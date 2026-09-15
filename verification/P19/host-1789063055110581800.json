@@ -1,0 +1,116 @@
+{
+  "command": [
+    "F:\\T\\TEST-SR-CLEANENV-20260910\\Scripts\\python.exe",
+    "-B",
+    "-m",
+    "pytest",
+    "tests/host/hermes/test_attachments_shutdown.py",
+    "tests/host/hermes/test_audience_isolation.py",
+    "tests/host/hermes/test_bounded_corrections.py",
+    "tests/host/hermes/test_dedupe.py",
+    "tests/host/hermes/test_identity.py",
+    "tests/host/hermes/test_p11_a2a_prepare.py",
+    "tests/host/hermes/test_prefetch.py",
+    "tests/host/hermes/test_real_host_loader.py",
+    "tests/host/hermes/test_runtime_bounds.py",
+    "tests/host/hermes/test_runtime_wiring.py",
+    "tests/host/hermes/test_operator_tools.py",
+    "tests/host/hermes/test_reinjection.py",
+    "tests/host/test_runtime_config_threshold.py",
+    "tests/host/codex/test_hooks.py",
+    "tests/host/codex/test_lifecycle_worker_wakeup.py",
+    "tests/host/codex/test_mcp.py",
+    "tests/host/codex/test_runtime_wiring.py",
+    "-q",
+    "--import-mode=importlib",
+    "-p",
+    "v11_guard",
+    "-p",
+    "no:cacheprovider",
+    "--durations=10",
+    "--junitxml=C:\\Temp\\sr\\TEST-v11-dg_6jqrp\\junit.xml"
+  ],
+  "exit_code": 0,
+  "overall_exit_code": 0,
+  "pytest_exit_code": 0,
+  "wrapper_exit_code": 0,
+  "cleanup_exit_code": 0,
+  "pytest": {
+    "state": "completed",
+    "exit_code": 0,
+    "error": null
+  },
+  "wrapper": {
+    "state": "succeeded",
+    "exit_code": 0,
+    "error": null
+  },
+  "cleanup": {
+    "state": "succeeded",
+    "exit_code": 0,
+    "error": null
+  },
+  "transition_history": [
+    "prepared",
+    "pytest_started",
+    "pytest_completed_waiting_cleanup",
+    "cleanup_succeeded",
+    "receipt_written"
+  ],
+  "duration_seconds": 22.121094100002665,
+  "watchdog_seconds": 180,
+  "passed": 113,
+  "failed": 0,
+  "skipped": 2,
+  "selected": [
+    "tests/host/hermes/test_attachments_shutdown.py",
+    "tests/host/hermes/test_audience_isolation.py",
+    "tests/host/hermes/test_bounded_corrections.py",
+    "tests/host/hermes/test_dedupe.py",
+    "tests/host/hermes/test_identity.py",
+    "tests/host/hermes/test_p11_a2a_prepare.py",
+    "tests/host/hermes/test_prefetch.py",
+    "tests/host/hermes/test_real_host_loader.py",
+    "tests/host/hermes/test_runtime_bounds.py",
+    "tests/host/hermes/test_runtime_wiring.py",
+    "tests/host/hermes/test_operator_tools.py",
+    "tests/host/hermes/test_reinjection.py",
+    "tests/host/test_runtime_config_threshold.py",
+    "tests/host/codex/test_hooks.py",
+    "tests/host/codex/test_lifecycle_worker_wakeup.py",
+    "tests/host/codex/test_mcp.py",
+    "tests/host/codex/test_runtime_wiring.py"
+  ],
+  "selection": {
+    "changed_files": [],
+    "impacts": [],
+    "unknown_files": [],
+    "required_tiers": [
+      "host"
+    ],
+    "reasons": [],
+    "metadata": {
+      "level": "T2",
+      "requires": [
+        "hermes",
+        "codex"
+      ],
+      "model_calls": false
+    },
+    "diagnostics": []
+  },
+  "required_gates": [
+    "hermes",
+    "codex"
+  ],
+  "missing_gates": [],
+  "log": "verification/P19/host-1789063055110581800.log",
+  "model_calls": false,
+  "process_policy": "v11_guard_with_allowlisted_test_subprocesses",
+  "test_data": "synthetic_only",
+  "source_base": "b8711ce6b51c73744b8df394e33f0c4596b57da2",
+  "source_inputs_sha256": "02f556735fd662f1618da905f211c165d0df3b7616ebf1f82474cc0a8b75970e",
+  "source_manifest": "verification/P19/host-1789063055110581800-inputs.json",
+  "evidence_scope": "P19 selected local contracts and bounded TEST process boundaries; no model/API semantic evaluation",
+  "model_receipt": null
+}

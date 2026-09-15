@@ -1,0 +1,1264 @@
+{
+  "schema": "scope-recall-independent-gate-audit/1",
+  "gate": "G1",
+  "auditor": "/root/g0_desktop_audit",
+  "created_at_utc": "2026-09-06T10:28:29.649804+00:00",
+  "candidate": "ca055f73c930a1bf7c13a8d442d35bc9d5eced60",
+  "base": "0b65bf620ceecef8984e6894bee264ddd06b5565",
+  "verdict": "NO_GO",
+  "next_task_ready": false,
+  "summary": "The fixed candidate passes the selected existing local checks and the declared P07 early source-to-restore evidence requirement. One independently reproduced P1 remains in durable alias source authority; G1 cannot pass until that local closure is fixed and independently rechecked.",
+  "scope": {
+    "current_gate": "P03-P07 authority and data, including P07 simplified real raw-source extraction and new-session restoration",
+    "not_a_reopen_of": [
+      "accepted G0 interface audit",
+      "accepted Hermes SVG probe",
+      "frozen model/budget/evaluation contract",
+      "v6 dataset qualification"
+    ],
+    "no_product_source_edits_by_auditor": true,
+    "no_models_called_by_auditor": true,
+    "no_ui_or_production_operations": true,
+    "holdout_questions_answers_and_case_ids_in_report": false,
+    "read_only_archived_test_databases": "Only synthetic archived SQLite backups, opened mode=ro&immutable=1",
+    "source_identity_end": "All selected product/test Python hashes were unchanged through the final independent fixed-candidate test; root was then explicitly released to make a new candidate. This report never substitutes later worktree edits for ca055f73."
+  },
+  "normative_inputs": [
+    {
+      "path": "F:\\SCOPERECALL更新项目\\Scope_Recall_架构与实施完整包_v1.1\\Scope_Recall_Architecture_v1_1\\tasks\\P03.md",
+      "sha256": "3cdde309c90d0fe6bbf2b439852600a18e56860ac9badf0a5b060829d8dc87f3"
+    },
+    {
+      "path": "F:\\SCOPERECALL更新项目\\Scope_Recall_架构与实施完整包_v1.1\\Scope_Recall_Architecture_v1_1\\tasks\\P04.md",
+      "sha256": "755761af3cb1643669bef3c8456b092be8de1d4dcd342ef3fc4785e2cdeb3125"
+    },
+    {
+      "path": "F:\\SCOPERECALL更新项目\\Scope_Recall_架构与实施完整包_v1.1\\Scope_Recall_Architecture_v1_1\\tasks\\P05.md",
+      "sha256": "7ad307a5c12a57e4ca2f0a39ea0198594f767bedff8b7b02c1a433c1b6f68a3c"
+    },
+    {
+      "path": "F:\\SCOPERECALL更新项目\\Scope_Recall_架构与实施完整包_v1.1\\Scope_Recall_Architecture_v1_1\\tasks\\P06.md",
+      "sha256": "12e1fb5c915f12c5f10722267a7f61fdfd25f0ae0d812bb9940ec82f5fe00eb0"
+    },
+    {
+      "path": "F:\\SCOPERECALL更新项目\\Scope_Recall_架构与实施完整包_v1.1\\Scope_Recall_Architecture_v1_1\\tasks\\P07.md",
+      "sha256": "25fce7eac7ed7f5179ce4958d49876194eb8888d0648a254d42849f4c743ddfe"
+    },
+    {
+      "path": "F:\\SCOPERECALL更新项目\\Scope_Recall_架构与实施完整包_v1.1\\Scope_Recall_Architecture_v1_1\\docs\\03_Luna实施手册.md",
+      "sha256": "69216730a1357dbef8332a1b08a87f486ca5bab67b66f7e778686287eec6bc3c"
+    },
+    {
+      "path": "F:\\SCOPERECALL更新项目\\Scope_Recall_架构与实施完整包_v1.1\\Scope_Recall_Architecture_v1_1\\docs\\05_验收测试与独立审计.md",
+      "sha256": "0c678e8b8b89145238c075e7dae8613d4779689ba83a0430156d503127caf64d"
+    },
+    {
+      "path": "F:\\SCOPERECALL更新项目\\Scope_Recall_架构与实施完整包_v1.1\\Scope_Recall_Architecture_v1_1\\docs\\07_人类式记忆功能定稿与验收.md",
+      "sha256": "8f94274682a46ea51588edfb16d2b4714bb23ecb9e1480a6d08f9ff71d72b5f4"
+    }
+  ],
+  "fixed_input_verification": {
+    "candidate": "ca055f73c930a1bf7c13a8d442d35bc9d5eced60",
+    "base": "0b65bf620ceecef8984e6894bee264ddd06b5565",
+    "worktree_clean_at_start": true,
+    "manifest_sha256": "c148da7a7de2e3119aaaf1b6ed627120e5c07add779d13fd8d224d260b1dc4a6",
+    "manifest_files": 281,
+    "all_manifest_file_hashes_match": true,
+    "task_receipt_sha256": "5d35762759a5c11ab943ce90d38432d7dedb0b608b99b4b32636de30aaa87055",
+    "task_receipt_identity": "c148da7a7de2e3119aaaf1b6ed627120e5c07add779d13fd8d224d260b1dc4a6",
+    "receipt_checks": 43,
+    "changed_product_and_tests": [
+      "M\t.gitattributes",
+      "M\tcontracts.py",
+      "A\tcore/aliases.py",
+      "A\tcore/artifact_storage.py",
+      "M\tcore/capture.py",
+      "M\tcore/claims.py",
+      "M\tcore/composition.py",
+      "A\tcore/consolidate.py",
+      "M\tcore/delete_storage.py",
+      "M\tcore/deletion.py",
+      "A\tcore/episode_storage.py",
+      "A\tcore/episodes.py",
+      "M\tcore/mutate.py",
+      "A\tcore/reference_storage.py",
+      "M\tcore/restore.py",
+      "A\tcore/retained_artifacts.py",
+      "M\tcore/schema.py",
+      "A\tcore/source_qualification.py",
+      "M\tcore/storage.py",
+      "M\tcore/visibility.py",
+      "A\tdocs/episode-artifact-contract.md",
+      "M\tscripts/check.py",
+      "A\tscripts/test_directories.py",
+      "M\ttests/conftest.py",
+      "A\ttests/contract/test_v11_aliases.py",
+      "M\ttests/contract/test_v11_claims.py",
+      "A\ttests/contract/test_v11_consolidation_input.py",
+      "M\ttests/contract/test_v11_deletion.py",
+      "A\ttests/contract/test_v11_episode_authority.py",
+      "A\ttests/contract/test_v11_episodes.py",
+      "A\ttests/contract/test_v11_retained_artifacts.py",
+      "A\ttests/host/test_eval_model_runtime.py",
+      "A\ttests/unit/test_check_runner.py",
+      "M\ttests/unit/test_v11_context.py",
+      "M\ttests/v11_guard.py"
+    ]
+  },
+  "artifact_integrity": [
+    {
+      "manifest": "verification/P07/development-artifact-manifest.json",
+      "sha256": "8117ca5f0cfd6f1b917cabc3e6a704cf87f97ad351112f3e38de8fcacd8b8f25",
+      "files": 36,
+      "all_raw_hashes_match": true,
+      "failures": [],
+      "sqlite_readonly_integrity": [
+        {
+          "path": "verification/P07/development-v1/truth/memory.sqlite3",
+          "sha256": "d7ebc07c700fd58a7cd6da8911767499acd28b3942e23a09029fbfbe3e12ae4a",
+          "integrity": "ok",
+          "tables": 22
+        },
+        {
+          "path": "verification/P07/development-v2/truth/memory.sqlite3",
+          "sha256": "c54966f7b3123f2296d1d508546ee73fb210d2ec4b24a14c4a3cbdaaf0e37a7e",
+          "integrity": "ok",
+          "tables": 22
+        }
+      ]
+    },
+    {
+      "manifest": "verification/P07/failure-resume-artifact-manifest.json",
+      "sha256": "59e016c81bb28f5778dde0e415aed5346ab08492b6e2f771c9d9dd5d99fb07e6",
+      "files": 69,
+      "all_raw_hashes_match": true,
+      "failures": [],
+      "sqlite_readonly_integrity": [
+        {
+          "path": "verification/P07/failure-resume-v1/truth/memory.sqlite3",
+          "sha256": "73dfd5c822f8c167375c2725cbad7c99172e55d53435212e39828e477c7d69d2",
+          "integrity": "ok",
+          "tables": 22
+        },
+        {
+          "path": "verification/P07/failure-resume-v2/truth/memory.sqlite3",
+          "sha256": "04e164966284007645bf061ded75857174a64b0654bbf857d91b7764391cb3b4",
+          "integrity": "ok",
+          "tables": 22
+        },
+        {
+          "path": "verification/P07/failure-resume-v3/truth/memory.sqlite3",
+          "sha256": "f3751dbbfb7f51552528e80b639d0c684ecc5d1a1b6475685a6e7965c64b04a7",
+          "integrity": "ok",
+          "tables": 22
+        },
+        {
+          "path": "verification/P07/failure-resume-v4/truth/memory.sqlite3",
+          "sha256": "b3b0b00578d5e64e4c1b4a99b7705705e91655bd19ddb8d9906b5c78c08d9edd",
+          "integrity": "ok",
+          "tables": 22
+        }
+      ]
+    }
+  ],
+  "receipt_review": {
+    "task_receipt": {
+      "path": "verification/P07/task_receipt.json",
+      "bytes": 26676,
+      "sha256": "5d35762759a5c11ab943ce90d38432d7dedb0b608b99b4b32636de30aaa87055"
+    },
+    "runner_checks": 43,
+    "runner_failed_overall_runs_preserved": 12,
+    "all_counts_and_exit_codes_match": true,
+    "exception_is_explicit_correction": {
+      "path": "verification/P07/runner-receipt-correction.json",
+      "bytes": 719,
+      "sha256": "240b217d3e2e1eb1ae98dc88e6f5f9aed9510d4cc9c1841c1da4e97c8d9a2a7d"
+    },
+    "old_cleanup_failure": "episodes-1788683179161848700 had pytest 29 pass/2 skip but its enclosing command exited 1 after cleanup. The old success receipt is retained and explicitly overridden as overall failure; no missing traceback is fabricated.",
+    "fixed_wrapper": "New receipts separate pytest, wrapper, cleanup, and overall completion. Existing fault-injection unit checks are included in the independent 338-pass run.",
+    "task_receipt_blocked_is_honest": "P07 receipt intentionally awaits independent G1; its local checks do not self-authorize P08."
+  },
+  "independent_verification": {
+    "local_contracts": {
+      "candidate": "ca055f73c930a1bf7c13a8d442d35bc9d5eced60",
+      "command": [
+        "F:\\SCOPERECALL更新项目\\.venv\\Scripts\\python.exe",
+        "-X",
+        "utf8",
+        "-B",
+        "-m",
+        "pytest",
+        "tests/unit/test_v11_context.py",
+        "tests/unit/test_check_runner.py",
+        "tests/contract/test_v11_protocol.py",
+        "tests/contract/test_v11_inputs.py",
+        "tests/contract/test_v11_storage.py",
+        "tests/contract/test_v11_capture.py",
+        "tests/contract/test_v11_claims.py",
+        "tests/contract/test_v11_deletion.py",
+        "tests/contract/test_v11_episodes.py",
+        "tests/contract/test_v11_episode_authority.py",
+        "tests/contract/test_v11_retained_artifacts.py",
+        "tests/contract/test_v11_consolidation_input.py",
+        "tests/contract/test_v11_aliases.py",
+        "tests/host/test_eval_model_runtime.py",
+        "-q",
+        "-p",
+        "v11_guard",
+        "-p",
+        "no:cacheprovider",
+        "--durations=10",
+        "--junitxml=F:\\SCOPERECALL更新项目\\worktrees\\scope-recall-v1.1\\.execution\\TEST-G1-AUDIT\\TEST-fixed-checks-7376-1788690093072563300\\junit.xml"
+      ],
+      "exit_code": 0,
+      "duration_seconds": 24.285057400004007,
+      "passed": 338,
+      "failed": [],
+      "skipped": [
+        {
+          "name": "test_links_and_out_of_root_blob_are_rejected",
+          "reason": {
+            "type": "pytest.skip",
+            "message": "symlinks unavailable"
+          },
+          "text": "F:\\SCOPERECALL更新项目\\worktrees\\scope-recall-v1.1\\tests\\contract\\test_v11_retained_artifacts.py:105: symlinks unavailable"
+        }
+      ],
+      "junit_present": true,
+      "source_hashes_unchanged": true,
+      "changed": [],
+      "model_calls": false,
+      "evidence_scope": "Independent local contracts only; no actual host or semantic evaluation score",
+      "audit_directory_retained": true,
+      "run_directory": "F:\\SCOPERECALL更新项目\\worktrees\\scope-recall-v1.1\\.execution\\TEST-G1-AUDIT\\TEST-fixed-checks-7376-1788690093072563300"
+    },
+    "junit": {
+      "path": ".execution/TEST-G1-AUDIT/TEST-fixed-checks-7376-1788690093072563300/junit.xml",
+      "bytes": 52069,
+      "sha256": "1e2f5dd79875195769c8d9926899fd922dae07dc64d3d6b38d295ef450ba8744"
+    },
+    "stdout": {
+      "path": ".execution/TEST-G1-AUDIT/TEST-fixed-checks-7376-1788690093072563300/stdout.log",
+      "bytes": 1679,
+      "sha256": "60e5091e6729d8372d43e9ca36f794a725757a72ec90303e915b0657a07aed26"
+    },
+    "stderr": {
+      "path": ".execution/TEST-G1-AUDIT/TEST-fixed-checks-7376-1788690093072563300/stderr.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "source_inputs": {
+      "path": ".execution/TEST-G1-AUDIT/TEST-fixed-checks-7376-1788690093072563300/inputs.json",
+      "bytes": 72676,
+      "sha256": "add054e8af935fabcc5b4d7388b9c72580aaf681364bb713a4719daf5c34e45d"
+    },
+    "test_names": [
+      "test_model_cannot_supply_trusted_identity[database_path]",
+      "test_model_cannot_supply_trusted_identity[agent_id]",
+      "test_model_cannot_supply_trusted_identity[installation_id]",
+      "test_model_cannot_supply_trusted_identity[allowed_scope_ids]",
+      "test_model_cannot_supply_trusted_identity[actor_origin]",
+      "test_model_cannot_supply_trusted_identity[sql]",
+      "test_model_cannot_supply_trusted_identity[scope]",
+      "test_scope_can_only_narrow_installation_binding",
+      "test_user_role_does_not_make_human_origin[assistant_visible]",
+      "test_user_role_does_not_make_human_origin[tool_observation]",
+      "test_user_role_does_not_make_human_origin[host_generated]",
+      "test_user_role_does_not_make_human_origin[memory_reinjection]",
+      "test_user_role_does_not_make_human_origin[origin_unknown]",
+      "test_model_cannot_call_capture_schema",
+      "test_test_dataset_requires_isolated_installation",
+      "test_invalid_installation_is_not_bound[changes0]",
+      "test_invalid_installation_is_not_bound[changes1]",
+      "test_invalid_installation_is_not_bound[changes2]",
+      "test_invalid_installation_is_not_bound[changes3]",
+      "test_context_is_bounded",
+      "test_model_cannot_upgrade_unknown_display_order",
+      "test_fixed_clock_and_ids_are_explicit",
+      "test_runner_isolates_home_and_blocks_external_effects",
+      "test_windows_extended_paths_are_normalized_without_expanding_test_authority",
+      "test_cleanup_failure_is_recorded_and_nonzero",
+      "test_pytest_and_cleanup_success_is_zero",
+      "test_non_protocol_json_has_stable_sanitized_error[\\xff]",
+      "test_non_protocol_json_has_stable_sanitized_error[{\"x\":1,\"x\":2}]",
+      "test_non_protocol_json_has_stable_sanitized_error[{\"nested\":{\"a\":1,\"a\":2}}]",
+      "test_non_protocol_json_has_stable_sanitized_error[{\"value\":NaN}]",
+      "test_non_protocol_json_has_stable_sanitized_error[{\"value\":Infinity}]",
+      "test_non_protocol_json_has_stable_sanitized_error[value5]",
+      "test_non_protocol_json_has_stable_sanitized_error[value6]",
+      "test_non_protocol_json_has_stable_sanitized_error[value7]",
+      "test_non_protocol_json_has_stable_sanitized_error[value8]",
+      "test_non_protocol_json_has_stable_sanitized_error[null]",
+      "test_non_protocol_json_has_stable_sanitized_error[{]",
+      "test_non_protocol_json_has_stable_sanitized_error[value11]",
+      "test_oversize_and_deep_payloads_are_rejected",
+      "test_bad_or_non_utc_times_are_rejected[2026-02-30T12:00:00Z]",
+      "test_bad_or_non_utc_times_are_rejected[2026-09-05]",
+      "test_bad_or_non_utc_times_are_rejected[2026-09-05T12:00:00]",
+      "test_bad_or_non_utc_times_are_rejected[2026-09-05T12:00:00-04:00]",
+      "test_bad_or_non_utc_times_are_rejected[2026-09-05T25:00:00Z]",
+      "test_bad_or_non_utc_times_are_rejected[yesterday]",
+      "test_unknown_occurred_time_does_not_invent_past",
+      "test_source_enums_lengths_and_revisions_are_explicit[changes0]",
+      "test_source_enums_lengths_and_revisions_are_explicit[changes1]",
+      "test_source_enums_lengths_and_revisions_are_explicit[changes2]",
+      "test_source_enums_lengths_and_revisions_are_explicit[changes3]",
+      "test_source_enums_lengths_and_revisions_are_explicit[changes4]",
+      "test_source_enums_lengths_and_revisions_are_explicit[changes5]",
+      "test_source_enums_lengths_and_revisions_are_explicit[changes6]",
+      "test_import_preserves_known_origin_without_guessing",
+      "test_query_budgets_and_modes_are_bounded[changes0]",
+      "test_query_budgets_and_modes_are_bounded[changes1]",
+      "test_query_budgets_and_modes_are_bounded[changes2]",
+      "test_query_budgets_and_modes_are_bounded[changes3]",
+      "test_query_budgets_and_modes_are_bounded[changes4]",
+      "test_query_budgets_and_modes_are_bounded[changes5]",
+      "test_query_budgets_and_modes_are_bounded[changes6]",
+      "test_query_budgets_and_modes_are_bounded[changes7]",
+      "test_single_decoder_has_same_semantics_for_all_entry_encodings",
+      "test_availability_does_not_collapse_answerability_or_coverage[ok-ambiguous-partial]",
+      "test_availability_does_not_collapse_answerability_or_coverage[ok-partial-unknown]",
+      "test_availability_does_not_collapse_answerability_or_coverage[ok-supported-complete_for_query]",
+      "test_availability_does_not_collapse_answerability_or_coverage[partial-supported-partial]",
+      "test_unavailable_cannot_return_memory_or_supported_answer",
+      "test_specific_claim_kind_requires_its_structure[procedure-procedure]",
+      "test_specific_claim_kind_requires_its_structure[intention-intention]",
+      "test_specific_claim_kind_requires_its_structure[alias-alias]",
+      "test_proposals_cannot_assign_authority_or_reverse_valid_time",
+      "test_evidence_must_quote_exact_accessible_source_revision",
+      "test_reference_resolution_cannot_invent_candidate_or_collapse_ambiguity",
+      "test_delete_revisions_only_apply_to_requested_targets",
+      "test_segment_preserves_order_and_real_unknown_total[segment0-complete]",
+      "test_segment_preserves_order_and_real_unknown_total[segment1-partial]",
+      "test_segment_preserves_order_and_real_unknown_total[segment2-partial]",
+      "test_invalid_segment_or_false_completeness_is_rejected[changes0-complete]",
+      "test_invalid_segment_or_false_completeness_is_rejected[changes1-complete]",
+      "test_invalid_segment_or_false_completeness_is_rejected[changes2-complete]",
+      "test_invalid_segment_or_false_completeness_is_rejected[changes3-partial]",
+      "test_invalid_segment_or_false_completeness_is_rejected[changes4-partial]",
+      "test_invalid_segment_or_false_completeness_is_rejected[changes5-partial]",
+      "test_invalid_segment_or_false_completeness_is_rejected[changes6-partial]",
+      "test_invalid_segment_or_false_completeness_is_rejected[changes7-partial]",
+      "test_display_keeps_historical_order_and_duplicate_positions",
+      "test_display_requires_exact_versions_bounded_list_and_reference_membership[snapshot0]",
+      "test_display_requires_exact_versions_bounded_list_and_reference_membership[snapshot1]",
+      "test_display_requires_exact_versions_bounded_list_and_reference_membership[snapshot2]",
+      "test_display_requires_exact_versions_bounded_list_and_reference_membership[snapshot3]",
+      "test_assistant_repetition_cannot_verify_work_progress",
+      "test_pending_intention_is_representable_without_completion_or_authorization",
+      "test_all_features_invariants_behaviors_have_public_synthetic_cases",
+      "test_public_specs_are_complete_and_not_reported_executed",
+      "test_inputs_exclude_gold_metadata_and_preserve_raw_negation",
+      "test_raw_text_routes_all_validate_without_claim_preseeding",
+      "test_tool_artifact_and_fault_scenarios_cannot_be_loaded_as_human_claims",
+      "test_journey_controller_instructions_are_not_host_context",
+      "test_import_and_composition_have_no_storage_host_or_model_side_effects",
+      "test_independent_initialize_and_exact_restricted_roundtrip",
+      "test_scopes_filtered_and_foreign_binding_refused",
+      "test_context_filter_precedes_source_search_limit_and_status[project_id]",
+      "test_context_filter_precedes_source_search_limit_and_status[branch_id]",
+      "test_global_sources_remain_readable_without_exposing_project_sources",
+      "test_identity_drift_and_directory_copy_do_not_inherit_authority[agent]",
+      "test_identity_drift_and_directory_copy_do_not_inherit_authority[installation]",
+      "test_identity_drift_and_directory_copy_do_not_inherit_authority[test_mode]",
+      "test_identity_drift_and_directory_copy_do_not_inherit_authority[scopes]",
+      "test_identity_drift_and_directory_copy_do_not_inherit_authority[copy]",
+      "test_directory_and_binding_cannot_be_reassigned",
+      "test_read_only_and_foreign_key_guard_are_real_sqlite",
+      "test_unknown_schema_and_old_store_never_auto_upgrade",
+      "test_missing_database_read_does_not_create_it",
+      "test_owned_failure_rolls_back_source_work_and_epoch",
+      "test_owned_transaction_failures_discard_connection_and_allow_next_write[BEGIN IMMEDIATE]",
+      "test_owned_transaction_failures_discard_connection_and_allow_next_write[INSERT INTO source_events]",
+      "test_owned_transaction_failures_discard_connection_and_allow_next_write[INSERT INTO work_items]",
+      "test_owned_transaction_failures_discard_connection_and_allow_next_write[COMMIT]",
+      "test_borrowed_failure_rolls_back_only_nested_changes",
+      "test_commit_failure_after_successful_borrow_never_releases_savepoint_twice",
+      "test_savepoint_begin_and_release_failure_can_be_handled_by_owner[SAVEPOINT core_1]",
+      "test_savepoint_begin_and_release_failure_can_be_handled_by_owner[RELEASE SAVEPOINT core_1]",
+      "test_savepoint_cleanup_failure_poisoned_owner_cannot_commit",
+      "test_rollback_failure_keeps_primary_error_and_close_discards_transaction",
+      "test_close_failure_is_retained_and_retried_before_another_open",
+      "test_remaining_budget_bounds_busy_wait_and_zero_refuses_before_open",
+      "test_source_query_uses_authorized_identity_index",
+      "test_source_replay_and_versions_preserve_occurrences",
+      "test_test_dataset_is_rejected_by_production_binding",
+      "test_C14_real_occurrences_not_trivial_filter_and_duplicate_is_zero_mutation",
+      "test_source_conflict_never_claims_persisted_or_adds_work",
+      "test_mandatory_work_is_atomic_and_never_calls_models",
+      "test_empty_message_reports_non_persistence_but_explicit_gap_is_retained[]",
+      "test_empty_message_reports_non_persistence_but_explicit_gap_is_retained[ \\r\\n\\t]",
+      "test_credentials_rejected_before_any_source_hash_index_or_work[api_key=TEST_VALUE_ONLY]",
+      "test_credentials_rejected_before_any_source_hash_index_or_work[-----BEGIN PRIVATE KEY-----\\nTEST_TRUNCATED]",
+      "test_credentials_rejected_before_any_source_hash_index_or_work[\\uff21\\uff30\\uff29\\uff3f\\uff2b\\uff25\\uff39\\uff1dTEST_VALUE_ONLY]",
+      "test_credentials_rejected_before_any_source_hash_index_or_work[api_\\u200bkey=TEST_VALUE_ONLY]",
+      "test_credentials_rejected_before_any_source_hash_index_or_work[Bearer TESTONLYTESTONLYTESTONLYTESTONLY]",
+      "test_credentials_rejected_before_any_source_hash_index_or_work[redis://test:TEST_PASSWORD_ONLY@test.invalid]",
+      "test_credential_in_protocol_reference_is_also_rejected",
+      "test_raw_repository_access_cannot_bypass_prepared_capture_filter",
+      "test_duplicate_reports_real_projection_state_without_repairing_it",
+      "test_binary_transport_removed_with_explicit_gap_without_reformatting_prose",
+      "test_hidden_reasoning_or_free_metadata_never_enters_capture",
+      "test_revision_and_late_import_preserve_source_versions_without_overwrite",
+      "test_chunking_preserves_every_character_and_replays_all_or_nothing",
+      "test_revised_shorter_source_hides_obsolete_segment_tails",
+      "test_partial_host_segments_show_missing_tail_and_recover_on_replay",
+      "test_trusted_attachment_version_order_is_preserved",
+      "test_public_M01_M05_raw_source_fidelity_only[M01]",
+      "test_public_M01_M05_raw_source_fidelity_only[M02]",
+      "test_public_M01_M05_raw_source_fidelity_only[M03]",
+      "test_public_M01_M05_raw_source_fidelity_only[M04]",
+      "test_public_M01_M05_raw_source_fidelity_only[M05]",
+      "test_C13_origin_retained_even_for_user_role_and_instruction_shaped_data[human_direct]",
+      "test_C13_origin_retained_even_for_user_role_and_instruction_shaped_data[assistant_visible]",
+      "test_C13_origin_retained_even_for_user_role_and_instruction_shaped_data[tool_observation]",
+      "test_C13_origin_retained_even_for_user_role_and_instruction_shaped_data[external_document]",
+      "test_C13_origin_retained_even_for_user_role_and_instruction_shaped_data[host_generated]",
+      "test_C13_origin_retained_even_for_user_role_and_instruction_shaped_data[memory_reinjection]",
+      "test_C13_origin_retained_even_for_user_role_and_instruction_shaped_data[imported]",
+      "test_C13_origin_retained_even_for_user_role_and_instruction_shaped_data[origin_unknown]",
+      "test_C01_C02_C03_source_recall_keeps_reason_failure_and_cancellation",
+      "test_sql_metacharacters_and_precise_identifiers_are_data",
+      "test_exact_evidence_quotes_are_validated_against_persisted_source_version",
+      "test_whitespace_only_source_keys_are_not_repaired",
+      "test_foreign_installation_does_not_read_or_rebind_shared_directory",
+      "test_C04_M26_capture_explicit_attribute_correction_is_immediate_without_vectors",
+      "test_C05_late_import_cannot_replace_current_and_recorded_time_does_not_become_valid_time",
+      "test_unknown_time_is_not_filled_from_recorded_and_cannot_answer_past",
+      "test_C06_C07_scope_project_branch_are_read_and_evidence_boundaries",
+      "test_conditional_variants_and_C23_C24_constraints_coexist",
+      "test_M27_finite_exception_expires_and_does_not_permanently_change_regular_rule",
+      "test_M28_future_rule_and_recorded_asof_use_distinct_axes",
+      "test_invented_dates_and_unknown_historical_time_stay_proposed",
+      "test_M29_observation_basis_does_not_claim_present_verification",
+      "test_M30_external_conflicting_unknown_order_becomes_disputed_regardless_scores",
+      "test_same_assertion_candidate_collision_is_zero_mutation",
+      "test_proposed_collision_cannot_demote_active_or_advance_pointer",
+      "test_C13_derived_echoes_have_one_root_without_new_authority_or_literal_laundering[assistant_visible]",
+      "test_C13_derived_echoes_have_one_root_without_new_authority_or_literal_laundering[host_generated]",
+      "test_C13_derived_echoes_have_one_root_without_new_authority_or_literal_laundering[memory_reinjection]",
+      "test_C13_derived_echoes_have_one_root_without_new_authority_or_literal_laundering[origin_unknown]",
+      "test_C15_assistant_success_does_not_override_tool_failure",
+      "test_imported_role_and_original_label_require_runtime_manifest_attestation",
+      "test_incomplete_root_cannot_promote[partial]",
+      "test_incomplete_root_cannot_promote[gap]",
+      "test_quote_trimming_cannot_remove_hypothesis_or_negation",
+      "test_C36_ambiguous_correction_preserves_both_currents_and_raw_update",
+      "test_explicit_revision_compare_and_swap_and_no_silent_retries",
+      "test_two_real_writers_with_same_expected_revision_have_exactly_one_winner",
+      "test_old_human_quote_and_agent_echo_cannot_authorize_new_revision",
+      "test_retraction_blocks_current_but_keeps_history_and_past",
+      "test_explicit_condition_variant_does_not_change_base",
+      "test_stale_source_revision_is_fenced_before_any_derived_write",
+      "test_batch_invalid_span_rolls_back_other_valid_proposals",
+      "test_sql_foreign_key_enforces_one_existing_head",
+      "test_M38_intention_cancellation_uses_same_versions_and_does_not_erase_history",
+      "test_M40_reminder_does_not_complete_intention[assistant_visible-TEST-project \\u63d0\\u9192\\u4f60\\u68c0\\u67e5\\u6563\\u70ed\\u3002]",
+      "test_M40_reminder_does_not_complete_intention[human_direct-TEST-project \\u5df2\\u63d0\\u9192\\uff0c\\u4f46\\u5c1a\\u672a\\u5b8c\\u6210\\u6563\\u70ed\\u68c0\\u67e5\\u3002]",
+      "test_intention_actual_human_completion_and_procedure_evidence_are_qualified",
+      "test_import_attestation_is_not_a_model_request_field",
+      "test_negative_and_questioned_operations_do_not_change_current[\\u4e0d\\u8981\\u64a4\\u56deTEST-project \\u914d\\u8272\\u84dd\\u8272\\u3002]",
+      "test_negative_and_questioned_operations_do_not_change_current[TEST-project \\u914d\\u8272\\u6539\\u4e3a\\u94f6\\u8272\\uff1f]",
+      "test_negative_and_questioned_operations_do_not_change_current[\\u4e0d\\u8981\\u628aTEST-project \\u914d\\u8272\\u6539\\u6210\\u94f6\\u8272\\u3002]",
+      "test_question_marked_preference_source_cannot_become_active_claim",
+      "test_unpunctuated_question_revision_cannot_execute",
+      "test_negative_cancellation_does_not_cancel_pending_intention",
+      "test_late_direct_event_cannot_use_capture_fastpath_to_replace_newer_current",
+      "test_invented_method_steps_and_intention_targets_cannot_gain_active",
+      "test_failure_after_head_evidence_epoch_and_work_updates_rolls_back_everything",
+      "test_unrelated_hypothetical_sentence_cannot_demote_exact_asserted_span",
+      "test_import_attestation_cannot_be_reused_for_another_source_body_or_revision",
+      "test_unknown_retraction_time_does_not_resurrect_known_old_fact_for_asof",
+      "test_explicit_revision_cannot_borrow_unrelated_sentence_deadline",
+      "test_C08_delete_blocks_every_existing_content_exit_before_physical_purge",
+      "test_C09_late_proposal_and_derived_capture_cannot_resurrect_deleted_source",
+      "test_delete_claim_also_fences_original_source_representation",
+      "test_C30_suppress_blocks_auto_preserves_explicit_read_and_no_implicit_unsuppress",
+      "test_new_derivation_of_suppressed_source_inherits_auto_policy",
+      "test_delete_idempotence_is_zero_mutation_even_after_authorization_source_removed",
+      "test_unknown_and_unauthorized_targets_use_same_error_and_do_not_disclose_existence",
+      "test_expected_revision_and_explicit_batch_authorization_are_required",
+      "test_negative_or_unsettled_delete_does_not_change_any_target[\\u4e0d\\u8981\\u5220\\u9664 ]",
+      "test_negative_or_unsettled_delete_does_not_change_any_target[\\u662f\\u5426\\u5220\\u9664 ]",
+      "test_negative_or_unsettled_delete_does_not_change_any_target[\\u5220\\u9664\\u4e86\\u5417\\uff1f ]",
+      "test_C11_epoch_change_rejects_old_claim_release_without_vector_body_fallback",
+      "test_C20_authority_failure_prevents_release",
+      "test_purge_removes_source_claim_quote_and_lexical_payloads_and_reports_remaining_layers",
+      "test_C10_restored_backup_stays_closed_until_latest_ledger_replayed",
+      "test_restore_replays_withdrawal_without_inventing_missing_human_source",
+      "test_deleted_absent_snapshot_member_cannot_be_reimported_later",
+      "test_intention_dependency_and_duplicate_quote_edges_are_erased_together",
+      "test_missing_future_segment_is_still_denied_after_group_key_payload_purge",
+      "test_fresh_explicit_mention_does_not_permanently_remove_same_scoped_suppression",
+      "test_failure_after_all_blocks_rolls_back_epoch_operations_and_visibility",
+      "test_cancelled_intention_does_not_return_to_pending_after_restore",
+      "test_withdrawn_object_missing_from_backup_cannot_be_late_reconstructed",
+      "test_restore_epoch_never_reuses_any_pre_restore_packet_epoch",
+      "test_ordinary_context_with_all_scopes_has_no_installation_maintenance_authority",
+      "test_purge_failure_keeps_content_blocked_and_can_retry",
+      "test_question_word_without_punctuation_cannot_authorize_delete",
+      "test_restore_failed_commit_keeps_marker_closed_and_replay_retries",
+      "test_C37_plain_chat_has_provisional_episode_without_manufactured_goal",
+      "test_C25_one_session_changes_topic_without_cancelling_previous",
+      "test_C26_M06_same_trusted_task_continues_across_sessions_and_branches_do_not",
+      "test_same_title_in_new_session_without_anchor_does_not_merge",
+      "test_C02_C03_episode_state_tracks_actual_source_authority[tool_observation-TEST build exit_code: 1; \\u7f16\\u8bd1\\u5931\\u8d25\\u3002-failed]",
+      "test_C02_C03_episode_state_tracks_actual_source_authority[human_direct-\\u53d6\\u6d88\\u8fd9\\u4e2a\\u4efb\\u52a1\\uff0c\\u5148\\u6821\\u5bf9\\u3002-cancelled]",
+      "test_C02_C03_episode_state_tracks_actual_source_authority[host_generated-{\"lifecycle\":\"interrupted\"}-interrupted]",
+      "test_C02_C03_episode_state_tracks_actual_source_authority[assistant_visible-\\u6574\\u4e2a\\u4efb\\u52a1\\u5df2\\u7ecf\\u5b8c\\u6210\\u3002-unknown]",
+      "test_C02_C03_episode_state_tracks_actual_source_authority[human_direct-\\u5148\\u6682\\u505c\\uff0c\\u7a0d\\u540e\\u7ee7\\u7eed\\u3002-open]",
+      "test_resume_is_extractive_versioned_and_stale_environment_is_labelled",
+      "test_new_event_or_rebuilt_summary_does_not_revalidate_old_environment",
+      "test_occurrence_order_respects_fractional_utc_seconds",
+      "test_model_cannot_promote_promise_negative_or_hypothesis_to_verified_progress[TEST \\u6211\\u5c06\\u5b8c\\u6210\\u914d\\u8272\\u3002-assistant_visible-\\u5b8c\\u6210\\u914d\\u8272]",
+      "test_model_cannot_promote_promise_negative_or_hypothesis_to_verified_progress[TEST \\u914d\\u8272\\u8fd8\\u6ca1\\u5b8c\\u6210\\u3002-human_direct-\\u5b8c\\u6210]",
+      "test_model_cannot_promote_promise_negative_or_hypothesis_to_verified_progress[TEST \\u5047\\u8bbe\\u914d\\u8272\\u5df2\\u5b8c\\u6210\\u3002-human_direct-\\u914d\\u8272\\u5df2\\u5b8c\\u6210]",
+      "test_bad_watermark_or_old_source_revision_cannot_mark_processing_complete",
+      "test_resume_cannot_merge_two_topics_or_invent_local_artifact_access",
+      "test_C16_M47_same_path_overwrite_preserves_exact_prior_artifact",
+      "test_C17_M49_described_only_artifact_has_no_fabricated_bytes",
+      "test_M13_M14_display_order_binds_version_only_when_actually_observed",
+      "test_M50_deleted_artifact_blocks_descriptions_references_resume_and_cached_release",
+      "test_resume_keeps_unprocessed_tail_and_source_paging_is_not_a_false_complete_count",
+      "test_long_episode_uses_bounded_segments_and_preserves_final_source",
+      "test_old_arriving_failure_does_not_replace_newer_episode_completion",
+      "test_M15_explicit_clarification_updates_binding_and_preserves_old_version",
+      "test_question_and_negated_failure_do_not_close_or_fail_episode",
+      "test_terminal_state_requires_affirmative_assertion_in_actual_core[TEST \\u6574\\u4e2a\\u4efb\\u52a1\\u5df2\\u7ecf\\u5b8c\\u6210\\u4e86\\u5417-open]",
+      "test_terminal_state_requires_affirmative_assertion_in_actual_core[TEST \\u662f\\u5426\\u4efb\\u52a1\\u5df2\\u7ecf\\u5b8c\\u6210-open]",
+      "test_terminal_state_requires_affirmative_assertion_in_actual_core[TEST \\u5e76\\u975e\\u4efb\\u52a1\\u5df2\\u7ecf\\u5b8c\\u6210-open]",
+      "test_terminal_state_requires_affirmative_assertion_in_actual_core[TEST \\u4e0d\\u8981\\u518d\\u53d6\\u6d88\\u6574\\u4e2a\\u4efb\\u52a1-open]",
+      "test_terminal_state_requires_affirmative_assertion_in_actual_core[TEST \\u6ca1\\u6709\\u4efb\\u4f55\\u5931\\u8d25-open]",
+      "test_terminal_state_requires_affirmative_assertion_in_actual_core[TEST \\u6574\\u4e2a\\u4efb\\u52a1\\u5df2\\u7ecf\\u5b8c\\u6210-completed]",
+      "test_question_source_cannot_be_relabelled_verified_progress",
+      "test_trusted_task_anchor_does_not_turn_question_into_goal",
+      "test_question_source_cannot_be_relabelled_as_decision",
+      "test_assistant_goal_cannot_create_work_authority",
+      "test_trimmed_negation_or_question_cannot_authorize_resume[TEST \\u6211\\u6ca1\\u6709\\u786e\\u8ba4\\u84dd\\u8272\\u3002-\\u786e\\u8ba4\\u84dd\\u8272-decisions-None]",
+      "test_trimmed_negation_or_question_cannot_authorize_resume[TEST \\u84dd\\u8272\\u5df2\\u7ecf\\u786e\\u8ba4\\u4e86\\u5417-\\u84dd\\u8272\\u5df2\\u7ecf\\u786e\\u8ba4-decisions-None]",
+      "test_trimmed_negation_or_question_cannot_authorize_resume[TEST \\u4e0d\\u8981\\u5220\\u9664\\u6d77\\u62a5\\u3002-\\u5220\\u9664\\u6d77\\u62a5-next_step-user_requested]",
+      "test_trimmed_negation_or_question_cannot_authorize_resume[TEST \\u53ef\\u4ee5\\u5220\\u9664\\u6d77\\u62a5\\u5417\\uff1f-\\u5220\\u9664\\u6d77\\u62a5-next_step-user_requested]",
+      "test_trimmed_negation_or_question_cannot_authorize_resume[TEST \\u4e0d\\u8981\\u5220\\u9664\\u6d77\\u62a5\\u3002-\\u5220\\u9664\\u6d77\\u62a5-next_step-existing_plan]",
+      "test_trimmed_negation_or_question_cannot_authorize_resume[TEST Can we delete the poster?-delete the poster-next_step-existing_plan]",
+      "test_trimmed_negation_or_question_cannot_authorize_resume[TEST Do not delete the poster.-delete the poster-next_step-user_requested]",
+      "test_trimmed_negation_or_question_cannot_authorize_resume[TEST \\u53ea\\u8c03\\u6574\\u84dd\\u8272\\u3002-\\u8c03\\u6574\\u84dd\\u8272-next_step-user_requested]",
+      "test_negative_decision_keeps_its_prohibition_and_separate_next_step",
+      "test_zero_ordinal_is_not_last_item",
+      "test_resume_cannot_borrow_unmentioned_version_of_same_artifact",
+      "test_non_confirmation_does_not_resolve_observed_artifact[\\u5165\\u53e3\\u6d77\\u62a5\\u67091\\u4e2a\\u6807\\u9898\\u3002-\\u5165\\u53e3\\u6d77\\u62a5]",
+      "test_non_confirmation_does_not_resolve_observed_artifact[\\u5165\\u53e3\\u6d77\\u62a5\\u65c1\\u8fb9\\u662f\\u5c01\\u9762 v1\\u3002-\\u5165\\u53e3\\u6d77\\u62a5]",
+      "test_non_confirmation_does_not_resolve_observed_artifact[\\u5982\\u679c\\u7b2c\\u4e8c\\u5f20\\u8981\\u6539\\uff0c\\u5c31\\u628a\\u5b83\\u79fb\\u5230\\u524d\\u9762\\u3002-\\u7b2c\\u4e8c\\u5f20]",
+      "test_non_confirmation_does_not_resolve_observed_artifact[\\u4e0d\\u662f\\u7b2c\\u4e8c\\u5f20\\u3002-\\u7b2c\\u4e8c\\u5f20]",
+      "test_non_confirmation_does_not_resolve_observed_artifact[\\u5165\\u53e3\\u6d77\\u62a5 v1 \\u662f\\u6211\\u8981\\u7684\\u5417\\uff1f-\\u5165\\u53e3\\u6d77\\u62a5]",
+      "test_non_confirmation_does_not_resolve_observed_artifact[\\u521a\\u624d\\u90a3\\u4e2a\\u662f\\u5165\\u53e3\\u6d77\\u62a5 v1 \\u5417-\\u90a3\\u4e2a]",
+      "test_non_confirmation_does_not_resolve_observed_artifact[\\u7b2c\\u4e8c\\u5f20\\u5c31\\u662f\\u8981\\u4fee\\u6539\\u7684\\u5417-\\u7b2c\\u4e8c\\u5f20]",
+      "test_non_confirmation_does_not_resolve_observed_artifact[\\u5165\\u53e3\\u6d77\\u62a5 v1.2\\u3002-\\u5165\\u53e3\\u6d77\\u62a5]",
+      "test_exact_artifact_identity_disambiguates_same_label",
+      "test_stale_reference_head_can_be_clarified_as_new_version",
+      "test_hypothesis_and_negative_reference_texts_stay_unresolved",
+      "test_omitted_same_label_version_prevents_candidate_uniqueness",
+      "test_same_name_versions_are_content_addressed_and_immutable",
+      "test_mime_size_hash_and_svg_policy",
+      "test_read_detects_tamper_missing_and_erase_is_exact",
+      "test_links_and_out_of_root_blob_are_rejected",
+      "test_hardlink_mutation_is_detected_and_fsync_failure_leaves_no_partial",
+      "test_windows_junction_ancestor_is_rejected",
+      "test_blob_metadata_does_not_echo_text_contents",
+      "test_blob_identity_is_bound_to_installation_and_agent",
+      "test_consolidation_preserves_authorized_origin_role_and_attested_import",
+      "test_duplicate_source_refs_are_rejected",
+      "test_utf8_input_budget_is_enforced",
+      "test_source_instructions_remain_user_data",
+      "test_M11_asserted_rename_keeps_old_identity_and_records_new_alias",
+      "test_alias_target_from_other_project_is_not_accepted",
+      "test_question_or_negated_alias_source_stays_proposed[TEST-mist \\u9879\\u76ee\\u6539\\u540d\\u4e3a TEST\\u66ae\\u5149\\u5417\\uff1f]",
+      "test_question_or_negated_alias_source_stays_proposed[TEST-mist \\u9879\\u76ee\\u6539\\u540d\\u4e3a TEST\\u66ae\\u5149\\u5417]",
+      "test_question_or_negated_alias_source_stays_proposed[TEST-mist \\u5982\\u679c\\u6539\\u540d\\u4e3a TEST\\u66ae\\u5149\\uff0c\\u5c31\\u4fdd\\u7559\\u65e7\\u79f0\\u3002]",
+      "test_question_or_negated_alias_source_stays_proposed[TEST-mist \\u4e0d\\u662f\\u6539\\u540d\\u4e3a TEST\\u66ae\\u5149\\uff0c\\u4ecd\\u53eb TEST\\u6668\\u96fe\\u3002]",
+      "test_model_invented_target_ref_stays_proposed",
+      "test_mention_other_identity_or_name_prefix_is_not_rename[TEST-mist \\u9879\\u76ee\\u5c06\\u53c2\\u8003 TEST\\u66ae\\u5149 \\u7684\\u8bbe\\u8ba1\\u3002]",
+      "test_mention_other_identity_or_name_prefix_is_not_rename[TEST-other \\u9879\\u76ee\\u4ee5\\u540e\\u6539\\u540d\\u4e3a TEST\\u66ae\\u5149\\uff0c\\u5185\\u5bb9\\u4e0d\\u53d8\\u3002]",
+      "test_mention_other_identity_or_name_prefix_is_not_rename[TEST-mist \\u9879\\u76ee\\u6539\\u540d\\u4e3a TEST\\u66ae\\u5149\\u4e8c\\u53f7\\uff0c\\u5185\\u5bb9\\u4e0d\\u53d8\\u3002]",
+      "test_existing_unrelated_claim_cannot_supply_project_identity",
+      "test_M11_source_old_name_can_anchor_rename_without_runtime_id_in_quote",
+      "test_stub_send_persists_sanitized_request_response_and_usage",
+      "test_mimo_requires_disabled_thinking_and_unknown_usage_is_fail_closed",
+      "test_http_failure_and_malformed_response_are_recorded_without_retry",
+      "test_meter_breach_blocks_following_request",
+      "test_preflight_failure_leaves_evidence_and_does_not_post",
+      "test_evidence_write_failure_does_not_post",
+      "test_existing_model_cap_blocks_before_post",
+      "test_tool_choice_dict_and_extended_usage_are_supported",
+      "test_live_path_escape_and_prepost_fsync_order",
+      "test_input_guard_rejects_non_synthetic_or_oversized[non_synthetic]",
+      "test_input_guard_rejects_non_synthetic_or_oversized[oversized]"
+    ],
+    "symlink_limit": "Exactly one existing symlink creation test skipped because this Windows account cannot create symlinks. It is not counted as pass. Other retained-artifact path, immutable-byte, and ownership checks ran.",
+    "first_auditor_runner_attempt": {
+      "status": "HARNESS_FAILED_BEFORE_COLLECTION",
+      "pytest_score": null,
+      "reason": "The auditor added an extra long nested TEST directory; conftest plugin-copy paths exceeded the Windows path surface. Its raw stderr/stdout are retained. The wrapper then raised while trying to parse missing XML. The retry used the same owned audit parent with a shorter isolation root and handled missing XML, without modifying candidate code or weakening the guard.",
+      "stderr": {
+        "path": ".execution/TEST-G1-AUDIT/TEST-fixed-checks-4364-1788690030295322600/stderr.log",
+        "bytes": 3003,
+        "sha256": "9f7f1c083fe49d27f8605272247c5e709c311b0839245a131523145b5765168b"
+      },
+      "stdout": {
+        "path": ".execution/TEST-G1-AUDIT/TEST-fixed-checks-4364-1788690030295322600/stdout.log",
+        "bytes": 0,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "wrapper_before_fix": {
+        "path": ".execution/TEST-G1-AUDIT/run_fixed_contracts-before-audit-boundary-fix.py",
+        "bytes": 3756,
+        "sha256": "0d4e6f4d49bc8b0846330eedf21a47c935ce3efc2a88f44b3ed5b6a6c0a90a98"
+      },
+      "wrapper_after_fix": {
+        "path": ".execution/TEST-G1-AUDIT/run_fixed_contracts.py",
+        "bytes": 3835,
+        "sha256": "5a8e7ab5272cb74c9c25b9bc189d03430033eecdb774dde410bac433c0841c37"
+      }
+    },
+    "actual_core_version_and_question_probe": {
+      "evidence_scope": "Actual isolated local Core API; no model or host; independent TEST examples",
+      "input_hashes": {
+        "core/episode_storage.py": "881a98efbdf1aaccf2bc9eeced3f0808b883a7eccf1a3f37851276d2a0011adb",
+        "core/reference_storage.py": "393a8c61297c9d5ff3c7fed4f2632a0b445e025a377e4b0a7c851cf94ae57078",
+        "core/episodes.py": "4d1a791666519e5719ddbcf068ccf029af2d93b727024bbd10cb0447a178ecea",
+        "core/consolidate.py": "7bae2701d5fd14c0f96c06aee970c1f8f52e4b2b6a08c047681495dbf1794269",
+        "core/source_qualification.py": "917e96ca3f73b3866b5a534f9561490d27ed5ed8e23adb6829079f8b9069373c",
+        "contracts.py": "b700a0b7ec7da0857cf795c1e9da74482de646f310d784e14384ff4fe3744e7d"
+      },
+      "artifact_version_evidence": {
+        "disposition": "REJECTED",
+        "code": "DERIVATION_INVALID",
+        "field": "artifact_version_evidence"
+      },
+      "question_reference": {
+        "disposition": "ACCEPTED",
+        "resolution": "unresolved",
+        "reason": "ambiguous_or_unconfirmed",
+        "source_text": "TEST 刚才那个是入口海报 v1 吗"
+      },
+      "run_directory": "F:\\SCOPERECALL更新项目\\worktrees\\scope-recall-v1.1\\.execution\\TEST-G1-AUDIT\\TEST-version-1788690030259597400"
+    },
+    "actual_core_claim_authority_probe": {
+      "evidence_scope": "Actual isolated local Core API; no model or host; independent TEST examples",
+      "input_hashes": {
+        "core/claims.py": "f5227792851dd42d1fe12c2c9729eac0028915c161c2966b5518836c4b79b694",
+        "core/mutate.py": "6b8b36ca8b12de4220e7f93d0fd9244d12ac8ae56fb2803daa8939202581012f",
+        "core/claim_storage.py": "bdee57eb54b8706feb135e9e4a91c63908c7e540c15bd14e6fe58e5d06025a74",
+        "core/source_qualification.py": "917e96ca3f73b3866b5a534f9561490d27ed5ed8e23adb6829079f8b9069373c",
+        "contracts.py": "b700a0b7ec7da0857cf795c1e9da74482de646f310d784e14384ff4fe3744e7d"
+      },
+      "results": [
+        {
+          "trigger": "question_source_plus_model_decision_proposal",
+          "source": "TEST-project 配色蓝色吗？",
+          "disposition": "proposed",
+          "current_value": null
+        },
+        {
+          "trigger": "source_capture_automatic_correction",
+          "source": "TEST-project 配色改为银色吗",
+          "old_value": "蓝色",
+          "current_value": "蓝色",
+          "current_revision": 1,
+          "current_state": "active"
+        },
+        {
+          "trigger": "negated_cancellation_plus_model_cancelled_proposal",
+          "source": "TEST-project 不要取消下次检查输出目录。",
+          "disposition": "proposed",
+          "current_intention_state": null
+        }
+      ],
+      "run_directory": "F:\\SCOPERECALL更新项目\\worktrees\\scope-recall-v1.1\\.execution\\TEST-G1-AUDIT\\TEST-claims-34492-1788690030240630900"
+    },
+    "saved_actual_model_proposal_replay": {
+      "artifact": {
+        "path": ".execution/TEST-G1-AUDIT/TEST-saved-proposal-replay-1788690030244637600/replay-result.json",
+        "bytes": 13851,
+        "sha256": "ed67b8917b39b397df02eb8beee311abd2de3195e8966fdd0f11276f3b8f2e95"
+      },
+      "results": {
+        "evidence_scope": "Deterministic validation of the unchanged actual model responses against current source; not a new extraction, L1 capture, runtime command, host or score",
+        "source_inputs": {
+          "core\\aliases.py": "aa342a6a233648df66c64a330f34d8249d45cde4343f3e67c5cd3896d71594eb",
+          "core\\artifact_storage.py": "3b6a15e05c42db140e23ae5cec0c1558686be8304dda5e383d044d306832916d",
+          "core\\capture.py": "008a62c48b1d3956608a1807f617d41d3b728f24c6dc93c59a58f61d30bc0f19",
+          "core\\claims.py": "f5227792851dd42d1fe12c2c9729eac0028915c161c2966b5518836c4b79b694",
+          "core\\claim_storage.py": "bdee57eb54b8706feb135e9e4a91c63908c7e540c15bd14e6fe58e5d06025a74",
+          "core\\composition.py": "f4c4d2da554c224959b88b6680be8ab21db321a13576b2f0923959b5e085457f",
+          "core\\consolidate.py": "7bae2701d5fd14c0f96c06aee970c1f8f52e4b2b6a08c047681495dbf1794269",
+          "core\\delete_storage.py": "6c740870707c1bd8294f90a3db16458acef8f667244ac5e1122054340e193ec7",
+          "core\\deletion.py": "8b48ef91f7a81f26514c20fd6c6c8c80f1ec0d251fd68d507ead055b171c49aa",
+          "core\\episodes.py": "4d1a791666519e5719ddbcf068ccf029af2d93b727024bbd10cb0447a178ecea",
+          "core\\episode_storage.py": "881a98efbdf1aaccf2bc9eeced3f0808b883a7eccf1a3f37851276d2a0011adb",
+          "core\\events.py": "2be94c0ed4ccb3bf8399e17cb8fc68e3bab59cba0c2834e404485f5ec9f76ec3",
+          "core\\mutate.py": "6b8b36ca8b12de4220e7f93d0fd9244d12ac8ae56fb2803daa8939202581012f",
+          "core\\reference_storage.py": "393a8c61297c9d5ff3c7fed4f2632a0b445e025a377e4b0a7c851cf94ae57078",
+          "core\\restore.py": "d3c506c709d67b34733023c144230d3089599b6bae7a4e206ea804f928114dde",
+          "core\\retained_artifacts.py": "62a623eef2cebab78b584b17096a72815b168c1ac73b14c0bc7eff1a5986d42b",
+          "core\\schema.py": "480f0a0d893d6189393bc3067f81567a849a180755381b2561c1b10f47f5ed85",
+          "core\\source_qualification.py": "917e96ca3f73b3866b5a534f9561490d27ed5ed8e23adb6829079f8b9069373c",
+          "core\\storage.py": "2124bb4baaf2426b309183448b66ceee806486e0037e5438286d14c45d836318",
+          "core\\visibility.py": "26daed8b647c61a71ce1c06f14c063ea7d70ca85c559bcf052ebe4b7fbf6621c",
+          "core\\__init__.py": "830f5bea1118fa56e3830a41a31cd0b848f254da6aebd8e1430d3d159ec12216",
+          "contracts\\consolidation_result.schema.json": "8c8b517dcd9e992f4f2d13f847e87947a02e90e0f2405099834401038b72a3db",
+          "contracts\\examples.json": "e1180bcbc5defc042739cb90678a08557e3a868eefacb93094b6c4e86cc741bf",
+          "contracts\\forget_request.schema.json": "197fc7ec378a07dc440431a04a36071bb67ccd830ec4e769993ff322a19743ec",
+          "contracts\\recall_packet.schema.json": "adb4f641dbbccc92115138ee0d63458e2102f6c381b3758f008c398f4c3b6ee7",
+          "contracts\\recall_request.schema.json": "e2b8a4919b9cc46e7fe5b17e9395e50d2d4abe4bc284ac3fe4fc4a494ff455b4",
+          "contracts\\revise_request.schema.json": "c6bc9fd1eabc774cfb57384aa8b31f2edd7722fe9a45672261075587f7acaa42",
+          "contracts\\source_event.schema.json": "33d17c95514002114f6d018eb991ded7bcf0318c820af40604e590c660fbdaaa",
+          "contracts\\task_receipt.schema.json": "05db51edaefd10a2fa49d6c2cf9e6f0eee9450b9931a3bfba82156a5ecc93935",
+          "contracts.py": "b700a0b7ec7da0857cf795c1e9da74482de646f310d784e14384ff4fe3744e7d"
+        },
+        "results": [
+          {
+            "scenario": "artifact",
+            "original_model_attempt": 13,
+            "raw_manifest_sha256": "93e874217d91920f63b29a4423d8ba675e693e98e2f4cf76d2bc57271bff1359",
+            "saved_response_sha256": "0c15d0b74c2a6173091e2718692fd457a82662fb9a0a18728f0332654e3f2d22",
+            "source_refs_exactly_preserved": true,
+            "new_model_calls": 0,
+            "accepted": true,
+            "receipt": {
+              "items": [
+                {
+                  "ref": "reference-28e323c0010fbe04a7ebbfccc8497028dca11acc429eff2a9878aa1989ce7612",
+                  "revision": 1,
+                  "disposition": "applied",
+                  "state": "resolved"
+                },
+                {
+                  "ref": "reference-94f3cbe1e57d82b4915f5111dc185bb2e61acdfd558d1e200ebe7beb4bcdb47c",
+                  "revision": 1,
+                  "disposition": "applied",
+                  "state": "unresolved"
+                },
+                {
+                  "ref": "episode-0376a9fe2a29ac7ca2bfda5961283b14f85f9b4d7cca40c6cfcf4ccfbeb0bf19",
+                  "revision": 7,
+                  "disposition": "applied",
+                  "state": "open"
+                }
+              ],
+              "memory_epoch": 11,
+              "durability": "persisted"
+            },
+            "episodes": [
+              {
+                "ref": "episode-0376a9fe2a29ac7ca2bfda5961283b14f85f9b4d7cca40c6cfcf4ccfbeb0bf19",
+                "revision": 7,
+                "scope_id": "TEST-P07-scope",
+                "project_id": "TEST-bird-observatory",
+                "branch_id": "TEST-main",
+                "state": "open",
+                "resume": {
+                  "artifact_refs": [
+                    "artifact-77cdb48dee9b88d1c7086ab8e2ff17cca5ba3b9738160bdf02958fc0ae9681a8@1",
+                    "artifact-77cdb48dee9b88d1c7086ab8e2ff17cca5ba3b9738160bdf02958fc0ae9681a8@2"
+                  ],
+                  "blockers": [],
+                  "decisions": [
+                    {
+                      "evidence_refs": [
+                        "event-49ffbe1d05c215b6b92b1d5f8094670ae88d48fe4d53c7d1296a981658cbda37@1"
+                      ],
+                      "text": "上下两栏的结构已经确认，配色还没完成。下一步只调整配色，保留现有布局。"
+                    }
+                  ],
+                  "episode_ref": "episode-0376a9fe2a29ac7ca2bfda5961283b14f85f9b4d7cca40c6cfcf4ccfbeb0bf19",
+                  "evidence_refs": [
+                    "event-1c3facbb79ad64035b54ccaa45a6155b9d1e541c230388f989db685c25b91ef7@1",
+                    "event-52933849ca2b7c6ba885d35a91dd37a064a7a3c2b57fcfae73e25f482cbf7427@1",
+                    "event-49ffbe1d05c215b6b92b1d5f8094670ae88d48fe4d53c7d1296a981658cbda37@1",
+                    "event-56daef170a480d893af953e72d22f77021d95f8081f2c5980fbe903b503532de@1",
+                    "event-9ec8c6621b84c00e928006f7823cc5a4e36156d557def90f9d075ccca19ac1c5@1",
+                    "event-9b692f7a55592832d33a4a93b1661ec05819a5fdd9617e5ca313603c28e774a6@1"
+                  ],
+                  "goal": {
+                    "evidence_refs": [
+                      "event-1c3facbb79ad64035b54ccaa45a6155b9d1e541c230388f989db685c25b91ef7@1"
+                    ],
+                    "text": "继续做观鸟站入口海报：沿用上下两栏结构，先把配色调整好。"
+                  },
+                  "next_step": "下一步只调整配色，保留现有布局。",
+                  "next_step_basis": "user_requested",
+                  "open_items": [],
+                  "source_watermark": "watermark-84a983f709e83bd6038cd436f15248a3d25d33195118f1f922036bac2130ba17",
+                  "verified_progress": [
+                    {
+                      "evidence_refs": [
+                        "event-52933849ca2b7c6ba885d35a91dd37a064a7a3c2b57fcfae73e25f482cbf7427@1"
+                      ],
+                      "text": "入口海报 v1 已写入并通过 XML 解析。"
+                    },
+                    {
+                      "evidence_refs": [
+                        "event-9ec8c6621b84c00e928006f7823cc5a4e36156d557def90f9d075ccca19ac1c5@1"
+                      ],
+                      "text": "入口海报 v2 已写入并通过 XML 解析。"
+                    }
+                  ]
+                },
+                "evidence_refs": [
+                  "event-1c3facbb79ad64035b54ccaa45a6155b9d1e541c230388f989db685c25b91ef7@1",
+                  "event-49ffbe1d05c215b6b92b1d5f8094670ae88d48fe4d53c7d1296a981658cbda37@1",
+                  "event-52933849ca2b7c6ba885d35a91dd37a064a7a3c2b57fcfae73e25f482cbf7427@1",
+                  "event-56daef170a480d893af953e72d22f77021d95f8081f2c5980fbe903b503532de@1",
+                  "event-9b692f7a55592832d33a4a93b1661ec05819a5fdd9617e5ca313603c28e774a6@1",
+                  "event-9ec8c6621b84c00e928006f7823cc5a4e36156d557def90f9d075ccca19ac1c5@1"
+                ],
+                "source_watermark": "watermark-84a983f709e83bd6038cd436f15248a3d25d33195118f1f922036bac2130ba17",
+                "unprocessed_events": 0,
+                "suppressed": false,
+                "gaps": [],
+                "needs_revalidation": false
+              }
+            ],
+            "opened_artifacts": [
+              {
+                "version": 1,
+                "sha256": "3671985ca81767ea96e21634437a982a01d61cd43d577c3ba82aaee19b127c07",
+                "expected_sha256": "3671985ca81767ea96e21634437a982a01d61cd43d577c3ba82aaee19b127c07"
+              },
+              {
+                "version": 2,
+                "sha256": "60c023ffae91b4703c092b379186f27f9590887de2f87369edd41091a394a1b0",
+                "expected_sha256": "60c023ffae91b4703c092b379186f27f9590887de2f87369edd41091a394a1b0"
+              }
+            ],
+            "validation_reopen": "Fresh MemoryCore object and session in this one audit process; original independent-process proof remains separately archived."
+          },
+          {
+            "scenario": "failure",
+            "original_model_attempt": 20,
+            "raw_manifest_sha256": "f5f5aae7f76c8a509672053ea45a64a78946dfa3420959b53ff2e58ad26f1c25",
+            "saved_response_sha256": "335c27fc8e030e9c443f5631599929394654dd92e04de68408f6ddc5dbe613d4",
+            "source_refs_exactly_preserved": true,
+            "new_model_calls": 0,
+            "accepted": true,
+            "receipt": {
+              "items": [
+                {
+                  "ref": "claim-9fd1eb9418c57a936da8625122c7cd8f1a0a06b610dd715b0753b04957a4d794",
+                  "revision": 1,
+                  "disposition": "inserted",
+                  "state": "proposed"
+                },
+                {
+                  "ref": "claim-aa212210447604ffc0d98da4e0148dd194e51f93deb1029e7ebaea4b6a41dc9c",
+                  "revision": 1,
+                  "disposition": "inserted",
+                  "state": "active"
+                },
+                {
+                  "ref": "claim-411ac9746a09141fa614aea409676e37d9dc7d60881672f27ab953dbcac2c72a",
+                  "revision": 1,
+                  "disposition": "inserted",
+                  "state": "proposed"
+                },
+                {
+                  "ref": "claim-176e79694983195f79cbd886113e5a55310eb99f84aba4dc147c087f9d9884fc",
+                  "revision": 1,
+                  "disposition": "inserted",
+                  "state": "proposed"
+                },
+                {
+                  "ref": "claim-84efab8a3131e5852cb4c3225b057ea115ef2fb4de0bf218079eabe09b2766e5",
+                  "revision": 1,
+                  "disposition": "inserted",
+                  "state": "proposed"
+                },
+                {
+                  "ref": "episode-3c948fba39ffd8913ae597592f5ebca2c4719e87295d70517dd1f12c5b3ceedf",
+                  "revision": 4,
+                  "disposition": "applied",
+                  "state": "open"
+                }
+              ],
+              "memory_epoch": 9,
+              "durability": "persisted"
+            },
+            "episodes": [
+              {
+                "ref": "episode-3c948fba39ffd8913ae597592f5ebca2c4719e87295d70517dd1f12c5b3ceedf",
+                "revision": 4,
+                "scope_id": "TEST-P07-failure-scope",
+                "project_id": "TEST-export-project",
+                "branch_id": "TEST-main",
+                "state": "open",
+                "resume": {
+                  "artifact_refs": [],
+                  "blockers": [],
+                  "decisions": [
+                    {
+                      "evidence_refs": [
+                        "event-71b15a839689d72594adfba1d4d2114a96ac8f2275a07312a8a388233257c34d@1"
+                      ],
+                      "text": "排序已确认，输出目录尚未修复，先暂停，下次先检查输出目录。"
+                    }
+                  ],
+                  "episode_ref": "episode-3c948fba39ffd8913ae597592f5ebca2c4719e87295d70517dd1f12c5b3ceedf",
+                  "evidence_refs": [
+                    "event-340af03e73a39d27cd209a183277cca54a137c6ad3002aa515f4b5478d6fcd01@1",
+                    "event-76281b15d43f711f926a350c95d280d447b871935650de969d9f507d79e66896@1",
+                    "event-71b15a839689d72594adfba1d4d2114a96ac8f2275a07312a8a388233257c34d@1"
+                  ],
+                  "goal": {
+                    "evidence_refs": [
+                      "event-340af03e73a39d27cd209a183277cca54a137c6ad3002aa515f4b5478d6fcd01@1"
+                    ],
+                    "text": "请修复清单导出脚本，先验证文件名排序，再解决输出目录错误。"
+                  },
+                  "next_step": "下次先检查输出目录",
+                  "next_step_basis": "user_requested",
+                  "open_items": [
+                    {
+                      "evidence_refs": [
+                        "event-71b15a839689d72594adfba1d4d2114a96ac8f2275a07312a8a388233257c34d@1"
+                      ],
+                      "text": "输出目录尚未修复"
+                    }
+                  ],
+                  "source_watermark": "watermark-f27712fe600c09c7bf3833bf50268d3cd58b11a8b5e7df53f9ae63afc4151d17",
+                  "verified_progress": [
+                    {
+                      "evidence_refs": [
+                        "event-76281b15d43f711f926a350c95d280d447b871935650de969d9f507d79e66896@1"
+                      ],
+                      "text": "排序断言已通过。{\"sorted\": [\"alpha.json\", \"middle.json\", \"zeta.json\"]}"
+                    }
+                  ]
+                },
+                "evidence_refs": [
+                  "event-340af03e73a39d27cd209a183277cca54a137c6ad3002aa515f4b5478d6fcd01@1",
+                  "event-71b15a839689d72594adfba1d4d2114a96ac8f2275a07312a8a388233257c34d@1",
+                  "event-76281b15d43f711f926a350c95d280d447b871935650de969d9f507d79e66896@1"
+                ],
+                "source_watermark": "watermark-f27712fe600c09c7bf3833bf50268d3cd58b11a8b5e7df53f9ae63afc4151d17",
+                "unprocessed_events": 0,
+                "suppressed": false,
+                "gaps": [
+                  "environment_needs_revalidation"
+                ],
+                "needs_revalidation": true
+              }
+            ],
+            "opened_artifacts": [],
+            "validation_reopen": "Fresh MemoryCore object and session in this one audit process; original independent-process proof remains separately archived."
+          }
+        ],
+        "run_directory": "F:\\SCOPERECALL更新项目\\worktrees\\scope-recall-v1.1\\.execution\\TEST-G1-AUDIT\\TEST-saved-proposal-replay-1788690030244637600"
+      },
+      "meaning": "Unchanged archived actual responses 13 and 20 were accepted against their unchanged raw source records in new isolated TEST databases by the fixed candidate. Both SVG versions were opened and their bytes hashed.",
+      "limit": "This is deterministic replay of actual saved model responses, not a new model call, new original tool execution, L1 host capture, or formal host behavior score. The auditor creates a fresh MemoryCore/session in the same audit process; separate-process evidence is supplied by the original development probes."
+    }
+  },
+  "findings": [
+    {
+      "id": "G1-ALIAS-SOURCE-CONTEXT",
+      "severity": "P1",
+      "classification": "reproduced_fact",
+      "candidate": "ca055f73c930a1bf7c13a8d442d35bc9d5eced60",
+      "title": "Alias acceptance can use a different full name or remove source negation through a clipped quote",
+      "locations": [
+        {
+          "path": "core/aliases.py",
+          "symbol": "validate_alias_source",
+          "start": 30,
+          "end": 37
+        },
+        {
+          "path": "core/mutate.py",
+          "symbol": "apply_claim",
+          "start": 73,
+          "end": 83
+        }
+      ],
+      "input_hashes": {
+        "core/aliases.py": "aa342a6a233648df66c64a330f34d8249d45cde4343f3e67c5cd3896d71594eb",
+        "core/mutate.py": "6b8b36ca8b12de4220e7f93d0fd9244d12ac8ae56fb2803daa8939202581012f",
+        "core/claims.py": "f5227792851dd42d1fe12c2c9729eac0028915c161c2966b5518836c4b79b694",
+        "core/claim_storage.py": "bdee57eb54b8706feb135e9e4a91c63908c7e540c15bd14e6fe58e5d06025a74",
+        "core/source_qualification.py": "917e96ca3f73b3866b5a534f9561490d27ed5ed8e23adb6829079f8b9069373c",
+        "contracts.py": "b700a0b7ec7da0857cf795c1e9da74482de646f310d784e14384ff4fe3744e7d"
+      },
+      "preconditions": "A complete human source establishes a live, scoped naming fact for TEST-mist with value 晨雾. An unrelated later human sentence is captured in the same TEST context. A model-shaped alias proposal points to the old naming claim.",
+      "actual_result": "The public Core accepts all three independent probe variants as active and exposes the alias as current.",
+      "expected_result": "Keep the unsupported alias proposed; no current alias should be established for the target.",
+      "reproductions": [
+        {
+          "evidence_scope": "Isolated actual local Core; independent public synthetic case; no model or host",
+          "candidate": "ca055f73c930a1bf7c13a8d442d35bc9d5eced60",
+          "input_hashes": {
+            "core/aliases.py": "aa342a6a233648df66c64a330f34d8249d45cde4343f3e67c5cd3896d71594eb",
+            "core/mutate.py": "6b8b36ca8b12de4220e7f93d0fd9244d12ac8ae56fb2803daa8939202581012f",
+            "core/claims.py": "f5227792851dd42d1fe12c2c9729eac0028915c161c2966b5518836c4b79b694",
+            "core/claim_storage.py": "bdee57eb54b8706feb135e9e4a91c63908c7e540c15bd14e6fe58e5d06025a74",
+            "core/source_qualification.py": "917e96ca3f73b3866b5a534f9561490d27ed5ed8e23adb6829079f8b9069373c",
+            "contracts.py": "b700a0b7ec7da0857cf795c1e9da74482de646f310d784e14384ff4fe3744e7d"
+          },
+          "source": "海上晨雾项目以后改名为暮光，内容不变。",
+          "target_name": "晨雾",
+          "target_ref": "claim-c72d4d82c9937f258e50b4fc0c80cb4371e594995ac63636173d17064574120a",
+          "proposal_alias": "暮光",
+          "disposition": "active",
+          "current_alias": {
+            "name": "暮光",
+            "scope_description": "同一项目的改名，保留旧称",
+            "target_ref": "claim-c72d4d82c9937f258e50b4fc0c80cb4371e594995ac63636173d17064574120a"
+          },
+          "expected_disposition": "proposed",
+          "run_directory": "F:\\SCOPERECALL更新项目\\worktrees\\scope-recall-v1.1\\.execution\\TEST-G1-AUDIT\\TEST-alias-8188-1788689951367361800"
+        },
+        {
+          "candidate": "ca055f73c930a1bf7c13a8d442d35bc9d5eced60",
+          "evidence_scope": "Actual isolated Core; independent public synthetic probes; no model or host",
+          "input_hashes": {
+            "core/aliases.py": "aa342a6a233648df66c64a330f34d8249d45cde4343f3e67c5cd3896d71594eb",
+            "core/mutate.py": "6b8b36ca8b12de4220e7f93d0fd9244d12ac8ae56fb2803daa8939202581012f",
+            "core/claims.py": "f5227792851dd42d1fe12c2c9729eac0028915c161c2966b5518836c4b79b694",
+            "core/claim_storage.py": "bdee57eb54b8706feb135e9e4a91c63908c7e540c15bd14e6fe58e5d06025a74",
+            "core/source_qualification.py": "917e96ca3f73b3866b5a534f9561490d27ed5ed8e23adb6829079f8b9069373c",
+            "contracts.py": "b700a0b7ec7da0857cf795c1e9da74482de646f310d784e14384ff4fe3744e7d"
+          },
+          "results": [
+            {
+              "tag": "suffix_quote",
+              "source": "海上晨雾项目以后改名为暮光，内容不变。",
+              "quote": "晨雾项目以后改名为暮光",
+              "target_name": "晨雾",
+              "disposition": "active",
+              "current_alias": {
+                "name": "暮光",
+                "scope_description": "同一项目的改名，保留旧称",
+                "target_ref": "claim-c72d4d82c9937f258e50b4fc0c80cb4371e594995ac63636173d17064574120a"
+              },
+              "expected": "proposed"
+            },
+            {
+              "tag": "negation_clipped",
+              "source": "并非晨雾项目以后改名为暮光，内容不变。",
+              "quote": "晨雾项目以后改名为暮光",
+              "target_name": "晨雾",
+              "disposition": "active",
+              "current_alias": {
+                "name": "暮光",
+                "scope_description": "同一项目的改名，保留旧称",
+                "target_ref": "claim-c72d4d82c9937f258e50b4fc0c80cb4371e594995ac63636173d17064574120a"
+              },
+              "expected": "proposed"
+            }
+          ],
+          "run_directory": "F:\\SCOPERECALL更新项目\\worktrees\\scope-recall-v1.1\\.execution\\TEST-G1-AUDIT\\TEST-alias-29264-1788690148898275000"
+        }
+      ],
+      "mechanism": "The relation regex has no boundary before the old-name/subject anchor. apply_claim validates span.quote rather than the corresponding complete captured source. Thus a suffix of another name can match, and trimming an exact quote can remove either the longer-name prefix or a negation that the source-level assertion guard should preserve.",
+      "impact": "A durable current alias links the wrong identity or asserts a rename the human denied. This is a present data/authority error even though later automatic retrieval is not yet implemented.",
+      "violated_contracts": [
+        "F02/F06 and B03: stable, sourced entity/alias identity",
+        "07 section 6.1: names only provide a clue; an explicit sourced naming relationship is required",
+        "P07 M11-M15 structural condition and the stop condition forbidding fabricated source/artifact relationships"
+      ],
+      "minimal_fix": "Validate a complete naming relationship and its original surrounding assertion context in the actual captured human source. Bind the full old name or stable subject and the full new name; then establish that the quoted span supports that same relationship. Model-provided quote boundaries must not erase longer-name or negation context. Preserve the existing valid stable-subject and old-name positive cases.",
+      "repair_and_recheck": "Not fixed in ca055f73. Root was notified with concrete public probes and released to delegate the bounded fix to Luna after this candidate test run. Recheck the specific closure and affected claims/capture/deletion/episode safety tests on a new fixed identity; do not overwrite this report."
+    }
+  ],
+  "closed_prior_findings_in_this_candidate": [
+    {
+      "category": "Resume goal/decision/progress/next-step question or cropped qualifier promotion",
+      "status": "closed_for_reproduced_variants",
+      "evidence": "Actual Core regressions in the 338-pass run include transaction rollback, complete negative decisions, affirmative separate clauses, and both user_requested/existing_plan questions and negation."
+    },
+    {
+      "category": "Questioned/negated terminal episode state",
+      "status": "closed_for_reproduced_variants",
+      "evidence": "Shared source assertion guards and corresponding actual Core state regressions pass."
+    },
+    {
+      "category": "Reference question becomes a resolved artifact identity",
+      "status": "closed_for_reproduced_variant",
+      "evidence": {
+        "disposition": "ACCEPTED",
+        "resolution": "unresolved",
+        "reason": "ambiguous_or_unconfirmed",
+        "source_text": "TEST 刚才那个是入口海报 v1 吗"
+      }
+    },
+    {
+      "category": "Resume borrows another unmentioned version of the same artifact",
+      "status": "closed_for_reproduced_variant",
+      "evidence": {
+        "disposition": "REJECTED",
+        "code": "DERIVATION_INVALID",
+        "field": "artifact_version_evidence"
+      }
+    },
+    {
+      "category": "Questioned claims/corrections and negated intention cancellation",
+      "status": "closed_for_reproduced_variants",
+      "evidence": [
+        {
+          "trigger": "question_source_plus_model_decision_proposal",
+          "source": "TEST-project 配色蓝色吗？",
+          "disposition": "proposed",
+          "current_value": null
+        },
+        {
+          "trigger": "source_capture_automatic_correction",
+          "source": "TEST-project 配色改为银色吗",
+          "old_value": "蓝色",
+          "current_value": "蓝色",
+          "current_revision": 1,
+          "current_state": "active"
+        },
+        {
+          "trigger": "negated_cancellation_plus_model_cancelled_proposal",
+          "source": "TEST-project 不要取消下次检查输出目录。",
+          "disposition": "proposed",
+          "current_intention_state": null
+        }
+      ]
+    },
+    {
+      "category": "Old environment validation becomes current through a new event or rebuilt summary",
+      "status": "closed_for_reproduced_variants",
+      "evidence": "Independent selected regressions preserve needs_revalidation, and the archived J02 environment-change chain demonstrates the live limitation."
+    }
+  ],
+  "historical_failure_evidence": {
+    "artifacts": [
+      {
+        "path": ".execution/TEST-G1-AUDIT/qualify-resume-prior-observation.json",
+        "bytes": 1589,
+        "sha256": "8b21c7123ef263fce4efee8659d7934e3fb9de4eff61aeaeb67a1432ec31742c"
+      },
+      {
+        "path": ".execution/TEST-G1-AUDIT/state-polarity-observation.json",
+        "bytes": 1218,
+        "sha256": "df495fe0bda4aa95470f3770e4dd63d6a0d7ee99c61ba1a55785229697e72eea"
+      },
+      {
+        "path": ".execution/TEST-G1-AUDIT/reference-question-helper-observation.json",
+        "bytes": 885,
+        "sha256": "f3e2a2a069862e3202716b9ed34b592c32e5d7a20d32a94232ece07fd82c9b12"
+      },
+      {
+        "path": ".execution/TEST-G1-AUDIT/version-core-observation.json",
+        "bytes": 1734,
+        "sha256": "79115e399af79fb5eae77c4209d417f35359326dd583d6a33308721d862bc659"
+      },
+      {
+        "path": ".execution/TEST-G1-AUDIT/TEST-version-1788688337648039900/result.json",
+        "bytes": 1516,
+        "sha256": "13f1a3fd9a9ec322977e668388827b398e4269a43fec86fe7bb3ce004a88213c"
+      },
+      {
+        "path": ".execution/TEST-G1-AUDIT/TEST-version-1788688463347633800/claim-result.json",
+        "bytes": 1354,
+        "sha256": "39da79be80d5cc9f790b96cf30c20a6a8ab6d8159bd42cb8e9abcf989dacf54f"
+      },
+      {
+        "path": ".execution/TEST-G1-AUDIT/version-probe-harness-failure.json",
+        "bytes": 2022,
+        "sha256": "49382885e6c388a323ae906de4ad24fc976c75624f76de2a25b57393f54e8cce"
+      }
+    ],
+    "resume_first_observation_limit": "The first pure-function resume observations were recorded later as a structured restatement with their known source hash; no separately saved original stdout is claimed for that first probe.",
+    "other_harness_limits": "An earlier auditor SQLite-URI guard failed before the version probe and was corrected only inside the owned audit harness; a later parallel timestamp directory collision likewise did not execute Core. These are not product failures. Original files/output retained where available.",
+    "scope_limit": "Passing the finite reproduced variants does not prove complete natural-language understanding or authorize aliases through quote trimming."
+  },
+  "P07_early_real_slice_adjudication": {
+    "status": "sufficient_at_declared_early_development_slice_level",
+    "not_a_full_semantic_or_host_pass": true,
+    "J01_simplified": {
+      "archive": "verification/P07/development-v2",
+      "raw_sources": 6,
+      "provenance": "Three controlled TEST persona imports retain imported transport provenance, two tool observations correspond to actual SVG file/XML work, and one source is an assistant plan.",
+      "time_boundary": "The fixed occurred_at values are synthetic fixture history, explicitly distinct from tool wall-clock times; they do not prove actual chronological host capture.",
+      "real_extraction": "MiMo attempts 10/11/12 were rejected with evidence retained; unchanged actual proposal 13 was accepted.",
+      "new_context_restore": "The original probe starts a new process/Core session and actually reopens both retained SVG versions with different matching byte hashes. The current candidate also accepts deterministic replay of actual response 13.",
+      "consumer_results": "Attempt 14 network failure retained; 15 wrongly equated unresolved reference with lack of human acceptance; 16 corrected the interpretation and preserved the pending color work and previous version.",
+      "limits": "Proposal 13 omitted open_items; the unfinished state remained in sourced decisions/next_step. Answer 16 still asks for a color direction and makes no design edit. This is not L4 completion, rendered visual QA, or final P11/P12 host traversal."
+    },
+    "J02_simplified": {
+      "archive": "verification/P07/failure-resume-v4",
+      "raw_sources": 3,
+      "sequence": "Imported human request, actual subprocess tool failure, then imported human pause were captured in wall-clock order.",
+      "real_failure": "The TEST script actually sorted its input and then failed to export because the destination directory did not exist; exit code 1 and stdout/stderr are archived.",
+      "real_extraction": "MiMo 17/18 mismatched escaped quotes and 19 promoted unfinished work/rewrote the blocker; all rejections are retained. Approved Go DeepSeek Flash actual extraction 20 was accepted without prewritten Claims or gold.",
+      "environment_change": "Two actual fixture trees have different current file fingerprints. The new-session Core restore reports needs_revalidation=true. A real current tool run confirms sorting still passes while export still fails.",
+      "consumer_results": "Actual answer 21 gives a supported correction and verification plan, but ends by asking whether to execute it.",
+      "limits": "The fresh tool observation supplied to consumer 21 is not recaptured and reconsolidated as a new verified Core state. The answer does not execute the fix. No L4 completion, automatic RecallPacket delivery, actual Hermes/Codex journey, or final denominator is claimed.",
+      "rejected_development_versions": "v1/v2 inadequate source/time/context evidence is retained; v3/v4 failures and actual accepted attempt 20 are retained. The exact v1 probe source SHA was not separately frozen and remains unknown."
+    },
+    "budget": "The already approved frozen budget remains unchanged. Audit adds zero model calls; failed, rejected, and unknown-usage attempts remain in the archived ledger. No provider invoice is inferred from estimated charges.",
+    "gate_interpretation": "P07/05 section 3 requires early real extraction-to-new-session recovery and simplified J01/J02 source chains. These bounded development chains meet that evidence obligation; formal two-host behavior and four-arm metrics remain required at later gates and are not introduced as a new G1 blocker."
+  },
+  "dataset_qualification_boundary": {
+    "report": {
+      "path": "verification/G0/evaluation-dataset-audit-v6.json",
+      "bytes": 25254,
+      "sha256": "a43910b5c42a8dbaaeabff0a31855ab14912ac9234539cc21f08d4a7b508bbf3"
+    },
+    "verdict": "QUALIFIED_FOR_FROZEN_HOLDOUT_EXECUTION",
+    "independent_cases": 120,
+    "query_variants": 240,
+    "case_denominator": "Paired related/unrelated queries do not double N.",
+    "provenance_rule": "Only a trusted TEST import attestation may describe the simulated original role; real transport stays imported/synthetic_agent_relay or unknown as appropriate. A model parameter or relay message cannot promote itself to human_direct authority.",
+    "pending": "Actual fixture establishment, model extraction, all evaluation arms, and actual host execution are still required. Qualification alone contributes no functional numerator.",
+    "sealed_content_disclosed": false
+  },
+  "mandatory_later_product_obligations": [
+    "P08/P09: the single automatic hybrid recall path, source-current eligibility, bounded RecallPacket, unprompted applicability/correction/continuation and unrelated controls.",
+    "P10: the final bounded worker and event-cued intention behavior; remembered intent does not authorize independent action.",
+    "P11/P12 and G2: actual Hermes and Codex public interfaces, raw capture, fresh-context automatic use, precise attachment/version readback, interruptions and recovery at their measured support boundaries.",
+    "Preserve G0 partial boundaries: missing Bash exit-code field and interrupt/final-text limitations must stay explicit; an underlying tool may complete after UI interruption.",
+    "P14/P15/P17 and G3: isolated install/migration/backup/restore, deletion and current permission replay, clean package/OS checks, final receipt/package identity, and cleanup.",
+    "P18: execute the qualified 120-case frozen holdout and four fair arms, establish actual fixtures, preserve source labels, report complete numerators/denominators/failures/retries, and satisfy each actual host 40-query/8-journey requirement without lowering frozen thresholds."
+  ],
+  "reproduction_commands": [
+    {
+      "command": "& \"F:\\SCOPERECALL更新项目\\.venv\\Scripts\\python.exe\" -X utf8 -B \"F:\\SCOPERECALL更新项目\\worktrees\\scope-recall-v1.1\\.execution\\TEST-G1-AUDIT\\run_fixed_contracts.py\"",
+      "scope": "Owned TEST directory; no model or UI"
+    },
+    {
+      "command": "& \"F:\\SCOPERECALL更新项目\\.venv\\Scripts\\python.exe\" -X utf8 -B \"F:\\SCOPERECALL更新项目\\worktrees\\scope-recall-v1.1\\.execution\\TEST-G1-AUDIT\\independent_alias_identity_probe.py\"",
+      "scope": "Owned TEST directory; no model or UI"
+    },
+    {
+      "command": "& \"F:\\SCOPERECALL更新项目\\.venv\\Scripts\\python.exe\" -X utf8 -B \"F:\\SCOPERECALL更新项目\\worktrees\\scope-recall-v1.1\\.execution\\TEST-G1-AUDIT\\independent_alias_context_probe.py\"",
+      "scope": "Owned TEST directory; no model or UI"
+    },
+    {
+      "command": "& \"F:\\SCOPERECALL更新项目\\.venv\\Scripts\\python.exe\" -X utf8 -B \"F:\\SCOPERECALL更新项目\\worktrees\\scope-recall-v1.1\\.execution\\TEST-G1-AUDIT\\independent_version_probe.py\"",
+      "scope": "Owned TEST directory; no model or UI"
+    },
+    {
+      "command": "& \"F:\\SCOPERECALL更新项目\\.venv\\Scripts\\python.exe\" -X utf8 -B \"F:\\SCOPERECALL更新项目\\worktrees\\scope-recall-v1.1\\.execution\\TEST-G1-AUDIT\\independent_claim_authority_probe.py\"",
+      "scope": "Owned TEST directory; no model or UI"
+    },
+    {
+      "command": "& \"F:\\SCOPERECALL更新项目\\.venv\\Scripts\\python.exe\" -X utf8 -B \"F:\\SCOPERECALL更新项目\\worktrees\\scope-recall-v1.1\\.execution\\TEST-G1-AUDIT\\replay_actual_proposals.py\"",
+      "scope": "Owned TEST directory; no model or UI"
+    }
+  ],
+  "portable_public_repro_scripts": {
+    "independent_alias_identity_probe.py": "\"\"\"Local independent Core probe; all writes are confined to this audit directory.\"\"\"\nfrom pathlib import Path\nfrom types import ModuleType\nfrom dataclasses import replace\nimport hashlib\nimport itertools\nimport json\nimport os\nimport sys\nimport time\nfrom urllib.parse import urlsplit, unquote\n\nW = Path(__file__).resolve().parents[2]\nB = Path(__file__).resolve().parent\nRUN = B / ('TEST-alias-'  + str(os.getpid()) + '-' + str(time.time_ns()))\nRUN.mkdir()\nos.environ['SCOPE_RECALL_TEST_BOUNDARY_PARENT'] = str(B)\nsys.path[:0] = [str(W / 'tests'), str(W / 'tests/contract'), str(W)]\npkg = ModuleType('scope_recall'); pkg.__path__ = [str(W)]; sys.modules['scope_recall'] = pkg\nimport v11_guard\n\ndef sqlite_guard(event, args):\n    if event == 'sqlite3.connect' and args[0] != ':memory:':\n        database = str(args[0])\n        if database.startswith('file:'):\n            parsed = urlsplit(database)\n            if parsed.netloc:\n                raise RuntimeError('AUDIT sqlite remote URI')\n            database = unquote(parsed.path)\n            if os.name == 'nt' and len(database) > 2 and database[0] == '/' and database[2] == ':':\n                database = database[1:]\n        if not Path(database).resolve().is_relative_to(B):\n            raise RuntimeError('AUDIT sqlite outside isolated directory')\nsys.addaudithook(sqlite_guard)\n\nfrom scope_recall.core import MemoryCore, CoreConfig\nfrom test_v11_claims import Clock, capture, draft, accept\nfrom v11_support import context\nfrom test_v11_aliases import _alias\n\ninputs={n:hashlib.sha256((W/n).read_bytes()).hexdigest() for n in ['core/aliases.py','core/mutate.py','core/claims.py','core/claim_storage.py','core/source_qualification.py','contracts.py']}\nctx=replace(context(RUN/'TEST-prefix-identity'),project_id='TEST-mist',branch_id='TEST-main')\ncore=MemoryCore(CoreConfig(ctx.binding),clock=Clock()); core.initialize(); core.test_sequence=itertools.count(1)\ns=capture(core,ctx,'TEST-mist 项目名称是晨雾。')\ntarget=accept(core,ctx,draft(s,'晨雾',kind='fact',predicate='项目名称',subject='TEST-mist')).items[0]\nassert target.state=='active'\ns=capture(core,ctx,'海上晨雾项目以后改名为暮光，内容不变。')\nproposal=_alias(s,target,'暮光')\nr=accept(core,ctx,proposal).items[0]\ncurrent=core.current_claim(ctx,r.ref)\nresult=dict(evidence_scope='Isolated actual local Core; independent public synthetic case; no model or host',candidate='ca055f73c930a1bf7c13a8d442d35bc9d5eced60',input_hashes=inputs,source=s.event['content'],target_name='晨雾',target_ref=target.ref,proposal_alias='暮光',disposition=r.state,current_alias=current.payload['alias'] if current else None,expected_disposition='proposed',run_directory=str(RUN))\nassert all(hashlib.sha256((W/n).read_bytes()).hexdigest()==h for n,h in inputs.items())\nwith (RUN/'alias-result.json').open('x',encoding='utf-8') as f:json.dump(result,f,ensure_ascii=False,indent=2)\nprint(json.dumps(result,ensure_ascii=False))\n",
+    "independent_alias_context_probe.py": "\"\"\"Local independent Core probe; all writes are confined to this audit directory.\"\"\"\nfrom pathlib import Path\nfrom types import ModuleType\nfrom dataclasses import replace\nimport hashlib\nimport itertools\nimport json\nimport os\nimport sys\nimport time\nfrom urllib.parse import urlsplit, unquote\n\nW = Path(__file__).resolve().parents[2]\nB = Path(__file__).resolve().parent\nRUN = B / ('TEST-alias-'  + str(os.getpid()) + '-' + str(time.time_ns()))\nRUN.mkdir()\nos.environ['SCOPE_RECALL_TEST_BOUNDARY_PARENT'] = str(B)\nsys.path[:0] = [str(W / 'tests'), str(W / 'tests/contract'), str(W)]\npkg = ModuleType('scope_recall'); pkg.__path__ = [str(W)]; sys.modules['scope_recall'] = pkg\nimport v11_guard\n\ndef sqlite_guard(event, args):\n    if event == 'sqlite3.connect' and args[0] != ':memory:':\n        database = str(args[0])\n        if database.startswith('file:'):\n            parsed = urlsplit(database)\n            if parsed.netloc:\n                raise RuntimeError('AUDIT sqlite remote URI')\n            database = unquote(parsed.path)\n            if os.name == 'nt' and len(database) > 2 and database[0] == '/' and database[2] == ':':\n                database = database[1:]\n        if not Path(database).resolve().is_relative_to(B):\n            raise RuntimeError('AUDIT sqlite outside isolated directory')\nsys.addaudithook(sqlite_guard)\n\nfrom scope_recall.core import MemoryCore, CoreConfig\nfrom test_v11_claims import Clock, capture, draft, accept\nfrom v11_support import context\nfrom test_v11_aliases import _alias\n\ninputs={n:hashlib.sha256((W/n).read_bytes()).hexdigest() for n in ['core/aliases.py','core/mutate.py','core/claims.py','core/claim_storage.py','core/source_qualification.py','contracts.py']}\nresults=[]\nfor tag,raw,quote in [('suffix_quote','海上晨雾项目以后改名为暮光，内容不变。','晨雾项目以后改名为暮光'),('negation_clipped','并非晨雾项目以后改名为暮光，内容不变。','晨雾项目以后改名为暮光')]:\n    ctx=replace(context(RUN/('TEST-'+tag)),project_id='TEST-mist',branch_id='TEST-main')\n    core=MemoryCore(CoreConfig(ctx.binding),clock=Clock()); core.initialize(); core.test_sequence=itertools.count(1)\n    original=capture(core,ctx,'TEST-mist 项目名称是晨雾。')\n    target=accept(core,ctx,draft(original,'晨雾',kind='fact',predicate='项目名称',subject='TEST-mist')).items[0]\n    assert target.state=='active'\n    source=capture(core,ctx,raw)\n    proposal=_alias(source,target,'暮光')\n    proposal['evidence_spans'][0]['quote']=quote\n    result=accept(core,ctx,proposal).items[0]\n    current=core.current_claim(ctx,result.ref)\n    results.append(dict(tag=tag,source=raw,quote=quote,target_name='晨雾',disposition=result.state,current_alias=current.payload['alias'] if current else None,expected='proposed'))\nassert all(hashlib.sha256((W/n).read_bytes()).hexdigest()==h for n,h in inputs.items())\nreport=dict(candidate='ca055f73c930a1bf7c13a8d442d35bc9d5eced60',evidence_scope='Actual isolated Core; independent public synthetic probes; no model or host',input_hashes=inputs,results=results,run_directory=str(RUN))\nwith (RUN/'alias-context-result.json').open('x',encoding='utf-8') as f:json.dump(report,f,ensure_ascii=False,indent=2)\nprint(json.dumps(report,ensure_ascii=False))\n"
+  },
+  "final_counts": {
+    "open_P0": 0,
+    "open_P1_categories": 1,
+    "independent_failing_alias_variants": 3,
+    "existing_local_checks_passed": 338,
+    "existing_local_checks_failed": 0,
+    "existing_local_checks_skipped": 1,
+    "new_model_calls": 0
+  }
+}

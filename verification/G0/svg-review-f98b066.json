@@ -1,0 +1,481 @@
+{
+  "candidate_sha": "f98b0667f010c9763740391a3cec7ed5d79a4553",
+  "base_sha": "13b141bc7a5ef20d2b16e9aec15f029b713e3ba2",
+  "scope": "Bounded P02 SVG public interface + pending G0 evaluation proposal; no P00/P01 semantic re-audit; schema shape only.",
+  "verdict": "G0_NO_GO",
+  "hermes_svg_interface": "ACCEPT: necessary public transport, capture, version retention and explicit tool reopening are demonstrated; not full B10 or semantic acceptance.",
+  "evaluation_proposal": "ACCEPT_AS_PENDING_PROPOSAL; user paid-call approval and independent final freeze remain absent.",
+  "remaining_gate_blocks": [
+    "actual Codex desktop entry evidence pending",
+    "incremental evaluation authorization and final freeze pending"
+  ],
+  "manifest_count": 64,
+  "manifest_digest": "5b316de6c865c00b7ffb9d7ee61526da4697b7a1f21d5e684b4a034bfc1257fe",
+  "manifest_digest_matches_receipt": true,
+  "manifest_checks": [
+    {
+      "path": "docs/compatibility.md",
+      "matches_fixed_content": true,
+      "exact_blob": false,
+      "raw_worktree_matches_manifest": true,
+      "raw_worktree_normalizes_to_fixed_blob": true,
+      "mixed_line_endings": true
+    },
+    {
+      "path": "probes/README.md",
+      "matches_fixed_content": true,
+      "exact_blob": false,
+      "raw_worktree_matches_manifest": true,
+      "raw_worktree_normalizes_to_fixed_blob": true,
+      "mixed_line_endings": true
+    },
+    {
+      "path": "probes/check_preflight.py",
+      "matches_fixed_content": true,
+      "exact_blob": true
+    },
+    {
+      "path": "probes/codex/hook_probe.py",
+      "matches_fixed_content": true,
+      "exact_blob": true
+    },
+    {
+      "path": "probes/codex/hooks.example.json",
+      "matches_fixed_content": true,
+      "exact_blob": false
+    },
+    {
+      "path": "probes/codex/prepare_and_measure.py",
+      "matches_fixed_content": true,
+      "exact_blob": true
+    },
+    {
+      "path": "probes/hermes/__init__.py",
+      "matches_fixed_content": true,
+      "exact_blob": true
+    },
+    {
+      "path": "probes/hermes/budget_proxy.py",
+      "matches_fixed_content": true,
+      "exact_blob": true
+    },
+    {
+      "path": "probes/hermes/exercise_a2a.py",
+      "matches_fixed_content": true,
+      "exact_blob": true
+    },
+    {
+      "path": "probes/hermes/interface_requirements.json",
+      "matches_fixed_content": true,
+      "exact_blob": false
+    },
+    {
+      "path": "probes/hermes/plugin.yaml",
+      "matches_fixed_content": true,
+      "exact_blob": true
+    },
+    {
+      "path": "probes/hermes/run_gateway_probe.py",
+      "matches_fixed_content": true,
+      "exact_blob": true
+    },
+    {
+      "path": "probes/hermes/run_svg_probe.py",
+      "matches_fixed_content": true,
+      "exact_blob": true
+    },
+    {
+      "path": "probes/hermes/svg/__init__.py",
+      "matches_fixed_content": true,
+      "exact_blob": true
+    },
+    {
+      "path": "probes/hermes/svg/plugin.yaml",
+      "matches_fixed_content": true,
+      "exact_blob": true
+    },
+    {
+      "path": "probes/native_startup.py",
+      "matches_fixed_content": true,
+      "exact_blob": true
+    },
+    {
+      "path": "tests/host/test_p02_budget.py",
+      "matches_fixed_content": true,
+      "exact_blob": true
+    },
+    {
+      "path": "verification/G0/evaluation-proposal.md",
+      "matches_fixed_content": true,
+      "exact_blob": true
+    },
+    {
+      "path": "verification/G0/independent-review.json",
+      "matches_fixed_content": true,
+      "exact_blob": true
+    },
+    {
+      "path": "verification/G0/read-only-checks-13b141b.json",
+      "matches_fixed_content": true,
+      "exact_blob": false
+    },
+    {
+      "path": "verification/P02/budget-unit.xml",
+      "matches_fixed_content": true,
+      "exact_blob": true
+    },
+    {
+      "path": "verification/P02/codex-actual-entry-readback.json",
+      "matches_fixed_content": true,
+      "exact_blob": false
+    },
+    {
+      "path": "verification/P02/command-startup-1788660162644627700.json",
+      "matches_fixed_content": true,
+      "exact_blob": false
+    },
+    {
+      "path": "verification/P02/command-startup-1788660185984037900.json",
+      "matches_fixed_content": true,
+      "exact_blob": false
+    },
+    {
+      "path": "verification/P02/cursor-review.json",
+      "matches_fixed_content": true,
+      "exact_blob": false
+    },
+    {
+      "path": "verification/P02/hermes-actual-attachments.json",
+      "matches_fixed_content": true,
+      "exact_blob": false
+    },
+    {
+      "path": "verification/P02/hermes-actual-cancel.json",
+      "matches_fixed_content": true,
+      "exact_blob": false
+    },
+    {
+      "path": "verification/P02/hermes-actual-fixed-ordinary.json",
+      "matches_fixed_content": true,
+      "exact_blob": false
+    },
+    {
+      "path": "verification/P02/hermes-actual-local-budget-rejection.json",
+      "matches_fixed_content": true,
+      "exact_blob": false
+    },
+    {
+      "path": "verification/P02/hermes-actual-normal-1.json",
+      "matches_fixed_content": true,
+      "exact_blob": false
+    },
+    {
+      "path": "verification/P02/hermes-actual-ordinary.json",
+      "matches_fixed_content": true,
+      "exact_blob": false
+    },
+    {
+      "path": "verification/P02/hermes-actual-resume-2.json",
+      "matches_fixed_content": true,
+      "exact_blob": false
+    },
+    {
+      "path": "verification/P02/hermes-actual-tool-failure.json",
+      "matches_fixed_content": true,
+      "exact_blob": false
+    },
+    {
+      "path": "verification/P02/hermes-actual-tool-success.json",
+      "matches_fixed_content": true,
+      "exact_blob": false
+    },
+    {
+      "path": "verification/P02/hermes-agent-card.json",
+      "matches_fixed_content": true,
+      "exact_blob": false
+    },
+    {
+      "path": "verification/P02/hermes-api-error-runtime.json",
+      "matches_fixed_content": true,
+      "exact_blob": false
+    },
+    {
+      "path": "verification/P02/hermes-current-interface.json",
+      "matches_fixed_content": true,
+      "exact_blob": false
+    },
+    {
+      "path": "verification/P02/hermes-first-live-run.json",
+      "matches_fixed_content": true,
+      "exact_blob": false
+    },
+    {
+      "path": "verification/P02/hermes-live-readback-after-registration-fix.json",
+      "matches_fixed_content": true,
+      "exact_blob": false
+    },
+    {
+      "path": "verification/P02/hermes-live-readback-before-registration-fix.json",
+      "matches_fixed_content": true,
+      "exact_blob": false
+    },
+    {
+      "path": "verification/P02/hermes-native-coexistence-checked.json",
+      "matches_fixed_content": true,
+      "exact_blob": false
+    },
+    {
+      "path": "verification/P02/hermes-native-coexistence.json",
+      "matches_fixed_content": true,
+      "exact_blob": false
+    },
+    {
+      "path": "verification/P02/hermes-registration-runtime.json",
+      "matches_fixed_content": true,
+      "exact_blob": false
+    },
+    {
+      "path": "verification/P02/hermes-second-live-run.json",
+      "matches_fixed_content": true,
+      "exact_blob": false
+    },
+    {
+      "path": "verification/P02/hermes-svg-interface-1788665019563412500.json",
+      "matches_fixed_content": true,
+      "exact_blob": false
+    },
+    {
+      "path": "verification/P02/hermes-svg-interface-1788665044059874100.json",
+      "matches_fixed_content": true,
+      "exact_blob": false
+    },
+    {
+      "path": "verification/P02/hermes-svg-interface-1788665113140401500.json",
+      "matches_fixed_content": true,
+      "exact_blob": false
+    },
+    {
+      "path": "verification/P02/hermes-svg-interface-1788665138493081100.json",
+      "matches_fixed_content": true,
+      "exact_blob": false
+    },
+    {
+      "path": "verification/P02/hermes-svg-interface-1788665195356773900.json",
+      "matches_fixed_content": true,
+      "exact_blob": false
+    },
+    {
+      "path": "verification/P02/hermes-svg-interface-1788665256441150300.json",
+      "matches_fixed_content": true,
+      "exact_blob": false
+    },
+    {
+      "path": "verification/P02/hermes-third-live-run.json",
+      "matches_fixed_content": true,
+      "exact_blob": false
+    },
+    {
+      "path": "verification/P02/host-readback.json",
+      "matches_fixed_content": true,
+      "exact_blob": false
+    },
+    {
+      "path": "verification/P02/host-summary.json",
+      "matches_fixed_content": true,
+      "exact_blob": false
+    },
+    {
+      "path": "verification/P02/model-budget-authorization.json",
+      "matches_fixed_content": true,
+      "exact_blob": true
+    },
+    {
+      "path": "verification/P02/native-environment.txt",
+      "matches_fixed_content": true,
+      "exact_blob": false
+    },
+    {
+      "path": "verification/P02/native-startup-1788660518841052600.json",
+      "matches_fixed_content": true,
+      "exact_blob": false
+    },
+    {
+      "path": "verification/P02/preflight-1788660614726178900.json",
+      "matches_fixed_content": true,
+      "exact_blob": false
+    },
+    {
+      "path": "verification/P02/preflight-1788660651353557600.json",
+      "matches_fixed_content": true,
+      "exact_blob": false
+    },
+    {
+      "path": "verification/P02/preflight-1788662097393450400.json",
+      "matches_fixed_content": true,
+      "exact_blob": false
+    },
+    {
+      "path": "verification/P02/preflight-1788663251416411400.json",
+      "matches_fixed_content": true,
+      "exact_blob": false
+    },
+    {
+      "path": "verification/P02/preflight-1788664031971891600.json",
+      "matches_fixed_content": true,
+      "exact_blob": false
+    },
+    {
+      "path": "verification/P02/prepared-test-profiles.json",
+      "matches_fixed_content": true,
+      "exact_blob": false
+    },
+    {
+      "path": "verification/P02/probe-syntax-live.json",
+      "matches_fixed_content": true,
+      "exact_blob": false
+    },
+    {
+      "path": "verification/P02/probe-syntax.json",
+      "matches_fixed_content": true,
+      "exact_blob": false
+    }
+  ],
+  "receipt_schema_unchanged": true,
+  "strict_receipt_schema_errors": {
+    "P00": [],
+    "P01": [],
+    "P02": []
+  },
+  "host_source_checks": [
+    {
+      "path": "agent/memory_provider.py",
+      "matches_recorded": true
+    },
+    {
+      "path": "agent/memory_manager.py",
+      "matches_recorded": true
+    },
+    {
+      "path": "agent/turn_context.py",
+      "matches_recorded": true
+    },
+    {
+      "path": "agent/turn_finalizer.py",
+      "matches_recorded": true
+    },
+    {
+      "path": "agent/agent_init.py",
+      "matches_recorded": true
+    },
+    {
+      "path": "agent/tool_executor.py",
+      "matches_recorded": true
+    },
+    {
+      "path": "agent/inline_tool_executors.py",
+      "matches_recorded": true
+    },
+    {
+      "path": "run_agent.py",
+      "matches_recorded": true
+    },
+    {
+      "path": "hermes_cli/plugins.py",
+      "matches_recorded": true
+    },
+    {
+      "path": "hermes_cli/plugins_loader.py",
+      "matches_recorded": true
+    },
+    {
+      "path": "hermes_cli/plugins_ledger.py",
+      "matches_recorded": true
+    },
+    {
+      "path": "plugins/memory/__init__.py",
+      "matches_recorded": true
+    },
+    {
+      "path": "plugins/platforms/a2a/__init__.py",
+      "matches_recorded": true
+    },
+    {
+      "path": "plugins/platforms/a2a/adapter.py",
+      "matches_recorded": true
+    },
+    {
+      "path": "plugins/platforms/a2a/protocol.py",
+      "matches_recorded": true
+    },
+    {
+      "path": "plugins/platforms/a2a/security.py",
+      "matches_recorded": true
+    },
+    {
+      "path": "gateway/platforms/base.py",
+      "matches_recorded": true
+    }
+  ],
+  "raw_test_database_matches_receipt": {
+    "captured_versions": true,
+    "inbound": true,
+    "events": true
+  },
+  "raw_network_logs_match_receipt": {
+    "child": true,
+    "controller": true
+  },
+  "fixed_probe_files_match_executed": {
+    "probes/hermes/run_svg_probe.py": true,
+    "probes/hermes/svg/__init__.py": true,
+    "probes/hermes/svg/plugin.yaml": true
+  },
+  "copied_plugin_matches_record": true,
+  "pure_official_parser_hash_matches": [
+    true,
+    true
+  ],
+  "source_versions": [
+    {
+      "version": 1,
+      "svg_xml_root": "{http://www.w3.org/2000/svg}svg",
+      "source_to_store_to_tool_to_a2a_exact": true,
+      "sha_matches": true,
+      "reference_matches": true,
+      "origin_is_relay": true,
+      "new_session_contains_no_svg_before_tool": true,
+      "new_session_has_svg_after_tool": true
+    },
+    {
+      "version": 2,
+      "svg_xml_root": "{http://www.w3.org/2000/svg}svg",
+      "source_to_store_to_tool_to_a2a_exact": true,
+      "sha_matches": true,
+      "reference_matches": true,
+      "origin_is_relay": true,
+      "new_session_contains_no_svg_before_tool": true,
+      "new_session_has_svg_after_tool": true
+    }
+  ],
+  "event_counts": {
+    "pre_llm_capture": 2,
+    "provider_tool": 2,
+    "post_tool_call": 2
+  },
+  "distinct_tool_sessions": 2,
+  "tool_sessions_are_new": true,
+  "actual_a2a_sends": 4,
+  "local_fake_model_requests": 6,
+  "local_request_bytes": 77640,
+  "observed_network_is_loopback_only": true,
+  "independent_host_runtime_rerun": false,
+  "audit_model_calls": 0,
+  "formal_data_or_credentials_read": false,
+  "source_identity_boundary": "Use original observed host installation/session/turn plus event kind and tool-call id where appropriate. Preserve the envelope across local retries. Host creates a new random turn id per run_conversation invocation and A2A creates a new task id per send; neither caller retransmission nor automatic crash history recovery is proved. Never assign the current turn id to old conversation_history rows. Content fingerprints validate revisions and are not event occurrence identities. P04 must test no-op/conflict/real repeated utterances and persistence failures.",
+  "proposal_freeze_notes": [
+    "Keep actual automatic recall at its original contract cap; offline 2048 is not permission to enlarge the original 1200 auto budget.",
+    "Before execution fix L4 query and whole-journey denominators separately; do not let eight-turn journeys enlarge the independent query denominator.",
+    "Codex token values remain planning amounts until public usage can be accounted; submission rounds do not prove internal API request counts."
+  ],
+  "manifest_line_ending_note": "Manifest hashes are original worktree bytes. Exact Git blob, uniform CRLF, and two explicitly checked mixed-LF/CRLF worktree files are distinguished; mixed files have exact raw manifest hashes and normalize byte-for-byte to the fixed Git blobs."
+}

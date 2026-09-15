@@ -23,6 +23,11 @@ _COPY_IGNORE = shutil.ignore_patterns(
     "__pycache__",
     ".hermes-agent-src",
     ".execution",
+    # Verification receipts are evidence outputs, not plugin runtime inputs.
+    # They can contain deeply nested retained-artifact trees whose absolute
+    # Windows destination path exceeds the copy boundary. Frozen fixtures and
+    # schemas remain included through ``fixtures`` and ``contracts`` below.
+    "verification",
     "build",
     "dist",
     "*.egg-info",

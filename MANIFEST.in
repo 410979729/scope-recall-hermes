@@ -13,6 +13,8 @@ recursive-include docs *.md
 prune docs/plans
 prune tests
 recursive-include _internal *.py
+recursive-include packaging_hooks *.py
+include packaging/v11-module-allowlist.json
 recursive-include scripts *.py
 recursive-include scripts *.json
 recursive-include .github/scripts *.py

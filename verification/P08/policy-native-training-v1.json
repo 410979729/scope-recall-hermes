@@ -1,0 +1,54 @@
+{
+  "schema_version": 1,
+  "frozen": true,
+  "freeze_stage": "development_native_training",
+  "created_at_utc": "2026-09-06T12:03:17.756349+00:00",
+  "approved_by": "root",
+  "authorized_use": [
+    "p08_native_training"
+  ],
+  "validation_authorized": false,
+  "space_id": "dcffe30132272913fcec22269c66184e2da0086bbf5d7d20dae9bb8453bac4d2",
+  "embedding_space": {
+    "model": "gemini-embedding-001",
+    "dimensions": 3072,
+    "endpoint": "https://generativelanguage.googleapis.com/v1beta/models/gemini-embedding-001:batchEmbedContents",
+    "task_type": {
+      "document": "RETRIEVAL_DOCUMENT",
+      "query": "RETRIEVAL_QUERY"
+    },
+    "input_preprocessing": {
+      "id": "nfkc-v1",
+      "unicode_version": "15.0.0"
+    },
+    "metric": "cosine",
+    "vector_normalization": "l2_at_scoring",
+    "request_encoding": {
+      "id": "gemini001-native-top-level-v1",
+      "task_type_field": "taskType",
+      "task_type_location": "request"
+    }
+  },
+  "selected_threshold": 0.6462987789473623,
+  "score_type": "cosine_similarity",
+  "cosine_definition": "dot(a,b)/(sqrt(dot(a,a))*sqrt(dot(b,b))); Lance cosine distance is 1 - similarity",
+  "source_receipts": [
+    {
+      "path": ".execution/TEST-P08-plan/runs/train-v5-composed-20260906T115807Z-263e04db/threshold-proposal-v5-corrected.json",
+      "sha256": "63d98c1e6c46a052c6906093056820adf9d3a687a79a360b3d0eab252b370b73"
+    },
+    {
+      "path": ".execution/TEST-P08-plan/runs/train-v5-composed-20260906T115807Z-263e04db/composition-manifest.json",
+      "sha256": "8adbbe83bfdcb8b37018b125a09cc1f81f13bb22e53fe30eb9d90aeab79a869d"
+    },
+    {
+      "path": ".execution/TEST-P08-plan/runs/train-v5-composed-20260906T115807Z-263e04db/vectors.json",
+      "sha256": "428f260d2fbbe8fc015d2542672b922d236b551c66497851c0f409a2eceb952b"
+    },
+    {
+      "path": ".execution/TEST-P08-CALIBRATION-v5/train.jsonl",
+      "sha256": "f43518d9af0ed155f021ed937671d01db9a502650bf873968c0154acd2de1f6c"
+    }
+  ],
+  "boundary": "Frozen only for complete production-pipeline TRAIN measurement. Blind validation remains unused and unauthorized until final implementation and policy are frozen. This does not close P08."
+}

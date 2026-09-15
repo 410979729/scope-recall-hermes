@@ -1,0 +1,57 @@
+{
+  "command": [
+    "F:\\SCOPERECALL\u66f4\u65b0\u9879\u76ee\\.venv\\Scripts\\python.exe",
+    "-B",
+    "-m",
+    "pytest",
+    "tests/contract/test_v11_claims.py",
+    "-q",
+    "-p",
+    "v11_guard",
+    "-p",
+    "no:cacheprovider",
+    "--durations=10",
+    "--junitxml=F:\\SCOPERECALL\u66f4\u65b0\u9879\u76ee\\worktrees\\scope-recall-v1.1\\.execution\\TEST-v11-2levbioy\\junit.xml"
+  ],
+  "exit_code": 0,
+  "overall_exit_code": 0,
+  "pytest_exit_code": 0,
+  "wrapper_exit_code": 0,
+  "cleanup_exit_code": 0,
+  "pytest": {
+    "state": "completed",
+    "exit_code": 0,
+    "error": null
+  },
+  "wrapper": {
+    "state": "succeeded",
+    "exit_code": 0,
+    "error": null
+  },
+  "cleanup": {
+    "state": "succeeded",
+    "exit_code": 0,
+    "error": null
+  },
+  "transition_history": [
+    "prepared",
+    "pytest_started",
+    "pytest_completed_waiting_cleanup",
+    "cleanup_succeeded",
+    "receipt_written"
+  ],
+  "duration_seconds": 4.332963399996515,
+  "passed": 48,
+  "failed": 0,
+  "skipped": 0,
+  "selected": [
+    "tests/contract/test_v11_claims.py"
+  ],
+  "log": "verification/P07/claims-1788690386131536800.log",
+  "model_calls": false,
+  "test_data": "synthetic_only",
+  "source_base": "ca055f73c930a1bf7c13a8d442d35bc9d5eced60",
+  "source_inputs_sha256": "82fbd659d9c2602cb045e1271c052ee48463db73d96b07ed37459b4615e38cd8",
+  "source_manifest": "verification/P07/claims-1788690386131536800-inputs.json",
+  "evidence_scope": "P07 selected local contracts only; no M/J semantic or host behavior execution"
+}

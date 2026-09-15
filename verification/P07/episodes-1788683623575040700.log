@@ -1,0 +1,13 @@
+..........................s....                                          [100%]
+============================ slowest 10 durations =============================
+4.58s call     tests/contract/test_v11_episodes.py::test_long_episode_uses_bounded_segments_and_preserves_final_source
+0.10s call     tests/contract/test_v11_episodes.py::test_M13_M14_display_order_binds_version_only_when_actually_observed
+0.09s call     tests/contract/test_v11_episodes.py::test_M15_explicit_clarification_updates_binding_and_preserves_old_version
+0.08s call     tests/contract/test_v11_episodes.py::test_C16_M47_same_path_overwrite_preserves_exact_prior_artifact
+0.07s call     tests/contract/test_v11_episodes.py::test_M50_deleted_artifact_blocks_descriptions_references_resume_and_cached_release
+0.04s call     tests/contract/test_v11_episodes.py::test_C26_M06_same_trusted_task_continues_across_sessions_and_branches_do_not
+0.04s call     tests/contract/test_v11_episodes.py::test_resume_cannot_merge_two_topics_or_invent_local_artifact_access
+0.04s call     tests/contract/test_v11_episodes.py::test_resume_keeps_unprocessed_tail_and_source_paging_is_not_a_false_complete_count
+0.04s call     tests/contract/test_v11_episodes.py::test_bad_watermark_or_old_source_revision_cannot_mark_processing_complete
+0.03s call     tests/contract/test_v11_episodes.py::test_resume_is_extractive_versioned_and_stale_environment_is_labelled
+30 passed, 1 skipped in 6.24s

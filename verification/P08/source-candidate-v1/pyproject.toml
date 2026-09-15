@@ -1,0 +1,305 @@
+[build-system]
+requires = ["setuptools>=69,<82", "wheel>=0.45,<1"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hermes-scope-recall"
+version = "2.0.1"
+description = "Hermes scoped memory provider with journal-first capture, SQLite truth, vector companions, and hybrid RRF retrieval."
+readme = "README.md"
+requires-python = ">=3.11,<3.13"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [
+  { name = "scope-recall contributors" }
+]
+keywords = ["hermes", "memory", "sqlite", "lancedb", "plugin", "vector"]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+]
+dependencies = [
+  "PyYAML>=6.0,<7",
+  "jsonschema>=4.22,<5",
+  "tzdata>=2025.3,<2027; sys_platform == 'win32'",
+]
+
+[project.scripts]
+hermes-scope-recall = "scope_recall.cli:main"
+
+[project.optional-dependencies]
+lancedb = [
+  "lancedb>=0.30.2,<0.31",
+  "pyarrow>=24,<25",
+]
+pgvector = [
+  "psycopg[binary]>=3,<4",
+  "pgvector>=0.3,<1",
+]
+all = [
+  "lancedb>=0.30.2,<0.31",
+  "pyarrow>=24,<25",
+  "psycopg[binary]>=3,<4",
+  "pgvector>=0.3,<1",
+]
+dev = [
+  "build>=1.2,<2",
+  "pytest>=8,<10",
+  "PyYAML>=6,<7",
+  "ruff>=0.12,<1",
+  "setuptools>=69,<82",
+  "wheel>=0.45,<1",
+  "pyright>=1.1,<2",
+]
+
+[project.urls]
+Homepage = "https://github.com/410979729/scope-recall-hermes"
+Documentation = "https://github.com/410979729/scope-recall-hermes#readme"
+Issues = "https://github.com/410979729/scope-recall-hermes/issues"
+
+[tool.setuptools]
+include-package-data = true
+packages = [
+  "scope_recall",
+  "scope_recall.core",
+  "scope_recall._internal",
+  "scope_recall._internal.application",
+  "scope_recall._internal.compatibility",
+  "scope_recall._internal.runtime",
+  "scope_recall._internal.contracts",
+  "scope_recall._internal.journal",
+  "scope_recall._internal.experience",
+  "scope_recall._internal.nightly",
+  "scope_recall._internal.memory",
+  "scope_recall._internal.recall",
+]
+package-dir = {"scope_recall" = "."}
+
+[tool.setuptools.package-data]
+"scope_recall" = [
+  "py.typed",
+  "pyproject.toml",
+  "plugin.yaml",
+  "config.json",
+  "contracts/*.json",
+  "README.md",
+  "DESIGN.md",
+  "CHANGELOG.md",
+  "CONTRIBUTING.md",
+  "CONTRIBUTORS.md",
+  "LICENSE",
+  "SECURITY.md",
+  "MANIFEST.in",
+  ".env.example",
+  "docs/*.md",
+  "docs/benchmarks/*.md",
+  "scripts/*.py",
+  "scripts/*.json",
+  "benchmarks/*.json",
+  "examples/external_bridge/*.jsonl",
+  "examples/external_bridge/*.sql",
+]
+
+[tool.ruff]
+extend-exclude = [".hermes-agent-src"]
+
+[tool.ruff.lint]
+# Preserve Ruff <=0.15's explicit default contract across the 0.16 default-rule expansion.
+select = ["E4", "E7", "E9", "F"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+
+[tool.pyright]
+include = [
+  "*.py",
+  "scripts/*.py",
+  "_internal/*.py",
+  "_internal/**/*.py",
+  "activation_transaction.py",
+  "auto_adjudication.py",
+  "aliases.py",
+  "artifacts.py",
+  "candidate_extraction.py",
+  "candidate_promotion.py",
+  "candidate_review.py",
+  "candidate_store.py",
+  "capture.py",
+  "capture_filters.py",
+  "secret_patterns.py",
+  "capture_llm.py",
+  "cli.py",
+  "config.py",
+  "config_runtime_spec.py",
+  "config_schema.py",
+  "desktop_principal.py",
+  "digest_quality.py",
+  "digest_pollution.py",
+  "digest_run_results.py",
+  "doctor_common.py",
+  "doctor_experience.py",
+  "doctor_journal.py",
+  "doctor_source.py",
+  "doctor_sqlite.py",
+  "doctor_temporal.py",
+  "digest_state.py",
+  "durable_work.py",
+  "write_kernel.py",
+  "doctor_vector.py",
+  "doctor_event_digest.py",
+  "embedders.py",
+  "evidence_retrieval.py",
+  "event_digest.py",
+  "experience_bootstrap.py",
+  "experience_classification.py",
+  "experience_evidence.py",
+  "experience_models.py",
+  "experience_preflight.py",
+  "experience_promotion.py",
+  "experience_quality.py",
+  "experience_replay.py",
+  "experience_replay_generation.py",
+  "experience_store.py",
+  "experience_synthesis.py",
+  "external_bridge.py",
+  "evolution_policy.py",
+  "fact_actions.py",
+  "fact_evidence.py",
+  "fact_temporal_semantics.py",
+  "fact_executor.py",
+  "fact_evolution.py",
+  "fact_tooling.py",
+  "file_lock.py",
+  "fact_identity.py",
+  "fact_repository.py",
+  "forgetting.py",
+  "freshness.py",
+  "fts_maintenance.py",
+  "gating.py",
+  "governance.py",
+  "governance_cleanup.py",
+  "governance_scheduler.py",
+  "graph_hygiene.py",
+  "graph_relations.py",
+  "maintenance_ops.py",
+  "maintenance_lease.py",
+  "graph.py",
+  "http_utils.py",
+  "hygiene.py",
+  "installer.py",
+  "installer_yaml.py",
+  "managed_upgrade.py",
+  "stable_update.py",
+  "journal.py",
+  "journal_llm.py",
+  "journal_store.py",
+  "journal_candidates.py",
+  "journal_admission.py",
+  "journal_match_policy.py",
+  "digest_admission.py",
+  "nightly_admission.py",
+  "journal_extractors.py",
+  "journal_recovery.py",
+  "journal_source_restore.py",
+  "journal_source_restore_rows.py",
+  "journal_source_restore_snapshot.py",
+  "lifecycle_policy.py",
+  "lifecycle_service.py",
+  "memory_admission.py",
+  "memory_mutation.py",
+  "memory_ops.py",
+  "memory_queries.py",
+  "memory_scope.py",
+  "runtime_ports.py",
+  "runtime_kernel.py",
+  "memory_browser.py",
+  "memory_quality.py",
+  "memory_text_merge.py",
+  "entity_quality.py",
+  "migration.py",
+  "migration_openclaw.py",
+  "models.py",
+  "nightly_digest.py",
+  "nightly_llm.py",
+  "operator_ledger.py",
+  "provider_schemas.py",
+  "tool_runtime_spec.py",
+  "pgvector_store.py",
+  "postgres_bridge.py",
+  "prompting.py",
+  "provider.py",
+  "recall.py",
+  "recall_source_adapters.py",
+  "recall_sqlite_budget.py",
+  "recall_pipeline.py",
+  "recovery_commands.py",
+  "retention_profiles.py",
+  "relation_entity_policy.py",
+  "relation_extraction.py",
+  "relation_policy_generation.py",
+  "relation_frequency_index.py",
+  "relation_frequency_maintenance.py",
+  "relation_rebuild_queue.py",
+  "relation_scope_state.py",
+  "response_schemas.py",
+  "schema_compat.py",
+  "schemas.py",
+  "scoring.py",
+  "scope.py",
+  "source_isolation.py",
+  "scope_recall.py",
+  "secret_index.py",
+  "skill_bridge.py",
+  "sqlite_schema.py",
+  "sqlite_vector_store.py",
+  "sql_store.py",
+  "storage_views.py",
+  "task_boundary.py",
+  "temporal_facts.py",
+  "temporal_query.py",
+  "transcript_overlap.py",
+  "truth_connection.py",
+  "reflection.py",
+  "reflection_llm.py",
+  "reflection_grounding.py",
+  "reflection_tooling.py",
+  "scripts/benchmark.memory_evolution.py",
+  "scripts/benchmark.reflection.py",
+  "scripts/benchmark.temporal_scale.py",
+  "tool_validation.py",
+  "tooling.py",
+  "transaction_guard.py",
+  "writer_lease.py",
+  "vector_generation.py",
+  "vector_generation_preflight.py",
+  "vector_bootstrap.py",
+  "vector_membership.py",
+  "vector_migration.py",
+  "vector_mutation_guard.py",
+  "vector_outbox_replay.py",
+  "vector_reconciliation.py",
+  "vector_repair.py",
+  "vector_runtime.py",
+  "vector_store.py",
+]
+exclude = [
+  ".git",
+  ".hermes",
+  ".hermes-agent-src",
+  ".pytest_cache",
+  ".ruff_cache",
+  "build",
+  "dist",
+  "tests",
+]
+pythonVersion = "3.11"
+typeCheckingMode = "basic"
+reportMissingImports = "error"
+reportMissingTypeStubs = "none"
+
+[[tool.pyright.executionEnvironments]]
+root = "scripts"
+reportMissingImports = "warning"

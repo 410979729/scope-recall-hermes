@@ -1,0 +1,58 @@
+{
+  "sent": {
+    "jsonrpc": "2.0",
+    "id": "TEST-P02-normal-1",
+    "method": "message/send",
+    "params": {
+      "message": {
+        "messageId": "TEST-P02-message-1",
+        "role": "ROLE_USER",
+        "parts": [
+          {
+            "text": "TEST_SCOPE_RECALL This is a synthetic interface test. Reply only with the isolated P02 hook delivery marker in your current context, or NO_MARKER. Do not use tools or read files."
+          }
+        ],
+        "contextId": "TEST-P02-context-1"
+      },
+      "configuration": {
+        "blocking": true
+      }
+    }
+  },
+  "received": {
+    "jsonrpc": "2.0",
+    "id": "TEST-P02-normal-1",
+    "result": {
+      "id": "task-364366036da24d41",
+      "contextId": "TEST-P02-context-1",
+      "status": {
+        "state": "TASK_STATE_COMPLETED",
+        "timestamp": "2026-09-06T02:40:35.784Z",
+        "message": {
+          "role": "ROLE_AGENT",
+          "parts": [
+            {
+              "text": "NO_MARKER",
+              "mediaType": "text/plain"
+            }
+          ],
+          "messageId": "889b0a50cae9466980a0f157f73f4669",
+          "contextId": "TEST-P02-context-1"
+        }
+      },
+      "artifacts": [
+        {
+          "artifactId": "b8d38cd88ad043408c9886793be7f117",
+          "parts": [
+            {
+              "text": "NO_MARKER",
+              "mediaType": "text/plain"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "duration_seconds": 8.552995699981693,
+  "scope": "actual isolated Hermes A2A request"
+}

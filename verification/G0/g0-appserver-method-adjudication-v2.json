@@ -1,0 +1,522 @@
+{
+  "artifact": "g0-appserver-method-adjudication-v2",
+  "created_at_utc": "2026-09-06T21:22:17.740787+00:00",
+  "status": "CONDITIONALLY_ACCEPTED_METHOD_REVISION",
+  "gate_scope": "G0 Codex TEST entry-method adjudication only",
+  "method_revision_admissible": true,
+  "actual_desktop_ui_equivalence": false,
+  "whole_G0_pass": false,
+  "P12_pass": false,
+  "G2_pass": false,
+  "P18_pass": false,
+  "formal_evaluation_executable_now": false,
+  "authorization_basis": {
+    "source": "Current user autonomous TEST authorization as relayed by root",
+    "spec": [
+      "START_HERE.md:30",
+      "START_HERE.md:34",
+      "docs/05_验收测试与独立审计.md:146",
+      "docs/05_验收测试与独立审计.md:163"
+    ],
+    "renewed_user_approval_required_by_this_adjudication": false,
+    "production_or_release_authorization": false
+  },
+  "original_protocol": {
+    "path": "F:\\SCOPERECALL更新项目\\worktrees\\scope-recall-v1.1\\verification\\P18\\p18-evaluation-protocol-v1.json",
+    "sha256": "45b70192857b5b8645dd2bf409db55f320f1cf31f297e89910f9f340e76d32d4",
+    "modified": false,
+    "v1_ui_label_remains_unmet": true,
+    "supersession": "Only the Codex TEST entry method may use this separately named revision; all non-entry contracts remain binding. No silent substitution under v1 actualDesktopUI."
+  },
+  "method": {
+    "id": "codex_windows_appserver_native_hooks_v2",
+    "label": "Windows Codex official app-server native-hook entry",
+    "executable_version": "0.153.4",
+    "executable_sha256": "e5aa76d19c7c94e2e9ef9b707d590206a73ac0e97c8ddc8382181242494bef75",
+    "process": "Owned hidden independent Windows child; app-server stdio JSONL JSON-RPC; bounded cleanup",
+    "protocol": [
+      "initialize",
+      "initialized",
+      "hooks/list",
+      "thread/start",
+      "thread/resume",
+      "turn/start"
+    ],
+    "notifications": [
+      "hook/started",
+      "hook/completed",
+      "turn/started",
+      "turn/completed",
+      "item/*"
+    ],
+    "model": "gpt-5.6-luna",
+    "effort": "low",
+    "account_route": "Existing authorized Codex account; original ledger route and submission caps",
+    "forbidden": [
+      "codex exec substitution",
+      "direct synthetic hook invocation as runtime proof",
+      "private UI/RPC bypass",
+      "CUA or mouse bypass",
+      "hook trust bypass",
+      "client-supplied recall additionalContext",
+      "prewritten claims or answers",
+      "cross-arm or cross-host memory handoff",
+      "unstable transcript as required capability",
+      "gold/control fields in model input"
+    ],
+    "new_session": "Actual thread/start distinct session; resume/same-thread turns only where the frozen journey requires them",
+    "isolation": "Separate TEST home/database per host and arm remains required, including native-memory state. Diagnostic user CodexHome reuse is not a formal isolation waiver.",
+    "origin": "Preserve authorized local input provenance separately from JSON role; model/tool/remote/forwarded content never becomes human_direct solely through role=user.",
+    "arms": "Original A/B/C/D definitions preserved. A validates native memory with Scope Recall disabled; do not force a Scope Recall UserPromptSubmit admission requirement onto A.",
+    "attachments": "Actual authorized versioned file/image input or available native file tool; version/hash, source evaluation and access result preserved, no planted summary substitute.",
+    "formal_candidate_freeze": "Source, wheel, installed module identity, host version, native-memory state, tools, permissions, per-arm mapping and auxiliary allocation frozen before formal run."
+  },
+  "official_sources": [
+    {
+      "url": "https://learn.chatgpt.com/docs/app-server",
+      "supports": "Public rich-client protocol, hooks/list and synchronous hook notifications; not desktop equivalence."
+    },
+    {
+      "url": "https://learn.chatgpt.com/docs/hooks",
+      "supports": "UserPromptSubmit additionalContext is developer context; transcript format is unstable."
+    }
+  ],
+  "local_schema_checked": [
+    "ClientRequest.json public methods",
+    "v2/TurnStartParams.json client additionalContext and localImage",
+    "v2/HookCompletedNotification.json userPromptSubmit/context/threadId/turnId"
+  ],
+  "evidence": {
+    "real_callback": {
+      "path": "F:\\SCOPERECALL更新项目\\worktrees\\scope-recall-runtime-integration\\.execution\\TEST-CURSOR-APP-PROTOCOL-v1\\callback-receipt.json",
+      "sha256": "cfe5a5ceabd8f7248196a24b737d60b566212058fdb98697bfbd773d82fafd3c",
+      "session_id": "01a07883-202e-7c21-bdc7-b5daa14f0272",
+      "turn_id": "01a07883-2098-7c63-a6a7-0771115d438b",
+      "rpc_counts": {
+        "modelTurnsRequested": 1,
+        "threadRpcsDispatched": 1,
+        "turnRpcsDispatched": 1
+      },
+      "hook_events": [
+        {
+          "phase": "started",
+          "id": "session-start:1:C:\\Users\\w4109\\Documents\\Codex\\2026-09-06\\test-scope-recall-p12-v2\\.codex\\hooks.json",
+          "eventName": "sessionStart",
+          "status": "running",
+          "executionMode": "sync",
+          "handlerType": "command",
+          "scope": "thread",
+          "source": "project",
+          "startedAt": 1788728258,
+          "completedAt": null,
+          "durationMs": null,
+          "statusMessage": null,
+          "entries": [],
+          "threadId": "01a07883-202e-7c21-bdc7-b5daa14f0272",
+          "turnId": "01a07883-2098-7c63-a6a7-0771115d438b"
+        },
+        {
+          "phase": "completed",
+          "id": "session-start:1:C:\\Users\\w4109\\Documents\\Codex\\2026-09-06\\test-scope-recall-p12-v2\\.codex\\hooks.json",
+          "eventName": "sessionStart",
+          "status": "completed",
+          "executionMode": "sync",
+          "handlerType": "command",
+          "scope": "thread",
+          "source": "project",
+          "startedAt": 1788728258,
+          "completedAt": 1788728259,
+          "durationMs": 861,
+          "statusMessage": null,
+          "entries": [],
+          "threadId": "01a07883-202e-7c21-bdc7-b5daa14f0272",
+          "turnId": "01a07883-2098-7c63-a6a7-0771115d438b"
+        },
+        {
+          "phase": "started",
+          "id": "user-prompt-submit:3:C:\\Users\\w4109\\Documents\\Codex\\2026-09-06\\test-scope-recall-p12-v2\\.codex\\hooks.json",
+          "eventName": "userPromptSubmit",
+          "status": "running",
+          "executionMode": "sync",
+          "handlerType": "command",
+          "scope": "turn",
+          "source": "project",
+          "startedAt": 1788728259,
+          "completedAt": null,
+          "durationMs": null,
+          "statusMessage": null,
+          "entries": [],
+          "threadId": "01a07883-202e-7c21-bdc7-b5daa14f0272",
+          "turnId": "01a07883-2098-7c63-a6a7-0771115d438b"
+        },
+        {
+          "phase": "completed",
+          "id": "user-prompt-submit:3:C:\\Users\\w4109\\Documents\\Codex\\2026-09-06\\test-scope-recall-p12-v2\\.codex\\hooks.json",
+          "eventName": "userPromptSubmit",
+          "status": "completed",
+          "executionMode": "sync",
+          "handlerType": "command",
+          "scope": "turn",
+          "source": "project",
+          "startedAt": 1788728259,
+          "completedAt": 1788728260,
+          "durationMs": 872,
+          "statusMessage": null,
+          "entries": [
+            {
+              "kind": "context",
+              "textSha256": "c3b1f049e9d28cb80e5d1194de21f3d03bb96322e511ab2abd7e5a94b621434a",
+              "textLength": 937
+            }
+          ],
+          "threadId": "01a07883-202e-7c21-bdc7-b5daa14f0272",
+          "turnId": "01a07883-2098-7c63-a6a7-0771115d438b"
+        },
+        {
+          "phase": "started",
+          "id": "stop:4:C:\\Users\\w4109\\Documents\\Codex\\2026-09-06\\test-scope-recall-p12-v2\\.codex\\hooks.json",
+          "eventName": "stop",
+          "status": "running",
+          "executionMode": "sync",
+          "handlerType": "command",
+          "scope": "turn",
+          "source": "project",
+          "startedAt": 1788728261,
+          "completedAt": null,
+          "durationMs": null,
+          "statusMessage": null,
+          "entries": [],
+          "threadId": "01a07883-202e-7c21-bdc7-b5daa14f0272",
+          "turnId": "01a07883-2098-7c63-a6a7-0771115d438b"
+        },
+        {
+          "phase": "completed",
+          "id": "stop:4:C:\\Users\\w4109\\Documents\\Codex\\2026-09-06\\test-scope-recall-p12-v2\\.codex\\hooks.json",
+          "eventName": "stop",
+          "status": "completed",
+          "executionMode": "sync",
+          "handlerType": "command",
+          "scope": "turn",
+          "source": "project",
+          "startedAt": 1788728261,
+          "completedAt": 1788728262,
+          "durationMs": 820,
+          "statusMessage": null,
+          "entries": [],
+          "threadId": "01a07883-202e-7c21-bdc7-b5daa14f0272",
+          "turnId": "01a07883-2098-7c63-a6a7-0771115d438b"
+        }
+      ],
+      "turn_completed": {
+        "threadId": "01a07883-202e-7c21-bdc7-b5daa14f0272",
+        "turnId": "01a07883-2098-7c63-a6a7-0771115d438b",
+        "status": "completed",
+        "durationMs": 7398,
+        "startedAt": 1788728254,
+        "completedAt": 1788728262
+      },
+      "driver_errors_preserved": [
+        "Timed out waiting for turn/completed notification"
+      ],
+      "driver_exit_code": 1,
+      "driver_cleanup": "terminated",
+      "interpretation": "Native turn completed in 7398ms; enclosing driver timeout is a retained first-run failure, not erased by later fixture repair."
+    },
+    "source_events": {
+      "database": "F:/SCOPERECALL更新项目/TEST-P12-instance-v3/data/memory.sqlite3",
+      "access": "Read-only URI; metadata/hash/length for exactly the public synthetic callback session, no content or sealed data read",
+      "rows": [
+        {
+          "event_id": "event-b6f958509f609759f39cd6d415a545f9add7035451723f9c91d2872c534e2047",
+          "session_id": "01a07883-202e-7c21-bdc7-b5daa14f0272",
+          "scope_id": "audience:project:TEST-P12-Codex-v3",
+          "origin": "human_direct",
+          "role": "user",
+          "content_length": 60,
+          "content_sha256": "7be4b3b908d79d53aa39aca7cbbe7685ea46529b24868fb39bc63631af307173",
+          "capture_state": "complete"
+        },
+        {
+          "event_id": "event-c66dd2e3991594cb05e4de10b2915d1007ee5e28f1d6a0fb8157664b65b90fa0",
+          "session_id": "01a07883-202e-7c21-bdc7-b5daa14f0272",
+          "scope_id": "audience:project:TEST-P12-Codex-v3",
+          "origin": "assistant_visible",
+          "role": "assistant",
+          "content_length": 3,
+          "content_sha256": "64de30c1dbc5448ef8aa0372dae41a04e915c66d862c34b969b514d8bbb1a491",
+          "capture_state": "complete"
+        }
+      ],
+      "scope": "L1 source linkage only; origin stored label is not blanket caller authorization"
+    },
+    "config_restore": {
+      "live_sha256": "39e55d88849d26bbed96e31ddf4842c1217fdc7729e64d07573672a0fb80032f",
+      "before_sha256": "39e55d88849d26bbed96e31ddf4842c1217fdc7729e64d07573672a0fb80032f",
+      "equal": true
+    },
+    "old_package": {
+      "historical_install_receipt": "F:\\SCOPERECALL更新项目\\worktrees\\scope-recall-runtime-integration\\.execution\\TEST-P11-INSTALLED-v4-build\\installed-v4-receipt.json",
+      "recorded_source": "b8276187177871d67786a797b2a8308041901768",
+      "callback_used_this_old_package": "Reported by root; historical install receipt corroborates old build existence, but does not independently bind package to every callback invocation",
+      "latest_wheel_semantic_acceptance": false
+    },
+    "appsend": "Root reports Stop-only without UserPromptSubmit; prior equivalence remains unproven and failed evidence must be retained.",
+    "candidate_transport": {
+      "formal_supported": false,
+      "formal_guard": "P18_G0_G2_method_adjudication_required",
+      "fixtures_only_not_runtime_acceptance": true,
+      "code_read_not_executed_by_auditor": true
+    }
+  },
+  "minimum_remaining_closure": [
+    {
+      "owner": "P12/G2",
+      "required": "Pinned installed candidate: actual input -> persistent capture -> real automatic extraction -> objects/source -> clean-session unprompted recall -> native delivery -> visible behavior; existing correction/isolation/recovery and authorized versioned attachment cases. Existing valid same-version deterministic evidence may be reused.",
+      "status": "NOT_PROVEN_BY_CALLBACK"
+    },
+    {
+      "owner": "P12/G2",
+      "required": "Independent once-only delivery boundary evidence correlated with public native hook output, adapter dedup receipt and actual host delivery record; exclude client additionalContext. One notification or correct answer alone is insufficient; no hidden reasoning required.",
+      "status": "NOT_PROVEN_BY_CALLBACK"
+    },
+    {
+      "owner": "P12/G2",
+      "required": "Retain existing trust-state/path/instance-binding/multiwindow/failure obligations and report actual capability gaps; do not claim desktop UI coverage from app-server.",
+      "status": "EXISTING_OBLIGATIONS_NOT_WAIVED"
+    },
+    {
+      "owner": "P18 runner/preflight",
+      "required": "Explicit revision mapping and final hashes; A/B/C/D isolation and native-memory capability, fixed model/tools/context, exact auxiliary slice, shared ledger hard guards, raw executor/gold scorer separation, no-network fail-closed preflight and complete public output/error/usage capture. Do not merely flip formal_supported.",
+      "status": "NOT_PROVEN_BY_FIXTURES"
+    }
+  ],
+  "no_new_gates": true,
+  "not_required": [
+    "Restore CUA or mouse control",
+    "Prove all Codex clients equivalent",
+    "New large harness or product engine",
+    "Increase samples or models",
+    "Paid reruns of all deterministic cases",
+    "Reapprove already authorized TEST work"
+  ],
+  "unchanged_contracts": {
+    "sealed_fixture": {
+      "root": ".execution/TEST-EVAL-SEALED-120-v6",
+      "dataset_id": "TEST-EVAL-SEALED-120-v6",
+      "status": "SEALED_FOR_INDEPENDENT_REVIEW",
+      "schema_version": "scope-recall.eval-sealed.v6",
+      "independent_questions": 120,
+      "paired_variants": 240,
+      "paired_variants_are_not_independent_n": true,
+      "raw_records": 240,
+      "gold_records": 240,
+      "groups": 12,
+      "per_group": {
+        "positive": 4,
+        "negative": 3,
+        "ambiguous": 3
+      },
+      "files": [
+        {
+          "path": "manifest.json",
+          "bytes": 91126,
+          "sha256": "94e5388c8bb83807969d5bb596f59124ca2b02e765d690c42fe40d88ef898357"
+        },
+        {
+          "path": "fixture-manifest.json",
+          "bytes": 3067,
+          "sha256": "57ac235ed50fe086b15b5da712e4045c5f99e955ffb0424b16131d84b13e6044"
+        },
+        {
+          "path": "raw.jsonl",
+          "bytes": 205903,
+          "sha256": "75c9e0178dd0126ca33d44fcb84039a8ea9c09e4db62a4aaa3e4cd4e0924464c",
+          "visibility": "private_to_independent_executor"
+        },
+        {
+          "path": "gold.jsonl",
+          "bytes": 362064,
+          "sha256": "4ae850de48d11cb9ecc997f5aee51a175ab4e9561552934da3c2169d084229cc",
+          "visibility": "private_to_independent_grader"
+        }
+      ],
+      "control_only_fields_excluded_from_model_input": true,
+      "runtime_behavior_proof_in_fixture": false
+    },
+    "arms": [
+      {
+        "id": "A",
+        "name": "host_native_memory",
+        "configuration": "Host native memory enabled; Scope Recall disabled.",
+        "oracle_allowed": false
+      },
+      {
+        "id": "B",
+        "name": "baseline_578b",
+        "configuration": "Fixed plugin source at git commit 578b955802df753f2e2208e26eab6f71971285a0.",
+        "source_status": "Git commit exists; runnable old-plugin entry and compatibility remain unverified.",
+        "oracle_allowed": false,
+        "no_score_if_unrunnable": true
+      },
+      {
+        "id": "C",
+        "name": "final_new_scope_recall",
+        "configuration": "Final candidate after explicit source freeze; no additional memory, tokens, tools, or answers.",
+        "candidate_freeze_required": true,
+        "oracle_allowed": false
+      },
+      {
+        "id": "D",
+        "name": "archive_plus_simple_search",
+        "configuration": "Same archive and source snapshot plus deterministic simple search only; no complex plugin mechanism.",
+        "oracle_allowed": false
+      }
+    ],
+    "call_upper_bound": {
+      "per_arm_per_host": {
+        "independent_queries": 40,
+        "query_conditions_per_query": 2,
+        "query_submissions": 80,
+        "journeys": 8,
+        "rounds_per_journey": 8,
+        "journey_submissions": 64,
+        "primary_model_submissions": 144
+      },
+      "per_host_all_four_arms": 576,
+      "both_hosts_all_four_arms": 1152,
+      "interpretation": "The 1152 figure is the formal primary host-model submission upper bound: 4 arms x 2 hosts x (40 queries x 2 paired conditions + 8 journeys x 8 rounds). Auxiliary extraction, repair, allowance checks, or retries are not hidden in this number and must use the same declared ledger before freeze.",
+      "route_slices": {
+        "Hermes_formal_primary_Go_calls": 576,
+        "Codex_formal_desktop_submissions": 576
+      },
+      "retry_policy": "No unrecorded retry; first run and every rerun remain evidence."
+    },
+    "budget_and_reserve": {
+      "shared_persistent_ledger": ".execution/TEST-MODEL-BUDGET-V1/call-budget.sqlite3",
+      "total_api_folded_cap_usd": 20.0,
+      "total_api_folded_cap_micro_usd": 20000000,
+      "Go_route_total_call_cap": 8000,
+      "Go_route_input_cap_tokens": 64000000,
+      "Go_route_output_cap_tokens": 8000000,
+      "Codex_desktop_submission_cap": 1500,
+      "Codex_planning_input_cap_tokens": 40000000,
+      "Codex_planning_output_cap_tokens": 2000000,
+      "per_primary_request_reserve": {
+        "input_tokens": 32768,
+        "output_tokens": 4096
+      },
+      "mimo_auxiliary_reserve_output_tokens": 131072,
+      "reserve_rule": "Reserve maximum declared input/output and charge before network; reconcile actual usage; retain unknown usage on failure; never reset ledger or auto-retry.",
+      "formal_plan_estimate_usd": 19.59,
+      "estimate_is_not_bill_claim": true,
+      "auxiliary_ceiling_gap": "The current runtime meter supports shared caps but no P18 orchestrator declares the exact auxiliary extraction-call slice per arm. That slice must be frozen before execution; otherwise P18 is not executable."
+    },
+    "scoring_contract": {
+      "layers": [
+        "L1_record",
+        "L2_organization",
+        "L3_recall",
+        "L4_behavior"
+      ],
+      "l3_evidence_coverage_minimum": 0.9,
+      "l3_each_B_group_minimum": 0.8,
+      "l4_evidence_support_and_task_suitability_minimum": 0.9,
+      "l4_query_gate": "at least 36/40 per host; related and unrelated paired conditions both count",
+      "l4_journey_gate": "8/8 complete journeys per host; each journey uses its fixed 8-round budget",
+      "safety": "All determinate source/current-history/authorization/deletion/isolation assertions correct; any safety violation blocks.",
+      "reporting": "Full numerators, denominators, failures, reruns, uncertainty and Wilson intervals; never retain only the best run."
+    },
+    "fairness_and_blindness": {
+      "same_inputs_per_arm": true,
+      "same_host_model_tools_context_and_memory_budget": true,
+      "same_archive_snapshot": true,
+      "gold_or_control_fields_in_model_input": false,
+      "prewritten_claims_or_answers": false,
+      "oracle_arm_selection": false,
+      "cross_host_or_cross_arm_database_handoff": false,
+      "old_plugin_failure": "If baseline 578b cannot run, record the missing capability and do not invent a score."
+    }
+  },
+  "unchanged_contract_note": "Copied v1 contract fields remain binding; historical Codex_desktop names in numeric budgets denote the same original Codex route allocation and are not evidence of UI execution.",
+  "receipt_preservation": "Keep every original failure, retry, appsend receipt, callback timeout and ledger charge. No rerun to erase first evidence. Unknown usage retains original reserve.",
+  "audit": {
+    "head_at_read": "052dc9e2d761fc9f2bf3fed026621b9fa4926838",
+    "head_is_not_worktree_content_freeze": true,
+    "product_modified": false,
+    "model_called": false,
+    "ui_operated": false,
+    "sealed_raw_or_gold_read": false,
+    "db_written": false,
+    "files_created": [
+      "verification/G0/g0-appserver-method-adjudication-v2.md",
+      "verification/G0/g0-appserver-method-adjudication-v2.json"
+    ],
+    "evidence_hashes": [
+      {
+        "path": "F:\\SCOPERECALL更新项目\\worktrees\\scope-recall-v1.1\\verification\\P18\\p18-evaluation-protocol-v1.json",
+        "sha256": "45b70192857b5b8645dd2bf409db55f320f1cf31f297e89910f9f340e76d32d4"
+      },
+      {
+        "path": "F:\\SCOPERECALL更新项目\\worktrees\\scope-recall-runtime-integration\\verification\\G0\\g0-host-method-supplement-v1.json",
+        "sha256": "a072eab8ddcae44c85565842f66245ca2792b085526c30f4a576de53abfbe716"
+      },
+      {
+        "path": "F:\\SCOPERECALL更新项目\\worktrees\\scope-recall-runtime-integration\\.execution\\TEST-CURSOR-APP-PROTOCOL-v1\\callback-receipt.json",
+        "sha256": "cfe5a5ceabd8f7248196a24b737d60b566212058fdb98697bfbd773d82fafd3c"
+      },
+      {
+        "path": "F:\\SCOPERECALL更新项目\\worktrees\\scope-recall-runtime-integration\\.execution\\TEST-CURSOR-APP-PROTOCOL-v1\\discovery.json",
+        "sha256": "e878f6f23d6dfdbe02b290cee5e881397d84f0938da2326589731d389fa233fe"
+      },
+      {
+        "path": "F:\\SCOPERECALL更新项目\\worktrees\\scope-recall-runtime-integration\\.execution\\TEST-CURSOR-APP-PROTOCOL-v1\\appserver_probe.py",
+        "sha256": "173fc7dafe97681a92dac769c3d83c7d6695297bb3aa0019c46aa0f244335dae"
+      },
+      {
+        "path": "F:\\SCOPERECALL更新项目\\worktrees\\scope-recall-runtime-integration\\.execution\\TEST-CURSOR-APP-PROTOCOL-v1\\test_fixture_parser.py",
+        "sha256": "6acc8f7494738b2cc71311e553e899cf30d6cbfa40a2fdaf761c0461a9fc2253"
+      },
+      {
+        "path": "F:\\SCOPERECALL更新项目\\worktrees\\scope-recall-runtime-integration\\.execution\\TEST-CURSOR-APP-PROTOCOL-v1\\schema\\ClientRequest.json",
+        "sha256": "05c82ead1a820c765c23d3a1d262e4ae54889785276ee1acf7c494141fd94d70"
+      },
+      {
+        "path": "F:\\SCOPERECALL更新项目\\worktrees\\scope-recall-runtime-integration\\.execution\\TEST-CURSOR-APP-PROTOCOL-v1\\schema\\v2\\TurnStartParams.json",
+        "sha256": "b36fb37326b1cf69f75c8b306f1f886d53a57c4b1b985e08e298e2407ea2ad02"
+      },
+      {
+        "path": "F:\\SCOPERECALL更新项目\\worktrees\\scope-recall-runtime-integration\\.execution\\TEST-CURSOR-APP-PROTOCOL-v1\\schema\\v2\\HookCompletedNotification.json",
+        "sha256": "1f146d70303cea6e59752191179e36a273650d63a74d4f9338f9a399da6597d2"
+      },
+      {
+        "path": "F:\\SCOPERECALL更新项目\\worktrees\\scope-recall-runtime-integration\\tests\\eval\\p18_codex_appserver_transport.py",
+        "sha256": "f6415edd9ea91b987d2dff5beb49be62590e3deebdfe50417982b4efb76b3afe"
+      },
+      {
+        "path": "F:\\SCOPERECALL更新项目\\worktrees\\scope-recall-runtime-integration\\.execution\\TEST-P11-INSTALLED-v4-build\\installed-v4-receipt.json",
+        "sha256": "4bcb587d5d27b01423b84c7fbb7b6ad5bdbb17326db779efdcdc533fabca77f4"
+      },
+      {
+        "path": "F:\\SCOPERECALL更新项目\\Scope_Recall_架构与实施完整包_v1.1\\Scope_Recall_Architecture_v1_1\\tasks\\P12.md",
+        "sha256": "1cd2de7a9ff37affc59af87049c1b440afb4c87c3f6a8d4b4e64cf8aab41663f"
+      },
+      {
+        "path": "F:\\SCOPERECALL更新项目\\Scope_Recall_架构与实施完整包_v1.1\\Scope_Recall_Architecture_v1_1\\tasks\\P18.md",
+        "sha256": "17c273c54b9606908afd4c03d0412b76319fed11dde8129fa3dec30cc5d8fa9a"
+      },
+      {
+        "path": "F:\\SCOPERECALL更新项目\\Scope_Recall_架构与实施完整包_v1.1\\Scope_Recall_Architecture_v1_1\\START_HERE.md",
+        "sha256": "911bd2d73d275fe3317a3c01d9ec6c5662eadada9ed60ec07e1f81af3951a069"
+      },
+      {
+        "path": "F:\\SCOPERECALL更新项目\\Scope_Recall_架构与实施完整包_v1.1\\Scope_Recall_Architecture_v1_1\\docs\\05_验收测试与独立审计.md",
+        "sha256": "0c678e8b8b89145238c075e7dae8613d4779689ba83a0430156d503127caf64d"
+      },
+      {
+        "path": "F:\\SCOPERECALL更新项目\\Scope_Recall_架构与实施完整包_v1.1\\Scope_Recall_Architecture_v1_1\\docs\\07_人类式记忆功能定稿与验收.md",
+        "sha256": "8f94274682a46ea51588edfb16d2b4714bb23ecb9e1480a6d08f9ff71d72b5f4"
+      }
+    ]
+  },
+  "human_readable_companion": "g0-appserver-method-adjudication-v2.md"
+}

@@ -1,0 +1,55 @@
+{
+  "sent": {
+    "jsonrpc": "2.0",
+    "id": "TEST-P02-fixed-ordinary",
+    "method": "message/send",
+    "params": {
+      "message": {
+        "messageId": "TEST-P02-fixed-ordinary",
+        "role": "ROLE_USER",
+        "parts": [
+          {
+            "text": "TEST_SCOPE_RECALL What is 2 + 3? Answer with the number only. Do not use tools."
+          }
+        ],
+        "contextId": "TEST-P02-fixed-ordinary"
+      }
+    }
+  },
+  "received": {
+    "jsonrpc": "2.0",
+    "id": "TEST-P02-fixed-ordinary",
+    "result": {
+      "id": "task-ea4c14b409bc4763",
+      "contextId": "TEST-P02-fixed-ordinary",
+      "status": {
+        "state": "TASK_STATE_COMPLETED",
+        "timestamp": "2026-09-06T02:55:09.535Z",
+        "message": {
+          "role": "ROLE_AGENT",
+          "parts": [
+            {
+              "text": "5",
+              "mediaType": "text/plain"
+            }
+          ],
+          "messageId": "7696a3749b604b84a67b46672562e5c7",
+          "contextId": "TEST-P02-fixed-ordinary"
+        }
+      },
+      "artifacts": [
+        {
+          "artifactId": "bf3ecd4377924f9280e6393216e8e12a",
+          "parts": [
+            {
+              "text": "5",
+              "mediaType": "text/plain"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "duration_seconds": 12.5926825000206,
+  "scope": "actual isolated A2A fixed registration first context; uses final approved upstream request"
+}

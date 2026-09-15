@@ -1,0 +1,203 @@
+{
+  "audit_type": "bounded_independent_G0_reaudit",
+  "auditor": "/root/contract_adjudicator",
+  "candidate_sha": "ed302077ee5d46e57acc731ad976db3df92a49ff",
+  "comparison_base_sha": "f98b0667f010c9763740391a3cec7ed5d79a4553",
+  "intermediate_source_sha": "efbe8a56f293266a07952fc0debc33027d35b685",
+  "overall_G0": "NO_GO",
+  "next_task_P03_ready": false,
+  "prior_decisions_reopened": [],
+  "scope": "Model-route and evaluation-freeze delta only. P00/P01 and accepted Hermes SVG interface are not reopened. No full semantic acceptance.",
+  "component_decisions": {
+    "budget": {
+      "decision": "ACCEPT_FREEZE",
+      "authorization": "Owner explicitly approved autonomous execution under this budget; no repeat approval is required.",
+      "limit_micro_usd": 20000000,
+      "meaning": "Incremental API usage equivalent, including failures, retries, and unknown reservations; not a cash invoice or zero-balance-charge guarantee.",
+      "model_attempt_caps": {
+        "go_shared": 8000,
+        "embedding_batches": 4096
+      },
+      "token_caps": {
+        "go_input": 64000000,
+        "go_output": 8000000,
+        "embedding_input": 32000000
+      },
+      "per_model_tokens": {
+        "deepseek-v4-flash": [
+          8000000,
+          1000000
+        ],
+        "mimo-v2.5": [
+          52000000,
+          6500000
+        ],
+        "glm-5.3-flash": [
+          4000000,
+          500000
+        ]
+      },
+      "conservative_allocation_usd": "19.59",
+      "codex": {
+        "submitted_turn_cap": 1500,
+        "input_tokens_planning": 40000000,
+        "output_tokens_planning": 2000000,
+        "account": "Existing desktop account; no new credits purchased; planned tokens are not claimed to be an implemented task-level hard cap."
+      }
+    },
+    "model_routes": {
+      "decision": "ACCEPT_FREEZE_FOR_EVALUATION",
+      "hermes_main": "deepseek-v4-flash via https://opencode.ai/zen/go/v1/chat/completions",
+      "auxiliary": {
+        "model": "mimo-v2.5",
+        "endpoint": "https://opencode.ai/zen/go/v1/chat/completions",
+        "thinking": {
+          "type": "disabled"
+        },
+        "output_parameter": "max_completion_tokens",
+        "tool_choice_if_tools": "auto"
+      },
+      "embedding": {
+        "model": "gemini-embedding-001",
+        "dimensions": 3072,
+        "endpoint": "https://generativelanguage.googleapis.com/v1beta/openai/embeddings",
+        "transport": "Existing local HTTPS proxy, as probed"
+      },
+      "codex_main": "gpt-5.6-luna in the actual Windows desktop app",
+      "glm": "Unadopted candidate and unused reserve, not an automatic fallback. A formal comparison must not mix replacement models into the frozen run.",
+      "limitations": [
+        "DeepSeek API JSON/tool examples do not establish full Hermes main-chain or memory quality.",
+        "MiMo initial 0/2 and later 3/3 public diagnostics remain separate; the repeated public color case is not independent holdout evidence or proof of causal parameter improvement.",
+        "The 16-token result supports the explicit MiMo parameter profile; legacy max_tokens is not proven effective.",
+        "The embedding response supports route/dimension feasibility, not retrieval quality; both attempts still have unknown billable usage.",
+        "Record and hold all inference settings, request limits, tools, source snapshots, and model identifiers fixed across arms before the final matrix."
+      ]
+    },
+    "evaluation": {
+      "decision": "ACCEPT_FREEZE",
+      "core": {
+        "independent_questions": 120,
+        "groups": 12,
+        "per_group": {
+          "positive": 4,
+          "negative": 3,
+          "ambiguous": 3
+        },
+        "related_unrelated": "Paired conditions are reported separately and do not inflate the independent sample count.",
+        "necessary_evidence": "A gold-answerable question passes only if all required evidence slots have valid coverage. At least 90% overall and 80% per group; report both question-level and slot-level denominators.",
+        "safety": "All deterministic source/current-history/authorization/deletion/isolation assertions must pass; no unsupported affirmative historical claims on known-unknown or ambiguous inputs."
+      },
+      "per_host": {
+        "independent_queries": 40,
+        "query_pass_minimum": 36,
+        "query_pass_rule": "Both related and unrelated conditions pass.",
+        "independent_journeys": 8,
+        "journey_pass_minimum": 8,
+        "journey_pass_rule": "All specified steps and clean-session breakpoints pass; do not pool journey turns with queries."
+      },
+      "arms": [
+        "native memory",
+        "runnable old plugin at 578b955802df753f2e2208e26eab6f71971285a0",
+        "fixed final new version",
+        "same archive plus simple search"
+      ],
+      "limits": {
+        "main_input_tokens": 32768,
+        "main_output_tokens": 4096,
+        "explicit_offline_deep_inspection_memory_tokens": 2048,
+        "automatic_frontstage_memory_items": 6,
+        "automatic_frontstage_memory_tokens": 1200,
+        "automatic_frontstage_soft_seconds": 1.5,
+        "auxiliary_new_events": 200,
+        "auxiliary_input_tokens": 16000,
+        "auxiliary_proposals": 32
+      },
+      "rules": [
+        "Independent audit authors and seals synthetic source data and gold; developers use public cases and a separate early set.",
+        "No formal memory, private project data, credentials, gold, or prewritten correct Claims enter evaluation requests.",
+        "Fixed source data, questions, main model, tools, full input budget, and memory allowance within each host across all four arms.",
+        "P07/P09 early real chains and failures/retries consume the same budget; fake endpoints are not semantic acceptance.",
+        "Keep first attempts and every rerun; no best-of selection, unseen relabeling of exposed cases, or threshold reduction after failure.",
+        "Report raw numerators/denominators and 95% Wilson intervals. Require reproducible improvement in at least one specified key category with no regression of required previously passing behavior.",
+        "Budget, allowance, or route uncertainty causes a truthful stop; it does not change the acceptance standard."
+      ]
+    }
+  },
+  "remaining_gate_blocker": {
+    "severity": "P1_gate_prerequisite_unproved",
+    "id": "actual_codex_desktop_entry",
+    "evidence": "verification/P02/codex-actual-entry-readback.json",
+    "task_id": "01a07492-06f9-7a80-b8a0-744796c0e39e",
+    "observations": 7,
+    "finding": "Manual desktop input and its necessary callback/artifact path remain unproved. The CLI UserPromptSubmit and app-tool dispatch cannot substitute.",
+    "minimum_next_action": "Complete the already-requested real desktop TEST input, then inspect the resulting public callbacks and required artifact route on that host. Do not start P03 until this necessary P02 evidence is independently accepted.",
+    "authorization": "This is missing user interface evidence, not a request to reapprove the already approved budget."
+  },
+  "operational_requirement_before_further_Go_calls": {
+    "new_G0_P0_P1_defect": false,
+    "finding": "Account preflight is currently in mimo_compat_probe.py:20 and called at :51; cheap_model_probe.py:126 main lacks it. Its original four-call batch is already exhausted and refuses replay.",
+    "required_action": "Share a fresh GET usage fail-closed gate across every new Go runner attempt and retry: all three windows status ok with finite percentage below 80, alongside the persistent project reservation. Missing/failed/unavailable preflight must stop that attempt.",
+    "authority": "Routine implementation tightening within existing authorization; test with local fixtures and no additional upstream calls.",
+    "bounded_guarantee": "GET usage exists and was observed. Its snapshot is not an atomic reservation against other active instances. Do not claim plan-only billing or zero balance debit. Do not change the five active instances or account settings to manufacture a global lock.",
+    "existing_balance_setting": "Unknown and unchanged. Source permits balance fallback when configured; existing account reload behavior is not ruled out. The approved bound is this project's API usage equivalent, not all-account cash spending.",
+    "historical_gap": "The first four model calls preceded the first account read. Retain that omission; do not rewrite history as if preflight had occurred."
+  },
+  "evidence_checks": {
+    "fixed_manifest": {
+      "artifact_count": 85,
+      "all_raw_hashes_match": true,
+      "all_normalized_contents_equal_candidate_git_blobs": true,
+      "canonical_manifest_digest": "685c215d530e6d7137d5415e7d4a46a6aa54bcfc2519d3b04cf85325caef17af",
+      "strict_P02_task_receipt_valid": true,
+      "detail": ".execution/TEST-P02-G0-audit/ed302077-artifact-checks.json"
+    },
+    "local_budget_tests": {
+      "passed": 19,
+      "failed": 0,
+      "skipped": 0,
+      "seconds": 0.41,
+      "execution": "Fixed candidate code copied into independent audit directory; pytest with network/process audit guard, no model or credential access.",
+      "junit": ".execution/TEST-P02-G0-audit/ed302077-local-tests/budget-unit.xml"
+    },
+    "readonly_test_ledger": {
+      "attempts": 9,
+      "go_attempts": 7,
+      "embedding_attempts": 2,
+      "known_and_reserved_micro_usd": 44603,
+      "known_micro_usd": 857,
+      "reserved_unknown_micro_usd": 43746,
+      "remaining_micro_usd": 19955397,
+      "charge_recomputed_for_each_row": true,
+      "source_and_request_checks": 14,
+      "all_checks_pass": true,
+      "detail": ".execution/TEST-P02-G0-audit/ed302077-ledger-checks.json"
+    },
+    "failures_preserved": [
+      "Initial four API cases: 2 pass and 2 fail despite exit code 0.",
+      "MiMo timeout output reservation corrected from 1024 to 131072 with before/after rows retained.",
+      "Embedding direct attempt has unknown receipt/usage; its reservation remains after identified TEST process termination.",
+      "Proxy embedding response lacks usage; its input reservation remains."
+    ],
+    "public_source": {
+      "recorded_upstream_commit": "7c2199d84a5830f70a8250731a42ff958145b4d6",
+      "standalone_source_fingerprints_matched": 5,
+      "scope": "Audited the five saved public source files and matched their recorded hashes; this directory is standalone downloads, not a git checkout.",
+      "detail": ".execution/TEST-P02-G0-audit/ed302077-source-checks.json"
+    },
+    "working_tree_status_after_audit": "Clean at the recorded status check. Parent subsequently announced uncommitted guard changes; those changes are outside this fixed-candidate decision. Auditor wrote only own ignored audit artifacts."
+  },
+  "external_primary_sources": [
+    "https://opencode.ai/docs/go/",
+    "https://mimo.mi.com/docs/en-US/api/chat/openai-api",
+    "https://ai.google.dev/gemini-api/docs/pricing"
+  ],
+  "audit_side_effects": {
+    "model_calls": 0,
+    "credential_reads": 0,
+    "formal_memory_or_database_reads": 0,
+    "active_instance_changes": 0,
+    "candidate_code_or_receipt_changes": 0,
+    "subagents_spawned": 0
+  },
+  "conclusion": "Freeze accepted for the authorized budget, model route profiles, evaluation scale, fairness and scoring rules. Overall G0 remains NO_GO solely for the still-unproved actual Codex desktop prerequisite. This is not P03 authorization or complete-project acceptance."
+}

@@ -1,0 +1,378 @@
+{
+  "name": "TEST_SCOPE_RECALL_P02",
+  "description": "Hermes Agent \u2014 a general-purpose agent reachable over A2A.",
+  "url": "http://127.0.0.1:19921/",
+  "version": "1.0.0",
+  "provider": {
+    "organization": "Hermes Agent",
+    "url": "http://127.0.0.1:19921/"
+  },
+  "supportedInterfaces": [
+    {
+      "url": "http://127.0.0.1:19921/",
+      "protocolBinding": "JSONRPC",
+      "protocolVersion": "1.0"
+    }
+  ],
+  "capabilities": {
+    "streaming": true,
+    "pushNotifications": true,
+    "stateTransitionHistory": false,
+    "extendedAgentCard": false
+  },
+  "defaultInputModes": [
+    "text/plain"
+  ],
+  "defaultOutputModes": [
+    "text/plain"
+  ],
+  "skills": [
+    {
+      "id": "toolset.a2a",
+      "name": "a2a",
+      "description": "Hermes 'a2a' capabilities",
+      "tags": [
+        "a2a",
+        "a2a_call",
+        "a2a_discover",
+        "a2a_get_task",
+        "a2a_history",
+        "a2a_list",
+        "a2a_orchestrate",
+        "a2a_wait"
+      ]
+    },
+    {
+      "id": "toolset.browser",
+      "name": "browser",
+      "description": "Hermes 'browser' capabilities",
+      "tags": [
+        "browser",
+        "browser_back",
+        "browser_click",
+        "browser_console",
+        "browser_get_images",
+        "browser_navigate",
+        "browser_press",
+        "browser_scroll",
+        "browser_snapshot",
+        "browser_type",
+        "browser_vision"
+      ]
+    },
+    {
+      "id": "toolset.browser-cdp",
+      "name": "browser-cdp",
+      "description": "Hermes 'browser-cdp' capabilities",
+      "tags": [
+        "browser-cdp",
+        "browser_cdp",
+        "browser_dialog"
+      ]
+    },
+    {
+      "id": "toolset.browser-use",
+      "name": "browser-use",
+      "description": "Hermes 'browser-use' capabilities",
+      "tags": [
+        "browser-use",
+        "browser_exec"
+      ]
+    },
+    {
+      "id": "toolset.clarify",
+      "name": "clarify",
+      "description": "Hermes 'clarify' capabilities",
+      "tags": [
+        "clarify",
+        "clarify"
+      ]
+    },
+    {
+      "id": "toolset.code_execution",
+      "name": "code_execution",
+      "description": "Hermes 'code_execution' capabilities",
+      "tags": [
+        "code_execution",
+        "execute_code"
+      ]
+    },
+    {
+      "id": "toolset.computer_use",
+      "name": "computer_use",
+      "description": "Hermes 'computer_use' capabilities",
+      "tags": [
+        "computer_use",
+        "computer_use"
+      ]
+    },
+    {
+      "id": "toolset.cronjob",
+      "name": "cronjob",
+      "description": "Hermes 'cronjob' capabilities",
+      "tags": [
+        "cronjob",
+        "cronjob_manage"
+      ]
+    },
+    {
+      "id": "toolset.delegation",
+      "name": "delegation",
+      "description": "Hermes 'delegation' capabilities",
+      "tags": [
+        "delegation",
+        "delegate_task"
+      ]
+    },
+    {
+      "id": "toolset.desktop_ui",
+      "name": "desktop_ui",
+      "description": "Hermes 'desktop_ui' capabilities",
+      "tags": [
+        "desktop_ui",
+        "annotate_preview",
+        "apply_layout",
+        "close_terminal",
+        "desktop_preview",
+        "drive_preview",
+        "focus_pane",
+        "gui_tour",
+        "react_to_message",
+        "read_terminal",
+        "read_window_below"
+      ]
+    },
+    {
+      "id": "toolset.discord",
+      "name": "discord",
+      "description": "Hermes 'discord' capabilities",
+      "tags": [
+        "discord",
+        "discord"
+      ]
+    },
+    {
+      "id": "toolset.discord_admin",
+      "name": "discord_admin",
+      "description": "Hermes 'discord_admin' capabilities",
+      "tags": [
+        "discord_admin",
+        "discord_admin"
+      ]
+    },
+    {
+      "id": "toolset.feishu_doc",
+      "name": "feishu_doc",
+      "description": "Hermes 'feishu_doc' capabilities",
+      "tags": [
+        "feishu_doc",
+        "feishu_doc_read"
+      ]
+    },
+    {
+      "id": "toolset.feishu_drive",
+      "name": "feishu_drive",
+      "description": "Hermes 'feishu_drive' capabilities",
+      "tags": [
+        "feishu_drive",
+        "feishu_drive_add_comment",
+        "feishu_drive_list_comment_replies",
+        "feishu_drive_list_comments",
+        "feishu_drive_reply_comment"
+      ]
+    },
+    {
+      "id": "toolset.file",
+      "name": "file",
+      "description": "Hermes 'file' capabilities",
+      "tags": [
+        "file",
+        "patch",
+        "read_file",
+        "search_files",
+        "write_file"
+      ]
+    },
+    {
+      "id": "toolset.hermes-yuanbao",
+      "name": "hermes-yuanbao",
+      "description": "Hermes 'hermes-yuanbao' capabilities",
+      "tags": [
+        "hermes-yuanbao",
+        "yb_query_group_info",
+        "yb_query_group_members",
+        "yb_search_sticker",
+        "yb_send_dm",
+        "yb_send_sticker"
+      ]
+    },
+    {
+      "id": "toolset.homeassistant",
+      "name": "homeassistant",
+      "description": "Hermes 'homeassistant' capabilities",
+      "tags": [
+        "homeassistant",
+        "ha_call_service",
+        "ha_get_state",
+        "ha_list_entities",
+        "ha_list_services"
+      ]
+    },
+    {
+      "id": "toolset.image_gen",
+      "name": "image_gen",
+      "description": "Hermes 'image_gen' capabilities",
+      "tags": [
+        "image_gen",
+        "image_generate"
+      ]
+    },
+    {
+      "id": "toolset.kanban",
+      "name": "kanban",
+      "description": "Hermes 'kanban' capabilities",
+      "tags": [
+        "kanban",
+        "kanban_attach",
+        "kanban_attach_url",
+        "kanban_attachments",
+        "kanban_block",
+        "kanban_comment",
+        "kanban_complete",
+        "kanban_create",
+        "kanban_heartbeat",
+        "kanban_link",
+        "kanban_list"
+      ]
+    },
+    {
+      "id": "toolset.memory",
+      "name": "memory",
+      "description": "Hermes 'memory' capabilities",
+      "tags": [
+        "memory",
+        "memory"
+      ]
+    },
+    {
+      "id": "toolset.project",
+      "name": "project",
+      "description": "Hermes 'project' capabilities",
+      "tags": [
+        "project",
+        "desktop_project"
+      ]
+    },
+    {
+      "id": "toolset.session_search",
+      "name": "session_search",
+      "description": "Hermes 'session_search' capabilities",
+      "tags": [
+        "session_search",
+        "session_search"
+      ]
+    },
+    {
+      "id": "toolset.skills",
+      "name": "skills",
+      "description": "Hermes 'skills' capabilities",
+      "tags": [
+        "skills",
+        "skill_manage",
+        "skill_view",
+        "skills_list"
+      ]
+    },
+    {
+      "id": "toolset.spotify",
+      "name": "spotify",
+      "description": "Hermes 'spotify' capabilities",
+      "tags": [
+        "spotify",
+        "spotify_albums",
+        "spotify_devices",
+        "spotify_library",
+        "spotify_playback",
+        "spotify_playlists",
+        "spotify_queue",
+        "spotify_search"
+      ]
+    },
+    {
+      "id": "toolset.terminal",
+      "name": "terminal",
+      "description": "Hermes 'terminal' capabilities",
+      "tags": [
+        "terminal",
+        "process_manage",
+        "terminal"
+      ]
+    },
+    {
+      "id": "toolset.todo",
+      "name": "todo",
+      "description": "Hermes 'todo' capabilities",
+      "tags": [
+        "todo",
+        "todo_list"
+      ]
+    },
+    {
+      "id": "toolset.tts",
+      "name": "tts",
+      "description": "Hermes 'tts' capabilities",
+      "tags": [
+        "tts",
+        "text_to_speech"
+      ]
+    },
+    {
+      "id": "toolset.video",
+      "name": "video",
+      "description": "Hermes 'video' capabilities",
+      "tags": [
+        "video",
+        "video_analyze"
+      ]
+    },
+    {
+      "id": "toolset.video_gen",
+      "name": "video_gen",
+      "description": "Hermes 'video_gen' capabilities",
+      "tags": [
+        "video_gen",
+        "video_generate",
+        "xai_video_edit",
+        "xai_video_extend"
+      ]
+    },
+    {
+      "id": "toolset.vision",
+      "name": "vision",
+      "description": "Hermes 'vision' capabilities",
+      "tags": [
+        "vision",
+        "vision_analyze"
+      ]
+    },
+    {
+      "id": "toolset.web",
+      "name": "web",
+      "description": "Hermes 'web' capabilities",
+      "tags": [
+        "web",
+        "web_extract",
+        "web_search"
+      ]
+    },
+    {
+      "id": "toolset.x_search",
+      "name": "x_search",
+      "description": "Hermes 'x_search' capabilities",
+      "tags": [
+        "x_search",
+        "x_search"
+      ]
+    }
+  ]
+}

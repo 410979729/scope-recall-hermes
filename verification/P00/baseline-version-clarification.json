@@ -1,0 +1,84 @@
+{
+  "status": "verified_main_beyond_release_tag",
+  "base_sha": "578b955802df753f2e2208e26eab6f71971285a0",
+  "release_tag": "v2.0.1",
+  "release_commit": "2f7900d1a482d5dd94295d86fdd28cdc99163784",
+  "package_version_field": "2.0.1",
+  "commits_since_tag": 15,
+  "issue_fixes_in_history": [
+    "65",
+    "66",
+    "67",
+    "68",
+    "69",
+    "71"
+  ],
+  "merged_prs_since_tag": [
+    "70",
+    "72",
+    "73"
+  ],
+  "worktree_base_changed": false,
+  "checks": [
+    {
+      "command": [
+        "git",
+        "ls-remote",
+        "origin",
+        "HEAD",
+        "refs/heads/main"
+      ],
+      "exit_code": 0,
+      "duration_seconds": 1.1969047000166029,
+      "output": "578b955802df753f2e2208e26eab6f71971285a0\tHEAD\n578b955802df753f2e2208e26eab6f71971285a0\trefs/heads/main"
+    },
+    {
+      "command": [
+        "git",
+        "rev-parse",
+        "v2.0.1^{commit}"
+      ],
+      "exit_code": 0,
+      "duration_seconds": 0.04115629999432713,
+      "output": "2f7900d1a482d5dd94295d86fdd28cdc99163784"
+    },
+    {
+      "command": [
+        "git",
+        "rev-list",
+        "--count",
+        "v2.0.1..origin/main"
+      ],
+      "exit_code": 0,
+      "duration_seconds": 0.04029759997501969,
+      "output": "15"
+    },
+    {
+      "command": [
+        "git",
+        "diff",
+        "--shortstat",
+        "v2.0.1",
+        "origin/main"
+      ],
+      "exit_code": 0,
+      "duration_seconds": 0.0579081000178121,
+      "output": "78 files changed, 8070 insertions(+), 307 deletions(-)"
+    },
+    {
+      "command": [
+        "git",
+        "log",
+        "--first-parent",
+        "--format=%H %cI %s",
+        "v2.0.1..origin/main"
+      ],
+      "exit_code": 0,
+      "duration_seconds": 0.06450730003416538,
+      "output": "578b955802df753f2e2208e26eab6f71971285a0 2026-09-05T20:43:12-04:00 Merge pull request #73: prevent SQLite metadata deadlocks during writer handoff\nb536e3c1977bc183e58b993245ab63874d16a96a 2026-09-05T20:41:51-04:00 Merge pull request #72: preserve recall evidence and candidate transaction contracts\nb89f40d4b1a4f4882eb8c2c48f3c51d7bec61d12 2026-09-04T23:11:12-04:00 Merge pull request #70 from 410979729/codex/fix-reliability-65-69"
+    }
+  ],
+  "original_receipt_commit": "1db6f09c99bd746085eca03c63cd24329a99b7ad",
+  "updated_baseline_sha256": "0f7746e19fa8ebc5f0743a37200b3ea748eb0075331d555d611cf313848ad3ed",
+  "plugin_tests_run": false
+}

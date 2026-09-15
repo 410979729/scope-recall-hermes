@@ -17,6 +17,7 @@ import math
 import os
 import pathlib
 import re
+import runpy
 import shutil
 import signal
 import subprocess
@@ -42,7 +43,10 @@ if str(ROOT) not in sys.path:
 from secret_patterns import scan_secret_like_text, secret_scan_shadow  # noqa: E402
 from scripts.release_changelog import extract_version_section  # noqa: E402
 
-PACKAGE_VERSION = "2.0.1"
+# Kept for callers of this historical checker; current workflows use
+# scripts/check.py.  Read the single source directly so this checker also
+# works from a fresh checkout before the package has been installed.
+PACKAGE_VERSION = str(runpy.run_path(str(ROOT / "_version.py"))["__version__"])
 PUBLIC_RELEASE_BASELINE = "2.0.0"
 WHEEL_DIST_PREFIX = f"hermes_scope_recall-{PACKAGE_VERSION}"
 RELEASE_READINESS_DOC = f"docs/release-readiness.{PACKAGE_VERSION}.md"

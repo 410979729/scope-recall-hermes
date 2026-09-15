@@ -1,0 +1,11 @@
+{
+  "status": "network_error_usage_unknown_reserved_charge_retained",
+  "ledger_id": 14,
+  "usage": null,
+  "error_type": "malformed_response",
+  "answer": null,
+  "session": "TEST-P07-answer-new-context",
+  "prior_chat_messages_sent": false,
+  "actual_desktop_or_hermes": false,
+  "context_sha256": "6fb7b0a27f3267469b1b8d307e74b5cc8f555bf0cf0d10267a4a896c8c12d974"
+}

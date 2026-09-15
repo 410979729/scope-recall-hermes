@@ -340,6 +340,335 @@ def test_openai_compatible_embedder_restores_indexed_response_order(monkeypatch)
     ]
 
 
+def test_openai_compatible_accepts_position_consistent_partial_index(monkeypatch):
+    """Gemini OpenAI-compat: row0 omits index, later rows keep positional index."""
+
+    class PartialAPI:
+        def __init__(self) -> None:
+            self.calls: list[list[str]] = []
+
+        def create(self, **kwargs):
+            payload = list(kwargs["input"])
+            self.calls.append(payload)
+
+            class Item:
+                def __init__(self, embedding, index=None):
+                    self.embedding = embedding
+                    if index is not None:
+                        self.index = index
+
+            class Response:
+                data = [
+                    Item([1.0, 0.0, 0.0]),
+                    Item([0.0, 1.0, 0.0], index=1),
+                ]
+
+            return Response()
+
+    class PartialClient:
+        def __init__(self) -> None:
+            self.embeddings = PartialAPI()
+
+    client = PartialClient()
+    embedder = OpenAICompatibleEmbedder(
+        model="gemini-embedding-001",
+        api_key="pk-test",
+        base_url="https://example.invalid/v1",
+        dimensions=3,
+    )
+    monkeypatch.setattr(embedder, "_client_or_raise", lambda: client)
+
+    assert embedder.embed_texts(["alpha", "beta"]) == [
+        [1.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0],
+    ]
+    assert client.embeddings.calls == [["alpha", "beta"]]
+
+
+def test_openai_compatible_rejects_invalid_mixed_indexes_without_positional_guess(monkeypatch):
+    class Item:
+        def __init__(self, embedding, index=None):
+            self.embedding = embedding
+            if index is not None:
+                self.index = index
+
+    def _client_for(rows):
+        class API:
+            def create(self, **_kwargs):
+                class Response:
+                    data = rows
+
+                return Response()
+
+        class Client:
+            embeddings = API()
+
+        return Client()
+
+    embedder = OpenAICompatibleEmbedder(
+        model="gemini-embedding-001",
+        api_key="pk-test",
+        base_url="https://example.invalid/v1",
+        dimensions=3,
+    )
+
+    monkeypatch.setattr(
+        embedder,
+        "_client_or_raise",
+        lambda: _client_for([Item([0.1, 0.2, 0.3], index=True), Item([0.2, 0.3, 0.4], index=1)]),
+    )
+    with pytest.raises(RuntimeError, match="non-integer index"):
+        embedder.embed_texts(["alpha", "beta"])
+
+    monkeypatch.setattr(
+        embedder,
+        "_client_or_raise",
+        lambda: _client_for([Item([0.1, 0.2, 0.3], index=0), Item([0.2, 0.3, 0.4], index=0)]),
+    )
+    with pytest.raises(RuntimeError, match="invalid or duplicate index"):
+        embedder.embed_texts(["alpha", "beta"])
+
+    monkeypatch.setattr(
+        embedder,
+        "_client_or_raise",
+        lambda: _client_for([Item([0.1, 0.2, 0.3], index=0), Item([0.2, 0.3, 0.4], index=2)]),
+    )
+    with pytest.raises(RuntimeError, match="invalid or duplicate index"):
+        embedder.embed_texts(["alpha", "beta"])
+
+
+def test_openai_compatible_incompatible_mixed_index_falls_back_to_serial_requests(monkeypatch):
+    class API:
+        def __init__(self) -> None:
+            self.calls: list[list[str]] = []
+
+        def create(self, **kwargs):
+            payload = list(kwargs["input"])
+            self.calls.append(payload)
+
+            class Item:
+                def __init__(self, embedding, index=None):
+                    self.embedding = embedding
+                    if index is not None:
+                        self.index = index
+
+            class Response:
+                def __init__(self, data):
+                    self.data = data
+
+            if len(payload) == 2:
+                # Valid unique in-range indexes, but not position-consistent.
+                # Blind list-order fill would swap the two vectors.
+                return Response(
+                    [
+                        Item([0.9, 0.1, 0.0]),
+                        Item([0.1, 0.9, 0.0], index=0),
+                    ]
+                )
+            if payload == ["alpha"]:
+                return Response([Item([1.0, 0.0, 0.0])])
+            if payload == ["beta"]:
+                return Response([Item([0.0, 1.0, 0.0])])
+            raise AssertionError(payload)
+
+    class Client:
+        def __init__(self) -> None:
+            self.embeddings = API()
+
+    client = Client()
+    embedder = OpenAICompatibleEmbedder(
+        model="gemini-embedding-001",
+        api_key="pk-test",
+        base_url="https://example.invalid/v1",
+        dimensions=3,
+    )
+    monkeypatch.setattr(embedder, "_client_or_raise", lambda: client)
+
+    assert embedder.embed_texts(["alpha", "beta"]) == [
+        [1.0, 0.0, 0.0],
+        [0.0, 1.0, 0.0],
+    ]
+    assert client.embeddings.calls == [["alpha", "beta"], ["alpha"], ["beta"]]
+
+
+def test_openai_compatible_serial_fallback_shares_original_deadline(monkeypatch):
+    clock = {"now": 1000.0}
+    monkeypatch.setattr("scope_recall.embedders.time.monotonic", lambda: clock["now"])
+
+    class API:
+        def __init__(self) -> None:
+            self.calls: list[list[str]] = []
+
+        def create(self, **kwargs):
+            payload = list(kwargs["input"])
+            self.calls.append(payload)
+
+            class Item:
+                def __init__(self, embedding, index=None):
+                    self.embedding = embedding
+                    if index is not None:
+                        self.index = index
+
+            class Response:
+                def __init__(self, data):
+                    self.data = data
+
+            if len(payload) == 2:
+                return Response(
+                    [
+                        Item([0.9, 0.1, 0.0]),
+                        Item([0.1, 0.9, 0.0], index=0),
+                    ]
+                )
+            clock["now"] += 6.0
+            return Response([Item([1.0, 0.0, 0.0])])
+
+    class Client:
+        def __init__(self) -> None:
+            self.embeddings = API()
+
+    embedder = OpenAICompatibleEmbedder(
+        model="gemini-embedding-001",
+        api_key="pk-test",
+        base_url="https://example.invalid/v1",
+        dimensions=3,
+        writer_timeout_seconds=5.0,
+    )
+    monkeypatch.setattr(embedder, "_client_or_raise", lambda: Client())
+
+    with pytest.raises(TimeoutError, match="operation budget"):
+        embedder.embed_texts(["alpha", "beta"])
+
+
+def test_openai_compatible_multiple_missing_indexes_fall_back_to_serial_requests(monkeypatch):
+    """[None, None, 2] cannot prove the two unindexed identities; do not guess."""
+
+    first_input_vector = [1.0, 0.0, 0.0]
+    second_input_vector = [0.0, 1.0, 0.0]
+    third_input_vector = [0.0, 0.0, 1.0]
+
+    class API:
+        def __init__(self) -> None:
+            self.calls: list[list[str]] = []
+
+        def create(self, **kwargs):
+            payload = list(kwargs["input"])
+            self.calls.append(payload)
+
+            class Item:
+                def __init__(self, embedding, index=None):
+                    self.embedding = embedding
+                    if index is not None:
+                        self.index = index
+
+            class Response:
+                def __init__(self, data):
+                    self.data = data
+
+            if payload == ["first-input", "second-input", "third-input"]:
+                # Parent counterexample: present index equals its position,
+                # but the two missing indexes can still be swapped.
+                return Response(
+                    [
+                        Item(second_input_vector),
+                        Item(first_input_vector),
+                        Item(third_input_vector, index=2),
+                    ]
+                )
+            if payload == ["first-input"]:
+                return Response([Item(first_input_vector)])
+            if payload == ["second-input"]:
+                return Response([Item(second_input_vector)])
+            if payload == ["third-input"]:
+                return Response([Item(third_input_vector)])
+            raise AssertionError(payload)
+
+    class Client:
+        def __init__(self) -> None:
+            self.embeddings = API()
+
+    client = Client()
+    embedder = OpenAICompatibleEmbedder(
+        model="gemini-embedding-001",
+        api_key="pk-test",
+        base_url="https://example.invalid/v1",
+        dimensions=3,
+    )
+    monkeypatch.setattr(embedder, "_client_or_raise", lambda: client)
+
+    assert embedder.embed_texts(["first-input", "second-input", "third-input"]) == [
+        first_input_vector,
+        second_input_vector,
+        third_input_vector,
+    ]
+    assert client.embeddings.calls == [
+        ["first-input", "second-input", "third-input"],
+        ["first-input"],
+        ["second-input"],
+        ["third-input"],
+    ]
+
+
+def test_openai_compatible_serial_fallback_rejects_per_response_count_mismatch(monkeypatch):
+    """A 0-row single plus a 2-row single must not satisfy the combined count."""
+
+    class API:
+        def __init__(self) -> None:
+            self.calls: list[list[str]] = []
+
+        def create(self, **kwargs):
+            payload = list(kwargs["input"])
+            self.calls.append(payload)
+
+            class Item:
+                def __init__(self, embedding, index=None):
+                    self.embedding = embedding
+                    if index is not None:
+                        self.index = index
+
+            class Response:
+                def __init__(self, data):
+                    self.data = data
+
+            if payload == ["first-input", "second-input"]:
+                return Response(
+                    [
+                        Item([0.9, 0.1, 0.0]),
+                        Item([0.1, 0.9, 0.0], index=0),
+                    ]
+                )
+            if payload == ["first-input"]:
+                return Response([])
+            if payload == ["second-input"]:
+                return Response(
+                    [
+                        Item([1.0, 0.0, 0.0]),
+                        Item([0.0, 1.0, 0.0]),
+                    ]
+                )
+            raise AssertionError(payload)
+
+    class Client:
+        def __init__(self) -> None:
+            self.embeddings = API()
+
+    client = Client()
+    embedder = OpenAICompatibleEmbedder(
+        model="gemini-embedding-001",
+        api_key="pk-test",
+        base_url="https://example.invalid/v1",
+        dimensions=3,
+    )
+    monkeypatch.setattr(embedder, "_client_or_raise", lambda: client)
+
+    with pytest.raises(RuntimeError, match="response count"):
+        embedder.embed_texts(["first-input", "second-input"])
+    assert client.embeddings.calls == [
+        ["first-input", "second-input"],
+        ["first-input"],
+    ]
+
+
 def test_openai_compatible_embedder_rejects_response_count_and_dimension_mismatch(monkeypatch):
     class BadAPI:
         def __init__(self, vectors):

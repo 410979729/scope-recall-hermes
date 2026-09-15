@@ -1,0 +1,38 @@
+{
+  "classification": "historical_not_executed_this_turn",
+  "source_path": "F:\\Agents\\runtime\\windows\\hermes-yuheng\\workspace\\tasks\\scope-merge-72-73-20260905\\combined-tests.json",
+  "record": {
+    "command": [
+      "F:\\Agents\\runtime\\windows\\hermes-yuheng\\hermes-agent\\venv\\Scripts\\python.exe",
+      "-m",
+      "pytest",
+      "tests/test_arch_convergence_command_port.py",
+      "tests/test_candidate_store.py",
+      "tests/test_candidate_transaction_ownership.py",
+      "tests/test_cjk_interrogative_project_recall.py",
+      "tests/test_cjk_referential_project_identity_scope.py",
+      "tests/test_direct_command_writer_admission.py",
+      "tests/test_fact_freshness.py",
+      "tests/test_lance_helper_lifecycle.py",
+      "tests/test_lexical_cjk_golden.py",
+      "tests/test_lexical_cjk_retrieval.py",
+      "tests/test_lifecycle_policy_equivalence.py",
+      "tests/test_recall_orchestrator_unique_path.py",
+      "tests/test_recall_request_deadline_weights.py",
+      "tests/test_recall_temporal_capability.py",
+      "tests/test_sqlite_budget_context_state.py",
+      "tests/test_writer_handoff_activity.py",
+      "tests/test_writer_handoff_sqlite_contention.py",
+      "tests/test_writer_handoff_telemetry.py",
+      "tests/test_writer_idle_handoff.py",
+      "-q",
+      "--tb=short",
+      "-p",
+      "no:cacheprovider"
+    ],
+    "tree": "be913d45073d0948acad7d11317cad43db65307b",
+    "exit": 0,
+    "stdout": "........................................................................ [ 20%]\n............................................s........................... [ 41%]\n........................................................................ [ 62%]\n........................................................................ [ 83%]\n........................................................                 [100%]\n343 passed, 1 skipped in 79.10s (0:01:19)\n",
+    "stderr": ""
+  }
+}

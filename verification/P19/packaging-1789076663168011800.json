@@ -1,0 +1,94 @@
+{
+  "command": [
+    "F:\\T\\TEST-SR-HERMES-EP-20260910\\gate-venv\\Scripts\\python.exe",
+    "-B",
+    "-m",
+    "pytest",
+    "tests/packaging/test_clean_v11_wheel.py",
+    "tests/packaging/test_install_v11.py",
+    "tests/packaging/test_windows_hook_command.py",
+    "tests/packaging/test_model_receipt_validation.py",
+    "tests/packaging/test_source_manifest.py",
+    "tests/packaging/test_model_evidence_extractor.py",
+    "tests/packaging/test_check_selection.py",
+    "-q",
+    "--import-mode=importlib",
+    "-p",
+    "v11_guard",
+    "-p",
+    "no:cacheprovider",
+    "--durations=10",
+    "--junitxml=C:\\Temp\\sr\\TEST-v11-n9mvjhgp\\junit.xml"
+  ],
+  "exit_code": 0,
+  "overall_exit_code": 0,
+  "pytest_exit_code": 0,
+  "wrapper_exit_code": 0,
+  "cleanup_exit_code": 0,
+  "pytest": {
+    "state": "completed",
+    "exit_code": 0,
+    "error": null
+  },
+  "wrapper": {
+    "state": "succeeded",
+    "exit_code": 0,
+    "error": null
+  },
+  "cleanup": {
+    "state": "succeeded",
+    "exit_code": 0,
+    "error": null
+  },
+  "transition_history": [
+    "prepared",
+    "pytest_started",
+    "pytest_completed_waiting_cleanup",
+    "cleanup_succeeded",
+    "receipt_written"
+  ],
+  "duration_seconds": 54.784244000009494,
+  "watchdog_seconds": 180,
+  "passed": 79,
+  "failed": 0,
+  "skipped": 0,
+  "selected": [
+    "tests/packaging/test_clean_v11_wheel.py",
+    "tests/packaging/test_install_v11.py",
+    "tests/packaging/test_windows_hook_command.py",
+    "tests/packaging/test_model_receipt_validation.py",
+    "tests/packaging/test_source_manifest.py",
+    "tests/packaging/test_model_evidence_extractor.py",
+    "tests/packaging/test_check_selection.py"
+  ],
+  "selection": {
+    "changed_files": [],
+    "impacts": [],
+    "unknown_files": [],
+    "required_tiers": [
+      "packaging"
+    ],
+    "reasons": [],
+    "metadata": {
+      "level": "T3",
+      "requires": [
+        "clean_wheel"
+      ],
+      "model_calls": false
+    },
+    "diagnostics": []
+  },
+  "required_gates": [
+    "clean_wheel"
+  ],
+  "missing_gates": [],
+  "log": "verification/P19/packaging-1789076663168011800.log",
+  "model_calls": false,
+  "process_policy": "v11_guard_with_allowlisted_test_subprocesses",
+  "test_data": "synthetic_only",
+  "source_base": "b8711ce6b51c73744b8df394e33f0c4596b57da2",
+  "source_inputs_sha256": "3e32e6cbdee6cd33af7858204b1a67b8e60fdad3a1075da39b39e965e9c7c153",
+  "source_manifest": "verification/P19/packaging-1789076663168011800-inputs.json",
+  "evidence_scope": "P19 selected local contracts and bounded TEST process boundaries; no model/API semantic evaluation",
+  "model_receipt": null
+}

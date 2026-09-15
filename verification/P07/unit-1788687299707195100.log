@@ -1,0 +1,12 @@
+..........................                                               [100%]
+============================ slowest 10 durations =============================
+0.03s call     tests/unit/test_check_runner.py::test_cleanup_failure_is_recorded_and_nonzero
+0.03s call     tests/unit/test_check_runner.py::test_pytest_and_cleanup_success_is_zero
+0.01s setup    tests/unit/test_v11_context.py::test_model_cannot_supply_trusted_identity[database_path]
+0.01s call     tests/unit/test_v11_context.py::test_runner_isolates_home_and_blocks_external_effects
+0.01s call     tests/unit/test_v11_context.py::test_windows_extended_paths_are_normalized_without_expanding_test_authority
+
+(5 durations < 0.005s hidden.  Use -vv to show these durations.)
+26 passed in 0.41s
+
+{"cleanup_exit_code": 0, "overall_exit_code": 0, "pytest_exit_code": 0, "transition_history": ["prepared", "pytest_started", "pytest_completed_waiting_cleanup", "cleanup_succeeded", "receipt_written"], "wrapper_exit_code": 0}

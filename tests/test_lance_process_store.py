@@ -21,6 +21,21 @@ def _store(tmp_path):
     return process_store.ProcessLanceVectorStore(tmp_path / "lancedb", table_name="memories", dimensions=3)
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows Lance object path boundary")
+def test_native_path_preflight_rejects_before_helper_start(tmp_path):
+    store = process_store.ProcessLanceVectorStore(
+        tmp_path / ("deep-" + "x" * 240), table_name="memories", dimensions=3
+    )
+    try:
+        error = store.native_path_error()
+        assert error is not None and error.startswith("native_vector_path_too_long:")
+        with pytest.raises(process_store.NativeVectorPathError, match="native_vector_path_too_long"):
+            store.open()
+        assert store._process is None
+    finally:
+        store.close()
+
+
 @pytest.mark.parametrize("program", [
     "import sys,os; sys.stdin.buffer.readline(); os._exit(17)",
     "import sys; sys.stdin.buffer.readline(); print('invalid frame', flush=True)",
@@ -246,7 +261,10 @@ def crash_after_commit(self, rows):
     os._exit(17)
 native.LanceVectorStore.upsert_records = crash_after_commit
 """)
-    monkeypatch.setattr(process_store, "_worker_command", lambda: [sys.executable, "-c", script])
+    # Keep this inline worker under the same isolated dependency rules as the
+    # production helper; otherwise the repository's ``packaging`` directory
+    # can shadow the installed packaging wheel before LanceDB is imported.
+    monkeypatch.setattr(process_store, "_worker_command", lambda: [sys.executable, "-I", "-B", "-c", script])
     store = process_store.ProcessLanceVectorStore(tmp_path / "lancedb", table_name="memories", dimensions=16)
     provider = SimpleNamespace(
         _storage_dir=tmp_path, _db_path=tmp_path / "memory.sqlite3",

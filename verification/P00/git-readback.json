@@ -1,0 +1,8 @@
+{
+  "command": "git ls-remote https://github.com/410979729/scope-recall-hermes.git HEAD refs/heads/main",
+  "exit_code": 0,
+  "head": "578b955802df753f2e2208e26eab6f71971285a0",
+  "main": "578b955802df753f2e2208e26eab6f71971285a0",
+  "cloned_tree": "be913d45073d0948acad7d11317cad43db65307b",
+  "initial_worktree_status": "clean"
+}

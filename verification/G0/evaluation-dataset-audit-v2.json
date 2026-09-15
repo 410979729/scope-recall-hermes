@@ -1,0 +1,505 @@
+{
+  "schema_version": "scope-recall.independent-evaluation-dataset-audit.v2",
+  "auditor": "/root/g0_desktop_audit",
+  "completed_at_utc": "2026-09-06T07:31:31.410734+00:00",
+  "dataset_id": "TEST-EVAL-SEALED-120-v2",
+  "dataset_directory": ".execution/TEST-EVAL-SEALED-120-v2",
+  "verdict": "REJECTED_FOR_FINAL_EVALUATION",
+  "eligible_for_holdout_execution_or_acceptance": false,
+  "G0_status_changed": false,
+  "current_product_work_may_continue": true,
+  "scope": "Independent review of sealed synthetic raw/gold semantic quality against the already frozen evaluation contract. The auditor read all 120 related histories/questions, their gold, and all 120 unrelated questions/gold; public C/M/J specifications were compared. This report contains statistics, case identifiers and repair categories only, with no history, question, expected answer or gold span.",
+  "inspected_files": [
+    {
+      "path": "raw.jsonl",
+      "bytes": 205002,
+      "sha256": "6810889f47541aa348535e06ad4275365821edfe1a5af647d667caff1030fcfc"
+    },
+    {
+      "path": "gold.jsonl",
+      "bytes": 212599,
+      "sha256": "70e0e748ece1c5343852a1b1f1d706105c8438d8b050a63b180bce2be9aab5c3"
+    },
+    {
+      "path": "manifest.json",
+      "bytes": 48010,
+      "sha256": "7d6acdc5ff684e373442924f0c52764a225ead130b7e48771bacda25bb3befb6"
+    }
+  ],
+  "frozen_requirements_unchanged": {
+    "independent_core_questions": 120,
+    "groups": 12,
+    "per_group": {
+      "positive": 4,
+      "negative": 3,
+      "ambiguous": 3
+    },
+    "paired_conditions": [
+      "related",
+      "unrelated"
+    ],
+    "pairs_do_not_increase_independent_N": true,
+    "four_arms_unchanged": true,
+    "all_arms_use_same_original_sources_and_budgets": true,
+    "source_only_model_input_no_gold_or_prewritten_claims": true,
+    "necessary_evidence_coverage_minimum_overall": 0.9,
+    "necessary_evidence_coverage_minimum_each_group": 0.8,
+    "all_deterministic_source_time_authority_deletion_and_isolation_assertions_must_pass": true,
+    "per_host_independent_query_denominator": 40,
+    "both_conditions_required_to_pass_each_host_query": true,
+    "per_host_minimum_queries_passed": 36,
+    "per_host_independent_journeys": 8,
+    "per_host_minimum_journeys_passed": 8,
+    "all_existing_model_routes_context_limits_budget_and_first_run_retention_requirements_unchanged": true
+  },
+  "structural_results": {
+    "jsonl_parse": "PASS",
+    "manifest_raw_gold_hashes": "PASS",
+    "raw_rows": 240,
+    "gold_rows": 240,
+    "unique_case_ids": 120,
+    "unique_pair_ids": 120,
+    "unique_raw_record_keys": 240,
+    "unique_query_ids": 240,
+    "condition_counts": {
+      "related": 120,
+      "unrelated": 120
+    },
+    "per_group": {
+      "B01": {
+        "case_ids": 10,
+        "positive": 4,
+        "negative": 3,
+        "ambiguous": 3
+      },
+      "B02": {
+        "case_ids": 10,
+        "positive": 4,
+        "negative": 3,
+        "ambiguous": 3
+      },
+      "B03": {
+        "case_ids": 10,
+        "positive": 4,
+        "negative": 3,
+        "ambiguous": 3
+      },
+      "B04": {
+        "case_ids": 10,
+        "positive": 4,
+        "negative": 3,
+        "ambiguous": 3
+      },
+      "B05": {
+        "case_ids": 10,
+        "positive": 4,
+        "negative": 3,
+        "ambiguous": 3
+      },
+      "B06": {
+        "case_ids": 10,
+        "positive": 4,
+        "negative": 3,
+        "ambiguous": 3
+      },
+      "B07": {
+        "case_ids": 10,
+        "positive": 4,
+        "negative": 3,
+        "ambiguous": 3
+      },
+      "B08": {
+        "case_ids": 10,
+        "positive": 4,
+        "negative": 3,
+        "ambiguous": 3
+      },
+      "B09": {
+        "case_ids": 10,
+        "positive": 4,
+        "negative": 3,
+        "ambiguous": 3
+      },
+      "B10": {
+        "case_ids": 10,
+        "positive": 4,
+        "negative": 3,
+        "ambiguous": 3
+      },
+      "B11": {
+        "case_ids": 10,
+        "positive": 4,
+        "negative": 3,
+        "ambiguous": 3
+      },
+      "B12": {
+        "case_ids": 10,
+        "positive": 4,
+        "negative": 3,
+        "ambiguous": 3
+      }
+    },
+    "pairs_with_exactly_two_records": 120,
+    "pairs_with_identical_history_except_event_ids": 120,
+    "pairs_with_one_related_and_one_unrelated": 120,
+    "raw_gold_key_join_errors": 0,
+    "invalid_gold_source_event_id_references": 0,
+    "all_queries_declare_clean_session": true,
+    "unique_query_session_ids": 240,
+    "raw_top_level_field_sets": {
+      "dataset_id|history|pair_id|query|record_key|simulation": 240
+    },
+    "raw_records_with_control_or_gold_fields": 0,
+    "conclusion": "Counts, strata, raw/gold field separation, condition-specific joins and referenced-ID existence pass. These checks do not establish source entailment, sufficient behavioral coverage or 120 semantically independent holdout cases."
+  },
+  "semantic_statistics": {
+    "manually_reviewed_related_cases": 120,
+    "manually_reviewed_unrelated_conditions": 120,
+    "manually_reviewed_gold_rows": 240,
+    "unique_related_history_text_hashes": 120,
+    "unique_related_query_texts": 120,
+    "unique_unrelated_query_texts": 120,
+    "independence_rationale_distinct_values": 1,
+    "related_history_event_count_distribution": {
+      "3": 120
+    },
+    "related_history_role_patterns": {
+      "user|assistant|user": 115,
+      "user|user|assistant": 5
+    },
+    "related_history_total_text_characters": {
+      "min": 45,
+      "max": 94,
+      "mean": 67.58333333333333,
+      "median": 68.0,
+      "total": 8110
+    },
+    "raw_source_type_counts_across_both_conditions": {
+      "human_direct": 480,
+      "assistant_visible": 240
+    },
+    "answerability_by_condition_and_core_class": {
+      "related|positive|supported": 48,
+      "unrelated|positive|unsupported_or_unknown": 48,
+      "related|negative|unsupported_or_unknown": 36,
+      "unrelated|negative|unsupported_or_unknown": 36,
+      "related|ambiguous|ambiguous": 36,
+      "unrelated|ambiguous|unsupported_or_unknown": 36
+    },
+    "gold_required_fact_acceptance_counts_by_condition": {
+      "related|must_state": 214,
+      "unrelated|must_state_no_matching_history": 120,
+      "related|must_explain_ambiguity": 38,
+      "related|must_apply": 16
+    },
+    "related_required_fact_slots": 268,
+    "total_required_fact_slots": 388,
+    "raw_history_events_with_attachment_or_artifact_fields": 0,
+    "raw_history_events_with_tool_payload_fields": 0,
+    "non_raw_gold_manifest_fixture_files": 0,
+    "interpretation": "v2 is materially more concrete than v1 and does not exhibit the v1 control-field leakage. Exact textual uniqueness is not accepted as proof of semantic independence. Short three-event histories can be valid core semantic questions, but verbal references to actions, files or processing are not actual execution evidence."
+  },
+  "blocking_dataset_findings": [
+    {
+      "id": "EVAL-V2-01",
+      "priority": "P1_DATASET",
+      "category": "Answerability conflates case polarity with evidence sufficiency",
+      "affected_scope": "All 120 related labels follow core_class mechanically; all 36 negative related rows use unsupported_or_unknown. Multiple concrete negative questions are answerable from explicit source evidence.",
+      "reproduction_case_ids": [
+        "B01-05",
+        "B01-06",
+        "B01-07",
+        "B02-05",
+        "B02-06",
+        "B02-07",
+        "B03-07",
+        "B04-05",
+        "B04-06",
+        "B04-07",
+        "B06-05",
+        "B06-06",
+        "B06-07",
+        "B07-05",
+        "B07-06",
+        "B07-07",
+        "B08-05",
+        "B08-06",
+        "B08-07",
+        "B09-05",
+        "B09-06",
+        "B11-05",
+        "B11-06",
+        "B11-07"
+      ],
+      "additional_label_review_case_ids": [
+        "B03-05",
+        "B04-09",
+        "B05-09",
+        "B07-08",
+        "B10-05",
+        "B10-07"
+      ],
+      "impact": "A supported negative conclusion can be graded as unknown; missing specificity, partial collection coverage and true competing referents are not consistently separated. A local exceptional event also does not by itself revoke an established general rule in its ordinary scope.",
+      "repair": "Adjudicate each question from the source independently of positive/negative/ambiguous stratum. Use the contract answerability vocabulary or a documented lossless mapping to supported/partial/ambiguous/unknown, and score coverage separately. Reconstruct cases if needed to preserve the frozen 4/3/3 semantic strata; do not mechanically relabel the whole negative group."
+    },
+    {
+      "id": "EVAL-V2-02",
+      "priority": "P1_DATASET",
+      "category": "Unrelated-control grading conflates absent memory with inability to perform the current task",
+      "affected_scope": "All 120 unrelated rows require must_state_no_matching_history and share the same answerability category.",
+      "reproduction_case_ids": [
+        "B04-01",
+        "B04-03",
+        "B04-08",
+        "B04-09",
+        "B07-01",
+        "B07-02",
+        "B07-04",
+        "B07-05",
+        "B07-10",
+        "B08-01",
+        "B08-03",
+        "B08-04",
+        "B11-02"
+      ],
+      "condition": "unrelated",
+      "impact": "Several unrelated queries are ordinary new tasks or general-knowledge requests that can be completed without any historical evidence. Requiring a verbal history-gap statement can fail quiet correct task completion and reward interruption. An empty or unknown L3 memory assessment may be appropriate, but it is not the L4 task outcome.",
+      "repair": "Specify separate L3 no-inapplicable-evidence expectations and L4 task-appropriate expectations. Do not require a lack-of-history narration when the new task needs no history. Preserve honest abstention for questions that really require unavailable evidence. Keep both-condition scoring and denominators unchanged."
+    },
+    {
+      "id": "EVAL-V2-03",
+      "priority": "P1_DATASET",
+      "category": "Gold promotes promises or descriptions into observed completion, authorization or retrievability",
+      "reproduction_case_ids": [
+        "B03-08",
+        "B03-10",
+        "B04-10",
+        "B06-08",
+        "B06-10",
+        "B11-08",
+        "B10-02",
+        "B12-01"
+      ],
+      "additional_review_case_ids": [
+        "B01-09",
+        "B02-09",
+        "B02-10",
+        "B06-09",
+        "B10-09",
+        "B11-09"
+      ],
+      "impact": "Some necessary slots require actual unchanged or completed external state from only an assistant commitment. One version-selection case requires adoption without a selection statement. A reported saved source is also treated as presently expandable without the original content or an executable source fixture.",
+      "repair": "Keep assistant statements as statements, plans or unverified reports, and distinguish no recorded execution from verified nonexecution. Supply actual isolated tool/state/source fixtures only when the case is meant to prove that state. Require explicit selection evidence for adoption; a later version or description alone does not authorize it. Never prewrite the correct Claim as the fix."
+    },
+    {
+      "id": "EVAL-V2-04",
+      "priority": "P1_DATASET",
+      "category": "Concrete gold evidence slots do not consistently cite supporting roots",
+      "reproduction_case_ids": [
+        "B04-08",
+        "B06-04",
+        "B05-03"
+      ],
+      "reproduction_detail": [
+        {
+          "case_id": "B04-08",
+          "slot_id": "pending",
+          "issue": "The listed source event is a clarification statement; the asserted state is in a different event."
+        },
+        {
+          "case_id": "B06-04",
+          "slot_id": "reason",
+          "issue": "The listed source event does not contain the full asserted reason; another event does."
+        },
+        {
+          "case_id": "B05-03",
+          "slot_id": "total",
+          "issue": "The evidence policy requires only the assistant-derived event for an arithmetic result, excluding the original user evidence and transparent derivation."
+        }
+      ],
+      "impact": "The shared policy requires listed IDs. Zero dangling IDs therefore does not mean valid support: faithful source-root reasoning can be penalized while unsupported or secondary evidence is accepted.",
+      "repair": "Audit every necessary slot for entailment and role. Correct source IDs, allow equivalent valid roots and transparent derivations, and distinguish secondary statements from independent source evidence. Ancillary explanatory details should not become mandatory output slots unless they are necessary to the task."
+    },
+    {
+      "id": "EVAL-V2-05",
+      "priority": "P1_DATASET",
+      "category": "Semantic holdout independence is not established for the full declared 120",
+      "reproduction_case_ids": [
+        "B03-01",
+        "B03-03",
+        "B02-08"
+      ],
+      "public_case_mappings": [
+        {
+          "case_id": "B03-01",
+          "public_case_id": "M11"
+        },
+        {
+          "case_id": "B03-03",
+          "public_case_id": "M13"
+        },
+        {
+          "case_id": "B02-08",
+          "public_case_id": "M08"
+        }
+      ],
+      "impact": "These cases retain the public inference skeleton with changed entities and explanatory repetition, without a substantive new evidential dependency. All 120 control rationales are identical. Unique raw hashes and unique question strings cannot certify the frozen independent holdout requirement.",
+      "repair": "Replace demonstrated near-isomorphic cases with independently constructed evidence structures, dependencies, interference, temporal ordering or qualified conflicting evidence. Review all other cases on the same semantic criterion and record case-specific independence reasoning in control metadata. Shared B capability alone is not a failure, and no claim of literal copying or a numerical semantic-N estimate is made."
+    }
+  ],
+  "behavior_coverage_review": {
+    "scope": "Coverage limits are separate from the concrete gold/independence blockers above. The 120 core cases need not each be a full host journey or scale test. However, narratives about processing, assets or mutations cannot be credited as the actual fixture-backed capabilities. Final acceptance needs an explicit mapping to real TEST fixtures, separate deterministic checks or the already frozen host journeys; this audit adds no sample or threshold requirement.",
+    "groups": {
+      "B01": {
+        "present": "Some qualifiers, language acts and source-role distinctions.",
+        "remaining_boundary": "The short text set does not establish the full hypothetical/fictional/quoted-source and authority-laundering range or real capture fidelity."
+      },
+      "B02": {
+        "present": "Textual work-state continuation and competing task references.",
+        "remaining_boundary": "No actual host interruption, continuation in a new host session, or current-environment revalidation is established by the dataset alone."
+      },
+      "B03": {
+        "present": "Names, aliases and display-order reference questions.",
+        "remaining_boundary": "Actual versioned display snapshots and later clarification resolving earlier ambiguity are not established; demonstrated public-skeleton cases also require replacement."
+      },
+      "B04": {
+        "present": "Some fresh generation tasks require applying a scoped preference; this is a substantive improvement from v1.",
+        "remaining_boundary": "Unrelated task grading and mandatory narration must not defeat quiet implicit application or the current task override."
+      },
+      "B05": {
+        "present": "Concrete comparisons, simple aggregation and incomplete-information questions.",
+        "remaining_boundary": "Actual bounded supplementary evidence traversal, pagination and complete-set coverage cannot be inferred from a few values narrated in one source."
+      },
+      "B06": {
+        "present": "Current corrections and local exceptions.",
+        "remaining_boundary": "Most changes are retrospectively summarized in a single short history; out-of-order ingestion, historical-as-of answers and future validity require explicit independent coverage."
+      },
+      "B07": {
+        "present": "Scoped methods and conditional experience reports.",
+        "remaining_boundary": "Self-reported procedure stories are not verified tool outcomes or independent repeated roots; exception scope and source verification must remain explicit."
+      },
+      "B08": {
+        "present": "Textual questions about prospective agreements and cancellation.",
+        "remaining_boundary": "The positive queries directly ask about reminders. They do not prove an unprompted response to an observed future cue during an ordinary new task, nor actual false-cue silence."
+      },
+      "B09": {
+        "present": "Questions about described records and summaries.",
+        "remaining_boundary": "All histories have three events and 45 to 94 text characters in total across the full set. No actual long source, repeated-root chain, multi-batch consolidation, idle drain or interference-scale fixture is present."
+      },
+      "B10": {
+        "present": "Textual version descriptions and reference-only reasoning.",
+        "remaining_boundary": "The sealed directory has no artifacts or attachment metadata. It cannot establish immutable retained versions, same-path overwrite behavior, independent reopening or artifact deletion."
+      },
+      "B11": {
+        "present": "Textual distinctions between control requests and policies.",
+        "remaining_boundary": "No concrete preexisting target content, actual mutation receipt, post-deletion export/history/old-index query or suppression-to-deletion sequence is provided. Reading a requested control is not execution of that control."
+      },
+      "B12": {
+        "present": "Understanding reported availability and evidence limits.",
+        "remaining_boundary": "Narrated service or storage failures are not controlled runtime faults. Actual diagnostics and the delivered/used/verified chain require separate execution evidence."
+      }
+    },
+    "existing_product_obligations": [
+      "L1 actual capture evidence remains separate from L2-L4 behavior under a declared synthetic original-role assumption.",
+      "Raw source must undergo real model extraction; no correct Claims are seeded.",
+      "Keep actual host interfaces, new sessions, isolation, mutation and artifact steps in the frozen journeys and required capability mapping.",
+      "When a scenario depends on a tool result, file, fault or scale premise, establish that premise with an isolated fixture and preserve the actual result.",
+      "All first runs and repair reruns remain available; rejected or revealed cases are not relabeled as untouched fresh holdout evidence."
+    ]
+  },
+  "source_assumption_review": {
+    "verdict": "DECLARATION_IMPROVED_WITH_EXECUTION_BOUNDARIES",
+    "raw_records_declare_simulation": 240,
+    "manifest_declares_transport_origin": "synthetic_agent_relay",
+    "manifest_declares_import_origin": "imported",
+    "human_direct_is_a_declared_fictional_TEST_original_role_not_real_human_capture": true,
+    "required_mapping": "A trusted TEST importer must preserve per-event original role/source type, including assistant_visible; it must not blanket-promote all imported events to human_direct. Keep actual relay transport provenance independently of simulated original roles.",
+    "authorization_boundary": "dataset_id, model output and arbitrary fixture text confer no authority or production access.",
+    "time_and_identity_boundary": "Historical occurred_at and import time are distinct. Paired clones may have isolated record namespaces, but query_id or cloned event IDs cannot turn the same source into independent evidence roots or increase N.",
+    "implementation_verified_in_this_audit": false,
+    "reference": "verification/G0/evaluation-source-boundary.md"
+  },
+  "public_C_M_J_comparison": {
+    "catalogs": [
+      {
+        "path": "fixtures/acceptance_cases.jsonl",
+        "records": 40,
+        "sha256": "93c5e3cbfb1379dc5a7ca03819bcac4b4db0522c83f5ca5938efede257932b19"
+      },
+      {
+        "path": "fixtures/cognitive_cases.jsonl",
+        "records": 60,
+        "sha256": "c1fbfa4dfd515d2e2bb1c7ba2f802c5d4796d0615b38d432b2e6e66ed8cce85a"
+      },
+      {
+        "path": "fixtures/longitudinal_journeys.jsonl",
+        "records": 8,
+        "sha256": "78b1465904a8cc3b121c9e297d2628ca031158e6c26c8b5598d28ccad3d3e243"
+      }
+    ],
+    "method": "Manual comparison of evidence relationships, temporal and authority dependencies, task requirements and required behavior. Exact hashes and generic shared B labels were not used as semantic independence tests.",
+    "verdict": "FULL_DECLARED_HOLDOUT_INDEPENDENCE_NOT_QUALIFIED",
+    "not_claimed": [
+      "Literal copying or author intent.",
+      "That every public-capability variant is disallowed.",
+      "A computed replacement independent-N denominator."
+    ]
+  },
+  "repair_handoff": {
+    "author": "/root/eval_dataset_v2",
+    "author_observed_status_at_handoff": "pending_init",
+    "direct_message_attempt": "Issued using collaboration.send_message with case IDs, repair categories and v3-only instruction; the tool returned no acknowledgement payload, so author completion or receipt is not claimed.",
+    "revised_version_required": "TEST-EVAL-SEALED-120-v3",
+    "overwrite_v1_or_v2_allowed": false,
+    "next_review_status": "PENDING_V3_REPAIR_AND_INDEPENDENT_REVIEW",
+    "parent_blind_boundary": "No raw history, query or answer has been sent to the implementation thread in this report or its status message.",
+    "recommendations": [
+      "Correct a small representative subset against the stated semantic criteria before applying systematic repairs across all 120.",
+      "Freeze raw, gold, manifest and any executable control-fixture identities together; retain v1 and v2 unchanged.",
+      "Keep fixture controls and gold out of model-visible raw source; do not prewrite correct Claims.",
+      "Do not run or accept v2 as the final sealed holdout dataset."
+    ]
+  },
+  "verification": {
+    "runtime": "F:\\SCOPERECALL更新项目\\.venv\\Scripts\\python.exe",
+    "invocation": "PowerShell literal here-string piped to the isolated Python runtime with -X utf8 -B -; Python json/hashlib/collections/statistics only.",
+    "read_only_programmatic_checks": [
+      "Read JSONL and manifest; count and join case/pair/record/query identifiers; check declared raw/gold SHA-256 against raw file bytes.",
+      "Verify exactly two records per pair and one related plus one unrelated; compare histories after excluding only event_id.",
+      "Count classes by B group, raw/gold keys, speaker/source roles, history lengths, required acceptance rules and answerability by class.",
+      "Verify all gold source_event_ids exist in their joined raw history; report entailment separately through manual review.",
+      "Enumerate only the sealed dataset directory to determine whether asset/tool/control fixtures are included."
+    ],
+    "programmatic_exit_codes": [
+      0,
+      0,
+      0,
+      0
+    ],
+    "manual_semantic_check": "All 120 case histories and related query/gold, all 120 unrelated query/gold, and all public C/M/J records were inspected. Findings identify reproducible case/slot locations without revealing their contents.",
+    "raw_gold_or_production_execution_performed": false,
+    "checks_do_not_prove": "Identifier validity, textual uniqueness and class counts do not prove evidence entailment, semantic independence or actual host behavior."
+  },
+  "preserved_prior_artifacts": [
+    {
+      "path": "verification/G0/evaluation-dataset-audit.json",
+      "sha256": "6a29938fe01f7fc2e24227db6d135826141720e1a8191dda1ff0115211827e05"
+    },
+    {
+      "path": "verification/G0/evaluation-source-boundary.md",
+      "sha256": "4daafb16134fbddbc191518bc3acf55562516d7320c3f4ef49afe78292ae9377"
+    }
+  ],
+  "audit_boundaries": {
+    "raw_gold_manifest_modified": false,
+    "product_implementation_modified": false,
+    "frozen_thresholds_modified": false,
+    "G0_reopened": false,
+    "external_model_calls": 0,
+    "production_or_secret_access": false,
+    "holdout_history_question_answer_or_gold_span_in_this_report": false,
+    "only_new_file": "verification/G0/evaluation-dataset-audit-v2.json",
+    "semantic_review_not_replaced_by_hash_uniqueness": true
+  },
+  "conclusion": "v2 passes nominal counts, stratification, raw/gold structural separation, condition joins and declared synthetic-source labeling. It is still ineligible for final holdout execution or acceptance because evidence sufficiency, unrelated-task scoring, source grounding, authority and semantic independence are not reliably graded. Fixes must be sealed as v3 and independently reviewed. Actual B capability obligations remain mapped to their required fixtures or host journeys. This rejection does not reopen G0 or stop independent product implementation."
+}

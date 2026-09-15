@@ -30,3 +30,13 @@ review-report.*.md
 
 # Local execution evidence and private audit artifacts.
 .execution/
+
+# Gate run receipts. `scripts/check.py` writes one `<tier>-<nanos>.log` and one
+# `<tier>-<nanos>-inputs.json` per invocation, and a day of iterating leaves
+# hundreds. The curated evidence bundles under verification/ stay tracked --
+# they are what a claim cites -- but the exhaust of arriving at them is not
+# evidence of anything, and 600 untracked files make `git status` useless for
+# seeing what actually changed. Receipts already committed stay committed;
+# .gitignore does not touch them.
+verification/**/*-[0-9]*.log
+verification/**/*-[0-9]*.json

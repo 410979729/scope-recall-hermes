@@ -4,6 +4,128 @@ All notable changes to `scope-recall` will be documented in this file.
 
 ## [Unreleased]
 
+### Scope Recall 3.1.0rc22 withdraw the instance-wide brake, keep the report - 2026-09-15
+
+- Remove the drain page cut that clamped the whole pass to one item whenever `provider_refusals` was non-empty. It was measured against the live ledger during a real outage and was wrong three ways. It removed nothing: `core/worker.py` already drops a work type from `allowed` the moment one of its items returns a rate-limited code, so the refused model was already being asked about once per work type per pass -- it appears in 65 passes at a median of two calls each, while the healthy embedding model reached 39 calls in a single pass. It throttled the wrong work: the cut asked only whether *any* model was refusing, never which one or whether the work being drained routes to it, so that healthy model would have gone from 39 to 1. And it braked long after the wall came down: `provider_refusals` reads a one-hour lookback window, so it keeps reporting for an hour past the last refusal -- including for a model that has since been replaced and is no longer routed to. In the hour after exactly such a switch this instance cleared 168 pending items down to 15; a page of one would have prevented that recovery.
+- The refusal is still named in both readers, which was always the part that mattered. What a backward-looking, instance-wide, model-blind statement must not do is steer a forward-looking, per-item decision.
+- Pins the mechanism that does the work, so the duplicate cannot come back: a rate-limited code stands its own work type down for the rest of the pass, the per-item capacity backoff decides when each item returns, and neither is an instance-wide brake.
+
+### Scope Recall 3.1.0rc21 name the refusals that happen before the request - 2026-09-15
+
+- Report `model_not_approved:<role>:<model>` from the doctor and the worker status file when a configured route names a model that is not in `approved_models`. This was invisible by construction: `reserve` raises before the request is sent, so the refusal writes no ledger row, and every measurement built on the ledger -- `provider_refusals` included -- cannot see it. Observed live: a provider switch registered the endpoint and the credential but not the name, and nineteen `evaluate_candidate` items deferred for an hour, every hour, without ever saying why. This release changes what is reported, not what the queue does: the item still keeps its attempt and is still never abandoned. The deferral is benign, which was measured rather than assumed: the nineteen were still untouched 45 minutes after the name was registered, because their hourly deferral had not elapsed; when it did, at 05:59Z, all nineteen drained within three minutes to sixteen `done` and three `derivation_invalid`, with `budget_unavailable` reaching zero and not one item abandoned for it. Counted by work_id range (15717-15735), not by differencing the global state totals: those move concurrently while a drain runs, so any single reading of them can straddle two batches -- an earlier count taken that way said ten and two, which does not even add up to nineteen. So the hourly retry costs nothing and self-heals the moment an operator fixes the configuration -- it lasts as long as the mistake does, not forever. What was wrong was only that nothing said why they were waiting. The check reads the configuration rather than the queue, so it also reports on an installation that has not yet queued anything.
+- Report `ledger_missing:<name>` from the same two readers when a route that calls models has a ledger path that is not a file. This is the same fault wearing a different code: `reserve` raises `ledger_not_initialized` from `_connect_rw`, it folds into the same `budget_unavailable`, and all three readers go quiet in the same way -- `provider_refusals` returns `[]` because it cannot open the file, `_ledger_headroom` returns `{}` for the same reason, and an allowlist check does not look at files at all. Measured, not reasoned: with an absent path those two return exactly that, and `reserve` raises exactly that. Unlike an unapproved name, this one can arrive by a file being moved rather than by anyone editing the configuration.
+- The two checks are one function, `pre_request_refusals`, named for the category rather than for the first member of it found: a refusal raised before the request is sent leaves no ledger row, so no amount of reading the ledger will ever surface it.
+
+### Scope Recall 3.1.0rc20 size the backoff against what the queue actually did - 2026-09-14
+
+- Raise the capacity backoff floor to 30 minutes and its ceiling to 4 hours. rc19 started it at 60 seconds, which was sized against intuition rather than measurement: over eight hours of a real outage the interval between one item's retries had a median of 115 minutes, with 74% between one and two hours and only 2.6% under two minutes. The apparent "a call every 2.5 seconds" was 197 separate items sharing that cycle, not any one of them looping — so a 60-second floor would have made the instance ask *more* often than leaving it alone. Projected against the same queue, the steady state falls from roughly 200 calls an hour to about 50.
+
+### Scope Recall 3.1.0rc19 space the retries, never abandon the item - 2026-09-14
+
+- Space out retries after a provider refuses for capacity: each consecutive refusal doubles the wait, from one minute to a ceiling of one hour. rc18 refunded the item's attempt so an outage could not consume its recovery budget, but left the ordinary 60-second ceiling in place — so 197 live items retried without pause for the whole outage, which is exactly the silent loop this design exists to prevent. The count is kept as a `capacity:N` token in the error code beside the existing `auto_retry:` history, so no migration is needed and an operator reading the row sees it. There is no limit on how many times an item may check, only on how often: the item is never given up on.
+- Derive the worker's rate-limit stand-down set from `work_storage.CAPACITY_REFUSALS` instead of restating it. The two agreed about 429 and 503 while disagreeing about 502 and 504.
+- Protocol 1.1 and schema 1108 are unchanged.
+
+### Scope Recall 3.1.0rc18 an outage is not the item's fault - 2026-09-14
+
+- Refund a work item's attempt when the failure was a provider declining to serve anyone (`http_429`, `rate_limited`, `http_502/503/504`). Those say nothing about the payload, unlike a timeout, which a large item can genuinely cause — so the lease never got an attempt. Measured on a live instance, four hours of "monthly usage limit reached, resets in 13 days" pushed 195 items into `failed` at `attempt=3` apiece, each then needing an operator to grant it back by hand; over the provider's full thirteen-day window that is thousands. An ordinary fault still exhausts its budget and still becomes terminal.
+- Protocol 1.1 and schema 1108 are unchanged.
+
+### Scope Recall 3.1.0rc17 the watcher reads the status file - 2026-09-14
+
+- Report a refusing provider in the worker's status file as well as the doctor, from one shared implementation in `runtime/model_budget.py`. A host agent watching an instance polls the status file; naming the refusal only in the doctor left it reading "degraded" with an empty gap list for four hours while the provider answered every call with "monthly usage limit reached".
+- Protocol 1.1 and schema 1108 are unchanged.
+
+### Scope Recall 3.1.0rc16 a blown deadline degrades, it does not empty - 2026-09-14
+
+- Hydrate enough candidates to fill the requested packet even once the deadline is gone. An optional channel that overruns its allowance used to empty the packet entirely: measured against a live corpus, a vector port that respects its budget and then fails still returns six items, while one that overruns by a single second returns *zero* — the lexical, exact and recent candidates are all in hand and the hydrate loop abandons every one of them. On the instance this was found on, the two gaps appeared together in four of five degraded recalls. The floor is the caller's own `max_items` rather than a fixed count, since hydrating three when the packet holds eight only moves the emptiness to the byte budget; it is capped so a large `max_items` cannot make an overrun worse, and the overrun is still reported.
+- Protocol 1.1 and schema 1108 are unchanged.
+
+### Scope Recall 3.1.0rc15 say who refused, and why - 2026-09-14
+
+- Report a model provider that is refusing most calls, named by the provider's own code: `model_refused:<model>:<code>`. A live instance spent four hours with every worker run marked "degraded" and an empty `capability_gaps` list while the provider answered all 344 calls with "monthly usage limit reached, resets in 13 days". Everything needed to say so was already in the ledger and nothing read it. A flake does not qualify; the condition needs a sustained majority of a recent window, and it clears itself when the provider answers again.
+- Keep the provider's refusal *type* from a failed response body, and only that: a short symbol like `GoUsageLimitError`, validated against a bounded pattern and screened for secret-like text. The message beside it stays discarded, being free text that may carry account identifiers or URLs.
+- Stop reporting a worker run as `degraded` when every failure it met was a by-design terminal outcome, and when an item was auto-retried rather than failed. The doctor already classified `derivation_invalid` as terminal and called such an instance "attention"; the worker called the same state degraded, so an operator watching both saw a permanent fault the health check denied. Both now share `core/failure_retry`'s classification instead of restating it.
+- Protocol 1.1 and schema 1108 are unchanged.
+
+### Scope Recall 3.1.0rc15 one verdict on what is broken - 2026-09-14
+
+- Stop reporting a worker run as `degraded` when every failure it met was a by-design terminal outcome. The doctor already classified `derivation_invalid` as terminal and called such an instance "attention"; the worker called the same state degraded, so an operator watching the two saw a permanent fault that the health check denied. Both now share `core/failure_retry`'s classification rather than restating it. A clearable failure still degrades the run, and a terminal one is still visible in the run's items.
+- Protocol 1.1 and schema 1108 are unchanged.
+
+### Scope Recall 3.1.0rc14 name the failure, not its family - 2026-09-14
+
+- Record SQLite's symbolic error name alongside the exception class when a drain fails, so `worker_error:OperationalError` becomes `worker_error:OperationalError:SQLITE_BUSY` or `:SQLITE_ERROR`. A live instance reported the bare family for days: contention worth fixing and a query bug arrive as the same string, and only one of them is the plugin's problem. The symbolic name is a bounded vocabulary, unlike the message, which may carry paths.
+- Record the auxiliary `error_type` on a vector-channel failure for the same reason: every auxiliary failure is an `AuxiliaryModelError`, and whether the connection or the request failed decides both whether the read path's one retry applies and whether an operator should act.
+- Protocol 1.1 and schema 1108 are unchanged.
+
+### Scope Recall 3.1.0rc13 a new question, not a new clock - 2026-09-14
+
+- Replace the evaluation timer backoff introduced in rc12 with a content test. The backoff doubled the wait after each fruitless verdict, which bounds re-asking by *elapsed time* -- so a candidate that had just received exactly the testimony that would settle it still had to wait out a clock. That is a rate limit, not a loop guard, and this project does not cap usage.
+- Key the evaluation dedup on the *question* rather than the byte-exact evidence selection. The `UNIQUE(candidate, revision, evidence_fingerprint, rule_version)` guard already existed to stop a question being asked twice, but the fingerprint covered a recency window (`ORDER BY observed_at DESC LIMIT 16`), so one arriving tool observation displaced an older source and the key never collided. Replayed over a live store, 71% of all model judgements were the same question re-asked.
+- Order candidate evidence first-hand first, so a person's statement is never displaced out of the window by tool output; new testimony is therefore judged at the first opportunity, with nothing between it and a verdict.
+- Drop accumulating non-first-hand support as a second trigger. It was included on the reasoning that eight tool observations differ from four; the history disagrees -- re-judgements bought by that rule came to 955 model calls that produced exactly one conclusion.
+- Refuse reinjected memory as candidate evidence (carried from rc12): it is this store's own recalled output returning, adding nothing it did not already hold.
+- Stop reporting a money figure in the doctor. What an instance spent depends on the operator's own contract, so a currency amount means something different to every reader; calls and tokens are the same unit for everyone and are still reported, uncapped. The ledger still meters charges internally for the `meter_breach` anomaly check.
+- Tolerate small clock skew when deciding whether a package was rewritten after a process loaded it, so an ordinary rebuild-and-reinstall is still detected.
+- Protocol 1.1 and schema 1108 are unchanged.
+
+### Scope Recall 3.1.0rc12 evaluation backoff - 2026-09-14
+
+- Back off the candidate evaluation timer after a verdict that decided nothing. The settle window stopped a candidate being re-judged *while* evidence arrived, but a candidate whose trigger terms keep being hit never goes quiet at all, so it fell to the deferral limit every hour: measured on a live instance, 788 model judgements across 269 candidates in one afternoon, 93% `insufficient_evidence`, the median gap between two judgements of the same candidate 73 minutes. The evidence fingerprint differed every time, so the at-most-one-queued rule could not collapse them. Each fruitless verdict now doubles the next timer wait, to a ceiling of 24 hours; projected against the live candidate set that is 6,528 timer judgements in 24 hours down to 301. The quiet path is deliberately untouched, so a candidate that gains real support is still judged at the first opportunity.
+- Refuse reinjected memory as candidate evidence. It is this store's own recalled output coming back, so it adds nothing the store did not already hold, and it keeps a candidate from ever settling; it accounted for 16% of the evidence rows behind the re-judgement churn.
+- Ship the judged recall probe set in `tests/eval/recall_probes.py` with a gate test for its shape. The 8/8 and MRR 0.833 figures were previously only reproducible from a scratch directory.
+- Ignore a package modification time in the future when deciding whether a process is stale. An extractor that mishandles the archive's local-time entries pushed 31 of 135 files four hours ahead, which would have reported every process stale forever.
+- Version bumped from rc11 because three different builds carried that number while it was being iterated on; nothing with `3.1.0rc11` was released.
+- Protocol 1.1 and schema 1108 are unchanged. No memory rewrite, queue purge or vector rebuild is required.
+
+### Scope Recall 3.1.0rc11 bounded reads and distinct packets - 2026-09-14
+
+- Bound the embedding input. Six sources on a live instance were permanently unembeddable at 16,505 to 65,536 characters, rejected with a code that is not auto-recoverable, so their text reached SQLite and the lexical index but never the vector index. Oversized bodies are now truncated with a visible marker rather than refused; stored memory is unchanged.
+- Collapse retrieved content that is byte-identical, after ranking and before the budget, across both the query and background passes. De-duplication was keyed on `(kind, ref, revision)`, which is identity rather than content; on a store where an import re-delivered the same bodies under fresh identities, one document held four of six delivered slots and the answer ranked twelfth was never delivered. Two revisions of one object are not copies and both survive.
+- Report every bounded read that cut something: truncation carries the stage and both counts, and a collapse carries how many copies were folded. A collapse is not truncation and keeps its own vocabulary.
+- Count `derivation_invalid` as terminal for every work type, not only `consolidate`. Identical failures on candidate evaluation were driving a permanent `degraded` that no operator could act on.
+- Derive the operator-clearable failure set from the worker's own transient set instead of listing it twice. The two had drifted: `model_unavailable` was auto-recoverable but absent from the operator list, so rows left over from one outage pinned an instance at `degraded` with no way to clear them.
+- Add `requalify` and `retry-failures` maintenance commands, both defaulting to a read-only preview and both idempotent within a schema generation. Re-judging never re-opens a claim a person confirmed or that independent first-hand sources corroborated.
+- Scale the suite watchdog to the number of selected test files. The integration tier grew past a flat 180-second bound and began reporting a timeout instead of a result.
+- Refuse the release tier early, naming the gap and the remedy, when the package is not installed as a distribution. The doctor's entry-point probe runs isolated and cannot see `PYTHONPATH`, so a fresh checkout previously failed on an assertion that named neither cause nor cure.
+- Retry the recall query embedding once when the connection failed rather than the request, budgeted from what the first attempt left and refused when too little of the deadline remains. A single transport blip previously cost the whole semantic channel for that recall; it was reported in `gaps` but not recovered. Requests the provider rejected, and timeouts, are still not retried.
+- Protocol 1.1 and schema 1108 are unchanged. No memory rewrite, queue purge or vector rebuild is required.
+
+### Scope Recall 3.1.0rc10 recall timeout repair - 2026-09-13
+
+- Read the current SQLite memory epoch without scanning source and work queues at each recall fence, including the Hermes and Codex delivery checks. Fresh transactions, identity verification, deletion and version checks remain mandatory.
+- Reserve up to one second (20% of the original deadline) for packet compilation and release. Optional candidate collection shares the smaller retrieval budget; the overall deadline does not increase.
+- Keep an oversized first hit from consuming the budget or sole result slot ahead of usable evidence. Standalone oversized hits still produce the compiler's existing expansion diagnostics.
+- Protocol 1.1 and schema 1108 are unchanged. No memory rewrite, queue purge or vector rebuild is required for this patch.
+
+### Scope Recall 3.1.0rc5 composite correction closeout - 2026-09-13
+
+- Split a grounded positive correction from an explicitly rejected old value when an extractor combines them. Recover exact sibling rendition assertions mistakenly placed in conditions, through the same evidence-admission path.
+- Retire duplicate legacy composite frames only after their canonical replacement is admitted; preserve source text and historical payloads. Add frozen regressions from two actual failed model responses instead of resampling.
+- Protocol 1.1, schema 1108 and the installed configuration remain unchanged. This is a bounded literal grammar, not unrestricted semantic entity merging.
+
+### Scope Recall 3.1.0rc4 natural correction fixes - 2026-09-13
+
+- Align uniquely grounded project, subject and predicate frames across extraction and candidate evaluation. Keep applicability conditions and reject ambiguous or unasserted statements.
+- Order conflicting human evidence by source time, with capture order only for unknown-time live evidence from the same verified person. Late processing cannot resurrect an older value.
+- Add bounded, model-free `repair-claim-frames` maintenance for existing records without rewriting source text or historical payloads. See [candidate notes](docs/3.1.0rc4-closeout.md).
+
+### Scope Recall 3.1.0rc3 TianShu acceptance fixes - 2026-09-13
+
+- Route Codex capture through durable ingress and wake recovery for queued captures. Report content-free capture stage, disposition, durability, exception type, error code and elapsed time.
+- Revalidate candidate evidence and bind its epoch atomically when beginning the model attempt. Unrelated writes while a candidate waits no longer force a paid result to be discarded; changes during the model call still block publication.
+- Preserve protocol 1.1 and SQLite schema 1108. See [candidate notes](docs/3.1.0rc3-closeout.md); real-host receipts are separate from offline verification.
+
+### Scope Recall 3.1.0rc2 integration candidate - 2026-09-12
+
+- Combine the R1 evidence semantics, candidate lifecycle, and Hermes/Codex authorization work on protocol 1.1 and SQLite schema 1108.
+- Preserve the candidate evaluator and its deadline through the runtime wrapper. Continue bounded evidence matching after the first 16 candidates, including after restart.
+- Apply the source's exact scope/project/branch before limiting candidate matches, preventing visible but ineligible candidates from consuming every evidence page.
+- Retry explicit temporary provider rejections through the existing three-attempt limit; retain failure history and the uncertain-outcome retry fence.
+- Accept evidenced Chinese old-to-new corrections while preserving negation, uncertainty, subject binding, and old-value rejection.
+- Include the four new runtime modules in the wheel allowlist and repair two stale integration fixtures. See [candidate closeout](docs/3.1.0rc2-closeout.md) for acceptance limits; this candidate has not been publicly released or deployed to a running assistant.
+
 ### Fixed
 - Keep two-character Chinese content units in interrogative queries so a natural “who wrote which project” question can admit the same row as an exact title lookup. Window n-grams that glue light verbs onto question words no longer erase those units. A shared personal name or high vector score cannot admit a row when the query’s mixed letter-and-digit identifier (such as WSL2) is absent from that candidate; ordinary English category nouns stay on the baseline lexical scorer.
 - Keep `_internal/recall` free of sqlite3 and Provider host binding: request SQLite busy-timeout and source collectors live on outer adapter modules, while the orchestrator receives a typed capability port from RecallService.

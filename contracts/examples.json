@@ -1,0 +1,105 @@
+{
+  "source_event": {
+    "protocol_version": "1.1",
+    "source_event_key": "test-session-1/turn-1/user",
+    "source_revision": 1,
+    "origin": "human_direct",
+    "role": "user",
+    "content": "TEST项目采用银灰底，只用于这个海报。",
+    "occurred_at": "2026-09-01T08:00:00Z",
+    "recorded_at": "2026-09-01T08:00:01Z",
+    "time_precision": "instant",
+    "capture_state": "complete",
+    "evidence_refs": [],
+    "artifact_refs": [],
+    "dataset_id": "TEST-ONLY"
+  },
+  "recall_request": {
+    "protocol_version": "1.1",
+    "request_id": "test-query-1",
+    "query": "那个TEST海报底色怎么定的？",
+    "mode": "auto",
+    "max_items": 6,
+    "budget_tokens": 4096
+  },
+  "recall_packet": {
+    "protocol_version": "1.1",
+    "request_id": "test-query-1",
+    "status": "ok",
+    "memory_epoch": 1,
+    "items": [
+      {
+        "ref": "claim:test-color",
+        "revision": 1,
+        "kind": "claim",
+        "content": "TEST海报采用银灰底。",
+        "temporal_status": "current",
+        "origin": "human_direct",
+        "applicability": "仅TEST海报",
+        "evidence_refs": [
+          "event:test-1@1"
+        ],
+        "expandable": true,
+        "basis": "direct_report"
+      }
+    ],
+    "gaps": [],
+    "diagnostic_ref": "diag:test-query-1",
+    "answerability": "supported",
+    "coverage": "unknown",
+    "unmet_needs": []
+  },
+  "revise_request": {
+    "protocol_version": "1.1",
+    "target_ref": "claim:test-color",
+    "expected_revision": 1,
+    "new_value": "珍珠白",
+    "conditions": [
+      "仅TEST海报"
+    ],
+    "source_evidence_refs": [
+      "event:test-2@1"
+    ],
+    "valid_from": "2026-09-02T08:00:00Z"
+  },
+  "forget_request": {
+    "protocol_version": "1.1",
+    "target_refs": [
+      "claim:test-color"
+    ],
+    "mode": "delete",
+    "expected_revisions": {
+      "claim:test-color": 2
+    },
+    "reason": "合成删除案例"
+  },
+  "consolidation_result": {
+    "protocol_version": "1.1",
+    "source_refs": [
+      "event:test-1@1"
+    ],
+    "claim_proposals": [
+      {
+        "kind": "decision",
+        "subject": "TEST海报",
+        "predicate": "背景色",
+        "value_text": "银灰底",
+        "conditions": [
+          "仅TEST海报"
+        ],
+        "statement_kind": "decision",
+        "valid_from": null,
+        "valid_to": null,
+        "evidence_spans": [
+          {
+            "source_ref": "event:test-1",
+            "source_revision": 1,
+            "quote": "TEST项目采用银灰底，只用于这个海报。"
+          }
+        ]
+      }
+    ],
+    "resume_proposals": [],
+    "reference_proposals": []
+  }
+}

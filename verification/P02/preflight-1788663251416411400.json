@@ -1,0 +1,38 @@
+{
+  "status": "preflight_passed",
+  "scope": "Direct synthetic command inputs and registration recorder against the actual MemoryProvider ABC. No real host conversation or automatic callback execution.",
+  "host_callbacks_executed": false,
+  "model_calls": 0,
+  "checks": [
+    "SessionStart",
+    "UserPromptSubmit",
+    "PostToolUse",
+    "Stop",
+    "Interrupt",
+    "SessionEnd",
+    "reject_non_test_cwd_without_write",
+    "reject_non_test_state_directory",
+    "oversized_callback_reported_without_payload_capture",
+    "repeated_provider_activation_and_second_namespace_keep_one_hook",
+    "missing_session_never_registered_or_injected",
+    "actual_a2a_frame_allows_synthetic_probe",
+    "actual_MemoryProvider_ABC_compatible",
+    "synthetic_registration_and_single_injection",
+    "synthetic_session_switch"
+  ],
+  "passed": 15,
+  "failed": 0,
+  "skipped": 0,
+  "exit_code": 0,
+  "duration_seconds": 0.6339659000514075,
+  "source_hashes": {
+    "F:\\Agents\\runtime\\windows\\hermes-tianxuan\\hermes-agent\\agent\\memory_provider.py": "8970de8fd26dd6829220261d720fc0bb7abc9c162a54a654275b56f5ee5a267c",
+    "probes/hermes/__init__.py": "6103c058a8e996fdb3f2acc8a88a1ada733aac315a305bd418c137232adde5c7",
+    "probes/codex/hook_probe.py": "72ad4ae323800f690753af75a30df4f395043d5b80c8ff3804611cb154256346",
+    "probes/check_preflight.py": "ebf702977b0e46691dafdb799849159b8745468660a4b713bdd6edf14c758be7"
+  },
+  "state_dirs": {
+    "codex": "F:\\SCOPERECALL\u66f4\u65b0\u9879\u76ee\\worktrees\\scope-recall-v1.1\\.execution\\TEST-P02-preflight-1788663250780259200",
+    "hermes": "F:\\SCOPERECALL\u66f4\u65b0\u9879\u76ee\\worktrees\\scope-recall-v1.1\\.execution\\TEST-P02-preflight-1788663250780259200\\TEST-P02-hermes"
+  }
+}

@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "forget_request",
+  "description": "Design specification v1.1. Not an installed API. Trusted identity is supplied separately by the adapter.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "protocol_version": {
+      "const": "1.1"
+    },
+    "target_refs": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 240
+      },
+      "maxItems": 100,
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "mode": {
+      "enum": [
+        "suppress",
+        "delete"
+      ]
+    },
+    "expected_revisions": {
+      "type": "object",
+      "maxProperties": 100,
+      "additionalProperties": {
+        "type": "integer",
+        "minimum": 1
+      }
+    },
+    "reason": {
+      "type": "string",
+      "maxLength": 1024
+    }
+  },
+  "required": [
+    "protocol_version",
+    "target_refs",
+    "mode",
+    "expected_revisions"
+  ]
+}

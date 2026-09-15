@@ -1,6 +1,8 @@
-# Scope Recall Configuration Reference
+# Scope Recall Legacy Configuration Reference
 
-This file is generated from the packaged `config.json` registry. It lists every supported leaf key, its default value, risk level, and whether a Hermes restart/reload is normally required.
+> **旧版参考，不是 3.0.0 配置指南。** 本页来自旧 `config.json` 注册表；3.0.0 的 wheel 不分发该注册表，不使用下列旧键启用新版功能。新版安装见 [`install.md`](install.md)，可信运行配置为实例数据目录中的 `runtime-config.json`，其身份与权限必须匹配安装清单。
+
+This historical reference was generated from the legacy `config.json` registry. Defaults and controls below describe that older implementation, not the 3.0.0 Core.
 
 
 ## `auto_adjudication`
@@ -430,6 +432,16 @@ Treat chat aliases as explicit operator access-control grants.
 - `vector.table_name` (string; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `vector.table_name` in the `vector` group. Default: `"memories"`
 - `vector.top_k` (integer; risk: `medium`; restart_required: `yes`) — Scope Recall configuration key `vector.top_k` in the `vector` group. Default: `8`
 - `vector.write_outbox_replay_limit` (integer; risk: `medium`; restart_required: `yes`) — Maximum durable vector outbox events replayed after one committed memory write so transient backlog converges during normal traffic. Default: `20`
+
+## Automatic recall packet budget
+
+Automatic recall defaults to `4096` conservative budget units and the automatic ceiling is the same value. The implementation still counts the complete canonical packet as UTF-8 bytes, so this is a conservative token upper bound, not a measured tokenizer result. Callers that pass a smaller `budget_tokens` keep that smaller cap, including explicit `1200` and rejection/stress cases. `max_items` remains at most 6. This is not a `config.json` leaf; it is the core/host automatic request default.
+
+The Codex MCP `recall` tool advertises the same conservative UTF-8 byte budget, including packet and source metadata. When `budget_tokens` is omitted, the tool defaults to `4096` for explicit retrieval. Explicit caller values are still honored, including small values such as `768` that can clip every item. If the packet gaps include `budget_token_cap` or `budget_packet_cap`, retry once with `4096`. This does not raise the automatic-mode ceiling.
+
+## Automatic recall latency budget
+
+Automatic remote semantic recall defaults to `auto_recall_seconds=5.0`, which is also the hard maximum. The trusted-host fallback hook budget defaults to `hook_processing_seconds=6.0`, which is also the hard maximum, so the hook can cover a full automatic recall. A 1.5-second automatic default leaves typical hosted Gemini query embeddings about 1.1 seconds and times out; the same query, database, and configuration complete in about 2 seconds when the existing allowed 5-second maximum is used. Timeouts remain in force and degrade to lexical recall. Callers and `runtime-config.json` may set a stricter timeout; that explicit shorter deadline is honored and is clamped by the configured automatic budget. This does not raise money, token, call, packet, or source caps, disable TLS validation, or lower the raw vector 0.70 safety floor.
 
 ## `writer_lease`
 

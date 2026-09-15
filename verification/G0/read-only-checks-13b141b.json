@@ -1,0 +1,364 @@
+{
+  "candidate_sha": "13b141bc7a5ef20d2b16e9aec15f029b713e3ba2",
+  "review_base_sha": "87ab93b6322e456f8f2f8a3567ba78d648e9d0a6",
+  "scope": "Narrow review of all 11 changed files; retains P02/G0 no-go. No P00/P01 re-audit. No host execution, network, credential or database access.",
+  "manifest_count": 51,
+  "manifest_digest": "458c2cebe3a9478fa1414adf9384b7cf581db1b3637046a705acaaf141491162",
+  "manifest_digest_matches_receipt": true,
+  "artifact_checks": [
+    {
+      "path": "docs/compatibility.md",
+      "exact_blob_match": false,
+      "line_ending_normalized_match": true,
+      "pass": true
+    },
+    {
+      "path": "probes/README.md",
+      "exact_blob_match": false,
+      "line_ending_normalized_match": true,
+      "pass": true
+    },
+    {
+      "path": "probes/check_preflight.py",
+      "exact_blob_match": true,
+      "line_ending_normalized_match": false,
+      "pass": true
+    },
+    {
+      "path": "probes/codex/hook_probe.py",
+      "exact_blob_match": true,
+      "line_ending_normalized_match": false,
+      "pass": true
+    },
+    {
+      "path": "probes/codex/hooks.example.json",
+      "exact_blob_match": false,
+      "line_ending_normalized_match": true,
+      "pass": true
+    },
+    {
+      "path": "probes/codex/prepare_and_measure.py",
+      "exact_blob_match": true,
+      "line_ending_normalized_match": false,
+      "pass": true
+    },
+    {
+      "path": "probes/hermes/__init__.py",
+      "exact_blob_match": true,
+      "line_ending_normalized_match": false,
+      "pass": true
+    },
+    {
+      "path": "probes/hermes/budget_proxy.py",
+      "exact_blob_match": true,
+      "line_ending_normalized_match": false,
+      "pass": true
+    },
+    {
+      "path": "probes/hermes/exercise_a2a.py",
+      "exact_blob_match": true,
+      "line_ending_normalized_match": false,
+      "pass": true
+    },
+    {
+      "path": "probes/hermes/interface_requirements.json",
+      "exact_blob_match": false,
+      "line_ending_normalized_match": true,
+      "pass": true
+    },
+    {
+      "path": "probes/hermes/plugin.yaml",
+      "exact_blob_match": true,
+      "line_ending_normalized_match": false,
+      "pass": true
+    },
+    {
+      "path": "probes/hermes/run_gateway_probe.py",
+      "exact_blob_match": true,
+      "line_ending_normalized_match": false,
+      "pass": true
+    },
+    {
+      "path": "probes/native_startup.py",
+      "exact_blob_match": true,
+      "line_ending_normalized_match": false,
+      "pass": true
+    },
+    {
+      "path": "tests/host/test_p02_budget.py",
+      "exact_blob_match": true,
+      "line_ending_normalized_match": false,
+      "pass": true
+    },
+    {
+      "path": "verification/P02/budget-unit.xml",
+      "exact_blob_match": true,
+      "line_ending_normalized_match": true,
+      "pass": true
+    },
+    {
+      "path": "verification/P02/codex-actual-entry-readback.json",
+      "exact_blob_match": false,
+      "line_ending_normalized_match": true,
+      "pass": true
+    },
+    {
+      "path": "verification/P02/command-startup-1788660162644627700.json",
+      "exact_blob_match": false,
+      "line_ending_normalized_match": true,
+      "pass": true
+    },
+    {
+      "path": "verification/P02/command-startup-1788660185984037900.json",
+      "exact_blob_match": false,
+      "line_ending_normalized_match": true,
+      "pass": true
+    },
+    {
+      "path": "verification/P02/cursor-review.json",
+      "exact_blob_match": false,
+      "line_ending_normalized_match": true,
+      "pass": true
+    },
+    {
+      "path": "verification/P02/hermes-actual-attachments.json",
+      "exact_blob_match": false,
+      "line_ending_normalized_match": true,
+      "pass": true
+    },
+    {
+      "path": "verification/P02/hermes-actual-cancel.json",
+      "exact_blob_match": false,
+      "line_ending_normalized_match": true,
+      "pass": true
+    },
+    {
+      "path": "verification/P02/hermes-actual-fixed-ordinary.json",
+      "exact_blob_match": false,
+      "line_ending_normalized_match": true,
+      "pass": true
+    },
+    {
+      "path": "verification/P02/hermes-actual-local-budget-rejection.json",
+      "exact_blob_match": false,
+      "line_ending_normalized_match": true,
+      "pass": true
+    },
+    {
+      "path": "verification/P02/hermes-actual-normal-1.json",
+      "exact_blob_match": false,
+      "line_ending_normalized_match": true,
+      "pass": true
+    },
+    {
+      "path": "verification/P02/hermes-actual-ordinary.json",
+      "exact_blob_match": false,
+      "line_ending_normalized_match": true,
+      "pass": true
+    },
+    {
+      "path": "verification/P02/hermes-actual-resume-2.json",
+      "exact_blob_match": false,
+      "line_ending_normalized_match": true,
+      "pass": true
+    },
+    {
+      "path": "verification/P02/hermes-actual-tool-failure.json",
+      "exact_blob_match": false,
+      "line_ending_normalized_match": true,
+      "pass": true
+    },
+    {
+      "path": "verification/P02/hermes-actual-tool-success.json",
+      "exact_blob_match": false,
+      "line_ending_normalized_match": true,
+      "pass": true
+    },
+    {
+      "path": "verification/P02/hermes-agent-card.json",
+      "exact_blob_match": false,
+      "line_ending_normalized_match": true,
+      "pass": true
+    },
+    {
+      "path": "verification/P02/hermes-api-error-runtime.json",
+      "exact_blob_match": false,
+      "line_ending_normalized_match": true,
+      "pass": true
+    },
+    {
+      "path": "verification/P02/hermes-current-interface.json",
+      "exact_blob_match": false,
+      "line_ending_normalized_match": true,
+      "pass": true
+    },
+    {
+      "path": "verification/P02/hermes-first-live-run.json",
+      "exact_blob_match": false,
+      "line_ending_normalized_match": true,
+      "pass": true
+    },
+    {
+      "path": "verification/P02/hermes-live-readback-after-registration-fix.json",
+      "exact_blob_match": false,
+      "line_ending_normalized_match": true,
+      "pass": true
+    },
+    {
+      "path": "verification/P02/hermes-live-readback-before-registration-fix.json",
+      "exact_blob_match": false,
+      "line_ending_normalized_match": true,
+      "pass": true
+    },
+    {
+      "path": "verification/P02/hermes-native-coexistence-checked.json",
+      "exact_blob_match": false,
+      "line_ending_normalized_match": true,
+      "pass": true
+    },
+    {
+      "path": "verification/P02/hermes-native-coexistence.json",
+      "exact_blob_match": false,
+      "line_ending_normalized_match": true,
+      "pass": true
+    },
+    {
+      "path": "verification/P02/hermes-registration-runtime.json",
+      "exact_blob_match": false,
+      "line_ending_normalized_match": true,
+      "pass": true
+    },
+    {
+      "path": "verification/P02/hermes-second-live-run.json",
+      "exact_blob_match": false,
+      "line_ending_normalized_match": true,
+      "pass": true
+    },
+    {
+      "path": "verification/P02/hermes-third-live-run.json",
+      "exact_blob_match": false,
+      "line_ending_normalized_match": true,
+      "pass": true
+    },
+    {
+      "path": "verification/P02/host-readback.json",
+      "exact_blob_match": false,
+      "line_ending_normalized_match": true,
+      "pass": true
+    },
+    {
+      "path": "verification/P02/model-budget-authorization.json",
+      "exact_blob_match": true,
+      "line_ending_normalized_match": false,
+      "pass": true
+    },
+    {
+      "path": "verification/P02/native-environment.txt",
+      "exact_blob_match": false,
+      "line_ending_normalized_match": true,
+      "pass": true
+    },
+    {
+      "path": "verification/P02/native-startup-1788660518841052600.json",
+      "exact_blob_match": false,
+      "line_ending_normalized_match": true,
+      "pass": true
+    },
+    {
+      "path": "verification/P02/preflight-1788660614726178900.json",
+      "exact_blob_match": false,
+      "line_ending_normalized_match": true,
+      "pass": true
+    },
+    {
+      "path": "verification/P02/preflight-1788660651353557600.json",
+      "exact_blob_match": false,
+      "line_ending_normalized_match": true,
+      "pass": true
+    },
+    {
+      "path": "verification/P02/preflight-1788662097393450400.json",
+      "exact_blob_match": false,
+      "line_ending_normalized_match": true,
+      "pass": true
+    },
+    {
+      "path": "verification/P02/preflight-1788663251416411400.json",
+      "exact_blob_match": false,
+      "line_ending_normalized_match": true,
+      "pass": true
+    },
+    {
+      "path": "verification/P02/preflight-1788664031971891600.json",
+      "exact_blob_match": false,
+      "line_ending_normalized_match": true,
+      "pass": true
+    },
+    {
+      "path": "verification/P02/prepared-test-profiles.json",
+      "exact_blob_match": false,
+      "line_ending_normalized_match": true,
+      "pass": true
+    },
+    {
+      "path": "verification/P02/probe-syntax-live.json",
+      "exact_blob_match": false,
+      "line_ending_normalized_match": true,
+      "pass": true
+    },
+    {
+      "path": "verification/P02/probe-syntax.json",
+      "exact_blob_match": false,
+      "line_ending_normalized_match": true,
+      "pass": true
+    }
+  ],
+  "source_checks": [
+    {
+      "path": "agent/api_request_hooks.py",
+      "matches_recorded": true
+    },
+    {
+      "path": "agent/conversation_loop.py",
+      "matches_recorded": true
+    },
+    {
+      "path": "agent/turn_facade.py",
+      "matches_recorded": true
+    },
+    {
+      "path": "agent/agent_init.py",
+      "matches_recorded": true
+    }
+  ],
+  "actual_callback_row_count": 5,
+  "actual_callback_counts": {
+    "provider_initialize": 1,
+    "on_session_start": 1,
+    "pre_llm_call": 1,
+    "provider_prefetch": 1,
+    "api_request_error": 1
+  },
+  "pre_error_identity_matches": true,
+  "api_request_id_bound_to_turn": true,
+  "status_code": 400,
+  "raw_request_or_error_values_absent": true,
+  "claimed_hook_counts_match_rows": true,
+  "recorded_loopback_requests": [
+    {
+      "method": "POST",
+      "path": "/api/show",
+      "content_length": 28,
+      "purpose": "provider/model metadata probe"
+    },
+    {
+      "method": "POST",
+      "path": "/v1/chat/completions",
+      "content_length": 4045,
+      "purpose": "single model API failure fixture"
+    }
+  ],
+  "independent_runtime_rerun": false,
+  "external_model_calls_by_audit": 0,
+  "conclusion": "NO-GO: A2A raw attachments, actual desktop entry and G0 final evaluation budget freeze remain unresolved; api_request_error observation gap is resolved within narrow demonstrated boundary."
+}

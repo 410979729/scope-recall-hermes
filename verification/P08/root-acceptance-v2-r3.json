@@ -1,0 +1,27 @@
+{
+  "artifact": "P08-frozen-semantic-qualification-root-review",
+  "review_date": "2026-09-06",
+  "status": "ACCEPTED_FOR_FROZEN_EMBEDDING_SPACE",
+  "evidence_workspace": "F:/SCOPERECALL更新项目/worktrees/scope-recall-v1.1",
+  "public_summary": "verification/P08/blind-validation-summary-v2-r3.json",
+  "public_summary_sha256": "1d1477e49b625948e6db48a71fbcf76ae57f40ab0611fed733ec7f290c143570",
+  "public_index_sha256": "352f126cd46380ce1abf5c387c2eb5b3344649ecdde222aa1ec92b4dd2fe7343",
+  "space_id": "93ba90c7d52b3574462d6751e2e077a411f1095727862abb4cc80d3780d2e30c",
+  "threshold": 0.653189984350642,
+  "numeric_tolerance": 0.000001,
+  "gates": {
+    "positive": {"observed": 23, "denominator": 24, "minimum": 22},
+    "negative": {"observed": 23, "denominator": 24, "minimum": 20},
+    "zero_overlap": {"observed": 8, "denominator": 8, "minimum": 8},
+    "hard_identifier": {"incompatible_observations": 4, "violations": 0}
+  },
+  "execution": {"new_posts": 2, "cumulative_blind_posts": 7, "native_runs": 1, "new_cost_micro_usd": 177},
+  "root_review": {
+    "pre_execution_runner_guard_and_hashes_verified": true,
+    "public_summary_and_index_hashes_verified": true,
+    "prospective_denominators_and_thresholds_unchanged": true,
+    "sealed_or_private_content_read_by_root": false,
+    "prior_failed_and_rate_limited_runs_preserved": true
+  },
+  "boundary": "Qualification applies only to the frozen model, encoder, space descriptor and admission policy. It does not establish complete host journeys, migration, installation, all-model support or project completion. Later integration still requires the existing native contract and host acceptance gates; no further blind tuning is authorized by this receipt."
+}

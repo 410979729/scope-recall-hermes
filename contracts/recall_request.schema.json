@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "recall_request",
+  "description": "Design specification v1.1. Not an installed API. Trusted identity is supplied separately by the adapter.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "protocol_version": {
+      "const": "1.1"
+    },
+    "request_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 100
+    },
+    "query": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 8192
+    },
+    "mode": {
+      "enum": [
+        "auto",
+        "current",
+        "history",
+        "as_of",
+        "method"
+      ]
+    },
+    "as_of": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "max_items": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 30
+    },
+    "budget_tokens": {
+      "type": "integer",
+      "minimum": 64,
+      "maximum": 8000
+    },
+    "focus_refs": {
+      "type": "array",
+      "maxItems": 4,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 240
+      },
+      "description": "Untrusted narrowing hints; all references require scope/version/deletion checks."
+    }
+  },
+  "required": [
+    "protocol_version",
+    "request_id",
+    "query",
+    "mode",
+    "max_items",
+    "budget_tokens"
+  ],
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "mode": {
+            "const": "as_of"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "as_of"
+        ]
+      }
+    }
+  ]
+}

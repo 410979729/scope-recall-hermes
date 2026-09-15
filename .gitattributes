@@ -1,3 +1,7 @@
 # Windows working trees may use CRLF. Treat CR as a line terminator while
 # preserving trailing-space, blank-at-EOF, and space-before-tab checks.
 * whitespace=trailing-space,space-before-tab,cr-at-eol
+verification/P07/** -text
+verification/G0/evaluation-dataset-audit-v[3-6].json -text
+verification/G1/** -text
+verification/P08/** -text

@@ -1,0 +1,8 @@
+name: scope-recall
+version: 3.1.0rc22
+description: Bounded Hermes adapter over the installed Scope Recall v1.1 core
+provider_entry: register:register
+hooks:
+  - pre_llm_call
+  - api_request_error
+  - post_tool_call

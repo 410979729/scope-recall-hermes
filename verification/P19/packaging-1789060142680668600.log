@@ -1,0 +1,17 @@
+........................................................................ [ 94%]
+....                                                                     [100%]
+--------- generated xml file: C:\Temp\sr\TEST-v11-a8f3p5wb\junit.xml ----------
+============================ slowest 10 durations =============================
+23.35s setup    tests/packaging/test_clean_v11_wheel.py::test_clean_v11_wheel_entrypoint_and_register_delegate
+6.72s setup    tests/packaging/test_clean_v11_wheel.py::test_clean_v11_wheel_exact_allowlist
+0.80s call     tests/packaging/test_model_receipt_validation.py::test_final_validator_accepts_separate_authorized_native_aux_without_changing_main_counts
+0.78s call     tests/packaging/test_model_receipt_validation.py::test_formal_budget_authorization_is_consistent_across_both_validators
+0.74s call     tests/packaging/test_model_receipt_validation.py::test_hermes_cli_requires_its_own_frozen_adjudication
+0.72s call     tests/packaging/test_model_receipt_validation.py::test_method_requires_frozen_adjudication_bytes_and_explicit_new_id
+0.69s call     tests/packaging/test_model_receipt_validation.py::test_g2_and_independent_aggregate_must_bind_hermes_revision
+0.55s call     tests/packaging/test_model_receipt_validation.py::test_matching_report_and_ledger_hash_cannot_exceed_budget[actual_input-1000000000000]
+0.55s call     tests/packaging/test_model_receipt_validation.py::test_matching_report_and_ledger_hash_cannot_exceed_budget[actual_output-1000000000000]
+0.54s call     tests/packaging/test_model_receipt_validation.py::test_matching_report_and_ledger_hash_cannot_exceed_budget[charge_micro_usd-1000000000]
+76 passed in 47.92s
+
+{"cleanup_exit_code": 0, "overall_exit_code": 0, "pytest_exit_code": 0, "transition_history": ["prepared", "pytest_started", "pytest_completed_waiting_cleanup", "cleanup_succeeded", "receipt_written"], "wrapper_exit_code": 0}

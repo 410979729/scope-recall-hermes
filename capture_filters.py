@@ -240,7 +240,9 @@ INLINE_ATTACHMENT_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"\[Image attached at:\s*[^\]]*\]", re.IGNORECASE),
     re.compile(r"\[inline image/[^\]]*data omitted\]", re.IGNORECASE),
     re.compile(r"\[screenshot\]", re.IGNORECASE),
-    re.compile(r"(?:[A-Za-z]:)?[^\s\]]*[/\\]image_cache[/\\]img_[A-Za-z0-9_-]+\.(?:jpe?g|png|webp|gif)\b", re.IGNORECASE),
+    # The greedy prefix already consumes the entire non-whitespace token.
+    # Start there once, instead of rescanning every suffix of long CJK prose.
+    re.compile(r"(?<![^\s\]])(?:[A-Za-z]:)?[^\s\]]*[/\\]image_cache[/\\]img_[A-Za-z0-9_-]+\.(?:jpe?g|png|webp|gif)\b", re.IGNORECASE),
 )
 
 DATA_URL_PREFIX_RE = re.compile(
@@ -337,6 +339,19 @@ def strip_inline_data_urls(text: Any) -> str:
         output.append(" ")
         cursor = payload_end
     return "".join(output)
+
+
+def sanitize_source_capture_text(text: str) -> str:
+    """Remove known transport payloads without normalizing source prose.
+
+    The legacy summary filter below intentionally compacts whitespace. Source
+    evidence needs its original indentation, line endings, and punctuation.
+    A caller must mark any transport removal as incomplete capture.
+    """
+    cleaned = strip_inline_data_urls(text)
+    for pattern in INLINE_ATTACHMENT_PATTERNS:
+        cleaned = pattern.sub("", cleaned)
+    return cleaned
 
 
 def sanitize_capture_text(text: Any) -> str:

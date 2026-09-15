@@ -1087,3 +1087,259 @@ def test_vector_search_drops_rows_missing_sql_truth():
 
     assert results == []
 
+
+# Captured from 20260911-vector-acceptance evidence/p3-p6-recall.json.
+# These are annotated offline fixtures, not a live embedding rerun.
+_Q2_QUERY = "大堂音响系统那个例行保养的人是谁？"
+_Q2_GOLD_ID = "686c4e74a1b444ce9ea24286b23c81b4"
+_Q2_GOLD_CONTENT = "云栖大厅的扩音设备在每月第一个周五上午由周晴负责检修登记，联系人是周晴"
+_Q2_LEXICAL_FP_ID = "cc4b92a41f7b4116b714cb70a6a6968f"
+_Q2_LEXICAL_FP_CONTENT = "东翼备用发电机的每周例行检查由老韩负责，钥匙在二楼中控室铁柜"
+_Q2_LEXICAL_FP_SCORES = {"lexical_score": 0.2055, "vector_score": 0.6675}
+# Q2 gold vector_score was not persisted after hybrid drop. Q2b is the same
+# gold row on a sibling paraphrase and recorded vector_score 0.7469.
+_Q2B_ANALOG_VECTOR_SCORE = 0.7469
+
+
+def _q2_item(memory_id: str, content: str, **scores: float) -> RecallItem:
+    return RecallItem(
+        id=memory_id,
+        content=content,
+        summary=content,
+        source="tool-store",
+        target="memory",
+        score=scores.get("vector_score") or scores.get("lexical_score") or 0.0,
+        updated_at="2026-09-11T14:27:25+00:00",
+        metadata={
+            "lexical_score": float(scores.get("lexical_score") or 0.0),
+            "vector_score": float(scores.get("vector_score") or 0.0),
+            "scope_id": "shared-scope",
+            "trust": 0.588,
+            "importance": 0.68,
+            "memory_type": "factual",
+        },
+    )
+
+
+def _q2_background(index: int, vector_score: float) -> RecallItem:
+    return RecallItem(
+        id=f"background-{index}",
+        content=f"Harbor crane lubrication window {index} uses a separate checklist.",
+        summary=f"unrelated background {index}",
+        source="tool-store",
+        target="memory",
+        score=vector_score,
+        updated_at="2026-09-11T14:27:25+00:00",
+        metadata={
+            "lexical_score": 0.0,
+            "vector_score": vector_score,
+            "scope_id": "shared-scope",
+        },
+    )
+
+
+def _search_with_live_freshness(service: RecallService, query: str, *, limit: int = 5):
+    def _needs_live_check(memory_ids):
+        return {
+            memory_id: {"status": "needs_live_check", "truth_type": "fact"}
+            for memory_id in memory_ids
+        }
+
+    service._fact_freshness_evidence = _needs_live_check  # type: ignore[method-assign]
+    return service.search_memories(query, limit=limit)
+
+
+def test_q2_paraphrase_keeps_admitted_vector_only_above_weak_lexical_false_positive():
+    gold_lexical = lexical_score(
+        query=_Q2_QUERY,
+        content=_Q2_GOLD_CONTENT,
+        summary=_Q2_GOLD_CONTENT,
+        source="tool-store",
+        target="memory",
+    )
+    assert gold_lexical == 0.0
+
+    gold = _q2_item(
+        _Q2_GOLD_ID,
+        _Q2_GOLD_CONTENT,
+        lexical_score=gold_lexical,
+        vector_score=_Q2B_ANALOG_VECTOR_SCORE,
+    )
+    lexical_fp = _q2_item(
+        _Q2_LEXICAL_FP_ID,
+        _Q2_LEXICAL_FP_CONTENT,
+        **_Q2_LEXICAL_FP_SCORES,
+    )
+    provider = DummyProvider(
+        {
+            "mode": "hybrid",
+            "include_general": "same-scope",
+            "min_score": 0.18,
+            "vector_only_min_score": 0.70,
+            "vector_only_min_margin": 0.035,
+        },
+        db_items=[lexical_fp],
+        vector_items=[
+            gold,
+            lexical_fp,
+            _q2_background(0, 0.58),
+            _q2_background(1, 0.54),
+            _q2_background(2, 0.51),
+            _q2_background(3, 0.48),
+        ],
+    )
+    service = RecallService(provider)
+
+    results = _search_with_live_freshness(service, _Q2_QUERY, limit=5)
+
+    assert [item.id for item in results][0] == _Q2_GOLD_ID
+    assert _Q2_GOLD_ID in [item.id for item in results]
+    rejected = {
+        item.id: str((item.metadata or {}).get("rejected_reason") or "")
+        for item in service.last_rejected_candidates
+    }
+    assert rejected.get(_Q2_GOLD_ID) != "vector_only_below_min_score"
+
+
+def test_hybrid_unrelated_query_still_returns_no_mid_confidence_vector_noise():
+    noise = _q2_item(
+        _Q2_GOLD_ID,
+        _Q2_GOLD_CONTENT,
+        lexical_score=0.0,
+        vector_score=0.59,
+    )
+    provider = DummyProvider(
+        {
+            "mode": "hybrid",
+            "include_general": "same-scope",
+            "min_score": 0.18,
+            "vector_only_min_score": 0.70,
+        },
+        db_items=[],
+        vector_items=[
+            noise,
+            _q2_background(0, 0.41),
+            _q2_background(1, 0.37),
+            _q2_background(2, 0.33),
+            _q2_background(3, 0.29),
+        ],
+    )
+
+    results = _search_with_live_freshness(
+        RecallService(provider),
+        "月球基地的咖啡豆采购价格表",
+        limit=5,
+    )
+
+    assert results == []
+
+
+def test_hybrid_keeps_true_lexical_hit_when_vector_neighbor_is_noise():
+    lexical_hit = _q2_item(
+        _Q2_GOLD_ID,
+        _Q2_GOLD_CONTENT,
+        lexical_score=0.5277,
+        vector_score=0.8467,
+    )
+    vector_noise = _q2_item(
+        _Q2_LEXICAL_FP_ID,
+        _Q2_LEXICAL_FP_CONTENT,
+        lexical_score=0.0,
+        vector_score=0.59,
+    )
+    provider = DummyProvider(
+        {
+            "mode": "hybrid",
+            "include_general": "same-scope",
+            "min_score": 0.18,
+            "vector_only_min_score": 0.70,
+        },
+        db_items=[lexical_hit],
+        vector_items=[lexical_hit, vector_noise],
+    )
+
+    results = _search_with_live_freshness(
+        RecallService(provider),
+        "云栖大厅 扩音设备 周晴",
+        limit=5,
+    )
+
+    assert [item.id for item in results][0] == _Q2_GOLD_ID
+    assert _Q2_LEXICAL_FP_ID not in [item.id for item in results]
+
+
+def test_opaque_identifier_conflict_does_not_admit_high_vector_neighbor():
+    identifier = "7f3c1a90b2e44d1c9a6e5d4c3b2a1908"
+    neighbor = RecallItem(
+        id="unrelated-high-vector",
+        content="Weekly generator inspection stays in the east-wing cabinet.",
+        summary="Weekly generator inspection stays in the east-wing cabinet.",
+        source="tool-store",
+        target="memory",
+        score=0.93,
+        updated_at="2026-09-11T14:27:25+00:00",
+        metadata={"lexical_score": 0.0, "vector_score": 0.93, "scope_id": "shared-scope"},
+    )
+    exact = RecallItem(
+        id=identifier,
+        content=f"Ticket {identifier} is the sealed spare badge.",
+        summary=f"Ticket {identifier} is the sealed spare badge.",
+        source="tool-store",
+        target="memory",
+        score=1.0,
+        updated_at="2026-09-11T14:27:25+00:00",
+        metadata={"lexical_score": 1.0, "vector_score": 0.11, "scope_id": "shared-scope"},
+    )
+    provider = DummyProvider(
+        {
+            "mode": "hybrid",
+            "include_general": "same-scope",
+            "min_score": 0.18,
+            "vector_only_min_score": 0.70,
+        },
+        db_items=[exact],
+        vector_items=[neighbor, exact],
+    )
+
+    results = _search_with_live_freshness(RecallService(provider), identifier, limit=5)
+
+    assert [item.id for item in results] == [identifier]
+
+
+def test_entity_scope_mismatch_still_rejects_cross_boundary_vector_hit():
+    outsider = RecallItem(
+        id="other-project-row",
+        content="Project Orion rollback uses checkpoint Delta-7.",
+        summary="Project Orion rollback uses checkpoint Delta-7.",
+        source="tool-store",
+        target="project",
+        score=0.88,
+        updated_at="2026-09-11T14:27:25+00:00",
+        metadata={
+            "lexical_score": 0.0,
+            "vector_score": 0.88,
+            "scope_id": "shared-scope",
+            "entities": ["Orion"],
+            "claim": {"subject": "Orion"},
+        },
+    )
+    provider = DummyProvider(
+        {
+            "mode": "hybrid",
+            "include_general": "same-scope",
+            "min_score": 0.18,
+            "vector_only_min_score": 0.70,
+            "entity_scope_filter_enabled": True,
+        },
+        db_items=[],
+        vector_items=[outsider, _q2_background(0, 0.40)],
+    )
+
+    results = _search_with_live_freshness(
+        RecallService(provider),
+        "What is the current Feather gate badge location?",
+        limit=5,
+    )
+
+    assert outsider.id not in [item.id for item in results]
+

@@ -1,0 +1,246 @@
+{
+  "artifact": "g0-hermes-cli-method-adjudication-v1",
+  "created_at_utc": "2026-09-07T01:35:02.815643+00:00",
+  "status": "APPROVED_NARROW_METHOD_AMENDMENT_RUNTIME_PENDING",
+  "auditor": "/root/g0_hermes_entry_adjudication independent method auditor; not journey/transport implementer",
+  "method_revision_admissible": true,
+  "whole_G0_pass": false,
+  "P11_pass": false,
+  "G2_pass": false,
+  "P18_pass": false,
+  "formal_evaluation_executable_now": false,
+  "authorization": {
+    "basis": "Original user startup authorizes isolated TEST host work and independent G0 interface adjudication; current autonomous decisions/parallel audit and existing total $20 authorization relayed by root.",
+    "new_user_approval_required_for_this_TEST_method_only": false,
+    "new_budget_authorized": false,
+    "production_deployment_authorized": false,
+    "reason": "P11 requires actual Hermes entry and new sessions, not A2A exclusively. P18 freezes host/model/data/budget comparability, and docs/05 assigns interface/scope conflicts to G0. This corrects pre-formal-run test-entry construct validity without changing provenance or acceptance behavior."
+  },
+  "original_protocol": {
+    "path": "F:\\SCOPERECALL更新项目\\worktrees\\scope-recall-v1.1\\verification\\P18\\p18-evaluation-protocol-v1.json",
+    "sha256": "45b70192857b5b8645dd2bf409db55f320f1cf31f297e89910f9f340e76d32d4",
+    "modified": false,
+    "supersession": "Only Hermes formal TEST entry changes from hermes_a2a to hermes_cli_local_input_v1, including references in hosts, minimum_unified_test_runner and adapter-gap text. Original protocol is preserved; new runner must explicitly bind this revision. Codex remains governed by separate g0-appserver-method-adjudication-v2. Every other v1 contract remains binding."
+  },
+  "method": {
+    "id": "hermes_cli_local_input_v1",
+    "label": "Hermes official classic chat CLI authorized local synthetic user input",
+    "host_snapshot": "F:\\SCOPERECALL更新项目\\TEST-Hermes-runtime-v1\\hermes-source-79445",
+    "host_revision_declared": "79445a496c86a19332ad786494b8384d2167e2d0",
+    "host_snapshot_identity_boundary": "Snapshot has no .git. Audited source files are hashed in zero-model receipt; declared upstream commit is not independently re-established by git in this audit.",
+    "candidate_commit_at_audit": "5ba1cb20590ff271d2caaa9d9c766e5db7e7648c",
+    "installed_candidate_receipt": "F:\\SCOPERECALL更新项目\\worktrees\\scope-recall-runtime-integration\\.execution\\TEST-CANDIDATE-5ba1cb2\\installed-hermes-receipt.json",
+    "command_argv": [
+      "<pinned HermesPython>",
+      "-m",
+      "hermes_cli.main",
+      "--cli",
+      "chat",
+      "-Q",
+      "--query-file",
+      "<absolute UTF-8 raw user turn file>",
+      "--model",
+      "deepseek-v4-flash",
+      "--provider",
+      "<same frozen OpenCode Go provider alias>"
+    ],
+    "process": "Owned hidden child; shell=False argv; isolated per-arm HERMES_HOME and working directory; capture stdout, stderr, exit code, timeout and cleanup. Fixed source/Python/package/config hashes before dispatch.",
+    "human_input_scope": "Authorized executor may submit frozen synthetic human turns through the actual local CLI. Automation does not permit relabeling A2A, model, tool, imported, quoted or forwarded content as human assertions. Preserve exact raw content, speaker intent and embedding context; no source.origin/control/gold fields or provenance override.",
+    "identity": "Install manifest must explicitly bind cli/local and exact host agent_workspace=hermes audience to the isolated logical Agent. Host supplies platform=cli and primary; missing/wrong audience must fail closed. Changing a2a platform metadata to cli is forbidden.",
+    "new_session": "Omit --resume/--continue entirely for a clean session; same isolated arm home preserves only its authorized memory. Retain actual fresh id and prove distinct id plus no previous conversational history in query model input.",
+    "same_session": "Pass --resume <exact prior observed session_id> only when frozen journey requires continuation. No latest/title lookup, evaluator-built history, compressed-history injection or new source resubmission. Record requested and actual id and compression lineage.",
+    "lifecycle": "Use ordinary CLI initialize/prefetch/sync_turn/shutdown. Each chat -Q process performs native closure; freeze identical scheduling/drain allowance for A/B/C/D. No manual reflect/capture/hook calls, direct Claim writes or extra turns to force consolidation. Shutdown auxiliary calls and failures remain charged.",
+    "arms": "Apply this exact entry and lifecycle policy to all A/B/C/D before any formal run. Preserve arm definitions, model/provider, tools/permissions, raw/archive snapshot, source/query budget and context/memory allowances. A native memory must be enabled; Scope Recall disabled. B unrunnable remains no score, never repaired into a different baseline. No CLI C versus A2A controls.",
+    "attachments": "Preserve authorized versioned actual attachment/file paths, hashes and native tool access outcomes. --image is official but real attachment delivery/usage still needs evidence; do not replace images/files with planted descriptions.",
+    "usage": {
+      "do_not_use": "Top-level -z --usage-file bypasses classic CLI; dispatch does not forward resume. --usage-file has no effect on chat -Q. Never claim a missing file means zero usage.",
+      "public_export_argv": [
+        "<pinned HermesPython>",
+        "-m",
+        "hermes_cli.main",
+        "sessions",
+        "export",
+        "<absolute per-dispatch JSONL>",
+        "--format",
+        "jsonl",
+        "--session-id",
+        "<exact actual session id>"
+      ],
+      "reconciliation": "Official exported session metadata includes input_tokens/output_tokens/cache/reasoning/api_call_count. Capture before/after by physical session id; sum only nonnegative deltas across explicitly observed compression lineage. Do not double count cumulative snapshots on resume. Reject absent/ambiguous/decreasing usage as unknown and retain original reserve. Host source has best-effort flush; verify actual completed export, do not infer drain from rc=0.",
+      "ledger": "Export is postflight evidence, not a spending guard. Existing shared ledger must reserve declared maximum before any network request, bound tools/iterations/host retries and every primary/auxiliary call, reconcile actual usage and retain failures/reruns. A primary CLI invocation may make multiple API calls. Native public request events or existing bounded transport meter may supply correlation; no private monkeypatch. If every billable path cannot be guarded, dispatch is blocked.",
+      "independence": "Executor keeps content export private; public audit output is metadata/hash/count only. Grader alone reads gold. This auditor did not open any existing session database or sealed material."
+    },
+    "no_support_equivalence": "CLI evidence proves the explicitly named CLI entry only. It is not Telegram, desktop, all-Hermes-surfaces or A2A equivalence."
+  },
+  "a2a_preservation": {
+    "status": "RETAINED_SEPARATE_PROVENANCE_LIMITATION_AND_PRIOR_L2_FAILURE",
+    "evidence": [
+      "adapters/hermes/identity.py:116-125",
+      "core/worker.py:89,143-148"
+    ],
+    "meaning": "Authenticated A2A peer lacks human attestation and stays origin_unknown. Capture/raw recall may work; factual L2 roots intentionally exclude unknown. No spoofing, retrospective relabeling or erasure of original P11 failures/costs. CLI amendment does not waive existing isolation/source/authorization/deletion obligations or claim all Hermes paths passed."
+  },
+  "zero_model_evidence": {
+    "path": "F:\\SCOPERECALL更新项目\\worktrees\\scope-recall-runtime-integration\\.execution\\TEST-G0-HERMES-CLI-METHOD-v1\\receipt.json",
+    "sha256": "9898888e0e37381fcedca917d0dd31cbaeeebdcb03c4636cb66f4f1103b7ed47",
+    "status": "PASS_SOURCE_AND_PARSER_ONLY",
+    "checks_passed": 12,
+    "model_calls": 0,
+    "scope": "Real frozen argparse/text-reader code plus static lifecycle/resume/provider/usage source inspection. Full CLI conversation, installed provider lifecycle and semantic L1-L4 not executed or passed."
+  },
+  "required_before_formal_dispatch": [
+    "Explicit revised runner method binding, all-four-arm same-entry/config/isolation mapping, frozen source/package/host/config/tool identities and identical lifecycle/drain policy.",
+    "Existing P11/G2 real authorized public synthetic CLI chain: raw input -> persistent source -> automatic factual L2 -> distinct new session unprompted recall -> native delivery -> final behavior; preserve actual origin and each L1-L4 boundary. Resume, failure/cancel/truncate, isolation, attachment and recovery obligations remain.",
+    "No-network preflight proves hard shared budget guard, no unmetered host retries/tools/shutdown auxiliary calls, per-dispatch output/session/usage capture and raw-executor/gold-grader separation. Exact auxiliary slice stays within original allocation.",
+    "Final candidate and protocol hashes frozen; original thresholds/dataset/query and journey counts unchanged. Existing formal authorization/dependency conditions still apply; this method approval alone is not formal run permission."
+  ],
+  "unchanged_contracts": {
+    "sealed_fixture": {
+      "root": ".execution/TEST-EVAL-SEALED-120-v6",
+      "dataset_id": "TEST-EVAL-SEALED-120-v6",
+      "status": "SEALED_FOR_INDEPENDENT_REVIEW",
+      "schema_version": "scope-recall.eval-sealed.v6",
+      "independent_questions": 120,
+      "paired_variants": 240,
+      "paired_variants_are_not_independent_n": true,
+      "raw_records": 240,
+      "gold_records": 240,
+      "groups": 12,
+      "per_group": {
+        "positive": 4,
+        "negative": 3,
+        "ambiguous": 3
+      },
+      "files": [
+        {
+          "path": "manifest.json",
+          "bytes": 91126,
+          "sha256": "94e5388c8bb83807969d5bb596f59124ca2b02e765d690c42fe40d88ef898357"
+        },
+        {
+          "path": "fixture-manifest.json",
+          "bytes": 3067,
+          "sha256": "57ac235ed50fe086b15b5da712e4045c5f99e955ffb0424b16131d84b13e6044"
+        },
+        {
+          "path": "raw.jsonl",
+          "bytes": 205903,
+          "sha256": "75c9e0178dd0126ca33d44fcb84039a8ea9c09e4db62a4aaa3e4cd4e0924464c",
+          "visibility": "private_to_independent_executor"
+        },
+        {
+          "path": "gold.jsonl",
+          "bytes": 362064,
+          "sha256": "4ae850de48d11cb9ecc997f5aee51a175ab4e9561552934da3c2169d084229cc",
+          "visibility": "private_to_independent_grader"
+        }
+      ],
+      "control_only_fields_excluded_from_model_input": true,
+      "runtime_behavior_proof_in_fixture": false
+    },
+    "arms": [
+      {
+        "id": "A",
+        "name": "host_native_memory",
+        "configuration": "Host native memory enabled; Scope Recall disabled.",
+        "oracle_allowed": false
+      },
+      {
+        "id": "B",
+        "name": "baseline_578b",
+        "configuration": "Fixed plugin source at git commit 578b955802df753f2e2208e26eab6f71971285a0.",
+        "source_status": "Git commit exists; runnable old-plugin entry and compatibility remain unverified.",
+        "oracle_allowed": false,
+        "no_score_if_unrunnable": true
+      },
+      {
+        "id": "C",
+        "name": "final_new_scope_recall",
+        "configuration": "Final candidate after explicit source freeze; no additional memory, tokens, tools, or answers.",
+        "candidate_freeze_required": true,
+        "oracle_allowed": false
+      },
+      {
+        "id": "D",
+        "name": "archive_plus_simple_search",
+        "configuration": "Same archive and source snapshot plus deterministic simple search only; no complex plugin mechanism.",
+        "oracle_allowed": false
+      }
+    ],
+    "call_upper_bound": {
+      "per_arm_per_host": {
+        "independent_queries": 40,
+        "query_conditions_per_query": 2,
+        "query_submissions": 80,
+        "journeys": 8,
+        "rounds_per_journey": 8,
+        "journey_submissions": 64,
+        "primary_model_submissions": 144
+      },
+      "per_host_all_four_arms": 576,
+      "both_hosts_all_four_arms": 1152,
+      "interpretation": "The 1152 figure is the formal primary host-model submission upper bound: 4 arms x 2 hosts x (40 queries x 2 paired conditions + 8 journeys x 8 rounds). Auxiliary extraction, repair, allowance checks, or retries are not hidden in this number and must use the same declared ledger before freeze.",
+      "route_slices": {
+        "Hermes_formal_primary_Go_calls": 576,
+        "Codex_formal_desktop_submissions": 576
+      },
+      "retry_policy": "No unrecorded retry; first run and every rerun remain evidence."
+    },
+    "budget_and_reserve": {
+      "shared_persistent_ledger": ".execution/TEST-MODEL-BUDGET-V1/call-budget.sqlite3",
+      "total_api_folded_cap_usd": 20.0,
+      "total_api_folded_cap_micro_usd": 20000000,
+      "Go_route_total_call_cap": 8000,
+      "Go_route_input_cap_tokens": 64000000,
+      "Go_route_output_cap_tokens": 8000000,
+      "Codex_desktop_submission_cap": 1500,
+      "Codex_planning_input_cap_tokens": 40000000,
+      "Codex_planning_output_cap_tokens": 2000000,
+      "per_primary_request_reserve": {
+        "input_tokens": 32768,
+        "output_tokens": 4096
+      },
+      "mimo_auxiliary_reserve_output_tokens": 131072,
+      "reserve_rule": "Reserve maximum declared input/output and charge before network; reconcile actual usage; retain unknown usage on failure; never reset ledger or auto-retry.",
+      "formal_plan_estimate_usd": 19.59,
+      "estimate_is_not_bill_claim": true,
+      "auxiliary_ceiling_gap": "The current runtime meter supports shared caps but no P18 orchestrator declares the exact auxiliary extraction-call slice per arm. That slice must be frozen before execution; otherwise P18 is not executable."
+    },
+    "scoring_contract": {
+      "layers": [
+        "L1_record",
+        "L2_organization",
+        "L3_recall",
+        "L4_behavior"
+      ],
+      "l3_evidence_coverage_minimum": 0.9,
+      "l3_each_B_group_minimum": 0.8,
+      "l4_evidence_support_and_task_suitability_minimum": 0.9,
+      "l4_query_gate": "at least 36/40 per host; related and unrelated paired conditions both count",
+      "l4_journey_gate": "8/8 complete journeys per host; each journey uses its fixed 8-round budget",
+      "safety": "All determinate source/current-history/authorization/deletion/isolation assertions correct; any safety violation blocks.",
+      "reporting": "Full numerators, denominators, failures, reruns, uncertainty and Wilson intervals; never retain only the best run."
+    },
+    "fairness_and_blindness": {
+      "same_inputs_per_arm": true,
+      "same_host_model_tools_context_and_memory_budget": true,
+      "same_archive_snapshot": true,
+      "gold_or_control_fields_in_model_input": false,
+      "prewritten_claims_or_answers": false,
+      "oracle_arm_selection": false,
+      "cross_host_or_cross_arm_database_handoff": false,
+      "old_plugin_failure": "If baseline 578b cannot run, record the missing capability and do not invent a score."
+    }
+  },
+  "audit_boundaries": {
+    "product_code_modified": false,
+    "host_code_modified": false,
+    "credentials_read": false,
+    "live_fleet_read": false,
+    "sealed_raw_gold_private_J_read": false,
+    "network_called": false,
+    "model_called": false,
+    "new_gate_added": false
+  },
+  "human_readable_companion": "g0-hermes-cli-method-adjudication-v1.md"
+}

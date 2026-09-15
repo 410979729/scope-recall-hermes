@@ -1,0 +1,45 @@
+{
+  "base_sha": "8c24a5e8ed77127bd62925d5d734e13c29b29a0c",
+  "wheels": [
+    {
+      "artifact": ".execution/TEST-P03-wheel/hermes_scope_recall-2.0.1-py3-none-any.whl",
+      "sha256": "29cadcf11cf1fcbf7c26ed84b894735427207640f84c33f46c084357f70cd269",
+      "schema_files": [],
+      "core_source_matches": {
+        "core/__init__.py": true,
+        "core/composition.py": true,
+        "core/schema.py": true,
+        "core/storage.py": true
+      },
+      "result": "failed_missing_contract_package_data"
+    },
+    {
+      "artifact": ".execution/TEST-P03-wheel-v2/hermes_scope_recall-2.0.1-py3-none-any.whl",
+      "sha256": "4c4c7799fe5890168937ba783bdf5c702cd687766b3af55c593b9bafd9e59e73",
+      "schema_files": [
+        "scope_recall/contracts/consolidation_result.schema.json",
+        "scope_recall/contracts/forget_request.schema.json",
+        "scope_recall/contracts/recall_packet.schema.json",
+        "scope_recall/contracts/recall_request.schema.json",
+        "scope_recall/contracts/revise_request.schema.json",
+        "scope_recall/contracts/source_event.schema.json",
+        "scope_recall/contracts/task_receipt.schema.json"
+      ],
+      "core_source_matches": {
+        "core/__init__.py": true,
+        "core/composition.py": true,
+        "core/schema.py": true,
+        "core/storage.py": true
+      },
+      "result": "passed_installed_probe"
+    }
+  ],
+  "build_command": "python -B -m build --no-isolation --wheel --outdir .execution/TEST-P03-wheel-v2",
+  "build_exit_code": 0,
+  "build_duration_seconds": 5.9260726,
+  "install_command": "uv pip install --no-deps --no-index --reinstall <local wheel>",
+  "fix": "Include contracts/*.json in the package data; initial failure preserved verbatim",
+  "not_release": "Intermediate P03 package retains legacy distribution version 2.0.1; not a public release or final candidate",
+  "production_changes": 0,
+  "model_calls": 0
+}

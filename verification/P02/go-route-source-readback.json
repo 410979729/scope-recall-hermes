@@ -1,0 +1,28 @@
+{
+  "upstream_repo": "https://github.com/anomalyco/opencode",
+  "upstream_commit": "7c2199d84a5830f70a8250731a42ff958145b4d6",
+  "checked_at_ns": 1788668448817674300,
+  "files": {
+    "packages/console/app/src/routes/zen/util/handler.ts": "eb92c7905f5615fb7b59cf2e9a68d133187c0388653e903bb806a79cfb067221",
+    "packages/console/app/src/routes/zen/util/requestBody.ts": "4f5bfcf1cff011be67e327c9a23ae470e473ee8b9aacca8ec59ef101670aa9a7",
+    "packages/console/app/src/routes/zen/go/v1/usage.ts": "df396eb82e7aeb0a65b9d60c51942571bf66b2dca51af31db4881cdb4e243951",
+    "packages/console/app/src/routes/zen/go/v1/chat/completions.ts": "bc39e547d4afcd724d467f15eaa7cced9ac3110a8446aaac661624218a1933eb",
+    "packages/console/app/src/routes/zen/util/provider/openai-compatible.ts": "9c02dddc2a8a18a735a3f7f66ed26dfb0325c3a7fbb61148952f7114a4e68478"
+  },
+  "findings": [
+    "Go chat handler uses oa-compat and lite model list",
+    "Public GET /zen/go/v1/usage accepts the same bearer API key and returns rolling/weekly/monthly usage; no balance setting in that response",
+    "Observed public source passes the body through, changing model and adding stream usage options; no max_tokens conversion seen in these files. Downstream serving implementation remains unverified",
+    "MiMo official OpenAI Chat docs specify max_completion_tokens and tool_choice auto; non-auto selection is not a forced-call guarantee",
+    "The proxy retest checks actual 3072 finite nonzero vector output but the embedding response supplied no token usage"
+  ],
+  "sources": [
+    "https://opencode.ai/docs/go/",
+    "https://mimo.mi.com/docs/en-US/api/chat/openai-api",
+    "https://ai.google.dev/gemini-api/docs/openai",
+    "https://ai.google.dev/gemini-api/docs/pricing"
+  ],
+  "account_ui_attempt": "In-app browser created a public OpenCode tab, but two subsequent browser operations timed out; no authenticated account view or settings change was completed",
+  "private_interface_used": false,
+  "model_requests_for_source_lookup": 0
+}

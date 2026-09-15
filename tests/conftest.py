@@ -18,6 +18,7 @@ from scripts.execution_boundary import (
     ambient_active_hermes_home,
     validate_execution_boundary,
 )
+from scripts.test_directories import TestDirectory
 
 _DECLARED_REAL_HOME = str(os.environ.get("SCOPE_RECALL_REAL_HOME") or "").strip()
 _REAL_HOME = Path(_DECLARED_REAL_HOME or Path.home()).resolve(strict=False)
@@ -30,7 +31,7 @@ _TEST_BOUNDARY_PARENT = Path(
 ).resolve(strict=False)
 _TEST_BOUNDARY_PARENT.mkdir(parents=True, exist_ok=True)
 os.environ["SCOPE_RECALL_TEST_BOUNDARY_PARENT"] = str(_TEST_BOUNDARY_PARENT)
-_TEST_BOUNDARY = tempfile.TemporaryDirectory(
+_TEST_BOUNDARY = TestDirectory(
     prefix="scope.recall.test-boundary.",
     dir=_TEST_BOUNDARY_PARENT,
 )

@@ -1,0 +1,11 @@
+...........................                                              [100%]
+--------- generated xml file: C:\Temp\sr\TEST-v11-2r802jcu\junit.xml ----------
+============================ slowest 10 durations =============================
+0.06s setup    tests/unit/test_v11_context.py::test_model_cannot_supply_trusted_identity[database_path]
+0.04s call     tests/unit/test_check_runner.py::test_pytest_and_cleanup_success_is_zero
+0.02s call     tests/unit/test_check_runner.py::test_cleanup_failure_is_recorded_and_nonzero
+
+(7 durations < 0.005s hidden.  Use -vv to show these durations.)
+27 passed in 0.47s
+
+{"cleanup_exit_code": 0, "overall_exit_code": 0, "pytest_exit_code": 0, "transition_history": ["prepared", "pytest_started", "pytest_completed_waiting_cleanup", "cleanup_succeeded", "receipt_written"], "wrapper_exit_code": 0}

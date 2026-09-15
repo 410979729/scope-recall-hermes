@@ -1,0 +1,133 @@
+{
+  "kind": "isolated_native_import_and_exact_vector_smoke",
+  "host_callbacks_executed": false,
+  "model_calls": 0,
+  "script_sha256": "476e7a17ea6a697be089d00fb74ed6ca965089e125b8c74c948637c7dad94221",
+  "runs": [
+    {
+      "command": [
+        "F:\\SCOPERECALL\u66f4\u65b0\u9879\u76ee\\.venv-native-probe\\Scripts\\python.exe",
+        "-I",
+        "-B",
+        "F:\\SCOPERECALL\u66f4\u65b0\u9879\u76ee\\worktrees\\scope-recall-v1.1\\probes\\native_startup.py",
+        "--worker",
+        "F:\\SCOPERECALL\u66f4\u65b0\u9879\u76ee\\worktrees\\scope-recall-v1.1\\.execution\\TEST-P02-native-1788660504364727900",
+        "--create"
+      ],
+      "wall_seconds": 7.636830400035251,
+      "exit_code": 0,
+      "includes_fixture_creation": true,
+      "lancedb_version": "0.30.2",
+      "pyarrow_version": "24.0.0",
+      "native_import_seconds": 7.428542500012554,
+      "query_and_open_seconds": 0.04522099997848272,
+      "synthetic_neighbor": "TEST-A",
+      "embedding_api_calls": 0,
+      "semantic_evaluation": false
+    },
+    {
+      "command": [
+        "F:\\SCOPERECALL\u66f4\u65b0\u9879\u76ee\\.venv-native-probe\\Scripts\\python.exe",
+        "-I",
+        "-B",
+        "F:\\SCOPERECALL\u66f4\u65b0\u9879\u76ee\\worktrees\\scope-recall-v1.1\\probes\\native_startup.py",
+        "--worker",
+        "F:\\SCOPERECALL\u66f4\u65b0\u9879\u76ee\\worktrees\\scope-recall-v1.1\\.execution\\TEST-P02-native-1788660504364727900"
+      ],
+      "wall_seconds": 1.3810720999608748,
+      "exit_code": 0,
+      "includes_fixture_creation": false,
+      "lancedb_version": "0.30.2",
+      "pyarrow_version": "24.0.0",
+      "native_import_seconds": 1.1920438000233844,
+      "query_and_open_seconds": 0.03934509999817237,
+      "synthetic_neighbor": "TEST-A",
+      "embedding_api_calls": 0,
+      "semantic_evaluation": false
+    },
+    {
+      "command": [
+        "F:\\SCOPERECALL\u66f4\u65b0\u9879\u76ee\\.venv-native-probe\\Scripts\\python.exe",
+        "-I",
+        "-B",
+        "F:\\SCOPERECALL\u66f4\u65b0\u9879\u76ee\\worktrees\\scope-recall-v1.1\\probes\\native_startup.py",
+        "--worker",
+        "F:\\SCOPERECALL\u66f4\u65b0\u9879\u76ee\\worktrees\\scope-recall-v1.1\\.execution\\TEST-P02-native-1788660504364727900"
+      ],
+      "wall_seconds": 1.3742843000218272,
+      "exit_code": 0,
+      "includes_fixture_creation": false,
+      "lancedb_version": "0.30.2",
+      "pyarrow_version": "24.0.0",
+      "native_import_seconds": 1.1931166999856941,
+      "query_and_open_seconds": 0.034115000045858324,
+      "synthetic_neighbor": "TEST-A",
+      "embedding_api_calls": 0,
+      "semantic_evaluation": false
+    },
+    {
+      "command": [
+        "F:\\SCOPERECALL\u66f4\u65b0\u9879\u76ee\\.venv-native-probe\\Scripts\\python.exe",
+        "-I",
+        "-B",
+        "F:\\SCOPERECALL\u66f4\u65b0\u9879\u76ee\\worktrees\\scope-recall-v1.1\\probes\\native_startup.py",
+        "--worker",
+        "F:\\SCOPERECALL\u66f4\u65b0\u9879\u76ee\\worktrees\\scope-recall-v1.1\\.execution\\TEST-P02-native-1788660504364727900"
+      ],
+      "wall_seconds": 1.3585250999894924,
+      "exit_code": 0,
+      "includes_fixture_creation": false,
+      "lancedb_version": "0.30.2",
+      "pyarrow_version": "24.0.0",
+      "native_import_seconds": 1.1736989000346512,
+      "query_and_open_seconds": 0.03286509995814413,
+      "synthetic_neighbor": "TEST-A",
+      "embedding_api_calls": 0,
+      "semantic_evaluation": false
+    },
+    {
+      "command": [
+        "F:\\SCOPERECALL\u66f4\u65b0\u9879\u76ee\\.venv-native-probe\\Scripts\\python.exe",
+        "-I",
+        "-B",
+        "F:\\SCOPERECALL\u66f4\u65b0\u9879\u76ee\\worktrees\\scope-recall-v1.1\\probes\\native_startup.py",
+        "--worker",
+        "F:\\SCOPERECALL\u66f4\u65b0\u9879\u76ee\\worktrees\\scope-recall-v1.1\\.execution\\TEST-P02-native-1788660504364727900"
+      ],
+      "wall_seconds": 1.3586045000120066,
+      "exit_code": 0,
+      "includes_fixture_creation": false,
+      "lancedb_version": "0.30.2",
+      "pyarrow_version": "24.0.0",
+      "native_import_seconds": 1.1778283000458032,
+      "query_and_open_seconds": 0.03374089999124408,
+      "synthetic_neighbor": "TEST-A",
+      "embedding_api_calls": 0,
+      "semantic_evaluation": false
+    },
+    {
+      "command": [
+        "F:\\SCOPERECALL\u66f4\u65b0\u9879\u76ee\\.venv-native-probe\\Scripts\\python.exe",
+        "-I",
+        "-B",
+        "F:\\SCOPERECALL\u66f4\u65b0\u9879\u76ee\\worktrees\\scope-recall-v1.1\\probes\\native_startup.py",
+        "--worker",
+        "F:\\SCOPERECALL\u66f4\u65b0\u9879\u76ee\\worktrees\\scope-recall-v1.1\\.execution\\TEST-P02-native-1788660504364727900"
+      ],
+      "wall_seconds": 1.3635088999872096,
+      "exit_code": 0,
+      "includes_fixture_creation": false,
+      "lancedb_version": "0.30.2",
+      "pyarrow_version": "24.0.0",
+      "native_import_seconds": 1.179908299993258,
+      "query_and_open_seconds": 0.03309440001612529,
+      "synthetic_neighbor": "TEST-A",
+      "embedding_api_calls": 0,
+      "semantic_evaluation": false
+    }
+  ],
+  "valid_runs": 6,
+  "median_wall_seconds": 1.3688966000045184,
+  "maximum_wall_seconds": 7.636830400035251,
+  "limits": "Six fresh processes on this machine, OS cache uncontrolled; two manually supplied vectors. No semantic recall, real host startup, throughput or cancellation contract proven."
+}

@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "trace_request",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "protocol_version": {
+      "const": "1.1"
+    },
+    "request_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 100
+    },
+    "subject": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 240
+    },
+    "target": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 240
+    },
+    "max_hops": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 3
+    },
+    "max_nodes": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 64
+    },
+    "max_paths": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 30
+    },
+    "direction": {
+      "enum": [
+        "incoming",
+        "outgoing",
+        "both"
+      ]
+    },
+    "budget_bytes": {
+      "type": "integer",
+      "minimum": 1024,
+      "maximum": 65536
+    }
+  },
+  "required": [
+    "protocol_version",
+    "request_id",
+    "subject",
+    "max_hops",
+    "max_nodes",
+    "max_paths",
+    "direction",
+    "budget_bytes"
+  ]
+}

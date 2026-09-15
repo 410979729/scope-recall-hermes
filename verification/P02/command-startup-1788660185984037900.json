@@ -1,0 +1,74 @@
+{
+  "kind": "synthetic_command_startup_only",
+  "host_callback_tested": false,
+  "model_calls": 0,
+  "includes": "process startup + JSON + tiny isolated SQLite write/read; no LanceDB import",
+  "script_sha256": "8d866d2434182b9aa5680f4b14fa9889841ce1a9a6edef2126648b775adb2887",
+  "command": [
+    "F:\\SCOPERECALL\u66f4\u65b0\u9879\u76ee\\.venv\\Scripts\\python.exe",
+    "-I",
+    "-B",
+    "F:\\SCOPERECALL\u66f4\u65b0\u9879\u76ee\\worktrees\\scope-recall-v1.1\\probes\\codex\\hook_probe.py",
+    "--state-dir",
+    "F:\\SCOPERECALL\u66f4\u65b0\u9879\u76ee\\worktrees\\scope-recall-v1.1\\.execution\\TEST-P02-codex-command-1788660185291056700"
+  ],
+  "state_dir": "F:\\SCOPERECALL\u66f4\u65b0\u9879\u76ee\\worktrees\\scope-recall-v1.1\\.execution\\TEST-P02-codex-command-1788660185291056700",
+  "runs": [
+    {
+      "seconds": 0.09762259997660294,
+      "exit_code": 0,
+      "output_valid": true
+    },
+    {
+      "seconds": 0.06679870001971722,
+      "exit_code": 0,
+      "output_valid": true
+    },
+    {
+      "seconds": 0.06711709999945015,
+      "exit_code": 0,
+      "output_valid": true
+    },
+    {
+      "seconds": 0.06696750002447516,
+      "exit_code": 0,
+      "output_valid": true
+    },
+    {
+      "seconds": 0.06887850002385676,
+      "exit_code": 0,
+      "output_valid": true
+    },
+    {
+      "seconds": 0.06407469999976456,
+      "exit_code": 0,
+      "output_valid": true
+    },
+    {
+      "seconds": 0.06369350000750273,
+      "exit_code": 0,
+      "output_valid": true
+    },
+    {
+      "seconds": 0.06297969998558983,
+      "exit_code": 0,
+      "output_valid": true
+    },
+    {
+      "seconds": 0.06426620000274852,
+      "exit_code": 0,
+      "output_valid": true
+    },
+    {
+      "seconds": 0.06650570000056177,
+      "exit_code": 0,
+      "output_valid": true
+    }
+  ],
+  "median_seconds": 0.0666522000101395,
+  "maximum_seconds": 0.09762259997660294,
+  "valid_runs": 10,
+  "hooks_config": "F:\\SCOPERECALL\u66f4\u65b0\u9879\u76ee\\worktrees\\scope-recall-v1.1\\probes\\codex\\hooks.example.json",
+  "hooks_config_sha256": "db7e207e7f5330d28f14f28a0ff746460878b5b60f55d943e62456d4b75df34e",
+  "installed_in_active_profile": false
+}

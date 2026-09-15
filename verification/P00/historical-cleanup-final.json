@@ -1,0 +1,20 @@
+{
+  "classification": "historical_not_executed_this_turn",
+  "source_path": "F:\\Agents\\runtime\\windows\\hermes-yuheng\\workspace\\tasks\\scope-merge-72-73-20260905\\cleanup-final.json",
+  "record": {
+    "verified_absent": [
+      "F:\\t\\sr-m7273-20260905",
+      "F:\\Agents\\runtime\\windows\\hermes-yuheng\\workspace\\tmp\\scope-audit-20260905T095029Z\\source",
+      "F:\\t\\sr-m7273-checks",
+      "F:\\t\\sr-i71-20260905",
+      "F:\\t\\sr-i71-ci-checks"
+    ],
+    "no_active_clone_references": true,
+    "retained_evidence": [
+      "F:\\Agents\\runtime\\windows\\hermes-yuheng\\workspace\\tasks\\scope-merge-72-73-20260905",
+      "F:\\Agents\\runtime\\windows\\hermes-yuheng\\workspace\\tasks\\scope-issue71-20260905T1730Z",
+      "F:\\Agents\\runtime\\windows\\hermes-yuheng\\workspace\\archive\\scope-audit-20260905T095029Z\\final-508e9918"
+    ],
+    "ordinary_project_worktrees_and_live_instances": "untouched"
+  }
+}

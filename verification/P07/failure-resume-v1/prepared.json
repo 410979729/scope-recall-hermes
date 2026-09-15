@@ -1,0 +1,9 @@
+{
+  "environment_revision": "TEST-head-1",
+  "manifest_sha256": "53256f22268457d7255f639c84d308e6cab487737b045ddcb6cb92f3b26a3d3d",
+  "prepared_at": "2026-09-06T09:13:25.581844+00:00",
+  "source_refs": [
+    "event-340af03e73a39d27cd209a183277cca54a137c6ad3002aa515f4b5478d6fcd01@1",
+    "event-76281b15d43f711f926a350c95d280d447b871935650de969d9f507d79e66896@1"
+  ]
+}

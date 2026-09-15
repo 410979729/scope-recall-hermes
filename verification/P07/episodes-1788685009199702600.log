@@ -1,0 +1,66 @@
+........................F...s.........F........                          [100%]
+================================== FAILURES ===================================
+__ test_M15_explicit_clarification_updates_binding_and_preserves_old_version __
+
+app = (<scope_recall.core.composition.MemoryCore object at 0x0000023AD5ADF680>, TrustedContext(binding=InstanceBinding(agent...main', recent_messages=(), display_snapshot=None, import_provenance=None, task_anchor=None, environment_revision=None))
+tmp_path = WindowsPath('F:/SCOPERECALL更新项目/worktrees/scope-recall-v1.1/.execution/TEST-v11-hhwma6kn/scope.recall.test-boundary.vo18j4mn/temp/pytest-of-unknown/pytest-0/test_M15_explicit_clarificatio0')
+
+    def test_M15_explicit_clarification_updates_binding_and_preserves_old_version(app,tmp_path):
+        core,ctx=app
+        ctx=replace(ctx,task_anchor='TEST-one-work')
+        one,_,_=artifact(core,ctx,tmp_path,label='TEST-v1')
+        two,_,_=artifact(core,ctx,tmp_path,version=2,label='TEST-v2')
+        source=capture(core,ctx,'TEST 那个颜色不行。')
+        proposal=dict(mention='那个颜色',candidate_refs=[f'{one.ref}@1',f'{two.ref}@2'],resolved_ref=None,resolution='ambiguous',evidence_refs=[ref(source)])
+        original=apply(core,ctx,references=[proposal]).items[0]
+        clarification=capture(core,ctx,'刚才“那个颜色”说的是TEST-v2。')
+        updated=dict(proposal,evidence_refs=[ref(clarification)])
+        latest=apply(core,ctx,references=[updated]).items[0]
+        assert latest.ref==original.ref and latest.revision==2
+>       assert core.reference(ctx,latest.ref).payload['resolved_ref']==f'{two.ref}@2'
+E       AssertionError: assert None == 'artifact-d8a02a0a59e4a8c1cc8968911ad30ff0dc74d00689b0e9735707fef70c1984ec@2'
+
+tests\contract\test_v11_episodes.py:283: AssertionError
+_ test_non_confirmation_does_not_resolve_observed_artifact[\u5165\u53e3\u6d77\u62a5\u65c1\u8fb9\u662f\u5c01\u9762 v1\u3002-\u5165\u53e3\u6d77\u62a5] _
+
+app = (<scope_recall.core.composition.MemoryCore object at 0x0000023AD56D7740>, TrustedContext(binding=InstanceBinding(agent...main', recent_messages=(), display_snapshot=None, import_provenance=None, task_anchor=None, environment_revision=None))
+tmp_path = WindowsPath('F:/SCOPERECALL更新项目/worktrees/scope-recall-v1.1/.execution/TEST-v11-hhwma6kn/scope.recall.test-boundary.vo18j4mn/temp/pytest-of-unknown/pytest-0/test_non_confirmation_does_not1')
+raw = '入口海报旁边是封面 v1。', mention = '入口海报'
+
+    @pytest.mark.parametrize('raw,mention',[
+        ('入口海报有1个标题。','入口海报'),
+        ('入口海报旁边是封面 v1。','入口海报'),
+        ('如果第二张要改，就把它移到前面。','第二张'),
+        ('不是第二张。','第二张'),
+        ('入口海报 v1 是我要的吗？','入口海报'),
+        ('入口海报 v1.2。','入口海报'),
+    ])
+    def test_non_confirmation_does_not_resolve_observed_artifact(app,tmp_path,raw,mention):
+        core,ctx=app
+        one,_,_=artifact(core,ctx,tmp_path,key='TEST-a',label='入口海报')
+        two,_,_=artifact(core,ctx,tmp_path,key='TEST-b',label='封面')
+        display=DisplaySnapshot('observed',(ArtifactVersion(one.ref,1),ArtifactVersion(two.ref,1)))
+        source=capture(core,replace(ctx,display_snapshot=display),raw,display_snapshot=display.to_payload(),artifact_refs=[one.ref,two.ref])
+        mutation=apply(core,ctx,references=[dict(mention=mention,candidate_refs=[f'{one.ref}@1',f'{two.ref}@1'],resolved_ref=None,
+                                             resolution='ambiguous',evidence_refs=[ref(source)])]).items[0]
+>       assert core.reference(ctx,mutation.ref).payload['resolved_ref'] is None
+E       AssertionError: assert 'artifact-fdb53d1e8a919a3c6501f29ffec0282fe451fd8869ff8e0c1ce317621f684dfa@1' is None
+
+tests\contract\test_v11_episode_authority.py:57: AssertionError
+============================ slowest 10 durations =============================
+4.66s call     tests/contract/test_v11_episodes.py::test_long_episode_uses_bounded_segments_and_preserves_final_source
+0.11s call     tests/contract/test_v11_episode_authority.py::test_omitted_same_label_version_prevents_candidate_uniqueness
+0.10s call     tests/contract/test_v11_episodes.py::test_M13_M14_display_order_binds_version_only_when_actually_observed
+0.10s call     tests/contract/test_v11_episode_authority.py::test_stale_reference_head_can_be_clarified_as_new_version
+0.09s call     tests/contract/test_v11_episode_authority.py::test_hypothesis_and_negative_reference_texts_stay_unresolved
+0.09s call     tests/contract/test_v11_episodes.py::test_M15_explicit_clarification_updates_binding_and_preserves_old_version
+0.08s call     tests/contract/test_v11_episodes.py::test_M50_deleted_artifact_blocks_descriptions_references_resume_and_cached_release
+0.08s call     tests/contract/test_v11_episode_authority.py::test_non_confirmation_does_not_resolve_observed_artifact[\u5165\u53e3\u6d77\u62a5\u65c1\u8fb9\u662f\u5c01\u9762 v1\u3002-\u5165\u53e3\u6d77\u62a5]
+0.08s call     tests/contract/test_v11_episode_authority.py::test_non_confirmation_does_not_resolve_observed_artifact[\u4e0d\u662f\u7b2c\u4e8c\u5f20\u3002-\u7b2c\u4e8c\u5f20]
+0.08s call     tests/contract/test_v11_episode_authority.py::test_non_confirmation_does_not_resolve_observed_artifact[\u5165\u53e3\u6d77\u62a5 v1.2\u3002-\u5165\u53e3\u6d77\u62a5]
+=========================== short test summary info ===========================
+FAILED tests/contract/test_v11_episodes.py::test_M15_explicit_clarification_updates_binding_and_preserves_old_version
+FAILED tests/contract/test_v11_episode_authority.py::test_non_confirmation_does_not_resolve_observed_artifact[\u5165\u53e3\u6d77\u62a5\u65c1\u8fb9\u662f\u5c01\u9762 v1\u3002-\u5165\u53e3\u6d77\u62a5]
+2 failed, 44 passed, 1 skipped in 7.58s
+
+{"cleanup_exit_code": 0, "overall_exit_code": 1, "pytest_exit_code": 1, "transition_history": ["prepared", "pytest_started", "pytest_completed_waiting_cleanup", "cleanup_succeeded", "receipt_written"], "wrapper_exit_code": 0}

@@ -1,0 +1,1608 @@
+{
+  "scope": "P02 actual Windows desktop public-interface feasibility; not B01-B12/L1-L4 product acceptance",
+  "source_base": "f292eba31a153961f981bb745a5e8f65b29c01c3",
+  "current_probe_sha256": "b8b5eb02b3cf556266ecd354ba9d3b25ab6cf9fcb7d8ca0a059845855d3f5f08",
+  "observed_at_ns": 1788672440962707100,
+  "input_method": "Installed Computer Use @oai/sky, actual Codex native input and Send button",
+  "origin": "synthetic_agent_relay",
+  "desktop_package_version": "26.901.5280.0",
+  "codex_cli_version": "0.153.4",
+  "model": "gpt-5.6-luna",
+  "state_dir": "F:\\SCOPERECALL更新项目\\worktrees\\scope-recall-v1.1\\.execution\\TEST-P02-codex-desktop",
+  "task_ids": [
+    "01a07492-06f9-7a80-b8a0-744796c0e39e",
+    "01a07526-2007-7762-aae9-bea0566677d5"
+  ],
+  "ui_scenarios": [
+    {
+      "name": "first_plain_prefix_failure",
+      "sequences": [
+        9,
+        10,
+        11
+      ],
+      "duration_ms": 4311,
+      "result": "NO_MARKER",
+      "probe_sha256": "72ad4ae323800f690753af75a30df4f395043d5b80c8ff3804611cb154256346"
+    },
+    {
+      "name": "unique_nonce_strict_prefix_failure",
+      "sequences": [
+        12,
+        13,
+        14
+      ],
+      "duration_ms": 4890,
+      "result": "NO_MARKER",
+      "probe_sha256": null,
+      "source_boundary": "Intermediate uncommitted source hash was not recorded; strict plain TEST prefix prevented emission."
+    },
+    {
+      "name": "whitespace_only_fix_failure",
+      "sequences": [
+        15,
+        16
+      ],
+      "duration_ms": 2408,
+      "result": "NO_MARKER",
+      "probe_sha256": null,
+      "source_boundary": "Intermediate source hash not recorded; lstrip alone did not recognize desktop Markdown escapes."
+    },
+    {
+      "name": "escaped_prefix_fixed_tools",
+      "sequences": [
+        17,
+        18,
+        19,
+        20,
+        21,
+        22,
+        23,
+        24
+      ],
+      "duration_ms": 113148,
+      "probe_sha256": "498d64a2993f1c6f20f810a4dee954d2b8e62e574cefeed28edafa20ba5ff064"
+    },
+    {
+      "name": "first_SVG_attachment_public_path",
+      "sequences": [
+        25,
+        26,
+        27
+      ],
+      "duration_ms": 17128,
+      "probe_sha256": "6774c53ed2f93af945d12adec38b2948650f9a7f92c626fdf825d0f48c3644be"
+    },
+    {
+      "name": "two_same_name_SVGs_automatic_retention",
+      "sequences": [
+        32,
+        33
+      ],
+      "duration_ms": 4405,
+      "probe_sha256": "b8b5eb02b3cf556266ecd354ba9d3b25ab6cf9fcb7d8ca0a059845855d3f5f08"
+    },
+    {
+      "name": "fresh_context_desktop_SVG_reopen",
+      "sequences": [
+        34,
+        35,
+        36,
+        37,
+        38
+      ],
+      "duration_ms": 19318,
+      "probe_sha256": "b8b5eb02b3cf556266ecd354ba9d3b25ab6cf9fcb7d8ca0a059845855d3f5f08"
+    },
+    {
+      "name": "desktop_Interrupt_during_tool",
+      "sequences": [
+        39,
+        40
+      ],
+      "duration_ms": 24711,
+      "probe_sha256": "b8b5eb02b3cf556266ecd354ba9d3b25ab6cf9fcb7d8ca0a059845855d3f5f08"
+    },
+    {
+      "name": "desktop_resume_after_interrupt",
+      "sequences": [
+        41,
+        42
+      ],
+      "probe_sha256": "b8b5eb02b3cf556266ecd354ba9d3b25ab6cf9fcb7d8ca0a059845855d3f5f08",
+      "duration_ms": 3271
+    }
+  ],
+  "observations": [
+    {
+      "sequence": 9,
+      "event": "SessionStart",
+      "session_id": "01a07492-06f9-7a80-b8a0-744796c0e39e",
+      "turn_id": "",
+      "observed_ns": 1788669849400295700,
+      "metadata": {
+        "field_types": {
+          "session_id": "str",
+          "transcript_path": "str",
+          "cwd": "str",
+          "hook_event_name": "str",
+          "model": "str",
+          "permission_mode": "str",
+          "source": "str"
+        },
+        "payload_sha256": "c611f360e9217db314eabf2644cec2011146decb07595bf58cfc5fe3c0791ee6",
+        "payload_bytes": 415,
+        "test_probe_only": true,
+        "transcript_read": false
+      }
+    },
+    {
+      "sequence": 10,
+      "event": "UserPromptSubmit",
+      "session_id": "01a07492-06f9-7a80-b8a0-744796c0e39e",
+      "turn_id": "01a07507-e98a-7391-832a-e5ebfa0f5458",
+      "observed_ns": 1788669849716880900,
+      "metadata": {
+        "field_types": {
+          "session_id": "str",
+          "turn_id": "str",
+          "transcript_path": "str",
+          "cwd": "str",
+          "hook_event_name": "str",
+          "model": "str",
+          "permission_mode": "str",
+          "prompt": "str"
+        },
+        "payload_sha256": "efbe8551c208198ce60e166a01e2bfee58e533c6bba9b217c14dcbd4df0ce804",
+        "payload_bytes": 609,
+        "test_probe_only": true,
+        "transcript_read": false,
+        "prompt_characters": 69,
+        "prompt_contains_marker": false
+      }
+    },
+    {
+      "sequence": 11,
+      "event": "Stop",
+      "session_id": "01a07492-06f9-7a80-b8a0-744796c0e39e",
+      "turn_id": "01a07507-e98a-7391-832a-e5ebfa0f5458",
+      "observed_ns": 1788669852226131900,
+      "metadata": {
+        "field_types": {
+          "session_id": "str",
+          "turn_id": "str",
+          "transcript_path": "str",
+          "cwd": "str",
+          "hook_event_name": "str",
+          "model": "str",
+          "permission_mode": "str",
+          "stop_hook_active": "bool",
+          "last_assistant_message": "str"
+        },
+        "payload_sha256": "44ae1aa6633fbe88107d3da4a76e311a8706ddf587a9f1edf1f385cb511263b2",
+        "payload_bytes": 500,
+        "test_probe_only": true,
+        "transcript_read": false,
+        "last_assistant_message_characters": 9,
+        "last_assistant_message_contains_marker": false
+      }
+    },
+    {
+      "sequence": 12,
+      "event": "SessionStart",
+      "session_id": "01a07492-06f9-7a80-b8a0-744796c0e39e",
+      "turn_id": "",
+      "observed_ns": 1788670599573549700,
+      "metadata": {
+        "field_types": {
+          "session_id": "str",
+          "transcript_path": "str",
+          "cwd": "str",
+          "hook_event_name": "str",
+          "model": "str",
+          "permission_mode": "str",
+          "source": "str"
+        },
+        "payload_sha256": "c611f360e9217db314eabf2644cec2011146decb07595bf58cfc5fe3c0791ee6",
+        "payload_bytes": 415,
+        "test_probe_only": true,
+        "transcript_read": false
+      }
+    },
+    {
+      "sequence": 13,
+      "event": "UserPromptSubmit",
+      "session_id": "01a07492-06f9-7a80-b8a0-744796c0e39e",
+      "turn_id": "01a07513-5bfb-7191-87c6-68defade8a6b",
+      "observed_ns": 1788670599869448500,
+      "metadata": {
+        "field_types": {
+          "session_id": "str",
+          "turn_id": "str",
+          "transcript_path": "str",
+          "cwd": "str",
+          "hook_event_name": "str",
+          "model": "str",
+          "permission_mode": "str",
+          "prompt": "str"
+        },
+        "payload_sha256": "30d39be7b119fd8c83b02a76f414987d6ea358630a4b491c7d4a8f219166ca72",
+        "payload_bytes": 710,
+        "test_probe_only": true,
+        "transcript_read": false,
+        "prompt_characters": 242,
+        "prompt_contains_marker": false,
+        "prompt_contains_current_turn_marker": false
+      }
+    },
+    {
+      "sequence": 14,
+      "event": "Stop",
+      "session_id": "01a07492-06f9-7a80-b8a0-744796c0e39e",
+      "turn_id": "01a07513-5bfb-7191-87c6-68defade8a6b",
+      "observed_ns": 1788670602996690300,
+      "metadata": {
+        "field_types": {
+          "session_id": "str",
+          "turn_id": "str",
+          "transcript_path": "str",
+          "cwd": "str",
+          "hook_event_name": "str",
+          "model": "str",
+          "permission_mode": "str",
+          "stop_hook_active": "bool",
+          "last_assistant_message": "str"
+        },
+        "payload_sha256": "15276e543aaecd48610dd68c251a060a7032d90b2af2528a7adca8ba52139c4a",
+        "payload_bytes": 500,
+        "test_probe_only": true,
+        "transcript_read": false,
+        "last_assistant_message_characters": 9,
+        "last_assistant_message_contains_marker": false,
+        "last_assistant_message_contains_current_turn_marker": false
+      }
+    },
+    {
+      "sequence": 15,
+      "event": "UserPromptSubmit",
+      "session_id": "01a07492-06f9-7a80-b8a0-744796c0e39e",
+      "turn_id": "01a07517-ad7a-7221-ae0a-9fbc6f544c28",
+      "observed_ns": 1788670881561275200,
+      "metadata": {
+        "field_types": {
+          "session_id": "str",
+          "turn_id": "str",
+          "transcript_path": "str",
+          "cwd": "str",
+          "hook_event_name": "str",
+          "model": "str",
+          "permission_mode": "str",
+          "prompt": "str"
+        },
+        "payload_sha256": "58816c3879a2bae5534e2b8b8380b9c57c260603ca455d390144a4539e29d963",
+        "payload_bytes": 552,
+        "test_probe_only": true,
+        "transcript_read": false,
+        "prompt_characters": 87,
+        "prompt_contains_marker": false,
+        "prompt_contains_current_turn_marker": false,
+        "prompt_prefix_codepoints": [
+          84,
+          69,
+          83,
+          84,
+          92,
+          95,
+          83,
+          67,
+          79,
+          80,
+          69,
+          92,
+          95,
+          82,
+          69,
+          67,
+          65,
+          76,
+          76,
+          32,
+          82,
+          101,
+          112,
+          111,
+          114,
+          116,
+          32,
+          111,
+          110,
+          108,
+          121,
+          32
+        ],
+        "test_prefix_offset": -1,
+        "test_suffix_characters": 1
+      }
+    },
+    {
+      "sequence": 16,
+      "event": "Stop",
+      "session_id": "01a07492-06f9-7a80-b8a0-744796c0e39e",
+      "turn_id": "01a07517-ad7a-7221-ae0a-9fbc6f544c28",
+      "observed_ns": 1788670883526600100,
+      "metadata": {
+        "field_types": {
+          "session_id": "str",
+          "turn_id": "str",
+          "transcript_path": "str",
+          "cwd": "str",
+          "hook_event_name": "str",
+          "model": "str",
+          "permission_mode": "str",
+          "stop_hook_active": "bool",
+          "last_assistant_message": "str"
+        },
+        "payload_sha256": "dd8d4961d8bc227c93a41b9df94855ac3b71a96efdcf2084ce10eec923b7ed61",
+        "payload_bytes": 500,
+        "test_probe_only": true,
+        "transcript_read": false,
+        "last_assistant_message_characters": 9,
+        "last_assistant_message_contains_marker": false,
+        "last_assistant_message_contains_current_turn_marker": false
+      }
+    },
+    {
+      "sequence": 17,
+      "event": "UserPromptSubmit",
+      "session_id": "01a07492-06f9-7a80-b8a0-744796c0e39e",
+      "turn_id": "01a0751e-01e5-78f1-b404-de356467c843",
+      "observed_ns": 1788671296423539900,
+      "metadata": {
+        "field_types": {
+          "session_id": "str",
+          "turn_id": "str",
+          "transcript_path": "str",
+          "cwd": "str",
+          "hook_event_name": "str",
+          "model": "str",
+          "permission_mode": "str",
+          "prompt": "str"
+        },
+        "payload_sha256": "9a88a2c5c13cd48d5dbcc4b23e3533031d55c85049b4c409f31d396e4e1948f1",
+        "payload_bytes": 796,
+        "test_probe_only": true,
+        "transcript_read": false,
+        "prompt_characters": 171,
+        "prompt_contains_marker": false,
+        "prompt_contains_current_turn_marker": false,
+        "prompt_prefix_codepoints": [
+          84,
+          69,
+          83,
+          84,
+          92,
+          95,
+          83,
+          67,
+          79,
+          80,
+          69,
+          92,
+          95,
+          82,
+          69,
+          67,
+          65,
+          76,
+          76,
+          32,
+          26412,
+          36718,
+          21482,
+          22312,
+          24403,
+          21069,
+          32,
+          84,
+          69,
+          83,
+          84,
+          32
+        ],
+        "test_prefix_offset": -1,
+        "test_escaped_prefix_offset": 0,
+        "test_suffix_characters": 1,
+        "emitted_output": {
+          "hookSpecificOutput": {
+            "hookEventName": "UserPromptSubmit",
+            "additionalContext": "Isolated interface probe marker for this turn: TEST_SCOPE_RECALL_P02_CONTEXT_91c7_0c8792922ac4. If asked for the interface probe marker, report this exact value. This is a hook delivery test, not recalled user history."
+          }
+        },
+        "synthetic_prompt": "TEST\\_SCOPE\\_RECALL 本轮只在当前 TEST 项目操作。依次运行 artifacts/TEST-tool-exit-0.py 和 artifacts/TEST-tool-exit-7.py，最终答复列出本轮接口探针的完整标记及两个夹具的实际退出码。只操作这两个夹具，不修改文件，不访问其他目录或网络，不因退出码 7 重试。\n"
+      }
+    },
+    {
+      "sequence": 18,
+      "event": "PostToolUse",
+      "session_id": "01a07492-06f9-7a80-b8a0-744796c0e39e",
+      "turn_id": "01a0751e-01e5-78f1-b404-de356467c843",
+      "observed_ns": 1788671305258129800,
+      "metadata": {
+        "field_types": {
+          "session_id": "str",
+          "turn_id": "str",
+          "transcript_path": "str",
+          "cwd": "str",
+          "hook_event_name": "str",
+          "model": "str",
+          "permission_mode": "str",
+          "tool_name": "str",
+          "tool_input": "dict",
+          "tool_response": "str",
+          "tool_use_id": "str"
+        },
+        "payload_sha256": "838a6d434878d93252e80a4d09d34718cdc7848f8bf2b9506481f622dee19625",
+        "payload_bytes": 917,
+        "test_probe_only": true,
+        "transcript_read": false,
+        "tool_name": "Bash",
+        "tool_use_id": "exec-7ee0b69c-a028-4e94-8363-1aa2220eb73c",
+        "response_keys": [],
+        "tool_input_json_characters": 51,
+        "tool_input": {
+          "command": "python artifacts/TEST-tool-exit-0.py"
+        },
+        "tool_response_json_characters": 314,
+        "tool_response": "python: \r\nLine |\r\n   2 |  python artifacts/TEST-tool-exit-0.py\r\n     |  ~~~~~~\r\n     | The term 'python' is not recognized as a name of a cmdlet, function, script file, or executable program.\r\nCheck the spelling of the name, or if a path was included, verify that the path is correct and try again.\r\n"
+      }
+    },
+    {
+      "sequence": 19,
+      "event": "PostToolUse",
+      "session_id": "01a07492-06f9-7a80-b8a0-744796c0e39e",
+      "turn_id": "01a0751e-01e5-78f1-b404-de356467c843",
+      "observed_ns": 1788671313191141200,
+      "metadata": {
+        "field_types": {
+          "session_id": "str",
+          "turn_id": "str",
+          "transcript_path": "str",
+          "cwd": "str",
+          "hook_event_name": "str",
+          "model": "str",
+          "permission_mode": "str",
+          "tool_name": "str",
+          "tool_input": "dict",
+          "tool_response": "str",
+          "tool_use_id": "str"
+        },
+        "payload_sha256": "6602640ef5c83026708160b5ca205d82a3ad0531208907e11285186482ae7432",
+        "payload_bytes": 903,
+        "test_probe_only": true,
+        "transcript_read": false,
+        "tool_name": "Bash",
+        "tool_use_id": "exec-e44a1b6e-b686-4ed6-8000-fd78eb5e905c",
+        "response_keys": [],
+        "tool_input_json_characters": 50,
+        "tool_input": {
+          "command": "py -3 artifacts/TEST-tool-exit-0.py"
+        },
+        "tool_response_json_characters": 301,
+        "tool_response": "py: \r\nLine |\r\n   2 |  py -3 artifacts/TEST-tool-exit-0.py\r\n     |  ~~\r\n     | The term 'py' is not recognized as a name of a cmdlet, function, script file, or executable program.\r\nCheck the spelling of the name, or if a path was included, verify that the path is correct and try again.\r\n"
+      }
+    },
+    {
+      "sequence": 20,
+      "event": "PostToolUse",
+      "session_id": "01a07492-06f9-7a80-b8a0-744796c0e39e",
+      "turn_id": "01a0751e-01e5-78f1-b404-de356467c843",
+      "observed_ns": 1788671320637784100,
+      "metadata": {
+        "field_types": {
+          "session_id": "str",
+          "turn_id": "str",
+          "transcript_path": "str",
+          "cwd": "str",
+          "hook_event_name": "str",
+          "model": "str",
+          "permission_mode": "str",
+          "tool_name": "str",
+          "tool_input": "dict",
+          "tool_response": "str",
+          "tool_use_id": "str"
+        },
+        "payload_sha256": "5cb845a336496980f04fb378eb41b88fb08c2754e4f168c358c35c03d9ff3b8d",
+        "payload_bytes": 922,
+        "test_probe_only": true,
+        "transcript_read": false,
+        "tool_name": "Bash",
+        "tool_use_id": "exec-1f91a280-9ba5-40e7-9b20-8745207db42a",
+        "response_keys": [],
+        "tool_input_json_characters": 52,
+        "tool_input": {
+          "command": "python3 artifacts/TEST-tool-exit-0.py"
+        },
+        "tool_response_json_characters": 318,
+        "tool_response": "python3: \r\nLine |\r\n   2 |  python3 artifacts/TEST-tool-exit-0.py\r\n     |  ~~~~~~~\r\n     | The term 'python3' is not recognized as a name of a cmdlet, function, script file, or executable program.\r\nCheck the spelling of the name, or if a path was included, verify that the path is correct and try again.\r\n"
+      }
+    },
+    {
+      "sequence": 21,
+      "event": "PostToolUse",
+      "session_id": "01a07492-06f9-7a80-b8a0-744796c0e39e",
+      "turn_id": "01a0751e-01e5-78f1-b404-de356467c843",
+      "observed_ns": 1788671332674275100,
+      "metadata": {
+        "field_types": {
+          "session_id": "str",
+          "turn_id": "str",
+          "transcript_path": "str",
+          "cwd": "str",
+          "hook_event_name": "str",
+          "model": "str",
+          "permission_mode": "str",
+          "tool_name": "str",
+          "tool_input": "dict",
+          "tool_response": "str",
+          "tool_use_id": "str"
+        },
+        "payload_sha256": "634e85ec6c9b2e9b8cd8a34432a814aae2a74ab018df7b7edf7f45fb1f63882c",
+        "payload_bytes": 890,
+        "test_probe_only": true,
+        "transcript_read": false,
+        "tool_name": "Bash",
+        "tool_use_id": "exec-0d51855c-9628-47e7-8b0f-f4ef82301aa3",
+        "response_keys": [],
+        "tool_input_json_characters": 126,
+        "tool_input": {
+          "command": "Get-Command python,py,python3,uv,node,pwsh -ErrorAction SilentlyContinue | Select-Object -ExpandProperty Source"
+        },
+        "tool_response_json_characters": 212,
+        "tool_response": "F:\\Agents\\runtime\\windows\\hermes-tianji\\bin\\uv.exe\r\nC:\\Program Files\\nodejs\\node.exe\r\nC:\\Users\\w4109\\.cache\\codex-runtimes\\codex-primary-runtime\\dependencies\\native\\powershell\\pwsh.exe\r\n"
+      }
+    },
+    {
+      "sequence": 22,
+      "event": "PostToolUse",
+      "session_id": "01a07492-06f9-7a80-b8a0-744796c0e39e",
+      "turn_id": "01a0751e-01e5-78f1-b404-de356467c843",
+      "observed_ns": 1788671347191509100,
+      "metadata": {
+        "field_types": {
+          "session_id": "str",
+          "turn_id": "str",
+          "transcript_path": "str",
+          "cwd": "str",
+          "hook_event_name": "str",
+          "model": "str",
+          "permission_mode": "str",
+          "tool_name": "str",
+          "tool_input": "dict",
+          "tool_response": "str",
+          "tool_use_id": "str"
+        },
+        "payload_sha256": "a221e9e49e6a08bb7013be4d864d3b327383b2906f11a3d428724517543719f5",
+        "payload_bytes": 661,
+        "test_probe_only": true,
+        "transcript_read": false,
+        "tool_name": "Bash",
+        "tool_use_id": "exec-0605b4cf-885c-4633-84eb-9558af5b022d",
+        "response_keys": [],
+        "tool_input_json_characters": 74,
+        "tool_input": {
+          "command": "uv run --offline --no-project artifacts/TEST-tool-exit-0.py"
+        },
+        "tool_response_json_characters": 35,
+        "tool_response": "TEST_SCOPE_RECALL_TOOL_EXIT_0\r\n"
+      }
+    },
+    {
+      "sequence": 23,
+      "event": "PostToolUse",
+      "session_id": "01a07492-06f9-7a80-b8a0-744796c0e39e",
+      "turn_id": "01a0751e-01e5-78f1-b404-de356467c843",
+      "observed_ns": 1788671352138060600,
+      "metadata": {
+        "field_types": {
+          "session_id": "str",
+          "turn_id": "str",
+          "transcript_path": "str",
+          "cwd": "str",
+          "hook_event_name": "str",
+          "model": "str",
+          "permission_mode": "str",
+          "tool_name": "str",
+          "tool_input": "dict",
+          "tool_response": "str",
+          "tool_use_id": "str"
+        },
+        "payload_sha256": "3d6998f30df7b6b72bd282e547266437a99b1e43587766132868e6e5b7047eda",
+        "payload_bytes": 661,
+        "test_probe_only": true,
+        "transcript_read": false,
+        "tool_name": "Bash",
+        "tool_use_id": "exec-49762cc0-185d-4558-bbe3-106d9f1b4e6c",
+        "response_keys": [],
+        "tool_input_json_characters": 74,
+        "tool_input": {
+          "command": "uv run --offline --no-project artifacts/TEST-tool-exit-7.py"
+        },
+        "tool_response_json_characters": 35,
+        "tool_response": "TEST_SCOPE_RECALL_TOOL_EXIT_7\r\n"
+      }
+    },
+    {
+      "sequence": 24,
+      "event": "Stop",
+      "session_id": "01a07492-06f9-7a80-b8a0-744796c0e39e",
+      "turn_id": "01a0751e-01e5-78f1-b404-de356467c843",
+      "observed_ns": 1788671409089981000,
+      "metadata": {
+        "field_types": {
+          "session_id": "str",
+          "turn_id": "str",
+          "transcript_path": "str",
+          "cwd": "str",
+          "hook_event_name": "str",
+          "model": "str",
+          "permission_mode": "str",
+          "stop_hook_active": "bool",
+          "last_assistant_message": "str"
+        },
+        "payload_sha256": "11ddc4db4d548ed976189ae582201748350354b8959058c9c85e74234b4b1609",
+        "payload_bytes": 645,
+        "test_probe_only": true,
+        "transcript_read": false,
+        "last_assistant_message_characters": 121,
+        "last_assistant_message_contains_marker": true,
+        "last_assistant_message_contains_current_turn_marker": true
+      }
+    },
+    {
+      "sequence": 25,
+      "event": "UserPromptSubmit",
+      "session_id": "01a07492-06f9-7a80-b8a0-744796c0e39e",
+      "turn_id": "01a07522-c615-7691-9935-b349fdf8b514",
+      "observed_ns": 1788671608780668900,
+      "metadata": {
+        "field_types": {
+          "session_id": "str",
+          "turn_id": "str",
+          "transcript_path": "str",
+          "cwd": "str",
+          "hook_event_name": "str",
+          "model": "str",
+          "permission_mode": "str",
+          "prompt": "str"
+        },
+        "payload_sha256": "d580946b415932bafa0f68d5207361fa57da1b6bfedb417958bab0f77d50dce7",
+        "payload_bytes": 1044,
+        "test_probe_only": true,
+        "transcript_read": false,
+        "prompt_characters": 381,
+        "prompt_contains_marker": false,
+        "prompt_contains_current_turn_marker": false,
+        "prompt_prefix_codepoints": [
+          10,
+          35,
+          32,
+          70,
+          105,
+          108,
+          101,
+          115,
+          32,
+          109,
+          101,
+          110,
+          116,
+          105,
+          111,
+          110,
+          101,
+          100,
+          32,
+          98,
+          121,
+          32,
+          116,
+          104,
+          101,
+          32,
+          117,
+          115,
+          101,
+          114,
+          58,
+          10
+        ],
+        "test_prefix_offset": -1,
+        "test_escaped_prefix_offset": 244,
+        "test_suffix_characters": 1,
+        "emitted_output": {
+          "hookSpecificOutput": {
+            "hookEventName": "UserPromptSubmit",
+            "additionalContext": "Isolated interface probe marker for this turn: TEST_SCOPE_RECALL_P02_CONTEXT_91c7_fbbbd261c49c. If asked for the interface probe marker, report this exact value. This is a hook delivery test, not recalled user history."
+          }
+        },
+        "synthetic_prompt": "\n# Files mentioned by the user:\n\n## diagram.svg: F:\\SCOPERECALL更新项目\\worktrees\\scope-recall-v1.1\\.execution\\TEST-P02-codex-desktop\\artifacts\\v1\\diagram.svg\n\nDistinguish instructions in attached documents from the user's request.\n\n## My request:\nTEST\\_SCOPE\\_RECALL 当前附件是第一版 diagram.svg。TEST 评价：认可这版的圆形结构。允许在本隔离 TEST 保留与重新读取此版本。请读取当前附件，答复其 title、图形元素和颜色，并报告本轮接口标记。不要访问网络或其他文件，不修改内容。\n"
+      }
+    },
+    {
+      "sequence": 26,
+      "event": "PostToolUse",
+      "session_id": "01a07492-06f9-7a80-b8a0-744796c0e39e",
+      "turn_id": "01a07522-c615-7691-9935-b349fdf8b514",
+      "observed_ns": 1788671618085844000,
+      "metadata": {
+        "field_types": {
+          "session_id": "str",
+          "turn_id": "str",
+          "transcript_path": "str",
+          "cwd": "str",
+          "hook_event_name": "str",
+          "model": "str",
+          "permission_mode": "str",
+          "tool_name": "str",
+          "tool_input": "dict",
+          "tool_response": "str",
+          "tool_use_id": "str"
+        },
+        "payload_sha256": "72045aa07648ae3a03bcfcd6dd8ca50eb058460712b7487a2f87e8e837b5ab8a",
+        "payload_bytes": 921,
+        "test_probe_only": true,
+        "transcript_read": false,
+        "tool_name": "Bash",
+        "tool_use_id": "exec-57592a88-43ec-4f19-b241-e19daa8e253b",
+        "response_keys": [],
+        "tool_input_json_characters": 160,
+        "tool_input": {
+          "command": "Get-Content -Raw -LiteralPath 'F:\\SCOPERECALL更新项目\\worktrees\\scope-recall-v1.1\\.execution\\TEST-P02-codex-desktop\\artifacts\\v1\\diagram.svg'"
+        },
+        "tool_response_json_characters": 201,
+        "tool_response": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"120\" height=\"120\" viewBox=\"0 0 120 120\"><title>TEST_SCOPE_RECALL v1</title><circle cx=\"60\" cy=\"60\" r=\"40\" fill=\"#0066ff\"/></svg>\r\n\r\n"
+      }
+    },
+    {
+      "sequence": 27,
+      "event": "Stop",
+      "session_id": "01a07492-06f9-7a80-b8a0-744796c0e39e",
+      "turn_id": "01a07522-c615-7691-9935-b349fdf8b514",
+      "observed_ns": 1788671625439444700,
+      "metadata": {
+        "field_types": {
+          "session_id": "str",
+          "turn_id": "str",
+          "transcript_path": "str",
+          "cwd": "str",
+          "hook_event_name": "str",
+          "model": "str",
+          "permission_mode": "str",
+          "stop_hook_active": "bool",
+          "last_assistant_message": "str"
+        },
+        "payload_sha256": "9cf7413c9a2c067b046cd0b533a9ea4f052998f29919a90cf2943b390f268bac",
+        "payload_bytes": 809,
+        "test_probe_only": true,
+        "transcript_read": false,
+        "last_assistant_message_characters": 186,
+        "last_assistant_message_contains_marker": true,
+        "last_assistant_message_contains_current_turn_marker": true
+      }
+    },
+    {
+      "sequence": 28,
+      "event": "SessionStart",
+      "session_id": "01a07526-2007-7762-aae9-bea0566677d5",
+      "turn_id": "",
+      "observed_ns": 1788671832124088700,
+      "metadata": {
+        "field_types": {
+          "session_id": "str",
+          "transcript_path": "str",
+          "cwd": "str",
+          "hook_event_name": "str",
+          "model": "str",
+          "permission_mode": "str",
+          "source": "str"
+        },
+        "payload_sha256": "140d5ccccc482ac06ed574b61bf676b4255cd3aa9c8ac8b4fa59973bfccc4b3b",
+        "payload_bytes": 409,
+        "test_probe_only": true,
+        "transcript_read": false
+      }
+    },
+    {
+      "sequence": 29,
+      "event": "UserPromptSubmit",
+      "session_id": "01a07526-2007-7762-aae9-bea0566677d5",
+      "turn_id": "01a07526-20ac-7ed0-b13d-381668816b50",
+      "observed_ns": 1788671832410254100,
+      "metadata": {
+        "field_types": {
+          "session_id": "str",
+          "turn_id": "str",
+          "transcript_path": "str",
+          "cwd": "str",
+          "hook_event_name": "str",
+          "model": "str",
+          "permission_mode": "str",
+          "prompt": "str"
+        },
+        "payload_sha256": "c0aa3d03c94f0c05a1b1fc9f22ba283ef12399810eee6009467f6ab3f62258be",
+        "payload_bytes": 535,
+        "test_probe_only": true,
+        "transcript_read": false,
+        "prompt_characters": 80,
+        "prompt_contains_marker": false,
+        "prompt_contains_current_turn_marker": false,
+        "prompt_prefix_codepoints": [
+          84,
+          69,
+          83,
+          84,
+          95,
+          83,
+          67,
+          79,
+          80,
+          69,
+          95,
+          82,
+          69,
+          67,
+          65,
+          76,
+          76,
+          32,
+          82,
+          101,
+          112,
+          108,
+          121,
+          32,
+          111,
+          110,
+          108,
+          121,
+          32,
+          84,
+          69,
+          83
+        ],
+        "test_prefix_offset": 0,
+        "test_escaped_prefix_offset": -1,
+        "test_suffix_characters": 0,
+        "emitted_output": {
+          "hookSpecificOutput": {
+            "hookEventName": "UserPromptSubmit",
+            "additionalContext": "Isolated interface probe marker for this turn: TEST_SCOPE_RECALL_P02_CONTEXT_91c7_7f35428abc2a. If asked for the interface probe marker, report this exact value. This is a hook delivery test, not recalled user history."
+          }
+        },
+        "synthetic_prompt": "TEST_SCOPE_RECALL Reply only TEST_CONTEXT_READY. Do not use tools or read files.",
+        "artifacts": []
+      }
+    },
+    {
+      "sequence": 30,
+      "event": "Stop",
+      "session_id": "01a07526-2007-7762-aae9-bea0566677d5",
+      "turn_id": "01a07526-20ac-7ed0-b13d-381668816b50",
+      "observed_ns": 1788671834625762000,
+      "metadata": {
+        "field_types": {
+          "session_id": "str",
+          "turn_id": "str",
+          "transcript_path": "str",
+          "cwd": "str",
+          "hook_event_name": "str",
+          "model": "str",
+          "permission_mode": "str",
+          "stop_hook_active": "bool",
+          "last_assistant_message": "str"
+        },
+        "payload_sha256": "969709c6b36f62cf11e61e777602b37138766c1c55363275c5bd6d4d1c84e4c0",
+        "payload_bytes": 502,
+        "test_probe_only": true,
+        "transcript_read": false,
+        "last_assistant_message_characters": 18,
+        "last_assistant_message_contains_marker": false,
+        "last_assistant_message_contains_current_turn_marker": false
+      }
+    },
+    {
+      "sequence": 31,
+      "event": "SessionEnd",
+      "session_id": "01a07526-2007-7762-aae9-bea0566677d5",
+      "turn_id": "",
+      "observed_ns": 1788671834952839500,
+      "metadata": {
+        "field_types": {
+          "session_id": "str",
+          "transcript_path": "str",
+          "cwd": "str",
+          "hook_event_name": "str",
+          "reason": "str"
+        },
+        "payload_sha256": "9a708428714dc6d59e29d20b2fc0e3634cdd22fb841c9a61c705c8e6a2e6e493",
+        "payload_bytes": 344,
+        "test_probe_only": true,
+        "transcript_read": false
+      }
+    },
+    {
+      "sequence": 32,
+      "event": "UserPromptSubmit",
+      "session_id": "01a07492-06f9-7a80-b8a0-744796c0e39e",
+      "turn_id": "01a07527-832b-75f3-8f95-c1c88c189bb3",
+      "observed_ns": 1788671919331335700,
+      "metadata": {
+        "field_types": {
+          "session_id": "str",
+          "turn_id": "str",
+          "transcript_path": "str",
+          "cwd": "str",
+          "hook_event_name": "str",
+          "model": "str",
+          "permission_mode": "str",
+          "prompt": "str"
+        },
+        "payload_sha256": "3360b531af681ad90e544afd0de47a8635bcc99bbbe13c7bdf94cce2f0f215a6",
+        "payload_bytes": 1200,
+        "test_probe_only": true,
+        "transcript_read": false,
+        "prompt_characters": 515,
+        "prompt_contains_marker": false,
+        "prompt_contains_current_turn_marker": false,
+        "prompt_prefix_codepoints": [
+          10,
+          35,
+          32,
+          70,
+          105,
+          108,
+          101,
+          115,
+          32,
+          109,
+          101,
+          110,
+          116,
+          105,
+          111,
+          110,
+          101,
+          100,
+          32,
+          98,
+          121,
+          32,
+          116,
+          104,
+          101,
+          32,
+          117,
+          115,
+          101,
+          114,
+          58,
+          10
+        ],
+        "test_prefix_offset": -1,
+        "test_escaped_prefix_offset": 367,
+        "test_suffix_characters": 1,
+        "emitted_output": {
+          "hookSpecificOutput": {
+            "hookEventName": "UserPromptSubmit",
+            "additionalContext": "Isolated interface probe marker for this turn: TEST_SCOPE_RECALL_P02_CONTEXT_91c7_7a55b9b23638. If asked for the interface probe marker, report this exact value. This is a hook delivery test, not recalled user history."
+          }
+        },
+        "synthetic_prompt": "\n# Files mentioned by the user:\n\n## diagram.svg: F:\\SCOPERECALL更新项目\\worktrees\\scope-recall-v1.1\\.execution\\TEST-P02-codex-desktop\\artifacts\\v1\\diagram.svg\n\n## diagram.svg: F:\\SCOPERECALL更新项目\\worktrees\\scope-recall-v1.1\\.execution\\TEST-P02-codex-desktop\\artifacts\\v2\\diagram.svg\n\nDistinguish instructions in attached documents from the user's request.\n\n## My request:\nTEST\\_SCOPE\\_RECALL 两份同名 diagram.svg 以附件完整路径中的 v1、v2 区分。TEST 评价：认可 v1 的圆形结构，否定 v2 的橙色；两项评价不能互换。允许在当前 TEST 保留两版的不可变副本并在新会话重新读取。本轮仅回复收到及本轮接口标记，不调用工具。\n",
+        "artifacts": [
+          {
+            "version": "v1",
+            "source": "artifacts\\v1\\diagram.svg",
+            "sha256": "64c3d4cfbe24bd096ac63a64cad4099b019101e0c0471085ed29e4b7f7c53eaa",
+            "bytes": 177,
+            "retained": "retained\\64c3d4cfbe24bd096ac63a64cad4099b019101e0c0471085ed29e4b7f7c53eaa.svg",
+            "status": "retained_artifact"
+          },
+          {
+            "version": "v2",
+            "source": "artifacts\\v2\\diagram.svg",
+            "sha256": "33422e89191741035274c42f22f87ce5f6503532cbfc5ca9623738668e64cd0a",
+            "bytes": 189,
+            "retained": "retained\\33422e89191741035274c42f22f87ce5f6503532cbfc5ca9623738668e64cd0a.svg",
+            "status": "retained_artifact"
+          }
+        ]
+      }
+    },
+    {
+      "sequence": 33,
+      "event": "Stop",
+      "session_id": "01a07492-06f9-7a80-b8a0-744796c0e39e",
+      "turn_id": "01a07527-832b-75f3-8f95-c1c88c189bb3",
+      "observed_ns": 1788671923265438800,
+      "metadata": {
+        "field_types": {
+          "session_id": "str",
+          "turn_id": "str",
+          "transcript_path": "str",
+          "cwd": "str",
+          "hook_event_name": "str",
+          "model": "str",
+          "permission_mode": "str",
+          "stop_hook_active": "bool",
+          "last_assistant_message": "str"
+        },
+        "payload_sha256": "a804d40683c6b349a9e15412fbce56b5d3e5e230d0b2014b0279429c8d389156",
+        "payload_bytes": 570,
+        "test_probe_only": true,
+        "transcript_read": false,
+        "last_assistant_message_characters": 59,
+        "last_assistant_message_contains_marker": true,
+        "last_assistant_message_contains_current_turn_marker": true
+      }
+    },
+    {
+      "sequence": 34,
+      "event": "SessionStart",
+      "session_id": "01a07526-2007-7762-aae9-bea0566677d5",
+      "turn_id": "",
+      "observed_ns": 1788672014506508300,
+      "metadata": {
+        "field_types": {
+          "session_id": "str",
+          "transcript_path": "str",
+          "cwd": "str",
+          "hook_event_name": "str",
+          "model": "str",
+          "permission_mode": "str",
+          "source": "str"
+        },
+        "payload_sha256": "9c69a6349bf4c1b46a7f9de8618146955184a726fd5f9301f12b464f19e98bac",
+        "payload_bytes": 415,
+        "test_probe_only": true,
+        "transcript_read": false
+      }
+    },
+    {
+      "sequence": 35,
+      "event": "UserPromptSubmit",
+      "session_id": "01a07526-2007-7762-aae9-bea0566677d5",
+      "turn_id": "01a07528-f1ef-7d50-9626-ce17068cc37b",
+      "observed_ns": 1788672014799742400,
+      "metadata": {
+        "field_types": {
+          "session_id": "str",
+          "turn_id": "str",
+          "transcript_path": "str",
+          "cwd": "str",
+          "hook_event_name": "str",
+          "model": "str",
+          "permission_mode": "str",
+          "prompt": "str"
+        },
+        "payload_sha256": "4c14f4d0e690b6acd3c2d17dc083e05840b3648e1c481877a1f245f14822a241",
+        "payload_bytes": 926,
+        "test_probe_only": true,
+        "transcript_read": false,
+        "prompt_characters": 281,
+        "prompt_contains_marker": false,
+        "prompt_contains_current_turn_marker": false,
+        "prompt_prefix_codepoints": [
+          84,
+          69,
+          83,
+          84,
+          92,
+          95,
+          83,
+          67,
+          79,
+          80,
+          69,
+          92,
+          95,
+          82,
+          69,
+          67,
+          65,
+          76,
+          76,
+          32,
+          26032,
+          20250,
+          35805,
+          25509,
+          21475,
+          26816,
+          26597,
+          12290,
+          21482,
+          35835,
+          21462,
+          24403
+        ],
+        "test_prefix_offset": -1,
+        "test_escaped_prefix_offset": 0,
+        "test_suffix_characters": 1,
+        "emitted_output": {
+          "hookSpecificOutput": {
+            "hookEventName": "UserPromptSubmit",
+            "additionalContext": "Isolated interface probe marker for this turn: TEST_SCOPE_RECALL_P02_CONTEXT_91c7_7e9b14eedc58. If asked for the interface probe marker, report this exact value. This is a hook delivery test, not recalled user history."
+          }
+        },
+        "synthetic_prompt": "TEST\\_SCOPE\\_RECALL 新会话接口检查。只读取当前目录下 retained/64c3d4cfbe24bd096ac63a64cad4099b019101e0c0471085ed29e4b7f7c53eaa.svg 和 retained/33422e89191741035274c42f22f87ce5f6503532cbfc5ca9623738668e64cd0a.svg。逐个报告实际 title、图形元素、颜色及 SHA256，报告本轮接口标记，并使用应用提供的文件预览工具打开第一份文件。不读取原始路径或其他文件，不访问网络，不修改内容。\n",
+        "artifacts": []
+      }
+    },
+    {
+      "sequence": 36,
+      "event": "PostToolUse",
+      "session_id": "01a07526-2007-7762-aae9-bea0566677d5",
+      "turn_id": "01a07528-f1ef-7d50-9626-ce17068cc37b",
+      "observed_ns": 1788672024703418600,
+      "metadata": {
+        "field_types": {
+          "session_id": "str",
+          "turn_id": "str",
+          "transcript_path": "str",
+          "cwd": "str",
+          "hook_event_name": "str",
+          "model": "str",
+          "permission_mode": "str",
+          "tool_name": "str",
+          "tool_input": "dict",
+          "tool_response": "dict",
+          "tool_use_id": "str"
+        },
+        "payload_sha256": "0db8d9bf88452524061842699deaae0ae1b940a4e91de65dfd149b41d6cd2b10",
+        "payload_bytes": 919,
+        "test_probe_only": true,
+        "transcript_read": false,
+        "tool_name": "mcp__codex_app__open_in_codex",
+        "tool_use_id": "exec-d5c8cc52-bdca-4261-92d6-0cd9d149952b",
+        "response_keys": [
+          "content",
+          "isError"
+        ],
+        "tool_input_json_characters": 205,
+        "tool_input": {
+          "target": {
+            "type": "file",
+            "path": "F:\\SCOPERECALL更新项目\\worktrees\\scope-recall-v1.1\\.execution\\TEST-P02-codex-desktop\\retained\\64c3d4cfbe24bd096ac63a64cad4099b019101e0c0471085ed29e4b7f7c53eaa.svg"
+          }
+        },
+        "tool_response_json_characters": 138,
+        "tool_response": {
+          "content": [
+            {
+              "type": "text",
+              "text": "{\"status\":\"queued\",\"threadId\":\"01a07526-2007-7762-aae9-bea0566677d5\"}"
+            }
+          ],
+          "isError": false
+        }
+      }
+    },
+    {
+      "sequence": 37,
+      "event": "PostToolUse",
+      "session_id": "01a07526-2007-7762-aae9-bea0566677d5",
+      "turn_id": "01a07528-f1ef-7d50-9626-ce17068cc37b",
+      "observed_ns": 1788672025410827200,
+      "metadata": {
+        "field_types": {
+          "session_id": "str",
+          "turn_id": "str",
+          "transcript_path": "str",
+          "cwd": "str",
+          "hook_event_name": "str",
+          "model": "str",
+          "permission_mode": "str",
+          "tool_name": "str",
+          "tool_input": "dict",
+          "tool_response": "str",
+          "tool_use_id": "str"
+        },
+        "payload_sha256": "2e4ebffcceb945cb3c388691d3cae52a249feef0944b0ba720dfdb4fe35b3b49",
+        "payload_bytes": 1611,
+        "test_probe_only": true,
+        "transcript_read": false,
+        "tool_name": "Bash",
+        "tool_use_id": "exec-11bf0a19-6647-494c-bb58-6fe85220541e",
+        "response_keys": [],
+        "tool_input_json_characters": 331,
+        "tool_input": {
+          "command": "$files = @('retained/64c3d4cfbe24bd096ac63a64cad4099b019101e0c0471085ed29e4b7f7c53eaa.svg','retained/33422e89191741035274c42f22f87ce5f6503532cbfc5ca9623738668e64cd0a.svg'); foreach ($f in $files) { Write-Output \"--- $f ---\"; Get-Content -LiteralPath $f -Raw; (Get-FileHash -LiteralPath $f -Algorithm SHA256).Hash }"
+        },
+        "tool_response_json_characters": 728,
+        "tool_response": "--- retained/64c3d4cfbe24bd096ac63a64cad4099b019101e0c0471085ed29e4b7f7c53eaa.svg ---\r\n<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"120\" height=\"120\" viewBox=\"0 0 120 120\"><title>TEST_SCOPE_RECALL v1</title><circle cx=\"60\" cy=\"60\" r=\"40\" fill=\"#0066ff\"/></svg>\r\n\r\n64C3D4CFBE24BD096AC63A64CAD4099B019101E0C0471085ED29E4B7F7C53EAA\r\n--- retained/33422e89191741035274c42f22f87ce5f6503532cbfc5ca9623738668e64cd0a.svg ---\r\n<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"120\" height=\"120\" viewBox=\"0 0 120 120\"><title>TEST_SCOPE_RECALL v2</title><rect x=\"20\" y=\"20\" width=\"80\" height=\"80\" fill=\"#ff8800\"/></svg>\r\n\r\n33422E89191741035274C42F22F87CE5F6503532CBFC5CA9623738668E64CD0A\r\n"
+      }
+    },
+    {
+      "sequence": 38,
+      "event": "Stop",
+      "session_id": "01a07526-2007-7762-aae9-bea0566677d5",
+      "turn_id": "01a07528-f1ef-7d50-9626-ce17068cc37b",
+      "observed_ns": 1788672032073360200,
+      "metadata": {
+        "field_types": {
+          "session_id": "str",
+          "turn_id": "str",
+          "transcript_path": "str",
+          "cwd": "str",
+          "hook_event_name": "str",
+          "model": "str",
+          "permission_mode": "str",
+          "stop_hook_active": "bool",
+          "last_assistant_message": "str"
+        },
+        "payload_sha256": "e1c356be7e6b5d64e75c84a9f3b100945e0c5d72ea223ad600e295476f5de04c",
+        "payload_bytes": 1063,
+        "test_probe_only": true,
+        "transcript_read": false,
+        "last_assistant_message_characters": 440,
+        "last_assistant_message_contains_marker": true,
+        "last_assistant_message_contains_current_turn_marker": true
+      }
+    },
+    {
+      "sequence": 39,
+      "event": "UserPromptSubmit",
+      "session_id": "01a07526-2007-7762-aae9-bea0566677d5",
+      "turn_id": "01a0752b-be94-7bd0-95fb-7bbcf9f8a351",
+      "observed_ns": 1788672196655488600,
+      "metadata": {
+        "field_types": {
+          "session_id": "str",
+          "turn_id": "str",
+          "transcript_path": "str",
+          "cwd": "str",
+          "hook_event_name": "str",
+          "model": "str",
+          "permission_mode": "str",
+          "prompt": "str"
+        },
+        "payload_sha256": "ac483f8468302c17275a37697d8c463e29c9876e8a1810df16924f234bf44664",
+        "payload_bytes": 783,
+        "test_probe_only": true,
+        "transcript_read": false,
+        "prompt_characters": 154,
+        "prompt_contains_marker": false,
+        "prompt_contains_current_turn_marker": false,
+        "prompt_prefix_codepoints": [
+          84,
+          69,
+          83,
+          84,
+          92,
+          95,
+          83,
+          67,
+          79,
+          80,
+          69,
+          92,
+          95,
+          82,
+          69,
+          67,
+          65,
+          76,
+          76,
+          32,
+          20013,
+          26029,
+          25509,
+          21475,
+          23454,
+          39564,
+          12290,
+          20351,
+          29992,
+          29616,
+          26377,
+          32
+        ],
+        "test_prefix_offset": -1,
+        "test_escaped_prefix_offset": 0,
+        "test_suffix_characters": 1,
+        "emitted_output": {
+          "hookSpecificOutput": {
+            "hookEventName": "UserPromptSubmit",
+            "additionalContext": "Isolated interface probe marker for this turn: TEST_SCOPE_RECALL_P02_CONTEXT_91c7_920120065314. If asked for the interface probe marker, report this exact value. This is a hook delivery test, not recalled user history."
+          }
+        },
+        "synthetic_prompt": "TEST\\_SCOPE\\_RECALL 中断接口实验。使用现有 PowerShell 工具只运行一次当前目录的 artifacts/TEST-interrupt.ps1；该夹具在本 TEST 记录开始状态、等待 45 秒、再记录结束状态。不读取其他文件或网络，不修改夹具，不重试。完成后只报告本轮接口标记。\n",
+        "artifacts": []
+      }
+    },
+    {
+      "sequence": 40,
+      "event": "Interrupt",
+      "session_id": "01a07526-2007-7762-aae9-bea0566677d5",
+      "turn_id": "01a0752b-be94-7bd0-95fb-7bbcf9f8a351",
+      "observed_ns": 1788672220933042900,
+      "metadata": {
+        "field_types": {
+          "session_id": "str",
+          "turn_id": "str",
+          "transcript_path": "str",
+          "cwd": "str",
+          "hook_event_name": "str",
+          "model": "str",
+          "permission_mode": "str"
+        },
+        "payload_sha256": "803a746a6184778fa58e46f5f23bf8dc0d0115907c54f437f33bcdd0b5b7a20e",
+        "payload_bytes": 443,
+        "test_probe_only": true,
+        "transcript_read": false
+      }
+    },
+    {
+      "sequence": 41,
+      "event": "UserPromptSubmit",
+      "session_id": "01a07526-2007-7762-aae9-bea0566677d5",
+      "turn_id": "01a0752d-dca1-7041-98c7-fdd2408919d3",
+      "observed_ns": 1788672335449036000,
+      "metadata": {
+        "field_types": {
+          "session_id": "str",
+          "turn_id": "str",
+          "transcript_path": "str",
+          "cwd": "str",
+          "hook_event_name": "str",
+          "model": "str",
+          "permission_mode": "str",
+          "prompt": "str"
+        },
+        "payload_sha256": "4d46976a515db9ecbd65010312b63df7e6ab70864c04d448b60d21afa478f468",
+        "payload_bytes": 630,
+        "test_probe_only": true,
+        "transcript_read": false,
+        "prompt_characters": 69,
+        "prompt_contains_marker": false,
+        "prompt_contains_current_turn_marker": false,
+        "prompt_prefix_codepoints": [
+          84,
+          69,
+          83,
+          84,
+          92,
+          95,
+          83,
+          67,
+          79,
+          80,
+          69,
+          92,
+          95,
+          82,
+          69,
+          67,
+          65,
+          76,
+          76,
+          32,
+          36825,
+          26159,
+          20013,
+          26029,
+          21518,
+          30340,
+          26032,
+          19968,
+          36718,
+          12290,
+          19981,
+          35201
+        ],
+        "test_prefix_offset": -1,
+        "test_escaped_prefix_offset": 0,
+        "test_suffix_characters": 1,
+        "emitted_output": {
+          "hookSpecificOutput": {
+            "hookEventName": "UserPromptSubmit",
+            "additionalContext": "Isolated interface probe marker for this turn: TEST_SCOPE_RECALL_P02_CONTEXT_91c7_20123a76a5ca. If asked for the interface probe marker, report this exact value. This is a hook delivery test, not recalled user history."
+          }
+        },
+        "synthetic_prompt": "TEST\\_SCOPE\\_RECALL 这是中断后的新一轮。不要重新运行等待夹具，不调用工具，只报告本轮额外上下文中的接口探针完整标记。\n",
+        "artifacts": []
+      }
+    },
+    {
+      "sequence": 42,
+      "event": "Stop",
+      "session_id": "01a07526-2007-7762-aae9-bea0566677d5",
+      "turn_id": "01a0752d-dca1-7041-98c7-fdd2408919d3",
+      "observed_ns": 1788672338250404500,
+      "metadata": {
+        "field_types": {
+          "session_id": "str",
+          "turn_id": "str",
+          "transcript_path": "str",
+          "cwd": "str",
+          "hook_event_name": "str",
+          "model": "str",
+          "permission_mode": "str",
+          "stop_hook_active": "bool",
+          "last_assistant_message": "str"
+        },
+        "payload_sha256": "68141331b12a0056f7c8aa33cd1ae18d9f5993db3d115d2dc10ad2138ac9a59d",
+        "payload_bytes": 538,
+        "test_probe_only": true,
+        "transcript_read": false,
+        "last_assistant_message_characters": 47,
+        "last_assistant_message_contains_marker": true,
+        "last_assistant_message_contains_current_turn_marker": true
+      }
+    }
+  ],
+  "fixtures": [
+    {
+      "path": "artifacts\\TEST-interrupt.ps1",
+      "sha256": "6396f4bb66b00599b1819357178244c9ba91db7b5dd896fbe691963a7f876639",
+      "bytes": 518,
+      "content_utf8": "$probeState = Join-Path $PSScriptRoot 'TEST-interrupt-state.json'\r\n@{phase='started'; process_id=$PID; observed_utc=[DateTime]::UtcNow.ToString('o')} | ConvertTo-Json -Compress | Set-Content -LiteralPath $probeState -Encoding utf8\r\nWrite-Output 'TEST_SCOPE_RECALL_WAIT_STARTED'\r\nStart-Sleep -Seconds 45\r\n@{phase='finished'; process_id=$PID; observed_utc=[DateTime]::UtcNow.ToString('o')} | ConvertTo-Json -Compress | Set-Content -LiteralPath $probeState -Encoding utf8\r\nWrite-Output 'TEST_SCOPE_RECALL_WAIT_FINISHED'\r\n"
+    },
+    {
+      "path": "artifacts\\TEST-tool-exit-0.py",
+      "sha256": "14281cdf232e5a24ec302397f306dc07db8cb689b74d8e732381ca902c8c19ee",
+      "bytes": 61,
+      "content_utf8": "print(\"TEST_SCOPE_RECALL_TOOL_EXIT_0\")\r\nraise SystemExit(0)\r\n"
+    },
+    {
+      "path": "artifacts\\TEST-tool-exit-7.py",
+      "sha256": "fa6a8bb729c843e33108abaed8d1dd53f1574adb1ad7c19139106a0f34f96474",
+      "bytes": 61,
+      "content_utf8": "print(\"TEST_SCOPE_RECALL_TOOL_EXIT_7\")\r\nraise SystemExit(7)\r\n"
+    },
+    {
+      "path": "artifacts\\v1\\diagram.svg",
+      "sha256": "64c3d4cfbe24bd096ac63a64cad4099b019101e0c0471085ed29e4b7f7c53eaa",
+      "bytes": 177,
+      "content_utf8": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"120\" height=\"120\" viewBox=\"0 0 120 120\"><title>TEST_SCOPE_RECALL v1</title><circle cx=\"60\" cy=\"60\" r=\"40\" fill=\"#0066ff\"/></svg>\r\n"
+    },
+    {
+      "path": "artifacts\\v2\\diagram.svg",
+      "sha256": "33422e89191741035274c42f22f87ce5f6503532cbfc5ca9623738668e64cd0a",
+      "bytes": 189,
+      "content_utf8": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"120\" height=\"120\" viewBox=\"0 0 120 120\"><title>TEST_SCOPE_RECALL v2</title><rect x=\"20\" y=\"20\" width=\"80\" height=\"80\" fill=\"#ff8800\"/></svg>\r\n"
+    }
+  ],
+  "retained_artifacts": [
+    {
+      "path": "retained\\33422e89191741035274c42f22f87ce5f6503532cbfc5ca9623738668e64cd0a.svg",
+      "sha256": "33422e89191741035274c42f22f87ce5f6503532cbfc5ca9623738668e64cd0a",
+      "bytes": 189,
+      "content_utf8": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"120\" height=\"120\" viewBox=\"0 0 120 120\"><title>TEST_SCOPE_RECALL v2</title><rect x=\"20\" y=\"20\" width=\"80\" height=\"80\" fill=\"#ff8800\"/></svg>\r\n"
+    },
+    {
+      "path": "retained\\64c3d4cfbe24bd096ac63a64cad4099b019101e0c0471085ed29e4b7f7c53eaa.svg",
+      "sha256": "64c3d4cfbe24bd096ac63a64cad4099b019101e0c0471085ed29e4b7f7c53eaa",
+      "bytes": 177,
+      "content_utf8": "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"120\" height=\"120\" viewBox=\"0 0 120 120\"><title>TEST_SCOPE_RECALL v1</title><circle cx=\"60\" cy=\"60\" r=\"40\" fill=\"#0066ff\"/></svg>\r\n"
+    }
+  ],
+  "new_context_initialization": {
+    "entry": "official Codex CLI, new context initialization only",
+    "command": [
+      "C:\\Users\\w4109\\AppData\\Local\\OpenAI\\Codex\\bin\\27d6a192e9c98618\\codex.exe",
+      "exec",
+      "-m",
+      "gpt-5.6-luna",
+      "-c",
+      "model_reasoning_effort=\"low\"",
+      "-C",
+      "F:\\SCOPERECALL更新项目\\worktrees\\scope-recall-v1.1\\.execution\\TEST-P02-codex-desktop",
+      "--json",
+      "TEST_SCOPE_RECALL Reply only TEST_CONTEXT_READY. Do not use tools or read files."
+    ],
+    "exit_code": 0,
+    "duration_seconds": 15.48499999998603,
+    "events": [
+      {
+        "type": "thread.started",
+        "thread_id": "01a07526-2007-7762-aae9-bea0566677d5"
+      },
+      {
+        "type": "turn.started"
+      },
+      {
+        "type": "item.completed",
+        "item": {
+          "id": "item_0",
+          "type": "agent_message",
+          "text": "TEST_CONTEXT_READY"
+        }
+      },
+      {
+        "type": "turn.completed",
+        "usage": {
+          "input_tokens": 14998,
+          "cached_input_tokens": 11008,
+          "cache_write_input_tokens": 0,
+          "output_tokens": 7,
+          "reasoning_output_tokens": 0
+        }
+      }
+    ],
+    "hidden_reasoning_retained": false,
+    "stderr_bytes": 773
+  },
+  "interrupt_observation": {
+    "ui_stop_turn": "01a0752b-be94-7bd0-95fb-7bbcf9f8a351",
+    "ui_turn_status": "interrupted",
+    "ui_turn_duration_ms": 24711,
+    "fixture_start": {
+      "phase": "started",
+      "process_id": 12528,
+      "observed_utc": "2026-09-06T05:23:21.3006403Z"
+    },
+    "post_interrupt_fixture_state": {
+      "observed_utc": "2026-09-06T05:24:06.3464206Z",
+      "phase": "finished",
+      "process_id": 12528
+    },
+    "observed_at_ns": 1788672317297884800,
+    "process_12528_absent_after_finish": true,
+    "underlying_fixture_stopped_by_UI": false,
+    "interpretation": "Desktop Interrupt is a turn event; this launched shell fixture still completed its 45-second wait. No claim of tool side-effect cancellation."
+  },
+  "ui_preview": {
+    "method": "Actual file preview tab after queued open_in_codex was displayed by navigating back to the TEST task",
+    "path": "retained/64c3d4cfbe24bd096ac63a64cad4099b019101e0c0471085ed29e4b7f7c53eaa.svg",
+    "observed_visual": "blue circle",
+    "claim": "Actual desktop display only; not semantic evaluation or visual similarity benchmark"
+  },
+  "history_correction": "Actual desktop UserPromptSubmit works. Three failed UI probes were caused by the TEST guard rejecting Markdown-escaped underscores, not a missing desktop hook. App-tool dispatched messages still did not trigger UserPromptSubmit in the earlier separate test.",
+  "gap_policy": [
+    "Bash PostToolUse provides command, tool id and stdout/stderr string in this tested route; no structured exit_code. Do not derive success from the presence of a callback. Known exit-0/7 fixtures and observed final response are preserved separately.",
+    "Native SVG attachment callback includes ordered file paths and the current request; no embedded SVG bytes. Probe copies only two explicitly authorized fixture paths under TEST; general product attachment retention is not implemented.",
+    "Desktop stop emitted Interrupt without final assistant text or PostToolUse completion for the waiting tool. The underlying shell still completed; retain interrupted/partial capture state.",
+    "SessionEnd is observed on CLI completion and earlier desktop lifecycle changes; closing this active app was not attempted, so normal desktop exit timing remains partial.",
+    "New TEST context was initialized once through the official CLI with TEST_CONTEXT_READY, then resumed and operated through actual desktop UI; it contains no old SVG prompt/answer history.",
+    "UI-generated synthetic prompts do not establish human_direct provenance.",
+    "Full source version/permissions/deletion/automatic semantic extraction remain P04-P18 obligations."
+  ],
+  "unintended_ui_action": {
+    "type": "synthetic draft was once queued in root task",
+    "resolution": "Removed that exact unsent synthetic queue item using its observed delete button before any model turn",
+    "user_messages_deleted": false,
+    "root_model_turn_created": false
+  },
+  "go_or_embedding_calls": 0,
+  "transcripts_read": false,
+  "hidden_reasoning_retained": false,
+  "codex_submitted_model_turns_since_base": 10,
+  "codex_model_turns_P02_known_total": 12,
+  "evidence_recheck": {
+    "scope": "Recompute assertions over actual saved public callback evidence; no host/model rerun",
+    "checks": {
+      "current_probe_identity": true,
+      "historical_failures_preserved": true,
+      "current_nonce_delivery": true,
+      "nonce_absent_from_current_prompt": true,
+      "distinct_per_turn_context": true,
+      "success_and_nonzero_fixture_callbacks": true,
+      "shell_exit_status_gap_explicit": true,
+      "same_name_distinct_paths_and_evaluation": true,
+      "immutable_source_capture": true,
+      "fixture_source_identity": true,
+      "new_session_reopens_exact_bytes": true,
+      "fresh_context_has_no_prior_SVG": true,
+      "public_preview_tool_observed": true,
+      "interrupt_and_actual_side_effect_boundary": true,
+      "missing_interrupted_completion_is_explicit": true,
+      "resume_after_interrupt": true,
+      "no_transcript_or_hidden_reasoning": true
+    },
+    "passed": 17,
+    "failed": 0,
+    "skipped": 0,
+    "duration_seconds": 0.01600000000325963
+  }
+}

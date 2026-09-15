@@ -1,0 +1,24 @@
+[
+  {
+    "directory": "F:\\SCOPERECALL\u66f4\u65b0\u9879\u76ee\\worktrees\\scope-recall-v1.1\\.execution\\TEST-P02-codex-desktop",
+    "purpose": "synthetic_P02_only",
+    "files": {
+      "TEST-artifact-v1.png": "deeb1d140c2073c96eb0d461c2e47673fd4c21fd23f3c175f30b543ca95bc6f0",
+      "TEST-artifact-v2.png": "8502cec8ad24b5db4ec05e451dbf9460d9bd6dfd3c5211693053f33e64c29311",
+      ".codex\\hooks.json": "db7e207e7f5330d28f14f28a0ff746460878b5b60f55d943e62456d4b75df34e"
+    },
+    "actual_host_run": "not_executed"
+  },
+  {
+    "directory": "F:\\SCOPERECALL\u66f4\u65b0\u9879\u76ee\\worktrees\\scope-recall-v1.1\\.execution\\TEST-P02-hermes",
+    "purpose": "synthetic_P02_only",
+    "files": {
+      "TEST-artifact-v1.png": "deeb1d140c2073c96eb0d461c2e47673fd4c21fd23f3c175f30b543ca95bc6f0",
+      "TEST-artifact-v2.png": "8502cec8ad24b5db4ec05e451dbf9460d9bd6dfd3c5211693053f33e64c29311",
+      "TEST-P02-profile.json": "a62c24ebbaab12a4c6d12b037e652ceedabf78467ba72772f9489aa10b6f4043",
+      "plugins\\scope-recall-p02\\plugin.yaml": "7cbe6f4d98d93ac56ef1db299cbf8046aa07385e90b3235e903b201f14b79090",
+      "plugins\\scope-recall-p02\\__init__.py": "c49429aa8f50c4568c9217b0eba5be396ef3137fd2991a7da8d57c3236a70d91"
+    },
+    "actual_host_run": "not_executed"
+  }
+]

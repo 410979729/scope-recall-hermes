@@ -1,0 +1,1022 @@
+{
+  "version": "1.1",
+  "dataset": "SYNTHETIC_TEST_ONLY",
+  "evaluation_status": "not_executed",
+  "gold_context_policy": "Only normalized raw events and query text may be delivered; titles, behavior IDs, then, must_not and setup descriptions are excluded.",
+  "cognitive": {
+    "M01": {
+      "input_status": "raw_text_ready",
+      "required_setup": null,
+      "source_case": "fixtures/cognitive_cases.jsonl#M01",
+      "loader": "tests/v11_support.py:raw_case_inputs",
+      "preseeded_claims": false,
+      "layers": {
+        "L1": "not_executed",
+        "L2": "not_executed",
+        "L3": "not_executed",
+        "L4": "not_executed"
+      }
+    },
+    "M02": {
+      "input_status": "raw_text_ready",
+      "required_setup": null,
+      "source_case": "fixtures/cognitive_cases.jsonl#M02",
+      "loader": "tests/v11_support.py:raw_case_inputs",
+      "preseeded_claims": false,
+      "layers": {
+        "L1": "not_executed",
+        "L2": "not_executed",
+        "L3": "not_executed",
+        "L4": "not_executed"
+      }
+    },
+    "M03": {
+      "input_status": "raw_text_ready",
+      "required_setup": null,
+      "source_case": "fixtures/cognitive_cases.jsonl#M03",
+      "loader": "tests/v11_support.py:raw_case_inputs",
+      "preseeded_claims": false,
+      "layers": {
+        "L1": "not_executed",
+        "L2": "not_executed",
+        "L3": "not_executed",
+        "L4": "not_executed"
+      }
+    },
+    "M04": {
+      "input_status": "raw_text_ready",
+      "required_setup": null,
+      "source_case": "fixtures/cognitive_cases.jsonl#M04",
+      "loader": "tests/v11_support.py:raw_case_inputs",
+      "preseeded_claims": false,
+      "layers": {
+        "L1": "not_executed",
+        "L2": "not_executed",
+        "L3": "not_executed",
+        "L4": "not_executed"
+      }
+    },
+    "M05": {
+      "input_status": "raw_text_ready",
+      "required_setup": null,
+      "source_case": "fixtures/cognitive_cases.jsonl#M05",
+      "loader": "tests/v11_support.py:raw_case_inputs",
+      "preseeded_claims": false,
+      "layers": {
+        "L1": "not_executed",
+        "L2": "not_executed",
+        "L3": "not_executed",
+        "L4": "not_executed"
+      }
+    },
+    "M06": {
+      "input_status": "raw_text_ready",
+      "required_setup": null,
+      "source_case": "fixtures/cognitive_cases.jsonl#M06",
+      "loader": "tests/v11_support.py:raw_case_inputs",
+      "preseeded_claims": false,
+      "layers": {
+        "L1": "not_executed",
+        "L2": "not_executed",
+        "L3": "not_executed",
+        "L4": "not_executed"
+      }
+    },
+    "M07": {
+      "input_status": "raw_text_ready",
+      "required_setup": null,
+      "source_case": "fixtures/cognitive_cases.jsonl#M07",
+      "loader": "tests/v11_support.py:raw_case_inputs",
+      "preseeded_claims": false,
+      "layers": {
+        "L1": "not_executed",
+        "L2": "not_executed",
+        "L3": "not_executed",
+        "L4": "not_executed"
+      }
+    },
+    "M08": {
+      "input_status": "raw_text_ready",
+      "required_setup": null,
+      "source_case": "fixtures/cognitive_cases.jsonl#M08",
+      "loader": "tests/v11_support.py:raw_case_inputs",
+      "preseeded_claims": false,
+      "layers": {
+        "L1": "not_executed",
+        "L2": "not_executed",
+        "L3": "not_executed",
+        "L4": "not_executed"
+      }
+    },
+    "M09": {
+      "input_status": "setup_required",
+      "required_setup": "isolated_git_branch_observation",
+      "source_case": "fixtures/cognitive_cases.jsonl#M09",
+      "loader": "tests/v11_support.py:raw_case_inputs",
+      "preseeded_claims": false,
+      "layers": {
+        "L1": "not_executed",
+        "L2": "not_executed",
+        "L3": "not_executed",
+        "L4": "not_executed"
+      }
+    },
+    "M10": {
+      "input_status": "setup_required",
+      "required_setup": "versioned_config_test_observations",
+      "source_case": "fixtures/cognitive_cases.jsonl#M10",
+      "loader": "tests/v11_support.py:raw_case_inputs",
+      "preseeded_claims": false,
+      "layers": {
+        "L1": "not_executed",
+        "L2": "not_executed",
+        "L3": "not_executed",
+        "L4": "not_executed"
+      }
+    },
+    "M11": {
+      "input_status": "raw_text_ready",
+      "required_setup": null,
+      "source_case": "fixtures/cognitive_cases.jsonl#M11",
+      "loader": "tests/v11_support.py:raw_case_inputs",
+      "preseeded_claims": false,
+      "layers": {
+        "L1": "not_executed",
+        "L2": "not_executed",
+        "L3": "not_executed",
+        "L4": "not_executed"
+      }
+    },
+    "M12": {
+      "input_status": "raw_text_ready",
+      "required_setup": null,
+      "source_case": "fixtures/cognitive_cases.jsonl#M12",
+      "loader": "tests/v11_support.py:raw_case_inputs",
+      "preseeded_claims": false,
+      "layers": {
+        "L1": "not_executed",
+        "L2": "not_executed",
+        "L3": "not_executed",
+        "L4": "not_executed"
+      }
+    },
+    "M13": {
+      "input_status": "setup_required",
+      "required_setup": "actual_ordered_svg_display",
+      "source_case": "fixtures/cognitive_cases.jsonl#M13",
+      "loader": "tests/v11_support.py:raw_case_inputs",
+      "preseeded_claims": false,
+      "layers": {
+        "L1": "not_executed",
+        "L2": "not_executed",
+        "L3": "not_executed",
+        "L4": "not_executed"
+      }
+    },
+    "M14": {
+      "input_status": "raw_text_ready",
+      "required_setup": null,
+      "source_case": "fixtures/cognitive_cases.jsonl#M14",
+      "loader": "tests/v11_support.py:raw_case_inputs",
+      "preseeded_claims": false,
+      "layers": {
+        "L1": "not_executed",
+        "L2": "not_executed",
+        "L3": "not_executed",
+        "L4": "not_executed"
+      }
+    },
+    "M15": {
+      "input_status": "raw_text_ready",
+      "required_setup": null,
+      "source_case": "fixtures/cognitive_cases.jsonl#M15",
+      "loader": "tests/v11_support.py:raw_case_inputs",
+      "preseeded_claims": false,
+      "layers": {
+        "L1": "not_executed",
+        "L2": "not_executed",
+        "L3": "not_executed",
+        "L4": "not_executed"
+      }
+    },
+    "M16": {
+      "input_status": "raw_text_ready",
+      "required_setup": null,
+      "source_case": "fixtures/cognitive_cases.jsonl#M16",
+      "loader": "tests/v11_support.py:raw_case_inputs",
+      "preseeded_claims": false,
+      "layers": {
+        "L1": "not_executed",
+        "L2": "not_executed",
+        "L3": "not_executed",
+        "L4": "not_executed"
+      }
+    },
+    "M17": {
+      "input_status": "raw_text_ready",
+      "required_setup": null,
+      "source_case": "fixtures/cognitive_cases.jsonl#M17",
+      "loader": "tests/v11_support.py:raw_case_inputs",
+      "preseeded_claims": false,
+      "layers": {
+        "L1": "not_executed",
+        "L2": "not_executed",
+        "L3": "not_executed",
+        "L4": "not_executed"
+      }
+    },
+    "M18": {
+      "input_status": "raw_text_ready",
+      "required_setup": null,
+      "source_case": "fixtures/cognitive_cases.jsonl#M18",
+      "loader": "tests/v11_support.py:raw_case_inputs",
+      "preseeded_claims": false,
+      "layers": {
+        "L1": "not_executed",
+        "L2": "not_executed",
+        "L3": "not_executed",
+        "L4": "not_executed"
+      }
+    },
+    "M19": {
+      "input_status": "raw_text_ready",
+      "required_setup": null,
+      "source_case": "fixtures/cognitive_cases.jsonl#M19",
+      "loader": "tests/v11_support.py:raw_case_inputs",
+      "preseeded_claims": false,
+      "layers": {
+        "L1": "not_executed",
+        "L2": "not_executed",
+        "L3": "not_executed",
+        "L4": "not_executed"
+      }
+    },
+    "M20": {
+      "input_status": "raw_text_ready",
+      "required_setup": null,
+      "source_case": "fixtures/cognitive_cases.jsonl#M20",
+      "loader": "tests/v11_support.py:raw_case_inputs",
+      "preseeded_claims": false,
+      "layers": {
+        "L1": "not_executed",
+        "L2": "not_executed",
+        "L3": "not_executed",
+        "L4": "not_executed"
+      }
+    },
+    "M21": {
+      "input_status": "raw_text_ready",
+      "required_setup": null,
+      "source_case": "fixtures/cognitive_cases.jsonl#M21",
+      "loader": "tests/v11_support.py:raw_case_inputs",
+      "preseeded_claims": false,
+      "layers": {
+        "L1": "not_executed",
+        "L2": "not_executed",
+        "L3": "not_executed",
+        "L4": "not_executed"
+      }
+    },
+    "M22": {
+      "input_status": "raw_text_ready",
+      "required_setup": null,
+      "source_case": "fixtures/cognitive_cases.jsonl#M22",
+      "loader": "tests/v11_support.py:raw_case_inputs",
+      "preseeded_claims": false,
+      "layers": {
+        "L1": "not_executed",
+        "L2": "not_executed",
+        "L3": "not_executed",
+        "L4": "not_executed"
+      }
+    },
+    "M23": {
+      "input_status": "setup_required",
+      "required_setup": "actual_artifact_layout_evidence_links",
+      "source_case": "fixtures/cognitive_cases.jsonl#M23",
+      "loader": "tests/v11_support.py:raw_case_inputs",
+      "preseeded_claims": false,
+      "layers": {
+        "L1": "not_executed",
+        "L2": "not_executed",
+        "L3": "not_executed",
+        "L4": "not_executed"
+      }
+    },
+    "M24": {
+      "input_status": "raw_text_ready",
+      "required_setup": null,
+      "source_case": "fixtures/cognitive_cases.jsonl#M24",
+      "loader": "tests/v11_support.py:raw_case_inputs",
+      "preseeded_claims": false,
+      "layers": {
+        "L1": "not_executed",
+        "L2": "not_executed",
+        "L3": "not_executed",
+        "L4": "not_executed"
+      }
+    },
+    "M25": {
+      "input_status": "setup_required",
+      "required_setup": "actual_capture_gap",
+      "source_case": "fixtures/cognitive_cases.jsonl#M25",
+      "loader": "tests/v11_support.py:raw_case_inputs",
+      "preseeded_claims": false,
+      "layers": {
+        "L1": "not_executed",
+        "L2": "not_executed",
+        "L3": "not_executed",
+        "L4": "not_executed"
+      }
+    },
+    "M26": {
+      "input_status": "raw_text_ready",
+      "required_setup": null,
+      "source_case": "fixtures/cognitive_cases.jsonl#M26",
+      "loader": "tests/v11_support.py:raw_case_inputs",
+      "preseeded_claims": false,
+      "layers": {
+        "L1": "not_executed",
+        "L2": "not_executed",
+        "L3": "not_executed",
+        "L4": "not_executed"
+      }
+    },
+    "M27": {
+      "input_status": "raw_text_ready",
+      "required_setup": null,
+      "source_case": "fixtures/cognitive_cases.jsonl#M27",
+      "loader": "tests/v11_support.py:raw_case_inputs",
+      "preseeded_claims": false,
+      "layers": {
+        "L1": "not_executed",
+        "L2": "not_executed",
+        "L3": "not_executed",
+        "L4": "not_executed"
+      }
+    },
+    "M28": {
+      "input_status": "raw_text_ready",
+      "required_setup": null,
+      "source_case": "fixtures/cognitive_cases.jsonl#M28",
+      "loader": "tests/v11_support.py:raw_case_inputs",
+      "preseeded_claims": false,
+      "layers": {
+        "L1": "not_executed",
+        "L2": "not_executed",
+        "L3": "not_executed",
+        "L4": "not_executed"
+      }
+    },
+    "M29": {
+      "input_status": "setup_required",
+      "required_setup": "dated_synthetic_quote_tool",
+      "source_case": "fixtures/cognitive_cases.jsonl#M29",
+      "loader": "tests/v11_support.py:raw_case_inputs",
+      "preseeded_claims": false,
+      "layers": {
+        "L1": "not_executed",
+        "L2": "not_executed",
+        "L3": "not_executed",
+        "L4": "not_executed"
+      }
+    },
+    "M30": {
+      "input_status": "setup_required",
+      "required_setup": "two_versioned_external_documents",
+      "source_case": "fixtures/cognitive_cases.jsonl#M30",
+      "loader": "tests/v11_support.py:raw_case_inputs",
+      "preseeded_claims": false,
+      "layers": {
+        "L1": "not_executed",
+        "L2": "not_executed",
+        "L3": "not_executed",
+        "L4": "not_executed"
+      }
+    },
+    "M31": {
+      "input_status": "raw_text_ready",
+      "required_setup": null,
+      "source_case": "fixtures/cognitive_cases.jsonl#M31",
+      "loader": "tests/v11_support.py:raw_case_inputs",
+      "preseeded_claims": false,
+      "layers": {
+        "L1": "not_executed",
+        "L2": "not_executed",
+        "L3": "not_executed",
+        "L4": "not_executed"
+      }
+    },
+    "M32": {
+      "input_status": "setup_required",
+      "required_setup": "isolated_command_success_observation",
+      "source_case": "fixtures/cognitive_cases.jsonl#M32",
+      "loader": "tests/v11_support.py:raw_case_inputs",
+      "preseeded_claims": false,
+      "layers": {
+        "L1": "not_executed",
+        "L2": "not_executed",
+        "L3": "not_executed",
+        "L4": "not_executed"
+      }
+    },
+    "M33": {
+      "input_status": "setup_required",
+      "required_setup": "actual_svg_counterexample_observation",
+      "source_case": "fixtures/cognitive_cases.jsonl#M33",
+      "loader": "tests/v11_support.py:raw_case_inputs",
+      "preseeded_claims": false,
+      "layers": {
+        "L1": "not_executed",
+        "L2": "not_executed",
+        "L3": "not_executed",
+        "L4": "not_executed"
+      }
+    },
+    "M34": {
+      "input_status": "setup_required",
+      "required_setup": "readonly_then_writable_directory_tool",
+      "source_case": "fixtures/cognitive_cases.jsonl#M34",
+      "loader": "tests/v11_support.py:raw_case_inputs",
+      "preseeded_claims": false,
+      "layers": {
+        "L1": "not_executed",
+        "L2": "not_executed",
+        "L3": "not_executed",
+        "L4": "not_executed"
+      }
+    },
+    "M35": {
+      "input_status": "raw_text_ready",
+      "required_setup": null,
+      "source_case": "fixtures/cognitive_cases.jsonl#M35",
+      "loader": "tests/v11_support.py:raw_case_inputs",
+      "preseeded_claims": false,
+      "layers": {
+        "L1": "not_executed",
+        "L2": "not_executed",
+        "L3": "not_executed",
+        "L4": "not_executed"
+      }
+    },
+    "M36": {
+      "input_status": "raw_text_ready",
+      "required_setup": null,
+      "source_case": "fixtures/cognitive_cases.jsonl#M36",
+      "loader": "tests/v11_support.py:raw_case_inputs",
+      "preseeded_claims": false,
+      "layers": {
+        "L1": "not_executed",
+        "L2": "not_executed",
+        "L3": "not_executed",
+        "L4": "not_executed"
+      }
+    },
+    "M37": {
+      "input_status": "raw_text_ready",
+      "required_setup": null,
+      "source_case": "fixtures/cognitive_cases.jsonl#M37",
+      "loader": "tests/v11_support.py:raw_case_inputs",
+      "preseeded_claims": false,
+      "layers": {
+        "L1": "not_executed",
+        "L2": "not_executed",
+        "L3": "not_executed",
+        "L4": "not_executed"
+      }
+    },
+    "M38": {
+      "input_status": "raw_text_ready",
+      "required_setup": null,
+      "source_case": "fixtures/cognitive_cases.jsonl#M38",
+      "loader": "tests/v11_support.py:raw_case_inputs",
+      "preseeded_claims": false,
+      "layers": {
+        "L1": "not_executed",
+        "L2": "not_executed",
+        "L3": "not_executed",
+        "L4": "not_executed"
+      }
+    },
+    "M39": {
+      "input_status": "raw_text_ready",
+      "required_setup": null,
+      "source_case": "fixtures/cognitive_cases.jsonl#M39",
+      "loader": "tests/v11_support.py:raw_case_inputs",
+      "preseeded_claims": false,
+      "layers": {
+        "L1": "not_executed",
+        "L2": "not_executed",
+        "L3": "not_executed",
+        "L4": "not_executed"
+      }
+    },
+    "M40": {
+      "input_status": "raw_text_ready",
+      "required_setup": null,
+      "source_case": "fixtures/cognitive_cases.jsonl#M40",
+      "loader": "tests/v11_support.py:raw_case_inputs",
+      "preseeded_claims": false,
+      "layers": {
+        "L1": "not_executed",
+        "L2": "not_executed",
+        "L3": "not_executed",
+        "L4": "not_executed"
+      }
+    },
+    "M41": {
+      "input_status": "raw_text_ready",
+      "required_setup": null,
+      "source_case": "fixtures/cognitive_cases.jsonl#M41",
+      "loader": "tests/v11_support.py:raw_case_inputs",
+      "preseeded_claims": false,
+      "layers": {
+        "L1": "not_executed",
+        "L2": "not_executed",
+        "L3": "not_executed",
+        "L4": "not_executed"
+      }
+    },
+    "M42": {
+      "input_status": "setup_required",
+      "required_setup": "large_raw_input_with_real_tail_segment",
+      "source_case": "fixtures/cognitive_cases.jsonl#M42",
+      "loader": "tests/v11_support.py:raw_case_inputs",
+      "preseeded_claims": false,
+      "layers": {
+        "L1": "not_executed",
+        "L2": "not_executed",
+        "L3": "not_executed",
+        "L4": "not_executed"
+      }
+    },
+    "M43": {
+      "input_status": "raw_text_ready",
+      "required_setup": null,
+      "source_case": "fixtures/cognitive_cases.jsonl#M43",
+      "loader": "tests/v11_support.py:raw_case_inputs",
+      "preseeded_claims": false,
+      "layers": {
+        "L1": "not_executed",
+        "L2": "not_executed",
+        "L3": "not_executed",
+        "L4": "not_executed"
+      }
+    },
+    "M44": {
+      "input_status": "setup_required",
+      "required_setup": "persisted_processing_watermark_and_no_new_sources",
+      "source_case": "fixtures/cognitive_cases.jsonl#M44",
+      "loader": "tests/v11_support.py:raw_case_inputs",
+      "preseeded_claims": false,
+      "layers": {
+        "L1": "not_executed",
+        "L2": "not_executed",
+        "L3": "not_executed",
+        "L4": "not_executed"
+      }
+    },
+    "M45": {
+      "input_status": "setup_required",
+      "required_setup": "10k_and_100k_distinct_project_events",
+      "source_case": "fixtures/cognitive_cases.jsonl#M45",
+      "loader": "tests/v11_support.py:raw_case_inputs",
+      "preseeded_claims": false,
+      "layers": {
+        "L1": "not_executed",
+        "L2": "not_executed",
+        "L3": "not_executed",
+        "L4": "not_executed"
+      }
+    },
+    "M46": {
+      "input_status": "setup_required",
+      "required_setup": "two_real_svg_versions_and_human_evaluations",
+      "source_case": "fixtures/cognitive_cases.jsonl#M46",
+      "loader": "tests/v11_support.py:raw_case_inputs",
+      "preseeded_claims": false,
+      "layers": {
+        "L1": "not_executed",
+        "L2": "not_executed",
+        "L3": "not_executed",
+        "L4": "not_executed"
+      }
+    },
+    "M47": {
+      "input_status": "setup_required",
+      "required_setup": "same_path_overwritten_with_two_artifact_fingerprints",
+      "source_case": "fixtures/cognitive_cases.jsonl#M47",
+      "loader": "tests/v11_support.py:raw_case_inputs",
+      "preseeded_claims": false,
+      "layers": {
+        "L1": "not_executed",
+        "L2": "not_executed",
+        "L3": "not_executed",
+        "L4": "not_executed"
+      }
+    },
+    "M48": {
+      "input_status": "setup_required",
+      "required_setup": "authorized_retained_artifact_and_actual_readback",
+      "source_case": "fixtures/cognitive_cases.jsonl#M48",
+      "loader": "tests/v11_support.py:raw_case_inputs",
+      "preseeded_claims": false,
+      "layers": {
+        "L1": "not_executed",
+        "L2": "not_executed",
+        "L3": "not_executed",
+        "L4": "not_executed"
+      }
+    },
+    "M49": {
+      "input_status": "setup_required",
+      "required_setup": "text_only_artifact_without_pixels",
+      "source_case": "fixtures/cognitive_cases.jsonl#M49",
+      "loader": "tests/v11_support.py:raw_case_inputs",
+      "preseeded_claims": false,
+      "layers": {
+        "L1": "not_executed",
+        "L2": "not_executed",
+        "L3": "not_executed",
+        "L4": "not_executed"
+      }
+    },
+    "M50": {
+      "input_status": "setup_required",
+      "required_setup": "real_artifact_derivations_and_explicit_delete",
+      "source_case": "fixtures/cognitive_cases.jsonl#M50",
+      "loader": "tests/v11_support.py:raw_case_inputs",
+      "preseeded_claims": false,
+      "layers": {
+        "L1": "not_executed",
+        "L2": "not_executed",
+        "L3": "not_executed",
+        "L4": "not_executed"
+      }
+    },
+    "M51": {
+      "input_status": "setup_required",
+      "required_setup": "retention_policy_and_advanced_injected_clock",
+      "source_case": "fixtures/cognitive_cases.jsonl#M51",
+      "loader": "tests/v11_support.py:raw_case_inputs",
+      "preseeded_claims": false,
+      "layers": {
+        "L1": "not_executed",
+        "L2": "not_executed",
+        "L3": "not_executed",
+        "L4": "not_executed"
+      }
+    },
+    "M52": {
+      "input_status": "raw_text_ready",
+      "required_setup": null,
+      "source_case": "fixtures/cognitive_cases.jsonl#M52",
+      "loader": "tests/v11_support.py:raw_case_inputs",
+      "preseeded_claims": false,
+      "layers": {
+        "L1": "not_executed",
+        "L2": "not_executed",
+        "L3": "not_executed",
+        "L4": "not_executed"
+      }
+    },
+    "M53": {
+      "input_status": "setup_required",
+      "required_setup": "explicit_suppress_then_history_then_delete",
+      "source_case": "fixtures/cognitive_cases.jsonl#M53",
+      "loader": "tests/v11_support.py:raw_case_inputs",
+      "preseeded_claims": false,
+      "layers": {
+        "L1": "not_executed",
+        "L2": "not_executed",
+        "L3": "not_executed",
+        "L4": "not_executed"
+      }
+    },
+    "M54": {
+      "input_status": "raw_text_ready",
+      "required_setup": null,
+      "source_case": "fixtures/cognitive_cases.jsonl#M54",
+      "loader": "tests/v11_support.py:raw_case_inputs",
+      "preseeded_claims": false,
+      "layers": {
+        "L1": "not_executed",
+        "L2": "not_executed",
+        "L3": "not_executed",
+        "L4": "not_executed"
+      }
+    },
+    "M55": {
+      "input_status": "raw_text_ready",
+      "required_setup": null,
+      "source_case": "fixtures/cognitive_cases.jsonl#M55",
+      "loader": "tests/v11_support.py:raw_case_inputs",
+      "preseeded_claims": false,
+      "layers": {
+        "L1": "not_executed",
+        "L2": "not_executed",
+        "L3": "not_executed",
+        "L4": "not_executed"
+      }
+    },
+    "M56": {
+      "input_status": "raw_text_ready",
+      "required_setup": null,
+      "source_case": "fixtures/cognitive_cases.jsonl#M56",
+      "loader": "tests/v11_support.py:raw_case_inputs",
+      "preseeded_claims": false,
+      "layers": {
+        "L1": "not_executed",
+        "L2": "not_executed",
+        "L3": "not_executed",
+        "L4": "not_executed"
+      }
+    },
+    "M57": {
+      "input_status": "setup_required",
+      "required_setup": "two_distinct_contact_ids_and_ambiguous_mention",
+      "source_case": "fixtures/cognitive_cases.jsonl#M57",
+      "loader": "tests/v11_support.py:raw_case_inputs",
+      "preseeded_claims": false,
+      "layers": {
+        "L1": "not_executed",
+        "L2": "not_executed",
+        "L3": "not_executed",
+        "L4": "not_executed"
+      }
+    },
+    "M58": {
+      "input_status": "setup_required",
+      "required_setup": "persist_then_inject_sqlite_unavailability",
+      "source_case": "fixtures/cognitive_cases.jsonl#M58",
+      "loader": "tests/v11_support.py:raw_case_inputs",
+      "preseeded_claims": false,
+      "layers": {
+        "L1": "not_executed",
+        "L2": "not_executed",
+        "L3": "not_executed",
+        "L4": "not_executed"
+      }
+    },
+    "M59": {
+      "input_status": "setup_required",
+      "required_setup": "real_capture_consolidation_recall_delivery_and_failed_tool",
+      "source_case": "fixtures/cognitive_cases.jsonl#M59",
+      "loader": "tests/v11_support.py:raw_case_inputs",
+      "preseeded_claims": false,
+      "layers": {
+        "L1": "not_executed",
+        "L2": "not_executed",
+        "L3": "not_executed",
+        "L4": "not_executed"
+      }
+    },
+    "M60": {
+      "input_status": "setup_required",
+      "required_setup": "consolidator_fault_with_persisted_raw_lexical_source",
+      "source_case": "fixtures/cognitive_cases.jsonl#M60",
+      "loader": "tests/v11_support.py:raw_case_inputs",
+      "preseeded_claims": false,
+      "layers": {
+        "L1": "not_executed",
+        "L2": "not_executed",
+        "L3": "not_executed",
+        "L4": "not_executed"
+      }
+    }
+  },
+  "journeys": {
+    "J01": {
+      "input_status": "setup_required",
+      "source_cases": [
+        "M13",
+        "M46",
+        "M47",
+        "M48",
+        "M20"
+      ],
+      "instructions_are_test_controller_data": true,
+      "host_runs": [
+        "Hermes actual supported profile",
+        "Codex actual supported profile"
+      ],
+      "required_evidence": [
+        "raw_event_refs_and_revisions",
+        "actual_consolidator_route",
+        "actual_packet",
+        "host_delivered_context",
+        "host_visible_result",
+        "costs_and_failures"
+      ],
+      "layers": {
+        "L1": "not_executed",
+        "L2": "not_executed",
+        "L3": "not_executed",
+        "L4": "not_executed"
+      }
+    },
+    "J02": {
+      "input_status": "setup_required",
+      "source_cases": [
+        "M06",
+        "M07",
+        "M09",
+        "M10",
+        "M34"
+      ],
+      "instructions_are_test_controller_data": true,
+      "host_runs": [
+        "Hermes actual supported profile",
+        "Codex actual supported profile"
+      ],
+      "required_evidence": [
+        "raw_event_refs_and_revisions",
+        "actual_consolidator_route",
+        "actual_packet",
+        "host_delivered_context",
+        "host_visible_result",
+        "costs_and_failures"
+      ],
+      "layers": {
+        "L1": "not_executed",
+        "L2": "not_executed",
+        "L3": "not_executed",
+        "L4": "not_executed"
+      }
+    },
+    "J03": {
+      "input_status": "setup_required",
+      "source_cases": [
+        "M16",
+        "M17",
+        "M20",
+        "M26",
+        "M27"
+      ],
+      "instructions_are_test_controller_data": true,
+      "host_runs": [
+        "Hermes actual supported profile",
+        "Codex actual supported profile"
+      ],
+      "required_evidence": [
+        "raw_event_refs_and_revisions",
+        "actual_consolidator_route",
+        "actual_packet",
+        "host_delivered_context",
+        "host_visible_result",
+        "costs_and_failures"
+      ],
+      "layers": {
+        "L1": "not_executed",
+        "L2": "not_executed",
+        "L3": "not_executed",
+        "L4": "not_executed"
+      }
+    },
+    "J04": {
+      "input_status": "setup_required",
+      "source_cases": [
+        "M36",
+        "M37",
+        "M38",
+        "M39",
+        "M40"
+      ],
+      "instructions_are_test_controller_data": true,
+      "host_runs": [
+        "Hermes actual supported profile",
+        "Codex actual supported profile"
+      ],
+      "required_evidence": [
+        "raw_event_refs_and_revisions",
+        "actual_consolidator_route",
+        "actual_packet",
+        "host_delivered_context",
+        "host_visible_result",
+        "costs_and_failures"
+      ],
+      "layers": {
+        "L1": "not_executed",
+        "L2": "not_executed",
+        "L3": "not_executed",
+        "L4": "not_executed"
+      }
+    },
+    "J05": {
+      "input_status": "setup_required",
+      "source_cases": [
+        "M08",
+        "M11",
+        "M12",
+        "M14",
+        "M15"
+      ],
+      "instructions_are_test_controller_data": true,
+      "host_runs": [
+        "Hermes actual supported profile",
+        "Codex actual supported profile"
+      ],
+      "required_evidence": [
+        "raw_event_refs_and_revisions",
+        "actual_consolidator_route",
+        "actual_packet",
+        "host_delivered_context",
+        "host_visible_result",
+        "costs_and_failures"
+      ],
+      "layers": {
+        "L1": "not_executed",
+        "L2": "not_executed",
+        "L3": "not_executed",
+        "L4": "not_executed"
+      }
+    },
+    "J06": {
+      "input_status": "setup_required",
+      "source_cases": [
+        "M01",
+        "M02",
+        "M03",
+        "M35",
+        "M55"
+      ],
+      "instructions_are_test_controller_data": true,
+      "host_runs": [
+        "Hermes actual supported profile",
+        "Codex actual supported profile"
+      ],
+      "required_evidence": [
+        "raw_event_refs_and_revisions",
+        "actual_consolidator_route",
+        "actual_packet",
+        "host_delivered_context",
+        "host_visible_result",
+        "costs_and_failures"
+      ],
+      "layers": {
+        "L1": "not_executed",
+        "L2": "not_executed",
+        "L3": "not_executed",
+        "L4": "not_executed"
+      }
+    },
+    "J07": {
+      "input_status": "setup_required",
+      "source_cases": [
+        "M21",
+        "M22",
+        "M23",
+        "M24",
+        "M25"
+      ],
+      "instructions_are_test_controller_data": true,
+      "host_runs": [
+        "Hermes actual supported profile",
+        "Codex actual supported profile"
+      ],
+      "required_evidence": [
+        "raw_event_refs_and_revisions",
+        "actual_consolidator_route",
+        "actual_packet",
+        "host_delivered_context",
+        "host_visible_result",
+        "costs_and_failures"
+      ],
+      "layers": {
+        "L1": "not_executed",
+        "L2": "not_executed",
+        "L3": "not_executed",
+        "L4": "not_executed"
+      }
+    },
+    "J08": {
+      "input_status": "setup_required",
+      "source_cases": [
+        "M43",
+        "M45",
+        "M50",
+        "M53",
+        "M58"
+      ],
+      "instructions_are_test_controller_data": true,
+      "host_runs": [
+        "Hermes actual supported profile",
+        "Codex actual supported profile"
+      ],
+      "required_evidence": [
+        "raw_event_refs_and_revisions",
+        "actual_consolidator_route",
+        "actual_packet",
+        "host_delivered_context",
+        "host_visible_result",
+        "costs_and_failures"
+      ],
+      "layers": {
+        "L1": "not_executed",
+        "L2": "not_executed",
+        "L3": "not_executed",
+        "L4": "not_executed"
+      }
+    }
+  }
+}

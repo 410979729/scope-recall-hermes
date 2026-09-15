@@ -1,0 +1,29 @@
+............................................F                            [100%]
+================================== FAILURES ===================================
+______ test_explicit_revision_cannot_borrow_unrelated_sentence_deadline _______
+
+app = (<scope_recall.core.composition.MemoryCore object at 0x000002623410AA50>, TrustedContext(binding=InstanceBinding(agent..., project_id='TEST-project', branch_id='TEST-main', recent_messages=(), display_snapshot=None, import_provenance=None))
+
+    def test_explicit_revision_cannot_borrow_unrelated_sentence_deadline(app):
+        core,ctx = app
+        item,_ = initial(core,ctx)
+        source = capture(core,ctx,"Please correct TEST-project 配色: 银色。另一份红色方案到2026-09-30截止。",when="2026-09-03T12:00:00Z")
+>       with pytest.raises(ContractError,match="time_not_grounded"):
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+E       Failed: DID NOT RAISE ContractError
+
+tests\contract\test_v11_claims.py:495: Failed
+============================ slowest 10 durations =============================
+0.06s call     tests/contract/test_v11_claims.py::test_retraction_blocks_current_but_keeps_history_and_past
+0.05s call     tests/contract/test_v11_claims.py::test_C36_ambiguous_correction_preserves_both_currents_and_raw_update
+0.05s call     tests/contract/test_v11_claims.py::test_two_real_writers_with_same_expected_revision_have_exactly_one_winner
+0.05s call     tests/contract/test_v11_claims.py::test_C04_M26_capture_explicit_attribute_correction_is_immediate_without_vectors
+0.05s call     tests/contract/test_v11_claims.py::test_old_human_quote_and_agent_echo_cannot_authorize_new_revision
+0.05s call     tests/contract/test_v11_claims.py::test_explicit_revision_compare_and_swap_and_no_silent_retries
+0.05s call     tests/contract/test_v11_claims.py::test_explicit_condition_variant_does_not_change_base
+0.05s call     tests/contract/test_v11_claims.py::test_M27_finite_exception_expires_and_does_not_permanently_change_regular_rule
+0.04s call     tests/contract/test_v11_claims.py::test_M40_reminder_does_not_complete_intention[human_direct-TEST-project \u5df2\u63d0\u9192\uff0c\u4f46\u5c1a\u672a\u5b8c\u6210\u6563\u70ed\u68c0\u67e5\u3002]
+0.04s call     tests/contract/test_v11_claims.py::test_C05_late_import_cannot_replace_current_and_recorded_time_does_not_become_valid_time
+=========================== short test summary info ===========================
+FAILED tests/contract/test_v11_claims.py::test_explicit_revision_cannot_borrow_unrelated_sentence_deadline
+1 failed, 44 passed in 2.56s

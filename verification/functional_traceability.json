@@ -1,0 +1,713 @@
+{
+  "version": "1.1",
+  "status": "P00_mapped_not_behavior_verified",
+  "behaviors": [
+    {
+      "id": "B01",
+      "features": [
+        "F01",
+        "F04",
+        "F06"
+      ],
+      "cases": [
+        "M01",
+        "M02",
+        "M03",
+        "M04",
+        "M05"
+      ],
+      "tasks": [
+        "P04",
+        "P05",
+        "P10"
+      ],
+      "gate_checks": [
+        "G0 representation and acceptance scope",
+        "G1 applicable persisted semantics",
+        "G2 real recall/delivery",
+        "G3 withheld behavior and closure"
+      ],
+      "baseline_status": "partial",
+      "current_implementation_locations": [
+        "journal_store.py:144",
+        "fact_repository.py:338"
+      ],
+      "verification_evidence": [
+        "docs/baseline.md"
+      ],
+      "v1_1_behavior_verification": "not_run",
+      "layers": {
+        "L1": "not_run",
+        "L2": "not_run",
+        "L3": "not_run",
+        "L4": "not_run"
+      }
+    },
+    {
+      "id": "B02",
+      "features": [
+        "F02"
+      ],
+      "cases": [
+        "M06",
+        "M07",
+        "M08",
+        "M09",
+        "M10"
+      ],
+      "tasks": [
+        "P07",
+        "P09"
+      ],
+      "gate_checks": [
+        "G0 representation and acceptance scope",
+        "G1 applicable persisted semantics",
+        "G2 real recall/delivery",
+        "G3 withheld behavior and closure"
+      ],
+      "baseline_status": "partial",
+      "current_implementation_locations": [
+        "sql_store.py:650"
+      ],
+      "verification_evidence": [
+        "docs/baseline.md"
+      ],
+      "v1_1_behavior_verification": "not_run",
+      "layers": {
+        "L1": "not_run",
+        "L2": "not_run",
+        "L3": "not_run",
+        "L4": "not_run"
+      }
+    },
+    {
+      "id": "B03",
+      "features": [
+        "F02",
+        "F06"
+      ],
+      "cases": [
+        "M11",
+        "M12",
+        "M13",
+        "M14",
+        "M15"
+      ],
+      "tasks": [
+        "P07",
+        "P08"
+      ],
+      "gate_checks": [
+        "G0 representation and acceptance scope",
+        "G1 applicable persisted semantics",
+        "G2 real recall/delivery",
+        "G3 withheld behavior and closure"
+      ],
+      "baseline_status": "partial",
+      "current_implementation_locations": [
+        "aliases.py",
+        "artifacts.py:65"
+      ],
+      "verification_evidence": [
+        "docs/baseline.md"
+      ],
+      "v1_1_behavior_verification": "not_run",
+      "layers": {
+        "L1": "not_run",
+        "L2": "not_run",
+        "L3": "not_run",
+        "L4": "not_run"
+      }
+    },
+    {
+      "id": "B04",
+      "features": [
+        "F03",
+        "F05"
+      ],
+      "cases": [
+        "M16",
+        "M17",
+        "M18",
+        "M19",
+        "M20"
+      ],
+      "tasks": [
+        "P08",
+        "P09",
+        "P11",
+        "P12"
+      ],
+      "gate_checks": [
+        "G0 representation and acceptance scope",
+        "G1 applicable persisted semantics",
+        "G2 real recall/delivery",
+        "G3 withheld behavior and closure"
+      ],
+      "baseline_status": "partial",
+      "current_implementation_locations": [
+        "provider.py:465",
+        "_internal/recall/prefetch.py:56"
+      ],
+      "verification_evidence": [
+        "docs/baseline.md"
+      ],
+      "v1_1_behavior_verification": "not_run",
+      "layers": {
+        "L1": "not_run",
+        "L2": "not_run",
+        "L3": "not_run",
+        "L4": "not_run"
+      }
+    },
+    {
+      "id": "B05",
+      "features": [
+        "F03",
+        "F06"
+      ],
+      "cases": [
+        "M21",
+        "M22",
+        "M23",
+        "M24",
+        "M25"
+      ],
+      "tasks": [
+        "P08",
+        "P09"
+      ],
+      "gate_checks": [
+        "G0 representation and acceptance scope",
+        "G1 applicable persisted semantics",
+        "G2 real recall/delivery",
+        "G3 withheld behavior and closure"
+      ],
+      "baseline_status": "partial",
+      "current_implementation_locations": [
+        "_internal/recall/orchestrator.py"
+      ],
+      "verification_evidence": [
+        "docs/baseline.md"
+      ],
+      "v1_1_behavior_verification": "not_run",
+      "layers": {
+        "L1": "not_run",
+        "L2": "not_run",
+        "L3": "not_run",
+        "L4": "not_run"
+      }
+    },
+    {
+      "id": "B06",
+      "features": [
+        "F04"
+      ],
+      "cases": [
+        "M26",
+        "M27",
+        "M28",
+        "M29",
+        "M30"
+      ],
+      "tasks": [
+        "P05",
+        "P06"
+      ],
+      "gate_checks": [
+        "G0 representation and acceptance scope",
+        "G1 applicable persisted semantics",
+        "G2 real recall/delivery",
+        "G3 withheld behavior and closure"
+      ],
+      "baseline_status": "partial",
+      "current_implementation_locations": [
+        "fact_repository.py:282",
+        "_internal/recall/orchestrator.py:82"
+      ],
+      "verification_evidence": [
+        "docs/baseline.md"
+      ],
+      "v1_1_behavior_verification": "not_run",
+      "layers": {
+        "L1": "not_run",
+        "L2": "not_run",
+        "L3": "not_run",
+        "L4": "not_run"
+      }
+    },
+    {
+      "id": "B07",
+      "features": [
+        "F05"
+      ],
+      "cases": [
+        "M31",
+        "M32",
+        "M33",
+        "M34",
+        "M35"
+      ],
+      "tasks": [
+        "P10"
+      ],
+      "gate_checks": [
+        "G0 representation and acceptance scope",
+        "G1 applicable persisted semantics",
+        "G2 real recall/delivery",
+        "G3 withheld behavior and closure"
+      ],
+      "baseline_status": "partial",
+      "current_implementation_locations": [
+        "experience_models.py:52"
+      ],
+      "verification_evidence": [
+        "docs/baseline.md"
+      ],
+      "v1_1_behavior_verification": "not_run",
+      "layers": {
+        "L1": "not_run",
+        "L2": "not_run",
+        "L3": "not_run",
+        "L4": "not_run"
+      }
+    },
+    {
+      "id": "B08",
+      "features": [
+        "F02",
+        "F05"
+      ],
+      "cases": [
+        "M36",
+        "M37",
+        "M38",
+        "M39",
+        "M40"
+      ],
+      "tasks": [
+        "P05",
+        "P07",
+        "P09",
+        "P10"
+      ],
+      "gate_checks": [
+        "G0 representation and acceptance scope",
+        "G1 applicable persisted semantics",
+        "G2 real recall/delivery",
+        "G3 withheld behavior and closure"
+      ],
+      "baseline_status": "missing",
+      "current_implementation_locations": [
+        "fact_repository.py:282",
+        "sql_store.py:650"
+      ],
+      "verification_evidence": [
+        "docs/baseline.md"
+      ],
+      "v1_1_behavior_verification": "not_run",
+      "layers": {
+        "L1": "not_run",
+        "L2": "not_run",
+        "L3": "not_run",
+        "L4": "not_run"
+      }
+    },
+    {
+      "id": "B09",
+      "features": [
+        "F01",
+        "F02",
+        "F09"
+      ],
+      "cases": [
+        "M41",
+        "M42",
+        "M43",
+        "M44",
+        "M45"
+      ],
+      "tasks": [
+        "P04",
+        "P10",
+        "P13"
+      ],
+      "gate_checks": [
+        "G0 representation and acceptance scope",
+        "G1 applicable persisted semantics",
+        "G2 real recall/delivery",
+        "G3 withheld behavior and closure"
+      ],
+      "baseline_status": "partial",
+      "current_implementation_locations": [
+        "journal_store.py:267",
+        "durable_work.py:177"
+      ],
+      "verification_evidence": [
+        "docs/baseline.md"
+      ],
+      "v1_1_behavior_verification": "not_run",
+      "layers": {
+        "L1": "not_run",
+        "L2": "not_run",
+        "L3": "not_run",
+        "L4": "not_run"
+      }
+    },
+    {
+      "id": "B10",
+      "features": [
+        "F06"
+      ],
+      "cases": [
+        "M46",
+        "M47",
+        "M48",
+        "M49",
+        "M50"
+      ],
+      "tasks": [
+        "P04",
+        "P07",
+        "P11",
+        "P12",
+        "P15"
+      ],
+      "gate_checks": [
+        "G0 representation and acceptance scope",
+        "G1 applicable persisted semantics",
+        "G2 real recall/delivery",
+        "G3 withheld behavior and closure"
+      ],
+      "baseline_status": "partial",
+      "current_implementation_locations": [
+        "artifacts.py:65"
+      ],
+      "verification_evidence": [
+        "docs/baseline.md"
+      ],
+      "v1_1_behavior_verification": "not_run",
+      "layers": {
+        "L1": "not_run",
+        "L2": "not_run",
+        "L3": "not_run",
+        "L4": "not_run"
+      }
+    },
+    {
+      "id": "B11",
+      "features": [
+        "F03",
+        "F05",
+        "F07"
+      ],
+      "cases": [
+        "M51",
+        "M52",
+        "M53",
+        "M54",
+        "M55"
+      ],
+      "tasks": [
+        "P06",
+        "P09",
+        "P10"
+      ],
+      "gate_checks": [
+        "G0 representation and acceptance scope",
+        "G1 applicable persisted semantics",
+        "G2 real recall/delivery",
+        "G3 withheld behavior and closure"
+      ],
+      "baseline_status": "partial",
+      "current_implementation_locations": [
+        "lifecycle_policy.py",
+        "privacy_purge_schema.py"
+      ],
+      "verification_evidence": [
+        "docs/baseline.md"
+      ],
+      "v1_1_behavior_verification": "not_run",
+      "layers": {
+        "L1": "not_run",
+        "L2": "not_run",
+        "L3": "not_run",
+        "L4": "not_run"
+      }
+    },
+    {
+      "id": "B12",
+      "features": [
+        "F06",
+        "F08",
+        "F09"
+      ],
+      "cases": [
+        "M56",
+        "M57",
+        "M58",
+        "M59",
+        "M60"
+      ],
+      "tasks": [
+        "P09",
+        "P13",
+        "P18"
+      ],
+      "gate_checks": [
+        "G0 representation and acceptance scope",
+        "G1 applicable persisted semantics",
+        "G2 real recall/delivery",
+        "G3 withheld behavior and closure"
+      ],
+      "baseline_status": "partial",
+      "current_implementation_locations": [
+        "_internal/recall/compiler.py:266"
+      ],
+      "verification_evidence": [
+        "docs/baseline.md"
+      ],
+      "v1_1_behavior_verification": "not_run",
+      "layers": {
+        "L1": "not_run",
+        "L2": "not_run",
+        "L3": "not_run",
+        "L4": "not_run"
+      }
+    }
+  ],
+  "base_sha": "578b955802df753f2e2208e26eab6f71971285a0",
+  "source_sha256": "7f5cb0b6fbe9d2891051d955fa780067470f258e3edb1206e650378212d14b73",
+  "public_input_routes": "fixtures/input_routes.json",
+  "features": [
+    {
+      "id": "F01",
+      "synthetic_cases": [
+        "C14",
+        "C34"
+      ],
+      "execution_status": "not_executed"
+    },
+    {
+      "id": "F02",
+      "synthetic_cases": [
+        "C01",
+        "C02",
+        "C03",
+        "C25",
+        "C26",
+        "C37"
+      ],
+      "execution_status": "not_executed"
+    },
+    {
+      "id": "F03",
+      "synthetic_cases": [
+        "C11",
+        "C12",
+        "C18",
+        "C19",
+        "C20",
+        "C21",
+        "C22",
+        "C31",
+        "C32"
+      ],
+      "execution_status": "not_executed"
+    },
+    {
+      "id": "F04",
+      "synthetic_cases": [
+        "C04",
+        "C05",
+        "C07",
+        "C33",
+        "C36",
+        "C38"
+      ],
+      "execution_status": "not_executed"
+    },
+    {
+      "id": "F05",
+      "synthetic_cases": [
+        "C06",
+        "C13",
+        "C15",
+        "C23",
+        "C24"
+      ],
+      "execution_status": "not_executed"
+    },
+    {
+      "id": "F06",
+      "synthetic_cases": [
+        "C16",
+        "C17"
+      ],
+      "execution_status": "not_executed"
+    },
+    {
+      "id": "F07",
+      "synthetic_cases": [
+        "C08",
+        "C09",
+        "C10",
+        "C30"
+      ],
+      "execution_status": "not_executed"
+    },
+    {
+      "id": "F08",
+      "synthetic_cases": [
+        "C29",
+        "C39"
+      ],
+      "execution_status": "not_executed"
+    },
+    {
+      "id": "F09",
+      "synthetic_cases": [
+        "C27",
+        "C28",
+        "C35",
+        "C40"
+      ],
+      "execution_status": "not_executed"
+    }
+  ],
+  "invariants": [
+    {
+      "id": "I01",
+      "synthetic_cases": [
+        "C28",
+        "C29",
+        "C32"
+      ],
+      "execution_status": "not_executed"
+    },
+    {
+      "id": "I02",
+      "synthetic_cases": [
+        "C12"
+      ],
+      "execution_status": "not_executed"
+    },
+    {
+      "id": "I03",
+      "synthetic_cases": [
+        "C34"
+      ],
+      "execution_status": "not_executed"
+    },
+    {
+      "id": "I04",
+      "synthetic_cases": [
+        "C14"
+      ],
+      "execution_status": "not_executed"
+    },
+    {
+      "id": "I05",
+      "synthetic_cases": [
+        "C01",
+        "C02",
+        "C13",
+        "C15",
+        "C16",
+        "C17",
+        "C23",
+        "C26",
+        "C37"
+      ],
+      "execution_status": "not_executed"
+    },
+    {
+      "id": "I06",
+      "synthetic_cases": [
+        "C03",
+        "C04",
+        "C05",
+        "C06",
+        "C07",
+        "C21",
+        "C24",
+        "C25",
+        "C36",
+        "C38"
+      ],
+      "execution_status": "not_executed"
+    },
+    {
+      "id": "I07",
+      "synthetic_cases": [
+        "C08",
+        "C09",
+        "C10",
+        "C30"
+      ],
+      "execution_status": "not_executed"
+    },
+    {
+      "id": "I08",
+      "synthetic_cases": [
+        "C11",
+        "C18",
+        "C19",
+        "C20",
+        "C22",
+        "C31"
+      ],
+      "execution_status": "not_executed"
+    },
+    {
+      "id": "I09",
+      "synthetic_cases": [
+        "C33"
+      ],
+      "execution_status": "not_executed"
+    },
+    {
+      "id": "I10",
+      "synthetic_cases": [
+        "C35"
+      ],
+      "execution_status": "not_executed"
+    },
+    {
+      "id": "I11",
+      "synthetic_cases": [
+        "C27"
+      ],
+      "execution_status": "not_executed"
+    },
+    {
+      "id": "I12",
+      "synthetic_cases": [
+        "C39"
+      ],
+      "execution_status": "not_executed"
+    },
+    {
+      "id": "I13",
+      "synthetic_cases": [
+        "C30"
+      ],
+      "execution_status": "not_executed"
+    },
+    {
+      "id": "I14",
+      "synthetic_cases": [
+        "C13",
+        "C24"
+      ],
+      "execution_status": "not_executed"
+    },
+    {
+      "id": "I15",
+      "synthetic_cases": [
+        "C40"
+      ],
+      "execution_status": "not_executed"
+    }
+  ]
+}

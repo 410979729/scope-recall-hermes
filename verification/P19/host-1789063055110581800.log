@@ -1,0 +1,17 @@
+...........................................................s............ [ 62%]
+..s........................................                              [100%]
+--------- generated xml file: C:\Temp\sr\TEST-v11-dg_6jqrp\junit.xml ----------
+============================ slowest 10 durations =============================
+6.28s call     tests/host/codex/test_mcp.py::test_mcp_inspect_resolves_old_episode_by_explicit_ref
+1.46s call     tests/host/codex/test_mcp.py::test_mcp_stdio_all_tools_and_host_thread_bound_mutations
+1.23s call     tests/host/codex/test_mcp.py::test_mcp_stdio_exposes_only_six_tools_and_strict_boundary
+0.76s call     tests/host/codex/test_runtime_wiring.py::test_real_owned_watchdog_outlives_short_hook_and_cleans_config
+0.72s call     tests/host/hermes/test_runtime_bounds.py::test_current_source_refs_are_turn_local_and_old_capture_can_return
+0.59s call     tests/host/codex/test_hooks.py::test_hook_entry_cli_uses_absolute_config_and_bounded_stdin
+0.17s setup    tests/host/hermes/test_attachments_shutdown.py::test_missing_authorization_records_attachment_gap
+0.16s call     tests/host/codex/test_mcp.py::test_recall_epoch_race_scrubs_compiled_payload_surface
+0.11s call     tests/host/hermes/test_audience_isolation.py::test_explicit_unthreaded_chat_captures_without_widening_audience
+0.10s call     tests/host/hermes/test_identity.py::test_a2a_default_context_is_not_human_attested
+113 passed, 2 skipped in 18.08s
+
+{"cleanup_exit_code": 0, "overall_exit_code": 0, "pytest_exit_code": 0, "transition_history": ["prepared", "pytest_started", "pytest_completed_waiting_cleanup", "cleanup_succeeded", "receipt_written"], "wrapper_exit_code": 0}

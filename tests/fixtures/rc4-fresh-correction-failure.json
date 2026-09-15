@@ -1,0 +1,74 @@
+[
+  {
+    "content": "RC4独立验收。只对项目【RC4-松石】而言，我的长期偏好是会议纪要采用宋体；只有我明确说“对外版”时才采用黑体。",
+    "occurred_at": "2026-09-13T08:05:33.646822+00:00",
+    "recorded_at": "2026-09-13T08:05:33.646822+00:00",
+    "proposals": [
+      {
+        "kind": "preference",
+        "subject": "会议纪要",
+        "predicate": "采用",
+        "value_text": "宋体",
+        "conditions": [
+          "项目【RC4-松石】"
+        ],
+        "statement_kind": "assertion",
+        "valid_from": null,
+        "valid_to": null,
+        "evidence_spans": [
+          {
+            "source_ref": "TEST-original-1",
+            "source_revision": 1,
+            "quote": "只对项目【RC4-松石】而言，我的长期偏好是会议纪要采用宋体"
+          }
+        ]
+      },
+      {
+        "kind": "preference",
+        "subject": "会议纪要",
+        "predicate": "采用",
+        "value_text": "黑体",
+        "conditions": [
+          "只对项目【RC4-松石】而言",
+          "我明确说“对外版”时"
+        ],
+        "statement_kind": "assertion",
+        "valid_from": null,
+        "valid_to": null,
+        "evidence_spans": [
+          {
+            "source_ref": "TEST-original-1",
+            "source_revision": 1,
+            "quote": "只有我明确说“对外版”时才采用黑体"
+          }
+        ]
+      }
+    ]
+  },
+  {
+    "content": "RC4独立验收自然纠正：刚才长期偏好中的字体写错了；项目【RC4-松石】会议纪要应采用楷体，不是宋体，对外版仍是黑体。我只是问“是不是应该默认仿宋？”，这不是确认；“也许我喜欢隶书”也不是确认。",
+    "occurred_at": "2026-09-13T08:05:38.006739+00:00",
+    "recorded_at": "2026-09-13T08:05:38.006739+00:00",
+    "proposals": [
+      {
+        "kind": "preference",
+        "subject": "项目【RC4-松石】会议纪要",
+        "predicate": "应采用",
+        "value_text": "楷体，不是宋体",
+        "conditions": [
+          "对外版仍是黑体"
+        ],
+        "statement_kind": "assertion",
+        "valid_from": null,
+        "valid_to": null,
+        "evidence_spans": [
+          {
+            "source_ref": "TEST-original-2",
+            "source_revision": 1,
+            "quote": "项目【RC4-松石】会议纪要应采用楷体，不是宋体，对外版仍是黑体"
+          }
+        ]
+      }
+    ]
+  }
+]

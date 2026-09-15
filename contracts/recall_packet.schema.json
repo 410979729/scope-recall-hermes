@@ -1,0 +1,267 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "recall_packet",
+  "description": "Design specification v1.1. Not an installed API. Trusted identity is supplied separately by the adapter.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "protocol_version": {
+      "const": "1.1"
+    },
+    "request_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 100
+    },
+    "status": {
+      "enum": [
+        "ok",
+        "no_match",
+        "partial",
+        "unavailable"
+      ]
+    },
+    "memory_epoch": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 0
+    },
+    "items": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "ref": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 240
+          },
+          "revision": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "kind": {
+            "enum": [
+              "event",
+              "episode",
+              "claim",
+              "procedure",
+              "artifact"
+            ]
+          },
+          "content": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 12000
+          },
+          "temporal_status": {
+            "enum": [
+              "current",
+              "historical",
+              "disputed",
+              "unknown"
+            ]
+          },
+          "origin": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 80
+          },
+          "applicability": {
+            "type": "string",
+            "maxLength": 2048
+          },
+          "evidence_refs": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 240
+            },
+            "maxItems": 32,
+            "minItems": 1,
+            "uniqueItems": true
+          },
+          "expandable": {
+            "type": "boolean"
+          },
+          "basis": {
+            "enum": [
+              "direct_report",
+              "observed",
+              "derived_summary",
+              "inferred_suggestion",
+              "unknown"
+            ]
+          },
+          "source_contexts": {
+            "type": "array",
+            "maxItems": 8,
+            "uniqueItems": true,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "platform",
+                "chat_type"
+              ],
+              "properties": {
+                "platform": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 64
+                },
+                "chat_type": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 64
+                }
+              }
+            }
+          },
+          "claim_state": {
+            "enum": [
+              "proposed",
+              "active",
+              "superseded",
+              "disputed",
+              "retracted"
+            ]
+          },
+          "qualification_reason": {
+            "type": "string",
+            "maxLength": 120
+          }
+        },
+        "required": [
+          "ref",
+          "revision",
+          "kind",
+          "content",
+          "temporal_status",
+          "origin",
+          "applicability",
+          "evidence_refs",
+          "expandable",
+          "basis"
+        ]
+      },
+      "maxItems": 30
+    },
+    "gaps": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 1000
+      },
+      "maxItems": 16
+    },
+    "diagnostic_ref": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "maxLength": 240
+    },
+    "answerability": {
+      "enum": [
+        "supported",
+        "partial",
+        "ambiguous",
+        "unknown"
+      ]
+    },
+    "coverage": {
+      "enum": [
+        "complete_for_query",
+        "partial",
+        "unknown"
+      ]
+    },
+    "unmet_needs": {
+      "type": "array",
+      "maxItems": 8,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 500
+      }
+    }
+  },
+  "required": [
+    "protocol_version",
+    "request_id",
+    "status",
+    "memory_epoch",
+    "items",
+    "gaps",
+    "diagnostic_ref",
+    "answerability",
+    "coverage",
+    "unmet_needs"
+  ],
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "enum": [
+              "no_match",
+              "unavailable"
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "items": {
+            "maxItems": 0
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "const": "ok"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "items": {
+            "minItems": 1
+          },
+          "memory_epoch": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "status": {
+            "enum": [
+              "no_match",
+              "unavailable"
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "answerability": {
+            "const": "unknown"
+          }
+        }
+      }
+    }
+  ]
+}

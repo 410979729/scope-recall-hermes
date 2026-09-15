@@ -1,0 +1,28 @@
+{
+  "review": "bounded independent code review, not G1 audit",
+  "reviewer": "/root/codex_contract_read",
+  "findings": [
+    {
+      "priority": "P1",
+      "issue": "status leaked other project/branch counts",
+      "resolution": "source/status/search SQL context filter before LIMIT; queue creation records actual project/branch",
+      "failure_evidence": "verification/P06/storage-1788681206488054700.json"
+    },
+    {
+      "priority": "P1",
+      "found_by": "/root",
+      "issue": "older snapshot reused previously released epoch",
+      "resolution": "independent latest checkpoint epoch floor plus one",
+      "failure_evidence": "verification/P06/deletion-1788681207420804100.json"
+    },
+    {
+      "priority": "P1",
+      "found_by": "/root",
+      "issue": "all-scope ordinary context implicitly treated as installation maintenance",
+      "resolution": "distinct runtime-only InstallationMaintenance capability required by all three maintenance functions",
+      "test": "test_ordinary_context_with_all_scopes_has_no_installation_maintenance_authority"
+    }
+  ],
+  "independent_followup": "first two fixes reviewed without new P0/P1; root did not adopt reviewer assumption that all scopes implies all projects maintenance",
+  "boundary": "G1 independently audits complete P03-P07 slice"
+}

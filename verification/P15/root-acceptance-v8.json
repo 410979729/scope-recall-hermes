@@ -1,0 +1,38 @@
+{
+  "schema": "scope_recall.p15.root_acceptance.v1",
+  "created_utc": "2026-09-06T19:05:50.445051+00:00",
+  "decision": "source_fix_accepted; installed_wheel_validation_pending",
+  "scope": "V8 one-shot offline migration from the frozen official 578b955 source schema; synthetic data only",
+  "reviewer": "root, independent of the V8 implementation author; this is not final G3 approval",
+  "source_hashes": {
+    "maintenance/migrate_v2.py": "f14f0fb3757cea2605e5ca25c007fefb18d6b65bc8019b1260225f5bbc2d00e4",
+    "tests/migration/test_v8_migration_completion.py": "6fe97bc56cca6e8f9253d34ef6fb2d8ff3457fa16f7301eec3c2cede8bd6cc58",
+    "docs/upgrade-guide.zh-CN.md": "8809c2e71bae9ef08f892ec5c1ec94fac76b5af24420d0235b181c04d00fbcb5",
+    "docs/upgrade-contract.md": "36540f67d58753ed6c460e6c9ff12223f86ae1cc3993dbf25c6f6501459c2a4a",
+    "verification/P15/audit/v8-root-core-completion-probe.py": "f285bbdabd4a306396588d61feea8d59f250f244d72d5eb32061101106e02921",
+    "verification/P15/audit/v8-root-core-completion-results.json": "a0694e0c521d4a63774ec6fda04e88b29d2348789e07d335f64f4c0e0273ee46",
+    "verification/P15/audit/v8-root-valid-subject-probe.py": "de37e2e7f5894a50b605d72bfdd1913f0d458a89aa5196a1e18dff193e497683",
+    "verification/P15/audit/v8-root-valid-subject-results.json": "331387826de35c45f030205b6c7cc717c1d3647d89c5a1e688d97a9bcd3485f6",
+    ".execution/TEST-P15-V8/receipt.json": "2ac57e7b2431f003cd590bf521eed671356aa1c59dcb61b34be14b3a597d2ed1"
+  },
+  "verified": {
+    "equal_timestamp_current_and_release": true,
+    "valid_source_correction_and_rerun": true,
+    "shared_source_fact_procedure_forget_purge": true,
+    "deleted_current_and_history_unreleasable": true,
+    "deleted_rerun_database_byte_identical": true,
+    "strict_inverted_history_blocked": true,
+    "old_source_bytes_unchanged": true
+  },
+  "tests": {
+    "implementation_suite": "19 passed, see implementation receipt",
+    "root_checks": "Two preserved direct Core probes; this receipt independently checks the valid-subject result assertions and source binding"
+  },
+  "preserved_failure": "The first root probe used an English correction that omitted the actual Chinese subject; DERIVATION_INVALID subject_not_bound is retained and is not counted as a passed correction. The separate valid-subject probe passed.",
+  "remaining": [
+    "Validate the final installed wheel and freeze it with final source",
+    "Overall P18 and G3 remain pending"
+  ],
+  "network_model_calls": 0,
+  "production_changes": 0
+}

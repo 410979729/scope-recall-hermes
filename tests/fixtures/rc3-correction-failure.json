@@ -1,0 +1,129 @@
+[
+  {
+    "content": "RC2SOL-20260913 定向验收。请记住：只对项目【RC2SOL-青岚】而言，我的长期偏好是内部技术总结使用蓝色标题；只有我明确说“对外版”时才使用绿色标题。临时要求：仅在你这一次回复末尾加上【临时尾标-7】，以后不要沿用。请简短复述，不要调用任何工具。",
+    "occurred_at": "2026-09-13T04:31:00.591683Z",
+    "recorded_at": "2026-09-13T04:31:00.591683Z",
+    "proposals": [
+      {
+        "conditions": [],
+        "evidence_spans": [
+          {
+            "quote": "仅在你这一次回复末尾加上【临时尾标-7】",
+            "source_ref": "TEST-original-1",
+            "source_revision": 1
+          }
+        ],
+        "intention": {
+          "conditions": [],
+          "cue": "临时要求",
+          "state": "pending",
+          "state_evidence_refs": [
+            "TEST-original-1@1"
+          ],
+          "target": "仅在你这一次回复末尾加上【临时尾标-7】"
+        },
+        "kind": "intention",
+        "predicate": "在这一次回复末尾加上",
+        "statement_kind": "request",
+        "subject": "你",
+        "valid_from": null,
+        "valid_to": null,
+        "value_text": "【临时尾标-7】"
+      },
+      {
+        "conditions": [
+          "只对项目【RC2SOL-青岚】而言"
+        ],
+        "evidence_spans": [
+          {
+            "quote": "只对项目【RC2SOL-青岚】而言，我的长期偏好是内部技术总结使用蓝色标题",
+            "source_ref": "TEST-original-1",
+            "source_revision": 1
+          }
+        ],
+        "kind": "preference",
+        "predicate": "使用",
+        "statement_kind": "assertion",
+        "subject": "我的长期偏好",
+        "valid_from": null,
+        "valid_to": null,
+        "value_text": "内部技术总结使用蓝色标题"
+      }
+    ]
+  },
+  {
+    "content": "RC2SOL-20260913 自然纠正：刚才长期偏好中的内部标题颜色写错了；项目【RC2SOL-青岚】内部技术总结应使用银色，不是蓝色，对外版仍是绿色。我只是问“是不是应该默认红色？”，这不是确认；“也许我喜欢橙色”也不是确认。并且本轮没有任何工具回执，所以不要声称已创建文件或完成外部操作。请只确认这些边界，不调用工具。",
+    "occurred_at": "2026-09-13T04:31:39.511043Z",
+    "recorded_at": "2026-09-13T04:31:39.511043Z",
+    "proposals": [
+      {
+        "conditions": [],
+        "evidence_spans": [
+          {
+            "quote": "对外版仍是绿色",
+            "source_ref": "TEST-original-2",
+            "source_revision": 1
+          }
+        ],
+        "kind": "preference",
+        "predicate": "仍是",
+        "statement_kind": "assertion",
+        "subject": "项目【RC2SOL-青岚】对外版",
+        "valid_from": "2026-09-13T04:31:39.511043Z",
+        "valid_to": null,
+        "value_text": "绿色"
+      },
+      {
+        "conditions": [],
+        "evidence_spans": [
+          {
+            "quote": "内部技术总结应使用银色，不是蓝色",
+            "source_ref": "TEST-original-2",
+            "source_revision": 1
+          }
+        ],
+        "kind": "preference",
+        "predicate": "应使用",
+        "statement_kind": "assertion",
+        "subject": "项目【RC2SOL-青岚】内部技术总结",
+        "valid_from": "2026-09-13T04:31:39.511043Z",
+        "valid_to": null,
+        "value_text": "银色"
+      },
+      {
+        "conditions": [],
+        "evidence_spans": [
+          {
+            "quote": "我只是问“是不是应该默认红色？”，这不是确认",
+            "source_ref": "TEST-original-2",
+            "source_revision": 1
+          }
+        ],
+        "kind": "fact",
+        "predicate": "不是",
+        "statement_kind": "assertion",
+        "subject": "“是不是应该默认红色？”",
+        "valid_from": "2026-09-13T04:31:39.511043Z",
+        "valid_to": null,
+        "value_text": "确认"
+      },
+      {
+        "conditions": [],
+        "evidence_spans": [
+          {
+            "quote": "“也许我喜欢橙色”也不是确认",
+            "source_ref": "TEST-original-2",
+            "source_revision": 1
+          }
+        ],
+        "kind": "fact",
+        "predicate": "不是",
+        "statement_kind": "assertion",
+        "subject": "“也许我喜欢橙色”",
+        "valid_from": "2026-09-13T04:31:39.511043Z",
+        "valid_to": null,
+        "value_text": "确认"
+      }
+    ]
+  }
+]

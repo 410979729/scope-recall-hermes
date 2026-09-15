@@ -1,0 +1,16 @@
+........................................................................ [ 91%]
+.......                                                                  [100%]
+============================ slowest 10 durations =============================
+23.02s setup    tests/packaging/test_clean_v11_wheel.py::test_clean_v11_wheel_entrypoint_and_register_delegate
+6.86s setup    tests/packaging/test_clean_v11_wheel.py::test_clean_v11_wheel_exact_allowlist
+0.79s call     tests/packaging/test_model_receipt_validation.py::test_formal_budget_authorization_is_consistent_across_both_validators
+0.78s call     tests/packaging/test_model_receipt_validation.py::test_final_validator_accepts_separate_authorized_native_aux_without_changing_main_counts
+0.75s call     tests/packaging/test_model_receipt_validation.py::test_g2_and_independent_aggregate_must_bind_hermes_revision
+0.74s call     tests/packaging/test_model_receipt_validation.py::test_method_requires_frozen_adjudication_bytes_and_explicit_new_id
+0.70s call     tests/packaging/test_model_receipt_validation.py::test_hermes_cli_requires_its_own_frozen_adjudication
+0.58s call     tests/packaging/test_model_receipt_validation.py::test_matching_report_and_ledger_hash_cannot_exceed_budget[actual_output-1000000000000]
+0.52s call     tests/packaging/test_model_receipt_validation.py::test_model_receipt_allows_a_low_baseline_and_b_codex_unsupported
+0.51s call     tests/packaging/test_model_receipt_validation.py::test_matching_report_and_ledger_hash_cannot_exceed_budget[charge_micro_usd-1000000000]
+79 passed in 48.43s
+
+{"cleanup_exit_code": 0, "overall_exit_code": 0, "pytest_exit_code": 0, "transition_history": ["prepared", "pytest_started", "pytest_completed_waiting_cleanup", "cleanup_succeeded", "receipt_written"], "wrapper_exit_code": 0}

@@ -486,10 +486,11 @@ def run_search(host: RecallSearchHost, request: RecallSearchRequest) -> list[Rec
         "needs_live_check_count": sum(1 for payload in freshness_evidence.values() if bool(payload.get("needs_live_check"))),
     }
     min_score = float(retrieval_cfg.get("min_score") or host.provider._config_value("min_score", DEFAULT_MIN_SCORE))
-    # Vector-only matches have no lexical evidence, so they must clear a
-    # substantially higher bar than the broad vector candidate threshold.
-    # This keeps the semantic companion useful for strong hits while
-    # preventing mid-confidence neighbor drift from injecting stale topics.
+    # Vector-only matches have no lexical evidence, so they must clear the
+    # raw vector floor already used by assess_candidate_admission. The
+    # freshness-adjusted blended score is a different scale and must not
+    # reuse that floor, or an admitted semantic hit is dropped after
+    # needs_live_check while a weak lexical false positive survives.
     filtered: list[RecallItem] = []
     rejected: list[RecallItem] = list(admission_rejected)
     host.last_rejected_candidates = []
@@ -675,7 +676,7 @@ def run_search(host: RecallSearchHost, request: RecallSearchRequest) -> list[Rec
             item.metadata = meta
             rejected.append(item)
             continue
-        if vector_only_candidate and base_score < vector_only_min_score:
+        if vector_only_candidate and vector_score < vector_only_min_score:
             meta["rejected_reason"] = "vector_only_below_min_score"
             trace["filters"]["vector_only_below_min_score"] += 1
             item.metadata = meta

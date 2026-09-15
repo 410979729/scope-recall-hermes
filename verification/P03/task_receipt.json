@@ -1,0 +1,95 @@
+{
+  "task_id": "P03",
+  "status": "completed",
+  "base_sha": "8c24a5e8ed77127bd62925d5d734e13c29b29a0c",
+  "head_sha_or_diff_sha256": "e5742e67b278e763bee1d46d2211496a8a23a1bdb1fa03a4fca39b9334518d33",
+  "changed_responsibilities": [
+    "Document the old-to-target single-authority mapping before coding, preserving provenance/time/scope/deletion and bounded compatibility exit at P16",
+    "Compose a host-independent core from explicit immutable binding, storage, clock, ID, vector and model ports",
+    "Reuse existing protected truth connection and writer lease only for short owned transactions; encapsulate nested savepoints and failed cleanup",
+    "Explicit target initialization at schema 1100; normal requests reject unknown schema and changed identity/location, including copied directories",
+    "Implement restricted immutable source revisions and one durable work registry inside the controlled SQLite boundary",
+    "Validate an actual installed wheel without Hermes/network/model calls; fix missing protocol schemas discovered only by that probe"
+  ],
+  "checks": [
+    {
+      "exit_code": 0,
+      "duration_seconds": 1.5561750999768265,
+      "passed": 73,
+      "failed": 0,
+      "skipped": 0,
+      "command": "F:\\SCOPERECALL更新项目\\.venv\\Scripts\\python.exe -B -m pytest tests/contract/test_v11_protocol.py tests/contract/test_v11_inputs.py -q -p v11_guard -p no:cacheprovider --durations=10 --junitxml=F:\\SCOPERECALL更新项目\\worktrees\\scope-recall-v1.1\\.execution\\TEST-v11-ez15salc\\junit.xml",
+      "evidence_ref": "verification/P03/contract-1788674175098489600.json"
+    },
+    {
+      "exit_code": 0,
+      "duration_seconds": 1.7574908999959007,
+      "passed": 28,
+      "failed": 0,
+      "skipped": 0,
+      "command": "F:\\SCOPERECALL更新项目\\.venv\\Scripts\\python.exe -B -m pytest tests/contract/test_v11_storage.py -q -p v11_guard -p no:cacheprovider --durations=10 --junitxml=F:\\SCOPERECALL更新项目\\worktrees\\scope-recall-v1.1\\.execution\\TEST-v11-b_jf2sv_\\junit.xml",
+      "evidence_ref": "verification/P03/storage-1788674156107761500.json"
+    },
+    {
+      "exit_code": 0,
+      "duration_seconds": 1.3893889999599196,
+      "passed": 23,
+      "failed": 0,
+      "skipped": 0,
+      "command": "F:\\SCOPERECALL更新项目\\.venv\\Scripts\\python.exe -B -m pytest tests/unit/test_v11_context.py -q -p v11_guard -p no:cacheprovider --durations=10 --junitxml=F:\\SCOPERECALL更新项目\\worktrees\\scope-recall-v1.1\\.execution\\TEST-v11-1pht0zsg\\junit.xml",
+      "evidence_ref": "verification/P03/unit-1788674174934157800.json"
+    },
+    {
+      "command": "Installed wheel probe with -I, no Hermes: initial attempt",
+      "exit_code": 1,
+      "duration_seconds": 0.6312737,
+      "passed": 0,
+      "failed": 1,
+      "skipped": 0,
+      "evidence_ref": "verification/P03/package-probe-first-failure.log"
+    },
+    {
+      "command": "Installed wheel probe with -I, no Hermes: contracts package-data fix",
+      "exit_code": 0,
+      "duration_seconds": 0.21245719998842105,
+      "passed": 9,
+      "failed": 0,
+      "skipped": 0,
+      "evidence_ref": "verification/P03/package-probe.json"
+    }
+  ],
+  "not_run": [
+    "P04 capture/credential filtering/lexical search and actual process termination recovery",
+    "Claim/Evidence/Episode/Artifact/ReferenceBinding/ResumeState product persistence and semantic behavior in P05-P10",
+    "P14 legacy migration and P15 restore; this task provides the field mapping and target boundary only",
+    "P11/P12 two-host product adapters, native worker lifecycle and P18 holdout acceptance",
+    "No production migration, installation, push, merge or release"
+  ],
+  "blockers": [],
+  "artifacts": [
+    "core/__init__.py",
+    "core/composition.py",
+    "core/schema.py",
+    "core/storage.py",
+    "docs/core-storage-mapping.md",
+    "pyproject.toml",
+    "scripts/check.py",
+    "tests/contract/core_package_probe.py",
+    "tests/contract/test_v11_storage.py",
+    "verification/P03/artifact-manifest.json",
+    "verification/P03/build-evidence.json",
+    "verification/P03/contract-1788674175098489600-inputs.json",
+    "verification/P03/contract-1788674175098489600.json",
+    "verification/P03/contract-1788674175098489600.log",
+    "verification/P03/package-probe-first-failure.log",
+    "verification/P03/package-probe.json",
+    "verification/P03/storage-1788674156107761500-inputs.json",
+    "verification/P03/storage-1788674156107761500.json",
+    "verification/P03/storage-1788674156107761500.log",
+    "verification/P03/unit-1788674174934157800-inputs.json",
+    "verification/P03/unit-1788674174934157800.json",
+    "verification/P03/unit-1788674174934157800.log",
+    "verification/task_manifest.json"
+  ],
+  "next_task_ready": true
+}

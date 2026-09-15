@@ -1,0 +1,124 @@
+{
+  "dataset": "P07_DEVELOPMENT",
+  "provenance": "authorized synthetic persona import",
+  "source_fingerprints": [
+    "aa0e7d61069d92d60418d38cc686b9cb2dc8ae716b91ca67568b9b78b7fe7758",
+    "5cbc3223614273d99bec045b308ebbe90e090ac8d5e27609d01219383717d490",
+    "c0ab346b5a48adac11c02244577a9b892a2985aec6285bebeb00a6b36d0e61d0"
+  ],
+  "raw_events": [
+    {
+      "protocol_version": "1.1",
+      "source_event_key": "TEST-P07-source/1",
+      "source_revision": 1,
+      "origin": "imported",
+      "role": "user",
+      "content": "继续做观鸟站入口海报：沿用上下两栏结构，先把配色调整好。",
+      "occurred_at": "2026-09-06T12:00:01Z",
+      "recorded_at": "2026-09-06T08:43:48.976309+00:00",
+      "time_precision": "instant",
+      "capture_state": "complete",
+      "evidence_refs": [],
+      "dataset_id": "SYNTHETIC_TEST_ONLY",
+      "source_original_origin": "human_direct"
+    },
+    {
+      "protocol_version": "1.1",
+      "source_event_key": "TEST-P07-source/2",
+      "source_revision": 1,
+      "origin": "tool_observation",
+      "role": "tool",
+      "content": "入口海报 v1 已写入并通过 XML 解析。",
+      "occurred_at": "2026-09-06T12:00:02Z",
+      "recorded_at": "2026-09-06T08:43:48.976309+00:00",
+      "time_precision": "instant",
+      "capture_state": "complete",
+      "evidence_refs": [],
+      "dataset_id": "SYNTHETIC_TEST_ONLY",
+      "display_snapshot": {
+        "order": "observed",
+        "items": [
+          {
+            "artifact_ref": "artifact-77cdb48dee9b88d1c7086ab8e2ff17cca5ba3b9738160bdf02958fc0ae9681a8",
+            "revision": 1
+          }
+        ]
+      },
+      "artifact_refs": [
+        "artifact-77cdb48dee9b88d1c7086ab8e2ff17cca5ba3b9738160bdf02958fc0ae9681a8"
+      ]
+    },
+    {
+      "protocol_version": "1.1",
+      "source_event_key": "TEST-P07-source/3",
+      "source_revision": 1,
+      "origin": "imported",
+      "role": "user",
+      "content": "上下两栏的结构已经确认，配色还没完成。下一步只调整配色，保留现有布局。",
+      "occurred_at": "2026-09-06T12:00:03Z",
+      "recorded_at": "2026-09-06T08:43:48.976309+00:00",
+      "time_precision": "instant",
+      "capture_state": "complete",
+      "evidence_refs": [],
+      "dataset_id": "SYNTHETIC_TEST_ONLY",
+      "source_original_origin": "human_direct"
+    },
+    {
+      "protocol_version": "1.1",
+      "source_event_key": "TEST-P07-source/4",
+      "source_revision": 1,
+      "origin": "assistant_visible",
+      "role": "assistant",
+      "content": "我会把橙色改成蓝色并进行检查。",
+      "occurred_at": "2026-09-06T12:00:04Z",
+      "recorded_at": "2026-09-06T08:43:48.976309+00:00",
+      "time_precision": "instant",
+      "capture_state": "complete",
+      "evidence_refs": [],
+      "dataset_id": "SYNTHETIC_TEST_ONLY"
+    },
+    {
+      "protocol_version": "1.1",
+      "source_event_key": "TEST-P07-source/5",
+      "source_revision": 1,
+      "origin": "tool_observation",
+      "role": "tool",
+      "content": "入口海报 v2 已写入并通过 XML 解析。",
+      "occurred_at": "2026-09-06T12:00:05Z",
+      "recorded_at": "2026-09-06T08:43:48.976309+00:00",
+      "time_precision": "instant",
+      "capture_state": "complete",
+      "evidence_refs": [],
+      "dataset_id": "SYNTHETIC_TEST_ONLY",
+      "display_snapshot": {
+        "order": "observed",
+        "items": [
+          {
+            "artifact_ref": "artifact-77cdb48dee9b88d1c7086ab8e2ff17cca5ba3b9738160bdf02958fc0ae9681a8",
+            "revision": 2
+          }
+        ]
+      },
+      "artifact_refs": [
+        "artifact-77cdb48dee9b88d1c7086ab8e2ff17cca5ba3b9738160bdf02958fc0ae9681a8"
+      ]
+    },
+    {
+      "protocol_version": "1.1",
+      "source_event_key": "TEST-P07-source/6",
+      "source_revision": 1,
+      "origin": "imported",
+      "role": "user",
+      "content": "我说的上一版是入口海报 v1；下一步只调整配色，保留现有布局。",
+      "occurred_at": "2026-09-06T12:00:06Z",
+      "recorded_at": "2026-09-06T08:43:48.976309+00:00",
+      "time_precision": "instant",
+      "capture_state": "complete",
+      "evidence_refs": [],
+      "dataset_id": "SYNTHETIC_TEST_ONLY",
+      "source_original_origin": "human_direct"
+    }
+  ],
+  "holdout": false,
+  "claims_preseeded": false
+}

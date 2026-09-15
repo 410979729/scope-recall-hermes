@@ -1,0 +1,79 @@
+{
+  "command": [
+    "F:\\T\\TEST-SR-CLEANENV-20260910\\Scripts\\python.exe",
+    "-B",
+    "-m",
+    "pytest",
+    "tests/unit/test_v11_context.py",
+    "tests/unit/test_check_runner.py",
+    "-q",
+    "--import-mode=importlib",
+    "-p",
+    "v11_guard",
+    "-p",
+    "no:cacheprovider",
+    "--durations=10",
+    "--junitxml=C:\\Temp\\sr\\TEST-v11-2r802jcu\\junit.xml"
+  ],
+  "exit_code": 0,
+  "overall_exit_code": 0,
+  "pytest_exit_code": 0,
+  "wrapper_exit_code": 0,
+  "cleanup_exit_code": 0,
+  "pytest": {
+    "state": "completed",
+    "exit_code": 0,
+    "error": null
+  },
+  "wrapper": {
+    "state": "succeeded",
+    "exit_code": 0,
+    "error": null
+  },
+  "cleanup": {
+    "state": "succeeded",
+    "exit_code": 0,
+    "error": null
+  },
+  "transition_history": [
+    "prepared",
+    "pytest_started",
+    "pytest_completed_waiting_cleanup",
+    "cleanup_succeeded",
+    "receipt_written"
+  ],
+  "duration_seconds": 2.7213121999811847,
+  "passed": 27,
+  "failed": 0,
+  "skipped": 0,
+  "selected": [
+    "tests/unit/test_v11_context.py",
+    "tests/unit/test_check_runner.py"
+  ],
+  "selection": {
+    "changed_files": [],
+    "impacts": [],
+    "unknown_files": [],
+    "required_tiers": [
+      "unit"
+    ],
+    "reasons": [],
+    "metadata": {
+      "level": "T0",
+      "requires": [],
+      "model_calls": false
+    },
+    "diagnostics": []
+  },
+  "required_gates": [],
+  "missing_gates": [],
+  "log": "verification/P19/unit-1789060673663161300.log",
+  "model_calls": false,
+  "process_policy": "v11_guard_no_child_processes",
+  "test_data": "synthetic_only",
+  "source_base": "b8711ce6b51c73744b8df394e33f0c4596b57da2",
+  "source_inputs_sha256": "95c7c9229dfef0922e61854d28a33bd30c3926c829f92a73191a506c98de1e7e",
+  "source_manifest": "verification/P19/unit-1789060673663161300-inputs.json",
+  "evidence_scope": "P19 selected local in-process contracts only; no model/API semantic evaluation",
+  "model_receipt": null
+}

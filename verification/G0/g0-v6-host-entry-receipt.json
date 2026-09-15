@@ -1,0 +1,104 @@
+{
+  "status": "PREPARED_CAPTURED_NOT_G0_ACCEPTANCE",
+  "scope": "G0 Hermes official CLI operator entry and A2A isolation preparation",
+  "v5_preserved": true,
+  "v5_negative_receipt": "F:\\SCOPERECALL更新项目\\worktrees\\scope-recall-runtime-integration\\verification\\P11\\p11-v5-root-review-final-receipt.json",
+  "installation": {
+    "hermes_home": "F:\\SCOPERECALL更新项目\\TEST-P11-Hermes-v6\\hermes-home",
+    "core_db": "F:\\SCOPERECALL更新项目\\TEST-P11-Hermes-v6\\hermes-home\\scope-recall\\memory.sqlite3",
+    "host_root": "F:\\SCOPERECALL更新项目\\TEST-Hermes-runtime-v1\\hermes-source-79445",
+    "host_python": "F:\\SCOPERECALL更新项目\\TEST-Hermes-runtime-v1\\venv\\Scripts\\python.exe",
+    "hermes_version": "0.21.0",
+    "hermes_head": "79445a496c86a19332ad786494b8384d2167e2d0",
+    "agent_id": "default",
+    "installation_id": "hermes-install:11cfb51ee54faffc7fdafd5c7a7080cd"
+  },
+  "official_cli": {
+    "module": "hermes_cli.main",
+    "argv": [
+      "-B",
+      "-m",
+      "hermes_cli.main",
+      "chat",
+      "--query-file",
+      "F:\\SCOPERECALL更新项目\\TEST-P11-Hermes-v6\\cli-input.txt",
+      "-Q",
+      "--source",
+      "cli",
+      "--provider",
+      "g0-local-zero"
+    ],
+    "session_id": "20260906_165133_cf98ba",
+    "session_source": "cli",
+    "session_message_count": 2,
+    "session_tool_call_count": 0,
+    "session_api_call_count": 1,
+    "response": "TEST-G0-CLI-CAPTURE-OK",
+    "operator_origin": "human_direct"
+  },
+  "source_events": [
+    {
+      "event_id": "event-cae21f6b4c8e5633e5e718675f2c8fcd25ba9c83e45f8a28c487901409ebee90",
+      "role": "user",
+      "origin": "human_direct",
+      "capture_state": "complete",
+      "scope_id": "audience:12:conversation|platform:3:cli|key:17:TEST-context-v6-1",
+      "session_id": "20260906_165133_cf98ba",
+      "source_event_key_prefix": "hermes:hermes-install:11cfb51ee54faffc7fdafd5c7a7080cd:20260906_165133_cf98ba:user"
+    },
+    {
+      "event_id": "event-367ac50d8d0fc30e2da7de846beb24dc2b2662d389d29e861fb28d00ec75699c",
+      "role": "assistant",
+      "origin": "assistant_visible",
+      "capture_state": "complete",
+      "scope_id": "audience:12:conversation|platform:3:cli|key:17:TEST-context-v6-1",
+      "session_id": "20260906_165133_cf98ba",
+      "source_event_key_prefix": "hermes:hermes-install:11cfb51ee54faffc7fdafd5c7a7080cd:20260906_165133_cf98ba:sync_assistant"
+    }
+  ],
+  "entry_mapping": {
+    "cli": {
+      "platform": "cli",
+      "chat_type": "cli",
+      "chat_id": "local",
+      "thread_id": "main",
+      "default_origin": "human_direct",
+      "authorized_conversation_scope": "audience:12:conversation|platform:3:cli|key:17:TEST-context-v6-1"
+    },
+    "a2a": {
+      "platform": "a2a",
+      "chat_type": "dm",
+      "chat_id": "TEST-context-v6-1",
+      "thread_id": "",
+      "default_origin": "origin_unknown",
+      "authorized_conversation_scope": "audience:12:conversation|platform:3:cli|key:17:TEST-context-v6-1",
+      "owner_private_exposed": false,
+      "resolver_gap": "capability_gap:owner_private_denied"
+    }
+  },
+  "config_integrity": {
+    "embedding_dimensions": 3072,
+    "embedding_space": "93ba90c7d52b3574462d6751e2e077a411f1095727862abb4cc80d3780d2e30c",
+    "vector_threshold": 0.653189984350642,
+    "external_embedding": false,
+    "external_consolidation": false,
+    "lancedb": "0.30.2",
+    "pyarrow": "24.0.0",
+    "hermes_httpx": "0.28.1",
+    "mcp": "absent",
+    "global_budget_mutated": false
+  },
+  "zero_upstream": {
+    "transport": "127.0.0.1:29992",
+    "external_api": false,
+    "requests": 1,
+    "receipt": "F:\\SCOPERECALL更新项目\\TEST-P11-Hermes-v6\\archive\\zero-transport.json",
+    "request_sha256": "7b5f1c2814c9df7b2f1af09c821653b385aee90ee8c2597172dbc0f2c1c1e176"
+  },
+  "product_interface_gap": {
+    "observed": "ScopeRecallHermesAdapter.get_tool_schemas() returns [] and the Hermes adapter surface exposes capture/recall hooks only; no Hermes CLI revise/forget operator command is wired.",
+    "effect": "The captured CLI user is human_direct and scope-authorized, but current correction/deletion cannot yet be invoked through this official Hermes CLI plugin surface.",
+    "minimum_fix": "Add a native Hermes CLI operator command/hook that constructs the trusted CLI identity from the exact manifest audience and calls Core revise/forget with human_direct; keep A2A on origin_unknown and do not expose the mutator through A2A or model text."
+  },
+  "evidence_boundary": "This receipt proves isolated official CLI capture and exact A2A/CLI identity resolution only; it does not claim G0 acceptance, mutation/deletion equivalence, or a final wheel release."
+}

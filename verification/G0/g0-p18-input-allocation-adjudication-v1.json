@@ -1,0 +1,189 @@
+{
+  "artifact": "g0-p18-input-allocation-adjudication-v1",
+  "status": "ALLOCATION_RULE_ACCEPTED_EXECUTION_MAP_PENDING",
+  "scope": "TEST-only structure and allocation; no product or semantic PASS",
+  "authorization": {
+    "basis": "Existing autonomous TEST authority relayed by root; implements P18 step 2, does not change samples/thresholds/budget",
+    "renewed_user_approval_required": false
+  },
+  "bindings": {
+    "protocol": {
+      "path": "F:\\SCOPERECALL更新项目\\worktrees\\scope-recall-v1.1\\verification\\P18\\p18-evaluation-protocol-v1.json",
+      "sha256": "45b70192857b5b8645dd2bf409db55f320f1cf31f297e89910f9f340e76d32d4"
+    },
+    "method": {
+      "path": "F:\\SCOPERECALL更新项目\\worktrees\\scope-recall-runtime-integration\\verification\\G0\\g0-appserver-method-adjudication-v2.json",
+      "sha256": "029f8a2eeecf47ddc7d2a4be62457993a9667d58277f5158a4e745bda17653a4"
+    },
+    "proposal": {
+      "path": "F:\\SCOPERECALL更新项目\\worktrees\\scope-recall-runtime-integration\\verification\\G0\\evaluation-proposal.md",
+      "sha256": "cc3d036920e2d22c915a4b67a1be4c406924c5326d60aba9adfca9a0c61acb04"
+    },
+    "task": {
+      "path": "F:\\SCOPERECALL更新项目\\Scope_Recall_架构与实施完整包_v1.1\\Scope_Recall_Architecture_v1_1\\tasks\\P18.md",
+      "sha256": "17c273c54b9606908afd4c03d0412b76319fed11dde8129fa3dec30cc5d8fa9a"
+    },
+    "acceptance05": {
+      "path": "F:\\SCOPERECALL更新项目\\Scope_Recall_架构与实施完整包_v1.1\\Scope_Recall_Architecture_v1_1\\docs\\05_验收测试与独立审计.md",
+      "sha256": "0c678e8b8b89145238c075e7dae8613d4779689ba83a0430156d503127caf64d"
+    },
+    "acceptance07": {
+      "path": "F:\\SCOPERECALL更新项目\\Scope_Recall_架构与实施完整包_v1.1\\Scope_Recall_Architecture_v1_1\\docs\\07_人类式记忆功能定稿与验收.md",
+      "sha256": "8f94274682a46ea51588edfb16d2b4714bb23ecb9e1480a6d08f9ff71d72b5f4"
+    },
+    "journey_spec": {
+      "path": "F:\\SCOPERECALL更新项目\\Scope_Recall_架构与实施完整包_v1.1\\Scope_Recall_Architecture_v1_1\\fixtures\\longitudinal_journeys.jsonl",
+      "sha256": "78b1465904a8cc3b121c9e297d2628ca031158e6c26c8b5598d28ccad3d3e243"
+    },
+    "current_plan_summary": {
+      "path": "F:\\SCOPERECALL更新项目\\worktrees\\scope-recall-runtime-integration\\.execution\\TEST-P18-SEALED-RUN-PLAN-v1\\plan-summary.json",
+      "sha256": "57176b7e8a8089ee394f34d21bb85b573cebcef52fa39ffe3b4511e5d7bad604"
+    }
+  },
+  "original_protocol_modified": false,
+  "codex_method_id": "codex_windows_appserver_native_hooks_v2",
+  "codex_historical_host_id": "codex_windows_desktop",
+  "historical_host_label_is_not_actual_desktop_UI_claim": true,
+  "rejected_plan": {
+    "path": "F:\\SCOPERECALL更新项目\\worktrees\\scope-recall-runtime-integration\\.execution\\TEST-P18-SEALED-RUN-PLAN-v1\\plan-summary.json",
+    "reason": [
+      "source-order first 40 has no B01-B12 coverage proof",
+      "alternating two independent query variants eight times is not a longitudinal journey",
+      "72 omitted pairs still belong to the required complete core evaluation"
+    ],
+    "preserve_original_artifacts": true
+  },
+  "core": {
+    "independent_pairs": 120,
+    "conditions": 240,
+    "groups": 12,
+    "pairs_per_group": 10,
+    "per_group_classes": {
+      "positive": 4,
+      "negative": 3,
+      "ambiguous": 3
+    },
+    "arms": [
+      "A",
+      "B",
+      "C",
+      "D"
+    ],
+    "planned_condition_executions": 960,
+    "all_pairs_assigned_once_per_arm": true,
+    "host_subset_does_not_reduce_core_denominator": true,
+    "fresh_isolated_arm_history": true,
+    "l3_evidence": "real raw capture -> actual organization/extraction as supported by arm -> recall/packet -> independent scorer; no prewritten Claim or gold in model input",
+    "unsupported_baseline": "report missing capability/observability without invented score; no baseline-all-PASS gate",
+    "scoring": "Preserve complete 120/240 and B-group denominators, plus actual answerable question/slot denominators and negative/ambiguity assertions; do not infer all 120 are answerable."
+  },
+  "host_query_selection": {
+    "independent_queries_per_host": 40,
+    "conditions_per_host_arm": 80,
+    "input_metadata_fields": [
+      "pair_id",
+      "group_id",
+      "core_class"
+    ],
+    "metadata_source": "Independent executor extracts opaque mapping from existing frozen control manifest; no raw text/gold inspection by selector; if mapping unavailable do not infer from raw order",
+    "seed": "p18-allocation-v1:45b70192857b5b8645dd2bf409db55f320f1cf31f297e89910f9f340e76d32d4",
+    "sort_rule": "Within each (group_id,core_class), sort by (SHA256(UTF8(seed + newline + pair_id)), pair_id); select first required count",
+    "base_per_B_group": {
+      "positive": 1,
+      "negative": 1,
+      "ambiguous": 1
+    },
+    "extra_positive_groups": [
+      "B01",
+      "B04",
+      "B07",
+      "B10"
+    ],
+    "totals": {
+      "positive": 16,
+      "negative": 12,
+      "ambiguous": 12
+    },
+    "same_selection_all_four_arms": true,
+    "same_selection_both_hosts_with_independent_execution": true,
+    "selection_by_answer_or_result_forbidden": true,
+    "success_gate": "both paired conditions pass; C at least 36/40 separately for each host"
+  },
+  "journeys": {
+    "ids": [
+      "J01",
+      "J02",
+      "J03",
+      "J04",
+      "J05",
+      "J06",
+      "J07",
+      "J08"
+    ],
+    "approved_source": {
+      "path": "F:\\SCOPERECALL更新项目\\Scope_Recall_架构与实施完整包_v1.1\\Scope_Recall_Architecture_v1_1\\fixtures\\longitudinal_journeys.jsonl",
+      "sha256": "78b1465904a8cc3b121c9e297d2628ca031158e6c26c8b5598d28ccad3d3e243"
+    },
+    "existing_spec_steps_per_journey": 6,
+    "complete_executable_eight_round_fixture_found": false,
+    "round_budget_per_journey": 8,
+    "padding_repeated_queries_forbidden": true,
+    "source_of_real_rounds": "Independent executor must instantiate unseen synthetic data and a fixed operation graph from every ordered J step plus its referenced public M cases, then freeze bytes before formal execution. No sealed pair is relabeled as a journey.",
+    "operation_fields": [
+      "journey_id",
+      "operation_id",
+      "source_step_orders",
+      "operation_kind",
+      "session_boundary",
+      "input_artifact_ref",
+      "required_evidence_artifact_kinds",
+      "primary_round_ordinal_or_null"
+    ],
+    "allowed_operation_kinds": [
+      "source_capture",
+      "host_turn",
+      "new_session",
+      "test_artifact_setup",
+      "authorized_state_change",
+      "fault_injection",
+      "deterministic_assertion"
+    ],
+    "completion": "All six source steps, referenced evidence and required new-session/state/fault boundaries satisfied; <=8 paid main-model rounds. Eight is a reserved round budget, not a reason to add meaningless submissions. If genuine steps exceed it, preserve failure/preflight block and resolve execution plan within existing budget authority before calls.",
+    "private_instance_required": true,
+    "model_input_excludes_assertions_and_gold": true,
+    "gate": "C 8/8 complete successful journeys per host; no averaging journey rounds into 40-query denominator"
+  },
+  "unchanged": {
+    "formal_host_primary_submission_upper_bound": 1152,
+    "upper_bound_is_not_required_actual_call_count": true,
+    "core_960_separate_from_host_1152": true,
+    "total_api_folded_cap_usd": 20,
+    "ledger_reset": false,
+    "all_primary_auxiliary_source_load_tool_failed_retry_calls_accounted": true,
+    "candidate_source_wheel_protocol_method_scorer_hash_binding": true,
+    "same_inputs_tools_context_memory_budget_per_arm": true,
+    "zero_determinate_safety_violations": true,
+    "l3_coverage_minimum": 0.9,
+    "l3_each_B_group_minimum": 0.8,
+    "l4_query_minimum_per_host": "36/40",
+    "l4_journeys_per_host": "8/8"
+  },
+  "minimal_next": [
+    "Independent executor emits private 120-pair metadata map and source-manifest binding; public summary only has counts/hash.",
+    "Planner emits all 240 core conditions per arm plus deterministic 40-pair host subset; removes manufactured journey generation.",
+    "Independent executor creates J01-J08 private fixed operation bundles from approved public specs; reviewer checks operation metadata and step coverage without raw/gold.",
+    "Bind allocation adjudication bytes, private maps, journey bundles, original protocol and accepted Codex method hashes in run freeze; no-network structural preflight before already-authorized formal execution."
+  ],
+  "audit": {
+    "sealed_raw_read": false,
+    "gold_read": false,
+    "private_units_read": false,
+    "private_association_read": false,
+    "host_calls": 0,
+    "model_calls": 0,
+    "product_modified": false,
+    "planner_modified": false,
+    "P18_pass": false,
+    "G2_pass": false
+  }
+}

@@ -1,0 +1,15 @@
+............................                                             [100%]
+============================ slowest 10 durations =============================
+0.92s call     tests/contract/test_v11_recall_admission.py::test_P08_relation_budget_counts_rejected_candidates_and_checks_original_deadline
+0.75s call     tests/contract/test_v11_recall_admission.py::test_P08_relation_expansion_stays_within_two_hops_and_24_objects
+0.15s call     tests/contract/test_v11_recall_admission.py::test_P08_claim_state_reuses_current_history_and_as_of_semantics
+0.11s call     tests/contract/test_v11_recall_admission.py::test_P08_high_score_candidates_still_no_match_after_authority_hydration
+0.10s call     tests/contract/test_v11_recall_admission.py::test_P08_collection_claim_and_episode_versions_filter_state_and_reject_cursor_replay
+0.10s call     tests/contract/test_v11_recall_admission.py::test_P08_collection_reports_partial_then_complete_and_rejects_cursor_replay
+0.05s call     tests/contract/test_v11_recall_admission.py::test_P08_derived_echo_cannot_be_recalled_as_direct_authority[assistant_visible]
+0.05s call     tests/contract/test_v11_recall_admission.py::test_P08_derived_echo_cannot_be_recalled_as_direct_authority[memory_reinjection]
+0.05s call     tests/contract/test_v11_recall_admission.py::test_P08_current_history_and_as_of_filter_vector_candidates
+0.05s call     tests/contract/test_v11_recall_admission.py::test_P08_identifier_mismatch_is_rejected_but_explicit_comparison_admits_both
+28 passed in 3.29s
+
+{"cleanup_exit_code": 0, "overall_exit_code": 0, "pytest_exit_code": 0, "transition_history": ["prepared", "pytest_started", "pytest_completed_waiting_cleanup", "cleanup_succeeded", "receipt_written"], "wrapper_exit_code": 0}

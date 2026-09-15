@@ -1,0 +1,36 @@
+{
+  "checks": {
+    "import_and_construction_no_database": true,
+    "imported_from_installed_package": true,
+    "explicit_initialization": true,
+    "exact_persisted_source": true,
+    "group_cannot_read_private": true,
+    "source_and_work_committed": true,
+    "queries_leave_database_bytes_unchanged": true,
+    "rollback_retains_only_committed_source": true,
+    "no_host_provider_native_imports": true
+  },
+  "passed": 9,
+  "failed": 0,
+  "skipped": 0,
+  "duration_seconds": 0.21245719998842105,
+  "schema_version": 1100,
+  "python": "3.12.14 (main, Aug 25 2026, 14:01:42) [MSC v.1944 64 bit (AMD64)]",
+  "distributions": {
+    "attrs": "26.1.0",
+    "build": "1.6.0",
+    "colorama": "0.4.6",
+    "hermes-scope-recall": "2.0.1",
+    "jsonschema": "4.26.0",
+    "jsonschema-specifications": "2025.9.1",
+    "packaging": "26.3",
+    "pyproject_hooks": "1.2.0",
+    "referencing": "0.37.0",
+    "rpds-py": "2026.6.3",
+    "setuptools": "81.0.0",
+    "typing_extensions": "4.16.0",
+    "wheel": "0.48.0"
+  },
+  "database_sha256": "213c030392490df0e70443389fcec3ec0063a1d8e3c4857f5089aeab1fd2217f",
+  "evidence_scope": "Installed intermediate wheel, no Hermes, no network/model calls; storage only"
+}

@@ -1,0 +1,542 @@
+"""Provider-compat tool port adapter. Tooling must not import or hold the Hermes class."""
+
+from __future__ import annotations
+
+from contextlib import ExitStack, contextmanager, nullcontext
+from typing import Any, Iterator, Mapping, Sequence
+
+from ...fact_actions import EvolutionProposal, EvolutionResult
+from ..application.memory_queries import MemoryQueryApplication
+from .ports import FactMemoryRow, FactTargetRow, FactToolPort, MemoryCommandPort
+from .provider_compat_hosts import LegacyProviderToolHost
+
+
+def _call(host: Any, name: str, *args: Any, **kwargs: Any) -> Any:
+    fn = getattr(host, name, None)
+    if not callable(fn):
+        raise AttributeError(name)
+    return fn(*args, **kwargs)
+
+
+def _optional_call(host: Any, name: str, *args: Any, default: Any = None, **kwargs: Any) -> Any:
+    fn = getattr(host, name, None)
+    if not callable(fn):
+        return default
+    return fn(*args, **kwargs)
+
+
+def _assembled_command_port(host: Any) -> MemoryCommandPort | None:
+    """Return the already assembled composition command_port, if present."""
+
+    composition = getattr(host, "_composition", None)
+    return getattr(composition, "command_port", None) if composition is not None else None
+
+
+def _assembled_query_port(host: Any) -> MemoryQueryApplication | None:
+    composition = getattr(host, "_composition", None)
+    return getattr(composition, "query_port", None) if composition is not None else None
+
+
+class ProviderToolRuntimeAdapter:
+    """Central compat face over the current Provider. D2 may replace the thin doors.
+
+    Production writes use the composition ``command_port`` injected at bind
+    time (or looked up on the host composition). Isolated FakeProvider /
+    external hosts without a composition fall back to the legacy persist
+    wrapper so ``store_now`` / ``_store_now`` hooks still intercept.
+    """
+
+    def __init__(
+        self,
+        host: LegacyProviderToolHost,
+        *,
+        command_port: MemoryCommandPort | None = None,
+        query_port: MemoryQueryApplication | None = None,
+    ) -> None:
+        self._host = host
+        self._bound_command_port = command_port
+        self._bound_query_port = query_port
+
+    def _resolve_command_port(self) -> MemoryCommandPort:
+        if self._bound_command_port is not None:
+            return self._bound_command_port
+        assembled = _assembled_command_port(self._host)
+        if assembled is not None:
+            return assembled
+        from .kernel import bind_memory_command_port
+
+        return bind_memory_command_port(self._host)
+
+    def _command_kernel(self) -> Any:
+        from .kernel import COMMAND_KERNEL
+
+        return COMMAND_KERNEL
+
+    def _resolve_query_port(self) -> MemoryQueryApplication | None:
+        if self._bound_query_port is not None:
+            return self._bound_query_port
+        return _assembled_query_port(self._host)
+
+    def _query_kernel(self) -> Any:
+        from .kernel import KERNEL
+
+        return KERNEL
+
+    def query_connection(self) -> Any:
+        fn = getattr(self._host, "query_connection", None)
+        if callable(fn):
+            return fn()
+        fn = getattr(self._host, "_require_conn", None)
+        if callable(fn):
+            return fn()
+        raise RuntimeError("query connection is unavailable")
+
+    def query_lock(self) -> Any:
+        fn = getattr(self._host, "query_lock", None)
+        if callable(fn):
+            return fn()
+        lock = getattr(self._host, "_lock", None)
+        return lock if lock is not None else nullcontext()
+
+    def query_scope_view(self) -> dict[str, Any]:
+        fn = getattr(self._host, "query_scope_view", None)
+        if callable(fn):
+            payload = fn()
+            return dict(payload) if isinstance(payload, Mapping) else {}
+        return {
+            "scope_id": str(getattr(self._host, "_scope_id", "") or ""),
+            "shared_scope_id": str(getattr(self._host, "_shared_scope_id", "") or ""),
+            "accessible_scope_ids": list(getattr(self._host, "_accessible_scope_ids", []) or []),
+            "writable_scope_ids": list(getattr(self._host, "_writable_scope_ids", []) or []),
+            "shared_pool_scope_id": str(getattr(self._host, "_shared_pool_scope_id", "") or ""),
+        }
+
+    def vector_status_view(self) -> Mapping[str, Any]:
+        payload = _optional_call(self._host, "vector_status_view", default={})
+        return dict(payload) if isinstance(payload, Mapping) else {}
+
+    def retrieval_status_view(self) -> Mapping[str, Any]:
+        payload = _optional_call(self._host, "retrieval_status_view", default={})
+        return dict(payload) if isinstance(payload, Mapping) else {}
+
+    def runtime_status_view(self) -> Mapping[str, Any]:
+        payload = _optional_call(self._host, "runtime_status_view", default={})
+        return dict(payload) if isinstance(payload, Mapping) else {}
+
+    def recall_service_view(self) -> Any:
+        fn = getattr(self._host, "recall_service_view", None)
+        if callable(fn):
+            return fn()
+        return getattr(self._host, "_recall_service", None)
+
+    def clean_text(self, text: Any) -> str:
+        fn = getattr(self._host, "_clean_text", None)
+        if callable(fn):
+            return str(fn(text) or "")
+        return str(text or "")
+
+    def session_id(self) -> str:
+        return str(getattr(self._host, "_session_id", "") or "")
+
+    def scope_object(self) -> Any:
+        return getattr(self._host, "_scope", None)
+
+    def scope_id(self) -> str:
+        return str(self.query_scope_view().get("scope_id") or "")
+
+    def shared_scope_id(self) -> str:
+        return str(self.query_scope_view().get("shared_scope_id") or "")
+
+    def shared_pool_scope_id(self) -> str:
+        return str(self.query_scope_view().get("shared_pool_scope_id") or "")
+
+    def writable_scope_ids(self) -> list[str]:
+        return [str(item) for item in (self.query_scope_view().get("writable_scope_ids") or [])]
+
+    def accessible_scope_ids(self) -> list[str]:
+        return [str(item) for item in (self.query_scope_view().get("accessible_scope_ids") or [])]
+
+    def scope_id_for_mode(self, scope_mode: str) -> str:
+        if scope_mode == "shared_pool":
+            return self.shared_pool_scope_id()
+        if scope_mode == "shared":
+            return self.shared_scope_id()
+        return self.scope_id()
+
+    def scope_mode_for(self, target: str, source: str = "") -> str:
+        fn = getattr(self._host, "_scope_mode_for", None)
+        if callable(fn):
+            return str(fn(target, source))
+        return "local"
+
+    def config_view(self) -> dict[str, Any]:
+        raw = getattr(self._host, "_config", {})
+        return dict(raw) if isinstance(raw, Mapping) else {}
+
+    def fact_memory_row(
+        self, memory_id: str, writable_scope_ids: Sequence[str]
+    ) -> FactMemoryRow | None:
+        writable = [str(item).strip() for item in writable_scope_ids if str(item).strip()]
+        if not writable:
+            return None
+        placeholders = ",".join("?" for _ in writable)
+        with self.query_lock():
+            row = self.query_connection().execute(
+                "SELECT id, source, target, scope_id, metadata FROM memories "
+                f"WHERE id = ? AND scope_id IN ({placeholders})",
+                (memory_id, *writable),
+            ).fetchone()
+        if row is None:
+            return None
+        return {
+            "id": str(row["id"] or ""),
+            "source": str(row["source"] or ""),
+            "target": str(row["target"] or ""),
+            "scope_id": str(row["scope_id"] or ""),
+            "metadata": row["metadata"],
+        }
+
+    def fact_target_rows(
+        self, target_ids: Sequence[str], writable_scope_ids: Sequence[str]
+    ) -> list[FactTargetRow]:
+        targets = [str(item).strip() for item in target_ids if str(item).strip()]
+        writable = [str(item).strip() for item in writable_scope_ids if str(item).strip()]
+        if not targets or not writable:
+            return []
+        id_placeholders = ",".join("?" for _ in targets)
+        scope_placeholders = ",".join("?" for _ in writable)
+        with self.query_lock():
+            rows = self.query_connection().execute(
+                "SELECT id, scope_id, target, source FROM memories "
+                f"WHERE id IN ({id_placeholders}) "
+                f"AND scope_id IN ({scope_placeholders})",
+                (*targets, *writable),
+            ).fetchall()
+        return [
+            {
+                "id": str(row["id"] or ""),
+                "scope_id": str(row["scope_id"] or ""),
+                "target": str(row["target"] or ""),
+                "source": str(row["source"] or ""),
+            }
+            for row in rows
+        ]
+
+    def fact_memory_updated_at(self, memory_id: str) -> str:
+        with self.query_lock():
+            row = self.query_connection().execute(
+                "SELECT updated_at FROM memories WHERE id = ?",
+                (memory_id,),
+            ).fetchone()
+        return str(row["updated_at"] or "") if row is not None else ""
+
+    def fact_pipeline_receipt_exists(
+        self,
+        *,
+        lane: str,
+        run_id: str,
+        source_key: str,
+        scope_id: str,
+    ) -> bool:
+        from ...fact_evolution import pipeline_receipt_exists
+
+        with self.query_lock():
+            return pipeline_receipt_exists(
+                self.query_connection(),
+                lane=lane,
+                run_id=run_id,
+                source_key=source_key,
+                scope_id=scope_id,
+            )
+
+    def execute_fact_proposal(
+        self,
+        *,
+        proposal: EvolutionProposal,
+        lane: str,
+        run_id: str,
+        source_key: str,
+        trusted_scope_id: str,
+        writable_scope_ids: Sequence[str],
+        actor: str,
+        source: str,
+        target: str,
+        content: str,
+        metadata: Mapping[str, object],
+        dry_run: bool,
+        provenance_refs: Sequence[Mapping[str, object]],
+    ) -> EvolutionResult:
+        from ...fact_evolution import execute_pipeline_proposal
+        from ...write_kernel import command_write_access
+
+        scope = self.scope_object()
+        admission = (
+            nullcontext()
+            if dry_run
+            else command_write_access(self._host, user_initiated=True)
+        )
+        with admission:
+            with self.query_lock():
+                return execute_pipeline_proposal(
+                    self.query_connection(),
+                    proposal=proposal,
+                    lane=lane,
+                    run_id=run_id,
+                    source_key=source_key,
+                    trusted_scope_id=trusted_scope_id,
+                    writable_scope_ids=writable_scope_ids,
+                    actor=actor,
+                    source=source,
+                    target=target,
+                    content=content,
+                    metadata=metadata,
+                    runtime_config=self.config_view(),
+                    dry_run=dry_run,
+                    provenance_refs=provenance_refs,
+                    session_id=self.session_id(),
+                    platform=str(getattr(scope, "platform", "") or ""),
+                    user_id=str(getattr(scope, "user_id", "") or ""),
+                    chat_id=str(getattr(scope, "chat_id", "") or ""),
+                    thread_id=str(getattr(scope, "thread_id", "") or ""),
+                    gateway_session_key=str(
+                        getattr(scope, "gateway_session_key", "") or ""
+                    ),
+                    agent_identity=str(getattr(scope, "agent_identity", "") or ""),
+                    agent_workspace=str(getattr(scope, "agent_workspace", "") or ""),
+                )
+
+    def shared_pool_enabled(self) -> bool:
+        return bool(getattr(self._host, "_shared_pool_enabled", False))
+
+    def shared_pool_write_enabled(self) -> bool:
+        return bool(getattr(self._host, "_shared_pool_write_enabled", False))
+
+    def config_value(self, key: str, default: Any = None) -> Any:
+        fn = getattr(self._host, "_config_value", None)
+        if callable(fn):
+            return fn(key, default)
+        return self.config_view().get(key, default)
+
+    def normalize_query(self, query: str, char_limit: int) -> str:
+        fn = getattr(self._host, "_normalize_query", None)
+        if callable(fn):
+            return str(fn(query, char_limit) or "")
+        return str(query or "")[: max(0, int(char_limit))]
+
+    def retrieval_config_view(self) -> dict[str, Any]:
+        raw = getattr(self._host, "_retrieval_config", {}) or {}
+        return dict(raw) if isinstance(raw, Mapping) else {}
+
+    def vector_store_view(self) -> Any:
+        return getattr(self._host, "_vector_store", None)
+
+    @contextmanager
+    def write_access(self, *, capture_barrier: bool) -> Iterator[bool]:
+        """Use the same reentrant command boundary as direct provider calls."""
+
+        from ...write_kernel import (
+            WRITE_AUTHORITY_BUSY,
+            command_write_access,
+        )
+
+        with ExitStack() as stack:
+            try:
+                stack.enter_context(
+                    command_write_access(
+                        self._host,
+                        capture_barrier=capture_barrier,
+                        user_initiated=True,
+                    )
+                )
+            except RuntimeError as exc:
+                if str(exc) != WRITE_AUTHORITY_BUSY:
+                    raise
+                yield False
+                return
+            yield True
+
+    def rollback_conn_after_error(self, context: str) -> Any:
+        return _optional_call(self._host, "_rollback_conn_after_error", context)
+
+    def recover_sqlite_connection_after_error(self, context: str) -> Mapping[str, Any]:
+        payload = _optional_call(
+            self._host, "_recover_sqlite_connection_after_error", context, default={}
+        )
+        return payload if isinstance(payload, Mapping) else {}
+
+    def store_now(self, *args: Any, **kwargs: Any) -> Any:
+        return self._command_kernel().store(self._resolve_command_port(), *args, **kwargs)
+
+    def review_candidate(self, **kwargs: Any) -> dict[str, Any]:
+        return self._command_kernel().review_candidate(self._resolve_command_port(), **kwargs)
+
+    def stored_memory_identity(self, memory_id: str) -> dict[str, Any]:
+        """Read a bounded, content-free receipt after a durable store."""
+        from ...candidate_review import candidate_identity_fields
+        from ...graph import load_metadata
+
+        if not memory_id:
+            return {}
+        if not any(callable(getattr(self._host, name, None)) for name in ("query_connection", "_require_conn")):
+            # Isolated legacy hosts may expose only a store hook. Do not claim
+            # promotion when that host cannot provide a persisted receipt.
+            return {}
+        with self.query_lock():
+            scopes = self.writable_scope_ids()
+            placeholders = ",".join("?" for _ in scopes) or "NULL"
+            row = self.query_connection().execute(
+                f"SELECT source, metadata FROM memories WHERE id=? AND scope_id IN ({placeholders})",
+                [memory_id, *scopes],
+            ).fetchone()
+        return candidate_identity_fields(source=str(row[0]), metadata=load_metadata(row[1])) if row else {}
+
+    def update_memory(self, *args: Any, **kwargs: Any) -> Any:
+        return self._command_kernel().update(self._resolve_command_port(), *args, **kwargs)
+
+    def merge_memories(self, *args: Any, **kwargs: Any) -> Any:
+        return self._command_kernel().merge(self._resolve_command_port(), *args, **kwargs)
+
+    def archive_memories(self, *args: Any, **kwargs: Any) -> Any:
+        return self._command_kernel().archive(self._resolve_command_port(), *args, **kwargs)
+
+    def delete_memories(self, *args: Any, **kwargs: Any) -> Any:
+        return self._command_kernel().delete(self._resolve_command_port(), *args, **kwargs)
+
+    def feedback_memory(self, *args: Any, **kwargs: Any) -> Any:
+        return self._command_kernel().feedback(self._resolve_command_port(), *args, **kwargs)
+
+    def fact_owned_memory_ids(self, *args: Any, **kwargs: Any) -> Any:
+        return self._command_kernel().fact_owned(
+            self._resolve_command_port(), *args, **kwargs
+        )
+
+    def purge_memories(self, *args: Any, **kwargs: Any) -> Any:
+        return self._command_kernel().purge(
+            self._resolve_command_port(), *args, **kwargs
+        )
+
+    def dedupe_memories(self, *args: Any, **kwargs: Any) -> Any:
+        return self._command_kernel().dedupe(self._resolve_command_port(), *args, **kwargs)
+
+    def govern_memories(self, *args: Any, **kwargs: Any) -> Any:
+        return self._command_kernel().govern(self._resolve_command_port(), *args, **kwargs)
+
+    def repair_vector(self, *args: Any, **kwargs: Any) -> Any:
+        return self._command_kernel().repair(self._resolve_command_port(), *args, **kwargs)
+
+    def hygiene_report(self, *args: Any, **kwargs: Any) -> Any:
+        query_port = self._resolve_query_port()
+        if query_port is not None:
+            return self._query_kernel().hygiene(query_port, *args, **kwargs)
+        return _call(self._host, "_hygiene_report", *args, **kwargs)
+
+    def stats_payload(self, *args: Any, **kwargs: Any) -> Any:
+        query_port = self._resolve_query_port()
+        if query_port is not None:
+            return self._query_kernel().stats(query_port, *args, **kwargs)
+        return _call(self._host, "_stats_payload", *args, **kwargs)
+
+    def inspect_memory(self, *args: Any, **kwargs: Any) -> Any:
+        query_port = self._resolve_query_port()
+        if query_port is not None:
+            return self._query_kernel().inspect(query_port, *args, **kwargs)
+        return _call(self._host, "_inspect_memory", *args, **kwargs)
+
+    def explain_query(self, *args: Any, **kwargs: Any) -> Any:
+        query_port = self._resolve_query_port()
+        if query_port is not None:
+            return self._query_kernel().explain(query_port, *args, **kwargs)
+        return _call(self._host, "_explain_query", *args, **kwargs)
+
+    def recall_inspector(self, *args: Any, **kwargs: Any) -> Any:
+        query_port = self._resolve_query_port()
+        if query_port is None:
+            raise RuntimeError("Recall Inspector requires the application query port")
+        return self._query_kernel().inspector(query_port, *args, **kwargs)
+
+    def export_memories(self, *args: Any, **kwargs: Any) -> Any:
+        query_port = self._resolve_query_port()
+        if query_port is not None:
+            return self._query_kernel().export(query_port, *args, **kwargs)
+        return _call(self._host, "_export_memories", *args, **kwargs)
+
+    def context_payload(self, *args: Any, **kwargs: Any) -> Any:
+        query_port = self._resolve_query_port()
+        if query_port is not None:
+            return self._query_kernel().context(query_port, *args, **kwargs)
+        return _call(self._host, "_context_payload", *args, **kwargs)
+
+    def profile_payload(self, *args: Any, **kwargs: Any) -> Any:
+        query_port = self._resolve_query_port()
+        if query_port is not None:
+            return self._query_kernel().profile(query_port, *args, **kwargs)
+        return _call(self._host, "_profile_payload", *args, **kwargs)
+
+    def probe_entity(self, *args: Any, **kwargs: Any) -> Any:
+        query_port = self._resolve_query_port()
+        if query_port is not None:
+            return self._query_kernel().probe(query_port, *args, **kwargs)
+        return _call(self._host, "_probe_entity", *args, **kwargs)
+
+    def related_entities(self, *args: Any, **kwargs: Any) -> Any:
+        query_port = self._resolve_query_port()
+        if query_port is not None:
+            return self._query_kernel().related(query_port, *args, **kwargs)
+        return _call(self._host, "_related_entities", *args, **kwargs)
+
+    def benchmark_queries(self, *args: Any, **kwargs: Any) -> Any:
+        query_port = self._resolve_query_port()
+        if query_port is not None:
+            return self._query_kernel().benchmark(query_port, *args, **kwargs)
+        return _call(self._host, "_benchmark_queries", *args, **kwargs)
+
+    def run_reflection(self, args: Mapping[str, Any]) -> Any:
+        from ...reflection_tooling import run_reflection_tool
+
+        return run_reflection_tool(self._host, args=dict(args))
+
+    def mark_vector_needs_repair(self, reason: str) -> None:
+        composition = getattr(self._host, "_composition", None)
+        vector = getattr(composition, "vector", None)
+        mark = getattr(vector, "mark_needs_repair", None)
+        if callable(mark):
+            mark(reason)
+            return
+        from ...vector_runtime import mark_vector_needs_repair
+
+        mark_vector_needs_repair(self._host, reason)
+
+    def hermes_home_path(self) -> Any:
+        from pathlib import Path
+
+        return getattr(self._host, "_hermes_home", Path.home() / ".hermes")
+
+    def reflection_transport(self) -> Any:
+        return getattr(self._host, "_reflection_transport", None)
+
+def bind_tool_runtime_port(
+    obj: LegacyProviderToolHost | ProviderToolRuntimeAdapter,
+    *,
+    command_port: MemoryCommandPort | None = None,
+    query_port: MemoryQueryApplication | None = None,
+) -> ProviderToolRuntimeAdapter:
+    if isinstance(obj, ProviderToolRuntimeAdapter):
+        if command_port is not None and obj._bound_command_port is None:
+            obj._bound_command_port = command_port
+        if query_port is not None and obj._bound_query_port is None:
+            obj._bound_query_port = query_port
+        return obj
+    existing = getattr(getattr(obj, "_composition", None), "tool_port", None)
+    if isinstance(existing, ProviderToolRuntimeAdapter) and existing._host is obj:
+        if command_port is not None and existing._bound_command_port is None:
+            existing._bound_command_port = command_port
+        if query_port is not None and existing._bound_query_port is None:
+            existing._bound_query_port = query_port
+        return existing
+    return ProviderToolRuntimeAdapter(
+        obj, command_port=command_port, query_port=query_port
+    )
+
+
+def bind_fact_tool_port(obj: Any) -> FactToolPort:
+    return bind_tool_runtime_port(obj)

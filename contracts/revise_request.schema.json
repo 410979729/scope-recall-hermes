@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "revise_request",
+  "description": "Design specification v1.1. Not an installed API. Trusted identity is supplied separately by the adapter.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "protocol_version": {
+      "const": "1.1"
+    },
+    "target_ref": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 240
+    },
+    "expected_revision": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "new_value": {
+      "type": [
+        "string",
+        "number",
+        "boolean",
+        "object",
+        "array",
+        "null"
+      ]
+    },
+    "conditions": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 1000
+      },
+      "maxItems": 16
+    },
+    "source_evidence_refs": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 240
+      },
+      "maxItems": 32,
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "valid_from": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "date-time"
+    }
+  },
+  "required": [
+    "protocol_version",
+    "target_ref",
+    "expected_revision",
+    "new_value",
+    "conditions",
+    "source_evidence_refs",
+    "valid_from"
+  ]
+}

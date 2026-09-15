@@ -155,15 +155,30 @@ class RecallCandidate:
     def ordering_evidence_score(self) -> int:
         """Count only independent retrieval channels for packet ordering.
 
-        Relation, temporal, curated-source, and current-truth annotations stay
-        visible in the packet but cannot silently acquire ranking authority.
+        Relation, temporal, curated-source, current-truth, and derived fusion
+        annotations stay visible in the packet but cannot acquire ranking
+        authority. A lexical score that is weaker than the same row's vector
+        score is a hitchhiker, not a second independent channel.
         """
 
-        score = sum(
-            kind in {"lexical", "vector", "fusion"}
-            for kind in self.evidence_kinds
-        )
         metadata = _metadata(self.item)
+        try:
+            lexical = float(metadata.get("lexical_score") or 0.0)
+        except (TypeError, ValueError):
+            lexical = 0.0
+        try:
+            vector = float(metadata.get("vector_score") or 0.0)
+        except (TypeError, ValueError):
+            vector = 0.0
+        if not math.isfinite(lexical):
+            lexical = 0.0
+        if not math.isfinite(vector):
+            vector = 0.0
+        score = 0
+        if vector > 0.0:
+            score += 1
+        if lexical > 0.0 and lexical >= vector:
+            score += 1
         if (
             "curated" in self.evidence_kinds
             and _text(metadata.get("memory_type")).lower() == "preference"
