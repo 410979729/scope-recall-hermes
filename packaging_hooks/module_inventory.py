@@ -236,19 +236,19 @@ def write_all(repo_root: Path | None = None) -> list[str]:
         text = path.read_text(encoding="utf-8")
         stamped = stamped_manifest(text, version)
         if stamped != text:
-            path.write_text(stamped, encoding="utf-8")
+            path.write_text(stamped, encoding="utf-8", newline="\n")
             changed.append(relative)
     codex_path = root / CODEX_MANIFEST
     codex = json.loads(codex_path.read_text(encoding="utf-8"))
     if codex.get("version") != semver_version(version):
         codex["version"] = semver_version(version)
-        codex_path.write_text(json.dumps(codex, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        codex_path.write_text(json.dumps(codex, ensure_ascii=False, indent=2) + "\n", encoding="utf-8", newline="\n")
         changed.append(CODEX_MANIFEST)
     allowlist_path = root / "packaging" / "v11-module-allowlist.json"
     expected = expected_allowlist(root)
     current = json.loads(allowlist_path.read_text(encoding="utf-8"))
     if current != expected:
-        allowlist_path.write_text(json.dumps(expected, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        allowlist_path.write_text(json.dumps(expected, ensure_ascii=False, indent=2) + "\n", encoding="utf-8", newline="\n")
         changed.append("packaging/v11-module-allowlist.json")
     return changed
 
