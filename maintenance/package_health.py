@@ -124,10 +124,16 @@ def version_health(instance: Path, probe: dict, running: dict) -> dict:
 
 
 def apply_package_health(report, instance: Path, probe: dict) -> None:
-    """Attach independent checks and named gaps to the public doctor report."""
+    """Attach independent checks and named gaps to the public doctor report.
+
+    Re-applying replaces the earlier rows: the doctor runs this before the
+    binding is known, so an unbound instance still gets these checks, and again
+    once the live breadcrumbs that ``version_mismatch`` compares have been read.
+    """
     checks = {name: probe.get(name, {"status": "unavailable"}) for name in ("hot_patched", "dependency_drift")}
     checks["version_mismatch"] = version_health(instance, probe, report.running_code)
     report.package_health = checks
+    report.checks = [item for item in report.checks if item["name"] not in checks]
     for name, result in checks.items():
         report.checks.append({"name": name, "result": result["status"]})
         if result["status"] == "mismatch" and name not in report.capability_gaps:
