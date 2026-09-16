@@ -160,7 +160,7 @@
     "runtime/worker_watchdog.py",
     "vector/__init__.py",
     "vector/compaction.py",
-    "vector/mutation_guard.py",
+    "vector/lance_native.py",
     "vector/process_store.py",
     "vector/sqlite_store.py",
     "vector/store.py"

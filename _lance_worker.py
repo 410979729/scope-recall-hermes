@@ -55,19 +55,19 @@ def main() -> None:
     package.__path__ = [str(Path(__file__).resolve().parent)]
     sys.modules["scope_recall"] = package
     if TYPE_CHECKING:
-        from .vector import store as vector_store
         from .core.capture_filters import sanitize_report_text
+        from .vector.lance_native import skip_native_probe
         from .vector.process_store import LANCE_WORKER_METHODS, MAX_LANCE_FRAME_BYTES
         from .vector.store import LanceVectorStore
     else:
-        from scope_recall.vector import store as vector_store
         from scope_recall.core.capture_filters import sanitize_report_text
+        from scope_recall.vector.lance_native import skip_native_probe
         from scope_recall.vector.process_store import LANCE_WORKER_METHODS, MAX_LANCE_FRAME_BYTES
         from scope_recall.vector.store import LanceVectorStore
 
     # This entire interpreter is already disposable. A second import-probe
     # subprocess adds no isolation and complicates deadline/process ownership.
-    vector_store._NATIVE_VECTOR_PROBE = {"safe": True, "returncode": 0, "stdout": "", "stderr": ""}
+    skip_native_probe()
 
     store = None
     # Keep protocol output on a private duplicate. Redirect the actual stdout
@@ -123,8 +123,7 @@ def main() -> None:
                             guard_timeout_seconds=request.get("kwargs", {}).get("guard_timeout_seconds"),
                         )
                     else:
-                        member = getattr(store, method)
-                        result = member if method == "id_lookup_indexed" else member(*request["args"], **request["kwargs"])
+                        result = getattr(store, method)(*request["args"], **request["kwargs"])
                 response = {"id": request_id, "ok": True, "result": result}
             except FenceHandshakeError:
                 # No terminal response is safe after a malformed/late guard
