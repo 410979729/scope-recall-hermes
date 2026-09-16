@@ -750,8 +750,8 @@ class _PurgeInventory:
 def _purge_guard(data_directory: Path):
     """Hold the cooperative writer and physical-retained locks for purge."""
 
-    from scope_recall.file_lock import advisory_file_lock
-    from scope_recall.writer_lease import holding_truth_writer_lease, truth_writer_process_snapshot
+    from scope_recall.core.file_lock import advisory_file_lock
+    from scope_recall.core.writer_lease import holding_truth_writer_lease, truth_writer_process_snapshot
 
     @contextmanager
     def guarded():

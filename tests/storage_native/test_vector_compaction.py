@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from scope_recall import vector_compaction as vc
+from scope_recall.vector import compaction as vc
 from scope_recall.runtime.vector_upkeep import RESERVE_SECONDS, compact_if_due
 
 
@@ -161,7 +161,7 @@ def _row(index: int) -> dict:
 
 
 def _open_store(tmp_path, rows: int):
-    from scope_recall.vector_store import LanceVectorStore
+    from scope_recall.vector.store import LanceVectorStore
 
     store = LanceVectorStore(tmp_path / "lancedb", table_name="scope_recall", dimensions=_DIMENSIONS)
     store.open()
@@ -212,7 +212,7 @@ def test_a_reader_follows_the_table_forward_after_another_writer_commits(tmp_pat
     This is the defect that let a long-running host keep answering from the
     vectors it saw at startup while the worker kept publishing new ones.
     """
-    from scope_recall.vector_store import LanceVectorStore
+    from scope_recall.vector.store import LanceVectorStore
 
     writer = _open_store(tmp_path, 2)
     reader = LanceVectorStore(tmp_path / "lancedb", table_name="scope_recall", dimensions=_DIMENSIONS)
@@ -232,7 +232,7 @@ def test_a_reader_follows_the_table_forward_after_another_writer_commits(tmp_pat
 @pytest_native
 def test_a_reader_survives_a_compaction_performed_by_another_writer(tmp_path):
     """Compaction drops superseded versions; a pinned reader would break."""
-    from scope_recall.vector_store import LanceVectorStore
+    from scope_recall.vector.store import LanceVectorStore
 
     rows = vc.FRAGMENT_THRESHOLD + 3
     writer = _open_store(tmp_path, rows)

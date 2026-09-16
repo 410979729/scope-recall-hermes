@@ -8,7 +8,7 @@ import re
 
 from ..contracts import (ClaimProposal, ContractError, SourceSnapshot, TrustedContext,
                          validate_model_request, validate_payload, validate_proposal_references)
-from ..secret_patterns import contains_secret_like_text
+from .secret_patterns import contains_secret_like_text
 from .claim_storage import parse_source_ref
 from .aliases import validate_alias_source, validate_alias_target
 from .evidence_quote import resolve_evidence_quotes

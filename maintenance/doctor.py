@@ -20,7 +20,7 @@ from scope_recall.core.failure_retry import NEEDS_REVIEW_COUNT
 from scope_recall.core.work_storage import AUTO_RECOVERABLE_ERRORS
 from scope_recall.runtime.model_budget import pre_request_refusals, provider_refusals
 from scope_recall.runtime.running_code import live_records, stale_records
-from scope_recall.vector_compaction import instance_vector_footprints
+from scope_recall.vector.compaction import instance_vector_footprints
 from scope_recall._version import __version__
 
 HostChoice = Literal["hermes", "codex"]

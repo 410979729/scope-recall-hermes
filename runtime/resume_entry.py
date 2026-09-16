@@ -90,7 +90,7 @@ def resume_once(config_path, *, launcher=launch_worker, now=None):
     # Ownership is proved with the supervisor's OS lock, not a stale PID in a
     # status file. The watchdog coalesces if another wake wins this race.
     from .scheduling import SupervisorControl
-    from ..file_lock import advisory_file_lock
+    from ..core.file_lock import advisory_file_lock
     try:
         with advisory_file_lock(SupervisorControl(config).owner_lock, timeout_seconds=0):
             pass

@@ -25,7 +25,7 @@ from ..contracts import ContractError, InstanceBinding, Origin, TrustedContext
 from ..core.composition import CoreConfig, MemoryCore
 from ..core.storage import SQLiteStorage
 from ..core.retrieval import SearchContext
-from .._internal.recall.deadline import RequestDeadline, using_request_deadline
+from ..core.deadline import RequestDeadline, using_request_deadline
 from .auxiliary import AuxiliaryRuntimeConfig, build_auxiliary_runtime
 from .running_code import record_running_code
 from .vector_upkeep import compact_if_due
@@ -540,7 +540,7 @@ class RuntimeInstance:
             self._ensure_vector_port(allow_create=True, deadline=vector_deadline)
             self.background_gaps = ingress_gaps
         except Exception as exc:
-            from ..lance_process_store import NativeVectorPathError
+            from ..vector.process_store import NativeVectorPathError
             code = NativeVectorPathError.code if isinstance(exc, NativeVectorPathError) else f"vector_unavailable:{type(exc).__name__}"
             self.background_gaps = (*ingress_gaps, code)
             # Optional indexing failure cannot suppress a healthy independent
@@ -648,7 +648,7 @@ class RuntimeInstance:
 
 def default_vector_factory(config: VectorRuntimeConfig) -> Any:
     """Build an existing-companion store without opening or creating it."""
-    from ..vector_store import build_vector_store
+    from ..vector.store import build_vector_store
 
     return build_vector_store(
         config.backend,

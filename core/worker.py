@@ -6,7 +6,7 @@ import math
 from typing import Callable, Protocol
 
 from ..contracts import ContractError, TrustedContext
-from ..file_lock import advisory_file_lock
+from .file_lock import advisory_file_lock
 from .consolidate import consolidation_messages
 from .candidate_lifecycle import (
     PROCESS_BATCH_LIMIT,

@@ -17,7 +17,7 @@ from scope_recall.adapters.runtime_wiring import launch_audience_worker
 from scope_recall.core import CoreConfig, MemoryCore
 from scope_recall.runtime.instance import RuntimeInstanceConfig, build_runtime_instance
 from scope_recall.runtime import worker_entry
-from scope_recall.file_lock import advisory_file_lock
+from scope_recall.core.file_lock import advisory_file_lock
 from scope_recall.adapters.models import AuxiliaryModelError
 from scope_recall.core.worker import _model_exception_outcome
 from test_runtime_worker_entry import _binding, _config_payload, _write_config

@@ -11,7 +11,7 @@ import pytest
 from scope_recall.adapters.lance import LanceIndexWriter, LanceVectorPort, LanceVectorRecord, physical_partition_scope_id
 from scope_recall.core import CoreConfig, MemoryCore
 from scope_recall.core.recall_policy import RecallPolicy, SPACE_ID
-from scope_recall.lance_process_store import ProcessLanceVectorStore
+from scope_recall.vector.process_store import ProcessLanceVectorStore
 from tests.contract.test_v11_claims import Clock, capture
 from tests.v11_support import context, recall_request
 

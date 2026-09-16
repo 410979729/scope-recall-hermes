@@ -14,7 +14,7 @@ import re
 import xml.etree.ElementTree as ET
 
 from ..contracts import ContractError, InstanceBinding
-from ..secret_patterns import contains_secret_like_text
+from .secret_patterns import contains_secret_like_text
 
 
 MAX_RETAINED_BYTES = 16 * 1024 * 1024

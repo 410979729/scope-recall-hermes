@@ -6,9 +6,9 @@ import hashlib
 import re
 import unicodedata
 
-from ..capture_filters import sanitize_source_capture_text
+from .capture_filters import sanitize_source_capture_text
 from ..contracts import ContractError, SourceEvent, TrustedContext, decode_payload, validate_capture
-from ..secret_patterns import contains_secret_like_text
+from .secret_patterns import contains_secret_like_text
 
 
 MAX_SEGMENT_CHARS = 65536

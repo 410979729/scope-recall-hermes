@@ -4,7 +4,7 @@ from contextlib import closing
 from dataclasses import dataclass
 import hashlib, http.client, importlib.util, json, os, sqlite3, time
 from pathlib import Path
-from scope_recall.secret_patterns import contains_secret_like_text
+from scope_recall.core.secret_patterns import contains_secret_like_text
 
 ROOT=Path(__file__).resolve().parents[1]; STATE=ROOT/".execution/TEST-MODEL-BUDGET-V1"; LEDGER_PATH=STATE/"call-budget.sqlite3"
 MODELS={"mimo-v2.5","deepseek-v4-flash","glm-5.3-flash"}; BATCH_CAPS={"P07_DEVELOPMENT":32,"P09_DEVELOPMENT":100,"P18_EVALUATION":8000}

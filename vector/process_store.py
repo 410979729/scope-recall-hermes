@@ -21,8 +21,8 @@ import weakref
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping
 
-from ._internal.recall.deadline import RequestDeadline, current_request_deadline, remaining_seconds, using_request_deadline
-from .vector_store import VectorRecord, VectorStoreCompatibilityError, _python_subprocess_options, vector_record_to_dict
+from ..core.deadline import RequestDeadline, current_request_deadline, remaining_seconds, using_request_deadline
+from .store import VectorRecord, VectorStoreCompatibilityError, _python_subprocess_options, vector_record_to_dict
 
 MAX_LANCE_FRAME_BYTES = 64 * 1024 * 1024
 # Lance's Rust object writer creates additional temporary/data path suffixes.
@@ -59,7 +59,7 @@ def _worker_command() -> list[str]:
         sys.executable,
         "-I",
         "-B",
-        str(Path(__file__).with_name("_lance_worker.py")),
+        str(Path(__file__).resolve().parents[1] / "_lance_worker.py"),
     ]
 
 

@@ -96,7 +96,7 @@ def _runtime_error_messages(module_name: str) -> list[str]:
     import importlib
     import inspect
 
-    module = importlib.import_module("scope_recall." + module_name.removesuffix(".py"))
+    module = importlib.import_module(module_name)
     path = pathlib.Path(inspect.getsourcefile(module))
     messages = []
     for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
@@ -107,7 +107,7 @@ def _runtime_error_messages(module_name: str) -> list[str]:
     return messages
 
 
-@pytest.mark.parametrize("module_name", ["lance_process_store.py", "vector_store.py"])
+@pytest.mark.parametrize("module_name", ["scope_recall.vector.process_store", "scope_recall.vector.store"])
 def test_the_vocabulary_cannot_silently_fall_behind_the_code(module_name):
     """A new RuntimeError in the vector path that nothing here names would arrive
     as a bare class again, which is the fault this module exists to remove."""
@@ -134,7 +134,7 @@ def test_a_remote_failure_keeps_the_name_the_helper_gave_it():
     classes, and dropped the rest -- so every other subprocess failure arrived as
     the bare word RuntimeError with the diagnosis stranded in a discarded
     message."""
-    from scope_recall.lance_process_store import _remote_failure
+    from scope_recall.vector.process_store import _remote_failure
 
     assert vector_failure_label(_remote_failure("ValueError", "table missing")) \
         == "RuntimeError:ValueError"
@@ -143,7 +143,7 @@ def test_a_remote_failure_keeps_the_name_the_helper_gave_it():
 
 @pytest.mark.parametrize("bogus", [None, 123, "", "bad type!", "A" * 80, "sk-ant-api03-AAAA!"])
 def test_a_malformed_remote_type_is_refused_rather_than_reported(bogus):
-    from scope_recall.lance_process_store import _remote_failure
+    from scope_recall.vector.process_store import _remote_failure
 
     assert vector_failure_label(_remote_failure(bogus, "something went wrong")) == "RuntimeError"
 
@@ -152,7 +152,7 @@ def test_the_two_fallbacks_both_carry_the_type():
     """One call site fixed and the other left behind is how this drifted before."""
     import inspect
 
-    from scope_recall import lance_process_store
+    from scope_recall.vector import process_store as lance_process_store
 
     source = inspect.getsource(lance_process_store)
     assert source.count("raise _remote_failure(error_type, message)") == 2

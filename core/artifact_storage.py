@@ -7,7 +7,7 @@ import hashlib
 import json
 
 from ..contracts import ContractError
-from ..secret_patterns import contains_secret_like_text
+from .secret_patterns import contains_secret_like_text
 from .claim_storage import parse_source_ref
 from .delete_storage import canonical
 from .retained_artifacts import ArtifactGrant, RetainedBlob, retain, read_retained

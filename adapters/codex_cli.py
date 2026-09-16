@@ -23,7 +23,7 @@ import threading
 import time
 
 from .models import AuxiliaryModelError
-from ..secret_patterns import contains_secret_like_text
+from ..core.secret_patterns import contains_secret_like_text
 from ..runtime.subscription_budget import SubscriptionBudgetLedger, SubscriptionBudgetPolicy
 
 MODEL = "gpt-5.6-luna"

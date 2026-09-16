@@ -17,7 +17,7 @@ import uuid
 
 from ..contracts import TrustedContext
 from ..core.storage import SQLiteStorage
-from ..file_lock import advisory_file_lock
+from ..core.file_lock import advisory_file_lock
 from .backup import _safe_path, _sha256, backup_sqlite
 from .migrate_v2 import (
     MigrationError,

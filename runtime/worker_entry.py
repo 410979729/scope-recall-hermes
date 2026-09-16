@@ -19,8 +19,8 @@ from pathlib import Path
 import sys
 from typing import Any, TextIO
 
-from ..file_lock import advisory_file_lock
-from ..lance_process_store import NativeVectorPathError
+from ..core.file_lock import advisory_file_lock
+from ..vector.process_store import NativeVectorPathError
 from ..contracts import TrustedContext
 from .instance import RuntimeInstanceConfig, build_runtime_instance
 from .model_budget import pre_request_refusals, provider_refusals
@@ -309,7 +309,7 @@ def run_worker(config_path: str | Path, *, output: TextIO | None = None) -> int:
         config = load_config(config_path)
         deadline = time.monotonic() + config.drain_seconds
         if config.vector is not None and config.vector.backend == "lancedb":
-            from ..lance_process_store import ProcessLanceVectorStore
+            from ..vector.process_store import ProcessLanceVectorStore
             vector = config.vector
             check = ProcessLanceVectorStore(vector.storage_dir, table_name=vector.table_name,
                                             dimensions=vector.dimensions, metric=vector.metric)

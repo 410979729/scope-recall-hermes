@@ -14,7 +14,7 @@ from collections import Counter
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
-from .vector_store import VECTOR_METADATA_COLUMNS, VectorStoreCompatibilityError, clamp_vector_sample_limit
+from .store import VECTOR_METADATA_COLUMNS, VectorStoreCompatibilityError, clamp_vector_sample_limit
 
 
 class SQLiteBruteForceVectorStore:

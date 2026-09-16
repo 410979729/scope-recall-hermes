@@ -69,7 +69,7 @@ def _write_config(path: Path, payload: dict) -> Path:
 def test_worker_reports_native_path_gap_without_starting_helper(tmp_path, monkeypatch):
     from io import StringIO
     from scope_recall.core.recall_policy import SPACE_ID
-    import scope_recall.lance_process_store as native_store
+    import scope_recall.vector.process_store as native_store
     from scope_recall.runtime.worker_entry import run_worker
 
     binding = _binding(tmp_path / "data")
@@ -246,7 +246,7 @@ def test_lazy_vector_facade_opens_existing_store_for_each_core_search_context(tm
             self.search_calls = []
 
         def open_existing(self):
-            from scope_recall._internal.recall.deadline import current_request_deadline
+            from scope_recall.core.deadline import current_request_deadline
 
             self.opened = True
             deadline = current_request_deadline()
@@ -321,7 +321,7 @@ def test_lazy_vector_facade_reopens_poisoned_cached_store_on_next_search(tmp_pat
             return self.failed
 
         def open_existing(self):
-            from scope_recall._internal.recall.deadline import current_request_deadline
+            from scope_recall.core.deadline import current_request_deadline
 
             deadline = current_request_deadline()
             self.open_deadlines.append(None if deadline is None else deadline.deadline_monotonic)
@@ -486,7 +486,7 @@ def test_worker_empty_database_is_idle_and_concurrent_owner_is_busy(tmp_path, mo
     core = MemoryCore(CoreConfig(binding))
     core.initialize()
     lock_path = binding.data_directory / "runtime-worker.lock"
-    from scope_recall.file_lock import advisory_file_lock
+    from scope_recall.core.file_lock import advisory_file_lock
     from scope_recall.runtime.worker_entry import run_worker
     from concurrent.futures import ThreadPoolExecutor
     from io import StringIO

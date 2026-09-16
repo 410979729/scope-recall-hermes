@@ -18,7 +18,7 @@ import subprocess
 import sys
 import zipfile
 
-from ..file_lock import advisory_file_lock
+from ..core.file_lock import advisory_file_lock
 from .backup import _safe_path
 
 

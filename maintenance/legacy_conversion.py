@@ -2537,7 +2537,7 @@ def migrate_legacy(
                 "shared_scope_id_is_not_blanket_block": True,
             },
             "redaction": {
-                "pipeline": "scope_recall.capture_filters.sanitize_report_text/sanitize_structured_value",
+                "pipeline": "scope_recall.core.capture_filters.sanitize_report_text/sanitize_structured_value",
                 "redacted_records": redactions,
             },
             "rollback_boundary": "new sources/deletions/corrections not representable in 578b require Core restore-required stop-write protection; old snapshot is never overwritten",

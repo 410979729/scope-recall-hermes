@@ -9,7 +9,7 @@ import pytest
 
 from scope_recall.contracts import ContractError
 from scope_recall.core import CoreConfig, MemoryCore
-from scope_recall.file_lock import advisory_file_lock
+from scope_recall.core.file_lock import advisory_file_lock
 from tests.v11_support import context, source_event
 
 

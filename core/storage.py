@@ -12,7 +12,7 @@ from pathlib import Path
 import sqlite3
 
 from ..contracts import ContractError, InstanceBinding, SourceEvent, TrustedContext, validate_capture
-from ..truth_connection import TruthDatabaseMode, connect_truth_database
+from .truth_connection import TruthDatabaseMode, connect_truth_database
 from .schema import APPLICATION_ID, SCHEMA_VERSION, STATEMENTS, upgrade_1105, upgrade_1106, upgrade_1107
 from .events import lexical_terms, prepare_capture, query_terms
 

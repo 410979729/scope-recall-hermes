@@ -18,8 +18,8 @@ from ..contracts import (
     TrustedContext,
     TrustedSourcePrincipal,
 )
-from ..truth_connection import TruthDatabaseConnectionError
-from ..writer_lease import TruthWriterBusyError
+from .truth_connection import TruthDatabaseConnectionError
+from .writer_lease import TruthWriterBusyError
 from .capture import CaptureReceipt, record_event
 from .events import PreparedCapture, prepare_capture
 

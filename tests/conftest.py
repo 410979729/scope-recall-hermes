@@ -99,7 +99,7 @@ _register_package_alias(_REPO_ROOT)
 def _isolate_posix_truth_hardening_cache():
     """Reset process-local POSIX hardening records around every test."""
 
-    import scope_recall.truth_connection as truth_connection
+    import scope_recall.core.truth_connection as truth_connection
 
     reset = getattr(truth_connection, "_reset_posix_hardening_cache_for_tests", None)
     if callable(reset):
