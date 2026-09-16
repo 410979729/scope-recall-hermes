@@ -51,7 +51,7 @@ python scripts/build.package_manifest.py --check     # "ok": true
 冲突基本只会在 `packaging/v11-module-allowlist.json`：直接 `--write` 重新生成即可。合完跑七层门禁，全绿后 `git push origin simplify/3.1-structure`。
 
 ### 1.3 合并后的统一清理（本人尚未做）
-1. **跨模块死代码扫描到不动点**：脚本在 `scripts/dead_code.py`（若不存在，见 1.6 的说明补上）。规则：从其他发布模块/测试/配置文件被引用的顶层名字是根，模块内可达的活，其余删；`__all__` 同步裁剪；然后 `uv tool run ruff check . --select F --fix`。
+1. **跨模块死代码扫描到不动点**：`python scripts/dead_code.py <模块...>` 报告，`--apply` 删除；对整个发布集跑：`python scripts/dead_code.py --apply $(python -c "import json;print(' '.join(json.load(open('packaging/v11-module-allowlist.json'))['python_modules']))")`，重复到报告为 0。规则：从其他发布模块/测试/配置文件被引用的顶层名字是根，模块内可达的活，其余删；`__all__` 同步裁剪；然后 `uv tool run ruff check . --select F --fix`。
 2. **重复 helper 统一**：`_now/utc_now`（runtime/running_code、vector_upkeep、worker_entry、codex handler、core/capture/composition）、`_json`（core/*storage、migration_records）、`_absolute`（codex/mcp_entry 与 install_common）、`_digest`（fact_identity、legacy_tianshu_compat、migration_records、upgrade）、`_bounded_text`（attachments、fact_actions 两份行为不同，需判断）。
 3. **剩余 if 阶梯**：`adapters/codex/handler.py::handle_payload`（代理判断表驱动会掩盖四种事件尾部差异，保留即可）、`core/delete_storage.py::physical_members/purge_sqlite`（5 层 elif → dict）、`core/episodes.py::state_from_sources`、`runtime/scheduling.py::next_wake`（若 runtime 代理未做）。
 4. **测试树里的旧路径**：`grep -rn "scope_recall\.\(writer_lease\|vector_store\|lance_process_store\|_internal\)" tests` 应为空。
@@ -68,7 +68,7 @@ python scripts/build.package_manifest.py --check     # "ok": true
 4. 清理代理 worktree：合入后 `git worktree remove <路径>`（在 `.repos/scope-recall` 下执行 `git worktree list` 查看）。
 
 ### 1.6 死代码扫描脚本说明
-本人用的脚本在本会话的 scratch 目录，未入库；接手时重写很快：对每个发布模块，用 `ast` 收集顶层 def/class/Assign 名字；根 = 在其他文件（allowlist 模块 + `tests/**` + `probes/**` + json/yaml/toml/cmd）里以单词边界出现的名字，加 `main` 与 dunder；在模块内沿 `ast.Name`/`ast.Attribute` 引用做闭包；不可达的按行号区间删除，`__all__` 剔除同名项；循环到不动点。每次删完跑 unit+contract 与相关 tier。
+已入库为 `scripts/dead_code.py`（本节说明其规则）：对每个发布模块，用 `ast` 收集顶层 def/class/Assign 名字；根 = 在其他文件（allowlist 模块 + `tests/**` + `probes/**` + json/yaml/toml/cmd）里以单词边界出现的名字，加 `main` 与 dunder；在模块内沿 `ast.Name`/`ast.Attribute` 引用做闭包；不可达的按行号区间删除，`__all__` 剔除同名项；循环到不动点。每次删完跑 unit+contract 与相关 tier。
 
 ## 2. 不要做的事
 - 不在 `release/3.1.0` 或 `main` 上直接开发；不 `git init`、不复制目录。
