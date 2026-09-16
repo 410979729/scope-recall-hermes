@@ -16,7 +16,7 @@
 | 散落 | `F:\t` 174 个目录（15 个仓库、16 个 venv）；规范仓库注册 18 个 worktree，多数 detached。 |
 | 已知缺陷 | 见第 4 节缺陷清单（D-01 … D-12）。 |
 
-## 0.1 执行记录（2026-09-15 19:30Z 更新）
+## 0.1 执行记录（2026-09-16 01:30Z 更新）
 
 阶段 0 已完成的步骤与结果；证据在 `F:\t\SR-TIANSHU-RECALL-FIX-20260915\deploy-rc27-20260915\`。
 
@@ -38,9 +38,26 @@
 - 证据摘要依赖检出换行：`scripts/model_receipt_evidence.py` 钉住的 sha256 是 CRLF 字节，而仓库一直存 LF，只在 Windows 检出上恰好通过；已用 `verification/** -text` 修正。
 - 天玑机器上还挂着 9 个历史计划任务（`Tianji Scope Recall Closeout 20260828`、`Exclusive Maintenance`、`Upgrade Controller`、`Yuheng ScopeRecall Deploy 20260823` 等）和一份失败的旧 supervisor 文件（`runtime-supervisor-1314a4fc…`，exit 124）。列入 1.3 清理清单。
 
-### 1.8 Codex 安装升级 rc5 → rc27（阶段 1 新增）
+### 1.8 Codex 安装升级 rc5 → rc28（阶段 1 新增；2026-09-16 01:25Z 完成）
 - 操作：确认 Codex 插件目录（`~/.codex/config.toml` 中 `scope-recall-codex@personal`）与 `codex-installation.json` 的绑定；`pip install` 到 `F:\ScopeRecall\codex-venv`；`plan-install --host codex` 无 conflicts 后 `apply-install`；worker 任务 pause/enable；MCP 服务进程随下一次 Codex 会话自然换代。
-- 验收：`doctor --host codex` 三方版本 rc27；一次 Codex 会话内 recall 有结果。
+- 验收：`doctor --host codex` 三方版本一致；一次 Codex 会话内 recall 有结果。
+
+执行记录（证据在 `F:\t\SR-TIANSHU-RECALL-FIX-20260915\deploy-rc28-20260916\codex\`）：
+
+| 步 | 结果 |
+|---|---|
+| 侦察 | 插件目录 `C:\Users\w4109\plugins\scope-recall-codex`；schema 1108（与 rc27/rc28 相同，无迁移）；venv 是 Codex 自带运行时 3.12.14（uv 建、无 pip），mcp 2.1.0 / lancedb 0.30.2 正好落在 `pyproject` 范围内。无 MCP/worker 进程在跑。 |
+| 根因 | rc5 装完 40 秒后，有人在插件目录手写 `scripts/local_runtime.py` + `hooks/codex-local.cmd`，并改写 `.mcp.json`/`hooks.json`/`plugin.json`——receipt 里 4 个文件 3 个被改、2 个文件不在 receipt。原因是**产品缺口**：Codex 用自己的环境拉起 MCP 服务与 hook 进程，发布代码里只有 worker（`resume_entry.py`）会从 env 文件读嵌入凭据，所以安装器生成的包装层拿不到 API key，只能靶向热补。这就是 D-15 的真面目。 |
+| 修法 | rc28（`4b2a921`）：`plan-install/apply-install --host codex --env-file`，写进 `.mcp.json`、`hooks.json`、`scope-recall-hook.cmd` 与 receipt；`mcp_entry`/`hook_entry` 接 `--env-file`，通过 `runtime.resume_entry.host_process_credential_environment` 复用 worker 的 `credential_environment` 契约（只读配置声明的凭据名，不解释 dotenv）；文件不可读只写 stderr、进程照常启动，hook 永不因此失败；`--host hermes` 拒绝该参数。新测试 `tests/host/codex/test_env_file_credentials.py` 进 `host`，`test_install_v11` 加包装层/receipt 用例。门禁 unit 29 / contract 96 / host 122 / packaging 119 / native 48 / integration 1688，0 failed。tag `v3.1.0rc28` 已推送。 |
+| 部署 | 备份插件目录、rc5 包与 dist-info、receipt、`codex-installation.json`、两份 sqlite（sha256 校验一致）→ `autostart pause` → `uv pip install --reinstall` rc5→rc28（0 个残留文件）→ `apply-uninstall`（保留数据）→ 删除 3 个被改文件与 2 个热补文件 → `plan-install --env-file F:\ScopeRecall\codex\embedding.env` 0 conflicts、`reuse_instance=true` → `apply-install` → `autostart enable --env-file`。receipt = wrapper = 包 = rc28，`installation_id` 不变。 |
+| 验收 | doctor：package ok rc28、binding ok、schema 1108。MCP stdio 冒烟（客户端环境里去掉全部 `SCOPE_RECALL_*`，只靠 `--env-file`）：initialize 成功、9 个工具、3 次 recall 1.6–2.3 s 无 vector 缺口，预算账本同时刻出现 3 条 `http_200` 嵌入请求——凭据链路成立。worker：`resume_entry` 返回 `capability_unavailable / launched=false`，supervisor `blocked`，与 rc5 最后一轮相同（见下）。 |
+
+由此新增的事实：
+
+- **Codex hooks 需要重新信任**：`hooks.json` 内容变了，`config.toml` 里 `hooks.state."scope-recall-codex@personal:hooks/hooks.json:*"` 的 `trusted_hash` 已不匹配，而且这些条目原本就没有 `enabled = true`（同机另一个测试项目的条目有）。下次打开 Codex 时按提示批准，然后 `doctor` 的 `hook_trust` 才会离开 `pending`。
+- **Codex 实例积压与天玑同病**：199 条 `consolidate` 待处理且外部整合未批准（D5 的第三个实例）、24 条 `embed` 失败码 `http_400`（嵌入 API 拒绝请求体，非终态，需查是超长还是空内容）。supervisor 因此 `blocked` 到 `deadline_at`，resume 不拉起 worker——这是设计行为，不是故障，但 doctor 会一直 `degraded`。
+- **版本漂移（有意、限期）**：Codex 在 rc28，天枢/天玑仍是 rc27。rc28 对 Hermes 路径无行为变化（只新增可选参数与一个函数），为一次 Codex 改动重启两台 gateway 没有收益，且天玑正由 Grok 治理积压。规则 1 的意图是"一条谱系、每个版本对应一棵树"，不是"同一分钟三台同版"。期限：下一个含 Hermes 相关修复的版本（阶段 2 第一项）必须把三台拉齐；届时不得再出现 rc27 以下。
+- `pip` 路径在 uv venv 上不可用（无 pip 模块）；部署脚本化（1.3）时用 `uv pip install --python <venv python>`，它按 RECORD 卸旧装新，比 `pip --force-reinstall` 少一个 D-14 的坑。
 
 ## 1. 从今天起生效的规则（写进 AGENTS.md「Release and deployment」）
 
@@ -170,9 +187,11 @@
 | D-12 | 天玑停留在 rc10 | 已修：2026-09-15 升到 rc27 |
 | D-13 | 天玑 4 条采集卡在 `VERSION_CONFLICT`，从不重放 | 阶段 1（新） |
 | D-14 | 原地 pip 升级在 gateway 运行时可能半途失败（目录句柄） | 阶段 1：部署脚本化（新） |
-| D-15 | Codex 宿主安装停留在 rc5 | 阶段 1.8（新） |
+| D-15 | Codex 宿主安装停留在 rc5，且靠插件目录里的热补启动器给 MCP/hook 注入凭据 | 已修：rc28 `--env-file`，2026-09-16 升到 rc28 |
+| D-16 | Codex 实例 24 条 `embed` 失败 `http_400`（非终态，从不再试也不落终态） | 阶段 1（新，随 D5 一起看） |
 | 已修 | recall 有候选返回 0 条；lance helper 超时中毒；五个热补文件未入库；两个回归测试不在 tier；8 个可重试失败 | rc26 |
 | 已修 | D-08 天枢/天玑三方版本不一致；D-09 autostart 缺参；D-10 shim 遮蔽；Codex 清单未入库；manifest 工具 CRLF；证据摘要依赖检出换行 | rc27 |
+| 已修 | D-15 Codex 包装层凭据缺口（安装器 `--env-file`、入口读同一契约） | rc28 |
 
 ## 7. 需要用户拍板的决策
 
@@ -180,9 +199,10 @@
 - D2 树瘦身：`attic/` 还是直接删除？（推荐删除；历史在 git）
 - D3 嵌入传输：是否接受一个常驻 helper 进程持有嵌入凭据？（需安全评审）
 - D4 `derivation_invalid`：重试一次还是保持终态只加 review 桶？
-- D5 天玑：已升级到 rc27。仍需拍板：是否批准天玑的外部整合（`external_consolidation_not_approved`，20,644 条 consolidate 待处理，每日队列 4800 已用满）；不批准则应把这批 work 标记为不适用而不是永远挂着。
+- D5 外部整合：天玑（20,644 条 consolidate 待处理，每日队列 4800 已用满）与 Codex 实例（199 条，supervisor 因此 `blocked`）都未批准。批准与否要一次决定：不批准则把这类 work 标记为不适用而不是永远挂着，doctor 也不该为此永远 `degraded`。天玑积压由用户交 Grok 治理中。
 - D6 清理清单：哪些目录可以删除（`F:\t` 174 个目录、hub 18 个 worktree、天玑 9 个历史计划任务、两个已退役独立仓库）。
-- D7 Codex 宿主安装：升级到 rc27 还是卸载（`F:\ScopeRecall\codex`，最近一次 worker 运行 2026-09-15 15:11）。
+- D7 Codex 宿主安装：已升级到 rc28（用户 2026-09-15 20:53 拍板先做）。遗留给用户的一步：下次打开 Codex 时重新信任 `scope-recall-codex@personal` 的 hooks（见 1.8）。
+- D8 三台同版的期限：Codex rc28、天枢/天玑 rc27 的漂移是否接受到下一个含 Hermes 相关修复的版本（推荐接受；替代方案是现在就重启两台 gateway 装 rc28，其中天玑正被 Grok 使用）。
 
 ## 8. 禁止事项
 
