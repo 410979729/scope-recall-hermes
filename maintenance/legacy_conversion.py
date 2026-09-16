@@ -607,7 +607,10 @@ def _read_back(storage: SQLiteStorage, context: TrustedContext) -> dict[str, Any
     """Counts and receipts as the target now holds them, not as we meant to write."""
     with storage.read(context) as tx:
         conn = tx._check()
-        count = lambda sql: int(conn.execute(sql).fetchone()[0])  # noqa: E731
+
+        def count(sql: str) -> int:
+            return int(conn.execute(sql).fetchone()[0])
+
         return {
             "source_status": [
                 {"read_blocked": int(x[0]), "capture_state": str(x[1]), "count": int(x[2])}
