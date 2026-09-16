@@ -2,7 +2,7 @@
 
 Scope Recall v3 is a bounded local memory core with SQLite as the authority and rebuildable vector companions. It provides host adapters for Hermes and Codex, including Codex MCP tools when the optional `codex` extra is installed. The public package is `hermes-scope-recall`; the Python import is `scope_recall`; the host wrapper identity remains `scope-recall`.
 
-This checkout is release candidate `3.1.0rc27`. It bounds the reads that were
+This checkout is release candidate `3.1.0rc28`. It bounds the reads that were
 silently truncating -- embedding input, evidence budget, packet slots -- and
 reports what each one cut; it collapses byte-identical retrieved content so a
 packet slot is never spent saying the same thing twice; and it adds operator
@@ -45,7 +45,7 @@ python -m pip install "<absolute-path-to-wheel>"
 python -m pip install "<absolute-path-to-wheel>[codex]"
 ```
 
-The current release candidate is `3.1.0rc27`; these commands are local
+The current release candidate is `3.1.0rc28`; these commands are local
 placeholders until a reviewed wheel is built. They do not claim that full host
 runtime wiring or production registration has been accepted.
 
@@ -59,7 +59,7 @@ scope-recall apply-install --host hermes --target-plugin-dir <absolute-plugin-di
 scope-recall doctor --host hermes --instance-root <absolute-instance-root> --python <absolute-python>
 ```
 
-Codex uses the same commands with `--host codex`. The installer writes only its own wrapper and installation records and preserves foreign host files. Its receipt records host registration and applicable hook trust as pending at installation time; use doctor and actual host loading to verify the current state. Uninstall keeps Core data by default; explicit purge is bounded to verified installation-owned data and refuses uncertain ownership or active writers.
+Codex uses the same commands with `--host codex`, plus `--env-file <absolute-file>` so the Codex-launched MCP server and hooks can read the credential names the runtime config declares (Codex does not pass them in the environment). The installer writes only its own wrapper and installation records and preserves foreign host files. Its receipt records host registration and applicable hook trust as pending at installation time; use doctor and actual host loading to verify the current state. Uninstall keeps Core data by default; explicit purge is bounded to verified installation-owned data and refuses uncertain ownership or active writers.
 
 ## Uninstall (default: retain memory)
 

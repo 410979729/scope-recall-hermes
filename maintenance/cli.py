@@ -84,6 +84,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     plan.add_argument("--python", required=True)
     plan.add_argument(
+        "--env-file",
+        default=None,
+        help="Codex only: absolute file with the credential names the runtime config declares; "
+        "written into .mcp.json and hooks.json because Codex starts those processes without them.",
+    )
+    plan.add_argument(
         "--test-mode",
         action="store_true",
         help="use isolated TEST binding semantics; omitted for production installation",
@@ -101,6 +107,12 @@ def main(argv: list[str] | None = None) -> int:
         help="Hermes audience workspace; defaults to hermes to match the host memory-provider init contract. Codex rejects this flag.",
     )
     apply_cmd.add_argument("--python", required=True)
+    apply_cmd.add_argument(
+        "--env-file",
+        default=None,
+        help="Codex only: absolute file with the credential names the runtime config declares; "
+        "written into .mcp.json and hooks.json because Codex starts those processes without them.",
+    )
     apply_cmd.add_argument(
         "--test-mode",
         action="store_true",
@@ -203,6 +215,7 @@ def main(argv: list[str] | None = None) -> int:
                 host=args.host,
                 test_mode=args.test_mode,
                 agent_workspace=args.agent_workspace,
+                env_file=_absolute(args.env_file, "env_file") if args.env_file else None,
             )
             _emit(result.to_dict())
             return 1 if result.conflicts else 0
@@ -216,6 +229,7 @@ def main(argv: list[str] | None = None) -> int:
                 host=args.host,
                 test_mode=args.test_mode,
                 agent_workspace=args.agent_workspace,
+                env_file=_absolute(args.env_file, "env_file") if args.env_file else None,
             )
             result = apply_install(install_plan)
             _emit(result.to_dict())

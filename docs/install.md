@@ -98,18 +98,24 @@ $Python   = "C:\Python312\python.exe"
 
 scope-recall plan-install --host codex `
   --target-plugin-dir $Plugin --instance-root $Instance `
-  --project-root $Project --agent-id main --python $Python
+  --project-root $Project --agent-id main --python $Python `
+  --env-file "$Instance\embedding.env"
 
 scope-recall apply-install --host codex `
   --target-plugin-dir $Plugin --instance-root $Instance `
-  --project-root $Project --agent-id main --python $Python
+  --project-root $Project --agent-id main --python $Python `
+  --env-file "$Instance\embedding.env"
 ```
+
+`--env-file`（仅 Codex）：Codex 用自己的环境变量拉起 MCP 服务与钩子进程，其中没有 `runtime-config.json` 声明的凭据名（如嵌入 API key）。给出该文件后，安装器把 `--env-file` 写进 `.mcp.json`、`hooks.json` 与 hook 启动器，入口进程只读取配置声明的那几个名字（与 worker 的 `autostart --env-file` 同一契约，不解释 dotenv）。不给则 MCP 内的 recall 退化为纯词法。同一份文件通常也传给 `autostart enable --env-file`。Hermes 进程继承 gateway 环境，`--host hermes` 拒绝该参数。
 
 `apply-install` 会在插件目录写入：
 
 - `.codex-plugin\plugin.json`
-- `hooks\hooks.json`（六个原生钩子事件，见下）
+- `hooks\hooks.json`（六个原生钩子事件，见下）与 `hooks\scope-recall-hook.cmd`（Windows 启动器）
 - `.mcp.json`（MCP 服务定义；需安装 `[codex]` extra 才能实际启动 MCP）
+
+这些文件由安装器独占：不要手工改写或在插件目录放自己的启动脚本，否则下次 `plan-install` 会把它们报成 `edited prior file` / `unrelated plugin file` 并拒绝。需要改行为就改安装器。
 
 六个钩子事件（与 `maintenance/install.py` 中 `CODEX_HOOK_EVENTS` 一致）：`SessionStart`、`UserPromptSubmit`、`PostToolUse`、`Stop`、`Interrupt`、`SessionEnd`。每条钩子通过隔离 Python 调用 `scope_recall.adapters.codex.hook_entry`。
 

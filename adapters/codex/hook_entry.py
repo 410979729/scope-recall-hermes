@@ -2,10 +2,13 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 import time
 from pathlib import Path
 
+from ...runtime.resume_entry import host_process_credential_environment
+from .config import load_codex_config
 from .handler import CodexHookHandler, emit_result
 
 
@@ -17,6 +20,13 @@ def main(argv: list[str] | None = None) -> int:
         type=Path,
         default=None,
         help="Absolute path to trusted local runtime worker config",
+    )
+    parser.add_argument(
+        "--env-file",
+        type=Path,
+        default=None,
+        help="Absolute file holding the credential names the runtime config declares; "
+        "Codex does not pass them in the hook's environment",
     )
     args = parser.parse_args(argv)
     # Start the trusted wall-clock budget before configuration/runtime loading;
@@ -32,6 +42,19 @@ def main(argv: list[str] | None = None) -> int:
         sys.stderr.write("CODEX_HOOK:runtime_config_not_absolute\n")
         emit_result({})
         return 0
+    if args.env_file is not None:
+        # A hook must answer inside its 2 s budget whatever happens; a missing key
+        # only costs the semantic channel, so the failure is logged and not fatal.
+        env_file = args.env_file.expanduser()
+        if not env_file.is_absolute():
+            sys.stderr.write("CODEX_HOOK:env_file_not_absolute\n")
+        else:
+            try:
+                config = load_codex_config(str(config_path))
+                os.environ.update(host_process_credential_environment(
+                    runtime_config or (config.data_directory / "runtime-config.json"), env_file))
+            except Exception:
+                sys.stderr.write("CODEX_HOOK:credential_environment_unavailable\n")
     try:
         handler = CodexHookHandler.from_config_path(
             str(config_path),

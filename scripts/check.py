@@ -121,6 +121,7 @@ SUITES = {
         "tests/host/hermes/test_operator_tools.py",
         "tests/host/hermes/test_reinjection.py",
         "tests/host/test_runtime_config_threshold.py",
+        "tests/host/codex/test_env_file_credentials.py",
         "tests/host/codex/test_hooks.py",
         "tests/host/codex/test_lifecycle_worker_wakeup.py",
         "tests/host/codex/test_mcp.py",

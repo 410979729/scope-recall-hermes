@@ -1106,3 +1106,79 @@ def test_hermes_cli_default_and_explicit_workspace(tmp_path, capsys):
     assert receipt["agent_workspace"] == "hermes"
     manifest = json.loads((instance_root / "scope-recall" / "installation.json").read_text(encoding="utf-8"))
     assert {row["agent_workspace"] for row in manifest["audiences"]} == {"hermes"}
+
+
+def test_codex_env_file_is_written_into_every_wrapper_and_hermes_rejects_it(tmp_path, capsys):
+    """Codex starts the MCP server and hooks with its own environment, so the
+    credential file the worker already uses must reach both wrappers verbatim
+    and be recorded in the receipt; Hermes processes inherit the gateway
+    environment and must not carry a second credential path."""
+    from scope_recall.maintenance import cli as maintenance_cli
+
+    instance_root, plugin_dir, project_root = _install_paths(tmp_path, host="codex")
+    env_file = (tmp_path / "secrets" / "embedding.env").resolve()
+    env_file.parent.mkdir()
+    env_file.write_text("SCOPE_RECALL_TEST_EMBED_KEY=unused-by-installer\n", encoding="utf-8")
+
+    plan = plan_install(
+        host="codex",
+        target_plugin_dir=plugin_dir,
+        instance_root=instance_root,
+        project_root=project_root,
+        agent_id="main",
+        python_executable=Path(sys.executable),
+        env_file=env_file,
+    )
+    assert not plan.conflicts
+    assert plan.env_file == env_file
+    assert plan.to_dict()["env_file"] == str(env_file)
+    apply_install(plan)
+
+    mcp = json.loads((plugin_dir / ".mcp.json").read_text(encoding="utf-8"))
+    args = mcp["mcpServers"]["scope-recall"]["args"]
+    assert args[:4] == ["-I", "-B", "-m", "scope_recall.adapters.codex.mcp_entry"]
+    assert args[-4:] == ["--workspace", str(project_root), "--env-file", str(env_file)]
+    hooks = json.loads((plugin_dir / "hooks" / "hooks.json").read_text(encoding="utf-8"))
+    for event, entries in hooks["hooks"].items():
+        command = entries[0]["hooks"][0]["command"]
+        assert shlex.split(command)[-2:] == ["--env-file", str(env_file)], event
+    launcher = (plugin_dir / "hooks" / "scope-recall-hook.cmd").read_bytes().decode("utf-8")
+    assert f'"--env-file" "{env_file}"' in launcher
+    receipt = json.loads((instance_root / ".scope-recall-install-receipt.json").read_text(encoding="utf-8"))
+    assert Path(receipt["env_file"]).samefile(env_file)
+
+    # A file the entry could never read is refused at plan time, not at first recall.
+    with pytest.raises(InstallError, match="env_file"):
+        plan_install(
+            host="codex",
+            target_plugin_dir=plugin_dir,
+            instance_root=instance_root,
+            project_root=project_root,
+            agent_id="main",
+            python_executable=Path(sys.executable),
+            env_file=tmp_path / "secrets" / "missing.env",
+        )
+
+    hermes_instance, hermes_plugin, hermes_project = _install_paths(tmp_path / "hermes", host="hermes")
+    with pytest.raises(InstallError, match="only used for Codex"):
+        plan_install(
+            host="hermes",
+            target_plugin_dir=hermes_plugin,
+            instance_root=hermes_instance,
+            project_root=hermes_project,
+            agent_id="default",
+            python_executable=Path(sys.executable),
+            env_file=env_file,
+            test_mode=True,
+        )
+    assert maintenance_cli.main([
+        "plan-install", "--host", "hermes",
+        "--target-plugin-dir", str(hermes_plugin),
+        "--instance-root", str(hermes_instance),
+        "--project-root", str(hermes_project),
+        "--agent-id", "default",
+        "--python", str(Path(sys.executable)),
+        "--env-file", str(env_file),
+        "--test-mode",
+    ]) == 2
+    capsys.readouterr()
