@@ -15,7 +15,7 @@ from scope_recall.core.coverage import (
     parse_coverage_gap,
     truncation_gap,
 )
-from scope_recall.core.recall_packet import RecallPacketCompiler
+from scope_recall.core.recall_packet import public_gaps
 from scope_recall.core.retrieval import SearchContext
 from tests.contract.test_v11_claims import app, accept, capture, draft
 from tests.v11_support import recall_request
@@ -73,9 +73,9 @@ def test_note_truncation_tolerates_no_list_and_never_duplicates():
 
 
 def test_the_counts_survive_into_the_public_packet():
-    """``_public_marker`` collapses some prefixes; coverage must not be one."""
+    """``public_marker`` collapses some prefixes; coverage must not be one."""
     gap = truncation_gap("profile_stable", considered=8, available=9, at_least=True)
-    assert RecallPacketCompiler._public_gaps((gap,)) == (gap,)
+    assert public_gaps((gap,)) == (gap,)
 
 
 # --------------------------------------------------------------------------
