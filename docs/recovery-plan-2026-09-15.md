@@ -8,7 +8,7 @@
 | 干活的目录 | linked worktree `F:\SCOPERECALL更新项目\worktrees\release-3.1.0`（= `release/3.1.0`，最新提交见 `git log -1`）。新任务用 `git worktree add`，合并后 `git worktree remove`；不复制目录，不 `git init`。 |
 | 当前版本 | `3.1.0rc28`（tag `v3.1.0rc28`）。版本只改 `_version.py`，然后 `python -I scripts/build.package_manifest.py --write` 盖章清单。 |
 | 门禁 | 在 worktree 里 `python -X utf8 scripts/check.py --tier <unit|contract|host|packaging|native|integration>`；今天用的解释器 `F:\t\SR-TIANSHU-RECALL-FIX-20260915\.venv\Scripts\python.exe`（3.11）。发版前六层全绿。 |
-| 三套安装 | 天枢 `hermes-tianshu` rc27、天玑 `hermes-tianji` rc27（Hermes 宿主）；Codex 宿主 `F:\ScopeRecall\codex` rc28（venv `F:\ScopeRecall\codex-venv`，插件目录 `C:\Users\w4109\plugins\scope-recall-codex`）。部署步骤与回执模板见 `F:\t\SR-TIANSHU-RECALL-FIX-20260915\deploy-rc27-20260915\` 与 `deploy-rc28-20260916\codex\DEPLOY-RECEIPT.md`。 |
+| 三套安装 | 三台都是 `3.1.0rc28`（2026-09-16 核过：import = dist = receipt = wrapper）。天枢 `F:\Agents\runtime\windows\hermes-tianshu`；天玑 `F:\Agents\runtime\windows\hermes-tianji`；Codex `F:\ScopeRecall\codex`（venv `F:\ScopeRecall\codex-venv`，插件目录 `C:\Users\w4109\plugins\scope-recall-codex`）。回执：`deploy-rc27-20260915\`、`deploy-rc28-20260916\`。 |
 | 树的现状（不要误以为已经干净） | 版本谱系与发布流程已治理；**树本身还没瘦身**：git 里 810 个非测试 `.py`，wheel 只装 140 个，672 个不进 wheel（`verification/` 387 是证据脚本、`_internal/` 58、`probes/` 33、`benchmarks/` 7，以及根目录约 180 个游离模块）。这是 1.2/D2，等用户拍板。 |
 | 机器上的散落 | hub 仍注册 17 个其他 worktree（多数 detached）、`F:\t` 170 余个目录、两个已退役独立仓库——1.3/D6，用户勾选后才删。 |
 | 已停用的路径 | `F:\t\SR-310-INTEGRATION-20260915`（已迁到上面的 worktree 路径）；`F:\t\SR-TIANSHU-RECALL-FIX-20260915\src` 与另一独立仓库（根有 `RETIRED.md`）。 |
@@ -69,7 +69,7 @@
 
 - **Codex hooks 需要重新信任**：`hooks.json` 内容变了，`config.toml` 里 `hooks.state."scope-recall-codex@personal:hooks/hooks.json:*"` 的 `trusted_hash` 已不匹配，而且这些条目原本就没有 `enabled = true`（同机另一个测试项目的条目有）。下次打开 Codex 时按提示批准，然后 `doctor` 的 `hook_trust` 才会离开 `pending`。
 - **Codex 实例积压与天玑同病**：199 条 `consolidate` 待处理且外部整合未批准（D5 的第三个实例）、24 条 `embed` 失败码 `http_400`（嵌入 API 拒绝请求体，非终态，需查是超长还是空内容）。supervisor 因此 `blocked` 到 `deadline_at`，resume 不拉起 worker——这是设计行为，不是故障，但 doctor 会一直 `degraded`。
-- **版本漂移（有意、限期）**：Codex 在 rc28，天枢/天玑仍是 rc27。rc28 对 Hermes 路径无行为变化（只新增可选参数与一个函数），为一次 Codex 改动重启两台 gateway 没有收益，且天玑正由 Grok 治理积压。规则 1 的意图是"一条谱系、每个版本对应一棵树"，不是"同一分钟三台同版"。期限：下一个含 Hermes 相关修复的版本（阶段 2 第一项）必须把三台拉齐；届时不得再出现 rc27 以下。
+- **D8 已关**：用户 2026-09-16 说天玑 Grok 用完、三台对齐。核验结果：天枢/天玑 receipt 已于 22:05/22:07 写成 rc28（Grok 治理期间已装上），import = dist = wrapper = receipt = `3.1.0rc28`，与 Codex 相同。未再重启 gateway（包已在跑）。doctor：天枢 `attention`（68 条终态 `derivation_invalid`，D4）；天玑 `degraded`（外部整合未批准 + 延迟采集，D5）。
 - `pip` 路径在 uv venv 上不可用（无 pip 模块）；部署脚本化（1.3）时用 `uv pip install --python <venv python>`，它按 RECORD 卸旧装新，比 `pip --force-reinstall` 少一个 D-14 的坑。
 
 ## 1. 从今天起生效的规则（写进 AGENTS.md「Release and deployment」）
@@ -212,10 +212,10 @@
 - D2 树瘦身：`attic/` 还是直接删除？（推荐删除；历史在 git）
 - D3 嵌入传输：是否接受一个常驻 helper 进程持有嵌入凭据？（需安全评审）
 - D4 `derivation_invalid`：重试一次还是保持终态只加 review 桶？
-- D5 外部整合：天玑（20,644 条 consolidate 待处理，每日队列 4800 已用满）与 Codex 实例（199 条，supervisor 因此 `blocked`）都未批准。批准与否要一次决定：不批准则把这类 work 标记为不适用而不是永远挂着，doctor 也不该为此永远 `degraded`。天玑积压由用户交 Grok 治理中。
-- D6 清理清单：哪些目录可以删除（`F:\t` 174 个目录、hub 18 个 worktree、天玑 9 个历史计划任务、两个已退役独立仓库）。
-- D7 Codex 宿主安装：已升级到 rc28（用户 2026-09-15 20:53 拍板先做）。遗留给用户的一步：下次打开 Codex 时重新信任 `scope-recall-codex@personal` 的 hooks（见 1.8）。
-- D8 三台同版的期限：Codex rc28、天枢/天玑 rc27 的漂移是否接受到下一个含 Hermes 相关修复的版本（推荐接受；替代方案是现在就重启两台 gateway 装 rc28，其中天玑正被 Grok 使用）。
+- D5 外部整合：用户已拍板「Codex 批准、天玑等 Grok」。Grok 已用完；下一步按建议给 Codex 开整合（预算上限），天玑积压以 Grok 治理结果为准，未处理完的再标不适用。
+- D6 清理清单：用户已拍板「出清单再勾选」。清单生成被中断，待续。
+- D7 Codex 宿主安装：已升级到 rc28。遗留：下次打开 Codex 时重新信任 hooks。
+- D8 三台同版：用户 2026-09-16 拍板立刻对齐。核验已同版 rc28，无需再部署。
 
 ## 8. 禁止事项
 
