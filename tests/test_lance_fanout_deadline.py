@@ -8,11 +8,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from scope_recall._internal.recall import deadline as request_deadline
+from scope_recall.core import deadline as request_deadline
 from scope_recall.adapters.lance import LanceVectorPort
 from scope_recall.core.recall_policy import SPACE_ID
 from scope_recall.core.retrieval import SearchContext, SearchLimits
-from scope_recall.lance_process_store import ProcessLanceVectorStore
+from scope_recall.vector.process_store import ProcessLanceVectorStore
 from tests.v11_support import context as trusted_context
 
 
@@ -107,7 +107,7 @@ class TimedSearchStore:
 def test_fanout_stops_before_over_budget_rpc_and_keeps_worker_usable(
     tmp_path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    import scope_recall.lance_process_store as process_store
+    import scope_recall.vector.process_store as process_store
 
     clock = ManualClock()
     monkeypatch.setattr(
@@ -143,7 +143,7 @@ def test_fanout_stops_before_over_budget_rpc_and_keeps_worker_usable(
 
 
 def test_started_transport_failure_is_not_masked(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
-    import scope_recall.lance_process_store as process_store
+    import scope_recall.vector.process_store as process_store
 
     monkeypatch.setattr(
         process_store,

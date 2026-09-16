@@ -35,10 +35,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any, Literal
 
-if __package__:
-    from .writer_lease import TruthWriterBusyError, TruthWriterLease
-else:
-    from writer_lease import TruthWriterBusyError, TruthWriterLease
+from .writer_lease import TruthWriterBusyError, TruthWriterLease
 
 
 TruthDatabaseMode = Literal["ro", "rw", "rwc"]

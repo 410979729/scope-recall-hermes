@@ -9,9 +9,9 @@ import json
 import re
 
 from ..contracts import Basis, ClaimProposal, ContractError, Origin, SourcePrincipal
-from ..fact_actions import ClaimDraft, EvidenceReference
-from ..fact_evidence import evidence_supports_claim, evidence_supports_relation
-from ..fact_temporal_semantics import classify_durable_state_clause
+from .fact_actions import ClaimDraft, EvidenceReference
+from .fact_evidence import evidence_supports_claim, evidence_supports_relation
+from .fact_temporal_semantics import classify_durable_state_clause
 from .subject_binding import neighbourhood_binds
 from .source_qualification import (AUTHORITY_QUESTION, RELATIVE_SCOPE,
                                    REPORTED_SPEECH, UNASSERTED_UNCERTAINTY,

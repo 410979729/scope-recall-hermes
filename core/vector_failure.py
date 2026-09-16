@@ -31,7 +31,7 @@ falls back to the bare class rather than inventing a category.
 from __future__ import annotations
 
 #: Marker -> token, most specific first.  Markers are fragments of the messages
-#: raised in ``lance_process_store`` and ``vector_store``; the token is what an
+#: raised in ``vector.process_store`` and ``vector.store``; the token is what an
 #: operator reads.  ``test_vector_failure`` parses both modules and fails if any
 #: ``RuntimeError`` there stops being covered, so this cannot silently rot.
 NATIVE_VECTOR_FAULTS: tuple[tuple[str, str], ...] = (

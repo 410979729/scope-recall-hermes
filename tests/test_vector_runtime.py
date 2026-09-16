@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from scope_recall.vector_store import VectorRecord, build_vector_store
+from scope_recall.vector.store import VectorRecord, build_vector_store
 
 
 def test_vector_store_factory_builds_sqlite_bruteforce_protocol_adapter(tmp_path):

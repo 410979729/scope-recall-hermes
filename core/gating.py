@@ -9,10 +9,7 @@ import re
 from collections.abc import Iterable, Mapping
 from typing import Any, List, Set
 
-if __package__:
-    from .aliases import canonicalize_alias
-else:
-    from aliases import canonicalize_alias
+from .name_aliases import canonicalize_alias
 
 TRIVIAL_RE = re.compile(
     r"^(?:"

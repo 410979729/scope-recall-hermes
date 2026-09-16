@@ -22,7 +22,7 @@ import time
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from typing import Any, Protocol, cast
 
-from .._internal.recall.deadline import RequestDeadline, using_request_deadline
+from ..core.deadline import RequestDeadline, using_request_deadline
 from ..contracts import ContractError, TrustedContext
 from ..core.recall_policy import SPACE_ID
 from ..core.storage import StoredSource

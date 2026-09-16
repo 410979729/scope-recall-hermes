@@ -4,8 +4,8 @@ import time
 
 import pytest
 
-from scope_recall import lance_process_store as native
-from scope_recall._internal.recall.deadline import RequestDeadline, using_request_deadline
+from scope_recall.vector import process_store as native
+from scope_recall.core.deadline import RequestDeadline, using_request_deadline
 
 
 def store(tmp_path, monkeypatch, *, error=False, delay=.1):

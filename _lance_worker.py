@@ -55,15 +55,15 @@ def main() -> None:
     package.__path__ = [str(Path(__file__).resolve().parent)]
     sys.modules["scope_recall"] = package
     if TYPE_CHECKING:
-        from . import vector_store
-        from .capture_filters import sanitize_report_text
-        from .lance_process_store import LANCE_WORKER_METHODS, MAX_LANCE_FRAME_BYTES
-        from .vector_store import LanceVectorStore
+        from .vector import store as vector_store
+        from .core.capture_filters import sanitize_report_text
+        from .vector.process_store import LANCE_WORKER_METHODS, MAX_LANCE_FRAME_BYTES
+        from .vector.store import LanceVectorStore
     else:
-        from scope_recall import vector_store
-        from scope_recall.capture_filters import sanitize_report_text
-        from scope_recall.lance_process_store import LANCE_WORKER_METHODS, MAX_LANCE_FRAME_BYTES
-        from scope_recall.vector_store import LanceVectorStore
+        from scope_recall.vector import store as vector_store
+        from scope_recall.core.capture_filters import sanitize_report_text
+        from scope_recall.vector.process_store import LANCE_WORKER_METHODS, MAX_LANCE_FRAME_BYTES
+        from scope_recall.vector.store import LanceVectorStore
 
     # This entire interpreter is already disposable. A second import-probe
     # subprocess adds no isolation and complicates deadline/process ownership.

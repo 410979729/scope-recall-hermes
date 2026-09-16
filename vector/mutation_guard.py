@@ -11,7 +11,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
 
-from .file_lock import advisory_file_lock
+from ..core.file_lock import advisory_file_lock
 
 
 @contextmanager

@@ -49,7 +49,7 @@ from __future__ import annotations
 import re
 
 from ..contracts import ContractError
-from ..secret_patterns import contains_secret_like_text
+from .secret_patterns import contains_secret_like_text
 from .work_storage import AUTO_RECOVERABLE_ERRORS, DERIVATION_RETRY_MARKER
 
 #: Faults an operator may clear even though the worker's automatic budget is

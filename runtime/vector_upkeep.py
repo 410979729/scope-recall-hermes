@@ -1,6 +1,6 @@
 """Run a vector compaction when one is due, and record what it did.
 
-Sits between the policy (``vector_compaction.py``, which knows the footprint
+Sits between the policy (``vector/compaction.py``, which knows the footprint
 and the threshold) and the store (``vector_store.LanceVectorStore.compact``,
 which knows LanceDB).  ``runtime/instance.py`` has the single call site, at the
 start of a drain.
@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from ..vector_compaction import compaction_due, measure_footprint, read_state, write_state
+from ..vector.compaction import compaction_due, measure_footprint, read_state, write_state
 
 #: Seconds of the drain budget set aside for one pass.  Measured: 0.12 s when
 #: there is nothing to do, 3.5 s to clear a 2,243-fragment backlog.  Below this

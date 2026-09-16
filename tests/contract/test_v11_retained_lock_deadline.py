@@ -6,7 +6,7 @@ import sys
 import threading
 import time
 
-from scope_recall.file_lock import advisory_file_lock
+from scope_recall.core.file_lock import advisory_file_lock
 
 
 def test_retained_lock_timeout_returns_quickly_for_competing_thread(tmp_path):

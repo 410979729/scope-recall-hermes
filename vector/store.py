@@ -19,9 +19,9 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Protocol, cast, runtime_checkable
 
-from .capture_filters import sanitize_report_text
-from .vector_compaction import physical_vector_footprint
-from .vector_mutation_guard import advisory_file_lock
+from ..core.capture_filters import sanitize_report_text
+from .compaction import physical_vector_footprint
+from .mutation_guard import advisory_file_lock
 
 logger = logging.getLogger(__name__)
 
@@ -1144,14 +1144,14 @@ def build_vector_store(
     """
     normalized = normalize_vector_backend(backend)
     if normalized == "sqlite-bruteforce":
-        from .sqlite_vector_store import SQLiteBruteForceVectorStore
+        from .sqlite_store import SQLiteBruteForceVectorStore
 
         db_path = Path(storage_dir) / "vector.sqlite3"
         return SQLiteBruteForceVectorStore(db_path, table_name=table_name, dimensions=dimensions, metric=metric)
     if normalized == "lancedb":
         vector_dir = Path(storage_dir) / "lancedb"
         if sys.platform == "win32":
-            from .lance_process_store import ProcessLanceVectorStore
+            from .process_store import ProcessLanceVectorStore
 
             return ProcessLanceVectorStore(vector_dir, table_name=table_name, dimensions=dimensions, metric=metric)
         return LanceVectorStore(vector_dir, table_name=table_name, dimensions=dimensions, metric=metric)

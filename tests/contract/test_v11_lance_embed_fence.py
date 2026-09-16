@@ -16,7 +16,7 @@ from test_v11_deletion import authorize, request
 
 from scope_recall.adapters.lance import LanceEmbedPort, LancePurgePort
 from scope_recall.contracts import ContractError
-from scope_recall.lance_process_store import ProcessLanceVectorStore
+from scope_recall.vector.process_store import ProcessLanceVectorStore
 
 
 def _purge_port(store, ctx, spaces=("TEST-p10-space",)):

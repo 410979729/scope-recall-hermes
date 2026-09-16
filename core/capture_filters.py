@@ -9,30 +9,17 @@ from dataclasses import dataclass
 from functools import lru_cache
 from typing import Any
 
-try:  # Support package imports and the repository's direct manual scripts.
-    from .gating import clean_text, is_trivial
-    from .secret_patterns import (
-        COMMON_SECRET_PATTERN_VALUES,
-        PEM_PRIVATE_KEY_BEGIN_RE,
-        SECRET_ASSIGNMENT_RE,
-        TOKEN_ASSIGNMENT_RE,
-        contains_secret_like_text,
-        is_safe_token_metric_key,
-        is_sensitive_mapping_key,
-        secret_scan_shadow,
-    )
-except ImportError:  # pragma: no cover - exercised by manual script import style
-    from gating import clean_text, is_trivial
-    from secret_patterns import (
-        COMMON_SECRET_PATTERN_VALUES,
-        PEM_PRIVATE_KEY_BEGIN_RE,
-        SECRET_ASSIGNMENT_RE,
-        TOKEN_ASSIGNMENT_RE,
-        contains_secret_like_text,
-        is_safe_token_metric_key,
-        is_sensitive_mapping_key,
-        secret_scan_shadow,
-    )
+from .gating import clean_text, is_trivial
+from .secret_patterns import (
+    COMMON_SECRET_PATTERN_VALUES,
+    PEM_PRIVATE_KEY_BEGIN_RE,
+    SECRET_ASSIGNMENT_RE,
+    TOKEN_ASSIGNMENT_RE,
+    contains_secret_like_text,
+    is_safe_token_metric_key,
+    is_sensitive_mapping_key,
+    secret_scan_shadow,
+)
 
 
 @dataclass(frozen=True)

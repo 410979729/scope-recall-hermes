@@ -9,7 +9,7 @@ from typing import Protocol
 import uuid
 
 from ..contracts import ContractError, InstanceBinding, SourceEvent, TrustedContext
-from ..file_lock import advisory_file_lock
+from .file_lock import advisory_file_lock
 from .storage import SQLiteStorage, StoreStatus, StoredSource
 from .capture import CaptureReceipt, record_event
 from .admission import AdmissionPolicy

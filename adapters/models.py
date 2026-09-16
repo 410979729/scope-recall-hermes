@@ -25,7 +25,7 @@ from ..core.recall_policy import (
 )
 from ..core.storage import StoredSource
 from ..runtime.model_budget import AuxiliaryBudgetLedger, BudgetPolicy
-from ..secret_patterns import contains_secret_like_text
+from ..core.secret_patterns import contains_secret_like_text
 
 
 MAX_CHAT_RESPONSE_BYTES = 1_048_576

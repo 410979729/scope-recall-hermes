@@ -15,7 +15,7 @@ import time
 
 from ..core.storage import SQLiteStorage
 from ..core.work_storage import AUTO_RECOVERABLE_ERRORS
-from ..file_lock import advisory_file_lock
+from ..core.file_lock import advisory_file_lock
 from .worker_entry import _atomic_metadata, _metadata_path, _read_metadata, load_config
 
 
