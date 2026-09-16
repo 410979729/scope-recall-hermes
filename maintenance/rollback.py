@@ -7,26 +7,17 @@ stores untouched.
 """
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 from pathlib import Path
 import sqlite3
 from typing import Any
 
-from .backup import _create_output, _safe_path
+from .backup import _create_output, _safe_path, _sha256
 
 
 class RollbackError(RuntimeError):
     pass
-
-
-def _sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def _counts(path: Path) -> dict[str, int]:

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import partial
 import hashlib
 import json
 import os
@@ -9,6 +10,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Mapping
 
+from scope_recall.adapters.hermes.installation import bounded_text
 from scope_recall.contracts import InstanceBinding
 from scope_recall.core import CoreConfig, MemoryCore
 
@@ -20,6 +22,7 @@ class CodexConfigError(RuntimeError):
 SCHEMA_VERSION = "scope-recall.codex-installation.v1"
 CONFIG_FILENAME = "codex-installation.json"
 _MAX_FIELD_LEN = 240
+_bounded_text = partial(bounded_text, error=CodexConfigError)
 
 
 @dataclass(frozen=True)
@@ -43,19 +46,6 @@ class CodexInstallationConfig:
             scope_ids=self.scope_ids,
             test_mode=self.test_mode,
         )
-
-
-def _bounded_text(value: object, *, field: str, required: bool = True) -> str:
-    if type(value) is not str:
-        if required:
-            raise CodexConfigError(f"{field} is required")
-        return ""
-    text = value.strip()
-    if required and not text:
-        raise CodexConfigError(f"{field} is required")
-    if len(text) > _MAX_FIELD_LEN:
-        raise CodexConfigError(f"{field} exceeds bounded length")
-    return text
 
 
 def _strict_bool(value: object, *, field: str) -> bool:

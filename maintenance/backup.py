@@ -1,8 +1,9 @@
-"""P15-only consistent SQLite backup helper.
+"""Consistent SQLite backup, plus the path, digest and atomic-write primitives
+the rest of the maintenance package builds on.
 
-This module is intentionally small and offline.  It uses sqlite3.Connection.backup
-instead of copying a live main file, never overwrites a public backup, and emits
-only structural metadata (no row content or credentials).
+The backup uses sqlite3.Connection.backup instead of copying a live main file,
+never overwrites a public backup, and emits only structural metadata (no row
+content or credentials).
 """
 from __future__ import annotations
 
@@ -13,10 +14,23 @@ from pathlib import Path
 import sqlite3
 import stat
 from typing import Any
+import uuid
 
 
 class BackupError(RuntimeError):
     pass
+
+
+def _first_link(path: Path) -> Path | None:
+    """The path itself or the nearest ancestor that is a symlink or reparse point."""
+    for part in (path, *path.parents):
+        try:
+            info = part.lstat()
+        except FileNotFoundError:
+            continue
+        if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & 0x400:
+            return part
+    return None
 
 
 def _safe_path(value: str | Path, *, must_exist: bool = False, error_type=BackupError) -> Path:
@@ -24,13 +38,8 @@ def _safe_path(value: str | Path, *, must_exist: bool = False, error_type=Backup
     path = Path(value).expanduser()
     if not path.is_absolute():
         path = Path.cwd() / path
-    for part in (path, *path.parents):
-        try:
-            info = part.lstat()
-        except FileNotFoundError:
-            continue
-        if stat.S_ISLNK(info.st_mode) or getattr(info, "st_file_attributes", 0) & 0x400:
-            raise error_type("symlink or reparse paths are not allowed")
+    if _first_link(path) is not None:
+        raise error_type("symlink or reparse paths are not allowed")
     return path.resolve(strict=must_exist)
 
 
@@ -50,6 +59,21 @@ def _sha256(path: Path) -> str:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _atomic_write(path: Path, content: str | bytes) -> None:
+    """Write through a same-directory temporary file so a crash leaves the old file intact."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    if isinstance(content, bytes):
+        temporary.write_bytes(content)
+    else:
+        temporary.write_text(content, encoding="utf-8")
+    os.replace(temporary, path)
+
+
+def _atomic_json(path: Path, value: object, *, sort_keys: bool = False) -> None:
+    _atomic_write(path, json.dumps(value, ensure_ascii=False, sort_keys=sort_keys, indent=2) + "\n")
 
 
 def _canonical(value: object) -> bytes:
