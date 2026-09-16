@@ -5,7 +5,6 @@ import argparse
 from contextlib import redirect_stdout
 from io import StringIO
 import json
-import math
 import os
 from pathlib import Path
 import signal
@@ -13,7 +12,9 @@ import subprocess
 import sys
 import time
 
-from .worker_entry import load_config
+from .validation import utc_now
+from .worker_entry import load_config, persist_worker_status
+from .worker_launch import detached_creationflags, reap_process, taskkill_tree, validate_wake_arguments
 
 
 class _OwnedWindowsJob:
@@ -106,18 +107,7 @@ def _kill_tree(process: subprocess.Popen[str], job: _OwnedWindowsJob | None = No
     if job is not None:
         job.close()
     if os.name == "nt":
-        try:
-            if process.poll() is None:
-                subprocess.run(
-                    ["taskkill", "/PID", str(process.pid), "/T", "/F"],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    check=False,
-                    timeout=5.0,
-                )
-        except (OSError, subprocess.TimeoutExpired):
-            if process.poll() is None:
-                process.terminate()
+        taskkill_tree(process)
     else:
         # The group belongs exclusively to this worker.  Reap it even after
         # the parent has exited, including descendants that ignore SIGTERM.
@@ -125,22 +115,23 @@ def _kill_tree(process: subprocess.Popen[str], job: _OwnedWindowsJob | None = No
             os.killpg(process.pid, signal.SIGKILL)
         except ProcessLookupError:
             pass
-    try:
-        process.wait(timeout=5.0)
-    except subprocess.TimeoutExpired:
-        if os.name == "nt":
-            process.kill()
-        else:
-            try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except (OSError, ProcessLookupError):
-                process.kill()
-        process.wait(timeout=5.0)
+    reap_process(process)
 
 
 def _emit(payload: dict[str, object]) -> None:
     sys.stdout.write(json.dumps(payload, ensure_ascii=False, separators=(",", ":")) + "\n")
     sys.stdout.flush()
+
+
+def _degraded(gap: str) -> dict[str, object]:
+    return {"status": "degraded", "processed": 0, "items": [], "capability_gaps": [gap]}
+
+
+def _unlink_quietly(path: Path) -> None:
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        pass
 
 
 def _wait_for_prior_worker(pid: int, deadline: float) -> bool:
@@ -183,14 +174,72 @@ def _wait_for_prior_worker(pid: int, deadline: float) -> bool:
     return False
 
 
+def _spawn_worker(config_path: Path, python_executable: Path) -> subprocess.Popen[str]:
+    command = [
+        str(python_executable),
+        "-B",
+        str(Path(__file__).with_name("_worker_bootstrap.py")),
+        str(config_path),
+    ]
+    return subprocess.Popen(
+        command,
+        cwd=str(Path(__file__).resolve().parents[1]),
+        env=os.environ.copy(),
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        creationflags=detached_creationflags(),
+        start_new_session=(os.name != "nt"),
+    )
+
+
+def _release_worker(child: subprocess.Popen[str]) -> None:
+    """The stdlib-only bootstrap cannot import or run the worker until
+    ownership is established.  EOF also aborts it if this owner dies."""
+    assert child.stdin is not None
+    child.stdin.write("\x01")
+    child.stdin.flush()
+    child.stdin.close()
+    child.stdin = None
+
+
+def _wait_for_exit(child: subprocess.Popen[str], deadline: float) -> bool:
+    while child.poll() is None:
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.02)
+    return True
+
+
+def _relay_output(stdout: str, stderr: str, result_sink: dict | None) -> None:
+    if result_sink is not None and stdout.strip():
+        try:
+            value = json.loads(stdout.strip().splitlines()[-1])
+            if isinstance(value, dict):
+                result_sink.update(value)
+        except (ValueError, IndexError):
+            pass
+    if stdout.strip():
+        sys.stdout.write(stdout)
+        sys.stdout.flush()
+    if stderr:
+        sys.stderr.write(stderr)
+        sys.stderr.flush()
+
+
 def _run_once(config_path: Path, python_executable: Path, *, cleanup_config: bool,
         after_pid: int | None = None, delay_seconds: float = 0.0,
         timeout_seconds: float | None = None, result_sink: dict | None = None) -> int:
-    from .worker_entry import _now, persist_worker_status
-    started_at = _now()
+    started_at = utc_now()
     config = None
+    child: subprocess.Popen[str] | None = None
+    job: _OwnedWindowsJob | None = None
+    tree_stopped = False
 
-    def save(payload, exit_code):
+    def save(payload, exit_code) -> None:
         if result_sink is not None:
             result_sink.update(payload)
         if config is not None:
@@ -199,144 +248,80 @@ def _run_once(config_path: Path, python_executable: Path, *, cleanup_config: boo
                                       exit_code=exit_code, worker_pid=child.pid if child is not None else None)
             except (OSError, ValueError):
                 pass
-    child: subprocess.Popen[str] | None = None
-    job: _OwnedWindowsJob | None = None
-    tree_stopped = False
+
+    def report(payload, exit_code) -> int:
+        save(payload, exit_code)
+        _emit(payload)
+        return exit_code
+
     try:
         config = load_config(config_path)
-        if after_pid is not None and (type(after_pid) is not int or not 1 <= after_pid <= 0xFFFFFFFF):
-            raise ValueError("worker_after_pid")
-        if type(delay_seconds) not in (int, float) or not math.isfinite(delay_seconds) or not 0 <= delay_seconds <= 3600:
-            raise ValueError("worker_delay_seconds")
+        validate_wake_arguments(after_pid, delay_seconds)
         # One detached delayed wake survives host shutdown. It never spawns
         # another wake; its ordinary daily/model budgets remain unchanged.
         if delay_seconds:
             time.sleep(delay_seconds)
-        deadline = time.monotonic() + min(float(config.drain_seconds), timeout_seconds if timeout_seconds is not None else float(config.drain_seconds))
+        budget = float(config.drain_seconds)
+        if timeout_seconds is not None:
+            budget = min(budget, timeout_seconds)
+        deadline = time.monotonic() + budget
         if after_pid is not None and not _wait_for_prior_worker(after_pid, deadline):
-            started_at = _now()
-            payload = {"status": "degraded", "processed": 0, "items": [],
-                       "capability_gaps": ["worker_followup_wait_timeout"]}
-            save(payload, 124)
-            _emit(payload)
-            return 124
-        started_at = _now()
+            started_at = utc_now()
+            return report(_degraded("worker_followup_wait_timeout"), 124)
+        started_at = utc_now()
         job = _OwnedWindowsJob()
-        command = [
-            str(python_executable),
-            "-B",
-            str(Path(__file__).with_name("_worker_bootstrap.py")),
-            str(config_path),
-        ]
-        creationflags = int(getattr(subprocess, "CREATE_NO_WINDOW", 0))
-        if os.name == "nt":
-            creationflags |= int(getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
-        child = subprocess.Popen(
-            command,
-            cwd=str(Path(__file__).resolve().parents[1]),
-            env=os.environ.copy(),
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            creationflags=creationflags,
-            start_new_session=(os.name != "nt"),
-        )
-        # The stdlib-only bootstrap cannot import or run the worker until
-        # ownership is established.  EOF also aborts it if this owner dies.
+        child = _spawn_worker(config_path, python_executable)
         if not job.assign(child):
             raise OSError("worker_job_assignment_failed")
-        assert child.stdin is not None
-        child.stdin.write("\x01")
-        child.stdin.flush()
-        child.stdin.close()
-        child.stdin = None
-        while child.poll() is None:
-            if time.monotonic() >= deadline:
-                _kill_tree(child, job)
-                tree_stopped = True
-                payload = {
-                        "status": "degraded",
-                        "owner_id": config.owner_id,
-                        "installation_id": config.binding.installation_id,
-                        "processed": 0,
-                        "items": [],
-                        "capability_gaps": ["worker_watchdog_timeout"],
-                    }
-                save(payload, 124)
-                _emit(payload)
-                return 124
-            time.sleep(0.02)
+        _release_worker(child)
+        if not _wait_for_exit(child, deadline):
+            _kill_tree(child, job)
+            tree_stopped = True
+            payload = {**_degraded("worker_watchdog_timeout"), "owner_id": config.owner_id,
+                       "installation_id": config.binding.installation_id}
+            return report(payload, 124)
         # Descendants may have inherited the pipes and outlived their parent.
         # Stop the owned tree before reading EOF, rather than waiting on them.
         _kill_tree(child, job)
         tree_stopped = True
         stdout, stderr = child.communicate(timeout=5.0)
-        if result_sink is not None and stdout.strip():
-            try:
-                value = json.loads(stdout.strip().splitlines()[-1])
-                if isinstance(value, dict):
-                    result_sink.update(value)
-            except (ValueError, IndexError):
-                pass
-        if stdout.strip():
-            sys.stdout.write(stdout)
-            sys.stdout.flush()
-        if stderr:
-            sys.stderr.write(stderr)
-            sys.stderr.flush()
+        _relay_output(stdout, stderr, result_sink)
         if child.returncode and not stdout.strip():
             save({"status": "degraded", "capability_gaps": ["worker_process_failed"]}, int(child.returncode))
         return int(child.returncode or 0)
     except Exception as exc:
-        payload = {
-                "status": "degraded",
-                "processed": 0,
-                "items": [],
-                "capability_gaps": [f"watchdog_error:{type(exc).__name__}"],
-            }
-        save(payload, 1)
-        _emit(payload)
-        return 1
+        return report(_degraded(f"watchdog_error:{type(exc).__name__}"), 1)
     finally:
         if child is not None and not tree_stopped:
             _kill_tree(child, job)
         elif job is not None:
             job.close()
         if cleanup_config:
-            try:
-                config_path.unlink(missing_ok=True)
-            except OSError:
-                pass
+            _unlink_quietly(config_path)
 
 
 def run(config_path: Path, python_executable: Path, *, cleanup_config: bool,
         after_pid: int | None = None, delay_seconds: float = 0.0) -> int:
-    started: set[bool] = set()
+    passes = 0
     try:
         config = load_config(config_path)
         if not config.supervisor_enabled:
             return _run_once(config_path, python_executable, cleanup_config=False,
                              after_pid=after_pid, delay_seconds=delay_seconds)
-        if after_pid is not None and (type(after_pid) is not int or not 1 <= after_pid <= 0xFFFFFFFF):
-            raise ValueError('worker_after_pid')
-        if type(delay_seconds) not in (int, float) or not math.isfinite(delay_seconds) or not 0 <= delay_seconds <= 3600:
-            raise ValueError('worker_delay_seconds')
+        validate_wake_arguments(after_pid, delay_seconds)
         from .scheduling import supervise
         predecessor = after_pid
         latest = {}
 
         def drain_once(remaining):
-            nonlocal predecessor
+            nonlocal predecessor, passes
             payload = {}
             # Preserve the process protocol: one final compact JSON receipt,
             # not an unbounded stream or a pipe inherited by sleeping helpers.
             with redirect_stdout(StringIO()):
                 code = _run_once(config_path, python_executable, cleanup_config=False,
                                  after_pid=predecessor, timeout_seconds=remaining, result_sink=payload)
-            started.add(True)
+            passes += 1
             predecessor = None
             latest.clear()
             latest.update(payload)
@@ -347,22 +332,17 @@ def run(config_path: Path, python_executable: Path, *, cleanup_config: bool,
         return code
     except Exception as exc:
         # Scheduling reads the bound database before the first pass, so a
-        # missing or unreadable one failed here and was reported as an opaque
-        # watchdog_error, hiding the worker's own diagnosis. When no pass ever
-        # started, run one bounded pass directly: the worker names the real
-        # cause. The delay is dropped because the intended wake already passed.
-        if not started:
+        # missing or unreadable one would surface as an opaque watchdog_error.
+        # When no pass ever started, run one bounded pass directly: the worker
+        # names the real cause.  The delay is dropped; the wake already passed.
+        if not passes:
             return _run_once(config_path, python_executable, cleanup_config=False,
                              after_pid=after_pid, delay_seconds=0.0)
-        _emit({'status': 'degraded', 'processed': 0, 'items': [],
-               'capability_gaps': [f'watchdog_error:{type(exc).__name__}']})
+        _emit(_degraded(f'watchdog_error:{type(exc).__name__}'))
         return 1
     finally:
         if cleanup_config:
-            try:
-                config_path.unlink(missing_ok=True)
-            except OSError:
-                pass
+            _unlink_quietly(config_path)
 
 
 def main(argv: list[str] | None = None) -> int:

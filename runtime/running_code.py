@@ -1,45 +1,30 @@
 """What version each live process actually loaded, as opposed to what is on disk.
 
-The gap this closes was measured, not imagined: on 2026-09-13 the TianShu
-gateway started at 04:14 and the package was reinstalled at 01:34 the next day,
-but the gateway is a long-running process that imports ``scope_recall`` once at
-startup.  For 21 hours the same function behaved one way inside the gateway
-(old code) and another way inside each worker drain (new code, fresh process
-every time).  Nothing reported it: the installer does not look at processes and
-doctor only looked at disk.  It was found by bisecting evidence byte counts.
-
-So every process that opens a runtime instance leaves one small record saying
-which version it is holding.  ``maintenance/doctor.py`` reads those records,
-keeps the ones whose process is still alive, and compares them against the
-package on disk.
+A long-running host imports ``scope_recall`` once; after a reinstall it keeps
+running the old code while every fresh worker runs the new one, and neither the
+installer nor a disk-only doctor can see it.  So every process that opens a
+runtime instance leaves one small record, and ``maintenance/doctor.py`` compares
+the live ones against the package on disk.
 
 Two facts are recorded because two different things go wrong:
 
-* ``version`` -- the in-memory ``__version__``.  Bound at import, so it cannot
-  drift; a mismatch against disk is proof of a stale process.
-* ``first_record_at`` -- when this process first wrote its record, which is
-  necessarily *after* it imported the package.  If the package on disk was
-  modified later than that, this process demonstrably loaded something else,
-  even when the version string is unchanged.  Reinstalling the same release
-  candidate is the ordinary development loop, so this is the common case.
+* ``version`` -- the in-memory ``__version__``, bound at import; a mismatch
+  against disk is proof of a stale process.
+* ``first_record_at`` -- when this process first wrote its record, necessarily
+  after it imported the package.  A package modified later than that is not
+  what this process loaded, even when the version string is unchanged, which
+  is the ordinary reinstall-the-same-candidate case.
 
-Both tests are exact.  Neither can fire for a process that is genuinely current,
-which matters more than catching every exotic case: a diagnostic that cries wolf
-gets ignored, and then the real signal is lost with it.
+Both tests are exact; neither can fire for a process that is genuinely current.
+A diagnostic that cries wolf gets ignored, and the real signal with it.
 
-When a process appears here, stated rather than left to be rediscovered: at
-instance construction, not at import.  For a host adapter that is earlier than
-it sounds -- ``initialize(session_id)`` binds an identity and
-``attach_trusted_host_runtime`` builds the instance right there, so a gateway
-registers when a *conversation starts*, before it recalls or captures anything.
+Records are written at instance construction, not at import: a host adapter
+registers when a conversation starts, before it recalls or captures anything.
+A host with no conversation yet has no record, and "no records" means "nothing
+has registered yet", not "everything is current".
 
-The window that remains is a host that has started and had no conversation yet.
-It is also doing no memory work in that window, so nothing is missed; but "no
-records" means "nothing has registered yet", not "everything is current", and
-the doctor says so in those words rather than reporting ok.
-
-Not responsible for: deciding what to do about a stale process (doctor reports,
-the operator restarts), or for any form of process control.
+Not responsible for: acting on a stale process (doctor reports, the operator
+restarts), or any form of process control.
 """
 from __future__ import annotations
 
@@ -216,19 +201,11 @@ def package_modified_at(package_path: Path, *, now: float | None = None) -> str 
     change the version string.  Bounded to ``*.py`` because those are exactly
     what an already-running interpreter cannot pick up.
 
-    A stamp meaningfully in the future is ignored rather than believed.
-    Nothing can have been modified later than now, so such a stamp is a broken
-    clock or an unpacking tool that mishandled the archive's local-time entries
-    -- and believing it would make *every* process look stale forever, which is
-    the permanently-degraded health check this whole module exists to avoid.
-    The real TianShu case was an extraction that shifted 31 of 135 files four
-    hours ahead.
-
-    "Meaningfully" is the whole point of the tolerance: a file written a
-    moment ago can carry a stamp a hair past ``time.time()`` -- filesystem
-    timestamp granularity, or a clock that ticked between the write and the
-    read -- and treating that as evidence of a broken clock would discard the
-    ordinary rebuild-and-reinstall case this check exists to catch.
+    A stamp meaningfully in the future is ignored rather than believed: it is
+    a broken clock or an archive extracted with mishandled local-time entries,
+    and believing it would make every process look stale forever.  The
+    tolerance exists because a file written a moment ago can legitimately
+    carry a stamp a hair past ``time.time()``.
     """
     ceiling = (time.time() if now is None else now) + FUTURE_TOLERANCE_SECONDS
     newest: float | None = None
