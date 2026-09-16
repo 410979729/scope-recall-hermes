@@ -170,6 +170,7 @@
     "runtime/running_code.py",
     "runtime/scheduling.py",
     "runtime/subscription_budget.py",
+    "runtime/validation.py",
     "runtime/vector_upkeep.py",
     "runtime/worker_entry.py",
     "runtime/worker_launch.py",

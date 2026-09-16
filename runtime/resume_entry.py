@@ -8,7 +8,8 @@ import hashlib
 from pathlib import Path
 import re
 
-from .scheduling import next_wake
+from ..core.file_lock import advisory_file_lock
+from .scheduling import SupervisorControl, next_wake
 from .worker_entry import _atomic_metadata, load_config
 from .worker_launch import launch_worker
 
@@ -89,8 +90,6 @@ def resume_once(config_path, *, launcher=launch_worker, now=None):
         return dict(status=plan.reason, launched=False, next_wake_at=plan.due_at)
     # Ownership is proved with the supervisor's OS lock, not a stale PID in a
     # status file. The watchdog coalesces if another wake wins this race.
-    from .scheduling import SupervisorControl
-    from ..core.file_lock import advisory_file_lock
     try:
         with advisory_file_lock(SupervisorControl(config).owner_lock, timeout_seconds=0):
             pass

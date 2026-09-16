@@ -16,11 +16,11 @@ Not responsible for: deciding the threshold, or performing the native work.
 from __future__ import annotations
 
 import time
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from ..vector.compaction import compaction_due, measure_footprint, read_state, write_state
+from .validation import utc_now
 
 #: Seconds of the drain budget set aside for one pass.  Measured: 0.12 s when
 #: there is nothing to do, 3.5 s to clear a 2,243-fragment backlog.  Below this
@@ -54,7 +54,7 @@ def compact_if_due(store: Any, vector_config: Any, *, available_seconds: float) 
     started = time.monotonic()
     receipt: dict[str, Any] = {
         "reason": reason,
-        "started_at": _now(),
+        "started_at": utc_now(),
         "fragments_before": footprint.fragments,
         "manifests_before": footprint.manifests,
         "bytes_before": footprint.bytes,
@@ -68,7 +68,7 @@ def compact_if_due(store: Any, vector_config: Any, *, available_seconds: float) 
         receipt["outcome"] = "compacted"
     after = measure_footprint(db_path, vector_config.table_name)
     receipt.update(
-        finished_at=_now(),
+        finished_at=utc_now(),
         seconds=round(time.monotonic() - started, 3),
         fragments=after.fragments,
         manifests=after.manifests,
@@ -76,10 +76,6 @@ def compact_if_due(store: Any, vector_config: Any, *, available_seconds: float) 
     )
     write_state(storage_dir, receipt)
     return receipt
-
-
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
 
 
 __all__ = ["RESERVE_SECONDS", "compact_if_due"]
