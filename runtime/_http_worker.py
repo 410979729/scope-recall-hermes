@@ -92,7 +92,7 @@ def _sanitize_request_headers(headers: dict[str, str]) -> dict[str, str] | None:
     return headers
 
 
-def _request(raw: bytes) -> bytes:
+def _request(raw: bytes, connections: dict | None = None) -> bytes:
     try:
         request = json.loads(raw.decode("utf-8"))
     except (UnicodeError, json.JSONDecodeError):
@@ -136,19 +136,27 @@ def _request(raw: bytes) -> bytes:
     chunks: list[bytes] = []
     total = 0
     status: int | None = None
+    reusable = False
+    cache_key = (parsed.hostname, parsed.port or 443, tuple(sorted(headers.items())))
     try:
         try:
-            connection = _open_https_connection(
-                parsed.hostname,
-                parsed.port or 443,
-                deadline=deadline,
-            )
+            if connections is not None:
+                connection = connections.pop(cache_key, None)
+                for old in connections.values():
+                    old.close()
+                connections.clear()
+            if connection is None:
+                connection = _open_https_connection(
+                    parsed.hostname, parsed.port or 443, deadline=deadline,
+                )
         except ValueError:
             return _result(ok=False, error="http_protocol")
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             return _result(ok=False, error="timeout")
-        connection.connect()
+        if connection.sock is None:
+            connection.timeout = remaining
+            connection.connect()
         path = parsed.path or "/"
         if parsed.query:
             path = f"{path}?{parsed.query}"
@@ -182,6 +190,7 @@ def _request(raw: bytes) -> bytes:
             if total > max_response_bytes:
                 return _result(ok=False, status=status, body=b"".join(chunks), error="response_limit")
             chunks.append(piece)
+        reusable = status < 400 and not response.will_close and connection.sock is not None
         return _result(ok=True, status=status, body=b"".join(chunks))
     except socket.timeout:
         return _result(ok=False, status=status, body=b"".join(chunks), error="timeout")
@@ -191,10 +200,30 @@ def _request(raw: bytes) -> bytes:
         return _result(ok=False, status=status, body=b"".join(chunks), error="network_error")
     finally:
         if connection is not None:
-            connection.close()
+            if reusable and connections is not None:
+                connections[cache_key] = connection
+            else:
+                connection.close()
 
 
 def main() -> int:
+    if sys.argv[1:] == ["--persistent"]:
+        connections = {}
+        try:
+            while True:
+                raw = sys.stdin.buffer.readline(MAX_REQUEST_BYTES + 2)
+                if not raw:
+                    break
+                if len(raw) > MAX_REQUEST_BYTES + 1 or not raw.endswith(b"\n"):
+                    sys.stdout.buffer.write(_result(ok=False, error="request_limit") + b"\n")
+                    sys.stdout.buffer.flush()
+                    break
+                sys.stdout.buffer.write(_request(raw, connections) + b"\n")
+                sys.stdout.buffer.flush()
+        finally:
+            for connection in connections.values():
+                connection.close()
+        return 0
     raw = sys.stdin.buffer.read(MAX_REQUEST_BYTES + 1)
     if len(raw) > MAX_REQUEST_BYTES:
         sys.stdout.buffer.write(_result(ok=False, error="request_limit"))

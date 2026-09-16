@@ -614,6 +614,7 @@ def test_P08_relation_budget_counts_rejected_candidates_and_checks_original_dead
 
 
 def test_automatic_packet_budget_keeps_later_constraint_and_stays_closed(tmp_path):
+    from scope_recall.core.recall_budget import estimate_tokens
     from scope_recall.core.recall_packet import RecallPacketCompiler
     from scope_recall.core.retrieval import AUTOMATIC_PACKET_BUDGET_UNITS, SearchLimits
 
@@ -649,11 +650,15 @@ def test_automatic_packet_budget_keeps_later_constraint_and_stays_closed(tmp_pat
     assert all(item["evidence_refs"] for item in default["items"])
     assert "budget_token_cap" not in default["gaps"]
 
+    # 1200 estimated units now fit these short CJK records. This measured
+    # 500-unit boundary fits two event envelopes, not three, including gaps.
+    cap = 500
     capped = core.recall_packet(
         ctx,
-        recall_request(query=query, mode="auto", budget_tokens=1200, request_id="TEST-hotel-1200"),
+        recall_request(query=query, mode="auto", budget_tokens=cap, request_id="TEST-hotel-capped"),
         deadline_seconds=5,
     )
+    assert estimate_tokens(canonical_render_json(capped)) <= cap
     assert "budget_token_cap" in capped["gaps"]
     # A budget cut comes off the bottom of the ranking, and what is cut is named.
     #
@@ -673,13 +678,8 @@ def test_automatic_packet_budget_keeps_later_constraint_and_stays_closed(tmp_pat
 
     # A budget no valid packet can fit is a caller error, not a packet.
     #
-    # The smallest legal envelope — status unavailable, no items, one gap — is
-    # 224 bytes, so 80 cannot be honoured by anything. This used to expect a
-    # degraded packet back, which contradicts the contract two other tests
-    # already pin: test_autonomous_context and test_v11_profile_entity both
-    # assert that 64 (and 220) raise with field "budget_tokens". Returning a
-    # 224-byte packet to a caller who declared an 80-byte ceiling would break
-    # the guarantee the budget exists to give.
+    # The tiny estimate must still reject an envelope that cannot fit;
+    # do not silently exceed the cap or fall back to the old byte unit.
     with pytest.raises(ContractError) as exc:
         core.recall_packet(
             ctx,
@@ -695,7 +695,7 @@ def test_automatic_packet_budget_keeps_later_constraint_and_stays_closed(tmp_pat
         recall_request(query=query, mode="auto", budget_tokens=400, request_id="TEST-hotel-400"),
         deadline_seconds=5,
     )
-    assert len(canonical_render_json(tiny).encode("utf-8")) <= 400
+    assert estimate_tokens(canonical_render_json(tiny)) <= 400
     assert len(tiny["items"]) <= len(capped["items"])
 
     _capture(core, ctx, "TEST-hotel-delete", f"删除 {third.ref}")

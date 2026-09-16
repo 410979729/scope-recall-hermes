@@ -163,36 +163,82 @@ def test_recovery_progress_continues_once_and_budget_waits_legacy_repair(tmp_pat
 
 
 def test_real_detached_supervisor_processes_future_local_work_after_host_exit(tmp_path):
-    core,cfg,path=fixture(tmp_path,supervisor_seconds=12,supervisor_max_drains=5,drain_seconds=5)
+    # A wall-clock +3s due date raced Python startup and could be consumed by
+    # the first drain. Handshake at the actual scheduler sleep, then advance its
+    # injected clocks; the worker, SQLite and host-exit boundary remain real.
+    core,cfg,path=fixture(tmp_path,supervisor_seconds=180,supervisor_max_drains=5,
+                          drain_seconds=30,daily_work_limit=16)
     receipt=core.record_event(cfg.context(),source_event(),scope_id='TEST-a')
     ref=receipt.event_refs[0].ref
-    due=(datetime.now(timezone.utc)+timedelta(seconds=3)).isoformat().replace('+00:00','Z')
+    base=datetime.now(timezone.utc)
+    due=(base+timedelta(days=1)).isoformat().replace('+00:00','Z')
     with core.storage.write(cfg.context()) as tx:
         tx.work.enqueue('rebuild_projection',ref,1,available_at=due)
     marker=tmp_path/'host-exited.json'
-    script='''import json,os,sys
+    waiting=tmp_path/'supervisor-waiting'
+    release=tmp_path/'work-now-due'
+    child=tmp_path/'TEST-controlled-supervisor.py'
+    child.write_text("""import sys,types,time
+from datetime import datetime,timedelta
 from pathlib import Path
-from scope_recall.runtime.worker_launch import launch_worker
-worker=launch_worker(Path(sys.argv[1]),detach_output=True)
-Path(sys.argv[2]).write_text(json.dumps({'pid':worker.pid}))
+root,config,waiting,release,base=sys.argv[1:]
+package=types.ModuleType('scope_recall'); package.__path__=[root]
+sys.modules['scope_recall']=package
+from scope_recall.runtime import scheduling,worker_watchdog
+original=scheduling.supervise
+elapsed=[0.0]; base=datetime.fromisoformat(base)
+def sleep(seconds):
+    Path(waiting).touch()
+    deadline=time.monotonic()+40
+    while not Path(release).exists():
+        if time.monotonic()>deadline: raise TimeoutError('TEST clock handshake')
+        time.sleep(.02)
+    elapsed[0]+=seconds
+def controlled(path,drain,**kwargs):
+    return original(path,drain,**kwargs,clock=lambda:elapsed[0],sleep=sleep,
+                    utc_now=lambda:base+timedelta(seconds=elapsed[0]))
+scheduling.supervise=controlled
+raise SystemExit(worker_watchdog.main(['--config',config,'--python',sys.executable]))
+""",encoding='utf-8')
+    script="""import json,os,subprocess,sys
+from pathlib import Path
+child=subprocess.Popen([sys.executable,'-B',*sys.argv[1:-1]],
+                       stdout=(log:=open(Path(sys.argv[1]).with_suffix('.log'),'w')),stderr=log,
+                       start_new_session=(os.name!='nt'),
+                       creationflags=int(getattr(subprocess,'CREATE_NO_WINDOW',0)))
+Path(sys.argv[-1]).write_text(json.dumps({'pid':child.pid}))
 os._exit(0)
-'''
-    env=os.environ.copy(); env['PYTHONPATH']=str(Path(__file__).resolve().parents[2])+os.pathsep+env.get('PYTHONPATH','')
-    parent=subprocess.Popen([sys.executable,'-B','-c',script,str(path),str(marker)],env=env,
+"""
+    parent=subprocess.Popen([sys.executable,'-B','-c',script,str(child),
+                             str(Path(__file__).resolve().parents[2]),str(path),
+                             str(waiting),str(release),base.isoformat(),str(marker)],
                             stdout=subprocess.PIPE,stderr=subprocess.PIPE,
                             creationflags=int(getattr(subprocess,'CREATE_NO_WINDOW',0)))
-    out,err=parent.communicate(timeout=5)
+    out,err=parent.communicate(timeout=15)
     assert parent.returncode==0,(out,err)
     assert marker.exists()
-    control=SupervisorControl(cfg); deadline=time.monotonic()+10
+    control=SupervisorControl(cfg); deadline=time.monotonic()+40
+    try:
+        while not waiting.exists() and time.monotonic()<deadline:
+            time.sleep(.02)
+        assert waiting.exists(),(control.read(),child.with_suffix('.log').read_text(encoding='utf-8'))
+        assert control.read()['state']=='waiting'
+        # Only after observing the second-pass scheduler do we release real DB
+        # work. No 3-second startup assumption and no pytest/CI retries.
+        with core.storage.write(cfg.context()) as tx:
+            tx._check(write=True).execute(
+                "UPDATE work_items SET available_at=? WHERE work_type='rebuild_projection'",
+                (base.isoformat().replace('+00:00','Z'),))
+    finally:
+        release.touch()  # also releases the owned child on an assertion failure
     while time.monotonic()<deadline:
         state=control.read()
         if state.get('state') in {'idle','blocked','failed','suspended'}:
             break
-        time.sleep(.05)
-    assert state['state']=='blocked' and state['drains']>=2
+        time.sleep(.02)
+    assert state['state']=='blocked' and state['drains']>=2,state
     with core.storage.read(cfg.context()) as tx:
         row=tx._check().execute("SELECT state FROM work_items WHERE work_type='rebuild_projection'").fetchone()
         assert row['state']=='done'
     budget=json.loads((cfg.binding.data_directory/'runtime-worker-day.json').read_text())
-    assert budget['used']==1  # No optional model work or free budget reset.
+    assert budget['used']==1  # An explicit cap, never the uncapped default.

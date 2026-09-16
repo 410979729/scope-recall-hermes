@@ -49,7 +49,8 @@ from __future__ import annotations
 import re
 
 from ..contracts import ContractError
-from .work_storage import AUTO_RECOVERABLE_ERRORS
+from ..secret_patterns import contains_secret_like_text
+from .work_storage import AUTO_RECOVERABLE_ERRORS, DERIVATION_RETRY_MARKER
 
 #: Faults an operator may clear even though the worker's automatic budget is
 #: spent.  Neither is auto-recoverable, and both are here for a stated reason:
@@ -78,8 +79,29 @@ TERMINAL_FAILURES = frozenset({
 #: Stamped on every row this grants a re-look, so the grant is visible and
 #: cannot be repeated within one schema generation.
 RETRY_MARKER = "retried"
+# Per work item, not per schema generation; explicit operator retries remain separate.
+NEEDS_REVIEW_COUNT = f"""
+    SELECT count(*) FROM work_items WHERE state='failed'
+    AND last_error_code LIKE '%{DERIVATION_RETRY_MARKER}|%'
+    AND lower(last_error_code) LIKE '%|derivation_invalid'
+"""
 
 _MARKER_RE = re.compile(rf"(?:^|\|){RETRY_MARKER}:(\d+)\|")
+
+
+def validation_feedback(code: object, field: object) -> dict[str, str]:
+    """Return bounded validation symbols, never exception/output text.
+
+    Legacy rows may lack a field or carry a decorated work code. In that case
+    the only honest repair hint is the generic derivation/payload failure.
+    """
+    safe_code = code.upper() if isinstance(code, str) else ""
+    if safe_code not in {"INPUT_INVALID", "DERIVATION_INVALID"}:
+        safe_code = "DERIVATION_INVALID"
+    safe_field = field if (isinstance(field, str)
+                           and re.fullmatch(r"[A-Za-z0-9_./\[\]-]{1,240}", field)
+                           and not contains_secret_like_text(field)) else "payload"
+    return {"code": safe_code, "field": safe_field}
 
 
 def failure_kind(error_code: object) -> str:

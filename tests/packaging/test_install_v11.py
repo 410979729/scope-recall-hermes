@@ -1182,3 +1182,104 @@ def test_codex_env_file_is_written_into_every_wrapper_and_hermes_rejects_it(tmp_
         "--test-mode",
     ]) == 2
     capsys.readouterr()
+
+
+def test_package_health_record_bytes_and_declared_dependencies(tmp_path, monkeypatch):
+    """A real dist-info fixture, not a hard-coded production-version table."""
+    import base64
+    import tomllib
+    from importlib import metadata
+    from scope_recall.maintenance.package_health import record_integrity, dependency_health
+
+    site = tmp_path / "TEST-site"
+    dist_dir = site / "hermes_scope_recall-3.1.0rc28.dist-info"
+    dist_dir.mkdir(parents=True)
+    payload = site / "scope_recall" / "sample.py"
+    payload.parent.mkdir()
+    raw = b"value = 1\r\n"
+    payload.write_bytes(raw)
+    digest = base64.urlsafe_b64encode(hashlib.sha256(raw).digest()).decode().rstrip("=")
+    (dist_dir / "RECORD").write_text(f"scope_recall/sample.py,sha256={digest},{len(raw)}\n", encoding="utf-8")
+    project = tomllib.loads((Path(__file__).resolve().parents[2] / "pyproject.toml").read_text(encoding="utf-8"))["project"]
+    specs = list(project["dependencies"])
+    for extra in ("lancedb", "codex"):
+        specs.extend(f"{spec}; extra == '{extra}'" for spec in project["optional-dependencies"][extra])
+    (dist_dir / "METADATA").write_text("Metadata-Version: 2.1\nName: hermes-scope-recall\nVersion: 3.1.0rc28\n" +
+                                     "".join(f"Requires-Dist: {s}\n" for s in specs), encoding="utf-8")
+    versions = {"PyYAML": "6.0.3", "jsonschema": "4.25.1", "packaging": "25.0", "tzdata": "2026.1",
+                "lancedb": "0.37.1", "pyarrow": "24.0.0", "mcp": "2.0.0", "pydantic": "2.13.4"}
+    for name, version in versions.items():
+        info = site / f"{name}-{version}.dist-info"
+        info.mkdir()
+        (info / "METADATA").write_text(f"Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n", encoding="utf-8")
+    monkeypatch.syspath_prepend(str(site))
+    dist = metadata.Distribution.at(dist_dir)
+    assert record_integrity(dist)["status"] == "ok"
+    payload.write_bytes(raw.replace(b"1", b"2"))  # Same length, different byte.
+    assert record_integrity(dist)["mismatch_count"] == 1
+    payload.write_bytes(raw.replace(b"\r\n", b"\n"))
+    assert record_integrity(dist)["status"] == "mismatch", "newline normalization must not mask drift"
+    payload.write_bytes(raw)
+    assert record_integrity(dist)["status"] == "ok"
+    good = dependency_health(dist.requires)
+    assert good["status"] == "ok", good
+    mcp_metadata = site / "mcp-2.0.0.dist-info" / "METADATA"
+    original = mcp_metadata.read_text(encoding="utf-8")
+    mcp_metadata.write_text(original.replace("Version: 2.0.0", "Version: 99.0"), encoding="utf-8")
+    bad = dependency_health(dist.requires)
+    assert bad["status"] == "mismatch"
+    assert any(row["name"] == "mcp" and not row["ok"] for row in bad["requirements"])
+    mcp_metadata.write_text(original, encoding="utf-8")
+    assert dependency_health(dist.requires)["status"] == "ok"
+    print(json.dumps({"record_bytes": "clean / same-size edit / CRLF edit / restored",
+                      "dependencies": {"clean": good, "defect": bad}}, ensure_ascii=False))
+
+
+def test_package_health_doctor_three_way_versions(tmp_path, monkeypatch):
+    from scope_recall.maintenance import package_health
+    from scope_recall.runtime.running_code import record_running_code
+
+    instance, plugin, project = _install_paths(tmp_path, host="hermes")
+    apply_install(plan_install(host="hermes", target_plugin_dir=plugin, instance_root=instance,
+                              project_root=project, agent_id="TEST-health", python_executable=Path(sys.executable)))
+    record_path = record_running_code(instance / "scope-recall", host_adapter="hermes")
+    assert record_path is not None
+    original = record_path.read_text(encoding="utf-8")
+    probe = {"source": "installed", "version": __version__, "distribution_version": __version__,
+             "hot_patched": {"status": "ok"}, "dependency_drift": {"status": "ok"}}
+    monkeypatch.setattr(package_health, "package_probe", lambda: probe)
+
+    def check():
+        report = run_doctor(host="hermes", instance_root=instance)
+        assert all(name in report.to_dict()["package_health"] for name in
+                   ("hot_patched", "dependency_drift", "version_mismatch"))
+        return report
+
+    assert check().package_health["version_mismatch"]["status"] == "ok"
+    for component in ("receipt", "distribution", "running"):
+        receipt_path = instance / ".scope-recall-install-receipt.json"
+        receipt_raw = receipt_path.read_text(encoding="utf-8")
+        if component == "receipt":
+            receipt = json.loads(receipt_raw)
+            receipt["package_version"] = "0.0.1"
+            receipt_path.write_text(json.dumps(receipt), encoding="utf-8")
+        elif component == "distribution":
+            probe["distribution_version"] = "0.0.1"
+        else:
+            record = json.loads(original)
+            record["version"] = "0.0.1"
+            record_path.write_text(json.dumps(record), encoding="utf-8")
+        report = check()
+        assert "version_mismatch" in report.capability_gaps
+        print(json.dumps({"component": component, "check": report.package_health["version_mismatch"]}))
+        receipt_path.write_text(receipt_raw, encoding="utf-8")
+        record_path.write_text(original, encoding="utf-8")
+        probe["distribution_version"] = __version__
+        assert "version_mismatch" not in check().capability_gaps
+    for gap in ("hot_patched", "dependency_drift"):
+        probe[gap] = {"status": "mismatch"}
+        assert gap in check().capability_gaps
+        probe[gap] = {"status": "ok"}
+        assert gap not in check().capability_gaps
+    record_path.unlink()
+    assert check().package_health["version_mismatch"]["status"] == "incomplete"

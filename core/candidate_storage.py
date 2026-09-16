@@ -147,17 +147,9 @@ class CandidateLifecycle:
             return None, False
         return self._schedule(candidate, now=now, rule_version=rule_version)
 
-    def _schedule(self, candidate, *, now: str, rule_version: str) -> tuple[int | None, bool]:
-        conn = self._tx._check(write=True)
-        row = conn.execute(
-            """SELECT processing_state,reason FROM candidate_lifecycle
-               WHERE candidate_ref=? AND candidate_revision=?""",
-            (candidate.ref, candidate.revision),
-        ).fetchone()
-        if row is None or row["processing_state"] in {"resolved", "blocked"}:
-            return None, False
-        if row["processing_state"] == "archived" and row["reason"] != "dormant_no_evidence":
-            return None, False
+    def _evaluation_evidence(self, candidate_ref: str, candidate_revision: int):
+        """Select the same live, bounded evidence for preview and enqueue."""
+        conn = self._tx._check()
         evidence = conn.execute(
             """SELECT e.source_ref,e.source_revision,e.observed_at,s.origin,
                       LENGTH(s.content) AS content_length
@@ -169,7 +161,7 @@ class CandidateLifecycle:
                      AND b.object_ref=e.source_ref AND (b.read_blocked=1 OR b.suppressed=1))
                ORDER BY (s.origin='human_direct') DESC,
                         e.observed_at DESC,e.source_ref,e.source_revision DESC LIMIT 16""",
-            (candidate.ref, candidate.revision),
+            (candidate_ref, candidate_revision),
         ).fetchall()
         # Sixteen sources is a count, not a size. A candidate that accumulates
         # evidence collects sixteen of whatever length, and the evaluation prompt
@@ -197,6 +189,20 @@ class CandidateLifecycle:
             # Every source is oversized on its own. Judge the smallest rather
             # than nothing: the alternative is a candidate no evidence can reach.
             selected = [min(evidence, key=lambda item: int(item["content_length"] or 0))]
+        return selected
+
+    def _schedule(self, candidate, *, now: str, rule_version: str) -> tuple[int | None, bool]:
+        conn = self._tx._check(write=True)
+        row = conn.execute(
+            """SELECT processing_state,reason FROM candidate_lifecycle
+               WHERE candidate_ref=? AND candidate_revision=?""",
+            (candidate.ref, candidate.revision),
+        ).fetchone()
+        if row is None or row["processing_state"] in {"resolved", "blocked"}:
+            return None, False
+        if row["processing_state"] == "archived" and row["reason"] != "dormant_no_evidence":
+            return None, False
+        selected = self._evaluation_evidence(candidate.ref, candidate.revision)
         refs = tuple(sorted((str(item["source_ref"]), int(item["source_revision"])) for item in selected))
         if not refs:
             conn.execute(
@@ -729,11 +735,12 @@ class CandidateLifecycle:
             work.work_id, work.lease_token, work.lease_owner, now=now, error_code=code, seconds=3600,
         )
 
-    def fail(self, evaluation_id: int, work, *, now: str, code: str, field: str | None = None):
-        self._record_error(work.work_id, work.lease_token, code, now, field)
+    def fail(self, evaluation_id: int, work, *, now: str, code: str, field: str | None = None,
+             validation_code: str | None = None):
+        self._record_error(work.work_id, work.lease_token, validation_code or code, now, field)
         # An explicit provider rejection has no usable result to replay.
-        # Retry through the existing durable attempt limit, but never clear
-        # the fence after an uncertain timeout/crash or invalid model output.
+        # Provider failures use the existing limit; invalid output has one
+        # explicit extra attempt. Uncertain timeout/crash never clears the fence.
         recoverable = code in {"http_429", "rate_limited", "http_500", "http_502", "http_503", "http_504"}
         mutation = self._tx.work.fail(
             work.work_id, work.lease_token, work.lease_owner, error_code=code, now=now, recoverable=recoverable,
@@ -766,6 +773,51 @@ class CandidateLifecycle:
         )
         return mutation
 
+    def _settling_rows(self):
+        """Shared live revision/authority/scope filter for scheduler and doctor."""
+        conn = self._tx._check()
+        context, params = self._context("l.")
+        return conn.execute(
+            f"""SELECT l.candidate_ref,l.candidate_revision,l.scope_id,l.project_id,l.branch_id,
+                       l.reason,l.rule_version AS lifecycle_rule,
+                       l.last_evidence_at,l.last_evaluated_at,l.created_at,
+                       v.state AS fact_state,v.payload_json,
+                       EXISTS(SELECT 1 FROM candidate_evaluations e WHERE e.candidate_ref=l.candidate_ref
+                         AND e.candidate_revision=l.candidate_revision AND e.state='queued') AS queued
+                FROM candidate_lifecycle l
+                JOIN claims c ON c.claim_id=l.candidate_ref
+                JOIN claim_versions v ON v.claim_id=l.candidate_ref AND v.revision=l.candidate_revision
+                WHERE l.processing_state IN ('pending_evaluation','waiting_evidence')
+                  AND l.reason<>'authority_revoked' AND {context}
+                  AND c.current_revision=l.candidate_revision AND c.read_blocked=0 AND c.suppressed=0
+                  AND v.state IN ('proposed','disputed')
+                  AND EXISTS(SELECT 1 FROM candidate_evidence ev
+                      WHERE ev.candidate_ref=l.candidate_ref
+                        AND ev.candidate_revision=l.candidate_revision)
+                ORDER BY l.last_evidence_at,l.candidate_ref,l.candidate_revision""",
+            params,
+        ).fetchall()
+
+    def _settling_eligible(self, row, *, now: str, rule_version: str):
+        """Return settle reason only when enqueue can create a new question."""
+        if row["queued"]:
+            return None
+        reason = settle_reason(now=now, last_evidence_at=row["last_evidence_at"],
+                               last_evaluated_at=row["last_evaluated_at"], created_at=row["created_at"])
+        if reason is None:
+            return None
+        selected = self._evaluation_evidence(row["candidate_ref"], row["candidate_revision"])
+        if not selected:
+            return None
+        digest = question_digest((str(item["source_ref"]), int(item["source_revision"]), item["origin"])
+                                 for item in selected)
+        exists = self._tx._check().execute(
+            "SELECT 1 FROM candidate_evaluations WHERE candidate_ref=? AND candidate_revision=? "
+            "AND evidence_fingerprint=? AND rule_version=?",
+            (row["candidate_ref"], row["candidate_revision"], digest, _rule(rule_version)),
+        ).fetchone()
+        return None if exists else reason
+
     def schedule_settled_candidates(self, *, now: str, rule_version: str = RULE_VERSION,
                                     limit: int = 16) -> int:
         """Queue one evaluation for each candidate whose evidence has settled.
@@ -794,36 +846,12 @@ class CandidateLifecycle:
         if type(limit) is not int or not 1 <= limit <= 64:
             raise ContractError("INPUT_INVALID", "settle_limit")
         conn = self._tx._check(write=True)
-        context, params = self._context("l.")
-        rows = conn.execute(
-            f"""SELECT l.candidate_ref,l.candidate_revision,l.scope_id,l.project_id,l.branch_id,
-                       l.reason,l.rule_version AS lifecycle_rule,
-                       l.last_evidence_at,l.last_evaluated_at,l.created_at,
-                       v.state AS fact_state,v.payload_json
-                FROM candidate_lifecycle l
-                JOIN claims c ON c.claim_id=l.candidate_ref
-                JOIN claim_versions v ON v.claim_id=l.candidate_ref AND v.revision=l.candidate_revision
-                WHERE l.processing_state IN ('pending_evaluation','waiting_evidence')
-                  AND l.reason<>'authority_revoked' AND {context}
-                  AND c.current_revision=l.candidate_revision AND c.read_blocked=0 AND c.suppressed=0
-                  AND v.state IN ('proposed','disputed')
-                  AND NOT EXISTS(SELECT 1 FROM candidate_evaluations e
-                      WHERE e.candidate_ref=l.candidate_ref
-                        AND e.candidate_revision=l.candidate_revision AND e.state='queued')
-                  AND EXISTS(SELECT 1 FROM candidate_evidence ev
-                      WHERE ev.candidate_ref=l.candidate_ref
-                        AND ev.candidate_revision=l.candidate_revision)
-                ORDER BY l.last_evidence_at,l.candidate_ref,l.candidate_revision LIMIT ?""",
-            (*params, limit),
-        ).fetchall()
+        rows = self._settling_rows()
         scheduled = 0
         for row in rows:
-            reason = settle_reason(
-                now=now,
-                last_evidence_at=row["last_evidence_at"],
-                last_evaluated_at=row["last_evaluated_at"],
-                created_at=row["created_at"],
-            )
+            if scheduled >= limit:
+                break
+            reason = self._settling_eligible(row, now=now, rule_version=rule_version)
             if reason is None:
                 continue
             snapshot = CandidateSnapshot(
@@ -851,31 +879,18 @@ class CandidateLifecycle:
         number that goes up for a good reason is indistinguishable from one
         going up for a bad one unless it is split.
         """
-        conn = self._tx._check()
-        context, params = self._context("l.")
-        rows = conn.execute(
-            f"""SELECT l.last_evidence_at,l.last_evaluated_at,l.created_at,
-                       EXISTS(SELECT 1 FROM candidate_evaluations e
-                              WHERE e.candidate_ref=l.candidate_ref
-                                AND e.candidate_revision=l.candidate_revision
-                                AND e.state='queued') AS queued
-                FROM candidate_lifecycle l
-                WHERE l.processing_state IN ('pending_evaluation','waiting_evidence')
-                  AND l.reason<>'authority_revoked' AND {context}""",
-            params,
-        ).fetchall()
+        rows = self._settling_rows()
         summary = {"queued": 0, "collecting": 0, "settled_waiting_sweep": 0}
         for row in rows:
             if row["queued"]:
                 summary["queued"] += 1
                 continue
-            reason = settle_reason(
-                now=now,
-                last_evidence_at=row["last_evidence_at"],
-                last_evaluated_at=row["last_evaluated_at"],
-                created_at=row["created_at"],
-            )
-            summary["settled_waiting_sweep" if reason else "collecting"] += 1
+            reason = self._settling_eligible(row, now=now, rule_version=RULE_VERSION)
+            if reason:
+                summary["settled_waiting_sweep"] += 1
+            elif settle_reason(now=now, last_evidence_at=row["last_evidence_at"],
+                               last_evaluated_at=row["last_evaluated_at"], created_at=row["created_at"]) is None:
+                summary["collecting"] += 1
         summary["quiet_seconds"] = QUIET_SECONDS
         summary["max_deferral_seconds"] = MAX_DEFERRAL_SECONDS
         return summary
@@ -968,7 +983,7 @@ class CandidateLifecycle:
                 rescheduled += 1
         return rescheduled
 
-    def reopen_evaluation(self, work_id: int, *, now: str) -> bool:
+    def reopen_evaluation(self, work_id: int, *, now: str, reason: str = "operator_retry") -> bool:
         """Put a failed evaluation and its lifecycle back where a retry can run.
 
         ``fail()`` writes three tables at once, so a retry that only re-queues
@@ -988,18 +1003,18 @@ class CandidateLifecycle:
         if row is None:
             return False
         moved = conn.execute(
-            """UPDATE candidate_evaluations SET state='queued',reason='operator_retry',
+            """UPDATE candidate_evaluations SET state='queued',reason=?,
                completed_at=NULL,model_attempted_at=NULL,failure_code=NULL
                WHERE evaluation_id=? AND state='failed'""",
-            (row["evaluation_id"],),
+            (reason, row["evaluation_id"]),
         ).rowcount
         if moved != 1:
             return False
         conn.execute(
             """UPDATE candidate_lifecycle SET processing_state='pending_evaluation',
-               reason='operator_retry',updated_at=?
+               reason=?,updated_at=?
                WHERE (candidate_ref,candidate_revision)=(?,?) AND processing_state<>'blocked'""",
-            (now, row["candidate_ref"], row["candidate_revision"]),
+            (reason, now, row["candidate_ref"], row["candidate_revision"]),
         )
         return True
 

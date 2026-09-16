@@ -352,6 +352,7 @@ def test_lazy_vector_facade_reopens_poisoned_cached_store_on_next_search(tmp_pat
     store = RecoveringStore()
     factory_calls = []
     instance = build_runtime_instance(config, vector_factory=lambda _: (factory_calls.append(store) or store))
+    owned_auxiliary = instance.auxiliary
     instance.auxiliary = replace(instance.auxiliary, query_embedding=QueryEmbedding())
     instance.core.initialize()
     first = SearchContext(
@@ -378,8 +379,9 @@ def test_lazy_vector_facade_reopens_poisoned_cached_store_on_next_search(tmp_pat
     assert len(store.open_deadlines) == 2
     assert store.open_deadlines[1] is not None
     assert store.open_deadlines[1] <= second.deadline
-    assert instance._owned_resources == [store]
+    assert instance._owned_resources == [owned_auxiliary, store]
     instance.close()
+    assert store.closed
 
 
 def test_default_vector_factory_selects_process_store_without_opening(tmp_path):

@@ -52,7 +52,8 @@ def _model_source_principal(source) -> dict[str, str] | None:
 CONSOLIDATION_INPUT_BUDGET = 16000
 
 
-def consolidation_messages(sources, *, episode_ref=None, budget=CONSOLIDATION_INPUT_BUDGET):
+def consolidation_messages(sources, *, episode_ref=None, budget=CONSOLIDATION_INPUT_BUDGET,
+                           validation_feedback=None):
     """Build one bounded model proposal input from already authorized raw sources.
 
     This is an input formatter, not another application pipeline or a source of
@@ -139,6 +140,12 @@ def consolidation_messages(sources, *, episode_ref=None, budget=CONSOLIDATION_IN
                    'resume 的 goal 可以逐字沿用 prior_fragment_goals 中先前片段提出的目标，其他新内容必须来自当前片段。'
                    '不要声称整条来源已经处理完成。仅提取片段内有完整引文的 claim；'
                    '边界可能截断句子，不得补猜省略的否定、条件或指代。')
+    if validation_feedback is not None:
+        from .failure_retry import validation_feedback as safe_feedback
+        feedback = safe_feedback(validation_feedback.get("code"), validation_feedback.get("field"))
+        system += (' The previous result failed validation. Repair the indicated schema/contract '
+                   'violation using only the authorized sources; return the complete JSON object. '
+                   'validation_error=' + json.dumps(feedback, sort_keys=True, separators=(',', ':')))
     watermark = source_watermark(refs)
     body=dict(episode_ref=episode_ref,source_refs=refs,source_watermark=watermark,
               resume_envelope=dict(source_refs=refs,source_watermark=watermark),sources=records,

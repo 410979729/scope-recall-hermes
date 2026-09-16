@@ -14,7 +14,7 @@ Maintainability is a product requirement. Prefer a small, explicit change to a n
 ## Release and deployment
 
 - The canonical repository is `github.com/410979729/scope-recall-hermes`; deployable wheels are built only from its release branch, at a tagged commit (`v3.1.0rcN`), one wheel and one sha256 per tag. Never `git init` a second history or copy the tree; use `git worktree add` and remove the worktree when the task is merged.
-- Production is upgraded only by `pip install --no-index --no-deps --force-reinstall <wheel>` followed by a planned stop (`gateway.status.write_planned_stop_marker`). Never edit files under `site-packages`; a hot patch that was unavoidable becomes a tagged release the same day.
+- Production upgrades stop all target gateway/MCP/worker writers and automatic restarters FIRST (planned-stop where supported), then use `maintenance.cli package-upgrade` with an offline wheel and external backup; uv supports pip-less venvs. Follow `maintenance/AGENT_WORKFLOW.md` for activation/recovery. Never hot-edit `site-packages` or remove `~*` remnants as an upgrade procedure.
 - After every upgrade run `maintenance.cli plan-install` / `apply-install` so the receipt and host wrapper carry the installed version, then `doctor`; receipt, `pip show` and `running-code` records disagreeing on the version is a defect.
 - Operator CLIs run as `python -I -X utf8 -m scope_recall.maintenance.cli ...` from outside the source tree, so the installed package and not a checkout answers.
 - One writer at a time on the release branch; other contributors deliver branches or patches. Run the tiers that own the changed files before committing, `unit` + `contract` + `packaging` before merging, `integration` + `native` before tagging.

@@ -130,6 +130,7 @@ SUITES = {
     "migration": ["tests/migration/test_v11_migration.py"],
     "packaging": [
         "tests/packaging/test_clean_v11_wheel.py",
+        "tests/packaging/test_package_upgrade.py",
         "tests/packaging/test_install_v11.py",
         "tests/packaging/test_windows_hook_command.py",
         *SCRIPT_GATE_TESTS,
@@ -139,6 +140,7 @@ SUITES = {
         "tests/contract/test_v11_worker_incremental_batch.py",
         "tests/integration/test_v11_guard_git.py",
         "tests/contract/test_runtime_auxiliary.py",
+        "tests/contract/test_codex_cli_consolidation.py",
         "tests/contract/test_runtime_worker_entry.py",
         "tests/contract/test_running_code.py",
         "tests/contract/test_coverage_gaps.py",
@@ -345,6 +347,7 @@ CORE_RELEASE_CONTRACTS += [
 
 RUNTIME_BOUNDARY_TESTS = [
     "tests/contract/test_http_transport_boundary.py",
+    "tests/contract/test_codex_cli_consolidation.py",
     "tests/contract/test_runtime_auxiliary.py",
     "tests/contract/test_runtime_worker_entry.py",
     "tests/host/test_runtime_watchdog.py",

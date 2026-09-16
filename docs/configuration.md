@@ -435,9 +435,9 @@ Treat chat aliases as explicit operator access-control grants.
 
 ## Automatic recall packet budget
 
-Automatic recall defaults to `4096` conservative budget units and the automatic ceiling is the same value. The implementation still counts the complete canonical packet as UTF-8 bytes, so this is a conservative token upper bound, not a measured tokenizer result. Callers that pass a smaller `budget_tokens` keep that smaller cap, including explicit `1200` and rejection/stress cases. `max_items` remains at most 6. This is not a `config.json` leaf; it is the core/host automatic request default.
+Automatic recall defaults to `4096` character-calibrated token-estimate units, and the automatic ceiling is the same value. `core/recall_budget.py` applies one estimator to admission and the complete canonical packet: ASCII letters, digits and whitespace cost a quarter unit each; CJK and other letters, numbers, combining marks and punctuation cost one unit; other symbols use their UTF-8 byte length. The combined quarter-unit total is rounded up once. This is a deterministic approximation, not a provider tokenizer measurement. UTF-8 bytes are reported separately and no longer penalize each CJK character by its encoded byte length. Explicit smaller `budget_tokens` values keep their cap; `max_items` remains at most 6. This is not a `config.json` leaf.
 
-The Codex MCP `recall` tool advertises the same conservative UTF-8 byte budget, including packet and source metadata. When `budget_tokens` is omitted, the tool defaults to `4096` for explicit retrieval. Explicit caller values are still honored, including small values such as `768` that can clip every item. If the packet gaps include `budget_token_cap` or `budget_packet_cap`, retry once with `4096`. This does not raise the automatic-mode ceiling.
+Codex MCP `recall` advertises the same whole-packet estimate, including packet and source metadata. Omission defaults to `4096` for explicit retrieval; small explicit values can still clip every item. A packet that cannot fit even the minimal honest envelope is rejected. On `budget_token_cap` or `budget_packet_cap`, retry at most once with `4096`; this does not raise the automatic ceiling. The separate `profile` and `entity` read views retain their documented UTF-8 byte budgets.
 
 ## Automatic recall latency budget
 

@@ -17,6 +17,8 @@ from ..adapters.models import (
     HttpTransport,
     OpenAIConsolidationAdapter,
 )
+from ..adapters.codex_cli import CodexCliConsolidationAdapter, CodexCliRouteConfig
+from .subscription_budget import SubscriptionBudgetLedger
 from .model_budget import (
     AuxiliaryBudgetLedger,
     BudgetPolicy,
@@ -99,7 +101,7 @@ class AuxiliaryRuntimeConfig:
     ledger_path: Path | None
     budget: BudgetPolicy
     embedding: EmbeddingRouteConfig | None
-    consolidation: ConsolidationRouteConfig | None
+    consolidation: ConsolidationRouteConfig | CodexCliRouteConfig | None
     consolidation_reserve_input: int
 
     @staticmethod
@@ -139,9 +141,13 @@ class AuxiliaryRuntimeConfig:
 class AuxiliaryRuntime:
     source_embedding: GeminiEmbeddingAdapter | None
     query_embedding: GeminiEmbeddingAdapter | None
-    consolidation: OpenAIConsolidationAdapter | None
+    consolidation: OpenAIConsolidationAdapter | CodexCliConsolidationAdapter | None
     capability_gaps: tuple[str, ...]
     ledger_path: Path | None
+
+    def close(self) -> None:
+        if self.query_embedding is not None:
+            self.query_embedding.close()
 
 
 def load_formal_p18_budget_policy() -> BudgetPolicy | None:
@@ -289,11 +295,15 @@ def _embedding_route_from_mapping(raw: object) -> EmbeddingRouteConfig | None:
     )
 
 
-def _consolidation_route_from_mapping(raw: object) -> ConsolidationRouteConfig | None:
+def _consolidation_route_from_mapping(raw: object) -> ConsolidationRouteConfig | CodexCliRouteConfig | None:
     if raw is None:
         return None
     if not isinstance(raw, Mapping):
         raise ValueError("consolidation_mapping_required")
+    if raw.get("kind") == "codex_cli":
+        return CodexCliRouteConfig.from_mapping(raw)
+    if raw.get("kind", "openai") != "openai":
+        raise ValueError("consolidation_kind")
     thinking = raw.get("thinking")
     thinking_map = MappingProxyType(dict(thinking)) if isinstance(thinking, Mapping) else None
     response_format = raw.get("response_format")
@@ -350,6 +360,11 @@ def build_auxiliary_runtime(
             gaps.append("external_consolidation_unconfigured")
         elif ledger is None:
             gaps.append("auxiliary_budget_ledger_unconfigured")
+        elif isinstance(config.consolidation, CodexCliRouteConfig):
+            consolidation_adapter = CodexCliConsolidationAdapter(
+                config.consolidation,
+                ledger=SubscriptionBudgetLedger(ledger.path, config.consolidation.subscription_budget),
+            )
         else:
             consolidation_adapter = OpenAIConsolidationAdapter(
                 config.consolidation,
@@ -380,4 +395,8 @@ def auxiliary_runtime_status(config: AuxiliaryRuntimeConfig) -> dict:
         "external_consolidation": config.external_consolidation,
         "capability_gaps": runtime.capability_gaps,
         "budget": budget,
+        "subscription_budget": (
+            runtime.consolidation.ledger.status()
+            if isinstance(runtime.consolidation, CodexCliConsolidationAdapter) else None
+        ),
     }

@@ -34,6 +34,9 @@ def main(argv: list[str] | None = None) -> int:
     if arguments and arguments[0] == "autostart":
         from .autostart import main as autostart_main
         return autostart_main(arguments[1:])
+    if arguments and arguments[0] == "package-upgrade":
+        from .package_upgrade import main as package_main
+        return package_main(arguments[1:])
     if arguments and arguments[0] in {"setup", "migrate"}:
         from .upgrade_cli import main as upgrade_main
         return upgrade_main(arguments)
@@ -41,6 +44,7 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("setup", help="agent-operated fresh install/update/migration routing")
     sub.add_parser("migrate", help="prepare, resume, verify and index a legacy migration job")
+    sub.add_parser("package-upgrade", help="offline wheel replacement after stopping all target writers")
     sub.add_parser("autostart", help="plan, enable, pause or remove a bounded Windows background wake")
     repair = sub.add_parser('repair-claim-frames', help='revalidate a bounded page of legacy claim frames without model calls')
     repair.add_argument('--config', required=True)

@@ -10,6 +10,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import threading
 import time
 import urllib.parse
 from collections.abc import Mapping, Sequence
@@ -131,11 +132,39 @@ def _validate_credential_env_name(env_name: object) -> str:
     return env_name
 
 
-@dataclass(frozen=True)
 class HttpsTransport:
-    """Bounded HTTPS POST through the isolated stdlib worker."""
+    """Bounded HTTPS POST; query callers may own a persistent stdlib worker."""
 
-    def post(
+    def __init__(self, *, persistent: bool = False):
+        from ..runtime.http_session import HttpWorkerSession
+        self._session = HttpWorkerSession() if persistent else None
+        self._post_lock = threading.Lock()
+
+    def close(self):
+        if self._session is not None:
+            self._session.close()
+
+    def post(self, url: str, *, body: bytes, headers: Mapping[str, str],
+             timeout_seconds: float, max_response_bytes: int) -> tuple[int, bytes]:
+        """Bound the entire exchange, including waiting for a query session."""
+        if self._session is None:
+            return self._post(url, body=body, headers=headers,
+                              timeout_seconds=timeout_seconds, max_response_bytes=max_response_bytes)
+        deadline = time.monotonic() + _validate_timeout_seconds(timeout_seconds)
+        if not self._post_lock.acquire(timeout=max(0, _remaining_seconds(deadline))):
+            raise AuxiliaryModelError("timeout")
+        try:
+            return self._post(url, body=body, headers=headers,
+                              timeout_seconds=_remaining_seconds(deadline),
+                              max_response_bytes=max_response_bytes)
+        except BaseException:
+            if self._session is not None:
+                self._session.discard()
+            raise
+        finally:
+            self._post_lock.release()
+
+    def _post(
         self,
         url: str,
         *,
@@ -183,21 +212,24 @@ class HttpsTransport:
             remaining = _remaining_seconds(deadline)
             if remaining <= 0:
                 raise AuxiliaryModelError("timeout")
-            process = subprocess.Popen(
-                command,
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                startupinfo=startupinfo,
-                creationflags=creationflags,
-            )
-            remaining = _remaining_seconds(deadline)
-            if remaining <= 0:
-                raise AuxiliaryModelError("timeout")
-            stdout, stderr = process.communicate(input=request_bytes, timeout=remaining)
+            if self._session is not None:
+                stdout, stderr = self._session.exchange(
+                    command, request_bytes, deadline=deadline,
+                    max_stdout=(max_response_bytes * 4) // 3 + _HTTP_WORKER_STDOUT_MARGIN,
+                    startupinfo=startupinfo, creationflags=creationflags,
+                )
+            else:
+                process = subprocess.Popen(
+                    command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE, startupinfo=startupinfo, creationflags=creationflags,
+                )
+                remaining = _remaining_seconds(deadline)
+                if remaining <= 0:
+                    raise AuxiliaryModelError("timeout")
+                stdout, stderr = process.communicate(input=request_bytes, timeout=remaining)
             if _remaining_seconds(deadline) <= 0:
                 raise AuxiliaryModelError("timeout")
-            if process.returncode != 0:
+            if process is not None and process.returncode != 0:
                 raise AuxiliaryModelError("transport_worker", detail=str(process.returncode))
             max_stdout = (max_response_bytes * 4) // 3 + _HTTP_WORKER_STDOUT_MARGIN
             if len(stdout) > max_stdout or len(stderr) > _HTTP_WORKER_STDOUT_MARGIN:
@@ -241,8 +273,12 @@ class HttpsTransport:
                 raise AuxiliaryModelError("transport_worker_protocol")
             raise AuxiliaryModelError(error_type, detail=None if status is None else str(status))
         except AuxiliaryModelError:
+            if self._session is not None:
+                self._session.discard()
             raise
-        except subprocess.TimeoutExpired as exc:
+        except (subprocess.TimeoutExpired, TimeoutError) as exc:
+            if self._session is not None:
+                self._session.discard()
             raise AuxiliaryModelError("timeout") from exc
         except OSError as exc:
             raise AuxiliaryModelError("network_error", detail=type(exc).__name__) from exc
@@ -571,6 +607,8 @@ class GeminiEmbeddingAdapter:
         self._route = route
         self._ledger = ledger
         self._transport = transport if transport is not None else HttpsTransport()
+        self._query_transport = transport if transport is not None else HttpsTransport(persistent=True)
+        self._owns_transport = transport is None
         space = route.space()
         self._space = space
         self._endpoint = space["endpoint"]
@@ -580,7 +618,13 @@ class GeminiEmbeddingAdapter:
 
     def embed_query(self, text: str, *, remaining_seconds: float) -> Sequence[float]:
         encoded = encode_embedding_text(text, kind="query")
-        return self._embed(encoded, remaining_seconds=remaining_seconds)
+        return self._embed(encoded, remaining_seconds=remaining_seconds, transport=self._query_transport)
+
+    def close(self):
+        """Release only transports created by this adapter, not injected ports."""
+        if self._owns_transport:
+            self._query_transport.close()
+            self._transport.close()
 
     def embed_source(self, source: StoredSource, *, remaining_seconds: float) -> Sequence[float]:
         encoded = encode_embedding_text(source.event["content"], kind="document")
@@ -596,7 +640,7 @@ class GeminiEmbeddingAdapter:
         encoded = encode_embedding_text(text, kind="document")
         return self._embed(encoded, remaining_seconds=remaining_seconds)
 
-    def _embed(self, encoded_text: str, *, remaining_seconds: float) -> Sequence[float]:
+    def _embed(self, encoded_text: str, *, remaining_seconds: float, transport: HttpTransport | None = None) -> Sequence[float]:
         deadline = time.monotonic() + _validate_timeout_seconds(remaining_seconds)
         _reject_secrets(encoded_text)
         if self._dialect == "gemini":
@@ -624,7 +668,7 @@ class GeminiEmbeddingAdapter:
             http_remaining = _remaining_seconds(deadline)
             if http_remaining <= 0:
                 raise AuxiliaryModelError("timeout")
-            status_code, raw = self._transport.post(
+            status_code, raw = (transport or self._transport).post(
                 self._endpoint,
                 body=body,
                 headers={

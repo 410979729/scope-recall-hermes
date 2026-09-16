@@ -133,6 +133,8 @@ Codex 的 `hook_trust_status` 在只读诊断中通常仍为 `pending`；本项�
 
 Core 数据目录为 `<instance-root>\data\`（含 `memory.sqlite3`）。
 
+可选的 Codex CLI 订阅整合走已有后台 worker，不另建调度服务。`gpt-5.6-luna` 的显式启用配置、无工具启动约束与 calls/tokens 预算见 [`codex-cli-consolidation.md`](codex-cli-consolidation.md)；插件已安装不等于该模型路径已验收或持续运行已启用。
+
 ## 5. 向量与平台边界
 
 - **LanceDB**：安装时带 `[lancedb]` extra；数据目录路径宜短（如 `C:\ScopeRecall\my-agent`）。LanceDB 会在该路径下追加表名与临时文件；过长可能触发 `native_vector_path_too_long`。

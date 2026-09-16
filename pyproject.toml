@@ -24,6 +24,7 @@ classifiers = [
 dependencies = [
   "PyYAML>=6.0,<7",
   "jsonschema>=4.22,<5",
+  "packaging>=24,<27",
   "tzdata>=2025.3,<2027; sys_platform == 'win32'",
 ]
 
@@ -36,11 +37,11 @@ scope-recall = "scope_recall.distribution.hermes:register"
 
 [project.optional-dependencies]
 lancedb = [
-  "lancedb>=0.30.2,<0.31",
+  "lancedb>=0.30.2,<=0.37.1",
   "pyarrow>=24,<25",
 ]
 codex = [
-  "mcp==2.1.0",
+  "mcp>=2.0.0,<=2.1.0",
   "pydantic>=2,<3",
 ]
 dev = [
@@ -123,7 +124,6 @@ include = [
   "capture_llm.py",
   "cli.py",
   "config.py",
-  "config_runtime_spec.py",
   "config_schema.py",
   "desktop_principal.py",
   "digest_quality.py",
@@ -189,7 +189,6 @@ include = [
   "journal_candidates.py",
   "journal_admission.py",
   "journal_match_policy.py",
-  "digest_admission.py",
   "nightly_admission.py",
   "journal_extractors.py",
   "journal_recovery.py",
@@ -203,7 +202,6 @@ include = [
   "memory_ops.py",
   "memory_queries.py",
   "memory_scope.py",
-  "runtime_ports.py",
   "runtime_kernel.py",
   "memory_browser.py",
   "memory_quality.py",

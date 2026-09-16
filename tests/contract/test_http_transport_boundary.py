@@ -1,4 +1,4 @@
-"""Offline transport boundary checks; no sockets leave this test process."""
+"""Offline transport checks; sockets are restricted to synthetic loopback HTTP."""
 from __future__ import annotations
 
 import base64
@@ -135,3 +135,123 @@ def test_worker_path_is_fixed_to_runtime_helper() -> None:
     expected = (Path(models.__file__).resolve().parents[1] / "runtime" / "_http_worker.py").resolve()
     assert models._HTTP_WORKER_PATH == expected
     assert expected.is_file()
+
+
+@pytest.fixture
+def persistent_transport(tmp_path, monkeypatch):
+    """Real helper/HTTP framing; loopback replaces TLS, no provider or key."""
+    import http.server
+    import threading
+
+    connections = set()
+    slow_started = threading.Event()
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def log_message(self, *args):
+            pass
+
+        def do_POST(self):
+            connections.add(self.client_address)
+            body = self.rfile.read(int(self.headers["Content-Length"]))
+            if body == b"slow":
+                slow_started.set()
+                time.sleep(0.5)
+            response = (json.dumps({"embeddings": [{"values": [0.01] * 3072}], "usageMetadata": {"promptTokenCount": 10}}).encode()
+                        if body.startswith(b"{") else b"ok")
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(response)))
+            self.end_headers()
+            try:
+                self.wfile.write(response)
+                self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+                pass
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    worker = tmp_path / "loopback_worker.py"
+    worker.write_text(
+        "import importlib.util, http.client\n"
+        f"s=importlib.util.spec_from_file_location('worker', {str(models._HTTP_WORKER_PATH)!r})\n"
+        "w=importlib.util.module_from_spec(s); s.loader.exec_module(w)\n"
+        f"w._open_https_connection=lambda *a, **k: http.client.HTTPConnection('127.0.0.1', {server.server_port})\n"
+        "raise SystemExit(w.main())\n", encoding="utf-8",
+    )
+    monkeypatch.setattr(models, "_HTTP_WORKER_PATH", worker)
+    transport = models.HttpsTransport(persistent=True)
+    try:
+        yield transport, connections, slow_started
+    finally:
+        transport.close()
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+def _persistent_post(transport, body=b"request", *, timeout=2, limit=1024):
+    return transport.post("https://synthetic.invalid/embed", body=body,
+                          headers={"X-Synthetic": "not-a-credential"},
+                          timeout_seconds=timeout, max_response_bytes=limit)
+
+
+def test_query_helper_reuses_process_and_connection_and_recovers(persistent_transport):
+    transport, connections, _ = persistent_transport
+    assert _persistent_post(transport) == (200, b"ok")
+    process = transport._session._process
+    assert _persistent_post(transport) == (200, b"ok")
+    assert transport._session._process is process
+    assert len(connections) == 1
+    with pytest.raises(models.AuxiliaryModelError, match="response_limit"):
+        _persistent_post(transport, limit=1)
+    assert process.poll() is not None
+    assert _persistent_post(transport) == (200, b"ok")
+    process = transport._session._process
+    with pytest.raises(models.AuxiliaryModelError, match="timeout"):
+        _persistent_post(transport, b"slow", timeout=0.1)
+    assert process.poll() is not None
+    assert _persistent_post(transport) == (200, b"ok")
+    process = transport._session._process
+    transport.close()
+    assert process.poll() is not None
+
+
+def test_query_adapter_uses_persistent_helper_but_source_does_not(persistent_transport, tmp_path, monkeypatch):
+    from test_runtime_auxiliary import _runtime_config, _source
+    from scope_recall.runtime.auxiliary import build_auxiliary_runtime
+    _, connections, _ = persistent_transport
+    monkeypatch.setenv("SCOPE_RECALL_TEST_EMBED_KEY", "synthetic-local-value")
+    config, _, _ = _runtime_config(tmp_path)
+    runtime = build_auxiliary_runtime(config)
+    adapter = runtime.query_embedding
+    # Never let a stale imported model class escape the loopback harness.
+    assert adapter._query_transport._post.__globals__["_HTTP_WORKER_PATH"] == models._HTTP_WORKER_PATH
+    assert adapter._transport._post.__globals__["_HTTP_WORKER_PATH"] == models._HTTP_WORKER_PATH
+    try:
+        first = adapter.embed_query("TEST first query", remaining_seconds=2)
+        process = adapter._query_transport._session._process
+        second = adapter.embed_query("TEST second query", remaining_seconds=2)
+        assert len(first) == len(second) == 3072
+        assert adapter._query_transport._session._process is process
+        assert len(connections) == 1
+        assert len(adapter.embed_source(_source("TEST source"), remaining_seconds=2)) == 3072
+        assert adapter._transport._session is None and len(connections) == 2
+    finally:
+        runtime.close()
+    assert process.poll() is not None
+
+
+def test_query_helper_close_cancels_active_request(persistent_transport):
+    from concurrent.futures import ThreadPoolExecutor
+    transport, _, slow_started = persistent_transport
+    assert _persistent_post(transport) == (200, b"ok")
+    process = transport._session._process
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        pending = executor.submit(_persistent_post, transport, b"slow")
+        assert slow_started.wait(2)
+        transport.close()
+        with pytest.raises(models.AuxiliaryModelError):
+            pending.result(timeout=2)
+    assert process.poll() is not None

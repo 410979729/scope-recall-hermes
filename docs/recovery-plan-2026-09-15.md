@@ -146,6 +146,8 @@
 - 验收：五个 tier 全绿；`packaging` 校验 wheel 文件集不变；仓库根目录只剩发布代码、`tests/`、`scripts/`、`packaging/`、`docs/`、`distribution/`、`build/`。
 - 回滚：`git revert`。
 
+本轮 D2 接手候选仅执行只读清单 `D2-deletion-boundary.json` 的 `delete_recommended`（3 个 shim、182 个未入 tier 的 legacy 测试、15 个 probe）；有新保留方引用则留存并记录。先备份本次编辑/删除文件，使用 `relative_path` 限定 detached runtime 工作树，未触碰 `verification/`、`_internal/` 或 D6。验收缩为 D1/D4 整合后的实际 `AllowlistedBuildPy` shipping path+bytes 前后恒等、tier 引用不丢失；不构建 untagged wheel、不跑全 gate。确切删除与闭包回执归入本任务 `integration/` 证据目录。
+
 ### 1.3 清理散落（决策 D6，用户确认后执行）
 - 操作：生成清单（路径、类型：linked worktree / 独立仓库 / 无 git 的快照、最后修改时间、是否有未提交改动、大小），用户勾选后删除；`git worktree prune`；`F:\SCOPERECALL更新项目\worktrees` 只保留有活跃分支的。
 - 验收：`git worktree list` ≤ 3 条；`F:\t` 只剩本周仍在用的目录。
@@ -153,6 +155,14 @@
 ### 1.4 依赖版本决策（D1）
 - 操作：scratch venv 装生产版本（lancedb 0.37.1、mcp 2.0.0）跑 `native`+`host` tier。通过则 pyproject 放宽并记录；不通过则把天枢/天玑 venv 钉回 pyproject 版本（`pip install "lancedb>=0.30.2,<0.31" "mcp==2.1.0"`，需 planned-stop）。
 - 验收：doctor `dependency_drift` 为空。
+
+2026-09-16 D1 接手候选（未部署）：按本轮限定只跑决定兼容性的 native / MCP 最小检查，不扩成完整 tier 或全项目矩阵。基线 `b74c02a` / rc28；独立 Windows CPython 3.11.15 venv 实装 `lancedb==0.37.1`、`mcp==2.0.0`、`pyarrow==24.0.0`、`pydantic==2.13.4`，依赖一致性检查通过。
+
+- 实测 native：真实 Lance 写入、SQLite 真相回填、跨项目/嵌入空间预过滤、全局分区权限隔离、读者跟随新提交、物理删除确认，5 个所选检查通过。MCP：真实 stdio initialize / 工具发现 / 调用、宿主线程绑定修改与删除、默认 4096 预算和非法类型拒绝，3 个所选检查通过。
+- 首轮命令 exit 1（5 passed / 3 failed）：MCP 子进程找不到 `scope_recall`，原因是 flat-layout 源码仅在 pytest 父进程注册 alias，隔离 venv 尚无包入口。仅在任务 venv 增加指向本候选的源码 symlink，核对解析路径后重跑这 3 个 MCP 检查，exit 0；没有修改产品逻辑或测试断言。
+- 决定：不建议回退，候选声明放宽到 `lancedb>=0.30.2,<=0.37.1`、`mcp>=2.0.0,<=2.1.0`，其余依赖不变。区间保留原合同并容纳本次验证端点；未逐版验证区间内所有版本，不能外推后续版本、Python 3.12 或其他平台的兼容性。
+- 边界：合成 TEST 数据、真实本地库与 MCP 协议，无模型/API 调用；源码候选检查不是 clean-wheel 安装或 live 服务验收。本轮不修改 live 依赖、不发版、不重启；`doctor dependency_drift` 的 live 验收仍未执行。
+- 原始证据：`F:\Agents\runtime\windows\hermes-yuheng\workspace\tmp\SR-CURSOR-HANDOFF-20260915\deps\` 下 `environment*.json`、`requirements-frozen.txt`、`focused-checks.{log,json,xml}`、`mcp-checks.{log,json,xml}`、`pip-check.log`；精确命令保存在 JSON receipt 的 `command` 字段。
 
 ### 1.5 doctor 与 scheduler 共享 `settled_waiting_sweep` 谓词（D-05）
 - 操作：把 `schedule_settled` 的过滤条件抽成 `core/candidate_storage.py` 一个查询，doctor 调同一函数。
@@ -210,8 +220,8 @@
 
 - D1 依赖：放宽 pyproject 到生产版本，还是把生产钉回 pyproject？（1.4 的门禁结果出来后决定）
 - D2 树瘦身：`attic/` 还是直接删除？（推荐删除；历史在 git）
-- D3 嵌入传输：是否接受一个常驻 helper 进程持有嵌入凭据？（需安全评审）
-- D4 `derivation_invalid`：重试一次还是保持终态只加 review 桶？
+- D3 已批准同权限常驻 helper 持有嵌入凭据。候选实现仅 query embedding 复用私有管道子进程及 HTTPS 连接；无监听端口、无凭据日志。截止时间包含等待与管道 I/O；超时、取消或协议错误回收 helper，不自动重放失败 POST；下一请求可重建，runtime close 释放。source embedding / consolidation 保持一次性 transport。未部署，未验证生产 TLS/代理延迟。
+- D4 已批准每项 `derivation_invalid` 自动额外一次，然后待人工。候选复用现有 work/evaluation/lifecycle 事务和错误字段的 `derivation_retry:1` 标记，无 schema 迁移；旧 failed 条目也仅补一次。仍失败保留 `failed`、原内容及错误记录，doctor 显示 `needs_review_work` / `work_needs_review`，总失败数不扣除、不会报 `ok`；不再把提炼失败改写成 `done/source_only`。显式 `retry-failures --include-terminal` 仍为人工操作，不重置自动额度。已成为 `done/source_only` 的历史数据不自动回写；生产数据未处理。第二次 consolidate / evaluate_candidate 沿现有 port、runtime wrapper 与 formatter 接口附带安全的 `validation_error={code,field}` 修复提示；只取现有 `work_error_details` 中校验符号，历史无明细时用 `DERIVATION_INVALID/payload`，不带失败正文或凭据。
 - D5 外部整合：用户已拍板「Codex 批准、天玑等 Grok」。Grok 已用完；下一步按建议给 Codex 开整合（预算上限），天玑积压以 Grok 治理结果为准，未处理完的再标不适用。
 - D6 清理清单：用户已拍板「出清单再勾选」。清单生成被中断，待续。
 - D7 Codex 宿主安装：已升级到 rc28。遗留：下次打开 Codex 时重新信任 hooks。

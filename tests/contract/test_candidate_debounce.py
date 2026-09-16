@@ -205,7 +205,8 @@ def test_the_doctor_can_tell_waiting_on_purpose_from_stuck(app):
     _settle(core)
     with core.storage.read(ctx) as tx:
         settled = tx.candidates.settling_summary(now=core.clock.utc_now())
-    assert settled["settled_waiting_sweep"] == 3
+    assert settled["settled_waiting_sweep"] == _sweep(core, ctx)
+    assert settled["settled_waiting_sweep"] > 0
     assert settled["quiet_seconds"] == QUIET_SECONDS
     assert settled["max_deferral_seconds"] == MAX_DEFERRAL_SECONDS
 
@@ -260,3 +261,38 @@ def test_an_ordinary_source_matching_the_same_candidate_is_still_admitted(app):
         tx.candidates.observe_source(more.ref, more.revision,
                                      observed_at=core.clock.utc_now())
     assert more.ref in set(_evidence_rows(core)), "an ordinary source stopped being evidence"
+
+
+@pytest.mark.parametrize("excluded", ["unchanged", "revoked", "blocked", "suppressed", "old_revision", "no_evidence", "blocked_evidence"])
+def test_doctor_sweep_share_exact_eligibility(app, excluded):
+    core, ctx = app
+    candidate = _register(core, ctx, 0)
+    _retire_live_evaluations(core)
+    _settle(core)
+    with core.storage.write(ctx) as tx:
+        conn = tx._check(write=True)
+        if excluded != "unchanged":
+            conn.execute("DELETE FROM candidate_evaluations")
+        if excluded == "revoked":
+            conn.execute("UPDATE candidate_lifecycle SET reason='authority_revoked'")
+        elif excluded in {"blocked", "suppressed"}:
+            column = "read_blocked" if excluded == "blocked" else "suppressed"
+            conn.execute(f"UPDATE claims SET {column}=1 WHERE claim_id=?", (candidate.ref,))
+        elif excluded == "old_revision":
+            conn.execute("UPDATE claims SET current_revision=current_revision+1 WHERE claim_id=?", (candidate.ref,))
+        elif excluded == "no_evidence":
+            conn.execute("DELETE FROM candidate_evidence")
+        elif excluded == "blocked_evidence":
+            conn.execute("UPDATE source_events SET read_blocked=1")
+        summary = tx.candidates.settling_summary(now=core.clock.utc_now())
+        actual = tx.candidates.schedule_settled_candidates(now=core.clock.utc_now(), limit=64)
+        assert summary["settled_waiting_sweep"] == actual == 0
+        if excluded == "old_revision":
+            conn.execute("UPDATE claims SET current_revision=current_revision-1 WHERE claim_id=?", (candidate.ref,))
+    # A clean candidate with a new question is counted and enqueued once.
+    if excluded == "unchanged":
+        with core.storage.write(ctx) as tx:
+            tx._check(write=True).execute("UPDATE candidate_evaluations SET evidence_fingerprint='previous-question'")
+            assert tx.candidates.settling_summary(now=core.clock.utc_now())["settled_waiting_sweep"] == 1
+            assert tx.candidates.schedule_settled_candidates(now=core.clock.utc_now()) == 1
+            assert tx.candidates.settling_summary(now=core.clock.utc_now())["settled_waiting_sweep"] == 0

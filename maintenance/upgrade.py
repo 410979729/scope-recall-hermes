@@ -336,7 +336,7 @@ def upgrade_status(job) -> dict:
 
 
 def queue_upgrade_index(job, *, limit=128) -> dict:
-    from ..core.index_rebuild import queue_embedding_page
+    from .migration_index import queue_index_page
 
     root, value = _load(job)
     with advisory_file_lock(root / "operation.lock", timeout_seconds=0):
@@ -348,27 +348,6 @@ def queue_upgrade_index(job, *, limit=128) -> dict:
             raise MigrationError("verify conversion before scheduling its index")
         if value.get("index_queue_complete"):
             return value
-        context = TrustedContext(
-            binding,
-            "upgrade-index:" + value["operation_id"],
-            binding.scope_ids,
-            "host_generated",
-        )
-        page = queue_embedding_page(
-            SQLiteStorage(binding),
-            context,
-            after_key=value.get("index_cursor"),
-            watermark=value.get("index_watermark"),
-            limit=limit,
-        )
-        value.update(
-            index_cursor=list(page["after_key"]),
-            index_watermark=list(page["watermark"]),
-            index_queue_complete=page["finished"],
-            vector_state="queued",
-            next_agent_action="start_existing_runtime_worker"
-            if page["finished"]
-            else "queue_next_index_page",
-        )
+        value = queue_index_page(binding, value, limit=limit)
         _write(root / "job.json", value)
         return value

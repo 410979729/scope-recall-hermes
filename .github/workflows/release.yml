@@ -4,6 +4,7 @@ on:
   push:
     tags:
       - "v*"
+      - "!v*rc*" # RC tags run CI only; stable policy below is unchanged.
   workflow_dispatch:
     inputs:
       release_tag:

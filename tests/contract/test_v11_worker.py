@@ -80,9 +80,12 @@ class FakeConsolidation:
     def __init__(self, builder):
         self.builder = builder
         self.calls = 0
+        self.feedbacks = []
 
-    def propose(self, sources, *, episode_ref=None, remaining_seconds=1.0):
+    def propose(self, sources, *, episode_ref=None, remaining_seconds=1.0, validation_feedback=None):
         self.calls += 1
+        self.feedbacks.append(validation_feedback)
+        # Model-port feedback is optional; deterministic builders stay unchanged.
         payload = self.builder(sources, episode_ref=episode_ref)
         return json.dumps(payload, ensure_ascii=False)
 
@@ -196,47 +199,76 @@ def test_transient_http_status_still_retries_with_honest_code(worker_app):
     assert row[3] == "pending" and row[6] == "http_status"
 
 
-def test_bad_json_records_derivation_invalid_without_hiding_source(worker_app):
+def test_bad_json_records_derivation_invalid_without_hiding_source(worker_app, monkeypatch):
     core, ctx, clock = worker_app
     source = capture(core, ctx, "TEST 精确代码 XAS-A_19.2-beta。")
     _mark_embed_done(core)
 
-    class BadModel:
-        def propose(self, sources, *, episode_ref=None, remaining_seconds=1.0):
-            return "{not-json"
+    from scope_recall.core.worker import build_consolidation_model
+    from scope_recall.runtime.instance import _BoundedConsolidation
+    payloads = []
 
-    # Persistently invalid derivations burn the bounded recoverable attempts,
-    # then retain source-only retrieval and a durable rejection outcome.
+    class BadPort:
+        def propose(self, messages, *, remaining_seconds):
+            payloads.append(json.dumps(messages))
+            return "{not-json FAILED_BODY_SENTINEL"
+
+    model = _BoundedConsolidation(build_consolidation_model(BadPort()), 3)
+    # One extra attempt only; keep failure and source visible, never mark done.
     for attempt in range(1, 5):
         clock.advance(seconds=65.0, iso=f"2026-09-06T12:{attempt:02d}:30Z")
-        core.drain_worker(ctx, consolidation=BadModel(), max_items=2, remaining_seconds=5)
+        core.drain_worker(ctx, consolidation=model, max_items=2, remaining_seconds=5)
+    assert len(payloads) == 2 and payloads[0] != payloads[1]
+    assert "validation_error=" not in payloads[0]
+    assert 'validation_error={"code":"INPUT_INVALID","field":"payload"}' in json.loads(payloads[1])[0]["content"]
+    assert "FAILED_BODY_SENTINEL" not in payloads[1]
     row = next(row for row in work_rows(core) if row[1] == source.ref and row[0] == "consolidate")
-    assert row[3] == "done" and row[6] == "derivation_invalid"
+    assert row[3] == "failed" and row[4] == 2
+    assert row[6].startswith("derivation_retry:1|")
     with sqlite3.connect(core.storage.path) as db:
-        assert db.execute("SELECT disposition FROM consolidation_outcomes").fetchone()[0] == "source_only"
-        assert db.execute("SELECT count(*) FROM work_error_details").fetchone()[0] == 3
+        from scope_recall.core.failure_retry import NEEDS_REVIEW_COUNT
+        assert db.execute(NEEDS_REVIEW_COUNT).fetchone()[0] == 1
+        assert db.execute("SELECT count(*) FROM consolidation_outcomes").fetchone()[0] == 0
+        assert db.execute("SELECT count(*) FROM work_error_details").fetchone()[0] == 2
         assert db.execute("SELECT count(*) FROM claims").fetchone()[0] == 0
     assert core.source(ctx, source.ref, 1).event["content"] == "TEST 精确代码 XAS-A_19.2-beta。"
+    from scope_recall.maintenance import doctor
+    (ctx.binding.data_directory / "installation.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(doctor, "_load_binding", lambda *args: (ctx.binding, ctx.binding.data_directory))
+    monkeypatch.setattr(doctor, "_hermes_data_dir", lambda root: ctx.binding.data_directory)
+    report = doctor.run_doctor(host="hermes", instance_root=ctx.binding.data_directory)
+    assert report.needs_review_work == report.failed_work == 1
+    assert report.to_dict()["needs_review_work"] == 1
+    assert "work_needs_review" in report.capability_gaps and report.status != "ok"
 
 
 def test_flaky_model_derivation_recovers_on_bounded_retry(worker_app):
     core, ctx, clock = worker_app
     source = capture(core, ctx, "TEST 精确代码 XAS-A_19.2-beta。")
     _mark_embed_done(core)
-    calls = {"n": 0}
+    from scope_recall.core.worker import build_consolidation_model
+    from scope_recall.runtime.instance import _BoundedConsolidation
+    payloads = []
+    hint = 'validation_error={"code":"INPUT_INVALID","field":"required"}'
 
-    class FlakyModel:
-        def propose(self, sources, *, episode_ref=None, remaining_seconds=1.0):
-            calls["n"] += 1
-            if calls["n"] == 1:
-                return "{not-json"
-            return json.dumps(consolidation_payload(*sources), ensure_ascii=False)
+    class RepairPort:
+        def propose(self, messages, *, remaining_seconds):
+            payloads.append(json.dumps(messages))
+            # This succeeds only when the actual formatter carries the validator
+            # feedback, not merely because this happens to be the second call.
+            if hint not in messages[0]["content"]:
+                return '{"protocol_version":"1.1"}'
+            return json.dumps(json.loads(messages[-1]["content"])["empty_result"])
 
-    first = core.drain_worker(ctx, consolidation=FlakyModel(), max_items=1, remaining_seconds=5)
+    model = _BoundedConsolidation(build_consolidation_model(RepairPort()), 3)
+    first = core.drain_worker(ctx, consolidation=model, max_items=1, remaining_seconds=5)
     assert first.retried >= 1 and first.failed == 0
     for attempt in range(1, 4):
         clock.advance(seconds=65.0, iso=f"2026-09-06T12:{attempt:02d}:30Z")
-        core.drain_worker(ctx, consolidation=FlakyModel(), max_items=1, remaining_seconds=5)
+        core.drain_worker(ctx, consolidation=model, max_items=1, remaining_seconds=5)
+    assert len(payloads) == 2 and payloads[0] != payloads[1]
+    assert "validation_error=" not in payloads[0]
+    assert hint in json.loads(payloads[1])[0]["content"]
     row = next(row for row in work_rows(core) if row[1] == source.ref and row[0] == "consolidate")
     assert row[3] == "done"
 
@@ -287,16 +319,18 @@ def test_model_cannot_submit_evidence_outside_its_authorized_batch(worker_app):
     _mark_embed_done(core)
 
     class HallucinatingModel:
-        def propose(self, sources, *, episode_ref=None, remaining_seconds=1.0):
+        def propose(self, sources, *, episode_ref=None, remaining_seconds=1.0, validation_feedback=None):
             return json.dumps(consolidation_payload(unrelated), ensure_ascii=False)
 
     for attempt in range(1, 5):
         clock.advance(seconds=65.0, iso=f"2026-09-06T12:{attempt:02d}:30Z")
         core.drain_worker(ctx, consolidation=HallucinatingModel(), max_items=4, remaining_seconds=5)
     row = next(row for row in work_rows(core) if row[1] == source.ref and row[0] == "consolidate")
-    assert row[3] == "done" and row[6].lower() == "derivation_invalid"
+    # D4 retains invalid derivation as failed/needs-review after one extra
+    # automatic attempt; unauthorized evidence must never become done/source_only.
+    assert row[3] == "failed" and row[6].lower().endswith("derivation_invalid")
     with sqlite3.connect(core.storage.path) as db:
-        assert db.execute("SELECT disposition FROM consolidation_outcomes").fetchone()[0] == "source_only"
+        assert db.execute("SELECT count(*) FROM consolidation_outcomes").fetchone()[0] == 0
 
 
 def test_M41_precise_anchor_survives_failed_derivation(worker_app):

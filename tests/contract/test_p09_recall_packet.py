@@ -11,6 +11,7 @@ import pytest
 from scope_recall.contracts import ContractError, TrustedContext, validate_payload
 from scope_recall.core import CoreConfig, MemoryCore
 from scope_recall.core.recall_diagnostics import RecallDiagnostics
+from scope_recall.core.recall_budget import estimate_tokens
 from scope_recall.core.recall_packet import (
     RecallPacketCompiler,
     RecallPacketRenderer,
@@ -235,7 +236,7 @@ def test_p09_ok_packet_validates_schema_and_preserves_evidence(app):
     assert packet["answerability"] in {"supported", "partial", "ambiguous"}
     prepared = core.prepare_recall_render(ctx, packet)
     assert prepared.canonical_text is not None
-    assert len(prepared.canonical_text.encode("utf-8")) <= 1200
+    assert estimate_tokens(prepared.canonical_text) <= 1200
 
 
 def test_recall_fences_never_run_full_queue_diagnostics(app, monkeypatch):
@@ -263,7 +264,7 @@ def test_oversized_first_hit_does_not_consume_only_slot(app):
     packet = _packet(core, ctx, query="H100", mode="history", max_items=1,
                      budget_tokens=1200, focus_refs=[f"{huge.ref}@{huge.revision}"])
     assert [item["ref"] for item in packet["items"]] == [useful.ref]
-    assert len(canonical_render_json(packet).encode("utf-8")) <= 1200
+    assert estimate_tokens(canonical_render_json(packet)) <= 1200
 
 
 def test_prior_budget_rejection_diagnostics_do_not_block_later_evidence(app):
@@ -272,7 +273,7 @@ def test_prior_budget_rejection_diagnostics_do_not_block_later_evidence(app):
         ref="event-oversized",
         revision=1,
         kind="event",
-        content="lower-value oversized candidate " + ("X" * 1000),
+        content="lower-value oversized candidate " + ("X" * 7000),
         origin="human_direct",
         temporal_status="current",
         applicability="trusted scope",
@@ -295,7 +296,7 @@ def test_prior_budget_rejection_diagnostics_do_not_block_later_evidence(app):
         source_kinds=("event",),
     )
     candidates = (
-        CandidateRef("event", oversized.ref, 1, "lexical", fusion_score=0.99),
+        CandidateRef("event", oversized.ref, 1, "exact_ref", fusion_score=0.99),
         CandidateRef("event", useful.ref, 1, "lexical", fusion_score=0.98),
     )
 
@@ -339,7 +340,7 @@ def test_prior_budget_rejection_diagnostics_do_not_block_later_evidence(app):
     )
 
     assert [item["ref"] for item in packet["items"]] == [useful.ref]
-    assert len(canonical_render_json(packet).encode("utf-8")) <= 1200
+    assert estimate_tokens(canonical_render_json(packet)) <= 1200
     assert "budget_token_cap" in packet["gaps"]
     assert "expandable" in packet["unmet_needs"]
 
@@ -422,7 +423,7 @@ def test_p09_budget_never_slices_item_content(app):
     for index in range(4):
         sources.append(capture(core, ctx, f"{negation} #{index}", key=f"TEST-p09/budget/{index}"))
     packet = _packet(core, ctx, query="H100", mode="current", max_items=2, budget_tokens=512, request_id="TEST-p09-budget")
-    assert len(canonical_render_json(packet).encode("utf-8")) <= 512
+    assert estimate_tokens(canonical_render_json(packet)) <= 512
     for item in packet["items"]:
         assert "不要删除" in item["content"]
         assert "不得恢复" in item["content"]
@@ -465,7 +466,7 @@ def test_p09_auto_budget_prefers_active_direct_fact_over_its_raw_instruction(app
         recall_request(
             query="请回答青岚档案的公开项目代号。",
             mode="auto",
-            budget_tokens=1200,
+            budget_tokens=600,
             request_id="TEST-p09-active-fact-budget",
         ),
         ctx,
@@ -1075,7 +1076,7 @@ def test_p09_final_packet_budget_includes_rejection_gaps_and_render_text(app):
     packet = compile_recall_packet(search, result, core.storage, storage_reader=reader, clock=FixedClock())
     prepared = core.prepare_recall_render(ctx, packet)
     if prepared.canonical_text is not None:
-        assert len(prepared.canonical_text.encode("utf-8")) <= 1200
+        assert estimate_tokens(prepared.canonical_text) <= 1200
     assert packet["status"] in {"ok", "partial", "no_match"}
 
 
@@ -1154,7 +1155,7 @@ def test_p09_resume_correction_selects_complete_json_under_auto_budget(app):
     assert packet["items"][0]["content"] != original
     prepared = core.prepare_recall_render(ctx, packet)
     assert prepared.canonical_text is not None
-    assert len(prepared.canonical_text.encode("utf-8")) <= 1200
+    assert estimate_tokens(prepared.canonical_text) <= 1200
 
 
 def test_p09_resume_compact_uses_source_sequence_and_keeps_cross_field_evidence(app):
@@ -1229,7 +1230,7 @@ def test_p09_resume_compact_uses_source_sequence_and_keeps_cross_field_evidence(
     }
     prepared = core.prepare_recall_render(ctx, packet)
     assert prepared.canonical_text is not None
-    assert len(prepared.canonical_text.encode("utf-8")) <= 1200
+    assert estimate_tokens(prepared.canonical_text) <= 1200
 
 
 def test_p09_resume_uses_late_trusted_order_and_text_for_next_step_provenance(app):
@@ -1284,7 +1285,7 @@ def test_p09_resume_uses_late_trusted_order_and_text_for_next_step_provenance(ap
     )
     request = recall_request(
         query="继续执行晚修正，当前进度是什么",
-        mode="auto", max_items=6, budget_tokens=1200,
+        mode="auto", max_items=6, budget_tokens=600,
         request_id="TEST-p09-late-resume",
     )
     search = SearchContext.from_request(request, ctx, now=FixedClock.now, deadline=200.0)
@@ -1521,7 +1522,7 @@ def test_p09_renderer_dedupes_same_installation_session_request(app):
     second = core.prepare_recall_render(ctx, packet)
     assert first.render_ref is not None
     assert first.canonical_text is not None
-    assert len(first.canonical_text.encode("utf-8")) <= 1200
+    assert estimate_tokens(first.canonical_text) <= 1200
     assert second.render_ref is None
     assert second.context is None
     assert second.canonical_text is None
@@ -1603,3 +1604,83 @@ def test_supported_episode_compact_is_not_empty_object():
     assert variants
     assert "{}" not in variants
     assert any("resume the delivery window" in item for item in variants)
+
+
+@pytest.mark.parametrize("budget", [1600, 3200, 4096])
+@pytest.mark.parametrize("suffix", ["alpha", "other-identifiers"])
+def test_budget_density_keeps_773_byte_hit_over_3398_byte_repeat(app, budget, suffix):
+    """The former fit threshold must not let a bulky repeat win a single slot."""
+    from scope_recall.core.recall import RetrievalPipeline
+
+    core, ctx = app
+
+    def object_of_size(ref, size, phrase):
+        obj = RetrievedObject(ref=ref, revision=1, kind="event", content="x",
+                              origin="imported", temporal_status="current", applicability="trusted scope",
+                              evidence_refs=(ref + "@1",), basis="observed", expandable=True, source_kinds=("event",))
+        remaining = size - RecallPacketCompiler._rendered_budget_bytes(obj) + 1
+        count = remaining // len(phrase.encode("utf-8"))
+        content = phrase * count
+        content += "x" * (remaining - len(content.encode("utf-8")))
+        obj = replace(obj, content=content)
+        assert RecallPacketCompiler._rendered_budget_bytes(obj) == size
+        return obj
+
+    large = object_of_size("event-repeat-" + suffix, 3398, "预算重复导入事件。")
+    target = object_of_size("event-answer-" + suffix, 773, "预算有效目标命中。")
+    pairs = [(CandidateRef("event", obj.ref, 1, "lexical", fusion_score=score), obj)
+             for obj, score in ((large, .032), (target, .030))]
+    search = SearchContext.from_request(recall_request(query="预算", mode="history", max_items=1,
+                                                      budget_tokens=budget, request_id="TEST-density"),
+                                        ctx, now=FixedClock.now, deadline=200.0)
+    # Exercise the earlier retrieval admission as well as final compilation.
+    pipeline = object.__new__(RetrievalPipeline)
+    assert pipeline._apply_budget(pairs, search.limits)[0][1].ref == target.ref
+
+    class FixtureStorage(RetrievalStorage):
+        def hydrate(self, tx, candidate, context):
+            return next(obj for _, obj in pairs if obj.ref == candidate.ref)
+
+    result = RetrievalResult(tuple(c for c, _ in pairs), tuple(o for _, o in pairs),
+                             core.status(ctx).memory_epoch, (), "unknown", "supported", 2, 2,
+                             request_id="TEST-density")
+    packet = compile_recall_packet(search, result, core.storage, storage_reader=FixtureStorage(clock=FixedClock()),
+                                   diagnostics=core.recall_diagnostics, clock=FixedClock())
+    assert [item["ref"] for item in packet["items"]] == [target.ref]
+    rendered = canonical_render_json(packet)
+    metrics = core.recall_diagnostics.get(packet["diagnostic_ref"])
+    assert metrics.rendered_bytes == len(rendered.encode("utf-8"))
+    assert metrics.estimated_tokens == estimate_tokens(rendered) <= budget
+    assert metrics.budget_tokens == budget
+    print(json.dumps({"budget": budget, "item_bytes": [3398, 773], "target": target.ref,
+                      "delivered": [item["ref"] for item in packet["items"]], "metrics": metrics.to_public()}))
+
+
+def test_cjk_budget_uses_character_classes_and_reports_exact_units(app):
+    core, ctx = app
+    assert estimate_tokens("汉字中文") == 4
+    assert estimate_tokens("abcd") == 1
+    assert estimate_tokens("漢あ한") == 3
+    assert estimate_tokens("汉字abcd") == 3
+    sources = [capture(core, ctx, "预算中文记录 " + "保留完整有效证据" * 50 + str(i), key=f"TEST-CJK/{i}")
+               for i in range(4)]
+    search = SearchContext.from_request(recall_request(query="预算中文记录", mode="history", max_items=4,
+                                                       budget_tokens=4096), ctx, now=FixedClock.now, deadline=200.0)
+    candidates = tuple(CandidateRef("event", s.ref, 1, "lexical") for s in sources)
+    reader = RetrievalStorage(clock=FixedClock())
+    with core.storage.read(ctx) as tx:
+        objects = tuple(reader.hydrate(tx, candidate, search) for candidate in candidates)
+    result = RetrievalResult(candidates, objects, core.status(ctx).memory_epoch, (), "unknown", "supported", 4, 4)
+    packet = compile_recall_packet(search, result, core.storage, storage_reader=reader,
+                                   diagnostics=core.recall_diagnostics, clock=FixedClock())
+    assert {item["ref"] for item in packet["items"]} == {source.ref for source in sources}
+    rendered = canonical_render_json(packet)
+    byte_count = len(rendered.encode("utf-8"))
+    token_count = estimate_tokens(rendered)
+    assert byte_count > 4096 >= token_count, "byte cap would discard evidence that fits the token estimate"
+    diagnostic = core.recall_diagnostics.get(packet["diagnostic_ref"])
+    assert diagnostic.rendered_bytes == byte_count
+    assert diagnostic.estimated_tokens == token_count
+    assert diagnostic.budget_tokens == 4096
+    print(json.dumps({"cjk_delivered": len(packet["items"]), "bytes": byte_count, "estimated_tokens": token_count,
+                      "budget_tokens": diagnostic.budget_tokens}))
