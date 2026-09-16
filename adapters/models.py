@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from functools import partial
 import base64
 import json
 import math
@@ -13,7 +14,7 @@ import sys
 import threading
 import time
 import urllib.parse
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from types import MappingProxyType
 from typing import Any, Protocol
 
@@ -34,6 +35,7 @@ EMBED_RESERVE_FLOOR = 8192
 RESERVE_ENVELOPE_MARGIN = 256
 MAX_CREDENTIAL_BYTES = 8192
 _ENV_NAME_RE = re.compile(r"^[A-Z][A-Z0-9_]{0,127}$")
+_CHAT_ROLES = frozenset({"system", "user", "assistant", "tool"})
 
 
 class AuxiliaryModelError(RuntimeError):
@@ -46,7 +48,6 @@ class AuxiliaryModelError(RuntimeError):
         super().__init__(message)
 
 
-
 #: A provider's own name for why it refused, e.g. ``GoUsageLimitError``.  Short,
 #: symbolic, drawn from the provider's vocabulary -- unlike the message beside
 #: it, which is free text and may carry account identifiers or URLs.
@@ -56,12 +57,9 @@ _REFUSAL_CODE = re.compile(r"^[A-Za-z][A-Za-z0-9_]{0,63}$")
 def provider_refusal_code(raw: object) -> str | None:
     """The bounded symbol naming why a provider refused, or ``None``.
 
-    The whole body is discarded on a failure, and rightly so -- it is free text.
-    But the *type* inside it is not: it is the difference between "the model is
-    failing" and "the monthly quota is exhausted until the 27th".  A live
-    instance spent four hours reporting every worker run as degraded with no
-    capability gap at all, while the provider was answering every single call
-    with exactly that sentence.
+    The body of a failed call is free text and is discarded, but the *type*
+    inside it is the difference between "the model is failing" and "the
+    monthly quota is exhausted until the 27th".
     """
     if not isinstance(raw, (bytes, bytearray)) or len(raw) > MAX_CHAT_RESPONSE_BYTES:
         return None
@@ -75,9 +73,10 @@ def provider_refusal_code(raw: object) -> str | None:
     for candidate in (error.get("type") if isinstance(error, dict) else None,
                       error.get("code") if isinstance(error, dict) else None,
                       payload.get("type")):
-        if type(candidate) is str and _REFUSAL_CODE.match(candidate)                 and not contains_secret_like_text(candidate):
+        if type(candidate) is str and _REFUSAL_CODE.match(candidate) and not contains_secret_like_text(candidate):
             return candidate
     return None
+
 
 class HttpTransport(Protocol):
     def post(
@@ -95,6 +94,11 @@ _HTTP_WORKER_PATH = (Path(__file__).resolve().parents[1] / "runtime" / "_http_wo
 _HTTP_WORKER_STDOUT_MARGIN = 8 * 1024
 _HTTP_WORKER_MAX_REQUEST_BYTES = 3 * 1024 * 1024
 _HTTP_WORKER_CLEANUP_GRACE_SECONDS = 0.2
+#: Replies the worker may send; anything else is a protocol fault, not a provider answer.
+_HTTP_WORKER_ERRORS = frozenset({
+    "endpoint_invalid", "http_redirect", "http_protocol", "network_error",
+    "request_limit", "response_limit", "timeout",
+})
 
 
 def _cleanup_http_worker(process: subprocess.Popen[bytes] | None) -> None:
@@ -113,8 +117,8 @@ def _cleanup_http_worker(process: subprocess.Popen[bytes] | None) -> None:
         pass
 
 
-def _validate_timeout_seconds(timeout_seconds: float) -> float:
-    if type(timeout_seconds) is bool or type(timeout_seconds) not in (int, float):
+def validate_timeout_seconds(timeout_seconds: object) -> float:
+    if type(timeout_seconds) not in (int, float):
         raise AuxiliaryModelError("timeout")
     value = float(timeout_seconds)
     if not math.isfinite(value) or value <= 0:
@@ -132,6 +136,75 @@ def _validate_credential_env_name(env_name: object) -> str:
     return env_name
 
 
+def _hidden_window() -> dict[str, Any]:
+    """Popen options that keep the helper from flashing a console on Windows."""
+    if os.name != "nt":
+        return {"startupinfo": None, "creationflags": 0}
+    startupinfo = subprocess.STARTUPINFO()
+    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    startupinfo.wShowWindow = subprocess.SW_HIDE
+    return {"startupinfo": startupinfo, "creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0)}
+
+
+def _worker_request(url: str, *, body: bytes, headers: Mapping[str, str], budget: float,
+                    max_response_bytes: int) -> bytes:
+    """The one request line the worker accepts, validated before any process starts."""
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme != "https" or not parsed.hostname:
+        raise AuxiliaryModelError("endpoint_invalid")
+    if not _HTTP_WORKER_PATH.is_file():
+        raise AuxiliaryModelError("transport_unavailable")
+    if type(max_response_bytes) is not int or max_response_bytes <= 0:
+        raise AuxiliaryModelError("response_limit")
+    if not isinstance(body, bytes) or not isinstance(headers, Mapping):
+        raise AuxiliaryModelError("request_invalid")
+    request = {
+        "url": url,
+        "body_b64": base64.b64encode(body).decode("ascii"),
+        "headers": dict(headers),
+        "timeout_seconds": budget,
+        "max_response_bytes": max_response_bytes,
+    }
+    try:
+        request_bytes = json.dumps(request, ensure_ascii=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
+    except (TypeError, ValueError) as exc:
+        raise AuxiliaryModelError("request_invalid") from exc
+    if len(request_bytes) > _HTTP_WORKER_MAX_REQUEST_BYTES:
+        raise AuxiliaryModelError("request_limit")
+    return request_bytes
+
+
+def _worker_reply(stdout: bytes, max_response_bytes: int) -> tuple[int, bytes]:
+    """Decode the worker's reply: a provider answer returns, a worker fault raises."""
+    try:
+        result = json.loads(stdout.decode("utf-8"))
+    except (UnicodeError, json.JSONDecodeError) as exc:
+        raise AuxiliaryModelError("transport_worker_protocol") from exc
+    if not isinstance(result, dict) or type(result.get("ok")) is not bool:
+        raise AuxiliaryModelError("transport_worker_protocol")
+    status = result.get("status")
+    if status is not None and (type(status) is not int or not 100 <= status <= 599):
+        raise AuxiliaryModelError("transport_worker_protocol")
+    body_b64 = result.get("body_b64", "")
+    if type(body_b64) is not str:
+        raise AuxiliaryModelError("transport_worker_protocol")
+    try:
+        response_body = base64.b64decode(body_b64.encode("ascii"), validate=True)
+    except (UnicodeError, ValueError) as exc:
+        raise AuxiliaryModelError("transport_worker_protocol") from exc
+    if len(response_body) > max_response_bytes:
+        raise AuxiliaryModelError("response_limit")
+    if result["ok"]:
+        if set(result) != {"ok", "status", "body_b64"} or status is None:
+            raise AuxiliaryModelError("transport_worker_protocol")
+        return status, response_body
+    error_type = result.get("error")
+    if (set(result) - {"ok", "error", "status", "body_b64"}
+            or type(error_type) is not str or error_type not in _HTTP_WORKER_ERRORS):
+        raise AuxiliaryModelError("transport_worker_protocol")
+    raise AuxiliaryModelError(error_type, detail=None if status is None else str(status))
+
+
 class HttpsTransport:
     """Bounded HTTPS POST; query callers may own a persistent stdlib worker."""
 
@@ -144,13 +217,17 @@ class HttpsTransport:
         if self._session is not None:
             self._session.close()
 
+    def _discard_session(self) -> None:
+        if self._session is not None:
+            self._session.discard()
+
     def post(self, url: str, *, body: bytes, headers: Mapping[str, str],
              timeout_seconds: float, max_response_bytes: int) -> tuple[int, bytes]:
         """Bound the entire exchange, including waiting for a query session."""
         if self._session is None:
             return self._post(url, body=body, headers=headers,
                               timeout_seconds=timeout_seconds, max_response_bytes=max_response_bytes)
-        deadline = time.monotonic() + _validate_timeout_seconds(timeout_seconds)
+        deadline = time.monotonic() + validate_timeout_seconds(timeout_seconds)
         if not self._post_lock.acquire(timeout=max(0, _remaining_seconds(deadline))):
             raise AuxiliaryModelError("timeout")
         try:
@@ -158,8 +235,7 @@ class HttpsTransport:
                               timeout_seconds=_remaining_seconds(deadline),
                               max_response_bytes=max_response_bytes)
         except BaseException:
-            if self._session is not None:
-                self._session.discard()
+            self._discard_session()
             raise
         finally:
             self._post_lock.release()
@@ -173,55 +249,25 @@ class HttpsTransport:
         timeout_seconds: float,
         max_response_bytes: int,
     ) -> tuple[int, bytes]:
-        budget = _validate_timeout_seconds(timeout_seconds)
+        """Build the request line, exchange it with the helper, decode its reply."""
+        budget = validate_timeout_seconds(timeout_seconds)
         deadline = time.monotonic() + budget
-        parsed = urllib.parse.urlparse(url)
-        if parsed.scheme != "https" or not parsed.hostname:
-            raise AuxiliaryModelError("endpoint_invalid")
-        if not _HTTP_WORKER_PATH.is_file():
-            raise AuxiliaryModelError("transport_unavailable")
-        if type(max_response_bytes) is not int or max_response_bytes <= 0:
-            raise AuxiliaryModelError("response_limit")
-        if not isinstance(body, bytes) or not isinstance(headers, Mapping):
-            raise AuxiliaryModelError("request_invalid")
-        request = {
-            "url": url,
-            "body_b64": base64.b64encode(body).decode("ascii"),
-            "headers": dict(headers),
-            "timeout_seconds": budget,
-            "max_response_bytes": max_response_bytes,
-        }
-        try:
-            request_bytes = json.dumps(
-                request, ensure_ascii=True, separators=(",", ":"), allow_nan=False
-            ).encode("utf-8")
-        except (TypeError, ValueError) as exc:
-            raise AuxiliaryModelError("request_invalid") from exc
-        if len(request_bytes) > _HTTP_WORKER_MAX_REQUEST_BYTES:
-            raise AuxiliaryModelError("request_limit")
+        request_bytes = _worker_request(url, body=body, headers=headers, budget=budget,
+                                        max_response_bytes=max_response_bytes)
         command = [sys.executable, "-I", "-B", str(_HTTP_WORKER_PATH)]
-        startupinfo = None
-        creationflags = 0
-        if os.name == "nt":
-            startupinfo = subprocess.STARTUPINFO()
-            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-            startupinfo.wShowWindow = subprocess.SW_HIDE
-            creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        max_stdout = (max_response_bytes * 4) // 3 + _HTTP_WORKER_STDOUT_MARGIN
         process: subprocess.Popen[bytes] | None = None
         try:
-            remaining = _remaining_seconds(deadline)
-            if remaining <= 0:
+            if _remaining_seconds(deadline) <= 0:
                 raise AuxiliaryModelError("timeout")
             if self._session is not None:
                 stdout, stderr = self._session.exchange(
-                    command, request_bytes, deadline=deadline,
-                    max_stdout=(max_response_bytes * 4) // 3 + _HTTP_WORKER_STDOUT_MARGIN,
-                    startupinfo=startupinfo, creationflags=creationflags,
+                    command, request_bytes, deadline=deadline, max_stdout=max_stdout, **_hidden_window(),
                 )
             else:
                 process = subprocess.Popen(
-                    command, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE, startupinfo=startupinfo, creationflags=creationflags,
+                    command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    **_hidden_window(),
                 )
                 remaining = _remaining_seconds(deadline)
                 if remaining <= 0:
@@ -231,54 +277,14 @@ class HttpsTransport:
                 raise AuxiliaryModelError("timeout")
             if process is not None and process.returncode != 0:
                 raise AuxiliaryModelError("transport_worker", detail=str(process.returncode))
-            max_stdout = (max_response_bytes * 4) // 3 + _HTTP_WORKER_STDOUT_MARGIN
             if len(stdout) > max_stdout or len(stderr) > _HTTP_WORKER_STDOUT_MARGIN:
                 raise AuxiliaryModelError("transport_worker_protocol")
-            try:
-                result = json.loads(stdout.decode("utf-8"))
-            except (UnicodeError, json.JSONDecodeError) as exc:
-                raise AuxiliaryModelError("transport_worker_protocol") from exc
-            if not isinstance(result, dict) or type(result.get("ok")) is not bool:
-                raise AuxiliaryModelError("transport_worker_protocol")
-            status = result.get("status")
-            if status is not None and (type(status) is not int or not 100 <= status <= 599):
-                raise AuxiliaryModelError("transport_worker_protocol")
-            body_b64 = result.get("body_b64", "")
-            if type(body_b64) is not str:
-                raise AuxiliaryModelError("transport_worker_protocol")
-            try:
-                response_body = base64.b64decode(body_b64.encode("ascii"), validate=True)
-            except (UnicodeError, ValueError) as exc:
-                raise AuxiliaryModelError("transport_worker_protocol") from exc
-            if len(response_body) > max_response_bytes:
-                raise AuxiliaryModelError("response_limit")
-            if result["ok"]:
-                if set(result) != {"ok", "status", "body_b64"} or status is None:
-                    raise AuxiliaryModelError("transport_worker_protocol")
-                return status, response_body
-            error_type = result.get("error")
-            if (
-                set(result) - {"ok", "error", "status", "body_b64"}
-                or type(error_type) is not str
-                or error_type not in {
-                    "endpoint_invalid",
-                    "http_redirect",
-                    "http_protocol",
-                    "network_error",
-                    "request_limit",
-                    "response_limit",
-                    "timeout",
-                }
-            ):
-                raise AuxiliaryModelError("transport_worker_protocol")
-            raise AuxiliaryModelError(error_type, detail=None if status is None else str(status))
+            return _worker_reply(stdout, max_response_bytes)
         except AuxiliaryModelError:
-            if self._session is not None:
-                self._session.discard()
+            self._discard_session()
             raise
         except (subprocess.TimeoutExpired, TimeoutError) as exc:
-            if self._session is not None:
-                self._session.discard()
+            self._discard_session()
             raise AuxiliaryModelError("timeout") from exc
         except OSError as exc:
             raise AuxiliaryModelError("network_error", detail=type(exc).__name__) from exc
@@ -306,6 +312,17 @@ def _load_credential(env_name: str) -> str:
 def _reject_secrets(value: str) -> None:
     if contains_secret_like_text(value):
         raise AuxiliaryModelError("sensitive_request")
+
+
+def validate_chat_messages(messages: object) -> None:
+    """Exactly role and content per message, a role from the closed set, no secret-like text."""
+    if not isinstance(messages, list) or not messages:
+        raise AuxiliaryModelError("input_invalid")
+    for message in messages:
+        if (not isinstance(message, dict) or set(message) != {"role", "content"}
+                or message["role"] not in _CHAT_ROLES or type(message["content"]) is not str):
+            raise AuxiliaryModelError("input_invalid")
+        _reject_secrets(message["content"])
 
 
 def _load_json_object(raw: bytes) -> dict[str, Any]:
@@ -346,6 +363,15 @@ def _extract_chat_content(payload: Mapping[str, Any]) -> str:
     return content
 
 
+def _chat_usage(payload: Mapping[str, Any]) -> dict[str, int] | None:
+    candidate = payload.get("usage")
+    if isinstance(candidate, dict) and all(
+        type(candidate.get(name)) is int and candidate[name] >= 0 for name in ("prompt_tokens", "completion_tokens")
+    ):
+        return {"prompt_tokens": candidate["prompt_tokens"], "completion_tokens": candidate["completion_tokens"]}
+    return None
+
+
 def build_gemini_embed_body(encoded_text: str, *, model: str | None = None, dimensions: int | None = None) -> bytes:
     model = model or EMBEDDING_SPACE["model"]
     body = {
@@ -373,6 +399,31 @@ def build_openai_embed_body(encoded_text: str, *, model: str, dimensions: int) -
     return _json_bytes({"model": model, "input": [encoded_text], "dimensions": dimensions})
 
 
+def _embedding_usage(payload: Mapping[str, Any], *, dialect: str) -> dict[str, int] | None:
+    if dialect == "gemini":
+        metadata, key = payload.get("usageMetadata"), "promptTokenCount"
+    else:
+        metadata, key = payload.get("usage"), "prompt_tokens"
+    if isinstance(metadata, dict) and type(metadata.get(key)) is int:
+        return {"promptTokenCount": metadata[key]}
+    return None
+
+
+def _embedding_vector(payload: Mapping[str, Any], *, dialect: str, dimensions: int) -> tuple[float, ...]:
+    if dialect == "gemini":
+        embeddings = payload.get("embeddings")
+        if not isinstance(embeddings, list) or len(embeddings) != 1:
+            raise AuxiliaryModelError("unsupported_response_shape")
+        row = embeddings[0]
+        if not isinstance(row, dict) or set(row) != {"values"}:
+            raise AuxiliaryModelError("unsupported_response_shape")
+        return validate_embedding_vector(row["values"], dimensions=dimensions)
+    data = payload.get("data")
+    if not isinstance(data, list) or len(data) != 1 or not isinstance(data[0], dict):
+        raise AuxiliaryModelError("unsupported_response_shape")
+    return validate_embedding_vector(data[0].get("embedding"), dimensions=dimensions)
+
+
 def parse_embedding_response(payload: object, *, dialect: str, dimensions: int) -> tuple[tuple[float, ...], dict[str, int] | None]:
     """Read one vector, and any usage the provider reported, from a response.
 
@@ -381,25 +432,8 @@ def parse_embedding_response(payload: object, *, dialect: str, dimensions: int) 
     """
     if not isinstance(payload, dict):
         raise AuxiliaryModelError("unsupported_response_shape")
-    usage: dict[str, int] | None = None
-    if dialect == "gemini":
-        metadata = payload.get("usageMetadata")
-        if isinstance(metadata, dict) and type(metadata.get("promptTokenCount")) is int:
-            usage = {"promptTokenCount": metadata["promptTokenCount"]}
-        embeddings = payload.get("embeddings")
-        if not isinstance(embeddings, list) or len(embeddings) != 1:
-            raise AuxiliaryModelError("unsupported_response_shape")
-        row = embeddings[0]
-        if not isinstance(row, dict) or set(row) != {"values"}:
-            raise AuxiliaryModelError("unsupported_response_shape")
-        return validate_embedding_vector(row["values"], dimensions=dimensions), usage
-    metadata = payload.get("usage")
-    if isinstance(metadata, dict) and type(metadata.get("prompt_tokens")) is int:
-        usage = {"promptTokenCount": metadata["prompt_tokens"]}
-    data = payload.get("data")
-    if not isinstance(data, list) or len(data) != 1 or not isinstance(data[0], dict):
-        raise AuxiliaryModelError("unsupported_response_shape")
-    return validate_embedding_vector(data[0].get("embedding"), dimensions=dimensions), usage
+    usage = _embedding_usage(payload, dialect=dialect)
+    return _embedding_vector(payload, dialect=dialect, dimensions=dimensions), usage
 
 
 def validate_embedding_vector(values: object, *, dimensions: int | None = None) -> tuple[float, ...]:
@@ -448,7 +482,6 @@ _CONSOLIDATION_HEADER_NAME_RE = re.compile(r"^[!#$%&'*+.^_`|~0-9A-Za-z-]{1,64}$"
 _CONSOLIDATION_HEADER_RESERVED = {"authorization", "content-type", "user-agent", "host", "content-length"}
 _OPENCODE_GO_SESSION_HEADER = "x-opencode-session"
 _OPENCODE_GO_DEFAULT_SESSION = "scope-recall-auxiliary-consolidation"
-_OPENCODE_GO_ENDPOINT_MARK = "opencode.ai/zen/go"
 
 
 def _validate_consolidation_headers(value: object) -> Mapping[str, str] | None:
@@ -596,6 +629,90 @@ class ConsolidationRouteConfig:
         object.__setattr__(self, "headers", _validate_consolidation_headers(self.headers))
 
 
+#: Ledger refusals that mean "not now" rather than "over budget".
+_BUDGET_UNAVAILABLE = frozenset({
+    "ledger_not_initialized", "unsupported_model", "unsupported_model_or_size", "ledger_busy_timeout",
+})
+
+
+def _ledger_error(exc: ValueError) -> AuxiliaryModelError:
+    """The ledger refuses with a ValueError code; callers see a closed vocabulary."""
+    code = str(exc)
+    if code == "budget_exhausted_or_meter_breach":
+        return AuxiliaryModelError("budget_exhausted")
+    if code in _BUDGET_UNAVAILABLE:
+        return AuxiliaryModelError("budget_unavailable")
+    return AuxiliaryModelError("request_rejected", detail=type(exc).__name__)
+
+
+def _settle(settle: Callable[..., str], request_id: int, status: str, usage: Mapping[str, int] | None,
+            deadline: float, pending: BaseException | None) -> BaseException | None:
+    """Close the reservation; the exception to raise afterwards, if any.
+
+    A failure that already happened stays authoritative over anything the
+    settlement finds; a clean call still fails on a metering breach, or when a
+    200 came back without the usage the ledger needs.
+    """
+    try:
+        final = settle(request_id, status, usage, timeout_seconds=max(.001, _remaining_seconds(deadline)))
+    except Exception as settle_exc:
+        return pending if pending is not None else settle_exc
+    if pending is not None:
+        return pending
+    if "meter_breach" in final:
+        return AuxiliaryModelError("meter_breach")
+    if "usage_unknown" in final and status.startswith("http_200"):
+        return AuxiliaryModelError("missing_usage")
+    return None
+
+
+def _metered_post(*, ledger: AuxiliaryBudgetLedger, settle: Callable[..., str], model: str, body: bytes,
+                  reserved_input: int, reserved_output: int, deadline: float, transport: HttpTransport,
+                  endpoint: str, headers: Mapping[str, str], max_response_bytes: int,
+                  read_usage: Callable[[Mapping[str, Any]], dict[str, int] | None],
+                  read_result: Callable[[Mapping[str, Any]], Any]) -> Any:
+    """Reserve, send, parse, settle -- and settle even when sending failed.
+
+    The reservation row is committed before the request leaves the process
+    and closed after it returns, so a crash between the two retains the
+    reserved charge rather than losing it.  Usage is read before the result
+    so a well-formed usage block still settles the row when the answer
+    beside it is malformed.
+    """
+    request_id: int | None = None
+    status = "network_error"
+    usage: dict[str, int] | None = None
+    pending: BaseException | None = None
+    result: Any = None
+    try:
+        request_id = ledger.reserve(model, body, reserved_input=reserved_input, reserved_output=reserved_output,
+                                    timeout_seconds=_remaining_seconds(deadline))
+        http_remaining = _remaining_seconds(deadline)
+        if http_remaining <= 0:
+            raise AuxiliaryModelError("timeout")
+        status_code, raw = transport.post(endpoint, body=body, headers=headers,
+                                          timeout_seconds=http_remaining, max_response_bytes=max_response_bytes)
+        status = f"http_{status_code}"
+        if status_code != 200:
+            refusal = provider_refusal_code(raw)
+            if refusal is not None:
+                status = f"{status}:{refusal}"
+            raise AuxiliaryModelError("http_status", detail=str(status_code))
+        payload = _load_json_object(raw)
+        usage = read_usage(payload)
+        result = read_result(payload)
+    except AuxiliaryModelError as exc:
+        pending = exc
+    except ValueError as exc:
+        pending = _ledger_error(exc)
+    finally:
+        if request_id is not None:
+            pending = _settle(settle, request_id, status, usage, deadline, pending)
+    if pending is not None:
+        raise pending
+    return result
+
+
 class GeminiEmbeddingAdapter:
     def __init__(
         self,
@@ -641,91 +758,27 @@ class GeminiEmbeddingAdapter:
         return self._embed(encoded, remaining_seconds=remaining_seconds)
 
     def _embed(self, encoded_text: str, *, remaining_seconds: float, transport: HttpTransport | None = None) -> Sequence[float]:
-        deadline = time.monotonic() + _validate_timeout_seconds(remaining_seconds)
+        deadline = time.monotonic() + validate_timeout_seconds(remaining_seconds)
         _reject_secrets(encoded_text)
         if self._dialect == "gemini":
             body = build_gemini_embed_body(encoded_text, model=self._model, dimensions=self._dimensions)
         else:
             body = build_openai_embed_body(encoded_text, model=self._model, dimensions=self._dimensions)
-        reserve_input = conservative_embed_reserve(body)
-        remaining = _remaining_seconds(deadline)
-        if remaining <= 0:
+        if _remaining_seconds(deadline) <= 0:
             raise AuxiliaryModelError("timeout")
-        request_id: int | None = None
-        status = "network_error"
-        usage: dict[str, int] | None = None
-        pending: BaseException | None = None
-        result: Sequence[float] | None = None
-        try:
-            key = _load_credential(self._route.credential_env)
-            request_id = self._ledger.reserve(
-                self._model,
-                body,
-                reserved_input=reserve_input,
-                reserved_output=0,
-                timeout_seconds=_remaining_seconds(deadline),
-            )
-            http_remaining = _remaining_seconds(deadline)
-            if http_remaining <= 0:
-                raise AuxiliaryModelError("timeout")
-            status_code, raw = (transport or self._transport).post(
-                self._endpoint,
-                body=body,
-                headers={
-                    "Content-Type": "application/json",
-                    # Google authenticates with its own header; every
-                    # OpenAI-compatible provider uses bearer auth.
-                    **({"x-goog-api-key": key} if self._dialect == "gemini"
-                       else {"Authorization": f"Bearer {key}"}),
-                    "User-Agent": "ScopeRecall-AuxiliaryEmbed/1.1",
-                },
-                timeout_seconds=http_remaining,
-                max_response_bytes=MAX_EMBED_RESPONSE_BYTES,
-            )
-            status = f"http_{status_code}"
-            if status_code != 200:
-                refusal = provider_refusal_code(raw)
-                if refusal is not None:
-                    status = f"{status}:{refusal}"
-                raise AuxiliaryModelError("http_status", detail=str(status_code))
-            payload = _load_json_object(raw)
-            result, usage = parse_embedding_response(
-                payload, dialect=self._dialect, dimensions=self._dimensions
-            )
-        except AuxiliaryModelError as exc:
-            pending = exc
-        except ValueError as exc:
-            if str(exc) == "budget_exhausted_or_meter_breach":
-                pending = AuxiliaryModelError("budget_exhausted")
-            elif str(exc) in {"ledger_not_initialized", "unsupported_model", "unsupported_model_or_size"}:
-                pending = AuxiliaryModelError("budget_unavailable")
-            elif str(exc) == "ledger_busy_timeout":
-                pending = AuxiliaryModelError("budget_unavailable")
-            else:
-                pending = AuxiliaryModelError("request_rejected", detail=type(exc).__name__)
-        finally:
-            remaining = _remaining_seconds(deadline)
-            if request_id is not None:
-                try:
-                    final = self._ledger.finish_embedding(
-                        request_id,
-                        status,
-                        usage,
-                        timeout_seconds=max(.001, remaining),
-                    )
-                except Exception as settle_exc:
-                    if pending is None:
-                        pending = settle_exc
-                else:
-                    if pending is None:
-                        if "meter_breach" in final:
-                            pending = AuxiliaryModelError("meter_breach")
-                        elif "usage_unknown" in final and status.startswith("http_200"):
-                            pending = AuxiliaryModelError("missing_usage")
-        if pending is not None:
-            raise pending
-        assert result is not None
-        return result
+        key = _load_credential(self._route.credential_env)
+        # Google authenticates with its own header; every OpenAI-compatible
+        # provider uses bearer auth.
+        auth = {"x-goog-api-key": key} if self._dialect == "gemini" else {"Authorization": f"Bearer {key}"}
+        return _metered_post(
+            ledger=self._ledger, settle=self._ledger.finish_embedding, model=self._model, body=body,
+            reserved_input=conservative_embed_reserve(body), reserved_output=0, deadline=deadline,
+            transport=transport or self._transport, endpoint=self._endpoint,
+            headers={"Content-Type": "application/json", **auth, "User-Agent": "ScopeRecall-AuxiliaryEmbed/1.1"},
+            max_response_bytes=MAX_EMBED_RESPONSE_BYTES,
+            read_usage=partial(_embedding_usage, dialect=self._dialect),
+            read_result=partial(_embedding_vector, dialect=self._dialect, dimensions=self._dimensions),
+        )
 
 
 class OpenAIConsolidationAdapter:
@@ -742,114 +795,38 @@ class OpenAIConsolidationAdapter:
         self._reserve_input = reserve_input
         self._transport = transport if transport is not None else HttpsTransport()
 
-    def propose(self, messages: list[dict], *, remaining_seconds: float) -> str:
-        deadline = time.monotonic() + _validate_timeout_seconds(remaining_seconds)
-        if not isinstance(messages, list) or not messages:
-            raise AuxiliaryModelError("input_invalid")
-        for message in messages:
-            if not isinstance(message, dict) or set(message) - {"role", "content"}:
-                raise AuxiliaryModelError("input_invalid")
-            if message.get("role") not in {"system", "user", "assistant", "tool"}:
-                raise AuxiliaryModelError("input_invalid")
-            content = message.get("content")
-            if type(content) is not str:
-                raise AuxiliaryModelError("input_invalid")
-            _reject_secrets(content)
-        body_obj: dict[str, Any] = {
-            "model": self._route.model,
+    def _chat_body(self, messages: list[dict]) -> bytes:
+        route = self._route
+        body: dict[str, Any] = {
+            "model": route.model,
             "messages": messages,
-            "stream": self._route.stream,
-            "n": self._route.n,
-            self._route.output_limit_field: self._route.max_output_tokens,
+            "stream": route.stream,
+            "n": route.n,
+            route.output_limit_field: route.max_output_tokens,
         }
-        if self._route.thinking is not None:
-            body_obj["thinking"] = dict(self._route.thinking)
-        if self._route.response_format is not None:
-            body_obj["response_format"] = dict(self._route.response_format)
-        if self._route.reasoning_effort is not None:
-            body_obj["reasoning_effort"] = self._route.reasoning_effort
-        body = _json_bytes(body_obj)
+        if route.thinking is not None:
+            body["thinking"] = dict(route.thinking)
+        if route.response_format is not None:
+            body["response_format"] = dict(route.response_format)
+        if route.reasoning_effort is not None:
+            body["reasoning_effort"] = route.reasoning_effort
+        return _json_bytes(body)
+
+    def propose(self, messages: list[dict], *, remaining_seconds: float) -> str:
+        deadline = time.monotonic() + validate_timeout_seconds(remaining_seconds)
+        validate_chat_messages(messages)
+        body = self._chat_body(messages)
         _reject_secrets(body.decode("utf-8"))
-        reserved_input = conservative_consolidation_input_reserve(body, self._reserve_input)
-        reserved_output = model_output_reserve(
-            self._ledger.policy,
-            self._route.model,
-            self._route.max_output_tokens,
-        )
-        remaining = _remaining_seconds(deadline)
-        if remaining <= 0:
+        reserved_output = model_output_reserve(self._ledger.policy, self._route.model, self._route.max_output_tokens)
+        if _remaining_seconds(deadline) <= 0:
             raise AuxiliaryModelError("timeout")
-        request_id: int | None = None
-        status = "network_error"
-        usage: dict[str, int] | None = None
-        pending: BaseException | None = None
-        result: str | None = None
-        try:
-            key = _load_credential(self._route.credential_env)
-            request_id = self._ledger.reserve(
-                self._route.model,
-                body,
-                reserved_input=reserved_input,
-                reserved_output=reserved_output,
-                timeout_seconds=_remaining_seconds(deadline),
-            )
-            http_remaining = _remaining_seconds(deadline)
-            if http_remaining <= 0:
-                raise AuxiliaryModelError("timeout")
-            status_code, raw = self._transport.post(
-                self._route.endpoint,
-                body=body,
-                headers=_consolidation_request_headers(self._route, key),
-                timeout_seconds=http_remaining,
-                max_response_bytes=MAX_CHAT_RESPONSE_BYTES,
-            )
-            status = f"http_{status_code}"
-            if status_code != 200:
-                refusal = provider_refusal_code(raw)
-                if refusal is not None:
-                    status = f"{status}:{refusal}"
-                raise AuxiliaryModelError("http_status", detail=str(status_code))
-            payload = _load_json_object(raw)
-            candidate = payload.get("usage")
-            if isinstance(candidate, dict) and all(
-                type(candidate.get(name)) is int and candidate[name] >= 0 for name in ("prompt_tokens", "completion_tokens")
-            ):
-                usage = {
-                    "prompt_tokens": candidate["prompt_tokens"],
-                    "completion_tokens": candidate["completion_tokens"],
-                }
-            result = _extract_chat_content(payload)
-        except AuxiliaryModelError as exc:
-            pending = exc
-        except ValueError as exc:
-            if str(exc) == "budget_exhausted_or_meter_breach":
-                pending = AuxiliaryModelError("budget_exhausted")
-            elif str(exc) in {"ledger_not_initialized", "unsupported_model", "unsupported_model_or_size"}:
-                pending = AuxiliaryModelError("budget_unavailable")
-            elif str(exc) == "ledger_busy_timeout":
-                pending = AuxiliaryModelError("budget_unavailable")
-            else:
-                pending = AuxiliaryModelError("request_rejected", detail=type(exc).__name__)
-        finally:
-            remaining = _remaining_seconds(deadline)
-            if request_id is not None:
-                try:
-                    final = self._ledger.finish(
-                        request_id,
-                        status,
-                        usage,
-                        timeout_seconds=max(.001, remaining),
-                    )
-                except Exception as settle_exc:
-                    if pending is None:
-                        pending = settle_exc
-                else:
-                    if pending is None:
-                        if final == "meter_breach" or "meter_breach" in final:
-                            pending = AuxiliaryModelError("meter_breach")
-                        elif "usage_unknown" in final and status.startswith("http_200"):
-                            pending = AuxiliaryModelError("missing_usage")
-        if pending is not None:
-            raise pending
-        assert result is not None
-        return result
+        key = _load_credential(self._route.credential_env)
+        return _metered_post(
+            ledger=self._ledger, settle=self._ledger.finish, model=self._route.model, body=body,
+            reserved_input=conservative_consolidation_input_reserve(body, self._reserve_input),
+            reserved_output=reserved_output, deadline=deadline,
+            transport=self._transport, endpoint=self._route.endpoint,
+            headers=_consolidation_request_headers(self._route, key),
+            max_response_bytes=MAX_CHAT_RESPONSE_BYTES,
+            read_usage=_chat_usage, read_result=_extract_chat_content,
+        )

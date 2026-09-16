@@ -11,7 +11,6 @@ from contextlib import closing
 from dataclasses import dataclass
 import hashlib
 import json
-import math
 import os
 from pathlib import Path
 import re
@@ -22,9 +21,9 @@ import tempfile
 import threading
 import time
 
-from .models import AuxiliaryModelError
-from ..core.secret_patterns import contains_secret_like_text
+from .models import AuxiliaryModelError, validate_chat_messages, validate_timeout_seconds
 from ..runtime.subscription_budget import SubscriptionBudgetLedger, SubscriptionBudgetPolicy
+from ..runtime.validation import only_keys
 
 MODEL = "gpt-5.6-luna"
 # Filled only for binaries whose effective request tool catalog was verified.
@@ -44,6 +43,7 @@ _DISABLED = (
     "tool_suggest", "unbounded_connection_retries", "unified_exec", "view_image",
     "workspace_dependencies",
 )
+_CONFIG_KEYS = ("kind", "model", "executable", "executable_sha256", "subscription_budget")
 
 
 @dataclass(frozen=True)
@@ -64,8 +64,7 @@ class CodexCliRouteConfig:
 
     @classmethod
     def from_mapping(cls, raw):
-        if set(raw) - {"kind", "model", "executable", "executable_sha256", "subscription_budget"}:
-            raise ValueError("codex_unknown_config")
+        only_keys("codex_unknown_config", raw, _CONFIG_KEYS)
         return cls(executable=Path(raw["executable"]), executable_sha256=raw["executable_sha256"],
                    model=raw.get("model", MODEL), kind=raw.get("kind", "codex_cli"),
                    subscription_budget=SubscriptionBudgetPolicy.from_mapping(raw.get("subscription_budget")))
@@ -96,79 +95,82 @@ def _kill_tree(process: subprocess.Popen) -> None:
     process.wait(timeout=1)
 
 
-_EVENT_TYPES = frozenset({"thread.started", "turn.started", "item.started", "item.updated",
-                          "item.completed", "turn.completed", "turn.failed", "error"})
+#: Stream event kinds the CLI emits, each with the ``_Transcript`` step that folds it in.
+_EVENT_HANDLERS = {
+    "thread.started": "ignore",
+    "turn.started": "ignore",
+    "turn.completed": "turn_completed",
+    "item.started": "item",
+    "item.updated": "item",
+    "item.completed": "item",
+    "error": "failed",
+    "turn.failed": "failed",
+}
 _HTTP_STATUS = re.compile(r"(?:http(?:/\d(?:\.\d)?)?\s*|status(?:\s+code)?[\s:=]*)([1-5]\d\d)\b", re.I)
+#: Closed vocabulary for stderr/error text; the text itself is never kept.
+_ERROR_NEEDLES = (
+    (("too many requests", "rate limit", "rate_limit"), "rate_limited"),
+    (("unauthorized", "invalid api key", "token_invalidated"), "authentication"),
+    (("forbidden", "permission denied"), "permission"),
+    (("timed out", "timeout"), "transport_timeout"),
+    (("connection", "stream disconnected"), "transport"),
+)
+_STATUS_CATEGORIES = {401: "authentication", 403: "permission", 429: "rate_limited"}
+_REFUSALS = frozenset(_STATUS_CATEGORIES.values())
+_LINE_LIMIT = 16384
 
 
-def _run(command: list[str], *, cwd: Path, prompt: bytes, seconds: float,
-         diagnostics: dict | None = None, environment: dict[str, str] | None = None) -> tuple[int, bytes]:
-    """Drain bounded pipes; expose only closed-vocabulary metadata, even on timeout.
+class _StreamInspector:
+    """Fold both pipes into bounded diagnostics while the process runs.
 
-    Raw stdout is returned only to the existing decoder. Stderr is classified
-    in memory and discarded. Neither arbitrary event fields nor error text are
-    copied into diagnostics. Each stream has a total byte and line-size bound.
+    Stdout is kept for the decoder; stderr is classified in memory and
+    discarded.  Neither arbitrary event fields nor error text reach ``diag``,
+    only event kinds, HTTP status numbers and failure categories.
     """
-    started = time.monotonic()
-    diag = diagnostics if diagnostics is not None else {}
-    diag.update(phase="spawn", event_types=[], error_categories=[], http_statuses=[],
-                elapsed_seconds=0.0, process_state="not_started", exit_code=None)
-    if seconds <= 0:
-        raise AuxiliaryModelError("timeout")
-    process = subprocess.Popen(command, cwd=cwd, env=_child_env() if environment is None else environment, stdin=subprocess.PIPE,
-                               stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                               start_new_session=os.name != "nt",
-                               creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-    chunks: list[bytes] = []
-    oversized = threading.Event()
-    refused = threading.Event()
-    lock = threading.Lock()
 
-    def classify(text):
+    def __init__(self, diag: dict) -> None:
+        self.diag = diag
+        self.chunks: list[bytes] = []
+        self.oversized = threading.Event()
+        self.refused = threading.Event()
+        self._lock = threading.Lock()
+
+    def classify(self, text: str) -> None:
         lower = text.lower()
         statuses = {int(value) for value in _HTTP_STATUS.findall(text)}
-        categories = set()
-        for needles, category, status in (
-            (("too many requests", "rate limit", "rate_limit"), "rate_limited", 429),
-            (("unauthorized", "invalid api key", "token_invalidated"), "authentication", 401),
-            (("forbidden", "permission denied"), "permission", 403),
-            (("timed out", "timeout"), "transport_timeout", None),
-            (("connection", "stream disconnected"), "transport", None),
-        ):
-            if any(word in lower for word in needles):
-                categories.add(category)
-
-        for status, category in ((401, "authentication"), (403, "permission"), (429, "rate_limited")):
-            if status in statuses:
-                categories.add(category)
+        categories = {category for needles, category in _ERROR_NEEDLES
+                      if any(word in lower for word in needles)}
+        categories.update(category for status, category in _STATUS_CATEGORIES.items() if status in statuses)
         if any(status >= 500 for status in statuses):
             categories.add("server")
-        with lock:
-            diag["http_statuses"] = sorted(set(diag["http_statuses"]) | statuses)
-            diag["error_categories"] = sorted(set(diag["error_categories"]) | categories)
-        if statuses & {401, 403, 429} or categories & {"authentication", "permission", "rate_limited"}:
-            refused.set()
+        with self._lock:
+            self.diag["http_statuses"] = sorted(set(self.diag["http_statuses"]) | statuses)
+            self.diag["error_categories"] = sorted(set(self.diag["error_categories"]) | categories)
+        if statuses & set(_STATUS_CATEGORIES) or categories & _REFUSALS:
+            self.refused.set()
 
-    def inspect_line(line, stdout):
+    def inspect_line(self, line: bytes, stdout: bool) -> None:
         if not stdout:
-            classify(line.decode("utf-8", errors="replace"))
+            self.classify(line.decode("utf-8", errors="replace"))
             return
         try:
             event = json.loads(line)
             kind = event.get("type")
-            if kind in _EVENT_TYPES:
-                with lock:
-                    if kind not in diag["event_types"]:
-                        diag["event_types"].append(kind)
-                if kind in {"error", "turn.failed"}:
-                    error = event.get("error", {})
-                    message = event.get("message") or (error.get("message") if isinstance(error, dict) else error)
-                    if isinstance(message, str):
-                        classify(message)
+            if kind not in _EVENT_HANDLERS:
+                return
+            with self._lock:
+                if kind not in self.diag["event_types"]:
+                    self.diag["event_types"].append(kind)
+            if kind in {"error", "turn.failed"}:
+                error = event.get("error", {})
+                message = event.get("message") or (error.get("message") if isinstance(error, dict) else error)
+                if isinstance(message, str):
+                    self.classify(message)
         except (ValueError, TypeError, AttributeError, RecursionError):
             pass
 
-    def read_output(pipe, stdout):
+    def read(self, pipe, stdout: bool) -> None:
+        """Drain one pipe with a total byte bound and a per-line size bound."""
         total = 0
         pending = b""
         dropping = False
@@ -178,77 +180,99 @@ def _run(command: list[str], *, cwd: Path, prompt: bytes, seconds: float,
             while block := pipe.read1(8192):
                 total += len(block)
                 if total > MAX_OUTPUT_BYTES:
-                    oversized.set()
+                    self.oversized.set()
                     break
                 if stdout:
-                    chunks.append(block)
+                    self.chunks.append(block)
                 for part in block.splitlines(keepends=True):
                     if not dropping:
                         pending += part
-                        if len(pending) > 16384:
+                        if len(pending) > _LINE_LIMIT:
                             pending = b""
                             dropping = True
                     if part.endswith((b"\n", b"\r")):
                         if not dropping:
-                            inspect_line(pending, stdout)
+                            self.inspect_line(pending, stdout)
                         pending = b""
                         dropping = False
             if pending and not dropping:
-                inspect_line(pending, stdout)
+                self.inspect_line(pending, stdout)
         except (OSError, ValueError):
             pass
 
-    def send_input():
-        try:
-            process.stdin.write(prompt)
-            process.stdin.close()
-        except (OSError, ValueError):
-            pass
-
-    readers = [threading.Thread(target=read_output, args=(pipe, stdout), daemon=True)
-               for pipe, stdout in ((process.stdout, True), (process.stderr, False))]
-    writer = threading.Thread(target=send_input, daemon=True)
-    for reader in readers:
-        reader.start()
-    writer.start()
-    deadline = started + seconds
-    diag["phase"] = "process_wait"
-
-    def check_limits():
-        if refused.is_set():
+    def check_limits(self, deadline: float) -> None:
+        if self.refused.is_set():
             raise AuxiliaryModelError("codex_turn_failed")
-        if oversized.is_set():
+        if self.oversized.is_set():
             raise AuxiliaryModelError("codex_output_limit")
         if time.monotonic() >= deadline:
             raise AuxiliaryModelError("timeout")
 
+
+def _send_input(process: subprocess.Popen, prompt: bytes) -> None:
+    try:
+        process.stdin.write(prompt)
+        process.stdin.close()
+    except (OSError, ValueError):
+        pass
+
+
+def _close_pipes(process: subprocess.Popen, readers: list[threading.Thread], writer: threading.Thread) -> None:
+    for reader in readers:
+        reader.join(timeout=.2)
+    writer.join(timeout=.2)
+    # Never block closing a pipe held by a surviving reader thread.
+    for reader, pipe in zip(readers, (process.stdout, process.stderr)):
+        if not reader.is_alive():
+            pipe.close()
+    if not writer.is_alive():
+        process.stdin.close()
+
+
+def _run(command: list[str], *, cwd: Path, prompt: bytes, seconds: float,
+         diagnostics: dict | None = None, environment: dict[str, str] | None = None) -> tuple[int, bytes]:
+    """Spawn, drain bounded pipes, enforce the deadline, then reap the whole tree.
+
+    Raw stdout is returned only to the decoder.  ``diagnostics`` receives
+    closed-vocabulary metadata only, even on timeout.
+    """
+    started = time.monotonic()
+    diag = diagnostics if diagnostics is not None else {}
+    diag.update(phase="spawn", event_types=[], error_categories=[], http_statuses=[],
+                elapsed_seconds=0.0, process_state="not_started", exit_code=None)
+    if seconds <= 0:
+        raise AuxiliaryModelError("timeout")
+    process = subprocess.Popen(command, cwd=cwd, env=_child_env() if environment is None else environment,
+                               stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                               start_new_session=os.name != "nt",
+                               creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    inspector = _StreamInspector(diag)
+    readers = [threading.Thread(target=inspector.read, args=(pipe, stdout), daemon=True)
+               for pipe, stdout in ((process.stdout, True), (process.stderr, False))]
+    writer = threading.Thread(target=_send_input, args=(process, prompt), daemon=True)
+    for thread in (*readers, writer):
+        thread.start()
+    deadline = started + seconds
+    diag["phase"] = "process_wait"
     try:
         while process.poll() is None:
-            check_limits()
+            inspector.check_limits(deadline)
             time.sleep(min(.02, max(.001, deadline - time.monotonic())))
         diag["phase"] = "pipe_drain"
         for reader in readers:
             reader.join(timeout=max(.001, deadline - time.monotonic()))
-        check_limits()
+        inspector.check_limits(deadline)
         if any(reader.is_alive() for reader in readers):
             raise AuxiliaryModelError("timeout")
         diag["phase"] = "complete"
-        return process.returncode, b"".join(chunks)
+        return process.returncode, b"".join(inspector.chunks)
     finally:
         diag["process_state"] = "still_running" if process.poll() is None else "exited"
         diag["exit_code"] = process.poll()
         try:
             _kill_tree(process)
         finally:
-            for reader in readers:
-                reader.join(timeout=.2)
-            writer.join(timeout=.2)
-            # Never block closing a pipe held by a surviving reader thread.
-            for reader, pipe in zip(readers, (process.stdout, process.stderr)):
-                if not reader.is_alive():
-                    pipe.close()
-            if not writer.is_alive():
-                process.stdin.close()
+            _close_pipes(process, readers, writer)
             diag["cleanup_process_state"] = "still_running" if process.poll() is None else "exited"
             diag["cleanup_exit_code"] = process.poll()
             diag["elapsed_seconds"] = round(time.monotonic() - started, 6)
@@ -343,43 +367,59 @@ def _command(route: CodexCliRouteConfig, directory: Path, catalog: Path) -> list
     return command + ["-"]
 
 
+class _Transcript:
+    """Fold the CLI's JSON event stream into one message, its usage and a status."""
+
+    def __init__(self, exit_code: int) -> None:
+        self.text: str | None = None
+        self.usage: tuple[int, int] | None = None
+        self.status = "codex_exit_nonzero" if exit_code else "codex_protocol"
+        self.completed = False
+        self.invalid = False
+
+    def ignore(self, kind: str, event: dict) -> None:
+        pass
+
+    def turn_completed(self, kind: str, event: dict) -> None:
+        values = event.get("usage", {})
+        pair = (values.get("input_tokens"), values.get("output_tokens"))
+        if all(type(v) is int and v >= 0 for v in pair):
+            self.usage = pair
+        if self.completed:
+            self.invalid = True
+        self.completed = True
+
+    def item(self, kind: str, event: dict) -> None:
+        item = event.get("item", {})
+        if item.get("type") not in {"agent_message", "reasoning"}:
+            self.invalid = True
+            self.status = "codex_tool_event"
+        if kind == "item.completed" and item.get("type") == "agent_message":
+            if self.text is not None or type(item.get("text")) is not str:
+                self.invalid = True
+            self.text = item.get("text")
+
+    def failed(self, kind: str, event: dict) -> None:
+        self.invalid = True
+        self.status = "codex_turn_failed"
+
+
 def _decode(raw: bytes, exit_code: int) -> tuple[str | None, tuple[int, int] | None, str]:
-    text = None
-    usage = None
-    status = "codex_exit_nonzero" if exit_code else "codex_protocol"
-    completed = False
-    invalid = False
+    transcript = _Transcript(exit_code)
     try:
         for line in raw.splitlines():
             event = json.loads(line)
-            kind = event.get("type")
-            if kind == "turn.completed":
-                values = event.get("usage", {})
-                pair = (values.get("input_tokens"), values.get("output_tokens"))
-                if all(type(v) is int and v >= 0 for v in pair):
-                    usage = pair
-                if completed:
-                    invalid = True
-                completed = True
-            elif kind in {"item.started", "item.updated", "item.completed"}:
-                item = event.get("item", {})
-                if item.get("type") not in {"agent_message", "reasoning"}:
-                    invalid = True
-                    status = "codex_tool_event"
-                if kind == "item.completed" and item.get("type") == "agent_message":
-                    if text is not None or type(item.get("text")) is not str:
-                        invalid = True
-                    text = item.get("text")
-            elif kind in {"error", "turn.failed"}:
-                invalid = True
-                status = "codex_turn_failed"
-            elif kind not in {"thread.started", "turn.started"}:
-                invalid = True
+            handler = _EVENT_HANDLERS.get(event.get("type"))
+            if handler is None:
+                transcript.invalid = True
+            else:
+                getattr(transcript, handler)(event.get("type"), event)
     except (ValueError, TypeError, AttributeError):
-        invalid = True
-    if not exit_code and not invalid and completed and text and usage is not None:
-        status = "codex_success"
-    return text, usage, status
+        transcript.invalid = True
+    if (not exit_code and not transcript.invalid and transcript.completed
+            and transcript.text and transcript.usage is not None):
+        transcript.status = "codex_success"
+    return transcript.text, transcript.usage, transcript.status
 
 
 class CodexCliConsolidationAdapter:
@@ -399,17 +439,8 @@ class CodexCliConsolidationAdapter:
         return adapter
 
     def propose(self, messages: list[dict], *, remaining_seconds: float) -> str:
-        if type(remaining_seconds) not in (int, float) or not math.isfinite(remaining_seconds) or remaining_seconds <= 0:
-            raise AuxiliaryModelError("timeout")
-        if not isinstance(messages, list) or not messages:
-            raise AuxiliaryModelError("input_invalid")
-        for message in messages:
-            if (not isinstance(message, dict) or set(message) != {"role", "content"}
-                    or message["role"] not in {"system", "user", "assistant", "tool"}
-                    or type(message["content"]) is not str):
-                raise AuxiliaryModelError("input_invalid")
-            if contains_secret_like_text(message["content"]):
-                raise AuxiliaryModelError("sensitive_request")
+        validate_timeout_seconds(remaining_seconds)
+        validate_chat_messages(messages)
         prompt = json.dumps(messages, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         if len(prompt) > self.route.subscription_budget.max_request_bytes:
             raise AuxiliaryModelError("input_invalid")

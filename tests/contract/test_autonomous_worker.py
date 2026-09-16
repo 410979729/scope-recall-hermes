@@ -8,8 +8,8 @@ import pytest
 
 from scope_recall.core.worker import WorkerConfig, drain_worker
 from scope_recall.runtime.instance import RuntimeInstanceConfig
-from scope_recall.runtime.worker_entry import (_reserve_daily_work, persist_worker_status,
-                                              _now, run_worker)
+from scope_recall.runtime.validation import utc_now as _now
+from scope_recall.runtime.worker_entry import _reserve_daily_work, persist_worker_status, run_worker
 from test_v11_worker import worker_app, app, capture, work_rows, _mark_embed_done
 from test_runtime_worker_entry import _binding, _config_payload, _write_config
 from scope_recall.core import CoreConfig, MemoryCore
@@ -153,7 +153,7 @@ def test_daily_processing_cap_never_resets_model_budget_and_resets_by_day(tmp_pa
     # worker_entry and the string target stopped referring to the same
     # globals, so the clock moved for the module and not for the caller and
     # the day never rolled over. Order-dependent green is not green.
-    monkeypatch.setitem(_reserve_daily_work.__globals__, '_now', lambda: '2030-01-01T00:00:00Z')
+    monkeypatch.setitem(_reserve_daily_work.__globals__, 'utc_now', lambda: '2030-01-01T00:00:00Z')
     assert _reserve_daily_work(cfg)[2] == 2
     assert not (binding.data_directory/'auxiliary-budget.sqlite3').exists()
 
