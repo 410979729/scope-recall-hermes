@@ -9,8 +9,6 @@ identity.
 """
 from __future__ import annotations
 
-from dataclasses import asdict, is_dataclass
-import json
 from pathlib import Path
 from typing import Annotated, Any, Literal
 import uuid
@@ -23,13 +21,27 @@ from pydantic import Field, StrictInt, StrictStr
 from scope_recall.contracts import ContractError, Origin, SourceEvent, TrustedContext, validate_model_request
 from scope_recall.core import CoreConfig, MemoryCore
 from scope_recall.core.read_views import DEFAULT_BUDGET_TOKENS, DEFAULT_MAX_ITEMS
+from scope_recall.core.trace import TRACE_GUIDANCE, fence_trace_epoch
 from ..runtime_wiring import READ_VIEW_BUDGET_GUIDANCE, RECALL_CONTEXT_GUIDANCE
+from ..tool_common import (
+    FENCED_ENTITY,
+    FENCED_PROFILE,
+    FENCED_RECALL,
+    MAX_CONTENT,
+    MAX_REFS,
+    PROTOCOL_VERSION,
+    check_protocol,
+    envelope,
+    fence_epoch,
+    request_id as bounded_request_id,
+    revision_ref,
+    strict_object,
+)
 from .config import CodexInstallationConfig
 from .identity import CodexRuntimeAudience, resolve_runtime_audience, trusted_context
 from .runtime_wiring import TrustedHostRuntime, attach_trusted_host_runtime
 
 
-PROTOCOL_VERSION = "1.1"
 OUTPUT_ORIGIN = "memory_reinjection"
 RECOMMENDED_EXPLICIT_BUDGET_TOKENS = 4096
 BUDGET_RETRY_HINT = "retry_once_with_budget_tokens_4096"
@@ -40,107 +52,24 @@ _RECALL_BUDGET_GUIDANCE = (
     "Explicit smaller values are honored and may clip every item. "
     "If gaps include budget_token_cap or budget_packet_cap, retry once with budget_tokens=4096."
 )
-_MAX_CONTENT = 8192
-_MAX_REFS = 32
-_MAX_JSON_BYTES = 2 * 1024 * 1024
-_MAX_JSON_DEPTH = 32
 _BUDGET_CAP_GAPS = ("budget_token_cap", "budget_packet_cap")
 
-
-def _error(code: str, field: str = "payload") -> ContractError:
-    return ContractError(code, field)
-
-
-def _object(value: object, *, allowed: frozenset[str], required: frozenset[str] = frozenset()) -> dict[str, Any]:
-    """Make MCP's untyped JSON object strict before passing it to Core."""
-    if type(value) is not dict:
-        raise _error("INPUT_INVALID", "object")
-    keys = frozenset(value)
-    if not keys <= allowed:
-        raise _error("INPUT_INVALID", "unknown_field")
-    if not required <= keys:
-        raise _error("INPUT_INVALID", "required_field")
-    # The SDK has already decoded JSON, but this gives us the same bounded
-    # JSON/depth semantics as the public contracts and removes custom objects.
-    def walk(item: object, depth: int = 0) -> None:
-        if depth > _MAX_JSON_DEPTH:
-            raise _error("INPUT_INVALID", "nesting")
-        if type(item) in (str, int, float, bool) or item is None:
-            return
-        if type(item) is list:
-            for child in item:
-                walk(child, depth + 1)
-            return
-        if type(item) is dict:
-            for key, child in item.items():
-                if type(key) is not str:
-                    raise _error("INPUT_INVALID", "json_key")
-                walk(child, depth + 1)
-            return
-        raise _error("INPUT_INVALID", "json_value")
-
-    try:
-        encoded = json.dumps(value, ensure_ascii=False, allow_nan=False)
-        if len(encoded.encode("utf-8")) > _MAX_JSON_BYTES:
-            raise _error("INPUT_INVALID", "size")
-        walk(value)
-        decoded = json.loads(encoded)
-    except ContractError:
-        raise
-    except (TypeError, ValueError, RecursionError):
-        raise _error("INPUT_INVALID", "json_value") from None
-    if type(decoded) is not dict:
-        raise _error("INPUT_INVALID", "object")
-    return decoded
-
-
-def _protocol(payload: dict[str, Any]) -> None:
-    if payload.get("protocol_version") != PROTOCOL_VERSION:
-        raise _error("INPUT_INVALID", "protocol_version")
-
-
-def _request_id(payload: dict[str, Any]) -> str:
-    value = payload.get("request_id")
-    if value is None:
-        return f"mcp-call:{uuid.uuid4().hex}"
-    if type(value) is not str or not 1 <= len(value) <= 100:
-        raise _error("INPUT_INVALID", "request_id")
-    return value
-
-
-def _json_value(value: object) -> object:
-    if is_dataclass(value) and not isinstance(value, type):
-        return {str(k): _json_value(v) for k, v in asdict(value).items()}
-    if isinstance(value, dict):
-        return {str(k): _json_value(v) for k, v in value.items()}
-    if isinstance(value, (tuple, list)):
-        return [_json_value(item) for item in value]
-    if isinstance(value, Path):
-        return str(value)
-    return value
-
-
-def _envelope(request_id: str, result: object, *, capability_gaps: tuple[str, ...] = ()) -> dict[str, Any]:
-    converted = _json_value(result)
-    if len(json.dumps(converted, ensure_ascii=False, allow_nan=False).encode("utf-8")) > _MAX_JSON_BYTES:
-        raise _error("OUTPUT_LIMIT", "result")
-    return {
-        "protocol_version": PROTOCOL_VERSION,
-        "request_id": request_id,
-        "origin": OUTPUT_ORIGIN,
-        "capability_gaps": list(capability_gaps),
-        "result": converted,
-    }
-
-
-def _scrub_no_content(value: object) -> object:
-    """Remove every rendered/body surface from a raced stale packet."""
-    surfaces = {"canonical_text", "context", "rendered", "additionalContext", "injection_text", "text", "body", "content"}
-    if isinstance(value, dict):
-        return {key: ("" if key in surfaces else _scrub_no_content(item)) for key, item in value.items()}
-    if isinstance(value, list):
-        return [_scrub_no_content(item) for item in value]
-    return value
+_READ_ONLY = ToolAnnotations(read_only_hint=True, destructive_hint=False, idempotent_hint=True, open_world_hint=False)
+#: The public tool surface in registration order.  Each entry names the
+#: ``CodexMCPServer`` method of the same name: the SDK derives the advertised
+#: argument/output schema titles from the function name, so the method name is
+#: part of the frozen contract.
+_TOOLS: tuple[tuple[str, str, ToolAnnotations], ...] = (
+    ("recall", "Run the shared bounded read-only recall pipeline. Protocol version 1.1. " + _RECALL_BUDGET_GUIDANCE + " " + RECALL_CONTEXT_GUIDANCE, _READ_ONLY),
+    ("inspect", "Inspect one visible, versioned object or source. Protocol version 1.1.", _READ_ONLY),
+    ("profile", "Read-only categorized current-fact profile for one explicitly named subject. Uses only admitted consolidated claims; does not dump raw chat or USER.md/MEMORY.md. Protocol version 1.1. " + READ_VIEW_BUDGET_GUIDANCE + " " + RECALL_CONTEXT_GUIDANCE, _READ_ONLY),
+    ("trace", TRACE_GUIDANCE, _READ_ONLY),
+    ("entity", "Read-only exact one-hop entity view. action=probe returns current facts about the subject; action=related returns direct recorded statements. Incoming matches full scalar value_text only. No multi-hop traversal or inferred identity merge. Protocol version 1.1. " + READ_VIEW_BUDGET_GUIDANCE + " " + RECALL_CONTEXT_GUIDANCE, _READ_ONLY),
+    ("propose_memory", "Record an assistant-visible candidate without promoting it to authority. Protocol version 1.1.", ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=False, open_world_hint=False)),
+    ("revise", "Apply a Core-authorized, versioned revision. Protocol version 1.1.", ToolAnnotations(read_only_hint=False, destructive_hint=True, idempotent_hint=False, open_world_hint=False)),
+    ("forget", "Apply a Core-authorized suppress or delete request. Protocol version 1.1.", ToolAnnotations(read_only_hint=False, destructive_hint=True, idempotent_hint=True, open_world_hint=False)),
+    ("status", "Read bounded Core status and adapter capability gaps. Protocol version 1.1.", _READ_ONLY),
+)
 
 
 def _budget_retry_hint(packet: object) -> None:
@@ -158,21 +87,6 @@ def _budget_retry_hint(packet: object) -> None:
         return
     if BUDGET_RETRY_HINT not in needs:
         needs.append(BUDGET_RETRY_HINT)
-
-
-def _revision_ref(value: str) -> tuple[str, int | None]:
-    if type(value) is not str or not 1 <= len(value) <= 240:
-        raise _error("INPUT_INVALID", "ref")
-    if "@" not in value:
-        return value, None
-    ref, raw = value.rsplit("@", 1)
-    try:
-        revision = int(raw)
-    except ValueError:
-        raise _error("INPUT_INVALID", "ref") from None
-    if not ref or revision < 1 or raw != str(revision):
-        raise _error("INPUT_INVALID", "ref")
-    return ref, revision
 
 
 class CodexMCPServer:
@@ -236,10 +150,36 @@ class CodexMCPServer:
         )
         self._register_tools()
 
+    def _register_tools(self) -> None:
+        for name, description, annotations in _TOOLS:
+            self.server.tool(name=name, description=description, annotations=annotations, structured_output=True)(getattr(self, name))
+            # mcp 2.1 builds argument models from signatures with Pydantic's
+            # default ``extra=ignore``.  Public tools must reject forged
+            # identity, path, scope, and host-session fields, so tighten the
+            # generated model and the advertised JSON Schema.
+            tool = self.server._tool_manager.get_tool(name)
+            tool.fn_metadata.arg_model.model_config["extra"] = "forbid"
+            tool.fn_metadata.arg_model.model_rebuild(force=True)
+            tool.parameters["additionalProperties"] = False
+
+    # -- trusted binding -------------------------------------------------
+
     def _context(self, origin: Origin = "memory_reinjection") -> TrustedContext:
         if origin == self.context.actor_origin:
             return self.context
         return trusted_context(self.config, self.audience, session_id=self.session_id, actor_origin=origin)
+
+    @staticmethod
+    def _thread_id(ctx: Context) -> str | None:
+        """Codex's reserved MCP thread metadata, or None when absent or malformed."""
+        meta = getattr(ctx.request_context, "meta", None) or {}
+        value = meta.get("threadId") if isinstance(meta, dict) else None
+        if not isinstance(value, str):
+            return None
+        try:
+            return str(uuid.UUID(value))
+        except ValueError:
+            return None
 
     def _request_context(self, ctx: Context, *, mutation: bool = False, origin: Origin = "memory_reinjection") -> TrustedContext:
         """Bind one call to Codex's reserved MCP thread metadata.
@@ -249,373 +189,232 @@ class CodexMCPServer:
         while mutations fail closed because Core's same-session human evidence
         check cannot be satisfied by the independent server session.
         """
-        meta = getattr(ctx.request_context, "meta", None) or {}
-        value = meta.get("threadId") if isinstance(meta, dict) else None
-        if not isinstance(value, str):
+        thread_id = self._thread_id(ctx)
+        if thread_id is None:
             if mutation:
-                raise _error("ACCESS_DENIED", "codex_thread_id")
-            return self._context(origin)
-        try:
-            thread_id = str(uuid.UUID(value))
-        except (ValueError, AttributeError, TypeError):
-            if mutation:
-                raise _error("ACCESS_DENIED", "codex_thread_id") from None
+                raise ContractError("ACCESS_DENIED", "codex_thread_id")
             return self._context(origin)
         if self._host_runtime is not None:
             self._host_runtime.rebind_session(thread_id, self.audience.allowed_scope_ids)
-        return trusted_context(
-            self.config,
-            self.audience,
-            # Codex Hook stores the raw host session_id; MCP must use the same
-            # value so Core current_human evidence can interoperate.
-            session_id=thread_id,
-            actor_origin=origin,
+        # Codex Hook stores the raw host session_id; MCP must use the same
+        # value so Core current_human evidence can interoperate.
+        return trusted_context(self.config, self.audience, session_id=thread_id, actor_origin=origin)
+
+    def _capability_gaps(self, ctx: Context) -> tuple[str, ...]:
+        return () if self._thread_id(ctx) is not None else ("mcp_session_is_not_codex_conversation_id",)
+
+    # -- per-call plumbing -----------------------------------------------
+
+    def _request(self, **fields: Any) -> tuple[dict[str, Any], str]:
+        """Rebuild the typed call as a strict v1.1 JSON object and pin its request id.
+
+        Unset optionals are dropped so Core sees what a raw JSON caller would
+        have sent.  The SDK already typed every field; this re-applies the
+        bounded size/depth contract that free-form values like ``new_value``
+        still need, on the same code path Hermes uses.
+        """
+        body = strict_object({key: value for key, value in fields.items() if value is not None}, allowed=frozenset(fields))
+        check_protocol(body)
+        call_id = bounded_request_id(body, prefix="mcp-call")
+        body["request_id"] = call_id
+        return body, call_id
+
+    def _reply(self, ctx: Context, call_id: str, result: object) -> dict[str, Any]:
+        return envelope(call_id, result, origin=OUTPUT_ORIGIN, capability_gaps=self._capability_gaps(ctx))
+
+    # -- tools (method name == MCP tool name, see _TOOLS) ----------------
+
+    def recall(
+        self,
+        ctx: Context,
+        protocol_version: Literal["1.1"],
+        query: StrictStr,
+        mode: Literal["auto", "current", "history", "as_of", "method"],
+        max_items: StrictInt,
+        budget_tokens: Annotated[StrictInt, Field(description=_RECALL_BUDGET_GUIDANCE)] = RECOMMENDED_EXPLICIT_BUDGET_TOKENS,
+        as_of: StrictStr | None = None,
+        focus_refs: list[StrictStr] | None = None,
+        request_id: StrictStr | None = None,
+    ) -> dict[str, Any]:
+        body, call_id = self._request(
+            protocol_version=protocol_version, request_id=request_id, query=query, mode=mode,
+            max_items=max_items, budget_tokens=budget_tokens, as_of=as_of, focus_refs=focus_refs,
         )
+        # validate_model_request remains the single DTO authority; no MCP
+        # identity fields are merged into this request.
+        context = self._request_context(ctx)
+        validate_model_request("recall_request", body, context)
+        # Explicit tool calls get the bounded deep-search ceiling.  Auto
+        # mode is still clamped by the trusted CoreConfig budget.
+        packet = self.core.recall_packet(context, body, deadline_seconds=5.0)
+        packet = fence_epoch(packet, self.core.memory_epoch(context), FENCED_RECALL)
+        _budget_retry_hint(packet)
+        return self._reply(ctx, call_id, packet)
 
-    @staticmethod
-    def _capability_gaps(ctx: Context) -> tuple[str, ...]:
-        meta = getattr(ctx.request_context, "meta", None) or {}
-        value = meta.get("threadId") if isinstance(meta, dict) else None
-        if isinstance(value, str):
-            try:
-                uuid.UUID(value)
-                return ()
-            except (ValueError, AttributeError, TypeError):
-                pass
-        return ("mcp_session_is_not_codex_conversation_id",)
+    def inspect(self, ctx: Context, protocol_version: Literal["1.1"], ref: StrictStr, limit: StrictInt = 24, request_id: StrictStr | None = None) -> dict[str, Any]:
+        body, call_id = self._request(protocol_version=protocol_version, request_id=request_id, ref=ref, limit=limit)
+        context = self._request_context(ctx)
+        ref, revision = revision_ref(body["ref"])
+        if not 1 <= body["limit"] <= 24:
+            raise ContractError("INPUT_INVALID", "limit")
+        inspected = self.core.inspect_object(context, ref, revision, limit=body["limit"])
+        result = {"kind": inspected.kind, "ref": inspected.ref, "revision": inspected.revision, "value": inspected.value, "memory_epoch": inspected.memory_epoch}
+        return self._reply(ctx, call_id, result)
 
-    def _register_tools(self) -> None:
-        @self.server.tool(name="recall", description="Run the shared bounded read-only recall pipeline. Protocol version 1.1. " + _RECALL_BUDGET_GUIDANCE + " " + RECALL_CONTEXT_GUIDANCE, annotations=ToolAnnotations(read_only_hint=True, destructive_hint=False, idempotent_hint=True, open_world_hint=False), structured_output=True)
-        def recall(
-            ctx: Context,
-            protocol_version: Literal["1.1"],
-            query: StrictStr,
-            mode: Literal["auto", "current", "history", "as_of", "method"],
-            max_items: StrictInt,
-            budget_tokens: Annotated[StrictInt, Field(description=_RECALL_BUDGET_GUIDANCE)] = RECOMMENDED_EXPLICIT_BUDGET_TOKENS,
-            as_of: StrictStr | None = None,
-            focus_refs: list[StrictStr] | None = None,
-            request_id: StrictStr | None = None,
-        ) -> dict[str, Any]:
-            payload: dict[str, Any] = dict(protocol_version=protocol_version, query=query, mode=mode,
-                           max_items=max_items, budget_tokens=budget_tokens)
-            if request_id is not None:
-                payload["request_id"] = request_id
-            if as_of is not None:
-                payload["as_of"] = as_of
-            if focus_refs is not None:
-                payload["focus_refs"] = focus_refs
-            body = _object(
-                payload,
-                allowed=frozenset({"protocol_version", "request_id", "query", "mode", "as_of", "max_items", "budget_tokens", "focus_refs"}),
-                required=frozenset({"protocol_version", "query", "mode", "max_items", "budget_tokens"}),
-            )
-            _protocol(body)
-            call_id: str = _request_id(body)
-            body["request_id"] = call_id
-            # validate_model_request remains the single DTO authority; no MCP
-            # identity fields are merged into this request.
-            call_context = self._request_context(ctx)
-            validate_model_request("recall_request", body, call_context)
-            # Explicit tool calls get the bounded deep-search ceiling.  Auto
-            # mode is still clamped by the trusted CoreConfig budget.
-            packet = self.core.recall_packet(call_context, body, deadline_seconds=5.0)
-            # A mutation can race the read-only compiler.  Never hand a stale
-            # packet to a host: the caller can retry against the new epoch.
-            current_epoch = self.core.memory_epoch(call_context)
-            if packet.get("memory_epoch") is not None and packet["memory_epoch"] != current_epoch:
-                scrubbed = _scrub_no_content(packet)
-                packet = dict(scrubbed) if isinstance(scrubbed, dict) else {}
-                packet.update(
-                    status="unavailable",
-                    memory_epoch=current_epoch,
-                    items=[],
-                    gaps=[*packet.get("gaps", []), "memory_epoch_changed_before_delivery"],
-                    answerability="unknown",
-                    coverage="unknown",
-                    unmet_needs=[*packet.get("unmet_needs", []), "retry_against_current_epoch"],
-                )
-            _budget_retry_hint(packet)
-            return _envelope(call_id, packet, capability_gaps=self._capability_gaps(ctx))
+    def profile(
+        self,
+        ctx: Context,
+        protocol_version: Literal["1.1"],
+        subject: StrictStr,
+        max_items: Annotated[StrictInt, Field(ge=1, le=30)] = DEFAULT_MAX_ITEMS,
+        budget_tokens: Annotated[StrictInt, Field(description=READ_VIEW_BUDGET_GUIDANCE)] = DEFAULT_BUDGET_TOKENS,
+        request_id: StrictStr | None = None,
+    ) -> dict[str, Any]:
+        body, call_id = self._request(
+            protocol_version=protocol_version, request_id=request_id, subject=subject,
+            max_items=max_items, budget_tokens=budget_tokens,
+        )
+        context = self._request_context(ctx)
+        view = self.core.profile(context, body)
+        view = fence_epoch(view, self.core.status(context).memory_epoch, FENCED_PROFILE)
+        return self._reply(ctx, call_id, view)
 
-        @self.server.tool(name="inspect", description="Inspect one visible, versioned object or source. Protocol version 1.1.", annotations=ToolAnnotations(read_only_hint=True, destructive_hint=False, idempotent_hint=True, open_world_hint=False), structured_output=True)
-        def inspect(ctx: Context, protocol_version: Literal["1.1"], ref: StrictStr, limit: StrictInt = 24, request_id: StrictStr | None = None) -> dict[str, Any]:
-            payload = dict(protocol_version=protocol_version, ref=ref, limit=limit)
-            if request_id is not None:
-                payload["request_id"] = request_id
-            body = _object(
-                payload,
-                allowed=frozenset({"protocol_version", "request_id", "ref", "limit"}),
-                required=frozenset({"protocol_version", "ref"}),
-            )
-            _protocol(body)
-            call_id: str = _request_id(body)
-            call_context = self._request_context(ctx)
-            ref, revision = _revision_ref(body["ref"])
-            limit = body.get("limit", 24)
-            if type(limit) is not int or not 1 <= limit <= 24:
-                raise _error("INPUT_INVALID", "limit")
-            inspected = self.core.inspect_object(call_context, ref, revision, limit=limit)
-            return _envelope(call_id, {"kind": inspected.kind, "ref": inspected.ref, "revision": inspected.revision, "value": inspected.value, "memory_epoch": inspected.memory_epoch}, capability_gaps=self._capability_gaps(ctx))
+    def trace(
+        self,
+        ctx: Context,
+        protocol_version: Literal["1.1"],
+        subject: StrictStr,
+        target: StrictStr | None = None,
+        max_hops: StrictInt = 2,
+        max_nodes: StrictInt = 24,
+        max_paths: StrictInt = 12,
+        direction: Literal["incoming", "outgoing", "both"] = "both",
+        budget_bytes: StrictInt = 16384,
+        request_id: StrictStr | None = None,
+    ) -> dict[str, Any]:
+        body, call_id = self._request(
+            protocol_version=protocol_version, request_id=request_id, subject=subject, target=target,
+            max_hops=max_hops, max_nodes=max_nodes, max_paths=max_paths, direction=direction, budget_bytes=budget_bytes,
+        )
+        context = self._request_context(ctx)
+        view = self.core.trace(context, body)
+        view = fence_trace_epoch(view, self.core.status(context).memory_epoch)
+        return self._reply(ctx, call_id, view)
 
-        @self.server.tool(name="profile", description="Read-only categorized current-fact profile for one explicitly named subject. Uses only admitted consolidated claims; does not dump raw chat or USER.md/MEMORY.md. Protocol version 1.1. " + READ_VIEW_BUDGET_GUIDANCE + " " + RECALL_CONTEXT_GUIDANCE, annotations=ToolAnnotations(read_only_hint=True, destructive_hint=False, idempotent_hint=True, open_world_hint=False), structured_output=True)
-        def profile(
-            ctx: Context,
-            protocol_version: Literal["1.1"],
-            subject: StrictStr,
-            max_items: Annotated[StrictInt, Field(ge=1, le=30)] = DEFAULT_MAX_ITEMS,
-            budget_tokens: Annotated[StrictInt, Field(description=READ_VIEW_BUDGET_GUIDANCE)] = DEFAULT_BUDGET_TOKENS,
-            request_id: StrictStr | None = None,
-        ) -> dict[str, Any]:
-            payload: dict[str, Any] = dict(
-                protocol_version=protocol_version,
-                subject=subject,
-                max_items=max_items,
-                budget_tokens=budget_tokens,
-            )
-            if request_id is not None:
-                payload["request_id"] = request_id
-            body = _object(
-                payload,
-                allowed=frozenset({"protocol_version", "request_id", "subject", "max_items", "budget_tokens"}),
-                required=frozenset({"protocol_version", "subject"}),
-            )
-            _protocol(body)
-            call_id: str = _request_id(body)
-            body["request_id"] = call_id
-            call_context = self._request_context(ctx)
-            view = self.core.profile(call_context, body)
-            current_epoch = self.core.status(call_context).memory_epoch
-            if view.get("memory_epoch") is not None and view["memory_epoch"] != current_epoch:
-                scrubbed = _scrub_no_content(view)
-                view = dict(scrubbed) if isinstance(scrubbed, dict) else {}
-                view.update(
-                    status="unavailable",
-                    memory_epoch=current_epoch,
-                    resolved_subject=None,
-                    alias_resolution="none",
-                    sections={"facts": [], "preferences": [], "constraints": [], "decisions": [], "pending_intentions": []},
-                    disputed=[],
-                    gaps=[*view.get("gaps", []), "memory_epoch_changed_before_delivery"],
-                    answerability="unknown",
-                    coverage="unknown",
-                    unmet_needs=[*view.get("unmet_needs", []), "retry_against_current_epoch"],
-                )
-            return _envelope(call_id, view, capability_gaps=self._capability_gaps(ctx))
+    def entity(
+        self,
+        ctx: Context,
+        protocol_version: Literal["1.1"],
+        subject: StrictStr,
+        action: Literal["probe", "related"],
+        direction: Literal["outgoing", "incoming", "both"] = "both",
+        predicate: StrictStr | None = None,
+        max_items: Annotated[StrictInt, Field(ge=1, le=30)] = DEFAULT_MAX_ITEMS,
+        budget_tokens: Annotated[StrictInt, Field(description=READ_VIEW_BUDGET_GUIDANCE)] = DEFAULT_BUDGET_TOKENS,
+        request_id: StrictStr | None = None,
+    ) -> dict[str, Any]:
+        body, call_id = self._request(
+            protocol_version=protocol_version, request_id=request_id, subject=subject, action=action,
+            direction=direction, predicate=predicate, max_items=max_items, budget_tokens=budget_tokens,
+        )
+        context = self._request_context(ctx)
+        view = self.core.entity(context, body)
+        view = fence_epoch(view, self.core.status(context).memory_epoch, FENCED_ENTITY)
+        return self._reply(ctx, call_id, view)
 
-        from ...core.trace import TRACE_GUIDANCE, fence_trace_epoch
+    def propose_memory(
+        self,
+        ctx: Context,
+        protocol_version: Literal["1.1"],
+        content: StrictStr,
+        evidence_refs: list[StrictStr] | None = None,
+        reason: StrictStr | None = None,
+        request_id: StrictStr | None = None,
+    ) -> dict[str, Any]:
+        body, call_id = self._request(
+            protocol_version=protocol_version, request_id=request_id, content=content,
+            evidence_refs=evidence_refs, reason=reason,
+        )
+        context = self._request_context(ctx, mutation=True, origin="assistant_visible")
+        if not 1 <= len(body["content"]) <= MAX_CONTENT:
+            raise ContractError("INPUT_INVALID", "content")
+        refs = body.get("evidence_refs", [])
+        if len(refs) > MAX_REFS or any(not 1 <= len(ref) <= 240 for ref in refs):
+            raise ContractError("INPUT_INVALID", "evidence_refs")
+        if len(body.get("reason") or "") > 1024:
+            raise ContractError("INPUT_INVALID", "reason")
+        if self.audience.capture_scope_id is None:
+            raise ContractError("ACCESS_DENIED", "capture_scope")
+        now = self.core.clock.utc_now()
+        event: SourceEvent = {
+            "protocol_version": PROTOCOL_VERSION,
+            "source_event_key": f"codex-mcp:{self.session_id}:{call_id}",
+            "source_revision": 1,
+            "origin": "assistant_visible",
+            "role": "assistant",
+            "content": body["content"],
+            "occurred_at": now,
+            "recorded_at": now,
+            "time_precision": "instant",
+            "capture_state": "complete",
+            "evidence_refs": list(refs),
+        }
+        receipt = self.core.record_event(context, event, scope_id=self.audience.capture_scope_id, remaining_seconds=1.0)
+        return self._reply(ctx, call_id, {"candidate": True, "authority": "assistant_visible_only", "receipt": receipt})
 
-        @self.server.tool(name="trace", description=TRACE_GUIDANCE, annotations=ToolAnnotations(read_only_hint=True, destructive_hint=False, idempotent_hint=True, open_world_hint=False), structured_output=True)
-        def trace(ctx: Context, protocol_version: Literal["1.1"], subject: StrictStr,
-                  target: StrictStr | None = None, max_hops: StrictInt = 2,
-                  max_nodes: StrictInt = 24, max_paths: StrictInt = 12,
-                  direction: Literal["incoming", "outgoing", "both"] = "both",
-                  budget_bytes: StrictInt = 16384, request_id: StrictStr | None = None) -> dict[str, Any]:
-            payload = dict(protocol_version=protocol_version, subject=subject, max_hops=max_hops,
-                           max_nodes=max_nodes, max_paths=max_paths, direction=direction, budget_bytes=budget_bytes)
-            if target is not None:
-                payload["target"] = target
-            if request_id is not None:
-                payload["request_id"] = request_id
-            _protocol(payload)
-            call_id = _request_id(payload)
-            payload["request_id"] = call_id
-            context = self._request_context(ctx)
-            view = self.core.trace(context, payload)
-            view = fence_trace_epoch(view, self.core.status(context).memory_epoch)
-            return _envelope(call_id, view, capability_gaps=self._capability_gaps(ctx))
+    def revise(
+        self,
+        ctx: Context,
+        protocol_version: Literal["1.1"],
+        target_ref: StrictStr,
+        expected_revision: StrictInt,
+        new_value: Any,
+        conditions: list[StrictStr],
+        source_evidence_refs: list[StrictStr],
+        valid_from: StrictStr | None,
+        request_id: StrictStr | None = None,
+    ) -> dict[str, Any]:
+        body, call_id = self._request(
+            protocol_version=protocol_version, request_id=request_id, target_ref=target_ref,
+            expected_revision=expected_revision, new_value=new_value, conditions=conditions,
+            source_evidence_refs=source_evidence_refs,
+        )
+        body["valid_from"] = valid_from  # required by the DTO; None is a legitimate value, not "unset"
+        body.pop("request_id")
+        # The stdio server has no attested Codex user turn.  Core still
+        # requires its own human evidence and expected revision before
+        # changing state.
+        receipt = self.core.revise(self._request_context(ctx, mutation=True, origin="human_direct"), body, remaining_seconds=1.0)
+        return self._reply(ctx, call_id, receipt)
 
-        @self.server.tool(name="entity", description="Read-only exact one-hop entity view. action=probe returns current facts about the subject; action=related returns direct recorded statements. Incoming matches full scalar value_text only. No multi-hop traversal or inferred identity merge. Protocol version 1.1. " + READ_VIEW_BUDGET_GUIDANCE + " " + RECALL_CONTEXT_GUIDANCE, annotations=ToolAnnotations(read_only_hint=True, destructive_hint=False, idempotent_hint=True, open_world_hint=False), structured_output=True)
-        def entity(
-            ctx: Context,
-            protocol_version: Literal["1.1"],
-            subject: StrictStr,
-            action: Literal["probe", "related"],
-            direction: Literal["outgoing", "incoming", "both"] = "both",
-            predicate: StrictStr | None = None,
-            max_items: Annotated[StrictInt, Field(ge=1, le=30)] = DEFAULT_MAX_ITEMS,
-            budget_tokens: Annotated[StrictInt, Field(description=READ_VIEW_BUDGET_GUIDANCE)] = DEFAULT_BUDGET_TOKENS,
-            request_id: StrictStr | None = None,
-        ) -> dict[str, Any]:
-            payload: dict[str, Any] = dict(
-                protocol_version=protocol_version,
-                subject=subject,
-                action=action,
-                direction=direction,
-                max_items=max_items,
-                budget_tokens=budget_tokens,
-            )
-            if request_id is not None:
-                payload["request_id"] = request_id
-            if predicate is not None:
-                payload["predicate"] = predicate
-            body = _object(
-                payload,
-                allowed=frozenset({
-                    "protocol_version", "request_id", "subject", "action", "direction",
-                    "predicate", "max_items", "budget_tokens",
-                }),
-                required=frozenset({"protocol_version", "subject", "action"}),
-            )
-            _protocol(body)
-            call_id: str = _request_id(body)
-            body["request_id"] = call_id
-            call_context = self._request_context(ctx)
-            view = self.core.entity(call_context, body)
-            current_epoch = self.core.status(call_context).memory_epoch
-            if view.get("memory_epoch") is not None and view["memory_epoch"] != current_epoch:
-                scrubbed = _scrub_no_content(view)
-                view = dict(scrubbed) if isinstance(scrubbed, dict) else {}
-                view.update(
-                    status="unavailable",
-                    memory_epoch=current_epoch,
-                    resolved_subject=None,
-                    alias_resolution="none",
-                    statements=[],
-                    gaps=[*view.get("gaps", []), "memory_epoch_changed_before_delivery"],
-                    answerability="unknown",
-                    coverage="unknown",
-                    unmet_needs=[*view.get("unmet_needs", []), "retry_against_current_epoch"],
-                )
-            return _envelope(call_id, view, capability_gaps=self._capability_gaps(ctx))
+    def forget(
+        self,
+        ctx: Context,
+        protocol_version: Literal["1.1"],
+        target_refs: list[StrictStr],
+        mode: Literal["suppress", "delete"],
+        expected_revisions: dict[StrictStr, StrictInt],
+        reason: StrictStr | None = None,
+        request_id: StrictStr | None = None,
+    ) -> dict[str, Any]:
+        body, call_id = self._request(
+            protocol_version=protocol_version, request_id=request_id, target_refs=target_refs,
+            mode=mode, expected_revisions=expected_revisions, reason=reason,
+        )
+        body.pop("request_id")
+        receipt = self.core.forget(self._request_context(ctx, mutation=True, origin="human_direct"), body, remaining_seconds=1.0)
+        return self._reply(ctx, call_id, receipt)
 
-        @self.server.tool(name="propose_memory", description="Record an assistant-visible candidate without promoting it to authority. Protocol version 1.1.", annotations=ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=False, open_world_hint=False), structured_output=True)
-        def propose_memory(
-            ctx: Context,
-            protocol_version: Literal["1.1"],
-            content: StrictStr,
-            evidence_refs: list[StrictStr] | None = None,
-            reason: StrictStr | None = None,
-            request_id: StrictStr | None = None,
-        ) -> dict[str, Any]:
-            payload: dict[str, Any] = dict(protocol_version=protocol_version, content=content)
-            if request_id is not None:
-                payload["request_id"] = request_id
-            if evidence_refs is not None:
-                payload["evidence_refs"] = evidence_refs
-            if reason is not None:
-                payload["reason"] = reason
-            body = _object(
-                payload,
-                allowed=frozenset({"protocol_version", "request_id", "content", "evidence_refs", "reason"}),
-                required=frozenset({"protocol_version", "content"}),
-            )
-            _protocol(body)
-            call_id: str = _request_id(body)
-            call_context = self._request_context(ctx, mutation=True, origin="assistant_visible")
-            content = body["content"]
-            if type(content) is not str or not 1 <= len(content) <= _MAX_CONTENT:
-                raise _error("INPUT_INVALID", "content")
-            refs = body.get("evidence_refs", [])
-            if type(refs) is not list or len(refs) > _MAX_REFS or any(type(ref) is not str or not 1 <= len(ref) <= 240 for ref in refs):
-                raise _error("INPUT_INVALID", "evidence_refs")
-            reason = body.get("reason")
-            if reason is not None and (type(reason) is not str or len(reason) > 1024):
-                raise _error("INPUT_INVALID", "reason")
-            now = self.core.clock.utc_now()
-            event: SourceEvent = {
-                "protocol_version": PROTOCOL_VERSION,
-                "source_event_key": f"codex-mcp:{self.session_id}:{call_id}",
-                "source_revision": 1,
-                "origin": "assistant_visible",
-                "role": "assistant",
-                "content": content,
-                "occurred_at": now,
-                "recorded_at": now,
-                "time_precision": "instant",
-                "capture_state": "complete",
-                "evidence_refs": list(refs),
-            }
-            capture_scope_id = self.audience.capture_scope_id
-            if capture_scope_id is None:
-                raise _error("ACCESS_DENIED", "capture_scope")
-            receipt = self.core.record_event(
-                call_context,
-                event,
-                scope_id=capture_scope_id,
-                remaining_seconds=1.0,
-            )
-            return _envelope(call_id, {"candidate": True, "authority": "assistant_visible_only", "receipt": receipt}, capability_gaps=self._capability_gaps(ctx))
-
-        @self.server.tool(name="revise", description="Apply a Core-authorized, versioned revision. Protocol version 1.1.", annotations=ToolAnnotations(read_only_hint=False, destructive_hint=True, idempotent_hint=False, open_world_hint=False), structured_output=True)
-        def revise(
-            ctx: Context,
-            protocol_version: Literal["1.1"],
-            target_ref: StrictStr,
-            expected_revision: StrictInt,
-            new_value: Any,
-            conditions: list[StrictStr],
-            source_evidence_refs: list[StrictStr],
-            valid_from: StrictStr | None,
-            request_id: StrictStr | None = None,
-        ) -> dict[str, Any]:
-            payload: dict[str, Any] = dict(protocol_version=protocol_version, target_ref=target_ref,
-                           expected_revision=expected_revision, new_value=new_value, conditions=conditions,
-                           source_evidence_refs=source_evidence_refs, valid_from=valid_from)
-            if request_id is not None:
-                payload["request_id"] = request_id
-            body = _object(payload, allowed=frozenset({"protocol_version", "request_id", "target_ref", "expected_revision", "new_value", "conditions", "source_evidence_refs", "valid_from"}), required=frozenset({"protocol_version", "target_ref", "expected_revision", "new_value", "conditions", "source_evidence_refs", "valid_from"}))
-            _protocol(body)
-            call_id: str = _request_id(body)
-            request = dict(body)
-            request.pop("request_id", None)
-            # The stdio server has no attested Codex user turn.  Keep the
-            # adapter origin as memory_reinjection; Core still requires its
-            # own human evidence and expected revision before changing state.
-            receipt = self.core.revise(self._request_context(ctx, mutation=True, origin="human_direct"), request, remaining_seconds=1.0)
-            return _envelope(call_id, receipt, capability_gaps=self._capability_gaps(ctx))
-
-        @self.server.tool(name="forget", description="Apply a Core-authorized suppress or delete request. Protocol version 1.1.", annotations=ToolAnnotations(read_only_hint=False, destructive_hint=True, idempotent_hint=True, open_world_hint=False), structured_output=True)
-        def forget(
-            ctx: Context,
-            protocol_version: Literal["1.1"],
-            target_refs: list[StrictStr],
-            mode: Literal["suppress", "delete"],
-            expected_revisions: dict[StrictStr, StrictInt],
-            reason: StrictStr | None = None,
-            request_id: StrictStr | None = None,
-        ) -> dict[str, Any]:
-            payload: dict[str, Any] = dict(protocol_version=protocol_version, target_refs=target_refs,
-                           mode=mode, expected_revisions=expected_revisions)
-            if request_id is not None:
-                payload["request_id"] = request_id
-            if reason is not None:
-                payload["reason"] = reason
-            body = _object(payload, allowed=frozenset({"protocol_version", "request_id", "target_refs", "mode", "expected_revisions", "reason"}), required=frozenset({"protocol_version", "target_refs", "mode", "expected_revisions"}))
-            _protocol(body)
-            call_id: str = _request_id(body)
-            request = dict(body)
-            request.pop("request_id", None)
-            receipt = self.core.forget(self._request_context(ctx, mutation=True, origin="human_direct"), request, remaining_seconds=1.0)
-            return _envelope(call_id, receipt, capability_gaps=self._capability_gaps(ctx))
-
-        @self.server.tool(name="status", description="Read bounded Core status and adapter capability gaps. Protocol version 1.1.", annotations=ToolAnnotations(read_only_hint=True, destructive_hint=False, idempotent_hint=True, open_world_hint=False), structured_output=True)
-        def status(ctx: Context, protocol_version: Literal["1.1"] = "1.1", request_id: StrictStr | None = None) -> dict[str, Any]:
-            payload = dict(protocol_version=protocol_version)
-            if request_id is not None:
-                payload["request_id"] = request_id
-            body = _object(payload, allowed=frozenset({"protocol_version", "request_id"}), required=frozenset({"protocol_version"}))
-            _protocol(body)
-            call_id: str = _request_id(body)
-            result = {
-                "status": self.core.status(self._request_context(ctx)),
-                "session": "independent_mcp_server",
-                "workspace": str(self.workspace),
-                "agent_id": self.config.agent_id,
-                "installation_id": self.config.installation_id,
-            }
-            return _envelope(call_id, result, capability_gaps=self._capability_gaps(ctx))
-
-        # mcp 2.1 builds argument models from signatures with Pydantic's
-        # default ``extra=ignore``.  Public tools must reject forged identity,
-        # path, scope, and host-session fields, so tighten the generated model
-        # and the advertised JSON Schema after registration.
-        for name in ("recall", "inspect", "profile", "entity", "trace", "propose_memory", "revise", "forget", "status"):
-            tool = self.server._tool_manager.get_tool(name)
-            if tool is not None:
-                tool.fn_metadata.arg_model.model_config["extra"] = "forbid"
-                tool.fn_metadata.arg_model.model_rebuild(force=True)
-                tool.parameters["additionalProperties"] = False
+    def status(self, ctx: Context, protocol_version: Literal["1.1"] = "1.1", request_id: StrictStr | None = None) -> dict[str, Any]:
+        _body, call_id = self._request(protocol_version=protocol_version, request_id=request_id)
+        result = {
+            "status": self.core.status(self._request_context(ctx)),
+            "session": "independent_mcp_server",
+            "workspace": str(self.workspace),
+            "agent_id": self.config.agent_id,
+            "installation_id": self.config.installation_id,
+        }
+        return self._reply(ctx, call_id, result)
 
 
 def build_server(
