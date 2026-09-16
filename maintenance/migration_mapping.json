@@ -34,7 +34,7 @@
     {"old": "experience_runs, reflection_events, fact_freshness, skill_anchors, skill_conflicts", "new": "sanitized imported source history", "rule": "preserve exact rows and link to procedure/episode where IDs are unambiguous; old governance engines are not runtime dependencies"},
     {"old": "unknown columns on imported content/deletion tables", "new": "structural blocked report before target content writes", "rule": "fixed official 578b column inventory plus project_id/branch_id on scope-owning rows; any other added column blocks all content copying; no ACL guessing or raw row export"},
     {"old": "unknown tables and external files", "new": "unmapped evidence report", "rule": "schema inventory plus sanitized rows; explicit cutover block; no guessing"},
-    {"old": "all legacy text/JSON fields", "new": "sanitized target/report text", "rule": "use scope_recall.capture_filters secret/path pipeline; raw backup is a protected snapshot, not an export"}
+    {"old": "all legacy text/JSON fields", "new": "sanitized target/report text", "rule": "use scope_recall.core.capture_filters secret/path pipeline; raw backup is a protected snapshot, not an export"}
   ],
   "unmapped": [
     "multi-value fact groups or conflicting single slots that Core claim_slot cannot represent without inventing semantic conditions",

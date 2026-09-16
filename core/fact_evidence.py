@@ -37,19 +37,9 @@ CORROBORATING_EVIDENCE_SOURCE_TYPES = frozenset(
         "verified_profile",
     }
 )
-INFERRED_EVIDENCE_SOURCE_TYPES = frozenset(
-    {
-        "model_inference",
-        "summary_inference",
-    }
-)
 AUTHORITATIVE_EVIDENCE_SOURCE_TYPES = (
     DIRECT_EVIDENCE_SOURCE_TYPES | CORROBORATING_EVIDENCE_SOURCE_TYPES
 )
-TRUSTED_EVIDENCE_SOURCE_TYPES = (
-    AUTHORITATIVE_EVIDENCE_SOURCE_TYPES | INFERRED_EVIDENCE_SOURCE_TYPES
-)
-
 _WORD_RE = re.compile(r"[^\W_]+(?:[-'][^\W_]+)*", re.UNICODE)
 _CLAUSE_SPLIT_RE = re.compile(
     r"(?:[.;!?。！？；\n]+|\b(?:but|however|although|though)\b|(?:但是|不过|然而|可是))",
@@ -95,12 +85,6 @@ _HISTORICAL_OR_CONDITIONAL_RE = re.compile(
 _ATTRIBUTION_RE = re.compile(
     r"(?:\b(?:said|says|claimed|claims|reported|reports|told|according\s+to)\b|"
     r"(?:说|表示|声称|转述|据称|据说))",
-    re.IGNORECASE,
-)
-_RETRACTION_CUE_RE = re.compile(
-    r"(?:\b(?:no\s+longer|not|never|left|leave|leaving|quit|stopped?|ended?|"
-    r"incorrect|wrong|false|retract(?:ed|ion)?|withdraw(?:n)?)\b|"
-    r"(?:不再|已经离开|已离开|离职|停止|结束|错误|不正确|撤回|作废))",
     re.IGNORECASE,
 )
 _PRESENT_AUXILIARY_RE = re.compile(r"\b(?:am|is|are|has|have|does)\b", re.IGNORECASE)
@@ -573,38 +557,4 @@ def evidence_supports_relation(
     )
 
 
-def evidence_supports_retraction(
-    evidence: EvidenceReference,
-    target_claim: ClaimDraft,
-) -> bool:
-    """Return whether a quote explicitly retracts the runtime-bound target claim."""
-
-    source_type = _normalized(evidence.source_type)
-    if source_type not in AUTHORITATIVE_EVIDENCE_SOURCE_TYPES:
-        return False
-    quote = str(evidence.quote or "").strip()
-    if not quote:
-        return False
-    return any(
-        proposition.polarity != "unknown"
-        and proposition.subject_supported
-        and proposition.relation_supported
-        and proposition.arguments_aligned
-        and _RETRACTION_CUE_RE.search(
-            _claim_frame_context(proposition.clause, target_claim)
-        )
-        is not None
-        for proposition in _claim_aligned_propositions(evidence, target_claim)
-    )
-
-
-__all__ = [
-    "AUTHORITATIVE_EVIDENCE_SOURCE_TYPES",
-    "CORROBORATING_EVIDENCE_SOURCE_TYPES",
-    "DIRECT_EVIDENCE_SOURCE_TYPES",
-    "INFERRED_EVIDENCE_SOURCE_TYPES",
-    "TRUSTED_EVIDENCE_SOURCE_TYPES",
-    "evidence_supports_claim",
-    "evidence_supports_relation",
-    "evidence_supports_retraction",
-]
+__all__ = ['AUTHORITATIVE_EVIDENCE_SOURCE_TYPES', 'CORROBORATING_EVIDENCE_SOURCE_TYPES', 'DIRECT_EVIDENCE_SOURCE_TYPES', 'evidence_supports_claim', 'evidence_supports_relation']

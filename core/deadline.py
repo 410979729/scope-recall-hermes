@@ -14,16 +14,10 @@ from __future__ import annotations
 from contextlib import contextmanager
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
-import math
 import time
-from typing import Any, Iterator, Mapping
+from typing import Iterator
 
 # Same default and range as vector.embedder.query_timeout_seconds.
-DEFAULT_FOREGROUND_BUDGET_SECONDS = 8.0
-_MIN_FOREGROUND_BUDGET_SECONDS = 0.05
-_MAX_FOREGROUND_BUDGET_SECONDS = 300.0
-EXPERIENCE_MIN_REMAINING_SECONDS = 0.05
-
 _CURRENT: ContextVar[RequestDeadline | None] = ContextVar(
     "scope_recall_request_deadline",
     default=None,
@@ -104,65 +98,3 @@ def remaining_seconds(now: float | None = None) -> float | None:
         return None
     return deadline.remaining(now)
 
-
-def acquire_until(lock: Any, deadline: RequestDeadline | None) -> bool:
-    """Acquire ``lock`` using only the remaining request budget.
-
-    A missing deadline keeps the historical unbounded acquire. Exhausted
-    budget returns False without waiting and without touching the lock
-    unless this thread already owns a reentrant lock.
-    """
-
-    acquire = getattr(lock, "acquire", None)
-    if not callable(acquire):
-        return False
-    if deadline is None:
-        return bool(acquire())
-    remaining = deadline.remaining()
-    if remaining <= 0.0:
-        return bool(acquire(blocking=False))
-    return bool(acquire(timeout=remaining))
-
-
-def resolve_foreground_budget_seconds(config: Mapping[str, Any] | None) -> float:
-    """Reuse the existing query-embedding timer as the foreground request budget."""
-
-    raw_vector = config.get("vector") if isinstance(config, Mapping) else None
-    raw_embedder = raw_vector.get("embedder") if isinstance(raw_vector, Mapping) else None
-    raw = (
-        raw_embedder.get("query_timeout_seconds")
-        if isinstance(raw_embedder, Mapping)
-        else None
-    )
-    if raw is None:
-        return DEFAULT_FOREGROUND_BUDGET_SECONDS
-    if isinstance(raw, bool):
-        raise ValueError(
-            "vector.embedder.query_timeout_seconds must be a finite number "
-            f"between {_MIN_FOREGROUND_BUDGET_SECONDS:g} and {_MAX_FOREGROUND_BUDGET_SECONDS:g}"
-        )
-    try:
-        parsed = float(raw)
-    except (TypeError, ValueError) as exc:
-        raise ValueError(
-            "vector.embedder.query_timeout_seconds must be a finite number "
-            f"between {_MIN_FOREGROUND_BUDGET_SECONDS:g} and {_MAX_FOREGROUND_BUDGET_SECONDS:g}"
-        ) from exc
-    if (
-        not math.isfinite(parsed)
-        or not _MIN_FOREGROUND_BUDGET_SECONDS <= parsed <= _MAX_FOREGROUND_BUDGET_SECONDS
-    ):
-        raise ValueError(
-            "vector.embedder.query_timeout_seconds must be a finite number "
-            f"between {_MIN_FOREGROUND_BUDGET_SECONDS:g} and {_MAX_FOREGROUND_BUDGET_SECONDS:g}"
-        )
-    return parsed
-
-
-def is_request_budget_failure(exc: BaseException) -> bool:
-    """Return whether ``exc`` is a recoverable request-budget exhaustion."""
-
-    if isinstance(exc, TimeoutError):
-        return True
-    text = str(exc).casefold()
-    return "deadline exhausted" in text or "request deadline" in text

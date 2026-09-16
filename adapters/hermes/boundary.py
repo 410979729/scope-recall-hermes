@@ -239,8 +239,3 @@ def tool_call_source_event(
     )
 
 
-
-
-def api_error_gap(*, session_id: str, turn_id: str, status: str | None) -> tuple[str, ...]:
-    suffix = status or "unknown"
-    return (f"api_request_error:{session_id}:{turn_id}:{suffix}",)

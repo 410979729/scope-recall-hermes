@@ -215,43 +215,6 @@ class ConsolidationResult(TypedDict):
     reference_proposals: list[ReferenceBinding]
 
 
-class ReviseRequest(TypedDict):
-    protocol_version: Literal["1.1"]
-    target_ref: str
-    expected_revision: int
-    new_value: JsonValue
-    conditions: list[str]
-    source_evidence_refs: list[str]
-    valid_from: str | None
-
-
-class ForgetRequest(TypedDict):
-    protocol_version: Literal["1.1"]
-    target_refs: list[str]
-    mode: Literal["suppress", "delete"]
-    expected_revisions: dict[str, int]
-    reason: NotRequired[str]
-
-
-class ProfileRequest(TypedDict):
-    protocol_version: Literal["1.1"]
-    request_id: str
-    subject: str
-    max_items: int
-    budget_tokens: int
-
-
-class EntityRequest(TypedDict):
-    protocol_version: Literal["1.1"]
-    request_id: str
-    subject: str
-    action: Literal["probe", "related"]
-    direction: Literal["outgoing", "incoming", "both"]
-    max_items: int
-    budget_tokens: int
-    predicate: NotRequired[str]
-
-
 class ContractError(ValueError):
     def __init__(self, code: str, field: str = "payload") -> None:
         self.code = code
@@ -382,6 +345,54 @@ def _validate_read_view_honesty(payload: dict, *, items: list) -> None:
         raise ContractError("INPUT_INVALID", "coverage")
 
 
+def _check_source_event(payload: dict) -> None:
+    if (payload["occurred_at"] is None) != (payload["time_precision"] == "unknown"):
+        raise ContractError("INPUT_INVALID", "time_precision")
+    if payload["origin"] != "imported" and "source_original_origin" in payload:
+        raise ContractError("INPUT_INVALID", "source_original_origin")
+    if segment := payload.get("segment"):
+        if segment["total"] is not None and segment["index"] >= segment["total"]:
+            raise ContractError("INPUT_INVALID", "segment_index")
+        if (segment["total"] is None or segment["truncated"]) and payload["capture_state"] == "complete":
+            raise ContractError("INPUT_INVALID", "segment_completeness")
+    if snapshot := payload.get("display_snapshot"):
+        if not {item["artifact_ref"] for item in snapshot["items"]} <= set(payload.get("artifact_refs", [])):
+            raise ContractError("INPUT_INVALID", "display_artifact_refs")
+
+
+def _check_recall_packet(payload: dict) -> None:
+    if payload["items"] and payload["memory_epoch"] is None:
+        raise ContractError("INPUT_INVALID", "memory_epoch")
+
+
+def _check_forget_request(payload: dict) -> None:
+    if not set(payload["expected_revisions"]) <= set(payload["target_refs"]):
+        raise ContractError("INPUT_INVALID", "expected_revisions")
+
+
+def _check_consolidation_result(payload: dict) -> None:
+    for claim in payload["claim_proposals"]:
+        start, end = claim["valid_from"], claim["valid_to"]
+        if start is not None and end is not None and datetime.fromisoformat(end) <= datetime.fromisoformat(start):
+            raise ContractError("DERIVATION_INVALID", "valid_interval")
+    for binding in payload["reference_proposals"]:
+        if binding["resolution"] == "resolved" and binding["resolved_ref"] not in binding["candidate_refs"]:
+            raise ContractError("DERIVATION_INVALID", "resolved_ref")
+        if binding["resolution"] == "ambiguous" and len(binding["candidate_refs"]) < 2:
+            raise ContractError("DERIVATION_INVALID", "candidate_refs")
+
+
+#: Cross-field rules JSON Schema cannot express, keyed by schema name.
+_CROSS_FIELD_CHECKS = {
+    "source_event": _check_source_event,
+    "recall_packet": _check_recall_packet,
+    "profile_view": lambda payload: _validate_read_view_honesty(payload, items=_profile_view_items(payload)),
+    "entity_view": lambda payload: _validate_read_view_honesty(payload, items=payload.get("statements") or []),
+    "forget_request": _check_forget_request,
+    "consolidation_result": _check_consolidation_result,
+}
+
+
 def validate_payload(name: str, value: str | bytes | dict) -> dict:
     if name not in _SCHEMAS:
         raise ContractError("INPUT_INVALID", "schema_name")
@@ -392,37 +403,9 @@ def validate_payload(name: str, value: str | bytes | dict) -> dict:
     error = next(Draft202012Validator(schema, format_checker=checker).iter_errors(payload), None)
     if error is not None:
         raise ContractError("INPUT_INVALID", str(error.validator or "schema"))
-    if name == "source_event":
-        if (payload["occurred_at"] is None) != (payload["time_precision"] == "unknown"):
-            raise ContractError("INPUT_INVALID", "time_precision")
-        if payload["origin"] != "imported" and "source_original_origin" in payload:
-            raise ContractError("INPUT_INVALID", "source_original_origin")
-        if segment := payload.get("segment"):
-            if segment["total"] is not None and segment["index"] >= segment["total"]:
-                raise ContractError("INPUT_INVALID", "segment_index")
-            if (segment["total"] is None or segment["truncated"]) and payload["capture_state"] == "complete":
-                raise ContractError("INPUT_INVALID", "segment_completeness")
-        if snapshot := payload.get("display_snapshot"):
-            if not {item["artifact_ref"] for item in snapshot["items"]} <= set(payload.get("artifact_refs", [])):
-                raise ContractError("INPUT_INVALID", "display_artifact_refs")
-    if name == "recall_packet" and payload["items"] and payload["memory_epoch"] is None:
-        raise ContractError("INPUT_INVALID", "memory_epoch")
-    if name == "profile_view":
-        _validate_read_view_honesty(payload, items=_profile_view_items(payload))
-    if name == "entity_view":
-        _validate_read_view_honesty(payload, items=payload.get("statements") or [])
-    if name == "forget_request" and not set(payload["expected_revisions"]) <= set(payload["target_refs"]):
-        raise ContractError("INPUT_INVALID", "expected_revisions")
-    if name == "consolidation_result":
-        for claim in payload["claim_proposals"]:
-            start, end = claim["valid_from"], claim["valid_to"]
-            if start is not None and end is not None and datetime.fromisoformat(end) <= datetime.fromisoformat(start):
-                raise ContractError("DERIVATION_INVALID", "valid_interval")
-        for binding in payload["reference_proposals"]:
-            if binding["resolution"] == "resolved" and binding["resolved_ref"] not in binding["candidate_refs"]:
-                raise ContractError("DERIVATION_INVALID", "resolved_ref")
-            if binding["resolution"] == "ambiguous" and len(binding["candidate_refs"]) < 2:
-                raise ContractError("DERIVATION_INVALID", "candidate_refs")
+    check = _CROSS_FIELD_CHECKS.get(name)
+    if check is not None:
+        check(payload)
     return payload
 
 

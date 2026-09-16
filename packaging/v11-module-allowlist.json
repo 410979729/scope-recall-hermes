@@ -89,7 +89,6 @@
     "core/index_rebuild.py",
     "core/inspect_service.py",
     "core/mutate.py",
-    "core/name_aliases.py",
     "core/read_views.py",
     "core/recall.py",
     "core/recall_budget.py",
