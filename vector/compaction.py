@@ -1,37 +1,27 @@
-"""Physical state of the Lance vector store, and when it needs a compaction.
+"""Physical state of a Lance vector store, and when it needs compacting.
 
-Every vector publication is its own Lance commit, so the store gains one data
-fragment and one manifest per vector and never gives either back.  Measured on
-the TianShu store on 2026-09-14, at 2,243 vectors:
+Every publication is its own Lance commit, so the store gains one data
+fragment and one manifest per vector and never gives either back; and each
+manifest lists every fragment, so the manifest history grows as O(n^2).
+Measured on one production store at 2,243 vectors: 2,243 fragments (34 MB),
+2,245 manifests (238 MB), and a 142 ms search that took 29 ms once compacted.
 
-    data fragments   2,243        34.4 MB
-    manifests        2,245       237.6 MB   <- each one lists every fragment,
-    transactions     2,244        0.3 MB       so the history grows as O(n^2)
-    search latency     142 ms                 against 29 ms once compacted
-
-Nothing in the code base ever called ``optimize``.  This module holds the two
-things that decision needs and that neither the store nor the doctor should own
-privately: how to read the footprint off the filesystem, and when a compaction
-is due.
-
-Measuring from the filesystem rather than asking LanceDB is deliberate.  The
-doctor must be able to report this without opening the table or loading
-lancedb, and an operator should be able to confirm the number with a file
+This module owns the two inputs to that decision which neither the store nor
+the doctor should own privately: reading the footprint off the filesystem,
+and deciding when a pass is due.  Measuring from the filesystem rather than
+asking LanceDB is deliberate: the doctor must report this without opening the
+table or loading lancedb, and an operator can confirm the number with a file
 listing.
 
-The one residual risk, stated so it is not rediscovered as a surprise: the
-worker compacts while the gateway may be mid-search, and the two are separate
-processes, so a search could in principle be reading a version the pass drops.
-Reads follow the table forward (``vector_store._fresh_table``), which closes
-the common case, and ``core/recall.py`` already catches any vector failure and
-records ``vector_unavailable`` / ``vector_error`` while the other channels
-answer.  So the worst case is one recall degrading visibly for a fraction of a
-second per hour -- against a store that otherwise grows a manifest history
-without bound.
+Residual risk, stated so it is not rediscovered as a surprise: the worker
+compacts while the gateway may be mid-search in another process, so a search
+could read a version the pass drops.  Reads follow the table forward
+(``store.LanceVectorStore._fresh_table``), which closes the common case, and
+recall already records ``vector_unavailable`` / ``vector_error`` and answers
+from its other channels, so the worst case is one visibly degraded recall.
 
-Not responsible for: performing the compaction (``vector_store.LanceVectorStore
-.compact``), or scheduling it (``runtime/vector_upkeep.py``, called once at the
-start of each drain).
+Not responsible for performing the compaction (``store.LanceVectorStore
+.compact``) or scheduling it (``runtime/vector_upkeep.py``).
 """
 from __future__ import annotations
 
@@ -42,15 +32,14 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-#: Fragment count above which a compaction is worth doing.  Compaction is cheap
-#: (0.12 s with nothing to do, 3.5 s for the 2,243-fragment backlog), so this is
-#: set low enough that the store never accumulates a manifest history worth
-#: noticing, rather than tuned to a latency cliff.
+#: Fragment count above which a compaction is worth doing.  A pass is cheap
+#: (0.12 s with nothing to do, 3.5 s for a 2,243-fragment backlog), so this is
+#: low enough that the manifest history never grows worth noticing, rather
+#: than tuned to a latency cliff.
 FRAGMENT_THRESHOLD = 64
 
-#: Shortest interval between two compactions of the same store.  Guards against
-#: repeating the pass every drain while writes keep arriving; it does not bound
-#: how much work any single pass may do, because a pass is bounded already.
+#: Shortest interval between two compactions of the same store, so the pass is
+#: not repeated on every drain while writes keep arriving.
 COOLDOWN = timedelta(minutes=15)
 
 #: Written next to the store it describes, so the state cannot outlive or drift
@@ -79,12 +68,8 @@ def table_directory(db_path: Path, table_name: str) -> Path:
     return Path(db_path) / f"{table_name}.lance"
 
 
-def physical_vector_footprint(db_path: Path, table_name: str) -> dict[str, int]:
-    """Count fragments, manifests and bytes.  Missing store reads as zero."""
-    return measure_footprint(db_path, table_name).as_dict()
-
-
 def measure_footprint(db_path: Path, table_name: str) -> VectorFootprint:
+    """Count fragments, manifests, transactions and bytes.  A missing store reads as zero."""
     table = table_directory(db_path, table_name)
     counts = {"data": 0, "_versions": 0, "_transactions": 0}
     total = 0
@@ -210,7 +195,6 @@ __all__ = [
     "compaction_due",
     "instance_vector_footprints",
     "measure_footprint",
-    "physical_vector_footprint",
     "read_state",
     "table_directory",
     "write_state",
