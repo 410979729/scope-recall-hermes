@@ -39,7 +39,6 @@ _SPACE_BYTES = json.dumps(
     EMBEDDING_SPACE, ensure_ascii=False, separators=(",", ":")
 ).encode("utf-8")
 SPACE_ID = hashlib.sha256(_SPACE_BYTES).hexdigest()
-COSINE_DEFINITION = "cosine similarity = dot(a,b) / (sqrt(dot(a,a)) * sqrt(dot(b,b))); native distance converts as 1 - cosine"
 VECTOR_SCORE_TOLERANCE = 1e-6
 
 _WEAK_QUERY = frozenset({"那次", "那件", "那个", "这个", "怎样", "如何", "what", "that", "it"})

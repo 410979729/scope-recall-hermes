@@ -89,17 +89,6 @@ def _digest(value: Any) -> str:
     return sha256(json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")).hexdigest()
 
 
-def bridge_table_contract() -> dict[str, Any]:
-    """Return fresh recognition data, not permission to ignore pending work."""
-    return {
-        "table": BRIDGE_TABLE,
-        "columns": list(BRIDGE_COLUMNS),
-        "required_columns": list(BRIDGE_COLUMNS),
-        "disposition": "audit_completed_transport",
-        "replay": False,
-    }
-
-
 def build_completed_bridge_archive(conn: sqlite3.Connection) -> dict[str, Any]:
     """Read all completed transport records losslessly into an inert JSON envelope.
 

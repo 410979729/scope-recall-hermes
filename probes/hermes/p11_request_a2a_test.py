@@ -17,7 +17,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from probes.hermes.p11_a2a_testkit import (
     A2A_AGENT_NAME, A2A_HOST, A2A_PORT, ARCHIVE, CORE_DB, LEDGER, MAIN_MODEL, MAX_MODEL_POSTS,
-    RUNTIME_RECORD, STATE, TEST_CONTEXT, assert_test_path, digest_bytes, load_json,
+    RUNTIME_RECORD, STATE, TEST_CONTEXT, digest_bytes, load_json,
     scrub, write_json,
 )
 

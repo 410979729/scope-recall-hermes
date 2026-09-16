@@ -8,16 +8,6 @@ import re
 from collections.abc import Iterable, Mapping
 from typing import Any
 
-TRIVIAL_RE = re.compile(
-    r"^(?:"
-    r"ok|okay|kk|k|yes|no|yep|nope|sure|thanks|thank you|thx|ty|got it|roger|"
-    r"understood|noted|acknowledged|done|"
-    r"hi|hello|hey|yo|早|早安|你好|嗨|在吗|在嗎|谢谢|謝謝|收到|明白|明白了|了解|了解了|好的|好"
-    r")(?:[!！,.。?？~\s]*)$",
-    re.IGNORECASE,
-)
-
-
 MEMORY_CONTEXT_RE = re.compile(
     r"<memory-context>[\s\S]*?</memory-context>\s*", re.IGNORECASE
 )
@@ -66,10 +56,6 @@ def clean_text(text: Any) -> str:
     text = MEMORY_CONTEXT_RE.sub("", text or "")
     text = SUPERMEMORY_CONTEXT_RE.sub("", text)
     return text.strip()
-
-
-def is_trivial(text: str) -> bool:
-    return bool(TRIVIAL_RE.match((text or "").strip()))
 
 
 def dedup_key(text: str) -> str:

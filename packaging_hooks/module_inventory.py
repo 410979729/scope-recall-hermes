@@ -181,7 +181,7 @@ def semver_version(version: str) -> str:
     """The semver spelling of a PEP 440 version, for manifests that demand one.
 
     Deliberately a second, independent statement of the rule that
-    ``maintenance/install.py::_manifest_version`` applies, so that this build
+    ``maintenance/install_common.py::_manifest_version`` applies, so that this build
     helper needs no runtime import.  ``tests/packaging/test_package_manifest.py``
     asserts the two agree; if they ever diverge, that test says so rather than a
     plugin manifest quietly carrying a version no host can parse.

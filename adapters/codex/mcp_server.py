@@ -151,8 +151,8 @@ class CodexMCPServer:
         self._register_tools()
 
     def _register_tools(self) -> None:
-        for name, description, annotations in _TOOLS:
-            self.server.tool(name=name, description=description, annotations=annotations, structured_output=True)(getattr(self, name))
+        for name, description, hints in _TOOLS:
+            self.server.tool(name=name, description=description, annotations=hints, structured_output=True)(getattr(self, name))
             # mcp 2.1 builds argument models from signatures with Pydantic's
             # default ``extra=ignore``.  Public tools must reject forged
             # identity, path, scope, and host-session fields, so tighten the
