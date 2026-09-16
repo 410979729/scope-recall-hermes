@@ -34,7 +34,8 @@ evaluation, whose fingerprint then differs; an unchanged evidence set collides
 on that fingerprint and schedules nothing, so this cannot spin.
 
 Not responsible for: reading or writing any of these timestamps
-(``core/candidate_storage.py`` owns the SQL), or for choosing the evidence set.
+(``core/candidate_intake.py`` and ``core/candidate_sweeps.py`` own the SQL), or
+for choosing the evidence set.
 """
 from __future__ import annotations
 
