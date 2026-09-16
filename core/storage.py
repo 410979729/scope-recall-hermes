@@ -273,9 +273,9 @@ class Transaction:
         return self.source(ref, int(row["revision"]))
 
 
-    def put_source(self, event: SourceEvent, *, scope_id: str, persisted_at: str, capture_gaps: tuple[str, ...] = ()) -> SourceWrite:
-        conn = self._check(write=True)
-        self._scope(scope_id)
+    def _admitted_source(self, event: SourceEvent) -> dict:
+        """Validate a capture against the contract, the import provenance and the
+        admission policy; the stored event must be exactly the admitted one."""
         event = validate_capture(dict(event), self.context)
         provenance = self.context.import_provenance
         if provenance is not None:
@@ -285,43 +285,75 @@ class Transaction:
         admitted = prepare_capture(event, self.context)
         if admitted.rejection or len(admitted.events) != 1 or admitted.events[0] != event:
             raise ContractError("INPUT_INVALID", "unprepared_source")
-        # First delivery's recorded_at is retained. Transport retries may arrive
+        return event
+
+    def _same_identity(self, row, scope_id: str) -> bool:
+        return (row["scope_id"], row["session_id"], row["project_id"], row["branch_id"]) == (
+            scope_id, self.context.session_id, self.context.project_id, self.context.branch_id)
+
+    def _check_source_group(self, conn, group_key: str, scope_id: str, revision: int, segment_total: int):
+        """A segment group belongs to one identity and one segment count; a
+        blocked group refuses new members.  Returns the group's block policy row."""
+        from .delete_storage import group_digest
+        digest = group_digest(self.context.binding, scope_id, self.context.project_id, self.context.branch_id, group_key)
+        policy = conn.execute("SELECT read_blocked,suppressed FROM source_group_blocks WHERE group_sha256=?", (digest,)).fetchone()
+        if policy is not None and policy["read_blocked"]:
+            raise ContractError("ACCESS_DENIED", "source_unavailable")
+        for row in conn.execute("SELECT scope_id,session_id,project_id,branch_id,source_revision,segment_total,read_blocked FROM source_events WHERE source_group_key=?", (group_key,)):
+            if row["read_blocked"]:
+                raise ContractError("ACCESS_DENIED", "source_unavailable")
+            if not self._same_identity(row, scope_id):
+                raise ContractError("VERSION_CONFLICT", "source_group_identity")
+            if row["source_revision"] == revision and row["segment_total"] != segment_total:
+                raise ContractError("VERSION_CONFLICT", "source_segment_total")
+        return policy
+
+    def _existing_revision(self, conn, ref: str, scope_id: str, revision: int, fingerprint: str) -> bool:
+        """Whether this exact revision is already stored.  A different identity or a
+        different fingerprint under the same revision is a conflict, not a retry."""
+        for row in conn.execute("SELECT source_revision,event_sha256,scope_id,session_id,project_id,branch_id,read_blocked FROM source_events WHERE event_id=?", (ref,)):
+            if row["read_blocked"]:
+                raise ContractError("ACCESS_DENIED", "source_unavailable")
+            if not self._same_identity(row, scope_id):
+                raise ContractError("VERSION_CONFLICT", "source_identity")
+            if row["source_revision"] == revision:
+                if row["event_sha256"] != fingerprint:
+                    raise ContractError("VERSION_CONFLICT", "source_revision")
+                return True
+        return False
+
+    def _inherits_suppression(self, conn, scope_id: str, content: str) -> bool:
+        """A source restating a suppressed claim (subject, predicate, value and every
+        condition literally present) is suppressed with it."""
+        return conn.execute("""SELECT 1 FROM claims c JOIN claim_versions v ON v.claim_id=c.claim_id AND v.revision=c.current_revision
+            WHERE c.suppressed=1 AND c.read_blocked=0 AND c.scope_id=? AND c.project_id IS ? AND c.branch_id IS ?
+            AND v.state IN ('active','disputed') AND instr(?,c.subject)>0 AND instr(?,c.predicate)>0
+            AND instr(?,json_extract(v.payload_json,'$.value_text'))>0
+            AND NOT EXISTS(SELECT 1 FROM json_each(v.payload_json,'$.conditions') WHERE instr(?,value)=0) LIMIT 1""",
+            (scope_id, self.context.project_id, self.context.branch_id, content, content, content, content)).fetchone() is not None
+
+    def put_source(self, event: SourceEvent, *, scope_id: str, persisted_at: str, capture_gaps: tuple[str, ...] = ()) -> SourceWrite:
+        conn = self._check(write=True)
+        self._scope(scope_id)
+        event = self._admitted_source(event)
+        provenance = self.context.import_provenance
+        # First delivery's recorded_at is retained.  Transport retries may arrive
         # later; occurrence time and all provenance/content fields must agree.
         identity = _json([self.context.binding.installation_id, event["source_event_key"]])
         ref = "event-" + hashlib.sha256(identity.encode("utf-8")).hexdigest()
         from .visibility import allowed
-        if not allowed(self,"event",ref):
-            raise ContractError("ACCESS_DENIED","source_unavailable")
+        if not allowed(self, "event", ref):
+            raise ContractError("ACCESS_DENIED", "source_unavailable")
         revision = event["source_revision"]
         fingerprint_input = {k: v for k, v in event.items() if k != "recorded_at"}
         provenance_hash = provenance.manifest_sha256 if provenance else None
         fingerprint = hashlib.sha256(_json([scope_id, self.context.session_id, self.context.project_id, self.context.branch_id, fingerprint_input, provenance_hash]).encode("utf-8")).hexdigest()
         segment = event.get("segment")
         group_key = segment["group_key"] if segment else event["source_event_key"]
-        from .delete_storage import group_digest
-        group_policy = conn.execute("SELECT read_blocked,suppressed FROM source_group_blocks WHERE group_sha256=?",
-            (group_digest(self.context.binding,scope_id,self.context.project_id,self.context.branch_id,group_key),)).fetchone()
-        if group_policy is not None and group_policy["read_blocked"]:
-            raise ContractError("ACCESS_DENIED","source_unavailable")
         segment_index, segment_total = (segment["index"], segment["total"]) if segment else (0, 1)
-        group_rows = conn.execute("SELECT scope_id,session_id,project_id,branch_id,source_revision,segment_total,read_blocked FROM source_events WHERE source_group_key=?", (group_key,)).fetchall()
-        for row in group_rows:
-            if row["read_blocked"]:
-                raise ContractError("ACCESS_DENIED", "source_unavailable")
-            if (row["scope_id"],row["session_id"],row["project_id"],row["branch_id"]) != (scope_id,self.context.session_id,self.context.project_id,self.context.branch_id):
-                raise ContractError("VERSION_CONFLICT", "source_group_identity")
-            if row["source_revision"] == revision and row["segment_total"] != segment_total:
-                raise ContractError("VERSION_CONFLICT", "source_segment_total")
-        rows = conn.execute("SELECT source_revision,event_sha256,scope_id,session_id,project_id,branch_id,read_blocked FROM source_events WHERE event_id=?", (ref,)).fetchall()
-        for row in rows:
-            if row["read_blocked"]:
-                raise ContractError("ACCESS_DENIED", "source_unavailable")
-            if (row["scope_id"],row["session_id"],row["project_id"],row["branch_id"]) != (scope_id,self.context.session_id,self.context.project_id,self.context.branch_id):
-                raise ContractError("VERSION_CONFLICT", "source_identity")
-            if row["source_revision"] == revision:
-                if row["event_sha256"] != fingerprint:
-                    raise ContractError("VERSION_CONFLICT", "source_revision")
-                return SourceWrite("duplicate", ref, revision)
+        group_policy = self._check_source_group(conn, group_key, scope_id, revision, segment_total)
+        if self._existing_revision(conn, ref, scope_id, revision, fingerprint):
+            return SourceWrite("duplicate", ref, revision)
         columns = ("source_event_key", "origin", "role", "content", "occurred_at", "recorded_at", "time_precision", "capture_state")
         extras = {k: v for k, v in event.items() if k not in {*columns, "protocol_version", "source_revision", "source_original_origin", "dataset_id"}}
         conn.execute("""INSERT INTO source_events(event_id,source_revision,scope_id,session_id,project_id,branch_id,
@@ -331,14 +363,8 @@ class Transaction:
             VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (ref, revision, scope_id, self.context.session_id, self.context.project_id, self.context.branch_id,
             *(event[k] for k in columns), hashlib.sha256(event["content"].encode("utf-8")).hexdigest(), fingerprint, persisted_at,
             event.get("source_original_origin"), event.get("dataset_id"), _json(extras), group_key, segment_index, segment_total, _json(capture_gaps), provenance_hash))
-        inherited = conn.execute("""SELECT 1 FROM claims c JOIN claim_versions v ON v.claim_id=c.claim_id AND v.revision=c.current_revision
-            WHERE c.suppressed=1 AND c.read_blocked=0 AND c.scope_id=? AND c.project_id IS ? AND c.branch_id IS ?
-            AND v.state IN ('active','disputed') AND instr(?,c.subject)>0 AND instr(?,c.predicate)>0
-            AND instr(?,json_extract(v.payload_json,'$.value_text'))>0
-            AND NOT EXISTS(SELECT 1 FROM json_each(v.payload_json,'$.conditions') WHERE instr(?,value)=0) LIMIT 1""",
-            (scope_id,self.context.project_id,self.context.branch_id,event["content"],event["content"],event["content"],event["content"])).fetchone()
-        if (group_policy is not None and group_policy["suppressed"]) or inherited is not None:
-            conn.execute("UPDATE source_events SET suppressed=1 WHERE event_id=? AND source_revision=?",(ref,revision))
+        if (group_policy is not None and group_policy["suppressed"]) or self._inherits_suppression(conn, scope_id, event["content"]):
+            conn.execute("UPDATE source_events SET suppressed=1 WHERE event_id=? AND source_revision=?", (ref, revision))
         conn.execute("UPDATE instance_meta SET memory_epoch=memory_epoch+1 WHERE singleton=1")
         return SourceWrite("inserted", ref, revision)
 
