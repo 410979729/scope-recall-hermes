@@ -21,9 +21,9 @@ from scope_recall.adapters.hermes.installation import build_installation_manifes
 from scope_recall.runtime.model_budget import read_auxiliary_budget_status
 from probes.hermes.p11_a2a_testkit import (
     A2A_PORT, ARCHIVE, BATCH_NAME, BUDGET_CONFIG, CORE_DIR, HERMES_CONFIG, HERMES_HOME, HERMES_PYTHON,
-    HERMES_ROOT, HOST_HEAD, HOST_PYTHON_SHA256, HOST_VERSION, LEDGER, LOCAL_BRIDGE_TOKEN_ENV,
+    HERMES_ROOT, HOST_HEAD, HOST_VERSION, LEDGER, LOCAL_BRIDGE_TOKEN_ENV,
     MAIN_BRIDGE_PORT, MAIN_MODEL, MAX_MODEL_POSTS, REPO_ROOT as KIT_REPO_ROOT, RUNTIME_CONFIG,
-    STATE, TEST_AGENT_ID, TEST_CONTEXT, TEST_USER_ID, TEST_WORKSPACE, UPSTREAM_ENDPOINT,
+    STATE, TEST_AGENT_ID, TEST_CONTEXT, TEST_USER_ID, UPSTREAM_ENDPOINT,
     UPSTREAM_KEY_ENV, assert_test_path, budget_mapping, digest_bytes, host_python_sha256, port_status, scrub,
     install_batch_guard, shared_ledger_status,
     write_json,

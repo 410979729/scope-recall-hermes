@@ -1,7 +1,7 @@
 """Run a vector compaction when one is due, and record what it did.
 
 Sits between the policy (``vector/compaction.py``, which knows the footprint
-and the threshold) and the store (``vector_store.LanceVectorStore.compact``,
+and the threshold) and the store (``vector.store.LanceVectorStore.compact``,
 which knows LanceDB).  ``runtime/instance.py`` has the single call site, at the
 start of a drain.
 
