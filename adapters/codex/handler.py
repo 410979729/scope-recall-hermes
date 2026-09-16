@@ -2,13 +2,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 import json
 import math
 import sys
 import time
 from typing import Any, Callable, Protocol, cast
 
-from scope_recall.contracts import ContractError, Origin, RecallRequest
+from scope_recall.contracts import ContractError, Origin, RecallRequest, TrustedContext
 from scope_recall.core import CoreConfig, MemoryCore
 from scope_recall.core.retrieval import AUTOMATIC_PACKET_BUDGET_UNITS
 from ..runtime_wiring import render_host_recall_context
@@ -34,6 +35,8 @@ from .runtime_wiring import (
 _MAX_STDIN_BYTES = 65536
 _CAPTURE_TIMEOUT_S = 1.0
 _TOTAL_BUDGET_S = 2.0
+#: Attaching the trusted runtime after a capture needs this much budget left.
+_RUNTIME_ATTACH_MIN_S = 0.3
 _CAPTURE_ERROR_CODES = frozenset({
     "ACCESS_DENIED", "IDENTITY_UNBOUND", "INPUT_INVALID", "VERSION_CONFLICT",
     "DEADLINE_EXCEEDED", "STORAGE_UNAVAILABLE", "SOURCE_MISSING", "SECRET_DETECTED",
@@ -50,8 +53,6 @@ class HookClock(Protocol):
 
 class SystemHookClock:
     def utc_now(self) -> str:
-        from datetime import datetime, timezone
-
         return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
     def monotonic(self) -> float:
@@ -69,14 +70,10 @@ class HookDiagnostics:
     capture_error_type: str | None = None
     capture_error_code: str | None = None
     #: The code before the frozen allowlist collapsed it to CAPTURE_ERROR.
-    #:
-    #: ``capture_error_code`` is a contract the host reads, so it may only ever
-    #: carry one of ``_CAPTURE_ERROR_CODES``; widening it would change the
-    #: public surface.  But collapsing is also how a real flake stayed invisible:
-    #: ``test_mcp_stdio_all_tools_and_host_thread_bound_mutations`` failed once
-    #: in thirteen runs with ``CAPTURE_ERROR / not_persisted`` and there was no
-    #: way to learn what had actually gone wrong.  This field keeps the original
-    #: for the local stderr diagnostic line and never reaches the host.
+    #: ``capture_error_code`` is a contract the host reads and may only carry
+    #: one of ``_CAPTURE_ERROR_CODES``; this keeps the original for the local
+    #: stderr diagnostic line so a collapsed code is still diagnosable.  It
+    #: never reaches the host.
     capture_error_detail: str | None = None
     capture_elapsed_ms: int | None = None
 
@@ -100,8 +97,7 @@ class CodexHookHandler:
                 raise CodexConfigError("injected core mismatch")
             self.core = host_runtime.core
         elif core is None:
-            core = MemoryCore(CoreConfig(config.to_binding()), clock=clock)
-            self.core = core
+            self.core = MemoryCore(CoreConfig(config.to_binding()), clock=clock)
         else:
             if core.config.binding != config.to_binding():
                 raise CodexConfigError("injected core binding mismatch")
@@ -136,12 +132,7 @@ class CodexHookHandler:
             # Capture uses a basic Core first.  Trusted runtime attach
             # (Lance/aux/worker) waits until after a durable Source commit.
             core = MemoryCore(CoreConfig(config.to_binding()), clock=clock)
-            handler = cls(
-                config,
-                core=core,
-                clock=clock,
-                hook_started_at=hook_started_at,
-            )
+            handler = cls(config, core=core, clock=clock, hook_started_at=hook_started_at)
             handler._pending_runtime_config_path = trusted_runtime_config_path
             return handler
         if host_runtime is None:
@@ -153,13 +144,9 @@ class CodexHookHandler:
                 core=core,
                 clock=clock,
             )
-        return cls(
-            config,
-            core=core,
-            host_runtime=host_runtime,
-            clock=clock,
-            hook_started_at=hook_started_at,
-        )
+        return cls(config, core=core, host_runtime=host_runtime, clock=clock, hook_started_at=hook_started_at)
+
+    # -- diagnostics and budget ------------------------------------------
 
     def _merge_runtime_gaps(self, gaps: tuple[str, ...] = ()) -> None:
         runtime_gaps = self._host_runtime.capability_gaps if self._host_runtime is not None else ()
@@ -171,6 +158,10 @@ class CodexHookHandler:
         self.diagnostics.last_reason = reason
         if gaps:
             self._merge_runtime_gaps(gaps)
+
+    def _note_capture_error(self, code: object) -> None:
+        self.diagnostics.capture_error_code = code if code in _CAPTURE_ERROR_CODES else "CAPTURE_ERROR"
+        self.diagnostics.capture_error_detail = _error_detail(code)
 
     def _remaining(self, deadline: float) -> float:
         return max(0.0, deadline - self.clock.monotonic())
@@ -188,30 +179,31 @@ class CodexHookHandler:
             started = self.clock.monotonic()
         return started + budget
 
+    def _captured_this_call(self) -> bool:
+        return self._persisted_this_call or self._queued_this_call
+
+    # -- trusted runtime -------------------------------------------------
+
+    def _context(self, audience, session_id: str, origin: Origin) -> TrustedContext:
+        return trusted_context(self.config, audience, session_id=session_id, actor_origin=origin)
+
     def _ensure_host_runtime(self, audience=None) -> None:
         """Attach Lance/worker runtime only after Source persist, or for wakeup."""
         if self._host_runtime is not None or self._runtime_attach_attempted:
             return
         self._runtime_attach_attempted = True
+        session_id = f"codex-runtime:{self.config.installation_id}"
         try:
-            partition_context = (
-                trusted_context(
-                    self.config,
-                    audience,
-                    session_id=f"codex-runtime:{self.config.installation_id}",
-                    actor_origin="host_generated",
-                )
-                if audience is not None else None
-            )
+            partition = self._context(audience, session_id, "host_generated") if audience is not None else None
             host_runtime = attach_trusted_host_runtime(
                 config_path=self._pending_runtime_config_path,
                 expected_binding=self.config.to_binding(),
-                session_id=f"codex-runtime:{self.config.installation_id}",
+                session_id=session_id,
                 allowed_scope_ids=self.config.scope_ids,
                 core=self.core,
                 clock=self.clock,
-                project_id=partition_context.project_id if partition_context is not None else None,
-                branch_id=partition_context.branch_id if partition_context is not None else None,
+                project_id=partition.project_id if partition is not None else None,
+                branch_id=partition.branch_id if partition is not None else None,
             )
         except Exception:
             self._diag("runtime_attach_failed", gaps=("capability_gap:trusted_runtime_invalid",))
@@ -219,6 +211,45 @@ class CodexHookHandler:
         self._host_runtime = host_runtime
         self.core = host_runtime.core
         self._merge_runtime_gaps()
+
+    def _maybe_launch_owned_worker(self, session_id: str, audience, *, require_persisted: bool = True) -> None:
+        if self._host_runtime is None or not self._host_runtime.configured:
+            if self._captured_this_call():
+                self._merge_runtime_gaps()
+            return
+        if require_persisted and not self._captured_this_call():
+            return
+        try:
+            launch = getattr(self._host_runtime, "maybe_launch_bounded_worker", None)
+            if not callable(launch):
+                worker_gaps = (GAP_WORKER_LAUNCH_FAILED,)
+            else:
+                partition = self._context(audience, session_id, "host_generated")
+                worker_gaps = cast(Callable[..., tuple[str, ...]], launch)(
+                    session_id=session_id,
+                    allowed_scope_ids=audience.allowed_scope_ids,
+                    project_id=partition.project_id,
+                    branch_id=partition.branch_id,
+                )
+        except Exception:
+            worker_gaps = (GAP_WORKER_LAUNCH_FAILED,)
+        if worker_gaps:
+            self._diag("runtime_worker", gaps=worker_gaps)
+
+    def _wake_after_capture(self, session_id: str, audience, deadline: float) -> None:
+        """After a Stop/SessionEnd capture, attach the runtime and wake the owned worker."""
+        if self._captured_this_call() and self._remaining(deadline) >= _RUNTIME_ATTACH_MIN_S:
+            self._ensure_host_runtime(audience)
+        self._maybe_launch_owned_worker(session_id, audience)
+
+    def close(self) -> None:
+        if self._host_runtime is not None:
+            # A short hook must return without synchronously killing the
+            # already-owned bounded watchdog.  The watchdog owns cleanup and
+            # removes its ephemeral trusted config when the drain exits.
+            self._host_runtime.close(detach_worker=True)
+
+    # -- payload dispatch ------------------------------------------------
 
     def _session_id(self, payload: dict[str, Any]) -> str | None:
         session_id = payload.get("session_id")
@@ -233,62 +264,6 @@ class CodexHookHandler:
             self._diag("no_audience", gaps=audience.capability_gaps)
             return None
         return audience
-
-    def _capture(
-        self,
-        context,
-        event,
-        *,
-        scope_id: str,
-        host_scope: dict[str, str],
-        deadline: float,
-        gaps: tuple[str, ...] = (),
-    ) -> tuple[tuple[str, ...], tuple[str, ...]]:
-        if event is None:
-            return (), gaps
-        started = time.monotonic()
-        self.diagnostics.capture_stage = "ingress"
-        self.diagnostics.capture_durability = "not_persisted"
-        if self._remaining(deadline) <= 0:
-            self.diagnostics.capture_error_code = "DEADLINE_EXCEEDED"
-            self.diagnostics.capture_elapsed_ms = 0
-            self._diag("deadline_exceeded", gaps=gaps)
-            return (), gaps
-        try:
-            receipt = self.core.record_host_event(
-                context,
-                event,
-                scope_id=scope_id,
-                host_scope=host_scope,
-                remaining_seconds=min(_CAPTURE_TIMEOUT_S, self._remaining(deadline)),
-            )
-        except (ContractError, OSError, RuntimeError) as exc:
-            self.diagnostics.capture_durability = "unknown"
-            self.diagnostics.capture_error_type = type(exc).__name__
-            if isinstance(exc, ContractError):
-                self.diagnostics.capture_error_code = exc.code if exc.code in _CAPTURE_ERROR_CODES else "CAPTURE_ERROR"
-                self.diagnostics.capture_error_detail = _error_detail(exc.code)
-            self._diag("capture_exception", gaps=(*gaps, "capture_gap:write_exception"))
-            return (), (*gaps, "capture_gap:write_exception")
-        finally:
-            self.diagnostics.capture_elapsed_ms = round((time.monotonic() - started) * 1000)
-        self.diagnostics.capture_disposition = receipt.disposition
-        self.diagnostics.capture_durability = receipt.durability
-        if receipt.error_code:
-            self.diagnostics.capture_error_code = receipt.error_code if receipt.error_code in _CAPTURE_ERROR_CODES else "CAPTURE_ERROR"
-            self.diagnostics.capture_error_detail = _error_detail(receipt.error_code)
-        if receipt.durability == "queued":
-            self._queued_this_call = True
-            self.diagnostics.capture_stage = "durable_inbox"
-            self._diag("capture_queued", gaps=(*gaps, "capture_gap:durable_ingress_pending"))
-            return (), (*gaps, "capture_gap:durable_ingress_pending")
-        if receipt.durability != "persisted":
-            self._diag("capture_unavailable", gaps=(*gaps, f"capture_gap:{receipt.disposition}"))
-            return (), (*gaps, f"capture_gap:{receipt.disposition}")
-        self._persisted_this_call = True
-        self.diagnostics.capture_stage = "source_committed"
-        refs = tuple(f"{write.ref}@{write.revision}" for write in receipt.event_refs)
-        return refs, (*gaps, *receipt.gaps)
 
     def handle_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
         self._persisted_this_call = False
@@ -313,79 +288,88 @@ class CodexHookHandler:
         budget = self._hook_budget() if event == "UserPromptSubmit" else _TOTAL_BUDGET_S
         deadline = self._hook_deadline(budget)
         if event == "SessionStart":
-            if self._session_start(session_id, audience, deadline):
-                if self._remaining(deadline) >= 0.3:
-                    self._ensure_host_runtime(audience)
-                    self._maybe_launch_owned_worker(
-                        session_id,
-                        audience,
-                        require_persisted=False,
-                    )
-            return {}
-        if event == "SessionEnd":
-            result = self._session_end(session_id, audience, payload, deadline)
-            if (self._persisted_this_call or self._queued_this_call) and self._remaining(deadline) >= 0.3:
+            if self._session_start(session_id, audience, deadline) and self._remaining(deadline) >= _RUNTIME_ATTACH_MIN_S:
                 self._ensure_host_runtime(audience)
-            self._maybe_launch_owned_worker(session_id, audience)
-            return result
-        if event == "Interrupt":
-            return self._interrupt(session_id, audience, payload, deadline)
+                self._maybe_launch_owned_worker(session_id, audience, require_persisted=False)
+            return {}
         if event == "UserPromptSubmit":
             return self._user_prompt_submit(session_id, audience, payload, deadline)
-        if event == "Stop":
-            result = self._stop(session_id, audience, payload, deadline)
-            if (self._persisted_this_call or self._queued_this_call) and self._remaining(deadline) >= 0.3:
-                self._ensure_host_runtime(audience)
-            self._maybe_launch_owned_worker(session_id, audience)
-            return result
+        if event == "Interrupt":
+            return self._interrupt(session_id, audience, payload, deadline)
         if event == "PostToolUse":
             return self._post_tool_use(session_id, audience, payload, deadline)
-        return {}
+        capture = self._stop if event == "Stop" else self._session_end
+        result = capture(session_id, audience, payload, deadline)
+        self._wake_after_capture(session_id, audience, deadline)
+        return result
 
-    def _maybe_launch_owned_worker(
-        self,
-        session_id: str,
-        audience,
-        *,
-        require_persisted: bool = True,
-    ) -> None:
-        if self._host_runtime is None or not self._host_runtime.configured:
-            if self._persisted_this_call or self._queued_this_call:
-                self._merge_runtime_gaps()
-            return
-        if require_persisted and not (self._persisted_this_call or self._queued_this_call):
-            return
+    def handle_bytes(self, raw: bytes) -> dict[str, Any]:
+        if len(raw) > _MAX_STDIN_BYTES:
+            self._diag("input_too_large")
+            return {}
         try:
-            launch = getattr(self._host_runtime, "maybe_launch_bounded_worker", None)
-            if not callable(launch):
-                worker_gaps = (GAP_WORKER_LAUNCH_FAILED,)
-            else:
-                partition_context = trusted_context(
-                    self.config,
-                    audience,
-                    session_id=session_id,
-                    actor_origin="host_generated",
-                )
-                worker_gaps = cast(Callable[..., tuple[str, ...]], launch)(
-                    session_id=session_id,
-                    allowed_scope_ids=audience.allowed_scope_ids,
-                    project_id=partition_context.project_id,
-                    branch_id=partition_context.branch_id,
-                )
-        except Exception:
-            worker_gaps = (GAP_WORKER_LAUNCH_FAILED,)
-        if worker_gaps:
-            self._diag("runtime_worker", gaps=worker_gaps)
+            payload = json.loads(raw.decode("utf-8"))
+        except (UnicodeError, ValueError):
+            self._diag("invalid_json")
+            return {}
+        if type(payload) is not dict:
+            self._diag("invalid_root")
+            return {}
+        return self.handle_payload(payload)
 
-    def close(self) -> None:
-        if self._host_runtime is not None:
-            # A short hook must return without synchronously killing the
-            # already-owned bounded watchdog.  The watchdog owns cleanup and
-            # removes its ephemeral trusted config when the drain exits.
-            self._host_runtime.close(detach_worker=True)
+    # -- capture ---------------------------------------------------------
+
+    def _capture(self, context, audience, event, *, deadline: float, gaps: tuple[str, ...] = ()) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        """Record one host event; returns the committed source refs and the accumulated gaps."""
+        if event is None:
+            return (), gaps
+        started = time.monotonic()
+        self.diagnostics.capture_stage = "ingress"
+        self.diagnostics.capture_durability = "not_persisted"
+        if self._remaining(deadline) <= 0:
+            self.diagnostics.capture_error_code = "DEADLINE_EXCEEDED"
+            self.diagnostics.capture_elapsed_ms = 0
+            self._diag("deadline_exceeded", gaps=gaps)
+            return (), gaps
+        try:
+            receipt = self.core.record_host_event(
+                context,
+                event,
+                scope_id=audience.capture_scope_id,
+                host_scope={"cwd": audience.matched_project_root},
+                remaining_seconds=min(_CAPTURE_TIMEOUT_S, self._remaining(deadline)),
+            )
+        except (ContractError, OSError, RuntimeError) as exc:
+            self.diagnostics.capture_durability = "unknown"
+            self.diagnostics.capture_error_type = type(exc).__name__
+            if isinstance(exc, ContractError):
+                self._note_capture_error(exc.code)
+            gaps = (*gaps, "capture_gap:write_exception")
+            self._diag("capture_exception", gaps=gaps)
+            return (), gaps
+        finally:
+            self.diagnostics.capture_elapsed_ms = round((time.monotonic() - started) * 1000)
+        self.diagnostics.capture_disposition = receipt.disposition
+        self.diagnostics.capture_durability = receipt.durability
+        if receipt.error_code:
+            self._note_capture_error(receipt.error_code)
+        if receipt.durability == "queued":
+            self._queued_this_call = True
+            self.diagnostics.capture_stage = "durable_inbox"
+            gaps = (*gaps, "capture_gap:durable_ingress_pending")
+            self._diag("capture_queued", gaps=gaps)
+            return (), gaps
+        if receipt.durability != "persisted":
+            gaps = (*gaps, f"capture_gap:{receipt.disposition}")
+            self._diag("capture_unavailable", gaps=gaps)
+            return (), gaps
+        self._persisted_this_call = True
+        self.diagnostics.capture_stage = "source_committed"
+        refs = tuple(f"{write.ref}@{write.revision}" for write in receipt.event_refs)
+        return refs, (*gaps, *receipt.gaps)
 
     def _session_start(self, session_id: str, audience, deadline: float) -> bool:
-        context = trusted_context(self.config, audience, session_id=session_id, actor_origin="host_generated")
+        context = self._context(audience, session_id, "host_generated")
         try:
             self.core.status(context)
         except ContractError:
@@ -404,28 +388,23 @@ class CodexHookHandler:
             content=f"session_end:{label}",
             recorded_at=self.clock.utc_now(),
         )
-        context = trusted_context(self.config, audience, session_id=session_id, actor_origin="host_generated")
-        self._capture(context, event, scope_id=audience.capture_scope_id,
-                      host_scope={"cwd": audience.matched_project_root}, deadline=deadline)
+        self._capture(self._context(audience, session_id, "host_generated"), audience, event, deadline=deadline)
         return {}
 
     def _interrupt(self, session_id: str, audience, payload: dict[str, Any], deadline: float) -> dict[str, Any]:
         turn_id, gaps = turn_id_from_payload(payload, required=True)
-        event_id = turn_id or session_id
         if turn_id is None:
             gaps = (*gaps, "outcome_gap:interrupt_without_turn")
         event = lifecycle_source_event(
             installation_id=self.config.installation_id,
             session_id=session_id,
             event_kind="interrupt",
-            event_id=event_id,
+            event_id=turn_id or session_id,
             content="interrupt:turn_stopped",
             recorded_at=self.clock.utc_now(),
             gaps=gaps,
         )
-        context = trusted_context(self.config, audience, session_id=session_id, actor_origin="host_generated")
-        self._capture(context, event, scope_id=audience.capture_scope_id,
-                      host_scope={"cwd": audience.matched_project_root}, deadline=deadline, gaps=gaps)
+        self._capture(self._context(audience, session_id, "host_generated"), audience, event, deadline=deadline, gaps=gaps)
         return {}
 
     def _user_prompt_submit(self, session_id: str, audience, payload: dict[str, Any], deadline: float) -> dict[str, Any]:
@@ -451,16 +430,9 @@ class CodexHookHandler:
         )
         if event is not None and attachment_refs:
             event["artifact_refs"] = attachment_refs
-        context = trusted_context(self.config, audience, session_id=session_id, actor_origin="human_direct")
-        current_refs, capture_gaps = self._capture(
-            context,
-            event,
-            scope_id=audience.capture_scope_id,
-            host_scope={"cwd": audience.matched_project_root},
-            deadline=deadline,
-            gaps=gaps,
-        )
-        if (self._persisted_this_call or self._queued_this_call) and self._remaining(deadline) >= 0.3:
+        context = self._context(audience, session_id, "human_direct")
+        current_refs, capture_gaps = self._capture(context, audience, event, deadline=deadline, gaps=gaps)
+        if self._captured_this_call() and self._remaining(deadline) >= _RUNTIME_ATTACH_MIN_S:
             self._ensure_host_runtime(audience)
             if self._queued_this_call:
                 self._maybe_launch_owned_worker(session_id, audience)
@@ -470,41 +442,35 @@ class CodexHookHandler:
             if not self._queued_this_call:
                 self._diag("capture_failed", gaps=capture_gaps)
             return {}
+        return self._auto_recall(context, prompt, f"codex-auto:{session_id}:{turn_id}", current_refs, deadline, capture_gaps)
+
+    def _auto_recall(self, context, prompt: str, request_id: str, current_refs: tuple[str, ...], deadline: float, gaps: tuple[str, ...]) -> dict[str, Any]:
+        """Render this turn's automatic recall context, or nothing once the budget is gone."""
         remaining = self._remaining(deadline)
         if remaining <= 0:
             self._diag("deadline_exceeded")
             return {}
         request: RecallRequest = {
             "protocol_version": "1.1",
-            "request_id": f"codex-auto:{session_id}:{turn_id}"[:100],
+            "request_id": request_id[:100],
             "query": prompt,
             "mode": "auto",
             "max_items": 6,
             "budget_tokens": AUTOMATIC_PACKET_BUDGET_UNITS,
         }
         try:
-            packet = self.core.recall_packet(
-                context,
-                request,
-                current_source_refs=current_refs,
-                deadline_seconds=remaining,
-            )
+            packet = self.core.recall_packet(context, request, current_source_refs=current_refs, deadline_seconds=remaining)
             preparation = self.core.prepare_recall_render(context, packet)
         except (ContractError, OSError, RuntimeError):
-            self._diag("recall_exception", gaps=capture_gaps)
+            self._diag("recall_exception", gaps=gaps)
             return {}
         if self._remaining(deadline) <= 0:
-            self._diag("deadline_exceeded", gaps=capture_gaps)
+            self._diag("deadline_exceeded", gaps=gaps)
             return {}
         text = render_host_recall_context(preparation.canonical_text)
         if not text:
             return {}
-        return {
-            "hookSpecificOutput": {
-                "hookEventName": "UserPromptSubmit",
-                "additionalContext": text,
-            }
-        }
+        return {"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": text}}
 
     def _stop(self, session_id: str, audience, payload: dict[str, Any], deadline: float) -> dict[str, Any]:
         turn_id, gaps = turn_id_from_payload(payload, required=True)
@@ -522,15 +488,8 @@ class CodexHookHandler:
             message=message,
             recorded_at=self.clock.utc_now(),
         )
-        context = trusted_context(self.config, audience, session_id=session_id, actor_origin="assistant_visible")
-        self._capture(
-            context,
-            event,
-            scope_id=audience.capture_scope_id,
-            host_scope={"cwd": audience.matched_project_root},
-            deadline=deadline,
-            gaps=(*gaps, *outcome_gaps),
-        )
+        context = self._context(audience, session_id, "assistant_visible")
+        self._capture(context, audience, event, deadline=deadline, gaps=(*gaps, *outcome_gaps))
         return {}
 
     def _post_tool_use(self, session_id: str, audience, payload: dict[str, Any], deadline: float) -> dict[str, Any]:
@@ -558,35 +517,9 @@ class CodexHookHandler:
         )
         if tool_gaps:
             self._diag("tool_payload_gap", gaps=tool_gaps)
-        context = trusted_context(
-            self.config,
-            audience,
-            session_id=session_id,
-            actor_origin=cast(Origin, origin),
-        )
-        self._capture(
-            context,
-            event,
-            scope_id=audience.capture_scope_id,
-            host_scope={"cwd": audience.matched_project_root},
-            deadline=deadline,
-            gaps=(*gaps, *tool_gaps),
-        )
+        context = self._context(audience, session_id, cast(Origin, origin))
+        self._capture(context, audience, event, deadline=deadline, gaps=(*gaps, *tool_gaps))
         return {}
-
-    def handle_bytes(self, raw: bytes) -> dict[str, Any]:
-        if len(raw) > _MAX_STDIN_BYTES:
-            self._diag("input_too_large")
-            return {}
-        try:
-            payload = json.loads(raw.decode("utf-8"))
-        except (UnicodeError, ValueError):
-            self._diag("invalid_json")
-            return {}
-        if type(payload) is not dict:
-            self._diag("invalid_root")
-            return {}
-        return self.handle_payload(payload)
 
 
 def _error_detail(code: object) -> str | None:
