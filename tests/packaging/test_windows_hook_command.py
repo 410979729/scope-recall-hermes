@@ -7,7 +7,7 @@ import sys
 
 import pytest
 
-from scope_recall.maintenance import install
+from scope_recall.maintenance import install_codex as install
 
 
 @pytest.mark.skipif(os.name != 'nt', reason='actual Windows command boundary')
