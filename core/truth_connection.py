@@ -479,6 +479,65 @@ class _LeasedTruthConnection(sqlite3.Connection):
         self._truth_writer_lease = None
 
 
+def _truth_database_target(path: str | Path, mode: str) -> tuple[str | Path, bool, TruthWriterLease | None]:
+    """Resolve what ``sqlite3.connect`` opens for ``mode``: the target, whether it
+    is a URI, and the connection-level writer lease a live truth file requires.
+
+    ``:memory:`` never takes a lease.  A FILE-backed writable open classified as
+    live truth by :func:`is_live_truth_database_path` acquires the lease on the
+    parent directory before the pager opens; backup/staging/vector names that
+    are not same-file aliases do not.
+    """
+    raw_path = os.fspath(path)
+    if raw_path == ":memory:":
+        if mode != "rwc":
+            raise ValueError("SQLite :memory: truth databases require mode='rwc'")
+        return "file::memory:?mode=rwc", True, None
+    db_path = Path(os.path.abspath(os.fspath(Path(path).expanduser())))
+    if mode in {"rw", "rwc"}:
+        _harden_mutable_truth_path(db_path, create=mode == "rwc")
+    elif not db_path.is_file():
+        raise sqlite3.OperationalError(f"SQLite truth database does not exist: {db_path}")
+    # SQLite's Windows URI parser rejects otherwise-valid filenames containing
+    # URI metacharacters even when they are percent-encoded.  A plain filesystem
+    # path has no query-string surface; mode semantics are already enforced by
+    # the existence/hardening checks above and query_only below.
+    if os.name == "nt" and any(character in str(db_path) for character in "?#%"):
+        database: str | Path = db_path
+        uri = False
+    else:
+        database = f"{db_path.as_uri()}?mode={mode}"
+        uri = True
+    lease = None
+    if mode in {"rw", "rwc"} and is_live_truth_database_path(db_path):
+        lease = TruthWriterLease(db_path.parent, role="truth_connection")
+        result = lease.acquire()
+        if result.get("status") != "acquired":
+            owner = result.get("owner")
+            raise TruthWriterBusyError(
+                role="truth_connection",
+                scope=str(result.get("scope") or ""),
+                owner=owner if isinstance(owner, dict) else {},
+            )
+    return database, uri, lease
+
+
+def _release_failed_open(conn: sqlite3.Connection | None, lease: TruthWriterLease | None, original: BaseException) -> None:
+    """Undo a half-open connection.  A close or release that itself fails is
+    surfaced as a retryable cleanup error; a failed close never counts as a
+    released lease."""
+    if conn is not None:
+        try:
+            conn.close()
+        except BaseException:
+            raise TruthDatabaseCleanupError(cleanup=lambda: conn.close()) from original
+    elif lease is not None:
+        try:
+            lease.release()
+        except BaseException:
+            raise TruthDatabaseCleanupError(cleanup=lambda: lease.release()) from original
+
+
 def connect_truth_database(
     path: str | Path,
     *,
@@ -491,76 +550,25 @@ def connect_truth_database(
     """Open one authoritative SQLite truth connection and verify FK=ON.
 
     ``mode='ro'`` and ``mode='rw'`` require an existing database; ``rwc`` may
-    create it. A FILE-backed writable open classified as live truth by
-    :func:`is_live_truth_database_path` acquires a connection-level
-    ``TruthWriterLease`` on the parent directory before ``sqlite3.connect``
-    opens the pager. ``:memory:``, read-only mode, and backup/staging/vector
-    names that are not same-file aliases do not take that lease. The
-    returned connection remains a ``sqlite3.Connection`` ready for callers
-    to install the activation authorizer and configure WAL/synchronous
-    policy.
+    create it.  The returned connection is a plain ``sqlite3.Connection`` ready
+    for callers to install the activation authorizer and configure the
+    WAL/synchronous policy; a live truth file's writer lease travels with it.
     """
-
     normalized_mode = str(mode)
     if normalized_mode not in {"ro", "rw", "rwc"}:
         raise ValueError(f"unsupported truth database mode: {mode!r}")
-    kwargs: dict[str, Any] = {
-        "uri": True,
-        "timeout": float(timeout),
-        "check_same_thread": bool(check_same_thread),
-    }
+    database, uri, lease = _truth_database_target(path, normalized_mode)
+    kwargs: dict[str, Any] = {"uri": uri, "timeout": float(timeout), "check_same_thread": bool(check_same_thread)}
     if isolation_level is not _DEFAULT_ISOLATION_LEVEL:
         kwargs["isolation_level"] = isolation_level
-    raw_path = os.fspath(path)
-    lease: TruthWriterLease | None = None
+    if lease is not None:
+        kwargs["factory"] = _LeasedTruthConnection
     conn: sqlite3.Connection | None = None
-    if raw_path == ":memory:":
-        if normalized_mode != "rwc":
-            raise ValueError("SQLite :memory: truth databases require mode='rwc'")
-        database: str | Path = "file::memory:?mode=rwc"
-    else:
-        expanded_path = Path(path).expanduser()
-        db_path = Path(os.path.abspath(os.fspath(expanded_path)))
-        if normalized_mode in {"rw", "rwc"}:
-            _harden_mutable_truth_path(
-                db_path,
-                create=normalized_mode == "rwc",
-            )
-        elif not db_path.is_file():
-            raise sqlite3.OperationalError(
-                f"SQLite truth database does not exist: {db_path}"
-            )
-
-        # SQLite's Windows URI parser rejects otherwise-valid filenames containing
-        # URI metacharacters even when they are percent-encoded. A plain filesystem
-        # path has no query-string surface; mode semantics are already enforced by
-        # the existence/hardening checks above and query_only below.
-        if os.name == "nt" and any(
-            character in str(db_path) for character in "?#%"
-        ):
-            kwargs["uri"] = False
-            database = db_path
-        else:
-            database = f"{db_path.as_uri()}?mode={normalized_mode}"
-        if normalized_mode in {"rw", "rwc"} and is_live_truth_database_path(db_path):
-            lease = TruthWriterLease(db_path.parent, role="truth_connection")
-            result = lease.acquire()
-            if result.get("status") != "acquired":
-                owner = result.get("owner")
-                raise TruthWriterBusyError(
-                    role="truth_connection",
-                    scope=str(result.get("scope") or ""),
-                    owner=owner if isinstance(owner, dict) else {},
-                )
     try:
-        if lease is not None:
-            kwargs["factory"] = _LeasedTruthConnection
         conn = sqlite3.connect(database, **kwargs)
         if lease is not None:
             if not isinstance(conn, _LeasedTruthConnection):
-                raise TruthDatabaseConnectionError(
-                    "SQLite truth connection factory did not bind the writer lease"
-                )
+                raise TruthDatabaseConnectionError("SQLite truth connection factory did not bind the writer lease")
             conn._truth_writer_lease = lease
             lease = None
         require_foreign_keys(conn)
@@ -569,26 +577,7 @@ def connect_truth_database(
         conn.row_factory = row_factory
         return conn
     except BaseException as original:
-        if conn is not None:
-            pending_conn = conn
-            try:
-                pending_conn.close()
-            except BaseException:
-                # Look up close at retry time so a later injection removal can
-                # succeed. Never treat a failed close as a released lease.
-                def _retry_close() -> None:
-                    pending_conn.close()
-
-                raise TruthDatabaseCleanupError(cleanup=_retry_close) from original
-        elif lease is not None:
-            pending_lease = lease
-            try:
-                pending_lease.release()
-            except BaseException:
-                def _retry_release() -> None:
-                    pending_lease.release()
-
-                raise TruthDatabaseCleanupError(cleanup=_retry_release) from original
+        _release_failed_open(conn, lease, original)
         raise
 
 
