@@ -425,6 +425,10 @@ def _try_lock_exclusive_nonblocking(handle: IO[bytes]) -> bool:
     return False
 
 
+def _busy(scope: str, owner: dict[str, Any] | None = None) -> dict[str, Any]:
+    return {"status": "busy", "scope": scope, "owner": owner or {}}
+
+
 class TruthWriterLease:
     """Per-process writer lease handle for one storage directory.
 
@@ -456,11 +460,7 @@ class TruthWriterLease:
                     != threading.get_ident()
                     or self._role != "truth_connection"
                 ):
-                    return {
-                        "status": "busy",
-                        "scope": "process_handoff",
-                        "owner": {},
-                    }
+                    return _busy("process_handoff")
                 return self._join_existing_handoff_authority()
             result = self._acquire_under_handoff()
             if result.get("status") == "acquired":
@@ -477,7 +477,7 @@ class TruthWriterLease:
             self._acquired = False
             self._acquired_pid = None
         if _shared_state_poisoned():
-            return {"status": "busy", "scope": "fork_state_error", "owner": {}}
+            return _busy("fork_state_error")
         holder = sys.modules.get(_SHARED_STATE_NAME)
         registry_lock = getattr(holder, "lock", _PROCESS_REGISTRY_LOCK)
         registry = getattr(holder, "registry", _PROCESS_REGISTRY)
@@ -486,11 +486,7 @@ class TruthWriterLease:
             self._registry_key = key
             state = registry.get(key)
             if state is None or int(getattr(state, "holders", 0) or 0) <= 0:
-                return {
-                    "status": "busy",
-                    "scope": "process_handoff_recovery_missing_authority",
-                    "owner": {},
-                }
+                return _busy("process_handoff_recovery_missing_authority")
             state.connection_pins += 1
             self._pin_only = True
             self._acquired = True
@@ -522,11 +518,7 @@ class TruthWriterLease:
         if _shared_state_poisoned():
             return {"status": "busy", "scope": "fork_state_error", "owner": {}}
         if not _os_lock_available():
-            return {
-                "status": "busy",
-                "scope": "unsupported_platform",
-                "owner": {},
-            }
+            return _busy("unsupported_platform")
         holder = sys.modules.get(_SHARED_STATE_NAME)
         registry_lock = getattr(holder, "lock", _PROCESS_REGISTRY_LOCK)
         registry = getattr(holder, "registry", _PROCESS_REGISTRY)
@@ -540,7 +532,7 @@ class TruthWriterLease:
                 self._lease_path.parent.mkdir(parents=True, exist_ok=True)
             except OSError:
                 logger.warning("Scope Recall writer lease file unavailable")
-                return {"status": "busy", "scope": "lease_file_error", "owner": {}}
+                return _busy("lease_file_error")
             key = _canonical_registry_key(self._lease_path)
             self._registry_key = key
             state = registry.get(key)
@@ -562,7 +554,7 @@ class TruthWriterLease:
                 handle = self._lease_path.open("a+b")
             except OSError:
                 logger.warning("Scope Recall writer lease file unavailable")
-                return {"status": "busy", "scope": "lease_file_error", "owner": {}}
+                return _busy("lease_file_error")
             if _try_lock_exclusive_nonblocking(handle):
                 state = _ProcessLeaseState(handle)
                 if self._role == "truth_connection":
@@ -584,11 +576,7 @@ class TruthWriterLease:
                 handle.close()
             except OSError:
                 pass
-            return {
-                "status": "busy",
-                "scope": "cross_process",
-                "owner": read_truth_writer_owner(self._storage_dir),
-            }
+            return _busy("cross_process", read_truth_writer_owner(self._storage_dir))
 
     def release(self) -> None:
         """Serialize release against process-wide idle handoff."""
