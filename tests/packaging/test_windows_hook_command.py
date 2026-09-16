@@ -16,7 +16,7 @@ def test_windows_command_preserves_literal_arguments_and_stdin(tmp_path, monkeyp
     helper.parent.mkdir()
     helper.write_text('import json,sys\nprint(json.dumps({"args":sys.argv[1:],"input":sys.stdin.buffer.read().decode("utf-8")}))\n', encoding='utf-8')
     argument = "literal 中文 and spaces"
-    monkeypatch.setattr(install, '_hook_argv', lambda *_: [sys.executable, '-I', '-B', str(helper), argument])
+    monkeypatch.setattr(install, '_hook_argv', lambda *_, **__: [sys.executable, '-I', '-B', str(helper), argument])
     _, command = install._hook_command(Path(sys.executable), tmp_path / 'config.json')
     assert command.endswith("scope-recall-hook.cmd")
     assert "EncodedCommand" not in command

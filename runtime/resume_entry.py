@@ -56,6 +56,23 @@ def credential_environment(config, env_file):
     return result
 
 
+def host_process_credential_environment(runtime_config_path, env_file):
+    """Credential variables for a process the host launches with its own environment.
+
+    The worker receives them through its autostart control file (``resume_once``);
+    a Codex-launched MCP server or hook starts with Codex's environment, which carries
+    none of the configured credential names, so it is given the same two paths and
+    reads them under the same contract: only the names the trusted runtime config
+    declares, never an interpolated dotenv.  Raises ``ValueError`` for an unusable
+    env file and ``OSError``/``ValueError`` for an unreadable config; the caller
+    decides whether a process may run without credentials.
+    """
+    config_path = Path(runtime_config_path)
+    if not config_path.is_absolute():
+        raise ValueError("runtime_config_path_not_absolute")
+    return credential_environment(load_config(config_path), str(env_file))
+
+
 def resume_once(config_path, *, launcher=launch_worker, now=None):
     path = Path(config_path).resolve()
     config = load_config(path)

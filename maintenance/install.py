@@ -83,6 +83,7 @@ class InstallPlan:
     python_executable: Path
     test_mode: bool = False
     agent_workspace: str = ""
+    env_file: Path | None = None
     changes: list[PlannedChange] = field(default_factory=list)
     conflicts: list[str] = field(default_factory=list)
     reuse_instance: bool = False
@@ -97,6 +98,7 @@ class InstallPlan:
             "python_executable": str(self.python_executable),
             "test_mode": self.test_mode,
             "agent_workspace": self.agent_workspace,
+            "env_file": str(self.env_file) if self.env_file is not None else None,
             "reuse_instance": self.reuse_instance,
             "conflicts": list(self.conflicts),
             "changes": [item.to_dict() for item in self.changes],
@@ -253,6 +255,17 @@ def _validate_agent_id(agent_id: str) -> str:
     if not _AGENT_ID_RE.fullmatch(agent):
         raise InstallError("agent_id format is invalid")
     return agent
+
+
+def _validate_env_file(env_file: Path | str | None, host: HostChoice) -> Path | None:
+    """Codex starts the MCP server and hooks with its own environment, so the
+    installer may hand them a credential file; Hermes processes inherit the
+    gateway environment and must not carry a second credential path."""
+    if env_file is None or str(env_file).strip() == "":
+        return None
+    if host != "codex":
+        raise InstallError("env_file is only used for Codex installation")
+    return _require_file(Path(env_file), "env_file")
 
 
 def _validate_agent_workspace(agent_workspace: str | None, host: HostChoice) -> str:
@@ -423,8 +436,8 @@ def _validate_receipt_binding(
     )
 
 
-def _hook_argv(python_executable: Path, config_path: Path) -> list[str]:
-    return [
+def _hook_argv(python_executable: Path, config_path: Path, *, env_file: Path | None = None) -> list[str]:
+    argv = [
         str(python_executable),
         "-I",
         "-B",
@@ -433,22 +446,25 @@ def _hook_argv(python_executable: Path, config_path: Path) -> list[str]:
         "--config",
         str(config_path),
     ]
+    if env_file is not None:
+        argv += ["--env-file", str(env_file)]
+    return argv
 
 
 WINDOWS_HOOK_LAUNCHER = "scope-recall-hook.cmd"
 
 
-def _windows_hook_launcher_bytes(python_executable: Path, config_path: Path) -> bytes:
+def _windows_hook_launcher_bytes(python_executable: Path, config_path: Path, *, env_file: Path | None = None) -> bytes:
     """UTF-8 .cmd so cmd.exe can start python without a PowerShell EncodedCommand tax."""
-    argv = _hook_argv(python_executable, config_path)
+    argv = _hook_argv(python_executable, config_path, env_file=env_file)
     quoted = " ".join('"' + part.replace('"', "") + '"' for part in argv)
     text = "@echo off\r\nchcp 65001 >nul\r\n" + quoted + "\r\nexit /b %ERRORLEVEL%\r\n"
     return text.encode("utf-8")
 
 
-def _write_windows_hook_launcher(path: Path, python_executable: Path, config_path: Path) -> Path:
+def _write_windows_hook_launcher(path: Path, python_executable: Path, config_path: Path, *, env_file: Path | None = None) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_bytes(_windows_hook_launcher_bytes(python_executable, config_path))
+    path.write_bytes(_windows_hook_launcher_bytes(python_executable, config_path, env_file=env_file))
     return path
 
 
@@ -458,8 +474,9 @@ def _hook_command(
     *,
     windows_launcher: Path | None = None,
     write_launcher: bool = True,
+    env_file: Path | None = None,
 ) -> tuple[str, str]:
-    argv = _hook_argv(python_executable, config_path)
+    argv = _hook_argv(python_executable, config_path, env_file=env_file)
     posix = shlex.join(argv)
     # Codex's Windows runner puts commandWindows inside cmd.exe /C. A
     # PowerShell EncodedCommand wrapper costs ~0.5-1.0s and pushes capture
@@ -467,7 +484,7 @@ def _hook_command(
     # Unicode/space paths literal without that tax.
     launcher = windows_launcher if windows_launcher is not None else Path(config_path).with_name(WINDOWS_HOOK_LAUNCHER)
     if write_launcher:
-        _write_windows_hook_launcher(launcher, python_executable, config_path)
+        _write_windows_hook_launcher(launcher, python_executable, config_path, env_file=env_file)
     return posix, str(launcher.resolve())
 
 
@@ -476,12 +493,14 @@ def _codex_hooks_json(
     config_path: Path,
     *,
     windows_launcher: Path | None = None,
+    env_file: Path | None = None,
 ) -> dict[str, Any]:
     command, command_windows = _hook_command(
         python_executable,
         config_path,
         windows_launcher=windows_launcher,
         write_launcher=False,
+        env_file=env_file,
     )
     hooks: dict[str, Any] = {}
     for event in sorted(CODEX_HOOK_EVENTS):
@@ -500,24 +519,24 @@ def _codex_hooks_json(
     return {"hooks": hooks}
 
 
-def _codex_mcp_json(python_executable: Path, config_path: Path, workspace: Path) -> dict[str, Any]:
-    return {
-        "mcpServers": {
-            "scope-recall": {
-                "command": str(python_executable),
-                "args": [
-                    "-I",
-                    "-B",
-                    "-m",
-                    "scope_recall.adapters.codex.mcp_entry",
-                    "--config",
-                    str(config_path),
-                    "--workspace",
-                    str(workspace),
-                ],
-            }
-        }
-    }
+def _codex_mcp_json(
+    python_executable: Path, config_path: Path, workspace: Path, *, env_file: Path | None = None
+) -> dict[str, Any]:
+    args = [
+        "-I",
+        "-B",
+        "-m",
+        "scope_recall.adapters.codex.mcp_entry",
+        "--config",
+        str(config_path),
+        "--workspace",
+        str(workspace),
+    ]
+    if env_file is not None:
+        # Codex starts the server with its own environment; the key names the
+        # runtime config declares are read from this file by the entry itself.
+        args += ["--env-file", str(env_file)]
+    return {"mcpServers": {"scope-recall": {"command": str(python_executable), "args": args}}}
 
 
 def _codex_plugin_json(plugin_name: str) -> dict[str, Any]:
@@ -546,18 +565,19 @@ def _planned_codex_files(
     project_root: Path,
     python_executable: Path,
     plugin_name: str,
+    env_file: Path | None = None,
 ) -> dict[Path, str | bytes]:
     config_path = instance_root / "codex-installation.json"
     launcher = target_plugin_dir / "hooks" / WINDOWS_HOOK_LAUNCHER
     return {
         target_plugin_dir / ".codex-plugin" / "plugin.json": _json_dump(_codex_plugin_json(plugin_name)),
-        launcher: _windows_hook_launcher_bytes(python_executable, config_path),
+        launcher: _windows_hook_launcher_bytes(python_executable, config_path, env_file=env_file),
         target_plugin_dir / "hooks" / "hooks.json": _json_dump(
-            _codex_hooks_json(python_executable, config_path, windows_launcher=launcher)
+            _codex_hooks_json(python_executable, config_path, windows_launcher=launcher, env_file=env_file)
         ),
         target_plugin_dir / "skills" / "scope-recall-setup" / "SKILL.md": (REPO_ROOT / "maintenance" / "skills" / "scope-recall-setup" / "SKILL.md").read_text(encoding="utf-8"),
         target_plugin_dir / ".mcp.json": _json_dump(
-            _codex_mcp_json(python_executable, config_path, project_root)
+            _codex_mcp_json(python_executable, config_path, project_root, env_file=env_file)
         ),
     }
 
@@ -1029,6 +1049,8 @@ def _write_receipt(
     }
     if plan.host == "hermes":
         receipt_body["agent_workspace"] = plan.agent_workspace
+    if plan.env_file is not None:
+        receipt_body["env_file"] = _norm(plan.env_file)
     receipt_payload = _digest_receipt(receipt_body)
     receipt_path = _receipt_path(plan.instance_root)
     _atomic_write(receipt_path, _json_dump(receipt_payload))
@@ -1045,6 +1067,7 @@ def plan_install(
     host: str,
     test_mode: bool = False,
     agent_workspace: str | None = None,
+    env_file: Path | str | None = None,
 ) -> InstallPlan:
     host_choice = _validate_host(host)
     target = _require_absolute(Path(target_plugin_dir), "target_plugin_dir")
@@ -1053,6 +1076,7 @@ def plan_install(
     python = _require_file(Path(python_executable), "python_executable")
     agent = _validate_agent_id(agent_id)
     workspace = _validate_agent_workspace(agent_workspace, host_choice)
+    credentials = _validate_env_file(env_file, host_choice)
     if type(test_mode) is not bool:
         raise InstallError("test_mode must be a boolean")
     plugin_name = _validate_plugin_name(target.name)
@@ -1071,6 +1095,7 @@ def plan_install(
         python_executable=python,
         test_mode=test_mode,
         agent_workspace=workspace,
+        env_file=credentials,
     )
     receipt = _load_receipt(instance)
     owned: dict[str, str] = {}
@@ -1096,6 +1121,7 @@ def plan_install(
             project_root=project,
             python_executable=python,
             plugin_name=plugin_name,
+            env_file=credentials,
         )
     else:
         planned = _planned_hermes_files(target, instance)
@@ -1154,6 +1180,7 @@ def apply_install(plan: InstallPlan) -> InstallResult:
         host=plan.host,
         test_mode=plan.test_mode,
         agent_workspace=plan.agent_workspace or None,
+        env_file=plan.env_file,
     )
     if fresh.conflicts:
         raise InstallError("; ".join(fresh.conflicts))
@@ -1172,6 +1199,7 @@ def apply_install(plan: InstallPlan) -> InstallResult:
             project_root=plan.project_root,
             python_executable=plan.python_executable,
             plugin_name=_validate_plugin_name(plan.target_plugin_dir.name),
+            env_file=plan.env_file,
         )
     else:
         planned_files = _planned_hermes_files(plan.target_plugin_dir, plan.instance_root)
