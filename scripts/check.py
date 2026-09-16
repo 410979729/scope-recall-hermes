@@ -822,6 +822,54 @@ def _as_text(value: object) -> str:
     return str(value or "")
 
 
+_PROCESS_TIERS = frozenset({"native", "host", "integration", "migration", "packaging", "release"})
+
+
+def _test_environment(tier: str, isolated: Path) -> dict[str, str]:
+    """A clean, isolated environment for one pytest run: only the OS essentials,
+    every user/config/temp location redirected under ``isolated``."""
+    env = {k: v for k, v in os.environ.items() if k.upper() in {"SYSTEMROOT", "WINDIR", "COMSPEC", "PATH", "PATHEXT", "PROCESSOR_ARCHITECTURE", "NUMBER_OF_PROCESSORS"}}
+    for key in ("HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "TEMP", "TMP", "HERMES_HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME"):
+        target = isolated / key.lower()
+        target.mkdir()
+        env[key] = str(target)
+    test_root = ROOT / "tests"
+    test_import_paths = (test_root, test_root / "contract", test_root / "migration", ROOT)
+    env.update(PYTHONUTF8="1", PYTHONDONTWRITEBYTECODE="1", PYTEST_DISABLE_PLUGIN_AUTOLOAD="1", PYTHONPATH=os.pathsep.join(str(path) for path in test_import_paths), SCOPE_RECALL_TEST_BOUNDARY_PARENT=str(isolated), SCOPE_RECALL_TEST_PROTECTED_HOME=str(Path.home()), SCOPE_RECALL_ACTIVE_HERMES_HOME=str(isolated / "protected-unused"), SCOPE_RECALL_REAL_HOME=str(isolated / "unused-real"), SCOPE_RECALL_TEST_TIER=tier, HF_HUB_OFFLINE="1", TRANSFORMERS_OFFLINE="1")
+    env.update(packaging_helper_env(tier))
+    if tier in _PROCESS_TIERS:
+        # Process tiers enable v11_guard's allowlisted TEST child-process path;
+        # network and protected-file checks remain active in the parent.
+        env["SCOPE_RECALL_TEST_ALLOW_OWNED_SUBPROCESSES"] = "1"
+        env["SCOPE_RECALL_TEST_ALLOW_LOOPBACK"] = "1"
+    return env
+
+
+def _junit_counts(junit: Path) -> dict[str, int]:
+    counts = {"passed": 0, "failed": 0, "skipped": 0}
+    if junit.is_file():
+        cases = ET.parse(junit).findall(".//testcase")
+        counts["failed"] = sum(c.find("failure") is not None or c.find("error") is not None for c in cases)
+        counts["skipped"] = sum(c.find("skipped") is not None for c in cases)
+        counts["passed"] = len(cases) - counts["failed"] - counts["skipped"]
+    return counts
+
+
+def _evidence_scope(tier: str, task: str) -> str:
+    if tier in _PROCESS_TIERS:
+        return f"{task} selected local contracts and bounded TEST process boundaries; no model/API semantic evaluation"
+    return f"{task} selected local in-process contracts only; no model/API semantic evaluation"
+
+
+def _early_exit(tier, selected, selection, *, status, missing_gates=None, **extra) -> int:
+    payload = _selection_output(tier, selected, selection, status=status)
+    if missing_gates is not None:
+        payload["missing_gates"] = missing_gates
+    payload.update(extra)
+    print(json.dumps(payload, ensure_ascii=False))
+    return 2
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--tier", required=True, choices=SUITES)
@@ -846,58 +894,44 @@ def main() -> int:
     model_receipt = None
     if args.model_receipt is not None:
         if args.tier != "release":
-            payload = _selection_output(args.tier, selected, selection, status="model_receipt_invalid")
-            payload["missing_gates"] = ["model_receipt"]
-            payload["model_receipt"] = {"status": "REJECTED", "reasons": ["model_receipt_only_valid_for_release"]}
-            print(json.dumps(payload, ensure_ascii=False))
-            return 2
+            return _early_exit(args.tier, selected, selection, status="model_receipt_invalid", missing_gates=["model_receipt"],
+                               model_receipt={"status": "REJECTED", "reasons": ["model_receipt_only_valid_for_release"]})
         model_receipt = validate_model_receipt(args.model_receipt)
         if model_receipt.get("status") != "PASS":
-            payload = _selection_output(args.tier, selected, selection, status="model_receipt_rejected")
-            payload["missing_gates"] = ["model"]
-            payload["model_receipt"] = model_receipt
-            print(json.dumps(payload, ensure_ascii=False))
-            return 2
+            return _early_exit(args.tier, selected, selection, status="model_receipt_rejected", missing_gates=["model"], model_receipt=model_receipt)
     if TIER_METADATA.get(args.tier, {}).get("model_calls") and not args.allow_model_calls:
-        payload = _selection_output(args.tier, selected, selection, status="model_calls_disabled")
-        payload["missing_gates"] = ["explicit_model_authorization"]
-        print(json.dumps(payload, ensure_ascii=False))
-        return 2
+        return _early_exit(args.tier, selected, selection, status="model_calls_disabled", missing_gates=["explicit_model_authorization"])
     if args.tier == "release" and not distribution_is_installed():
         # Release asks the doctor whether a host can actually reach this
-        # provider, and the doctor answers by probing the interpreter for the
-        # ``hermes_agent.memory_providers`` entry point in isolated mode --
-        # which sees installed distributions only, never PYTHONPATH or the
-        # source tree's egg-info. Without the install that probe reports
-        # "entry_point_missing" and a fresh checkout fails on an assertion that
-        # names neither the cause nor the cure. Say it here instead.
-        payload = _selection_output(args.tier, selected, selection, status="distribution_not_installed")
-        payload["missing_gates"] = ["installed_distribution"]
-        payload["remedy"] = f"uv pip install -e . --no-deps --python {sys.executable}"
-        print(json.dumps(payload, ensure_ascii=False))
-        return 2
+        # provider, and the doctor probes the interpreter for the
+        # ``hermes_agent.memory_providers`` entry point in isolated mode, which
+        # sees installed distributions only.  Say so here instead of failing
+        # later on an assertion that names neither the cause nor the cure.
+        return _early_exit(args.tier, selected, selection, status="distribution_not_installed", missing_gates=["installed_distribution"],
+                           remedy=f"uv pip install -e . --no-deps --python {sys.executable}")
     if not selected:
         print(json.dumps(_selection_output(args.tier, selected, selection, status="not_implemented"), ensure_ascii=False))
         return 2
-    if any(not (ROOT / p).is_file() for p in selected):
-        missing = [p for p in selected if not (ROOT / p).is_file()]
-        payload = _selection_output(args.tier, selected, selection, status="missing_tests")
-        payload["missing_tests"] = missing
-        print(json.dumps(payload, ensure_ascii=False))
-        return 2
+    missing = [p for p in selected if not (ROOT / p).is_file()]
+    if missing:
+        return _early_exit(args.tier, selected, selection, status="missing_tests", missing_tests=missing)
     if args.list or args.plan:
         status = "planned_not_executed" if args.plan else "listed_not_executed"
-        payload = _selection_output(
-            args.tier,
-            selected,
-            selection,
-            status=status,
-            model_receipt_status=(model_receipt or {}).get("status"),
-        )
+        payload = _selection_output(args.tier, selected, selection, status=status, model_receipt_status=(model_receipt or {}).get("status"))
         if model_receipt is not None:
             payload["model_receipt"] = model_receipt
         print(json.dumps(payload, ensure_ascii=False))
         return 0
+    return _execute(args, selected, selection, model_receipt)
+
+
+def _execute(args, selected: list[str], selection: dict, model_receipt) -> int:
+    """Run the selected files under the watchdog, always clean up, always write a receipt.
+
+    The receipt records pytest, wrapper and cleanup outcomes separately with
+    the transition history that led to them; a failed cleanup or a missing
+    required gate fails the run even when every test passed.
+    """
     evidence = ROOT / "verification" / args.task
     evidence.mkdir(parents=True, exist_ok=True)
     # Keep the owned TEST root short on Windows.  Packaging install probes use
@@ -909,49 +943,29 @@ def main() -> int:
     parent = temp_root / "sr"
     parent.mkdir(parents=True, exist_ok=True)
     manifest = _source_manifest()
-    source_digest = _source_inputs_sha256(manifest)
-    stamp = time.time_ns()
-    stem = f"{args.tier}-{stamp}"
+    stem = f"{args.tier}-{time.time_ns()}"
     log = evidence / f"{stem}.log"
-    inputs_path = evidence / f"{stem}-inputs.json"
-    receipt_path = evidence / f"{stem}.json"
-    command = []
+    command: list[str] = []
     output_parts: list[str] = []
     counts = {"passed": 0, "failed": 0, "skipped": 0}
     elapsed = 0.0
     pytest_exit_code = 2
     wrapper_exit_code = 0
     pytest_state = "not_started"
-    pytest_error = None
     wrapper_error = None
     cleanup_exit_code = 0
     cleanup_state = "not_started"
     cleanup_error = None
-    transition_history = ["prepared"]
+    transitions = ["prepared"]
     directory = None
     watchdog_seconds = pytest_watchdog_seconds(args.tier, len(selected))
-
     try:
         directory = TestDirectory(prefix="TEST-v11-", dir=parent)
         isolated = Path(directory.name if hasattr(directory, "name") else directory)
-        env = {k: v for k, v in os.environ.items() if k.upper() in {"SYSTEMROOT", "WINDIR", "COMSPEC", "PATH", "PATHEXT", "PROCESSOR_ARCHITECTURE", "NUMBER_OF_PROCESSORS"}}
-        for key in ("HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "TEMP", "TMP", "HERMES_HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME"):
-            target = isolated / key.lower()
-            target.mkdir()
-            env[key] = str(target)
-        test_root = ROOT / "tests"
-        test_import_paths = (test_root, test_root / "contract", test_root / "migration", ROOT)
-        env.update(PYTHONUTF8="1", PYTHONDONTWRITEBYTECODE="1", PYTEST_DISABLE_PLUGIN_AUTOLOAD="1", PYTHONPATH=os.pathsep.join(str(path) for path in test_import_paths), SCOPE_RECALL_TEST_BOUNDARY_PARENT=str(isolated), SCOPE_RECALL_TEST_PROTECTED_HOME=str(Path.home()), SCOPE_RECALL_ACTIVE_HERMES_HOME=str(isolated / "protected-unused"), SCOPE_RECALL_REAL_HOME=str(isolated / "unused-real"), SCOPE_RECALL_TEST_TIER=args.tier, HF_HUB_OFFLINE="1", TRANSFORMERS_OFFLINE="1")
-        env.update(packaging_helper_env(args.tier))
-        if args.tier in {"native", "host", "integration", "migration", "packaging", "release"}:
-            env["SCOPE_RECALL_TEST_ALLOW_OWNED_SUBPROCESSES"] = "1"
-            env["SCOPE_RECALL_TEST_ALLOW_LOOPBACK"] = "1"
+        env = _test_environment(args.tier, isolated)
         junit = isolated / "junit.xml"
-        # Every tier keeps v11_guard.  Process tiers explicitly enable its
-        # allowlisted TEST child-process path; network and protected-file
-        # checks remain active in the parent.
         command = [sys.executable, "-B", "-m", "pytest", *selected, "-q", "--import-mode=importlib", "-p", "v11_guard", "-p", "no:cacheprovider", "--durations=10", f"--junitxml={junit}"]
-        transition_history.append("pytest_started")
+        transitions.append("pytest_started")
         start = time.perf_counter()
         try:
             result = subprocess.run(command, cwd=ROOT, env=env, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=watchdog_seconds)
@@ -959,50 +973,42 @@ def main() -> int:
             result = subprocess.CompletedProcess(command, 124, _as_text(exc.stdout), f"TEST_TIMEOUT after {watchdog_seconds} seconds\n")
         elapsed = time.perf_counter() - start
         output_parts.extend((_as_text(result.stdout), _as_text(result.stderr)))
-        if junit.is_file():
-            tree = ET.parse(junit)
-            cases = tree.findall(".//testcase")
-            counts["failed"] = sum(c.find("failure") is not None or c.find("error") is not None for c in cases)
-            counts["skipped"] = sum(c.find("skipped") is not None for c in cases)
-            counts["passed"] = len(cases) - counts["failed"] - counts["skipped"]
+        counts = _junit_counts(junit)
         pytest_exit_code = result.returncode if result.returncode else (0 if counts["passed"] and not counts["failed"] else 2)
         pytest_state = "completed"
-        transition_history.append("pytest_completed_waiting_cleanup")
+        transitions.append("pytest_completed_waiting_cleanup")
     except Exception as exc:
-        pytest_exit_code = 2
-        wrapper_exit_code = 2
+        pytest_exit_code = wrapper_exit_code = 2
         pytest_state = "wrapper_failed"
         wrapper_error = _safe_error(exc)
         output_parts.append(json.dumps({"transition": "pytest_wrapper_failed", "error": wrapper_error}, sort_keys=True))
-        transition_history.append("pytest_wrapper_failed_waiting_cleanup")
+        transitions.append("pytest_wrapper_failed_waiting_cleanup")
     finally:
-        if directory is not None:
+        if directory is None:
+            cleanup_exit_code = 3
+            cleanup_error = {"type": "CleanupNotStarted", "reason": "test directory was not created"}
+            transitions.append("cleanup_not_started")
+        else:
             try:
                 directory.cleanup()
                 cleanup_state = "succeeded"
-                transition_history.append("cleanup_succeeded")
+                transitions.append("cleanup_succeeded")
             except Exception as exc:
                 cleanup_exit_code = 3
                 cleanup_state = "failed"
                 cleanup_error = _safe_error(exc)
                 output_parts.append(json.dumps({"transition": "cleanup_failed", "error": cleanup_error}, sort_keys=True))
-                transition_history.append("cleanup_failed")
-        else:
-            cleanup_exit_code = 3
-            cleanup_state = "not_started"
-            cleanup_error = {"type": "CleanupNotStarted", "reason": "test directory was not created"}
-            transition_history.append("cleanup_not_started")
+                transitions.append("cleanup_failed")
 
     overall_code = cleanup_exit_code or wrapper_exit_code or pytest_exit_code
     missing_gates = ["model"] if args.tier == "release" and model_receipt is None else []
     if missing_gates and overall_code == 0:
         overall_code = 2
-        transition_history.append("required_gates_missing")
-    transition_history.append("receipt_written")
+        transitions.append("required_gates_missing")
+    transitions.append("receipt_written")
     log_lines = [part for part in output_parts if part]
-    log_lines.append(json.dumps({"transition_history": transition_history, "pytest_exit_code": pytest_exit_code, "wrapper_exit_code": wrapper_exit_code, "cleanup_exit_code": cleanup_exit_code, "overall_exit_code": overall_code}, sort_keys=True))
+    log_lines.append(json.dumps({"transition_history": transitions, "pytest_exit_code": pytest_exit_code, "wrapper_exit_code": wrapper_exit_code, "cleanup_exit_code": cleanup_exit_code, "overall_exit_code": overall_code}, sort_keys=True))
     log.write_text("\n".join(log_lines) + "\n", encoding="utf-8")
-    source_base = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
     receipt = {
         "command": command,
         "exit_code": overall_code,
@@ -1010,10 +1016,10 @@ def main() -> int:
         "pytest_exit_code": pytest_exit_code,
         "wrapper_exit_code": wrapper_exit_code,
         "cleanup_exit_code": cleanup_exit_code,
-        "pytest": {"state": pytest_state, "exit_code": pytest_exit_code, "error": pytest_error},
+        "pytest": {"state": pytest_state, "exit_code": pytest_exit_code, "error": None},
         "wrapper": {"state": "failed" if wrapper_exit_code else "succeeded", "exit_code": wrapper_exit_code, "error": wrapper_error},
         "cleanup": {"state": cleanup_state, "exit_code": cleanup_exit_code, "error": cleanup_error},
-        "transition_history": transition_history,
+        "transition_history": transitions,
         "duration_seconds": elapsed,
         "watchdog_seconds": watchdog_seconds,
         **counts,
@@ -1023,25 +1029,16 @@ def main() -> int:
         "missing_gates": missing_gates,
         "log": log.relative_to(ROOT).as_posix(),
         "model_calls": bool(args.allow_model_calls and TIER_METADATA.get(args.tier, {}).get("model_calls", False)),
-        "process_policy": (
-            "v11_guard_with_allowlisted_test_subprocesses"
-            if args.tier in {"native", "host", "integration", "migration", "packaging", "release"}
-            else "v11_guard_no_child_processes"
-        ),
+        "process_policy": "v11_guard_with_allowlisted_test_subprocesses" if args.tier in _PROCESS_TIERS else "v11_guard_no_child_processes",
         "test_data": "synthetic_only",
-        "source_base": source_base,
-        "source_inputs_sha256": source_digest,
+        "source_base": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
+        "source_inputs_sha256": _source_inputs_sha256(manifest),
         "source_manifest": f"verification/{args.task}/{stem}-inputs.json",
-        "evidence_scope": (
-            f"{args.task} selected local contracts and bounded TEST process boundaries; "
-            "no model/API semantic evaluation"
-            if args.tier in {"native", "host", "integration", "migration", "packaging", "release"}
-            else f"{args.task} selected local in-process contracts only; no model/API semantic evaluation"
-        ),
+        "evidence_scope": _evidence_scope(args.tier, args.task),
         "model_receipt": model_receipt,
     }
-    inputs_path.write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
-    receipt_path.write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
+    (evidence / f"{stem}-inputs.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
+    (evidence / f"{stem}.json").write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
     print("".join(output_parts), end="")
     print(json.dumps(receipt))
     return overall_code
