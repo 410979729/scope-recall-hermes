@@ -194,24 +194,9 @@
   ],
   "forbidden_wheel_substrings": [
     ".execution/",
-    "benchmarks/",
     "config.json",
-    "config_schema.py",
-    "pgvector",
-    "postgres_bridge",
     "probes/",
-    "scope_recall/cli.py",
-    "scope_recall/config.json",
-    "scope_recall/provider.py",
     "scope_recall/tests/",
-    "scope_recall/_internal/application/",
-    "scope_recall/_internal/compatibility/",
-    "scope_recall/_internal/contracts/",
-    "scope_recall/_internal/experience/",
-    "scope_recall/_internal/journal/",
-    "scope_recall/_internal/memory/",
-    "scope_recall/_internal/nightly/",
-    "scope_recall/_internal/runtime/",
     "verification/"
   ]
 }

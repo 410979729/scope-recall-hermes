@@ -1,7 +1,4 @@
-include plugin.yaml
-include config.json
 include README.md
-include DESIGN.md
 include CHANGELOG.md
 include LICENSE
 include SECURITY.md
@@ -10,31 +7,13 @@ include CONTRIBUTORS.md
 include .env.example
 include py.typed
 recursive-include docs *.md
-prune docs/plans
 prune tests
-recursive-include _internal *.py
 recursive-include packaging_hooks *.py
 include packaging/v11-module-allowlist.json
-recursive-include scripts *.py
-recursive-include scripts *.json
+include scripts/check.py
+include scripts/build.package_manifest.py
 recursive-include .github/scripts *.py
-include constraints/release.txt
-include constraints/release-hashed.txt
-include constraints/runtime-min.txt
-include constraints/runtime-max.txt
-recursive-include benchmarks *.json
-recursive-include examples *.jsonl
-include tests/plugin_source.py
-include tests/conftest.py
-include tests/journal_source_restore_oracles.py
-include tests/journal_source_restore_support.py
-include tests/test_journal_source_restore_apply.py
-include tests/test_journal_source_restore_cli.py
-include tests/test_journal_source_restore_ledger.py
-include tests/test_journal_source_restore_package.py
-include tests/test_journal_source_restore_planning.py
-include tests/test_journal_source_restore_rows.py
-include tests/test_journal_source_restore_snapshot.py
+recursive-include constraints *.txt
 recursive-include .github/workflows *.yml
 recursive-exclude * __pycache__
 recursive-exclude * *.py[cod]
