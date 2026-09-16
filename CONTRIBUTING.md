@@ -9,12 +9,14 @@ in `scripts/check.py`.
 
 | Path | What lives there |
 |---|---|
-| `core/` | Host-independent memory core: SQLite truth, capture, claims, recall, worker |
-| `adapters/` | Hermes and Codex host adapters, model transport, LanceDB port |
-| `runtime/` | Background worker, budgets, scheduling, HTTP helper subprocess |
-| `maintenance/` | Install, doctor, upgrade, migration and the operator CLI |
+| `contracts.py` | The v1.1 protocol: trusted context, payload schemas, contract errors |
+| `core/` | Host-independent memory core: SQLite truth (`storage`, `truth_connection`, `writer_lease`), capture and admission, claims (`claims`, `mutate`, `fact_*`), candidates (`candidate_*`), episodes, recall (`recall*`, `retrieval*`, `read_views`), the worker (`worker*`), deletion and restore |
+| `vector/` | Rebuildable vector companions: the `VectorStore` contract, the Lance store, its process-isolated driver, the SQLite brute-force fallback, compaction |
+| `adapters/` | Hermes and Codex host adapters (`tool_common` holds the shared tool boundary), model transport, the LanceDB port |
+| `runtime/` | Background worker entry points, budgets and ledgers, scheduling, the HTTP helper subprocess |
+| `maintenance/` | Install (`install*`), doctor, upgrade, legacy migration (`legacy_*`, `migration_*`) and the operator CLI |
 | `tests/` | The gated test suite; `scripts/check.py --tier <tier>` selects it |
-| `scripts/` | The gate runner and the manifest stamper only |
+| `scripts/` | The gate runner, the manifest stamper and the dead-code scan |
 | `probes/hermes/` | The P11 real-host A2A test kit (see `docs/p11-a2a-test.zh-CN.md`) |
 | `verification/` | Byte-exact evidence bundles cited by receipts; never edit by hand |
 

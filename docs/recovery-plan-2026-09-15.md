@@ -165,7 +165,7 @@
 - 原始证据：`F:\Agents\runtime\windows\hermes-yuheng\workspace\tmp\SR-CURSOR-HANDOFF-20260915\deps\` 下 `environment*.json`、`requirements-frozen.txt`、`focused-checks.{log,json,xml}`、`mcp-checks.{log,json,xml}`、`pip-check.log`；精确命令保存在 JSON receipt 的 `command` 字段。
 
 ### 1.5 doctor 与 scheduler 共享 `settled_waiting_sweep` 谓词（D-05）
-- 操作：把 `schedule_settled` 的过滤条件抽成 `core/candidate_storage.py` 一个查询，doctor 调同一函数。
+- 操作：把 `schedule_settled` 的过滤条件抽成 `core/candidate_sweeps.py` 一个查询，doctor 调同一函数。
 - 验收：doctor 计数 == 实际可调度数；契约测试。
 
 ### 1.6 CI

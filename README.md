@@ -107,6 +107,10 @@ original source/history/deletion semantics and never re-extracts the whole old
 journal. Unsupported formats or unresolved permissions block cutover and preserve
 the old installation. Index scheduling and actual live readiness remain separate.
 
+## Tree layout
+
+The package root holds only the entry (`__init__.py`), the version and the protocol contracts. `core/` is the host-independent memory core over SQLite truth; `vector/` the rebuildable vector companions; `adapters/` the Hermes and Codex host adapters and model transport; `runtime/` the background worker, budgets and scheduling; `maintenance/` install, doctor, upgrade and migration behind the operator CLI. Every shipped module is reachable by import from an entry point named in `packaging_hooks/module_inventory.py`; the wheel allowlist is derived from that, not typed.
+
 ## Development checks
 
 The clean wheel must be tested outside the source checkout. At minimum, verify both CLI aliases, a read-only doctor result, Core capture and recall against a temporary installation, and the stdlib HTTP helper's bounded invalid-input response. Host registration, real gateway lifecycle, and production data are separate acceptance boundaries.
