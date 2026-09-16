@@ -72,61 +72,104 @@ def validate_claims(tx, value, scope_id: str):
     return validate_proposal_references(result, tuple(snapshots), tx.context)
 
 
+def _alias_verified(tx, proposal: ClaimProposal, roots, scope_id: str, now: str) -> bool:
+    """A sourced naming claim supplies stable identity; the alias must name a live
+    target and be bound to it by a complete first-hand quote."""
+    alias = proposal.get("alias")
+    if alias is None:
+        raise ContractError("INPUT_INVALID", "alias")
+    try:
+        target = select_effective(tx.claims.versions(alias["target_ref"]), now)
+        if target is None:
+            raise ContractError("SOURCE_MISSING", "alias_target")
+        validate_alias_target(target, scope_id=scope_id, project_id=tx.context.project_id, branch_id=tx.context.branch_id)
+        if proposal["subject"] != target.payload["subject"]:
+            raise ContractError("ACCESS_DENIED", "alias_subject_identity")
+        for root in roots:
+            if effective_origin(root) != "human_direct" or root.capture_state != "complete" or root.capture_gaps:
+                continue
+            for span in proposal["evidence_spans"]:
+                if (span["source_ref"], span["source_revision"]) != (root.ref, root.revision):
+                    continue
+                try:
+                    validate_alias_source(span["quote"], alias["name"], target, source_text=root.content)
+                    return True
+                except ContractError:
+                    continue
+        raise ContractError("ACCESS_DENIED", "alias_relation_not_bound")
+    except ContractError:
+        return False
+
+
+def _corroborated(tx, proposal, roots, identical, previous, qualification) -> bool:
+    """The same assertion from a second independent first-hand source is not a
+    duplicate but corroboration; see core/corroboration.py.  Only when the slot's
+    head is this assertion, so corroboration can never bypass ordering,
+    principal or disputed-state handling below."""
+    head_is_this_assertion = previous is None or same_assertion(previous.payload, proposal)
+    return head_is_this_assertion and corroboration_promotes(
+        existing=identical,
+        existing_reason=identical.reason,
+        incoming_reason=qualification.reason,
+        incoming_roots=roots,
+        existing_roots=tx.claims.roots(evidence_refs(identical.payload)),
+    )
+
+
+def _order_against_head(tx, proposal, roots, previous, qualification, scope_id):
+    """Decide whether a differing assertion advances the slot head.
+
+    Returns (qualification, advance_head, conflict_revisions).  A different
+    human principal or evidence that is older than the head's stays historical;
+    evidence whose order against the head is unknown and has no live human
+    behind it becomes disputed.
+    """
+    from .claim_normalization import human_owner, source_order
+    old_roots = tx.claims.roots(evidence_refs(previous.payload))
+    new_owner, old_owner = human_owner(roots), human_owner(old_roots)
+    new_order, old_order = source_order(tx, roots), source_order(tx, old_roots)
+    ingestion_ordered = (new_owner is not None and new_owner == old_owner
+                         and new_order is not None and old_order is not None
+                         and all(r.occurred_at is None for r in (*roots, *old_roots)))
+    new_start, old_start = canonical_time(proposal["valid_from"]), canonical_time(previous.valid_from)
+    new_times = [stamp for r in roots if r.occurred_at is not None if (stamp := canonical_time(r.occurred_at)) is not None]
+    old_times = [stamp for r in old_roots if r.occurred_at is not None if (stamp := canonical_time(r.occurred_at)) is not None]
+    late = (new_start is not None and old_start is not None and new_start < old_start) or (
+        new_times and old_times and max(new_times) < max(old_times) and not (new_start and old_start and new_start > old_start))
+    late = late or (ingestion_ordered and new_order < old_order)
+    if new_owner is not None and old_owner is not None and new_owner != old_owner:
+        return Qualification("proposed", "inferred_suggestion", "different_source_principal"), False, ()
+    if late:
+        return Qualification("active", qualification.basis, "late_historical_evidence"), False, ()
+    try:
+        tx.claims.current_human(evidence_refs(proposal), scope_id)
+        live_human = True
+    except ContractError:
+        live_human = False
+    ordered = (bool(new_start and old_start and new_start > old_start)
+               or bool(new_times and old_times and min(new_times) > max(old_times))
+               or (ingestion_ordered and new_order > old_order))
+    if not live_human and not ordered:
+        conflicts = tuple(dict.fromkeys((*previous.conflict_revisions, previous.revision)))
+        return Qualification("disputed", qualification.basis, "conflicting_evidence_order_unknown"), True, conflicts
+    return qualification, True, ()
+
+
 def apply_claim(tx, proposal: ClaimProposal, scope_id: str, now: str, *,
                 _subject_bound: bool = False) -> Mutation:
     roots = tx.claims.roots(evidence_refs(proposal))
-    from .claim_normalization import normalize_frame, human_owner, source_order
+    from .claim_normalization import normalize_frame
     proposal = normalize_frame(proposal, roots)
     if _subject_bound:
         subject_bound, binding_issue = True, None
     else:
         proposal, subject_bound, binding_issue = bind_claim_subject(proposal, roots)
-    qualification = (
-        Qualification("proposed", "inferred_suggestion", binding_issue)
-        if binding_issue is not None
-        else qualify(
-            proposal,
-            roots,
-            project_id=tx.context.project_id,
-            _subject_bound=subject_bound,
-        )
-    )
-    if proposal["kind"] == "alias":
-        alias = proposal.get("alias")
-        if alias is None:
-            raise ContractError("INPUT_INVALID", "alias")
-        # A sourced naming claim supplies stable identity; aliases preserve the
-        # old name. Artifact/display bindings have their own versioned repository.
-        target_versions = tx.claims.versions(alias["target_ref"])
-        target = select_effective(target_versions, now)
-        try:
-            if target is None:
-                raise ContractError("SOURCE_MISSING", "alias_target")
-            validate_alias_target(target, scope_id=scope_id, project_id=tx.context.project_id,
-                                  branch_id=tx.context.branch_id)
-            if proposal["subject"] != target.payload["subject"]:
-                raise ContractError("ACCESS_DENIED", "alias_subject_identity")
-            supported = False
-            for root in roots:
-                if effective_origin(root) != "human_direct" or root.capture_state != "complete" or root.capture_gaps:
-                    continue
-                for span in proposal["evidence_spans"]:
-                    if (span["source_ref"], span["source_revision"]) != (root.ref, root.revision):
-                        continue
-                    try:
-                        validate_alias_source(
-                            span["quote"],
-                            alias["name"],
-                            target,
-                            source_text=root.content,
-                        )
-                        supported = True
-                    except ContractError:
-                        continue
-            if not supported:
-                raise ContractError("ACCESS_DENIED", "alias_relation_not_bound")
-        except ContractError:
-            qualification = Qualification("proposed","inferred_suggestion","alias_target_or_relation_unverified")
+    if binding_issue is not None:
+        qualification = Qualification("proposed", "inferred_suggestion", binding_issue)
+    else:
+        qualification = qualify(proposal, roots, project_id=tx.context.project_id, _subject_bound=subject_bound)
+    if proposal["kind"] == "alias" and not _alias_verified(tx, proposal, roots, scope_id, now):
+        qualification = Qualification("proposed", "inferred_suggestion", "alias_target_or_relation_unverified")
     history = tx.claims.slot(scope_id, proposal)
     previous = next((v for v in history if v.revision == v.current_revision), None)
     # Repeated extraction cannot alter the live identity, validity, head,
@@ -134,72 +177,21 @@ def apply_claim(tx, proposal: ClaimProposal, scope_id: str, now: str, *,
     identical = next((v for v in reversed(history) if same_assertion(v.payload, proposal)
                       and (v.state == qualification.state or v.state == "active")), None)
     if identical is not None:
-        # The same assertion arriving from a second independent first-hand
-        # source is not a duplicate, it is corroboration -- the one dimension
-        # this system had no way to accumulate.  Nothing below reconsiders
-        # either statement; both were judged normally and both fell short for a
-        # reason that another witness can cure.  See core/corroboration.py.
-        #
-        # Only when the slot's head *is* this assertion.  Defence in depth: the
-        # conflict path below already turns a differing value away before it
-        # gets here, and this makes sure a future change to that path cannot
-        # quietly turn corroboration into a way around ordering, principal and
-        # disputed-state handling.
-        head_is_this_assertion = previous is None or same_assertion(previous.payload, proposal)
-        if head_is_this_assertion and corroboration_promotes(
-            existing=identical,
-            existing_reason=identical.reason,
-            incoming_reason=qualification.reason,
-            incoming_roots=roots,
-            existing_roots=tx.claims.roots(evidence_refs(identical.payload)),
-        ):
+        if _corroborated(tx, proposal, roots, identical, previous, qualification):
             promoted = Qualification("active", "direct_report", CORROBORATED_REASON)
             saved = tx.claims.append(scope_id, proposal, promoted, recorded_at=now,
-                                     previous=previous if previous is not None else identical,
-                                     advance_head=True)
+                                     previous=previous if previous is not None else identical, advance_head=True)
             return Mutation(saved.ref, saved.revision, "inserted", saved.state)
-        return Mutation(identical.ref,identical.revision,"duplicate",identical.state)
-    advance = True
-    conflicts = ()
+        return Mutation(identical.ref, identical.revision, "duplicate", identical.state)
+    advance, conflicts = True, ()
     if previous is not None and previous.state != "proposed":
         if qualification.state == "proposed":
             advance = False
         else:
-            old_roots = tx.claims.roots(evidence_refs(previous.payload))
-            new_owner, old_owner = human_owner(roots), human_owner(old_roots)
-            new_order, old_order = source_order(tx, roots), source_order(tx, old_roots)
-            ingestion_ordered = (new_owner is not None and new_owner == old_owner
-                                 and new_order is not None and old_order is not None
-                                 and all(r.occurred_at is None for r in (*roots, *old_roots)))
-            new_start, old_start = canonical_time(proposal["valid_from"]), canonical_time(previous.valid_from)
-            new_times = [stamp for r in roots if r.occurred_at is not None
-                         if (stamp := canonical_time(r.occurred_at)) is not None]
-            old_times = [stamp for r in old_roots if r.occurred_at is not None
-                         if (stamp := canonical_time(r.occurred_at)) is not None]
-            late = (new_start is not None and old_start is not None and new_start < old_start) or (
-                new_times and old_times and max(new_times) < max(old_times) and not (new_start and old_start and new_start > old_start))
-            late = late or (ingestion_ordered and new_order < old_order)
-            if new_owner is not None and old_owner is not None and new_owner != old_owner:
-                advance = False
-                qualification = Qualification('proposed', 'inferred_suggestion', 'different_source_principal')
-            elif late:
-                advance = False
-                qualification = Qualification("active",qualification.basis,"late_historical_evidence")
-            else:
-                try:
-                    tx.claims.current_human(evidence_refs(proposal),scope_id)
-                    live_human = True
-                except ContractError:
-                    live_human = False
-                ordered = (bool(new_start and old_start and new_start > old_start)
-                           or bool(new_times and old_times and min(new_times) > max(old_times))
-                           or (ingestion_ordered and new_order > old_order))
-                if not live_human and not ordered:
-                    qualification = Qualification("disputed",qualification.basis,"conflicting_evidence_order_unknown")
-                    conflicts = tuple(dict.fromkeys((*previous.conflict_revisions,previous.revision)))
+            qualification, advance, conflicts = _order_against_head(tx, proposal, roots, previous, qualification, scope_id)
     saved = tx.claims.append(scope_id, proposal, qualification, recorded_at=now, previous=previous,
                              advance_head=advance, conflicts=conflicts)
-    return Mutation(saved.ref,saved.revision,"inserted" if advance else "historical",saved.state)
+    return Mutation(saved.ref, saved.revision, "inserted" if advance else "historical", saved.state)
 
 
 def register_applied_candidate(tx, mutation: Mutation, now: str, *,
