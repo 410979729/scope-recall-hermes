@@ -9,6 +9,8 @@ from dataclasses import dataclass
 import json
 from typing import TYPE_CHECKING, Protocol
 
+from ..contracts import ContractError
+
 if TYPE_CHECKING:
     from .storage import StoredSource
 
@@ -16,9 +18,6 @@ RULE_VERSION = "r1-candidate-v1"
 SOURCE_MATCH_LIMIT = 16
 PROCESS_BATCH_LIMIT = 8
 DORMANCY_DAYS = 30
-PROCESSING_STATES = frozenset({
-    "pending_evaluation", "waiting_evidence", "resolved", "archived", "blocked",
-})
 _SELF_SUBJECTS = frozenset({"user", "current_user", "用户", "我"})
 
 
@@ -189,7 +188,6 @@ def candidate_evaluation_messages(
         separators=(",", ":"),
     )
     if len(candidate_json.encode("utf-8")) > 32768:
-        from ..contracts import ContractError
         raise ContractError("INPUT_INVALID", "candidate_input_budget")
     messages.insert(0, {
         "role": "system",
@@ -209,14 +207,13 @@ def candidate_evaluation_messages(
     # be bounded. Raise the same field the consolidation path raises: callers
     # and the oversize recovery already recognise it.
     if sum(len(message["content"].encode("utf-8")) for message in messages) > budget:
-        from ..contracts import ContractError
         raise ContractError("INPUT_INVALID", "consolidation_input_budget")
     return messages
 
 
 __all__ = [
     "RULE_VERSION", "SOURCE_MATCH_LIMIT", "PROCESS_BATCH_LIMIT", "DORMANCY_DAYS",
-    "PROCESSING_STATES", "CandidateSnapshot", "CandidateRegistration",
+    "CandidateSnapshot", "CandidateRegistration",
     "CandidateSourceTrigger", "CandidateEvaluationSnapshot", "CandidateSummary",
     "CandidateEvaluator", "candidate_evaluation_messages", "candidate_model_subject",
     "candidate_subject_matches",
