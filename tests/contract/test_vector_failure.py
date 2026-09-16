@@ -148,13 +148,14 @@ def test_a_malformed_remote_type_is_refused_rather_than_reported(bogus):
     assert vector_failure_label(_remote_failure(bogus, "something went wrong")) == "RuntimeError"
 
 
-def test_the_two_fallbacks_both_carry_the_type():
-    """One call site fixed and the other left behind is how this drifted before."""
+def test_the_one_remote_fallback_carries_the_type():
+    """Plain and fenced responses are judged by one function.  Two copies, one
+    fixed and one left behind, is how this drifted before."""
     import inspect
 
     from scope_recall.vector import process_store as lance_process_store
 
     source = inspect.getsource(lance_process_store)
-    assert source.count("raise _remote_failure(error_type, message)") == 2
-    # The bare fallback must be gone from both, or the fix is half applied.
+    assert source.count("raise _remote_failure(error_type, message)") == 1
+    # The bare fallback must be gone, or the fix is half applied.
     assert "raise RuntimeError(message)" not in source
