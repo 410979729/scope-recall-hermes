@@ -9,11 +9,11 @@ import re
 from ..contracts import ContractError
 from .schema import SCHEMA_VERSION
 
-ALLOWED_WORK_TYPES = frozenset({"consolidate", "embed", "rebuild_projection", "purge", "evaluate_candidate"})
 MAX_RECOVERABLE_ATTEMPTS = 3
 MAX_OPERATOR_RETRIES = 2
 DERIVATION_RETRY_MARKER = "derivation_retry:1"
 OPERATOR_ORIGINS = frozenset({"human_direct", "host_generated"})
+_OPERATION_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}")
 _OPERATOR_TOKEN = re.compile(r"(?:^|\|prior:)operator_retry:([A-Za-z0-9][A-Za-z0-9_.-]{0,63})(?=\||$)")
 _AUTO_TOKEN = re.compile(r"(?:^|\|(?:prior:)?)auto_retry:([0-9]+)(?=\||$)")
 # Only infrastructure failures may be recovered without a new source revision.
@@ -25,19 +25,35 @@ AUTO_RECOVERABLE_ERRORS = frozenset({
     "memory_epoch_changed", "lease_exhausted", "embedding_unavailable",
 })
 
-
 #: Failures that are never about the work item.  A provider declining to serve
 #: anyone says nothing about this payload -- unlike a timeout, which a large
 #: item can genuinely cause -- so the lease never got an attempt at all and the
-#: attempt is refunded.
-#:
-#: Measured on a live instance: four hours of "monthly usage limit reached,
-#: resets in 13 days" pushed 195 work items into ``failed`` at ``attempt=3``
-#: apiece, each one then needing an operator to grant it back by hand.  Over
-#: the full thirteen days that is thousands.  The outage is reported either way
-#: (``model_refused:<model>:<code>``); what this changes is that it stops
-#: consuming budgets that exist to absorb the item's *own* bad luck.
+#: attempt is refunded.  Without the refund one four-hour provider outage pushed
+#: 195 items into ``failed`` at ``attempt=3`` apiece, each needing an operator.
 CAPACITY_REFUSALS = frozenset({"http_429", "rate_limited", "http_502", "http_503", "http_504"})
+
+#: Token recording how many times in a row a provider refused for capacity.
+#: Kept in the error code beside ``auto_retry:`` rather than a new column, so
+#: no migration is needed and an operator reading the row sees the history.
+_CAPACITY_TOKEN = re.compile(r"(?:^|\|)capacity:([0-9]+)(?=\||$)")
+
+#: First wait after a provider refuses for capacity, and the longest one.
+#: Sized against a measured outage: the median interval between one item's
+#: retries was 115 minutes, so the floor sits above that cycle rather than
+#: below it (a 60 s floor would have made the instance ask *more* often).
+#: There is no limit on how many times an item may check: it is never given
+#: up on, only asked less often.
+CAPACITY_BACKOFF_FLOOR_SECONDS = 1800.0
+CAPACITY_BACKOFF_CEILING_SECONDS = 4 * 3600.0
+
+#: Purge rows are claimed before anything else: a delete must land before
+#: derived work can rebuild what it removes.
+_PURGE_FIRST = "CASE WHEN work_type='purge' THEN 0 ELSE 1 END"
+_LEASED_ROW = "work_id=? AND state='leased' AND lease_token=? AND lease_owner=?"
+
+
+def _marks(values) -> str:
+    return ",".join("?" for _ in values)
 
 
 def _auto_count(error: str) -> int:
@@ -53,6 +69,51 @@ def _preserve_retry_history(error) -> bool:
                            or _auto_count(str(error)) or "derivation_retry:1" in str(error)))
 
 
+def _auto_retry_stamp(error: str) -> str:
+    """The error code of a row granted one automatic recovery."""
+    stamp = f"auto_retry:{_auto_count(error) + 1}|{_failure_kind(error)}"
+    if "derivation_retry:1|" in error:
+        stamp = "derivation_retry:1|" + stamp
+    if error.startswith("operator_retry:"):
+        stamp = f"{error}|{stamp}"[-1024:]
+    return stamp
+
+
+def _capacity_count(error: object) -> int:
+    return max((int(value) for value in _CAPACITY_TOKEN.findall(str(error or ""))), default=0)
+
+
+def _capacity_backoff_seconds(refusals: int) -> float:
+    """Wait before asking a provider that just refused for capacity again."""
+    if type(refusals) is not int or refusals <= 1:
+        return CAPACITY_BACKOFF_FLOOR_SECONDS
+    return min(CAPACITY_BACKOFF_CEILING_SECONDS,
+               CAPACITY_BACKOFF_FLOOR_SECONDS * (2.0 ** min(refusals - 1, 16)))
+
+
+def _operator_retry_ids(value: str) -> tuple[str, ...]:
+    return tuple(_OPERATOR_TOKEN.findall(value))
+
+
+def _parse_time(value: str) -> datetime:
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        raise ContractError("INPUT_INVALID", "timestamp")
+    return parsed.astimezone(timezone.utc)
+
+
+def _format_time(value: datetime) -> str:
+    return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _after(now: str, seconds: float) -> str:
+    return _format_time(_parse_time(now) + timedelta(seconds=seconds))
+
+
+def _backoff_seconds(attempt: int) -> float:
+    return min(60.0, 2.0 ** max(0, attempt))
+
+
 @dataclass(frozen=True)
 class LeasedWork:
     work_id: int
@@ -65,6 +126,11 @@ class LeasedWork:
     lease_token: int
     attempt: int
     lease_owner: str
+
+    @property
+    def lease(self) -> tuple[int, int, str]:
+        """``(work_id, lease_token, lease_owner)``: the fence every mutation takes."""
+        return self.work_id, self.lease_token, self.lease_owner
 
 
 @dataclass(frozen=True)
@@ -91,58 +157,121 @@ class OperatorRetryMutation:
     operation_id: str | None = None
 
 
-def _parse_time(value: str) -> datetime:
-    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    if parsed.tzinfo is None:
-        raise ContractError("INPUT_INVALID", "timestamp")
-    return parsed.astimezone(timezone.utc)
+# --- where each work type's subject lives ----------------------------------
+#
+# Enqueue resolves the subject to the scope, project and branch a new row
+# inherits; the retry paths ask whether that subject may still be worked on.
 
 
-def _format_time(value: datetime) -> str:
-    return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+def _source_context(tx, ref: str, revision: int) -> tuple[str, str | None, str | None]:
+    source = tx.source(ref, revision)
+    if source is None:
+        raise ContractError("SOURCE_MISSING")
+    return source.scope_id, source.project_id, source.branch_id
 
 
-def _backoff_seconds(attempt: int) -> float:
-    return min(60.0, 2.0 ** max(0, attempt))
+def _claim_context(tx, ref: str, revision: int) -> tuple[str, str | None, str | None]:
+    version = tx.claims.version(ref, revision)
+    if version is None:
+        raise ContractError("SOURCE_MISSING")
+    tx.claims.require_target(version)
+    return version.scope_id, version.project_id, version.branch_id
 
 
-#: Token recording how many times in a row a provider refused for capacity.
-#: Kept in the error code beside ``auto_retry:`` rather than a new column, so
-#: no migration is needed and an operator reading the row sees the history.
-_CAPACITY_TOKEN = re.compile(r"(?:^|\|)capacity:([0-9]+)(?=\||$)")
-
-#: First wait after a provider refuses for capacity, and the longest one.
-#:
-#: Sized against what the queue actually did before this existed, not against
-#: intuition.  Over eight hours of a real outage the interval between one
-#: item's retries had a median of 115 minutes: 74% fell in one to two hours and
-#: only 2.6% were under two minutes.  The apparent "a call every 2.5 seconds"
-#: was 197 separate items sharing that two-hour cycle, not any one of them
-#: looping -- a distinction worth stating, because a first draft of this backoff
-#: started at 60 seconds and would have made the instance ask *more* often than
-#: leaving it alone.
-#:
-#: So the floor sits above the old cycle rather than below it, and the ceiling
-#: well above.  There is still no limit on how many times an item may check:
-#: the item is never given up on, only asked less often.
-CAPACITY_BACKOFF_FLOOR_SECONDS = 1800.0
-CAPACITY_BACKOFF_CEILING_SECONDS = 4 * 3600.0
+def _source_or_claim_context(tx, ref: str, revision: int) -> tuple[str, str | None, str | None]:
+    # A claim is embeddable and projectable too; without this fallback derived
+    # objects never reach the vector index and enter recall only by relation
+    # expansion out of some event retrieved first.
+    source = tx.source(ref, revision)
+    if source is not None:
+        return source.scope_id, source.project_id, source.branch_id
+    return _claim_context(tx, ref, revision)
 
 
-def _capacity_count(error: object) -> int:
-    return max((int(value) for value in _CAPACITY_TOKEN.findall(str(error or ""))), default=0)
+def _purge_context(tx, ref: str, revision: int) -> tuple[str, str | None, str | None]:
+    scope_id = ref.split(":", 1)[-1]
+    tx._scope(scope_id)
+    return scope_id, tx.context.project_id, tx.context.branch_id
 
 
-def _capacity_backoff_seconds(refusals: int) -> float:
-    """Wait before asking a provider that just refused for capacity again."""
-    if type(refusals) is not int or refusals <= 1:
-        return CAPACITY_BACKOFF_FLOOR_SECONDS
-    return min(CAPACITY_BACKOFF_CEILING_SECONDS,
-               CAPACITY_BACKOFF_FLOOR_SECONDS * (2.0 ** min(refusals - 1, 16)))
+def _candidate_context(tx, ref: str, revision: int) -> tuple[str, str | None, str | None]:
+    row = tx._check().execute(
+        """SELECT candidate_ref,scope_id,project_id,branch_id,state FROM candidate_evaluations e
+           JOIN candidate_lifecycle l USING(candidate_ref,candidate_revision)
+           WHERE evaluation_id=?""",
+        (revision,),
+    ).fetchone()
+    if row is None or "candidate:" + row["candidate_ref"] != ref or row["state"] != "queued":
+        raise ContractError("SOURCE_MISSING", "candidate_evaluation")
+    tx._scope(row["scope_id"])
+    if (row["project_id"], row["branch_id"]) != (tx.context.project_id, tx.context.branch_id):
+        raise ContractError("ACCESS_DENIED", "candidate_context")
+    return row["scope_id"], row["project_id"], row["branch_id"]
 
 
-def _operator_retry_ids(value: str) -> tuple[str, ...]:
-    return tuple(_OPERATOR_TOKEN.findall(value))
+_SUBJECT_CONTEXT = {
+    "consolidate": _source_context,
+    "embed": _source_or_claim_context,
+    "rebuild_projection": _source_or_claim_context,
+    "purge": _purge_context,
+    "evaluate_candidate": _candidate_context,
+}
+ALLOWED_WORK_TYPES = frozenset(_SUBJECT_CONTEXT)
+
+
+def _current_source_reason(tx, source) -> str | None:
+    current = tx.source_current(source.ref)
+    if current is None or current.revision != source.revision:
+        return "source_revision_stale"
+    try:
+        tx.claims.require_live_source(source.ref, source.revision)
+    except ContractError:
+        return "source_revision_stale"
+    return None
+
+
+def _source_retry_reason(tx, ref: str, revision: int, *, current_epoch: int | None = None) -> str | None:
+    source = tx.source(ref, revision)
+    if source is None:
+        return "source_deleted_or_inaccessible"
+    return _current_source_reason(tx, source)
+
+
+def _projection_retry_reason(tx, ref: str, revision: int, *, current_epoch: int | None = None) -> str | None:
+    source = tx.source(ref, revision)
+    if source is not None:
+        return _current_source_reason(tx, source)
+    version = tx.claims.version(ref, revision)
+    if version is None or tx.claims.current_revision(ref) != revision:
+        return "claim_revision_stale_or_deleted"
+    try:
+        tx.claims.require_target(version)
+    except ContractError:
+        return "claim_denied"
+    return None
+
+
+def _purge_retry_reason(tx, ref: str, revision: int, *, current_epoch: int | None = None) -> str | None:
+    try:
+        receipt = tx.deletions.receipt(ref.rsplit(":", 1)[0])
+    except ContractError:
+        receipt = None
+    if receipt is None or receipt.get("mode") != "delete":
+        return "delete_fence_missing"
+    if current_epoch is not None and int(receipt.get("memory_epoch", current_epoch)) > current_epoch:
+        return "memory_epoch_stale"
+    return None
+
+
+#: Why a failed row's subject may no longer be worked on.  Candidate
+#: evaluations are absent on purpose: an evidence combination is evaluated at
+#: most once, and new evidence makes a new row rather than a retry.
+_RETRY_SUBJECT_REASON = {
+    "consolidate": _source_retry_reason,
+    "embed": _source_retry_reason,
+    "rebuild_projection": _projection_retry_reason,
+    "purge": _purge_retry_reason,
+}
 
 
 class WorkItems:
@@ -151,7 +280,7 @@ class WorkItems:
 
     def derivation_feedback(self, work_id: int) -> dict[str, str] | None:
         """Read repair metadata only for a work item granted the bounded retry."""
-        from .failure_retry import validation_feedback
+        from .failure_retry import validation_feedback  # imports this module
 
         conn = self._tx._check()
         row = conn.execute("SELECT last_error_code FROM work_items WHERE work_id=?", (work_id,)).fetchone()
@@ -170,11 +299,29 @@ class WorkItems:
         ).fetchone()
         return validation_feedback(*(detail if detail is not None else (None, None)))
 
-    def _context_filter(self) -> tuple[str, tuple]:
+    def _visible_filter(self) -> tuple[str, tuple]:
+        """SQL restricting work_items to the context's scopes, project and branch."""
+        context = self._tx.context
+        scopes = sorted(context.allowed_scope_ids)
         return (
-            "AND (project_id IS NULL OR project_id=?) AND (branch_id IS NULL OR branch_id=?)",
-            (self._tx.context.project_id, self._tx.context.branch_id),
+            f"scope_id IN ({_marks(scopes)}) AND (project_id IS NULL OR project_id=?) AND (branch_id IS NULL OR branch_id=?)",
+            (*scopes, context.project_id, context.branch_id),
         )
+
+    def _context_denial(self, row) -> str | None:
+        """Why this context may not act on the row, or None when it may."""
+        context = self._tx.context
+        if row["scope_id"] not in context.allowed_scope_ids:
+            return "scope_denied"
+        if row["project_id"] is not None and row["project_id"] != context.project_id:
+            return "project_denied"
+        if row["branch_id"] is not None and row["branch_id"] != context.branch_id:
+            return "branch_denied"
+        return None
+
+    def _retry_subject_reason(self, row, *, current_epoch: int | None = None) -> str | None:
+        return _RETRY_SUBJECT_REASON[row["work_type"]](
+            self._tx, row["subject_ref"], row["subject_revision"], current_epoch=current_epoch)
 
     def enqueue(self, work_type: str, subject_ref: str, subject_revision: int, *, available_at: str) -> bool:
         conn = self._tx._check(write=True)
@@ -182,57 +329,7 @@ class WorkItems:
             raise ContractError("INPUT_INVALID", "work_type")
         if type(subject_ref) is not str or not subject_ref or type(subject_revision) is not int or subject_revision < 1:
             raise ContractError("INPUT_INVALID", "work_subject")
-        if work_type == "consolidate":
-            source = self._tx.source(subject_ref, subject_revision)
-            if source is None:
-                raise ContractError("SOURCE_MISSING")
-            scope_id, project_id, branch_id = source.scope_id, source.project_id, source.branch_id
-        elif work_type == "embed":
-            # A claim is embeddable too. Until derived objects reached the vector
-            # index the lexical, vector and recent channels all yielded events
-            # only, so a claim could enter automatic recall solely by relation
-            # expansion out of some event retrieved first. Same source-then-claim
-            # fallback that rebuild_projection already uses.
-            source = self._tx.source(subject_ref, subject_revision)
-            if source is not None:
-                scope_id, project_id, branch_id = source.scope_id, source.project_id, source.branch_id
-            else:
-                versions = self._tx.claims.versions(subject_ref)
-                version = next((value for value in versions if value.revision == subject_revision), None)
-                if version is None:
-                    raise ContractError("SOURCE_MISSING")
-                self._tx.claims.require_target(version)
-                scope_id, project_id, branch_id = version.scope_id, version.project_id, version.branch_id
-        elif work_type == "rebuild_projection":
-            source = self._tx.source(subject_ref, subject_revision)
-            if source is not None:
-                scope_id, project_id, branch_id = source.scope_id, source.project_id, source.branch_id
-            else:
-                versions = self._tx.claims.versions(subject_ref)
-                version = next((value for value in versions if value.revision == subject_revision), None)
-                if version is None:
-                    raise ContractError("SOURCE_MISSING")
-                self._tx.claims.require_target(version)
-                scope_id, project_id, branch_id = version.scope_id, version.project_id, version.branch_id
-        elif work_type == "purge":
-            scope_id = subject_ref.split(":", 1)[-1]
-            self._tx._scope(scope_id)
-            project_id, branch_id = self._tx.context.project_id, self._tx.context.branch_id
-        elif work_type == "evaluate_candidate":
-            row = conn.execute(
-                """SELECT candidate_ref,scope_id,project_id,branch_id,state FROM candidate_evaluations e
-                   JOIN candidate_lifecycle l USING(candidate_ref,candidate_revision)
-                   WHERE evaluation_id=?""",
-                (subject_revision,),
-            ).fetchone()
-            if row is None or "candidate:" + row["candidate_ref"] != subject_ref or row["state"] != "queued":
-                raise ContractError("SOURCE_MISSING", "candidate_evaluation")
-            self._tx._scope(row["scope_id"])
-            if (row["project_id"], row["branch_id"]) != (
-                self._tx.context.project_id, self._tx.context.branch_id,
-            ):
-                raise ContractError("ACCESS_DENIED", "candidate_context")
-            scope_id, project_id, branch_id = row["scope_id"], row["project_id"], row["branch_id"]
+        scope_id, project_id, branch_id = _SUBJECT_CONTEXT[work_type](self._tx, subject_ref, subject_revision)
         before = conn.total_changes
         conn.execute(
             """INSERT INTO work_items(work_type,subject_ref,subject_revision,scope_id,project_id,branch_id,available_at)
@@ -243,12 +340,9 @@ class WorkItems:
 
     def release_stale(self, now: str) -> int:
         conn = self._tx._check(write=True)
-        scopes = sorted(self._tx.context.allowed_scope_ids)
-        marks = ",".join("?" for _ in scopes)
-        context_filter, context_params = self._context_filter()
-        base = f"""state='leased' AND scope_id IN ({marks}) {context_filter}
-            AND lease_until IS NOT NULL AND lease_until < ?"""
-        params = (*scopes, *context_params, now)
+        visible, params = self._visible_filter()
+        base = f"state='leased' AND {visible} AND lease_until IS NOT NULL AND lease_until < ?"
+        params = (*params, now)
         failed = conn.execute(
             f"""UPDATE work_items SET state='failed',lease_owner=NULL,lease_until=NULL,last_error_code=CASE
                     WHEN last_error_code LIKE 'operator_retry:%' OR last_error_code LIKE 'auto_retry:%' OR last_error_code LIKE '%derivation_retry:1|%' THEN last_error_code || '|lease_exhausted'
@@ -274,56 +368,31 @@ class WorkItems:
             raise ContractError("INPUT_INVALID", "work_types")
         if not allowed_work_types:
             return ()
-        scopes = sorted(self._tx.context.allowed_scope_ids)
-        marks = ",".join("?" for _ in scopes)
-        context_filter, context_params = self._context_filter()
+        visible, params = self._visible_filter()
         kinds = sorted(allowed_work_types)
-        kind_marks = ",".join("?" for _ in kinds)
-        params = (now, *scopes, *context_params, *kinds, limit)
         self.release_stale(now)
         rows = conn.execute(
             f"""SELECT work_id FROM work_items
-                WHERE state='pending' AND available_at<=? AND scope_id IN ({marks}) {context_filter}
-                AND work_type IN ({kind_marks})
-                ORDER BY CASE WHEN work_type='purge' THEN 0 ELSE 1 END, available_at, work_id LIMIT ?""",
-            params,
+                WHERE state='pending' AND available_at<=? AND {visible} AND work_type IN ({_marks(kinds)})
+                ORDER BY {_PURGE_FIRST}, available_at, work_id LIMIT ?""",
+            (now, *params, *kinds, limit),
         ).fetchall()
-        claimed: list[LeasedWork] = []
-        until = _format_time(_parse_time(now) + timedelta(seconds=float(lease_seconds)))
+        until = _after(now, float(lease_seconds))
+        claimed = []
         for row in rows:
-            work_id = row["work_id"]
-            current = conn.execute(
-                "SELECT lease_token,attempt FROM work_items WHERE work_id=? AND state='pending'",
-                (work_id,),
-            ).fetchone()
-            if current is None:
-                continue
-            token = current["lease_token"] + 1
-            update = conn.execute(
-                """UPDATE work_items SET state='leased',lease_token=?,lease_owner=?,lease_until=?,attempt=attempt+1
-                   WHERE work_id=? AND state='pending' AND lease_token=?""",
-                (token, owner, until, work_id, current["lease_token"]),
+            # The write transaction is IMMEDIATE, so the pending rows selected
+            # above cannot change under this loop; the new token is the fence
+            # every later mutation must present.
+            conn.execute(
+                """UPDATE work_items SET state='leased',lease_token=lease_token+1,lease_owner=?,lease_until=?,attempt=attempt+1
+                   WHERE work_id=?""",
+                (owner, until, row["work_id"]),
             )
-            # total_changes is connection-global and includes earlier writes in
-            # this transaction.  The row count of this compare-and-set is the
-            # fencing result we need.
-            if update.rowcount != 1:
-                continue
-            item = conn.execute("SELECT * FROM work_items WHERE work_id=?", (work_id,)).fetchone()
-            claimed.append(
-                LeasedWork(
-                    item["work_id"],
-                    item["work_type"],
-                    item["subject_ref"],
-                    item["subject_revision"],
-                    item["scope_id"],
-                    item["project_id"],
-                    item["branch_id"],
-                    item["lease_token"],
-                    item["attempt"],
-                    owner,
-                )
-            )
+            item = conn.execute("SELECT * FROM work_items WHERE work_id=?", (row["work_id"],)).fetchone()
+            claimed.append(LeasedWork(
+                item["work_id"], item["work_type"], item["subject_ref"], item["subject_revision"],
+                item["scope_id"], item["project_id"], item["branch_id"], item["lease_token"], item["attempt"], owner,
+            ))
         return tuple(claimed)
 
     def recover_transient_failures(self, *, now: str, allowed_work_types: frozenset[str],
@@ -340,70 +409,40 @@ class WorkItems:
             raise ContractError("INPUT_INVALID", "auto_recovery")
         if not math.isfinite(cooldown_seconds) or not 60 <= cooldown_seconds <= 86400 or not 1 <= limit <= 200:
             raise ContractError("INPUT_INVALID", "auto_recovery_budget")
-        cutoff = _format_time(_parse_time(now) - timedelta(seconds=cooldown_seconds))
-        scopes = sorted(self._tx.context.allowed_scope_ids)
-        marks = ",".join("?" for _ in scopes)
-        context_filter, context_params = self._context_filter()
+        cutoff = _after(now, -cooldown_seconds)
+        kinds = sorted(allowed_work_types & frozenset(_RETRY_SUBJECT_REASON))
+        if not kinds or max_recoveries == 0:
+            return 0
+        visible, params = self._visible_filter()
         error_filter = " OR ".join("(last_error_code=? OR last_error_code LIKE ?)" for _ in AUTO_RECOVERABLE_ERRORS)
         error_params = tuple(value for code in sorted(AUTO_RECOVERABLE_ERRORS) for value in (code, f"%|{code}"))
+        # Rows that already spent their automatic budget are excluded in SQL so
+        # they cannot fill the page; ``_auto_count`` below remains the authority.
         exhausted_filter = " AND ".join("last_error_code NOT LIKE ?" for _ in range(max_recoveries, 5))
         exhausted_params = tuple(f"%auto_retry:{count}|%" for count in range(max_recoveries, 5))
-        if not allowed_work_types or max_recoveries == 0:
-            return 0
-        kinds = sorted(allowed_work_types)
-        kind_marks = ",".join("?" for _ in kinds)
         rows = conn.execute(
             f"""SELECT * FROM work_items WHERE state='failed' AND available_at<=?
-                AND scope_id IN ({marks}) {context_filter} AND ({error_filter}) AND {exhausted_filter}
-                AND work_type IN ({kind_marks})
-                ORDER BY CASE WHEN work_type='purge' THEN 0 ELSE 1 END,available_at,work_id LIMIT ?""",
-            (cutoff, *scopes, *context_params, *error_params, *exhausted_params, *kinds, limit),
+                AND {visible} AND ({error_filter}) AND {exhausted_filter}
+                AND work_type IN ({_marks(kinds)})
+                ORDER BY {_PURGE_FIRST},available_at,work_id LIMIT ?""",
+            (cutoff, *params, *error_params, *exhausted_params, *kinds, limit),
         ).fetchall()
         recovered = 0
         for row in rows:
             error = str(row["last_error_code"] or "")
-            count = _auto_count(error)
-            if row["work_type"] not in allowed_work_types or count >= max_recoveries or _failure_kind(error) not in AUTO_RECOVERABLE_ERRORS:
+            if _auto_count(error) >= max_recoveries or _failure_kind(error) not in AUTO_RECOVERABLE_ERRORS:
                 continue
-            # Candidate evidence combinations are at-most-once logical model
-            # evaluations. A new evidence fingerprint creates a new work row;
-            # generic transient recovery must never replay the old combination.
-            if row["work_type"] == "evaluate_candidate":
-                continue
-            valid = True
             try:
-                if row["work_type"] in {"embed", "consolidate"}:
-                    self._tx.claims.require_live_source(row["subject_ref"], row["subject_revision"])
-                    source = self._tx.source_current(row["subject_ref"])
-                    valid = source is not None and source.revision == row["subject_revision"]
-                elif row["work_type"] == "purge":
-                    receipt = self._tx.deletions.receipt(row["subject_ref"].rsplit(":", 1)[0])
-                    valid = receipt is not None and receipt.get("mode") == "delete"
-                else:
-                    source = self._tx.source(row["subject_ref"], row["subject_revision"])
-                    if source is not None:
-                        self._tx.claims.require_live_source(source.ref, source.revision)
-                        current = self._tx.source_current(source.ref)
-                        valid = current is not None and current.revision == source.revision
-                    else:
-                        claim = self._tx.claims.version(row["subject_ref"], row["subject_revision"])
-                        valid = claim is not None and self._tx.claims.current_revision(row["subject_ref"]) == row["subject_revision"]
-                        if valid:
-                            self._tx.claims.require_target(claim)
+                revoked = self._retry_subject_reason(row) is not None
             except ContractError:
-                valid = False
-            if not valid:
+                revoked = True
+            if revoked:
                 conn.execute("UPDATE work_items SET state='obsolete',last_error_code='authority_revoked' WHERE work_id=? AND state='failed'", (row["work_id"],))
                 continue
-            stamp = f"auto_retry:{count + 1}|{_failure_kind(error)}"
-            if "derivation_retry:1|" in error:
-                stamp = "derivation_retry:1|" + stamp
-            if error.startswith("operator_retry:"):
-                stamp = f"{error}|{stamp}"[-1024:]
             recovered += conn.execute(
                 """UPDATE work_items SET state='pending',available_at=?,last_error_code=?,
                    lease_owner=NULL,lease_until=NULL WHERE work_id=? AND state='failed'""",
-                (now, stamp, row["work_id"]),
+                (now, _auto_retry_stamp(error), row["work_id"]),
             ).rowcount
         return recovered
 
@@ -418,27 +457,23 @@ class WorkItems:
         conn = self._tx._check(write=True)
         if type(limit) is not int or not 1 <= limit <= 16:
             raise ContractError("INPUT_INVALID", "repair_limit")
-        scopes = sorted(self._tx.context.allowed_scope_ids)
-        marks = ",".join("?" for _ in scopes)
+        visible, params = self._visible_filter()
         rows = conn.execute(
-            f"""SELECT w.* FROM work_items w
-                WHERE w.work_type='consolidate' AND w.state='failed'
-                  AND w.last_error_code='INPUT_INVALID' AND w.consolidation_offset=0
-                  AND w.scope_id IN ({marks})
-                  AND (w.project_id IS NULL OR w.project_id=?)
-                  AND (w.branch_id IS NULL OR w.branch_id=?)
-                ORDER BY w.work_id LIMIT ?""",
-            (*scopes,self._tx.context.project_id,self._tx.context.branch_id,limit),
+            f"""SELECT * FROM work_items
+                WHERE work_type='consolidate' AND state='failed'
+                  AND last_error_code='INPUT_INVALID' AND consolidation_offset=0 AND {visible}
+                ORDER BY work_id LIMIT ?""",
+            (*params, limit),
         ).fetchall()
         recovered = 0
         for row in rows:
             oversized = False
             try:
-                self._tx.claims.require_live_source(row["subject_ref"],row["subject_revision"])
-                source = self._tx.source(row["subject_ref"],row["subject_revision"])
+                self._tx.claims.require_live_source(row["subject_ref"], row["subject_revision"])
+                source = self._tx.source(row["subject_ref"], row["subject_revision"])
                 if source is not None and not source.capture_gaps and source.event["capture_state"] == "complete":
-                    episode = self._tx.episodes.source_episode(source.ref,source.revision)
-                    formatter((source,),episode_ref=episode.ref if episode else None)
+                    episode = self._tx.episodes.source_episode(source.ref, source.revision)
+                    formatter((source,), episode_ref=episode.ref if episode else None)
             except ContractError as exc:
                 if exc.code in {"STORAGE_UNAVAILABLE", "DEADLINE_EXCEEDED"}:
                     raise
@@ -455,7 +490,7 @@ class WorkItems:
                 """UPDATE work_items SET state='pending',available_at=?,lease_owner=NULL,lease_until=NULL,
                    last_error_code='chunk_upgrade:1106|INPUT_INVALID'
                    WHERE work_id=? AND state='failed' AND last_error_code='INPUT_INVALID'
-                   AND consolidation_offset=0""", (now,row["work_id"]),
+                   AND consolidation_offset=0""", (now, row["work_id"]),
             ).rowcount
         return recovered
 
@@ -467,7 +502,7 @@ class WorkItems:
         a single source, while a candidate evaluation formats a candidate against
         its whole evidence set. The candidate worker also lowercases its error
         codes, so that sibling's exact-case ``INPUT_INVALID`` filter would miss
-        them even without the work-type gate — matching here is case-insensitive.
+        them even without the work-type gate -- matching here is case-insensitive.
 
         The caller owns deciding ``fits`` and moving the candidate tables with it;
         this only touches ``work_items``. Either way the row gets a durable
@@ -497,16 +532,14 @@ class WorkItems:
         kinds = sorted(allowed_work_types & {"consolidate", "evaluate_candidate"})
         if not kinds:
             return 0
-        scopes = sorted(self._tx.context.allowed_scope_ids)
-        context_filter, params = self._context_filter()
+        visible, params = self._visible_filter()
         rows = conn.execute(
             f"""SELECT work_id,work_type,last_error_code FROM work_items
-                WHERE state='failed' AND scope_id IN ({','.join('?' for _ in scopes)})
-                {context_filter} AND work_type IN ({','.join('?' for _ in kinds)})
+                WHERE state='failed' AND {visible} AND work_type IN ({_marks(kinds)})
                 AND (lower(last_error_code)='derivation_invalid'
                      OR lower(last_error_code) LIKE '%|derivation_invalid')
                 AND last_error_code NOT LIKE ? ORDER BY work_id LIMIT ?""",
-            (*scopes, *params, *kinds, f"%{DERIVATION_RETRY_MARKER}|%", limit),
+            (*params, *kinds, f"%{DERIVATION_RETRY_MARKER}|%", limit),
         ).fetchall()
         return sum(self._reopen_failed(row["work_id"], row["work_type"], row["last_error_code"],
                                        now=now, automatic=True) for row in rows)
@@ -523,14 +556,13 @@ class WorkItems:
 
         A candidate evaluation needs three tables to move together -- evaluation,
         lifecycle and work item -- or ``begin_model_attempt`` refuses the next
-        attempt as ``candidate_attempt_interrupted``, which is exactly how eight
-        of these rows got here.  Other work types need only the work item.
+        attempt as ``candidate_attempt_interrupted``.  Other work types need
+        only the work item.
 
         Idempotent: every row is stamped with the schema generation that granted
         it, and a row already carrying this generation's stamp is skipped.
         """
-        from .failure_retry import selects, validate_page
-        from .schema import SCHEMA_VERSION
+        from .failure_retry import selects, validate_page  # imports this module
 
         validate_page(limit)
         if type(include_terminal) is not bool or type(dry_run) is not bool:
@@ -538,14 +570,11 @@ class WorkItems:
         # A preview must be able to run inside a read transaction, which is what
         # makes "look before you touch production" the cheap option.
         conn = self._tx._check(write=not dry_run)
-        scopes = sorted(self._tx.context.allowed_scope_ids)
-        marks = ",".join("?" for _ in scopes)
-        context_filter, context_params = self._context_filter()
+        visible, params = self._visible_filter()
         rows = conn.execute(
             f"""SELECT work_id, work_type, last_error_code FROM work_items
-                WHERE state='failed' AND scope_id IN ({marks}) {context_filter}
-                ORDER BY work_id LIMIT ?""",
-            (*scopes, *context_params, max(limit * 8, limit)),
+                WHERE state='failed' AND {visible} ORDER BY work_id LIMIT ?""",
+            (*params, max(limit * 8, limit)),
         ).fetchall()
 
         report = {"examined": 0, "retried": 0, "by_kind": {}, "applied": not dry_run}
@@ -565,8 +594,7 @@ class WorkItems:
 
     def _reopen_failed(self, work_id: int, work_type: str, code: object, *, now: str, automatic: bool = False) -> bool:
         """Move one failed row, and its sibling tables when it has any."""
-        from .failure_retry import marked
-        from .schema import SCHEMA_VERSION
+        from .failure_retry import marked  # imports this module
 
         conn = self._tx._check(write=True)
         reason = "derivation_retry" if automatic else "operator_retry"
@@ -584,14 +612,13 @@ class WorkItems:
         conn = self._tx._check(write=True)
         if not self._verify_lease(work_id, lease_token, owner, now=now):
             return WorkMutation(work_id, "stale", self.read_state(work_id) or "stale", lease_token)
-        available = _format_time(_parse_time(now) + timedelta(seconds=seconds))
         prior = conn.execute("SELECT last_error_code FROM work_items WHERE work_id=?", (work_id,)).fetchone()[0]
         if _preserve_retry_history(prior):
             error_code = f"{prior}|{error_code}"[:1024]
-        conn.execute("""UPDATE work_items SET state='pending',attempt=MAX(0,attempt-1),
+        conn.execute(f"""UPDATE work_items SET state='pending',attempt=MAX(0,attempt-1),
                        lease_owner=NULL,lease_until=NULL,last_error_code=?,available_at=?
-                       WHERE work_id=? AND state='leased' AND lease_token=? AND lease_owner=?""",
-                     (error_code, available, work_id, lease_token, owner))
+                       WHERE {_LEASED_ROW}""",
+                     (error_code, _after(now, seconds), work_id, lease_token, owner))
         return WorkMutation(work_id, "deferred", "pending", lease_token)
 
     def read_state(self, work_id: int) -> str | None:
@@ -617,128 +644,18 @@ class WorkItems:
         pending is idempotent.
         """
         conn = self._tx._check(write=True)
-        if self._tx.context.actor_origin not in OPERATOR_ORIGINS:
-            raise ContractError("ACCESS_DENIED", "operator_origin")
-        if not isinstance(work_ids, (tuple, list)) or not work_ids:
-            raise ContractError("INPUT_INVALID", "retry_work_ids")
-        if type(max_items) is not int or not 1 <= max_items <= 8 or len(work_ids) > max_items:
-            raise ContractError("INPUT_INVALID", "retry_budget")
-        if any(type(value) is not int or value < 1 for value in work_ids):
-            raise ContractError("INPUT_INVALID", "retry_work_ids")
-        if len(set(work_ids)) != len(work_ids):
-            raise ContractError("INPUT_INVALID", "retry_work_ids")
-        if type(operation_id) is not str or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}", operation_id):
-            raise ContractError("INPUT_INVALID", "retry_operation")
-        if expected_memory_epoch is not None and (type(expected_memory_epoch) is not int or expected_memory_epoch < 0):
-            raise ContractError("INPUT_INVALID", "memory_epoch")
-        if expected_memory_epoch is not None and self._tx.status().memory_epoch != expected_memory_epoch:
-            raise ContractError("VERSION_CONFLICT", "memory_epoch")
-        # Validate the timestamp through the existing strict UTC parser before
-        # any row is changed.  The worker's clock remains the authority.
+        self._check_operator_request(work_ids, operation_id, expected_memory_epoch, max_items)
+        # Validate the timestamp through the strict UTC parser before any row
+        # is changed.  The worker's clock remains the authority.
         _parse_time(now)
         current_epoch = self._tx.status().memory_epoch
-        results: list[OperatorRetryMutation] = []
+        results = []
         for work_id in work_ids:
             row = conn.execute("SELECT * FROM work_items WHERE work_id=?", (work_id,)).fetchone()
-            if row is None:
-                results.append(OperatorRetryMutation(work_id, "rejected", "missing", "work_missing", operation_id))
-                continue
-            if row["scope_id"] not in self._tx.context.allowed_scope_ids:
-                results.append(OperatorRetryMutation(work_id, "rejected", "unavailable", "scope_denied", operation_id))
-                continue
-            if row["project_id"] is not None and row["project_id"] != self._tx.context.project_id:
-                results.append(OperatorRetryMutation(work_id, "rejected", "unavailable", "project_denied", operation_id))
-                continue
-            if row["branch_id"] is not None and row["branch_id"] != self._tx.context.branch_id:
-                results.append(OperatorRetryMutation(work_id, "rejected", "unavailable", "branch_denied", operation_id))
-                continue
-            state = row["state"]
-            if row["work_type"] == "evaluate_candidate":
-                results.append(OperatorRetryMutation(
-                    work_id, "rejected", state, "new_evidence_required", operation_id,
-                ))
-                continue
-            if state == "pending":
-                results.append(OperatorRetryMutation(work_id, "already_pending", state, "idempotent", operation_id))
-                continue
-            if state == "leased":
-                results.append(OperatorRetryMutation(work_id, "rejected", state, "leased", operation_id))
-                continue
-            if state != "failed":
-                results.append(OperatorRetryMutation(work_id, "rejected", state, "state_not_failed", operation_id))
-                continue
-            prior_error = row["last_error_code"] or ""
-            marker = f"operator_retry:{operation_id}"
-            prior_operator_ids = _operator_retry_ids(prior_error)
-            if operation_id in prior_operator_ids:
-                results.append(OperatorRetryMutation(work_id, "already_retried", state, "idempotent", operation_id))
-                continue
-            if len(prior_operator_ids) >= MAX_OPERATOR_RETRIES:
-                results.append(OperatorRetryMutation(work_id, "rejected", state, "operator_retry_budget", operation_id))
-                continue
-
-            reason = None
-            if row["work_type"] in {"embed", "consolidate"}:
-                source = self._tx.source(row["subject_ref"], row["subject_revision"])
-                current = self._tx.source_current(row["subject_ref"])
-                if source is None:
-                    reason = "source_deleted_or_inaccessible"
-                elif current is None or current.revision != row["subject_revision"]:
-                    reason = "source_revision_stale"
-                else:
-                    try:
-                        self._tx.claims.require_live_source(source.ref, source.revision)
-                    except ContractError:
-                        reason = "source_revision_stale"
-            elif row["work_type"] == "rebuild_projection":
-                source = self._tx.source(row["subject_ref"], row["subject_revision"])
-                if source is not None:
-                    current = self._tx.source_current(row["subject_ref"])
-                    if current is None or current.revision != row["subject_revision"]:
-                        reason = "source_revision_stale"
-                    else:
-                        try:
-                            self._tx.claims.require_live_source(source.ref, source.revision)
-                        except ContractError:
-                            reason = "source_revision_stale"
-                else:
-                    version = self._tx.claims.version(row["subject_ref"], row["subject_revision"])
-                    current_revision = self._tx.claims.current_revision(row["subject_ref"])
-                    if version is None or current_revision != row["subject_revision"]:
-                        reason = "claim_revision_stale_or_deleted"
-                    else:
-                        try:
-                            self._tx.claims.require_target(version)
-                        except ContractError:
-                            reason = "claim_denied"
-            elif row["work_type"] == "purge":
-                operation = row["subject_ref"].rsplit(":", 1)[0]
-                try:
-                    receipt = self._tx.deletions.receipt(operation)
-                except ContractError:
-                    receipt = None
-                if receipt is None or receipt.get("mode") != "delete":
-                    reason = "delete_fence_missing"
-                elif int(receipt.get("memory_epoch", current_epoch)) > current_epoch:
-                    reason = "memory_epoch_stale"
-            if reason is not None:
-                results.append(OperatorRetryMutation(work_id, "rejected", state, reason, operation_id))
-                continue
-            # Keep attempt as-is: explicit maintenance retry grants exactly one
-            # new worker execution and cannot silently restart the automatic
-            # three-attempt budget.  The operation marker is durable in the
-            # existing bounded error field for audit/idempotence.
-            stamped = marker if not prior_error else f"{marker}|prior:{prior_error}"[:1024]
-            updated = conn.execute(
-                """UPDATE work_items SET state='pending',available_at=?,lease_owner=NULL,
-                   lease_until=NULL,last_error_code=?
-                   WHERE work_id=? AND state='failed'""",
-                (now, stamped, work_id),
-            )
-            if updated.rowcount != 1:
-                results.append(OperatorRetryMutation(work_id, "rejected", "race", "state_changed", operation_id))
-                continue
-            results.append(OperatorRetryMutation(work_id, "requeued", "pending", "operator_retry_requested", operation_id))
+            verdict = self._operator_retry_rejection(row, operation_id, current_epoch)
+            if verdict is None:
+                verdict = self._operator_requeue(conn, row, operation_id, now)
+            results.append(OperatorRetryMutation(work_id, *verdict, operation_id))
         # Re-read the epoch in the same write transaction.  A concurrent
         # deletion/update cannot commit between the eligibility check and the
         # requeue commit; a later worker fence still handles a post-commit
@@ -746,6 +663,66 @@ class WorkItems:
         if expected_memory_epoch is not None and self._tx.status().memory_epoch != expected_memory_epoch:
             raise ContractError("VERSION_CONFLICT", "memory_epoch")
         return tuple(results)
+
+    def _check_operator_request(self, work_ids, operation_id, expected_memory_epoch, max_items) -> None:
+        if self._tx.context.actor_origin not in OPERATOR_ORIGINS:
+            raise ContractError("ACCESS_DENIED", "operator_origin")
+        if not isinstance(work_ids, (tuple, list)) or not work_ids:
+            raise ContractError("INPUT_INVALID", "retry_work_ids")
+        if type(max_items) is not int or not 1 <= max_items <= 8 or len(work_ids) > max_items:
+            raise ContractError("INPUT_INVALID", "retry_budget")
+        if any(type(value) is not int or value < 1 for value in work_ids) or len(set(work_ids)) != len(work_ids):
+            raise ContractError("INPUT_INVALID", "retry_work_ids")
+        if type(operation_id) is not str or not _OPERATION_ID.fullmatch(operation_id):
+            raise ContractError("INPUT_INVALID", "retry_operation")
+        if expected_memory_epoch is not None:
+            if type(expected_memory_epoch) is not int or expected_memory_epoch < 0:
+                raise ContractError("INPUT_INVALID", "memory_epoch")
+            if self._tx.status().memory_epoch != expected_memory_epoch:
+                raise ContractError("VERSION_CONFLICT", "memory_epoch")
+
+    def _operator_retry_rejection(self, row, operation_id: str, current_epoch: int) -> tuple[str, str, str] | None:
+        """``(disposition, state, reason)`` refusing the retry, or None to requeue."""
+        if row is None:
+            return "rejected", "missing", "work_missing"
+        denied = self._context_denial(row)
+        if denied is not None:
+            return "rejected", "unavailable", denied
+        state = row["state"]
+        if row["work_type"] == "evaluate_candidate":
+            return "rejected", state, "new_evidence_required"
+        if state == "pending":
+            return "already_pending", state, "idempotent"
+        if state == "leased":
+            return "rejected", state, "leased"
+        if state != "failed":
+            return "rejected", state, "state_not_failed"
+        prior_operations = _operator_retry_ids(row["last_error_code"] or "")
+        if operation_id in prior_operations:
+            return "already_retried", state, "idempotent"
+        if len(prior_operations) >= MAX_OPERATOR_RETRIES:
+            return "rejected", state, "operator_retry_budget"
+        reason = self._retry_subject_reason(row, current_epoch=current_epoch)
+        if reason is not None:
+            return "rejected", state, reason
+        return None
+
+    @staticmethod
+    def _operator_requeue(conn, row, operation_id: str, now: str) -> tuple[str, str, str]:
+        # Keep attempt as-is: explicit maintenance retry grants exactly one
+        # new worker execution and cannot silently restart the automatic
+        # three-attempt budget.  The operation marker is durable in the
+        # existing bounded error field for audit/idempotence.
+        marker = f"operator_retry:{operation_id}"
+        prior_error = row["last_error_code"] or ""
+        stamped = marker if not prior_error else f"{marker}|prior:{prior_error}"[:1024]
+        conn.execute(
+            """UPDATE work_items SET state='pending',available_at=?,lease_owner=NULL,
+               lease_until=NULL,last_error_code=?
+               WHERE work_id=? AND state='failed'""",
+            (now, stamped, row["work_id"]),
+        )
+        return "requeued", "pending", "operator_retry_requested"
 
     def _verify_lease(self, work_id: int, lease_token: int, owner: str, *, now: str) -> bool:
         # Verification is a read operation.  Mutations call it from a write
@@ -756,30 +733,24 @@ class WorkItems:
                FROM work_items WHERE work_id=?""",
             (work_id,),
         ).fetchone()
+        if row is None or row["state"] != "leased" or row["lease_token"] != lease_token or row["lease_owner"] != owner:
+            return False
+        if self._context_denial(row) is not None:
+            return False
+        return row["lease_until"] is None or _parse_time(row["lease_until"]) > _parse_time(now)
+
+    def _stale_mutation(self, conn, work_id: int) -> WorkMutation:
+        row = conn.execute("SELECT state,lease_token FROM work_items WHERE work_id=?", (work_id,)).fetchone()
         if row is None:
-            return False
-        if row["state"] != "leased" or row["lease_token"] != lease_token or row["lease_owner"] != owner:
-            return False
-        if row["scope_id"] not in self._tx.context.allowed_scope_ids:
-            return False
-        if row["project_id"] is not None and row["project_id"] != self._tx.context.project_id:
-            return False
-        if row["branch_id"] is not None and row["branch_id"] != self._tx.context.branch_id:
-            return False
-        if row["lease_until"] is not None and _parse_time(row["lease_until"]) <= _parse_time(now):
-            return False
-        return True
+            raise ContractError("SOURCE_MISSING", "work_item")
+        return WorkMutation(work_id, "stale", row["state"], row["lease_token"])
 
     def complete(self, work_id: int, lease_token: int, owner: str, *, now: str) -> WorkMutation:
         conn = self._tx._check(write=True)
         if not self._verify_lease(work_id, lease_token, owner, now=now):
-            row = conn.execute("SELECT state,lease_token FROM work_items WHERE work_id=?", (work_id,)).fetchone()
-            if row is None:
-                raise ContractError("SOURCE_MISSING", "work_item")
-            return WorkMutation(work_id, "stale", row["state"], row["lease_token"])
+            return self._stale_mutation(conn, work_id)
         conn.execute(
-            """UPDATE work_items SET state='done',lease_owner=NULL,lease_until=NULL,last_error_code=NULL
-               WHERE work_id=? AND state='leased' AND lease_token=? AND lease_owner=?""",
+            f"UPDATE work_items SET state='done',lease_owner=NULL,lease_until=NULL,last_error_code=NULL WHERE {_LEASED_ROW}",
             (work_id, lease_token, owner),
         )
         return WorkMutation(work_id, "completed", "done", lease_token)
@@ -838,13 +809,9 @@ class WorkItems:
     def fail(self, work_id: int, lease_token: int, owner: str, *, error_code: str, now: str, recoverable: bool) -> WorkMutation:
         conn = self._tx._check(write=True)
         if not self._verify_lease(work_id, lease_token, owner, now=now):
-            row = conn.execute("SELECT state,lease_token FROM work_items WHERE work_id=?", (work_id,)).fetchone()
-            if row is None:
-                raise ContractError("SOURCE_MISSING", "work_item")
-            return WorkMutation(work_id, "stale", row["state"], row["lease_token"])
+            return self._stale_mutation(conn, work_id)
         row = conn.execute("SELECT attempt,last_error_code,work_type FROM work_items WHERE work_id=?", (work_id,)).fetchone()
-        attempt = row["attempt"]
-        prior = row["last_error_code"]
+        attempt, prior = row["attempt"], row["last_error_code"]
         # Invalid output gets exactly one extra execution, even when earlier
         # infrastructure failures have consumed the ordinary attempt counter.
         invalid = (_failure_kind(error_code).lower() == "derivation_invalid"
@@ -861,49 +828,37 @@ class WorkItems:
             # for an entire provider outage, which is the silent loop this
             # whole design exists to prevent.
             refusals = _capacity_count(prior) + 1
-            available = _format_time(
-                _parse_time(now) + timedelta(seconds=_capacity_backoff_seconds(refusals)))
             retry_error = f"capacity:{refusals}|{error_code}"[:1024]
             if "derivation_retry:1|" in str(prior or ""):
                 retry_error = "derivation_retry:1|" + retry_error
             conn.execute(
-                """UPDATE work_items SET state='pending',lease_owner=NULL,lease_until=NULL,
-                   last_error_code=?,available_at=?,attempt=MAX(attempt-1,0)
-                   WHERE work_id=? AND state='leased' AND lease_token=? AND lease_owner=?""",
-                (retry_error, available, work_id, lease_token, owner),
+                f"""UPDATE work_items SET state='pending',lease_owner=NULL,lease_until=NULL,
+                   last_error_code=?,available_at=?,attempt=MAX(attempt-1,0) WHERE {_LEASED_ROW}""",
+                (retry_error, _after(now, _capacity_backoff_seconds(refusals)), work_id, lease_token, owner),
             )
             return WorkMutation(work_id, "retry", "pending", lease_token)
+        history = f"{prior}|{error_code}"[:1024] if _preserve_retry_history(prior) else error_code
         if recoverable and (invalid or attempt < MAX_RECOVERABLE_ATTEMPTS):
-            available = _format_time(_parse_time(now) + timedelta(seconds=_backoff_seconds(attempt)))
-            retry_error = error_code
-            if _preserve_retry_history(prior):
-                retry_error = f"{prior}|{error_code}"[:1024]
             conn.execute(
-                """UPDATE work_items SET state='pending',lease_owner=NULL,lease_until=NULL,last_error_code=?,available_at=?
-                   WHERE work_id=? AND state='leased' AND lease_token=? AND lease_owner=?""",
-                (retry_error, available, work_id, lease_token, owner),
+                f"""UPDATE work_items SET state='pending',lease_owner=NULL,lease_until=NULL,last_error_code=?,available_at=?
+                   WHERE {_LEASED_ROW}""",
+                (history, _after(now, _backoff_seconds(attempt)), work_id, lease_token, owner),
             )
             return WorkMutation(work_id, "retry", "pending", lease_token)
-        final_error = error_code
-        if _preserve_retry_history(prior):
-            final_error = f"{prior}|{error_code}"[:1024]
         conn.execute(
-            """UPDATE work_items SET state='failed',lease_owner=NULL,lease_until=NULL,last_error_code=?,available_at=?
-               WHERE work_id=? AND state='leased' AND lease_token=? AND lease_owner=?""",
-            (final_error, now, work_id, lease_token, owner),
+            f"""UPDATE work_items SET state='failed',lease_owner=NULL,lease_until=NULL,last_error_code=?,available_at=?
+               WHERE {_LEASED_ROW}""",
+            (history, now, work_id, lease_token, owner),
         )
         return WorkMutation(work_id, "failed", "failed", lease_token)
 
     def mark_obsolete(self, work_id: int, lease_token: int, owner: str, *, now: str) -> WorkMutation:
         conn = self._tx._check(write=True)
         if not self._verify_lease(work_id, lease_token, owner, now=now):
-            row = conn.execute("SELECT state,lease_token FROM work_items WHERE work_id=?", (work_id,)).fetchone()
-            if row is None:
-                raise ContractError("SOURCE_MISSING", "work_item")
-            return WorkMutation(work_id, "stale", row["state"], row["lease_token"])
+            return self._stale_mutation(conn, work_id)
         conn.execute(
-            """UPDATE work_items SET state='obsolete',lease_owner=NULL,lease_until=NULL,last_error_code='authority_revoked'
-               WHERE work_id=? AND state='leased' AND lease_token=? AND lease_owner=?""",
+            f"""UPDATE work_items SET state='obsolete',lease_owner=NULL,lease_until=NULL,last_error_code='authority_revoked'
+               WHERE {_LEASED_ROW}""",
             (work_id, lease_token, owner),
         )
         return WorkMutation(work_id, "obsolete", "obsolete", lease_token)
