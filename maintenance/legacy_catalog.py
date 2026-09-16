@@ -12,7 +12,7 @@ from .backup import _safe_path
 from .legacy_tianshu_compat import (
     BRIDGE_TABLE, BRIDGE_COLUMNS, IMPORT_LEDGER_TABLE, IMPORT_LEDGER_COLUMNS,
 )
-from .migration_records import MigrationError, _canon, _tables, _columns
+from .migration_records import MigrationError, _canon, _columns, _open_immutable, _tables
 
 _HISTORY = {
     "fact_action_receipts",
@@ -57,137 +57,37 @@ _KNOWN = {
     "fact_claims_fts_membership",
     "procedural_playbooks",
     "playbook_versions",
+    BRIDGE_TABLE,
+    IMPORT_LEDGER_TABLE,
     *_HISTORY,
     *_COMPAT,
     *_DIGEST_TABLES,
 }
+
+# Columns a legacy table must have before any of its rows can be converted.
 _REQUIRED = {
-    "journal_entries": {
-        "id",
-        "scope_id",
-        "shared_scope_id",
-        "session_id",
-        "role",
-        "content",
-        "created_at",
-    },
-    "memories": {
-        "id",
-        "scope_id",
-        "session_id",
-        "source",
-        "target",
-        "content",
-        "summary",
-        "created_at",
-        "updated_at",
-    },
-    "memory_journal_sources": {"memory_id", "journal_entry_id"},
-    "task_episodes": {
-        "id",
-        "scope_id",
-        "session_id",
-        "task_goal",
-        "status",
-        "started_at",
-    },
-    "fact_claims": {
-        "claim_id",
-        "memory_id",
-        "scope_id",
-        "subject_key",
-        "predicate_key",
-        "fact_key",
-        "value",
-        "cardinality",
-        "assertion_kind",
-        "recorded_at",
-        "status",
-    },
-    "fact_claim_evidence": {
-        "evidence_id",
-        "claim_id",
-        "source_type",
-        "source_ref",
-        "evidence_hash",
-        "excerpt",
-        "recorded_at",
-    },
-    "fact_action_receipts": {
-        "action_id",
-        "idempotency_key",
-        "request_hash",
-        "scope_id",
-        "requested_action",
-        "effective_action",
-        "status",
-        "applied",
-        "receipt_json",
-        "created_at",
-        "updated_at",
-    },
-    "procedural_playbooks": {
-        "id",
-        "scope_id",
-        "task_class",
-        "title",
-        "goal",
-        "status",
-        "created_at",
-        "updated_at",
-    },
-    "playbook_versions": {
-        "id",
-        "playbook_id",
-        "version",
-        "change_type",
-        "snapshot",
-        "created_at",
-    },
-    "experience_runs": {"id", "playbook_id", "scope_id", "decision", "started_at"},
-    "reflection_events": {
-        "id",
-        "episode_id",
-        "scope_id",
-        "event_type",
-        "outcome",
-        "created_at",
-    },
-    "fact_freshness": {
-        "id",
-        "subject_type",
-        "subject_id",
-        "fact_key",
-        "truth_type",
-        "created_at",
-        "updated_at",
-    },
-    "skill_anchors": {"id", "playbook_id", "skill_name", "created_at"},
-    "skill_conflicts": {"id", "playbook_id", "conflict_summary", "created_at"},
-    "memory_digest_sources": {
-        "memory_id",
-        "run_id",
-        "session_id",
-        "message_ids",
-        "source_hash",
-        "created_at",
-    },
-    "nightly_digest_quarantine": {
-        "id",
-        "run_id",
-        "session_id",
-        "candidate_hash",
-        "reason_codes",
-        "created_at",
-    },
-    "nightly_digest_runs": {
-        "id",
-        "digest_date",
-        "source_db",
-        "started_at",
-        "extractor",
-        "status",
-    },
+    table: frozenset(columns.split())
+    for table, columns in {
+        "journal_entries": "id scope_id shared_scope_id session_id role content created_at",
+        "memories": "id scope_id session_id source target content summary created_at updated_at",
+        "memory_journal_sources": "memory_id journal_entry_id",
+        "task_episodes": "id scope_id session_id task_goal status started_at",
+        "fact_claims": "claim_id memory_id scope_id subject_key predicate_key fact_key value cardinality assertion_kind recorded_at status",
+        "fact_claim_evidence": "evidence_id claim_id source_type source_ref evidence_hash excerpt recorded_at",
+        "fact_action_receipts": "action_id idempotency_key request_hash scope_id requested_action effective_action status applied receipt_json created_at updated_at",
+        "procedural_playbooks": "id scope_id task_class title goal status created_at updated_at",
+        "playbook_versions": "id playbook_id version change_type snapshot created_at",
+        "experience_runs": "id playbook_id scope_id decision started_at",
+        "reflection_events": "id episode_id scope_id event_type outcome created_at",
+        "fact_freshness": "id subject_type subject_id fact_key truth_type created_at updated_at",
+        "skill_anchors": "id playbook_id skill_name created_at",
+        "skill_conflicts": "id playbook_id conflict_summary created_at",
+        "memory_digest_sources": "memory_id run_id session_id message_ids source_hash created_at",
+        "nightly_digest_quarantine": "id run_id session_id candidate_hash reason_codes created_at",
+        "nightly_digest_runs": "id digest_date source_db started_at extractor status",
+        BRIDGE_TABLE: " ".join(BRIDGE_COLUMNS),
+        IMPORT_LEDGER_TABLE: " ".join(IMPORT_LEDGER_COLUMNS),
+    }.items()
 }
 
 # Frozen 578b columns for tables whose rows become readable Core content or
@@ -215,6 +115,13 @@ _LEGACY_COLUMNS = {
     "memory_digest_sources": "memory_id run_id session_id message_ids source_hash created_at",
     "nightly_digest_quarantine": "id run_id session_id candidate_hash reason_codes metadata created_at",
     "nightly_digest_runs": "id digest_date source_db started_at finished_at extractor model dry_run status inserted updated skipped deleted error metadata",
+    BRIDGE_TABLE: " ".join(BRIDGE_COLUMNS),
+    IMPORT_LEDGER_TABLE: " ".join(IMPORT_LEDGER_COLUMNS),
+}
+_SUPPORTED_COLUMNS = {
+    table: frozenset(columns.split())
+    | (frozenset({"project_id", "branch_id"}) if "scope_id" in columns.split() else frozenset())
+    for table, columns in _LEGACY_COLUMNS.items()
 }
 
 _CONTENT_TABLES = {
@@ -228,75 +135,54 @@ _CONTENT_TABLES = {
     "playbook_versions",
     *_HISTORY,
 }
-
-_LINEAGE_TABLES = {
-    "memory_journal_sources",
-    "memory_digest_sources",
-}
-
-_AUDIT_TABLES = {
-    "nightly_digest_quarantine",
-    "nightly_digest_runs",
-    "governance_audit_events",
-}
-
+_LINEAGE_TABLES = {"memory_journal_sources", "memory_digest_sources"}
 _PURGE_TABLES = {
     "privacy_purge_operations",
     "privacy_purge_tombstones",
     "privacy_purge_source_tombstones",
     "privacy_purge_vector_intents",
 }
+_DISPOSITIONS = {
+    BRIDGE_TABLE: "audit_completed_transport",
+    IMPORT_LEDGER_TABLE: "audit_import_provenance",
+    **{table: "content" for table in _CONTENT_TABLES},
+    **{table: "lineage" for table in _LINEAGE_TABLES},
+    "nightly_digest_quarantine": "audit_quarantine",
+    "nightly_digest_runs": "audit_run",
+    "governance_audit_events": "audit_governance",
+    **{table: "purge_authority" for table in _PURGE_TABLES},
+}
+
+# Rebuildable indexes and bookkeeping never block a cutover. Matched on the
+# lower-cased name because SQLite table names are case-insensitive.
+_DERIVED_PREFIXES = ("vector_", "embedding_", "relation_", "lexical_")
+_DERIVED_NAMES = frozenset({
+    "memory_entities", "memory_relations", "memory_feedback", "operator_operations",
+})
+_CATALOG_DERIVED_NAMES = _DERIVED_NAMES | {
+    "schema_migrations",
+    "journal_digest_runs",
+    "journal_rejections",
+    "journal_session_digest_state",
+    "sqlite_sequence",
+    *_COMPAT,
+}
 
 
-_KNOWN.add(BRIDGE_TABLE)
-_REQUIRED[BRIDGE_TABLE] = set(BRIDGE_COLUMNS)
-_LEGACY_COLUMNS[BRIDGE_TABLE] = " ".join(BRIDGE_COLUMNS)
-_KNOWN.add(IMPORT_LEDGER_TABLE)
-_REQUIRED[IMPORT_LEDGER_TABLE] = set(IMPORT_LEDGER_COLUMNS)
-_LEGACY_COLUMNS[IMPORT_LEDGER_TABLE] = " ".join(IMPORT_LEDGER_COLUMNS)
-
+def _is_derived_index(table: str, names: frozenset[str] = _DERIVED_NAMES) -> bool:
+    lower = table.lower()
+    return (
+        lower.endswith("_fts")
+        or "_fts_" in lower
+        or lower.startswith(_DERIVED_PREFIXES)
+        or lower in names
+    )
 
 
 def _classify_table_disposition(table: str) -> str:
-    lower = table.lower()
-    if table == BRIDGE_TABLE:
-        return "audit_completed_transport"
-    if table == IMPORT_LEDGER_TABLE:
-        return "audit_import_provenance"
-    if table in _CONTENT_TABLES:
-        return "content"
-    if table in _LINEAGE_TABLES:
-        return "lineage"
-    if table == "nightly_digest_quarantine":
-        return "audit_quarantine"
-    if table == "nightly_digest_runs":
-        return "audit_run"
-    if table == "governance_audit_events":
-        return "audit_governance"
-    if table in _PURGE_TABLES:
-        return "purge_authority"
-    if (
-        lower.endswith("_fts")
-        or "_fts_" in lower
-        or lower.startswith("vector_")
-        or lower.startswith("embedding_")
-        or lower.startswith("relation_")
-        or lower.startswith("lexical_")
-        or lower in {
-            "schema_migrations",
-            "journal_digest_runs",
-            "journal_rejections",
-            "journal_session_digest_state",
-            "memory_entities",
-            "memory_relations",
-            "memory_feedback",
-            "operator_operations",
-            "sqlite_sequence",
-            *_COMPAT,
-        }
-    ):
-        return "derived_index"
-    return "unknown"
+    if table in _DISPOSITIONS:
+        return _DISPOSITIONS[table]
+    return "derived_index" if _is_derived_index(table, _CATALOG_DERIVED_NAMES) else "unknown"
 
 
 def _offline_source_path(source: str | Path) -> Path:
@@ -312,199 +198,181 @@ def _offline_source_path(source: str | Path) -> Path:
     return path
 
 
+def _tally_scopes(
+    conn: sqlite3.Connection,
+    tables: set[str],
+    columns: dict[str, list[str]],
+    dispositions: dict[str, str],
+) -> dict[str, Any]:
+    """Count every direct and shared scope identity, exactly as spelled.
+
+    Empty string and '*' are audit sentinels, never audience grants; a
+    non-string identity is malformed and reported instead of coerced.
+    """
+    content: dict[str, int] = {}
+    audit_only: dict[str, int] = {}
+    shared: dict[str, int] = {}
+    occurrences: dict[str, dict[str, int]] = {}
+    sentinels: dict[str, dict[str, int]] = {"": {}, "*": {}, "<null>": {}}
+    direct: set[str] = set()
+    unsupported: list[dict[str, Any]] = []
+    for table in sorted(tables):
+        for column in ("scope_id", "shared_scope_id"):
+            if column not in columns[table]:
+                continue
+            key = f"{table}.{column}"
+            for raw, count in conn.execute(f"SELECT {column}, count(*) FROM [{table}] GROUP BY {column}"):
+                count = int(count)
+                if raw is None:
+                    sentinels["<null>"][key] = count
+                    continue
+                if type(raw) is not str:
+                    unsupported.append({
+                        "table": table,
+                        "key": "<data>",
+                        "reason": "malformed_non_string_identity",
+                        "column": column,
+                        "auto_promoted": False,
+                    })
+                    continue
+                if column == "scope_id":
+                    direct.add(raw)
+                per_key = occurrences.setdefault(raw, {})
+                per_key[key] = per_key.get(key, 0) + count
+                if raw in ("", "*"):
+                    sentinels[raw][key] = count
+                    continue
+                if column == "shared_scope_id":
+                    bucket = shared
+                elif dispositions[table] in {"content", "lineage"}:
+                    bucket = content
+                else:
+                    bucket = audit_only
+                bucket[raw] = bucket.get(raw, 0) + count
+    audit_only = {scope: n for scope, n in audit_only.items() if scope not in content}
+    shared_only = {
+        scope: n for scope, n in shared.items()
+        if scope not in content and scope not in audit_only
+    }
+    return {
+        "content": content,
+        "audit_only": audit_only,
+        "shared_only": shared_only,
+        "sentinels": sentinels,
+        "occurrences": occurrences,
+        "direct": direct,
+        "unsupported": unsupported,
+    }
+
+
+def _schema_issues(
+    tables: set[str], columns: dict[str, list[str]], dispositions: dict[str, str]
+) -> list[dict[str, Any]]:
+    issues: list[dict[str, Any]] = []
+    for table in sorted(tables - {"sqlite_sequence"}):
+        present = set(columns[table])
+        missing = sorted(_REQUIRED.get(table, frozenset()) - present)
+        if missing:
+            issues.append({
+                "table": table,
+                "key": "<schema>",
+                "reason": "legacy_schema_column_missing_blocks_cutover",
+                "missing_columns": missing,
+                "auto_promoted": False,
+            })
+        if table in _SUPPORTED_COLUMNS:
+            extra = sorted(present - _SUPPORTED_COLUMNS[table])
+            if extra:
+                issues.append({
+                    "table": table,
+                    "key": "<schema>",
+                    "reason": "unknown_legacy_columns_blocks_cutover",
+                    "columns": extra,
+                    "auto_promoted": False,
+                })
+        if dispositions[table] == "unknown":
+            issues.append({
+                "table": table,
+                "key": "<table>",
+                "reason": "unknown_legacy_table_blocks_cutover",
+                "columns": columns[table],
+                "auto_promoted": False,
+            })
+    return issues
+
+
+def _catalog(conn: sqlite3.Connection) -> dict[str, Any]:
+    tables = _tables(conn)
+    dispositions = {t: _classify_table_disposition(t) for t in sorted(tables)}
+    row_counts = {
+        t: int(conn.execute(f"SELECT count(*) FROM [{t}]").fetchone()[0])
+        for t in sorted(tables)
+    }
+    columns = {t: _columns(conn, t) for t in sorted(tables)}
+    tally = _tally_scopes(conn, tables, columns, dispositions)
+    unsupported = tally["unsupported"] + _schema_issues(tables, columns, dispositions)
+    sentinels = tally["sentinels"]
+    # The hash covers the raw tallies, so a manifest bound to one catalog
+    # cannot be reused against a snapshot that differs in any identity.
+    summary = {
+        "content_scopes": tally["content"],
+        "shared_only_scopes": tally["shared_only"],
+        "audit_only_scopes": tally["audit_only"],
+        "audit_sentinels": sentinels,
+        "table_dispositions": dispositions,
+        "table_row_counts": row_counts,
+        "table_columns": columns,
+        "unsupported": unsupported,
+        "scope_occurrences": tally["occurrences"],
+    }
+    return {
+        "catalog_sha256": hashlib.sha256(_canon(summary).encode("utf-8")).hexdigest(),
+        "is_supported": not unsupported,
+        "content_scopes": sorted(tally["content"]),
+        "shared_only_scopes": sorted(tally["shared_only"]),
+        "audit_only_scopes": sorted(tally["audit_only"]),
+        "audit_sentinels": {
+            marker: {"total": sum(found.values()), "occurrences": found}
+            for marker, found in sentinels.items()
+        },
+        "sentinel_rules": {
+            "empty_string_is_audit_sentinel": True,
+            "star_is_audit_sentinel": True,
+            "sentinels_prohibited_from_audience_grants": True,
+        },
+        "scope_counts": {
+            "content": tally["content"],
+            "shared_only": tally["shared_only"],
+            "audit_only": tally["audit_only"],
+        },
+        "scope_occurrences": tally["occurrences"],
+        "table_dispositions": dispositions,
+        "table_row_counts": row_counts,
+        "unsupported": unsupported,
+        "direct_scope_count": len(tally["direct"]),
+        "total_nonempty_raw_values": sum(1 for key in tally["occurrences"] if key != ""),
+    }
+
+
 def build_legacy_catalog(source: str | Path | sqlite3.Connection) -> dict[str, Any]:
     """Read-only catalog/preflight covering direct scope columns, shared references, and dispositions.
 
-    Empty string and '*' are classified as audit sentinels, not normal audience grants.
     Original identifiers are preserved exactly without synthetic equivalences.
     """
-    should_close = False
+    conn = source
     source_path: Path | None = None
     source_sha256: str | None = None
     if isinstance(source, (str, Path)):
         source_path = _offline_source_path(source)
         source_sha256 = hashlib.sha256(source_path.read_bytes()).hexdigest()
-        conn = sqlite3.connect(f"{source_path.as_uri()}?mode=ro&immutable=1", uri=True)
-        conn.row_factory = sqlite3.Row
-        should_close = True
-    else:
-        conn = source
+        conn = _open_immutable(source_path)
     try:
-        tables = _tables(conn)
-        table_dispositions = {t: _classify_table_disposition(t) for t in sorted(tables)}
-        table_row_counts = {
-            t: int(conn.execute(f"SELECT count(*) FROM [{t}]").fetchone()[0])
-            for t in sorted(tables)
-        }
-
-        content_scopes: dict[str, int] = {}
-        audit_only_scopes: dict[str, int] = {}
-        audit_sentinels: dict[str, dict[str, int]] = {"": {}, "*": {}, "<null>": {}}
-        shared_refs: dict[str, int] = {}
-        unsupported: list[dict[str, Any]] = []
-        scope_occurrences: dict[str, dict[str, int]] = {}
-        direct_scope_strings: set[str] = set()
-
-        for table in sorted(tables):
-            cols = _columns(conn, table)
-            if "scope_id" in cols:
-                for row in conn.execute(f"SELECT scope_id, count(*) FROM [{table}] GROUP BY scope_id"):
-                    raw = row[0]
-                    cnt = int(row[1])
-                    key = f"{table}.scope_id"
-                    if raw is None:
-                        audit_sentinels["<null>"][key] = cnt
-                    elif type(raw) is not str:
-                        unsupported.append({
-                            "table": table,
-                            "key": "<data>",
-                            "reason": "malformed_non_string_identity",
-                            "column": "scope_id",
-                            "auto_promoted": False,
-                        })
-                    else:
-                        direct_scope_strings.add(raw)
-                        if raw not in scope_occurrences:
-                            scope_occurrences[raw] = {}
-                        scope_occurrences[raw][key] = scope_occurrences[raw].get(key, 0) + cnt
-                        
-                        if raw == "":
-                            audit_sentinels[""][key] = cnt
-                        elif raw == "*":
-                            audit_sentinels["*"][key] = cnt
-                        else:
-                            if table_dispositions.get(table) in {"content", "lineage"}:
-                                content_scopes[raw] = content_scopes.get(raw, 0) + cnt
-                            else:
-                                audit_only_scopes[raw] = audit_only_scopes.get(raw, 0) + cnt
-
-            if "shared_scope_id" in cols:
-                for row in conn.execute(f"SELECT shared_scope_id, count(*) FROM [{table}] GROUP BY shared_scope_id"):
-                    raw = row[0]
-                    cnt = int(row[1])
-                    key = f"{table}.shared_scope_id"
-                    if raw is None:
-                        audit_sentinels["<null>"][key] = cnt
-                    elif type(raw) is not str:
-                        unsupported.append({
-                            "table": table,
-                            "key": "<data>",
-                            "reason": "malformed_non_string_identity",
-                            "column": "shared_scope_id",
-                            "auto_promoted": False,
-                        })
-                    else:
-                        if raw not in scope_occurrences:
-                            scope_occurrences[raw] = {}
-                        scope_occurrences[raw][key] = scope_occurrences[raw].get(key, 0) + cnt
-                        
-                        if raw == "":
-                            audit_sentinels[""][key] = cnt
-                        elif raw == "*":
-                            audit_sentinels["*"][key] = cnt
-                        else:
-                            shared_refs[raw] = shared_refs.get(raw, 0) + cnt
-
-        for s in list(audit_only_scopes):
-            if s in content_scopes:
-                del audit_only_scopes[s]
-
-        shared_only_scopes = {
-            s: cnt
-            for s, cnt in shared_refs.items()
-            if s not in content_scopes and s not in audit_only_scopes
-        }
-
-        for table in sorted(tables - {"sqlite_sequence"}):
-            missing = sorted(_REQUIRED.get(table, set()) - set(_columns(conn, table)))
-            if missing:
-                unsupported.append({
-                    "table": table,
-                    "key": "<schema>",
-                    "reason": "legacy_schema_column_missing_blocks_cutover",
-                    "missing_columns": missing,
-                    "auto_promoted": False,
-                })
-            if table in _LEGACY_COLUMNS:
-                supported = set(_LEGACY_COLUMNS[table].split())
-                if "scope_id" in supported:
-                    supported.update({"project_id", "branch_id"})
-                extra_columns = sorted(set(_columns(conn, table)) - supported)
-                if extra_columns:
-                    unsupported.append({
-                        "table": table,
-                        "key": "<schema>",
-                        "reason": "unknown_legacy_columns_blocks_cutover",
-                        "columns": extra_columns,
-                        "auto_promoted": False,
-                    })
-            if table_dispositions.get(table) == "unknown":
-                unsupported.append({
-                    "table": table,
-                    "key": "<table>",
-                    "reason": "unknown_legacy_table_blocks_cutover",
-                    "columns": _columns(conn, table),
-                    "auto_promoted": False,
-                })
-
-        canonical_summary = {
-            "content_scopes": content_scopes,
-            "shared_only_scopes": shared_only_scopes,
-            "audit_only_scopes": audit_only_scopes,
-            "audit_sentinels": audit_sentinels,
-            "table_dispositions": table_dispositions,
-            "table_row_counts": table_row_counts,
-            "table_columns": {t: _columns(conn, t) for t in sorted(tables)},
-            "unsupported": unsupported,
-            "scope_occurrences": scope_occurrences,
-        }
-        catalog_sha256 = hashlib.sha256(_canon(canonical_summary).encode("utf-8")).hexdigest()
-
-        direct_count = len(direct_scope_strings)
-        total_raw_nonempty = sum(1 for key in scope_occurrences if key != "")
-
         return {
             "format": "scope-recall-legacy-catalog/1",
             "source_path": str(source_path) if source_path else None,
             "source_sha256": source_sha256,
-            "catalog_sha256": catalog_sha256,
-            "is_supported": len(unsupported) == 0,
-            "content_scopes": sorted(content_scopes),
-            "shared_only_scopes": sorted(shared_only_scopes),
-            "audit_only_scopes": sorted(audit_only_scopes),
-            "audit_sentinels": {
-                "": {
-                    "total": sum(audit_sentinels[""].values()),
-                    "occurrences": audit_sentinels[""],
-                },
-                "*": {
-                    "total": sum(audit_sentinels["*"].values()),
-                    "occurrences": audit_sentinels["*"],
-                },
-                "<null>": {
-                    "total": sum(audit_sentinels["<null>"].values()),
-                    "occurrences": audit_sentinels["<null>"],
-                },
-            },
-            "sentinel_rules": {
-                "empty_string_is_audit_sentinel": True,
-                "star_is_audit_sentinel": True,
-                "sentinels_prohibited_from_audience_grants": True,
-            },
-            "scope_counts": {
-                "content": content_scopes,
-                "shared_only": shared_only_scopes,
-                "audit_only": audit_only_scopes,
-            },
-            "scope_occurrences": scope_occurrences,
-            "table_dispositions": table_dispositions,
-            "table_row_counts": table_row_counts,
-            "unsupported": unsupported,
-            "direct_scope_count": direct_count,
-            "total_nonempty_raw_values": total_raw_nonempty,
+            **_catalog(conn),
         }
     finally:
-        if should_close:
+        if conn is not source:
             conn.close()
-
-
