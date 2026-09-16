@@ -26,7 +26,7 @@
 | 代理 | worktree 目录 | 分支 | 任务 | 状态 |
 |---|---|---|---|---|
 | ~~vector~~ 已合入 b849e25 | `agent-af5332ff1aedd8592` | `simplify/3.1-vector` | `vector/*.py`、`adapters/lance.py`、`_lance_worker.py`：三个 store 共用一个接口/协议、去掉逐方法包装重复、Lance 表 helper 移出 `store.py`、`process_store` 的 `_invoke_locked/_invoke_fenced_locked` 合一、`LanceEmbedPort` 的 source/claim 双胞胎合一；保留 `tests/contract/test_vector_failure.py` 解析的 RuntimeError 文案 | 完成 |
-| recall | `agent-ad3c6b18b31c0c8f1` | `worktree-agent-ad3c6b18b31c0c8f1` | `core/recall_packet.py`（`compile` 291 行拆阶段）、`core/recall.py`（`search` 拆步骤）、`core/retrieval_storage.py::hydrate`、`core/read_views.py` profile/entity 合并、统一 `_effective_limits`/token 估算；删除无引用的 `RetrievalPort` | 进行中（曾整文件删掉待重写，务必检查文件是否齐全） |
+| ~~recall~~ 已合入 b4cf020 | `agent-ad3c6b18b31c0c8f1` | `worktree-agent-ad3c6b18b31c0c8f1` | `core/recall_packet.py`（`compile` 291 行拆阶段）、`core/recall.py`（`search` 拆步骤）、`core/retrieval_storage.py::hydrate`、`core/read_views.py` profile/entity 合并、统一 `_effective_limits`/token 估算；删除无引用的 `RetrievalPort`；新增 `core/recall_needs.py`、`core/resume_compaction.py` | 完成 |
 | runtime | `agent-a37a64389e4852215` | `worktree-agent-a37a64389e4852215` | `runtime/*.py`、`adapters/models.py`、`adapters/codex_cli.py`、三个 `runtime_wiring.py`：统一 `_strict_*` 校验 helper、config 类改字段表、`HttpsTransport._post`/`propose`/`codex_cli._run` 拆步骤、`attach_trusted_host_runtime` 三份合一 | 进行中 |
 
 ## 1. 接手步骤（按顺序）
