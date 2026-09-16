@@ -10,7 +10,7 @@ import pytest
 from maintenance.backup import backup_sqlite
 from maintenance.migrate_v2 import _stable, migrate_legacy
 from maintenance.rollback import rollback_to_verified_snapshot
-from maintenance.legacy_fixture import build_official_578b_fixture
+from legacy_fixture import build_official_578b_fixture
 from scope_recall.contracts import ContractError, InstanceBinding, TrustedContext
 from scope_recall.core.restore import InstallationMaintenance, begin_restore, export_deletion_ledger, ledger_digest, replay_deletion_ledger
 from scope_recall.core.storage import SQLiteStorage

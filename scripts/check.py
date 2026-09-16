@@ -266,45 +266,13 @@ CORE_RELEASE_CONTRACTS = [
     "tests/contract/test_p13_operator_retry.py",
     "tests/contract/test_p13_configurable_budget.py",
 ]
-# Written as contracts, run by nothing. Twenty-eight contract files sat outside
-# every tier: about 350 passing assertions that protected nothing, and four
-# failures no one could see -- one of them a contract rc18 had deliberately
-# changed, which should have turned that file red the day it changed. A test
-# that never runs is not a test, and an ungated file is how a deliberate
-# contract change stops announcing itself.
-#
-# They are added here rather than to one tier because ``release`` is not built
-# from ``SUITES["integration"]``: a file added only there runs in CI and not in
+# Every contract file under tests/contract must be selected by some tier
+# (tests/packaging/test_check_selection.py enforces it).  These run in both
+# ``integration`` and ``release`` because ``release`` is not built from
+# ``SUITES["integration"]``; a file listed only there would run in CI and not in
 # the gate that decides whether something ships.
-#
-# Two stay out, named rather than quietly dropped: test_http_proxy_socket binds
-# real local sockets and test_historical_hermes_reserve_cover reads a frozen
-# fixture outside the test data boundary. Both are real coverage; neither is
-# hermetic, so they belong to a tier that allows those.
-# Every contract written for 3.1.0 itself was in the same position: these twelve
-# cover duplicate collapse, the evidence question digest, candidate debounce,
-# corroboration, confirmation, coverage, the embedding budget and its retry,
-# failure classification, the recall probe set, running-code staleness and
-# subject binding -- every module this release added -- and the gate that
-# decides whether to ship ran none of them.
-# Ten more from the same population, measured green before being added: 81
-# assertions over the vector policy, runtime, startup reconciliation, status
-# contract, threshold calibration and write replay, the SQLite writer handoff
-# and its contention, prior release regressions, and zero-signal retrieval.
-# Named honestly: they do not cover the fault that made the vector channel
-# unnameable -- that was found by measuring live gaps, not by a test -- so they
-# are hygiene, not the net that should have caught it.
 CORE_RELEASE_CONTRACTS += [
-    "tests/test_vector_policy.py",
     "tests/test_vector_runtime.py",
-    "tests/test_vector_startup_reconciliation.py",
-    "tests/test_vector_status_contract.py",
-    "tests/test_vector_threshold_calibration.py",
-    "tests/test_vector_write_replay.py",
-    "tests/test_writer_handoff_sqlite_contention.py",
-    "tests/test_writer_handoff_activity.py",
-    "tests/test_adversarial_release_prior_regressions.py",
-    "tests/test_zero_signal_retrieval.py",
     "tests/contract/test_candidate_debounce.py",
     "tests/contract/test_confirmation.py",
     "tests/contract/test_corroboration.py",

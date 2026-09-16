@@ -254,19 +254,7 @@ def test_other_tiers_do_not_require_an_installed_distribution(monkeypatch) -> No
 #: Contract files that deliberately stay out of the gate, each with the reason.
 #: Anything else under tests/contract must be selected by some tier, or it is a
 #: file that was written as a contract and is run by nothing.
-UNGATED_CONTRACTS_BY_DESIGN = {
-    # Binds real local sockets; the hermetic tiers forbid child processes and
-    # listening sockets, so this needs a tier that allows them.
-    "tests/contract/test_http_proxy_socket.py",
-    # Reads a frozen fixture outside the test data boundary the guard enforces.
-    "tests/contract/test_historical_hermes_reserve_cover.py",
-    # Two assertions encode contracts that 3.1.0 changed on purpose and that
-    # need their fixtures rebuilt, not their expectations bent: subject binding
-    # now promotes the proposal this file accepts, so the candidate worker has
-    # nothing left to evaluate, and two claims that used to differ now normalise
-    # onto one slot.
-    "tests/contract/test_rc4_correction_closeout.py",
-}
+UNGATED_CONTRACTS_BY_DESIGN: set[str] = set()
 
 
 def test_every_contract_file_is_selected_by_some_tier():

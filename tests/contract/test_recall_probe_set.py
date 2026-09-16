@@ -1,6 +1,6 @@
 """The probe set itself has to be well formed, even where it cannot be run.
 
-``tests/eval/recall_probes.py`` scores recall against a real corpus, which no
+``tests/contract/recall_probes.py`` scores recall against a real corpus, which no
 gate has.  What a gate *can* check is that the set stays honest: every question
 distinct, every predicate a valid regex that is narrower than "mentions a
 word", and the abstention questions genuinely absent from the answerable set.
@@ -8,16 +8,10 @@ word", and the abstention questions genuinely absent from the answerable set.
 from __future__ import annotations
 
 import re
-import sys
-from pathlib import Path
 
 import pytest
 
-EVAL = Path(__file__).resolve().parents[1] / "eval"
-if str(EVAL) not in sys.path:
-    sys.path.insert(0, str(EVAL))
-
-from recall_probes import (  # noqa: E402
+from recall_probes import (
     ANSWERABLE,
     GOLD,
     UNANSWERABLE,
