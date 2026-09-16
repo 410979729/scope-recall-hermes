@@ -34,7 +34,7 @@ def test_retained_lock_timeout_returns_quickly_for_competing_thread(tmp_path):
 def test_retained_lock_timeout_returns_quickly_for_competing_process(tmp_path):
     path = tmp_path / "retained-process.lock"
     script = (
-        "from scope_recall.file_lock import advisory_file_lock\n"
+        "from scope_recall.core.file_lock import advisory_file_lock\n"
         "import sys\n"
         "try:\n"
         "  with advisory_file_lock(__import__('pathlib').Path(sys.argv[1]), timeout_seconds=0.08): print('acquired')\n"

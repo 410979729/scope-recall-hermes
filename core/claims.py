@@ -292,6 +292,221 @@ def assertion_clause(content: str, quote: str) -> str:
     return "\n".join(dict.fromkeys(clauses)) if clauses else quote
 
 
+_UNASSERTED_STATEMENTS = frozenset({"request", "proposal", "hypothetical", "quotation", "fictional", "unknown"})
+_HUMAN_ONLY_KINDS = frozenset({"preference", "constraint", "decision", "intention", "alias"})
+_POLARITY_KINDS = frozenset({"fact", "preference", "constraint", "decision"})
+
+
+@dataclass(frozen=True)
+class _Cited:
+    """One proposal against the complete root spans it actually cites.
+
+    ``roots`` are narrowed to the sentence radius around each quote; ``quoted``
+    is the quotes themselves; ``asserted`` is the clause each quote was lifted
+    from, taken before narrowing because the negation and polarity rules keep
+    the wider radius.  ``human``/``observed``/``documents`` partition the roots
+    by effective origin.
+    """
+
+    proposal: ClaimProposal
+    roots: tuple[RootEvidence, ...]
+    quoted: str
+    asserted: str
+    cited_spans: tuple[tuple[str, str], ...]
+    source_text: str
+    human: tuple[RootEvidence, ...]
+    observed: tuple[RootEvidence, ...]
+    documents: tuple[RootEvidence, ...]
+    subject_bound: bool
+    explicit_attribute_correction: bool
+
+    @property
+    def kind(self) -> str:
+        return self.proposal["kind"]
+
+    @property
+    def subject(self) -> str:
+        return self.proposal["subject"]
+
+
+def _cite(proposal: ClaimProposal, roots: tuple[RootEvidence, ...], *, subject_bound: bool,
+          explicit_attribute_correction: bool) -> _Cited | None:
+    """Pair every cited span with its complete root; None when no root qualifies."""
+    spans = proposal["evidence_spans"]
+
+    def cited(root: RootEvidence):
+        return [span for span in spans if span["source_ref"] == root.ref and span["source_revision"] == root.revision]
+
+    # A summary may link to a root for lineage, but cannot lend its own wording
+    # that root's authority.  Promotion requires a span on the actual root.
+    roots = tuple(r for r in roots if cited(r) and r.capture_state == "complete" and not r.capture_gaps)
+    if not roots:
+        return None
+    narrowed = tuple(replace(r, content="\n".join(evidence_context(r.content, span["quote"]) for span in cited(r))) for r in roots)
+    by_origin = {origin: tuple(r for r in narrowed if effective_origin(r) == origin)
+                 for origin in ("human_direct", "tool_observation", "external_document")}
+    return _Cited(
+        proposal, narrowed,
+        quoted="\n".join(span["quote"] for span in spans),
+        asserted="\n".join(assertion_clause(r.content, span["quote"]) for r in roots for span in cited(r)),
+        cited_spans=tuple((span["quote"], r.content) for r in roots for span in cited(r)),
+        source_text="\n".join(r.content for r in narrowed),
+        human=by_origin["human_direct"], observed=by_origin["tool_observation"], documents=by_origin["external_document"],
+        subject_bound=subject_bound, explicit_attribute_correction=explicit_attribute_correction,
+    )
+
+
+# Each rule answers with the refusal reason, or None.  Order matters: the first
+# refusal wins, and later rules assume the earlier ones passed.
+def _not_asserted(c: _Cited) -> str | None:
+    if c.proposal["statement_kind"] in _UNASSERTED_STATEMENTS:
+        return "statement_not_asserted"
+    if AUTHORITY_QUESTION.search(c.asserted or c.source_text):
+        return "question_not_asserted"
+    if _HYPOTHETICAL.search(c.source_text) or _UNDECIDED.search(c.source_text) or UNASSERTED_UNCERTAINTY.search(c.source_text):
+        return "hypothetical_or_undecided"
+    if is_transient_request(c.source_text):
+        return "transient_request_not_durable"
+    if (c.kind in {"preference", "constraint", "decision"} and _QUOTED_OTHER.search(c.source_text)) or REPORTED_SPEECH.search(c.source_text):
+        return "other_speaker"
+    return None
+
+
+def _scope_preserved(c: _Cited) -> str | None:
+    conditions, valid_to = c.proposal["conditions"], c.proposal["valid_to"]
+    if any(not condition_supports_value(c.source_text, condition, c.proposal["value_text"]) for condition in conditions):
+        return "condition_not_supported"
+    if _LIMIT.search(c.source_text) and not conditions and valid_to is None:
+        return "missing_limitation"
+    for marker in RELATIVE_SCOPE.finditer(c.source_text):
+        if valid_to is None and not any(bound_literal(condition, marker.group()) for condition in conditions):
+            return "relative_scope_not_preserved"
+    return None
+
+
+def _authority(c: _Cited) -> str | None:
+    if not (c.human or c.observed or c.documents):
+        return "no_independent_authority"
+    if c.kind in _HUMAN_ONLY_KINDS and not c.human:
+        return "requires_human_source"
+    if any(not grounded_time(c.proposal[field], c.roots) for field in ("valid_from", "valid_to")):
+        return "time_not_grounded"
+    return None
+
+
+def _subject_binds(c: _Cited) -> str | None:
+    # Aliases have a separate, exact old-name -> target proof in apply_claim;
+    # that proof may name the sourced old label instead of its internal subject.
+    if c.subject_bound or c.kind == "alias":
+        return None
+    subject, kind = c.subject, c.kind
+    self_bound = subject.casefold() in _SELF_SUBJECTS and self_report_bound(c.source_text, c.proposal["value_text"], kind=kind)
+    if subject in c.quoted and not bound_literal(c.quoted, subject):
+        return "subject_not_bound"
+    if subject == "我" and not self_bound:
+        return "subject_not_bound"
+    # The subject may also be stated verbatim in the sentence next to the quote,
+    # in the same source; see core/subject_binding.py.  Nothing is inferred: only
+    # literal text from the cited source counts, and a subject that merely
+    # points ("you", "the agent") is refused at any distance.
+    if not bound_literal(c.quoted, subject) and not neighbourhood_binds(subject, c.cited_spans) and not self_bound:
+        return "subject_not_bound"
+    return None
+
+
+def _intention_proved(c: _Cited) -> str | None:
+    if c.kind != "intention":
+        return None
+    intention = c.proposal.get("intention")
+    if intention is None:
+        return "intention_missing"
+    if intention["target"] not in c.source_text and c.proposal["predicate"] not in c.source_text:
+        return "intention_target_unproved"
+    state = intention["state"]
+    if state == "pending" and intention["cue"] not in c.source_text:
+        return "intention_cue_unproved"
+    state_sources = set(intention["state_evidence_refs"])
+    authorized = "\n".join(r.content for r in c.roots if f"{r.ref}@{r.revision}" in state_sources
+                           and effective_origin(r) in {"human_direct", "tool_observation"})
+    if state == "completed" and (not asserted_marker(_COMPLETION, authorized) or _NEGATED_COMPLETION.search(authorized)):
+        return "completion_unproved"
+    if state == "cancelled" and not asserted_marker(_CANCELLATION, authorized):
+        return "cancellation_unproved"
+    if state == "expired" and c.proposal["valid_to"] is None:
+        return "expiry_unproved"
+    return None
+
+
+def _procedure_proved(c: _Cited) -> str | None:
+    if c.kind != "procedure":
+        return None
+    procedure = c.proposal.get("procedure")
+    if procedure is None:
+        return "procedure_missing"
+    if any(step not in c.source_text for step in procedure["method"]):
+        return "method_steps_unproved"
+    if any(condition not in c.source_text for condition in procedure["non_applicable"]):
+        return "method_exception_unproved"
+    verification = procedure["verification_basis"]
+    if verification == "user_accepted" and not any(asserted_marker(_ACCEPTANCE, r.content) for r in c.human):
+        return "method_acceptance_unproved"
+    if verification == "observed_once" and not c.observed:
+        return "method_observation_unproved"
+    if verification in {"inferred_suggestion", "unknown"}:
+        return "method_is_suggestion"
+    return None
+
+
+def _fact_entailed(c: _Cited) -> str | None:
+    """Ordinary durable facts keep the claim-frame support check."""
+    if c.kind != "fact" or c.explicit_attribute_correction:
+        return None
+    try:
+        draft = ClaimDraft.from_parts(subject=c.subject, predicate=c.proposal["predicate"], value=c.proposal["value_text"], scope_id="qualification-only")
+        evidence = tuple(
+            EvidenceReference(
+                "direct_user" if effective_origin(root) == "human_direct" else "external_record",
+                root.ref, evidence_context(root.content, span["quote"]),
+                c.subject if c.subject_bound and _principal_ref(root) == c.subject else "",
+            )
+            for root in (*c.human, *c.observed, *c.documents) for span in c.proposal["evidence_spans"]
+            if span["source_ref"] == root.ref and span["source_revision"] == root.revision)
+    except ValueError:
+        return "fact_entailment_unproved"
+    if any(evidence_supports_claim(item, draft) for item in evidence) or any(evidence_supports_relation(item, draft) for item in evidence):
+        return None
+    return "fact_entailment_unproved"
+
+
+def _value_preserved(c: _Cited) -> str | None:
+    value, conditions = c.proposal["value_text"], c.proposal["conditions"]
+    if c.kind not in {"procedure", "intention", "alias"} and value not in c.quoted:
+        return "value_not_supported_by_quote"
+    if c.kind in _POLARITY_KINDS and not preserves_qualifiers(c.source_text, value, conditions=conditions, polarity_only=True):
+        return "value_polarity_not_preserved"
+    if c.kind in {"preference", "decision"} and _NEGATION.search(c.source_text) and not _NEGATION.search(value):
+        from .claim_normalization import rejects_other_value
+        if not rejects_other_value(c.source_text, c.proposal):
+            return "negation_not_preserved"
+    return None
+
+
+def _time_scope_known(c: _Cited) -> str | None:
+    temporal = classify_durable_state_clause(c.source_text)
+    valid_from, valid_to = c.proposal["valid_from"], c.proposal["valid_to"]
+    if temporal == "past" and valid_from is None:
+        return "historical_start_unknown"
+    if temporal == "future" and valid_from is None and c.kind != "intention":
+        return "future_start_unknown"
+    if temporal == "temporary" and valid_to is None and not c.proposal["conditions"]:
+        return "temporary_scope_unknown"
+    return None
+
+
+_REFUSALS = (_not_asserted, _scope_preserved, _authority, _subject_binds, _intention_proved,
+             _procedure_proved, _fact_entailed, _value_preserved, _time_scope_known)
+
+
 def qualify(proposal: ClaimProposal, roots: tuple[RootEvidence, ...], *, project_id: str | None = None,
             explicit_attribute_correction: bool = False,
             _subject_bound: bool = False) -> Qualification:
@@ -306,158 +521,18 @@ def qualify(proposal: ClaimProposal, roots: tuple[RootEvidence, ...], *, project
         if binding_issue is not None:
             return Qualification("proposed", "inferred_suggestion", binding_issue)
         if subject_bound:
-            return qualify(
-                bound_proposal,
-                roots,
-                project_id=project_id,
-                explicit_attribute_correction=explicit_attribute_correction,
-                _subject_bound=True,
-            )
-    # A summary may link to a root for lineage, but cannot lend its own wording
-    # that root's authority. Promotion requires a span on the actual root.
-    roots = tuple(root for root in roots if any(span["source_ref"] == root.ref and span["source_revision"] == root.revision for span in proposal["evidence_spans"]))
-    quoted = "\n".join(span["quote"] for span in proposal["evidence_spans"])
-    complete_roots = tuple(r for r in roots if r.capture_state == "complete" and not r.capture_gaps)
-    if not complete_roots:
+            return qualify(bound_proposal, roots, project_id=project_id,
+                           explicit_attribute_correction=explicit_attribute_correction, _subject_bound=True)
+    cited = _cite(proposal, roots, subject_bound=_subject_bound, explicit_attribute_correction=explicit_attribute_correction)
+    if cited is None:
         return Qualification("proposed", "inferred_suggestion", "no_complete_root_span")
-    roots = complete_roots
-    # Whether this proposal is a question is a property of the sentence it was
-    # lifted from, not of everything else the source happens to say.  Taken
-    # before the contexts below are computed, because those keep the wider
-    # radius the negation and polarity checks depend on.
-    asserted_text = "\n".join(assertion_clause(r.content,span["quote"]) for r in roots
-                              for span in proposal["evidence_spans"]
-                              if span["source_ref"] == r.ref and span["source_revision"] == r.revision)
-    # The stored text each cited span came from, kept before roots collapse to
-    # per-quote contexts.  Only the subject check below uses it, and only to
-    # look one sentence wider than the quote; see core/subject_binding.py.
-    cited_spans = tuple(
-        (span["quote"], r.content)
-        for r in roots
-        for span in proposal["evidence_spans"]
-        if span["source_ref"] == r.ref and span["source_revision"] == r.revision
-    )
-    roots = tuple(replace(r,content="\n".join(evidence_context(r.content,span["quote"]) for span in proposal["evidence_spans"]
-                             if span["source_ref"] == r.ref and span["source_revision"] == r.revision)) for r in roots)
-    source_text = "\n".join(r.content for r in roots)
-    kind = proposal["kind"]
-    if proposal["statement_kind"] in {"request", "proposal", "hypothetical", "quotation", "fictional", "unknown"}:
-        return Qualification("proposed", "inferred_suggestion", "statement_not_asserted")
-    if AUTHORITY_QUESTION.search(asserted_text or source_text):
-        return Qualification("proposed", "inferred_suggestion", "question_not_asserted")
-    if (_HYPOTHETICAL.search(source_text) or _UNDECIDED.search(source_text)
-            or UNASSERTED_UNCERTAINTY.search(source_text)):
-        return Qualification("proposed", "inferred_suggestion", "hypothetical_or_undecided")
-    if is_transient_request(source_text):
-        return Qualification("proposed", "inferred_suggestion", "transient_request_not_durable")
-    if ((kind in {"preference", "constraint", "decision"} and _QUOTED_OTHER.search(source_text))
-            or REPORTED_SPEECH.search(source_text)):
-        return Qualification("proposed", "inferred_suggestion", "other_speaker")
-    if any(not condition_supports_value(source_text, condition, proposal["value_text"])
-           for condition in proposal["conditions"]):
-        return Qualification("proposed", "inferred_suggestion", "condition_not_supported")
-    if _LIMIT.search(source_text) and not proposal["conditions"] and proposal["valid_to"] is None:
-        return Qualification("proposed", "inferred_suggestion", "missing_limitation")
-    for marker in RELATIVE_SCOPE.finditer(source_text):
-        if not any(bound_literal(condition, marker.group()) for condition in proposal["conditions"]) and proposal["valid_to"] is None:
-            return Qualification("proposed", "inferred_suggestion", "relative_scope_not_preserved")
-    human = tuple(r for r in roots if effective_origin(r) == "human_direct")
-    observed = tuple(r for r in roots if effective_origin(r) == "tool_observation")
-    documents = tuple(r for r in roots if effective_origin(r) == "external_document")
-    if not human and not observed and not documents:
-        return Qualification("proposed", "inferred_suggestion", "no_independent_authority")
-    if kind in {"preference", "constraint", "decision", "intention", "alias"} and not human:
-        return Qualification("proposed", "inferred_suggestion", "requires_human_source")
-    if any(not grounded_time(proposal[field], roots) for field in ("valid_from", "valid_to")):
-        return Qualification("proposed", "inferred_suggestion", "time_not_grounded")
-    subject = proposal["subject"]
-    # Aliases have a separate, exact old-name -> target proof in apply_claim;
-    # that proof may name the sourced old label instead of its internal subject.
-    if not _subject_bound and kind != "alias" and subject in quoted and not bound_literal(quoted, subject):
-        return Qualification("proposed", "inferred_suggestion", "subject_not_bound")
-    is_self_subject = subject.casefold() in _SELF_SUBJECTS
-    if not _subject_bound and kind != "alias" and subject == "我" and not self_report_bound(source_text, proposal["value_text"], kind=kind):
-        return Qualification("proposed", "inferred_suggestion", "subject_not_bound")
-    # Second rung: the subject may also be stated verbatim in the sentence next
-    # to the quote, in the same source.  Measured on tianshu, 48 of the 92
-    # refusals here were that -- "此测试项目的名称为 SRLIVE-…。…不要写业务文件"
-    # states the subject one sentence before the clause that was quoted.
-    # Nothing is inferred: the rung returns only literal text from the cited
-    # source, and a subject that merely points ("you", "the agent") is refused
-    # at any distance.
-    if (not _subject_bound and kind != "alias" and not bound_literal(quoted, subject)
-            and not neighbourhood_binds(subject, cited_spans)
-            and not (is_self_subject and self_report_bound(source_text, proposal["value_text"], kind=kind))):
-        return Qualification("proposed", "inferred_suggestion", "subject_not_bound")
-    if kind == "intention":
-        intention = proposal.get("intention")
-        if intention is None:
-            return Qualification("proposed", "inferred_suggestion", "intention_missing")
-        if intention["target"] not in source_text and proposal["predicate"] not in source_text:
-            return Qualification("proposed", "inferred_suggestion", "intention_target_unproved")
-        if intention["state"] == "pending" and intention["cue"] not in source_text:
-            return Qualification("proposed", "inferred_suggestion", "intention_cue_unproved")
-        state_sources = set(intention["state_evidence_refs"])
-        state_roots = tuple(r for r in roots if f"{r.ref}@{r.revision}" in state_sources)
-        authorized_state = "\n".join(r.content for r in state_roots if effective_origin(r) in {"human_direct", "tool_observation"})
-        if intention["state"] == "completed" and (not asserted_marker(_COMPLETION,authorized_state) or _NEGATED_COMPLETION.search(authorized_state)):
-            return Qualification("proposed", "inferred_suggestion", "completion_unproved")
-        if intention["state"] == "cancelled" and not asserted_marker(_CANCELLATION,authorized_state):
-            return Qualification("proposed", "inferred_suggestion", "cancellation_unproved")
-        if intention["state"] == "expired" and proposal["valid_to"] is None:
-            return Qualification("proposed", "inferred_suggestion", "expiry_unproved")
-    if kind == "procedure":
-        procedure = proposal.get("procedure")
-        if procedure is None:
-            return Qualification("proposed", "inferred_suggestion", "procedure_missing")
-        verification = procedure["verification_basis"]
-        if any(step not in source_text for step in procedure["method"]):
-            return Qualification("proposed", "inferred_suggestion", "method_steps_unproved")
-        if any(condition not in source_text for condition in procedure["non_applicable"]):
-            return Qualification("proposed", "inferred_suggestion", "method_exception_unproved")
-        if verification == "user_accepted" and not any(asserted_marker(_ACCEPTANCE,r.content) for r in human):
-            return Qualification("proposed", "inferred_suggestion", "method_acceptance_unproved")
-        if verification == "observed_once" and not observed:
-            return Qualification("proposed", "inferred_suggestion", "method_observation_unproved")
-        if verification in {"inferred_suggestion", "unknown"}:
-            return Qualification("proposed", "inferred_suggestion", "method_is_suggestion")
-    # Keep the established claim-frame support check for ordinary durable facts.
-    # Finite/dated statements have their own bounded interval, which the legacy
-    # current-only lifecycle could not represent.
-    if kind == "fact":
-        try:
-            draft = ClaimDraft.from_parts(subject=proposal["subject"], predicate=proposal["predicate"], value=proposal["value_text"], scope_id="qualification-only")
-            evidence = tuple(EvidenceReference(
-                "direct_user" if effective_origin(root) == "human_direct" else "external_record",
-                root.ref, evidence_context(root.content, span["quote"]),
-                proposal["subject"] if _subject_bound and _principal_ref(root) == proposal["subject"] else "",
-            ) for root in (*human, *observed, *documents) for span in proposal["evidence_spans"]
-                if span["source_ref"] == root.ref and span["source_revision"] == root.revision)
-            supported = any(evidence_supports_claim(item, draft) for item in evidence)
-            relation_supported = any(evidence_supports_relation(item, draft) for item in evidence)
-        except ValueError:
-            supported = relation_supported = False
-        if not supported and not relation_supported and not explicit_attribute_correction:
-            return Qualification("proposed", "inferred_suggestion", "fact_entailment_unproved")
-    if kind not in {"procedure", "intention", "alias"} and proposal["value_text"] not in quoted:
-        return Qualification("proposed", "inferred_suggestion", "value_not_supported_by_quote")
-    if kind in {"fact", "preference", "constraint", "decision"} and not preserves_qualifiers(
-        source_text, proposal["value_text"], conditions=proposal["conditions"], polarity_only=True,
-    ):
-        return Qualification("proposed", "inferred_suggestion", "value_polarity_not_preserved")
-    if kind in {"preference", "decision"} and _NEGATION.search(source_text) and not _NEGATION.search(proposal["value_text"]):
-        from .claim_normalization import rejects_other_value
-        if not rejects_other_value(source_text, proposal):
-            return Qualification("proposed", "inferred_suggestion", "negation_not_preserved")
-    temporal = classify_durable_state_clause(source_text)
-    if temporal == "past" and proposal["valid_from"] is None:
-        return Qualification("proposed", "inferred_suggestion", "historical_start_unknown")
-    if temporal == "future" and proposal["valid_from"] is None and kind != "intention":
-        return Qualification("proposed", "inferred_suggestion", "future_start_unknown")
-    if temporal == "temporary" and proposal["valid_to"] is None and not proposal["conditions"]:
-        return Qualification("proposed", "inferred_suggestion", "temporary_scope_unknown")
-    basis: Basis = "direct_report" if human else "observed"
-    return Qualification("active", basis, "explicit_scoped_source" if human else "observation_at_source_time")
+    for rule in _REFUSALS:
+        reason = rule(cited)
+        if reason is not None:
+            return Qualification("proposed", "inferred_suggestion", reason)
+    if cited.human:
+        return Qualification("active", "direct_report", "explicit_scoped_source")
+    return Qualification("active", "observed", "observation_at_source_time")
 
 
 def valid_at(version: ClaimVersion, instant: str, *, historical: bool) -> bool:

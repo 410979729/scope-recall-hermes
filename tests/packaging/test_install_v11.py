@@ -659,7 +659,7 @@ def test_purge_refuses_active_truth_writer(tmp_path):
     code = (
         "from pathlib import Path\n"
         "import sys\n"
-        "from scope_recall.writer_lease import holding_truth_writer_lease\n"
+        "from scope_recall.core.writer_lease import holding_truth_writer_lease\n"
         "data=Path(sys.argv[1]); ready=Path(sys.argv[2])\n"
         "with holding_truth_writer_lease(data, role='provider'):\n"
         "    ready.write_text('ready', encoding='utf-8')\n"
@@ -838,7 +838,7 @@ def test_hermes_purge_refuses_active_truth_writer(tmp_path):
     code = (
         "from pathlib import Path\n"
         "import sys\n"
-        "from scope_recall.writer_lease import holding_truth_writer_lease\n"
+        "from scope_recall.core.writer_lease import holding_truth_writer_lease\n"
         "data=Path(sys.argv[1]); ready=Path(sys.argv[2])\n"
         "with holding_truth_writer_lease(data, role='provider'):\n"
         "    ready.write_text('ready', encoding='utf-8')\n"

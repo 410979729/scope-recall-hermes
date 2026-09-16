@@ -387,13 +387,3 @@ def assert_same_installation(current: HermesIdentity | None, fresh: HermesIdenti
     if current.owner_private_scope_id != fresh.owner_private_scope_id:
         raise HermesIdentityError("owner_private scope conflict")
 
-
-def focus_refs_from_query(query: str, *, allowed_refs: frozenset[str]) -> tuple[str, ...]:
-    """Query text may narrow focus only; it cannot select or enlarge scope."""
-
-    if not query.strip():
-        return ()
-    refs = tuple(ref for ref in allowed_refs if ref in query)
-    if refs and len(refs) != len(set(refs)):
-        raise ContractError("INPUT_INVALID", "focus_refs")
-    return refs
