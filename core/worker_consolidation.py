@@ -8,13 +8,23 @@ from dataclasses import replace
 from functools import partial
 import json
 from typing import Protocol
+
 from ..contracts import ContractError, decode_payload, validate_payload
 from .storage import StoredSource
 from .consolidate import ConsolidationWorkFence, accept_consolidation, consolidation_messages
 from .consolidation_chunks import source_chunk
 from .candidate_lifecycle import candidate_evaluation_messages
 from .episodes import source_origin
-from .worker_outcomes import _Outcome, _remaining, _work_result, _deadline_result, _model_exception_outcome, _finalize_work
+from .worker_outcomes import (
+    _Outcome,
+    _deadline_result,
+    _epoch_changed,
+    _finalize_work,
+    _mark_obsolete,
+    _model_failure,
+    _remaining,
+    _work_result,
+)
 
 _ROOT_ORIGINS = frozenset({"human_direct", "tool_observation", "external_document", "imported"})
 
@@ -22,7 +32,6 @@ _ROOT_ORIGINS = frozenset({"human_direct", "tool_observation", "external_documen
 class ConsolidationModel(Protocol):
     def propose(self, sources: tuple[StoredSource, ...], *, episode_ref: str | None, remaining_seconds: float,
                 validation_feedback: dict[str, str] | None = None) -> str: ...
-
 
 
 def _fit_prompt_budget(
@@ -58,7 +67,6 @@ def _fit_prompt_budget(
     order = {id(stored): index for index, stored in enumerate(batch)}
     kept.sort(key=lambda stored: order[id(stored)])
     return kept, deferred
-
 
 
 def _episode_batch(tx, source: StoredSource, item, *, now: str):
@@ -109,7 +117,6 @@ def _episode_batch(tx, source: StoredSource, item, *, now: str):
     return episode.ref, tuple(batch), tuple(pending)
 
 
-
 def _root_only_sources(tx, sources: tuple[StoredSource, ...]) -> tuple[StoredSource, ...]:
     roots: list[StoredSource] = []
     seen: set[tuple[str, int]] = set()
@@ -131,7 +138,6 @@ def _root_only_sources(tx, sources: tuple[StoredSource, ...]) -> tuple[StoredSou
             continue
         roots.append(source)
     return tuple(roots)
-
 
 
 def _decode_consolidation_result(raw: str, sources=()) -> dict:
@@ -187,7 +193,6 @@ def _decode_consolidation_result(raw: str, sources=()) -> dict:
     return validate_payload("consolidation_result", value)
 
 
-
 def _process_consolidate(
     storage,
     clock,
@@ -198,6 +203,7 @@ def _process_consolidate(
     started: float,
     budget: float,
 ) -> tuple[str, str | None, str]:
+    finish = partial(_finalize_work, storage, clock, context, item, started=started, budget=budget)
     memory_epoch = None
     batch, pending_sources = (), ()
     chunk, offset = None, 0
@@ -205,7 +211,7 @@ def _process_consolidate(
     with storage.read(context, remaining_seconds=_remaining(started, clock, budget)) as tx:
         feedback = tx.work.derivation_feedback(item.work_id)
         memory_epoch = tx.status().memory_epoch
-        if not tx.work._verify_lease(item.work_id, item.lease_token, item.lease_owner, now=clock.utc_now()):
+        if not tx.work._verify_lease(*item.lease, now=clock.utc_now()):
             state = tx.work.read_state(item.work_id) or "stale"
             return "stale", "authority_revoked" if state == "obsolete" else None, state
         source = tx.source(item.subject_ref, item.subject_revision)
@@ -217,8 +223,7 @@ def _process_consolidate(
         if source is None:
             episode_ref, roots = None, ()
         else:
-            offset = tx.work.consolidation_offset(item.work_id, item.lease_token, item.lease_owner,
-                                                 now=clock.utc_now())
+            offset = tx.work.consolidation_offset(*item.lease, now=clock.utc_now())
             if offset:
                 from .consolidation_summary import resume_seed
                 seed = resume_seed(tx, item.work_id)
@@ -230,40 +235,30 @@ def _process_consolidate(
     # Do not open a write transaction while the read transaction above is
     # still active.  SQLite's reader lock otherwise turns an obsolete source
     # into a spurious "database is locked" failure.
-    now = clock.utc_now()
     if source is None:
-        return _finalize_work(storage, clock, context, item, "obsolete", "authority_revoked", started=started, budget=budget)
+        return finish("obsolete", "authority_revoked")
     if not roots:
         if _remaining(started, clock, budget) <= 0:
             return _deadline_result(storage, context, item)
         with storage.write(context, remaining_seconds=_remaining(started, clock, budget)) as tx:
             now = clock.utc_now()
-            if not tx.work._verify_lease(item.work_id, item.lease_token, item.lease_owner, now=now):
-                return _work_result(tx.work.complete(item.work_id, item.lease_token, item.lease_owner, now=now))
+            if not tx.work._verify_lease(*item.lease, now=now):
+                return _work_result(tx.work.complete(*item.lease, now=now))
             try:
                 tx.claims.require_live_source(item.subject_ref, item.subject_revision)
                 for stored in batch:
                     tx.claims.require_live_source(stored.ref, stored.revision)
-                if tx.status().memory_epoch != memory_epoch:
-                    raise ContractError("VERSION_CONFLICT", "memory_epoch")
-            except ContractError as exc:
-                if exc.code == "VERSION_CONFLICT" and exc.field == "memory_epoch":
-                    return _work_result(
-                        tx.work.fail(item.work_id, item.lease_token, item.lease_owner,
-                                     error_code="memory_epoch_changed", now=now, recoverable=True),
-                        error_code="memory_epoch_changed",
-                    )
-                return _work_result(
-                    tx.work.mark_obsolete(item.work_id, item.lease_token, item.lease_owner, now=now),
-                    error_code="authority_revoked",
-                )
+            except ContractError:
+                return _mark_obsolete(tx, item, now)
+            if tx.status().memory_epoch != memory_epoch:
+                return _epoch_changed(tx, item, now)
             return _work_result(tx.work.complete_consolidation(
-                item.work_id, item.lease_token, item.lease_owner, now=now,
+                *item.lease, now=now,
                 covered_source_refs=frozenset(f"{s.ref}@{s.revision}" for s in batch) | {f"{source.ref}@{source.revision}"},
                 pending_sources=pending_sources,
             ))
     if model is None:
-        return _finalize_work(storage, clock, context, item, "retry", "model_unavailable", started=started, budget=budget)
+        return finish("retry", "model_unavailable")
     try:
         needs_chunk = bool(offset)
         if not needs_chunk:
@@ -284,29 +279,16 @@ def _process_consolidate(
         # A probabilistic model occasionally emits an invalid derivation; give
         # the work item a bounded fresh attempt instead of killing it on the
         # first bad generation (attempts stay capped by MAX_RECOVERABLE_ATTEMPTS).
-        return _finalize_work(
-            storage,
-            clock,
-            context,
-            item,
-            "retry",
-            exc.code or "model_unavailable",
-            started=started,
-            budget=budget,
-            error_detail=exc.field, stage="prepare_or_model",
-        )
+        return finish("retry", exc.code or "model_unavailable", error_detail=exc.field, stage="prepare_or_model")
     except Exception as exc:
-        outcome = _model_exception_outcome(exc)
-        if outcome is None:
-            return _finalize_work(storage, clock, context, item, "retry", "model_unavailable", started=started, budget=budget)
-        return _finalize_work(storage, clock, context, item, outcome[0], outcome[1], started=started, budget=budget)
+        return finish(*_model_failure(exc))
     try:
         value = _decode_consolidation_result(raw, roots)
     except (ContractError, ValueError, TypeError, json.JSONDecodeError) as exc:
         detail = exc.field if isinstance(exc, ContractError) else "json_envelope"
-        return _Outcome(*_finalize_work(storage, clock, context, item, "retry", "derivation_invalid", started=started, budget=budget,
-                                      error_detail=detail, stage="decode",
-                                      validation_code=exc.code if isinstance(exc, ContractError) else "INPUT_INVALID"), detail=detail)
+        return _Outcome(*finish("retry", "derivation_invalid", error_detail=detail, stage="decode",
+                                validation_code=exc.code if isinstance(exc, ContractError) else "INPUT_INVALID"),
+                        detail=detail)
     fence = ConsolidationWorkFence(
         item.work_id,
         item.lease_token,
@@ -339,23 +321,18 @@ def _process_consolidate(
         # Reject this result, but retain live work for a fresh bounded attempt.
         # An unrelated capture also advances the instance-wide epoch.
         if code == "VERSION_CONFLICT" and exc.field == "memory_epoch":
-            return _finalize_work(storage, clock, context, item, "retry", "memory_epoch_changed", started=started, budget=budget)
+            return finish("retry", "memory_epoch_changed")
         if code in {"SOURCE_MISSING", "VERSION_CONFLICT", "ACCESS_DENIED"}:
-            return _finalize_work(storage, clock, context, item, "obsolete", "authority_revoked", started=started, budget=budget)
+            return finish("obsolete", "authority_revoked")
         recoverable = code in {"STORAGE_UNAVAILABLE", "DEADLINE_EXCEEDED", "DERIVATION_INVALID"}
-        disposition = "retry" if recoverable else "failed"
         # Keep the clause that rejected the result. Without it a terminal
         # DERIVATION_INVALID cannot be told apart from any other, and diagnosing
         # one costs a full reproduction against live work.
-        return _Outcome(
-            *_finalize_work(storage, clock, context, item, disposition, code, started=started, budget=budget,
-                            error_detail=exc.field, stage="accept"),
-            detail=exc.field,
-        )
+        return _Outcome(*finish("retry" if recoverable else "failed", code, error_detail=exc.field, stage="accept"),
+                        detail=exc.field)
     if chunk is not None and not chunk.final:
         return "deferred", None, "pending"
     return "completed", None, "done"
-
 
 
 def build_consolidation_model(port) -> ConsolidationModel | None:
@@ -372,4 +349,3 @@ def build_consolidation_model(port) -> ConsolidationModel | None:
             return port.propose(messages, remaining_seconds=remaining_seconds)
 
     return Adapter()
-

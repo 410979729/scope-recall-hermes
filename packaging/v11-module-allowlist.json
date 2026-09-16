@@ -116,6 +116,7 @@
     "core/worker_candidates.py",
     "core/worker_consolidation.py",
     "core/worker_outcomes.py",
+    "core/worker_projection.py",
     "core/writer_lease.py",
     "distribution/__init__.py",
     "distribution/hermes/__init__.py",
