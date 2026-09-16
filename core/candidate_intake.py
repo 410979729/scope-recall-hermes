@@ -54,15 +54,32 @@ class CandidateIntake(CandidateTables):
             raise ContractError("VERSION_CONFLICT", "candidate_revision")
         prior = self._lifecycle_row(candidate_ref, candidate_revision)
         state, reason, updated_at = _registration_target(candidate, prior, rule_version, now)
+        self._write_lifecycle(candidate, state, reason, rule_version, now, updated_at)
+        evaluation_id, queued = None, False
+        if is_reachable(state, reason):
+            self._index(candidate, now)
+            if state == "pending_evaluation" and schedule_initial:
+                evaluation_id, queued = self._schedule(candidate, now=now, rule_version=rule_version)
+            elif state == "pending_evaluation":
+                self._move(candidate.ref, candidate.revision, "waiting_evidence", "evaluated_waiting_evidence",
+                           now=now, evaluated_at=now)
+            current = self._lifecycle_row(candidate.ref, candidate.revision)
+            state, reason = current["processing_state"], current["reason"]
+        disposition = "inserted" if prior is None else "updated"
+        if prior is not None and (prior["processing_state"], prior["reason"]) == (state, reason) and not queued:
+            disposition = "unchanged"
+        return CandidateRegistration(candidate.ref, candidate.revision, state, reason, disposition, evaluation_id, queued)
+
+    def _write_lifecycle(self, candidate, state: str, reason: str, rule_version: str, now: str, updated_at: str) -> None:
+        """Upsert the candidate's row; older revisions of the claim can no longer be judged."""
         conn = self._write()
-        # Older revisions of this claim can no longer be judged.
         conn.execute(
             """UPDATE candidate_lifecycle SET processing_state='archived',reason='superseded_by_candidate_revision',
                dormant_at=?,updated_at=? WHERE candidate_ref=? AND candidate_revision<>?
                AND processing_state NOT IN ('resolved','blocked')""",
-            (now, now, candidate_ref, candidate_revision),
+            (now, now, candidate.ref, candidate.revision),
         )
-        self._retire_evaluations(candidate_ref, candidate_revision, "candidate_revision_changed", now, others=True)
+        self._retire_evaluations(candidate.ref, candidate.revision, "candidate_revision_changed", now, others=True)
         conn.execute(
             """INSERT INTO candidate_lifecycle(
                 candidate_ref,candidate_revision,scope_id,project_id,branch_id,processing_state,reason,
@@ -78,20 +95,6 @@ class CandidateIntake(CandidateTables):
             "DELETE FROM candidate_trigger_terms WHERE candidate_ref=? AND candidate_revision=?",
             (candidate.ref, candidate.revision),
         )
-        evaluation_id, queued = None, False
-        if is_reachable(state, reason):
-            self._index(candidate, now)
-            if state == "pending_evaluation" and schedule_initial:
-                evaluation_id, queued = self._schedule(candidate, now=now, rule_version=rule_version)
-            elif state == "pending_evaluation":
-                self._move(candidate.ref, candidate.revision, "waiting_evidence", "evaluated_waiting_evidence",
-                           now=now, evaluated_at=now)
-            current = self._lifecycle_row(candidate.ref, candidate.revision)
-            state, reason = current["processing_state"], current["reason"]
-        disposition = "inserted" if prior is None else "updated"
-        if prior is not None and (prior["processing_state"], prior["reason"]) == (state, reason) and not queued:
-            disposition = "unchanged"
-        return CandidateRegistration(candidate.ref, candidate.revision, state, reason, disposition, evaluation_id, queued)
 
     def _index(self, candidate, now: str) -> None:
         """Make the candidate findable by later sources and seed it from its own evidence links."""
@@ -168,6 +171,7 @@ class CandidateIntake(CandidateTables):
             )
             _, queued = self._schedule_when_settled(candidate, now=now, rule_version=rule_version)
             scheduled += int(queued)
+        # A resumed page adds to the counts the first page recorded.
         conn.execute(
             """INSERT INTO candidate_source_triggers(
                 source_ref,source_revision,matched_count,scheduled_count,truncated,processed_at)
