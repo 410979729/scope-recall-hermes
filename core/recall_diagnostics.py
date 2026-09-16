@@ -32,6 +32,9 @@ class RecallDiagnosticRecord:
     items_dropped_budget: int
     elapsed_ms: int
     deadline_remaining_ms: int | None
+    rendered_bytes: int = 0
+    estimated_tokens: int = 0
+    budget_tokens: int = 0
 
     def to_public(self) -> dict[str, object]:
         return {
@@ -44,6 +47,9 @@ class RecallDiagnosticRecord:
             "items_dropped_budget": self.items_dropped_budget,
             "elapsed_ms": self.elapsed_ms,
             "deadline_remaining_ms": self.deadline_remaining_ms,
+            "rendered_bytes": self.rendered_bytes,
+            "estimated_tokens": self.estimated_tokens,
+            "budget_tokens": self.budget_tokens,
         }
 
 
@@ -72,6 +78,9 @@ class RecallDiagnostics:
         items_dropped_budget: int,
         elapsed_ms: int,
         deadline_remaining_ms: int | None,
+        rendered_bytes: int = 0,
+        estimated_tokens: int = 0,
+        budget_tokens: int = 0,
     ) -> str:
         with self._lock:
             self._counter += 1
@@ -107,6 +116,9 @@ class RecallDiagnostics:
                 max(0, items_dropped_budget),
                 max(0, elapsed_ms),
                 deadline_remaining_ms,
+                rendered_bytes,
+                estimated_tokens,
+                budget_tokens,
             )
             self._records.append(entry)
             self._by_ref[entry.ref] = entry

@@ -107,11 +107,13 @@ def test_correction_is_visible_without_background_cache(app):
 
 
 def test_small_budget_never_overflows_or_drops_question_for_background(app):
+    from scope_recall.core.recall_budget import estimate_tokens
+
     core, ctx = app
     preference(core, ctx)
     for budget in (256, 512, 1200):
         result = packet(core, ctx, budget_tokens=budget)
-        assert len(canonical_render_json(result).encode("utf-8")) <= budget
+        assert estimate_tokens(canonical_render_json(result)) <= budget
     with pytest.raises(ContractError, match="budget_tokens"):
         packet(core, ctx, budget_tokens=64)
 

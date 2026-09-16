@@ -34,8 +34,8 @@ OUTPUT_ORIGIN = "memory_reinjection"
 RECOMMENDED_EXPLICIT_BUDGET_TOKENS = 4096
 BUDGET_RETRY_HINT = "retry_once_with_budget_tokens_4096"
 _RECALL_BUDGET_GUIDANCE = (
-    "budget_tokens is a conservative UTF-8 byte budget for the complete canonical "
-    "packet, including packet and source metadata, not a tokenizer count. "
+    "budget_tokens caps the character-calibrated token estimate of the complete canonical "
+    "packet, including packet and source metadata; it is neither UTF-8 bytes nor an exact tokenizer count. "
     "Recommended 4096 for explicit retrieval; omit the field to use that default. "
     "Explicit smaller values are honored and may clip every item. "
     "If gaps include budget_token_cap or budget_packet_cap, retry once with budget_tokens=4096."

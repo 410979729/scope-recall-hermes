@@ -16,6 +16,7 @@ from typing import Any, Literal
 from scope_recall.contracts import TrustedContext
 from scope_recall.core import CoreConfig, MemoryCore
 from scope_recall.core.schema import SCHEMA_VERSION
+from scope_recall.core.failure_retry import NEEDS_REVIEW_COUNT
 from scope_recall.core.work_storage import AUTO_RECOVERABLE_ERRORS
 from scope_recall.runtime.model_budget import pre_request_refusals, provider_refusals
 from scope_recall.runtime.running_code import live_records, stale_records
@@ -23,23 +24,10 @@ from scope_recall.vector_compaction import instance_vector_footprints
 from scope_recall._version import __version__
 
 HostChoice = Literal["hermes", "codex"]
-_PACKAGE_PROBE = '''
-import json
-from pathlib import Path
-from importlib import metadata
-import scope_recall._version as version
-path = Path(version.__file__).resolve()
-distribution_version = None
-source = 'development'
-try:
-    distribution = metadata.distribution('hermes-scope-recall')
-    distribution_version = distribution.version
-    if path.is_relative_to(Path(distribution.locate_file('scope_recall')).resolve()):
-        source = 'installed'
-except metadata.PackageNotFoundError:
-    pass
-print(json.dumps(dict(source=source, version=version.__version__, path=str(path), distribution_version=distribution_version)))
-'''
+# Run the new checker file with the target interpreter even if its installed
+# package predates these diagnostics. Optional libraries are never imported.
+_PACKAGE_PROBE = Path(__file__).with_name("package_health.py")
+
 
 
 @dataclass
@@ -59,6 +47,7 @@ class DoctorReport:
     pending_work: int | None = None
     failed_work: int | None = None
     terminal_failed_work: int | None = None
+    needs_review_work: int = 0
     leased_work: int | None = None
     oldest_pending_at: str | None = None
     oldest_pending_age_seconds: float | None = None
@@ -88,6 +77,7 @@ class DoctorReport:
     index_metadata: dict[str, Any] = field(default_factory=dict)
     ledger_headroom: dict[str, Any] = field(default_factory=dict)
     running_code: dict[str, Any] = field(default_factory=dict)
+    package_health: dict[str, Any] = field(default_factory=dict)
     candidate_settling: dict[str, int] = field(default_factory=dict)
     capability_gaps: list[str] = field(default_factory=list)
     checks: list[dict[str, str]] = field(default_factory=list)
@@ -108,6 +98,7 @@ class DoctorReport:
             "memory_epoch": self.memory_epoch,
             "pending_work": self.pending_work,
             "failed_work": self.failed_work,
+            "needs_review_work": self.needs_review_work,
             "terminal_failed_work": self.terminal_failed_work,
             "leased_work": self.leased_work,
             "oldest_pending_at": self.oldest_pending_at,
@@ -138,6 +129,7 @@ class DoctorReport:
             "index_metadata": dict(self.index_metadata),
             "ledger_headroom": dict(self.ledger_headroom),
             "running_code": dict(self.running_code),
+            "package_health": dict(self.package_health),
             "candidate_settling": dict(self.candidate_settling),
             "capability_gaps": list(self.capability_gaps),
             "checks": list(self.checks),
@@ -169,7 +161,7 @@ def _require_absolute(path: Path, field: str) -> Path:
 def _probe_python_package(python: Path) -> tuple[bool, dict[str, Any]]:
     try:
         result = subprocess.run(
-            [str(python), "-I", "-B", "-c", _PACKAGE_PROBE],
+            [str(python), "-I", "-B", str(_PACKAGE_PROBE)],
             capture_output=True,
             text=True,
             timeout=30,
@@ -295,7 +287,8 @@ def _ledger_headroom(ledger_path: Path | None, policy: Any) -> dict[str, Any]:
 #: at "degraded" forever.  Two kinds qualify, and only two:
 #:
 #: * ``derivation_invalid`` -- the model returned a payload that did not
-#:   validate.  Nothing retries it.  This used to be counted for
+#:   validate. After its one extra automatic attempt it needs review.
+#:   This used to be counted for
 #:   ``consolidate`` only, which left 213 identical failures on the candidate
 #:   path driving "degraded" on tianshu with nobody able to act on them; the
 #:   reasoning in the comment below never distinguished the two work types.
@@ -321,6 +314,7 @@ TERMINAL_FAILURE_COUNT = """
 #: carries no signal when something actually breaks.
 _NON_ACTIONABLE_GAPS = frozenset({
     "work_failed_terminal_only",
+    "work_needs_review",
     "worker_capability_unavailable",
 })
 
@@ -476,6 +470,9 @@ def run_doctor(
         raise ValueError("host must be 'hermes' or 'codex'")
     instance = _require_absolute(Path(instance_root), "instance_root")
 
+    from .package_health import apply_package_health, package_probe as current_package_probe
+
+    package_probe: dict[str, Any] = {}
     report = DoctorReport(host=host_choice, status="degraded")
     report.host_registration_status = _host_registration_status(host_choice, instance, Path(python_executable) if python_executable else None)
     report.hook_trust_status = "pending" if host_choice == "codex" else "unknown"
@@ -527,6 +524,7 @@ def run_doctor(
             else "development"
         )
         _record(report, "package", "ok", report.package_source)
+        package_probe = current_package_probe()
     # An unavailable target interpreter is one diagnostic result. The current
     # installed checker can still inspect the explicit binding and SQLite store.
 
@@ -535,6 +533,7 @@ def run_doctor(
         if host_choice == "codex"
         else _hermes_data_dir(instance) / "installation.json"
     )
+    apply_package_health(report, instance, package_probe)
     if not config_path.is_file():
         report.capability_gaps.append("installation_config_missing")
         _record(report, "adapter_config", "missing")
@@ -551,6 +550,8 @@ def run_doctor(
     _record(report, "adapter_binding", "ok", binding.installation_id)
 
     _check_running_code(report, data_directory)
+    report.checks = [item for item in report.checks if item["name"] not in report.package_health]
+    apply_package_health(report, instance, package_probe)
 
     db_path = data_directory / "memory.sqlite3"
     report.database_present = db_path.is_file()
@@ -572,6 +573,7 @@ def run_doctor(
             report.recent_work_errors = [dict(r) for r in conn.execute("SELECT work_id,lease_token,stage,error_code,error_field,recorded_at FROM work_error_details ORDER BY detail_id DESC LIMIT 16")]
             report.extraction_outcomes = dict(conn.execute("SELECT disposition,count(*) FROM consolidation_outcomes GROUP BY disposition").fetchall())
             terminal_extraction_failures = conn.execute(TERMINAL_FAILURE_COUNT).fetchone()[0]
+            report.needs_review_work = conn.execute(NEEDS_REVIEW_COUNT).fetchone()[0]
             candidate_summary = transaction.candidates.summary(include_all_projects=True)
             # Debouncing raises pending_evaluation on purpose, so split that
             # number: waiting inside the quiet window is health, waiting past it
@@ -685,6 +687,9 @@ def run_doctor(
             report.capability_gaps.append("work_backlog_stalled")
     else:
         _record(report, "work_backlog", "idle")
+    if report.needs_review_work:
+        report.capability_gaps.append("work_needs_review")
+        _record(report, "needs_review_work", "present", str(report.needs_review_work))
     if status.failed_work:
         # A DERIVATION_INVALID is terminal by design and never clears, so
         # counting it as an ordinary gap pins the instance at "degraded" forever

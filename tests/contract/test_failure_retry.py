@@ -411,3 +411,70 @@ def test_the_two_rate_limit_sets_cannot_drift_apart():
     from scope_recall.core.worker import _RATE_LIMITED_ERRORS
 
     assert _RATE_LIMITED_ERRORS is CAPACITY_REFUSALS
+
+@pytest.mark.parametrize("legacy", [False, True])
+@pytest.mark.parametrize("repair_success", [False, True])
+def test_invalid_candidate_gets_one_extra_attempt_repair_or_visible_review(app, legacy, repair_success):
+    """Real candidate worker; legacy failures and fresh output share one cap."""
+    from scope_recall.core.failure_retry import NEEDS_REVIEW_COUNT
+    core, ctx = app
+    _candidate(core, ctx)
+    _finish_source_work(core)
+    import json
+    from scope_recall.core.worker import build_consolidation_model
+    from scope_recall.runtime.instance import _BoundedCandidate
+    calls = []
+
+    class InvalidPort:
+        def propose(self, messages, *, remaining_seconds):
+            calls.append(json.dumps(messages))
+            expected = {"code": "DERIVATION_INVALID" if legacy else "INPUT_INVALID",
+                        "field": "payload" if legacy or not repair_success else "required"}
+            hint = "validation_error=" + json.dumps(expected, sort_keys=True, separators=(",", ":"))
+            if repair_success:
+                if any(hint in message["content"] for message in messages if message["role"] == "system"):
+                    body = next(json.loads(message["content"]) for message in messages
+                                if message["role"] == "user" and message["content"].startswith("{"))
+                    return json.dumps(body["empty_result"])
+                return '{"protocol_version":"1.1"}'
+            return "{not-json FAILED_BODY_SENTINEL"
+
+    model = _BoundedCandidate(build_consolidation_model(InvalidPort()), 3)
+    if legacy:
+        with sqlite3.connect(core.storage.path) as db:
+            db.execute("UPDATE work_items SET state='failed',attempt=3,last_error_code='derivation_invalid' WHERE work_type='evaluate_candidate'")
+            db.execute("UPDATE candidate_evaluations SET state='failed',model_attempted_at=?", (core.clock.utc_now(),))
+            db.execute("UPDATE candidate_lifecycle SET processing_state='waiting_evidence',reason='evaluation_failed'")
+    for _ in range(4):
+        with sqlite3.connect(core.storage.path) as db:
+            db.execute("UPDATE work_items SET available_at=? WHERE state='pending'", (core.clock.utc_now(),))
+        core.drain_worker(ctx, max_items=8, remaining_seconds=10, consolidation=model)
+    lifecycle, evaluations, work = _candidate_rows(core)
+    assert len(calls) == (1 if legacy else 2), (work, evaluations)
+    hint = {"code": "DERIVATION_INVALID" if legacy else "INPUT_INVALID",
+            "field": "payload" if legacy or not repair_success else "required"}
+    assert "validation_error=" + json.dumps(hint, sort_keys=True, separators=(",", ":")) in " ".join(
+        message["content"] for message in json.loads(calls[-1]))
+    assert "FAILED_BODY_SENTINEL" not in calls[-1]
+    if not legacy:
+        assert "validation_error=" not in calls[0] and calls[0] != calls[1]
+    if repair_success:
+        assert work[0]["state"] == "done"
+        assert evaluations[0]["state"] == "waiting_evidence"
+        assert lifecycle[0]["reason"] == "insufficient_evidence"
+        with sqlite3.connect(core.storage.path) as db:
+            assert db.execute(NEEDS_REVIEW_COUNT).fetchone()[0] == 0
+        return
+    assert work[0]["state"] == evaluations[0]["state"] == "failed"
+    assert "derivation_retry:1|" in work[0]["last_error_code"]
+    assert lifecycle[0]["reason"] == "evaluation_failed"
+    with sqlite3.connect(core.storage.path) as db:
+        assert db.execute(NEEDS_REVIEW_COUNT).fetchone()[0] == 1
+        assert db.execute("SELECT count(*) FROM work_items WHERE state='failed'").fetchone()[0] == 1
+    assert core.retry_failed_work(ctx, limit=64, dry_run=False)["retried"] == 0
+    # Explicit operator action does not grant another automatic retry budget.
+    assert core.retry_failed_work(ctx, limit=64, include_terminal=True, dry_run=False)["retried"] == 1
+    core.drain_worker(ctx, max_items=8, remaining_seconds=10, consolidation=model)
+    assert len(calls) == (2 if legacy else 3)
+    with sqlite3.connect(core.storage.path) as db:
+        assert db.execute(NEEDS_REVIEW_COUNT).fetchone()[0] == 1

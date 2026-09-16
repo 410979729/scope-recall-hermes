@@ -36,6 +36,44 @@ The structured `route` selects exactly one branch:
 The common install CLI takes explicit host/instance/plugin/project/Python paths.
 Resolve these yourself from the host. Never ask a nontechnical user to fill them in.
 
+## 1.1 Current package upgrades (D14, including pip-less uv venvs)
+
+Reuse this workflow and the installed `maintenance.cli package-upgrade` command.
+The historical root `managed_upgrade.py` upgrades old plugin trees and is not in
+the current wheel; do not route wheel-based installations through that engine.
+
+1. Verify the exact interpreter/home/controller and offline wheel identity. Back
+   up configuration, installation manifests/receipts/wrappers and consistent SQLite
+   snapshots using `maintenance.cli backup`. Keep these restricted outside the venv.
+2. Pause the existing background wake/autostart, then stop the target gateway,
+   MCP and workers through their real controllers. Wait for their exit and prevent
+   automatic relaunch. `--source-quiesced` is the operator's attestation of this
+   boundary, not a command to kill processes. Do not stop another instance.
+3. From an independent helper/candidate environment outside the target venv run:
+   `python -I -m scope_recall.maintenance.cli package-upgrade --python <target-python>
+   --wheel <verified-offline-wheel> --backup <new-private-backup-dir>
+   --source-quiesced --uv <external-native-uv>`.
+   The helper checks Windows delete sharing for installed files AND directories,
+   copies and hashes RECORD files (including entrypoints), then calls external uv
+   with `--no-index --no-deps --reinstall-package hermes-scope-recall`.
+   It never bootstraps pip, changes dependencies, edits models or starts a host.
+4. Lock/access or backup failure before uv means no package uninstall occurred.
+   After `installing` is recorded, any failed/interrupted uv/import check requires
+   retaining the backup and keeping hosts paused. Do not blindly retry or delete
+   `~*` remnants. Inspect `package-upgrade.json`; use the previous verified wheel
+   to restore the package under the same stopped boundary, then verify its
+   imports/RECORD/version before restoring matching wrapper/receipt. Automatic
+   database rollback is NOT permitted; reconcile any new writes first.
+5. `package_verified` means only that package replacement and isolated import
+   succeeded. Run existing plan-install/apply-install for the same binding and
+   doctor, verify receipt/wrapper/package, then restore the original wake policy,
+   restart and probe the real host. The package receipt never authorizes restart
+   on its own (`host_restart_allowed=false`). Keep the backup until that succeeds.
+
+The Windows preflight removes the known D14 held-handle path before uninstall.
+It is not a guarantee against disk failure or a new process started in violation
+of quiescence. Those failures remain explicit recovery, never a green upgrade.
+
 ## 2. Prepare legacy identity and permissions
 
 Use the source catalog and the old runtime's actual audience/identity settings.

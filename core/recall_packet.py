@@ -6,6 +6,8 @@ rechecks go through the existing read boundary within the original deadline.
 """
 from __future__ import annotations
 
+from .recall_budget import estimate_tokens, event_admission_order
+
 from collections import OrderedDict
 from dataclasses import dataclass
 import copy
@@ -197,6 +199,12 @@ class RecallPacketCompiler:
         if include_diagnostic_ref:
             return len(canonical_render_json(packet).encode("utf-8"))
         return len(canonical_render_json(dict(packet, diagnostic_ref=None)).encode("utf-8"))
+
+    @staticmethod
+    def _envelope_tokens(packet: RecallPacket, *, include_diagnostic_ref: bool = True) -> int:
+        """Use the same estimate for admission and final canonical JSON."""
+        measured = packet if include_diagnostic_ref else dict(packet, diagnostic_ref=None)
+        return estimate_tokens(canonical_render_json(measured))
 
     @staticmethod
     def _public_marker(value: str) -> str:
@@ -812,6 +820,7 @@ class RecallPacketCompiler:
             stale_drops += len(verified)
             verified = []
 
+        verified = event_admission_order(verified)
         verified = self._prioritize_resume_evidence(context, verified)
         verified = self._prioritize_current_claims(context, verified)
         # Ambient preferences/task state cannot displace answer evidence.
@@ -835,7 +844,7 @@ class RecallPacketCompiler:
                 stale_drops,
                 budget_drops,
             )
-            return self._envelope_bytes(packet) <= limits.budget_tokens
+            return self._envelope_tokens(packet) <= limits.budget_tokens
 
         for _candidate, obj in verified:
             if len(delivered) >= limits.max_items:
@@ -914,9 +923,9 @@ class RecallPacketCompiler:
                 context, result, memory_epoch, tuple(delivered), tuple(delivered_objects),
                 compile_gaps, unmet_needs, stale_drops, budget_drops,
             )
-            if self._envelope_bytes(packet) <= limits.budget_tokens:
+            if self._envelope_tokens(packet) <= limits.budget_tokens:
                 break
-            if self._envelope_bytes(packet, include_diagnostic_ref=False) <= limits.budget_tokens:
+            if self._envelope_tokens(packet, include_diagnostic_ref=False) <= limits.budget_tokens:
                 include_diagnostic_ref = False
                 break
             if not delivered:
@@ -939,7 +948,7 @@ class RecallPacketCompiler:
                         context, result, memory_epoch, tuple(trial), tuple(delivered_objects),
                         compile_gaps, unmet_needs, stale_drops, budget_drops,
                     )
-                    if self._envelope_bytes(trial_packet, include_diagnostic_ref=False) <= limits.budget_tokens:
+                    if self._envelope_tokens(trial_packet, include_diagnostic_ref=False) <= limits.budget_tokens:
                         delivered[index] = replacement
                         if "goal" not in json.loads(compact_content) or "next_step" not in json.loads(compact_content):
                             unmet_needs.append("resume_state")
@@ -981,15 +990,15 @@ class RecallPacketCompiler:
     @staticmethod
     def _bounded_packet(packet: RecallPacket, budget: int) -> RecallPacket:
         """Keep answer evidence and public budget diagnostics under the cap."""
-        if len(canonical_render_json(packet).encode("utf-8")) <= budget:
+        if estimate_tokens(canonical_render_json(packet)) <= budget:
             return isolate_recall_packet(packet)
         without_diagnostic_ref = dict(packet, diagnostic_ref=None)
-        if len(canonical_render_json(without_diagnostic_ref).encode("utf-8")) <= budget:
+        if estimate_tokens(canonical_render_json(without_diagnostic_ref)) <= budget:
             return isolate_recall_packet(cast(RecallPacket, without_diagnostic_ref))
         minimal = dict(packet, status="unavailable", memory_epoch=None, items=[],
                        gaps=["budget_packet_cap"], diagnostic_ref=None,
                        answerability="unknown", coverage="unknown", unmet_needs=[])
-        if len(canonical_render_json(minimal).encode("utf-8")) > budget:
+        if estimate_tokens(canonical_render_json(minimal)) > budget:
             raise ContractError("INPUT_INVALID", "budget_tokens")
         return isolate_recall_packet(cast(RecallPacket, minimal))
 
@@ -1014,6 +1023,9 @@ class RecallPacketCompiler:
             context, result, memory_epoch, items, delivered_objects,
             compile_gaps, unmet_needs, stale_drops, budget_drops,
         )
+        packet["diagnostic_ref"] = _DIAGNOSTIC_REF_PLACEHOLDER if include_diagnostic_ref and self.diagnostics else None
+        packet = self._bounded_packet(packet, limits.budget_tokens)
+        measured = canonical_render_json(packet)
         diagnostic_ref = None
         if self.diagnostics is not None:
             # The process-local record is always written; only the public
@@ -1027,13 +1039,16 @@ class RecallPacketCompiler:
                 status=packet["status"],
                 retrieval_gaps=retrieval_gaps,
                 compile_gaps=raw_gaps,
-                items_delivered=len(items),
+                items_delivered=len(packet["items"]),
+                rendered_bytes=len(measured.encode("utf-8")),
+                estimated_tokens=estimate_tokens(measured),
+                budget_tokens=limits.budget_tokens,
                 items_dropped_stale=stale_drops,
                 items_dropped_budget=budget_drops,
                 elapsed_ms=int((self._clock().monotonic() - started) * 1000),
                 deadline_remaining_ms=self._remaining_ms(context),
             )
-        packet["diagnostic_ref"] = diagnostic_ref if include_diagnostic_ref else None
+        packet["diagnostic_ref"] = diagnostic_ref if packet.get("diagnostic_ref") else None
         return packet
 
     def _assemble(

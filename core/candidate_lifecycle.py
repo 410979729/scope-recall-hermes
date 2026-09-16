@@ -96,6 +96,7 @@ class CandidateEvaluator(Protocol):
         sources: tuple[StoredSource, ...],
         *,
         remaining_seconds: float,
+        validation_feedback: dict[str, str] | None = None,
     ) -> str: ...
 
 
@@ -165,11 +166,13 @@ def candidate_evaluation_messages(
     sources: tuple[StoredSource, ...],
     *,
     budget: int = CANDIDATE_EVALUATION_INPUT_BUDGET,
+    validation_feedback: dict[str, str] | None = None,
 ) -> list[dict]:
     """Build a bounded candidate-specific request for the shared model port."""
     from .consolidate import consolidation_messages
 
-    messages = consolidation_messages(sources, episode_ref=None, budget=budget)
+    messages = consolidation_messages(sources, episode_ref=None, budget=budget,
+                                      validation_feedback=validation_feedback)
     candidate_json = json.dumps(
         {
             "candidate_ref": candidate.ref,

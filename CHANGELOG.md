@@ -4,6 +4,13 @@ All notable changes to `scope-recall` will be documented in this file.
 
 ## [Unreleased]
 
+### Scope Recall 3.1.0rc29 recovery candidate - 2026-09-16
+
+- Integrates the recovery-plan candidates: shared doctor/scheduler predicates, bounded derivation repair, packet budget handling, reusable query-embedding transport, and dependency ranges covering the locally checked versions.
+- Separates migration conversion, activation and indexing; separates worker outcomes and consolidation; adds the offline package-upgrade path and package health checks. Removes only the previously approved legacy deletion set; operator D6 cleanup remains a checklist, not an automatic deletion.
+- Adds optional, explicit `gpt-5.6-luna` Codex CLI consolidation with a verified tool-free binary, normal Core validation, durable subscription reservations and a per-call deadline. Offline request-boundary checks do not establish real subscription inference or continuous-operation acceptance; the startup timeout remains an open activation blocker.
+- Includes the Codex consolidation checks in both integration and release selection, and separates RC CI from stable-release publishing. This candidate does not assert remote CI, deployment, 24-hour performance or seven-day acceptance.
+
 ### Scope Recall 3.1.0rc28 the Codex wrapper carries its own credentials - 2026-09-16
 
 - The Codex host was the third installation, still on rc5. Its plugin directory held a hand-written `scripts/local_runtime.py` plus a second hook launcher, added forty seconds after the rc5 install and never recorded in the receipt: Codex starts the MCP server and every hook with its own environment, the installer's `.mcp.json` and `hooks.json` gave those processes no way to reach the embedding key, and the launcher loaded it from `embedding.env` by hand. The installer now takes `--env-file` for `--host codex`, writes it into `.mcp.json`, `hooks.json` and `scope-recall-hook.cmd`, and records it in the receipt; `mcp_entry` and `hook_entry` read it through the one function the worker already uses, `credential_environment` (only the names the runtime config declares, no dotenv interpolation), exposed as `host_process_credential_environment`. A missing or unreadable file is a stderr diagnostic and the process still starts, because a memory tool without its semantic channel is worth more than no memory tool; a hook never fails for it. `--host hermes` rejects the flag: Hermes processes inherit the gateway environment. The local launcher is retired with the rc5 wrapper.

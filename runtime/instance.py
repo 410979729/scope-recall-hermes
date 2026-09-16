@@ -561,7 +561,14 @@ class RuntimeInstance:
 
         model = consolidation
         if model is None:
-            model = build_consolidation_model(self.core.consolidation)
+            from ..adapters.codex_cli import CodexCliConsolidationAdapter
+
+            port = self.core.consolidation
+            # This allowance is shared by consolidation and candidate evaluation
+            # within this pass; no new scheduler, lease or queue policy.
+            if isinstance(port, CodexCliConsolidationAdapter):
+                port = port.for_pass()
+            model = build_consolidation_model(port)
         candidate_model = (
             _BoundedCandidate(model, self.config.request_seconds)
             if callable(getattr(model, "evaluate_candidate", None)) else None
@@ -657,11 +664,13 @@ class _BoundedConsolidation:
         self._inner = inner
         self._limit = limit
 
-    def propose(self, sources, *, episode_ref=None, remaining_seconds=1.0):
+    def propose(self, sources, *, episode_ref=None, remaining_seconds=1.0, validation_feedback=None):
+        repair = {"validation_feedback": validation_feedback} if validation_feedback is not None else {}
         return self._inner.propose(
             sources,
             episode_ref=episode_ref,
             remaining_seconds=min(float(remaining_seconds), self._limit),
+            **repair,
         )
 
 
@@ -670,9 +679,11 @@ class _BoundedCandidate:
         self._inner = inner
         self._limit = limit
 
-    def evaluate_candidate(self, candidate, sources, *, remaining_seconds=1.0):
+    def evaluate_candidate(self, candidate, sources, *, remaining_seconds=1.0, validation_feedback=None):
+        repair = {"validation_feedback": validation_feedback} if validation_feedback is not None else {}
         return self._inner.evaluate_candidate(
             candidate, sources, remaining_seconds=min(float(remaining_seconds), self._limit),
+            **repair,
         )
 
 
@@ -762,6 +773,8 @@ def build_runtime_instance(
         from ..adapters.codex.authorization import build_ingress_authorizer
 
         ingress_authorizer = build_ingress_authorizer(config.binding)
+    if auxiliary is not None:
+        owned.append(auxiliary)
     instance = RuntimeInstance(
         config=config,
         core=core,

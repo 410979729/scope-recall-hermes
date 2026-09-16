@@ -579,7 +579,10 @@ def pre_request_refusals(auxiliary) -> list[str]:
     routes = []
     if getattr(auxiliary, "external_consolidation", False):
         route = getattr(auxiliary, "consolidation", None)
-        routes.append(("consolidation", getattr(route, "model", None) if route else None))
+        # CLI subscriptions have their own call/token ledger, not invented API
+        # prices. Their explicit route validates the approved model itself.
+        if getattr(route, "kind", None) != "codex_cli":
+            routes.append(("consolidation", getattr(route, "model", None) if route else None))
     if getattr(auxiliary, "external_embedding", False):
         route = getattr(auxiliary, "embedding", None)
         try:

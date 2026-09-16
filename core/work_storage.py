@@ -12,6 +12,7 @@ from .schema import SCHEMA_VERSION
 ALLOWED_WORK_TYPES = frozenset({"consolidate", "embed", "rebuild_projection", "purge", "evaluate_candidate"})
 MAX_RECOVERABLE_ATTEMPTS = 3
 MAX_OPERATOR_RETRIES = 2
+DERIVATION_RETRY_MARKER = "derivation_retry:1"
 OPERATOR_ORIGINS = frozenset({"human_direct", "host_generated"})
 _OPERATOR_TOKEN = re.compile(r"(?:^|\|prior:)operator_retry:([A-Za-z0-9][A-Za-z0-9_.-]{0,63})(?=\||$)")
 _AUTO_TOKEN = re.compile(r"(?:^|\|(?:prior:)?)auto_retry:([0-9]+)(?=\||$)")
@@ -49,7 +50,7 @@ def _failure_kind(error: str) -> str:
 
 def _preserve_retry_history(error) -> bool:
     return bool(error and (str(error).startswith(("operator_retry:", "chunk_upgrade:1106|"))
-                           or _auto_count(str(error))))
+                           or _auto_count(str(error)) or "derivation_retry:1" in str(error)))
 
 
 @dataclass(frozen=True)
@@ -148,6 +149,27 @@ class WorkItems:
     def __init__(self, transaction) -> None:
         self._tx = transaction
 
+    def derivation_feedback(self, work_id: int) -> dict[str, str] | None:
+        """Read repair metadata only for a work item granted the bounded retry."""
+        from .failure_retry import validation_feedback
+
+        conn = self._tx._check()
+        row = conn.execute("SELECT last_error_code FROM work_items WHERE work_id=?", (work_id,)).fetchone()
+        if row is None or f"{DERIVATION_RETRY_MARKER}|" not in str(row[0] or ""):
+            return None
+        # A successful fragment consumes this feedback, not the durable retry
+        # allowance. Keep the marker/history, but never replay an old page's
+        # validation error after its checkpoint (including later timeouts).
+        outstanding = str(row[0]).lower().rsplit("consolidation_chunk_pending", 1)[-1]
+        if not {"derivation_invalid", "input_invalid"}.intersection(outstanding.split("|")):
+            return None
+        detail = conn.execute(
+            """SELECT error_code,error_field FROM work_error_details WHERE work_id=?
+               AND lower(error_code) IN ('derivation_invalid','input_invalid')
+               ORDER BY detail_id DESC LIMIT 1""", (work_id,),
+        ).fetchone()
+        return validation_feedback(*(detail if detail is not None else (None, None)))
+
     def _context_filter(self) -> tuple[str, tuple]:
         return (
             "AND (project_id IS NULL OR project_id=?) AND (branch_id IS NULL OR branch_id=?)",
@@ -229,7 +251,7 @@ class WorkItems:
         params = (*scopes, *context_params, now)
         failed = conn.execute(
             f"""UPDATE work_items SET state='failed',lease_owner=NULL,lease_until=NULL,last_error_code=CASE
-                    WHEN last_error_code LIKE 'operator_retry:%' OR last_error_code LIKE 'auto_retry:%' THEN last_error_code || '|lease_exhausted'
+                    WHEN last_error_code LIKE 'operator_retry:%' OR last_error_code LIKE 'auto_retry:%' OR last_error_code LIKE '%derivation_retry:1|%' THEN last_error_code || '|lease_exhausted'
                     ELSE 'lease_exhausted' END, available_at=?
                 WHERE {base} AND attempt >= ?""",
             (now, *params, MAX_RECOVERABLE_ATTEMPTS),
@@ -374,6 +396,8 @@ class WorkItems:
                 conn.execute("UPDATE work_items SET state='obsolete',last_error_code='authority_revoked' WHERE work_id=? AND state='failed'", (row["work_id"],))
                 continue
             stamp = f"auto_retry:{count + 1}|{_failure_kind(error)}"
+            if "derivation_retry:1|" in error:
+                stamp = "derivation_retry:1|" + stamp
             if error.startswith("operator_retry:"):
                 stamp = f"{error}|{stamp}"[-1024:]
             recovered += conn.execute(
@@ -460,6 +484,33 @@ class WorkItems:
              f"{marker}:{SCHEMA_VERSION}|input_invalid", work_id),
         ).rowcount
 
+    def recover_invalid_derivations(self, *, now: str, allowed_work_types: frozenset[str], limit: int = 32) -> int:
+        """Grant legacy invalid results the same single extra attempt as new work.
+
+        Reuse the operator retry's three-table transition for candidates. The
+        next worker revalidates source/epoch authority before any model call.
+        The durable marker is independent of schema generation and attempts.
+        """
+        conn = self._tx._check(write=True)
+        if type(limit) is not int or not 1 <= limit <= 200:
+            raise ContractError("INPUT_INVALID", "retry_limit")
+        kinds = sorted(allowed_work_types & {"consolidate", "evaluate_candidate"})
+        if not kinds:
+            return 0
+        scopes = sorted(self._tx.context.allowed_scope_ids)
+        context_filter, params = self._context_filter()
+        rows = conn.execute(
+            f"""SELECT work_id,work_type,last_error_code FROM work_items
+                WHERE state='failed' AND scope_id IN ({','.join('?' for _ in scopes)})
+                {context_filter} AND work_type IN ({','.join('?' for _ in kinds)})
+                AND (lower(last_error_code)='derivation_invalid'
+                     OR lower(last_error_code) LIKE '%|derivation_invalid')
+                AND last_error_code NOT LIKE ? ORDER BY work_id LIMIT ?""",
+            (*scopes, *params, *kinds, f"%{DERIVATION_RETRY_MARKER}|%", limit),
+        ).fetchall()
+        return sum(self._reopen_failed(row["work_id"], row["work_type"], row["last_error_code"],
+                                       now=now, automatic=True) for row in rows)
+
     def retry_failed(self, *, now: str, include_terminal: bool = False,
                      limit: int = 64, dry_run: bool = True) -> dict:
         """Grant one bounded re-look to failures a shipped fix may have cured.
@@ -512,18 +563,19 @@ class WorkItems:
             report["retried"] += 1
         return report
 
-    def _reopen_failed(self, work_id: int, work_type: str, code: object, *, now: str) -> bool:
+    def _reopen_failed(self, work_id: int, work_type: str, code: object, *, now: str, automatic: bool = False) -> bool:
         """Move one failed row, and its sibling tables when it has any."""
         from .failure_retry import marked
         from .schema import SCHEMA_VERSION
 
         conn = self._tx._check(write=True)
-        if work_type == "evaluate_candidate" and not self._tx.candidates.reopen_evaluation(work_id, now=now):
+        reason = "derivation_retry" if automatic else "operator_retry"
+        if work_type == "evaluate_candidate" and not self._tx.candidates.reopen_evaluation(work_id, now=now, reason=reason):
             return False
         return conn.execute(
             """UPDATE work_items SET state='pending',available_at=?,lease_owner=NULL,
                lease_until=NULL,last_error_code=? WHERE work_id=? AND state='failed'""",
-            (now, marked(code, generation=SCHEMA_VERSION), work_id),
+            (now, f"{DERIVATION_RETRY_MARKER}|{code}" if automatic else marked(code, generation=SCHEMA_VERSION), work_id),
         ).rowcount == 1
 
     def defer_without_attempt(self, work_id: int, lease_token: int, owner: str, *,
@@ -790,9 +842,17 @@ class WorkItems:
             if row is None:
                 raise ContractError("SOURCE_MISSING", "work_item")
             return WorkMutation(work_id, "stale", row["state"], row["lease_token"])
-        row = conn.execute("SELECT attempt,last_error_code FROM work_items WHERE work_id=?", (work_id,)).fetchone()
+        row = conn.execute("SELECT attempt,last_error_code,work_type FROM work_items WHERE work_id=?", (work_id,)).fetchone()
         attempt = row["attempt"]
         prior = row["last_error_code"]
+        # Invalid output gets exactly one extra execution, even when earlier
+        # infrastructure failures have consumed the ordinary attempt counter.
+        invalid = (_failure_kind(error_code).lower() == "derivation_invalid"
+                   and row["work_type"] in {"consolidate", "evaluate_candidate"})
+        if invalid:
+            recoverable = f"{DERIVATION_RETRY_MARKER}|" not in str(prior or "")
+            if recoverable:
+                prior = f"{DERIVATION_RETRY_MARKER}|{prior or ''}".rstrip("|")
         if recoverable and _failure_kind(error_code) in CAPACITY_REFUSALS:
             # The provider refused everyone; this lease never got an attempt, so
             # the attempt is refunded and the item is never given up on.  What
@@ -804,6 +864,8 @@ class WorkItems:
             available = _format_time(
                 _parse_time(now) + timedelta(seconds=_capacity_backoff_seconds(refusals)))
             retry_error = f"capacity:{refusals}|{error_code}"[:1024]
+            if "derivation_retry:1|" in str(prior or ""):
+                retry_error = "derivation_retry:1|" + retry_error
             conn.execute(
                 """UPDATE work_items SET state='pending',lease_owner=NULL,lease_until=NULL,
                    last_error_code=?,available_at=?,attempt=MAX(attempt-1,0)
@@ -811,7 +873,7 @@ class WorkItems:
                 (retry_error, available, work_id, lease_token, owner),
             )
             return WorkMutation(work_id, "retry", "pending", lease_token)
-        if recoverable and attempt < MAX_RECOVERABLE_ATTEMPTS:
+        if recoverable and (invalid or attempt < MAX_RECOVERABLE_ATTEMPTS):
             available = _format_time(_parse_time(now) + timedelta(seconds=_backoff_seconds(attempt)))
             retry_error = error_code
             if _preserve_retry_history(prior):

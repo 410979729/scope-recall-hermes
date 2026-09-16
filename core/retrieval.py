@@ -22,8 +22,8 @@ RecallMode = Literal["auto", "current", "history", "as_of", "method"]
 Coverage = Literal["complete_for_query", "partial", "unknown"]
 Answerability = Literal["supported", "partial", "ambiguous", "unknown"]
 
-# Conservative UTF-8 byte upper bound used as automatic packet budget units.
-# This is not a measured tokenizer count.
+# Character-calibrated whole-packet units from recall_budget.estimate_tokens.
+# This is not a measured provider tokenizer count; bytes are diagnostic only.
 AUTOMATIC_PACKET_BUDGET_UNITS = 4096
 
 

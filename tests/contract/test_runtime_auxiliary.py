@@ -715,18 +715,31 @@ def test_source_embedding_uses_document_encoding(tmp_path, monkeypatch):
 
 
 def test_import_modules_in_either_order():
-    import importlib
+    import subprocess
     import sys
 
-    for name in list(sys.modules):
-        if name.startswith("scope_recall.runtime") or name == "scope_recall.adapters.models":
-            del sys.modules[name]
-    models = importlib.import_module("scope_recall.adapters.models")
-    auxiliary = importlib.import_module("scope_recall.runtime.auxiliary")
-    runtime_pkg = importlib.import_module("scope_recall.runtime")
-    assert models.AuxiliaryModelError is not None
-    assert auxiliary.build_auxiliary_runtime is not None
-    assert runtime_pkg.AuxiliaryRuntimeConfig is auxiliary.AuxiliaryRuntimeConfig
+    # Import-order checks must not evict the running suite's modules: retained
+    # class globals would otherwise bypass later transport monkeypatches.
+    root = Path(__file__).resolve().parents[2]
+    bootstrap = (
+        "import importlib, importlib.util, sys; "
+        f"root={str(root)!r}; "
+        "spec=importlib.util.spec_from_file_location('scope_recall',root+'/__init__.py',submodule_search_locations=[root]); "
+        "package=importlib.util.module_from_spec(spec); sys.modules['scope_recall']=package; spec.loader.exec_module(package); "
+    )
+    for order in (("adapters.models", "runtime.auxiliary"), ("runtime.auxiliary", "adapters.models")):
+        program = bootstrap + (
+            f"[importlib.import_module('scope_recall.'+name) for name in {order!r}]; "
+            "models=importlib.import_module('scope_recall.adapters.models'); "
+            "auxiliary=importlib.import_module('scope_recall.runtime.auxiliary'); "
+            "runtime_pkg=importlib.import_module('scope_recall.runtime'); "
+            "assert models.AuxiliaryModelError is not None; "
+            "assert auxiliary.build_auxiliary_runtime is not None; "
+            "assert runtime_pkg.AuxiliaryRuntimeConfig is auxiliary.AuxiliaryRuntimeConfig"
+        )
+        result = subprocess.run([sys.executable, "-I", "-B", "-c", program],
+                                capture_output=True, text=True, timeout=15)
+        assert result.returncode == 0, result.stderr
 
 
 def test_credential_sk_key_is_header_only(tmp_path, monkeypatch):

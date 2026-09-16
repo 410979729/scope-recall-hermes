@@ -21,6 +21,7 @@ class _FakeSocket:
 class _FakeHTTPResponse:
     def __init__(self, *, status: int, body: bytes) -> None:
         self.status = status
+        self.will_close = True  # This one-shot response double never permits reuse.
         self._body = body
 
     def read(self, _amt: int | None = None) -> bytes:

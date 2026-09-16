@@ -1,6 +1,8 @@
 """The one production retrieval pipeline used by automatic and tool recall."""
 from __future__ import annotations
 
+from .recall_budget import estimate_tokens, event_admission_order
+
 from dataclasses import replace
 from itertools import islice
 import json
@@ -90,7 +92,7 @@ class RetrievalPipeline:
 
     @staticmethod
     def _estimate_tokens(text: str) -> int:
-        return max(1, len(text.encode("utf-8")) // 4)
+        return estimate_tokens(text)
 
     @staticmethod
     def _evidence_roots(item: object) -> frozenset[str]:
@@ -535,7 +537,7 @@ class RetrievalPipeline:
         kept: list[tuple[CandidateRef, RetrievedObject]] = []
         oversized: list[tuple[CandidateRef, RetrievedObject]] = []
         total_tokens = 0
-        for candidate, item in ranked:
+        for candidate, item in event_admission_order(ranked):
             if len(kept) >= limits.max_items:
                 break
             tokens = self._estimate_tokens(getattr(item, "content", ""))
@@ -546,7 +548,7 @@ class RetrievalPipeline:
                 continue
             if kept and total_tokens + tokens > limits.budget_tokens:
                 # One large candidate must not starve smaller useful evidence
-                # later in the ranking. The packet compiler rechecks bytes.
+                # later in the ranking. The compiler budgets the whole packet.
                 continue
             total_tokens += tokens
             kept.append((candidate, item))
