@@ -62,7 +62,7 @@ def test_every_entry_point_exists():
 )
 def test_semver_spelling_agrees_with_the_installer(version):
     """The build helper restates the installer's rule; it must not drift from it."""
-    from scope_recall.maintenance.install import _manifest_version
+    from scope_recall.maintenance.install_common import _manifest_version
 
     assert inventory.semver_version(version) == _manifest_version(version)
 
