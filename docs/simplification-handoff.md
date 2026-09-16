@@ -21,13 +21,13 @@
 4. 合入的代理分支：宿主工具面（`adapters/tool_common.py`）、doctor 命名检查、worker 分发表 + `core/worker_projection.py`、legacy 转换流水线（`maintenance/legacy_plan/sources/claims/deletions.py`）、候选生命周期（`core/candidate_tables/intake/evaluations/sweeps.py`）、安装器拆分（`maintenance/install_common/receipt/codex/hermes/purge.py`）+ CLI 表路由；vector 包（`vector/__init__.py` 的 `VectorStore` 基类、`vector/lance_native.py`，删除 `mutation_guard.py`；分支 `simplify/3.1-vector`，已合入）。
 5. `scripts/dead_code.py`：跨模块引用扫描工具（见 1.6）。
 
-### 尚未合入（代理 worktree，位于 `F:\SCOPERECALL更新项目\.repos\scope-recall\.claude\worktrees\`）
+### 九个代理分支全部合入（记录保留；worktree 已删除；代理 worktree 原位于，位于 `F:\SCOPERECALL更新项目\.repos\scope-recall\.claude\worktrees\`）
 
 | 代理 | worktree 目录 | 分支 | 任务 | 状态 |
 |---|---|---|---|---|
 | ~~vector~~ 已合入 b849e25 | `agent-af5332ff1aedd8592` | `simplify/3.1-vector` | `vector/*.py`、`adapters/lance.py`、`_lance_worker.py`：三个 store 共用一个接口/协议、去掉逐方法包装重复、Lance 表 helper 移出 `store.py`、`process_store` 的 `_invoke_locked/_invoke_fenced_locked` 合一、`LanceEmbedPort` 的 source/claim 双胞胎合一；保留 `tests/contract/test_vector_failure.py` 解析的 RuntimeError 文案 | 完成 |
 | ~~recall~~ 已合入 b4cf020 | `agent-ad3c6b18b31c0c8f1` | `worktree-agent-ad3c6b18b31c0c8f1` | `core/recall_packet.py`（`compile` 291 行拆阶段）、`core/recall.py`（`search` 拆步骤）、`core/retrieval_storage.py::hydrate`、`core/read_views.py` profile/entity 合并、统一 `_effective_limits`/token 估算；删除无引用的 `RetrievalPort`；新增 `core/recall_needs.py`、`core/resume_compaction.py` | 完成 |
-| runtime（完成，待合入：分支 `simplify/3.1-runtime`，HEAD 7590b4c） | `agent-a37a64389e4852215` | `simplify/3.1-runtime` | `runtime/*.py`、`adapters/models.py`、`adapters/codex_cli.py`、三个 `runtime_wiring.py`：统一 `_strict_*` 校验 helper、config 类改字段表、`HttpsTransport._post`/`propose`/`codex_cli._run` 拆步骤、`attach_trusted_host_runtime` 三份合一；新增 `runtime/validation.py` | 完成，待合入 |
+| ~~runtime~~ 已合入 4642eb9 | `agent-a37a64389e4852215` | `simplify/3.1-runtime` | `runtime/*.py`、`adapters/models.py`、`adapters/codex_cli.py`、三个 `runtime_wiring.py`：统一 `_strict_*` 校验 helper、config 类改字段表、`HttpsTransport._post`/`propose`/`codex_cli._run` 拆步骤、`attach_trusted_host_runtime` 三份合一；新增 `runtime/validation.py` | 完成 |
 
 ## 1. 接手步骤（按顺序）
 
@@ -51,7 +51,7 @@ python scripts/build.package_manifest.py --check     # "ok": true
 ```
 冲突基本只会在 `packaging/v11-module-allowlist.json`：直接 `--write` 重新生成即可。合完跑七层门禁，全绿后 `git push origin simplify/3.1-structure`。
 
-### 1.3 合并后的统一清理（本人尚未做）
+### 1.3 合并后的统一清理（已做：f772f61 跑 dead_code 到不动点，只剩 20 行；ruff F 干净。下面是可选的后续）
 1. **跨模块死代码扫描到不动点**：`python scripts/dead_code.py <模块...>` 报告，`--apply` 删除；对整个发布集跑：`python scripts/dead_code.py --apply $(python -c "import json;print(' '.join(json.load(open('packaging/v11-module-allowlist.json'))['python_modules']))")`，重复到报告为 0。规则：从其他发布模块/测试/配置文件被引用的顶层名字是根，模块内可达的活，其余删；`__all__` 同步裁剪；然后 `uv tool run ruff check . --select F --fix`。
 2. **重复 helper 统一**：`_now/utc_now`（runtime/running_code、vector_upkeep、worker_entry、codex handler、core/capture/composition）、`_json`（core/*storage、migration_records）、`_absolute`（codex/mcp_entry 与 install_common）、`_digest`（fact_identity、legacy_tianshu_compat、migration_records、upgrade）、`_bounded_text`（attachments、fact_actions 两份行为不同，需判断）。
 3. **剩余 if 阶梯**：`adapters/codex/handler.py::handle_payload`（代理判断表驱动会掩盖四种事件尾部差异，保留即可）、`core/delete_storage.py::physical_members/purge_sqlite`（5 层 elif → dict）、`core/episodes.py::state_from_sources`、`runtime/scheduling.py::next_wake`（若 runtime 代理未做）。
@@ -63,7 +63,7 @@ python scripts/build.package_manifest.py --check     # "ok": true
 - `README.md` 加一小节"树的布局"（core / vector / adapters / runtime / maintenance 各一句）。
 
 ### 1.5 交付
-1. 最终树跑七层门禁，全绿；`python scripts/build.package_manifest.py --check` ok；记录行数：`git ls-files '*.py' | grep -v ^verification | xargs wc -l | tail -1`（PR 1 后为 81,667；目标：发布代码再降 10–20%）。
+1. 最终树（f772f61）：unit 29 / contract 96 / capture 39 / storage 31 / claims 57 / episodes 105 / deletion 28 / retrieval 65 / migration 7 / host 122 全绿；native/packaging/integration 见最后一次运行记录。行数：308 个 .py、75,884 行（起点 1,208 个、479,581 行，−84%）；发布集 167 个模块、40,843 行（起点 46,784，−13%）；最长函数 171 行（起点 2,149）。
 2. `git push origin simplify/3.1-prune simplify/3.1-structure`。
 3. 开 PR：PR 1 base `release/3.1.0`；PR 2 base `simplify/3.1-prune`（叠在 PR 1 之上，diff 只含结构改动）。`main` 是 9/5 的旧祖先，勿以它为 base。PR 正文写：删除了什么、搬了什么、每个 god file 拆成什么、门禁计数、以及"行为差异"一节（各代理报告里点名的几处边角：doctor `to_dict` 字段顺序、worker 已删 claim 的 embed 现在报 `obsolete/authority_revoked`、候选 `defer_budget` 加了 blocked 栅栏、安装器 manifest 校验先报身份错误）。
 4. 清理代理 worktree：合入后 `git worktree remove <路径>`（在 `.repos/scope-recall` 下执行 `git worktree list` 查看）。
