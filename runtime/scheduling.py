@@ -20,12 +20,9 @@ from .worker_entry import _atomic_metadata, _metadata_path, _read_metadata, load
 
 
 def _daily_budget_spent(config, used: int) -> bool:
-    """Whether the per-day item cap is reached. A limit of 0 means uncapped.
-
-    Without the zero check every ``used >= limit`` test below is trivially true
-    on an uncapped instance, and every wake would be pushed to the next day —
-    the exact dormancy the uncapped setting exists to avoid.
-    """
+    """Whether the per-day item cap is reached.  A limit of 0 means uncapped,
+    and without the zero check every wake on an uncapped instance would be
+    pushed to the next day."""
     limit = getattr(config, "daily_work_limit", 0)
     return bool(limit) and used >= limit
 
@@ -50,6 +47,38 @@ class WakePlan:
     failed: int = 0
 
 
+def _capable_work_types(config) -> set[str]:
+    aux = config.auxiliary
+    capable = {"purge", "rebuild_projection"}
+    if aux is not None and aux.external_consolidation and aux.consolidation is not None:
+        capable.update(("consolidate", "evaluate_candidate"))
+    if aux is not None and aux.external_embedding and aux.embedding is not None and config.vector is not None:
+        capable.add("embed")
+    return capable
+
+
+def _daily_items_used(config, now: datetime) -> int:
+    day = _read_metadata(_metadata_path(config, "runtime-worker-day.json"))
+    if day.get("installation_id") not in (None, config.binding.installation_id):
+        raise ValueError("supervisor_budget_binding")
+    used = day.get("used", 0) if day.get("day") == _stamp(now)[:10] else 0
+    if type(used) is not int or not 0 <= used <= 10000:
+        raise ValueError("supervisor_budget_invalid")
+    return used
+
+
+def _auto_recovery_rows(conn, base: str, params: tuple, config) -> list:
+    """Failed items still inside their automatic recovery allowance."""
+    errors = sorted(AUTO_RECOVERABLE_ERRORS)
+    error_filter = " OR ".join("(last_error_code=? OR last_error_code LIKE ?)" for _ in errors)
+    error_params = tuple(value for error in errors for value in (error, f'%|{error}'))
+    exhausted = " AND ".join("last_error_code NOT LIKE ?" for _ in range(config.max_auto_recoveries, 5))
+    exhausted_params = tuple(f'%auto_retry:{i}|%' for i in range(config.max_auto_recoveries, 5))
+    return conn.execute(f"""SELECT work_type,min(available_at) AS due FROM work_items
+        WHERE {base} AND state='failed' AND ({error_filter}) AND {exhausted}
+        GROUP BY work_type""", (*params, *error_params, *exhausted_params)).fetchall()
+
+
 def next_wake(config, *, now: datetime | None = None, unavailable_until=None) -> WakePlan:
     """Read only generic work fields under the same partition as claim_next.
 
@@ -58,19 +87,25 @@ def next_wake(config, *, now: datetime | None = None, unavailable_until=None) ->
     """
     now = now or datetime.now(timezone.utc)
     unavailable_until = unavailable_until or {}
-    aux = config.auxiliary
-    capable = {"purge", "rebuild_projection"}
-    if aux is not None and aux.external_consolidation and aux.consolidation is not None:
-        capable.update(("consolidate", "evaluate_candidate"))
-    if aux is not None and aux.external_embedding and aux.embedding is not None and config.vector is not None:
-        capable.add("embed")
-    day = _read_metadata(_metadata_path(config, "runtime-worker-day.json"))
-    if day.get("installation_id") not in (None, config.binding.installation_id):
-        raise ValueError("supervisor_budget_binding")
-    used = day.get("used", 0) if day.get("day") == _stamp(now)[:10] else 0
-    if type(used) is not int or not 0 <= used <= 10000:
-        raise ValueError("supervisor_budget_invalid")
+    capable = _capable_work_types(config)
+    spent = _daily_budget_spent(config, _daily_items_used(config, now))
     next_day = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+
+    def cooled(due, reason, cooldown):
+        """A capability cooldown wins when it ends later than the work is due."""
+        if cooldown is not None and cooldown > due:
+            return cooldown, 'capability_cooldown'
+        return due, reason
+
+    def budgeted(due, reason):
+        """A spent daily budget pushes the wake to the next UTC day."""
+        return (max(due, next_day), 'daily_queue_budget') if spent else (due, reason)
+
+    def scheduled(work_type, due, reason):
+        """Queue items: cooldown first, then the daily budget; purge is exempt from it."""
+        due, reason = cooled(due, reason, unavailable_until.get(work_type))
+        return budgeted(due, reason) if work_type != 'purge' else (due, reason)
+
     scopes = sorted(config.allowed_scope_ids)
     marks = ",".join("?" for _ in scopes)
     base = f"scope_id IN ({marks}) AND (project_id IS NULL OR project_id=?) AND (branch_id IS NULL OR branch_id=?)"
@@ -84,11 +119,8 @@ def next_wake(config, *, now: datetime | None = None, unavailable_until=None) ->
         if source_pages:
             pending += source_pages
             if 'evaluate_candidate' in capable:
-                due, reason = (next_day, 'daily_queue_budget') if _daily_budget_spent(config, used) else (now, 'candidate_evidence_remainder')
-                cooldown = unavailable_until.get('evaluate_candidate', unavailable_until.get('consolidate', now))
-                if cooldown > due:
-                    due, reason = cooldown, 'capability_cooldown'
-                candidates.append((due, reason))
+                cooldown = unavailable_until.get('evaluate_candidate', unavailable_until.get('consolidate'))
+                candidates.append(cooled(*budgeted(now, 'candidate_evidence_remainder'), cooldown))
             else:
                 blocked += source_pages
         inbox = conn.execute(f"""SELECT count(*) FROM capture_inbox WHERE {base}
@@ -112,11 +144,7 @@ def next_wake(config, *, now: datetime | None = None, unavailable_until=None) ->
             if row['state'] == 'leased':
                 due += timedelta(milliseconds=1)  # release_stale uses strict <.
             reason = 'lease_expiry' if row['state'] == 'leased' else 'work_available'
-            if row['work_type'] in unavailable_until and unavailable_until[row['work_type']] > due:
-                due, reason = unavailable_until[row['work_type']], 'capability_cooldown'
-            if row['work_type'] != 'purge' and _daily_budget_spent(config, used):
-                due, reason = max(due, next_day), 'daily_queue_budget'
-            candidates.append((due, reason))
+            candidates.append(scheduled(row['work_type'], due, reason))
         # Schema 1106 gives each legacy offset-zero failure one inspection.
         # Core marks BOTH repaired and non-repairable candidates, so even a
         # page with recovered=0 makes bounded progress and cannot hide the next
@@ -126,29 +154,13 @@ def next_wake(config, *, now: datetime | None = None, unavailable_until=None) ->
                 AND work_type='consolidate' AND state='failed'
                 AND last_error_code='INPUT_INVALID' AND consolidation_offset=0 LIMIT 1""", params).fetchone()
             if legacy is not None:
-                due, reason = (next_day, 'daily_queue_budget') if _daily_budget_spent(config, used) else (now, 'legacy_source_repair')
-                if unavailable_until.get('consolidate', now) > due:
-                    due, reason = unavailable_until['consolidate'], 'capability_cooldown'
-                candidates.append((due, reason))
+                candidates.append(cooled(*budgeted(now, 'legacy_source_repair'), unavailable_until.get('consolidate')))
         if config.max_auto_recoveries:
-            errors = sorted(AUTO_RECOVERABLE_ERRORS)
-            error_filter = " OR ".join("(last_error_code=? OR last_error_code LIKE ?)" for _ in errors)
-            error_params = tuple(value for error in errors for value in (error, f'%|{error}'))
-            exhausted = " AND ".join("last_error_code NOT LIKE ?" for _ in range(config.max_auto_recoveries, 5))
-            exhausted_params = tuple(f'%auto_retry:{i}|%' for i in range(config.max_auto_recoveries, 5))
-            rows = conn.execute(f"""SELECT work_type,min(available_at) AS due FROM work_items
-                WHERE {base} AND state='failed' AND ({error_filter}) AND {exhausted}
-                GROUP BY work_type""", (*params, *error_params, *exhausted_params)).fetchall()
-            for row in rows:
+            for row in _auto_recovery_rows(conn, base, params, config):
                 if row['work_type'] not in capable:
                     continue
                 due = _utc(row['due']) + timedelta(seconds=config.auto_retry_cooldown_seconds)
-                reason = 'failure_cooldown'
-                if row['work_type'] in unavailable_until and unavailable_until[row['work_type']] > due:
-                    due, reason = unavailable_until[row['work_type']], 'capability_cooldown'
-                if row['work_type'] != 'purge' and _daily_budget_spent(config, used):
-                    due, reason = max(due, next_day), 'daily_queue_budget'
-                candidates.append((due, reason))
+                candidates.append(scheduled(row['work_type'], due, 'failure_cooldown'))
     if not candidates:
         reason = 'capability_unavailable' if blocked else ('failed_terminal' if failed else 'idle')
         return WakePlan(None, reason, pending, blocked, failed)
@@ -206,6 +218,28 @@ class SupervisorControl:
             return True
 
 
+def _acquire_ownership(control: SupervisorControl):
+    """Take the owner lock, or return ``None`` when a live owner owes this wake a read."""
+    owner = advisory_file_lock(control.owner_lock, timeout_seconds=0)
+    try:
+        owner.__enter__()
+        return owner
+    except TimeoutError:
+        pass
+    with advisory_file_lock(control.control_lock, timeout_seconds=1):
+        if control.read().get('accepting', False):
+            return None  # The owner now owes this generation a read before exit.
+    owner = advisory_file_lock(control.owner_lock, timeout_seconds=2)
+    try:
+        owner.__enter__()  # Closing owner hands off; failure stays explicit.
+        return owner
+    except TimeoutError:
+        with advisory_file_lock(control.control_lock, timeout_seconds=1):
+            if control.read().get('accepting', False):
+                return None
+        raise
+
+
 def supervise(config_path: Path, drain_once, *, delay_seconds=0.0, clock=time.monotonic,
               sleep=time.sleep, utc_now=lambda: datetime.now(timezone.utc), planner=next_wake) -> int:
     """Run bounded drains sequentially; no recursive supervisor process spawn.
@@ -216,22 +250,9 @@ def supervise(config_path: Path, drain_once, *, delay_seconds=0.0, clock=time.mo
     config = load_config(config_path)
     control = SupervisorControl(config)
     control.request()
-    owner = advisory_file_lock(control.owner_lock, timeout_seconds=0)
-    try:
-        owner.__enter__()
-    except TimeoutError:
-        with advisory_file_lock(control.control_lock, timeout_seconds=1):
-            accepting = control.read().get('accepting', False)
-        if accepting:
-            return 0  # The owner now owes this generation a read before exit.
-        owner = advisory_file_lock(control.owner_lock, timeout_seconds=2)
-        try:
-            owner.__enter__()  # Closing owner hands off; failure stays explicit.
-        except TimeoutError:
-            with advisory_file_lock(control.control_lock, timeout_seconds=1):
-                if control.read().get('accepting', False):
-                    return 0
-            raise
+    owner = _acquire_ownership(control)
+    if owner is None:
+        return 0
     deadline = clock() + config.supervisor_seconds
     wall_deadline = utc_now() + timedelta(seconds=config.supervisor_seconds)
     count = 0

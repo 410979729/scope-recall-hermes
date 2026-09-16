@@ -2,21 +2,59 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import math
 import os
 from pathlib import Path
 import signal
 import subprocess
 import sys
 
+from .validation import absolute_path, strict_bool, strict_float, strict_int
 
-def _absolute_config(path: str | Path) -> Path:
-    value = Path(path)
-    if not value.is_absolute():
-        raise ValueError("config_must_be_absolute")
-    if not value.is_file():
-        raise ValueError("config_not_found")
-    return value.resolve()
+
+def validate_wake_arguments(after_pid: int | None, delay_seconds: float) -> None:
+    """The follow-up pid and delay a host may attach to a wake; shared with the watchdog."""
+    if after_pid is not None:
+        strict_int("worker_after_pid", after_pid, minimum=1, maximum=0xFFFFFFFF)
+    strict_float("worker_delay_seconds", delay_seconds, minimum=0, maximum=3600)
+
+
+def detached_creationflags() -> int:
+    flags = int(getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    if os.name == "nt":
+        flags |= int(getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
+    return flags
+
+
+def taskkill_tree(process: subprocess.Popen) -> None:
+    """Windows: kill the whole Popen-owned tree at once; terminating the parent
+    first can orphan native children."""
+    try:
+        if process.poll() is None:
+            subprocess.run(
+                ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+                timeout=5.0,
+            )
+    except (OSError, subprocess.TimeoutExpired):
+        if process.poll() is None:
+            process.terminate()
+
+
+def reap_process(process: subprocess.Popen) -> None:
+    """Wait briefly, then force the process (and its POSIX group) down."""
+    try:
+        process.wait(timeout=5.0)
+    except subprocess.TimeoutExpired:
+        if os.name == "nt":
+            process.kill()
+        else:
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except (OSError, ProcessLookupError):
+                process.kill()
+        process.wait(timeout=5.0)
 
 
 @dataclass
@@ -32,8 +70,7 @@ class WorkerProcess:
         return self.process.poll()
 
     def wait(self, timeout: float = 120.0) -> int:
-        if type(timeout) not in (int, float) or timeout <= 0 or timeout > 120.0:
-            raise ValueError("worker_wait_timeout")
+        strict_float("worker_wait_timeout", timeout, minimum=1e-9, maximum=120.0)
         try:
             return self.process.wait(timeout=float(timeout))
         except subprocess.TimeoutExpired:
@@ -41,8 +78,7 @@ class WorkerProcess:
             raise
 
     def communicate(self, timeout: float = 120.0) -> tuple[str, str]:
-        if type(timeout) not in (int, float) or timeout <= 0 or timeout > 120.0:
-            raise ValueError("worker_communicate_timeout")
+        strict_float("worker_communicate_timeout", timeout, minimum=1e-9, maximum=120.0)
         try:
             stdout, stderr = self.process.communicate(timeout=float(timeout))
         except subprocess.TimeoutExpired:
@@ -65,34 +101,13 @@ class WorkerProcess:
         if self.process.poll() is not None:
             return
         if os.name == "nt":
-            # Kill the complete Popen-owned tree while the watchdog is still
-            # alive; terminating the parent first can orphan native children.
-            try:
-                subprocess.run(
-                    ["taskkill", "/PID", str(self.process.pid), "/T", "/F"],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL,
-                    check=False,
-                    timeout=5.0,
-                )
-            except (OSError, subprocess.TimeoutExpired):
-                self.process.terminate()
+            taskkill_tree(self.process)
         else:
             try:
                 os.killpg(self.process.pid, signal.SIGTERM)
             except (OSError, ProcessLookupError):
                 self.process.terminate()
-        try:
-            self.process.wait(timeout=5.0)
-        except subprocess.TimeoutExpired:
-            if os.name == "nt":
-                self.process.kill()
-            else:
-                try:
-                    os.killpg(self.process.pid, signal.SIGKILL)
-                except (OSError, ProcessLookupError):
-                    self.process.kill()
-            self.process.wait(timeout=5.0)
+        reap_process(self.process)
 
 
 def launch_worker(
@@ -105,13 +120,12 @@ def launch_worker(
     detach_output: bool = False,
     environment: dict[str, str] | None = None,
 ) -> WorkerProcess:
-    if type(detach_output) is not bool:
-        raise ValueError("worker_detach_output")
-    if after_pid is not None and (type(after_pid) is not int or not 1 <= after_pid <= 0xFFFFFFFF):
-        raise ValueError("worker_after_pid")
-    if type(delay_seconds) not in (int, float) or not math.isfinite(delay_seconds) or not 0 <= delay_seconds <= 3600:
-        raise ValueError("worker_delay_seconds")
-    path = _absolute_config(config_path)
+    strict_bool("worker_detach_output", detach_output)
+    validate_wake_arguments(after_pid, delay_seconds)
+    path = absolute_path("config", os.fspath(config_path))
+    if not path.is_file():
+        raise ValueError("config_not_found")
+    path = path.resolve()
     executable = Path(python_executable) if python_executable is not None else Path(sys.executable)
     if not executable.is_absolute() or not executable.exists():
         raise ValueError("python_executable")
@@ -130,9 +144,6 @@ def launch_worker(
         command.extend(("--after-pid", str(after_pid)))
     if delay_seconds:
         command.extend(("--delay-seconds", str(delay_seconds)))
-    creationflags = int(getattr(subprocess, "CREATE_NO_WINDOW", 0))
-    if os.name == "nt":
-        creationflags |= int(getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
     # The caller owns PYTHONPATH and other trusted environment configuration;
     # copying it avoids mutating the parent while preserving installed/checked
     # package resolution for the child.
@@ -153,10 +164,10 @@ def launch_worker(
         text=True,
         encoding="utf-8",
         errors="replace",
-        creationflags=creationflags,
+        creationflags=detached_creationflags(),
         start_new_session=(os.name != "nt"),
     )
     return WorkerProcess(process=process, config_path=path)
 
 
-__all__ = ["WorkerProcess", "launch_worker"]
+__all__ = ["WorkerProcess", "launch_worker", "validate_wake_arguments"]

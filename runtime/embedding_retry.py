@@ -1,28 +1,13 @@
-"""One more attempt at the query embedding when the connection, not the request, failed.
+"""One free retry of the query embedding when the connection, not the request, failed.
 
-The query embedding is a single network call with no second chance, and losing
-it costs the entire semantic channel for that recall: ``_vector_candidates``
-catches the failure, records ``vector_unavailable`` and ``vector_error:<type>``,
-and returns nothing, so the answer is assembled from the lexical and recent
-channels alone.  That degradation is honest -- it is reported, never silent --
-but it is avoidable when the cause was a connection that failed in
-milliseconds.  A live instance recorded exactly that twice in one day.
-
-Only *connection* failures are retried.  A request the provider rejected
-(``input_invalid``, ``endpoint_invalid``, ``credential_missing``) or a vector it
-returned malformed will fail the same way a second time, and retrying it would
-spend the recall's deadline to arrive at the same answer.  ``timeout`` is
-deliberately excluded for the same reason: a call that used its whole budget
-has none left to use again.
-
-The retry is also refused unless a real share of the embedding budget survives,
-because a second attempt that cannot finish is worse than the first failure --
-it turns a degraded packet into a late one, and the deadline belongs to the
-caller.
-
-Not responsible for: retrying anything the worker does.  Paid consolidation
-calls already have their own durable, bounded recovery in
-``AUTO_RECOVERABLE_ERRORS``; this is only the read path's one free retry.
+Losing the query embedding costs the whole semantic channel for that recall
+(reported as ``vector_unavailable``, never silent).  Only connection failures
+are retried: a request the provider rejected fails the same way twice, and a
+``timeout`` has no budget left to spend.  The retry is refused unless a real
+share of the budget survives, because a second attempt that cannot finish
+turns a degraded packet into a late one.  Paid consolidation calls have their
+own durable recovery in ``AUTO_RECOVERABLE_ERRORS``; this is the read path's
+only retry.
 """
 from __future__ import annotations
 
