@@ -4,7 +4,7 @@ from dataclasses import replace
 import pytest
 
 from scope_recall.core.background_context import background_candidates, mark_background
-from scope_recall.core.recall_packet import RecallPacketCompiler
+from scope_recall.core.recall_packet import prioritize_current_claims, prioritize_resume_evidence
 from scope_recall.core.retrieval import CandidateRef, CollectionQuery, RetrievedObject, SearchContext
 from scope_recall.core.retrieval_storage import scope_digest
 from tests.contract.test_v11_claims import app, accept, capture, draft
@@ -86,8 +86,8 @@ def test_packet_prioritization_never_moves_background_ahead_of_query(app, kind):
                                          metadata=(("state", "active"),)))
     evidence = (CandidateRef("event", event.ref, 1, "lexical"), event)
     ambient = (CandidateRef(kind, background.ref, 1, "background"), background)
-    order = RecallPacketCompiler._prioritize_resume_evidence(search, [evidence, ambient])
-    order = RecallPacketCompiler._prioritize_current_claims(search, order)
+    order = prioritize_resume_evidence(search, [evidence, ambient])
+    order = prioritize_current_claims(search, order)
     assert order[0][0].ref == event.ref
 
 

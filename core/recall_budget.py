@@ -1,13 +1,24 @@
-"""One recall budget unit and size-aware admission policy.
+"""How a packet is measured: one canonical serialization and one budget unit.
 
-This is a tokenizer-independent estimate, not an exact model token count.
+The unit is a tokenizer-independent estimate, not an exact model token count.
 UTF-8 bytes remain a separate diagnostic; CJK characters must not cost three
 budget units merely because their encoding uses three bytes.
 """
 from __future__ import annotations
 
+import json
 import math
 import unicodedata
+
+
+def canonical_render_json(value: object) -> str:
+    """Serialize rendered recall data once, compactly and deterministically."""
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _cjk(code: int) -> bool:
+    return (0x2E80 <= code <= 0xA4CF or 0xAC00 <= code <= 0xD7AF
+            or 0xF900 <= code <= 0xFAFF or 0x20000 <= code <= 0x323AF)
 
 
 def estimate_tokens(text: str) -> int:
@@ -15,15 +26,9 @@ def estimate_tokens(text: str) -> int:
     quarters = 0
     for char in text:
         code = ord(char)
-        category = unicodedata.category(char)
         if code < 128 and (char.isalnum() or char.isspace()):
             quarters += 1
-        elif (0x2E80 <= code <= 0xA4CF or 0xAC00 <= code <= 0xD7AF
-              or 0xF900 <= code <= 0xFAFF or 0x20000 <= code <= 0x323AF):
-            quarters += 4
-        elif category[0] in {"L", "N", "M"}:
-            quarters += 4
-        elif category[0] in {"P", "Z"}:
+        elif _cjk(code) or unicodedata.category(char)[0] in "LNMPZ":
             quarters += 4
         else:
             quarters += 4 * len(char.encode("utf-8"))
@@ -45,12 +50,9 @@ def event_admission_order(ranked):
         # Size admission targets oversized raw sources. Re-sorting a run of
         # short statements by raw fusion score loses the ranker's semantic
         # tie-breaks (for example a decisive answer versus an assistant echo).
-        if all(estimate_tokens(pair[1].content) <= 256 for pair in run):
-            ordered.extend(run)
-            run.clear()
-            return
-        run.sort(key=lambda pair: max(pair[0].fusion_score, 1e-6) /
-                 math.sqrt(1 + estimate_tokens(pair[1].content) / 256), reverse=True)
+        if any(estimate_tokens(pair[1].content) > 256 for pair in run):
+            run.sort(key=lambda pair: max(pair[0].fusion_score, 1e-6) /
+                     math.sqrt(1 + estimate_tokens(pair[1].content) / 256), reverse=True)
         ordered.extend(run)
         run.clear()
 

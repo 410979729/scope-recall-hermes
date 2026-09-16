@@ -17,8 +17,11 @@ from scope_recall.core.recall_packet import (
     RecallPacketRenderer,
     canonical_render_json,
     compile_recall_packet,
+    packet_item,
+    prioritize_current_claims,
     render_recall_packet_context,
 )
+from scope_recall.core.resume_compaction import compact_episode_variants
 from scope_recall.core.retrieval import CandidateRef, RetrievedObject, RetrievalResult, SearchContext
 from scope_recall.core.retrieval_storage import RetrievalStorage
 from tests.contract.test_v11_claims import accept, capture, draft
@@ -556,7 +559,6 @@ def test_p09_exact_ref_keeps_explicit_event_ahead_of_related_active_claim(app):
 
 def test_p09_current_claim_priority_preserves_resume_and_non_event_barriers(app):
     core, ctx = app
-    compiler = RecallPacketCompiler(RetrievalStorage(clock=FixedClock()), clock=FixedClock())
     evidence_ref = "event-priority@1"
     event = RetrievedObject(
         "event-priority",
@@ -623,7 +625,7 @@ def test_p09_current_claim_priority_preserves_resume_and_non_event_barriers(app)
         deadline=200.0,
     )
     resume_order = [(episode_candidate, episode), (event_candidate, event), (claim_candidate, claim)]
-    assert compiler._prioritize_current_claims(resume_search, resume_order) == resume_order
+    assert prioritize_current_claims(resume_search, resume_order) == resume_order
 
     current_search = SearchContext.from_request(
         recall_request(query="H100", mode="auto", request_id="TEST-p09-artifact-order"),
@@ -632,7 +634,7 @@ def test_p09_current_claim_priority_preserves_resume_and_non_event_barriers(app)
         deadline=200.0,
     )
     barrier_order = [(event_candidate, event), (artifact_candidate, artifact), (claim_candidate, claim)]
-    assert compiler._prioritize_current_claims(current_search, barrier_order) == barrier_order
+    assert prioritize_current_claims(current_search, barrier_order) == barrier_order
 
 
 def test_p09_oversized_single_item_reports_expandable_gap_without_text(app):
@@ -1583,7 +1585,7 @@ def test_empty_episode_has_no_compact_object_variant():
         True,
         ("episode",),
     )
-    assert RecallPacketCompiler._compact_episode_variants(obj) == ()
+    assert compact_episode_variants(obj) == ()
 
 
 def test_supported_episode_compact_is_not_empty_object():
@@ -1600,7 +1602,7 @@ def test_supported_episode_compact_is_not_empty_object():
         True,
         ("episode",),
     )
-    variants = RecallPacketCompiler._compact_episode_variants(obj)
+    variants = [canonical_render_json(variant) for variant in compact_episode_variants(obj)]
     assert variants
     assert "{}" not in variants
     assert any("resume the delivery window" in item for item in variants)
@@ -1614,16 +1616,19 @@ def test_budget_density_keeps_773_byte_hit_over_3398_byte_repeat(app, budget, su
 
     core, ctx = app
 
+    def rendered_bytes(obj):
+        return len(canonical_render_json(packet_item(obj)).encode("utf-8"))
+
     def object_of_size(ref, size, phrase):
         obj = RetrievedObject(ref=ref, revision=1, kind="event", content="x",
                               origin="imported", temporal_status="current", applicability="trusted scope",
                               evidence_refs=(ref + "@1",), basis="observed", expandable=True, source_kinds=("event",))
-        remaining = size - RecallPacketCompiler._rendered_budget_bytes(obj) + 1
+        remaining = size - rendered_bytes(obj) + 1
         count = remaining // len(phrase.encode("utf-8"))
         content = phrase * count
         content += "x" * (remaining - len(content.encode("utf-8")))
         obj = replace(obj, content=content)
-        assert RecallPacketCompiler._rendered_budget_bytes(obj) == size
+        assert rendered_bytes(obj) == size
         return obj
 
     large = object_of_size("event-repeat-" + suffix, 3398, "预算重复导入事件。")

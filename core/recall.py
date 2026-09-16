@@ -1,63 +1,95 @@
 """The one production retrieval pipeline used by automatic and tool recall."""
 from __future__ import annotations
 
-from .recall_budget import estimate_tokens, event_admission_order
-
 from dataclasses import replace
 from itertools import islice
-import json
-import re
 import time
 import unicodedata
-from typing import NotRequired, Protocol, TypedDict, cast
+from typing import Protocol
 
 from ..contracts import ContractError
-from .events import lexical_terms
-from .recall_policy import RecallPolicy, hard_identifiers, identifiers_compatible, meaningful_query_terms, rrf_score
-from .retrieval import AUTOMATIC_PACKET_BUDGET_UNITS, CandidateRef, CollectionQuery, RetrievedObject, RetrievalResult, SearchContext, SearchLimits
-from .retrieval_storage import CollectionPage, RetrievalStorage
 from .background_context import background_candidates, current_task_candidate
 from .coverage import note_truncation
 from .duplicate_collapse import DistinctContent, note_duplicates
+from .events import lexical_terms
+from .recall_budget import estimate_tokens, event_admission_order
+from .recall_needs import CHOICE_MARKERS, directed_followup_query, evidence_roots, mentions, unmet_needs
+from .recall_policy import RecallPolicy, identifiers_compatible, meaningful_query_terms, rrf_score
+from .retrieval import (
+    CandidateRef,
+    CollectionQuery,
+    RetrievalResult,
+    RetrievedObject,
+    SearchContext,
+    SearchLimits,
+    effective_limits,
+    optional_json,
+)
+from .retrieval_storage import CollectionPage, RetrievalStorage
 from .vector_failure import vector_failure_label
-
-_CAUSAL_MARKERS = re.compile(r"因为|由于|原因是|because|reason is|due to", re.I)
-_REASON_PREDICATES = frozenset({"原因", "理由", "reason", "why", "rationale"})
-_COMPARE_MARKERS = ("比较", "对比", "差异", "哪个更", "compare", "versus", " vs ")
-_WHY_MARKERS = ("为什么", "为何", "原因", "why", "reason")
-_RESUME_MARKERS = ("继续", "接着", "恢复", "resume", "continue")
-_AMBIGUOUS_MARKERS = ("哪个", "哪一个", "which", "choose")
-
 
 #: Ceiling on the candidates hydrated after the deadline is already gone.
 #:
-#: An optional channel that overruns its allowance used to empty the packet.
-#: Measured: a vector port that respects its budget and then fails still
-#: returns six items, while one that overruns it by a single second returns
-#: *zero* -- the lexical, exact and recent candidates are all in hand, and the
-#: hydrate loop abandons every one of them because the clock is gone.
-#:
-#: The floor is the caller's own ``max_items`` rather than a fixed number,
-#: because the point is to deliver the packet that was asked for; hydrating
-#: three when the packet holds eight just moves the emptiness one stage later,
-#: where the byte budget discards two of the three.  This ceiling bounds what a
-#: large ``max_items`` can cost once the deadline is gone -- each one is a
-#: single bounded storage read, and the overrun is still reported, so nothing
-#: is hidden.
+#: An optional channel that overruns its allowance used to empty the packet:
+#: the lexical, exact and recent candidates were all in hand, and the hydrate
+#: loop abandoned every one of them because the clock was gone.  The floor is
+#: the caller's own ``max_items`` rather than a fixed number, because hydrating
+#: three when the packet holds eight just moves the emptiness one stage later.
+#: This ceiling bounds what a large ``max_items`` can cost once the deadline is
+#: gone -- each one is a single bounded storage read, and the overrun is still
+#: reported, so nothing is hidden.
 MINIMUM_HYDRATION_CAP = 16
-
-class ChannelBudget(TypedDict):
-    exact: int
-    lexical: int
-    recent: int
-    vector: int
-    total: int
-    reserve: NotRequired[dict[str, int]]
-    reserve_total: NotRequired[int]
+_CHANNELS = ("exact", "lexical", "recent", "vector")
+#: Vector admission reasons that are reported, and how; the rest are silent.
+_VECTOR_REJECTION_GAPS = {
+    "embedding_space_mismatch": "vector_old_or_mismatched_space",
+    "vector_threshold_unconfigured": "vector_threshold_unconfigured",
+}
+_VECTOR_SILENT_REJECTIONS = frozenset({"vector_below_threshold", "vector_id_missing", "vector_score_invalid"})
 
 
 class RetrievalClock(Protocol):
     def monotonic(self) -> float: ...
+
+
+class ChannelBudget:
+    """Candidate slots left per channel across follow-up rounds.
+
+    A round may not spend what later rounds need: ``hold`` reserves one slot
+    per remaining round in every channel so a directed follow-up always has
+    room, even after rejected-by-dedup work consumed the first round.
+    """
+
+    def __init__(self, limits: SearchLimits) -> None:
+        self.left = {"exact": limits.candidate_pool, "lexical": limits.candidate_pool,
+                     "recent": limits.recent_items, "vector": limits.vector_limit}
+        self.total = sum(self.left.values())
+        self.reserve = dict.fromkeys(_CHANNELS, 0)
+
+    def hold(self, future_rounds: int) -> None:
+        self.reserve = {channel: min(future_rounds, self.left[channel]) for channel in _CHANNELS}
+
+    def allowance(self, channel: str, limit: int) -> int:
+        free_total = self.total - sum(self.reserve.values())
+        return min(limit, max(0, self.left[channel] - self.reserve[channel]), max(0, free_total))
+
+    def spend(self, channel: str, count: int) -> None:
+        self.left[channel] -= count
+        self.total -= count
+
+
+def _empty_result(context: SearchContext, gap: str) -> RetrievalResult:
+    return RetrievalResult((), (), None, (gap,), "unknown", "unknown", 0, 0, request_id=context.request_id)
+
+
+def _statement_text(obj: RetrievedObject) -> str:
+    """What a claim asserts, for term matching; other kinds match on content."""
+    if obj.kind != "claim":
+        return obj.content
+    payload = optional_json(obj.content)
+    if not isinstance(payload, dict):
+        return obj.content
+    return " ".join(str(payload.get(key, "")) for key in ("subject", "predicate", "value_text", "conditions"))
 
 
 class RetrievalPipeline:
@@ -75,219 +107,15 @@ class RetrievalPipeline:
     def _remaining(self, context: SearchContext) -> float:
         return context.deadline - self.clock.monotonic()
 
-    @staticmethod
-    def _effective_limits(context: SearchContext) -> SearchLimits:
-        if context.mode != "auto":
-            return context.limits
-        return SearchLimits(
-            max_items=min(context.limits.max_items, 6),
-            budget_tokens=min(context.limits.budget_tokens, AUTOMATIC_PACKET_BUDGET_UNITS),
-            candidate_pool=context.limits.candidate_pool,
-            recent_items=context.limits.recent_items,
-            relation_hops=context.limits.relation_hops,
-            relation_objects=context.limits.relation_objects,
-            vector_limit=context.limits.vector_limit,
-            followups=context.limits.followups,
-        )
-
-    @staticmethod
-    def _estimate_tokens(text: str) -> int:
-        return estimate_tokens(text)
-
-    @staticmethod
-    def _evidence_roots(item: object) -> frozenset[str]:
-        roots: set[str] = set()
-        if getattr(item, "kind", "") == "event":
-            roots.add(str(getattr(item, "ref", "")))
-        for ref in getattr(item, "evidence_refs", ()) or ():
-            if type(ref) is str and "@" in ref:
-                roots.add(ref.split("@", 1)[0])
-        return frozenset(roots)
-
-    @staticmethod
-    def _comparison_targets(query: str) -> frozenset[str]:
-        return hard_identifiers(query)
-
-    @classmethod
-    def _comparison_sides(cls, query: str, items: tuple[object, ...]) -> dict[str, frozenset[str]]:
-        targets = cls._comparison_targets(query)
-        sides: dict[str, frozenset[str]] = {}
-        for target in sorted(targets):
-            roots: set[str] = set()
-            for item in items:
-                if target in hard_identifiers(getattr(item, "content", "")):
-                    roots.update(cls._evidence_roots(item))
-            if roots:
-                sides[target] = frozenset(roots)
-        return sides
-
-    @staticmethod
-    def _primary_root(roots: frozenset[str]) -> str:
-        return min(roots) if roots else ""
-
-    @classmethod
-    def _comparison_unmet(cls, query: str, items: tuple[object, ...]) -> bool:
-        text = query.casefold()
-        if not any(marker in text for marker in _COMPARE_MARKERS):
-            return False
-        targets = cls._comparison_targets(query)
-        if len(targets) < 2:
-            return True
-        sides = cls._comparison_sides(query, items)
-        if len(sides) < 2:
-            return True
-        # One source can explicitly cover both named objects.  Requiring two
-        # independent roots would incorrectly turn a direct shared statement
-        # into a missing-side result.
-        if any(targets <= hard_identifiers(getattr(item, "content", "")) for item in items):
-            return False
-        primary_roots = tuple(cls._primary_root(roots) for roots in sides.values() if roots)
-        return len(set(primary_roots)) < 2
-
-    @staticmethod
-    def _reason_window_supported(content: str, targets: frozenset[str], marker: re.Match[str]) -> bool:
-        """Accept a causal phrase only when it names the requested target."""
-
-        # Use the complete sentence/clause so a long qualifier cannot be
-        # clipped, while a semicolon-separated reason for another object does
-        # not become evidence for this target.
-        separators = re.compile(r"[。！？!?;；\n]")
-        prior = [match.end() for match in separators.finditer(content, 0, marker.start())]
-        following = separators.search(content, marker.end())
-        start = prior[-1] if prior else 0
-        end = following.start() if following else len(content)
-        window = content[start:end]
-        if re.search(r"未知|不明|不清楚|未(?:知|记录|说明)|没有证据|无证据|不能确定|无法确定|no evidence|unknown|unclear", window, re.I):
-            return False
-        if not targets:
-            return True
-        return bool(targets.intersection(hard_identifiers(window)))
-
-    @classmethod
-    def _why_unmet(cls, query: str, items: tuple[object, ...]) -> bool:
-        text = query.casefold()
-        if not any(marker in text for marker in _WHY_MARKERS):
-            return False
-        topic_terms = set(meaningful_query_terms(query))
-        targets = hard_identifiers(query)
-        if not topic_terms:
-            return True
-        for item in items:
-            content = getattr(item, "content", "")
-            if not topic_terms.intersection(lexical_terms(content)):
-                continue
-            payload = None
-            for key, value in getattr(item, "metadata", ()):
-                if key == "payload_json" and type(value) is str:
-                    try:
-                        payload = json.loads(value)
-                    except (TypeError, ValueError, json.JSONDecodeError):
-                        payload = None
-            if isinstance(payload, dict) and str(payload.get("predicate", "")).casefold() in {p.casefold() for p in _REASON_PREDICATES}:
-                if not re.search(r"未知|不明|不清楚|未(?:知|记录|说明)|没有证据|无证据|不能确定|无法确定|no evidence|unknown|unclear", content, re.I):
-                    return False
-            for causal in _CAUSAL_MARKERS.finditer(content):
-                if cls._reason_window_supported(content, targets, causal):
-                    return False
-            for key, value in getattr(item, "metadata", ()):
-                if key == "basis" and value in {"direct_report", "observed"}:
-                    if any(cls._reason_window_supported(content, targets, causal) for causal in _CAUSAL_MARKERS.finditer(content)):
-                        return False
-        return True
-
-    @classmethod
-    def _resume_unmet(cls, items: tuple[object, ...]) -> bool:
-        episodes = [item for item in items if getattr(item, "kind", "") == "episode"]
-        if not episodes:
-            return True
-        for item in episodes:
-            gaps_meta = {key: value for key, value in getattr(item, "metadata", ())}
-            if "gaps" in gaps_meta:
-                try:
-                    gaps = json.loads(gaps_meta["gaps"])
-                except (TypeError, ValueError, json.JSONDecodeError):
-                    gaps = ()
-                if any(gap in gaps for gap in ("resume_requires_rebuild", "source_version_changed", "environment_needs_revalidation")):
-                    continue
-            try:
-                resume = json.loads(getattr(item, "content", ""))
-            except (TypeError, ValueError, json.JSONDecodeError):
-                continue
-            if type(resume) is not dict:
-                continue
-            goal = resume.get("goal")
-            if type(goal) is not dict or not goal.get("text") or not goal.get("evidence_refs"):
-                continue
-            verified = resume.get("verified_progress") or ()
-            open_items = resume.get("open_items") or ()
-            has_verified = any(
-                isinstance(entry, dict) and entry.get("text") and entry.get("evidence_refs")
-                for entry in verified
-            )
-            has_open_item = any(
-                isinstance(entry, dict) and entry.get("text") and entry.get("evidence_refs")
-                for entry in open_items
-            )
-            next_step = resume.get("next_step")
-            basis = str(resume.get("next_step_basis") or "").casefold()
-            has_grounded_next_step = bool(next_step and basis in {"user_requested", "tool_observation", "observed", "direct_report", "evidence"})
-            if has_verified or has_open_item or has_grounded_next_step:
-                return False
-        return True
-
-    @classmethod
-    def _unmet_needs(cls, query: str, items: tuple[object, ...]) -> tuple[str, ...]:
-        """Describe bounded evidence slots that P09 cannot fill by searching."""
-        text = query.casefold()
-        needs: list[str] = []
-        if any(marker in text for marker in _COMPARE_MARKERS) and cls._comparison_unmet(query, items):
-            needs.append("comparison_second_side")
-        if any(marker in text for marker in _WHY_MARKERS) and cls._why_unmet(query, items):
-            needs.append("reason_evidence")
-        if any(marker in text for marker in _RESUME_MARKERS) and cls._resume_unmet(items):
-            needs.append("resume_state")
-        return tuple(needs)
-
-    @classmethod
-    def _directed_followup_query(cls, context: SearchContext, unmet_needs: tuple[str, ...], items: tuple[object, ...]) -> str | None:
-        if not unmet_needs or context.limits.followups <= 0:
-            return None
-        need = unmet_needs[0]
-        if need == "comparison_second_side":
-            targets = cls._comparison_targets(context.query)
-            if len(targets) < 2:
-                return None
-            sides = cls._comparison_sides(context.query, items)
-            missing = [target for target in sorted(targets) if target not in sides]
-            if len(missing) == 1:
-                return missing[0]
-            if len(missing) >= 2:
-                return None
-            if len(sides) >= 2 and len({cls._primary_root(roots) for roots in sides.values() if roots}) < 2:
-                return None
-            return None
-        if need == "reason_evidence":
-            terms = meaningful_query_terms(context.query)
-            if not terms:
-                return None
-            return f"{' '.join(terms[:3])} 原因"
-        if need == "resume_state":
-            # One directed pass only, within the original shared budgets.
-            terms = tuple(term for term in meaningful_query_terms(context.query)
-                          if term.casefold() not in _RESUME_MARKERS)
-            return f"{' '.join(terms[:3])} 未完成任务 下一步".strip()
-        return None
+    # -- candidate channels ---------------------------------------------------
 
     def _vector_candidates(self, context: SearchContext, gaps: list[str], *, budget: ChannelBudget | None = None) -> tuple[CandidateRef, ...]:
         if self.vector_port is None or context.limits.vector_limit == 0:
             gaps.append("vector_unavailable")
             return ()
-        request_limit = context.limits.vector_limit
-        if budget is not None:
-            reserve = budget.get("reserve", {}).get("vector", 0)
-            request_limit = min(request_limit, max(0, budget["vector"] - reserve), max(0, budget["total"] - budget.get("reserve_total", 0)))
-            if request_limit <= 0:
-                return ()
+        limit = context.limits.vector_limit if budget is None else budget.allowance("vector", context.limits.vector_limit)
+        if limit <= 0:
+            return ()
         remaining = self._remaining(context)
         if remaining <= 0:
             gaps.append("deadline_exceeded_vector")
@@ -295,65 +123,93 @@ class RetrievalPipeline:
         # Keep part of the caller's deadline for SQLite hydration and the
         # packet's final authority checks if the optional vector call times out.
         vector_context = replace(context, deadline=context.deadline - remaining * 0.25)
-        remaining *= 0.75
         try:
-            raw = tuple(islice(iter(self.vector_port.search(vector_context, limit=request_limit, remaining_seconds=remaining) or ()), request_limit))
-            if budget is not None:
-                budget["vector"] -= len(raw)
-                budget["total"] -= len(raw)
+            raw = tuple(islice(iter(self.vector_port.search(vector_context, limit=limit, remaining_seconds=remaining * 0.75) or ()), limit))
         except Exception as exc:
+            # The class alone does not say what went wrong; see core/vector_failure.py.
             gaps.append("vector_unavailable")
-            # The class alone does not say what went wrong, and for the native
-            # Lance helper it is not even close: that path raises more than
-            # twenty distinct RuntimeErrors and every one of them reached the
-            # operator as the single word "RuntimeError". See
-            # core/vector_failure.py for what that cost on a live instance.
             gaps.append(f"vector_error:{vector_failure_label(exc)}")
             return ()
-        result = []
-        for rank, item in enumerate(tuple(raw or ()), 1):
-            if isinstance(item, CandidateRef):
-                candidate = item if item.rank == rank else replace(item, rank=rank)
-            else:
-                try:
-                    candidate = CandidateRef(
-                        "event" if not hasattr(item, "kind") else item.kind,
-                        item.ref,
-                        item.revision,
-                        "vector",
-                        rank=rank,
-                        vector_score=getattr(item, "vector_score", getattr(item, "score", None)),
-                        vector_id=getattr(item, "vector_id", None),
-                        embedding_space=getattr(item, "embedding_space", None),
-                    )
-                except (AttributeError, ContractError):
-                    gaps.append("vector_candidate_invalid")
-                    continue
-            admitted, reason = self.policy.vector_admission(candidate)
-            if admitted:
-                result.append(candidate)
-            elif reason == "embedding_space_mismatch":
-                gaps.append("vector_old_or_mismatched_space")
-            elif reason == "vector_threshold_unconfigured":
-                gaps.append("vector_threshold_unconfigured")
-            elif reason in {"vector_below_threshold", "vector_id_missing", "vector_score_invalid"}:
+        if budget is not None:
+            budget.spend("vector", len(raw))
+        admitted = []
+        for rank, candidate in enumerate(raw, 1):
+            if candidate.rank != rank:
+                candidate = replace(candidate, rank=rank)
+            accepted, reason = self.policy.vector_admission(candidate)
+            if accepted:
+                admitted.append(candidate)
                 continue
-            else:
-                gaps.append(f"vector_rejected:{reason}")
-        return tuple(result)
+            gap = _VECTOR_REJECTION_GAPS.get(reason)
+            if gap is None and reason not in _VECTOR_SILENT_REJECTIONS:
+                gap = f"vector_rejected:{reason}"
+            if gap is not None:
+                gaps.append(gap)
+        return tuple(admitted)
 
-    def _admit(self, candidate: CandidateRef, context: SearchContext, gaps: list[str]) -> bool:
+    def _admit(self, candidate: CandidateRef, context: SearchContext) -> bool:
         if candidate.kind == "event" and f"{candidate.ref}@{candidate.revision}" in context.current_source_refs:
             return False
         if candidate.source == "vector":
             return self.policy.vector_admission(candidate)[0]
-        if candidate.source == "exact_ref":
-            return True
-        if candidate.source == "relation":
+        if candidate.source in {"exact_ref", "relation"}:
             return True
         return self.policy.lexical_admission(candidate, context.query, exact=False)[0]
 
-    def _hydrate_admit(self, tx, candidate: CandidateRef, context: SearchContext, gaps: list[str], *, original_query: str | None = None) -> RetrievedObject | None:
+    def _fuse_candidates(self, admitted: list[CandidateRef], seen: set[tuple[str, str, int]] | None) -> tuple[CandidateRef, ...]:
+        by_key: dict[tuple[str, str, int], list[CandidateRef]] = {}
+        for candidate in admitted:
+            if seen is not None and candidate.key in seen:
+                continue
+            by_key.setdefault(candidate.key, []).append(candidate)
+        seeds: list[CandidateRef] = []
+        for _key, signals in sorted(by_key.items()):
+            representative = min(signals, key=lambda item: (item.rank, item.source))
+            fusion = rrf_score((item.rank for item in signals), k=self.policy.rrf_k)
+            seeds.append(replace(representative, fusion_score=fusion))
+        return tuple(seeds)
+
+    def _collect(self, tx, context: SearchContext, gaps: list[str], *, seen: set[tuple[str, str, int]], budget: ChannelBudget) -> tuple[CandidateRef, ...]:
+        """One round of exact, lexical, recent and vector candidates, fused by identity."""
+        if self._remaining(context) <= 0:
+            gaps.append("deadline_exceeded_collect")
+            return ()
+        raw: list[CandidateRef] = []
+
+        def admitted() -> tuple[CandidateRef, ...]:
+            # Deadline exits still pass every collected candidate through the
+            # same current-source and channel qualification gate.
+            return self._fuse_candidates([candidate for candidate in raw if self._admit(candidate, context)], seen)
+
+        channels = (
+            ("exact", self.storage_reader.exact, context.limits.candidate_pool),
+            ("lexical", self.storage_reader.lexical, context.limits.candidate_pool),
+            ("recent", self.storage_reader.recent, context.limits.recent_items),
+        )
+        try:
+            for channel, loader, limit in channels:
+                if self._remaining(context) <= 0:
+                    gaps.append("deadline_exceeded_collect")
+                    return admitted()
+                allowance = budget.allowance(channel, limit)
+                if allowance <= 0:
+                    continue
+                values = tuple(loader(tx, context, limit=allowance))
+                budget.spend(channel, len(values))
+                raw.extend(values)
+        except ContractError:
+            raise
+        except Exception as exc:
+            gaps.append(f"sqlite_candidate_error:{type(exc).__name__}")
+        if self._remaining(context) <= 0:
+            gaps.append("deadline_exceeded_collect")
+            return admitted()
+        raw.extend(self._vector_candidates(context, gaps, budget=budget))
+        return admitted()
+
+    # -- hydration and admission ----------------------------------------------
+
+    def _hydrate_admit(self, tx, candidate: CandidateRef, context: SearchContext, *, original_query: str | None = None) -> RetrievedObject | None:
         obj = self.storage_reader.hydrate(tx, candidate, context)
         if obj is None:
             return None
@@ -367,116 +223,69 @@ class RetrievalPipeline:
             return None
         return obj
 
-    def _collect(self, tx, context: SearchContext, gaps: list[str], *, seen: set[tuple[str, str, int]] | None = None, budget: ChannelBudget | None = None) -> tuple[CandidateRef, ...]:
-        if self._remaining(context) <= 0:
-            gaps.append("deadline_exceeded_collect")
-            return ()
-        raw: list[CandidateRef] = []
-
-        def admitted_fused() -> tuple[CandidateRef, ...]:
-            # Deadline exits still pass every collected candidate through the
-            # same current-source and channel qualification gate.
-            admitted = [candidate for candidate in raw if self._admit(candidate, context, gaps)]
-            return self._fuse_candidates(admitted, seen)
-
-        def fetch(channel: str, loader, limit: int) -> tuple[CandidateRef, ...]:
-            request_limit = limit
-            if budget is not None:
-                reserve = budget.get("reserve", {}).get(channel, 0)
-                channel_budget_value = budget.get(channel, 0)
-                if not isinstance(channel_budget_value, int):
-                    return ()
-                request_limit = min(request_limit, max(0, channel_budget_value - reserve), max(0, budget.get("total", 0) - budget.get("reserve_total", 0)))
-                if request_limit <= 0:
-                    return ()
-            values = tuple(loader(request_limit))
-            if budget is not None:
-                budget[channel] -= len(values)
-                budget["total"] -= len(values)
-            return values
-
-        try:
-            if self._remaining(context) <= 0:
-                gaps.append("deadline_exceeded_collect")
-                return ()
-            raw.extend(fetch("exact", lambda limit: self.storage_reader.exact(tx, context, limit=limit), context.limits.candidate_pool))
-            if self._remaining(context) <= 0:
-                gaps.append("deadline_exceeded_collect")
-                return admitted_fused()
-            raw.extend(fetch("lexical", lambda limit: self.storage_reader.lexical(tx, context, limit=limit), context.limits.candidate_pool))
-            if self._remaining(context) <= 0:
-                gaps.append("deadline_exceeded_collect")
-                return admitted_fused()
-            raw.extend(fetch("recent", lambda limit: self.storage_reader.recent(tx, context, limit=limit), context.limits.recent_items))
-        except ContractError:
-            raise
-        except Exception as exc:
-            gaps.append(f"sqlite_candidate_error:{type(exc).__name__}")
-        if self._remaining(context) <= 0:
-            gaps.append("deadline_exceeded_collect")
-            return admitted_fused()
-        raw.extend(self._vector_candidates(context, gaps, budget=budget))
-        return admitted_fused()
-
-    def _fuse_candidates(self, admitted: list[CandidateRef], seen: set[tuple[str, str, int]] | None) -> tuple[CandidateRef, ...]:
-        by_key: dict[tuple[str, str, int], list[CandidateRef]] = {}
-        for candidate in admitted:
-            if seen is not None and candidate.key in seen:
+    def _hydrate_all(self, tx, hydrated: list[tuple[CandidateRef, RetrievedObject]], candidates, context: SearchContext,
+                     gaps: list[str], *, floor: int, original_query: str | None = None) -> None:
+        """Hydrate in rank order; once the deadline is gone, only up to ``floor`` items."""
+        known = {candidate.key for candidate, _obj in hydrated}
+        for candidate in candidates:
+            if self._remaining(context) <= 0 and len(hydrated) >= floor:
+                gaps.append("deadline_exceeded_hydrate")
+                break
+            if candidate.key in known:
                 continue
-            by_key.setdefault(candidate.key, []).append(candidate)
-        seeds: list[CandidateRef] = []
-        for key, signals in sorted(by_key.items()):
-            representative = min(signals, key=lambda item: (item.rank, item.source))
-            fusion = rrf_score((item.rank for item in signals), k=self.policy.rrf_k)
-            seeds.append(replace(representative, fusion_score=fusion))
-        return tuple(seeds)
+            obj = self._hydrate_admit(tx, candidate, context, original_query=original_query)
+            if obj is not None:
+                hydrated.append((candidate, obj))
+                known.add(candidate.key)
 
     def _expand(self, tx, context: SearchContext, seeds: tuple[CandidateRef, ...], gaps: list[str]) -> tuple[CandidateRef, ...]:
-        if context.limits.relation_hops == 0 or context.limits.relation_objects == 0:
+        """Bounded relation hops out of the seeds; every inspected object counts."""
+        limits = context.limits
+        if limits.relation_hops == 0 or limits.relation_objects == 0:
             return seeds
         all_candidates = list(seeds)
         seen = {candidate.key for candidate in seeds}
         frontier = list(seeds)
         inspected = 0
-        for _hop in range(context.limits.relation_hops):
+
+        def stopped(gap: str) -> tuple[CandidateRef, ...]:
+            gaps.append(gap)
+            return tuple(all_candidates)
+
+        for _hop in range(limits.relation_hops):
             next_frontier: list[CandidateRef] = []
             for seed in sorted(frontier, key=lambda item: item.key):
-                if inspected >= context.limits.relation_objects:
-                    gaps.append("relation_bound_reached")
-                    return tuple(all_candidates)
+                if inspected >= limits.relation_objects:
+                    return stopped("relation_bound_reached")
                 if self._remaining(context) <= 0:
-                    gaps.append("deadline_exceeded_relation")
-                    return tuple(all_candidates)
-                for candidate in self.storage_reader.related(tx, seed, limit=context.limits.relation_objects - inspected):
+                    return stopped("deadline_exceeded_relation")
+                for candidate in self.storage_reader.related(tx, seed, limit=limits.relation_objects - inspected):
                     inspected += 1
-                    bound_reached = inspected >= context.limits.relation_objects
+                    bound_reached = inspected >= limits.relation_objects
                     if self._remaining(context) <= 0:
-                        gaps.append("deadline_exceeded_relation")
-                        return tuple(all_candidates)
+                        return stopped("deadline_exceeded_relation")
                     if candidate.key in seen:
                         if bound_reached:
-                            gaps.append("relation_bound_reached")
-                            return tuple(all_candidates)
+                            return stopped("relation_bound_reached")
                         continue
                     seen.add(candidate.key)
                     if candidate.kind == "event" and f"{candidate.ref}@{candidate.revision}" in context.current_source_refs:
                         continue
-                    obj = self._hydrate_admit(tx, candidate, context, gaps)
-                    if obj is None:
+                    if self._hydrate_admit(tx, candidate, context) is None:
                         if bound_reached:
-                            gaps.append("relation_bound_reached")
-                            return tuple(all_candidates)
+                            return stopped("relation_bound_reached")
                         continue
                     candidate = replace(candidate, fusion_score=rrf_score((candidate.rank + 1,), k=self.policy.rrf_k))
                     all_candidates.append(candidate)
                     next_frontier.append(candidate)
                     if bound_reached:
-                        gaps.append("relation_bound_reached")
-                        return tuple(all_candidates)
+                        return stopped("relation_bound_reached")
             frontier = next_frontier
             if not frontier:
                 break
         return tuple(all_candidates)
+
+    # -- ranking and budget ---------------------------------------------------
 
     def _rank_hydrated(self, hydrated: list[tuple[CandidateRef, RetrievedObject]], context: SearchContext | None = None) -> list[tuple[CandidateRef, RetrievedObject]]:
         ranked = sorted(
@@ -489,48 +298,39 @@ class RetrievalPipeline:
                 pair[0].revision,
             ),
         )
-        # Work only on candidates that have already passed hydration, scope,
-        # time and source admission. Scores never create permission or facts.
+        # Only candidates that already passed hydration, scope, time and source
+        # admission reach this point; scores never create permission or facts.
         # Explicit historical lookups keep their original ordering.
         if context is None or context.mode in {"history", "as_of"}:
             return ranked
         query_terms = set(meaningful_query_terms(context.query))
         if not query_terms:
             return ranked
-        matched = {}
-        for candidate, obj in ranked:
-            content = obj.content
-            if obj.kind == "claim":
-                try:
-                    payload = json.loads(content)
-                    content = " ".join(str(payload.get(key, "")) for key in
-                                       ("subject", "predicate", "value_text", "conditions"))
-                except (ValueError, AttributeError):
-                    pass
-            matched[candidate.key] = query_terms.intersection(lexical_terms(content))
+        matched = {candidate.key: query_terms.intersection(lexical_terms(_statement_text(obj))) for candidate, obj in ranked}
         selected: list[tuple[CandidateRef, RetrievedObject]] = []
         covered: set[str] = set()
         selected_roots: set[str] = set()
+
+        def score(pair):
+            candidate, obj = pair
+            hits = matched[candidate.key]
+            roots = evidence_roots(obj)
+            # A small, bounded diversity bonus favours another part of the
+            # question over repeats from one source. RRF remains the base.
+            relevance = len(hits) / len(query_terms)
+            additional = len(hits - covered) / len(query_terms)
+            repeated = bool(roots and roots <= selected_roots and not (hits - covered))
+            return (candidate.source == "exact_ref",
+                    candidate.fusion_score + .008 * relevance + .008 * additional - .006 * repeated)
+
         while ranked:
             if self._remaining(context) <= 0:
                 selected.extend(ranked)
                 break
-            def score(pair):
-                candidate, obj = pair
-                hits = matched[candidate.key]
-                roots = self._evidence_roots(obj)
-                # A small, bounded diversity bonus favours another part of the
-                # question over repeats from one source. RRF remains the base.
-                relevance = len(hits) / len(query_terms)
-                additional = len(hits - covered) / len(query_terms)
-                repeated = bool(roots and roots <= selected_roots and not (hits - covered))
-                return (candidate.source == "exact_ref",
-                        candidate.fusion_score + .008 * relevance + .008 * additional - .006 * repeated)
-            best = max(range(len(ranked)), key=lambda index: score(ranked[index]))
-            pair = ranked.pop(best)
+            pair = ranked.pop(max(range(len(ranked)), key=lambda index: score(ranked[index])))
             selected.append(pair)
             covered.update(matched[pair[0].key])
-            selected_roots.update(self._evidence_roots(pair[1]))
+            selected_roots.update(evidence_roots(pair[1]))
         return selected
 
     def _apply_budget(self, ranked: list[tuple[CandidateRef, RetrievedObject]], limits: SearchLimits) -> list[tuple[CandidateRef, RetrievedObject]]:
@@ -540,10 +340,9 @@ class RetrievalPipeline:
         for candidate, item in event_admission_order(ranked):
             if len(kept) >= limits.max_items:
                 break
-            tokens = self._estimate_tokens(getattr(item, "content", ""))
+            tokens = estimate_tokens(getattr(item, "content", ""))
             if tokens > limits.budget_tokens:
-                # Preserve an expandable hint if space remains, but never
-                # charge an undeliverable first item against all later hits.
+                # Never charge an undeliverable item against all later hits.
                 oversized.append((candidate, item))
                 continue
             if kept and total_tokens + tokens > limits.budget_tokens:
@@ -552,154 +351,129 @@ class RetrievalPipeline:
                 continue
             total_tokens += tokens
             kept.append((candidate, item))
-        # The hint is a fallback, not a suffix. "if space remains" above was
-        # never actually checked, so a candidate too large to deliver got
-        # appended even when smaller deliverable evidence had already been kept,
-        # displacing a real answer with a stub and reordering the ranking. An
-        # item that alone exceeds the whole budget cannot fit in what is left of
-        # it, so it is worth returning only when there is nothing else to show.
+        # An item that alone exceeds the whole budget cannot fit in what is
+        # left of it, so it is worth returning only when there is nothing else
+        # to show: the expandable hint is a fallback, not a suffix.
         return (kept or oversized)[:limits.max_items]
+
+    # -- the search itself ----------------------------------------------------
 
     def search(self, context: SearchContext) -> RetrievalResult:
         if not isinstance(context, SearchContext):
             raise ContractError("INPUT_INVALID", "search_context")
-        limits = self._effective_limits(context)
+        limits = effective_limits(context)
         working = replace(context, limits=limits) if limits != context.limits else context
-        gaps: list[str] = []
-        # Enough to fill the packet the caller asked for, and no more.
-        hydration_floor = min(max(int(limits.max_items), 0), MINIMUM_HYDRATION_CAP)
         if self._remaining(working) <= 0:
-            return RetrievalResult((), (), None, ("deadline_exceeded",), "unknown", "unknown", 0, 0, request_id=working.request_id)
+            return _empty_result(working, "deadline_exceeded")
+        gaps: list[str] = []
         try:
             with self.storage.read(working.trusted_context, remaining_seconds=max(self._remaining(working), 0.001)) as tx:
                 epoch = self.storage_reader.epoch(tx)
-                hydrated: list[tuple[CandidateRef, RetrievedObject]] = []
-                seen_keys: set[tuple[str, str, int]] = set()
-                seed_count = 0
-                rounds = 0
-                max_rounds = min(2, 1 + working.limits.followups)
-                channel_budget: ChannelBudget = {
-                    "exact": working.limits.candidate_pool,
-                    "lexical": working.limits.candidate_pool,
-                    "recent": working.limits.recent_items,
-                    "vector": working.limits.vector_limit,
-                    "total": 0,
-                }
-                channel_budget["total"] = sum(channel_budget[key] for key in ("exact", "lexical", "recent", "vector"))
-                follow_query: str | None = None
-
-                while rounds < max_rounds:
-                    if self._remaining(working) <= 0:
-                        gaps.append("deadline_exceeded_followup" if rounds else "deadline_exceeded")
-                        break
-                    round_context = replace(working, query=follow_query) if follow_query else working
-                    future_rounds = max(0, max_rounds - rounds - 1)
-                    round_budget: ChannelBudget = cast(ChannelBudget, dict(channel_budget))
-                    round_budget["reserve"] = {
-                        key: min(future_rounds, channel_budget[key])
-                        for key in ("exact", "lexical", "recent", "vector")
-                    }
-                    round_budget["reserve_total"] = sum(round_budget["reserve"].values())
-                    seeds = self._collect(tx, round_context, gaps, seen=seen_keys, budget=round_budget)
-                    for key in ("exact", "lexical", "recent", "vector", "total"):
-                        channel_budget[key] = round_budget[key]
-                    seed_count += len(seeds)
-                    for candidate in seeds:
-                        seen_keys.add(candidate.key)
-                    for candidate in seeds:
-                        if self._remaining(working) <= 0 and len(hydrated) >= hydration_floor:
-                            gaps.append("deadline_exceeded_hydrate")
-                            break
-                        if candidate.key in {pair[0].key for pair in hydrated}:
-                            continue
-                        obj = self._hydrate_admit(tx, candidate, round_context, gaps, original_query=working.query)
-                        if obj is not None:
-                            hydrated.append((candidate, obj))
-                    rounds += 1
-                    if rounds >= max_rounds:
-                        break
-                    provisional_items = tuple(pair[1] for pair in hydrated)
-                    unmet = self._unmet_needs(working.query, provisional_items)
-                    if not unmet:
-                        break
-                    if self._remaining(working) <= 0:
-                        gaps.append("deadline_exceeded_followup")
-                        break
-                    follow_query = self._directed_followup_query(working, unmet, provisional_items)
-                    if follow_query is None:
-                        break
-                    if "resume_state" in unmet:
-                        task = current_task_candidate(tx, working, self.storage_reader, self.clock)
-                        if task is not None and task[0].key not in {pair[0].key for pair in hydrated}:
-                            # This task answers an explicit resume request.
-                            hydrated.append((replace(task[0], source="relation", lexical_score=1.0), task[1]))
-
-                valid_seeds = tuple(candidate for candidate, _obj in hydrated)
-                expanded = self._expand(tx, working, valid_seeds, gaps)
-                already = {candidate.key for candidate, _obj in hydrated}
-                for candidate in expanded:
-                    if candidate.key in already:
-                        continue
-                    if self._remaining(working) <= 0 and len(hydrated) >= hydration_floor:
-                        gaps.append("deadline_exceeded_hydrate")
-                        break
-                    obj = self._hydrate_admit(tx, candidate, working, gaps)
-                    if obj is not None:
-                        hydrated.append((candidate, obj))
-                        already.add(candidate.key)
-
-                # Distinct *content*, not distinct rows. Candidates are already
-                # unique by (kind, ref, revision); on a corpus where a legacy
-                # import re-delivered the same bodies under fresh identities,
-                # that let one document hold four of six slots and pushed the
-                # answer out of the packet entirely. One filter spans both
-                # passes so background cannot repeat the evidence either.
-                distinct = DistinctContent()
-                ranked = self._apply_budget(distinct.filtered(self._rank_hydrated(hydrated, working)), limits)
-                query_items = tuple(pair[1] for pair in ranked)
-                if working.mode == "auto" and self._remaining(working) > 0:
-                    background = background_candidates(tx, working, self.storage_reader, self.clock, gaps)
-                    present = {candidate.key for candidate, _obj in ranked}
-                    # Query evidence comes first; background shares the final
-                    # byte budget and can only consume remaining packet slots.
-                    ranked.extend(pair for pair in background
-                                  if pair[0].key not in present and distinct.admits(pair[1]))
-                    note_truncation(gaps, "packet_slots", considered=limits.max_items, available=len(ranked))
-                    ranked = ranked[:limits.max_items]
-                note_duplicates(gaps, distinct.collapsed)
-                candidates = tuple(pair[0] for pair in ranked)
-                items = tuple(pair[1] for pair in ranked)
-                unmet_needs = self._unmet_needs(working.query, query_items)
-                if items and not query_items:
-                    unmet_needs = (*unmet_needs, "query_evidence_missing")
-                ambiguous = len(query_items) > 1 and any(marker in working.query.casefold() for marker in _AMBIGUOUS_MARKERS)
-                if not query_items:
-                    answerability = "unknown"
-                elif unmet_needs:
-                    answerability = "partial"
-                elif ambiguous:
-                    answerability = "ambiguous"
-                else:
-                    answerability = "supported"
-                coverage = "partial" if gaps else "unknown"
-                return RetrievalResult(
-                    candidates,
-                    items,
-                    epoch,
-                    tuple(dict.fromkeys(gaps)),
-                    coverage,
-                    answerability,
-                    seed_count,
-                    len(hydrated),
-                    request_id=working.request_id,
-                    unmet_needs=unmet_needs,
-                )
+                hydrated, seed_count = self._collect_rounds(tx, working, gaps)
+                self._hydrate_related(tx, working, hydrated, gaps)
+                ranked, query_items = self._select(tx, working, hydrated, gaps)
+                return self._result(working, epoch, ranked, query_items, gaps, seed_count, len(hydrated))
         except ContractError as exc:
             if exc.code == "DEADLINE_EXCEEDED":
-                return RetrievalResult((), (), None, ("deadline_exceeded",), "unknown", "unknown", 0, 0, request_id=working.request_id)
-            return RetrievalResult((), (), None, (f"sqlite_unavailable:{exc.code}",), "unknown", "unknown", 0, 0, request_id=working.request_id)
+                return _empty_result(working, "deadline_exceeded")
+            return _empty_result(working, f"sqlite_unavailable:{exc.code}")
         except Exception as exc:
-            return RetrievalResult((), (), None, (f"sqlite_unavailable:{type(exc).__name__}",), "unknown", "unknown", 0, 0, request_id=working.request_id)
+            return _empty_result(working, f"sqlite_unavailable:{type(exc).__name__}")
+
+    def _collect_rounds(self, tx, working: SearchContext, gaps: list[str]) -> tuple[list[tuple[CandidateRef, RetrievedObject]], int]:
+        """The first round plus at most one directed follow-up for an open need."""
+        hydrated: list[tuple[CandidateRef, RetrievedObject]] = []
+        seen: set[tuple[str, str, int]] = set()
+        seed_count = 0
+        # Enough to fill the packet the caller asked for, and no more.
+        floor = min(working.limits.max_items, MINIMUM_HYDRATION_CAP)
+        max_rounds = min(2, 1 + working.limits.followups)
+        budget = ChannelBudget(working.limits)
+        follow_query: str | None = None
+        for round_index in range(max_rounds):
+            if self._remaining(working) <= 0:
+                gaps.append("deadline_exceeded_followup" if round_index else "deadline_exceeded")
+                break
+            round_context = replace(working, query=follow_query) if follow_query else working
+            budget.hold(max_rounds - round_index - 1)
+            seeds = self._collect(tx, round_context, gaps, seen=seen, budget=budget)
+            seed_count += len(seeds)
+            seen.update(candidate.key for candidate in seeds)
+            self._hydrate_all(tx, hydrated, seeds, round_context, gaps, floor=floor, original_query=working.query)
+            if round_index + 1 >= max_rounds:
+                break
+            items = tuple(obj for _candidate, obj in hydrated)
+            needs = unmet_needs(working.query, items)
+            if not needs:
+                break
+            if self._remaining(working) <= 0:
+                gaps.append("deadline_exceeded_followup")
+                break
+            follow_query = directed_followup_query(working, needs, items)
+            if follow_query is None:
+                break
+            if "resume_state" in needs:
+                task = current_task_candidate(tx, working, self.storage_reader, self.clock)
+                if task is not None and task[0].key not in {candidate.key for candidate, _obj in hydrated}:
+                    # This task answers an explicit resume request.
+                    hydrated.append((replace(task[0], source="relation", lexical_score=1.0), task[1]))
+        return hydrated, seed_count
+
+    def _hydrate_related(self, tx, working: SearchContext, hydrated: list[tuple[CandidateRef, RetrievedObject]], gaps: list[str]) -> None:
+        seeds = tuple(candidate for candidate, _obj in hydrated)
+        known = {candidate.key for candidate in seeds}
+        expanded = [candidate for candidate in self._expand(tx, working, seeds, gaps) if candidate.key not in known]
+        floor = min(working.limits.max_items, MINIMUM_HYDRATION_CAP)
+        self._hydrate_all(tx, hydrated, expanded, working, gaps, floor=floor)
+
+    def _select(self, tx, working: SearchContext, hydrated: list[tuple[CandidateRef, RetrievedObject]], gaps: list[str]):
+        """Rank, fold duplicate bodies, fit the item budget, then add background."""
+        # Distinct *content*, not distinct rows: candidates are already unique
+        # by (kind, ref, revision), but a corpus where a legacy import
+        # re-delivered the same bodies under fresh identities let one document
+        # hold four of six slots.  One filter spans both passes so background
+        # cannot repeat the evidence either.
+        distinct = DistinctContent()
+        ranked = self._apply_budget(distinct.filtered(self._rank_hydrated(hydrated, working)), working.limits)
+        query_items = tuple(obj for _candidate, obj in ranked)
+        if working.mode == "auto" and self._remaining(working) > 0:
+            background = background_candidates(tx, working, self.storage_reader, self.clock, gaps)
+            present = {candidate.key for candidate, _obj in ranked}
+            # Query evidence comes first; background shares the final byte
+            # budget and can only consume remaining packet slots.
+            ranked.extend(pair for pair in background if pair[0].key not in present and distinct.admits(pair[1]))
+            note_truncation(gaps, "packet_slots", considered=working.limits.max_items, available=len(ranked))
+            ranked = ranked[:working.limits.max_items]
+        note_duplicates(gaps, distinct.collapsed)
+        return ranked, query_items
+
+    @staticmethod
+    def _result(working: SearchContext, epoch: int, ranked, query_items: tuple[RetrievedObject, ...], gaps: list[str],
+                seed_count: int, hydrated_count: int) -> RetrievalResult:
+        items = tuple(obj for _candidate, obj in ranked)
+        needs = unmet_needs(working.query, query_items)
+        if items and not query_items:
+            needs = (*needs, "query_evidence_missing")
+        if not query_items:
+            answerability = "unknown"
+        elif needs:
+            answerability = "partial"
+        elif len(query_items) > 1 and mentions(working.query, CHOICE_MARKERS):
+            answerability = "ambiguous"
+        else:
+            answerability = "supported"
+        return RetrievalResult(
+            tuple(candidate for candidate, _obj in ranked),
+            items,
+            epoch,
+            tuple(dict.fromkeys(gaps)),
+            "partial" if gaps else "unknown",
+            answerability,
+            seed_count,
+            hydrated_count,
+            request_id=working.request_id,
+            unmet_needs=needs,
+        )
 
     def collection(self, context: SearchContext, query: CollectionQuery, cursor=None) -> CollectionPage:
         if not isinstance(context, SearchContext) or not isinstance(query, CollectionQuery):
@@ -713,5 +487,4 @@ class RetrievalPipeline:
 
 def recall(context: SearchContext, *, storage, vector_port=None, policy: RecallPolicy | None = None, clock=None) -> RetrievalResult:
     """Small functional entry point for adapters that do not retain a service."""
-
     return RetrievalPipeline(storage, vector_port=vector_port, policy=policy, clock=clock).search(context)
