@@ -18,6 +18,7 @@ LEGACY_BASELINE = "578b955802df753f2e2208e26eab6f71971285a0"
 REPORT_FORMAT = "scope-recall-p15-migration-report/3"
 _ISO = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|\+00:00)$")
 
+
 class MigrationError(RuntimeError):
     pass
 
@@ -39,27 +40,28 @@ def _materialize_explicit_scope_selection(
     """Keep omitted selection distinct from an explicit empty or subset list."""
     if scope_ids is None:
         return None
-    materialized = list(scope_ids)
     seen: list[str] = []
-    present: set[str] = set()
-    for item in materialized:
+    for item in scope_ids:
         if type(item) is not str:
             raise MigrationError("explicit scope selection items must be strings")
-        if item in present:
+        if item in seen:
             raise MigrationError("explicit scope selection contains duplicates")
         seen.append(item)
-        present.add(item)
     return seen
 
 
-def _blocked_prewrite_report(
+def _blocked_report(
     *,
     batch_key: str,
     unmapped: list[dict[str, Any]],
     reasons: list[str],
-    extra: dict[str, Any] | None = None,
+    **sections: Any,
 ) -> dict[str, Any]:
-    report = {
+    """A report for a conversion that stopped before writing anything.
+
+    ``sections`` are appended verbatim; the two blocked shapes differ only there.
+    """
+    return {
         "format": REPORT_FORMAT,
         "baseline": LEGACY_BASELINE,
         "target_schema": SCHEMA_VERSION,
@@ -81,21 +83,31 @@ def _blocked_prewrite_report(
             "unmapped": len(unmapped),
         },
         "unmapped": unmapped,
-        "cutover_block": {
-            "blocked": True,
-            "reasons": reasons,
-        },
-        "source_status": [],
-        "deletion_receipts": [],
-        "permission_classification": {
+        "cutover_block": {"blocked": True, "reasons": reasons},
+        **sections,
+    }
+
+
+def _blocked_prewrite_report(
+    *,
+    batch_key: str,
+    unmapped: list[dict[str, Any]],
+    reasons: list[str],
+    extra: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return _blocked_report(
+        batch_key=batch_key,
+        unmapped=unmapped,
+        reasons=reasons,
+        source_status=[],
+        deletion_receipts=[],
+        permission_classification={
             "rows_with_explicit_scope_gap": 0,
             "schema_permission_unknown": True,
         },
-        "candidate_auto_promoted": False,
-    }
-    if extra:
-        report.update(extra)
-    return report
+        candidate_auto_promoted=False,
+        **(extra or {}),
+    )
 
 
 def _canon(value: object) -> str:
@@ -139,6 +151,13 @@ def _json(value: object, default: object) -> object:
     return default
 
 
+def _open_immutable(path: Path) -> sqlite3.Connection:
+    """Open a frozen offline snapshot; ``immutable=1`` never touches its journals."""
+    conn = sqlite3.connect(f"{path.as_uri()}?mode=ro&immutable=1", uri=True)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
 def _tables(conn: sqlite3.Connection) -> set[str]:
     return {
         str(row[0])
@@ -174,5 +193,3 @@ def _time(value: object) -> tuple[str | None, str]:
 
 def _recorded(value: object) -> str:
     return _time(value)[0] or "1970-01-01T00:00:00.000000Z"
-
-

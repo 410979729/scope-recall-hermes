@@ -281,7 +281,8 @@ def test_p15_official_multivalue_is_archived_without_fake_conditions(tmp_path: P
 
 def test_migration_public_facade_has_real_responsibility_owners():
     import ast
-    from scope_recall.maintenance import (migrate_v2, legacy_conversion, legacy_catalog,
+    from scope_recall.maintenance import (migrate_v2, legacy_conversion, legacy_catalog, legacy_claims,
+                                          legacy_deletions, legacy_plan, legacy_sources,
                                           migration_activation, migration_index, migration_records)
     assert migrate_v2.MigrationError is migration_records.MigrationError
     assert migrate_v2.build_legacy_catalog is legacy_catalog.build_legacy_catalog
@@ -293,6 +294,7 @@ def test_migration_public_facade_has_real_responsibility_owners():
     assert callable(migration_index.queue_index_page)
     # Lower responsibilities never import the orchestration facade; this would
     # create cycles or make facade monkeypatches a hidden execution dependency.
-    for module in (legacy_conversion, legacy_catalog, migration_activation, migration_index, migration_records):
+    for module in (legacy_conversion, legacy_catalog, legacy_claims, legacy_deletions, legacy_plan, legacy_sources,
+                   migration_activation, migration_index, migration_records):
         tree = ast.parse(Path(module.__file__).read_text(encoding='utf-8'))
         assert not any(isinstance(n, ast.ImportFrom) and n.module == 'migrate_v2' for n in ast.walk(tree))
