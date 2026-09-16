@@ -16,7 +16,7 @@ from scope_recall.core.claims import claim_slot
 
 from .legacy_plan import Conversion, Row
 from .legacy_sources import (
-    _anchor_ref, _evidence_items, _json, _resolve, _safe, _safe_text, _scope, _text_or_none,
+    _anchor_ref, _evidence_items, _json, _resolve, _safe, _safe_list, _safe_text, _scope, _text_or_none,
 )
 from .migration_records import MigrationError, _canon, _digest, _recorded, _stable, _time
 
