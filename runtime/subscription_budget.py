@@ -13,6 +13,8 @@ from pathlib import Path
 import sqlite3
 import time
 
+from .validation import mapping, only_keys, positive_int
+
 
 _TABLE = """CREATE TABLE IF NOT EXISTS codex_subscription_requests (
     id INTEGER PRIMARY KEY, day TEXT NOT NULL, model TEXT NOT NULL,
@@ -34,9 +36,7 @@ class SubscriptionBudgetPolicy:
 
     def __post_init__(self):
         for name in self.__dataclass_fields__:
-            value = getattr(self, name)
-            if type(value) is not int or value < 1:
-                raise ValueError(f"codex_{name}")
+            positive_int(f"codex_{name}", getattr(self, name))
         if self.reserve_input > self.daily_input_tokens or self.reserve_output > self.daily_output_tokens:
             raise ValueError("codex_reservation_exceeds_daily_cap")
 
@@ -44,9 +44,8 @@ class SubscriptionBudgetPolicy:
     def from_mapping(cls, raw):
         if raw is None:
             return cls()
-        if not isinstance(raw, dict) or set(raw) - set(cls.__dataclass_fields__):
-            raise ValueError("codex_subscription_budget")
-        return cls(**raw)
+        return cls(**only_keys("codex_subscription_budget", mapping("codex_subscription_budget", raw),
+                               cls.__dataclass_fields__))
 
 
 def _day() -> str:
