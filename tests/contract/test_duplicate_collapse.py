@@ -19,7 +19,7 @@ from scope_recall.core.duplicate_collapse import (
     note_duplicates,
     parse_duplicate_gap,
 )
-from scope_recall.core.recall_packet import RecallPacketCompiler
+from scope_recall.core.recall_packet import public_gaps
 from tests.contract.test_v11_claims import app, capture
 from tests.v11_support import recall_request
 
@@ -66,10 +66,10 @@ def test_note_tolerates_no_list_and_never_duplicates():
 
 
 def test_the_count_survives_into_the_public_packet():
-    """``_public_marker`` collapses some prefixes to bare names; not this one --
+    """``public_marker`` collapses some prefixes to bare names; not this one --
     a count nobody can read is the silent truncation this exists to prevent."""
     gap = duplicate_gap(4)
-    assert RecallPacketCompiler._public_gaps((gap,)) == (gap,)
+    assert public_gaps((gap,)) == (gap,)
 
 
 # --------------------------------------------------------------------------

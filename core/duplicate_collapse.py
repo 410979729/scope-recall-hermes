@@ -1,31 +1,21 @@
 """Keep one copy of each distinct body, and say how many were folded away.
 
-Half of TianShu's visible corpus is exact duplicates: 31,442 sources carry only
-15,773 distinct bodies, and a single tool summary appears 1,140 times, because
-a legacy import re-delivered the same content under fresh identities.  The
-retrieval pipeline already de-duplicates -- but on ``(kind, ref, revision)``,
-which is *identity*, not content -- so N copies of one document held N packet
-slots.
+The retrieval pipeline de-duplicates on ``(kind, ref, revision)``, which is
+*identity*, not content.  A legacy import that re-delivered the same bodies
+under fresh identities let one document hold most of a packet's slots and
+pushed the answer out entirely; collapsing copies was the only change that
+fixed that (inverse-document-frequency weighting was measured alongside it
+and made both recall and abstention worse, so the scoring was left alone).
 
-Measured against the live store: a question whose answer ranked 12th came back
-as six items of which four were the same paragraph, and the answer was never
-delivered at all.  Collapsing copies alone moved the judged probe set from 7/8
-answered to 8/8, and removed every one of the eight duplicate slots it had been
-spending.  It was also the *only* change that helped -- weighting the lexical
-channel by inverse document frequency was measured alongside it and made both
-recall and abstention worse, so the scoring was left alone.
-
-Collapsing is not truncation.  The surviving copy is byte-identical to the ones
-removed, so no content is lost and coverage is not reduced; that is why this
-gap has its own prefix rather than reusing ``coverage_truncated``.  It is still
-recorded, because "six items from six sources" and "six items from three" are
-different facts about the evidence, and a reader counting independent support
-must not be misled by repetition.
+Collapsing is not truncation.  The surviving copy is byte-identical to the
+ones removed, so no content is lost and coverage is not reduced; that is why
+this gap has its own prefix rather than reusing ``coverage_truncated``.  It is
+still recorded, because "six items from six sources" and "six items from
+three" are different facts about the evidence.
 
 A duplicate is *two different objects carrying the same body*.  Two revisions
-of one object are not duplicates however identical their text: an episode whose
-status changed but whose wording did not is still two facts, and ``history``
-and ``as_of`` exist precisely to show those side by side.  So a collision is
+of one object are not duplicates however identical their text: ``history`` and
+``as_of`` exist precisely to show those side by side.  So a collision is
 folded only when the colliding items have different refs.
 
 Not responsible for: stopping duplicates at capture, or choosing which copy is

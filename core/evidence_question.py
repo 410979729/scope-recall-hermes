@@ -1,39 +1,28 @@
 """What makes this a different question, as opposed to more of the same answer.
 
-A candidate is re-judged when its evidence set changes, and the set was keyed
-on every source in a recency window: ``ORDER BY observed_at DESC LIMIT 16``.
-So a single new tool observation displaced an older one, the set differed, the
-fingerprint differed, and the ``UNIQUE(candidate, revision, fingerprint, rule)``
-guard -- which exists precisely to stop a question being asked twice -- could
-never collide.  Measured on TianShu across the six most re-judged candidates,
-830 evidence arrivals sat between consecutive verdicts: **679 tool observations
-against 74 first-hand human statements**, and 93% of the verdicts they bought
-were ``insufficient_evidence`` again.
+A candidate is re-judged when its evidence set changes.  Keying that set on a
+recency window (``ORDER BY observed_at DESC LIMIT 16``) meant every new tool
+observation displaced an older one, so the fingerprint always differed and the
+``UNIQUE(candidate, revision, fingerprint, rule)`` guard -- which exists to
+stop a question being asked twice -- could never collide.  Nearly every
+verdict bought that way was ``insufficient_evidence`` again.
 
-The bound this replaces was a doubling *timer*, which was the wrong instrument:
-it made a candidate wait out a clock even when it had just received exactly the
-evidence that would settle it.  That is a rate limit wearing a loop guard's
-clothes.  Nothing here limits how much work an instance may do; it decides
-whether there is a *new question* to ask, and a candidate holding unjudged new
-testimony is always asked immediately.
+The doubling *timer* this replaces was the wrong instrument: it made a
+candidate wait out a clock even when it had just received exactly the
+evidence that would settle it.  Nothing here limits how much work an instance
+may do; it decides whether there is a *new question* to ask, and a candidate
+holding unjudged new testimony is always asked immediately.
 
 One thing makes a question new: **first-hand testimony changed** -- a person
 said something this candidate had not heard.  That is what the qualification
-gates are waiting for, so it is asked at once, however many verdicts came
-before and however long ago the last one was.
-
-Accumulating non-first-hand support was tried as a second trigger, on the
-reasoning that "eight tool observations" is a different case from "four".  The
-history says otherwise: replayed over TianShu, re-judgements bought by that
-rule came to **955 model calls that produced exactly one conclusion**.  A
-trigger that cannot answer the question is not worth asking, so it is gone --
-which is a statement about yield, not a budget.  Nothing here limits how much
-work an instance may do; a candidate with no first-hand evidence simply waits
-for somebody to say something, and is judged the moment they do.
+gates are waiting for.  Accumulating non-first-hand support was tried as a
+second trigger and, replayed over a live history, produced hundreds of model
+calls and exactly one conclusion; a trigger that cannot answer the question is
+not worth asking, which is a statement about yield, not a budget.
 
 Not responsible for: choosing which evidence the model sees.  The selection
-still sends the newest that fits; this only decides whether that selection is a
-question already answered.
+still sends the newest that fits; this only decides whether that selection is
+a question already answered.
 """
 from __future__ import annotations
 

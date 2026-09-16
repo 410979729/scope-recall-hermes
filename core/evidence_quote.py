@@ -4,23 +4,21 @@ The model never sees stored bytes.  ``consolidation_messages`` hands it
 ``json.dumps(body, ensure_ascii=False)``, so a source holding a double quote
 or a newline reaches the model as ``\"`` and ``\n`` -- two characters, not
 one.  A quote copied faithfully from what the model saw is therefore not
-always a substring of what is stored, and the three byte-strict ``in`` checks
-(``core/claim_storage.py``, ``core/consolidate.py``, and the alias path in
-``core/mutate.py``) reject it as ``evidence_span`` / ``fragment_evidence``.
+always a substring of what is stored, and the byte-strict ``in`` checks in
+``core/claim_storage.py``, ``core/consolidate.py`` and the alias path in
+``core/mutate.py`` reject it as ``evidence_span`` / ``fragment_evidence``.
 
-Measured against tianshu's live database: of the 111 sources behind the 88
-work items that failed on ``evidence_span``, **109** change under JSON
-encoding -- 66 contain a backslash, 99 a double quote, 28 a newline.  None of
-them differ under NFC normalisation and none contain a tab or a non-breaking
-space, so this ladder has no normalisation rung and no whitespace-tolerant
-rung: a rung is added when a corpus shows it is needed, not in anticipation.
-Whitespace tolerance in particular would trade away the verbatim guarantee the
-whole quoting contract rests on.
+On a live corpus almost every such rejection came from a backslash, a double
+quote or a newline; none differed under NFC normalisation and none involved
+tabs or non-breaking spaces.  So this ladder has no normalisation rung and no
+whitespace-tolerant rung: a rung is added when a corpus shows it is needed,
+not in anticipation.  Whitespace tolerance in particular would trade away the
+verbatim guarantee the whole quoting contract rests on.
 
-Resolution is monotone.  Rung 1 is exactly today's rule, so nothing that
-passes now can begin to fail.  Every later rung returns a slice of the stored
-content itself, which is why the callers stay byte-strict: by the time they
-run, the quote already *is* a literal substring.
+Resolution is monotone.  Rung 1 is exactly the plain substring rule, so
+nothing that passes now can begin to fail.  Every later rung returns a slice
+of the stored content itself, which is why the callers stay byte-strict: by
+the time they run, the quote already *is* a literal substring.
 """
 from __future__ import annotations
 
