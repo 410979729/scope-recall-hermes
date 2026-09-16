@@ -1,5 +1,18 @@
 # Scope Recall 恢复与治理规划（2026-09-15 起）
 
+## 交接卡（接手的 agent 先读这一节；2026-09-16 01:45Z）
+
+| 项 | 值 |
+|---|---|
+| 唯一源码真相 | 规范仓库 `F:\SCOPERECALL更新项目\.repos\scope-recall`，分支 `release/3.1.0`，远端 `github.com/410979729/scope-recall-hermes`（`main` 只是 9/5 的旧祖先，落后 16 个提交，勿在其上开发）。 |
+| 干活的目录 | linked worktree `F:\SCOPERECALL更新项目\worktrees\release-3.1.0`（= `release/3.1.0`，最新提交见 `git log -1`）。新任务用 `git worktree add`，合并后 `git worktree remove`；不复制目录，不 `git init`。 |
+| 当前版本 | `3.1.0rc28`（tag `v3.1.0rc28`）。版本只改 `_version.py`，然后 `python -I scripts/build.package_manifest.py --write` 盖章清单。 |
+| 门禁 | 在 worktree 里 `python -X utf8 scripts/check.py --tier <unit|contract|host|packaging|native|integration>`；今天用的解释器 `F:\t\SR-TIANSHU-RECALL-FIX-20260915\.venv\Scripts\python.exe`（3.11）。发版前六层全绿。 |
+| 三套安装 | 天枢 `hermes-tianshu` rc27、天玑 `hermes-tianji` rc27（Hermes 宿主）；Codex 宿主 `F:\ScopeRecall\codex` rc28（venv `F:\ScopeRecall\codex-venv`，插件目录 `C:\Users\w4109\plugins\scope-recall-codex`）。部署步骤与回执模板见 `F:\t\SR-TIANSHU-RECALL-FIX-20260915\deploy-rc27-20260915\` 与 `deploy-rc28-20260916\codex\DEPLOY-RECEIPT.md`。 |
+| 树的现状（不要误以为已经干净） | 版本谱系与发布流程已治理；**树本身还没瘦身**：git 里 810 个非测试 `.py`，wheel 只装 140 个，672 个不进 wheel（`verification/` 387 是证据脚本、`_internal/` 58、`probes/` 33、`benchmarks/` 7，以及根目录约 180 个游离模块）。这是 1.2/D2，等用户拍板。 |
+| 机器上的散落 | hub 仍注册 17 个其他 worktree（多数 detached）、`F:\t` 170 余个目录、两个已退役独立仓库——1.3/D6，用户勾选后才删。 |
+| 已停用的路径 | `F:\t\SR-310-INTEGRATION-20260915`（已迁到上面的 worktree 路径）；`F:\t\SR-TIANSHU-RECALL-FIX-20260915\src` 与另一独立仓库（根有 `RETIRED.md`）。 |
+
 本文是执行清单，不是讨论稿。每一步都有：目标、操作、验收、回滚、负责人。没有验收证据的步骤不算完成。
 事实来源：`F:\t\SR-TIANSHU-RECALL-FIX-20260915\deploy-rc26-20260915\GOVERNANCE-ASSESSMENT.md` 及同目录原始输出。
 
@@ -113,7 +126,7 @@
 - 回滚：`predeploy-backup` 覆盖回去 + planned-stop；receipt 由 `apply-install` 自己备份在 `<instance>\.scope-recall-install-backups\`。
 
 ### 0.6 退役独立仓库、切换工作区
-- 操作：在两个独立仓库根写 `RETIRED.md`（指向规范仓库、说明其历史已回放为哪些提交）；不删除目录（删除由用户确认后在 1.3 执行）。Cursor 工作区切到 `F:\t\SR-310-INTEGRATION-20260915`（或新建 `F:\SCOPERECALL更新项目\worktrees\release-3.1.0`）。
+- 操作：在两个独立仓库根写 `RETIRED.md`（指向规范仓库、说明其历史已回放为哪些提交）；不删除目录（删除由用户确认后在 1.3 执行）。Cursor 工作区切到规范仓库的 worktree（2026-09-16 已执行：`git worktree move` 把 `F:\t\SR-310-INTEGRATION-20260915` 迁为 `F:\SCOPERECALL更新项目\worktrees\release-3.1.0`，同时清掉 `build/`、`dist/`、egg-info 与 `__pycache__`；`F:\t` 下不再有活动 worktree）。
 - 验收：`git -C hub remote remove tmp-standalone`；工作区打开的是规范仓库 worktree。
 
 ### 0.7 天玑评估（只读）
