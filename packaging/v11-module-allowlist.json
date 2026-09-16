@@ -47,6 +47,7 @@
     "adapters/lance.py",
     "adapters/models.py",
     "adapters/runtime_wiring.py",
+    "adapters/tool_common.py",
     "contracts.py",
     "core/__init__.py",
     "core/admission.py",

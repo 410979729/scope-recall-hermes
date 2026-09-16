@@ -40,9 +40,7 @@ from .outcomes import TurnOutcomeTracker
 from .protocol import PublicMemoryProvider
 from .runtime_wiring import GAP_WORKER_LAUNCH_FAILED, HermesHostRuntime, TrustedHostRuntime, attach_trusted_host_runtime
 from .worker import AdapterWorker
-from .tool_surface import (
-    HermesToolSurface, _TOOL_NAMES,
-)
+from .tool_surface import HermesToolSurface, _TOOL_NAMES
 
 _CAPTURE_TIMEOUT_S = 1.0
 _BOUNDED_MESSAGE_SCAN = 8
