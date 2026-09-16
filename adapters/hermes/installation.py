@@ -5,19 +5,45 @@ from dataclasses import dataclass, field
 import hashlib
 import json
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+import re
+from typing import Any, Callable, Mapping, Sequence
 
 from scope_recall.contracts import InstanceBinding
 from scope_recall.core import CoreConfig, MemoryCore
-
 
 from .audiences import (
     HermesIdentityError, _audience_entry, _normalize_audience_entry,
     is_archive_scope, normalize_retained_scope_ids, normalize_owner_principals,
 )
 
-
+MANIFEST_FILENAME = "installation.json"
+SCHEMA_VERSION = "scope-recall.hermes-installation.v3"
+# Exact per-principal/session rows need more room than the old coarse audiences.
+_MAX_MANIFEST_BYTES = 512 * 1024
 _MAX_FIELD_LEN = 240
+_HEX64_RE = re.compile(r"[0-9a-fA-F]{64}")
+# Production migrations retain only these two inert audit namespaces.
+# Source-to-archive remapping remains the hash-bound, TEST-only workflow.
+AUDIT_RETENTION_SCOPES = {
+    "orphan_bridge": "archive|reserved:orphan_bridge",
+    "digest_audit": "archive|reserved:digest_audit",
+}
+
+
+def bounded_text(
+    value: object, *, field: str, required: bool = True, error: type[Exception] = HermesIdentityError
+) -> str:
+    """A stripped string of at most 240 characters; ``required`` refuses a missing or blank one."""
+    if type(value) is not str:
+        if required:
+            raise error(f"{field} is required")
+        return ""
+    text = value.strip()
+    if required and not text:
+        raise error(f"{field} is required")
+    if len(text) > _MAX_FIELD_LEN:
+        raise error(f"{field} exceeds bounded length")
+    return text
 
 
 def _scope_component(label: str, value: str) -> str:
@@ -43,82 +69,6 @@ def build_archive_scope_id(source_scope: str) -> str:
     if len(hex_id) <= _MAX_FIELD_LEN:
         return hex_id
     return f"archive|sha256:{hashlib.sha256(raw).hexdigest()}"
-
-
-
-
-_HEX64_RE = __import__("re").compile(r"[0-9a-fA-F]{64}")
-
-def _validate_archive_manifest_fields(
-    *,
-    has_archive_fields: bool,
-    archive_scopes: frozenset[str],
-    archive_source_map: dict[str, str],
-    archive_retention_scopes: dict[str, str],
-    archive_snapshot_hash: Any,
-    archive_catalog_hash: Any,
-    test_mode: Any,
-    scope_ids: frozenset[str],
-    mapped_scopes: frozenset[str],
-    audience_scopes_values: frozenset[str],
-    retained_scope_ids: frozenset[str],
-) -> None:
-    # Production migrations retain only these two inert audit namespaces.
-    # Source-to-archive remapping remains the hash-bound, TEST-only workflow.
-    audit_retention_only = (
-        not archive_source_map and archive_snapshot_hash == "" and archive_catalog_hash == ""
-        and archive_retention_scopes == {
-            "orphan_bridge": "archive|reserved:orphan_bridge",
-            "digest_audit": "archive|reserved:digest_audit",
-        }
-    )
-    if has_archive_fields and not audit_retention_only:
-        if test_mode is not True:
-            raise HermesIdentityError("archive fields require literal test_mode=True")
-        if type(archive_snapshot_hash) is not str or not _HEX64_RE.fullmatch(archive_snapshot_hash):
-            raise HermesIdentityError("invalid or missing archive_snapshot_hash")
-        if type(archive_catalog_hash) is not str or not _HEX64_RE.fullmatch(archive_catalog_hash):
-            raise HermesIdentityError("invalid or missing archive_catalog_hash")
-
-    all_vals = set()
-    for k, v in archive_source_map.items():
-        if type(k) is not str or not k or k == "*":
-            raise HermesIdentityError("source map key must be nonempty string and not '*'")
-        if type(v) is not str or not v or not is_archive_scope(v):
-            raise HermesIdentityError("source map value must be nonempty string in archive namespace")
-        if v in all_vals:
-            raise HermesIdentityError("archive map value collision")
-        all_vals.add(v)
-
-    for k, v in archive_retention_scopes.items():
-        if type(k) is not str or not k:
-            raise HermesIdentityError("retention map key must be nonempty string")
-        if type(v) is not str or not v or not is_archive_scope(v):
-            raise HermesIdentityError("retention map value must be nonempty string in archive namespace")
-        if v in all_vals:
-            raise HermesIdentityError("archive map value collision")
-        all_vals.add(v)
-
-    if set(archive_scopes) != all_vals:
-        raise HermesIdentityError("archive_scopes must exactly equal the union of source and retention map values")
-
-    if not set(archive_scopes).issubset(set(scope_ids)):
-        raise HermesIdentityError("archive_scopes must be a subset of registered scope_ids")
-
-    runtime_scopes = set(mapped_scopes) | set(audience_scopes_values)
-    for s in runtime_scopes:
-        if is_archive_scope(s) or s in archive_scopes:
-            raise HermesIdentityError("runtime scopes cannot use archive namespace or overlap archive_scopes")
-
-    if retained_scope_ids & (runtime_scopes | set(archive_scopes)):
-        raise HermesIdentityError("retained_scope_ids must not overlap runtime or archive scopes")
-    if set(scope_ids) != (set(mapped_scopes) | set(archive_scopes) | set(retained_scope_ids)):
-        raise HermesIdentityError("registered scope_ids must equal audience union retained union archive")
-
-MANIFEST_FILENAME = "installation.json"
-SCHEMA_VERSION = "scope-recall.hermes-installation.v3"
-# Exact per-principal/session rows need more room than the old coarse audiences.
-_MAX_MANIFEST_BYTES = 512 * 1024
 
 
 @dataclass(frozen=True)
@@ -155,17 +105,55 @@ def _installation_id(hermes_home: Path) -> str:
     return f"hermes-install:{digest[:32]}"
 
 
-def _bounded_text(value: object, *, field: str, required: bool = True) -> str:
-    if type(value) is not str:
-        if required:
-            raise HermesIdentityError(f"{field} is required")
-        return ""
-    text = value.strip()
-    if required and not text:
-        raise HermesIdentityError(f"{field} is required")
-    if len(text) > _MAX_FIELD_LEN:
-        raise HermesIdentityError(f"{field} exceeds bounded length")
-    return text
+def _archive_values(mapping: Mapping[str, str], *, label: str, reject_star: bool, seen: set[str]) -> None:
+    """Every value must be a distinct archive-namespace scope; keys are nonempty originals."""
+    for key, value in mapping.items():
+        if type(key) is not str or not key or (reject_star and key == "*"):
+            raise HermesIdentityError(f"{label} map key must be nonempty string" + (" and not '*'" if reject_star else ""))
+        if type(value) is not str or not value or not is_archive_scope(value):
+            raise HermesIdentityError(f"{label} map value must be nonempty string in archive namespace")
+        if value in seen:
+            raise HermesIdentityError("archive map value collision")
+        seen.add(value)
+
+
+def _validate_archive_fields(manifest: InstallationManifest, *, present: bool, test_mode: object) -> None:
+    """Archive scopes are inert audit/import namespaces: hash-bound, TEST-only unless audit retention only."""
+    audit_retention_only = (
+        not manifest.archive_source_map
+        and manifest.archive_snapshot_hash == ""
+        and manifest.archive_catalog_hash == ""
+        and manifest.archive_retention_scopes == AUDIT_RETENTION_SCOPES
+    )
+    if present and not audit_retention_only:
+        if test_mode is not True:
+            raise HermesIdentityError("archive fields require literal test_mode=True")
+        for label, digest in (
+            ("archive_snapshot_hash", manifest.archive_snapshot_hash),
+            ("archive_catalog_hash", manifest.archive_catalog_hash),
+        ):
+            if type(digest) is not str or not _HEX64_RE.fullmatch(digest):
+                raise HermesIdentityError(f"invalid or missing {label}")
+
+    archive_values: set[str] = set()
+    _archive_values(manifest.archive_source_map, label="source", reject_star=True, seen=archive_values)
+    _archive_values(manifest.archive_retention_scopes, label="retention", reject_star=False, seen=archive_values)
+    archive = set(manifest.archive_scopes)
+    if archive != archive_values:
+        raise HermesIdentityError("archive_scopes must exactly equal the union of source and retention map values")
+    if not archive.issubset(manifest.scope_ids):
+        raise HermesIdentityError("archive_scopes must be a subset of registered scope_ids")
+
+    mapped = {scope_id for row in manifest.audiences for scope_id in row["allowed_scope_ids"]}
+    runtime = mapped | set(manifest.audience_scopes.values())
+    for scope_id in runtime:
+        if is_archive_scope(scope_id) or scope_id in archive:
+            raise HermesIdentityError("runtime scopes cannot use archive namespace or overlap archive_scopes")
+    retained = set(manifest.retained_scope_ids)
+    if retained & (runtime | archive):
+        raise HermesIdentityError("retained_scope_ids must not overlap runtime or archive scopes")
+    if set(manifest.scope_ids) != (mapped | archive | retained):
+        raise HermesIdentityError("registered scope_ids must equal audience union retained union archive")
 
 
 def _build_audience_scope_ids(
@@ -218,7 +206,47 @@ def _build_audience_scope_ids(
     }
 
 
+def _grant(scope_id: str, *, kind: str, chat_type: str, chat_id: str, route: dict[str, str]) -> dict[str, Any]:
+    """One exact audience row whose read, write and capture grants are the same single scope."""
+    return _audience_entry(
+        **route,
+        chat_type=chat_type,
+        chat_id=chat_id,
+        thread_id="main",
+        allowed_scope_ids=[scope_id],
+        writable_scope_ids=[scope_id],
+        capture_scope_id=scope_id,
+        kind=kind,
+    )
 
+
+def _archive_maps(
+    archive_source_scopes: Sequence[str] | Mapping[str, str] | None,
+    archive_retention_scopes: Mapping[str, str] | None,
+) -> tuple[dict[str, str], dict[str, str]]:
+    """Source originals to bound archive IDs, and the named retention namespaces."""
+    source: dict[str, str] = {}
+    if isinstance(archive_source_scopes, Mapping):
+        for original, archive in archive_source_scopes.items():
+            if type(original) is not str or type(archive) is not str:
+                raise HermesIdentityError("archive scope map keys and values must be strings")
+            source[original] = archive
+    elif archive_source_scopes is not None:
+        for original in archive_source_scopes:
+            if type(original) is not str:
+                raise HermesIdentityError("archive scope must be string")
+            if original in source:
+                raise HermesIdentityError("duplicate sequence source identifiers")
+            source[original] = build_archive_scope_id(original)
+    retention: dict[str, str] = {}
+    if archive_retention_scopes is not None:
+        if not isinstance(archive_retention_scopes, Mapping):
+            raise HermesIdentityError("archive retention must be a mapping")
+        for key, value in archive_retention_scopes.items():
+            if type(key) is not str or type(value) is not str:
+                raise HermesIdentityError("archive retention map keys and values must be strings")
+            retention[key] = value
+    return source, retention
 
 
 def build_installation_manifest(
@@ -248,22 +276,22 @@ def build_installation_manifest(
     home = hermes_home.expanduser().resolve()
     if not home.is_absolute():
         raise HermesIdentityError("hermes_home must be absolute")
-    agent = _bounded_text(agent_id, field="agent_id")
-    plat = _bounded_text(platform or "cli", field="platform")
-    owner = _bounded_text(user_id or "local", field="user_id", required=False) or "local"
+    agent = bounded_text(agent_id, field="agent_id")
+    plat = bounded_text(platform or "cli", field="platform")
+    owner = bounded_text(user_id or "local", field="user_id", required=False) or "local"
     principals = normalize_owner_principals(
         list(owner_principals) if owner_principals is not None else [dict(platform=plat, user_id=owner)]
     )
     if dict(platform=plat, user_id=owner) not in principals:
         raise HermesIdentityError("primary owner must be included in owner_principals")
-    workspace = _bounded_text(agent_workspace or "default", field="agent_workspace", required=False) or "default"
-    project = _bounded_text(project_id or workspace, field="project_id", required=False) or workspace
-    conversation = _bounded_text(conversation_key or "default", field="conversation_key", required=False) or "default"
+    workspace = bounded_text(agent_workspace or "default", field="agent_workspace", required=False) or "default"
+    project = bounded_text(project_id or workspace, field="project_id", required=False) or workspace
+    conversation = bounded_text(conversation_key or "default", field="conversation_key", required=False) or "default"
     if plat != "cli" and conversation == "default":
         # Retain the historical fixture's explicitly named group-1 audience;
         # all other groups still require an installer supplied mapping.
         conversation = "group-1"
-    generated_scopes = _build_audience_scope_ids(
+    scopes = _build_audience_scope_ids(
         platform=plat,
         user_id=owner,
         agent_identity=agent,
@@ -271,148 +299,60 @@ def build_installation_manifest(
         project_id=project,
         conversation_key=conversation,
     )
-    # The owner mapping is always explicit.  Other mappings are exact entries
-    # supplied by the trusted installer; no non-CLI wildcard is synthesized.
-    owner_chat_type = "cli" if plat == "cli" else "private"
-    owner_chat_id = "local" if plat == "cli" else owner
-    owner_thread = "main"
-    mappings = [
-        _audience_entry(
-            platform=plat,
-            user_id=owner,
-            gateway_session_key=gateway_session_key,
-            chat_type=owner_chat_type,
-            chat_id=owner_chat_id,
-            thread_id=owner_thread,
-            agent_workspace=workspace,
-            allowed_scope_ids=[generated_scopes["owner_private"]],
-            writable_scope_ids=[generated_scopes["owner_private"]],
-            capture_scope_id=generated_scopes["owner_private"],
-            kind="owner_private",
-        )
-    ]
+    # The owner grant is always explicit.  Other rows are exact entries the
+    # trusted installer supplies; no non-CLI wildcard is synthesized.
+    route = dict(platform=plat, user_id=owner, gateway_session_key=gateway_session_key, agent_workspace=workspace)
+    owner_chat = ("cli", "local") if plat == "cli" else ("private", owner)
+    rows = [_grant(scopes["owner_private"], kind="owner_private", chat_type=owner_chat[0], chat_id=owner_chat[1], route=route)]
     if audiences is not None:
         if project_id:
             raise HermesIdentityError("explicit audiences cannot be mixed with project convenience grants")
-        mappings = [_normalize_audience_entry(item) for item in audiences]
-        if not mappings:
+        rows = [_normalize_audience_entry(item) for item in audiences]
+        if not rows:
             raise HermesIdentityError("explicit audiences must not be empty")
-    # Preserve the historical convenience arguments as explicit mappings.
-    elif plat != "cli":
-        mappings.append(
-            _audience_entry(
-                platform=plat,
-                user_id=owner,
-                gateway_session_key=gateway_session_key,
-                chat_type="group",
-                chat_id=conversation,
-                thread_id="main",
-                agent_workspace=workspace,
-                allowed_scope_ids=[generated_scopes["conversation"]],
-                writable_scope_ids=[generated_scopes["conversation"]],
-                capture_scope_id=generated_scopes["conversation"],
-                kind="conversation",
-            )
-        )
-    if project_id:
-        mappings.append(
-            _audience_entry(
-                platform=plat,
-                user_id=owner,
-                gateway_session_key=gateway_session_key,
-                chat_type="project",
-                chat_id=project,
-                thread_id="main",
-                agent_workspace=workspace,
-                allowed_scope_ids=[generated_scopes["project"]],
-                writable_scope_ids=[generated_scopes["project"]],
-                capture_scope_id=generated_scopes["project"],
-                kind="project",
-            )
-        )
+    else:
+        # The historical convenience arguments become explicit rows.
+        if plat != "cli":
+            rows.append(_grant(scopes["conversation"], kind="conversation", chat_type="group", chat_id=conversation, route=route))
+        if project_id:
+            rows.append(_grant(scopes["project"], kind="project", chat_type="project", chat_id=project, route=route))
     audience_scopes: dict[str, str] = {}
-    for mapping in mappings:
-        key = str(mapping.get("kind") or "conversation")
-        audience_scopes.setdefault(key, str(mapping["capture_scope_id"]))
+    for row in rows:
+        audience_scopes.setdefault(str(row.get("kind") or "conversation"), str(row["capture_scope_id"]))
     if "owner_private" not in audience_scopes:
         raise HermesIdentityError("an explicit owner_private audience is required")
-    mapped_scopes = frozenset(
-        scope_id
-        for mapping in mappings
-        for scope_id in mapping["allowed_scope_ids"]
-    )
-    archive_map: dict[str, str] = {}
-    arch_retention: dict[str, str] = {}
-    
-    has_archive_fields = (
-        archive_source_scopes is not None or
-        archive_retention_scopes is not None or
-        archive_snapshot_hash is not None or
-        archive_catalog_hash is not None
-    )
 
-    if archive_source_scopes is not None:
-        if isinstance(archive_source_scopes, Mapping):
-            for src, arch in archive_source_scopes.items():
-                if type(src) is not str or type(arch) is not str:
-                    raise HermesIdentityError("archive scope map keys and values must be strings")
-                archive_map[src] = arch
-        else:
-            seen_src = set()
-            for item in archive_source_scopes:
-                if type(item) is not str:
-                    raise HermesIdentityError("archive scope must be string")
-                if item in seen_src:
-                    raise HermesIdentityError("duplicate sequence source identifiers")
-                seen_src.add(item)
-                a_clean = build_archive_scope_id(item)
-                archive_map[item] = a_clean
-
-    if archive_retention_scopes is not None:
-        if not isinstance(archive_retention_scopes, Mapping):
-            raise HermesIdentityError("archive retention must be a mapping")
-        for key, val in archive_retention_scopes.items():
-            if type(key) is not str or type(val) is not str:
-                raise HermesIdentityError("archive retention map keys and values must be strings")
-            arch_retention[key] = val
-
-    arch_scopes = frozenset(archive_map.values()) | frozenset(arch_retention.values())
+    mapped = frozenset(scope_id for row in rows for scope_id in row["allowed_scope_ids"])
+    source_map, retention = _archive_maps(archive_source_scopes, archive_retention_scopes)
+    archive = frozenset(source_map.values()) | frozenset(retention.values())
     retained = normalize_retained_scope_ids(retained_scope_ids)
-    scope_ids = mapped_scopes | arch_scopes | retained
-    
-    _validate_archive_manifest_fields(
-        has_archive_fields=has_archive_fields,
-        archive_scopes=arch_scopes,
-        archive_source_map=archive_map,
-        archive_retention_scopes=arch_retention,
-        archive_snapshot_hash=archive_snapshot_hash if archive_snapshot_hash is not None else "",
-        archive_catalog_hash=archive_catalog_hash if archive_catalog_hash is not None else "",
-        test_mode=test_mode,
-        scope_ids=scope_ids,
-        mapped_scopes=mapped_scopes,
-        audience_scopes_values=frozenset(audience_scopes.values()),
-        retained_scope_ids=retained,
-    )
-
-    data_directory = (home / "scope-recall").resolve()
-    return InstallationManifest(
+    manifest = InstallationManifest(
         schema_version=SCHEMA_VERSION,
         installation_id=_installation_id(home),
         agent_id=agent,
-        data_directory=data_directory,
-        scope_ids=scope_ids,
+        data_directory=(home / "scope-recall").resolve(),
+        scope_ids=mapped | archive | retained,
         owner_principals=principals,
         audience_scopes=audience_scopes,
-        audiences=tuple(mappings),
+        audiences=tuple(rows),
         test_mode=bool(test_mode),
         hermes_home=home,
         retained_scope_ids=retained,
-        archive_scopes=arch_scopes,
-        archive_source_map=archive_map,
-        archive_retention_scopes=arch_retention,
+        archive_scopes=archive,
+        archive_source_map=source_map,
+        archive_retention_scopes=retention,
         archive_snapshot_hash=archive_snapshot_hash if archive_snapshot_hash is not None else "",
         archive_catalog_hash=archive_catalog_hash if archive_catalog_hash is not None else "",
     )
+    _validate_archive_fields(
+        manifest,
+        present=any(
+            value is not None
+            for value in (archive_source_scopes, archive_retention_scopes, archive_snapshot_hash, archive_catalog_hash)
+        ),
+        test_mode=test_mode,
+    )
+    return manifest
 
 
 def manifest_payload(manifest: InstallationManifest) -> dict[str, Any]:
@@ -451,9 +391,100 @@ def write_installation_manifest(manifest: InstallationManifest) -> Path:
     return path
 
 
-def load_installation_manifest(hermes_home: Path | str) -> InstallationManifest:
-    home = Path(str(hermes_home)).expanduser().resolve()
-    path = home / "scope-recall" / MANIFEST_FILENAME
+def _scope_id_list(raw: object) -> frozenset[str]:
+    if not isinstance(raw, list) or not raw:
+        raise HermesIdentityError("installation manifest scope_ids invalid")
+    seen: set[str] = set()
+    for scope_id in raw:
+        if type(scope_id) is not str or not scope_id:
+            raise HermesIdentityError("scope_id must be a nonempty string")
+        if scope_id in seen:
+            raise HermesIdentityError("duplicate scope_ids")
+        seen.add(scope_id)
+    return frozenset(seen)
+
+
+def _audience_scope_map(raw: object) -> dict[str, str]:
+    if not isinstance(raw, dict) or not raw:
+        raise HermesIdentityError("installation manifest audience_scopes invalid")
+    if "owner_private" not in raw:
+        raise HermesIdentityError("installation manifest audience_scopes incomplete")
+    for key, value in raw.items():
+        if type(key) is not str or not key:
+            raise HermesIdentityError("audience_scopes key must be nonempty string")
+        if type(value) is not str or not value:
+            raise HermesIdentityError("audience_scopes value must be nonempty string")
+    return dict(raw)
+
+
+def _audience_rows(raw: object) -> tuple[dict[str, Any], ...]:
+    if not isinstance(raw, list) or not raw:
+        raise HermesIdentityError("installation manifest audiences invalid")
+    for item in raw:
+        if not isinstance(item, dict):
+            raise HermesIdentityError("audience entry must be dict")
+        allowed = item.get("allowed_scope_ids")
+        if not isinstance(allowed, list):
+            raise HermesIdentityError("audience allowed_scope_ids must be a list")
+        seen: list[str] = []
+        for scope_id in allowed:
+            if type(scope_id) is not str or not scope_id:
+                raise HermesIdentityError("audience allowed_scope_ids entry must be nonempty string")
+            if scope_id in seen:
+                raise HermesIdentityError("audience allowed_scope_ids contains duplicates")
+            seen.append(scope_id)
+        if type(item.get("capture_scope_id")) is not str:
+            raise HermesIdentityError("audience capture_scope_id must be an explicit string")
+    return tuple(_normalize_audience_entry(item) for item in raw)
+
+
+def _archive_scope_list(raw: object) -> frozenset[str]:
+    if type(raw) is not list:
+        raise HermesIdentityError("installation manifest archive_scopes must be a list")
+    for scope_id in raw:
+        if type(scope_id) is not str:
+            raise HermesIdentityError("installation manifest archive_scopes entry must be str")
+    if len(raw) != len(set(raw)):
+        raise HermesIdentityError("installation manifest archive_scopes contains duplicates")
+    return frozenset(raw)
+
+
+def _archive_map(name: str) -> Callable[[object], dict[str, str]]:
+    def check(raw: object) -> dict[str, str]:
+        if type(raw) is not dict:
+            raise HermesIdentityError(f"installation manifest {name} must be a dict")
+        return dict(raw)
+
+    return check
+
+
+# Manifest field -> validator producing the manifest attribute.  Required
+# fields are checked in this order; archive fields are optional but, when
+# present, may not be null.
+_REQUIRED_FIELDS: tuple[tuple[str, Callable[[object], Any]], ...] = (
+    ("scope_ids", _scope_id_list),
+    ("audience_scopes", _audience_scope_map),
+    ("audiences", _audience_rows),
+    ("owner_principals", normalize_owner_principals),
+)
+_ARCHIVE_FIELDS: tuple[tuple[str, Callable[[object], Any], Callable[[], Any]], ...] = (
+    ("archive_scopes", _archive_scope_list, frozenset),
+    ("archive_source_map", _archive_map("archive_source_map"), dict),
+    ("archive_retention_scopes", _archive_map("archive_retention_scopes"), dict),
+    ("archive_snapshot_hash", lambda raw: raw, str),
+    ("archive_catalog_hash", lambda raw: raw, str),
+)
+
+
+def _archive_field(payload: dict[str, Any], name: str, check: Callable[[object], Any], absent: Callable[[], Any]) -> Any:
+    if name not in payload:
+        return absent()
+    if payload[name] is None:
+        raise HermesIdentityError(f"explicit null {name} is not an absent field")
+    return check(payload[name])
+
+
+def _read_manifest(path: Path) -> dict[str, Any]:
     if not path.is_file():
         raise HermesIdentityError("installation manifest is required")
     if path.stat().st_size > _MAX_MANIFEST_BYTES:
@@ -464,151 +495,37 @@ def load_installation_manifest(hermes_home: Path | str) -> InstallationManifest:
         raise HermesIdentityError("installation manifest is invalid") from exc
     if payload.get("schema_version") != SCHEMA_VERSION:
         raise HermesIdentityError("unsupported installation manifest schema; explicit v3 upgrade required")
+    return payload
+
+
+def load_installation_manifest(hermes_home: Path | str) -> InstallationManifest:
+    home = Path(str(hermes_home)).expanduser().resolve()
+    payload = _read_manifest(home / "scope-recall" / MANIFEST_FILENAME)
     data_directory = Path(str(payload.get("data_directory") or "")).expanduser().resolve()
-    expected_directory = (home / "scope-recall").resolve()
-    if data_directory != expected_directory:
+    if data_directory != (home / "scope-recall").resolve():
         raise HermesIdentityError("installation manifest data_directory mismatch")
-    scope_ids = payload.get("scope_ids")
-    if not isinstance(scope_ids, list) or not scope_ids:
-        raise HermesIdentityError("installation manifest scope_ids invalid")
-    seen_scope_ids = set()
-    for s in scope_ids:
-        if type(s) is not str or not s:
-            raise HermesIdentityError("scope_id must be a nonempty string")
-        if s in seen_scope_ids:
-            raise HermesIdentityError("duplicate scope_ids")
-        seen_scope_ids.add(s)
-    
-    audience_scopes = payload.get("audience_scopes")
-    if not isinstance(audience_scopes, dict) or not audience_scopes:
-        raise HermesIdentityError("installation manifest audience_scopes invalid")
-    if "owner_private" not in audience_scopes:
-        raise HermesIdentityError("installation manifest audience_scopes incomplete")
-    for k, v in audience_scopes.items():
-        if type(k) is not str or not k:
-            raise HermesIdentityError("audience_scopes key must be nonempty string")
-        if type(v) is not str or not v:
-            raise HermesIdentityError("audience_scopes value must be nonempty string")
-    raw_audiences = payload.get("audiences")
-    if not isinstance(raw_audiences, list) or not raw_audiences:
-        raise HermesIdentityError("installation manifest audiences invalid")
-    for item in raw_audiences:
-        if not isinstance(item, dict):
-            raise HermesIdentityError("audience entry must be dict")
-        allowed = item.get("allowed_scope_ids")
-        if not isinstance(allowed, list):
-            raise HermesIdentityError("audience allowed_scope_ids must be a list")
-        seen_allowed: list[str] = []
-        for s in allowed:
-            if type(s) is not str or not s:
-                raise HermesIdentityError("audience allowed_scope_ids entry must be nonempty string")
-            if s in seen_allowed:
-                raise HermesIdentityError("audience allowed_scope_ids contains duplicates")
-            seen_allowed.append(s)
-        capture = item.get("capture_scope_id")
-        if type(capture) is not str:
-            raise HermesIdentityError("audience capture_scope_id must be an explicit string")
-    audiences = tuple(_normalize_audience_entry(item) for item in raw_audiences)
-    principals = normalize_owner_principals(payload.get("owner_principals"))
-
-    has_archive_fields = any(
-        k in payload for k in (
-            "archive_scopes", "archive_source_map", "archive_retention_scopes",
-            "archive_snapshot_hash", "archive_catalog_hash"
-        )
-    )
-
-    archive_scopes_raw = payload.get("archive_scopes")
-    if "archive_scopes" in payload:
-        if archive_scopes_raw is None:
-            raise HermesIdentityError("explicit null archive_scopes is not an absent field")
-        if type(archive_scopes_raw) is not list:
-            raise HermesIdentityError("installation manifest archive_scopes must be a list")
-        for s in archive_scopes_raw:
-            if type(s) is not str:
-                raise HermesIdentityError("installation manifest archive_scopes entry must be str")
-        if len(archive_scopes_raw) != len(set(archive_scopes_raw)):
-            raise HermesIdentityError("installation manifest archive_scopes contains duplicates")
-        archive_scopes = frozenset(archive_scopes_raw)
-    else:
-        archive_scopes = frozenset()
-
-    archive_source_map_raw = payload.get("archive_source_map")
-    if "archive_source_map" in payload:
-        if archive_source_map_raw is None:
-            raise HermesIdentityError("explicit null archive_source_map is not an absent field")
-        if type(archive_source_map_raw) is not dict:
-            raise HermesIdentityError("installation manifest archive_source_map must be a dict")
-        archive_source_map = dict(archive_source_map_raw)
-    else:
-        archive_source_map = {}
-
-    archive_retention_scopes_raw = payload.get("archive_retention_scopes")
-    if "archive_retention_scopes" in payload:
-        if archive_retention_scopes_raw is None:
-            raise HermesIdentityError("explicit null archive_retention_scopes is not an absent field")
-        if type(archive_retention_scopes_raw) is not dict:
-            raise HermesIdentityError("installation manifest archive_retention_scopes must be a dict")
-        archive_retention_scopes = dict(archive_retention_scopes_raw)
-    else:
-        archive_retention_scopes = {}
-
-    if "archive_snapshot_hash" in payload:
-        archive_snapshot_hash = payload.get("archive_snapshot_hash")
-        if archive_snapshot_hash is None:
-            raise HermesIdentityError("explicit null archive_snapshot_hash is not an absent field")
-    else:
-        archive_snapshot_hash = ""
-    if "archive_catalog_hash" in payload:
-        archive_catalog_hash = payload.get("archive_catalog_hash")
-        if archive_catalog_hash is None:
-            raise HermesIdentityError("explicit null archive_catalog_hash is not an absent field")
-    else:
-        archive_catalog_hash = ""
-    test_mode_val = payload.get("test_mode")
-
-    mapped_scopes = frozenset(
-        scope_id for item in audiences for scope_id in item["allowed_scope_ids"]
-    )
-    scope_ids_set = frozenset(scope_ids)
-    retained = normalize_retained_scope_ids(payload.get("retained_scope_ids"))
-
-    _validate_archive_manifest_fields(
-        has_archive_fields=has_archive_fields,
-        archive_scopes=archive_scopes,
-        archive_source_map=archive_source_map,
-        archive_retention_scopes=archive_retention_scopes,
-        archive_snapshot_hash=archive_snapshot_hash,
-        archive_catalog_hash=archive_catalog_hash,
-        test_mode=test_mode_val,
-        scope_ids=scope_ids_set,
-        mapped_scopes=mapped_scopes,
-        audience_scopes_values=frozenset(audience_scopes.values()),
-        retained_scope_ids=retained,
-    )
-
+    fields = {name: check(payload.get(name)) for name, check in _REQUIRED_FIELDS}
+    archive = {name: _archive_field(payload, name, check, absent) for name, check, absent in _ARCHIVE_FIELDS}
+    test_mode = payload.get("test_mode")
     manifest = InstallationManifest(
         schema_version=SCHEMA_VERSION,
-        installation_id=_bounded_text(payload.get("installation_id"), field="installation_id"),
-        agent_id=_bounded_text(payload.get("agent_id"), field="agent_id"),
+        installation_id=bounded_text(payload.get("installation_id"), field="installation_id"),
+        agent_id=bounded_text(payload.get("agent_id"), field="agent_id"),
         data_directory=data_directory,
-        scope_ids=scope_ids_set,
-        owner_principals=tuple(principals),
-        audience_scopes=dict(audience_scopes),
-        audiences=audiences,
-        test_mode=bool(test_mode_val),
+        test_mode=bool(test_mode),
         hermes_home=home,
-        retained_scope_ids=retained,
-        archive_scopes=archive_scopes,
-        archive_source_map=archive_source_map,
-        archive_retention_scopes=archive_retention_scopes,
-        archive_snapshot_hash=archive_snapshot_hash,
-        archive_catalog_hash=archive_catalog_hash,
+        retained_scope_ids=normalize_retained_scope_ids(payload.get("retained_scope_ids")),
+        **fields,
+        **archive,
+    )
+    _validate_archive_fields(
+        manifest,
+        present=any(name in payload for name, _check, _absent in _ARCHIVE_FIELDS),
+        test_mode=test_mode,
     )
     if manifest.installation_id != _installation_id(home):
         raise HermesIdentityError("installation manifest installation_id mismatch")
     return manifest
-
 
 
 def assert_binding_matches_manifest(binding: InstanceBinding, manifest: InstallationManifest) -> None:
@@ -632,6 +549,14 @@ def assert_binding_matches_manifest(binding: InstanceBinding, manifest: Installa
 def assert_core_binding_matches(core: MemoryCore, binding: InstanceBinding) -> None:
     if core.config.binding != binding:
         raise HermesIdentityError("injected core binding mismatch")
+
+
+def _initialize_core(manifest: InstallationManifest, clock: Any | None) -> tuple[InstanceBinding, MemoryCore]:
+    binding = manifest.to_binding()
+    core = MemoryCore(CoreConfig(binding), clock=clock)
+    core.initialize()
+    assert_binding_matches_manifest(core.config.binding, manifest)
+    return binding, core
 
 
 def install_hermes_scope_recall(
@@ -667,19 +592,29 @@ def install_hermes_scope_recall(
         retained_scope_ids=retained_scope_ids,
         owner_principals=owner_principals,
         audiences=audiences,
-        archive_retention_scopes=(
-            {"orphan_bridge": "archive|reserved:orphan_bridge",
-             "digest_audit": "archive|reserved:digest_audit"}
-            if legacy_audit_retention else None
-        ),
+        archive_retention_scopes=AUDIT_RETENTION_SCOPES if legacy_audit_retention else None,
         test_mode=test_mode,
     )
     write_installation_manifest(manifest)
-    binding = manifest.to_binding()
-    core = MemoryCore(CoreConfig(binding), clock=clock)
-    core.initialize()
-    assert_binding_matches_manifest(core.config.binding, manifest)
-    return binding, core
+    return _initialize_core(manifest, clock)
+
+
+def _verified_legacy_catalog(source_database: Path | str, source_hash: str, catalog_hash: str) -> dict[str, Any]:
+    from scope_recall.maintenance.migrate_v2 import build_legacy_catalog
+
+    catalog = build_legacy_catalog(source_database)
+    if catalog["source_sha256"] != source_hash:
+        raise HermesIdentityError(
+            f"source snapshot digest mismatch: expected {source_hash}, got {catalog['source_sha256']}"
+        )
+    if catalog["catalog_sha256"] != catalog_hash:
+        raise HermesIdentityError(
+            f"catalog digest mismatch: expected {catalog_hash}, got {catalog['catalog_sha256']}"
+        )
+    if not catalog["is_supported"]:
+        reasons = [item.get("reason", "unknown") for item in catalog.get("unsupported", [])]
+        raise HermesIdentityError(f"legacy catalog reports unsupported semantics: {reasons}")
+    return catalog
 
 
 def install_hermes_archive_migration(
@@ -698,55 +633,18 @@ def install_hermes_archive_migration(
     """Explicit opt-in trusted install for isolated archive migrations."""
     if test_mode is not True:
         raise HermesIdentityError("archive-only migration requires test_mode=True (literal True)")
-    
-    orig_home = Path(hermes_home)
-    if not orig_home.is_absolute():
+    home = Path(hermes_home)
+    if not home.is_absolute():
         raise HermesIdentityError("hermes_home must be absolute before resolve")
-        
-    home = orig_home.expanduser().resolve()
-    
+    home = home.expanduser().resolve()
     if not any(part.upper().startswith("TEST") for part in home.parts):
-        raise HermesIdentityError(
-            "archive-only installation target must be beneath a TEST-named path component"
-        )
-    target_data = home / "scope-recall"
+        raise HermesIdentityError("archive-only installation target must be beneath a TEST-named path component")
+    for label, digest in (("expected_source_hash", expected_source_hash), ("expected_catalog_hash", expected_catalog_hash)):
+        if type(digest) is not str or not _HEX64_RE.fullmatch(digest):
+            raise HermesIdentityError(f"{label} must be exact 64-hex string")
 
-    if type(expected_source_hash) is not str or not _HEX64_RE.fullmatch(expected_source_hash):
-        raise HermesIdentityError("expected_source_hash must be exact 64-hex string")
-    if type(expected_catalog_hash) is not str or not _HEX64_RE.fullmatch(expected_catalog_hash):
-        raise HermesIdentityError("expected_catalog_hash must be exact 64-hex string")
-
-    from scope_recall.maintenance.migrate_v2 import build_legacy_catalog
-
-    catalog = build_legacy_catalog(source_database)
-
-    if catalog["source_sha256"] != expected_source_hash:
-        raise HermesIdentityError(
-            f"source snapshot digest mismatch: expected {expected_source_hash}, got {catalog['source_sha256']}"
-        )
-    if catalog["catalog_sha256"] != expected_catalog_hash:
-        raise HermesIdentityError(
-            f"catalog digest mismatch: expected {expected_catalog_hash}, got {catalog['catalog_sha256']}"
-        )
-    if not catalog["is_supported"]:
-        unsupported_reasons = [u.get("reason", "unknown") for u in catalog.get("unsupported", [])]
-        raise HermesIdentityError(
-            f"legacy catalog reports unsupported semantics: {unsupported_reasons}"
-        )
-
-    real_scopes_set = set()
-    real_source_scopes = []
-    for s in catalog["content_scopes"] + catalog["shared_only_scopes"] + catalog["audit_only_scopes"]:
-        if s not in real_scopes_set:
-            real_scopes_set.add(s)
-            real_source_scopes.append(s)
-
-    archive_source_map = {src: build_archive_scope_id(src) for src in real_source_scopes}
-    archive_retention_scopes = {
-        "orphan_bridge": "archive|reserved:orphan_bridge",
-        "digest_audit": "archive|reserved:digest_audit",
-    }
-
+    catalog = _verified_legacy_catalog(source_database, expected_source_hash, expected_catalog_hash)
+    sources = dict.fromkeys(catalog["content_scopes"] + catalog["shared_only_scopes"] + catalog["audit_only_scopes"])
     manifest = build_installation_manifest(
         home,
         agent_id=agent_id,
@@ -754,37 +652,22 @@ def install_hermes_archive_migration(
         user_id=user_id,
         agent_workspace=agent_workspace,
         test_mode=True,
-        archive_source_scopes=archive_source_map,
-        archive_retention_scopes=archive_retention_scopes,
+        archive_source_scopes={source: build_archive_scope_id(source) for source in sources},
+        archive_retention_scopes=AUDIT_RETENTION_SCOPES,
         archive_snapshot_hash=catalog["source_sha256"],
         archive_catalog_hash=catalog["catalog_sha256"],
     )
-    intended_payload = manifest_payload(manifest)
 
+    target_data = home / "scope-recall"
     if target_data.exists() and any(target_data.iterdir()):
         try:
             existing = load_installation_manifest(home)
         except HermesIdentityError as exc:
-            raise HermesIdentityError(
-                f"archive target exists but manifest is invalid or unreadable: {exc}"
-            ) from exc
-        
-        existing_payload = manifest_payload(existing)
-        if existing_payload != intended_payload:
-            raise HermesIdentityError(
-                "existing manifest payload does not match intended payload; refusing unrelated target"
-            )
-        
-        binding = existing.to_binding()
-        core = MemoryCore(CoreConfig(binding), clock=clock)
-        core.initialize()
-        assert_binding_matches_manifest(core.config.binding, existing)
-        return binding, existing, catalog
-
-    write_installation_manifest(manifest)
-    binding = manifest.to_binding()
-    core = MemoryCore(CoreConfig(binding), clock=clock)
-    core.initialize()
-    assert_binding_matches_manifest(core.config.binding, manifest)
+            raise HermesIdentityError(f"archive target exists but manifest is invalid or unreadable: {exc}") from exc
+        if manifest_payload(existing) != manifest_payload(manifest):
+            raise HermesIdentityError("existing manifest payload does not match intended payload; refusing unrelated target")
+        manifest = existing
+    else:
+        write_installation_manifest(manifest)
+    binding, _core = _initialize_core(manifest, clock)
     return binding, manifest, catalog
-
