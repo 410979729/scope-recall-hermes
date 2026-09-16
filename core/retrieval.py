@@ -1,4 +1,4 @@
-"""Immutable retrieval values and ports for the single core recall pipeline.
+"""Immutable retrieval values for the single core recall pipeline.
 
 The objects in this module deliberately contain no host, Provider, or vector
 database implementation.  A request is copied into :class:`SearchContext`
@@ -6,12 +6,12 @@ once at the trusted boundary; downstream stages receive that frozen snapshot.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 import base64
 import json
 import math
-from typing import Literal, Protocol
+from typing import Literal
 
 from ..contracts import ContractError, RecallRequest, TrustedContext, validate_model_request
 
@@ -25,6 +25,16 @@ Answerability = Literal["supported", "partial", "ambiguous", "unknown"]
 # Character-calibrated whole-packet units from recall_budget.estimate_tokens.
 # This is not a measured provider tokenizer count; bytes are diagnostic only.
 AUTOMATIC_PACKET_BUDGET_UNITS = 4096
+
+
+def optional_json(text: object) -> object:
+    """Decode JSON carried in metadata; absent or malformed text reads as ``None``."""
+    if type(text) is not str:
+        return None
+    try:
+        return json.loads(text)
+    except ValueError:
+        return None
 
 
 def _utc(value: str) -> str:
@@ -119,14 +129,6 @@ class SearchContext:
         if len(set(self.current_source_refs)) != len(self.current_source_refs):
             raise ContractError("INPUT_INVALID", "current_source_refs")
 
-    @property
-    def deadline_monotonic(self) -> float:
-        return self.deadline
-
-    @property
-    def trusted(self) -> TrustedContext:
-        return self.trusted_context
-
     @classmethod
     def from_request(
         cls,
@@ -153,6 +155,22 @@ class SearchContext:
             current_source_refs=tuple(current_source_refs),
             request_id=payload["request_id"],
         )
+
+
+def effective_limits(context: SearchContext) -> SearchLimits:
+    """Automatic recall delivers at most six items within the automatic packet
+    budget, whatever the request asked for; explicit modes keep their limits."""
+    if context.mode != "auto":
+        return context.limits
+    return replace(
+        context.limits,
+        max_items=min(context.limits.max_items, 6),
+        budget_tokens=min(context.limits.budget_tokens, AUTOMATIC_PACKET_BUDGET_UNITS),
+    )
+
+
+#: Episode gaps that make a resume unsafe to act on from live modes.
+STALE_RESUME_GAPS = ("resume_requires_rebuild", "source_version_changed", "environment_needs_revalidation")
 
 
 @dataclass(frozen=True)
@@ -239,10 +257,6 @@ class RetrievalResult:
     request_id: str = ""
     unmet_needs: tuple[str, ...] = ()
 
-    @property
-    def objects(self) -> tuple[RetrievedObject, ...]:
-        return self.items
-
 
 @dataclass(frozen=True)
 class CollectionQuery:
@@ -324,13 +338,5 @@ class PageCursor:
                 tuple(payload["last_sort_key"]),
                 payload["object_kind"],
             )
-        except (ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
+        except (ValueError, TypeError, KeyError) as exc:
             raise ContractError("INPUT_INVALID", "cursor") from exc
-
-
-class VectorPort(Protocol):
-    def search(self, context: SearchContext, *, limit: int, remaining_seconds: float) -> tuple[CandidateRef, ...]: ...
-
-
-class RetrievalPort(Protocol):
-    def search(self, context: SearchContext) -> RetrievalResult: ...

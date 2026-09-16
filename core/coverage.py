@@ -1,24 +1,21 @@
 """Say what a bounded read did not look at, instead of silently not looking.
 
-Every read in this system is bounded -- by a SQL ``LIMIT``, by the request
-deadline, by the number of packet slots -- and until now all three bounds were
-invisible.  A recall that scanned eight of forty candidates returned exactly the
-same shape as one that scanned all forty, so "the memory does not know that"
-and "the memory did not look" were indistinguishable from the outside.  That
-matters most for the abstention design: a system whose whole value is refusing
-to guess has to be able to say *why* it is refusing.
+Every read is bounded -- by a SQL ``LIMIT``, by the request deadline, by the
+number of packet slots -- and a recall that scanned eight of forty candidates
+must not look like one that scanned all forty.  "The memory does not know"
+and "the memory did not look" are different answers, and a system whose value
+is refusing to guess has to be able to say *why* it refuses.
 
 The vocabulary is one gap string per truncation, carrying the stage, how many
-candidates were considered, and how many there were:
+candidates were considered, and how many there were::
 
     coverage_truncated:profile_terms:8of8+
     coverage_truncated:background_deadline:5of17
 
-A trailing ``+`` means "at least this many", which is what a ``LIMIT n+1`` probe
-can honestly prove.  Probing that way is deliberate: an exact total would need a
-second aggregate query on every read, and on the TianShu lexical projection --
-1.41 million rows -- that is real latency spent to refine a number nobody acts
-on differently.  Knowing that more exist is the part that changes behaviour.
+A trailing ``+`` means "at least this many", which is what a ``LIMIT n+1``
+probe can honestly prove.  An exact total would cost a second aggregate query
+on every read to refine a number nobody acts on differently; knowing that
+more exist is the part that changes behaviour.
 
 Not responsible for: deciding the bounds, or what a host does with the finding.
 """
@@ -26,8 +23,8 @@ from __future__ import annotations
 
 from typing import Any
 
-#: Prefix shared by every truncation gap.  ``RecallPacketCompiler._public_marker``
-#: passes unrecognised prefixes through intact, so the counts reach the host.
+#: Prefix shared by every truncation gap.  The packet compiler publishes
+#: unrecognised prefixes intact, so the counts reach the host.
 COVERAGE_GAP_PREFIX = "coverage_truncated"
 
 

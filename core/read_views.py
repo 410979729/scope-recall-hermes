@@ -1,30 +1,28 @@
-"""Bounded read-only profile and one-hop entity views over admitted claims."""
+"""Bounded read-only profile and one-hop entity views over admitted claims.
+
+Both views follow one shape: resolve the subject, select and clip candidate
+versions in a first read, release them through the authority boundary, recheck
+them in a second read, then render.  They differ only in which refs are
+enumerated and how the released statements are grouped.
+"""
 from __future__ import annotations
 
 from dataclasses import dataclass
-import json
+from typing import Callable
 
-from ..contracts import (
-    SOURCE_CONTEXTS_MAX_ITEMS,
-    ContractError,
-    SourceContext,
-    TrustedContext,
-    bounded_source_context,
-    bounded_source_contexts,
-    validate_model_request,
-    validate_payload,
-)
+from ..contracts import ContractError, SourceContext, TrustedContext, validate_model_request, validate_payload
 from .aliases import validate_alias_source, validate_alias_target
 from .claim_storage import parse_source_ref
 from .claims import ClaimVersion, effective_origin, select_effective
 from .mutate import evidence_refs
-from .visibility import ObjectRef, allowed, release_objects
+from .recall_budget import canonical_render_json
+from .retrieval_storage import evidence_source_contexts
+from .visibility import CLOSED_INTENTION_STATES, ObjectRef, allowed, release_objects
 
 
 DEFAULT_MAX_ITEMS = 16
 DEFAULT_BUDGET_TOKENS = 4096
 CANDIDATE_CAP = 200
-_PROFILE_KINDS = frozenset({"fact", "preference", "constraint", "decision", "intention"})
 _STATEMENT_KINDS = frozenset({"fact", "preference", "constraint", "decision", "intention"})
 _SECTION_FOR_KIND = {
     "fact": "facts",
@@ -33,10 +31,11 @@ _SECTION_FOR_KIND = {
     "decision": "decisions",
 }
 _SECTION_ORDER = ("facts", "preferences", "constraints", "decisions", "pending_intentions")
-_CLOSED_INTENTION = frozenset({"completed", "cancelled", "expired"})
 _RELEASE_ERRORS = frozenset({"VERSION_CONFLICT", "SOURCE_MISSING"})
 _CURRENT_SUBJECT_ALIASES = frozenset({"user", "current_user", "用户", "我"})
 
+
+# -- request and subject ------------------------------------------------------
 
 def _verified_current_principal(context: TrustedContext) -> str | None:
     principal = context.source_principal
@@ -52,7 +51,6 @@ def _verified_current_principal(context: TrustedContext) -> str | None:
 
 def _profile_subject(context: TrustedContext, requested: str) -> str:
     """Bind only explicit current-person aliases to a verified C1 principal."""
-
     if requested.casefold() not in _CURRENT_SUBJECT_ALIASES:
         return requested
     principal_ref = _verified_current_principal(context)
@@ -61,12 +59,8 @@ def _profile_subject(context: TrustedContext, requested: str) -> str:
     return principal_ref
 
 
-def _canonical_json(value: object) -> str:
-    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-
-
 def _budget_bytes(value: object) -> int:
-    return len(_canonical_json(value).encode("utf-8"))
+    return len(canonical_render_json(value).encode("utf-8"))
 
 
 def _strict_int(value: object, field: str) -> int:
@@ -79,28 +73,23 @@ def _normalize_read_request(name: str, request, context: TrustedContext, *, enti
     if type(request) is not dict:
         raise ContractError("INPUT_INVALID", "object")
     body = dict(request)
-    if "max_items" not in body:
-        body["max_items"] = DEFAULT_MAX_ITEMS
-    if "budget_tokens" not in body:
-        body["budget_tokens"] = DEFAULT_BUDGET_TOKENS
+    body.setdefault("max_items", DEFAULT_MAX_ITEMS)
+    body.setdefault("budget_tokens", DEFAULT_BUDGET_TOKENS)
     if entity and "direction" not in body:
         body["direction"] = "outgoing" if body.get("action") == "probe" else "both"
-    _strict_int(body.get("max_items"), "max_items")
-    _strict_int(body.get("budget_tokens"), "budget_tokens")
+    _strict_int(body["max_items"], "max_items")
+    _strict_int(body["budget_tokens"], "budget_tokens")
     return validate_model_request(name, body, context)
-
-
-def _empty_sections() -> dict[str, list]:
-    return {name: [] for name in _SECTION_ORDER}
 
 
 def _public_markers(values: list[str], *, limit: int) -> list[str]:
     return list(dict.fromkeys(value for value in values if type(value) is str and value))[:limit]
 
 
+# -- claim versions -----------------------------------------------------------
+
 def _claim_evidence_keys(version: ClaimVersion) -> tuple[str, ...]:
-    refs = evidence_refs(version.payload)
-    return tuple(dict.fromkeys(refs))[:32]
+    return tuple(dict.fromkeys(evidence_refs(version.payload)))[:32]
 
 
 def _claim_evidence_live(tx, version: ClaimVersion) -> bool:
@@ -126,25 +115,6 @@ def _claim_evidence_live(tx, version: ClaimVersion) -> bool:
     return True
 
 
-def _source_contexts_for(tx, version: ClaimVersion) -> list[SourceContext] | None:
-    collected: list[SourceContext] = []
-    for key in _claim_evidence_keys(version):
-        try:
-            source_ref, source_revision = parse_source_ref(key)
-        except ContractError:
-            continue
-        source = tx.source(source_ref, source_revision)
-        if source is None:
-            continue
-        context = bounded_source_context(source.event.get("source_context"))
-        if context is None or context in collected:
-            continue
-        collected.append(context)
-        if len(collected) >= SOURCE_CONTEXTS_MAX_ITEMS:
-            break
-    return bounded_source_contexts(collected)
-
-
 def _intention_state(version: ClaimVersion) -> str | None:
     intention = version.payload.get("intention")
     if not isinstance(intention, dict):
@@ -156,19 +126,10 @@ def _intention_state(version: ClaimVersion) -> str | None:
 def _is_current_statement(version: ClaimVersion) -> bool:
     if version.suppressed or version.state not in {"active", "disputed"}:
         return False
-    if version.payload["kind"] not in _STATEMENT_KINDS:
+    kind = version.payload["kind"]
+    if kind not in _STATEMENT_KINDS:
         return False
-    if version.payload["kind"] == "intention" and _intention_state(version) in _CLOSED_INTENTION:
-        return False
-    return True
-
-
-def _temporal_status(version: ClaimVersion) -> str:
-    if version.state == "disputed":
-        return "disputed"
-    if version.state == "active":
-        return "current"
-    return "unknown"
+    return not (kind == "intention" and _intention_state(version) in CLOSED_INTENTION_STATES)
 
 
 def _sort_key(version: ClaimVersion) -> tuple[str, str, str, int]:
@@ -176,50 +137,27 @@ def _sort_key(version: ClaimVersion) -> tuple[str, str, str, int]:
     return (payload["predicate"], payload["value_text"], version.ref, version.revision)
 
 
-def _profile_item(version: ClaimVersion, contexts: list[SourceContext] | None) -> dict:
+def _claim_item(version: ClaimVersion, contexts: list[SourceContext] | None, *, direction: str | None = None) -> dict:
+    """One rendered statement; entity statements lead with their direction."""
     payload = version.payload
-    item = {
-        "ref": version.ref,
-        "revision": version.revision,
-        "kind": payload["kind"],
-        "subject": payload["subject"],
-        "predicate": payload["predicate"],
-        "value_text": payload["value_text"],
-        "conditions": list(payload.get("conditions") or []),
-        "temporal_status": _temporal_status(version),
-        "claim_state": "disputed" if version.state == "disputed" else "active",
-        "valid_from": version.valid_from,
-        "valid_to": version.valid_to,
-        "evidence_refs": list(_claim_evidence_keys(version)),
-        "basis": version.basis,
-    }
+    identity = {"ref": version.ref, "revision": version.revision, "kind": payload["kind"]}
+    statement = {"subject": payload["subject"], "predicate": payload["predicate"], "value_text": payload["value_text"]}
+    item = {**identity, **statement} if direction is None else {"direction": direction, **statement, **identity}
+    item.update(
+        conditions=list(payload.get("conditions") or []),
+        temporal_status="disputed" if version.state == "disputed" else "current" if version.state == "active" else "unknown",
+        claim_state="disputed" if version.state == "disputed" else "active",
+        valid_from=version.valid_from,
+        valid_to=version.valid_to,
+        evidence_refs=list(_claim_evidence_keys(version)),
+        basis=version.basis,
+    )
     if contexts:
         item["source_contexts"] = [dict(context) for context in contexts]
     return item
 
 
-def _statement_item(version: ClaimVersion, *, direction: str, contexts: list[SourceContext] | None) -> dict:
-    payload = version.payload
-    item = {
-        "direction": direction,
-        "subject": payload["subject"],
-        "predicate": payload["predicate"],
-        "value_text": payload["value_text"],
-        "ref": version.ref,
-        "revision": version.revision,
-        "kind": payload["kind"],
-        "conditions": list(payload.get("conditions") or []),
-        "temporal_status": _temporal_status(version),
-        "claim_state": "disputed" if version.state == "disputed" else "active",
-        "valid_from": version.valid_from,
-        "valid_to": version.valid_to,
-        "evidence_refs": list(_claim_evidence_keys(version)),
-        "basis": version.basis,
-    }
-    if contexts:
-        item["source_contexts"] = [dict(context) for context in contexts]
-    return item
-
+# -- alias resolution ---------------------------------------------------------
 
 @dataclass(frozen=True)
 class _AliasResolution:
@@ -244,12 +182,7 @@ def _alias_source_bound(tx, alias: ClaimVersion, target: ClaimVersion) -> bool:
             if (span.get("source_ref"), span.get("source_revision")) != (root.ref, root.revision):
                 continue
             try:
-                validate_alias_source(
-                    span["quote"],
-                    alias_payload["name"],
-                    target,
-                    source_text=root.content,
-                )
+                validate_alias_source(span["quote"], alias_payload["name"], target, source_text=root.content)
                 return True
             except ContractError:
                 continue
@@ -258,26 +191,11 @@ def _alias_source_bound(tx, alias: ClaimVersion, target: ClaimVersion) -> bool:
 
 def _load_effective(tx, ref: str, now: str) -> ClaimVersion | None:
     versions = tx.claims.versions(ref)
-    if not versions:
-        return None
-    return select_effective(versions, now)
-
-
-def _alias_proof_fence(alias: ClaimVersion, target: ClaimVersion) -> tuple[ObjectRef, ...]:
-    fence: list[ObjectRef] = []
-    seen: set[tuple[str, str, int]] = set()
-    for version in (alias, target):
-        key = ("claim", version.ref, version.revision)
-        if key in seen:
-            continue
-        seen.add(key)
-        fence.append(ObjectRef("claim", version.ref, version.revision))
-    return tuple(fence)
+    return select_effective(versions, now) if versions else None
 
 
 def resolve_subject(tx, queried: str, now: str) -> _AliasResolution:
     """Resolve only admitted project-name aliases; never merge ambiguous names."""
-
     alias_refs = tx.claims.list_refs(alias_name=queried, limit=CANDIDATE_CAP)
     if len(alias_refs) >= CANDIDATE_CAP:
         return _AliasResolution("ambiguous", None, (), True)
@@ -291,19 +209,14 @@ def resolve_subject(tx, queried: str, now: str) -> _AliasResolution:
         alias_payload = alias.payload.get("alias")
         if not isinstance(alias_payload, dict):
             continue
-        name = alias_payload.get("name")
-        if name != queried and alias.payload.get("value_text") != queried:
+        if alias_payload.get("name") != queried and alias.payload.get("value_text") != queried:
             continue
-        target = _load_effective(tx, alias_payload.get("target_ref"), now) if type(alias_payload.get("target_ref")) is str else None
+        target_ref = alias_payload.get("target_ref")
+        target = _load_effective(tx, target_ref, now) if type(target_ref) is str else None
         try:
             if target is None:
                 raise ContractError("SOURCE_MISSING", "alias_target")
-            validate_alias_target(
-                target,
-                scope_id=alias.scope_id,
-                project_id=tx.context.project_id,
-                branch_id=tx.context.branch_id,
-            )
+            validate_alias_target(target, scope_id=alias.scope_id, project_id=tx.context.project_id, branch_id=tx.context.branch_id)
             if alias.payload["subject"] != target.payload["subject"]:
                 raise ContractError("ACCESS_DENIED", "alias_subject_identity")
         except ContractError:
@@ -312,59 +225,76 @@ def resolve_subject(tx, queried: str, now: str) -> _AliasResolution:
             continue
         accepted.append((target.payload["subject"], alias, target))
     distinct = list(dict.fromkeys(subject for subject, _alias, _target in accepted))
-    literal_refs = tx.claims.list_refs(subject=queried, limit=1)
-    has_literal = bool(literal_refs)
-    if len(distinct) > 1:
-        return _AliasResolution("ambiguous", None, (), False)
-    if len(distinct) == 1 and has_literal and queried != distinct[0]:
+    has_literal = bool(tx.claims.list_refs(subject=queried, limit=1))
+    if len(distinct) > 1 or (len(distinct) == 1 and has_literal and queried != distinct[0]):
         return _AliasResolution("ambiguous", None, (), False)
     if len(distinct) == 1:
         _subject, alias, target = next(row for row in accepted if row[0] == distinct[0])
-        return _AliasResolution("resolved", distinct[0], _alias_proof_fence(alias, target), False)
+        fence = tuple(dict.fromkeys(ObjectRef("claim", version.ref, version.revision) for version in (alias, target)))
+        return _AliasResolution("resolved", distinct[0], fence, False)
     return _AliasResolution("literal", queried, (), False)
+
+
+# -- select, release, recheck -------------------------------------------------
+
+@dataclass(frozen=True)
+class _Selection:
+    """What the first read chose for release, and what bounded it."""
+
+    versions: tuple[ClaimVersion, ...]
+    scan_capped: bool
+    truncated: bool
+    outgoing: frozenset[str] = frozenset()
+    incoming: frozenset[str] = frozenset()
+
+
+@dataclass(frozen=True)
+class _Loaded:
+    epoch: int
+    resolution: _AliasResolution
+    selection: _Selection
+    versions: dict[str, ClaimVersion]
+    contexts: dict[str, list[SourceContext]]
+
+
+@dataclass(frozen=True)
+class _Unavailable:
+    epoch: int | None
+    gaps: tuple[str, ...] = ()
+
+
+Selector = Callable[[object, str, str, _AliasResolution], _Selection]
 
 
 def _select_versions(tx, refs: tuple[str, ...], now: str) -> tuple[ClaimVersion, ...]:
     selected = []
     for ref in refs:
         version = _load_effective(tx, ref, now)
-        if version is None or not _is_current_statement(version):
-            continue
-        if not _claim_evidence_live(tx, version):
-            continue
-        selected.append(version)
+        if version is not None and _is_current_statement(version) and _claim_evidence_live(tx, version):
+            selected.append(version)
     return tuple(selected)
 
 
+def _clip_candidate_refs(*groups: tuple[str, ...], reserved: int = 0) -> tuple[tuple[str, ...], bool]:
+    merged = list(dict.fromkeys(ref for group in groups for ref in group))
+    room = max(0, CANDIDATE_CAP - reserved)
+    overflow = len(merged) > room or any(len(group) >= CANDIDATE_CAP for group in groups)
+    return tuple(sorted(merged))[:room], overflow
+
+
+def _clip_versions_for_view(versions: tuple[ClaimVersion, ...], *, max_items: int) -> tuple[tuple[ClaimVersion, ...], bool]:
+    ordered = tuple(sorted(versions, key=_sort_key))
+    return ordered[:max_items], len(ordered) > max_items
+
+
 def _release_selected(storage, clock, context, versions: tuple[ClaimVersion, ...], fence: tuple[ObjectRef, ...], epoch: int):
-    refs = []
-    seen: set[tuple[str, str, int]] = set()
-    for version in (*versions,):
-        key = ("claim", version.ref, version.revision)
-        if key in seen:
-            continue
-        seen.add(key)
-        refs.append(ObjectRef("claim", version.ref, version.revision))
-    for item in fence:
-        key = (item.kind, item.ref, item.revision)
-        if key in seen:
-            continue
-        seen.add(key)
-        refs.append(item)
+    refs = tuple(dict.fromkeys((*(ObjectRef("claim", version.ref, version.revision) for version in versions), *fence)))
     if not refs:
         with storage.read(context) as tx:
             if tx.status().memory_epoch != epoch:
                 raise ContractError("VERSION_CONFLICT", "memory_epoch")
         return ()
-    return release_objects(
-        storage,
-        clock,
-        context,
-        tuple(refs),
-        expected_epoch=epoch,
-        automatic=False,
-        history=False,
-    )
+    return release_objects(storage, clock, context, refs, expected_epoch=epoch, automatic=False, history=False)
 
 
 def _recheck_released(tx, released, expected: tuple[ClaimVersion, ...]) -> tuple[ClaimVersion, ...] | None:
@@ -380,47 +310,49 @@ def _recheck_released(tx, released, expected: tuple[ClaimVersion, ...]) -> tuple
     return tuple(checked)
 
 
-def _coverage(*, status: str, truncated: bool, scan_capped: bool, budget_capped: bool) -> str:
-    if status in {"no_match", "unavailable"}:
-        return "unknown"
-    if scan_capped or truncated or budget_capped or status == "partial":
-        return "partial"
-    if status == "ok":
-        return "complete_for_query"
-    return "unknown"
+def _load_view(storage, clock, context: TrustedContext, lookup_subject: str, select: Selector) -> _Loaded | _Unavailable:
+    """Resolve, select, release and recheck; the epoch must hold across all three reads."""
+    now = clock.utc_now()
+    try:
+        with storage.read(context) as tx:
+            epoch = tx.status().memory_epoch
+            resolution = resolve_subject(tx, lookup_subject, now)
+            if resolution.status == "ambiguous":
+                selection = _Selection((), resolution.scan_capped, False)
+            else:
+                selection = select(tx, now, resolution.subject or lookup_subject, resolution)
+        released = _release_selected(storage, clock, context, selection.versions, resolution.fence, epoch)
+        with storage.read(context) as tx:
+            if tx.status().memory_epoch != epoch:
+                return _Unavailable(tx.status().memory_epoch)
+            checked = _recheck_released(tx, released, selection.versions)
+            if checked is None and selection.versions:
+                return _Unavailable(epoch)
+            versions = {version.ref: version for version in checked or ()}
+            contexts = {ref: evidence_source_contexts(tx, _claim_evidence_keys(version)) for ref, version in versions.items()}
+            current = tx.status().memory_epoch
+            if current != epoch:
+                return _Unavailable(current)
+    except ContractError as exc:
+        if exc.code not in _RELEASE_ERRORS:
+            raise
+        try:
+            with storage.read(context) as tx:
+                current = tx.status().memory_epoch
+        except ContractError:
+            current = None
+        return _Unavailable(current, (exc.field,))
+    return _Loaded(epoch, resolution, selection, versions, contexts)
 
 
-def _answerability(*, status: str, alias_status: str, item_count: int, disputed: bool) -> str:
-    if status in {"no_match", "unavailable"}:
-        return "unknown"
-    if alias_status == "ambiguous":
-        return "ambiguous"
-    if status == "partial" or disputed:
-        return "partial"
-    if item_count:
-        return "supported"
-    return "unknown"
+# -- rendering ----------------------------------------------------------------
+
+def _empty_sections() -> dict[str, list]:
+    return {name: [] for name in _SECTION_ORDER}
 
 
-def _clip_candidate_refs(*groups: tuple[str, ...], reserved: int = 0) -> tuple[tuple[str, ...], bool]:
-    merged: list[str] = []
-    seen: set[str] = set()
-    for group in groups:
-        for ref in group:
-            if ref in seen:
-                continue
-            seen.add(ref)
-            merged.append(ref)
-    room = max(0, CANDIDATE_CAP - reserved)
-    overflow = len(merged) > room or any(len(group) >= CANDIDATE_CAP for group in groups)
-    return tuple(sorted(merged))[:room], overflow
-
-
-def _clip_versions_for_view(versions: tuple[ClaimVersion, ...], *, max_items: int) -> tuple[tuple[ClaimVersion, ...], bool]:
-    ordered = tuple(sorted(versions, key=_sort_key))
-    if len(ordered) <= max_items:
-        return ordered, False
-    return ordered[:max_items], True
+def _profile_item_lists(result: dict) -> list[list]:
+    return [result["sections"][name] for name in _SECTION_ORDER] + [result["disputed"]]
 
 
 def _mark_gap(result: dict, gap: str, *, unmet: str | None = None) -> None:
@@ -460,45 +392,29 @@ def _clear_terminal_body(result: dict, item_lists: list[list]) -> None:
         result["alias_resolution"] = "none"
 
 
-def _mark_budget_cap(result: dict, budget_tokens: int) -> None:
-    result["truncated"] = True
-    _mark_gap(result, "budget_token_cap")
-    if budget_tokens < DEFAULT_BUDGET_TOKENS:
-        _mark_gap(result, "budget_token_cap", unmet="retry_once_with_budget_tokens_4096")
-
-
-def _converge_final_budget(
-    result: dict,
-    *,
-    max_items: int,
-    budget_tokens: int,
-    item_lists: list[list],
-    alias_status: str,
-    scan_capped: bool,
-    disputed_from,
-) -> dict:
-    """Fit the finalized canonical UTF-8 envelope, then reject if even the minimum cannot fit."""
-
-    _apply_max_items(result, item_lists, max_items)
-    while True:
-        item_count = sum(len(items) for items in item_lists)
-        _finalize_status(
-            result,
-            item_count=item_count,
-            alias_status=alias_status,
-            scan_capped=scan_capped,
-            disputed=bool(disputed_from()),
-        )
-        _clear_terminal_body(result, item_lists)
-        if _budget_bytes(result) <= budget_tokens:
-            return result
-        if not _drop_one_item(item_lists):
-            raise ContractError("INPUT_INVALID", "budget_tokens")
-        _mark_budget_cap(result, budget_tokens)
-
-
-def _profile_item_lists(result: dict) -> list[list]:
-    return [result["sections"][name] for name in _SECTION_ORDER] + [result["disputed"]]
+def _finalize_status(result: dict, *, item_count: int, alias_status: str, scan_capped: bool, disputed: bool) -> None:
+    """The one place that turns what happened into status, coverage and answerability."""
+    if result["status"] == "unavailable":
+        result["coverage"] = "unknown"
+        result["answerability"] = "unknown"
+        return
+    if alias_status == "ambiguous":
+        result["status"] = "partial"
+        result["coverage"] = "partial" if scan_capped else "unknown"
+        result["answerability"] = "ambiguous"
+        return
+    truncated = result["truncated"]
+    budget_capped = "budget_token_cap" in result["gaps"]
+    if item_count == 0:
+        capped = truncated or budget_capped or "max_items_cap" in result["gaps"]
+        result["status"] = "partial" if capped else "no_match"
+        result["coverage"] = "partial" if capped else "unknown"
+        result["answerability"] = "partial" if capped else "unknown"
+        return
+    partial = truncated or scan_capped
+    result["status"] = "partial" if partial else "ok"
+    result["coverage"] = "partial" if partial or budget_capped else "complete_for_query"
+    result["answerability"] = "partial" if partial or disputed else "supported"
 
 
 def _finish_view(
@@ -512,54 +428,25 @@ def _finish_view(
     scan_capped: bool,
     disputed_from,
 ) -> dict:
-    _converge_final_budget(
-        result,
-        max_items=max_items,
-        budget_tokens=budget_tokens,
-        item_lists=item_lists,
-        alias_status=alias_status,
-        scan_capped=scan_capped,
-        disputed_from=disputed_from,
-    )
-    return validate_payload(schema, result)
-
-
-def _finalize_status(result: dict, *, item_count: int, alias_status: str, scan_capped: bool, disputed: bool) -> None:
-    if result["status"] == "unavailable":
-        result["coverage"] = "unknown"
-        result["answerability"] = "unknown"
-        return
-    if alias_status == "ambiguous":
-        result["status"] = "partial"
-        result["coverage"] = "unknown" if not scan_capped else "partial"
-        result["answerability"] = "ambiguous"
-        return
-    if item_count == 0:
-        if result["truncated"] or "budget_token_cap" in result["gaps"] or "max_items_cap" in result["gaps"]:
-            result["status"] = "partial"
-            result["coverage"] = "partial"
-            result["answerability"] = "partial"
-            return
-        result["status"] = "no_match"
-        result["coverage"] = "unknown"
-        result["answerability"] = "unknown"
-        return
-    if result["truncated"] or scan_capped:
-        result["status"] = "partial"
-    else:
-        result["status"] = "ok"
-    result["coverage"] = _coverage(
-        status=result["status"],
-        truncated=result["truncated"],
-        scan_capped=scan_capped,
-        budget_capped="budget_token_cap" in result["gaps"],
-    )
-    result["answerability"] = _answerability(
-        status=result["status"],
-        alias_status=alias_status,
-        item_count=item_count,
-        disputed=disputed,
-    )
+    """Fit the finalized canonical UTF-8 envelope, then reject if even the minimum cannot fit."""
+    _apply_max_items(result, item_lists, max_items)
+    while True:
+        _finalize_status(
+            result,
+            item_count=sum(len(items) for items in item_lists),
+            alias_status=alias_status,
+            scan_capped=scan_capped,
+            disputed=bool(disputed_from()),
+        )
+        _clear_terminal_body(result, item_lists)
+        if _budget_bytes(result) <= budget_tokens:
+            return validate_payload(schema, result)
+        if not _drop_one_item(item_lists):
+            raise ContractError("INPUT_INVALID", "budget_tokens")
+        result["truncated"] = True
+        _mark_gap(result, "budget_token_cap")
+        if budget_tokens < DEFAULT_BUDGET_TOKENS:
+            _mark_gap(result, "budget_token_cap", unmet="retry_once_with_budget_tokens_4096")
 
 
 def _unavailable(request: dict, *, epoch: int | None, extra_gaps: tuple[str, ...] = (), entity: bool = False) -> dict:
@@ -596,253 +483,138 @@ def _unavailable(request: dict, *, epoch: int | None, extra_gaps: tuple[str, ...
     )
 
 
-def _contexts_map(tx, versions: tuple[ClaimVersion, ...]) -> dict[str, list[SourceContext] | None]:
-    return {version.ref: _source_contexts_for(tx, version) for version in versions}
-
-
-def read_profile(storage, clock, context: TrustedContext, request) -> dict:
-    payload = _normalize_read_request("profile_request", request, context, entity=False)
-    requested_subject = payload["subject"]
-    lookup_subject = _profile_subject(context, requested_subject)
-    now = clock.utc_now()
-    try:
-        with storage.read(context) as tx:
-            epoch = tx.status().memory_epoch
-            resolution = resolve_subject(tx, lookup_subject, now)
-            fence = resolution.fence
-            if resolution.status == "ambiguous":
-                selected: tuple[ClaimVersion, ...] = ()
-                scan_capped = resolution.scan_capped
-                item_truncated = False
-            else:
-                subject = resolution.subject or lookup_subject
-                refs = tx.claims.list_refs(subject=subject, limit=CANDIDATE_CAP)
-                clipped_refs, ref_overflow = _clip_candidate_refs(refs, reserved=len(fence))
-                scan_capped = resolution.scan_capped or len(refs) >= CANDIDATE_CAP or ref_overflow
-                selected = _select_versions(tx, clipped_refs, now)
-                selected, item_truncated = _clip_versions_for_view(selected, max_items=payload["max_items"])
-        released = _release_selected(storage, clock, context, selected, fence, epoch)
-        with storage.read(context) as tx:
-            if tx.status().memory_epoch != epoch:
-                return _unavailable(payload, epoch=tx.status().memory_epoch)
-            checked = _recheck_released(tx, released, selected)
-            if checked is None and selected:
-                return _unavailable(payload, epoch=epoch)
-            versions = checked or ()
-            if resolution.status == "resolved" and resolution.subject:
-                alias_ok = all(
-                    item.ref in {version.ref for version in released if isinstance(version, ClaimVersion)}
-                    for item in fence
-                )
-                if fence and not alias_ok:
-                    return _unavailable(payload, epoch=epoch)
-            contexts = _contexts_map(tx, versions)
-            result_epoch = tx.status().memory_epoch
-            if result_epoch != epoch:
-                return _unavailable(payload, epoch=result_epoch)
-    except ContractError as exc:
-        if exc.code in _RELEASE_ERRORS:
-            try:
-                with storage.read(context) as tx:
-                    current = tx.status().memory_epoch
-            except ContractError:
-                current = None
-            return _unavailable(payload, epoch=current, extra_gaps=(exc.field,))
-        raise
-    sections = _empty_sections()
-    disputed: list[dict] = []
-    gaps: list[str] = []
-    if resolution.status == "ambiguous":
-        gaps.append("alias_ambiguous")
-    for version in sorted(versions, key=_sort_key):
-        item = _profile_item(version, contexts.get(version.ref))
-        if version.state == "disputed":
-            disputed.append(item)
-            continue
-        if version.payload["kind"] == "intention":
-            if _intention_state(version) == "pending":
-                sections["pending_intentions"].append(item)
-            continue
-        section = _SECTION_FOR_KIND.get(version.payload["kind"])
-        if section is not None:
-            sections[section].append(item)
-    if disputed:
-        gaps.append("disputed_facts_separated")
-    if not any(sections[name] for name in _SECTION_ORDER) and not disputed and resolution.status != "ambiguous":
-        gaps.append("consolidation_required" if not versions else "no_current_qualified_facts")
+def _view_result(payload: dict, loaded: _Loaded, lookup_subject: str, body: dict, gaps: list[str]) -> dict:
+    """The shared envelope around a view body, with the bounds that applied."""
+    ambiguous = loaded.resolution.status == "ambiguous"
     result = {
         "protocol_version": "1.1",
         "request_id": payload["request_id"],
         "status": "ok",
-        "memory_epoch": epoch,
-        "subject": requested_subject,
-        "resolved_subject": None if resolution.status == "ambiguous" else (resolution.subject or lookup_subject),
-        "alias_resolution": resolution.status,
-        "sections": sections,
-        "disputed": disputed,
+        "memory_epoch": loaded.epoch,
+        "subject": payload["subject"],
+        "resolved_subject": None if ambiguous else (loaded.resolution.subject or lookup_subject),
+        "alias_resolution": loaded.resolution.status,
+        **body,
         "gaps": gaps,
         "coverage": "partial",
         "answerability": "unknown",
         "truncated": False,
-        "scan_capped": scan_capped,
+        "scan_capped": loaded.selection.scan_capped,
         "unmet_needs": [],
     }
-    if item_truncated:
+    if loaded.selection.truncated:
         result["truncated"] = True
         result["gaps"].append("max_items_cap")
         result["unmet_needs"].append("retry_with_higher_max_items")
-    if scan_capped:
+    if loaded.selection.scan_capped:
         result["gaps"].append("scan_capped")
         result["unmet_needs"].append("bounded_candidate_enumeration")
-    item_lists = _profile_item_lists(result)
+    return result
+
+
+# -- the two views ------------------------------------------------------------
+
+def read_profile(storage, clock, context: TrustedContext, request) -> dict:
+    payload = _normalize_read_request("profile_request", request, context, entity=False)
+    lookup_subject = _profile_subject(context, payload["subject"])
+
+    def select(tx, now: str, subject: str, resolution: _AliasResolution) -> _Selection:
+        refs = tx.claims.list_refs(subject=subject, limit=CANDIDATE_CAP)
+        clipped, overflow = _clip_candidate_refs(refs, reserved=len(resolution.fence))
+        versions, truncated = _clip_versions_for_view(_select_versions(tx, clipped, now), max_items=payload["max_items"])
+        return _Selection(versions, resolution.scan_capped or len(refs) >= CANDIDATE_CAP or overflow, truncated)
+
+    loaded = _load_view(storage, clock, context, lookup_subject, select)
+    if isinstance(loaded, _Unavailable):
+        return _unavailable(payload, epoch=loaded.epoch, extra_gaps=loaded.gaps)
+    sections = _empty_sections()
+    disputed: list[dict] = []
+    for version in sorted(loaded.versions.values(), key=_sort_key):
+        item = _claim_item(version, loaded.contexts.get(version.ref))
+        kind = version.payload["kind"]
+        if version.state == "disputed":
+            disputed.append(item)
+        elif kind == "intention":
+            if _intention_state(version) == "pending":
+                sections["pending_intentions"].append(item)
+        elif kind in _SECTION_FOR_KIND:
+            sections[_SECTION_FOR_KIND[kind]].append(item)
+    ambiguous = loaded.resolution.status == "ambiguous"
+    gaps: list[str] = ["alias_ambiguous"] if ambiguous else []
+    if disputed:
+        gaps.append("disputed_facts_separated")
+    if not ambiguous and not any(sections.values()) and not disputed:
+        gaps.append("consolidation_required" if not loaded.versions else "no_current_qualified_facts")
+    result = _view_result(payload, loaded, lookup_subject, {"sections": sections, "disputed": disputed}, gaps)
     return _finish_view(
         result,
         schema="profile_view",
         max_items=payload["max_items"],
         budget_tokens=payload["budget_tokens"],
-        item_lists=item_lists,
-        alias_status=resolution.status,
-        scan_capped=scan_capped,
+        item_lists=_profile_item_lists(result),
+        alias_status=loaded.resolution.status,
+        scan_capped=loaded.selection.scan_capped,
         disputed_from=lambda: bool(result["disputed"]),
     )
 
 
 def read_entity(storage, clock, context: TrustedContext, request) -> dict:
     payload = _normalize_read_request("entity_request", request, context, entity=True)
-    requested_subject = payload["subject"]
-    lookup_subject = _profile_subject(context, requested_subject)
-    now = clock.utc_now()
+    lookup_subject = _profile_subject(context, payload["subject"])
     predicate = payload.get("predicate")
-    want_out = payload["action"] == "probe" or payload["direction"] in {"outgoing", "both"}
-    want_in = payload["action"] == "related" and payload["direction"] in {"incoming", "both"}
-    if payload["action"] == "probe":
-        want_out, want_in = True, False
-    try:
-        with storage.read(context) as tx:
-            epoch = tx.status().memory_epoch
-            resolution = resolve_subject(tx, lookup_subject, now)
-            outgoing: tuple[ClaimVersion, ...] = ()
-            incoming: tuple[ClaimVersion, ...] = ()
-            scan_capped = resolution.scan_capped
-            item_truncated = False
-            fence = resolution.fence
-            if resolution.status != "ambiguous":
-                subject = resolution.subject or lookup_subject
-                outgoing_refs: tuple[str, ...] = ()
-                incoming_refs: tuple[str, ...] = ()
-                incoming_names: tuple[str, ...] = ()
-                scan_hit = False
-                if want_out:
-                    kind = "fact" if payload["action"] == "probe" else None
-                    outgoing_refs = tx.claims.list_refs(subject=subject, predicate=predicate, kind=kind, limit=CANDIDATE_CAP)
-                    scan_hit = scan_hit or len(outgoing_refs) >= CANDIDATE_CAP
-                if want_in:
-                    incoming_names = (
-                        (lookup_subject,)
-                        if resolution.status == "literal"
-                        else tuple(dict.fromkeys((lookup_subject, subject)))
-                    )
-                    seen_in: list[str] = []
-                    seen_set: set[str] = set()
-                    for name in incoming_names:
-                        refs = tx.claims.list_refs(value_text=name, predicate=predicate, limit=CANDIDATE_CAP)
-                        scan_hit = scan_hit or len(refs) >= CANDIDATE_CAP
-                        for ref in refs:
-                            if ref in seen_set:
-                                continue
-                            seen_set.add(ref)
-                            seen_in.append(ref)
-                    incoming_refs = tuple(seen_in)
-                clipped_refs, ref_overflow = _clip_candidate_refs(
-                    outgoing_refs, incoming_refs, reserved=len(fence),
-                )
-                scan_capped = scan_capped or scan_hit or ref_overflow
-                loaded = _select_versions(tx, clipped_refs, now)
-                outgoing = tuple(
-                    version for version in loaded
-                    if version.ref in outgoing_refs
-                    and (payload["action"] != "probe" or version.payload["kind"] == "fact")
-                )
-                incoming = tuple(
-                    version for version in loaded
-                    if version.ref in incoming_refs and version.payload.get("value_text") in incoming_names
-                )
-                selected_by_ref: dict[str, ClaimVersion] = {}
-                for version in (*outgoing, *incoming):
-                    selected_by_ref.setdefault(version.ref, version)
-                selected, item_truncated = _clip_versions_for_view(
-                    tuple(selected_by_ref.values()), max_items=payload["max_items"],
-                )
-                kept = {version.ref for version in selected}
-                outgoing = tuple(version for version in outgoing if version.ref in kept)
-                incoming = tuple(version for version in incoming if version.ref in kept)
-            else:
-                selected = ()
-        released = _release_selected(storage, clock, context, selected, fence, epoch)
-        with storage.read(context) as tx:
-            if tx.status().memory_epoch != epoch:
-                return _unavailable(payload, epoch=tx.status().memory_epoch, entity=True)
-            checked = _recheck_released(tx, released, selected)
-            if checked is None and selected:
-                return _unavailable(payload, epoch=epoch, entity=True)
-            versions = {version.ref: version for version in (checked or ())}
-            outgoing = tuple(versions[version.ref] for version in outgoing if version.ref in versions)
-            incoming = tuple(versions[version.ref] for version in incoming if version.ref in versions)
-            contexts = _contexts_map(tx, tuple(versions.values()))
-            if tx.status().memory_epoch != epoch:
-                return _unavailable(payload, epoch=tx.status().memory_epoch, entity=True)
-    except ContractError as exc:
-        if exc.code in _RELEASE_ERRORS:
-            try:
-                with storage.read(context) as tx:
-                    current = tx.status().memory_epoch
-            except ContractError:
-                current = None
-            return _unavailable(payload, epoch=current, extra_gaps=(exc.field,), entity=True)
-        raise
+    probe = payload["action"] == "probe"
+    direction = "outgoing" if probe else payload["direction"]
+    want_out = probe or direction in {"outgoing", "both"}
+    want_in = not probe and direction in {"incoming", "both"}
+
+    def select(tx, now: str, subject: str, resolution: _AliasResolution) -> _Selection:
+        outgoing_refs: tuple[str, ...] = ()
+        incoming_refs: tuple[str, ...] = ()
+        incoming_names: tuple[str, ...] = ()
+        scan_hit = False
+        if want_out:
+            outgoing_refs = tx.claims.list_refs(subject=subject, predicate=predicate, kind="fact" if probe else None, limit=CANDIDATE_CAP)
+            scan_hit = len(outgoing_refs) >= CANDIDATE_CAP
+        if want_in:
+            incoming_names = (lookup_subject,) if resolution.status == "literal" else tuple(dict.fromkeys((lookup_subject, subject)))
+            collected: list[str] = []
+            for name in incoming_names:
+                refs = tx.claims.list_refs(value_text=name, predicate=predicate, limit=CANDIDATE_CAP)
+                scan_hit = scan_hit or len(refs) >= CANDIDATE_CAP
+                collected.extend(refs)
+            incoming_refs = tuple(dict.fromkeys(collected))
+        clipped, overflow = _clip_candidate_refs(outgoing_refs, incoming_refs, reserved=len(resolution.fence))
+        loaded = _select_versions(tx, clipped, now)
+        outgoing = {v.ref for v in loaded if v.ref in outgoing_refs and (not probe or v.payload["kind"] == "fact")}
+        incoming = {v.ref for v in loaded if v.ref in incoming_refs and v.payload.get("value_text") in incoming_names}
+        versions, truncated = _clip_versions_for_view(
+            tuple(v for v in loaded if v.ref in outgoing or v.ref in incoming), max_items=payload["max_items"],
+        )
+        kept = {v.ref for v in versions}
+        return _Selection(versions, resolution.scan_capped or scan_hit or overflow, truncated,
+                          outgoing=frozenset(outgoing & kept), incoming=frozenset(incoming & kept))
+
+    loaded = _load_view(storage, clock, context, lookup_subject, select)
+    if isinstance(loaded, _Unavailable):
+        return _unavailable(payload, epoch=loaded.epoch, extra_gaps=loaded.gaps, entity=True)
+    ambiguous = loaded.resolution.status == "ambiguous"
     statements: list[dict] = []
-    if resolution.status != "ambiguous":
-        for version in sorted(outgoing, key=_sort_key):
-            statements.append(_statement_item(version, direction="outgoing", contexts=contexts.get(version.ref)))
-        for version in sorted(incoming, key=_sort_key):
-            statements.append(_statement_item(version, direction="incoming", contexts=contexts.get(version.ref)))
-    gaps: list[str] = []
-    if resolution.status == "ambiguous":
-        gaps.append("alias_ambiguous")
-    if not statements and resolution.status != "ambiguous":
+    if not ambiguous:
+        for group, side in ((loaded.selection.outgoing, "outgoing"), (loaded.selection.incoming, "incoming")):
+            members = [loaded.versions[ref] for ref in group if ref in loaded.versions]
+            statements.extend(_claim_item(v, loaded.contexts.get(v.ref), direction=side) for v in sorted(members, key=_sort_key))
+    gaps: list[str] = ["alias_ambiguous"] if ambiguous else []
+    if not statements and not ambiguous:
         gaps.append("consolidation_required")
-    result = {
-        "protocol_version": "1.1",
-        "request_id": payload["request_id"],
-        "status": "ok",
-        "memory_epoch": epoch,
-        "subject": requested_subject,
-        "resolved_subject": None if resolution.status == "ambiguous" else (resolution.subject or lookup_subject),
-        "alias_resolution": resolution.status,
-        "action": payload["action"],
-        "direction": "outgoing" if payload["action"] == "probe" else payload["direction"],
-        "statements": statements,
-        "gaps": gaps,
-        "coverage": "partial",
-        "answerability": "unknown",
-        "truncated": False,
-        "scan_capped": scan_capped,
-        "unmet_needs": [],
-    }
-    if item_truncated:
-        result["truncated"] = True
-        result["gaps"].append("max_items_cap")
-        result["unmet_needs"].append("retry_with_higher_max_items")
-    if scan_capped:
-        result["gaps"].append("scan_capped")
-        result["unmet_needs"].append("bounded_candidate_enumeration")
+    body = {"action": payload["action"], "direction": direction, "statements": statements}
+    result = _view_result(payload, loaded, lookup_subject, body, gaps)
     return _finish_view(
         result,
         schema="entity_view",
         max_items=payload["max_items"],
         budget_tokens=payload["budget_tokens"],
         item_lists=[result["statements"]],
-        alias_status=resolution.status,
-        scan_capped=scan_capped,
+        alias_status=loaded.resolution.status,
+        scan_capped=loaded.selection.scan_capped,
         disputed_from=lambda: any(item["temporal_status"] == "disputed" for item in result["statements"]),
     )

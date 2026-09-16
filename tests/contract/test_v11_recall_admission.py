@@ -615,8 +615,7 @@ def test_P08_relation_budget_counts_rejected_candidates_and_checks_original_dead
 
 def test_automatic_packet_budget_keeps_later_constraint_and_stays_closed(tmp_path):
     from scope_recall.core.recall_budget import estimate_tokens
-    from scope_recall.core.recall_packet import RecallPacketCompiler
-    from scope_recall.core.retrieval import AUTOMATIC_PACKET_BUDGET_UNITS, SearchLimits
+    from scope_recall.core.retrieval import AUTOMATIC_PACKET_BUDGET_UNITS, SearchLimits, effective_limits
 
     assert SearchLimits().budget_tokens == AUTOMATIC_PACKET_BUDGET_UNITS == 4096
     core, ctx, vectors = _app(tmp_path)
@@ -635,14 +634,14 @@ def test_automatic_packet_budget_keeps_later_constraint_and_stays_closed(tmp_pat
         now=FixedClock.now,
         deadline=200.0,
     )
-    assert RecallPacketCompiler._effective_limits(default_search).budget_tokens == AUTOMATIC_PACKET_BUDGET_UNITS
+    assert effective_limits(default_search).budget_tokens == AUTOMATIC_PACKET_BUDGET_UNITS
     small_search = SearchContext.from_request(
         recall_request(query=query, mode="auto", budget_tokens=1200, request_id="TEST-hotel-explicit"),
         ctx,
         now=FixedClock.now,
         deadline=200.0,
     )
-    assert RecallPacketCompiler._effective_limits(small_search).budget_tokens == 1200
+    assert effective_limits(small_search).budget_tokens == 1200
 
     default = core.recall_packet(ctx, recall_request(query=query, mode="auto", request_id="TEST-hotel-default"), deadline_seconds=5)
     default_text = " ".join(item["content"] for item in default["items"])
