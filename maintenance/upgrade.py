@@ -18,7 +18,7 @@ import uuid
 from ..contracts import TrustedContext
 from ..core.storage import SQLiteStorage
 from ..core.file_lock import advisory_file_lock
-from .backup import _safe_path, _sha256, backup_sqlite
+from .backup import _atomic_json as _write, _safe_path, _sha256, backup_sqlite
 from .migrate_v2 import (
     MigrationError,
     build_legacy_catalog,
@@ -41,15 +41,6 @@ _PLAN_FIELDS = (
     "host",
     "scope_map",
 )
-
-
-def _write(path: Path, payload: dict):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(".tmp")
-    temporary.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
-    temporary.replace(path)
 
 
 def _digest(value) -> str:

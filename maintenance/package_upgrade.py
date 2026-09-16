@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import argparse
 from contextlib import contextmanager
-import hashlib
 import json
 from pathlib import Path
 import shutil
@@ -19,7 +18,7 @@ import sys
 import zipfile
 
 from ..core.file_lock import advisory_file_lock
-from .backup import _safe_path
+from .backup import _atomic_json as _write_receipt, _safe_path, _sha256
 
 
 class PackageUpgradeError(RuntimeError):
@@ -80,12 +79,6 @@ def _delete_access(paths):
             close(handle)
 
 
-def _write_receipt(path: Path, value: dict) -> None:
-    pending = path.with_suffix('.tmp')
-    pending.write_text(json.dumps(value, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
-    pending.replace(path)
-
-
 def replace_package(python, wheel, backup, *, source_quiesced=False, uv=None) -> dict:
     """Replace one installed distribution, leaving host activation to the agent.
 
@@ -141,14 +134,14 @@ def replace_package(python, wheel, backup, *, source_quiesced=False, uv=None) ->
             destination = backup / 'files' / relative
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(path, destination)
-            digest = hashlib.sha256(path.read_bytes()).hexdigest()
-            if hashlib.sha256(destination.read_bytes()).hexdigest() != digest:
+            digest = _sha256(path)
+            if _sha256(destination) != digest:
                 raise PackageUpgradeError('backup_verification_failed')
             records.append(dict(path=relative.as_posix(), sha256=digest))
         value = dict(state='backed_up', previous_version=current['version'],
                      target_version=target_version, target_python=str(python),
                      target_prefix=str(prefix), files=records,
-                     wheel_sha256=hashlib.sha256(wheel.read_bytes()).hexdigest(),
+                     wheel_sha256=_sha256(wheel),
                      host_restart_allowed=False, automatic_rollback=False)
         receipt = backup / 'package-upgrade.json'
         _write_receipt(receipt, value)
