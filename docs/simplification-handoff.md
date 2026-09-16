@@ -18,13 +18,14 @@
 1. `d96a159` **prune**（PR 1）：删除退役 2.x 引擎及只有它引用的一切，1,023 个文件、−412,789 行；树从 480k 行降到 82k 行。
 2. `b400596` **structure**：根目录 17 个模块搬进 `core/` 与新包 `vector/`，删除 `_internal/`。
 3. 核心簇（本人）：`core/claims.py::qualify` 改成有序规则流水线；`contracts.py::validate_payload` 表驱动；`core/episode_storage.py`、`core/mutate.py`、`core/storage.py`、`core/truth_connection.py` 大函数拆成命名步骤；删除 1,600 行无人引用代码；`tests/sitecustomize.py` 修正门禁子进程加载旧 rc11 可编辑安装的漏洞；`scripts/check.py::main` 拆分。
-4. 合入的代理分支：宿主工具面（`adapters/tool_common.py`）、doctor 命名检查、worker 分发表 + `core/worker_projection.py`、legacy 转换流水线（`maintenance/legacy_plan/sources/claims/deletions.py`）、候选生命周期（`core/candidate_tables/intake/evaluations/sweeps.py`）、安装器拆分（`maintenance/install_common/receipt/codex/hermes/purge.py`）+ CLI 表路由。
+4. 合入的代理分支：宿主工具面（`adapters/tool_common.py`）、doctor 命名检查、worker 分发表 + `core/worker_projection.py`、legacy 转换流水线（`maintenance/legacy_plan/sources/claims/deletions.py`）、候选生命周期（`core/candidate_tables/intake/evaluations/sweeps.py`）、安装器拆分（`maintenance/install_common/receipt/codex/hermes/purge.py`）+ CLI 表路由；vector 包（`vector/__init__.py` 的 `VectorStore` 基类、`vector/lance_native.py`，删除 `mutation_guard.py`；分支 `simplify/3.1-vector`，已合入）。
+5. `scripts/dead_code.py`：跨模块引用扫描工具（见 1.6）。
 
 ### 尚未合入（代理 worktree，位于 `F:\SCOPERECALL更新项目\.repos\scope-recall\.claude\worktrees\`）
 
 | 代理 | worktree 目录 | 分支 | 任务 | 状态 |
 |---|---|---|---|---|
-| vector | `agent-af5332ff1aedd8592` | `worktree-agent-af5332ff1aedd8592` | `vector/*.py`、`adapters/lance.py`、`_lance_worker.py`：三个 store 共用一个接口/协议、去掉逐方法包装重复、Lance 表 helper 移出 `store.py`、`process_store` 的 `_invoke_locked/_invoke_fenced_locked` 合一、`LanceEmbedPort` 的 source/claim 双胞胎合一；保留 `tests/contract/test_vector_failure.py` 解析的 RuntimeError 文案 | 进行中 |
+| ~~vector~~ 已合入 b849e25 | `agent-af5332ff1aedd8592` | `simplify/3.1-vector` | `vector/*.py`、`adapters/lance.py`、`_lance_worker.py`：三个 store 共用一个接口/协议、去掉逐方法包装重复、Lance 表 helper 移出 `store.py`、`process_store` 的 `_invoke_locked/_invoke_fenced_locked` 合一、`LanceEmbedPort` 的 source/claim 双胞胎合一；保留 `tests/contract/test_vector_failure.py` 解析的 RuntimeError 文案 | 完成 |
 | recall | `agent-ad3c6b18b31c0c8f1` | `worktree-agent-ad3c6b18b31c0c8f1` | `core/recall_packet.py`（`compile` 291 行拆阶段）、`core/recall.py`（`search` 拆步骤）、`core/retrieval_storage.py::hydrate`、`core/read_views.py` profile/entity 合并、统一 `_effective_limits`/token 估算；删除无引用的 `RetrievalPort` | 进行中（曾整文件删掉待重写，务必检查文件是否齐全） |
 | runtime | `agent-a37a64389e4852215` | `worktree-agent-a37a64389e4852215` | `runtime/*.py`、`adapters/models.py`、`adapters/codex_cli.py`、三个 `runtime_wiring.py`：统一 `_strict_*` 校验 helper、config 类改字段表、`HttpsTransport._post`/`propose`/`codex_cli._run` 拆步骤、`attach_trusted_host_runtime` 三份合一 | 进行中 |
 
