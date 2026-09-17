@@ -6,6 +6,8 @@ queued per open question.  Nothing here writes a claim or grants authority.
 """
 from __future__ import annotations
 
+import json
+
 from ..contracts import ContractError
 from .candidate_lifecycle import (
     RULE_VERSION, SOURCE_MATCH_LIMIT, CandidateRegistration, CandidateSourceTrigger,
@@ -19,8 +21,11 @@ from .evidence_question import (
     AUTOMATIC_VERDICTS,
     PERSON_ABSENT_REASON,
     REPEAT_WITHOUT_RESTATEMENT_REASON,
+    _letters_and_digits,
     evidence_text,
+    is_first_hand,
     needs_absent_person,
+    restatement_needle,
     unanswerable_reason,
 )
 
@@ -202,7 +207,14 @@ class CandidateIntake(CandidateTables):
         return CandidateSourceTrigger(source_ref, source_revision, "processed", matched, scheduled, truncated)
 
     def _candidates_mentioned_by(self, source, limit: int) -> list:
-        """Reachable same-audience candidate heads sharing a term with the source, not yet holding it."""
+        """Reachable same-audience candidate heads this source can speak to, not yet holding it.
+
+        A shared term is enough for first-hand testimony, which can confirm a
+        value without repeating it and lend a promotion its authority.  Any
+        other source must restate the candidate or name its subject: on alpha
+        a shared bigram had attached 116,000 sources to 1,215 live candidates,
+        and 6% of them restated the candidate they were attached to.
+        """
         if source.event.get("origin") in ECHO_ORIGINS:
             # Memory read back to the model is never evidence (``_add_evidence``),
             # so it mentions no candidate.  Triggers written before reinjection
@@ -211,12 +223,14 @@ class CandidateIntake(CandidateTables):
         terms = lexical_terms(source.event["content"])
         if not terms:
             return []
+        first_hand = is_first_hand(evidence_text(source).origin)
         context, params = self._context("l.")
-        return self._read().execute(
-            f"""SELECT DISTINCT l.candidate_ref,l.candidate_revision
+        cursor = self._read().execute(
+            f"""SELECT DISTINCT l.candidate_ref,l.candidate_revision,v.payload_json
                 FROM candidate_trigger_terms t
                 JOIN candidate_lifecycle l USING(candidate_ref,candidate_revision)
                 JOIN claims c ON c.claim_id=l.candidate_ref
+                JOIN claim_versions v ON v.claim_id=l.candidate_ref AND v.revision=l.candidate_revision
                 WHERE t.term IN ({','.join('?' for _ in terms)}) AND {context}
                   AND l.scope_id=? AND l.project_id IS ? AND l.branch_id IS ?
                   AND c.current_revision=l.candidate_revision AND c.read_blocked=0 AND c.suppressed=0
@@ -224,10 +238,23 @@ class CandidateIntake(CandidateTables):
                   AND NOT EXISTS(SELECT 1 FROM candidate_evidence e
                       WHERE e.candidate_ref=l.candidate_ref AND e.candidate_revision=l.candidate_revision
                         AND e.source_ref=? AND e.source_revision=?)
-                ORDER BY l.updated_at,l.candidate_ref,l.candidate_revision LIMIT ?""",
+                ORDER BY l.updated_at,l.candidate_ref,l.candidate_revision""",
             (*terms, *params, source.scope_id, source.project_id, source.branch_id,
-             source.ref, source.revision, limit),
-        ).fetchall()
+             source.ref, source.revision),
+        )
+        try:
+            if first_hand:
+                return cursor.fetchmany(limit)
+            letters = _letters_and_digits(source.event["content"])
+            matched = []
+            for row in cursor:
+                if _speaks_to(json.loads(row["payload_json"]), letters):
+                    matched.append(row)
+                    if len(matched) >= limit:
+                        break
+            return matched
+        finally:
+            cursor.close()
 
     def _schedule_when_settled(self, candidate, *, now: str, rule_version: str) -> tuple[int | None, bool]:
         """Schedule only once this candidate has stopped collecting evidence.
@@ -471,6 +498,24 @@ def _registration_target(candidate, prior, rule_version: str, now: str) -> tuple
     if judgeable:
         return "pending_evaluation", "rule_version_changed", now
     return state, reason, now
+
+
+def _speaks_to(payload, letters: str) -> bool:
+    """Whether a source that is not first-hand restates this candidate or names its subject.
+
+    Compared on letters and digits, as ``evidence_question.restates`` compares.
+    A self subject such as 我 names nearly every message, so it never counts.
+    """
+    needle = restatement_needle(payload)
+    if not needle or needle in letters:
+        return True
+    from .claims import _SELF_SUBJECTS
+
+    subject = str(payload.get("subject") or "") if isinstance(payload, dict) else ""
+    if subject.casefold() in _SELF_SUBJECTS:
+        return False
+    named = _letters_and_digits(subject)
+    return bool(named) and named in letters
 
 
 def _trigger_terms(candidate) -> tuple[str, ...]:
