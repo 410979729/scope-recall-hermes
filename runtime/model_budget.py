@@ -225,6 +225,10 @@ class AuxiliaryBudgetLedger:
         self.policy = policy
         self.covered_historical_breaches = tuple(dict(entry) for entry in covered_historical_breaches)
 
+    def provider_hold_until(self, model: str) -> float | None:
+        """The hold on ``model`` in this ledger; see the module function."""
+        return provider_hold_until(self.path, model)
+
     def _connect_rw(self, *, deadline: float | None = None) -> sqlite3.Connection:
         if not self.path.is_file():
             raise ValueError("ledger_not_initialized")
@@ -465,6 +469,96 @@ def provider_refusals(ledger_path, *, now: float | None = None) -> list[str]:
             continue
         gaps.append(f"model_refused:{name}:{counted.most_common(1)[0][0]}")
     return gaps
+
+
+#: How long a model that just refused is left alone: doubling with each refusal
+#: in a row, from a minute to half an hour, and over at the first answer.  Each
+#: pass already stood a refused work type down, but the next pass asked again at
+#: once: through a monthly spend cap Google refused every embedding for seven
+#: hours while gamma, alpha and beta kept asking about 5,000 times a day.
+#: Half an hour between asks is still quick to notice the cap was raised.
+PROVIDER_HOLD_FIRST_SECONDS = 60.0
+PROVIDER_HOLD_LONGEST_SECONDS = 1800.0
+#: Recent calls of one model read to count refusals in a row.
+_HOLD_LOOKBACK_ROWS = 32
+#: Rows that are no answer at all: still in flight, or lost on the way.
+_NO_ANSWER_PREFIXES = (_RESERVED, "network_error", "timeout")
+
+
+def _held_refusal(status: object) -> bool:
+    """Whether a settled row is the provider declining to serve: capacity or account."""
+    from ..core.work_storage import ACCOUNT_REFUSALS, CAPACITY_REFUSALS
+
+    code = str(status or "").split(":", 1)[0].split("_usage", 1)[0]
+    return code in CAPACITY_REFUSALS or code in ACCOUNT_REFUSALS
+
+
+def provider_hold_until(ledger_path, model: object, *, now: float | None = None) -> float | None:
+    """Epoch seconds before which ``model`` should not be asked again, or ``None``.
+
+    Read from the shared ledger, so every process of the installation -- worker
+    passes, the planner, recall in the gateway -- honours one hold per model, and
+    a healthy model is never held for another's refusals.
+    """
+    if ledger_path is None or type(model) is not str or not model:
+        return None
+    try:
+        path = Path(ledger_path)
+        if not path.is_file():
+            return None
+        with closing(sqlite3.connect(_readonly_uri(path), uri=True, timeout=5)) as db:
+            rows = db.execute("SELECT status,started_ns FROM requests WHERE model=? ORDER BY id DESC LIMIT ?",
+                              (model, _HOLD_LOOKBACK_ROWS)).fetchall()
+    except (sqlite3.Error, OSError, ValueError):
+        return None
+    streak, latest = 0, None
+    for status, started_ns in rows:
+        if str(status or "").startswith(_NO_ANSWER_PREFIXES):
+            continue
+        if not _held_refusal(status):
+            break
+        streak += 1
+        if latest is None and type(started_ns) is int:
+            latest = started_ns
+    if not streak or latest is None:
+        return None
+    hold = min(PROVIDER_HOLD_LONGEST_SECONDS, PROVIDER_HOLD_FIRST_SECONDS * 2 ** min(streak - 1, 16))
+    until = latest / 1_000_000_000 + hold
+    return until if until > (time.time() if now is None else now) else None
+
+
+#: Work types each auxiliary route serves.
+_ROUTE_WORK_TYPES = {"embedding": ("embed",), "consolidation": ("consolidate", "evaluate_candidate")}
+
+
+def _route_model(auxiliary, role: str) -> str | None:
+    route = getattr(auxiliary, role, None)
+    if route is None or getattr(route, "kind", None) == "codex_cli":
+        return None
+    if role == "embedding":
+        try:
+            return route.space().get("model")
+        except Exception:
+            return getattr(route, "model", None)
+    return getattr(route, "model", None)
+
+
+def provider_holds(auxiliary, *, now: float | None = None) -> dict[str, tuple[str, float]]:
+    """Held work types, each with the model holding it and when the hold ends."""
+    ledger_path = getattr(auxiliary, "ledger_path", None)
+    if auxiliary is None or ledger_path is None:
+        return {}
+    holds: dict[str, tuple[str, float]] = {}
+    for role, enabled in (("embedding", "external_embedding"), ("consolidation", "external_consolidation")):
+        if not getattr(auxiliary, enabled, False):
+            continue
+        model = _route_model(auxiliary, role)
+        until = provider_hold_until(ledger_path, model, now=now)
+        if until is None:
+            continue
+        for work_type in _ROUTE_WORK_TYPES[role]:
+            holds[work_type] = (str(model), until)
+    return holds
 
 
 def pre_request_refusals(auxiliary) -> list[str]:

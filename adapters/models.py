@@ -813,6 +813,10 @@ class GeminiEmbeddingAdapter:
             body = build_openai_embed_body(encoded_text, model=self._model, dimensions=self._dimensions)
         if _remaining_seconds(deadline) <= 0:
             raise AuxiliaryModelError("timeout")
+        if self._ledger.provider_hold_until(self._model) is not None:
+            # The provider refused the calls just before this one; asking again
+            # now only adds a refusal (runtime/model_budget.py).
+            raise AuxiliaryModelError("provider_hold")
         key = _load_credential(self._route.credential_env)
         # Google authenticates with its own header; every OpenAI-compatible
         # provider uses bearer auth.
@@ -867,6 +871,8 @@ class OpenAIConsolidationAdapter:
         reserved_output = model_output_reserve(self._ledger.policy, self._route.model, self._route.max_output_tokens)
         if _remaining_seconds(deadline) <= 0:
             raise AuxiliaryModelError("timeout")
+        if self._ledger.provider_hold_until(self._route.model) is not None:
+            raise AuxiliaryModelError("provider_hold")
         key = _load_credential(self._route.credential_env)
         return _metered_post(
             ledger=self._ledger, settle=self._ledger.finish, model=self._route.model, body=body,

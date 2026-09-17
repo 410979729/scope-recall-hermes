@@ -52,6 +52,8 @@ _RATE_LIMITED_ERRORS = CAPACITY_REFUSALS
 #: and a candidate evaluation, whose attempt marker is already committed, is
 #: then failed as interrupted for good.
 FINALIZE_MARGIN_SECONDS = 5.0
+#: Work that waits on an auxiliary provider; purge and projection rebuilds never do.
+_HOLDABLE_WORK_TYPES = frozenset({"consolidate", "embed", "evaluate_candidate"})
 
 
 @dataclass(frozen=True)
@@ -68,6 +70,9 @@ class WorkerConfig:
     #: runtime's ``request_seconds``).  None means the ports are unbounded and
     #: each call gets whatever the pass has left, so no reserve can be known.
     request_seconds: float | None = None
+    #: Work types whose provider is on hold (runtime/model_budget.py): not
+    #: claimed at all this pass, so no item is leased only to be parked.
+    held_work_types: frozenset[str] = frozenset()
 
     def __post_init__(self) -> None:
         if type(self.owner_id) is not str or not self.owner_id:
@@ -88,6 +93,8 @@ class WorkerConfig:
                 type(self.request_seconds) not in (int, float) or not math.isfinite(self.request_seconds)
                 or self.request_seconds <= 0):
             raise ValueError("request_seconds must be positive")
+        if type(self.held_work_types) is not frozenset or not self.held_work_types <= _HOLDABLE_WORK_TYPES:
+            raise ValueError("held_work_types")
 
 
 @dataclass(frozen=True)
@@ -197,7 +204,8 @@ def drain_worker(
         allowed = frozenset({"purge"})
         unavailable: tuple[str, ...] = ()
     else:
-        allowed = frozenset({"purge", "rebuild_projection", *(kind for kind, port in ports.items() if port is not None)})
+        allowed = frozenset({"purge", "rebuild_projection",
+                             *(kind for kind, port in ports.items() if port is not None)}) - config.held_work_types
         _resume_admission(storage, clock, context, config, started, budget, candidate_available=candidate is not None)
         unavailable = _queued_work_types(storage, clock, context, started, budget,
                                          [kind for kind, port in ports.items() if port is None])

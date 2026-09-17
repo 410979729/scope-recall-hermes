@@ -299,7 +299,10 @@ def _drain_once(config: RuntimeInstanceConfig, instance: Any, deadline: float) -
     budget_state["used"] -= max(0, reserved - used)
     _atomic_metadata(budget_path, budget_state)
     background_gaps = tuple(instance.background_gaps)
-    gaps = [*(getattr(instance.auxiliary, "capability_gaps", ()) or ()), *refusals, *background_gaps]
+    # A held provider is the one refusal that does steer the pass: its work
+    # types were not claimed at all (runtime/model_budget.py provider_holds).
+    holds = sorted({f"provider_hold:{model[:64]}" for model, _until in (getattr(instance, "provider_holds", None) or {}).values()})
+    gaps = [*(getattr(instance.auxiliary, "capability_gaps", ()) or ()), *refusals, *holds, *background_gaps]
     if reserved == 0:
         gaps.append("daily_queue_budget")
     payload = _receipt_payload(config, receipt, gaps)

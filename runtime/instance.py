@@ -343,6 +343,9 @@ class RuntimeInstance:
     ingress_receipts: tuple[Any, ...] = ()
     #: Receipt of the vector compaction this drain ran, or ``None``.
     vector_compaction: dict | None = None
+    #: Work types this drain left alone, each with the held model and when its
+    #: hold ends (runtime/model_budget.py ``provider_holds``).
+    provider_holds: dict = field(default_factory=dict)
 
     def _ensure_open(self) -> None:
         if self._closed:
@@ -432,6 +435,8 @@ class RuntimeInstance:
         limit = self.config.request_seconds
         effective_embed = embed if embed is not None else self._default_embed
         effective_purge = purge if purge is not None else self._default_purge
+        from .model_budget import provider_holds
+        self.provider_holds = {} if purge_only else provider_holds(self.config.auxiliary)
         return drain_worker(
             self.core.storage, self.core.clock, self.config.context(),
             config=WorkerConfig(owner_id=self.config.owner_id,
@@ -442,7 +447,8 @@ class RuntimeInstance:
                                 purge_only=purge_only,
                                 admission_policy=self.core.config.admission_policy,
                                 # The bound the model and embedding ports below are clamped to.
-                                request_seconds=limit),
+                                request_seconds=limit,
+                                held_work_types=frozenset(self.provider_holds)),
             remaining_seconds=max(.001, deadline - time.monotonic()),
             consolidation=model,
             candidate=candidate,

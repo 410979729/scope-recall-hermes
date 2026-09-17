@@ -23,12 +23,14 @@ _NON_RETRYABLE_MODEL_ERRORS = frozenset({
 #: Refusals that say nothing about the item: raised before any network attempt,
 #: or the provider declining the account (``ACCOUNT_REFUSALS``).  The item is
 #: parked for an hour without spending an attempt, and its work type stands down
-#: for the pass.
+#: for the pass.  ``provider_hold`` is the adapter declining to ask a provider
+#: that refused the calls just before (runtime/model_budget.py).
 BUDGET_PAUSE_ERRORS = frozenset({
     "budget_exhausted",
     "budget_unavailable",
     "credential_missing",
     "credential_shape_invalid",
+    "provider_hold",
 }) | ACCOUNT_REFUSALS
 
 #: Port rejections that describe this payload rather than the provider;

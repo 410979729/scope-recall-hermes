@@ -86,7 +86,14 @@ def next_wake(config, *, now: datetime | None = None, unavailable_until=None) ->
     leases before every real mutation; this function grants no permission.
     """
     now = now or datetime.now(timezone.utc)
-    unavailable_until = unavailable_until or {}
+    unavailable_until = dict(unavailable_until or {})
+    # A provider on hold keeps its work types asleep until the hold ends, so a
+    # refusing provider is asked once per hold instead of once per wake.
+    from .model_budget import provider_holds
+    for work_type, (_model, until) in provider_holds(config.auxiliary, now=now.timestamp()).items():
+        held = datetime.fromtimestamp(until, timezone.utc)
+        if work_type not in unavailable_until or unavailable_until[work_type] < held:
+            unavailable_until[work_type] = held
     capable = _capable_work_types(config)
     spent = _daily_budget_spent(config, _daily_items_used(config, now))
     next_day = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)

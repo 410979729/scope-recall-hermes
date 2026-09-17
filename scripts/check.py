@@ -312,6 +312,7 @@ CORE_RELEASE_CONTRACTS += [
     "tests/contract/test_trace.py",
     "tests/contract/test_v11_profile_entity.py",
     "tests/contract/test_rc33_recall_accuracy.py",
+    "tests/contract/test_provider_hold.py",
 ]
 
 RUNTIME_BOUNDARY_TESTS = [
