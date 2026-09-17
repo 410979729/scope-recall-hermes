@@ -104,6 +104,51 @@ def test_existing_1105_source_upgrades_explicitly_and_resumes_to_exact_end(worke
         assert db.execute("SELECT MAX(processed_sequence) FROM episode_versions").fetchone()[0] in (None,0)
 
 
+def test_page_checkpoint_does_not_stand_down_other_consolidation(worker_app):
+    core, ctx, clock = worker_app
+    source = long_source(core, ctx)
+    others = [capture(core, replace(ctx, session_id=f"TEST-other-{index}"), f"TEST 另一段短资料 {index}。")
+              for index in range(3)]
+    _mark_embed_done(core)
+
+    def build(sources, **_):
+        if sources[0].ref == source.ref:
+            clock.advance(iso="2026-09-06T12:00:01Z")  # the page ends after the others were queued
+        return consolidation_payload(*sources)
+
+    receipt = core.drain_worker(ctx, consolidation=FakeConsolidation(build), max_items=4, remaining_seconds=5)
+    assert [(item.work_type, item.disposition) for item in receipt.items] == (
+        [("consolidate", "deferred")] + [("consolidate", "completed")] * 3)
+    assert row(core, source)[0] == "pending" and 0 < row(core, source)[1] < len(source.event["content"])
+    assert [row(core, other)[0] for other in others] == ["done"] * 3
+
+
+def test_port_refusal_still_stands_consolidation_down_for_the_pass(worker_app):
+    core, ctx, _clock = worker_app
+    for index in range(3):
+        capture(core, replace(ctx, session_id=f"TEST-refused-{index}"), f"TEST 预算暂停资料 {index}。")
+    _mark_embed_done(core)
+
+    class BudgetRefusal(RuntimeError):
+        error_type = "budget_exhausted"
+
+    class RefusingPort:
+        calls = 0
+
+        def propose(self, *args, **kwargs):
+            self.calls += 1
+            raise BudgetRefusal("budget_exhausted")
+
+    port = RefusingPort()
+    receipt = core.drain_worker(ctx, consolidation=port, max_items=4, remaining_seconds=5)
+    assert [(item.disposition, item.error_code) for item in receipt.items] == [("deferred", "budget_exhausted")]
+    assert port.calls == 1
+    with sqlite3.connect(core.storage.path) as db:
+        rows = db.execute("""SELECT state,attempt,lease_token,last_error_code FROM work_items
+                             WHERE work_type='consolidate' ORDER BY work_id""").fetchall()
+    assert rows == [("pending", 0, 1, "budget_exhausted"), ("pending", 0, 0, None), ("pending", 0, 0, None)]
+
+
 def test_chunk_claim_and_cursor_roll_back_together(worker_app, monkeypatch):
     core, ctx, _clock = worker_app
     source = long_source(core,ctx)

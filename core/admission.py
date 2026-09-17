@@ -1,8 +1,9 @@
 """Conservative scheduling policy; source fidelity and authority are unchanged.
 
-Only exact, content-free acknowledgements and successful tool wrappers are cheap
-terminal cases. Unrecognized text remains eligible. Queue pressure postpones
-derived work, never source persistence or lexical search.
+Only exact, content-free acknowledgements, successful tool wrappers and Scope
+Recall's own reinjected output are cheap terminal cases. Unrecognized text
+remains eligible. Queue pressure postpones derived work, never source
+persistence or lexical search.
 """
 from __future__ import annotations
 
@@ -55,6 +56,14 @@ class SourceScheduleReceipt:
     queued_work: int = 0
 
 
+#: A Scope Recall tool result captured back as a source.  It stays persisted and
+#: lexically searchable (retrieval already ranks it last), but it is never a
+#: consolidation root or candidate evidence, and embedding it only re-indexes
+#: what recall already returned.  So it earns no derived work: not at capture,
+#: not on refill and not on demand.
+_REINJECTION = AdmissionDecision("source_only", "memory_reinjection")
+
+
 _ACKS = frozenset({"好", "好的", "嗯", "嗯嗯", "哦", "噢", "收到", "明白", "了解", "谢谢", "谢谢你", "你好", "早上好", "晚上好", "晚安", "哈哈", "ok", "okay", "yes", "thanks", "thankyou", "hello", "hi", "goodnight", "ack", "acknowledged", "gotit"})
 _IMPORTANT = re.compile(r"更正|纠正|改为|改成|换成|调整为|取消|作废|不再|停止使用|停止采用|弃用|不要|必须|记住|偏好|喜欢|决定|采用|截止|完成|修复|失败|错误|\b(?:correct(?:ion)?|instead|cancel(?:led)?|no longer|switch to|discontinue|remember|prefer|decid\w*|deadline|must|error|fail\w*)\b", re.I)
 _TOOL_OK = re.compile(r"(?:success|successful|done|completed|ok|process exited with (?:code|exit code) 0|exit code:? 0)[.!\s]*", re.I)
@@ -72,6 +81,10 @@ def classify(event, policy=None):
     policy = policy or AdmissionPolicy()
     if not policy.enabled:
         return AdmissionDecision("schedule", "policy_disabled")
+    if event.get("origin") == "memory_reinjection":
+        # Before importance: recall output routinely repeats the keywords and
+        # evidence refs that would otherwise raise its priority.
+        return _REINJECTION
     text = event["content"]
     important = bool(event.get("artifact_refs") or event.get("evidence_refs") or event.get("segment") or _IMPORTANT.search(text))
     if important:
@@ -172,9 +185,17 @@ def _schedule(tx, clock, ref, revision, policy, *, on_demand=True):
     missing = WORK_TYPES - present
     if not missing:
         return SourceScheduleReceipt(ref, revision, "unchanged", "already_scheduled")
+    decision = classify(source.event, policy)
+    if decision == _REINJECTION:
+        # Neither a refill nor an explicit request turns recall output into
+        # work.  A row deferred before this rule settles as source_only, so the
+        # refill page stops selecting it; a settled marker is not rewritten.
+        if decision_marker(tx, ref, revision) != decision.gap:
+            store_decision(tx, ref, revision, decision)
+        return SourceScheduleReceipt(ref, revision, decision.disposition, decision.reason)
     prior_priority = conn.execute("""SELECT json_extract(extra_json,'$._scope_recall_admission.important')
         FROM source_events WHERE event_id=? AND source_revision=?""", (ref, revision)).fetchone()[0]
-    priority = on_demand or prior_priority == 1 or classify(source.event, policy).important
+    priority = on_demand or prior_priority == 1 or decision.important
     ready = _available_types(tx, source.scope_id, policy, priority, missing)
     if not ready:
         return SourceScheduleReceipt(ref, revision, "deferred", "queue_capacity")

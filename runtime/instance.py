@@ -440,7 +440,9 @@ class RuntimeInstance:
                                 auto_retry_cooldown_seconds=self.config.auto_retry_cooldown_seconds,
                                 max_auto_recoveries=self.config.max_auto_recoveries,
                                 purge_only=purge_only,
-                                admission_policy=self.core.config.admission_policy),
+                                admission_policy=self.core.config.admission_policy,
+                                # The bound the model and embedding ports below are clamped to.
+                                request_seconds=limit),
             remaining_seconds=max(.001, deadline - time.monotonic()),
             consolidation=model,
             candidate=candidate,
