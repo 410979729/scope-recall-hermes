@@ -168,7 +168,6 @@ class CandidateIntake(CandidateTables):
             return CandidateSourceTrigger(source_ref, source_revision, "duplicate", prior["matched_count"],
                                           prior["scheduled_count"], bool(prior["truncated"]))
         rows = self._candidates_mentioned_by(source, limit + 1)
-        truncated = len(rows) > limit
         matched = scheduled = 0
         for row in rows[:limit]:
             candidate = self._tx.claims.version(row["candidate_ref"], row["candidate_revision"])
@@ -185,6 +184,10 @@ class CandidateIntake(CandidateTables):
             )
             _, queued = self._schedule_when_settled(candidate, now=now, rule_version=rule_version)
             scheduled += int(queued)
+        # Evidence membership is the cursor, so a page that linked nothing puts
+        # the same rows first in line again and resuming it can never finish.
+        # Only a page that made progress keeps its remainder open.
+        truncated = len(rows) > limit and matched > 0
         # A resumed page adds to the counts the first page recorded.
         conn.execute(
             """INSERT INTO candidate_source_triggers(
@@ -200,6 +203,11 @@ class CandidateIntake(CandidateTables):
 
     def _candidates_mentioned_by(self, source, limit: int) -> list:
         """Reachable same-audience candidate heads sharing a term with the source, not yet holding it."""
+        if source.event.get("origin") in ECHO_ORIGINS:
+            # Memory read back to the model is never evidence (``_add_evidence``),
+            # so it mentions no candidate.  Triggers written before reinjection
+            # was admitted source-only still name such sources.
+            return []
         terms = lexical_terms(source.event["content"])
         if not terms:
             return []

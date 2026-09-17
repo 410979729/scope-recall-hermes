@@ -54,6 +54,10 @@ _RATE_LIMITED_ERRORS = CAPACITY_REFUSALS
 FINALIZE_MARGIN_SECONDS = 5.0
 #: Work that waits on an auxiliary provider; purge and projection rebuilds never do.
 _HOLDABLE_WORK_TYPES = frozenset({"consolidate", "embed", "evaluate_candidate"})
+#: Truncated source-trigger pages a pass continues before it claims work.  At
+#: one page a pass, a source matching a thousand candidates took sixty passes,
+#: started back to back, each paying a whole pass to link sixteen of them.
+SOURCE_PAGES_PER_PASS = 16
 
 
 @dataclass(frozen=True)
@@ -128,9 +132,17 @@ def _resume_admission(storage, clock, context, config: WorkerConfig, started: fl
     """Wake deferred captures and settle candidate pages before any claim."""
     resume_deferred(storage, clock, context, config.admission_policy, limit=min(16, config.max_items),
                     remaining_seconds=min(1.0, _remaining(started, clock, budget)))
+    # One write per page, so a capture never waits behind more than one; the
+    # pages may take at most half of the pass.
+    for _ in range(SOURCE_PAGES_PER_PASS):
+        if _remaining(started, clock, budget) <= budget / 2:
+            break
+        with storage.write(context, remaining_seconds=min(1.0, _remaining(started, clock, budget))) as tx:
+            if not tx.candidates.pending_source_pages():
+                break
+            tx.candidates.resume_source_pages(now=clock.utc_now())
     page = min(config.candidate_batch_limit, config.max_items)
     with storage.write(context, remaining_seconds=min(1.0, _remaining(started, clock, budget))) as tx:
-        tx.candidates.resume_source_pages(now=clock.utc_now())
         tx.candidates.backfill(now=clock.utc_now(), limit=page)
         tx.candidates.archive_dormant(now=clock.utc_now(), limit=page)
         if not candidate_available:
