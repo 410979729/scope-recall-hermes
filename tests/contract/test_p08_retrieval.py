@@ -10,7 +10,7 @@ from scope_recall.core.recall_policy import RecallPolicy, SPACE_ID
 from scope_recall.core.retrieval import CandidateRef, CollectionQuery, PageCursor, SearchContext
 from scope_recall.core.retrieval_storage import scope_digest
 from tests.contract.test_v11_claims import Clock, capture
-from tests.v11_support import context, recall_request
+from tests.v11_support import context, recall_request, source_event
 
 
 @pytest.fixture
@@ -189,3 +189,14 @@ def test_P08_lexical_pool_ranks_rows_naming_the_hard_identifier_first(app):
     for mode in ("auto", "current", "history"):
         result = core.recall(reader, recall_request(query=query, mode=mode), deadline_seconds=5)
         assert [item.ref for item in result.items] == [target.ref], mode
+
+    # Memory reinjection naming the identifier, and every query term, still ranks last.
+    reinjected = core.record_event(
+        replace(ctx, actor_origin="memory_reinjection"),
+        source_event(source_event_key="TEST-p08/identifier-pool/reinjected", origin="memory_reinjection", role="tool",
+                     content="召回注入：阿乙仍然是 Scope Recall，现在还是 rc28。", occurred_at="2026-09-03T12:00:00Z"),
+        scope_id="TEST-scope", remaining_seconds=10,
+    ).event_refs[0]
+    with core.storage.read(reader) as tx:
+        pool = RetrievalStorage().lexical(tx, search, limit=100)
+    assert (pool[0].ref, pool[-1].ref) == (target.ref, reinjected.ref)
