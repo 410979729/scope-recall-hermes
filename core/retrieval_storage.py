@@ -19,8 +19,10 @@ from .claim_storage import parse_source_ref
 from .claims import canonical_time, select_effective, select_proposal
 from .delete_storage import canonical
 from .episodes import source_origin
+from .events import lexical_terms
 from .recall_policy import (
     applicability,
+    claim_embedding_text,
     hard_identifiers,
     in_time_window,
     meaningful_query_terms,
@@ -201,6 +203,41 @@ def _source_contexts_metadata(contexts: list[SourceContext]) -> tuple[tuple[str,
     return (("source_contexts", json.dumps(contexts, ensure_ascii=False, separators=(",", ":"))),)
 
 
+#: Claims one query scores after the SQL prefilter.  Scoring loads a claim's
+#: versions, so this bounds a query's cost on an instance with many claims.
+_CLAIM_SCAN_LIMIT = 256
+#: Query terms the prefilter looks for, longest first (a query may have 128).
+_CLAIM_PREFILTER_TERMS = 32
+
+
+def _claim_version_for(versions, context: SearchContext, instant: str):
+    """The version of one claim that answers in this mode, as hydration would admit it."""
+    if not versions:
+        return None
+    if context.mode == "as_of":
+        return select_effective(versions, instant, as_of=True)
+    effective = select_effective(versions, instant)
+    if effective is not None:
+        return effective
+    if context.mode == "history":
+        return max(versions, key=lambda version: version.revision)
+    return select_proposal(versions, instant)
+
+
+def _claim_answers(hits: int, covered: float, term_count: int, *, proposed: bool) -> bool:
+    """Whether a claim's statement answers the query well enough to be offered.
+
+    The query must name the claim's subject -- at least half of its terms -- and
+    hit the statement beyond a single word; a one-term query can only name a
+    subject outright.  An unpromoted proposal needs one hit more: it is offered
+    as a lead, and a lead that shares two words is noise.
+    """
+    if covered < 0.5:
+        return False
+    needed = 1 if term_count == 1 else 2
+    return hits >= needed + (1 if proposed else 0)
+
+
 def _occurred_metadata(stamp: str | None) -> tuple[tuple[str, str], ...]:
     return (("occurred_at", stamp),) if stamp else ()
 
@@ -223,6 +260,19 @@ def _newest(stamps: Iterable[str | None]) -> str | None:
 def _claim_content(version) -> str:
     """Keep the complete qualified payload available to the packet compiler."""
     return json.dumps(version.payload, ensure_ascii=False, sort_keys=True)
+
+
+def _claim_statement_content(version) -> str:
+    """What a reader is shown for a claim: its payload without the quoted spans.
+
+    The spans are verbatim evidence, and a tool-derived claim quotes escaped
+    JSON: two such claims used most of a 4096-unit packet on alpha and pushed
+    the answering messages out.  The item's evidence_refs already name every
+    source, the full payload stays in metadata, and nothing on the read path
+    matches against the quotes.
+    """
+    return json.dumps({key: value for key, value in version.payload.items() if key != "evidence_spans"},
+                      ensure_ascii=False, sort_keys=True)
 
 
 def _claim_status(version, current_effective: bool) -> str:
@@ -330,6 +380,67 @@ class RetrievalStorage:
                 )),
             )
             for index, row in enumerate(rows, 1)
+        )
+
+    def claims(self, tx, context: SearchContext, *, limit: int) -> tuple[CandidateRef, ...]:
+        """Claims whose own statement answers the query.
+
+        The lexical, vector and recent channels all yield events, so a fact used
+        to reach recall only through relation expansion out of an event that was
+        retrieved first.  On alpha's benchmark 19 of the 29 facts recall missed
+        were never reached at all: newer talk about the same subject filled the
+        lexical pool before the fact's own evidence.  A claim is short and
+        structured, so it is matched on its statement, with its own rule
+        (``_claim_answers``) instead of the event specificity bar.
+
+        One candidate per claim: the version answering in this mode, chosen with
+        the same selectors hydration applies, so a replaced value is never the
+        one offered.
+        """
+        terms = frozenset(meaningful_query_terms(context.query))
+        if not terms or limit <= 0:
+            return ()
+        trusted = context.trusted_context
+        scopes = tuple(sorted(trusted.allowed_scope_ids))
+        needles = tuple(sorted(terms, key=lambda term: (-len(term), term))[:_CLAIM_PREFILTER_TERMS])
+        matched = " + ".join("(instr(statement,?)>0)" for _ in needles)
+        rows = tx._check().execute(
+            f"""WITH heads AS MATERIALIZED (
+                    SELECT c.claim_id AS claim_id,
+                           lower(c.subject || ' ' || c.predicate || ' ' ||
+                                 coalesce(json_extract(v.payload_json,'$.value_text'),'')) AS statement
+                    FROM claims c JOIN claim_versions v ON v.claim_id=c.claim_id AND v.revision=c.current_revision
+                    WHERE c.scope_id IN ({_marks(scopes)}) AND c.read_blocked=0 AND c.kind!='alias'
+                      AND (c.project_id IS NULL OR c.project_id=?) AND (c.branch_id IS NULL OR c.branch_id=?)
+                      AND NOT EXISTS(SELECT 1 FROM object_blocks b WHERE b.object_kind='claim'
+                          AND b.object_ref=c.claim_id AND b.read_blocked=1))
+                SELECT claim_id FROM (SELECT claim_id, {matched} AS hits FROM heads)
+                WHERE hits>0 ORDER BY hits DESC, claim_id LIMIT ?""",
+            (*scopes, trusted.project_id, trusted.branch_id, *needles, _CLAIM_SCAN_LIMIT),
+        ).fetchall()
+        instant = context.as_of or context.now
+        scored = []
+        for row in rows:
+            chosen = _claim_version_for(tx.claims.versions(row["claim_id"]), context, instant)
+            if chosen is None or chosen.payload.get("kind") == "alias":
+                continue
+            try:
+                statement = claim_embedding_text(chosen.payload)
+            except ContractError:
+                continue
+            hits = terms.intersection(lexical_terms(statement))
+            subject = {term for term in lexical_terms(str(chosen.payload.get("subject") or "")) if len(term) > 1}
+            covered = len(subject & terms) / len(subject) if subject else 0.0
+            proposed = chosen.state == "proposed"
+            if not _claim_answers(len(hits), covered, len(terms), proposed=proposed):
+                continue
+            rank_key = (not proposed, len(hits) + covered, canonical_time(chosen.recorded_from) or "", chosen.ref)
+            scored.append((rank_key, chosen, hits))
+        scored.sort(key=lambda entry: entry[0], reverse=True)
+        return tuple(
+            CandidateRef("claim", chosen.ref, chosen.revision, "claim_lexical", rank=index,
+                         lexical_score=float(len(hits)), matched_query_terms=tuple(sorted(hits)))
+            for index, (_key, chosen, hits) in enumerate(scored[:limit], 1)
         )
 
     def exact(self, tx, context: SearchContext, *, limit: int) -> tuple[CandidateRef, ...]:
@@ -519,7 +630,7 @@ class RetrievalStorage:
             candidate.ref,
             candidate.revision,
             "procedure" if payload.get("kind") == "procedure" else "claim",
-            _claim_content(version),
+            _claim_statement_content(version),
             origin,
             _claim_status(version, current_effective),
             applicability(context, version.project_id, version.branch_id),

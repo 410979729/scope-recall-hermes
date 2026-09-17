@@ -394,6 +394,32 @@ def _asks_only(term: str) -> bool:
     return _CJK_TEXT.search(term) is not None and any(char in _ASKING_CHARACTERS for char in term)
 
 
+#: Longest text still read as a bare question rather than a message that also
+#: says something.  Replies, reports and tool output run far longer.
+QUESTION_MAX_CHARS = 120
+#: A question either carries a question mark or ends on an asking particle or word.
+_QUESTION_MARK = re.compile(r"[？?]")
+_QUESTION_ENDING = re.compile(r"(?:吗|呢|么|呀|没|多少|是否|如何|哪|哪里|哪儿)$")
+_TRAILING = re.compile(r"[\s。！!~～…,.，、)）\]】\"'”’]+$")
+
+
+def asks_without_answering(text: str) -> bool:
+    """Whether a message only asks.
+
+    Asking again, alpha returned five earlier questions like the query and
+    not the reply that answered one: a question shares every content word with
+    a later one and is short, so it outranks its own answer.  A short message
+    with a question mark, or ending on an asking particle, is such a question.
+    "去看下阿戊怎么了" is a request, and "不管什么情况都要先备份" a rule.
+    """
+    if type(text) is not str:
+        return False
+    body = _TRAILING.sub("", unicodedata.normalize("NFKC", text).strip())
+    if not body or len(body) > QUESTION_MAX_CHARS:
+        return False
+    return _QUESTION_MARK.search(body) is not None or _QUESTION_ENDING.search(body) is not None
+
+
 def meaningful_query_terms(query: str) -> tuple[str, ...]:
     """Terms that can establish lexical relevance for one candidate."""
 

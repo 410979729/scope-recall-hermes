@@ -17,7 +17,7 @@ from ..contracts import ContractError, RecallRequest, TrustedContext, validate_m
 
 
 ObjectKind = Literal["event", "claim", "episode", "artifact", "reference"]
-CandidateChannel = Literal["lexical", "exact_ref", "vector", "recent_raw", "relation", "background"]
+CandidateChannel = Literal["lexical", "claim_lexical", "exact_ref", "vector", "recent_raw", "relation", "background"]
 RecallMode = Literal["auto", "current", "history", "as_of", "method"]
 Coverage = Literal["complete_for_query", "partial", "unknown"]
 Answerability = Literal["supported", "partial", "ambiguous", "unknown"]
@@ -75,10 +75,9 @@ class SearchLimits:
             "recent_items": (self.recent_items, 0, 24),
             "relation_hops": (self.relation_hops, 0, 2),
             # The ceiling used to equal the default, so an operator who noticed
-            # relation_bound_reached could not raise it. Relation expansion is
-            # the only path by which a claim reaches automatic recall — the
-            # lexical, vector and recent channels all yield events — so hitting
-            # this bound is exactly what makes the derived layer unreachable.
+            # relation_bound_reached could not raise it.  Claims now also have
+            # their own channel (``RetrievalStorage.claims``); expansion still
+            # brings in the claims and episodes around what was retrieved.
             "relation_objects": (self.relation_objects, 0, 200),
             "vector_limit": (self.vector_limit, 0, 200),
             "followups": (self.followups, 0, 1),
@@ -207,7 +206,7 @@ class CandidateRef:
             raise ContractError("INPUT_INVALID", "candidate_ref")
         if type(self.revision) is not int or self.revision < 1:
             raise ContractError("INPUT_INVALID", "candidate_revision")
-        if self.source not in {"lexical", "exact_ref", "vector", "recent_raw", "relation", "background"}:
+        if self.source not in {"lexical", "claim_lexical", "exact_ref", "vector", "recent_raw", "relation", "background"}:
             raise ContractError("INPUT_INVALID", "candidate_source")
         if type(self.rank) is not int or self.rank < 1:
             raise ContractError("INPUT_INVALID", "candidate_rank")

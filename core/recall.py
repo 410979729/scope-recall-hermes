@@ -14,7 +14,7 @@ from .duplicate_collapse import DistinctContent, note_duplicates
 from .events import lexical_terms
 from .recall_budget import estimate_tokens, event_admission_order
 from .recall_needs import CHOICE_MARKERS, directed_followup_query, evidence_roots, mentions, unmet_needs
-from .recall_policy import RecallPolicy, identifiers_compatible, meaningful_query_terms, rrf_score
+from .recall_policy import RecallPolicy, asks_without_answering, identifiers_compatible, meaningful_query_terms, rrf_score
 from .retrieval import (
     CandidateRef,
     CollectionQuery,
@@ -39,7 +39,16 @@ from .vector_failure import vector_failure_label
 #: gone -- each one is a single bounded storage read, and the overrun is still
 #: reported, so nothing is hidden.
 MINIMUM_HYDRATION_CAP = 16
-_CHANNELS = ("exact", "lexical", "recent", "vector")
+#: Claims offered per round.  A packet holds at most 30 items and a default one
+#: six; a claim that answers competes for those slots on rank, so a deep pool
+#: of claims would only spend hydration on statements that cannot be shown.
+CLAIM_CANDIDATES = 16
+#: Share of its fusion score a bare question keeps in live modes.  Asked again,
+#: alpha returned five earlier questions like the query ahead of the reply
+#: that answered one; at 0.6 a first-ranked question falls below a reply that
+#: ranked in the mid-teens, and still ranks as context when nothing answers.
+QUESTION_FUSION_WEIGHT = 0.6
+_CHANNELS = ("exact", "lexical", "claim", "recent", "vector")
 #: Vector admission reasons that are reported, and how; the rest are silent.
 _VECTOR_REJECTION_GAPS = {
     "embedding_space_mismatch": "vector_old_or_mismatched_space",
@@ -62,6 +71,7 @@ class ChannelBudget:
 
     def __init__(self, limits: SearchLimits) -> None:
         self.left = {"exact": limits.candidate_pool, "lexical": limits.candidate_pool,
+                     "claim": min(CLAIM_CANDIDATES, limits.candidate_pool),
                      "recent": limits.recent_items, "vector": limits.vector_limit}
         self.total = sum(self.left.values())
         self.reserve = dict.fromkeys(_CHANNELS, 0)
@@ -152,7 +162,8 @@ class RetrievalPipeline:
             return False
         if candidate.source == "vector":
             return self.policy.vector_admission(candidate)[0]
-        if candidate.source in {"exact_ref", "relation"}:
+        if candidate.source in {"exact_ref", "relation", "claim_lexical"}:
+            # A claim candidate already passed its own statement rule in storage.
             return True
         return self.policy.lexical_admission(candidate, context.query, exact=False)[0]
 
@@ -184,10 +195,14 @@ class RetrievalPipeline:
         channels = (
             ("exact", self.storage_reader.exact, context.limits.candidate_pool),
             ("lexical", self.storage_reader.lexical, context.limits.candidate_pool),
+            # A reader predating the claim channel simply offers no claims.
+            ("claim", getattr(self.storage_reader, "claims", None), CLAIM_CANDIDATES),
             ("recent", self.storage_reader.recent, context.limits.recent_items),
         )
         try:
             for channel, loader, limit in channels:
+                if loader is None:
+                    continue
                 if self._remaining(context) <= 0:
                     gaps.append("deadline_exceeded_collect")
                     return admitted()
@@ -254,7 +269,9 @@ class RetrievalPipeline:
 
         for _hop in range(limits.relation_hops):
             next_frontier: list[CandidateRef] = []
-            for seed in sorted(frontier, key=lambda item: item.key):
+            # The shared object bound is spent best seed first.  In key order it
+            # went to whichever refs sorted lowest, often a weak match's claims.
+            for seed in sorted(frontier, key=lambda item: (-item.fusion_score, item.key)):
                 if inspected >= limits.relation_objects:
                     return stopped("relation_bound_reached")
                 if self._remaining(context) <= 0:
@@ -288,6 +305,18 @@ class RetrievalPipeline:
     # -- ranking and budget ---------------------------------------------------
 
     def _rank_hydrated(self, hydrated: list[tuple[CandidateRef, RetrievedObject]], context: SearchContext | None = None) -> list[tuple[CandidateRef, RetrievedObject]]:
+        questions: set[tuple[str, str, int]] = set()
+        if context is not None and context.mode in {"auto", "current"}:
+            # A bare question is context, not evidence.  The weight goes on the
+            # candidate itself: budget admission re-sorts on fusion score, and a
+            # short question would otherwise win its place back there.
+            questions = {candidate.key for candidate, obj in hydrated
+                         if obj.kind == "event" and candidate.source != "exact_ref" and asks_without_answering(obj.content)}
+            hydrated = [
+                (replace(candidate, fusion_score=candidate.fusion_score * QUESTION_FUSION_WEIGHT), obj)
+                if candidate.key in questions else (candidate, obj)
+                for candidate, obj in hydrated
+            ]
         ranked = sorted(
             hydrated,
             key=lambda pair: (
@@ -320,8 +349,11 @@ class RetrievalPipeline:
             relevance = len(hits) / len(query_terms)
             additional = len(hits - covered) / len(query_terms)
             repeated = bool(roots and roots <= selected_roots and not (hits - covered))
+            # An earlier question covers the query's words by construction, so
+            # its coverage bonus is weighted like its fusion score.
+            weight = QUESTION_FUSION_WEIGHT if candidate.key in questions else 1.0
             return (candidate.source == "exact_ref",
-                    candidate.fusion_score + .008 * relevance + .008 * additional - .006 * repeated)
+                    candidate.fusion_score + weight * (.008 * relevance + .008 * additional) - .006 * repeated)
 
         while ranked:
             if self._remaining(context) <= 0:
