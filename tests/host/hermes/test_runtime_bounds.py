@@ -1,12 +1,59 @@
 """P11 runtime bounds: turn-local echo fences, worker coalescing, and hooks."""
 from __future__ import annotations
 
+import json
 import threading
 import sqlite3
 
+import pytest
+
 from scope_recall.adapters.hermes import ScopeRecallHermesAdapter, install_hermes_scope_recall
 from scope_recall.adapters.hermes.hooks import _global_callback, _register_adapter_instance, _unregister_adapter_instance
+from scope_recall.adapters.hermes.provider import GAP_CURRENT_SOURCE_REFS_LIMIT
 from scope_recall.adapters.hermes.worker import AdapterWorker
+from scope_recall.contracts import validate_payload
+from scope_recall.core.events import MAX_SEGMENT_CHARS
+from scope_recall.core.retrieval import MAX_CURRENT_SOURCE_REFS
+
+_MODES = ("history", "current", "auto")
+
+
+def _recall(provider, mode: str, request_id: str) -> str:
+    return provider.handle_tool_call("recall", {
+        "protocol_version": "1.1", "request_id": request_id, "query": "where does the orca42 rollout run",
+        "mode": mode, "max_items": 6, "budget_tokens": 4096,
+    })
+
+
+def _tool_result(provider, turn_id: str, call_id: str, result: str, *, tool_name: str = "terminal") -> None:
+    provider.observe_post_tool_call(session_id="TEST-session-1", turn_id=turn_id, tool_call_id=call_id,
+                                    tool_name=tool_name, result=result, status="success")
+
+
+def _earlier_turn_ref(provider) -> str:
+    """A fact from a finished turn, which recall must keep finding."""
+    provider.observe_pre_llm(session_id="TEST-session-1", turn_id="turn-earlier",
+                             user_message="The orca42 rollout runs from the blue cluster.")
+    (ref,) = provider.diagnostics.current_source_refs
+    return ref
+
+
+def _assert_fenced_recall(provider, *, earlier_ref: str, marker: str) -> None:
+    """Every mode recalls the earlier turn and nothing captured in this one.
+
+    Every source of this turn carries ``marker``, so the content check does
+    not depend on the provider's own bookkeeping of those refs.
+    """
+    this_turn = set(provider.diagnostics.current_source_refs)
+    for mode in _MODES:
+        reply = json.loads(_recall(provider, mode, f"final-{mode}"))
+        assert "error" not in reply, (mode, reply)
+        assert GAP_CURRENT_SOURCE_REFS_LIMIT not in reply["capability_gaps"]
+        items = reply["result"]["items"]
+        delivered = {f"{item['ref']}@{item['revision']}" for item in items}
+        assert not [item["content"] for item in items if marker in item["content"]], mode
+        assert not delivered & this_turn, mode
+        assert earlier_ref in delivered, (mode, reply["result"])
 
 
 def test_current_source_refs_are_turn_local_and_old_capture_can_return(adapter):
@@ -67,9 +114,94 @@ def test_same_text_new_uuid_is_distinct_and_overflow_is_degraded(adapter):
         after_new_uuid = conn.execute("SELECT count(*) FROM source_events").fetchone()[0]
     assert after_replay == 1
     assert after_new_uuid == 2
-    provider._current_source_refs = [f"ref-{index}" for index in range(17)]
+    # A full fence, then one more captured source of the same turn overflows it.
+    provider._current_source_refs = [f"ref-{index}" for index in range(MAX_CURRENT_SOURCE_REFS)]
+    _tool_result(provider, "uuid-b", "overflow-1", "one source past the fence")
     assert provider.prefetch("overflow check") == ""
     assert "degraded:current_source_refs_limit" in provider.diagnostics.capability_gaps
+
+
+def test_tool_heavy_turn_keeps_explicit_recall_working_and_fenced(adapter):
+    provider, _clock = adapter
+    earlier_ref = _earlier_turn_ref(provider)
+    provider.observe_pre_llm(session_id="TEST-session-1", turn_id="turn-heavy",
+                             user_message="heavy-turn: check where the orca42 rollout runs")
+    provider.on_turn_start(2, "heavy-turn: check where the orca42 rollout runs", turn_id="turn-heavy")
+    for index in range(40):
+        if index % 2:
+            # Scope Recall's own recall result is one of this turn's sources too.
+            result = _recall(provider, _MODES[index % 3], f"heavy-turn-{index}")
+            assert "error" not in json.loads(result), result
+            _tool_result(provider, "turn-heavy", f"heavy-{index}", result, tool_name="recall")
+        else:
+            _tool_result(provider, "turn-heavy", f"heavy-{index}", f"heavy-turn step {index}: orca42 rollout log")
+    assert len(provider.diagnostics.current_source_refs) == 41
+    _assert_fenced_recall(provider, earlier_ref=earlier_ref, marker="heavy-turn")
+
+
+def test_every_segment_of_a_long_tool_result_stays_fenced(adapter):
+    provider, _clock = adapter
+    earlier_ref = _earlier_turn_ref(provider)
+    provider.observe_pre_llm(session_id="TEST-session-1", turn_id="turn-long",
+                             user_message="long-turn: read the orca42 rollout log")
+    line = "long-turn: orca42 rollout log line\n"
+    log = line * (2 * MAX_SEGMENT_CHARS // len(line) + 64)
+    assert len(log) > 2 * MAX_SEGMENT_CHARS
+    _tool_result(provider, "turn-long", "long-1", log)
+    assert len(provider.diagnostics.current_source_refs) == 1 + 3  # the user message and three segments
+    _assert_fenced_recall(provider, earlier_ref=earlier_ref, marker="long-turn")
+
+
+def test_overflowed_turn_degrades_recall_visibly_until_the_next_turn(adapter):
+    provider, _clock = adapter
+    earlier_ref = _earlier_turn_ref(provider)
+    provider.observe_pre_llm(session_id="TEST-session-1", turn_id="turn-full", user_message="full-turn: orca42 rollout")
+    # Stand-ins for sources this turn already captured, one short of the fence.
+    provider._current_source_refs.extend(f"event-stand-in-{index}@1" for index in range(MAX_CURRENT_SOURCE_REFS - 2))
+    _tool_result(provider, "turn-full", "full-last", "full-turn: the last source the fence holds")
+    assert len(provider.diagnostics.current_source_refs) == MAX_CURRENT_SOURCE_REFS
+    at_bound = json.loads(_recall(provider, "history", "at-bound"))
+    assert "error" not in at_bound and at_bound["result"]["status"] != "unavailable"
+
+    _tool_result(provider, "turn-full", "full-over", "full-turn: one source past the fence")
+    assert len(provider.diagnostics.current_source_refs) == MAX_CURRENT_SOURCE_REFS
+    assert provider.prefetch("where does the orca42 rollout run") == ""
+    for mode in _MODES:
+        reply = json.loads(_recall(provider, mode, f"over-{mode}"))
+        assert "error" not in reply, reply
+        assert GAP_CURRENT_SOURCE_REFS_LIMIT in reply["capability_gaps"]
+        packet = validate_payload("recall_packet", reply["result"])
+        assert (packet["status"], packet["items"], packet["request_id"]) == ("unavailable", [], f"over-{mode}")
+        assert packet["gaps"] == ["current_source_refs_limit"]
+    status = json.loads(provider.handle_tool_call("status", {}))
+    assert GAP_CURRENT_SOURCE_REFS_LIMIT in status["capability_gaps"]
+
+    provider.observe_pre_llm(session_id="TEST-session-1", turn_id="turn-next", user_message="next-turn: orca42 rollout")
+    assert len(provider.diagnostics.current_source_refs) == 1
+    assert GAP_CURRENT_SOURCE_REFS_LIMIT not in provider.diagnostics.capability_gaps
+    assert "blue cluster" in provider.prefetch("where does the orca42 rollout run")
+    _assert_fenced_recall(provider, earlier_ref=earlier_ref, marker="next-turn")
+
+
+@pytest.mark.parametrize("reset", ["pre_llm_turn_id", "turn_start_ordinal", "session_switch", "initialize"])
+def test_overflow_clears_exactly_where_current_refs_reset(adapter, initialize_kwargs, reset):
+    provider, _clock = adapter
+    provider._current_source_refs = [f"ref-{index}" for index in range(MAX_CURRENT_SOURCE_REFS)]
+    _tool_result(provider, "turn-over", "over-1", "one source past the fence")
+    assert GAP_CURRENT_SOURCE_REFS_LIMIT in provider.diagnostics.capability_gaps
+    if reset == "pre_llm_turn_id":
+        provider.observe_pre_llm(session_id="TEST-session-1", turn_id="uuid-next", user_message="next message")
+    elif reset == "turn_start_ordinal":
+        provider.on_turn_start(8, "next message")
+    elif reset == "session_switch":
+        provider.on_session_switch("TEST-session-2")
+    else:
+        provider.initialize("TEST-session-1", **initialize_kwargs)
+    assert len(provider.diagnostics.current_source_refs) <= 1
+    assert GAP_CURRENT_SOURCE_REFS_LIMIT not in provider.diagnostics.capability_gaps
+    reply = json.loads(_recall(provider, "history", f"after-{reset}"))
+    assert "error" not in reply and GAP_CURRENT_SOURCE_REFS_LIMIT not in reply["capability_gaps"]
+    assert reply["result"]["status"] != "unavailable"
 
 
 def test_worker_keeps_one_active_and_one_coalesced_wakeup():

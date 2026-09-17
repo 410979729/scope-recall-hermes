@@ -165,6 +165,28 @@ def _dumps(payload: dict[str, Any]) -> str:
     return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
 
 
+def _unfenced_turn_packet(request_id: str) -> dict[str, Any]:
+    """The contract's unavailable recall packet, for a turn that overflowed its source fence.
+
+    The request is valid and nothing failed, so an error would wrongly blame
+    the caller (INPUT_INVALID) or storage.  This is the shape the epoch fence
+    already delivers when a packet cannot be handed over safely: no items,
+    unknown answerability and coverage, and a gap saying why.
+    """
+    return {
+        "protocol_version": PROTOCOL_VERSION,
+        "request_id": request_id,
+        "status": "unavailable",
+        "memory_epoch": None,
+        "items": [],
+        "gaps": ["current_source_refs_limit"],
+        "diagnostic_ref": None,
+        "answerability": "unknown",
+        "coverage": "unknown",
+        "unmet_needs": ["retry_next_turn"],
+    }
+
+
 def _error_output(code: str, field: str, *, request_id: str, origin: str, capability_gaps: tuple[str, ...] = ()) -> str:
     # Error output deliberately carries only the public contract code/field;
     # exception text could disclose a private ref, scope, or filesystem path.
@@ -243,6 +265,10 @@ class HermesToolSurface:
         body = self._tool_body(args, "recall")
         context = self._tool_context()
         validate_model_request("recall_request", body, context)
+        if self._current_source_refs_overflow:
+            # Recalling without every ref of this turn could hand the turn's
+            # own sources back; the provider reports the capability gap.
+            return self._reply(body["request_id"], _unfenced_turn_packet(body["request_id"]))
         core = self._require_core()
         packet = core.recall_packet(
             context,

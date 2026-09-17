@@ -25,6 +25,11 @@ Answerability = Literal["supported", "partial", "ambiguous", "unknown"]
 # Character-calibrated whole-packet units from recall_budget.estimate_tokens.
 # This is not a measured provider tokenizer count; bytes are diagnostic only.
 AUTOMATIC_PACKET_BUDGET_UNITS = 4096
+#: Refs to the caller's own current-turn sources, which recall must not hand
+#: back.  An in-memory echo filter, not an access check.  A host holds one ref
+#: per stored segment (a long tool result is several), so the bound is sized
+#: for a tool-heavy turn rather than for one message.
+MAX_CURRENT_SOURCE_REFS = 256
 
 
 def optional_json(text: object) -> object:
@@ -122,7 +127,7 @@ class SearchContext:
             raise ContractError("INPUT_INVALID", "focus_refs")
         if len(set(self.focus_refs)) != len(self.focus_refs):
             raise ContractError("INPUT_INVALID", "focus_refs")
-        if type(self.current_source_refs) is not tuple or len(self.current_source_refs) > 16:
+        if type(self.current_source_refs) is not tuple or len(self.current_source_refs) > MAX_CURRENT_SOURCE_REFS:
             raise ContractError("INPUT_INVALID", "current_source_refs")
         if any(type(ref) is not str or not 1 <= len(ref) <= 300 for ref in self.current_source_refs):
             raise ContractError("INPUT_INVALID", "current_source_refs")
