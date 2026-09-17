@@ -374,7 +374,27 @@ def _chat_usage(payload: Mapping[str, Any]) -> dict[str, int] | None:
     if isinstance(candidate, dict) and all(
         type(candidate.get(name)) is int and candidate[name] >= 0 for name in ("prompt_tokens", "completion_tokens")
     ):
-        return {"prompt_tokens": candidate["prompt_tokens"], "completion_tokens": candidate["completion_tokens"]}
+        usage = {"prompt_tokens": candidate["prompt_tokens"], "completion_tokens": candidate["completion_tokens"]}
+        cached = _cached_prompt_tokens(candidate)
+        if cached is not None:
+            usage["cached_prompt_tokens"] = cached
+        return usage
+    return None
+
+
+def _cached_prompt_tokens(usage: Mapping[str, Any]) -> int | None:
+    """Prompt tokens the provider says it served from its prefix cache.
+
+    DeepSeek reports ``prompt_cache_hit_tokens``; OpenAI-compatible routes nest
+    ``cached_tokens`` under ``prompt_tokens_details``.  Recorded for
+    observation only: whether a prompt layout actually reuses its prefix is
+    otherwise invisible from here.
+    """
+    details = usage.get("prompt_tokens_details")
+    for value in (usage.get("prompt_cache_hit_tokens"),
+                  details.get("cached_tokens") if isinstance(details, dict) else None):
+        if type(value) is int and 0 <= value <= usage["prompt_tokens"]:
+            return value
     return None
 
 

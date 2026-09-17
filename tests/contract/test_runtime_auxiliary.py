@@ -246,6 +246,61 @@ def test_consolidation_returns_raw_content_without_json_repair(tmp_path, monkeyp
     assert content == "{not valid json"
 
 
+def _cached_reply(usage):
+    return FakeTransport(lambda **kwargs: (200, json.dumps({
+        "usage": usage,
+        "choices": [{"message": {"role": "assistant", "content": "{}"}, "finish_reason": "stop"}],
+    }).encode()))
+
+
+def _ledger_rows(ledger):
+    with sqlite3.connect(ledger) as db:
+        db.row_factory = sqlite3.Row
+        return [dict(row) for row in db.execute("SELECT * FROM requests ORDER BY id")]
+
+
+@pytest.mark.parametrize("usage,cached", [
+    ({"prompt_tokens": 1000, "completion_tokens": 5, "prompt_cache_hit_tokens": 640, "prompt_cache_miss_tokens": 360}, 640),
+    ({"prompt_tokens": 1000, "completion_tokens": 5, "prompt_tokens_details": {"cached_tokens": 512}}, 512),
+    ({"prompt_tokens": 1000, "completion_tokens": 5}, None),
+])
+def test_cached_prompt_tokens_are_recorded_beside_an_unchanged_charge(tmp_path, monkeypatch, usage, cached):
+    """Whether a prompt layout reuses its prefix is invisible unless the ledger
+    keeps what the provider reported; the charge still prices every token."""
+    config, ledger, budget = _runtime_config(tmp_path)
+    monkeypatch.setenv("SCOPE_RECALL_TEST_CHAT_KEY", "test-key")
+    runtime = build_auxiliary_runtime(config, transport=_cached_reply(usage))
+    runtime.consolidation.propose([{"role": "user", "content": "bounded input"}], remaining_seconds=2.0)
+    row = _ledger_rows(ledger)[0]
+    assert row["cached_input"] == cached
+    assert row["charge_micro_usd"] == budget.pricing["deepseek-v4-flash"].charge_micro_usd(1000, 5)
+
+
+@pytest.mark.parametrize("hit", [True, -1, 1001, 12.0, "640"])
+def test_a_cache_count_that_cannot_be_true_is_not_recorded(tmp_path, monkeypatch, hit):
+    config, ledger, _ = _runtime_config(tmp_path)
+    monkeypatch.setenv("SCOPE_RECALL_TEST_CHAT_KEY", "test-key")
+    usage = {"prompt_tokens": 1000, "completion_tokens": 5, "prompt_cache_hit_tokens": hit}
+    runtime = build_auxiliary_runtime(config, transport=_cached_reply(usage))
+    runtime.consolidation.propose([{"role": "user", "content": "bounded input"}], remaining_seconds=2.0)
+    assert _ledger_rows(ledger)[0]["cached_input"] is None
+
+
+def test_a_ledger_from_before_the_cache_column_gains_it_on_first_use(tmp_path, monkeypatch):
+    config, ledger, _ = _runtime_config(tmp_path)
+    ledger.unlink()
+    with sqlite3.connect(ledger) as db:
+        db.execute("CREATE TABLE requests (id INTEGER PRIMARY KEY, batch TEXT, model TEXT, body_sha256 TEXT, "
+                   "request_bytes INTEGER, reserved_input INTEGER, reserved_output INTEGER, actual_input INTEGER, "
+                   "actual_output INTEGER, charge_micro_usd INTEGER, status TEXT, started_ns INTEGER)")
+    monkeypatch.setenv("SCOPE_RECALL_TEST_CHAT_KEY", "test-key")
+    usage = {"prompt_tokens": 1000, "completion_tokens": 5, "prompt_cache_hit_tokens": 640}
+    for _ in range(2):
+        runtime = build_auxiliary_runtime(config, transport=_cached_reply(usage))
+        runtime.consolidation.propose([{"role": "user", "content": "bounded input"}], remaining_seconds=2.0)
+    assert [row["cached_input"] for row in _ledger_rows(ledger)] == [640, 640]
+
+
 def _chat_reply(message, finish_reason):
     return json.dumps({
         "usage": {"prompt_tokens": 10, "completion_tokens": 512},
