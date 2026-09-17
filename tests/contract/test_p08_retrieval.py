@@ -1,4 +1,5 @@
 """Deterministic P08 core retrieval contracts using synthetic TEST identity."""
+from contextlib import contextmanager
 from dataclasses import FrozenInstanceError, replace
 from pathlib import Path
 
@@ -200,3 +201,143 @@ def test_P08_lexical_pool_ranks_rows_naming_the_hard_identifier_first(app):
     with core.storage.read(reader) as tx:
         pool = RetrievalStorage().lexical(tx, search, limit=100)
     assert (pool[0].ref, pool[-1].ref) == (target.ref, reinjected.ref)
+
+
+# -- Chinese synonyms ------------------------------------------------------------
+
+
+@contextmanager
+def _without_synonyms():
+    """The unexpanded lexical path: the same pipeline with an empty synonym table."""
+    from scope_recall.core import recall_policy
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(recall_policy, "_SYNONYMS", {})
+        yield
+
+
+def _lexical_pool(core, reader, query, *, mode="history"):
+    from scope_recall.core.retrieval_storage import RetrievalStorage
+
+    search = SearchContext.from_request(recall_request(query=query, mode=mode), reader,
+                                        now=Clock.now, deadline=core.clock.monotonic() + 5)
+    with core.storage.read(reader) as tx:
+        return RetrievalStorage().lexical(tx, search, limit=47)
+
+
+def _recalled(core, reader, query, mode):
+    return [item.ref for item in core.recall(reader, recall_request(query=query, mode=mode), deadline_seconds=5).items]
+
+
+def test_P08_synonym_table_is_short_disjoint_and_one_index_term_per_member():
+    from scope_recall.core.events import lexical_terms
+    from scope_recall.core.recall_policy import SYNONYM_GROUPS
+
+    members = [member for group in SYNONYM_GROUPS for member in group]
+    assert 10 <= len(SYNONYM_GROUPS) <= 20 and all(len(group) >= 2 for group in SYNONYM_GROUPS)
+    assert len(members) == len(set(members)), "a word belongs to one group"
+    # Two CJK characters make one index term, so a swap lines up bigram for bigram.
+    assert all(len(member) == 2 and lexical_terms(member) == (member,) for member in members)
+    assert "还是" not in members, "still, but also 'or'"
+
+
+def test_P08_judged_probe_questions_are_outside_the_synonym_table():
+    """The probe set is scored on a corpus no gate has: a table change reaching one must be re-measured."""
+    from scope_recall.core.recall_policy import synonym_expansions
+    from tests.contract.recall_probes import ANSWERABLE, UNANSWERABLE
+
+    for query in (*(question for question, _pattern in ANSWERABLE), *UNANSWERABLE):
+        assert synonym_expansions(query) == {}, query
+
+
+@pytest.mark.parametrize("mode", ["current", "history"])
+def test_P08_lexical_synonym_reaches_a_paraphrase_without_the_query_word(app, mode):
+    """"阿乙装上了吗" shares one of its five terms with "阿乙已经安装好了"; three are needed."""
+    core, ctx = app
+    target = capture(core, ctx, "阿乙已经安装好了", key="TEST-p08/synonym/installed")
+    reader = replace(ctx, session_id="TEST-p08-synonym-reader")
+    query = "阿乙装上了吗"
+    with _without_synonyms():
+        assert _recalled(core, reader, query, mode) == []
+    # 安装 and 装好 both stand in for 装上, 好了 for 上了: each query term is
+    # credited once, and coverage is still counted against the query's five.
+    [candidate] = _lexical_pool(core, reader, query, mode=mode)
+    assert (candidate.ref, candidate.lexical_score, candidate.matched_query_terms) == (
+        target.ref, 3.0, ("上了", "阿乙", "装上"))
+    # The source leads; its capture episode may follow by relation.
+    assert _recalled(core, reader, query, mode)[:1] == [target.ref]
+
+
+def test_P08_lexical_synonym_hit_counts_once_for_the_query_term_it_stands_in_for(app):
+    """A source sharing nothing with the query but synonyms of one word is one term, and stays out."""
+    core, ctx = app
+    one = capture(core, ctx, "新版安装包放在共享盘", key="TEST-p08/synonym-bound/one")
+    every = capture(core, ctx, "先安装依赖，再把插件装好", key="TEST-p08/synonym-bound/every")
+    reader = replace(ctx, session_id="TEST-p08-synonym-bound-reader")
+    query = "阿乙装上了吗"
+    pool = {candidate.ref: (candidate.lexical_score, candidate.matched_query_terms)
+            for candidate in _lexical_pool(core, reader, query)}
+    assert pool == {one.ref: (1.0, ("装上",)), every.ref: (1.0, ("装上",))}
+    for mode in ("current", "history"):
+        assert _recalled(core, reader, query, mode) == [], mode
+
+
+def test_P08_lexical_admission_counts_only_the_query_s_own_terms():
+    query = "阿乙装上了吗"
+    policy = RecallPolicy(vector_threshold=None)
+    credited = CandidateRef("event", "event-TEST", 1, "lexical", lexical_score=3.0,
+                            matched_query_terms=("上了", "阿乙", "装上"))
+    assert policy.lexical_admission(credited, query) == (True, None)
+    # The same count reported over synonym terms is one query term, not three.
+    inflated = replace(credited, matched_query_terms=("安装", "装上", "装好"))
+    assert policy.lexical_admission(inflated, query) == (False, "lexical_insufficient_specificity")
+
+
+def test_P08_lexical_synonym_ranks_a_paraphrased_release_status_into_the_pool(app):
+    """"依然是 rc28" is answered by "仍然是 rc28", never by rc29, however many rc28 logs compete."""
+    core, ctx = app
+    query = "阿乙依然是 rc28 吗"
+    target = capture(core, ctx, "阿乙仍然是 rc28", key="TEST-p08/synonym-pool/target", when="2026-09-01T12:00:00Z")
+    rc29 = capture(core, ctx, "阿乙仍然是 rc29", key="TEST-p08/synonym-pool/rc29", when="2026-09-01T12:00:00Z")
+    reader = replace(ctx, session_id="TEST-p08-synonym-pool-reader")
+    # rc29 matches every Chinese term through the synonym; the identifier still decides.
+    pool = {candidate.ref: candidate.lexical_score for candidate in _lexical_pool(core, reader, query)}
+    assert pool == {target.ref: 5.0, rc29.ref: 4.0}
+    for mode in ("current", "history"):
+        assert _recalled(core, reader, query, mode) == [target.ref], mode
+
+    # Sixty newer rc28 logs share three terms each, as many as the target
+    # shares literally: unexpanded, they fill the pool and the answer is lost.
+    for index in range(60):
+        capture(core, ctx, f"阿乙 rc28 回归记录 {index}：结果当然是通过",
+                key=f"TEST-p08/synonym-pool/{index}", when="2026-09-02T12:00:00Z")
+    with _without_synonyms():
+        assert target.ref not in {candidate.ref for candidate in _lexical_pool(core, reader, query)}
+        for mode in ("current", "history"):
+            assert target.ref not in _recalled(core, reader, query, mode), mode
+    assert _lexical_pool(core, reader, query)[0].ref == target.ref
+    for mode in ("current", "history"):
+        refs = _recalled(core, reader, query, mode)
+        assert refs[0] == target.ref and rc29.ref not in refs, mode
+
+
+def test_P08_lexical_query_without_a_synonym_is_untouched_by_the_table(app):
+    from scope_recall.core.recall_policy import synonym_expansions
+
+    core, ctx = app
+    for index, text in enumerate((
+        "阿乙升级收尾：现在还是 rc28，旧记忆和设置没动。",
+        "阿乙仍然是 Scope Recall 的测试对象",
+        "网关安装日志：rc28 已就绪",
+        "安全审计：阿乙网关日志 rc28 已归档",
+    )):
+        capture(core, ctx, text, key=f"TEST-p08/synonym-free/{index}", when=f"2026-09-0{index + 1}T12:00:00Z")
+    reader = replace(ctx, session_id="TEST-p08-synonym-free-reader")
+    for query in ("阿乙升级结果怎么样", "rc28 网关日志", "安全审计归档了吗"):
+        assert synonym_expansions(query) == {}, query
+        for mode in ("current", "history"):
+            request = recall_request(query=query, mode=mode)
+            expanded = (_lexical_pool(core, reader, query, mode=mode), core.recall(reader, request, deadline_seconds=5))
+            with _without_synonyms():
+                base = (_lexical_pool(core, reader, query, mode=mode), core.recall(reader, request, deadline_seconds=5))
+            assert expanded[0] and expanded == base, (query, mode)

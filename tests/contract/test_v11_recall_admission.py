@@ -19,7 +19,7 @@ import pytest
 from scope_recall.contracts import ContractError, InstanceBinding, TrustedContext
 from scope_recall.core import CoreConfig, MemoryCore
 from scope_recall.core.events import lexical_terms, query_terms
-from scope_recall.core.recall_policy import RecallPolicy, SPACE_ID, hard_identifiers, identifiers_compatible
+from scope_recall.core.recall_policy import RecallPolicy, SPACE_ID, hard_identifiers, identifiers_compatible, synonym_expansions
 from scope_recall.core.retrieval import MAX_CURRENT_SOURCE_REFS, CandidateRef, CollectionQuery, SearchContext
 from scope_recall.core.recall_packet import canonical_render_json
 from scope_recall.core.retrieval_storage import scope_digest
@@ -307,10 +307,13 @@ def test_P08_release_suffix_query_reaches_full_version_sources(tmp_path):
 
     # A source indexed before suffix terms existed has no "rc28" row, so only
     # a vector hit can reach it until it is re-indexed; hydration admits it.
+    # The paraphrase avoids the synonym table: 装好 would reach 已安装 lexically.
     with closing(sqlite3.connect(core.storage.path)) as conn, conn:
         conn.execute("DELETE FROM lexical_projection WHERE term IN ('rc28','rc29')")
     vectors.candidates = (_candidate(other), _candidate(full, score=0.90))
-    refs = {_item_ref(item) for item in recall(core, reader, query="rc28 装好了吗", mode="current").items}
+    query = "rc28 就绪了吗"
+    assert synonym_expansions(query) == {}
+    refs = {_item_ref(item) for item in recall(core, reader, query=query, mode="current").items}
     assert full.ref in refs and other.ref not in refs
 
 

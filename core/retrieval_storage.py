@@ -19,7 +19,7 @@ from .claim_storage import parse_source_ref
 from .claims import canonical_time, select_effective, select_proposal
 from .delete_storage import canonical
 from .episodes import source_origin
-from .recall_policy import applicability, hard_identifiers, in_time_window, meaningful_query_terms, query_is_relevant
+from .recall_policy import applicability, hard_identifiers, in_time_window, meaningful_query_terms, query_is_relevant, synonym_expansions
 from .resume_compaction import resume_evidence_refs
 from .retrieval import STALE_RESUME_GAPS, CandidateRef, CollectionQuery, ObjectKind, PageCursor, RetrievedObject, SearchContext
 from .visibility import CLOSED_INTENTION_STATES, OBJECT_KINDS, allowed
@@ -128,13 +128,43 @@ def _discriminating_terms(tx, terms: tuple[str, ...], keep: tuple[str, ...] = ()
     }
     if not frequencies:
         return terms
-    corpus = int(conn.execute("SELECT COUNT(*) FROM source_events").fetchone()[0] or 0)
-    ceiling = max(_LEXICAL_DF_FLOOR, int(corpus * _LEXICAL_DF_FRACTION))
+    ceiling = _common_term_ceiling(conn)
     kept = tuple(term for term in terms if term in keep or frequencies.get(term, 0) < ceiling)
     if kept:
         return kept
     rarest = min(frequencies.values())
     return tuple(term for term in terms if frequencies.get(term, 0) == rarest) or terms
+
+
+def _common_term_ceiling(conn) -> int:
+    """Document frequency at which a term is too common to separate anything."""
+    corpus = int(conn.execute("SELECT COUNT(*) FROM source_events").fetchone()[0] or 0)
+    return max(_LEXICAL_DF_FLOOR, int(corpus * _LEXICAL_DF_FRACTION))
+
+
+def _discriminating_synonyms(tx, synonyms: dict[str, str], terms: tuple[str, ...]) -> dict[str, str]:
+    """The synonym terms worth searching, each still mapped to the query term it stands in for.
+
+    A synonym term goes when the query term it stands in for was pruned, and it
+    is held to the same document-frequency bar without the query terms'
+    fallback: one too common to separate anything is not searched, and neither
+    is one the index has never seen, which could not match.
+    """
+    live = {term: original for term, original in synonyms.items() if original in terms}
+    if not live:
+        return {}
+    conn = tx._check()
+    frequencies = {
+        row[0]: int(row[1])
+        for row in conn.execute(
+            f"SELECT term,COUNT(*) FROM lexical_projection WHERE term IN ({_marks(live)}) GROUP BY term",
+            tuple(live),
+        ).fetchall()
+    }
+    if not frequencies:
+        return {}
+    ceiling = _common_term_ceiling(conn)
+    return {term: original for term, original in live.items() if 0 < frequencies.get(term, 0) < ceiling}
 
 
 def evidence_source_contexts(tx, evidence: Iterable[str]) -> list[SourceContext]:
@@ -222,18 +252,24 @@ class RetrievalStorage:
         requested = hard_identifiers(context.query)
         identifiers = tuple(term for term in terms if requested.intersection(hard_identifiers(term)))
         terms = _discriminating_terms(tx, terms, keep=identifiers)
+        # A synonym term matches as the query term it stands in for, so hits
+        # and matched terms still count the query's own terms, once each.
+        # Without a synonym the statement and its parameters are unchanged.
+        synonyms = _discriminating_synonyms(tx, synonym_expansions(context.query), terms)
+        credit = f"CASE p.term {' '.join('WHEN ? THEN ?' for _ in synonyms)} ELSE p.term END" if synonyms else "p.term"
+        credits = tuple(value for pair in synonyms.items() for value in pair)
         scopes = tuple(sorted(context.trusted_context.allowed_scope_ids))
-        term_marks, scope_marks = _marks(terms), _marks(scopes)
+        term_marks, scope_marks = _marks((*terms, *synonyms)), _marks(scopes)
         identified = f"MAX(p.term IN ({_marks(identifiers)})) DESC," if identifiers else ""
         current = "" if context.mode in {"history", "as_of"} else "AND NOT EXISTS (SELECT 1 FROM source_events newer WHERE newer.source_group_key=e.source_group_key AND newer.source_revision>e.source_revision)"
         as_of = ""
-        params: list[object] = [*terms, *scopes, context.trusted_context.project_id, context.trusted_context.branch_id]
+        params: list[object] = [*terms, *synonyms, *scopes, context.trusted_context.project_id, context.trusted_context.branch_id]
         if context.as_of is not None:
             as_of = " AND (e.occurred_at IS NULL OR e.occurred_at<=?)"
             params.append(context.as_of)
         rows = tx._check().execute(
-            f"""SELECT e.event_id,e.source_revision,COUNT(DISTINCT p.term) AS hits,
-                       GROUP_CONCAT(DISTINCT hex(p.term)) AS matched_term_hexes
+            f"""SELECT e.event_id,e.source_revision,COUNT(DISTINCT {credit}) AS hits,
+                       GROUP_CONCAT(DISTINCT hex({credit})) AS matched_term_hexes
                 FROM lexical_projection p JOIN source_events e
                 ON e.event_id=p.event_id AND e.source_revision=p.source_revision
                 WHERE p.term IN ({term_marks}) AND e.scope_id IN ({scope_marks})
@@ -251,7 +287,7 @@ class RetrievalStorage:
                 END,
                 {identified}hits DESC,e.occurred_at DESC,e.event_id,e.source_revision DESC
                 LIMIT ?""",
-            (*params, *identifiers, limit),
+            (*credits, *credits, *params, *identifiers, limit),
         ).fetchall()
         return tuple(
             CandidateRef(
