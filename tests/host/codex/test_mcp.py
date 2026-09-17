@@ -231,6 +231,44 @@ def test_recall_epoch_race_scrubs_compiled_payload_surface(tmp_path: Path) -> No
     assert result["result"]["items"] == []
 
 
+def test_mcp_recall_without_evidence_is_no_match_while_prompt_hook_keeps_background(installed) -> None:
+    """An explicit lookup that finds nothing says so; automatic prompt recall is unchanged."""
+    from scope_recall.adapters.codex.mcp_server import build_server
+
+    config, core, clock, project = installed
+    audience = resolve_runtime_audience(config, str(project))
+    human = trusted_context(config, audience, session_id=str(uuid4()), actor_origin="human_direct")
+    text = "TEST-project 表达偏好 简洁。"
+    event: SourceEvent = {
+        "protocol_version": "1.1", "source_event_key": "TEST-preference", "source_revision": 1,
+        "origin": "human_direct", "role": "user", "content": text,
+        "occurred_at": None, "recorded_at": clock.utc_now(), "time_precision": "unknown",
+        "capture_state": "complete", "evidence_refs": [],
+    }
+    source = core.record_event(human, event, scope_id=audience.capture_scope_id).event_refs[0]
+    claim_ref = core.accept_claim_proposals(human, {
+        "protocol_version": "1.1", "source_refs": [f"{source.ref}@{source.revision}"],
+        "claim_proposals": [{
+            "kind": "preference", "subject": "TEST-project", "predicate": "表达偏好", "value_text": "简洁",
+            "conditions": [], "statement_kind": "assertion", "valid_from": None, "valid_to": None,
+            "evidence_spans": [{"source_ref": source.ref, "source_revision": source.revision, "quote": text}],
+        }],
+        "resume_proposals": [], "reference_proposals": [],
+    }, scope_id=audience.capture_scope_id).items[0].ref
+    query = "紫色海豚量子温泉"
+
+    ambient = CodexHookHandler(config, core=core, clock=clock).handle_payload({
+        "hook_event_name": "UserPromptSubmit", "session_id": "TEST-session-1", "turn_id": "TEST-turn-1",
+        "cwd": str(project), "prompt": query,
+    })
+    assert claim_ref in ambient["hookSpecificOutput"]["additionalContext"]
+
+    tool = build_server(config, workspace=project, core=core).server._tool_manager.get_tool("recall")
+    fake_context = SimpleNamespace(request_context=SimpleNamespace(meta={}))
+    explicit = tool.fn(fake_context, protocol_version="1.1", query=query, mode="auto", max_items=6)["result"]
+    assert (explicit["status"], explicit["items"], explicit["answerability"]) == ("no_match", [], "unknown")
+
+
 def test_mcp_inspect_resolves_old_episode_by_explicit_ref(tmp_path: Path) -> None:
     """An early episode remains addressable after more than 200 later events."""
     project = tmp_path / "project"

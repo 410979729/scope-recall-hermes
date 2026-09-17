@@ -150,6 +150,27 @@ def test_task_context_does_not_guess_among_two_open_tasks(app):
     assert [entry["ref"] for entry in selected if entry["kind"] == "episode"] == [first.ref]
 
 
+def test_explicit_resume_without_evidence_keeps_only_its_grounded_task(app):
+    core, ctx = app
+    ctx = replace(ctx, task_anchor="TEST-explicit-resume")
+    episode = task(core, ctx, "TEST 海报排版还未完成")
+    # Captured under another task, so the open task's resume stays current.
+    claim, _ = preference(core, replace(ctx, task_anchor="TEST-other-task"))
+
+    def items(**flag):
+        search = SearchContext.from_request(recall_request(query="继续"), ctx, now=core.clock.utc_now(),
+                                            deadline=core.clock.monotonic() + 5, **flag)
+        # Without the directed follow-up the task can only arrive as background.
+        return core.recall_pipeline.search(replace(search, limits=replace(search.limits, followups=0))).items
+
+    assert {item.ref for item in items()} == {claim.ref, episode.ref}
+    explicit = items(background_without_evidence=False)
+    assert [item.ref for item in explicit] == [episode.ref]
+    assert explicit[0].applicability.startswith(BACKGROUND_PREFIX)
+    with pytest.raises(ContractError, match="background_without_evidence"):
+        items(background_without_evidence=None)
+
+
 def test_changed_environment_does_not_auto_reuse_old_task_state(app):
     core, ctx = app
     original = replace(ctx, task_anchor="TEST-current", environment_revision="TEST-env-v1")

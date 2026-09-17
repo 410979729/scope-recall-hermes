@@ -102,12 +102,18 @@ class SearchContext:
     trusted_context: TrustedContext
     current_source_refs: tuple[str, ...] = ()
     request_id: str = ""
+    #: Whether automatic-mode background may stand in for missing query
+    #: evidence.  Ambient recall keeps it; an explicit lookup turns it off, so
+    #: finding nothing stays a refusal (core/background_context.py).
+    background_without_evidence: bool = True
 
     def __post_init__(self) -> None:
         if type(self.query) is not str or not self.query.strip() or len(self.query) > 8192:
             raise ContractError("INPUT_INVALID", "query")
         if type(self.request_id) is not str or len(self.request_id) > 100:
             raise ContractError("INPUT_INVALID", "request_id")
+        if type(self.background_without_evidence) is not bool:
+            raise ContractError("INPUT_INVALID", "background_without_evidence")
         if self.mode not in {"auto", "current", "history", "as_of", "method"}:
             raise ContractError("INPUT_INVALID", "mode")
         if self.mode == "as_of" and self.as_of is None:
@@ -143,6 +149,7 @@ class SearchContext:
         now: str,
         deadline: float,
         current_source_refs: tuple[str, ...] = (),
+        background_without_evidence: bool = True,
     ) -> "SearchContext":
         payload = validate_model_request(
             "recall_request", dict(request) if isinstance(request, dict) else request, trusted_context
@@ -159,6 +166,7 @@ class SearchContext:
             trusted_context=trusted_context,
             current_source_refs=tuple(current_source_refs),
             request_id=payload["request_id"],
+            background_without_evidence=background_without_evidence,
         )
 
 

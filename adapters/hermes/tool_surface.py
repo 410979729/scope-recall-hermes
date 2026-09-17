@@ -277,6 +277,8 @@ class HermesToolSurface:
             # Explicit tool calls get the bounded deep-search ceiling.  Auto
             # mode is still clamped by the trusted CoreConfig budget.
             deadline_seconds=5.0,
+            # A lookup that finds nothing says so; prefetch keeps background.
+            background_without_evidence=False,
         )
         packet = fence_epoch(packet, core.memory_epoch(context), FENCED_RECALL)
         return self._reply(body["request_id"], packet)
