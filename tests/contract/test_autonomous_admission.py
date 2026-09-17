@@ -7,7 +7,7 @@ import pytest
 
 from scope_recall.contracts import ContractError
 from scope_recall.core import CoreConfig, MemoryCore
-from scope_recall.core.admission import ADMISSION_KEY, AdmissionPolicy, classify
+from scope_recall.core.admission import ADMISSION_KEY, AdmissionDecision, AdmissionPolicy, classify, store_decision
 from v11_support import context, source_event
 
 
@@ -89,6 +89,41 @@ def test_backpressure_reserves_capacity_then_automatically_refills_after_drain(t
     assert len(resumed) == 1 and resumed[0].queued_work == 2
     assert app.source(ctx, b.event_refs[0].ref, 1).capture_gaps == ()
     assert app.resume_deferred(ctx, remaining_seconds=10) == ()
+
+
+def test_memory_reinjection_is_source_only_at_capture_refill_and_on_demand(tmp_path):
+    app, ctx = app_at(tmp_path)
+    # Recall output routinely repeats the words that raise ordinary priority.
+    text = "记住：TEST-ECHO-ANCHOR 决定采用蓝色方案。"
+    echo = capture(app, replace(ctx, actor_origin="memory_reinjection"), "TEST-echo", text,
+                   origin="memory_reinjection", role="tool")
+    observed = capture(app, replace(ctx, actor_origin="tool_observation"), "TEST-observed", text,
+                       origin="tool_observation", role="tool")
+    ref = echo.event_refs[0].ref
+    assert echo.durability == "persisted" and echo.semantic_state == "not_scheduled"
+    assert echo.admission == ("admission_source_only:memory_reinjection",)
+    assert observed.semantic_state == "pending" and observed.admission == ()
+    conn = sqlite3.connect(f"{app.storage.path.as_uri()}?mode=ro", uri=True)
+    try:
+        work = conn.execute("SELECT subject_ref,work_type FROM work_items ORDER BY work_id").fetchall()
+    finally:
+        conn.close()
+    assert work == [(observed.event_refs[0].ref, "consolidate"), (observed.event_refs[0].ref, "embed")]
+    assert ref in {source.ref for source in app.search_sources(ctx, "TEST-ECHO-ANCHOR")}
+    # An explicit request creates no work either, and writes nothing.
+    before = app.storage.path.read_bytes()
+    receipt = app.schedule_source(ctx, ref, 1, remaining_seconds=10)
+    assert (receipt.disposition, receipt.reason, receipt.queued_work) == ("source_only", "memory_reinjection", 0)
+    assert app.storage.path.read_bytes() == before
+    # A row deferred for capacity before this rule settles on its first refill.
+    with app.storage.write(ctx, remaining_seconds=10) as tx:
+        store_decision(tx, ref, 1, AdmissionDecision("deferred", "queue_capacity", True))
+    resumed = app.resume_deferred(ctx, remaining_seconds=10)
+    assert [(item.ref, item.disposition, item.queued_work) for item in resumed] == [(ref, "source_only", 0)]
+    assert app.resume_deferred(ctx, remaining_seconds=10) == ()
+    assert counts(app)["work_items"] == 2
+    status = app.status(ctx)
+    assert status.source_only_sources == 1 and status.deferred_sources == 0
 
 
 def test_on_demand_activation_is_idempotent_and_does_not_bypass_visibility(tmp_path):
