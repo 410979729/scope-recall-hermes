@@ -12,7 +12,7 @@ import unicodedata
 
 from ..contracts import ContractError
 from .embedding_budget import bounded_embedding_text
-from .events import lexical_terms, query_terms
+from .events import lexical_terms, query_terms, version_suffixes
 from .retrieval import CandidateRef, SearchContext
 
 
@@ -371,7 +371,9 @@ def meaningful_query_terms(query: str) -> tuple[str, ...]:
 
 
 def hard_identifiers(text: str) -> frozenset[str]:
-    return frozenset(match.group(0).casefold() for match in _HARD_IDENTIFIER.finditer(text))
+    # A release is also identified by its version suffix: "rc28" for 3.1.0rc28.
+    matches = frozenset(match.group(0).casefold() for match in _HARD_IDENTIFIER.finditer(text))
+    return matches | version_suffixes(text)
 
 
 def identifiers_compatible(query: str, content: str) -> bool:

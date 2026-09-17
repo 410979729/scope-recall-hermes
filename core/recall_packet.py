@@ -349,7 +349,7 @@ class RecallPacketCompiler:
             return self._finalize(draft, limits, started)
         verified = self._verify(storage, draft, list(zip(result.candidates, result.items)))
         verified = self._fence(storage, draft, verified)
-        self._admit(draft, self._ordered(context, verified), limits)
+        self._admit(draft, self._ordered(context, verified, limits), limits)
         include_diagnostic_ref = self._fit(draft, limits)
         if draft.items and self._remaining_ms(context) == 0:
             draft.gaps.append("deadline_exceeded_compile")
@@ -432,8 +432,8 @@ class RecallPacketCompiler:
     # -- selection ------------------------------------------------------------
 
     @staticmethod
-    def _ordered(context: SearchContext, verified: list[Pair]) -> list[Pair]:
-        verified = event_admission_order(verified)
+    def _ordered(context: SearchContext, verified: list[Pair], limits: SearchLimits) -> list[Pair]:
+        verified = event_admission_order(verified, limits)
         verified = prioritize_resume_evidence(context, verified)
         verified = prioritize_current_claims(context, verified)
         # Ambient preferences/task state cannot displace answer evidence.

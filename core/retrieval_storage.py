@@ -19,7 +19,7 @@ from .claim_storage import parse_source_ref
 from .claims import canonical_time, select_effective, select_proposal
 from .delete_storage import canonical
 from .episodes import source_origin
-from .recall_policy import applicability, in_time_window, meaningful_query_terms, query_is_relevant
+from .recall_policy import applicability, hard_identifiers, in_time_window, meaningful_query_terms, query_is_relevant
 from .resume_compaction import resume_evidence_refs
 from .retrieval import STALE_RESUME_GAPS, CandidateRef, CollectionQuery, ObjectKind, PageCursor, RetrievedObject, SearchContext
 from .visibility import CLOSED_INTENTION_STATES, OBJECT_KINDS, allowed
@@ -105,7 +105,7 @@ def _has_first_hand_root(tx, evidence: Iterable[str]) -> bool:
     return False
 
 
-def _discriminating_terms(tx, terms: tuple[str, ...]) -> tuple[str, ...]:
+def _discriminating_terms(tx, terms: tuple[str, ...], keep: tuple[str, ...] = ()) -> tuple[str, ...]:
     """Drop query terms too common to separate anything.
 
     Document frequency is read once for the query's own terms, which is a
@@ -113,6 +113,10 @@ def _discriminating_terms(tx, terms: tuple[str, ...]) -> tuple[str, ...]:
     ``(term, event_id, source_revision)``.  If every term is that common the
     query keeps its rarest ones: answering from a weak signal beats answering
     from none, and the vector and recent channels still contribute.
+
+    ``keep`` is never dropped however common: the query's hard identifiers,
+    which hydration requires of every source.  Without them the SQL cannot
+    reach a single source hydration would admit.
     """
     conn = tx._check()
     frequencies = {
@@ -126,7 +130,7 @@ def _discriminating_terms(tx, terms: tuple[str, ...]) -> tuple[str, ...]:
         return terms
     corpus = int(conn.execute("SELECT COUNT(*) FROM source_events").fetchone()[0] or 0)
     ceiling = max(_LEXICAL_DF_FLOOR, int(corpus * _LEXICAL_DF_FRACTION))
-    kept = tuple(term for term in terms if frequencies.get(term, 0) < ceiling)
+    kept = tuple(term for term in terms if term in keep or frequencies.get(term, 0) < ceiling)
     if kept:
         return kept
     rarest = min(frequencies.values())
@@ -210,9 +214,17 @@ class RetrievalStorage:
         terms = meaningful_query_terms(context.query)
         if not terms:
             return ()
-        terms = _discriminating_terms(tx, terms)
+        # Hydration admits only content naming one of the query's hard
+        # identifiers (``identifiers_compatible``).  A term naming one is never
+        # pruned as common, and rows holding one rank first: otherwise sources
+        # sharing more generic terms fill the pool and the admissible source is
+        # never hydrated.
+        requested = hard_identifiers(context.query)
+        identifiers = tuple(term for term in terms if requested.intersection(hard_identifiers(term)))
+        terms = _discriminating_terms(tx, terms, keep=identifiers)
         scopes = tuple(sorted(context.trusted_context.allowed_scope_ids))
         term_marks, scope_marks = _marks(terms), _marks(scopes)
+        identified = f"MAX(p.term IN ({_marks(identifiers)})) DESC," if identifiers else ""
         current = "" if context.mode in {"history", "as_of"} else "AND NOT EXISTS (SELECT 1 FROM source_events newer WHERE newer.source_group_key=e.source_group_key AND newer.source_revision>e.source_revision)"
         as_of = ""
         params: list[object] = [*terms, *scopes, context.trusted_context.project_id, context.trusted_context.branch_id]
@@ -237,9 +249,9 @@ class RetrievalStorage:
                         OR (e.origin='imported' AND e.source_original_origin='memory_reinjection')
                     ) THEN 1 ELSE 0
                 END,
-                hits DESC,e.occurred_at DESC,e.event_id,e.source_revision DESC
+                {identified}hits DESC,e.occurred_at DESC,e.event_id,e.source_revision DESC
                 LIMIT ?""",
-            (*params, limit),
+            (*params, *identifiers, limit),
         ).fetchall()
         return tuple(
             CandidateRef(

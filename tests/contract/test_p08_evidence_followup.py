@@ -9,13 +9,14 @@ import pytest
 from scope_recall.contracts import ImportProvenance, import_source_fingerprint
 from scope_recall.core import CoreConfig, MemoryCore
 from scope_recall.core.events import lexical_terms
+from scope_recall.core.recall_needs import unmet_needs
 from scope_recall.core.recall_policy import (
     RecallPolicy,
     SPACE_ID,
     meaningful_query_terms,
     query_is_specific,
 )
-from scope_recall.core.retrieval import CandidateRef, CollectionQuery, SearchContext, SearchLimits
+from scope_recall.core.retrieval import CandidateRef, CollectionQuery, RetrievedObject, SearchContext, SearchLimits
 from scope_recall.core.retrieval_storage import RetrievalStorage, scope_digest
 from tests.contract.test_v11_claims import Clock, capture
 from tests.v11_support import context, recall_request, source_event
@@ -139,6 +140,28 @@ def test_comparison_same_side_event_duplicates_stay_partial(app):
     result = _recall(core, ctx, query="比较 H100 和 H200 部署配置", mode="history")
     assert "comparison_second_side" in result.unmet_needs
     assert result.answerability_hint == "partial"
+
+
+def test_comparison_counts_a_suffixed_version_and_its_suffix_as_one_side():
+    """A release named 3.1.0rc28 also yields the identifier rc28.
+
+    Counted as two sides, a report naming 3.1.0rc28 and a note naming rc28
+    passed for both sides of 3.1.0rc28 versus 3.1.0rc29.
+    """
+    def event(ref: str, content: str) -> RetrievedObject:
+        return RetrievedObject(ref, 1, "event", content, "human_direct", "current", "trusted scope",
+                               (f"{ref}@1",), "direct_report", True)
+
+    note = event("event-a-note", "rc28 安装后网关正常。")
+    report = event("event-b-report", "hermes-scope-recall 3.1.0rc28 已安装。")
+    dashed = event("event-b-dashed", "网关运行 v3.1.0-rc28。")
+    other = event("event-c-other", "hermes-scope-recall 3.1.0rc29 已安装。")
+    assert "comparison_second_side" in unmet_needs("比较 3.1.0rc28 和 3.1.0rc29", (report, note))
+    assert "comparison_second_side" in unmet_needs("比较 v3.1.0-rc28 和 v3.1.0-rc29", (dashed, note))
+    assert "comparison_second_side" not in unmet_needs("比较 3.1.0rc28 和 3.1.0rc29", (report, other))
+    # Named by suffix alone, a release is one side whichever form its source uses.
+    assert "comparison_second_side" in unmet_needs("比较 rc28 和 rc29", (report, note))
+    assert "comparison_second_side" not in unmet_needs("比较 rc28 和 rc29", (dashed, other))
 
 
 def test_directed_followup_retrieves_second_object_and_stops_at_two_rounds(tmp_path):

@@ -35,24 +35,57 @@ def estimate_tokens(text: str) -> int:
     return max(1, (quarters + 3) // 4)
 
 
-def event_admission_order(ranked):
-    """Rank ordinary event runs by relevance per bounded size cost.
+def _admitted(costs, order, limits, used):
+    """Positions the retrieval budget takes in ``order``, and what it has used after.
+
+    The rule of ``RetrievalPipeline._apply_budget``: an item enters while a
+    slot is free and its units fit what is left of the budget.
+    """
+    count, units = used
+    taken = set()
+    for index in order:
+        if count < limits.max_items and units + costs[index] <= limits.budget_tokens:
+            count, units = count + 1, units + costs[index]
+            taken.add(index)
+    return taken, (count, units)
+
+
+def event_admission_order(ranked, limits):
+    """Rank ordinary event runs by relevance per bounded size cost when admission must choose.
 
     Use a fixed reference quantum rather than the requested budget, so growing
     a budget cannot promote a previously oversized repeat ahead of a compact
     answer. Exact refs, claims and episode/resume anchors retain their priority.
     No source is deleted or merged: distinct evidence and temporal identity stay
     available; repeated imported text simply cannot win on volume alone.
+
+    Size settles only a choice the item cap and budget force.  A run whose
+    fusion order admits the same events as its density order keeps fusion
+    order, so a newer long report that fits beside an older short note is not
+    ranked below it for its length.  Capacity is simulated after everything
+    ranked above the run.  Retrieval's budget and the packet compiler both call
+    this with the request's effective limits; what retrieval kept always fits
+    them, so the compiler keeps retrieval's order rather than re-deciding it.
     """
     ordered, run = [], []
+    used = (0, 0)
 
     def flush():
+        nonlocal used
+        costs = [estimate_tokens(obj.content) for _candidate, obj in run]
+        fusion = range(len(run))
+        taken, after = _admitted(costs, fusion, limits, used)
         # Size admission targets oversized raw sources. Re-sorting a run of
         # short statements by raw fusion score loses the ranker's semantic
         # tie-breaks (for example a decisive answer versus an assistant echo).
-        if any(estimate_tokens(pair[1].content) > 256 for pair in run):
-            run.sort(key=lambda pair: max(pair[0].fusion_score, 1e-6) /
-                     math.sqrt(1 + estimate_tokens(pair[1].content) / 256), reverse=True)
+        if any(cost > 256 for cost in costs):
+            density = sorted(fusion, key=lambda index: max(run[index][0].fusion_score, 1e-6) /
+                             math.sqrt(1 + costs[index] / 256), reverse=True)
+            density_taken, density_after = _admitted(costs, density, limits, used)
+            if density_taken != taken:
+                run[:] = [run[index] for index in density]
+                after = density_after
+        used = after
         ordered.extend(run)
         run.clear()
 
@@ -62,6 +95,7 @@ def event_admission_order(ranked):
             run.append(pair)
         else:
             flush()
+            used = _admitted((estimate_tokens(obj.content),), (0,), limits, used)[1]
             ordered.append(pair)
     flush()
     return ordered

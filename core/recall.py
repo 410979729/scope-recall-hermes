@@ -337,7 +337,7 @@ class RetrievalPipeline:
         kept: list[tuple[CandidateRef, RetrievedObject]] = []
         oversized: list[tuple[CandidateRef, RetrievedObject]] = []
         total_tokens = 0
-        for candidate, item in event_admission_order(ranked):
+        for candidate, item in event_admission_order(ranked, limits):
             if len(kept) >= limits.max_items:
                 break
             tokens = estimate_tokens(getattr(item, "content", ""))
