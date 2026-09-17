@@ -45,6 +45,7 @@ _WEAK_QUERY = frozenset({"那次", "那件", "那个", "这个", "怎样", "如�
 _IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]{1,239}")
 _HARD_IDENTIFIER = re.compile(r"(?<![A-Za-z0-9_])(?:[A-Za-z]{1,12}\d[A-Za-z0-9._/-]*|\d+[A-Za-z][A-Za-z0-9._/-]*)(?![A-Za-z0-9_])")
 _CJK_TEXT = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
+_IDENTIFIER_JOINT = re.compile(r"(?<=[A-Za-z])[ \t_-](?=\d)")
 _CLAUSE_BOUNDARY = re.compile(r"[，,；;。！？!?\n]+")
 
 
@@ -501,6 +502,23 @@ def hard_identifiers(text: str) -> frozenset[str]:
     return matches | version_suffixes(text)
 
 
+def _written_forms(text: str) -> frozenset[str]:
+    """Hard identifiers with their hyphens and underscores dropped, so H-100 and H100 are one name."""
+    return frozenset(identifier.replace("-", "").replace("_", "") for identifier in hard_identifiers(text))
+
+
+def _spelled_out_forms(text: str) -> frozenset[str]:
+    """The same names, also as they read with a space or dash between letters and their digits.
+
+    A reply writes "DLSS 5" and "glm-5.3-flash" where the question wrote DLSS5
+    and glm5.3-flash; compared as written, the reply was refused as naming a
+    different thing.  Only the text being offered is read both ways: read that
+    way, a query asking for "the top 5 options" would start demanding that an
+    answer contain "top5", and a query about H100 would ask for "H100as".
+    """
+    return _written_forms(text) | _written_forms(_IDENTIFIER_JOINT.sub("", text))
+
+
 def identifiers_compatible(query: str, content: str) -> bool:
     """Keep distinct hard identifiers separate while supporting comparisons.
 
@@ -509,11 +527,10 @@ def identifiers_compatible(query: str, content: str) -> bool:
     at a time, with the evidence identity preserved for each side.
     """
 
-    requested = hard_identifiers(query)
+    requested = _written_forms(query)
     if not requested:
         return True
-    present = hard_identifiers(content)
-    return bool(requested.intersection(present))
+    return bool(requested.intersection(_spelled_out_forms(content)))
 
 
 def applicability(context: SearchContext, project_id: str | None, branch_id: str | None) -> str:
