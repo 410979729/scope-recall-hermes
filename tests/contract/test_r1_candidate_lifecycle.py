@@ -158,7 +158,7 @@ def test_r1_candidate_new_evidence_wakes_once_and_duplicate_capture_does_not_exp
     """Arriving evidence is recorded; it no longer mints an evaluation each time.
 
     Scheduling per arrival is what produced 7,802 retired-before-judged
-    evaluations on tianshu.  The evidence is still collected the moment it
+    evaluations on alpha.  The evidence is still collected the moment it
     arrives -- nothing is lost by waiting -- and one evaluation is scheduled
     once the candidate settles.
     """
@@ -220,7 +220,14 @@ def test_candidate_queued_before_unrelated_write_uses_current_attempt_epoch(app)
     assert evaluations[0]["memory_epoch"] == epoch
 
 
-def test_candidate_epoch_change_during_attempt_still_blocks_publication(app):
+def test_candidate_unrelated_capture_during_attempt_still_applies_verdict(app):
+    """An unrelated capture during the attempt no longer voids the paid verdict.
+
+    This was ``test_candidate_epoch_change_during_attempt_still_blocks_publication``:
+    the capture moved ``memory_epoch`` and the evaluation was made obsolete
+    with ``memory_epoch_changed`` although neither its evidence nor its
+    candidate head changed.  The verdict is now applied.
+    """
     core, ctx = app
     saved, _source, proposal, _registration = _candidate(core, ctx)
     _finish_source_work(core)
@@ -228,11 +235,76 @@ def test_candidate_epoch_change_during_attempt_still_blocks_publication(app):
         core, ctx, "另一个项目刚更新。", key="TEST-r1/during-model"))
     result = core.drain_worker(ctx, max_items=1, remaining_seconds=10, consolidation=evaluator)
     assert evaluator.calls == 1
+    assert result.completed == 1 and result.obsolete == 0
+    assert result.items[0].error_code is None
+    assert core.current_claim(ctx, saved.ref).state == "active"
+    _lifecycle, evaluations, _work = _candidate_rows(core)
+    assert evaluations[0]["state"] == "resolved"
+
+
+def test_candidate_evidence_suppressed_during_attempt_blocks_publication(app):
+    core, ctx = app
+    saved, source, proposal, _registration = _candidate(core, ctx)
+    _finish_source_work(core)
+
+    def suppress_evidence():
+        authorize(core, ctx, source, mode="suppress")
+        core.forget(ctx, request(source, mode="suppress"), remaining_seconds=10)
+
+    evaluator = Evaluator(proposal, callback=suppress_evidence)
+    result = core.drain_worker(ctx, max_items=1, remaining_seconds=10, consolidation=evaluator)
+    assert evaluator.calls == 1
+    assert result.completed == 0 and result.stale == 1
+    assert (result.items[0].state, result.items[0].error_code) == ("obsolete", None)
+    _lifecycle, evaluations, _work = _candidate_rows(core)
+    assert (evaluations[0]["state"], evaluations[0]["reason"]) == ("obsolete", "authority_revoked")
+    with core.storage.read(ctx) as tx:
+        assert [version.state for version in tx.claims.versions(saved.ref)] == ["proposed"]
+
+
+def test_candidate_slot_written_during_attempt_blocks_publication(app):
+    """A version recorded in the candidate's claim during the attempt voids the verdict.
+
+    The head is untouched -- the version is historical -- so the evaluation
+    itself is still current; only the claim-slot check sees the change.
+    """
+    core, ctx = app
+    saved, _source, proposal, _registration = _candidate(core, ctx)
+    _finish_source_work(core)
+
+    def write_history():
+        with core.storage.write(ctx) as tx:
+            head = tx.claims.version(saved.ref, saved.revision)
+            tx.claims.append("TEST-scope", proposal, Qualification("proposed", "inferred_suggestion", "TEST_history"),
+                             recorded_at=core.clock.utc_now(), previous=head, advance_head=False)
+
+    evaluator = Evaluator(proposal, callback=write_history)
+    result = core.drain_worker(ctx, max_items=1, remaining_seconds=10, consolidation=evaluator)
+    assert evaluator.calls == 1
     assert result.completed == 0 and result.obsolete == 1
     assert result.items[0].error_code == "memory_epoch_changed"
-    assert core.current_claim(ctx, saved.ref) is None
     with core.storage.read(ctx) as tx:
-        assert tx.claims.versions(saved.ref)[-1].state == "proposed"
+        versions = tx.claims.versions(saved.ref)
+    assert [(version.state, version.current_revision) for version in versions] == [("proposed", 1), ("proposed", 1)]
+
+
+def test_candidate_deletion_in_scope_during_attempt_blocks_publication(app):
+    core, ctx = app
+    saved, _source, proposal, _registration = _candidate(core, ctx)
+    other = capture(core, ctx, "TEST 与候选无关的记录。", key="TEST-r1/delete-other")
+    _finish_source_work(core)
+
+    def delete_other():
+        authorize(core, ctx, other)
+        core.forget(ctx, request(other), remaining_seconds=10)
+
+    evaluator = Evaluator(proposal, callback=delete_other)
+    result = core.drain_worker(ctx, max_items=1, remaining_seconds=10, consolidation=evaluator)
+    assert evaluator.calls == 1
+    assert result.completed == 0 and result.obsolete == 1
+    assert result.items[0].error_code == "memory_epoch_changed"
+    with core.storage.read(ctx) as tx:
+        assert [version.state for version in tx.claims.versions(saved.ref)] == ["proposed"]
 
 
 def test_r1_candidate_hides_c1_principal_from_model_and_rebinds_via_c2(app):
@@ -579,7 +651,7 @@ def test_r1_one_candidate_never_accumulates_a_queue_of_stale_evaluations(app):
 
     The dedup key is (candidate, revision, evidence_fingerprint, rule_version)
     and the fingerprint covers the evidence set, so scheduling on every arrival
-    minted a fresh evaluation and retired the ones still waiting -- on tianshu
+    minted a fresh evaluation and retired the ones still waiting -- on alpha
     7,802 of 11,158 were retired before anyone judged them, and exactly two ever
     reached a verdict.
 

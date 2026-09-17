@@ -13,7 +13,18 @@ from ..contracts import ContractError
 from .candidate_lifecycle import CandidateEvaluator, candidate_subject_matches
 from .failure_retry import validation_feedback
 from .worker_consolidation import _decode_consolidation_result
-from .worker_outcomes import BUDGET_PAUSE_ERRORS, _deadline_result, _model_failure, _remaining, _stale, _work_result
+from .worker_outcomes import (
+    BUDGET_PAUSE_ERRORS,
+    _deadline_result,
+    _model_failure,
+    _remaining,
+    _stale,
+    _work_result,
+    claim_versions_mark,
+    claims_changed,
+    derivation_changed,
+    read_derivation_fence,
+)
 
 
 def _candidate_verdict(storage, clock, context, item, *, code: str, started: float, budget: float, mutate):
@@ -49,6 +60,38 @@ def _candidate_obsolete(storage, clock, context, item, *, evaluation_id: int,
     )
 
 
+def _apply_verdict(tx, item, current, value, live_sources, now):
+    """Validate one decoded verdict and apply its proposal; None when it has none."""
+    expected_refs = tuple(f"{ref}@{revision}" for ref, revision in current.evidence_refs)
+    if tuple(sorted(value["source_refs"])) != tuple(sorted(expected_refs)):
+        raise ContractError("DERIVATION_INVALID", "candidate_source_refs")
+    if len(value["claim_proposals"]) > 1:
+        raise ContractError("DERIVATION_INVALID", "candidate_proposal_count")
+    from .mutate import apply_claim, evidence_refs, validate_claims
+    validated = validate_claims(tx, value, item.scope_id)
+    if not validated["claim_proposals"]:
+        return None
+    proposal = validated["claim_proposals"][0]
+    from .claim_normalization import normalize_frame
+    proposal = normalize_frame(proposal, tx.claims.roots(evidence_refs(proposal)))
+    expected_candidate = replace(current.candidate, payload=normalize_frame(
+        current.candidate.payload, tx.claims.roots(evidence_refs(current.candidate.payload))))
+    for field in ("kind", "predicate"):
+        if proposal.get(field) != expected_candidate.payload.get(field):
+            raise ContractError("DERIVATION_INVALID", f"candidate_{field}")
+    authorized_sources = tuple(source for source in live_sources if source is not None)
+    if not candidate_subject_matches(expected_candidate, authorized_sources, proposal.get("subject")):
+        raise ContractError("DERIVATION_INVALID", "candidate_subject")
+    applied = apply_claim(tx, proposal, item.scope_id, now)
+    applied_version = tx.claims.version(applied.ref, applied.revision)
+    if (
+        applied_version is None
+        or applied_version.payload.get("subject") != expected_candidate.payload.get("subject")
+    ):
+        raise ContractError("DERIVATION_INVALID", "candidate_subject_binding")
+    return applied
+
+
 def _process_candidate_evaluation(
     storage,
     clock,
@@ -67,11 +110,12 @@ def _process_candidate_evaluation(
                        evaluation_id=item.subject_revision, started=started, budget=budget)
     invalid_reason = None
     evidence_sources = ()
-    memory_epoch = None
+    dependencies = None
     began = False
     # Bind the attempt to the current, revalidated snapshot, not the epoch at
     # enqueue time. Unrelated writes while queued must not waste a model call.
-    # Validation and the at-most-once fence share one transaction.
+    # Validation, the dependency record and the at-most-once fence share one
+    # transaction.
     with storage.write(context, remaining_seconds=_remaining(started, clock, budget)) as tx:
         if not tx.work._verify_lease(*item.lease, now=clock.utc_now()):
             return _stale(tx, item)
@@ -85,13 +129,14 @@ def _process_candidate_evaluation(
                 invalid_reason = "authority_revoked"
             else:
                 evidence_sources = tuple(source for source in sources if source is not None)
-                memory_epoch = tx.status().memory_epoch
                 for source in evidence_sources:
                     try:
                         tx.claims.require_live_source(source.ref, source.revision)
                     except ContractError:
                         invalid_reason = "authority_revoked"
                         break
+                if invalid_reason is None:
+                    dependencies = read_derivation_fence(tx, scope_id=item.scope_id, sources=evidence_sources)
                 if invalid_reason is None and evaluation.model_attempted_at is None:
                     began = tx.candidates.begin_model_attempt(
                         evaluation.evaluation_id, *item.lease, now=clock.utc_now(),
@@ -135,44 +180,35 @@ def _process_candidate_evaluation(
             if current is None:
                 mutation = tx.candidates.obsolete(evaluation.evaluation_id, item, now=now, reason="authority_revoked")
                 return _work_result(mutation, error_code="authority_revoked")
-            if current.memory_epoch != memory_epoch or tx.status().memory_epoch != memory_epoch:
+            # The row's stamp identifies this model attempt; the recorded
+            # dependencies say whether anything the verdict was judged on
+            # changed.  A capture or a write to another object changes neither.
+            if current.memory_epoch != dependencies.memory_epoch or derivation_changed(tx, dependencies) is not None:
                 mutation = tx.candidates.obsolete(evaluation.evaluation_id, item, now=now, reason="memory_epoch_changed")
                 return _work_result(mutation, error_code="memory_epoch_changed")
             live_sources = tuple(tx.source(ref, revision) for ref, revision in current.evidence_refs)
             if any(source is None or source.suppressed for source in live_sources):
                 mutation = tx.candidates.obsolete(evaluation.evaluation_id, item, now=now, reason="authority_revoked")
                 return _work_result(mutation, error_code="authority_revoked")
-            expected_refs = tuple(f"{ref}@{revision}" for ref, revision in current.evidence_refs)
-            if tuple(sorted(value["source_refs"])) != tuple(sorted(expected_refs)):
-                raise ContractError("DERIVATION_INVALID", "candidate_source_refs")
-            if len(value["claim_proposals"]) > 1:
-                raise ContractError("DERIVATION_INVALID", "candidate_proposal_count")
-            from .mutate import apply_claim, evidence_refs, validate_claims
-            validated = validate_claims(tx, value, item.scope_id)
-            if not validated["claim_proposals"]:
+            mark = claim_versions_mark(tx)
+            try:
+                applied = _apply_verdict(tx, item, current, value, live_sources, now)
+            except ContractError as exc:
+                # A rejection caused by a claim written during the call stays
+                # the conflict the epoch comparison used to report first.
+                if claims_changed(tx, dependencies, until=mark):
+                    raise ContractError("VERSION_CONFLICT", "memory_epoch") from exc
+                raise
+            if applied is None:
                 mutation = tx.candidates.complete(
                     evaluation.evaluation_id, item, now=now, state="waiting_evidence",
                     reason="insufficient_evidence", result_digest=result_digest,
                 )
                 return _work_result(mutation)
-            proposal = validated["claim_proposals"][0]
-            from .claim_normalization import normalize_frame
-            proposal = normalize_frame(proposal, tx.claims.roots(evidence_refs(proposal)))
-            expected_candidate = replace(current.candidate, payload=normalize_frame(
-                current.candidate.payload, tx.claims.roots(evidence_refs(current.candidate.payload))))
-            for field in ("kind", "predicate"):
-                if proposal.get(field) != expected_candidate.payload.get(field):
-                    raise ContractError("DERIVATION_INVALID", f"candidate_{field}")
-            authorized_sources = tuple(source for source in live_sources if source is not None)
-            if not candidate_subject_matches(expected_candidate, authorized_sources, proposal.get("subject")):
-                raise ContractError("DERIVATION_INVALID", "candidate_subject")
-            applied = apply_claim(tx, proposal, item.scope_id, now)
-            applied_version = tx.claims.version(applied.ref, applied.revision)
-            if (
-                applied_version is None
-                or applied_version.payload.get("subject") != expected_candidate.payload.get("subject")
-            ):
-                raise ContractError("DERIVATION_INVALID", "candidate_subject_binding")
+            # Another writer's version in the slot the verdict just wrote to
+            # would have the stale verdict ordered against it; discard instead.
+            if claims_changed(tx, dependencies, until=mark, claim_refs={applied.ref, current.candidate.ref}):
+                raise ContractError("VERSION_CONFLICT", "memory_epoch")
             lifecycle_state = "resolved" if applied.state == "active" else "waiting_evidence"
             reason = "fact_active" if lifecycle_state == "resolved" else "evaluated_waiting_evidence"
             mutation = tx.candidates.complete(

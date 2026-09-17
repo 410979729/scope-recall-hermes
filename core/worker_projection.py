@@ -22,6 +22,8 @@ from .worker_outcomes import (
     _remaining,
     _stale,
     _work_result,
+    derivation_changed,
+    read_derivation_fence,
 )
 
 
@@ -112,14 +114,19 @@ def _process_embed(
 
     Publication is at-most-once against a live subject.  The worker owns the
     first fence check; a port must call ``lease_guard`` again at its physical
-    publication boundary, but it is never entered after a stale, deleted or
-    epoch-changed subject is observed here.
+    publication boundary, but it is never entered after a stale or deleted
+    subject, or one whose suppression, blocks or identity changed, is observed
+    here.  Captures and writes to other objects do not stop publication.
     """
     kind = _EMBED_SUBJECTS["claim" if item.subject_ref.startswith("claim-") else "source"]
     finish = partial(_finalize_work, storage, clock, context, item, started=started, budget=budget)
     with storage.read(context, remaining_seconds=_remaining(started, clock, budget)) as tx:
-        memory_epoch = tx.status().memory_epoch
         subject = kind.live(tx, item.subject_ref, item.subject_revision)
+        dependencies = None if subject is None else read_derivation_fence(
+            tx, scope_id=item.scope_id,
+            sources=(subject,) if kind.keyword == "source" else (),
+            claims=((subject.ref, subject.revision),) if kind.keyword == "claim" else (),
+        )
     if subject is None:
         return finish("obsolete", "authority_revoked")
     prepare = getattr(embed, kind.prepare, None)
@@ -135,11 +142,11 @@ def _process_embed(
     if _remaining(started, clock, budget) <= 0:
         return _deadline_result(storage, context, item)
 
-    epoch_changed = False
+    dependency_changed = False
 
     def lease_guard() -> bool:
-        nonlocal epoch_changed
-        epoch_changed = False
+        nonlocal dependency_changed
+        dependency_changed = False
         remaining = _remaining(started, clock, budget)
         if remaining <= 0:
             return False
@@ -152,8 +159,8 @@ def _process_embed(
                     return False
                 if (current.project_id, current.branch_id) != (context.project_id, context.branch_id):
                     return False
-                if tx.status().memory_epoch != memory_epoch:
-                    epoch_changed = True
+                if derivation_changed(tx, dependencies) is not None:
+                    dependency_changed = True
                     return False
                 return True
         except ContractError:
@@ -162,7 +169,7 @@ def _process_embed(
     if not lease_guard():
         if _remaining(started, clock, budget) <= 0:
             return _deadline_result(storage, context, item)
-        if epoch_changed:
+        if dependency_changed:
             return finish("retry", "memory_epoch_changed")
         return finish("obsolete", "authority_revoked")
     try:
@@ -175,7 +182,7 @@ def _process_embed(
             remaining_seconds=_remaining(started, clock, budget),
         )
     except Exception as exc:
-        if epoch_changed and isinstance(exc, ContractError):
+        if dependency_changed and isinstance(exc, ContractError):
             return finish("retry", "memory_epoch_changed")
         return finish(*_port_failure(exc))
     now = clock.utc_now()
@@ -184,7 +191,7 @@ def _process_embed(
     with storage.write(context, remaining_seconds=_remaining(started, clock, budget)) as tx:
         if kind.live(tx, item.subject_ref, item.subject_revision) is None:
             return _mark_obsolete(tx, item, now)
-        if tx.status().memory_epoch != memory_epoch:
+        if derivation_changed(tx, dependencies) is not None:
             return _epoch_changed(tx, item, now)
         return _work_result(tx.work.complete(*item.lease, now=now))
 

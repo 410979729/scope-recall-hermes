@@ -12,6 +12,7 @@ from .consolidation_chunks import ConsolidationChunk
 from .episodes import source_origin, source_watermark
 from .evidence_quote import resolve_evidence_quotes
 from .mutate import Mutation, MutationReceipt, apply_claim_frames, validate_claims
+from .worker_outcomes import DerivationFence, claim_versions_mark, claims_changed, derivation_changed
 
 
 @dataclass(frozen=True)
@@ -21,7 +22,8 @@ class ConsolidationWorkFence:
     lease_owner: str
     subject_ref: str
     subject_revision: int
-    memory_epoch: int
+    #: What the result was derived from, read with the batch before the model call.
+    dependencies: DerivationFence
     allowed_source_refs: frozenset[str]
     skipped_source_refs: frozenset[str] = frozenset()
     pending_sources: tuple[tuple[str, int, int], ...] = ()
@@ -177,7 +179,16 @@ def _fence_consolidation(tx, value, fence: ConsolidationWorkFence, *, now: str) 
         if ref not in fence.allowed_source_refs:
             raise ContractError("DERIVATION_INVALID", "source_refs")
         tx.claims.require_live_source(*parse_source_ref(ref))
-    if tx.status().memory_epoch != fence.memory_epoch:
+    # Captures and unrelated writes move memory_epoch without touching anything
+    # this result was derived from.  Only a changed dependency rejects it, with
+    # the same retryable conflict the epoch comparison raised.  A non-final
+    # page only stages its summaries; the final page applies all of them.
+    applies_summaries = fence.chunk is None or fence.chunk.final
+    if derivation_changed(
+        tx, fence.dependencies,
+        episode=applies_summaries and (fence.chunk is not None or bool(value["resume_proposals"])),
+        references=applies_summaries and (fence.chunk is not None or bool(value["reference_proposals"])),
+    ) is not None:
         raise ContractError("VERSION_CONFLICT", "memory_epoch")
     # ``validate_claims`` is where quotes are normally resolved, but the
     # fragment check below runs before it, so the same resolution has to happen
@@ -211,12 +222,28 @@ def _fence_consolidation(tx, value, fence: ConsolidationWorkFence, *, now: str) 
 def accept_consolidation(storage, clock, context, value, *, scope_id, remaining_seconds=1.0, work_fence: ConsolidationWorkFence | None = None):
     with storage.write(context, remaining_seconds=remaining_seconds) as tx:
         now = clock.utc_now()
+        mark = 0
         if work_fence is not None:
             _fence_consolidation(tx, value, work_fence, now=now)
-        result = validate_claims(tx, value, scope_id)
-        items = []
-        for proposal in result["claim_proposals"]:
-            items.extend(apply_claim_frames(tx, proposal, scope_id, now))
+            mark = claim_versions_mark(tx)
+        items, claim_refs = [], set()
+        try:
+            result = validate_claims(tx, value, scope_id)
+            for proposal in result["claim_proposals"]:
+                applied = apply_claim_frames(tx, proposal, scope_id, now)
+                claim_refs.update(item.ref for item in applied)
+                items.extend(applied)
+        except ContractError as exc:
+            # A rejection caused by a claim written during the call stays the
+            # retryable conflict the epoch comparison used to report first.
+            if work_fence is not None and claims_changed(tx, work_fence.dependencies, until=mark):
+                raise ContractError("VERSION_CONFLICT", "memory_epoch") from exc
+            raise
+        # A correction, confirmation or revision of a slot this result just
+        # wrote to, made during the call, would otherwise have the stale result
+        # silently ordered against the newer head instead of re-derived.
+        if work_fence is not None and claims_changed(tx, work_fence.dependencies, until=mark, claim_refs=claim_refs):
+            raise ContractError("VERSION_CONFLICT", "memory_epoch")
         if work_fence is not None and work_fence.chunk is not None:
             from .consolidation_summary import stage_fragment
             result = stage_fragment(tx, result, work_fence, now)
