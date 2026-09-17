@@ -20,7 +20,7 @@ from scope_recall.adapters.models import (
     build_gemini_embed_body,
     validate_embedding_vector,
 )
-from scope_recall.contracts import SourceEvent
+from scope_recall.contracts import ContractError, SourceEvent
 from scope_recall.core.recall_policy import EMBEDDING_SPACE, encode_embedding_text
 from scope_recall.core.storage import StoredSource
 from scope_recall.runtime.auxiliary import AuxiliaryRuntimeConfig, auxiliary_runtime_status, build_auxiliary_runtime
@@ -244,6 +244,43 @@ def test_consolidation_returns_raw_content_without_json_repair(tmp_path, monkeyp
         remaining_seconds=2.0,
     )
     assert content == "{not valid json"
+
+
+def _chat_reply(message, finish_reason):
+    return json.dumps({
+        "usage": {"prompt_tokens": 10, "completion_tokens": 512},
+        "choices": [{"message": message, "finish_reason": finish_reason}],
+    }).encode()
+
+
+def test_consolidation_reply_cut_off_at_output_limit_is_a_named_derivation_failure(tmp_path, monkeypatch):
+    config, ledger, _ = _runtime_config(tmp_path)
+    monkeypatch.setenv("SCOPE_RECALL_TEST_CHAT_KEY", "test-key")
+    prefix = {"role": "assistant", "content": '{"protocol_version":"1.1","source_refs":["'}
+    transport = FakeTransport(lambda **kwargs: (200, _chat_reply(prefix, "length")))
+    runtime = build_auxiliary_runtime(config, transport=transport)
+    with pytest.raises(ContractError) as exc:
+        runtime.consolidation.propose([{"role": "user", "content": "bounded input"}], remaining_seconds=2.0)
+    assert (exc.value.code, exc.value.field) == ("DERIVATION_INVALID", "model_output_truncated")
+    # The spent call is still settled with the usage the provider reported.
+    with sqlite3.connect(ledger) as db:
+        assert db.execute("SELECT status,actual_output FROM requests").fetchall() == [("http_200", 512)]
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        {"role": "assistant", "content": None},
+        {"role": "assistant", "content": "{", "tool_calls": [{"id": "call-1"}]},
+    ],
+)
+def test_truncated_reply_without_answer_text_keeps_its_shape_error(tmp_path, monkeypatch, message):
+    config, _, _ = _runtime_config(tmp_path)
+    monkeypatch.setenv("SCOPE_RECALL_TEST_CHAT_KEY", "test-key")
+    runtime = build_auxiliary_runtime(config, transport=FakeTransport(lambda **kwargs: (200, _chat_reply(message, "length"))))
+    with pytest.raises(AuxiliaryModelError) as exc:
+        runtime.consolidation.propose([{"role": "user", "content": "bounded input"}], remaining_seconds=2.0)
+    assert exc.value.error_type == "unsupported_response_shape"
 
 
 def test_consolidation_route_options_are_explicit(tmp_path, monkeypatch):
