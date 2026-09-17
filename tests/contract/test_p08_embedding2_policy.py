@@ -135,6 +135,45 @@ def test_P08_embedding_model_is_configuration_not_a_constant():
         )
 
 
+def test_P08_admission_is_bound_to_the_configured_space_not_the_shipped_one():
+    """Moving the store is only half of a model switch; admission has to follow.
+
+    The policy compared every vector with the shipped ``SPACE_ID``, so a named
+    route -- even one stating the default Gemini values, whose request encoding
+    gives it another digest -- had each of its own hits refused as a mismatch.
+    """
+    from scope_recall.core.recall_policy import build_embedding_space
+
+    named = embedding_space_id(build_embedding_space(
+        model="MiniMax-embedding-01", endpoint="https://api.minimaxi.com/v1/embeddings",
+        dimensions=1536, dialect="openai",
+    ))
+    stated_default = embedding_space_id(build_embedding_space(
+        model=EMBEDDING_SPACE["model"], endpoint=EMBEDDING_SPACE["endpoint"],
+        dimensions=EMBEDDING_SPACE["dimensions"],
+    ))
+    assert SPACE_ID not in {named, stated_default}
+
+    def hit(space: str) -> CandidateRef:
+        return CandidateRef("event", "event-space", 1, "vector", vector_id="v",
+                            embedding_space=space, vector_score=0.9)
+
+    for space in (named, stated_default):
+        bound = RecallPolicy(vector_threshold=0.5, embedding_space_id=space)
+        assert bound.vector_admission(hit(space)) == (True, None)
+        assert bound.vector_admission(hit(SPACE_ID)) == (False, "embedding_space_mismatch")
+
+    # The default policy, which Core and an install naming no route use, is unchanged.
+    default = RecallPolicy(vector_threshold=0.5)
+    assert default.embedding_space_id == SPACE_ID
+    assert default.vector_admission(hit(SPACE_ID)) == (True, None)
+    assert default.vector_admission(hit(named)) == (False, "embedding_space_mismatch")
+
+    for broken in ("", "  ", None, 7):
+        with pytest.raises(ContractError):
+            RecallPolicy(vector_threshold=0.5, embedding_space_id=broken)
+
+
 def test_P08_embedding_wire_dialects_round_trip_both_shapes():
     """Both request shapes are built, and both responses parse, at any width."""
     from scope_recall.adapters.models import (
