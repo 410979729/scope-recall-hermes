@@ -4,6 +4,15 @@ All notable changes to `scope-recall` will be documented in this file.
 
 ## [Unreleased]
 
+### Scope Recall 3.1.0rc31 pay only for questions that can be answered - 2026-09-17
+
+Measured on alpha the day rc30 shipped: DeepSeek billed about 20 million prompt tokens, about 70% of them outside its prefix cache, for 2,019 candidate evaluations that promoted 7 facts. A DeepSeek balance that ran out then failed 100 evaluations in fifteen minutes, and no operator command could reopen them.
+
+- Candidate evaluation first checks two necessary conditions of `claims.qualify` and records the answer without a model call when either fails: the candidate's value appears in no supplied source (`value_not_in_evidence`; qualification needs it inside a quote, for every kind but procedure, intention and alias), or no supplied source can lend the authority its kind needs (`no_authoritative_evidence`). The check runs where an evaluation is scheduled and again in the worker, so evaluations queued before this release are covered. The answer is stored like a verdict, with no work item and no attempt, so the settle sweep does not pick the same question again; new first-hand evidence poses a new question. Of the 10,602 evaluations alpha had run, 54% failed one of the two conditions and none of the 27 that promoted a fact did. The kind and origin sets are named once in `core/claims.py` and imported by `core/evidence_question.py`.
+- A provider answering 401, 402 or 403 has refused the account, not the request. Such work is now parked for an hour without spending an attempt and its work type stands down for the pass, like a budget refusal; candidate evaluations hand their attempt back. `retry-failures` can reopen rows that failed this way before the release.
+- Consolidation and candidate-evaluation input lists the sources before the refs, watermark and empty result. Those differ as soon as any one source does, and placed first they ended the prefix two requests could share before a single source. Replayed over alpha's 2026-09-17 evaluations, an ideal prefix cache reuses 68% of prompt tokens in the new order against 54% before.
+- The auxiliary ledger records the prompt tokens a provider reports serving from its cache (`prompt_cache_hit_tokens`, or `prompt_tokens_details.cached_tokens`) in a new `cached_input` column, added on first use to existing ledgers. Charges still price every prompt token.
+
 ### Scope Recall 3.1.0rc30 current facts reach recall - 2026-09-17
 
 Fixes found by testing rc29 on alpha's real data: facts were captured but reached recall late, stale, or not at all.
