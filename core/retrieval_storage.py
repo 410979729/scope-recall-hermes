@@ -8,7 +8,7 @@ outside the trusted context.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import timedelta, timezone
+from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 import re
@@ -355,6 +355,11 @@ class CollectionPage:
     memory_epoch: int
 
 
+#: How long after a person's message its turn's replies may come, and how many are followed.
+TURN_REPLY_SECONDS = 1800
+TURN_REPLY_LIMIT = 3
+
+
 class RetrievalStorage:
     """Typed read boundary used by one ``RetrievalPipeline`` instance."""
 
@@ -540,6 +545,49 @@ class RetrievalStorage:
             if len(result) >= limit:
                 break
         return tuple(result)
+
+    def turn_replies(self, tx, candidate: CandidateRef) -> tuple[CandidateRef, ...]:
+        """What the assistant said back in the turn a person's message opened.
+
+        Episode membership reaches a reply only through every event of its
+        episode, in id order, so a recalled question used up the relation bound
+        long before its own answer.  A turn's replies are the assistant's
+        visible messages in the same scope and session after the message, in
+        capture order, until the person speaks again.  A gateway can capture a
+        whole turn under one timestamp, so equal times fall back to rowid.
+        """
+        if candidate.kind != "event":
+            return ()
+        conn = tx._check()
+        row = conn.execute(
+            """SELECT rowid,scope_id,session_id,role,origin,occurred_at FROM source_events
+               WHERE event_id=? AND source_revision=?""",
+            (candidate.ref, candidate.revision),
+        ).fetchone()
+        if row is None or row["role"] != "user" or row["origin"] != "human_direct" or not row["occurred_at"]:
+            return ()
+        opened = canonical_time(row["occurred_at"])
+        if opened is None:
+            return ()
+        window_end = (datetime.fromisoformat(opened) + timedelta(seconds=TURN_REPLY_SECONDS)).isoformat(
+            timespec="microseconds").replace("+00:00", "Z")
+        rows = conn.execute(
+            """SELECT event_id,source_revision,role,origin FROM source_events
+               WHERE scope_id=? AND occurred_at>=? AND occurred_at<=? AND session_id=?
+                 AND (occurred_at>? OR rowid>?) AND read_blocked=0 AND suppressed=0
+               ORDER BY occurred_at,rowid LIMIT 64""",
+            (row["scope_id"], row["occurred_at"], window_end, row["session_id"], row["occurred_at"], row["rowid"]),
+        ).fetchall()
+        replies: list[CandidateRef] = []
+        for reply in rows:
+            if reply["role"] == "user":
+                break
+            if reply["role"] == "assistant" and reply["origin"] == "assistant_visible":
+                replies.append(CandidateRef("event", reply["event_id"], int(reply["source_revision"]), "relation",
+                                            rank=len(replies) + 1, lexical_score=1.0))
+                if len(replies) >= TURN_REPLY_LIMIT:
+                    break
+        return tuple(replies)
 
     def related(self, tx, candidate: CandidateRef, *, limit: int) -> tuple[CandidateRef, ...]:
         rows = tx._check().execute(

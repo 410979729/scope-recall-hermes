@@ -269,6 +269,33 @@ class RetrievalPipeline:
             gaps.append(gap)
             return tuple(all_candidates)
 
+        # The replies a recalled message received come before any other
+        # relation, for every seed: spent seed by seed they went to whichever
+        # seeds ranked first, and a lower-ranked question never reached its
+        # answer.  Half the bound is the most they may take, because a query
+        # that recalls many messages would otherwise leave nothing for the
+        # claims and episodes an answer is just as often reached through.
+        turn_replies = getattr(self.storage_reader, "turn_replies", None)
+        if callable(turn_replies):
+            turn_bound = max(1, limits.relation_objects // 2)
+            for seed in sorted(frontier, key=lambda item: (-item.fusion_score, item.key)):
+                if inspected >= turn_bound:
+                    break
+                for candidate in turn_replies(tx, seed):
+                    if inspected >= turn_bound:
+                        break
+                    if self._remaining(context) <= 0:
+                        return stopped("deadline_exceeded_relation")
+                    inspected += 1
+                    if candidate.key in seen:
+                        continue
+                    seen.add(candidate.key)
+                    if f"{candidate.ref}@{candidate.revision}" in context.current_source_refs:
+                        continue
+                    if self._hydrate_admit(tx, candidate, context) is None:
+                        continue
+                    all_candidates.append(replace(candidate, fusion_score=rrf_score((candidate.rank + 1,), k=self.policy.rrf_k)))
+
         for _hop in range(limits.relation_hops):
             next_frontier: list[CandidateRef] = []
             # The shared object bound is spent best seed first.  In key order it

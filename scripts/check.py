@@ -318,6 +318,8 @@ CORE_RELEASE_CONTRACTS += [
     "tests/contract/test_rc36_summary_isolation.py",
     "tests/contract/test_rc36_trigger_precision.py",
     "tests/contract/test_rc36_writer_busy.py",
+    "tests/contract/test_rc37_identifier_forms.py",
+    "tests/contract/test_rc37_turn_replies.py",
 ]
 
 RUNTIME_BOUNDARY_TESTS = [
