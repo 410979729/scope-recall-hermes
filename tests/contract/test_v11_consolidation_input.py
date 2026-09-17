@@ -36,6 +36,27 @@ def test_consolidation_preserves_authorized_origin_role_and_attested_import(app)
     assert "attested" not in body["sources"][1]
 
 
+def test_requests_over_the_same_sources_share_a_prefix_through_those_sources(app):
+    """Providers cache prompts by prefix.  With refs and the watermark first,
+    two requests that differed in any one source shared nothing past the system
+    text; with sources first they share every source they have in common."""
+    core, ctx = app
+    first = capture(core, ctx, "TEST 用户决定配色用蓝色。" * 20)
+    second = capture(core, ctx, "TEST 用户补充：按钮也用蓝色。")
+    third = capture(core, ctx, "TEST 用户又说：标题用灰色。")
+    one = consolidation_messages((first, second), budget=64000)
+    two = consolidation_messages((first, third), budget=64000)
+    assert one[0]["content"] == two[0]["content"]
+    assert one[1]["content"].startswith('{"sources":[')
+    shared = 0
+    for left, right in zip(one[1]["content"], two[1]["content"]):
+        if left != right:
+            break
+        shared += 1
+    first_record = json.dumps(json.loads(one[1]["content"])["sources"][0], ensure_ascii=False, separators=(",", ":"))
+    assert shared > len(first_record), "the shared prefix ended before the first common source"
+
+
 def test_consolidation_exposes_only_non_authorizing_principal_display(app):
     core, ctx = app
     verified = replace(
