@@ -19,7 +19,15 @@ from .claim_storage import parse_source_ref
 from .claims import canonical_time, select_effective, select_proposal
 from .delete_storage import canonical
 from .episodes import source_origin
-from .recall_policy import applicability, hard_identifiers, in_time_window, meaningful_query_terms, query_is_relevant, synonym_expansions
+from .recall_policy import (
+    applicability,
+    hard_identifiers,
+    in_time_window,
+    meaningful_query_terms,
+    parse_time,
+    query_is_relevant,
+    synonym_expansions,
+)
 from .resume_compaction import resume_evidence_refs
 from .retrieval import STALE_RESUME_GAPS, CandidateRef, CollectionQuery, ObjectKind, PageCursor, RetrievedObject, SearchContext
 from .visibility import CLOSED_INTENTION_STATES, OBJECT_KINDS, allowed
@@ -191,6 +199,25 @@ def _source_contexts_metadata(contexts: list[SourceContext]) -> tuple[tuple[str,
     if not contexts:
         return ()
     return (("source_contexts", json.dumps(contexts, ensure_ascii=False, separators=(",", ":"))),)
+
+
+def _occurred_metadata(stamp: str | None) -> tuple[tuple[str, str], ...]:
+    return (("occurred_at", stamp),) if stamp else ()
+
+
+def _newest(stamps: Iterable[str | None]) -> str | None:
+    """The latest of several ISO-8601 times; unparseable ones are skipped."""
+    newest: tuple[object, str] | None = None
+    for stamp in stamps:
+        if not stamp:
+            continue
+        try:
+            parsed = parse_time(stamp)
+        except ContractError:
+            continue
+        if newest is None or parsed > newest[0]:
+            newest = (parsed, stamp)
+    return newest[1] if newest else None
 
 
 def _claim_content(version) -> str:
@@ -429,7 +456,8 @@ class RetrievalStorage:
             "direct_report" if event["origin"] == "human_direct" else "observed",
             True,
             ("event",),
-            metadata=_source_contexts_metadata([context_meta] if context_meta is not None else []),
+            metadata=(*_source_contexts_metadata([context_meta] if context_meta is not None else []),
+                      *_occurred_metadata(tx.witnessed_at(source))),
         )
 
     def _hydrate_claim(self, tx, candidate: CandidateRef, context: SearchContext) -> RetrievedObject | None:
@@ -469,10 +497,12 @@ class RetrievalStorage:
             return None
         current_effective = context.mode in LIVE_MODES and effective is not None and effective.revision == version.revision
         origins = []
+        witnessed = []
         for ref in evidence:
             source = tx.source(*parse_source_ref(ref))
             if source is not None:
                 origins.append(source.event["origin"])
+                witnessed.append(tx.witnessed_at(source))
         origin = next((item for item in origins if item == "human_direct"), origins[0] if origins else "origin_unknown")
         metadata = (
             ("payload_json", _claim_content(version)),
@@ -482,6 +512,8 @@ class RetrievalStorage:
             # unasserted question or a missing condition.
             ("qualification_reason", version.reason),
             *_source_contexts_metadata(evidence_source_contexts(tx, evidence)),
+            # A claim was last said when its newest evidence was.
+            *_occurred_metadata(_newest(witnessed)),
         )
         return RetrievedObject(
             candidate.ref,

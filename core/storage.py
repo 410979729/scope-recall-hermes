@@ -235,6 +235,30 @@ class Transaction:
             return source
         return None
 
+    def witnessed_at(self, source: StoredSource) -> str | None:
+        """When a source was said or observed, as far as the store can tell.
+
+        Its occurrence time, except for a capture re-keyed before rc33: a
+        restarted Hermes gateway numbers turns from 1 again, and the adapter
+        copied the time of the earlier, unrelated message already stored under
+        the reused key.  Such a copy is recognizable exactly -- the original's
+        time on different content -- and the write time is the best one left.
+        Stored rows are never rewritten; their fingerprints cover that time.
+        """
+        from .capture_inbox import REKEY_MARKER
+        stamp = source.event.get("occurred_at")
+        stamp = stamp if type(stamp) is str and stamp else None
+        key = source.event.get("source_event_key")
+        if stamp is None or type(key) is not str or REKEY_MARKER not in key:
+            return stamp
+        original = self.source_by_event_key(key.split(REKEY_MARKER, 1)[0], source.revision)
+        if (original is None or original.event.get("occurred_at") != stamp
+                or original.event.get("content") == source.event.get("content")):
+            return stamp
+        row = self._check().execute("SELECT persisted_at FROM source_events WHERE event_id=? AND source_revision=?",
+                                    (source.ref, source.revision)).fetchone()
+        return row["persisted_at"] if row is not None and row["persisted_at"] else stamp
+
     def source(self, ref: str, revision: int) -> StoredSource | None:
         conn = self._check()
         if type(ref) is not str or not ref or len(ref) > 240 or type(revision) is not int or revision < 1:

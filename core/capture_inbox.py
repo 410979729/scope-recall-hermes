@@ -124,7 +124,7 @@ def _commit(storage, clock, context, token, prepared, scope_id, policy, deadline
 #: purpose: the stored key keeps the host's original and appends the content
 #: fingerprint, so the collision stays visible to anyone reading the row rather
 #: than being filed in a side table nobody queries.
-_REKEY_MARKER = "#rekey:"
+REKEY_MARKER = "#rekey:"
 
 
 def _rekeyed_event(event: dict) -> dict:
@@ -141,13 +141,13 @@ def _rekeyed_event(event: dict) -> dict:
     deterministic, so repairing the same payload twice is idempotent.
     """
     original = str(event["source_event_key"])
-    if _REKEY_MARKER in original:
+    if REKEY_MARKER in original:
         return dict(event)
     fingerprint = hashlib.sha256(
         _json([original, event.get("content"), event.get("origin"), event.get("role"),
                event.get("occurred_at")]).encode("utf-8")
     ).hexdigest()[:16]
-    return {**event, "source_event_key": f"{original}{_REKEY_MARKER}{fingerprint}"}
+    return {**event, "source_event_key": f"{original}{REKEY_MARKER}{fingerprint}"}
 
 
 def resolve_conflicted_ingress(storage, clock, context, *, authorize, admission_policy=None,

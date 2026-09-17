@@ -42,6 +42,7 @@ _BARE_MARKER_PREFIXES = frozenset({
 _MAX_PACKET_ITEM_CHARS = 12000
 _MAX_APPLICABILITY_CHARS = 2048
 _MAX_ORIGIN_CHARS = 80
+_MAX_OCCURRED_AT_CHARS = 64
 _MAX_EVIDENCE_REFS = 32
 _MAX_RENDER_PREPARED = 64
 _RENDER_CONTEXT_SCHEMA = "scope-recall.recall_context/1.1"
@@ -125,6 +126,9 @@ def packet_item(obj: RetrievedObject, *, content: dict | None = None) -> RecallI
     contexts = bounded_source_contexts(optional_json(metadata.get("source_contexts")))
     if contexts:
         item["source_contexts"] = contexts
+    occurred = metadata.get("occurred_at")
+    if type(occurred) is str and 0 < len(occurred) <= _MAX_OCCURRED_AT_CHARS:
+        item["occurred_at"] = occurred
     return item
 
 
@@ -636,6 +640,7 @@ class RecallPacketRenderer:
                     "expandable": item["expandable"],
                     **({"source_contexts": [dict(context) for context in item["source_contexts"]]}
                        if "source_contexts" in item else {}),
+                    **({"occurred_at": item["occurred_at"]} if "occurred_at" in item else {}),
                 }
                 for item in packet["items"]
             ],

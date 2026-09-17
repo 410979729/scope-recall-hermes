@@ -121,6 +121,10 @@ class RecallItem(TypedDict):
     claim_state: NotRequired[Literal["proposed", "active", "superseded", "disputed", "retracted"]]
     qualification_reason: NotRequired[str]
     source_contexts: NotRequired[list[SourceContext]]
+    #: When the item was said or observed: the source's occurrence time, or for
+    #: a claim its newest evidence.  Without it a reader holding two answers to
+    #: one question cannot tell which came later.
+    occurred_at: NotRequired[str]
 
 
 class RecallPacket(TypedDict):
