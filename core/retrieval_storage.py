@@ -8,6 +8,7 @@ outside the trusted context.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import timedelta, timezone
 import hashlib
 import json
 import re
@@ -236,6 +237,57 @@ def _claim_answers(hits: int, covered: float, term_count: int, *, proposed: bool
         return False
     needed = 1 if term_count == 1 else 2
     return hits >= needed + (1 if proposed else 0)
+
+
+#: How far back a reply's turn is looked for.  A turn that ran longer than this
+#: is judged from its last two hours only.
+_TURN_LOOKBACK = timedelta(hours=2)
+#: Memory lookups in one turn that make its reply a restatement.  On alpha and
+#: beta the replies that tested recall ran 3 to 15 of them; replies that used
+#: memory to answer a question mostly ran one or two, and those stay evidence.
+RECALL_ECHO_MIN_LOOKUPS = 3
+#: What a lookup that returned memory looks like: recall items, entity
+#: statements, profile sections.  A status lookup returns none of them.
+_MEMORY_RESULT = ("instr(content,'\"items\":')>0 OR instr(content,'\"statements\":')>0"
+                  " OR instr(content,'\"sections\":')>0")
+
+
+def _second_precision(moment) -> str:
+    """A bound that compares correctly with stored ISO times, whatever their fraction and zone suffix."""
+    return moment.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
+
+
+def recall_echo(tx, source) -> bool:
+    """Whether an assistant reply restates what memory lookups in its turn returned.
+
+    beta tested her own recall and reported the queries and what came back;
+    the report then came back first for those very queries, above the evidence
+    it quoted.  The turn is the stretch since the session's last user message,
+    which the host captures before any tool runs, and the reply is dated as the
+    store can best tell (``witnessed_at``), since that report's own row carried
+    a day-old time.
+    """
+    if source.event.get("origin") != "assistant_visible":
+        return False
+    stamp = tx.witnessed_at(source)
+    if stamp is None:
+        return False
+    try:
+        at = parse_time(stamp)
+    except ContractError:
+        return False
+    conn = tx._check()
+    upper = _second_precision(at + timedelta(seconds=1))
+    lower = _second_precision(at - _TURN_LOOKBACK)
+    started = conn.execute(
+        """SELECT max(occurred_at) FROM source_events WHERE scope_id=? AND occurred_at>=? AND occurred_at<?
+           AND session_id=? AND role='user' AND origin!='memory_reinjection'""",
+        (source.scope_id, lower, upper, source.session_id)).fetchone()[0]
+    lookups = conn.execute(
+        f"""SELECT count(*) FROM (SELECT 1 FROM source_events WHERE scope_id=? AND occurred_at>=? AND occurred_at<?
+            AND session_id=? AND origin='memory_reinjection' AND ({_MEMORY_RESULT}) LIMIT ?)""",
+        (source.scope_id, started or lower, upper, source.session_id, RECALL_ECHO_MIN_LOOKUPS)).fetchone()[0]
+    return lookups >= RECALL_ECHO_MIN_LOOKUPS
 
 
 def _occurred_metadata(stamp: str | None) -> tuple[tuple[str, str], ...]:
@@ -568,7 +620,8 @@ class RetrievalStorage:
             True,
             ("event",),
             metadata=(*_source_contexts_metadata([context_meta] if context_meta is not None else []),
-                      *_occurred_metadata(tx.witnessed_at(source))),
+                      *_occurred_metadata(tx.witnessed_at(source)),
+                      *((("recall_echo", "true"),) if context.mode in LIVE_MODES and recall_echo(tx, source) else ())),
         )
 
     def _hydrate_claim(self, tx, candidate: CandidateRef, context: SearchContext) -> RetrievedObject | None:

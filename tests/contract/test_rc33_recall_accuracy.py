@@ -105,6 +105,55 @@ def test_a_full_reply_is_not_traded_for_snippets_while_the_budget_has_room(app):
     assert reply.ref in [item["ref"] for item in items[:3]]
 
 
+def _say(core, ctx, raw, *, origin, role, when, key):
+    from dataclasses import replace
+
+    from tests.v11_support import source_event
+    event = source_event(source_event_key=key, origin=origin, role=role, content=raw, occurred_at=when, recorded_at=when)
+    saved = core.record_event(replace(ctx, actor_origin=origin), event, scope_id="TEST-scope", remaining_seconds=10)
+    assert saved.durability == "persisted"
+    return core.source(ctx, saved.event_refs[0].ref, 1)
+
+
+def test_a_reply_that_restates_recall_does_not_outrank_what_it_restates(app):
+    """beta tested her own recall and reported the queries and what came back;
+    the report then came back first for those very queries.  A reply written in
+    a turn that called the recall tool restates memory -- it keeps its place as
+    context, below first-hand evidence."""
+    core, ctx = app
+    fact = _say(core, ctx, "TEST-project 发布窗口定在周五晚上十点，回滚方案由值班同学执行。",
+                origin="human_direct", role="user", when="2026-09-01T09:00:00Z", key="TEST-echo/fact")
+    _say(core, ctx, "测试一下召回：TEST-project 发布窗口 回滚方案", origin="human_direct", role="user",
+         when="2026-09-05T10:00:00Z", key="TEST-echo/ask")
+    for n in range(3):
+        _say(core, ctx, '{"result": {"items": [{"content": "TEST-project 发布窗口定在周五晚上十点，回滚方案由值班同学执行。"}]}}',
+             origin="memory_reinjection", role="tool", when=f"2026-09-05T10:00:0{n + 5}Z", key=f"TEST-echo/tool-{n}")
+    report = _say(core, ctx, "测完了：查询 TEST-project 发布窗口 回滚方案，返回了发布窗口定在周五晚上十点、"
+                             "回滚方案由值班同学执行这条，召回正常。", origin="assistant_visible", role="assistant",
+                  when="2026-09-05T10:00:30Z", key="TEST-echo/report")
+    # One lookup to answer a question: the reply is still an answer.
+    _say(core, ctx, "上次的回滚方案是谁执行？", origin="human_direct", role="user", when="2026-09-06T09:00:00Z", key="TEST-echo/ask-2")
+    _say(core, ctx, '{"result": {"items": [{"content": "回滚方案由值班同学执行。"}]}}', origin="memory_reinjection",
+         role="tool", when="2026-09-06T09:00:03Z", key="TEST-echo/tool-single")
+    answer = _say(core, ctx, "TEST-project 的回滚方案由值班同学执行。", origin="assistant_visible", role="assistant",
+                  when="2026-09-06T09:00:20Z", key="TEST-echo/answer")
+    # Status lookups return no memory.
+    _say(core, ctx, "看下插件状态", origin="human_direct", role="user", when="2026-09-07T09:00:00Z", key="TEST-echo/ask-3")
+    for n in range(3):
+        _say(core, ctx, '{"result": {"status": {"schema_version": 1108, "pending_work": 3}}}', origin="memory_reinjection",
+             role="tool", when=f"2026-09-07T09:00:0{n + 1}Z", key=f"TEST-echo/status-{n}")
+    status_reply = _say(core, ctx, "TEST-project 插件状态正常，发布窗口前不用处理。", origin="assistant_visible",
+                        role="assistant", when="2026-09-07T09:00:20Z", key="TEST-echo/status-reply")
+    for mode in ("current", "auto"):
+        refs = [item["ref"] for item in _packet(core, ctx, "TEST-project 发布窗口 回滚方案", mode=mode)["items"]]
+        assert fact.ref in refs and report.ref in refs, mode
+        assert refs.index(fact.ref) < refs.index(report.ref), mode
+    with core.storage.read(ctx) as tx:
+        from scope_recall.core.retrieval_storage import recall_echo
+        assert recall_echo(tx, report)
+        assert not recall_echo(tx, answer) and not recall_echo(tx, status_reply)
+
+
 def test_what_counts_as_only_asking():
     from scope_recall.core.recall_policy import asks_without_answering
 

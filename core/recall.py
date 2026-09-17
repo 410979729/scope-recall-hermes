@@ -43,11 +43,13 @@ MINIMUM_HYDRATION_CAP = 16
 #: six; a claim that answers competes for those slots on rank, so a deep pool
 #: of claims would only spend hydration on statements that cannot be shown.
 CLAIM_CANDIDATES = 16
-#: Share of its fusion score a bare question keeps in live modes.  Asked again,
-#: alpha returned five earlier questions like the query ahead of the reply
-#: that answered one; at 0.6 a first-ranked question falls below a reply that
+#: Share of its fusion score context-only evidence keeps in live modes: a bare
+#: question, or a reply restating what a recall tool returned in its turn.
+#: Asked again, alpha returned five earlier questions like the query ahead of
+#: the reply that answered one, and beta's recall test report came back ahead
+#: of the evidence it quoted.  At 0.6 a first-ranked one falls below a reply that
 #: ranked in the mid-teens, and still ranks as context when nothing answers.
-QUESTION_FUSION_WEIGHT = 0.6
+CONTEXT_ONLY_WEIGHT = 0.6
 _CHANNELS = ("exact", "lexical", "claim", "recent", "vector")
 #: Vector admission reasons that are reported, and how; the rest are silent.
 _VECTOR_REJECTION_GAPS = {
@@ -305,16 +307,18 @@ class RetrievalPipeline:
     # -- ranking and budget ---------------------------------------------------
 
     def _rank_hydrated(self, hydrated: list[tuple[CandidateRef, RetrievedObject]], context: SearchContext | None = None) -> list[tuple[CandidateRef, RetrievedObject]]:
-        questions: set[tuple[str, str, int]] = set()
+        context_only: set[tuple[str, str, int]] = set()
         if context is not None and context.mode in {"auto", "current"}:
-            # A bare question is context, not evidence.  The weight goes on the
+            # A bare question, and a reply restating what a recall tool returned
+            # in its turn, are context, not evidence.  The weight goes on the
             # candidate itself: budget admission re-sorts on fusion score, and a
             # short question would otherwise win its place back there.
-            questions = {candidate.key for candidate, obj in hydrated
-                         if obj.kind == "event" and candidate.source != "exact_ref" and asks_without_answering(obj.content)}
+            context_only = {candidate.key for candidate, obj in hydrated
+                         if obj.kind == "event" and candidate.source != "exact_ref"
+                         and (asks_without_answering(obj.content) or dict(obj.metadata).get("recall_echo") == "true")}
             hydrated = [
-                (replace(candidate, fusion_score=candidate.fusion_score * QUESTION_FUSION_WEIGHT), obj)
-                if candidate.key in questions else (candidate, obj)
+                (replace(candidate, fusion_score=candidate.fusion_score * CONTEXT_ONLY_WEIGHT), obj)
+                if candidate.key in context_only else (candidate, obj)
                 for candidate, obj in hydrated
             ]
         ranked = sorted(
@@ -349,9 +353,9 @@ class RetrievalPipeline:
             relevance = len(hits) / len(query_terms)
             additional = len(hits - covered) / len(query_terms)
             repeated = bool(roots and roots <= selected_roots and not (hits - covered))
-            # An earlier question covers the query's words by construction, so
-            # its coverage bonus is weighted like its fusion score.
-            weight = QUESTION_FUSION_WEIGHT if candidate.key in questions else 1.0
+            # An earlier question or a restating reply covers the query's words
+            # by construction, so its coverage bonus is weighted like its fusion.
+            weight = CONTEXT_ONLY_WEIGHT if candidate.key in context_only else 1.0
             return (candidate.source == "exact_ref",
                     candidate.fusion_score + weight * (.008 * relevance + .008 * additional) - .006 * repeated)
 

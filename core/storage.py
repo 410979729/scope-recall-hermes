@@ -251,12 +251,16 @@ class Transaction:
         key = source.event.get("source_event_key")
         if stamp is None or type(key) is not str or REKEY_MARKER not in key:
             return stamp
-        original = self.source_by_event_key(key.split(REKEY_MARKER, 1)[0], source.revision)
-        if (original is None or original.event.get("occurred_at") != stamp
-                or original.event.get("content") == source.event.get("content")):
+        # The original is looked up by its stored key in the same scope, which
+        # the unique (source_event_key, source_revision) index answers directly.
+        conn = self._check()
+        original = conn.execute(
+            "SELECT occurred_at,content_sha256 FROM source_events WHERE source_event_key=? AND source_revision=? AND scope_id=?",
+            (key.split(REKEY_MARKER, 1)[0], source.revision, source.scope_id)).fetchone()
+        if original is None or original["occurred_at"] != stamp or original["content_sha256"] == source.content_sha256:
             return stamp
-        row = self._check().execute("SELECT persisted_at FROM source_events WHERE event_id=? AND source_revision=?",
-                                    (source.ref, source.revision)).fetchone()
+        row = conn.execute("SELECT persisted_at FROM source_events WHERE event_id=? AND source_revision=?",
+                           (source.ref, source.revision)).fetchone()
         return row["persisted_at"] if row is not None and row["persisted_at"] else stamp
 
     def source(self, ref: str, revision: int) -> StoredSource | None:
