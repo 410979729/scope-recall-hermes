@@ -324,6 +324,10 @@ _RETRY_SUBJECT_REASON = {
     "rebuild_projection": _projection_retry_reason,
     "purge": _purge_retry_reason,
 }
+#: The work types ``recover_transient_failures`` can reopen.  The planner wakes
+#: only for these: a candidate evaluation failed for good was counted as due, and
+#: alpha ran a pass every twenty seconds that recovered nothing.
+AUTO_RECOVERABLE_WORK_TYPES = frozenset(_RETRY_SUBJECT_REASON)
 
 
 class WorkItems:

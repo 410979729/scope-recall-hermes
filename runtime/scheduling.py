@@ -14,7 +14,7 @@ from pathlib import Path
 import time
 
 from ..core.storage import SQLiteStorage
-from ..core.work_storage import AUTO_RECOVERABLE_ERRORS
+from ..core.work_storage import AUTO_RECOVERABLE_ERRORS, AUTO_RECOVERABLE_WORK_TYPES
 from ..core.file_lock import advisory_file_lock
 from .worker_entry import DAILY_COUNTER_MAX, _atomic_metadata, _metadata_path, _read_metadata, load_config
 
@@ -164,7 +164,7 @@ def next_wake(config, *, now: datetime | None = None, unavailable_until=None) ->
                 candidates.append(cooled(*budgeted(now, 'legacy_source_repair'), unavailable_until.get('consolidate')))
         if config.max_auto_recoveries:
             for row in _auto_recovery_rows(conn, base, params, config):
-                if row['work_type'] not in capable:
+                if row['work_type'] not in capable or row['work_type'] not in AUTO_RECOVERABLE_WORK_TYPES:
                     continue
                 due = _utc(row['due']) + timedelta(seconds=config.auto_retry_cooldown_seconds)
                 candidates.append(scheduled(row['work_type'], due, 'failure_cooldown'))
@@ -313,7 +313,7 @@ def supervise(config_path: Path, drain_once, *, delay_seconds=0.0, clock=time.mo
             count += 1
             last_drain = {'monotonic': clock(),
                           'progress': int(payload.get('completed', 0)) + int(payload.get('recovered', 0))}
-            unavailable = set(payload.get('unavailable_work_types', ())) & {'embed', 'consolidate'}
+            unavailable = set(payload.get('unavailable_work_types', ())) & {'embed', 'consolidate', 'evaluate_candidate'}
             unavailable_until = {kind: utc_now() + timedelta(seconds=min(config.auto_retry_cooldown_seconds, 300))
                                  for kind in unavailable}
             if code not in (0, 75, 124):

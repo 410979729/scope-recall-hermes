@@ -226,6 +226,7 @@ def drain_worker(
     # may use the tail of the pass.
     model_bound = frozenset(ports)
     reserve = 0.0 if config.request_seconds is None else config.request_seconds + FINALIZE_MARGIN_SECONDS
+    paused: list[str] = []
     while len(receipts) < config.max_items and _remaining(started, clock, budget) > 0:
         if _remaining(started, clock, budget) < reserve:
             allowed = allowed - model_bound
@@ -255,6 +256,11 @@ def drain_worker(
             # checkpointed a page is deferred too, but without a refusal code:
             # it is pending again and says nothing about the port.
             allowed = allowed - {item.work_type}
+            # Reported like a missing port, so the supervisor sleeps the type
+            # instead of starting the next pass at once for the next item:
+            # delta, with no embedding credential, parked one of 2,548 items
+            # every seven seconds.
+            paused.append(item.work_type)
         if str(error_code or "").lower() in _RATE_LIMITED_ERRORS:
             # A provider that just answered 429 will answer 429 to the next item
             # too.  Each item backing off on its own is no backoff at all.
@@ -275,5 +281,5 @@ def drain_worker(
         items=tuple(receipts),
         deferred=dispositions["deferred"],
         recovered=recovered,
-        unavailable_work_types=unavailable,
+        unavailable_work_types=tuple(dict.fromkeys((*unavailable, *paused))),
     )
