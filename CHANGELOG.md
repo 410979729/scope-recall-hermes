@@ -4,6 +4,21 @@ All notable changes to `scope-recall` will be documented in this file.
 
 ## [Unreleased]
 
+### Scope Recall 3.1.0rc33 recall returns answers, and a refusing provider is left alone - 2026-09-17
+
+Found by beta testing her own recall on rc32 and by a recall benchmark over alpha and beta snapshots: earlier questions came back instead of their answers, facts reached recall only through relation expansion, the newest report in memory was dated a day early, a recall test report came back first for the queries it quoted, and three instances kept asking Google about 5,000 times a day while a monthly spend cap refused every call.
+
+- A restarted Hermes gateway numbers turns from 1 again, so a new message could arrive under a key an older message already held, and the adapter copied that message's time onto it before storage re-keyed it. Only a replay of the same admitted content inherits the stored time now. Rows already written this way (23 on alpha, 14 on beta) are dated by their write when recalled; the copy is recognized exactly and no stored row is rewritten.
+- Recall items carry `occurred_at`: a source's occurrence time, or a claim's newest evidence. The guidance injected beside the packet says the later of two disagreeing items is the newer statement.
+- Bigrams holding an asking character (什么吗呢呀吧嘛哪啥), a few asking words and English helper words no longer count toward matching, specificity or ranking.
+- A claim channel matches each claim's own statement: the query must name at least half of the subject and hit the statement beyond one word, one more for an unpromoted proposal. The version offered is the one hydration would admit, so a replaced value is not. Relation expansion spends its bound on the best seeds first. A claim is shown without its quoted spans, which for tool-derived claims were escaped JSON that filled the packet; its `evidence_refs` still name every source.
+- A bare question (short, with a question mark or an asking ending) and a reply written in a turn with three or more memory lookups keep 0.6 of their rank in auto and current recall, and stay available as context.
+- Budget admission weighs an event's size against a whole default packet (4,096 units) instead of 256-unit steps, and a run re-sorted for admission keeps the ranker's order among the events it admits, so a 690-unit reply no longer loses its slot to 15-unit questions.
+- A model whose latest calls were capacity or account refusals is held from a minute after one refusal, doubling to half an hour, until the first answered call. The hold is read from the shared ledger: drains do not claim its work types, the planner sleeps them, adapters refuse to send (`provider_hold`, parked without an attempt), and the worker status names `provider_hold:<model>`. A healthy model is never held for another's refusals.
+- The doctor names five or more model answers cut off at the output limit within an hour (`model_output_truncated`) and the two remedies: a larger `max_output_tokens`, or the provider's thinking turned off.
+
+On consistent snapshots (alpha 10:30Z, beta 10:49Z), rc32 -> rc33, top 3: alpha facts 32/60 -> 60/60, supersession 0/2 -> 2/2, facts asked as questions 17/60 -> 58/60; beta facts 9/17 -> 16/17, asked as questions 4/17 -> 16/17, the two rc32 field complaints 0/2 -> 2/2. Questions Joy asked, with the reply in the top 5: alpha 15/30 -> 17/30, beta 12/25 -> 14/25. no_match stays 20/20 on both.
+
 ### Scope Recall 3.1.0rc32 memory costs less than the agent it serves - 2026-09-17
 
 Measured on alpha (2026-09-12..17): the plugin sent about 74 M uncached prompt tokens against the agent's 12 M, and the candidate loop was 81-97% of every day's plugin tokens. 60-96% of each day's evaluations re-asked a candidate already judged, 307 candidates were asked ten times or more, and 95% of candidates came from tool output. Of 10,650 evaluations, 27 promoted a fact: 19 on a candidate's first verdict and 4 on its second.
