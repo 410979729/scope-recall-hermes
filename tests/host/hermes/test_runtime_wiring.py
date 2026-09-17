@@ -10,7 +10,9 @@ from unittest.mock import Mock
 import pytest
 
 from scope_recall.adapters.hermes import ScopeRecallHermesAdapter, install_hermes_scope_recall
+from scope_recall.adapters.hermes.provider import GAP_CURRENT_SOURCE_REFS_LIMIT
 from scope_recall.adapters.hermes.runtime_wiring import GAP_BINDING_MISMATCH, GAP_UNCONFIGURED, GAP_WORKER_BUSY, GAP_WORKER_LAUNCH_FAILED
+from scope_recall.core.retrieval import MAX_CURRENT_SOURCE_REFS
 
 
 def _runtime_payload(binding, *, session_id: str, allowed_scope_ids) -> dict:
@@ -201,7 +203,42 @@ def test_worker_launch_failure_reports_gap_and_next_session_end_retries(configur
     assert not failed_config.exists()
     provider.on_session_end([])
     assert launch.call_count == 2
+    assert GAP_WORKER_LAUNCH_FAILED not in provider.diagnostics.capability_gaps
     launch.call_args.args[0].unlink()
+
+
+def test_worker_busy_gap_lasts_only_until_a_later_launch_is_not_busy(configured_provider, monkeypatch):
+    provider = configured_provider
+    session_gaps = provider.diagnostics.capability_gaps
+    worker = Mock()
+    worker.poll.return_value = None
+    worker.pid = 12345
+    launch = Mock(return_value=worker)
+    monkeypatch.setattr("scope_recall.adapters.hermes.runtime_wiring.launch_worker", launch)
+
+    def reply_gaps() -> list[str]:
+        return json.loads(provider.handle_tool_call("status", {}))["capability_gaps"]
+
+    try:
+        provider.on_session_end([])
+        provider.on_session_end([])  # a follower queues behind the live worker
+        assert GAP_WORKER_BUSY in provider.diagnostics.capability_gaps
+        assert GAP_WORKER_BUSY in reply_gaps()
+        # A gap that is no launch result must outlive the replacement.  The
+        # capture's own wake still finds both workers alive, so it stays busy.
+        provider._current_source_refs = [f"ref-{index}" for index in range(MAX_CURRENT_SOURCE_REFS)]
+        provider.observe_post_tool_call(session_id="TEST-session-1", turn_id="turn-1", tool_call_id="over-1",
+                                        tool_name="terminal", result="one source past the fence", status="success")
+        assert GAP_WORKER_BUSY in reply_gaps()
+        worker.poll.return_value = 0  # every worker has exited
+        provider.on_session_end([])
+        assert launch.call_count == 3
+        assert GAP_WORKER_BUSY not in provider.diagnostics.capability_gaps
+        assert GAP_WORKER_BUSY not in reply_gaps()
+        assert provider.diagnostics.capability_gaps == (*session_gaps, GAP_CURRENT_SOURCE_REFS_LIMIT)
+    finally:
+        for call in launch.call_args_list:
+            call.args[0].unlink(missing_ok=True)
 
 
 def test_owned_worker_rejects_scope_widening_and_closed_runtime(configured_provider, monkeypatch):

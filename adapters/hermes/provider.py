@@ -132,6 +132,8 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
         self._current_task_message = ""
         self._retry_captures: dict[SourceIdentity, _RetryCapture] = {}
         self._diagnostics = AdapterDiagnostics()
+        #: What the last worker launch attempt added to capability_gaps.
+        self._worker_launch_gaps: tuple[str, ...] = ()
         self._initialized = False
 
     @property
@@ -227,6 +229,7 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
                     (*fresh.runtime_audience.capability_gaps, *self._host_runtime.capability_gaps)
                 )
             )
+            self._worker_launch_gaps = ()
             self._initialized = True
             from .hooks import update_adapter_binding
 
@@ -280,6 +283,20 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
         self._diagnostics.capability_gaps = tuple(
             gap for gap in self._diagnostics.capability_gaps if gap != GAP_CURRENT_SOURCE_REFS_LIMIT
         )
+
+    def _replace_worker_launch_gaps(self, gaps: tuple[str, ...]) -> None:
+        """This launch attempt's gaps replace the previous attempt's.
+
+        Busy or failed describes one attempt, not the session, so it must not
+        outlive a later attempt that was neither.  Identity, audience, runtime
+        and turn gaps are not launch results and stay.
+        """
+        previous = self._worker_launch_gaps
+        self._worker_launch_gaps = tuple(gaps)
+        self._diagnostics.capability_gaps = tuple(dict.fromkeys((
+            *(gap for gap in self._diagnostics.capability_gaps if gap not in previous),
+            *self._worker_launch_gaps,
+        )))
 
     def _record_capture_failure(self, identity: SourceIdentity | None, reason: str) -> None:
         if identity is not None:
@@ -400,9 +417,7 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
                 )
             except Exception:
                 gaps = (GAP_WORKER_LAUNCH_FAILED,)
-            self._diagnostics.capability_gaps = tuple(dict.fromkeys(
-                (*self._diagnostics.capability_gaps, *gaps)
-            ))
+            self._replace_worker_launch_gaps(gaps)
 
     def _retry_observed_captures(self) -> None:
         """Retry only previously observed DTOs with their original identities.
@@ -672,9 +687,7 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
                 except Exception:
                     # Persisted work remains recoverable on the next wakeup.
                     pass
-                self._diagnostics.capability_gaps = tuple(dict.fromkeys(
-                    (*self._diagnostics.capability_gaps, *gaps)
-                ))
+                self._replace_worker_launch_gaps(gaps)
                 return
             else:
                 # Basic mode retains the original bounded Core worker.  It is
@@ -709,6 +722,7 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
         self._diagnostics.capability_gaps = tuple(
             dict.fromkeys((*runtime_audience.capability_gaps, *(self._host_runtime.capability_gaps if self._host_runtime else ())))
         )
+        self._worker_launch_gaps = ()
         if self._host_runtime is not None:
             self._host_runtime.rebind_session(new_session_id, fresh.writable_scope_ids)
         from .hooks import update_adapter_binding
