@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import re
 from typing import TYPE_CHECKING, Protocol
 
 from ..contracts import ContractError
@@ -152,12 +153,51 @@ def candidate_subject_matches(
 #: Candidate re-evaluation carries the whole consolidation prompt (about 11.5 KB
 #: of instruction prose and inlined schema) plus a candidate block of its own,
 #: so the shared 16 KB consolidation ceiling left roughly 3.4 KB for evidence.
-#: Measured against tianshu's live database that admitted none of the 115
+#: Measured against alpha's live database that admitted none of the 115
 #: oversized evaluations: the smallest was already 2,892 characters of evidence.
 #: This ceiling is the request's real bound — the candidate block is counted
 #: inside it, not appended past it — and stays far below the auxiliary model's
 #: context window.
 CANDIDATE_EVALUATION_INPUT_BUDGET = 64000
+
+
+#: A source longer than this reaches a candidate evaluation as a window around
+#: the candidate's value (its subject when the value is absent), not whole.
+#: Tool output dominated the evidence: replayed over alpha's evaluations, the
+#: calls still made after the verdict limit carried 28 M characters, and windows
+#: of this size keep 44% of them.  Qualification reads the complete stored source
+#: around each quote, so a window changes what the model reads, never what a
+#: quote has to satisfy.
+EVIDENCE_WINDOW_THRESHOLD = 3000
+EVIDENCE_WINDOW_RADIUS = 1500
+
+
+def _needle_pattern(text: object) -> re.Pattern[str] | None:
+    """Match ``text`` whatever spacing or punctuation sits between its letters and digits."""
+    characters = [character for character in str(text or "") if character.isalnum()]
+    if not characters:
+        return None
+    return re.compile(r"[\W_]*".join(re.escape(character) for character in characters), re.IGNORECASE)
+
+
+def evidence_window(source: StoredSource, needles) -> StoredSource:
+    """The part of a long source an evaluation needs: a window around the first needle found."""
+    from .consolidation_chunks import ChunkedSource, ConsolidationChunk
+
+    content = str(source.event.get("content") or "")
+    total = len(content)
+    if total <= EVIDENCE_WINDOW_THRESHOLD or getattr(source, "consolidation_window", None) is not None:
+        return source
+    start, end = 0, EVIDENCE_WINDOW_THRESHOLD
+    for needle in needles:
+        pattern = _needle_pattern(needle)
+        match = pattern.search(content) if pattern is not None else None
+        if match is not None:
+            start = max(0, match.start() - EVIDENCE_WINDOW_RADIUS)
+            end = min(total, match.end() + EVIDENCE_WINDOW_RADIUS)
+            break
+    return ChunkedSource(**dict(source.__dict__, event=dict(source.event, content=content[start:end])),
+                         consolidation_window=ConsolidationChunk(start, end, total), consolidation_seed=())
 
 
 def candidate_evaluation_messages(
@@ -170,6 +210,8 @@ def candidate_evaluation_messages(
     """Build a bounded candidate-specific request for the shared model port."""
     from .consolidate import consolidation_messages
 
+    needles = (candidate.payload.get("value_text"), candidate.payload.get("subject"))
+    sources = tuple(evidence_window(source, needles) for source in sources)
     messages = consolidation_messages(sources, episode_ref=None, budget=budget,
                                       validation_feedback=validation_feedback)
     candidate_json = json.dumps(

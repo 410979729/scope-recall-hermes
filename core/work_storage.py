@@ -55,8 +55,11 @@ CAPACITY_BACKOFF_FLOOR_SECONDS = 1800.0
 CAPACITY_BACKOFF_CEILING_SECONDS = 4 * 3600.0
 
 #: Purge rows are claimed before anything else: a delete must land before
-#: derived work can rebuild what it removes.
-_PURGE_FIRST = "CASE WHEN work_type='purge' THEN 0 ELSE 1 END"
+#: derived work can rebuild what it removes.  Candidate evaluation is claimed
+#: last: it re-judges what memory already holds, while consolidation and
+#: embedding are what make a new conversation recallable at all, so a busy
+#: candidate queue must never hold captured conversation back.
+_CLAIM_ORDER = "CASE work_type WHEN 'purge' THEN 0 WHEN 'evaluate_candidate' THEN 2 ELSE 1 END"
 _LEASED_ROW = "work_id=? AND state='leased' AND lease_token=? AND lease_owner=?"
 
 # --- the fresh conversation lane ---------------------------------------------
@@ -409,7 +412,7 @@ class WorkItems:
     def claim_next(self, owner: str, now: str, *, lease_seconds: float, limit: int = 1,
                    allowed_work_types: frozenset[str] = ALLOWED_WORK_TYPES,
                    fresh_lane: bool = False) -> tuple[LeasedWork, ...]:
-        """Lease ready work: purge first, then FIFO by availability.
+        """Lease ready work: purge first, candidate evaluation last, FIFO by availability within each.
 
         ``fresh_lane`` places ready fresh conversation work (see
         ``FRESH_LANE_ORIGINS``) after purge and before the rest of the FIFO
@@ -432,7 +435,7 @@ class WorkItems:
         rows = conn.execute(
             f"""SELECT work_id,work_type FROM work_items
                 WHERE state='pending' AND available_at<=? AND {visible} AND work_type IN ({_marks(kinds)})
-                ORDER BY {_PURGE_FIRST}, available_at, work_id LIMIT ?""",
+                ORDER BY {_CLAIM_ORDER}, available_at, work_id LIMIT ?""",
             (now, *params, *kinds, limit),
         ).fetchall()
         if fresh_lane:
@@ -510,7 +513,7 @@ class WorkItems:
             f"""SELECT * FROM work_items WHERE state='failed' AND available_at<=?
                 AND {visible} AND ({error_filter}) AND {exhausted_filter}
                 AND work_type IN ({_marks(kinds)})
-                ORDER BY {_PURGE_FIRST},available_at,work_id LIMIT ?""",
+                ORDER BY {_CLAIM_ORDER},available_at,work_id LIMIT ?""",
             (cutoff, *params, *error_params, *exhausted_params, *kinds, limit),
         ).fetchall()
         recovered = 0

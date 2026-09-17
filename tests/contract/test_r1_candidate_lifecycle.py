@@ -873,6 +873,66 @@ def test_an_evaluation_queued_before_the_check_is_settled_without_the_model(app)
     assert (lifecycle[0]["processing_state"], lifecycle[0]["reason"]) == ("waiting_evidence", "value_not_in_evidence")
 
 
+def _long_evidence_messages(core, ctx, content):
+    saved, _source, _proposal, _registration = _candidate(core, ctx)
+    long_source = capture(core, ctx, content, origin="tool_observation", key="TEST-r1/long-output")
+    with core.storage.read(ctx) as tx:
+        head = tx.claims.version(saved.ref, saved.revision)
+    from scope_recall.core.candidate_lifecycle import CandidateSnapshot
+
+    snapshot_ = CandidateSnapshot(saved.ref, saved.revision, "TEST-scope", None, None, "proposed", head.payload,
+                                  "pending_evaluation", "new_evidence", "r1-candidate-v1")
+    messages = candidate_evaluation_messages(snapshot_, (long_source,))
+    record = json.loads(messages[2]["content"])["sources"][0]
+    return record, long_source
+
+
+def test_a_long_source_reaches_the_evaluation_as_a_window_around_the_value(app):
+    core, ctx = app
+    filler = "日志行：无关的构建输出。" * 400
+    record, source = _long_evidence_messages(core, ctx, filler + "entity-blue property-blue 蓝 色 已确认。" + filler)
+    total = len(source.event["content"])
+    assert total > 9000
+    assert "蓝 色" in record["content"]
+    assert len(record["content"]) <= 3000 + len("蓝 色")
+    window = record["source_window"]
+    assert window["total"] == total and window["coverage"] == "fragment_only"
+    assert source.event["content"][window["start"]:window["end"]] == record["content"]
+
+
+def test_a_long_source_without_the_value_sends_its_head_and_a_short_one_is_whole(app):
+    core, ctx = app
+    filler = "日志行：无关的构建输出。" * 400
+    record, source = _long_evidence_messages(core, ctx, filler)
+    assert record["content"] == source.event["content"][:3000]
+    saved, short_source, _proposal, _registration = _candidate(core, ctx, key="TEST-r1/short")
+    with core.storage.read(ctx) as tx:
+        head = tx.claims.version(saved.ref, saved.revision)
+    from scope_recall.core.candidate_lifecycle import CandidateSnapshot
+
+    snapshot_ = CandidateSnapshot(saved.ref, saved.revision, "TEST-scope", None, None, "proposed", head.payload,
+                                  "pending_evaluation", "new_evidence", "r1-candidate-v1")
+    whole = json.loads(candidate_evaluation_messages(snapshot_, (short_source,))[2]["content"])["sources"][0]
+    assert whole["content"] == short_source.event["content"] and "source_window" not in whole
+
+
+def test_captured_conversation_is_claimed_before_candidate_evaluation(app):
+    """A busy candidate queue must never hold a new conversation back from recall."""
+    core, ctx = app
+    _candidate(core, ctx)
+    _finish_source_work(core)
+    capture(core, ctx, "TEST 新的一轮对话。", key="TEST-r1/new-turn")
+    with core.storage.write(ctx) as tx:
+        order = []
+        while True:
+            leased = tx.work.claim_next("TEST-order", core.clock.utc_now(), lease_seconds=30, limit=1)
+            if not leased:
+                break
+            order.append(leased[0].work_type)
+    assert "evaluate_candidate" in order and len(order) >= 2
+    assert order[-1] == "evaluate_candidate", order
+
+
 def _new_first_hand_evidence(core, ctx, text, key):
     said = capture(core, ctx, text, key=key)
     with core.storage.write(ctx) as tx:
