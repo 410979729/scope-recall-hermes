@@ -4,6 +4,13 @@ All notable changes to `scope-recall` will be documented in this file.
 
 ## [Unreleased]
 
+### Scope Recall 3.1.0rc34 a pass that can make no progress is not started again at once - 2026-09-17
+
+Seen while rc33 ran as a canary on alpha: two instances started worker passes back to back that could do nothing.
+
+- Alpha ran a pass every ~20 seconds. The planner counted a candidate evaluation that failed with `lease_exhausted` as recoverable, but `recover_transient_failures` reopens only consolidate, embed, rebuild_projection and purge, so the row stayed failed and the plan stayed due. The planner now wakes only for failures of `AUTO_RECOVERABLE_WORK_TYPES`.
+- Delta ran a pass every ~7.5 seconds. With no embedding credential, each pass parked one of 2,548 embed items for an hour, and the next pass started at once for the item after it. A work type whose port refused before any attempt (credentials, budget, `provider_hold`, account refusals) is now reported in `unavailable_work_types`, so the supervisor sleeps it for its cooldown as it does a missing port; `evaluate_candidate` is slept that way too.
+
 ### Scope Recall 3.1.0rc33 recall returns answers, and a refusing provider is left alone - 2026-09-17
 
 Found by beta testing her own recall on rc32 and by a recall benchmark over alpha and beta snapshots: earlier questions came back instead of their answers, facts reached recall only through relation expansion, the newest report in memory was dated a day early, a recall test report came back first for the queries it quoted, and three instances kept asking Google about 5,000 times a day while a monthly spend cap refused every call.
