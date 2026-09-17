@@ -12,7 +12,7 @@ import unicodedata
 
 from ..contracts import ContractError
 from .embedding_budget import bounded_embedding_text
-from .events import lexical_terms, query_terms, version_suffixes
+from .events import _CJK, lexical_terms, query_terms, version_suffixes
 from .retrieval import CandidateRef, SearchContext
 
 
@@ -265,6 +265,12 @@ class RecallPolicy:
         terms = [term for term in query_terms(query) if term not in _WEAK_QUERY]
         if not terms and candidate.source == "recent_raw":
             return False, "weak_query_only"
+        if candidate.matched_query_terms is not None:
+            # Only the query's own terms count.  Storage credits a synonym hit
+            # to the one query term it stands in for (``synonym_expansions``);
+            # a synonym reported as itself adds nothing.
+            matched = set(meaningful_query_terms(query)).intersection(candidate.matched_query_terms)
+            score = min(score, float(len(matched)))
         if score < self.lexical_min_terms:
             return False, "lexical_below_minimum"
         if not query_is_specific(
@@ -368,6 +374,74 @@ def meaningful_query_terms(query: str) -> tuple[str, ...]:
     """Terms that can establish lexical relevance for one candidate."""
 
     return tuple(term for term in query_terms(query) if term not in _WEAK_QUERY and len(term) > 1)
+
+
+#: Chinese words that agent-operations conversations use interchangeably.
+#:
+#: The lexical index holds overlapping CJK bigrams, so "阿乙装上了吗" and
+#: "阿乙已经安装好了" share no term for the one word they both use.  A query
+#: naming a member also searches for the others (``synonym_expansions``); that
+#: happens at query time only, so nothing is stored and nothing is re-indexed.
+#:
+#: Curated and reviewed, not generated.  A group holds words interchangeable in
+#: this domain, and a word with a common second sense stays out even when one of
+#: its senses fits: 还是 is "still" but also "or"; 开始 is to begin, not to boot
+#: like 启动; 回退 is also a regression; 删掉 deletes but does not uninstall
+#: like 卸载.  Every member is exactly two CJK characters, one index term, so a
+#: swap replaces bigrams one for one (and 没成功 or 版本号 cannot join).
+SYNONYM_GROUPS: tuple[tuple[str, ...], ...] = (
+    ("仍然", "依然", "仍旧", "依旧"),  # still
+    ("安装", "装上", "装好"),  # install, installed
+    ("卸载", "卸掉"),  # uninstall
+    ("删除", "删掉"),  # delete
+    ("完成", "做完", "搞定"),  # done
+    ("修复", "修好"),  # fix, fixed
+    ("报错", "出错"),  # an error was raised
+    ("停止", "停掉"),  # stop
+    ("登录", "登陆"),  # log in; 登陆 is its common misspelling
+    ("账号", "帐号"),  # account (variant character)
+    ("账户", "帐户"),  # account (variant character)
+    ("密钥", "秘钥"),  # secret key; 秘钥 is its common misspelling
+    ("默认", "缺省"),  # default
+    ("截图", "截屏"),  # screenshot
+)
+_SYNONYMS = {member: tuple(other for other in group if other != member)
+             for group in SYNONYM_GROUPS for member in group}
+#: Bound on the synonym terms one query adds to the lexical search.
+_SYNONYM_TERM_LIMIT = 64
+
+
+def synonym_expansions(query: str) -> dict[str, str]:
+    """Index terms a synonym of a query word adds, each mapped to the query term it stands in for.
+
+    Writing another member in place of a group member changes three bigrams:
+    the word's own and the two it forms with its neighbours.  Swapping 安装 for
+    装上 in "阿乙装上了吗" turns 姬装, 装上 and 上了 into 姬安, 安装 and 装了.
+    Each changed bigram is credited to the query term at its position, so a
+    source phrased with the synonym matches at most the terms the question
+    written with that synonym would have matched, and one synonym term never
+    counts for more than one query term.  Coverage and specificity are still
+    measured against the query's own terms, and a synonym is a CJK word, so it
+    never names or satisfies a hard identifier.
+    """
+    terms = frozenset(meaningful_query_terms(query))
+    expansions: dict[str, str] = {}
+    for run in _CJK.findall(unicodedata.normalize("NFKC", query).casefold()):
+        for start in range(len(run) - 1):
+            for other in _SYNONYMS.get(run[start:start + 2], ()):
+                variant = run[:start] + other + run[start + 2:]
+                for position in range(max(start - 1, 0), min(start + 2, len(run) - 1)):
+                    original, replacement = run[position:position + 2], variant[position:position + 2]
+                    # A neighbouring member is an occurrence of its own and is
+                    # expanded as one; blending it with this swap makes noise.
+                    if position != start and original in _SYNONYMS:
+                        continue
+                    if original not in terms or replacement in terms or replacement in _WEAK_QUERY:
+                        continue
+                    expansions.setdefault(replacement, original)
+                    if len(expansions) >= _SYNONYM_TERM_LIMIT:
+                        return expansions
+    return expansions
 
 
 def hard_identifiers(text: str) -> frozenset[str]:
