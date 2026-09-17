@@ -23,6 +23,7 @@ from .worker_outcomes import _model_exception_outcome, _remaining
 from .worker_projection import EmbedPort, PurgePort, _process_embed, _process_purge, _process_rebuild_projection
 
 __all__ = [
+    "FINALIZE_MARGIN_SECONDS",
     "ConsolidationModel",
     "EmbedPort",
     "PurgePort",
@@ -44,6 +45,14 @@ __all__ = [
 #: definition -- two hand-kept copies of this set drifted apart once already.
 _RATE_LIMITED_ERRORS = CAPACITY_REFUSALS
 
+#: Seconds a model-bound item keeps back, beyond its one bounded request, to
+#: record the verdict under its lease: a few fenced SQLite writes and, for
+#: embed, the vector publish.  Finalization refuses to write once the pass is
+#: spent, so an item claimed without this stays leased until its lease expires,
+#: and a candidate evaluation, whose attempt marker is already committed, is
+#: then failed as interrupted for good.
+FINALIZE_MARGIN_SECONDS = 5.0
+
 
 @dataclass(frozen=True)
 class WorkerConfig:
@@ -55,6 +64,10 @@ class WorkerConfig:
     purge_only: bool = False
     admission_policy: object | None = None
     candidate_batch_limit: int = PROCESS_BATCH_LIMIT
+    #: The bound the caller clamps every model and embedding request to (the
+    #: runtime's ``request_seconds``).  None means the ports are unbounded and
+    #: each call gets whatever the pass has left, so no reserve can be known.
+    request_seconds: float | None = None
 
     def __post_init__(self) -> None:
         if type(self.owner_id) is not str or not self.owner_id:
@@ -71,6 +84,10 @@ class WorkerConfig:
             raise ValueError("purge_only")
         if type(self.candidate_batch_limit) is not int or not 1 <= self.candidate_batch_limit <= PROCESS_BATCH_LIMIT:
             raise ValueError("candidate_batch_limit")
+        if self.request_seconds is not None and (
+                type(self.request_seconds) not in (int, float) or not math.isfinite(self.request_seconds)
+                or self.request_seconds <= 0):
+            raise ValueError("request_seconds must be positive")
 
 
 @dataclass(frozen=True)
@@ -195,7 +212,15 @@ def drain_worker(
     receipts: list[WorkerItemReceipt] = []
     dispositions: Counter[str] = Counter()
     claimed_types: Counter[str] = Counter()
+    # Every optional port is one bounded model or embedding request.  Its work
+    # is claimed only while the pass still covers that request and the margin
+    # to record the verdict; purge and rebuild_projection are local work and
+    # may use the tail of the pass.
+    model_bound = frozenset(ports)
+    reserve = 0.0 if config.request_seconds is None else config.request_seconds + FINALIZE_MARGIN_SECONDS
     while len(receipts) < config.max_items and _remaining(started, clock, budget) > 0:
+        if _remaining(started, clock, budget) < reserve:
+            allowed = allowed - model_bound
         with storage.write(context, remaining_seconds=_remaining(started, clock, budget)) as tx:
             claimed = tx.work.claim_next(config.owner_id, clock.utc_now(), lease_seconds=config.lease_seconds,
                                          limit=1, allowed_work_types=allowed)

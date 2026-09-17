@@ -1032,6 +1032,79 @@ def test_deadline_expiry_returns_partial_receipt(worker_app):
     assert receipt.completed + receipt.failed + receipt.retried + receipt.skipped + receipt.obsolete + receipt.stale == receipt.processed
 
 
+def test_model_work_is_claimed_only_while_the_pass_covers_one_bounded_request(worker_app):
+    from scope_recall.core.worker import FINALIZE_MARGIN_SECONDS, WorkerConfig, drain_worker
+
+    core, ctx, clock = worker_app
+    doomed = capture(core, ctx, "TEST 预算尾部删除。", key="TEST-reserve/doomed")
+    authorize(core, ctx, doomed)
+    core.forget(ctx, request(doomed), remaining_seconds=10)
+    kept = capture(core, ctx, "TEST 预算尾部保留。", key="TEST-reserve/kept")
+
+    class Purge:
+        def purge_active(self, operation_id, *, receipt, remaining_seconds):
+            return True
+
+    class Embed:
+        calls = 0
+
+        def prepare_source(self, source, *, remaining_seconds=1.0):
+            self.calls += 1
+            return source.ref
+
+        def publish_source(self, prepared, *, source, lease_token, lease_owner, lease_guard, remaining_seconds=1.0):
+            assert lease_guard()
+
+    def one_second_call(sources, **_):
+        clock.advance(seconds=1)
+        return consolidation_payload(*sources)
+
+    model, embed = FakeConsolidation(one_second_call), Embed()
+    reserve = 45.0 + FINALIZE_MARGIN_SECONDS
+
+    def drain(remaining_seconds):
+        receipt = drain_worker(core.storage, clock, ctx, config=WorkerConfig("TEST-reserve", request_seconds=45.0),
+                               consolidation=model, embed=embed, purge=Purge(), remaining_seconds=remaining_seconds)
+        return [(item.work_type, item.disposition) for item in receipt.items]
+
+    def kept_work():
+        return {row[0]: row[3:] for row in work_rows(core) if row[1] == kept.ref}
+
+    # Below the reserve the purge still runs; model work is not even claimed.
+    assert drain(reserve - 0.5) == [("purge", "completed")]
+    assert model.calls == embed.calls == 0
+    assert kept_work() == {"consolidate": ("pending", 0, 0, None), "embed": ("pending", 0, 0, None)}
+    # A covered pass claims model work.  Once a call has spent the reserve the
+    # embed is left pending untouched, while local work still uses the tail.
+    with core.storage.write(ctx) as tx:
+        assert tx.work.enqueue("rebuild_projection", kept.ref, kept.revision, available_at=clock.utc_now())
+    assert drain(reserve) == [("consolidate", "completed"), ("rebuild_projection", "completed")]
+    assert model.calls == 1 and embed.calls == 0
+    assert kept_work()["embed"] == ("pending", 0, 0, None)
+    # The next covered pass claims it as before.
+    assert drain(reserve) == [("embed", "completed")]
+    assert embed.calls == 1 and kept_work()["embed"][0] == "done"
+
+
+def test_runtime_drain_reserves_its_own_request_bound(worker_app):
+    from scope_recall.core.worker import FINALIZE_MARGIN_SECONDS
+    from scope_recall.runtime.instance import RuntimeInstance, RuntimeInstanceConfig
+
+    core, ctx, _clock = worker_app
+    capture(core, ctx, "TEST 运行时请求上限。")
+    _mark_embed_done(core)
+    model = FakeConsolidation(lambda sources, **_: consolidation_payload(*sources))
+    config = RuntimeInstanceConfig(binding=ctx.binding, session_id=ctx.session_id,
+                                   allowed_scope_ids=ctx.allowed_scope_ids,
+                                   project_id=ctx.project_id, branch_id=ctx.branch_id, request_seconds=20.0)
+    runtime = RuntimeInstance(config=config, core=core, auxiliary=None)
+    short = runtime.drain(consolidation=model, remaining_seconds=20.0 + FINALIZE_MARGIN_SECONDS - 1)
+    assert short.idle and model.calls == 0
+    assert consolidate_rows(core)[0][3:] == ("pending", 0, 0, None)
+    covered = runtime.drain(consolidation=model, remaining_seconds=60.0)
+    assert covered.completed == 1 and model.calls == 1
+
+
 def test_M36_worker_intention_with_unproved_cue_stays_proposed(worker_app):
     core, ctx, clock = worker_app
     source = capture(core, ctx, "TEST-project 验收前提醒检查散热。")
