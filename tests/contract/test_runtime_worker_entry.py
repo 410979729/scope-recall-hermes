@@ -529,7 +529,7 @@ def test_a_handed_deadline_bounds_the_lock_wait_and_the_drain(tmp_path, monkeypa
 
     monkeypatch.setattr(worker_entry, "advisory_file_lock", observed_lock)
     monkeypatch.setattr(core_worker, "drain_worker", drain)
-    clock_reads = .05  # Epoch and monotonic readings, a few ticks apart.
+    clock_reads = .1  # Epoch/monotonic conversions, a few 15.6 ms Windows ticks.
     handed = time.time() + 10.0
     output = StringIO()
     config = _write_config(tmp_path / "owned.json", _config_payload(binding))
