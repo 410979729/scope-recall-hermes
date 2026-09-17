@@ -11,6 +11,7 @@ import hashlib
 import json
 import math
 import os
+import sqlite3
 import stat
 import tempfile
 import time
@@ -19,6 +20,7 @@ import sys
 from typing import Any, TextIO
 
 from ..core.file_lock import advisory_file_lock
+from ..core.writer_lease import TruthWriterBusyError
 from ..vector.process_store import NativeVectorPathError
 from ..contracts import ContractError, TrustedContext
 from .instance import RuntimeInstanceConfig, build_runtime_instance
@@ -229,6 +231,13 @@ def _failure_label(exc: BaseException) -> str:
     return name
 
 
+def _writer_busy(exc: BaseException) -> bool:
+    """Another writer held the truth database: a capture, a maintenance command, another tool."""
+    if isinstance(exc, TruthWriterBusyError):
+        return True
+    return isinstance(exc, sqlite3.OperationalError) and any(word in str(exc).lower() for word in ("locked", "busy"))
+
+
 def _exception_gap(exc: BaseException) -> str:
     if isinstance(exc, NativeVectorPathError):
         return NativeVectorPathError.code
@@ -393,6 +402,12 @@ def run_worker(config_path: str | Path, *, output: TextIO | None = None,
             # The window ran out inside the drain, as it does for a pass that
             # starts with milliseconds left.  Like a kill, it keeps its page.
             return _owner_timeout(sink, config, started_at=started_at)
+        if _writer_busy(exc):
+            # Nothing failed: another writer held the truth database.  Busy,
+            # like a held worker lock, so the supervisor tries again after a
+            # pause instead of stopping until the next autostart wake.
+            payload = _minimal_payload(config, "busy", "worker_writer_busy")
+            return _report(sink, config, payload, started_at=started_at, exit_code=75)
         # Error classes/codes are useful to a supervisor while details may
         # contain paths or model data.  Keep the protocol bounded and safe.
         payload = _minimal_payload(config, "degraded", preflight_gap or _exception_gap(exc))

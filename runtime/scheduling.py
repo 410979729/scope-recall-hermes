@@ -19,6 +19,13 @@ from ..core.file_lock import advisory_file_lock
 from .worker_entry import DAILY_COUNTER_MAX, _atomic_metadata, _metadata_path, _read_metadata, load_config
 
 
+#: Seconds a supervisor waits after a busy pass, when the worker lock or the
+#: truth writer was held, before it tries again.  At the plain interval a long
+#: maintenance write was met with a pass every few seconds; failing instead
+#: stopped the supervisor until the next autostart wake.
+BUSY_BACKOFF_SECONDS = 30.0
+
+
 def _daily_budget_spent(config, used: int) -> bool:
     """Whether the per-day item cap is reached.  A limit of 0 means uncapped,
     and without the zero check every wake on an uncapped instance would be
@@ -266,6 +273,7 @@ def supervise(config_path: Path, drain_once, *, delay_seconds=0.0, clock=time.mo
     last_drain = None
     last_code = 0
     unavailable_until = {}
+    busy_until = None
     try:
         control.update(accepting=True, state='running', reason='initial_wake', worker_pid=os.getpid(),
                        started_at=_stamp(utc_now()), deadline_at=_stamp(wall_deadline), drains=0,
@@ -302,6 +310,8 @@ def supervise(config_path: Path, drain_once, *, delay_seconds=0.0, clock=time.mo
             delay = max(0, (_utc(plan.due_at) - utc_now()).total_seconds())
             if last_drain is not None:
                 delay = max(delay, config.worker_min_interval_seconds - (clock() - last_drain['monotonic']))
+            if busy_until is not None:
+                delay = max(delay, busy_until - clock())
             if delay > 0:
                 control.update(state='waiting', reason=plan.reason, next_wake_at=plan.due_at, drains=count,
                                pending_work=plan.pending, failed_work=plan.failed, blocked_work=plan.blocked)
@@ -311,6 +321,7 @@ def supervise(config_path: Path, drain_once, *, delay_seconds=0.0, clock=time.mo
             code, payload = drain_once(max(.001, min(config.drain_seconds, deadline - clock())))
             last_code = code
             count += 1
+            busy_until = clock() + BUSY_BACKOFF_SECONDS if code == 75 else None
             last_drain = {'monotonic': clock(),
                           'progress': int(payload.get('completed', 0)) + int(payload.get('recovered', 0))}
             unavailable = set(payload.get('unavailable_work_types', ())) & {'embed', 'consolidate', 'evaluate_candidate'}
