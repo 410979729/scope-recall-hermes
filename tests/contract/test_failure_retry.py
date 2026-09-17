@@ -232,6 +232,27 @@ def test_a_transient_model_failure_can_be_cleared(code):
     assert selects(code, include_terminal=False, generation=SCHEMA_VERSION) is True
 
 
+@pytest.mark.parametrize("code", ["http_401", "http_402", "http_403"])
+def test_an_account_refusal_left_behind_can_be_cleared(code):
+    """Before the worker parked account refusals it failed their items, and no
+    operator command could reopen them once the account was fixed."""
+    assert retry_class(code) == "actionable"
+    assert selects(code, include_terminal=False, generation=SCHEMA_VERSION) is True
+
+
+def test_an_account_refusal_row_reopens_through_real_storage(app):
+    core, ctx = app
+    _fail_one(core, ctx, "timeout")
+    with sqlite3.connect(core.storage.path) as conn:
+        conn.execute("UPDATE work_items SET last_error_code='http_402' WHERE state='failed'")
+        conn.execute("UPDATE candidate_evaluations SET failure_code='http_402' WHERE state='failed'")
+        conn.commit()
+    report = core.retry_failed_work(ctx, limit=64, dry_run=False)
+    assert report["by_kind"].get("http_402") == 1
+    work, evaluations = _states(core)
+    assert not work.get("failed") and not evaluations.get("failed")
+
+
 def test_a_terminal_failure_is_never_also_actionable():
     assert not (ACTIONABLE_FAILURES & TERMINAL_FAILURES)
 

@@ -32,6 +32,14 @@ AUTO_RECOVERABLE_ERRORS = frozenset({
 #: 195 items into ``failed`` at ``attempt=3`` apiece, each needing an operator.
 CAPACITY_REFUSALS = frozenset({"http_429", "rate_limited", "http_502", "http_503", "http_504"})
 
+#: The provider declining the account rather than this request: payment
+#: required, key rejected, access forbidden.  No payload changes that answer, so
+#: the worker parks the item without an attempt (``BUDGET_PAUSE_ERRORS``) until
+#: someone fixes the account.  On alpha a DeepSeek balance that ran out
+#: answered 402 for fifteen minutes and failed 100 candidate evaluations
+#: outright, none of which an operator command could reopen afterwards.
+ACCOUNT_REFUSALS = frozenset({"http_401", "http_402", "http_403"})
+
 #: Token recording how many times in a row a provider refused for capacity.
 #: Kept in the error code beside ``auto_retry:`` rather than a new column, so
 #: no migration is needed and an operator reading the row sees the history.

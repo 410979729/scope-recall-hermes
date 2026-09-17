@@ -1,7 +1,7 @@
 """Give a failed work item one more attempt, once, when a fix has shipped.
 
 A failure that nothing clears is not automatically a failure nobody should look
-at again.  Measured on tianshu, the 249 failed work items were:
+at again.  Measured on alpha, the 249 failed work items were:
 
     derivation_invalid            213   model returned an invalid payload
     timeout                        15   transient; the automatic budget ran out
@@ -50,17 +50,19 @@ import re
 
 from ..contracts import ContractError
 from .secret_patterns import contains_secret_like_text
-from .work_storage import AUTO_RECOVERABLE_ERRORS, DERIVATION_RETRY_MARKER
+from .work_storage import ACCOUNT_REFUSALS, AUTO_RECOVERABLE_ERRORS, DERIVATION_RETRY_MARKER
 
 #: Faults an operator may clear even though the worker's automatic budget is
-#: spent.  Neither is auto-recoverable, and both are here for a stated reason:
-#: ``http_400`` came from unbounded embedding input, which now has a bound, and
+#: spent.  None is auto-recoverable, and each is here for a stated reason:
+#: ``http_400`` came from unbounded embedding input, which now has a bound;
 #: ``candidate_attempt_interrupted`` is the at-most-once fence firing after a
-#: crash, which the three-table reopen undoes.
+#: crash, which the three-table reopen undoes; and an account refusal failed
+#: its item outright before the worker learned to park it, so the rows it left
+#: can only come back once someone has fixed the account.
 _OPERATOR_ONLY_FAILURES = frozenset({
     "http_400",
     "candidate_attempt_interrupted",
-})
+}) | ACCOUNT_REFUSALS
 
 #: Faults.  Clearing these is what moves an instance from degraded to healthy.
 #: Derived from the worker's transient set so the two cannot drift apart again,

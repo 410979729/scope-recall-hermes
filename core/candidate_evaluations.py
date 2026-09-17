@@ -79,7 +79,11 @@ class CandidateEvaluations(CandidateTables):
         )
 
     def defer_budget(self, evaluation_id: int, work, *, now: str, code: str):
-        """No model call was made: hand the attempt back and park the work for an hour."""
+        """No verdict was produced: hand the attempt back and park the work for an hour.
+
+        Either no request left the process, or the provider refused the account
+        itself (``ACCOUNT_REFUSALS``), which answers before judging anything.
+        """
         self._record_error(work.work_id, work.lease_token, code, now)
         self._release_attempt(evaluation_id, "budget_paused", code)
         self._move_for(evaluation_id, "pending_evaluation", "budget_paused")

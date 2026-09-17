@@ -11,6 +11,7 @@ import hashlib
 
 from ..contracts import ContractError
 from .failure_retry import validation_feedback
+from .work_storage import ACCOUNT_REFUSALS
 
 _NON_RETRYABLE_MODEL_ERRORS = frozenset({
     "budget_exhausted",
@@ -19,14 +20,16 @@ _NON_RETRYABLE_MODEL_ERRORS = frozenset({
     "budget_unavailable",
 })
 
-#: Refusals raised before any network attempt.  The item is parked for an hour
-#: without spending an attempt, and its work type stands down for the pass.
+#: Refusals that say nothing about the item: raised before any network attempt,
+#: or the provider declining the account (``ACCOUNT_REFUSALS``).  The item is
+#: parked for an hour without spending an attempt, and its work type stands down
+#: for the pass.
 BUDGET_PAUSE_ERRORS = frozenset({
     "budget_exhausted",
     "budget_unavailable",
     "credential_missing",
     "credential_shape_invalid",
-})
+}) | ACCOUNT_REFUSALS
 
 #: Port rejections that describe this payload rather than the provider;
 #: sending the same input again would fail the same way.

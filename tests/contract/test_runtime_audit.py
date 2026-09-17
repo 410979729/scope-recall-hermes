@@ -108,14 +108,15 @@ def test_http_failure_classification_preserves_transient_and_permanent_errors():
     assert _model_exception_outcome(AuxiliaryModelError('http_status',detail='401')) == ('failed','http_401')
 
 
-@pytest.mark.parametrize('code,state,attempt',[('credential_missing','pending',0),('meter_breach','failed',1)])
-def test_worker_counts_only_actual_model_attempts(worker_app,code,state,attempt):
+@pytest.mark.parametrize('code,detail,state,attempt',[('credential_missing',None,'pending',0),('meter_breach',None,'failed',1),
+                                                      ('http_status','402','pending',0),('http_status','401','pending',0)])
+def test_worker_counts_only_actual_model_attempts(worker_app,code,detail,state,attempt):
     core,ctx,_=worker_app
     capture(core,ctx,'TEST durable original source for metering')
     _mark_embed_done(core)
     class Model:
         def propose(self,*args,**kwargs):
-            raise AuxiliaryModelError(code)
+            raise AuxiliaryModelError(code,detail=detail)
     core.drain_worker(ctx,consolidation=Model(),max_items=1,remaining_seconds=1)
     row=work_rows(core)[0]
     assert (row[3],row[4])==(state,attempt)

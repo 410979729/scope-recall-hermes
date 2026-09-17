@@ -449,6 +449,39 @@ def test_r1_candidate_budget_pause_is_explicit_and_does_not_spend_attempt(app):
     assert summary.budget_paused == 1
 
 
+@pytest.mark.parametrize("status", ["401", "402", "403"])
+def test_an_account_refusal_parks_candidates_instead_of_failing_them(app, status):
+    """A DeepSeek balance that ran out answered 402 for fifteen minutes and
+    failed 100 evaluations outright on alpha.  The provider refused the
+    account, not the question: park it, hand the attempt back, and stop asking
+    for the rest of the pass."""
+    from scope_recall.adapters.models import AuxiliaryModelError
+
+    core, ctx = app
+    _candidate(core, ctx)
+    _candidate(core, ctx, value="绿色", key="TEST-r1/green")
+    _finish_source_work(core)
+
+    class Refusing:
+        calls = 0
+
+        def evaluate_candidate(self, candidate, sources, *, remaining_seconds):
+            self.calls += 1
+            raise AuxiliaryModelError("http_status", detail=status)
+
+    evaluator = Refusing()
+    receipt = core.drain_worker(ctx, max_items=8, remaining_seconds=10, consolidation=evaluator)
+    lifecycle, evaluations, work = _candidate_rows(core)
+    assert len(work) == 2, "both candidates should have been queued for the pass"
+    assert evaluator.calls == 1, "a refused account was asked again in the same pass"
+    assert receipt.deferred == 1 and receipt.failed == 0
+    assert not any(row["state"] == "failed" for row in work)
+    refused = [row for row in work if row["attempt"] == 0 and row["last_error_code"] == f"http_{status}"]
+    assert len(refused) == 1 and refused[0]["state"] == "pending"
+    assert all(row["model_attempted_at"] is None for row in evaluations)
+    assert {row["reason"] for row in lifecycle} >= {"budget_paused"}
+
+
 def test_r1_candidate_failed_combination_rejects_operator_retry_and_needs_new_evidence(app):
     core, ctx = app
     _candidate(core, ctx)
