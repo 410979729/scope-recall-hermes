@@ -18,6 +18,7 @@ from collections.abc import Callable, Mapping, Sequence
 from types import MappingProxyType
 from typing import Any, Protocol
 
+from ..contracts import ContractError
 from ..core.recall_policy import (
     EMBEDDING_DIALECTS,
     EMBEDDING_SPACE,
@@ -360,6 +361,11 @@ def _extract_chat_content(payload: Mapping[str, Any]) -> str:
     content = message.get("content")
     if type(content) is not str:
         raise AuxiliaryModelError("unsupported_response_shape")
+    # "length" means the provider stopped at the output limit: the text is a
+    # prefix, not an answer.  Otherwise it reaches the decoder as anonymous
+    # invalid JSON and the one guided retry cannot tell the model what failed.
+    if choice.get("finish_reason") == "length":
+        raise ContractError("DERIVATION_INVALID", "model_output_truncated")
     return content
 
 
@@ -701,7 +707,9 @@ def _metered_post(*, ledger: AuxiliaryBudgetLedger, settle: Callable[..., str], 
         payload = _load_json_object(raw)
         usage = read_usage(payload)
         result = read_result(payload)
-    except AuxiliaryModelError as exc:
+    except (AuxiliaryModelError, ContractError) as exc:
+        # ContractError subclasses ValueError; a reply's own verdict (such as a
+        # truncated answer) must not be relabelled as a ledger refusal below.
         pending = exc
     except ValueError as exc:
         pending = _ledger_error(exc)

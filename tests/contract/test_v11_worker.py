@@ -273,6 +273,40 @@ def test_flaky_model_derivation_recovers_on_bounded_retry(worker_app):
     assert row[3] == "done"
 
 
+def test_reply_cut_off_at_output_limit_is_named_in_the_guided_retry(worker_app, tmp_path, monkeypatch):
+    from scope_recall.core.failure_retry import NEEDS_REVIEW_COUNT
+    from scope_recall.core.worker import build_consolidation_model
+    from scope_recall.runtime.auxiliary import build_auxiliary_runtime
+    from scope_recall.runtime.instance import _BoundedConsolidation
+    from test_runtime_auxiliary import FakeTransport, _chat_reply, _runtime_config
+
+    core, ctx, clock = worker_app
+    source = capture(core, ctx, "TEST 输出被上限截断。")
+    _mark_embed_done(core)
+    config, _, _ = _runtime_config(tmp_path)
+    monkeypatch.setenv("SCOPE_RECALL_TEST_CHAT_KEY", "test-key")
+    prompts = []
+
+    def cut_off(**kwargs):
+        prompts.append(json.loads(kwargs["body"])["messages"][0]["content"])
+        return 200, _chat_reply({"role": "assistant", "content": '{"protocol_version":"1.1","source_refs":["'}, "length")
+
+    runtime = build_auxiliary_runtime(config, transport=FakeTransport(cut_off))
+    model = _BoundedConsolidation(build_consolidation_model(runtime.consolidation), 3)
+    for attempt in range(1, 5):
+        clock.advance(seconds=65.0, iso=f"2026-09-06T12:{attempt:02d}:30Z")
+        core.drain_worker(ctx, consolidation=model, max_items=2, remaining_seconds=5)
+    assert len(prompts) == 2
+    assert "validation_error=" not in prompts[0]
+    assert 'validation_error={"code":"DERIVATION_INVALID","field":"model_output_truncated"}' in prompts[1]
+    with sqlite3.connect(core.storage.path) as db:
+        assert db.execute("SELECT error_code,error_field FROM work_error_details").fetchall() == [
+            ("DERIVATION_INVALID", "model_output_truncated")] * 2
+        assert db.execute(NEEDS_REVIEW_COUNT).fetchone()[0] == 1
+    row = next(row for row in work_rows(core) if row[1] == source.ref and row[0] == "consolidate")
+    assert row[3] == "failed" and row[6].startswith("derivation_retry:1|")
+
+
 def test_consolidation_accepts_only_transport_fence_and_null_optional_location(worker_app):
     core, ctx, clock = worker_app
     source = capture(core, ctx, "TEST-project 的公开代号是 TEST-ARCHIVE-V12-FLARE。")
@@ -310,6 +344,63 @@ def test_consolidation_accepts_only_transport_fence_and_null_optional_location(w
 def test_consolidation_decoder_rejects_unsafe_envelopes(raw):
     with pytest.raises((ContractError, ValueError, TypeError, json.JSONDecodeError)):
         _decode_consolidation_result(raw)
+
+
+def _timed_claim_result(valid_from, valid_to=None):
+    claim = dict(kind="fact", subject="TEST-project", predicate="配色", value_text="蓝色", conditions=[],
+                 statement_kind="assertion", valid_from=valid_from, valid_to=valid_to,
+                 evidence_spans=[dict(source_ref="TEST-event", source_revision=1, quote="TEST-project 配色 蓝色")])
+    return json.dumps(dict(protocol_version="1.1", source_refs=["TEST-event@1"], claim_proposals=[claim],
+                           resume_proposals=[], reference_proposals=[]))
+
+
+def test_consolidation_decoder_writes_numeric_offsets_as_the_same_utc_instant():
+    value = _decode_consolidation_result(_timed_claim_result("2026-09-16T10:00:00+08:00", "2026-09-16T01:30:00.25-05:30"))
+    claim = value["claim_proposals"][0]
+    assert (claim["valid_from"], claim["valid_to"]) == ("2026-09-16T02:00:00Z", "2026-09-16T07:00:00.25Z")
+    unchanged = _decode_consolidation_result(_timed_claim_result("2026-09-16T02:00:00+00:00", "2026-09-17T00:00:00Z"))
+    assert (unchanged["claim_proposals"][0]["valid_from"], unchanged["claim_proposals"][0]["valid_to"]) == (
+        "2026-09-16T02:00:00+00:00", "2026-09-17T00:00:00Z")
+
+
+@pytest.mark.parametrize(
+    "valid_from",
+    [
+        "2026-02-30T10:00:00+08:00",
+        "2026-09-16T10:00:00+24:00",
+        "2026-09-16T10:00:00+08:60",
+        "2026-09-16T10:00:00+0800",
+        "2026-09-16T10:00:00-00:00",
+        "2026-09-16T10:00:00",
+        "2026-09-16",
+    ],
+)
+def test_consolidation_decoder_still_rejects_invalid_timestamps(valid_from):
+    with pytest.raises(ContractError, match="INPUT_INVALID"):
+        _decode_consolidation_result(_timed_claim_result(valid_from))
+
+
+def test_offset_timestamp_does_not_discard_the_batch_and_is_stored_in_utc(worker_app):
+    core, ctx, clock = worker_app
+    source = capture(core, ctx, "TEST-project 配色 蓝色。TEST-project 主题 深色。", when="2026-09-16T02:00:00Z")
+    _mark_embed_done(core)
+
+    def builder(sources, episode_ref=None):
+        page = sources[0]
+        return consolidation_payload(page, claims=[
+            draft(page, "蓝色", quote_override="TEST-project 配色 蓝色。", valid_from="2026-09-16T02:00:00Z"),
+            draft(page, "深色", predicate="主题", quote_override="TEST-project 主题 深色。",
+                  valid_from="2026-09-16T10:00:00+08:00"),
+        ])
+
+    receipt = core.drain_worker(ctx, consolidation=FakeConsolidation(builder), max_items=1, remaining_seconds=5)
+    assert receipt.completed == 1
+    with sqlite3.connect(core.storage.path) as db:
+        stored = {json.loads(payload)["value_text"]: (json.loads(payload)["valid_from"], column)
+                  for payload, column in db.execute("SELECT payload_json,valid_from FROM claim_versions")}
+    assert set(stored) == {"蓝色", "深色"}
+    assert stored["深色"] == stored["蓝色"] == ("2026-09-16T02:00:00Z", "2026-09-16T02:00:00.000000+00:00")
+    assert next(row for row in work_rows(core) if row[1] == source.ref and row[0] == "consolidate")[3] == "done"
 
 
 def test_model_cannot_submit_evidence_outside_its_authorized_batch(worker_app):

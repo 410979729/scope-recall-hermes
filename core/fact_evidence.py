@@ -41,8 +41,14 @@ AUTHORITATIVE_EVIDENCE_SOURCE_TYPES = (
     DIRECT_EVIDENCE_SOURCE_TYPES | CORROBORATING_EVIDENCE_SOURCE_TYPES
 )
 _WORD_RE = re.compile(r"[^\W_]+(?:[-'][^\W_]+)*", re.UNICODE)
+# A "." with an ASCII letter or digit on both sides sits inside one token
+# (3.1.0rc28, 3.5, example.com) and ends no clause; splitting there left a
+# dotted value in no single clause, so it could never be proved.  A "." before
+# a space, the end or CJK text still ends one.  The dotted-date rewrites below
+# likewise match whole tokens only, never the "1.0" inside v3.1.0-rc28.
 _CLAUSE_SPLIT_RE = re.compile(
-    r"(?:[.;!?。！？；\n]+|\b(?:but|however|although|though)\b|(?:但是|不过|然而|可是))",
+    r"(?:(?:[;!?。！？；\n]|(?<![a-z0-9])\.|\.(?![a-z0-9]))+"
+    r"|\b(?:but|however|although|though)\b|(?:但是|不过|然而|可是))",
     re.IGNORECASE,
 )
 _MONTH_ABBREVIATION_PERIOD_RE = re.compile(
@@ -50,10 +56,10 @@ _MONTH_ABBREVIATION_PERIOD_RE = re.compile(
     re.IGNORECASE,
 )
 _DOTTED_NUMERIC_DATE_RE = re.compile(
-    r"\b(\d{1,4})\.(\d{1,2})\.(\d{1,4})\b"
+    r"(?<![a-z0-9]\.)\b(\d{1,4})\.(\d{1,2})\.(\d{1,4})\b(?!\.[a-z0-9])"
 )
 _TWO_COMPONENT_DOTTED_DATE_RE = re.compile(
-    r"\b(\d{1,2})\.(\d{1,2})(?=\s|$|[-–—])"
+    r"(?<![a-z0-9]\.)\b(\d{1,2})\.(\d{1,2})(?=\s|$|[-–—])"
 )
 _FIRST_PERSON_RE = re.compile(
     r"(?:\b(?:i|i'm|im|me|my|mine|myself)\b|我|我的|本人)",
