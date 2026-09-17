@@ -10,8 +10,10 @@ import pytest
 
 from scope_recall.contracts import ContractError, TrustedContext, validate_payload
 from scope_recall.core import CoreConfig, MemoryCore
+from scope_recall.core.events import lexical_terms
 from scope_recall.core.recall_diagnostics import RecallDiagnostics
 from scope_recall.core.recall_budget import estimate_tokens
+from scope_recall.core.recall_policy import meaningful_query_terms
 from scope_recall.core.recall_packet import (
     RecallPacketCompiler,
     RecallPacketRenderer,
@@ -1659,6 +1661,36 @@ def test_budget_density_keeps_773_byte_hit_over_3398_byte_repeat(app, budget, su
     assert metrics.budget_tokens == budget
     print(json.dumps({"budget": budget, "item_bytes": [3398, 773], "target": target.ref,
                       "delivered": [item["ref"] for item in packet["items"]], "metrics": metrics.to_public()}))
+
+
+@pytest.mark.parametrize("mode", ["auto", "current", "history"])
+def test_budget_density_keeps_fusion_order_when_the_whole_run_fits(app, mode):
+    """A newer long report that fits beside an older short todo is not demoted for its length.
+
+    Density ordering is for the choice above, when the cap cannot hold both.
+    Here both fit, so retrieval and the compiler keep the ranker's order.
+    """
+    core, ctx = app
+    query = "阿乙升级 rc29"
+    todo = capture(core, ctx, "阿乙 rc29 升级待办：self-cutover pending，等排空后再切换。",
+                   key="TEST-p09/density-fit/todo", when="2026-09-03T08:00:00Z", recorded_at="2026-09-03T08:00:00Z")
+    report = capture(core, ctx, "阿乙 rc29 升级收尾报告：排空超时，升级没有开始，现在还是 rc28，旧记忆和设置没动。"
+                     + "排空等待记录显示网关在超时前仍有写入者，自动重启器没有先停下，所以升级器按规则放弃。" * 8,
+                     key="TEST-p09/density-fit/report", when="2026-09-05T08:00:00Z", recorded_at="2026-09-05T08:00:00Z")
+    terms = set(meaningful_query_terms(query))
+    assert terms.intersection(lexical_terms(report.event["content"])) == terms.intersection(lexical_terms(todo.event["content"]))
+    assert estimate_tokens(todo.event["content"]) < 256 < estimate_tokens(report.event["content"])
+    # Another session reads, so only the lexical channel ranks the two.
+    reader = replace(ctx, session_id="TEST-p09-density-fit-reader")
+
+    request = recall_request(query=query, mode=mode, request_id=f"TEST-density-fit-{mode}")
+    assert [item.ref for item in core.recall(reader, request, deadline_seconds=5).items] == [report.ref, todo.ref]
+    assert [item["ref"] for item in _packet(core, reader, **request)["items"]] == [report.ref, todo.ref]
+
+    # One slot is a choice again, and the compact todo still takes it.
+    single = dict(request, max_items=1)
+    assert [item.ref for item in core.recall(reader, single, deadline_seconds=5).items] == [todo.ref]
+    assert [item["ref"] for item in _packet(core, reader, **single)["items"]] == [todo.ref]
 
 
 def test_cjk_budget_uses_character_classes_and_reports_exact_units(app):
