@@ -8,12 +8,11 @@ import subprocess
 import sys
 import time
 
-import pytest
-
 from scope_recall.adapters.codex import install_codex_scope_recall
 from scope_recall.adapters.runtime_wiring import write_ephemeral_worker_config
+from scope_recall.runtime.worker_entry import FINALIZE_MARGIN_SECONDS
 from scope_recall.runtime.worker_launch import launch_worker
-from scope_recall.runtime.worker_watchdog import _OwnedWindowsJob, _kill_tree
+from scope_recall.runtime.worker_watchdog import KILL_GRACE_SECONDS, _OwnedWindowsJob, _kill_tree
 from scope_recall.runtime import worker_watchdog
 
 
@@ -94,6 +93,120 @@ def test_bootstrap_exits_without_running_worker_when_owner_pipe_closes(tmp_path:
     stdout, stderr = worker.communicate(input=b"", timeout=5)
     assert worker.returncode == 125
     assert stdout == stderr == b""
+
+
+def test_bootstrap_with_a_handed_deadline_still_waits_for_the_release_token(tmp_path: Path):
+    bootstrap = Path(worker_watchdog.__file__).with_name("_worker_bootstrap.py")
+    for extra in ([repr(time.time() + 60)], [repr(time.time() + 60), "TEST-unexpected"]):
+        worker = subprocess.Popen(
+            [sys.executable, "-I", "-B", str(bootstrap), str(tmp_path / "missing.json"), *extra],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            creationflags=int(getattr(subprocess, "CREATE_NO_WINDOW", 0)),
+        )
+        stdout, stderr = worker.communicate(input=b"", timeout=5)
+        assert worker.returncode == 125
+        assert stdout == stderr == b""
+
+
+# The real bootstrap and worker entry, with only the Core drain replaced: "busy"
+# uses the whole window it is given, "hung" never returns.
+_OWNED_CHILD = """import json, runpy, sys, time
+from pathlib import Path
+import scope_recall.core.worker as worker
+
+record, mode = Path(sys.argv[1]), sys.argv[2]
+sys.argv = sys.argv[3:]
+
+
+def drain(*args, remaining_seconds, **kwargs):
+    now = time.time()
+    record.write_text(json.dumps({"handed": float(sys.argv[2]), "drain_ends": now + remaining_seconds}))
+    time.sleep(remaining_seconds if mode == "busy" else 600)
+    return worker.WorkerReceipt(0, 0, 0, 0, 0, 0, 0, True, ())
+
+
+worker.drain_worker = drain
+runpy.run_path(sys.argv[0], run_name="__main__")
+"""
+
+
+def _owned_children(monkeypatch, tmp_path: Path, mode: str) -> tuple[Path, list]:
+    wrapper = tmp_path / "TEST-owned-child.py"
+    wrapper.write_text(_OWNED_CHILD, encoding="utf-8")
+    record = tmp_path / f"TEST-{mode}-drain.json"
+    children = []
+    real_popen = subprocess.Popen
+
+    def spawn(command, **kwargs):
+        if len(command) > 2 and str(command[2]).endswith("_worker_bootstrap.py"):
+            command = [*command[:2], str(wrapper), str(record), mode, *command[2:]]
+        children.append(real_popen(command, **kwargs))
+        return children[-1]
+
+    monkeypatch.setattr(worker_watchdog.subprocess, "Popen", spawn)
+    return record, children
+
+
+def test_busy_child_finishes_inside_the_window_it_was_handed(tmp_path: Path, monkeypatch, capsys):
+    """The watchdog's deadline starts before the wait for a predecessor and the
+    spawn; the child restarted a full drain budget after its own start-up.  A
+    busy child was killed with 124 before its receipt, and the page it had
+    reserved for the day was never refunded."""
+    config_path, _ = _runtime_payload(tmp_path, drain_seconds=120.0)
+    payload = json.loads(config_path.read_text(encoding="utf-8"))
+    window = 8.0  # The supervisor's, which is tighter than drain_seconds here.
+    payload.update(supervisor_seconds=window, supervisor_max_drains=1)
+    config_path.write_text(json.dumps(payload), encoding="utf-8")
+    data = Path(payload["binding"]["data_directory"])
+    predecessor = subprocess.Popen([sys.executable, "-B", "-c", "import time; time.sleep(2.5)"],
+                                   creationflags=int(getattr(subprocess, "CREATE_NO_WINDOW", 0)))
+    record, children = _owned_children(monkeypatch, tmp_path, "busy")
+    try:
+        started = time.time()
+        code = worker_watchdog.run(config_path, Path(sys.executable), cleanup_config=False,
+                                   after_pid=predecessor.pid)
+        finished = time.time()
+    finally:
+        if predecessor.poll() is None:
+            predecessor.kill()
+        predecessor.wait(timeout=5)
+    assert code == 0
+    drained = json.loads(record.read_text(encoding="utf-8"))
+    # The supervisor's remaining window, not restarted after the 2.5 s wait.
+    # The slack covers the supervisor's own synced state writes before the pass.
+    assert drained["handed"] <= started + window + 1.0
+    clock_reads = .1  # Epoch/monotonic conversions, a few 15.6 ms Windows ticks.
+    assert drained["drain_ends"] <= drained["handed"] - FINALIZE_MARGIN_SECONDS + clock_reads
+    assert finished < drained["handed"] + KILL_GRACE_SECONDS  # It exited; nothing was killed.
+    receipt = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
+    assert receipt["status"] == "idle" and receipt["daily_queue_used"] == 0
+    status = json.loads((data / "runtime-worker-status.json").read_text(encoding="utf-8"))
+    assert status["exit_code"] == 0 and status["status"] == "idle"
+    # The whole page reserved before the drain was refunded after it.
+    assert json.loads((data / "runtime-worker-day.json").read_text(encoding="utf-8"))["used"] == 0
+    assert children and all(child.poll() is not None for child in children)
+
+
+def test_hung_child_is_still_killed_with_124_after_the_grace(tmp_path: Path, monkeypatch, capsys):
+    drain_seconds = 5.0
+    config_path, _ = _runtime_payload(tmp_path, drain_seconds=drain_seconds)
+    payload = json.loads(config_path.read_text(encoding="utf-8"))
+    payload["supervisor_enabled"] = False
+    config_path.write_text(json.dumps(payload), encoding="utf-8")
+    data = Path(payload["binding"]["data_directory"])
+    record, children = _owned_children(monkeypatch, tmp_path, "hung")
+    started = time.monotonic()
+    assert worker_watchdog.run(config_path, Path(sys.executable), cleanup_config=False) == 124
+    assert time.monotonic() - started >= drain_seconds + KILL_GRACE_SECONDS
+    assert record.exists()  # It hung inside the drain, not before it.
+    assert json.loads(capsys.readouterr().out)["capability_gaps"] == ["worker_watchdog_timeout"]
+    status = json.loads((data / "runtime-worker-status.json").read_text(encoding="utf-8"))
+    assert status["exit_code"] == 124 and status["capability_gaps"] == ["worker_watchdog_timeout"]
+    assert children and all(child.poll() is not None for child in children)
+    # A killed pass keeps the page it reserved: a hung worker gets no free retries.
+    assert json.loads((data / "runtime-worker-day.json").read_text(encoding="utf-8"))["used"] == 32
 
 
 def test_assignment_failure_aborts_real_blocked_worker(tmp_path: Path, monkeypatch, capsys):
