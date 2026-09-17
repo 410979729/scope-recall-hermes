@@ -82,6 +82,45 @@ def test_unrelated_condition_cannot_erase_relative_scope():
     assert qualification(text, conditions=['本次', 'TEST沙箱']).state == 'active'
 
 
+def observed_version(text, value):
+    root = RootEvidence('TEST-root', 1, 'tool_observation', None, text,
+                        '2026-09-16T10:00:00Z', 'complete', 'TEST-session')
+    proposal = dict(kind='fact', subject='阿乙', predicate='当前版本', value_text=value, conditions=[],
+                    statement_kind='assertion', valid_from=None, valid_to=None,
+                    evidence_spans=[dict(source_ref=root.ref, source_revision=1, quote=text)])
+    verdict = qualify(proposal, (root,))
+    return verdict.state, verdict.basis, verdict.reason
+
+
+@pytest.mark.parametrize('text,value', [
+    ('阿乙 当前版本: rc28', 'rc28'),
+    ('阿乙 当前版本: 3.1.0rc28', '3.1.0rc28'),
+    ('阿乙 当前版本: v3.1.0-rc28', 'v3.1.0-rc28'),
+    ('阿乙 当前版本: 3.1.0.dev2+alpha.2', '3.1.0.dev2+alpha.2'),
+    ('阿乙 当前版本: rc28。升级没有开始', 'rc28'),
+    ('阿乙 当前版本: 3.1.0rc28. 升级没有开始', '3.1.0rc28'),
+])
+def test_a_dotted_value_is_one_token_of_one_observed_clause(text, value):
+    assert observed_version(text, value) == ('active', 'observed', 'observation_at_source_time')
+
+
+@pytest.mark.parametrize('text,value', [
+    ('阿乙 当前版本: rc28，升级没有开始', 'rc28'),
+    ('阿乙 当前版本: 3.1.0rc28，升级没有开始', '3.1.0rc28'),
+])
+def test_negation_in_the_same_clause_still_refuses_an_observed_version(text, value):
+    assert observed_version(text, value) == ('proposed', 'inferred_suggestion', 'fact_entailment_unproved')
+
+
+def test_sentence_periods_dates_and_month_abbreviations_keep_their_clauses():
+    from scope_recall.core.fact_evidence import _value_clauses
+
+    assert _value_clauses('Moved to Berlin on Sep. 5. Left Paris.', 'Berlin') == ['moved to berlin on sep 5']
+    assert _value_clauses('Moved to Berlin on 2026.9.16. Left Paris.', 'Berlin') == ['moved to berlin on 2026-9-16']
+    assert _value_clauses('我 9.16 搬到柏林。之后去巴黎。', '柏林') == ['我 9-16 搬到柏林']
+    assert _value_clauses('Version: 3.1.0rc28. Rollout 3.5 hours.', '3.1.0rc28') == ['version: 3.1.0rc28']
+
+
 @pytest.fixture
 def app(tmp_path):
     ctx = replace(context(tmp_path / 'TEST-sprint-claims'), project_id='TEST-project', branch_id='TEST-main')
