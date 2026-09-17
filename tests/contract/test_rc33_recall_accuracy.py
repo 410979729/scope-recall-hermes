@@ -92,6 +92,19 @@ def test_earlier_questions_do_not_crowd_out_the_answer(app):
     assert {question.ref for question in questions} & set(refs), "questions stay available as context"
 
 
+def test_a_full_reply_is_not_traded_for_snippets_while_the_budget_has_room(app):
+    """Six slots and seventeen candidates: density admission preferred a 15-unit
+    question to the 690-unit reply that answered it, with the budget far from
+    full.  Size may cost a medium reply a little rank, not its place."""
+    core, ctx = app
+    reply = capture(core, ctx, "TEST-project 发布窗口和回滚方案都整理好了：" + "回滚预案步骤与检查点说明。" * 55,
+                    origin="assistant_visible", when="2026-09-02T10:00:00Z")
+    for n in range(8):
+        capture(core, ctx, f"TEST-project 发布窗口待定，第{n}次提醒。", when=f"2026-09-03T0{n}:00:00Z")
+    items = _packet(core, ctx, "TEST-project 发布窗口 回滚方案")["items"]
+    assert reply.ref in [item["ref"] for item in items[:3]]
+
+
 def test_what_counts_as_only_asking():
     from scope_recall.core.recall_policy import asks_without_answering
 

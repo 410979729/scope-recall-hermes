@@ -35,6 +35,16 @@ def estimate_tokens(text: str) -> int:
     return max(1, (quarters + 3) // 4)
 
 
+#: Size is weighed against a whole default packet (``AUTOMATIC_PACKET_BUDGET_UNITS``).
+#: Fusion scores are reciprocal ranks, 1/61 at the top and 1/80 twenty places
+#: down, so a size factor overrules them easily: at a 256-unit quantum a
+#: 690-unit reply that answered the question counted for half of a 15-unit
+#: question and lost its slot to it on alpha.  Weighed against the packet, a
+#: compact hit still takes the one slot a bulky repeat ranked a few percent
+#: above it, and a medium reply is not traded for a handful of snippets.
+DENSITY_QUANTUM_UNITS = 4096
+
+
 def _admitted(costs, order, limits, used):
     """Positions the retrieval budget takes in ``order``, and what it has used after.
 
@@ -80,10 +90,15 @@ def event_admission_order(ranked, limits):
         # tie-breaks (for example a decisive answer versus an assistant echo).
         if any(cost > 256 for cost in costs):
             density = sorted(fusion, key=lambda index: max(run[index][0].fusion_score, 1e-6) /
-                             math.sqrt(1 + costs[index] / 256), reverse=True)
+                             math.sqrt(1 + costs[index] / DENSITY_QUANTUM_UNITS), reverse=True)
             density_taken, density_after = _admitted(costs, density, limits, used)
             if density_taken != taken:
-                run[:] = [run[index] for index in density]
+                # Density decides which events enter, never where they stand:
+                # the admitted keep the ranker's order, and the rest follow in
+                # density order.  Re-sorted outright, a reply that won its slot
+                # still sat below every snippet that won one.
+                run[:] = ([run[index] for index in fusion if index in density_taken]
+                          + [run[index] for index in density if index not in density_taken])
                 after = density_after
         used = after
         ordered.extend(run)
