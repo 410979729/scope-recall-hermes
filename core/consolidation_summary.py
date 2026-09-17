@@ -129,20 +129,28 @@ def _merge_references(references, gaps):
 
 def apply_summary(tx, fence, kind, proposal, scope_id, now):
     apply = tx.episodes.apply_resume if kind == "resume" else tx.references.apply
-    if fence is None or fence.chunk is None:
+    if fence is None:
         return apply(proposal, scope_id, now)
+    # A worker's summary that does not qualify is dropped and named; the claims
+    # accepted beside it stay.  Only paged results did this once: a single page
+    # rolled back whole, and beta paid a second model call for each of 208
+    # unqualified goals in one day, losing the page's claims when that failed too.
     conn = tx._check(write=True)
-    conn.execute("SAVEPOINT fragment_summary")
+    conn.execute("SAVEPOINT consolidation_summary")
     try:
         item = apply(proposal, scope_id, now)
     except ContractError as exc:
-        conn.execute("ROLLBACK TO fragment_summary")
+        conn.execute("ROLLBACK TO consolidation_summary")
         if exc.code not in {"DERIVATION_INVALID", "INPUT_INVALID"}:
             raise
-        conn.execute("UPDATE consolidation_outcomes SET disposition='partial',detail=? WHERE work_id=?", (kind+"_qualification_failed", fence.work_id))
+        detail = kind + "_qualification_failed"
+        if fence.chunk is None:
+            conn.execute("INSERT OR REPLACE INTO consolidation_outcomes VALUES (?,?,?,?)", (fence.work_id, "partial", detail, now))
+        else:
+            conn.execute("UPDATE consolidation_outcomes SET disposition='partial',detail=? WHERE work_id=?", (detail, fence.work_id))
         conn.execute("INSERT INTO work_error_details(work_id,lease_token,stage,error_code,error_field,recorded_at) VALUES (?,?,?,?,?,?)",
                      (fence.work_id, fence.lease_token, "summary", exc.code, exc.field, now))
         return None
     finally:
-        conn.execute("RELEASE fragment_summary")
+        conn.execute("RELEASE consolidation_summary")
     return item
