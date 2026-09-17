@@ -26,6 +26,12 @@ from .validation import utc_now
 
 #: Worker metadata files are small JSON documents; anything larger is not one.
 METADATA_LIMIT_BYTES = 65536
+#: The largest ``used`` a valid day counter holds, for the worker that reserves
+#: against it and the supervisor that plans from it.  It rejects a corrupt file;
+#: it is not a daily cap: ``daily_work_limit`` goes to 1,000,000 and the uncapped
+#: default still counts what every pass keeps.  A smaller planner-only bound
+#: stopped supervision and autostart for the rest of a busy UTC day.
+DAILY_COUNTER_MAX = 100_000_000
 
 
 def load_config(path: str | Path) -> RuntimeInstanceConfig:
@@ -193,7 +199,7 @@ def _reserve_daily_work(config: RuntimeInstanceConfig) -> tuple[Path, dict[str, 
         raise ValueError("worker_budget_binding_mismatch")
     day = utc_now()[:10]
     used = prior.get("used", 0) if prior.get("day") == day else 0
-    if type(used) is not int or not 0 <= used <= 100_000_000:
+    if type(used) is not int or not 0 <= used <= DAILY_COUNTER_MAX:
         raise ValueError("worker_budget_invalid")
     # 0 means uncapped: take a full page every pass and let the auxiliary ledger,
     # the only layer that knows what a request costs, be the limit.  The counter
