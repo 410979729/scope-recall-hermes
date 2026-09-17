@@ -370,10 +370,35 @@ def query_is_specific(
     return False
 
 
+#: Characters that only ask: 什么, 怎么, 哪个, 多少 and the sentence-final
+#: particles.  The index holds overlapping bigrams, so "阿乙当前是什么模型"
+#: searched 是什, 什么 and 么模 too -- terms every earlier question shares and
+#: no answer does -- and beta returned "你现在是什么模型呀" as the best match.
+#: A bigram holding one of these asks rather than names, so it proves nothing.
+#: The few nouns built on them (酒吧, 哪吒) are the price of that rule.
+_ASKING_CHARACTERS = frozenset("什么吗呢呀吧嘛哪啥")
+#: Asking words whose characters also appear in naming words (怎 in 怎样 only,
+#: but 多 in 多少 and 多个, 是 in 是否 and 于是).
+_ASKING_WORDS = frozenset({"怎样", "如何", "为何", "多少", "是否", "何时", "几时"})
+#: English asking and helper words: in a question they carry no subject matter.
+_ASKING_ENGLISH = frozenset({
+    "what", "which", "who", "whom", "whose", "when", "where", "why", "how",
+    "is", "are", "was", "were", "do", "does", "did", "can", "could", "should", "would",
+    "the", "an", "of", "to", "in", "on", "for", "at", "by", "with", "about",
+})
+
+
+def _asks_only(term: str) -> bool:
+    if term in _ASKING_WORDS or term in _ASKING_ENGLISH:
+        return True
+    return _CJK_TEXT.search(term) is not None and any(char in _ASKING_CHARACTERS for char in term)
+
+
 def meaningful_query_terms(query: str) -> tuple[str, ...]:
     """Terms that can establish lexical relevance for one candidate."""
 
-    return tuple(term for term in query_terms(query) if term not in _WEAK_QUERY and len(term) > 1)
+    return tuple(term for term in query_terms(query)
+                 if term not in _WEAK_QUERY and len(term) > 1 and not _asks_only(term))
 
 
 #: Chinese words that agent-operations conversations use interchangeably.

@@ -51,3 +51,31 @@ def test_a_rekeyed_capture_with_an_inherited_time_is_dated_by_its_write(app):
     packet = _packet(core, ctx, "TEST-project 召回测试")
     assert _item(packet, copied.ref)["occurred_at"] == "2026-09-02T11:08:21Z"
     assert _item(packet, own.ref)["occurred_at"] == own.event["occurred_at"], "a re-key alone changes nothing"
+
+
+# -- a question is not its own answer --------------------------------------------
+
+def test_an_earlier_question_does_not_outrank_the_answer(app):
+    """"阿乙当前是什么模型" returned "你现在是什么模型呀" first on beta.
+
+    The index holds overlapping bigrams, so 是什么 contributed 是什, 什么 and
+    么模 -- terms every earlier question shares and no answer does.
+    """
+    core, ctx = app
+    question = capture(core, ctx, "你现在是什么模型呀", when="2026-09-03T10:00:00Z")
+    answer = capture(core, ctx, "阿乙当前模型切换为 grok-4.5。", when="2026-09-02T10:00:00Z")
+    for mode in ("current", "auto"):
+        items = _packet(core, ctx, "阿乙当前是什么模型", mode=mode)["items"]
+        # The newer question may still come along as conversation context; it
+        # must not stand in front of the answer.
+        assert [item["ref"] for item in items][:1] == [answer.ref], mode
+        assert question.ref != items[0]["ref"], mode
+
+
+def test_asking_words_are_not_evidence_terms():
+    from scope_recall.core.recall_policy import meaningful_query_terms
+
+    assert set(meaningful_query_terms("阿乙当前是什么模型")) == {"阿乙", "姬当", "当前", "前是", "模型"}
+    assert set(meaningful_query_terms("Scope Recall 的整理模型怎么配置？")) >= {"scope", "recall", "整理", "模型", "配置"}
+    assert not {"怎么", "么配"} & set(meaningful_query_terms("Scope Recall 的整理模型怎么配置？"))
+    assert set(meaningful_query_terms("which model does beta use")) == {"model", "beta", "use"}

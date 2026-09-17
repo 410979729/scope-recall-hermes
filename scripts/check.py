@@ -18,7 +18,7 @@ from model_receipt_evidence import HERMES_METHOD_ID, METHOD_ID, PROTOCOL_HOST_ME
 
 
 ROOT = Path(__file__).resolve().parents[1]
-_DEFAULT_PACKAGING_UV = r"F:\Agents\runtime\windows\hermes-tianji\bin\uv.exe"
+_DEFAULT_PACKAGING_UV = r"<instance root>\hermes-beta\bin\uv.exe"
 _PACKAGING_HELPER_TIERS = frozenset({"packaging", "release"})
 DEFAULT_WATCHDOG_SECONDS = 180
 RELEASE_WATCHDOG_SECONDS = 600
@@ -311,6 +311,7 @@ CORE_RELEASE_CONTRACTS += [
     "tests/contract/test_sprint_recall_selection.py",
     "tests/contract/test_trace.py",
     "tests/contract/test_v11_profile_entity.py",
+    "tests/contract/test_rc33_recall_accuracy.py",
 ]
 
 RUNTIME_BOUNDARY_TESTS = [
