@@ -1,11 +1,18 @@
 """Single prefetch delivery path and render dedupe contracts."""
 from __future__ import annotations
 
-from scope_recall.adapters.hermes import bind_hermes_identity, install_hermes_scope_recall
+import json
+
+from scope_recall.adapters.hermes import bind_hermes_identity
 from scope_recall.adapters.hermes.gating import is_trivial_prompt
+from scope_recall.contracts import validate_payload
 from scope_recall.core import MemoryCore
+from scope_recall.core.background_context import BACKGROUND_PREFIX
+from scope_recall.core.episodes import source_watermark
 from scope_recall.core.retrieval import RetrievalResult
 from tests.v11_support import source_event
+
+_UNRELATED_QUERY = "紫色海豚量子温泉"
 
 
 def test_prefetch_returns_canonical_render_text_once(adapter, initialize_kwargs):
@@ -72,6 +79,69 @@ def test_continue_go_ahead_and_chinese_are_not_filtered():
     assert not is_trivial_prompt("continue")
     assert not is_trivial_prompt("go ahead")
     assert not is_trivial_prompt("继续")
+
+
+def test_explicit_recall_without_evidence_is_no_match_while_prefetch_keeps_background(adapter):
+    provider, _clock = adapter
+    claim_ref = _active_preference(provider)
+    provider.observe_pre_llm(session_id="TEST-session-1", turn_id="TEST-turn-unrelated", user_message=_UNRELATED_QUERY)
+
+    rendered = provider.prefetch(_UNRELATED_QUERY)
+    assert claim_ref in rendered and BACKGROUND_PREFIX in rendered
+
+    # The model asked about something memory does not hold: the preference
+    # must not come back as the only item of its lookup.
+    packet = _explicit_recall(provider, _UNRELATED_QUERY)
+    assert (packet["status"], packet["items"], packet["answerability"]) == ("no_match", [], "unknown")
+
+
+def test_explicit_resume_recall_still_returns_the_grounded_task(adapter):
+    provider, _clock = adapter
+    core, identity = provider._core, provider._identity
+    goal = "TEST 海报排版还未完成"
+    provider.observe_pre_llm(session_id="TEST-session-1", turn_id="TEST-turn-task", user_message=goal)
+    refs = list(provider.diagnostics.current_source_refs)
+    resume = {
+        "episode_ref": None, "goal": {"text": goal, "evidence_refs": refs}, "decisions": [],
+        "verified_progress": [], "open_items": [{"text": goal, "evidence_refs": refs}], "blockers": [],
+        "next_step": None, "next_step_basis": "unknown", "artifact_refs": [],
+        "source_watermark": source_watermark(refs), "evidence_refs": refs,
+    }
+    episode = core.accept_consolidation(identity.trusted_context(mutation=True), {
+        "protocol_version": "1.1", "source_refs": refs, "claim_proposals": [],
+        "resume_proposals": [resume], "reference_proposals": [],
+    }, scope_id=identity.local_scope_id, remaining_seconds=10).items[0]
+
+    packet = _explicit_recall(provider, "继续")
+    assert [item["ref"] for item in packet["items"] if item["kind"] == "episode"] == [episode.ref]
+
+
+def _explicit_recall(provider, query: str) -> dict:
+    reply = json.loads(provider.handle_tool_call("recall", {
+        "protocol_version": "1.1", "request_id": "TEST-explicit-recall", "query": query,
+        "mode": "auto", "max_items": 6, "budget_tokens": 4096,
+    }))
+    return validate_payload("recall_packet", reply["result"])
+
+
+def _active_preference(provider) -> str:
+    """One current first-hand preference, eligible as automatic background."""
+    core, identity = provider._core, provider._identity
+    context = identity.trusted_context(mutation=True)
+    text = "TEST-project 表达偏好 简洁。"
+    event = source_event(content=text, source_event_key="TEST-preference/1")
+    source = core.record_event(context, event, scope_id=identity.local_scope_id, remaining_seconds=5).event_refs[0]
+    proposal = {
+        "protocol_version": "1.1", "source_refs": [f"{source.ref}@{source.revision}"],
+        "claim_proposals": [{
+            "kind": "preference", "subject": "TEST-project", "predicate": "表达偏好", "value_text": "简洁",
+            "conditions": [], "statement_kind": "assertion", "valid_from": None, "valid_to": None,
+            "evidence_spans": [{"source_ref": source.ref, "source_revision": source.revision, "quote": text}],
+        }],
+        "resume_proposals": [], "reference_proposals": [],
+    }
+    receipt = core.accept_claim_proposals(context, proposal, scope_id=identity.local_scope_id, remaining_seconds=5)
+    return receipt.items[0].ref
 
 
 def _bind_context(core: MemoryCore, initialize_kwargs, *, session_id: str):

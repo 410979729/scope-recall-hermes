@@ -245,8 +245,9 @@ class CodexMCPServer:
         context = self._request_context(ctx)
         validate_model_request("recall_request", body, context)
         # Explicit tool calls get the bounded deep-search ceiling.  Auto
-        # mode is still clamped by the trusted CoreConfig budget.
-        packet = self.core.recall_packet(context, body, deadline_seconds=5.0)
+        # mode is still clamped by the trusted CoreConfig budget.  A lookup
+        # that finds nothing says so; the prompt hook keeps background.
+        packet = self.core.recall_packet(context, body, deadline_seconds=5.0, background_without_evidence=False)
         packet = fence_epoch(packet, self.core.memory_epoch(context), FENCED_RECALL)
         _budget_retry_hint(packet)
         return self._reply(ctx, call_id, packet)

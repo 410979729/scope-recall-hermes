@@ -437,7 +437,8 @@ class RetrievalPipeline:
         ranked = self._apply_budget(distinct.filtered(self._rank_hydrated(hydrated, working)), working.limits)
         query_items = tuple(obj for _candidate, obj in ranked)
         if working.mode == "auto" and self._remaining(working) > 0:
-            background = background_candidates(tx, working, self.storage_reader, self.clock, gaps)
+            background = background_candidates(tx, working, self.storage_reader, self.clock, gaps,
+                                               query_evidence=bool(query_items))
             present = {candidate.key for candidate, _obj in ranked}
             # Query evidence comes first; background shares the final byte
             # budget and can only consume remaining packet slots.

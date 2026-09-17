@@ -165,8 +165,13 @@ class MemoryCore:
         with self.storage.read(context) as tx:
             return tx.search_sources(query, limit=limit, history=history, automatic=automatic)
 
-    def recall(self, context: TrustedContext, request, *, current_source_refs: tuple[str, ...] = (), deadline_seconds: float | None = None):
-        """Run the sole read-only P08 pipeline for auto and tool callers."""
+    def recall(self, context: TrustedContext, request, *, current_source_refs: tuple[str, ...] = (), deadline_seconds: float | None = None,
+               background_without_evidence: bool = True):
+        """Run the sole read-only P08 pipeline for auto and tool callers.
+
+        ``background_without_evidence`` is a trusted caller choice, never a
+        request field; see :class:`SearchContext`.
+        """
         from ..contracts import ContractError, validate_model_request
         from .retrieval import SearchContext
         payload = validate_model_request("recall_request", request, context)
@@ -184,11 +189,18 @@ class MemoryCore:
             now=self.clock.utc_now(),
             deadline=self.clock.monotonic() + effective_deadline,
             current_source_refs=tuple(current_source_refs),
+            background_without_evidence=background_without_evidence,
         )
         return self.recall_pipeline.search(search_context)
 
-    def recall_packet(self, context: TrustedContext, request, *, current_source_refs: tuple[str, ...] = (), deadline_seconds: float | None = None):
-        """Retrieve once, compile once, and return the public RecallPacket contract."""
+    def recall_packet(self, context: TrustedContext, request, *, current_source_refs: tuple[str, ...] = (), deadline_seconds: float | None = None,
+                      background_without_evidence: bool = True):
+        """Retrieve once, compile once, and return the public RecallPacket contract.
+
+        Explicit tool lookups pass ``background_without_evidence=False``: a
+        query that finds nothing then compiles to ``no_match`` rather than to
+        ambient preferences a caller could read as the answer.
+        """
         from ..contracts import ContractError, validate_model_request, validate_payload
         from .retrieval import SearchContext
 
@@ -207,6 +219,7 @@ class MemoryCore:
             now=self.clock.utc_now(),
             deadline=self.clock.monotonic() + effective_deadline,
             current_source_refs=tuple(current_source_refs),
+            background_without_evidence=background_without_evidence,
         )
         # Candidate collection is optional work. Reserve part of the original
         # deadline for the mandatory fresh SQLite release checks and rendering.
