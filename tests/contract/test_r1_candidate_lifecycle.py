@@ -746,3 +746,82 @@ def test_r1_a_started_evaluation_is_never_retired_by_new_evidence(app):
     _lifecycle, after, _work = _candidate_rows(core)
     started = next(row for row in after if row["evaluation_id"] == evaluations[0]["evaluation_id"])
     assert started["state"] == "queued", "a started evaluation keeps its fence"
+
+
+# --------------------------------------------------------------------------
+# Questions no verdict could settle are answered without the model
+# --------------------------------------------------------------------------
+
+def _register_candidate(core, ctx, source, value, *, slug):
+    proposal = draft(source, value, subject=f"entity-{slug}", predicate=f"property-{slug}")
+    with core.storage.write(ctx) as tx:
+        saved = tx.claims.append(
+            "TEST-scope", proposal, Qualification("proposed", "inferred_suggestion", "TEST_candidate"),
+            recorded_at=core.clock.utc_now(),
+        )
+        registration = tx.candidates.register(saved.ref, saved.revision, observed_at=core.clock.utc_now())
+    return saved, registration
+
+
+def test_a_value_absent_from_every_source_is_not_sent_to_the_model(app):
+    """On alpha 2,019 evaluations in a day promoted 7 facts; 46% of them asked
+    about a value none of the supplied sources contained."""
+    core, ctx = app
+    source = capture(core, ctx, "entity-violet property-violet 还没有定下来。", key="TEST-r1/violet")
+    _saved, registration = _register_candidate(core, ctx, source, "紫色", slug="violet")
+    assert registration.work_queued is False
+    assert (registration.processing_state, registration.reason) == ("waiting_evidence", "value_not_in_evidence")
+    _lifecycle, evaluations, work = _candidate_rows(core)
+    assert work == []
+    assert len(evaluations) == 1
+    assert (evaluations[0]["state"], evaluations[0]["reason"]) == ("waiting_evidence", "value_not_in_evidence")
+    assert evaluations[0]["work_id"] is None and evaluations[0]["model_attempted_at"] is None
+
+    # Recorded like a verdict: the settle sweep never selects that question again.
+    _finish_source_work(core)
+    _settle_evidence(core)
+    assert _sweep(core, ctx) == 0
+    evaluator = Evaluator()
+    core.drain_worker(ctx, max_items=8, remaining_seconds=10, consolidation=evaluator)
+    assert evaluator.calls == 0
+
+    # A person stating the value is a new question, and that one is asked.
+    said = capture(core, ctx, "entity-violet property-violet 定为紫色。", key="TEST-r1/violet-said")
+    with core.storage.write(ctx) as tx:
+        tx.candidates.observe_source(said.ref, said.revision, observed_at=core.clock.utc_now())
+    _finish_source_work(core)
+    _settle_evidence(core)
+    _sweep(core, ctx)
+    core.drain_worker(ctx, max_items=8, remaining_seconds=10, consolidation=evaluator)
+    assert evaluator.calls == 1
+
+
+def test_a_person_only_kind_without_a_person_is_not_sent_to_the_model(app):
+    core, ctx = app
+    source = capture(core, ctx, "entity-tool property-tool 灰色", origin="tool_observation", key="TEST-r1/tool")
+    _saved, registration = _register_candidate(core, ctx, source, "灰色", slug="tool")
+    assert (registration.work_queued, registration.reason) == (False, "no_authoritative_evidence")
+    _lifecycle, _evaluations, work = _candidate_rows(core)
+    assert work == []
+
+
+def test_an_evaluation_queued_before_the_check_is_settled_without_the_model(app):
+    """The live backlog was queued before this check existed; the worker applies
+    it too, spends no attempt, and leaves the at-most-once fence untouched."""
+    core, ctx = app
+    _candidate(core, ctx)
+    unrelated = capture(core, ctx, "entity-blue property-blue 今天先不讨论。", key="TEST-r1/unrelated")
+    _finish_source_work(core)
+    with sqlite3.connect(core.storage.path) as conn:
+        conn.execute("UPDATE candidate_evaluations SET evidence_refs_json=? WHERE state='queued'",
+                     (json.dumps([f"{unrelated.ref}@{unrelated.revision}"]),))
+        conn.commit()
+    evaluator = Evaluator()
+    receipt = core.drain_worker(ctx, max_items=8, remaining_seconds=10, consolidation=evaluator)
+    lifecycle, evaluations, work = _candidate_rows(core)
+    assert evaluator.calls == 0
+    assert receipt.completed == 1 and receipt.failed == 0
+    assert (evaluations[0]["state"], evaluations[0]["reason"]) == ("waiting_evidence", "value_not_in_evidence")
+    assert evaluations[0]["model_attempted_at"] is None
+    assert work[0]["state"] == "done"
+    assert (lifecycle[0]["processing_state"], lifecycle[0]["reason"]) == ("waiting_evidence", "value_not_in_evidence")

@@ -15,6 +15,7 @@ from .candidate_tables import (
     rule, settled_reason, utc,
 )
 from .events import lexical_terms
+from .evidence_question import evidence_text, unanswerable_reason
 
 #: Truncated source triggers still owe a page of candidates, joined to their
 #: source so the audience filter can apply.
@@ -242,6 +243,11 @@ class CandidateIntake(CandidateTables):
             self._move(candidate.ref, candidate.revision, "waiting_evidence", "no_valid_evidence", now=now)
             return None, False
         epoch = int(conn.execute("SELECT memory_epoch FROM instance_meta WHERE singleton=1").fetchone()[0])
+        unanswerable = self._unanswerable(candidate, refs)
+        if unanswerable is not None:
+            self._record_unanswerable(candidate, refs, digest, unanswerable, epoch=epoch, now=now,
+                                      rule_version=rule_version)
+            return None, False
         inserted = conn.execute(
             """INSERT INTO candidate_evaluations(
                 candidate_ref,candidate_revision,evidence_fingerprint,evidence_refs_json,rule_version,
@@ -267,6 +273,50 @@ class CandidateIntake(CandidateTables):
             (rule_version, digest, now, candidate.ref, candidate.revision),
         )
         return evaluation_id, True
+
+    def _unanswerable(self, candidate, refs) -> str | None:
+        """Why no verdict on this evidence could promote the candidate; see ``core/evidence_question.py``."""
+        payload = getattr(candidate, "payload", None)
+        evidence = []
+        for ref, revision in refs:
+            source = self._tx.source(ref, revision)
+            if source is None or source.suppressed:
+                # Unreadable evidence is the worker's fence to judge, not this one.
+                return None
+            evidence.append(evidence_text(source))
+        return unanswerable_reason(payload, evidence)
+
+    def _record_unanswerable(self, candidate, refs, digest: str, reason: str, *, epoch: int, now: str,
+                             rule_version: str) -> None:
+        """Answer the question without a model: recorded like a verdict, so it is never asked again.
+
+        The row carries no work item and no model attempt.  Its fingerprint is
+        what stops the settle sweep from selecting the same question every
+        drain; new first-hand evidence poses a new question and is checked anew.
+        A candidate that still holds a queued evaluation keeps its state, so
+        that evaluation can run on the evidence it was queued with.
+        """
+        conn = self._write()
+        inserted = conn.execute(
+            """INSERT INTO candidate_evaluations(
+                candidate_ref,candidate_revision,evidence_fingerprint,evidence_refs_json,rule_version,
+                memory_epoch,state,reason,created_at,completed_at)
+                VALUES (?,?,?,?,?,?,'waiting_evidence',?,?,?)
+                ON CONFLICT(candidate_ref,candidate_revision,evidence_fingerprint,rule_version) DO NOTHING""",
+            (candidate.ref, candidate.revision, digest, encode_refs(refs), rule_version, epoch, reason, now, now),
+        )
+        conn.execute(
+            "UPDATE candidate_lifecycle SET evidence_fingerprint=? WHERE candidate_ref=? AND candidate_revision=?",
+            (digest, candidate.ref, candidate.revision),
+        )
+        if inserted.rowcount != 1:
+            return
+        queued = conn.execute(
+            "SELECT 1 FROM candidate_evaluations WHERE candidate_ref=? AND candidate_revision=? AND state='queued'",
+            (candidate.ref, candidate.revision),
+        ).fetchone()
+        if queued is None:
+            self._move(candidate.ref, candidate.revision, "waiting_evidence", reason, now=now, evaluated_at=now)
 
     def _supersede_unstarted(self, candidate, evaluation_id: int, now: str) -> None:
         """An older queued evaluation would judge a strictly smaller evidence set.

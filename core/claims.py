@@ -252,12 +252,12 @@ def assertion_clause(content: str, quote: str) -> str:
 
     ``evidence_context`` cuts on real punctuation only, because its job is to
     keep a quote's negation attached to it.  A tool envelope stored as an
-    escaped JSON body has no real punctuation to cut on: measured on tianshu,
+    escaped JSON body has no real punctuation to cut on: measured on alpha,
     **all 16** claims rejected as ``question_not_asserted`` came from sources
     with zero real newlines and 14 to 46 escaped ones, so the context ran 155 to
     1,581 characters and one ``?`` anywhere inside vetoed the claim.  Twelve of
     the sixteen had no question marker in the quoted text at all -- the rejected
-    statements were lines like ``Version: 3.1.0.dev2+tianshu.2``.
+    statements were lines like ``Version: 3.1.0.dev2+alpha.2``.
 
     This is for tests that must judge *this* assertion rather than everything
     the source happens to mention.  Splitting on ``\\n`` also splits a literal
@@ -278,7 +278,7 @@ def assertion_clause(content: str, quote: str) -> str:
         # A quote whose own last character is the break already ends its
         # clause.  Searching onwards from there finds the *next* sentence's
         # terminator and pulls that whole sentence in -- which is how three
-        # correct assertions on tianshu were vetoed by a question standing in
+        # correct assertions on alpha were vetoed by a question standing in
         # the sentence after them, in a message that said in so many words
         # "我只是问…这不是确认".  ``evidence_context`` has always had this
         # guard; this is the same one.
@@ -294,6 +294,10 @@ def assertion_clause(content: str, quote: str) -> str:
 
 _UNASSERTED_STATEMENTS = frozenset({"request", "proposal", "hypothetical", "quotation", "fictional", "unknown"})
 _HUMAN_ONLY_KINDS = frozenset({"preference", "constraint", "decision", "intention", "alias"})
+#: Origins a cited root may lend authority from; ``_authority`` needs one of them.
+_AUTHORITY_ORIGINS = ("human_direct", "tool_observation", "external_document")
+#: Kinds proved by something other than the value inside a quote (``_value_preserved``).
+_VALUE_FREE_KINDS = frozenset({"procedure", "intention", "alias"})
 _POLARITY_KINDS = frozenset({"fact", "preference", "constraint", "decision"})
 
 
@@ -344,7 +348,7 @@ def _cite(proposal: ClaimProposal, roots: tuple[RootEvidence, ...], *, subject_b
         return None
     narrowed = tuple(replace(r, content="\n".join(evidence_context(r.content, span["quote"]) for span in cited(r))) for r in roots)
     by_origin = {origin: tuple(r for r in narrowed if effective_origin(r) == origin)
-                 for origin in ("human_direct", "tool_observation", "external_document")}
+                 for origin in _AUTHORITY_ORIGINS}
     return _Cited(
         proposal, narrowed,
         quoted="\n".join(span["quote"] for span in spans),
@@ -480,7 +484,7 @@ def _fact_entailed(c: _Cited) -> str | None:
 
 def _value_preserved(c: _Cited) -> str | None:
     value, conditions = c.proposal["value_text"], c.proposal["conditions"]
-    if c.kind not in {"procedure", "intention", "alias"} and value not in c.quoted:
+    if c.kind not in _VALUE_FREE_KINDS and value not in c.quoted:
         return "value_not_supported_by_quote"
     if c.kind in _POLARITY_KINDS and not preserves_qualifiers(c.source_text, value, conditions=conditions, polarity_only=True):
         return "value_polarity_not_preserved"
@@ -550,7 +554,7 @@ def select_proposal(versions: tuple[ClaimVersion, ...], instant: str) -> ClaimVe
     a proposal is not an effective version and must never be answered as if it
     were settled. But that also removed them from recall entirely, and on a real
     instance almost the whole derived layer sits in this state — 231 proposed
-    against 11 active on tianshu — so 95% of what consolidation produced was
+    against 11 active on alpha — so 95% of what consolidation produced was
     invisible to every caller, with no error and no gap to notice it by.
 
     Returning the head here lets retrieval admit it *labelled*, so the reader can
