@@ -4,6 +4,15 @@ All notable changes to `scope-recall` will be documented in this file.
 
 ## [Unreleased]
 
+### Scope Recall 3.1.0rc35 a candidate source trigger always finishes - 2026-09-17
+
+Seen while rc34 ran as a canary on alpha: worker passes still started every 8-17 seconds and processed nothing, now woken for `candidate_evidence_remainder`.
+
+- A source that mentions more than sixteen candidates records a truncated trigger, and each pass resumed one page of it. Evidence membership is the cursor, so a page that linked nothing came back first on the next pass. 56 of alpha's 120 open triggers named memory read back to the model, which is never evidence, and could never close. Reinjected memory now mentions no candidate, and a page that links nothing closes its trigger.
+- The other 64 triggers owed 1,091 pages at one page a pass. A pass now continues up to `SOURCE_PAGES_PER_PASS` (16) pages, one short write each, within half of its budget.
+
+Replayed on a alpha snapshot, the 120 triggers closed in 72 passes, and the planner then slept until real work was due.
+
 ### Scope Recall 3.1.0rc34 a pass that can make no progress is not started again at once - 2026-09-17
 
 Seen while rc33 ran as a canary on alpha: two instances started worker passes back to back that could do nothing.
