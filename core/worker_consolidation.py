@@ -5,8 +5,10 @@ Owned by the worker drain; model calls stay outside SQLite transactions.
 from __future__ import annotations
 
 from dataclasses import replace
+from datetime import datetime, timedelta
 from functools import partial
 import json
+import re
 from typing import Protocol
 
 from ..contracts import ContractError, decode_payload, validate_payload
@@ -140,6 +142,33 @@ def _root_only_sources(tx, sources: tuple[StoredSource, ...]) -> tuple[StoredSou
     return tuple(roots)
 
 
+#: RFC 3339 date-time with a numeric offset: local time, fraction, sign, hours, minutes.
+_NUMERIC_OFFSET_TIME = re.compile(r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(\.\d+)?([+-])(\d{2}):(\d{2})", re.ASCII)
+
+
+def _utc_instant(value: object) -> object:
+    """The same instant written in UTC, when a model used a non-zero offset.
+
+    The contract accepts only ``Z``/``+00:00``, so a model writing
+    ``2026-09-16T10:00:00+08:00`` failed the whole result as invalid, every
+    unrelated valid proposal included, although it named a correct instant.
+    Bare dates, naive times, zero offsets and impossible dates or offsets are
+    returned unchanged, so the validator still rejects them as before.
+    """
+    match = _NUMERIC_OFFSET_TIME.fullmatch(value) if type(value) is str else None
+    if match is None:
+        return value
+    local, fraction, sign, hours, minutes = match.groups()
+    offset = timedelta(hours=int(hours), minutes=int(minutes))
+    if not offset or int(hours) > 23 or int(minutes) > 59:
+        return value
+    try:
+        instant = datetime.fromisoformat(local) - (offset if sign == "+" else -offset)
+    except (ValueError, OverflowError):
+        return value
+    return instant.isoformat(timespec="seconds") + (fraction or "") + "Z"
+
+
 def _decode_consolidation_result(raw: str, sources=()) -> dict:
     """Decode the model envelope without relaxing the consolidation contract.
 
@@ -147,9 +176,10 @@ def _decode_consolidation_result(raw: str, sources=()) -> dict:
     a single ``json`` code fence despite ``response_format=json_object``.  The
     fence is transport decoration, so accepting it is safe only when it is the
     complete outer envelope.  Likewise, ``location`` is an optional evidence
-    field; a model's ``null`` for it has exactly the same meaning as omission.
-    All other shape, source, quote, and authority checks remain in the existing
-    validators below.
+    field; a model's ``null`` for it has exactly the same meaning as omission,
+    and a ``valid_from``/``valid_to`` written with a numeric offset names the
+    same instant as its UTC form (see ``_utc_instant``).  All other shape,
+    source, quote, and authority checks remain in the existing validators below.
     """
     if type(raw) is not str:
         raise ValueError("consolidation_result_not_text")
@@ -169,6 +199,9 @@ def _decode_consolidation_result(raw: str, sources=()) -> dict:
             for kind_field in ("procedure", "intention", "alias"):
                 if claim.get("kind") != kind_field and claim.get(kind_field) in (None, {}):
                     claim.pop(kind_field, None)
+            for time_field in ("valid_from", "valid_to"):
+                if time_field in claim:
+                    claim[time_field] = _utc_instant(claim[time_field])
             spans = claim.get("evidence_spans")
             if not isinstance(spans, list):
                 continue
