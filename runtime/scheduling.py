@@ -16,7 +16,7 @@ import time
 from ..core.storage import SQLiteStorage
 from ..core.work_storage import AUTO_RECOVERABLE_ERRORS
 from ..core.file_lock import advisory_file_lock
-from .worker_entry import _atomic_metadata, _metadata_path, _read_metadata, load_config
+from .worker_entry import DAILY_COUNTER_MAX, _atomic_metadata, _metadata_path, _read_metadata, load_config
 
 
 def _daily_budget_spent(config, used: int) -> bool:
@@ -62,7 +62,7 @@ def _daily_items_used(config, now: datetime) -> int:
     if day.get("installation_id") not in (None, config.binding.installation_id):
         raise ValueError("supervisor_budget_binding")
     used = day.get("used", 0) if day.get("day") == _stamp(now)[:10] else 0
-    if type(used) is not int or not 0 <= used <= 10000:
+    if type(used) is not int or not 0 <= used <= DAILY_COUNTER_MAX:
         raise ValueError("supervisor_budget_invalid")
     return used
 

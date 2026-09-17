@@ -504,6 +504,104 @@ def test_worker_empty_database_is_idle_and_concurrent_owner_is_busy(tmp_path, mo
     assert idle["processed"] == 0
 
 
+def test_a_handed_deadline_bounds_the_lock_wait_and_the_drain(tmp_path, monkeypatch):
+    """A watchdog-owned pass restarted its whole drain budget after its own
+    start-up, so a busy pass outlived its owner's window and was killed before
+    its receipt.  The pass now ends its lock wait and drain the finalize margin
+    before the deadline it was handed, and its own budget still caps it."""
+    from io import StringIO
+    import scope_recall.core.worker as core_worker
+    from scope_recall.runtime import worker_entry
+
+    binding = _binding(tmp_path / "data")
+    MemoryCore(CoreConfig(binding)).initialize()
+    seen = {}
+    real_lock = worker_entry.advisory_file_lock
+
+    def observed_lock(path, *, timeout_seconds=None):
+        if path.name == "runtime-worker.lock":
+            seen["lock_ends"] = time.time() + timeout_seconds
+        return real_lock(path, timeout_seconds=timeout_seconds)
+
+    def drain(*args, remaining_seconds, **kwargs):
+        seen["drain_ends"] = time.time() + remaining_seconds
+        return core_worker.WorkerReceipt(0, 0, 0, 0, 0, 0, 0, True, ())
+
+    monkeypatch.setattr(worker_entry, "advisory_file_lock", observed_lock)
+    monkeypatch.setattr(core_worker, "drain_worker", drain)
+    clock_reads = .1  # Epoch/monotonic conversions, a few 15.6 ms Windows ticks.
+    handed = time.time() + 10.0
+    output = StringIO()
+    config = _write_config(tmp_path / "owned.json", _config_payload(binding))
+    assert worker_entry.run_worker(config, output=output, deadline_epoch=handed) == 0
+    assert json.loads(output.getvalue())["status"] == "idle"
+    limit = handed - worker_entry.FINALIZE_MARGIN_SECONDS + clock_reads
+    assert seen["lock_ends"] <= limit and seen["drain_ends"] <= limit
+    assert seen["drain_ends"] > time.time()
+
+    config = _write_config(tmp_path / "short.json", _config_payload(binding, drain_seconds=1.0))
+    started = time.time()
+    assert worker_entry.run_worker(config, output=StringIO(), deadline_epoch=started + 60.0) == 0
+    assert seen["lock_ends"] <= started + 1.0 + clock_reads
+    assert seen["drain_ends"] <= started + 1.0 + clock_reads
+
+
+def test_a_pass_handed_no_window_reports_the_timeout_without_reserving(tmp_path, monkeypatch):
+    """With less than the finalize margin left, a pass started now could only be
+    killed mid-drain, or fail it; the owner's timeout is the honest receipt."""
+    from io import StringIO
+    import scope_recall.core.worker as core_worker
+    from scope_recall.runtime import worker_entry
+
+    binding = _binding(tmp_path / "data")
+    MemoryCore(CoreConfig(binding)).initialize()
+    config = _write_config(tmp_path / "worker.json", _config_payload(binding))
+
+    def drain(*args, **kwargs):
+        raise AssertionError("no window left, no drain")
+
+    monkeypatch.setattr(core_worker, "drain_worker", drain)
+    malformed = StringIO()
+    assert worker_entry.run_worker(config, output=malformed, deadline_epoch=float("nan")) == 1
+    assert json.loads(malformed.getvalue())["capability_gaps"] == ["worker_error:ValueError"]
+    output = StringIO()
+    handed = time.time() + worker_entry.FINALIZE_MARGIN_SECONDS / 2
+    assert worker_entry.run_worker(config, output=output, deadline_epoch=handed) == 124
+    receipt = json.loads(output.getvalue())
+    assert receipt["status"] == "degraded" and receipt["capability_gaps"] == ["worker_watchdog_timeout"]
+    assert not (binding.data_directory / "runtime-worker-day.json").exists()
+    saved = json.loads((binding.data_directory / "runtime-worker-status.json").read_text(encoding="utf-8"))
+    assert saved["exit_code"] == 124 and saved["capability_gaps"] == ["worker_watchdog_timeout"]
+
+
+def test_a_deadline_hit_inside_an_owned_drain_is_the_owner_timeout(tmp_path, monkeypatch):
+    """A drain that starts with milliseconds left raises DEADLINE_EXCEEDED.  As
+    exit 1 it would end a supervisor as failed, where the kill it replaces was a
+    timeout the supervisor survives."""
+    from io import StringIO
+    import scope_recall.core.worker as core_worker
+    from scope_recall.runtime import worker_entry
+
+    binding = _binding(tmp_path / "data")
+    MemoryCore(CoreConfig(binding)).initialize()
+    config = _write_config(tmp_path / "worker.json", _config_payload(binding))
+
+    def drain(*args, **kwargs):
+        raise ContractError("DEADLINE_EXCEEDED")
+
+    monkeypatch.setattr(core_worker, "drain_worker", drain)
+    owned = StringIO()
+    assert worker_entry.run_worker(config, output=owned, deadline_epoch=time.time() + 60.0) == 124
+    assert json.loads(owned.getvalue())["capability_gaps"] == ["worker_watchdog_timeout"]
+    # Like the kill it stands in for, the pass keeps the page it reserved.
+    day = binding.data_directory / "runtime-worker-day.json"
+    assert json.loads(day.read_text(encoding="utf-8"))["used"] == 32
+    # Without an owner there is no kill to stand in for; that report is unchanged.
+    unowned = StringIO()
+    assert worker_entry.run_worker(config, output=unowned) == 1
+    assert json.loads(unowned.getvalue())["capability_gaps"] == ["worker_error:ContractError"]
+
+
 def test_worker_session_b_can_apply_evidence_backed_correction(tmp_path):
     binding = _binding(tmp_path / "data")
     core_a = MemoryCore(CoreConfig(binding))
@@ -1004,7 +1102,7 @@ def _status_from(queue, *, background_gaps=(), source_only=0, gaps=()):
 
 
 def test_by_design_failures_alone_do_not_make_the_worker_say_degraded():
-    """Measured on tianshu: 33 items failed by design, none actionable. The
+    """Measured on alpha: 33 items failed by design, none actionable. The
     doctor said "attention"; this line said "degraded" with an empty gap list."""
     status = _status_from(_Queue(33, (("derivation_invalid", 33),)))
     assert status["status"] != "degraded"

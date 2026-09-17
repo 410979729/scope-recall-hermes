@@ -155,6 +155,23 @@ def test_external_wake_due_future_pause_and_task_plan(tmp_path):
     assert len(launched)==1
 
 
+def test_external_wake_still_launches_after_ten_thousand_items_in_a_day(tmp_path):
+    core,cfg,oldpath=fixture(tmp_path)
+    path=cfg.binding.data_directory/"runtime.json"
+    path.write_bytes(oldpath.read_bytes())
+    prepared=plan(path,Path(sys.executable),user_id="TEST-user")
+    control_path(cfg).write_text(json.dumps({k:v for k,v in prepared.items() if k!="xml"}))
+    (cfg.binding.data_directory/"runtime-worker-day.json").write_text(json.dumps(
+        dict(installation_id=cfg.binding.installation_id,day=NOW.isoformat()[:10],used=10_001)))
+    queue(core,cfg,due=NOW)
+    launched=[]
+    def launch(*args,**kwargs):
+        launched.append((args,kwargs))
+        return SimpleNamespace(pid=99)
+    assert resume_once(path,launcher=launch,now=NOW)["launched"]
+    assert len(launched)==1
+
+
 def test_restore_cancels_stale_inbox_and_fences_replay(worker_app,tmp_path):
     from test_v11_deletion import InstallationMaintenance,export_deletion_ledger,begin_restore,ledger_digest,replay_deletion_ledger,sqlite_backup
     core,ctx,clock=worker_app

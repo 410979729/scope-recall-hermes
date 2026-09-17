@@ -16,6 +16,11 @@ from .validation import utc_now
 from .worker_entry import load_config, persist_worker_status
 from .worker_launch import detached_creationflags, reap_process, taskkill_tree, validate_wake_arguments
 
+#: Seconds an owned child may outlive the deadline it was handed.  A child that
+#: honours that deadline has already written its receipt and exited; one still
+#: running after the grace is hung, and its tree is killed.
+KILL_GRACE_SECONDS = 5.0
+
 
 class _OwnedWindowsJob:
     """Kill-on-close Job Object for one watchdog-owned process tree."""
@@ -174,12 +179,16 @@ def _wait_for_prior_worker(pid: int, deadline: float) -> bool:
     return False
 
 
-def _spawn_worker(config_path: Path, python_executable: Path) -> subprocess.Popen[str]:
+def _spawn_worker(config_path: Path, python_executable: Path, deadline: float) -> subprocess.Popen[str]:
+    # A monotonic reading means nothing in another process: hand the child
+    # the same instant in epoch seconds, as an argument only it receives.
+    deadline_epoch = time.time() + (deadline - time.monotonic())
     command = [
         str(python_executable),
         "-B",
         str(Path(__file__).with_name("_worker_bootstrap.py")),
         str(config_path),
+        repr(deadline_epoch),
     ]
     return subprocess.Popen(
         command,
@@ -264,17 +273,19 @@ def _run_once(config_path: Path, python_executable: Path, *, cleanup_config: boo
         budget = float(config.drain_seconds)
         if timeout_seconds is not None:
             budget = min(budget, timeout_seconds)
+        # One deadline bounds the whole pass, a wait for the predecessor
+        # included.  The child is handed it and finishes inside it.
         deadline = time.monotonic() + budget
         if after_pid is not None and not _wait_for_prior_worker(after_pid, deadline):
             started_at = utc_now()
             return report(_degraded("worker_followup_wait_timeout"), 124)
         started_at = utc_now()
         job = _OwnedWindowsJob()
-        child = _spawn_worker(config_path, python_executable)
+        child = _spawn_worker(config_path, python_executable, deadline)
         if not job.assign(child):
             raise OSError("worker_job_assignment_failed")
         _release_worker(child)
-        if not _wait_for_exit(child, deadline):
+        if not _wait_for_exit(child, deadline + KILL_GRACE_SECONDS):
             _kill_tree(child, job)
             tree_stopped = True
             payload = {**_degraded("worker_watchdog_timeout"), "owner_id": config.owner_id,

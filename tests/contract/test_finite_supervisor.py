@@ -3,17 +3,19 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 import json
-import os
 from pathlib import Path
 import subprocess
 import sys
 import threading
 import time
 
+import pytest
+
 from scope_recall.contracts import InstanceBinding
 from scope_recall.core import CoreConfig, MemoryCore
 from scope_recall.runtime.instance import RuntimeInstanceConfig
 from scope_recall.runtime.scheduling import SupervisorControl, next_wake, supervise
+from scope_recall.runtime.worker_entry import DAILY_COUNTER_MAX, _reserve_daily_work
 from v11_support import source_event
 
 
@@ -76,6 +78,38 @@ def test_next_due_preserves_audience_cooldown_budget_and_purge(tmp_path):
         tx._check(write=True).execute("UPDATE work_items SET state='failed',last_error_code='invalid_derivation'")
     plan=next_wake(cfg,now=NOW)
     assert plan.due_at is None and plan.reason=='failed_terminal' and plan.failed>0
+
+
+def test_busy_day_counter_still_plans_and_both_readers_share_one_bound(tmp_path, monkeypatch):
+    # The planner once rejected any counter above 10,000 while the worker kept
+    # counting: every supervisor ended as failed after its first drain, and
+    # autostart could not launch, until the UTC date changed.
+    core,cfg,_ = fixture(tmp_path)
+    queue(core,cfg)
+    budget=cfg.binding.data_directory/'runtime-worker-day.json'
+    def day(used):
+        budget.write_text(json.dumps(dict(installation_id=cfg.binding.installation_id,day='2026-09-12',used=used)))
+    day(10_001)  # Uncapped (the default): a busy day is not a spent one.
+    plan=next_wake(cfg,now=NOW)
+    assert plan.due_at == '2026-09-12T00:00:00Z' and plan.reason == 'work_available'
+    capped=replace(cfg,daily_work_limit=20_000)
+    assert next_wake(capped,now=NOW).reason == 'work_available'
+    for used in (20_000, 20_001):
+        day(used)
+        plan=next_wake(capped,now=NOW)
+        assert plan.due_at == '2026-09-13T00:00:00Z' and plan.reason == 'daily_queue_budget'
+    # The reservation reads the same file for the same day; one bound decides
+    # for both what a valid counter is, so neither can accept what the other refuses.
+    monkeypatch.setitem(_reserve_daily_work.__globals__, 'utc_now', lambda: '2026-09-12T00:00:00Z')
+    for corrupt in (-1, DAILY_COUNTER_MAX + 1, True, 1.5, '12'):
+        day(corrupt)
+        with pytest.raises(ValueError, match='supervisor_budget_invalid'):
+            next_wake(cfg,now=NOW)
+        with pytest.raises(ValueError, match='worker_budget_invalid'):
+            _reserve_daily_work(cfg)
+    day(DAILY_COUNTER_MAX)
+    assert next_wake(cfg,now=NOW).reason == 'work_available'
+    assert _reserve_daily_work(cfg)[2] == cfg.max_items
 
 
 def test_quiet_supervisor_wakes_due_work_without_chat_and_does_not_spin(tmp_path):
