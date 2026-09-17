@@ -18,7 +18,7 @@ from scope_recall.contracts import ContractError, InstanceBinding, TrustedContex
 from scope_recall.core import CoreConfig, MemoryCore
 from scope_recall.core.events import lexical_terms, query_terms
 from scope_recall.core.recall_policy import RecallPolicy, SPACE_ID
-from scope_recall.core.retrieval import CandidateRef, CollectionQuery, SearchContext
+from scope_recall.core.retrieval import MAX_CURRENT_SOURCE_REFS, CandidateRef, CollectionQuery, SearchContext
 from scope_recall.core.recall_packet import canonical_render_json
 from scope_recall.core.retrieval_storage import scope_digest
 from v11_support import context, recall_request, source_event
@@ -227,6 +227,25 @@ def test_P08_runtime_source_is_excluded_but_identical_history_remains(tmp_path):
     refs = [_item_ref(item) for item in result.items]
     assert fresh.ref not in refs
     assert historical.ref in refs
+
+
+def test_P08_runtime_source_fence_holds_a_tool_heavy_turn_and_stays_strict(tmp_path):
+    core, ctx, vectors = _app(tmp_path)
+    live = replace(ctx, session_id="TEST-live")
+    historical = _capture(core, ctx, "TEST-history", "我们那次把周边元素淡化，使中间主体更醒目。")
+    fresh = _capture(core, live, "TEST-live-query", "我们那次把周边元素淡化，使中间主体更醒目。")
+    vectors.candidates = (_candidate(fresh), _candidate(historical, score=0.90))
+    query = "怎样把周边元素淡化，让中间主体更醒目？"
+    # A tool-heavy turn: the live source is the last ref of a full fence.
+    others = tuple(f"event-TEST-turn-{index}@1" for index in range(MAX_CURRENT_SOURCE_REFS - 1))
+    full = (*others, f"{fresh.ref}@{fresh.revision}")
+    refs = {_item_ref(item) for item in recall(core, live, query=query, current_source_refs=full).items}
+    assert fresh.ref not in refs
+    assert historical.ref in refs
+    for invalid in ((*full, "event-TEST-one-more@1"), (*others, others[0]), (*others, "x" * 301)):
+        with pytest.raises(ContractError) as caught:
+            recall(core, live, query=query, current_source_refs=invalid)
+        assert (caught.value.code, caught.value.field) == ("INPUT_INVALID", "current_source_refs")
 
 
 def test_P08_identifier_mismatch_is_rejected_but_explicit_comparison_admits_both(tmp_path):

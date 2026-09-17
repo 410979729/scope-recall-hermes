@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Optional
 
 from scope_recall.contracts import ContractError, RecallRequest, TrustedContext
 from scope_recall.core import CoreConfig, MemoryCore
-from scope_recall.core.retrieval import AUTOMATIC_PACKET_BUDGET_UNITS
+from scope_recall.core.retrieval import AUTOMATIC_PACKET_BUDGET_UNITS, MAX_CURRENT_SOURCE_REFS
 from ..runtime_wiring import render_host_recall_context
 
 from .boundary import (
@@ -44,6 +44,7 @@ from .tool_surface import HermesToolSurface, _TOOL_NAMES
 
 _CAPTURE_TIMEOUT_S = 1.0
 _BOUNDED_MESSAGE_SCAN = 8
+GAP_CURRENT_SOURCE_REFS_LIMIT = "degraded:current_source_refs_limit"
 
 def _serialized_host_event(method):
     @wraps(method)
@@ -125,6 +126,9 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
         self._pre_llm_pending = False
         self._session_watermark = 0
         self._current_source_refs: list[str] = []
+        #: This turn captured more sources than the fence holds; recall stays
+        #: off until the refs reset rather than run with an incomplete fence.
+        self._current_source_refs_overflow = False
         self._current_task_message = ""
         self._retry_captures: dict[SourceIdentity, _RetryCapture] = {}
         self._diagnostics = AdapterDiagnostics()
@@ -215,7 +219,7 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
             self._active_turn_id = ""
             self._pre_llm_pending = False
             self._session_watermark = 0
-            self._current_source_refs.clear()
+            self._reset_current_source_refs()
             self._current_task_message = ""
             self._retry_captures.clear()
             self._diagnostics.capability_gaps = tuple(
@@ -268,6 +272,14 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
             values.extend(group)
         merged = tuple(dict.fromkeys(values))[-128:]
         self._diagnostics.pending_outcome_gaps = merged
+
+    def _reset_current_source_refs(self) -> None:
+        """Open a new current-turn fence: no refs, no overflow, no overflow gap."""
+        self._current_source_refs.clear()
+        self._current_source_refs_overflow = False
+        self._diagnostics.capability_gaps = tuple(
+            gap for gap in self._diagnostics.capability_gaps if gap != GAP_CURRENT_SOURCE_REFS_LIMIT
+        )
 
     def _record_capture_failure(self, identity: SourceIdentity | None, reason: str) -> None:
         if identity is not None:
@@ -357,11 +369,16 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
             self._retry_captures.pop(identity, None)
         for write in receipt.event_refs if context.session_id == self._require_identity().session_id else ():
             ref = f"{write.ref}@{write.revision}"
-            if ref not in self._current_source_refs:
-                if len(self._current_source_refs) < 17:
-                    self._current_source_refs.append(ref)
-                else:
-                    self._merge_gaps(("degraded:current_source_refs_limit",))
+            if ref in self._current_source_refs:
+                continue
+            if len(self._current_source_refs) < MAX_CURRENT_SOURCE_REFS:
+                self._current_source_refs.append(ref)
+            elif not self._current_source_refs_overflow:
+                # A ref the fence cannot hold would let this turn's own source
+                # come back as memory, so recall stays off until the refs
+                # reset.  The gap goes where tool replies read it.
+                self._current_source_refs_overflow = True
+                self._diagnostics.capability_gaps = (*self._diagnostics.capability_gaps, GAP_CURRENT_SOURCE_REFS_LIMIT)
         if gaps:
             self._merge_gaps(gaps)
         self._wake_background_worker(context=context)
@@ -443,11 +460,9 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
         if not identity.runtime_audience.allowed_scope_ids:
             self._diagnostics.capability_gaps = identity.runtime_audience.capability_gaps
             return ""
-        if len(self._current_source_refs) > 16:
-            self._merge_gaps(("degraded:current_source_refs_limit",))
-            self._diagnostics.capability_gaps = tuple(
-                dict.fromkeys((*self._diagnostics.capability_gaps, "degraded:current_source_refs_limit"))
-            )
+        if self._current_source_refs_overflow:
+            # The overflow already reported its gap; an unfenced recall could
+            # inject this turn's own sources back as memory.
             return ""
         recent = (self._current_task_message,) if self._current_task_message else ()
         context = identity.trusted_context(session_id=effective_session, recent_messages=recent)
@@ -475,7 +490,7 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
         # UUID arrived, the ordinal is the bounded fallback.
         if not self._pre_llm_pending:
             if ordinal_turn_id != self._active_turn_id:
-                self._current_source_refs.clear()
+                self._reset_current_source_refs()
             self._active_turn_id = ordinal_turn_id
         session_id = self._effective_session_id(str(kwargs.get("session_id") or ""))
         if type(message) is str and message:
@@ -494,7 +509,7 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
         supplied_turn_id = str(kwargs.get("turn_id") or "").strip()
         turn_id = supplied_turn_id or self._active_turn_id or str(self._turn_counter or "turn")
         if supplied_turn_id and supplied_turn_id != self._active_turn_id:
-            self._current_source_refs.clear()
+            self._reset_current_source_refs()
             self._active_turn_id = supplied_turn_id
         self._pre_llm_pending = bool(supplied_turn_id)
         self._outcomes.open_turn(session_id, turn_id)
@@ -685,7 +700,7 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
         fresh = switch_hermes_identity(identity, new_session_id, parent_session_id=parent_session_id, **kwargs)
         self._outcomes.reset_session(identity.session_id)
         self._ledger.reset()
-        self._current_source_refs.clear()
+        self._reset_current_source_refs()
         self._current_task_message = ""
         self._active_turn_id = ""
         self._pre_llm_pending = False
