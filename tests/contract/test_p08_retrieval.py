@@ -115,7 +115,7 @@ def test_cursor_encoding_is_validated_before_scope_binding(app):
 def test_P08_lexical_skips_terms_too_common_to_separate_anything(app):
     """A term matching most of the corpus costs the most and tells the least.
 
-    Measured on tianshu: ten terms cleared 10% document frequency, every one a
+    Measured on alpha: ten terms cleared 10% document frequency, every one a
     JSON field name from tool-observation envelopes (`tool`, `summary`,
     `omitted`, `exit_code`, ...), together 10.3% of the whole index. A query
     containing one walked an 18,000-row posting list to learn nothing.
@@ -137,3 +137,32 @@ def test_P08_lexical_skips_terms_too_common_to_separate_anything(app):
         assert _discriminating_terms(tx, ("boilerplate",)) == ("boilerplate",)
         # A term the index has never seen has no frequency and is never pruned.
         assert _discriminating_terms(tx, ("neverindexed",)) == ("neverindexed",)
+
+
+def test_P08_lexical_pool_ranks_rows_naming_the_hard_identifier_first(app):
+    """Hydration admits only sources naming the query's identifier, so the pool must reach them.
+
+    Sixty sources share six generic query terms but not ``rc28``; the one that
+    names it matches fewer terms.  Ranked by hits alone it fell outside the
+    47-row first-round pool and every mode answered nothing.
+    """
+    from scope_recall.core.retrieval_storage import RetrievalStorage
+
+    core, ctx = app
+    query = "阿乙仍然是 Scope Recall rc28"
+    target = capture(core, ctx, "阿乙升级收尾：排空超时，现在还是 rc28，旧记忆和设置没动。",
+                     key="TEST-p08/identifier-pool/target", when="2026-09-01T12:00:00Z")
+    for index in range(60):
+        capture(core, ctx, f"阿乙仍然是 Scope Recall 的测试对象（记录 {index}）",
+                key=f"TEST-p08/identifier-pool/{index}", when="2026-09-02T12:00:00Z")
+    # Another session reads, so the recent channel cannot supply the target.
+    reader = replace(ctx, session_id="TEST-p08-identifier-pool-reader")
+    search = SearchContext.from_request(recall_request(query=query, mode="history"), reader,
+                                        now=Clock.now, deadline=core.clock.monotonic() + 5)
+    with core.storage.read(reader) as tx:
+        pool = RetrievalStorage().lexical(tx, search, limit=47)
+    assert pool[0].ref == target.ref
+    assert pool[0].lexical_score < pool[1].lexical_score, "identifier first, then hits"
+    for mode in ("auto", "current", "history"):
+        result = core.recall(reader, recall_request(query=query, mode=mode), deadline_seconds=5)
+        assert [item.ref for item in result.items] == [target.ref], mode
