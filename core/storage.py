@@ -200,7 +200,15 @@ class Transaction:
         errors = conn.execute(f"""SELECT last_error_code,COUNT(*) AS n FROM work_items
             WHERE state IN ('pending','failed') AND last_error_code IS NOT NULL
             AND scope_id IN ({marks}) {context_filter}
-            GROUP BY last_error_code ORDER BY n DESC LIMIT 16""", params).fetchall()
+            GROUP BY last_error_code""", params).fetchall()
+        # A code carries its retry history (``auto_retry:1|derivation_invalid``)
+        # and its writer's case, so one failure kind used to fill several rows
+        # of this list.  Count each kind once, as ``failure_retry.failure_kind``
+        # reads it.
+        kinds: dict[str, int] = {}
+        for code, count in errors:
+            kind = str(code).strip().lower().rsplit('|', 1)[-1][:80]
+            kinds[kind] = kinds.get(kind, 0) + int(count)
         return StoreStatus(
             int(meta["schema_version"]),
             int(meta["memory_epoch"]),
@@ -208,7 +216,7 @@ class Transaction:
             int(source_count),
             int(work_count),
             int(failed_count), int(leased_count), oldest,
-            tuple((str(row[0]).rsplit('|', 1)[-1][:80], int(row[1])) for row in errors),
+            tuple(sorted(kinds.items(), key=lambda pair: (-pair[1], pair[0]))[:16]),
             admission[0], admission[1], admission[2],
         )
 

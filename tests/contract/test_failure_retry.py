@@ -184,6 +184,24 @@ def test_every_by_design_terminal_failure_counts_as_terminal(app, code):
     assert total >= 1 and terminal == total
 
 
+def test_status_counts_each_failure_kind_once(app):
+    """Retry history and case used to split one kind across several rows, so
+    an operator saw ``derivation_invalid`` three times with different counts."""
+    core, ctx = app
+    _fail_one(core, ctx, "timeout")
+    codes = ("auto_retry:1|derivation_invalid", "DERIVATION_INVALID", "derivation_retry:1|derivation_invalid")
+    with sqlite3.connect(core.storage.path) as conn:
+        ids = [row[0] for row in conn.execute("SELECT work_id FROM work_items ORDER BY work_id LIMIT 3")]
+        for work_id, code in zip(ids, codes):
+            conn.execute("UPDATE work_items SET state='failed',last_error_code=? WHERE work_id=?", (code, work_id))
+        conn.commit()
+    counts = core.status(ctx).work_error_counts
+    kinds = [kind for kind, _count in counts]
+    assert len(kinds) == len(set(kinds))
+    assert dict(counts)["derivation_invalid"] == len(ids) >= 2
+    assert all(kind == kind.lower() and "|" not in kind for kind in kinds)
+
+
 def test_a_fault_still_counts_as_actionable(app):
     """Narrowing must not go so far that a real fault stops being reported."""
     core, ctx = app
