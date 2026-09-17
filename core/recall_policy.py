@@ -12,7 +12,7 @@ import unicodedata
 
 from ..contracts import ContractError
 from .embedding_budget import bounded_embedding_text
-from .events import lexical_terms, query_terms
+from .events import lexical_terms, query_terms, version_suffixes
 from .retrieval import CandidateRef, SearchContext
 
 
@@ -159,7 +159,7 @@ def encode_embedding_text(raw_text: str, *, kind: str) -> str:
 
     The one choke point every embedded body passes through -- source, claim and
     query alike -- which is why the input bound lives here rather than in each
-    caller.  Six sources on tianshu were permanently unembeddable because there
+    caller.  Six sources on alpha were permanently unembeddable because there
     was no bound at all; see ``core/embedding_budget.py``.
     """
 
@@ -364,7 +364,9 @@ def meaningful_query_terms(query: str) -> tuple[str, ...]:
 
 
 def hard_identifiers(text: str) -> frozenset[str]:
-    return frozenset(match.group(0).casefold() for match in _HARD_IDENTIFIER.finditer(text))
+    # A release is also identified by its version suffix: "rc28" for 3.1.0rc28.
+    matches = frozenset(match.group(0).casefold() for match in _HARD_IDENTIFIER.finditer(text))
+    return matches | version_suffixes(text)
 
 
 def identifiers_compatible(query: str, content: str) -> bool:

@@ -71,6 +71,19 @@ def prepare_capture(value: SourceEvent | dict | str | bytes, context: TrustedCon
 _CJK = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]+")
 _IDENTIFIER = re.compile(r"[a-z0-9]+(?:[._/-][a-z0-9]+)*")
 _FILENAME = re.compile(r"(?<![\w-])[\w-]+(?:\.[\w-]+)+", re.UNICODE)
+#: A dotted release version with a pre-release or build suffix, after
+#: normalization: 3.1.0rc28, v3.1.0-rc28, 3.1.0.dev2, 2.0.1-beta3, 1.10.2a1.
+_VERSION_SUFFIX = re.compile(r"(?<![a-z0-9])v?[0-9]+(?:\.[0-9]+)+[._-]?([a-z]+[0-9]+)(?![a-z0-9])")
+
+
+def version_suffixes(text: str) -> frozenset[str]:
+    """The suffixes ("rc28") of the release versions ``text`` names.
+
+    People name a release by its suffix alone, which the intact version token
+    never matches.  Callers add the suffix beside the full token, so rc28 and
+    rc29 stay as distinct as the versions they come from.
+    """
+    return frozenset(_VERSION_SUFFIX.findall(unicodedata.normalize("NFKC", text).casefold()))
 
 
 def lexical_terms(text: str) -> tuple[str, ...]:
@@ -78,6 +91,7 @@ def lexical_terms(text: str) -> tuple[str, ...]:
     normalized = unicodedata.normalize("NFKC", text).casefold()
     terms = set(_IDENTIFIER.findall(normalized)) | set(_FILENAME.findall(normalized))
     terms.update(part for token in tuple(terms) for part in token.split("/"))
+    terms.update(_VERSION_SUFFIX.findall(normalized))
     for run in _CJK.findall(normalized):
         if len(run) == 1:
             terms.add(run)

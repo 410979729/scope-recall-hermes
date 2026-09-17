@@ -7,9 +7,11 @@ remains the authority for scope, version, deletion, and temporal eligibility.
 
 from __future__ import annotations
 
+from contextlib import closing
 from dataclasses import replace
 from dataclasses import dataclass
 from pathlib import Path
+import sqlite3
 from typing import Any, Mapping
 
 import pytest
@@ -17,7 +19,7 @@ import pytest
 from scope_recall.contracts import ContractError, InstanceBinding, TrustedContext
 from scope_recall.core import CoreConfig, MemoryCore
 from scope_recall.core.events import lexical_terms, query_terms
-from scope_recall.core.recall_policy import RecallPolicy, SPACE_ID
+from scope_recall.core.recall_policy import RecallPolicy, SPACE_ID, hard_identifiers, identifiers_compatible
 from scope_recall.core.retrieval import CandidateRef, CollectionQuery, SearchContext
 from scope_recall.core.recall_packet import canonical_render_json
 from scope_recall.core.retrieval_storage import scope_digest
@@ -242,6 +244,55 @@ def test_P08_identifier_mismatch_is_rejected_but_explicit_comparison_admits_both
     comparison = recall(core, ctx, query="比较 TEST 项目的 H100 和 H200 方案。")
     comparison_refs = {_item_ref(item) for item in comparison.items}
     assert {h100.ref, h200.ref} <= comparison_refs
+
+
+@pytest.mark.parametrize(("version", "suffix", "identifier"), [
+    ("3.1.0rc28", "rc28", "0rc28"),
+    ("v3.1.0-rc28", "rc28", "v3.1.0-rc28"),
+    ("3.1.0.dev2", "dev2", "dev2"),
+    ("2.0.1-beta3", "beta3", "beta3"),
+    ("1.10.2a1", "a1", "2a1"),
+])
+def test_P08_version_suffix_is_an_extra_term_and_identifier(version, suffix, identifier):
+    text = f"网关升级到 {version} 了"
+    assert {version, suffix} <= set(lexical_terms(text)), "the full token stays a term"
+    assert {identifier, suffix} <= hard_identifiers(text), "the existing identifier stays"
+
+
+def test_P08_version_suffix_keeps_distinct_identifiers_distinct():
+    assert identifiers_compatible("rc28 状态", "hermes-scope-recall 3.1.0rc28 已安装")
+    assert identifiers_compatible("rc28 状态", "网关仍然运行 v3.1.0-rc28")
+    assert identifiers_compatible("3.1.0rc28 状态", "rc28 已安装")
+    assert not identifiers_compatible("rc28 状态", "hermes-scope-recall 3.1.0rc29 已安装")
+    assert not identifiers_compatible("3.1.0rc28 状态", "hermes-scope-recall 3.1.0rc280 已安装")
+    assert not identifiers_compatible("H100 部署", "H200 部署")
+    assert not identifiers_compatible("gpt4 配置", "gpt4o 配置")
+    assert not identifiers_compatible("gpt4o 配置", "gpt4 配置")
+    # A comparison still admits each side on its own.
+    assert identifiers_compatible("比较 rc28 和 rc29", "3.1.0rc28 已安装")
+    assert identifiers_compatible("比较 rc28 和 rc29", "v3.1.0-rc29 已安装")
+    # Without a suffixed version nothing is added.
+    assert hard_identifiers("H100 gpt4 gpt4o v1.2") == {"h100", "gpt4", "gpt4o", "v1.2"}
+    assert lexical_terms("H100 gpt4 gpt4o v1.2") == ("gpt4", "gpt4o", "h100", "v1.2")
+
+
+def test_P08_release_suffix_query_reaches_full_version_sources(tmp_path):
+    core, ctx, vectors = _app(tmp_path)
+    full = _capture(core, ctx, "TEST-rc28-full", "升级器报告：hermes-scope-recall 3.1.0rc28 已安装。")
+    dashed = _capture(core, ctx, "TEST-rc28-dashed", "网关仍然运行 v3.1.0-rc28。")
+    other = _capture(core, ctx, "TEST-rc29-full", "升级器报告：hermes-scope-recall 3.1.0rc29 已安装。")
+    reader = replace(ctx, session_id="TEST-rc28-reader")
+    for mode in ("auto", "current", "history"):
+        refs = {_item_ref(item) for item in recall(core, reader, query="rc28 安装了吗", mode=mode).items}
+        assert {full.ref, dashed.ref} <= refs and other.ref not in refs, mode
+
+    # A source indexed before suffix terms existed has no "rc28" row, so only
+    # a vector hit can reach it until it is re-indexed; hydration admits it.
+    with closing(sqlite3.connect(core.storage.path)) as conn, conn:
+        conn.execute("DELETE FROM lexical_projection WHERE term IN ('rc28','rc29')")
+    vectors.candidates = (_candidate(other), _candidate(full, score=0.90))
+    refs = {_item_ref(item) for item in recall(core, reader, query="rc28 装好了吗", mode="current").items}
+    assert full.ref in refs and other.ref not in refs
 
 
 def test_P08_current_history_and_as_of_filter_vector_candidates(tmp_path):

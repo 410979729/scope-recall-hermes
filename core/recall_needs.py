@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import re
 
-from .events import lexical_terms
+from .events import lexical_terms, version_suffixes
 from .recall_policy import hard_identifiers, meaningful_query_terms
 from .retrieval import STALE_RESUME_GAPS, SearchContext, optional_json
 
@@ -50,6 +50,20 @@ def _claim_payload(item: object) -> dict | None:
 
 # -- comparison ---------------------------------------------------------------
 
+def _comparison_targets(query: str) -> frozenset[str]:
+    """One identifier per compared object.
+
+    A suffixed version yields its suffix beside its own identifier ("rc28" and
+    "0rc28" for 3.1.0rc28).  Counted as a side of its own, two sources about
+    one release would pass for both sides, so the suffix is dropped wherever
+    the fuller identifier names the same object.
+    """
+    targets = hard_identifiers(query)
+    aliases = {suffix for suffix in version_suffixes(query)
+               if any(target != suffix and target.endswith(suffix) for target in targets)}
+    return targets - aliases
+
+
 def _comparison_sides(targets: frozenset[str], items: tuple[object, ...]) -> dict[str, frozenset[str]]:
     """Evidence roots that mention each compared identifier."""
     sides: dict[str, frozenset[str]] = {}
@@ -64,7 +78,7 @@ def _comparison_sides(targets: frozenset[str], items: tuple[object, ...]) -> dic
 
 
 def _comparison_unmet(query: str, items: tuple[object, ...]) -> bool:
-    targets = hard_identifiers(query)
+    targets = _comparison_targets(query)
     if len(targets) < 2:
         return True
     sides = _comparison_sides(targets, items)
@@ -78,7 +92,7 @@ def _comparison_unmet(query: str, items: tuple[object, ...]) -> bool:
 
 
 def _second_side_query(query: str, items: tuple[object, ...]) -> str | None:
-    targets = hard_identifiers(query)
+    targets = _comparison_targets(query)
     if len(targets) < 2:
         return None
     sides = _comparison_sides(targets, items)
