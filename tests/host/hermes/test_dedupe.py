@@ -3,7 +3,9 @@ from __future__ import annotations
 
 import sqlite3
 
+from scope_recall.adapters.hermes import ScopeRecallHermesAdapter
 from scope_recall.adapters.hermes.boundary import SourceObservationLedger, pre_llm_source_event, sync_turn_source_events
+from scope_recall.core import capture_inbox
 from tests.v11_support import context
 
 
@@ -122,3 +124,57 @@ def test_live_turn_events_carry_witnessed_occurrence_time(tmp_path):
     for event, identity in sync_events:
         assert event["occurred_at"] == "2026-09-06T12:00:00Z"
         assert event["time_precision"] == "instant"
+
+
+def _sync_after_restart(core, clock, initialize_kwargs, *, at: str, turn: int, user: str, assistant: str):
+    """One gateway process: its turn counter starts again, its session does not."""
+    clock.now = at
+    provider = ScopeRecallHermesAdapter(core=core, clock=clock)
+    provider.initialize("TEST-session-1", **initialize_kwargs)
+    try:
+        provider.on_turn_start(turn, user)
+        provider.sync_turn(user, assistant, session_id="TEST-session-1")
+        context = provider._require_identity().trusted_context(session_id="TEST-session-1", mutation=True)
+        capture_inbox.resolve_conflicted_ingress(
+            core.storage, clock, context, authorize=lambda _scope: context.allowed_scope_ids, remaining_seconds=5)
+    finally:
+        provider.shutdown()
+
+
+def _stored_times(core) -> dict[str, tuple[str, str]]:
+    with sqlite3.connect(core.storage.path) as conn:
+        rows = conn.execute("SELECT content, occurred_at, recorded_at FROM source_events").fetchall()
+    return {content: (occurred, recorded) for content, occurred, recorded in rows}
+
+
+def test_reused_turn_number_keeps_its_own_witnessed_time(installed_core, initialize_kwargs):
+    """A restarted gateway numbers turns from 1 again inside the same session.
+
+    beta's rc32 test report was written on 09-17 under turn number 8, which an
+    unrelated turn of the same session had used on 09-16.  Storage re-keyed the
+    new messages, but the adapter had already copied the older turn's time onto
+    them, so the newest report in memory claimed to be a day old.
+    """
+    core, clock = installed_core
+    _sync_after_restart(core, clock, initialize_kwargs, at="2026-09-06T13:15:04Z", turn=8,
+                        user="TEST 整理整个文件夹", assistant="TEST 整理好了。")
+    _sync_after_restart(core, clock, initialize_kwargs, at="2026-09-07T11:06:21Z", turn=8,
+                        user="TEST 你测试下召回", assistant="TEST 测完一轮。")
+    times = _stored_times(core)
+    assert times["TEST 整理整个文件夹"] == ("2026-09-06T13:15:04Z", "2026-09-06T13:15:04Z")
+    assert times["TEST 你测试下召回"] == ("2026-09-07T11:06:21Z", "2026-09-07T11:06:21Z")
+    assert times["TEST 测完一轮。"] == ("2026-09-07T11:06:21Z", "2026-09-07T11:06:21Z")
+
+
+def test_replayed_turn_keeps_its_first_witnessed_time(installed_core, initialize_kwargs):
+    """The same message under the same key is a replay: one row, first time kept."""
+    core, clock = installed_core
+    _sync_after_restart(core, clock, initialize_kwargs, at="2026-09-06T13:15:04Z", turn=8,
+                        user="TEST 整理整个文件夹", assistant="TEST 整理好了。")
+    _sync_after_restart(core, clock, initialize_kwargs, at="2026-09-07T11:06:21Z", turn=8,
+                        user="TEST 整理整个文件夹", assistant="TEST 整理好了。")
+    with sqlite3.connect(core.storage.path) as conn:
+        assert conn.execute("SELECT count(*) FROM source_events").fetchone()[0] == 2
+    times = _stored_times(core)
+    assert times["TEST 整理整个文件夹"] == ("2026-09-06T13:15:04Z", "2026-09-06T13:15:04Z")
+    assert times["TEST 整理好了。"] == ("2026-09-06T13:15:04Z", "2026-09-06T13:15:04Z")

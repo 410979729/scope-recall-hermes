@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Optional
 
 from scope_recall.contracts import ContractError, RecallRequest, TrustedContext
 from scope_recall.core import CoreConfig, MemoryCore
+from scope_recall.core.capture_filters import sanitize_source_capture_text
 from scope_recall.core.retrieval import AUTOMATIC_PACKET_BUDGET_UNITS, MAX_CURRENT_SOURCE_REFS
 from ..runtime_wiring import render_host_recall_context
 
@@ -65,6 +66,24 @@ def _is_scope_recall_tool_name(tool_name: object) -> bool:
     """
 
     return type(tool_name) is str and tool_name in _TOOL_NAMES
+
+
+def _same_stored_content(stored_event: dict, content: object) -> bool:
+    """Whether a capture repeats what is already stored under its key.
+
+    Storage keeps the admitted text, not the host's raw text, and splits a long
+    one into segments whose first holds the prefix, so the comparison runs on
+    the same admitted form.
+    """
+    if type(content) is not str:
+        return False
+    admitted = sanitize_source_capture_text(content)
+    stored = stored_event.get("content")
+    if type(stored) is not str:
+        return False
+    if "segment" in stored_event:
+        return admitted[:len(stored)] == stored
+    return admitted == stored
 
 
 def _memory_provider_base():
@@ -347,12 +366,16 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
         try:
             # The bounded host cache is only an optimization. SQLite retains
             # first-witnessed time after an old identity leaves that cache.
+            # Only a replay of the same message inherits it: a restarted gateway
+            # numbers turns from 1 again, so a different message can arrive under
+            # an old key.  Storage re-keys that one, and it must keep its own time.
             if identity is not None:
                 previous = self._require_core().source_by_event_key(context, identity[0], identity[1],
                             remaining_seconds=max(.001, remaining_seconds - (time.monotonic() - started)))
                 if (previous is not None and previous.scope_id == scope_id
                         and previous.session_id == context.session_id
-                        and previous.project_id == context.project_id and previous.branch_id == context.branch_id):
+                        and previous.project_id == context.project_id and previous.branch_id == context.branch_id
+                        and _same_stored_content(previous.event, event.get("content"))):
                     for field in ("occurred_at", "recorded_at", "time_precision"):
                         if field in previous.event:
                             event[field] = previous.event[field]
