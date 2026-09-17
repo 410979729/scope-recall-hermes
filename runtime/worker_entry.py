@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import os
 import stat
 import tempfile
@@ -22,10 +23,13 @@ from ..vector.process_store import NativeVectorPathError
 from ..contracts import TrustedContext
 from .instance import RuntimeInstanceConfig, build_runtime_instance
 from .model_budget import pre_request_refusals, provider_refusals
-from .validation import utc_now
+from .validation import strict_float, utc_now
 
 #: Worker metadata files are small JSON documents; anything larger is not one.
 METADATA_LIMIT_BYTES = 65536
+#: Seconds a watchdog-owned pass stops short of the deadline it was handed, so
+#: its refund, status file and receipt land before the owner kills the tree.
+FINALIZE_MARGIN_SECONDS = 2.0
 #: The largest ``used`` a valid day counter holds, for the worker that reserves
 #: against it and the supervisor that plans from it.  It rejects a corrupt file;
 #: it is not a daily cap: ``daily_work_limit`` goes to 1,000,000 and the uncapped
@@ -333,7 +337,23 @@ def _apply_queue_status(payload: dict[str, Any], gaps: list[str], queue: Any, re
         payload["status"] = "waiting"
 
 
-def run_worker(config_path: str | Path, *, output: TextIO | None = None) -> int:
+def _pass_deadline(config: RuntimeInstanceConfig, deadline_epoch: float | None) -> float:
+    """This pass's monotonic deadline: its own drain budget, cut to its owner's.
+
+    A watchdog hands its deadline as wall-clock epoch seconds, because a
+    monotonic reading means nothing in another process, and this pass keeps
+    ``FINALIZE_MARGIN_SECONDS`` of it back for everything after the drain.
+    """
+    now = time.monotonic()
+    deadline = now + config.drain_seconds
+    if deadline_epoch is not None:
+        handed = strict_float("worker_deadline_epoch", deadline_epoch, minimum=0.0, maximum=math.inf)
+        deadline = min(deadline, now + (handed - time.time()) - FINALIZE_MARGIN_SECONDS)
+    return deadline
+
+
+def run_worker(config_path: str | Path, *, output: TextIO | None = None,
+               deadline_epoch: float | None = None) -> int:
     sink: TextIO = sys.stdout if output is None else output
     config: RuntimeInstanceConfig | None = None
     instance = None
@@ -341,13 +361,18 @@ def run_worker(config_path: str | Path, *, output: TextIO | None = None) -> int:
     preflight_gap = None
     try:
         config = load_config(config_path)
-        deadline = time.monotonic() + config.drain_seconds
+        deadline = _pass_deadline(config, deadline_epoch)
         preflight_gap = _vector_preflight_gap(config)
         instance = build_runtime_instance(config)
         instance.status()  # Validate the bound database before writing metadata.
         lock_path = _metadata_path(config, "runtime-worker.lock")
         try:
             with advisory_file_lock(lock_path, timeout_seconds=max(0, deadline - time.monotonic())):
+                if deadline_epoch is not None and time.monotonic() >= deadline:
+                    # The owner's window closed before this pass could start:
+                    # report what its kill would, before reserving anything.
+                    payload = _minimal_payload(config, "degraded", "worker_watchdog_timeout")
+                    return _report(sink, config, payload, started_at=started_at, exit_code=124)
                 payload = _drain_once(config, instance, deadline)
                 return _report(sink, config, payload, started_at=started_at, exit_code=0)
         except TimeoutError:
