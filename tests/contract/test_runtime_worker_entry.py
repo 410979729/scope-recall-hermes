@@ -574,6 +574,34 @@ def test_a_pass_handed_no_window_reports_the_timeout_without_reserving(tmp_path,
     assert saved["exit_code"] == 124 and saved["capability_gaps"] == ["worker_watchdog_timeout"]
 
 
+def test_a_deadline_hit_inside_an_owned_drain_is_the_owner_timeout(tmp_path, monkeypatch):
+    """A drain that starts with milliseconds left raises DEADLINE_EXCEEDED.  As
+    exit 1 it would end a supervisor as failed, where the kill it replaces was a
+    timeout the supervisor survives."""
+    from io import StringIO
+    import scope_recall.core.worker as core_worker
+    from scope_recall.runtime import worker_entry
+
+    binding = _binding(tmp_path / "data")
+    MemoryCore(CoreConfig(binding)).initialize()
+    config = _write_config(tmp_path / "worker.json", _config_payload(binding))
+
+    def drain(*args, **kwargs):
+        raise ContractError("DEADLINE_EXCEEDED")
+
+    monkeypatch.setattr(core_worker, "drain_worker", drain)
+    owned = StringIO()
+    assert worker_entry.run_worker(config, output=owned, deadline_epoch=time.time() + 60.0) == 124
+    assert json.loads(owned.getvalue())["capability_gaps"] == ["worker_watchdog_timeout"]
+    # Like the kill it stands in for, the pass keeps the page it reserved.
+    day = binding.data_directory / "runtime-worker-day.json"
+    assert json.loads(day.read_text(encoding="utf-8"))["used"] == 32
+    # Without an owner there is no kill to stand in for; that report is unchanged.
+    unowned = StringIO()
+    assert worker_entry.run_worker(config, output=unowned) == 1
+    assert json.loads(unowned.getvalue())["capability_gaps"] == ["worker_error:ContractError"]
+
+
 def test_worker_session_b_can_apply_evidence_backed_correction(tmp_path):
     binding = _binding(tmp_path / "data")
     core_a = MemoryCore(CoreConfig(binding))

@@ -20,7 +20,7 @@ from typing import Any, TextIO
 
 from ..core.file_lock import advisory_file_lock
 from ..vector.process_store import NativeVectorPathError
-from ..contracts import TrustedContext
+from ..contracts import ContractError, TrustedContext
 from .instance import RuntimeInstanceConfig, build_runtime_instance
 from .model_budget import pre_request_refusals, provider_refusals
 from .validation import strict_float, utc_now
@@ -352,6 +352,14 @@ def _pass_deadline(config: RuntimeInstanceConfig, deadline_epoch: float | None) 
     return deadline
 
 
+def _owner_timeout(sink: TextIO, config: RuntimeInstanceConfig | None, *, started_at: str) -> int:
+    """The receipt a watchdog writes when it kills a pass that overran its
+    window, written instead by a pass that ran out of the window it was handed:
+    the same exit code and gap, which a supervisor survives, with nothing killed."""
+    payload = _minimal_payload(config, "degraded", "worker_watchdog_timeout")
+    return _report(sink, config, payload, started_at=started_at, exit_code=124, best_effort=True)
+
+
 def run_worker(config_path: str | Path, *, output: TextIO | None = None,
                deadline_epoch: float | None = None) -> int:
     sink: TextIO = sys.stdout if output is None else output
@@ -369,16 +377,19 @@ def run_worker(config_path: str | Path, *, output: TextIO | None = None,
         try:
             with advisory_file_lock(lock_path, timeout_seconds=max(0, deadline - time.monotonic())):
                 if deadline_epoch is not None and time.monotonic() >= deadline:
-                    # The owner's window closed before this pass could start:
-                    # report what its kill would, before reserving anything.
-                    payload = _minimal_payload(config, "degraded", "worker_watchdog_timeout")
-                    return _report(sink, config, payload, started_at=started_at, exit_code=124)
+                    # No window left to start in; nothing is reserved yet.
+                    return _owner_timeout(sink, config, started_at=started_at)
                 payload = _drain_once(config, instance, deadline)
                 return _report(sink, config, payload, started_at=started_at, exit_code=0)
         except TimeoutError:
             payload = _minimal_payload(config, "busy", "worker_wait_timeout")
             return _report(sink, config, payload, started_at=started_at, exit_code=75)
     except Exception as exc:
+        if (deadline_epoch is not None and preflight_gap is None
+                and isinstance(exc, ContractError) and exc.code == "DEADLINE_EXCEEDED"):
+            # The window ran out inside the drain, as it does for a pass that
+            # starts with milliseconds left.  Like a kill, it keeps its page.
+            return _owner_timeout(sink, config, started_at=started_at)
         # Error classes/codes are useful to a supervisor while details may
         # contain paths or model data.  Keep the protocol bounded and safe.
         payload = _minimal_payload(config, "degraded", preflight_gap or _exception_gap(exc))
