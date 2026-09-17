@@ -2,14 +2,13 @@
 
 Scope Recall v3 is a bounded local memory core with SQLite as the authority and rebuildable vector companions. It provides host adapters for Hermes and Codex, including Codex MCP tools when the optional `codex` extra is installed. The public package is `hermes-scope-recall`; the Python import is `scope_recall`; the host wrapper identity remains `scope-recall`.
 
-This checkout is release candidate `3.1.0rc35`. It ends the last worker passes
-that started back to back without progress: a candidate source trigger always
-closes, memory read back to the model no longer holds one open, and a pass
-continues up to sixteen trigger pages instead of one. rc34 stopped passes woken
-for failures a worker cannot recover or for a port that refused before any
-attempt. rc33 made recall return answers: facts are searched as facts, earlier
-questions no longer outrank the reply that answered them, and every item says
-when it was said.
+This checkout is release candidate `3.1.0rc36`. A consolidation keeps its claims
+when a summary beside them does not qualify, a source becomes a candidate's
+evidence only when it can speak to that candidate, and a worker pass that finds
+the truth writer held is busy rather than failed. rc35 ended the last worker
+passes that started back to back without progress. rc33 made recall return
+answers: facts are searched as facts, earlier questions no longer outrank the
+reply that answered them, and every item says when it was said.
 SQLite remains the only fact authority; host adapters share the same contracts.
 This is a local candidate, not a published release or a claim of live deployment.
 
@@ -48,7 +47,7 @@ python -m pip install "<absolute-path-to-wheel>"
 python -m pip install "<absolute-path-to-wheel>[codex]"
 ```
 
-The current release candidate is `3.1.0rc35`; these commands are local
+The current release candidate is `3.1.0rc36`; these commands are local
 placeholders until a reviewed wheel is built. They do not claim that full host
 runtime wiring or production registration has been accepted.
 

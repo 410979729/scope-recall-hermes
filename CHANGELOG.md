@@ -4,6 +4,16 @@ All notable changes to `scope-recall` will be documented in this file.
 
 ## [Unreleased]
 
+### Scope Recall 3.1.0rc36 claims survive an unqualified summary, evidence has to speak to its candidate, a held writer is busy - 2026-09-17
+
+Found while rc35 ran on all four instances and while epsilon was migrated from 2.0.1.
+
+- A single-page consolidation rolled back whole when one resume or reference summary failed qualification. That cost a second model call and, when the second answer failed too, every claim in the page. Beta recorded 208 such summary violations in one day, nearly all `goal_authority`. A paged consolidation already dropped the summary and kept the claims; every worker result now does. A result submitted outside the worker is still rejected whole.
+- A source became evidence for every reachable candidate sharing any lexical term with it: 116,000 rows on alpha's 1,215 live candidates, 6% of which restated the candidate. First-hand testimony keeps that rule. Any other source must restate the candidate or name its subject; a self subject such as 我 does not count. Replayed on the rc35 backups, alpha keeps 19% and beta 30% of the newest evidence rows, every first-hand row, and every trigger-attached source a promotion cited. Existing rows are left as they are.
+- A worker pass that raised `TruthWriterBusyError`, or SQLite reporting the database locked, exited as failed, which stops the supervisor until the next autostart wake. It now reports busy (exit 75, `worker_writer_busy`), and the supervisor waits `BUSY_BACKOFF_SECONDS` (30) before the next pass.
+
+A vector threshold of 0.68 instead of 0.65 was measured and not taken: on alpha and beta sandboxes with vectors, facts, questions, no_match and QA were identical at both values.
+
 ### Scope Recall 3.1.0rc35 a candidate source trigger always finishes - 2026-09-17
 
 Seen while rc34 ran as a canary on alpha: worker passes still started every 8-17 seconds and processed nothing, now woken for `candidate_evidence_remainder`.
