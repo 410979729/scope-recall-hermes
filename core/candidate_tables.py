@@ -17,7 +17,7 @@ import json
 from ..contracts import ContractError
 from .candidate_debounce import settle_reason
 from .candidate_lifecycle import CandidateSnapshot
-from .evidence_question import question_digest
+from .evidence_question import question_digest, restates
 
 #: Characters of evidence content one candidate evaluation may carry.
 #:
@@ -149,6 +149,57 @@ class CandidateTables:
                FROM candidate_lifecycle WHERE candidate_ref=? AND candidate_revision=?""",
             (ref, revision),
         ).fetchone()
+
+    def _cited_origins(self, ref: str, revision: int) -> frozenset[str]:
+        """Effective origins of the sources this claim version cites, imports resolved."""
+        origins = set()
+        for row in self._read().execute(
+            """SELECT s.origin,s.source_original_origin,s.import_provenance_sha256
+               FROM evidence_links l JOIN source_events s
+                 ON s.event_id=l.source_ref AND s.source_revision=l.source_revision
+               WHERE l.object_kind='claim' AND l.object_ref=? AND l.object_revision=?""",
+            (ref, revision),
+        ).fetchall():
+            origin = row["origin"]
+            if origin == "imported":
+                verified = row["import_provenance_sha256"] is not None
+                origin = (row["source_original_origin"] or "origin_unknown") if verified else "origin_unknown"
+            origins.add(origin)
+        return frozenset(origins)
+
+    def _model_verdicts(self, ref: str, revision: int, *,
+                        excluding: int | None = None) -> tuple[int, frozenset[tuple[str, int]]]:
+        """Model verdicts this candidate already had, and every source they judged.
+
+        An attempt handed back without a verdict (a refused account, a capacity
+        refusal) clears ``model_attempted_at`` and is not counted.
+        """
+        rows = self._read().execute(
+            """SELECT evidence_refs_json FROM candidate_evaluations
+               WHERE candidate_ref=? AND candidate_revision=? AND model_attempted_at IS NOT NULL
+                 AND evaluation_id<>?""",
+            (ref, revision, -1 if excluding is None else excluding),
+        ).fetchall()
+        judged: set[tuple[str, int]] = set()
+        for row in rows:
+            try:
+                judged.update(parse_refs(row[0]))
+            except (ValueError, TypeError, AttributeError):
+                continue
+        return len(rows), frozenset(judged)
+
+    def _restated_in_unjudged(self, payload, refs, judged: frozenset[tuple[str, int]]) -> bool:
+        """Whether a source no earlier verdict saw restates the candidate."""
+        unjudged = []
+        for ref, revision in refs:
+            if (ref, revision) in judged:
+                continue
+            row = self._read().execute(
+                "SELECT content FROM source_events WHERE event_id=? AND source_revision=?", (ref, revision),
+            ).fetchone()
+            if row is not None:
+                unjudged.append(row["content"])
+        return bool(unjudged) and restates(payload, unjudged)
 
     def _candidate_of(self, evaluation_id: int) -> tuple[str, int] | None:
         row = self._read().execute(

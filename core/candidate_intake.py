@@ -15,7 +15,14 @@ from .candidate_tables import (
     rule, settled_reason, utc,
 )
 from .events import lexical_terms
-from .evidence_question import evidence_text, unanswerable_reason
+from .evidence_question import (
+    AUTOMATIC_VERDICTS,
+    PERSON_ABSENT_REASON,
+    REPEAT_WITHOUT_RESTATEMENT_REASON,
+    evidence_text,
+    needs_absent_person,
+    unanswerable_reason,
+)
 
 #: Truncated source triggers still owe a page of candidates, joined to their
 #: source so the audience filter can apply.
@@ -55,6 +62,12 @@ class CandidateIntake(CandidateTables):
             raise ContractError("VERSION_CONFLICT", "candidate_revision")
         prior = self._lifecycle_row(candidate_ref, candidate_revision)
         state, reason, updated_at = _registration_target(candidate, prior, rule_version, now)
+        if state == "pending_evaluation" and needs_absent_person(
+                candidate.payload, self._cited_origins(candidate.ref, candidate.revision)):
+            # See core/evidence_question.py: only the person's own words can
+            # promote it, and their consolidation proposes it with that authority.
+            state, reason, updated_at = "archived", PERSON_ABSENT_REASON, now
+            self._retire_evaluations(candidate.ref, candidate.revision, PERSON_ABSENT_REASON, now)
         self._write_lifecycle(candidate, state, reason, rule_version, now, updated_at)
         evaluation_id, queued = None, False
         if is_reachable(state, reason):
@@ -238,12 +251,24 @@ class CandidateIntake(CandidateTables):
         row = self._lifecycle_row(candidate.ref, candidate.revision)
         if row is None or not is_reachable(row["processing_state"], row["reason"]):
             return None, False
+        payload = getattr(candidate, "payload", None)
+        if needs_absent_person(payload, self._cited_origins(candidate.ref, candidate.revision)):
+            # A candidate registered before this rule: archive it the way registration now would.
+            self._retire_evaluations(candidate.ref, candidate.revision, PERSON_ABSENT_REASON, now)
+            self._move(candidate.ref, candidate.revision, "archived", PERSON_ABSENT_REASON, now=now, dormant_at=now)
+            conn.execute("DELETE FROM candidate_trigger_terms WHERE candidate_ref=? AND candidate_revision=?",
+                         (candidate.ref, candidate.revision))
+            return None, False
         refs, digest = self._question(candidate.ref, candidate.revision)
         if not refs:
             self._move(candidate.ref, candidate.revision, "waiting_evidence", "no_valid_evidence", now=now)
             return None, False
         epoch = int(conn.execute("SELECT memory_epoch FROM instance_meta WHERE singleton=1").fetchone()[0])
         unanswerable = self._unanswerable(candidate, refs)
+        if unanswerable is None:
+            verdicts, judged = self._model_verdicts(candidate.ref, candidate.revision)
+            if verdicts >= AUTOMATIC_VERDICTS and not self._restated_in_unjudged(payload, refs, judged):
+                unanswerable = REPEAT_WITHOUT_RESTATEMENT_REASON
         if unanswerable is not None:
             self._record_unanswerable(candidate, refs, digest, unanswerable, epoch=epoch, now=now,
                                       rule_version=rule_version)

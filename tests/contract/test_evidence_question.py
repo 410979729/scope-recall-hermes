@@ -230,3 +230,40 @@ def test_an_imported_source_speaks_with_its_verified_origin(app):
     assert evidence_text(verified).origin == "human_direct"
     observed = capture(core, ctx, "配色 蓝色", origin="tool_observation", key="TEST-import/observed")
     assert evidence_text(observed).origin == "tool_observation" and evidence_text(observed).complete
+
+
+# --------------------------------------------------------------------------
+# Questions worth asking at most so often
+# --------------------------------------------------------------------------
+
+@pytest.mark.parametrize("kind", ["preference", "constraint", "decision", "intention", "alias"])
+@pytest.mark.parametrize("origins", [{"tool_observation"}, {"external_document"}, {"tool_observation", "external_document"}])
+def test_a_person_kind_from_impersonal_sources_needs_an_absent_person(kind, origins):
+    from scope_recall.core.evidence_question import needs_absent_person
+
+    assert needs_absent_person({"kind": kind}, origins) is True
+
+
+@pytest.mark.parametrize("kind,origins", [
+    ("constraint", {"tool_observation", "human_direct"}),
+    ("constraint", {"tool_observation", "assistant_visible"}),   # may lead to a person through lineage
+    ("constraint", {"origin_unknown"}),
+    ("constraint", set()),
+    ("fact", {"tool_observation"}),                              # an observation can establish a fact
+    ("procedure", {"tool_observation"}),
+    (None, {"tool_observation"}),
+])
+def test_anything_less_certain_stays_a_candidate(kind, origins):
+    from scope_recall.core.evidence_question import needs_absent_person
+
+    assert needs_absent_person({"kind": kind}, origins) is False
+
+
+def test_the_restatement_is_the_value_or_for_value_free_kinds_the_subject():
+    from scope_recall.core.evidence_question import restatement_needle, restates
+
+    assert restatement_needle({"kind": "decision", "subject": "配色", "value_text": "深 蓝色"}) == "深蓝色"
+    assert restatement_needle({"kind": "procedure", "subject": "Deploy-Steps", "value_text": "x"}) == "deploysteps"
+    assert restates({"kind": "decision", "value_text": "深蓝色"}, ["最后确认：深-蓝色！"]) is True
+    assert restates({"kind": "decision", "value_text": "深蓝色"}, ["还没定"]) is False
+    assert restates({"kind": "decision", "value_text": "——", "subject": "——"}, ["还没定"]) is True

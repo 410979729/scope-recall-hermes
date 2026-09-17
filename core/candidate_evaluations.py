@@ -10,6 +10,14 @@ from __future__ import annotations
 from ..contracts import ContractError
 from .candidate_lifecycle import CandidateEvaluationSnapshot
 from .candidate_tables import HEAD_COLUMNS, HEAD_JOINS, CandidateTables, is_live_head, parse_refs, snapshot
+from .evidence_question import (
+    AUTOMATIC_VERDICTS,
+    PERSON_ABSENT_REASON,
+    REPEAT_WITHOUT_RESTATEMENT_REASON,
+    evidence_text,
+    needs_absent_person,
+    unanswerable_reason,
+)
 
 #: Provider failures that keep the ordinary retry limit.  Invalid output and an
 #: uncertain timeout or crash do not: the at-most-once fence must not be
@@ -52,6 +60,32 @@ class CandidateEvaluations(CandidateTables):
             row["evaluation_id"], snapshot(row), refs, row["evidence_fingerprint"], row["memory_epoch"],
             row["state"], row["model_attempted_at"],
         )
+
+    def settle_without_model(self, evaluation: CandidateEvaluationSnapshot, work, sources, *, now: str):
+        """Answer a queued evaluation that a rule in ``core/evidence_question.py`` already decides.
+
+        Returns the work mutation, or ``None`` when the model has to be asked.
+        Nothing here begins a model attempt, so the at-most-once fence is
+        untouched and a candidate whose question later changes is asked anew.
+        """
+        candidate = evaluation.candidate
+        answer = None
+        if needs_absent_person(candidate.payload, self._cited_origins(candidate.ref, candidate.revision)):
+            answer = ("archived", PERSON_ABSENT_REASON)
+        else:
+            reason = unanswerable_reason(candidate.payload, tuple(evidence_text(source) for source in sources))
+            if reason is not None:
+                answer = ("waiting_evidence", reason)
+            else:
+                verdicts, judged = self._model_verdicts(candidate.ref, candidate.revision,
+                                                        excluding=evaluation.evaluation_id)
+                if verdicts >= AUTOMATIC_VERDICTS and not self._restated_in_unjudged(
+                        candidate.payload, evaluation.evidence_refs, judged):
+                    answer = ("waiting_evidence", REPEAT_WITHOUT_RESTATEMENT_REASON)
+        if answer is None:
+            return None
+        return self.complete(evaluation.evaluation_id, work, now=now, state=answer[0], reason=answer[1],
+                             result_digest=None)
 
     def begin_model_attempt(self, evaluation_id: int, work_id: int, lease_token: int, owner: str, *, now: str) -> bool:
         """Claim the single model attempt; False when the lease or the evaluation has moved."""

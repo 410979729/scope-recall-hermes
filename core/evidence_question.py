@@ -132,5 +132,71 @@ def unanswerable_reason(payload: Mapping, evidence: Iterable[EvidenceText]) -> s
     return None
 
 
-__all__ = ["FIRST_HAND_ORIGINS", "EvidenceText", "evidence_text", "is_first_hand", "question_digest",
-           "unanswerable_reason"]
+# --- questions worth asking at most so often ---------------------------------
+#
+# Even an answerable question is not worth asking again and again.  Replayed over
+# alpha's 10,650 evaluations (2026-09-13..17), the candidate loop cost 81-97% of
+# every day's model tokens, 60-96% of each day's evaluations re-asked a candidate
+# already judged, and 307 candidates were asked ten times or more.  Of the 27
+# verdicts that promoted a fact, 19 came from a candidate's first verdict, 4 from
+# its second, and 4 from the fifth or later.  Two rules follow:
+#
+# * a kind only a person can establish (``claims._HUMAN_ONLY_KINDS``) that was
+#   proposed from sources where no person spoke is not a candidate at all: 2,034
+#   of those evaluations promoted nothing, and when the person does say it, the
+#   consolidation of their own words proposes it with the authority it needs;
+# * a candidate gets ``AUTOMATIC_VERDICTS`` model verdicts; after that it is asked
+#   again only when a source that arrived since its last verdict restates it.
+#   Replayed, this keeps 24 of the 27 promotions and 20% of the model calls.
+
+#: Origins whose sources never carry a person's own words.
+IMPERSONAL_ORIGINS = frozenset({"tool_observation", "external_document"})
+
+#: Model verdicts a candidate receives before only a restatement can reopen it.
+AUTOMATIC_VERDICTS = 2
+
+#: The recorded reasons for the two rules, as they appear on lifecycle and evaluation rows.
+PERSON_ABSENT_REASON = "person_kind_without_person"
+REPEAT_WITHOUT_RESTATEMENT_REASON = "repeat_without_restatement"
+
+
+def needs_absent_person(payload: Mapping, cited_origins: Iterable[str]) -> bool:
+    """A kind only a person can establish, proposed where no person spoke.
+
+    ``cited_origins`` are the effective origins of the sources the proposal
+    cites.  An empty or unknown origin set is never judged absent.
+    """
+    from .claims import _HUMAN_ONLY_KINDS
+
+    kind = payload.get("kind") if isinstance(payload, Mapping) else None
+    origins = frozenset(cited_origins)
+    return kind in _HUMAN_ONLY_KINDS and bool(origins) and origins <= IMPERSONAL_ORIGINS
+
+
+def restatement_needle(payload: Mapping) -> str:
+    """What a later source must contain to restate this candidate, compared on letters and digits.
+
+    The value for kinds whose promotion quotes it; the subject for the kinds
+    proved otherwise.  Empty when neither has a letter or digit.
+    """
+    from .claims import _VALUE_FREE_KINDS
+
+    if not isinstance(payload, Mapping):
+        return ""
+    value = _letters_and_digits(payload.get("value_text"))
+    if payload.get("kind") in _VALUE_FREE_KINDS or not value:
+        return _letters_and_digits(payload.get("subject"))
+    return value
+
+
+def restates(payload: Mapping, contents: Iterable[str]) -> bool:
+    """Whether any of ``contents`` restates the candidate; unknown needles count as restated."""
+    needle = restatement_needle(payload)
+    if not needle:
+        return True
+    return any(needle in _letters_and_digits(content) for content in contents)
+
+
+__all__ = ["AUTOMATIC_VERDICTS", "FIRST_HAND_ORIGINS", "IMPERSONAL_ORIGINS", "PERSON_ABSENT_REASON",
+           "REPEAT_WITHOUT_RESTATEMENT_REASON", "EvidenceText", "evidence_text", "is_first_hand",
+           "needs_absent_person", "question_digest", "restatement_needle", "restates", "unanswerable_reason"]

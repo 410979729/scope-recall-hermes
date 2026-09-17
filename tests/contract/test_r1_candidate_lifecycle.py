@@ -796,13 +796,59 @@ def test_a_value_absent_from_every_source_is_not_sent_to_the_model(app):
     assert evaluator.calls == 1
 
 
-def test_a_person_only_kind_without_a_person_is_not_sent_to_the_model(app):
+def test_a_fact_without_any_authority_is_not_sent_to_the_model(app):
     core, ctx = app
-    source = capture(core, ctx, "entity-tool property-tool 灰色", origin="tool_observation", key="TEST-r1/tool")
-    _saved, registration = _register_candidate(core, ctx, source, "灰色", slug="tool")
+    source = capture(core, ctx, "entity-said property-said 灰色", origin="assistant_visible", key="TEST-r1/said")
+    proposal = draft(source, "灰色", subject="entity-said", predicate="property-said", kind="fact", statement_kind="fact")
+    with core.storage.write(ctx) as tx:
+        saved = tx.claims.append("TEST-scope", proposal, Qualification("proposed", "inferred_suggestion", "TEST_candidate"),
+                                 recorded_at=core.clock.utc_now())
+        registration = tx.candidates.register(saved.ref, saved.revision, observed_at=core.clock.utc_now())
     assert (registration.work_queued, registration.reason) == (False, "no_authoritative_evidence")
     _lifecycle, _evaluations, work = _candidate_rows(core)
     assert work == []
+
+
+def test_a_person_only_kind_proposed_from_a_tool_is_not_a_candidate(app):
+    """2,034 evaluations of such candidates on alpha promoted nothing: only the
+    person's own words can, and their consolidation proposes it with that authority."""
+    core, ctx = app
+    source = capture(core, ctx, "entity-tool property-tool 灰色", origin="tool_observation", key="TEST-r1/tool")
+    saved, registration = _register_candidate(core, ctx, source, "灰色", slug="tool")
+    assert (registration.processing_state, registration.reason, registration.work_queued) == (
+        "archived", "person_kind_without_person", False)
+    lifecycle, evaluations, work = _candidate_rows(core)
+    assert work == [] and evaluations == []
+    with sqlite3.connect(core.storage.path) as conn:
+        terms = conn.execute("SELECT count(*) FROM candidate_trigger_terms WHERE candidate_ref=?", (saved.ref,)).fetchone()[0]
+    assert terms == 0, "an archived candidate must not be woken by later sources"
+
+
+def test_a_person_only_kind_queued_before_the_rule_is_archived_without_the_model(app):
+    core, ctx = app
+    source = capture(core, ctx, "entity-tool property-tool 灰色", origin="tool_observation", key="TEST-r1/legacy")
+    saved, _registration = _register_candidate(core, ctx, source, "灰色", slug="tool")
+    # What an older release left behind: the candidate pending with a queued evaluation.
+    with sqlite3.connect(core.storage.path) as conn:
+        conn.execute("UPDATE candidate_lifecycle SET processing_state='pending_evaluation',reason='new_evidence'")
+        conn.commit()
+    with core.storage.write(ctx) as tx:
+        refs, digest = tx.candidates._question(saved.ref, saved.revision)
+        tx._check(write=True).execute(
+            """INSERT INTO candidate_evaluations(candidate_ref,candidate_revision,evidence_fingerprint,evidence_refs_json,
+               rule_version,memory_epoch,state,reason,created_at) VALUES (?,?,?,?,?,0,'queued','new_evidence',?)""",
+            (saved.ref, saved.revision, digest, json.dumps([f"{r}@{v}" for r, v in refs]), "r1-candidate-v1",
+             core.clock.utc_now()))
+        evaluation_id = tx._check().execute("SELECT max(evaluation_id) FROM candidate_evaluations").fetchone()[0]
+        work_id = tx.candidates._enqueue(saved.ref, evaluation_id, core.clock.utc_now())
+        tx._check(write=True).execute("UPDATE candidate_evaluations SET work_id=? WHERE evaluation_id=?", (work_id, evaluation_id))
+    _finish_source_work(core)
+    evaluator = Evaluator()
+    core.drain_worker(ctx, max_items=8, remaining_seconds=10, consolidation=evaluator)
+    lifecycle, evaluations, work = _candidate_rows(core)
+    assert evaluator.calls == 0
+    assert (lifecycle[0]["processing_state"], lifecycle[0]["reason"]) == ("archived", "person_kind_without_person")
+    assert evaluations[0]["model_attempted_at"] is None and work[0]["state"] == "done"
 
 
 def test_an_evaluation_queued_before_the_check_is_settled_without_the_model(app):
@@ -825,3 +871,72 @@ def test_an_evaluation_queued_before_the_check_is_settled_without_the_model(app)
     assert evaluations[0]["model_attempted_at"] is None
     assert work[0]["state"] == "done"
     assert (lifecycle[0]["processing_state"], lifecycle[0]["reason"]) == ("waiting_evidence", "value_not_in_evidence")
+
+
+def _new_first_hand_evidence(core, ctx, text, key):
+    said = capture(core, ctx, text, key=key)
+    with core.storage.write(ctx) as tx:
+        tx.candidates.observe_source(said.ref, said.revision, observed_at=core.clock.utc_now())
+    _finish_source_work(core)
+    _settle_evidence(core)
+    return _sweep(core, ctx)
+
+
+def test_a_candidate_gets_two_verdicts_then_only_a_restatement_reopens_it(app):
+    """On alpha 307 candidates were asked ten times or more.  Of 27 promotions,
+    19 came from the first verdict and 4 from the second."""
+    core, ctx = app
+    _candidate(core, ctx)
+    _finish_source_work(core)
+    evaluator = Evaluator()
+    core.drain_worker(ctx, max_items=8, remaining_seconds=10, consolidation=evaluator)
+    assert evaluator.calls == 1
+
+    assert _new_first_hand_evidence(core, ctx, "entity-blue property-blue 今天又讨论了一次。", "TEST-r1/second") == 1
+    core.drain_worker(ctx, max_items=8, remaining_seconds=10, consolidation=evaluator)
+    assert evaluator.calls == 2
+
+    # New testimony that does not restate the value: answered without the model.
+    assert _new_first_hand_evidence(core, ctx, "entity-blue property-blue 还要再想想。", "TEST-r1/third") == 0
+    core.drain_worker(ctx, max_items=8, remaining_seconds=10, consolidation=evaluator)
+    assert evaluator.calls == 2
+    lifecycle, evaluations, _work = _candidate_rows(core)
+    assert (lifecycle[0]["processing_state"], lifecycle[0]["reason"]) == ("waiting_evidence", "repeat_without_restatement")
+    assert evaluations[-1]["reason"] == "repeat_without_restatement" and evaluations[-1]["work_id"] is None
+
+    # Someone says the value again: that is worth a third verdict.
+    assert _new_first_hand_evidence(core, ctx, "entity-blue property-blue 最后确认用蓝色。", "TEST-r1/restated") == 1
+    core.drain_worker(ctx, max_items=8, remaining_seconds=10, consolidation=evaluator)
+    assert evaluator.calls == 3
+
+
+def test_a_repeat_queued_before_the_limit_is_answered_without_the_model(app):
+    core, ctx = app
+    saved, _source, _proposal, _registration = _candidate(core, ctx)
+    _finish_source_work(core)
+    evaluator = Evaluator()
+    core.drain_worker(ctx, max_items=8, remaining_seconds=10, consolidation=evaluator)
+    _new_first_hand_evidence(core, ctx, "entity-blue property-blue 今天又讨论了一次。", "TEST-r1/second")
+    core.drain_worker(ctx, max_items=8, remaining_seconds=10, consolidation=evaluator)
+    assert evaluator.calls == 2
+    said = capture(core, ctx, "entity-blue property-blue 还要再想想。", key="TEST-r1/legacy-third")
+    with core.storage.write(ctx) as tx:
+        tx.candidates.observe_source(said.ref, said.revision, observed_at=core.clock.utc_now())
+        refs, digest = tx.candidates._question(saved.ref, saved.revision)
+        conn = tx._check(write=True)
+        # What an older release queued: a third evaluation, no restatement in it.
+        conn.execute(
+            """INSERT INTO candidate_evaluations(candidate_ref,candidate_revision,evidence_fingerprint,evidence_refs_json,
+               rule_version,memory_epoch,state,reason,created_at) VALUES (?,?,?,?,?,0,'queued','new_evidence',?)""",
+            (saved.ref, saved.revision, digest, json.dumps([f"{r}@{v}" for r, v in refs]), "r1-candidate-v1",
+             core.clock.utc_now()))
+        evaluation_id = conn.execute("SELECT max(evaluation_id) FROM candidate_evaluations").fetchone()[0]
+        work_id = tx.candidates._enqueue(saved.ref, evaluation_id, core.clock.utc_now())
+        conn.execute("UPDATE candidate_evaluations SET work_id=? WHERE evaluation_id=?", (work_id, evaluation_id))
+        conn.execute("UPDATE candidate_lifecycle SET processing_state='pending_evaluation',reason='new_evidence'")
+    _finish_source_work(core)
+    core.drain_worker(ctx, max_items=8, remaining_seconds=10, consolidation=evaluator)
+    _lifecycle, evaluations, _work = _candidate_rows(core)
+    assert evaluator.calls == 2
+    third = next(row for row in evaluations if row["evaluation_id"] == evaluation_id)
+    assert third["reason"] == "repeat_without_restatement" and third["model_attempted_at"] is None

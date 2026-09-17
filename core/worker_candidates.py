@@ -11,7 +11,6 @@ from functools import partial
 
 from ..contracts import ContractError
 from .candidate_lifecycle import CandidateEvaluator, candidate_subject_matches
-from .evidence_question import evidence_text, unanswerable_reason
 from .failure_retry import validation_feedback
 from .worker_consolidation import _decode_consolidation_result
 from .worker_outcomes import (
@@ -138,17 +137,14 @@ def _process_candidate_evaluation(
                         break
                 if invalid_reason is None:
                     dependencies = read_derivation_fence(tx, scope_id=item.scope_id, sources=evidence_sources)
-                    # Evidence no verdict could promote needs no model call; see
+                    # A question a rule already answers needs no model call; see
                     # core/evidence_question.py.  Recorded like a verdict, with
                     # no attempt spent, so the at-most-once fence is untouched.
-                    unanswerable = unanswerable_reason(
-                        evaluation.candidate.payload, tuple(evidence_text(source) for source in evidence_sources),
+                    settled = tx.candidates.settle_without_model(
+                        evaluation, item, evidence_sources, now=clock.utc_now(),
                     )
-                    if unanswerable is not None:
-                        return _work_result(tx.candidates.complete(
-                            evaluation.evaluation_id, item, now=clock.utc_now(), state="waiting_evidence",
-                            reason=unanswerable, result_digest=None,
-                        ))
+                    if settled is not None:
+                        return _work_result(settled)
                 if invalid_reason is None and evaluation.model_attempted_at is None:
                     began = tx.candidates.begin_model_attempt(
                         evaluation.evaluation_id, *item.lease, now=clock.utc_now(),
