@@ -286,6 +286,25 @@ def test_a_cache_count_that_cannot_be_true_is_not_recorded(tmp_path, monkeypatch
     assert _ledger_rows(ledger)[0]["cached_input"] is None
 
 
+@pytest.mark.parametrize("usage,unreported", [
+    ({"prompt_tokens": 1000, "completion_tokens": 5, "total_tokens": 9005}, 8000),
+    ({"prompt_tokens": 1000, "completion_tokens": 5, "total_tokens": 1005}, None),
+    ({"prompt_tokens": 1000, "completion_tokens": 5, "total_tokens": 900}, None),
+    ({"prompt_tokens": 1000, "completion_tokens": 5}, None),
+])
+def test_output_billed_outside_completion_tokens_is_recorded_and_charged(tmp_path, monkeypatch, usage, unreported):
+    """beta's Gemini route recorded 325 completion tokens a call while the
+    provider billed thousands of thinking tokens nobody could see."""
+    config, ledger, budget = _runtime_config(tmp_path)
+    monkeypatch.setenv("SCOPE_RECALL_TEST_CHAT_KEY", "test-key")
+    runtime = build_auxiliary_runtime(config, transport=_cached_reply(usage))
+    runtime.consolidation.propose([{"role": "user", "content": "bounded input"}], remaining_seconds=2.0)
+    row = _ledger_rows(ledger)[0]
+    assert row["unreported_output"] == unreported
+    assert row["actual_output"] == 5 and row["status"] == "http_200"
+    assert row["charge_micro_usd"] == budget.pricing["deepseek-v4-flash"].charge_micro_usd(1000, 5 + (unreported or 0))
+
+
 def test_a_ledger_from_before_the_cache_column_gains_it_on_first_use(tmp_path, monkeypatch):
     config, ledger, _ = _runtime_config(tmp_path)
     ledger.unlink()
@@ -294,11 +313,11 @@ def test_a_ledger_from_before_the_cache_column_gains_it_on_first_use(tmp_path, m
                    "request_bytes INTEGER, reserved_input INTEGER, reserved_output INTEGER, actual_input INTEGER, "
                    "actual_output INTEGER, charge_micro_usd INTEGER, status TEXT, started_ns INTEGER)")
     monkeypatch.setenv("SCOPE_RECALL_TEST_CHAT_KEY", "test-key")
-    usage = {"prompt_tokens": 1000, "completion_tokens": 5, "prompt_cache_hit_tokens": 640}
+    usage = {"prompt_tokens": 1000, "completion_tokens": 5, "prompt_cache_hit_tokens": 640, "total_tokens": 2005}
     for _ in range(2):
         runtime = build_auxiliary_runtime(config, transport=_cached_reply(usage))
         runtime.consolidation.propose([{"role": "user", "content": "bounded input"}], remaining_seconds=2.0)
-    assert [row["cached_input"] for row in _ledger_rows(ledger)] == [640, 640]
+    assert [(row["cached_input"], row["unreported_output"]) for row in _ledger_rows(ledger)] == [(640, 1000), (640, 1000)]
 
 
 def _chat_reply(message, finish_reason):

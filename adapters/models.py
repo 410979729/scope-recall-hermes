@@ -378,8 +378,27 @@ def _chat_usage(payload: Mapping[str, Any]) -> dict[str, int] | None:
         cached = _cached_prompt_tokens(candidate)
         if cached is not None:
             usage["cached_prompt_tokens"] = cached
+        unreported = _unreported_output_tokens(candidate)
+        if unreported is not None:
+            usage["unreported_output_tokens"] = unreported
         return usage
     return None
+
+
+def _unreported_output_tokens(usage: Mapping[str, Any]) -> int | None:
+    """Billed tokens ``total_tokens`` counts beyond the prompt and the completion.
+
+    A thinking model can bill its reasoning without counting it in
+    ``completion_tokens``: beta's Gemini 2.5 Flash route recorded a median of
+    325 completion tokens a call while the provider's console showed roughly
+    8,000.  OpenAI-style routes count reasoning inside ``completion_tokens`` and
+    report a total equal to the sum, so nothing is counted twice.
+    """
+    total = usage.get("total_tokens")
+    if type(total) is not int:
+        return None
+    extra = total - usage["prompt_tokens"] - usage["completion_tokens"]
+    return extra if extra > 0 else None
 
 
 def _cached_prompt_tokens(usage: Mapping[str, Any]) -> int | None:

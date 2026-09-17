@@ -22,7 +22,7 @@ REQUESTS_TABLE = (
     "id INTEGER PRIMARY KEY, batch TEXT, model TEXT, body_sha256 TEXT, "
     "request_bytes INTEGER, reserved_input INTEGER, reserved_output INTEGER, "
     "actual_input INTEGER, actual_output INTEGER, charge_micro_usd INTEGER, "
-    "status TEXT, started_ns INTEGER, cached_input INTEGER)"
+    "status TEXT, started_ns INTEGER, cached_input INTEGER, unreported_output INTEGER)"
 )
 
 _LEDGER_BUSY_SLEEP_SECONDS = 0.01
@@ -328,7 +328,7 @@ class AuxiliaryBudgetLedger:
         timeout_seconds: float | None = None,
     ) -> str:
         counts = None
-        cached = None
+        cached = unreported = None
         if isinstance(usage, Mapping):
             prompt, completion = usage.get("prompt_tokens"), usage.get("completion_tokens")
             if type(prompt) is int and type(completion) is int and min(prompt, completion) >= 0:
@@ -336,7 +336,11 @@ class AuxiliaryBudgetLedger:
                 hit = usage.get("cached_prompt_tokens")
                 if type(hit) is int and 0 <= hit <= prompt:
                     cached = hit
-        return self._settle(request_id, status, counts, timeout_seconds=timeout_seconds, cached_input=cached)
+                extra = usage.get("unreported_output_tokens")
+                if type(extra) is int and extra > 0:
+                    unreported = extra
+        return self._settle(request_id, status, counts, timeout_seconds=timeout_seconds, cached_input=cached,
+                            unreported_output=unreported)
 
     def finish_embedding(
         self,
@@ -354,7 +358,8 @@ class AuxiliaryBudgetLedger:
         return self._settle(request_id, status, counts, timeout_seconds=timeout_seconds)
 
     def _settle(self, request_id: int, status: str, counts: tuple[int, int] | None, *,
-                timeout_seconds: float | None, cached_input: int | None = None) -> str:
+                timeout_seconds: float | None, cached_input: int | None = None,
+                unreported_output: int | None = None) -> str:
         """Close the reservation once.  Unknown usage keeps the reserved charge."""
         deadline = None if timeout_seconds is None else time.monotonic() + float(timeout_seconds)
         retained = f"{status}_usage_unknown_reserved_charge_retained"
@@ -375,13 +380,17 @@ class AuxiliaryBudgetLedger:
                         return retained
                     prompt, completion = counts
                     final = "meter_breach" if prompt > row[2] or completion > row[3] else status
-                    charge = pricing.charge_micro_usd(prompt, completion)
+                    # Unreported output is billed, so it is charged; the breach
+                    # check keeps judging what the reservation bounded.
+                    charge = pricing.charge_micro_usd(prompt, completion + (unreported_output or 0))
                     db.execute(
                         "UPDATE requests SET status=?,actual_input=?,actual_output=?,charge_micro_usd=? WHERE id=?",
                         (final, prompt, completion, charge, request_id),
                     )
                     if cached_input is not None:
-                        _record_cached_input(db, request_id, cached_input)
+                        _record_observed(db, request_id, "cached_input", cached_input)
+                    if unreported_output is not None:
+                        _record_observed(db, request_id, "unreported_output", unreported_output)
                     return final
             except sqlite3.OperationalError as exc:
                 if not _is_locked(exc):
@@ -392,16 +401,22 @@ class AuxiliaryBudgetLedger:
                 time.sleep(min(_LEDGER_BUSY_SLEEP_SECONDS, remaining))
 
 
-def _record_cached_input(db: sqlite3.Connection, request_id: int, cached: int) -> None:
-    """Store the provider's cached prompt tokens beside the settled row.
+#: Columns a settled row may carry beyond the original schema, added on first use.
+_OBSERVED_COLUMNS = frozenset({"cached_input", "unreported_output"})
 
-    Observation only; the charge above still prices every prompt token.  A
-    ledger created before the column existed gains it here, inside the settling
-    write transaction, so two workers cannot both try to add it.
+
+def _record_observed(db: sqlite3.Connection, request_id: int, column: str, value: int) -> None:
+    """Store a provider-reported count beside the settled row.
+
+    ``cached_input`` is observation only; ``unreported_output`` is also charged
+    above.  A ledger created before a column existed gains it here, inside the
+    settling write transaction, so two workers cannot both try to add it.
     """
-    if "cached_input" not in {row[1] for row in db.execute("PRAGMA table_info(requests)")}:
-        db.execute("ALTER TABLE requests ADD COLUMN cached_input INTEGER")
-    db.execute("UPDATE requests SET cached_input=? WHERE id=?", (cached, request_id))
+    if column not in _OBSERVED_COLUMNS:
+        raise ValueError("ledger_column")
+    if column not in {row[1] for row in db.execute("PRAGMA table_info(requests)")}:
+        db.execute(f"ALTER TABLE requests ADD COLUMN {column} INTEGER")
+    db.execute(f"UPDATE requests SET {column}=? WHERE id=?", (value, request_id))
 
 
 #: A provider refusing nearly every call for a sustained stretch is an outage,
