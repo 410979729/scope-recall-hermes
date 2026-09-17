@@ -221,9 +221,14 @@ def drain_worker(
     while len(receipts) < config.max_items and _remaining(started, clock, budget) > 0:
         if _remaining(started, clock, budget) < reserve:
             allowed = allowed - model_bound
+        # Every second claim prefers fresh conversation over the backlog.  The
+        # first claim of a pass stays FIFO, so the lane holds at most half of
+        # any pass, a one-claim pass included, and the oldest work keeps moving
+        # however busy the chat is.  A default runtime pass (120 s, 45 s
+        # requests) fits two model requests, so each such pass reaches the lane.
         with storage.write(context, remaining_seconds=_remaining(started, clock, budget)) as tx:
             claimed = tx.work.claim_next(config.owner_id, clock.utc_now(), lease_seconds=config.lease_seconds,
-                                         limit=1, allowed_work_types=allowed)
+                                         limit=1, allowed_work_types=allowed, fresh_lane=len(receipts) % 2 == 1)
         if not claimed:
             break
         item = claimed[0]

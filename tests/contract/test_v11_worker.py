@@ -626,6 +626,98 @@ def test_fair_claim_orders_by_available_at(worker_app):
     assert claimed.subject_ref == one.ref
 
 
+def _iso(value: str, seconds: float) -> str:
+    from datetime import datetime, timedelta
+
+    return (datetime.fromisoformat(value.replace("Z", "+00:00")) + timedelta(seconds=seconds)).isoformat().replace("+00:00", "Z")
+
+
+def test_fresh_conversation_is_claimed_in_the_first_pass_beside_the_backlog(worker_app):
+    from dataclasses import replace
+
+    core, ctx, clock = worker_app
+    clock.advance(iso="2026-09-05T12:00:00Z")
+    backlog = [capture(core, replace(ctx, session_id=f"TEST-old/{index}"), f"TEST 昨天积压的事实 {index}。")
+               for index in range(40)]
+    clock.advance(iso="2026-09-06T12:00:00Z")
+    first = capture(core, ctx, "TEST 刚刚说的第一句。")
+    second = capture(core, ctx, "TEST 刚刚说的第二句。")
+    other = capture(core, replace(ctx, session_id="TEST-other-chat"), "TEST 另一段对话刚刚说的话。")
+    _mark_embed_done(core)
+    batches = []
+
+    def record(sources, **_):
+        batches.append([source.ref for source in sources])
+        return consolidation_payload(*sources)
+
+    receipt = core.drain_worker(ctx, consolidation=FakeConsolidation(record), max_items=6, remaining_seconds=10)
+    # FIFO and the lane alternate, FIFO first.  The lane takes the oldest fresh
+    # item, whose episode batch still carries the rest of that conversation;
+    # once no fresh work is left its turn falls back to the backlog.
+    assert receipt.completed == 6
+    assert batches == [[backlog[0].ref], [first.ref, second.ref], [backlog[1].ref], [other.ref],
+                       [backlog[2].ref], [backlog[3].ref]]
+    states = {row[1]: row[3] for row in consolidate_rows(core)}
+    assert states[first.ref] == states[second.ref] == states[other.ref] == "done"
+    assert [states[source.ref] for source in backlog].count("pending") == 36
+
+
+def test_fresh_lane_keeps_purge_first_window_origins_and_fifo(worker_app):
+    from scope_recall.core.work_storage import FRESH_LANE_SECONDS
+
+    core, ctx, clock = worker_app
+    now = clock.utc_now()
+    clock.advance(iso=_iso(now, -FRESH_LANE_SECONDS - 1))
+    outside = capture(core, ctx, "TEST 刚过两小时的消息。")
+    clock.advance(iso=_iso(now, -FRESH_LANE_SECONDS))
+    edge = capture(core, ctx, "TEST 恰好两小时前的消息。")
+    clock.advance(iso=_iso(now, -60))
+    reply = capture(core, ctx, "TEST 助手刚刚的回答。", origin="assistant_visible")
+    clock.advance(iso=_iso(now, -30))
+    document = capture(core, ctx, "TEST 刚刚导入的文档。", origin="external_document")
+    clock.advance(iso=now)
+    with core.storage.write(ctx) as tx:
+        assert tx.work.enqueue("purge", "delete-test:TEST-scope", 1, available_at=now)
+        order = [(item.subject_ref, item.work_type)
+                 for item in tx.work.claim_next("TEST-lane", now, lease_seconds=60, limit=3, fresh_lane=True)]
+        while claimed := tx.work.claim_next("TEST-lane", now, lease_seconds=60, fresh_lane=True):
+            order.append((claimed[0].subject_ref, claimed[0].work_type))
+    # Purge first; then fresh conversation oldest first -- an assistant reply is
+    # fresh embedding work but not a consolidation root, and a document records
+    # ingestion, not conversation; then plain FIFO once the lane is empty.
+    assert order == [
+        ("delete-test:TEST-scope", "purge"),
+        (edge.ref, "consolidate"), (edge.ref, "embed"), (reply.ref, "embed"),
+        (outside.ref, "consolidate"), (outside.ref, "embed"), (reply.ref, "consolidate"),
+        (document.ref, "consolidate"), (document.ref, "embed"),
+    ]
+
+
+def test_fresh_lane_examines_a_bounded_page_of_recent_work(worker_app, monkeypatch):
+    from scope_recall.core import work_storage
+
+    core, ctx, clock = worker_app
+    clock.advance(iso="2026-09-05T12:00:00Z")
+    old = capture(core, ctx, "TEST 昨天积压的事实。")
+    clock.advance(iso="2026-09-06T11:00:00Z")
+    fresh = capture(core, ctx, "TEST 一小时前的新消息。")
+    clock.advance(iso="2026-09-06T12:00:00Z")
+    _mark_embed_done(core)
+    with sqlite3.connect(core.storage.path) as conn:
+        # Work made available after the fresh item, e.g. a refill of old sources.
+        conn.executemany(
+            """INSERT INTO work_items(work_type,subject_ref,subject_revision,scope_id,project_id,branch_id,available_at)
+               VALUES ('consolidate',?,1,'TEST-scope',?,?,?)""",
+            [(f"TEST-refilled/{index}", ctx.project_id, ctx.branch_id, clock.utc_now()) for index in range(2)])
+    monkeypatch.setattr(work_storage, "FRESH_LANE_SCAN_ROWS", 2)
+    with core.storage.write(ctx) as tx:
+        blind = tx.work.claim_next("TEST-bounded", clock.utc_now(), lease_seconds=60, fresh_lane=True)
+    monkeypatch.setattr(work_storage, "FRESH_LANE_SCAN_ROWS", 3)
+    with core.storage.write(ctx) as tx:
+        seen = tx.work.claim_next("TEST-bounded", clock.utc_now(), lease_seconds=60, fresh_lane=True)
+    assert [blind[0].subject_ref, seen[0].subject_ref] == [old.ref, fresh.ref]
+
+
 def test_concurrent_claim_gives_single_leased_item(worker_app, tmp_path):
     core, ctx, clock = worker_app
     capture(core, ctx, "TEST 并发领取。")

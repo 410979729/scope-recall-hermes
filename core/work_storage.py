@@ -51,6 +51,47 @@ CAPACITY_BACKOFF_CEILING_SECONDS = 4 * 3600.0
 _PURGE_FIRST = "CASE WHEN work_type='purge' THEN 0 ELSE 1 END"
 _LEASED_ROW = "work_id=? AND state='leased' AND lease_token=? AND lease_owner=?"
 
+# --- the fresh conversation lane ---------------------------------------------
+#
+# Claiming is otherwise strictly FIFO, so a message typed now waited behind the
+# whole backlog -- 1,443 items, the oldest 19 hours, on one live instance --
+# before it was consolidated into claims or embedded for semantic recall.  A
+# lane claim prefers ready consolidate/embed work whose subject source is fresh
+# conversation, oldest first, so one conversation is still consolidated in
+# order and its episode batch still forms.  Purge keeps absolute priority and
+# the drain gives the lane at most every other claim, so the backlog keeps
+# moving however busy the chat is.
+
+#: A source is fresh for two hours after it was persisted: about 48 default
+#: worker cycles (120 s pass + 30 s interval).  Work the lane has not reached by
+#: then means the lane is itself behind, and it ages in FIFO like any other.
+#: The window also outlasts the first capacity backoff (30 min) of a provider
+#: refusal, so one refused call does not cost an item its place.
+FRESH_LANE_SECONDS = 2 * 3600.0
+#: The conversation roots a person or a tool produced in the conversation.
+#: The other roots are ingested content: external_document and imported record
+#: when content was stored, not when anyone said it, and one bulk import would
+#: otherwise fill the lane.
+FRESH_CONVERSATION_ORIGINS = frozenset({"human_direct", "tool_observation"})
+#: assistant_visible is not a consolidation root, but recall searches it
+#: semantically, so its embedding is fresh work too.
+FRESH_LANE_ORIGINS = {
+    "consolidate": FRESH_CONVERSATION_ORIGINS,
+    "embed": FRESH_CONVERSATION_ORIGINS | {"assistant_visible"},
+}
+#: Recently available rows one lane claim examines, newest first.  The bound
+#: keeps the query off the backlog: a reverse range scan of ``work_ready``, one
+#: primary-key probe into ``source_events`` per row and a sort of at most this
+#: many rows, a few milliseconds with tens of thousands pending.  It covers 16
+#: passes of the largest refill (16 sources x 2 types), which is more than a
+#: realistic window holds.  Fresh work beyond it is still claimed in FIFO order.
+FRESH_LANE_SCAN_ROWS = 512
+
+
+def fresh_since(now: str) -> str:
+    """The oldest ``persisted_at`` that still counts as fresh conversation."""
+    return _after(now, -FRESH_LANE_SECONDS)
+
 
 def _marks(values) -> str:
     return ",".join("?" for _ in values)
@@ -358,7 +399,14 @@ class WorkItems:
         return failed + released
 
     def claim_next(self, owner: str, now: str, *, lease_seconds: float, limit: int = 1,
-                   allowed_work_types: frozenset[str] = ALLOWED_WORK_TYPES) -> tuple[LeasedWork, ...]:
+                   allowed_work_types: frozenset[str] = ALLOWED_WORK_TYPES,
+                   fresh_lane: bool = False) -> tuple[LeasedWork, ...]:
+        """Lease ready work: purge first, then FIFO by availability.
+
+        ``fresh_lane`` places ready fresh conversation work (see
+        ``FRESH_LANE_ORIGINS``) after purge and before the rest of the FIFO
+        page.  Without fresh work the result is exactly the FIFO claim.
+        """
         conn = self._tx._check(write=True)
         if type(owner) is not str or not owner or type(limit) is not int or not 1 <= limit <= 32:
             raise ContractError("INPUT_INVALID", "work_claim")
@@ -366,17 +414,21 @@ class WorkItems:
             raise ContractError("INPUT_INVALID", "lease_seconds")
         if type(allowed_work_types) is not frozenset or not allowed_work_types <= ALLOWED_WORK_TYPES:
             raise ContractError("INPUT_INVALID", "work_types")
+        if type(fresh_lane) is not bool:
+            raise ContractError("INPUT_INVALID", "work_claim")
         if not allowed_work_types:
             return ()
         visible, params = self._visible_filter()
         kinds = sorted(allowed_work_types)
         self.release_stale(now)
         rows = conn.execute(
-            f"""SELECT work_id FROM work_items
+            f"""SELECT work_id,work_type FROM work_items
                 WHERE state='pending' AND available_at<=? AND {visible} AND work_type IN ({_marks(kinds)})
                 ORDER BY {_PURGE_FIRST}, available_at, work_id LIMIT ?""",
             (now, *params, *kinds, limit),
         ).fetchall()
+        if fresh_lane:
+            rows = self._fresh_first(rows, now=now, limit=limit, kinds=allowed_work_types)
         until = _after(now, float(lease_seconds))
         claimed = []
         for row in rows:
@@ -394,6 +446,32 @@ class WorkItems:
                 item["scope_id"], item["project_id"], item["branch_id"], item["lease_token"], item["attempt"], owner,
             ))
         return tuple(claimed)
+
+    def _fresh_first(self, fifo, *, now: str, limit: int, kinds: frozenset[str]) -> list:
+        """Purge rows, then ready fresh conversation work, then the rest of the FIFO page."""
+        purges = [row for row in fifo if row["work_type"] == "purge"]
+        lane = sorted(kinds & FRESH_LANE_ORIGINS.keys())
+        if len(purges) == limit or not lane:
+            return fifo
+        since = fresh_since(now)
+        visible, params = self._visible_filter()
+        origins = " OR ".join(f"(w.work_type=? AND e.origin IN ({_marks(FRESH_LANE_ORIGINS[kind])}))" for kind in lane)
+        origin_params = tuple(value for kind in lane for value in (kind, *sorted(FRESH_LANE_ORIGINS[kind])))
+        # Work never becomes available before its source was persisted, so the
+        # window bounds the index range as well as the source it joins.
+        fresh = self._tx._check().execute(
+            f"""SELECT w.work_id,w.work_type FROM (
+                    SELECT work_id,work_type,subject_ref,subject_revision,available_at FROM work_items
+                    WHERE state='pending' AND available_at>=? AND available_at<=? AND {visible}
+                      AND work_type IN ({_marks(lane)})
+                    ORDER BY available_at DESC,work_id DESC LIMIT ?) w
+                JOIN source_events e ON e.event_id=w.subject_ref AND e.source_revision=w.subject_revision
+                WHERE e.persisted_at>=? AND ({origins})
+                ORDER BY w.available_at,w.work_id LIMIT ?""",
+            (since, now, *params, *lane, FRESH_LANE_SCAN_ROWS, since, *origin_params, limit - len(purges)),
+        ).fetchall()
+        chosen = {row["work_id"] for row in (*purges, *fresh)}
+        return [*purges, *fresh, *(row for row in fifo if row["work_id"] not in chosen)][:limit]
 
     def recover_transient_failures(self, *, now: str, allowed_work_types: frozenset[str],
                                    cooldown_seconds: float = 3600, max_recoveries: int = 2,

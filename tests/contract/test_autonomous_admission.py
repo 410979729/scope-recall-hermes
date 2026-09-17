@@ -1,6 +1,7 @@
 """Source-preserving cost admission with real isolated SQLite transactions."""
 from dataclasses import replace
 import itertools
+import json
 import sqlite3
 
 import pytest
@@ -220,6 +221,104 @@ def test_core_worker_uses_capture_policy_for_deferred_refill(tmp_path):
     assert saved.admission == ("admission_deferred:queue_capacity",)
     app.drain_worker(ctx, owner_id="TEST-worker", remaining_seconds=10)
     assert counts(app)["work_items"] == 2
+    assert app.resume_deferred(ctx, remaining_seconds=10) == ()
+
+
+def clocked_app(tmp_path, policy):
+    from test_v11_worker import Clock
+
+    app, ctx = app_at(tmp_path, policy)
+    app.clock = Clock()
+    app.clock.advance(iso="2026-09-05T12:00:00Z")
+    return app, ctx, app.clock, replace(ctx, session_id="TEST-yesterday")
+
+
+def work_for(app, ref):
+    conn = sqlite3.connect(f"{app.storage.path.as_uri()}?mode=ro", uri=True)
+    try:
+        return dict(conn.execute("SELECT work_type,state FROM work_items WHERE subject_ref=?", (ref,)).fetchall())
+    finally:
+        conn.close()
+
+
+def complete_work(app, ctx, clock, *, count=-1, **claim):
+    """Complete ready work through the real lease state machine, no model; all of it by default."""
+    with app.storage.write(ctx, remaining_seconds=10) as tx:
+        while count and (batch := tx.work.claim_next("TEST-worker", clock.utc_now(), lease_seconds=10, **claim)):
+            for work in batch:
+                tx.work.complete(work.work_id, work.lease_token, work.lease_owner, now=clock.utc_now())
+            count -= 1
+
+
+def test_refill_gives_a_freed_slot_to_fresh_conversation_before_older_deferred_sources(tmp_path):
+    app, ctx, clock, yesterday = clocked_app(tmp_path, AdmissionPolicy(max_pending_work=2, important_reserve=0))
+    capture(app, yesterday, "TEST-old-admitted", "TEST yesterday admitted source")
+    older = []
+    for index in range(2):
+        clock.advance(iso=f"2026-09-05T12:00:0{index + 1}Z")
+        older.append(capture(app, yesterday, f"TEST-old-deferred/{index}", f"TEST yesterday deferred source {index}"))
+    clock.advance(iso="2026-09-06T12:00:00Z")
+    fresh = capture(app, ctx, "TEST-fresh", "TEST the message typed just now")
+    assert {receipt.admission for receipt in (*older, fresh)} == {("admission_deferred:queue_capacity",)}
+    complete_work(app, ctx, clock)
+    resumed = app.resume_deferred(ctx, remaining_seconds=10)
+    assert [(item.ref, item.disposition, item.queued_work) for item in resumed] == [
+        (fresh.event_refs[0].ref, "scheduled", 2),
+        (older[0].event_refs[0].ref, "deferred", 0),
+        (older[1].event_refs[0].ref, "deferred", 0),
+    ]
+
+
+def test_fresh_message_at_queue_capacity_is_consolidated_within_one_pass(tmp_path):
+    from test_v11_worker import FakeConsolidation, consolidation_payload
+
+    # Two per type ordinarily, three with the reserve.
+    app, ctx, clock, yesterday = clocked_app(tmp_path, AdmissionPolicy(max_pending_work=4, important_reserve=2))
+    backlog = [capture(app, yesterday, f"TEST-backlog/{index}", f"TEST yesterday backlog source {index}")
+               for index in range(2)]
+    waiting = capture(app, yesterday, "TEST-backlog/waiting", "TEST yesterday waiting source")
+    clock.advance(iso="2026-09-06T12:00:00Z")
+    fresh = capture(app, ctx, "TEST-fresh", "TEST the message typed just now")
+    assert waiting.admission == fresh.admission == ("admission_deferred:queue_capacity",)
+    batches = []
+
+    def record(sources, **_):
+        batches.append([source.ref for source in sources])
+        return consolidation_payload(*sources)
+
+    receipt = app.drain_worker(ctx, owner_id="TEST-worker", consolidation=FakeConsolidation(record),
+                               max_items=2, remaining_seconds=10)
+    # The pass refills the fresh message into the reserve before it claims, so
+    # the same pass consolidates it.  The older deferred source still waits.
+    assert receipt.completed == 2
+    assert batches == [[source.event_refs[0].ref for source in backlog], [fresh.event_refs[0].ref]]
+    assert work_for(app, fresh.event_refs[0].ref) == {"consolidate": "done", "embed": "pending"}
+    assert work_for(app, waiting.event_refs[0].ref) == {}
+
+
+def test_freshness_lends_the_reserve_without_becoming_importance(tmp_path):
+    app, ctx, clock, yesterday = clocked_app(tmp_path, AdmissionPolicy(max_pending_work=4, important_reserve=2))
+    for index in range(2):
+        capture(app, yesterday, f"TEST-backlog/{index}", f"TEST yesterday backlog source {index}")
+    requested = capture(app, yesterday, "TEST-backlog/requested", "TEST yesterday requested source")
+    assert app.schedule_source(ctx, requested.event_refs[0].ref, 1, remaining_seconds=10).queued_work == 2
+    complete_work(app, ctx, clock, count=1, allowed_work_types=frozenset({"consolidate"}))
+    clock.advance(iso="2026-09-06T12:00:00Z")
+    fresh = capture(app, ctx, "TEST-fresh", "TEST the message typed just now")
+    ref = fresh.event_refs[0].ref
+    # Consolidation has a reserve slot left, embedding does not.
+    [partial] = app.resume_deferred(ctx, remaining_seconds=10)
+    assert (partial.ref, partial.disposition, partial.queued_work) == (ref, "partial", 1)
+    conn = sqlite3.connect(f"{app.storage.path.as_uri()}?mode=ro", uri=True)
+    try:
+        marker = conn.execute("SELECT json_extract(extra_json,'$._scope_recall_admission') FROM source_events WHERE event_id=?",
+                              (ref,)).fetchone()[0]
+    finally:
+        conn.close()
+    assert json.loads(marker) == {"disposition": "deferred", "reason": "queue_capacity", "important": False}
+    # Once it is no longer fresh it waits for the ordinary ceiling like any other source.
+    complete_work(app, ctx, clock, count=1, allowed_work_types=frozenset({"embed"}))
+    clock.advance(iso="2026-09-06T14:00:01Z")
     assert app.resume_deferred(ctx, remaining_seconds=10) == ()
 
 

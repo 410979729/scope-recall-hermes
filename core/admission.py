@@ -13,6 +13,7 @@ import re
 import unicodedata
 
 from ..contracts import ContractError
+from .work_storage import FRESH_CONVERSATION_ORIGINS, fresh_since
 
 ADMISSION_KEY = "_scope_recall_admission"
 WORK_TYPES = frozenset({"consolidate", "embed"})
@@ -171,7 +172,7 @@ def decision_marker(tx, ref, revision):
     return f"admission_{row[0]}:{row[1]}"
 
 
-def _schedule(tx, clock, ref, revision, policy, *, on_demand=True):
+def _schedule(tx, clock, ref, revision, policy, *, on_demand=True, fresh=False):
     source = tx.source(ref, revision)
     current = tx.source_current(ref)
     from .visibility import allowed
@@ -196,7 +197,8 @@ def _schedule(tx, clock, ref, revision, policy, *, on_demand=True):
     prior_priority = conn.execute("""SELECT json_extract(extra_json,'$._scope_recall_admission.important')
         FROM source_events WHERE event_id=? AND source_revision=?""", (ref, revision)).fetchone()[0]
     priority = on_demand or prior_priority == 1 or decision.important
-    ready = _available_types(tx, source.scope_id, policy, priority, missing)
+    # Freshness lends the reserve only while it lasts; it is never stored as importance.
+    ready = _available_types(tx, source.scope_id, policy, priority or fresh, missing)
     if not ready:
         return SourceScheduleReceipt(ref, revision, "deferred", "queue_capacity")
     for kind in sorted(ready):
@@ -218,7 +220,14 @@ def schedule_source(storage, clock, context, ref, revision, *, policy=None, rema
 
 
 def resume_deferred(storage, clock, context, policy=None, *, limit=16, remaining_seconds=1.0):
-    """Bounded automatic queue refill; never promote low-value terminal sources."""
+    """Bounded automatic queue refill; never promote low-value terminal sources.
+
+    Fresh conversation -- a human_direct or tool_observation source inside the
+    worker's fresh lane window -- is refilled first, oldest first, and may use
+    the important reserve.  Oldest-first alone left a message typed now behind
+    every older deferred source, and behind important ones for good while they
+    kept the reserve full.  The ceilings themselves are unchanged.
+    """
     if type(limit) is not int or not 1 <= limit <= 64:
         raise ContractError("INPUT_INVALID", "deferred_limit")
     if context.actor_origin not in {"human_direct", "host_generated"}:
@@ -227,6 +236,9 @@ def resume_deferred(storage, clock, context, policy=None, *, limit=16, remaining
     with storage.write(context, remaining_seconds=remaining_seconds) as tx:
         scopes = sorted(context.allowed_scope_ids)
         marks = ",".join("?" for _ in scopes)
+        origins = sorted(FRESH_CONVERSATION_ORIGINS)
+        fresh = f"(e.persisted_at>=? AND e.origin IN ({','.join('?' for _ in origins)}))"
+        fresh_params = (fresh_since(clock.utc_now()), *origins)
         # Filter before LIMIT: a long embedding-only backlog must not hide a
         # later source whose healthy consolidation slot can be filled now.
         eligible = []
@@ -238,25 +250,29 @@ def resume_deferred(storage, clock, context, policy=None, *, limit=16, remaining
                 priority = not policy.enabled or count < _capacity(policy, True)
                 if not priority:
                     continue
-                priority_filter = "" if ordinary else "AND json_extract(e.extra_json,'$._scope_recall_admission.important')=1"
+                priority_filter, priority_params = "", ()
+                if not ordinary:
+                    priority_filter = f"AND (json_extract(e.extra_json,'$._scope_recall_admission.important')=1 OR {fresh})"
+                    priority_params = fresh_params
                 eligible.append(f"""(e.scope_id=? {priority_filter} AND NOT EXISTS(
                     SELECT 1 FROM work_items w WHERE w.subject_ref=e.event_id
                     AND w.subject_revision=e.source_revision AND w.work_type=?))""")
-                eligibility_params.extend((scope, kind))
+                eligibility_params.extend((scope, *priority_params, kind))
         if not eligible:
             return ()
-        rows = tx._check().execute(f"""SELECT e.event_id,e.source_revision FROM source_events e
+        rows = tx._check().execute(f"""SELECT e.event_id,e.source_revision,{fresh} AS fresh FROM source_events e
             WHERE e.scope_id IN ({marks}) AND e.project_id IS ? AND e.branch_id IS ?
             AND e.read_blocked=0 AND e.suppressed=0
             AND json_extract(e.extra_json,'$._scope_recall_admission.disposition')='deferred'
             AND json_extract(e.extra_json,'$._scope_recall_admission.reason')='queue_capacity'
             AND ({' OR '.join(eligible)})
             AND NOT EXISTS(SELECT 1 FROM source_events n WHERE n.source_group_key=e.source_group_key AND n.source_revision>e.source_revision)
-            ORDER BY e.persisted_at,e.event_id LIMIT ?""", (*scopes, context.project_id, context.branch_id, *eligibility_params, limit)).fetchall()
+            ORDER BY fresh DESC,e.persisted_at,e.event_id LIMIT ?""",
+            (*fresh_params, *scopes, context.project_id, context.branch_id, *eligibility_params, limit)).fetchall()
         results = []
         for row in rows:
             try:
-                results.append(_schedule(tx, clock, row[0], row[1], policy, on_demand=False))
+                results.append(_schedule(tx, clock, row[0], row[1], policy, on_demand=False, fresh=bool(row[2])))
             except ContractError as exc:
                 if exc.code != "SOURCE_MISSING":
                     raise
