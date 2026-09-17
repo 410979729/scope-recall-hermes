@@ -4,6 +4,16 @@ All notable changes to `scope-recall` will be documented in this file.
 
 ## [Unreleased]
 
+### Scope Recall 3.1.0rc32 memory costs less than the agent it serves - 2026-09-17
+
+Measured on alpha (2026-09-12..17): the plugin sent about 74 M uncached prompt tokens against the agent's 12 M, and the candidate loop was 81-97% of every day's plugin tokens. 60-96% of each day's evaluations re-asked a candidate already judged, 307 candidates were asked ten times or more, and 95% of candidates came from tool output. Of 10,650 evaluations, 27 promoted a fact: 19 on a candidate's first verdict and 4 on its second.
+
+- A candidate gets two model verdicts (`AUTOMATIC_VERDICTS`). After that it is asked again only when a source no earlier verdict saw restates its value (its subject for procedure, intention and alias); otherwise the question is answered `repeat_without_restatement` without a model call. Replayed over alpha with rc31's checks, 20% of the historical model calls remain and 24 of the 27 promotions survive.
+- A preference, constraint, decision, intention or alias proposed only from tool or document sources is archived as `person_kind_without_person` instead of becoming a candidate: 2,034 such evaluations on alpha promoted nothing, and when the person says it, the consolidation of their own words proposes it with the authority it needs. Candidates registered by older releases are archived when next scheduled, and queued evaluations when the worker reaches them.
+- A source longer than 3,000 characters reaches a candidate evaluation as a window of 1,500 characters either side of the candidate's value (its subject, then the source's head, when the value is absent). Qualification still reads the complete stored source. Replayed, windows keep 44% of the evidence the remaining evaluations carried.
+- Work claims order candidate evaluation after every other type, so candidate work never holds captured conversation back from consolidation and embedding.
+- When a provider's `total_tokens` exceeds prompt plus completion, the difference (for example Gemini 2.5 Flash thinking, which beta's route billed at roughly 8,000 tokens a call while recording a median of 325) is stored as `unreported_output` and charged.
+
 ### Scope Recall 3.1.0rc31 pay only for questions that can be answered - 2026-09-17
 
 Measured on alpha the day rc30 shipped: DeepSeek billed about 20 million prompt tokens, about 70% of them outside its prefix cache, for 2,019 candidate evaluations that promoted 7 facts. A DeepSeek balance that ran out then failed 100 evaluations in fifteen minutes, and no operator command could reopen them.
