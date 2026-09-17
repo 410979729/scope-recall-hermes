@@ -7,7 +7,9 @@ from contextlib import closing
 
 import pytest
 
-from test_v11_claims import app, capture, draft
+from test_v11_claims import app, capture, draft, initial
+from test_v11_deletion import authorize, request
+from test_v11_episodes import artifact, resume
 from test_v11_worker import Clock, FakeConsolidation, consolidation_payload, worker_app
 
 
@@ -117,7 +119,16 @@ class BatchTracker:
         return json.dumps(consolidation_payload(*sources, claims=claims), ensure_ascii=False)
 
 
-def test_unrelated_capture_during_extraction_keeps_original_work_retryable(worker_app):
+def test_unrelated_capture_during_extraction_still_writes_claims(worker_app):
+    """A capture during the model call no longer throws the paid result away.
+
+    This was ``..._keeps_original_work_retryable``: the capture advanced the
+    instance-wide ``memory_epoch`` and the first pass had to retry with
+    ``memory_epoch_changed``.  During a live chat every message and tool call
+    is such a capture, so fresh facts were consolidated late or never.  The
+    capture changes nothing this result was derived from, so the first pass now
+    writes the claim, and the capture is still consolidated by its own work.
+    """
     core, ctx, clock = worker_app
     original = capture(core, ctx, "TEST-project 配色 蓝色。", key="TEST-epoch-original")
     _mark_embed_done(core)
@@ -128,20 +139,27 @@ def test_unrelated_capture_during_extraction_keeps_original_work_retryable(worke
             return json.dumps(consolidation_payload(*sources, claims=[draft(original)]), ensure_ascii=False)
 
     first = core.drain_worker(ctx, consolidation=InterleavingModel(), max_items=1, remaining_seconds=30)
-    assert first.retried == 1 and first.obsolete == 0
-    assert dict(_consolidate_states(core))[original.ref] == "pending"
+    assert first.completed == 1 and first.retried == 0 and first.obsolete == 0
+    assert dict(_consolidate_states(core))[original.ref] == "done"
     with closing(sqlite3.connect(core.storage.path)) as conn:
-        assert conn.execute("SELECT count(*) FROM claims").fetchone()[0] == 0
+        assert conn.execute("SELECT count(*) FROM claims").fetchone()[0] == 1
     clock.advance(seconds=60, iso="2026-09-06T12:01:00Z")
     _mark_embed_done(core)
     tracker = BatchTracker(with_claims=True)
     _drain(core, ctx, tracker)
-    assert f"{original.ref}@1" in {ref for batch in tracker.batches for ref in batch}
-    assert dict(_consolidate_states(core))[original.ref] == "done"
+    assert f"{original.ref}@1" not in {ref for batch in tracker.batches for ref in batch}
+    assert set(dict(_consolidate_states(core)).values()) == {"done"}
 
 
 @pytest.mark.parametrize("stage", ["prepare", "boundary", "publish"])
-def test_unrelated_capture_during_embedding_keeps_source_retryable(worker_app, stage):
+def test_unrelated_capture_during_embedding_still_publishes(worker_app, stage):
+    """An unrelated capture around the embedding call no longer blocks publication.
+
+    This was ``..._keeps_source_retryable``: each stage expected the item back
+    in ``pending`` with ``memory_epoch_changed``, and the ``boundary`` stage
+    expected the port's own guard to refuse.  The capture is not a dependency
+    of this source's vector, so every stage now publishes once and completes.
+    """
     core, ctx, clock = worker_app
     original = capture(core, ctx, "TEST embedding retained source。", key="TEST-embed-original")
     with closing(sqlite3.connect(core.storage.path)) as conn:
@@ -157,24 +175,26 @@ def test_unrelated_capture_during_embedding_keeps_source_retryable(worker_app, s
 
         def publish_source(self, prepared, **kwargs):
             if stage == "boundary":
-                from scope_recall.contracts import ContractError
                 capture(core, ctx, "TEST unrelated new weather。", key="TEST-embed-new")
-                assert not kwargs["lease_guard"]()
-                raise ContractError("VERSION_CONFLICT", "memory_epoch")
             assert kwargs["lease_guard"]()
             published.append(prepared)
             if stage == "publish":
                 capture(core, ctx, "TEST unrelated new weather。", key="TEST-embed-new")
 
     result = core.drain_worker(ctx, embed=InterleavingEmbed(), max_items=1, remaining_seconds=30)
-    assert result.retried == 1 and result.obsolete == 0
-    assert published == ([original.ref] if stage == "publish" else [])
+    assert result.completed == 1 and result.retried == 0 and result.obsolete == 0
+    assert published == [original.ref]
     with closing(sqlite3.connect(core.storage.path)) as conn:
         row = conn.execute("SELECT state,last_error_code FROM work_items WHERE work_type='embed' AND subject_ref=?", (original.ref,)).fetchone()
-    assert row == ("pending", "memory_epoch_changed")
+    assert row == ("done", None)
 
 
-def test_unrelated_capture_before_no_root_completion_keeps_work_retryable(worker_app, monkeypatch):
+def test_unrelated_capture_before_no_root_completion_still_completes(worker_app, monkeypatch):
+    """A capture before a no-root completion no longer sends the item back.
+
+    This was ``..._keeps_work_retryable`` and expected ``memory_epoch_changed``;
+    the batch sources are unchanged, so the completion is recorded.
+    """
     from contextlib import contextmanager
 
     core, ctx, _ = worker_app
@@ -198,8 +218,215 @@ def test_unrelated_capture_before_no_root_completion_keeps_work_retryable(worker
     monkeypatch.setattr(core.storage, "write", capture_before_write)
     result = _process_consolidate(core.storage, core.clock, ctx, item, model=None,
                                  started=core.clock.monotonic(), budget=30)
-    assert result == ("retry", "memory_epoch_changed", "pending")
-    assert dict(_consolidate_states(core))[original.ref] == "pending"
+    assert injected
+    assert result == ("completed", None, "done")
+    assert dict(_consolidate_states(core))[original.ref] == "done"
+
+
+# --- what still discards a result: a change to something it was derived from ---
+
+
+def _consolidate_row(core, ref):
+    with closing(sqlite3.connect(core.storage.path)) as conn:
+        return conn.execute(
+            "SELECT state,last_error_code FROM work_items WHERE work_type='consolidate' AND subject_ref=?", (ref,),
+        ).fetchone()
+
+
+def _claim_total(core):
+    with closing(sqlite3.connect(core.storage.path)) as conn:
+        return conn.execute("SELECT count(*) FROM claims").fetchone()[0]
+
+
+def test_suppressing_batch_source_during_extraction_discards_result(worker_app):
+    core, ctx, _clock = worker_app
+    original = capture(core, ctx, "TEST-project 配色 蓝色。", key="TEST-fence/suppress")
+    _mark_embed_done(core)
+
+    class SuppressingModel:
+        def propose(self, sources, *, episode_ref=None, remaining_seconds=1.0):
+            authorize(core, ctx, original, mode="suppress")
+            core.forget(ctx, request(original, mode="suppress"), remaining_seconds=10)
+            return json.dumps(consolidation_payload(*sources, claims=[draft(original)]), ensure_ascii=False)
+
+    result = core.drain_worker(ctx, consolidation=SuppressingModel(), max_items=1, remaining_seconds=30)
+    assert result.retried == 1 and result.completed == 0 and result.obsolete == 0
+    assert _consolidate_row(core, original.ref) == ("pending", "memory_epoch_changed")
+    assert _claim_total(core) == 0
+
+
+def test_deleting_batch_source_during_extraction_discards_result(worker_app):
+    core, ctx, _clock = worker_app
+    subject = capture(core, ctx, "TEST-project 配色 蓝色。", key="TEST-fence/delete-subject")
+    sibling = capture(core, ctx, "TEST-project 字体 宋体。", key="TEST-fence/delete-sibling")
+    _mark_embed_done(core)
+    with closing(sqlite3.connect(core.storage.path)) as conn:
+        # The subject is claimed first; the sibling is ready work in its batch.
+        conn.execute("UPDATE work_items SET available_at='2026-09-06T11:00:00Z' WHERE work_type='consolidate' AND subject_ref=?",
+                     (subject.ref,))
+        conn.commit()
+    batches = []
+
+    class DeletingModel:
+        def propose(self, sources, *, episode_ref=None, remaining_seconds=1.0):
+            batches.append({source.ref for source in sources})
+            authorize(core, ctx, sibling)
+            core.forget(ctx, request(sibling), remaining_seconds=10)
+            return json.dumps(consolidation_payload(*sources, claims=[draft(subject)]), ensure_ascii=False)
+
+    result = core.drain_worker(ctx, consolidation=DeletingModel(), max_items=1, remaining_seconds=30)
+    assert batches == [{subject.ref, sibling.ref}]
+    assert result.obsolete == 1 and result.completed == 0 and result.retried == 0
+    assert _consolidate_row(core, subject.ref) == ("obsolete", "authority_revoked")
+    assert _claim_total(core) == 0
+
+
+def test_correction_to_the_same_slot_during_extraction_discards_result(worker_app):
+    """A newer head written to the result's slot during the call is not silently ordered.
+
+    Accepting would record the stale derivation against the corrected head --
+    here as late historical evidence -- instead of re-deriving it.
+    """
+    core, ctx, _clock = worker_app
+    item, _first = initial(core, ctx, value="H100", kind="fact", predicate="配色")
+    later = capture(core, ctx, "TEST-project 配色 H150。", when="2026-09-02T12:00:00Z")
+    with closing(sqlite3.connect(core.storage.path)) as conn:
+        conn.execute("UPDATE work_items SET state='done' WHERE NOT (work_type='consolidate' AND subject_ref=?)", (later.ref,))
+        conn.commit()
+
+    class CorrectedDuringModel:
+        def propose(self, sources, *, episode_ref=None, remaining_seconds=1.0):
+            capture(core, ctx, "刚才写错了，TEST-project 用H200。", when="2026-09-03T12:00:00Z")
+            assert core.current_claim(ctx, item.ref).payload["value_text"] == "H200"
+            return json.dumps(consolidation_payload(
+                *sources, claims=[draft(later, "H150", kind="fact", predicate="配色")]), ensure_ascii=False)
+
+    result = core.drain_worker(ctx, consolidation=CorrectedDuringModel(), max_items=1, remaining_seconds=30)
+    assert result.retried == 1 and result.completed == 0
+    assert _consolidate_row(core, later.ref) == ("pending", "memory_epoch_changed")
+    assert [version.payload["value_text"] for version in core.claim_history(ctx, item.ref)] == ["H100", "H200"]
+
+
+def test_rejected_result_with_a_claim_written_during_extraction_stays_a_conflict(worker_app):
+    """A result rejected by acceptance while a claim was written meanwhile keeps today's retry code."""
+    core, ctx, _clock = worker_app
+    item, _first = initial(core, ctx, value="H100", kind="fact", predicate="配色")
+    later = capture(core, ctx, "TEST-project 配色 H150。", when="2026-09-02T12:00:00Z")
+    with closing(sqlite3.connect(core.storage.path)) as conn:
+        conn.execute("UPDATE work_items SET state='done' WHERE NOT (work_type='consolidate' AND subject_ref=?)", (later.ref,))
+        conn.commit()
+
+    class CorrectedDuringInvalidModel:
+        def propose(self, sources, *, episode_ref=None, remaining_seconds=1.0):
+            capture(core, ctx, "刚才写错了，TEST-project 用H200。", when="2026-09-03T12:00:00Z")
+            invalid = draft(later, "H150", kind="fact", predicate="配色", quote_override="TEST 原文中没有这句。")
+            return json.dumps(consolidation_payload(*sources, claims=[invalid]), ensure_ascii=False)
+
+    result = core.drain_worker(ctx, consolidation=CorrectedDuringInvalidModel(), max_items=1, remaining_seconds=30)
+    assert result.retried == 1 and result.completed == 0
+    assert _consolidate_row(core, later.ref) == ("pending", "memory_epoch_changed")
+    assert [version.payload["value_text"] for version in core.claim_history(ctx, item.ref)] == ["H100", "H200"]
+
+
+def test_correction_to_another_slot_during_extraction_keeps_result(worker_app):
+    core, ctx, _clock = worker_app
+    item, _first = initial(core, ctx, value="H100", kind="fact", predicate="配色")
+    later = capture(core, ctx, "TEST-other 字体 宋体。", when="2026-09-02T12:00:00Z")
+    with closing(sqlite3.connect(core.storage.path)) as conn:
+        conn.execute("UPDATE work_items SET state='done' WHERE NOT (work_type='consolidate' AND subject_ref=?)", (later.ref,))
+        conn.commit()
+
+    class CorrectedElsewhereModel:
+        def propose(self, sources, *, episode_ref=None, remaining_seconds=1.0):
+            capture(core, ctx, "刚才写错了，TEST-project 用H200。", when="2026-09-03T12:00:00Z")
+            return json.dumps(consolidation_payload(
+                *sources, claims=[draft(later, "宋体", subject="TEST-other", predicate="字体", kind="fact")]),
+                ensure_ascii=False)
+
+    result = core.drain_worker(ctx, consolidation=CorrectedElsewhereModel(), max_items=1, remaining_seconds=30)
+    assert result.completed == 1 and result.retried == 0
+    assert _consolidate_row(core, later.ref) == ("done", None)
+    with core.storage.read(ctx) as tx:
+        assert len(tx.claims.list_refs(subject="TEST-other", predicate="字体")) == 1
+    assert core.current_claim(ctx, item.ref).payload["value_text"] == "H200"
+
+
+def test_resume_applied_to_the_episode_during_extraction_discards_result(worker_app):
+    core, ctx, _clock = worker_app
+    goal = capture(core, ctx, "请帮我完成 TEST 报告第一部分。", key="TEST-fence/resume-goal")
+    _mark_embed_done(core)
+
+    class ResumedDuringModel:
+        def propose(self, sources, *, episode_ref=None, remaining_seconds=1.0):
+            other = capture(core, ctx, "请帮我完成 TEST 报告第二部分。", key="TEST-fence/resume-other")
+            core.accept_consolidation(ctx, dict(
+                protocol_version="1.1", source_refs=[f"{other.ref}@{other.revision}"], claim_proposals=[],
+                resume_proposals=[resume(other)], reference_proposals=[]), scope_id="TEST-scope", remaining_seconds=10)
+            return json.dumps(consolidation_payload(
+                *sources, resume_proposals=[resume(goal, episode_ref=episode_ref)]), ensure_ascii=False)
+
+    result = core.drain_worker(ctx, consolidation=ResumedDuringModel(), max_items=1, remaining_seconds=30)
+    assert result.retried == 1 and result.completed == 0
+    assert _consolidate_row(core, goal.ref) == ("pending", "memory_epoch_changed")
+    episode, = core.episodes(ctx)
+    assert episode.resume["goal"]["text"] == "请帮我完成 TEST 报告第二部分。"
+
+
+def test_capture_attached_to_the_episode_during_extraction_keeps_resume(worker_app):
+    """Attaching a capture adds an episode revision but leaves its resume as it was."""
+    core, ctx, _clock = worker_app
+    goal = capture(core, ctx, "请帮我完成 TEST 报告第一部分。", key="TEST-fence/attach-goal")
+    _mark_embed_done(core)
+
+    class AttachedDuringModel:
+        def propose(self, sources, *, episode_ref=None, remaining_seconds=1.0):
+            capture(core, ctx, "TEST 我先去喝杯水。", key="TEST-fence/attach-other")
+            return json.dumps(consolidation_payload(
+                *sources, resume_proposals=[resume(goal, episode_ref=episode_ref)]), ensure_ascii=False)
+
+    result = core.drain_worker(ctx, consolidation=AttachedDuringModel(), max_items=1, remaining_seconds=30)
+    assert result.completed == 1 and result.retried == 0
+    assert _consolidate_row(core, goal.ref) == ("done", None)
+    episode, = core.episodes(ctx)
+    assert episode.resume["goal"]["text"] == "请帮我完成 TEST 报告第一部分。"
+    assert "unprocessed_events" in episode.gaps
+
+
+def test_reference_binding_revised_during_extraction_discards_result(worker_app, tmp_path):
+    """A clarification that revised the binding meanwhile is not overwritten by the stale reading."""
+    from dataclasses import replace
+
+    core, ctx, _clock = worker_app
+    ctx = replace(ctx, task_anchor="TEST-fence/reference-work")
+    one, _, _ = artifact(core, ctx, tmp_path, label="TEST-v1")
+    two, _, _ = artifact(core, ctx, tmp_path, version=2, label="TEST-v2")
+    mention = capture(core, ctx, "TEST 那个颜色不行。", key="TEST-fence/reference-mention")
+    proposal = dict(mention="那个颜色", candidate_refs=[f"{one.ref}@1", f"{two.ref}@2"], resolved_ref=None,
+                    resolution="ambiguous", evidence_refs=[f"{mention.ref}@{mention.revision}"])
+
+    def accept_references(*references):
+        refs = list(dict.fromkeys(ref for item in references for ref in item["evidence_refs"]))
+        return core.accept_consolidation(ctx, dict(
+            protocol_version="1.1", source_refs=refs, claim_proposals=[], resume_proposals=[],
+            reference_proposals=list(references)), scope_id="TEST-scope", remaining_seconds=10)
+
+    binding = accept_references(proposal).items[0]
+    with closing(sqlite3.connect(core.storage.path)) as conn:
+        conn.execute("UPDATE work_items SET state='done' WHERE NOT (work_type='consolidate' AND subject_ref=?)", (mention.ref,))
+        conn.commit()
+
+    class ClarifiedDuringModel:
+        def propose(self, sources, *, episode_ref=None, remaining_seconds=1.0):
+            clarification = capture(core, ctx, "刚才“那个颜色”说的是TEST-v2。", key="TEST-fence/reference-clarification")
+            clarified = accept_references(dict(proposal, evidence_refs=[f"{clarification.ref}@{clarification.revision}"]))
+            assert clarified.items[0].ref == binding.ref
+            return json.dumps(dict(consolidation_payload(*sources), reference_proposals=[proposal]), ensure_ascii=False)
+
+    result = core.drain_worker(ctx, consolidation=ClarifiedDuringModel(), max_items=1, remaining_seconds=30)
+    assert result.retried == 1 and result.completed == 0
+    assert _consolidate_row(core, mention.ref) == ("pending", "memory_epoch_changed")
+    current = core.reference(ctx, binding.ref)
+    assert (current.revision, current.payload["resolved_ref"]) == (2, f"{two.ref}@2")
 
 
 @pytest.mark.parametrize("with_claims", [False, True], ids=["empty", "facts_only"])

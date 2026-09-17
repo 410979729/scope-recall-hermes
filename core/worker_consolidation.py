@@ -26,6 +26,8 @@ from .worker_outcomes import (
     _model_failure,
     _remaining,
     _work_result,
+    derivation_changed,
+    read_derivation_fence,
 )
 
 _ROOT_ORIGINS = frozenset({"human_direct", "tool_observation", "external_document", "imported"})
@@ -237,13 +239,12 @@ def _process_consolidate(
     budget: float,
 ) -> tuple[str, str | None, str]:
     finish = partial(_finalize_work, storage, clock, context, item, started=started, budget=budget)
-    memory_epoch = None
+    dependencies = None
     batch, pending_sources = (), ()
     chunk, offset = None, 0
     seed = ()
     with storage.read(context, remaining_seconds=_remaining(started, clock, budget)) as tx:
         feedback = tx.work.derivation_feedback(item.work_id)
-        memory_epoch = tx.status().memory_epoch
         if not tx.work._verify_lease(*item.lease, now=clock.utc_now()):
             state = tx.work.read_state(item.work_id) or "stale"
             return "stale", "authority_revoked" if state == "obsolete" else None, state
@@ -265,6 +266,9 @@ def _process_consolidate(
             else:
                 episode_ref, batch, pending_sources = _episode_batch(tx, source, item, now=clock.utc_now())
             roots = _root_only_sources(tx, batch)
+            # The dependencies come from the same snapshot as the batch itself.
+            dependencies = read_derivation_fence(tx, scope_id=item.scope_id, sources=(source, *batch),
+                                                 episode_ref=episode_ref)
     # Do not open a write transaction while the read transaction above is
     # still active.  SQLite's reader lock otherwise turns an obsolete source
     # into a spurious "database is locked" failure.
@@ -283,7 +287,7 @@ def _process_consolidate(
                     tx.claims.require_live_source(stored.ref, stored.revision)
             except ContractError:
                 return _mark_obsolete(tx, item, now)
-            if tx.status().memory_epoch != memory_epoch:
+            if derivation_changed(tx, dependencies) is not None:
                 return _epoch_changed(tx, item, now)
             return _work_result(tx.work.complete_consolidation(
                 *item.lease, now=now,
@@ -328,7 +332,7 @@ def _process_consolidate(
         item.lease_owner,
         item.subject_ref,
         item.subject_revision,
-        memory_epoch,
+        dependencies.only_sources((source, *batch)),
         allowed_refs,
         skipped_source_refs=frozenset(f"{s.ref}@{s.revision}" for s in batch) - allowed_refs,
         pending_sources=pending_sources,
@@ -341,8 +345,8 @@ def _process_consolidate(
             # A durable work item runs outside the originating host session.
             # Use the session from its freshly read source, never from model
             # output, so current_human can validate that session's actual
-            # latest evidence. Scope, project and the work/epoch fence remain
-            # unchanged; stale or unrelated human evidence still fails.
+            # latest evidence. Scope, project and the work/dependency fence
+            # remain unchanged; stale or unrelated human evidence still fails.
             replace(context, session_id=source.session_id, recent_messages=()),
             value,
             scope_id=item.scope_id,
@@ -351,8 +355,8 @@ def _process_consolidate(
         )
     except ContractError as exc:
         code = exc.code or "derivation_invalid"
-        # Reject this result, but retain live work for a fresh bounded attempt.
-        # An unrelated capture also advances the instance-wide epoch.
+        # Reject this result, but retain live work for a fresh bounded attempt:
+        # something it was derived from changed during the call.
         if code == "VERSION_CONFLICT" and exc.field == "memory_epoch":
             return finish("retry", "memory_epoch_changed")
         if code in {"SOURCE_MISSING", "VERSION_CONFLICT", "ACCESS_DENIED"}:

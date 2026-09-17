@@ -752,7 +752,15 @@ def test_embed_prepare_new_revision_blocks_publish(worker_app):
     assert receipt.obsolete == 1 or receipt.stale == 1
 
 
-def test_embed_prepare_epoch_flip_blocks_publish(worker_app):
+def test_embed_prepare_suppression_blocks_publish(worker_app):
+    """Suppressing the subject while it is being embedded blocks publication.
+
+    This was ``test_embed_prepare_epoch_flip_blocks_publish`` and bumped
+    ``memory_epoch`` by hand.  Every capture bumps it, so a bare epoch move no
+    longer blocks publication (test_unrelated_capture_during_embedding_still_publishes);
+    the authority change the bump stood in for is performed instead, with the
+    same outcome.
+    """
     core, ctx, clock = worker_app
     source = capture(core, ctx, "TEST embed epoch fence。")
     with sqlite3.connect(core.storage.path) as conn:
@@ -760,21 +768,44 @@ def test_embed_prepare_epoch_flip_blocks_publish(worker_app):
         conn.commit()
     published = {"called": False}
 
-    class EpochEmbed:
-        def prepare_source(self, source, *, remaining_seconds=1.0):
-            with sqlite3.connect(core.storage.path) as conn:
-                conn.execute("UPDATE instance_meta SET memory_epoch=memory_epoch+1 WHERE singleton=1")
-                conn.commit()
-            return {"ref": source.ref, "revision": source.revision}
+    class SuppressingEmbed:
+        def prepare_source(self, subject, *, remaining_seconds=1.0):
+            authorize(core, ctx, source, mode="suppress")
+            core.forget(ctx, request(source, mode="suppress"), remaining_seconds=10)
+            return {"ref": subject.ref, "revision": subject.revision}
 
         def publish_source(self, *args, **kwargs):
             published["called"] = True
 
-    receipt = core.drain_worker(ctx, max_items=1, remaining_seconds=5, owner_id="embed-epoch-fence", embed=EpochEmbed())
-    row = [r for r in work_rows(core) if r[0] == "embed"][0]
+    receipt = core.drain_worker(ctx, max_items=1, remaining_seconds=5, owner_id="embed-epoch-fence", embed=SuppressingEmbed())
+    row = [r for r in work_rows(core) if r[0] == "embed" and r[1] == source.ref][0]
     assert published["called"] is False
     assert row[3] == "pending" and row[6] == "memory_epoch_changed"
     assert receipt.retried == 1
+
+
+def test_embed_prepare_delete_blocks_publish(worker_app):
+    core, ctx, clock = worker_app
+    source = capture(core, ctx, "TEST embed delete fence。")
+    with sqlite3.connect(core.storage.path) as conn:
+        conn.execute("UPDATE work_items SET state='done' WHERE work_type='consolidate'")
+        conn.commit()
+    published = {"called": False}
+
+    class DeletingEmbed:
+        def prepare_source(self, subject, *, remaining_seconds=1.0):
+            authorize(core, ctx, source)
+            core.forget(ctx, request(source), remaining_seconds=10)
+            return {"ref": subject.ref, "revision": subject.revision}
+
+        def publish_source(self, *args, **kwargs):
+            published["called"] = True
+
+    receipt = core.drain_worker(ctx, max_items=1, remaining_seconds=5, owner_id="embed-delete-fence", embed=DeletingEmbed())
+    row = [r for r in work_rows(core) if r[0] == "embed" and r[1] == source.ref][0]
+    assert published["called"] is False
+    assert row[3] == "obsolete"
+    assert receipt.completed == 0 and receipt.retried == 0 and receipt.stale + receipt.obsolete == 1
 
 
 def test_embed_prepare_deadline_does_not_open_guard_or_publish(worker_app):
@@ -909,22 +940,48 @@ def test_consolidation_barrier_old_worker_cannot_mutate_after_lease_stolen(worke
         assert not tx.claims.list_refs(predicate="导出方法")
 
 
-def test_C10_restore_epoch_fences_late_consolidation(worker_app):
+def _restore(core, ctx, backup):
+    """The operator restore sequence: checkpoint, close admission, copy back, replay."""
+    from scope_recall.core.restore import (
+        InstallationMaintenance, begin_restore, export_deletion_ledger, ledger_digest, replay_deletion_ledger,
+    )
+    from test_v11_deletion import sqlite_backup
+
+    authority = InstallationMaintenance(ctx)
+    ledger = export_deletion_ledger(core.storage, authority)
+    begin_restore(core.storage, authority, expected_ledger_sha256=ledger_digest(ledger))
+    sqlite_backup(backup, core.storage.path)
+    replay_deletion_ledger(core.storage, authority, ledger)
+
+
+def test_C10_restore_epoch_fences_late_consolidation(worker_app, tmp_path):
+    """A restore during the model call that replays a suppression of the batch source.
+
+    This test used to bump ``memory_epoch`` by hand to stand in for a restore.
+    Every capture bumps it too, so a bare epoch move no longer discards a paid
+    result.  The restore is now performed for real -- backup, a suppression
+    recorded in the deletion ledger, restore and replay -- and the late result
+    is still discarded as a retryable ``memory_epoch_changed``.
+    """
+    from test_v11_deletion import sqlite_backup
+
     core, ctx, clock = worker_app
-    source = capture(core, ctx, "TEST restore epoch fence。")
+    source = capture(core, ctx, "TEST-project 配色 蓝色。")
     with sqlite3.connect(core.storage.path) as conn:
         conn.execute("UPDATE work_items SET state='done' WHERE work_type='embed'")
         conn.commit()
     epoch_before = core.status(ctx).memory_epoch
     barrier = Barrier(2)
+    backup = tmp_path / "TEST-restore-during-model.sqlite3"
 
     class EpochFenceModel:
         def propose(self, sources, *, episode_ref=None, remaining_seconds=1.0):
             barrier.wait()
-            with sqlite3.connect(core.storage.path) as conn:
-                conn.execute("UPDATE instance_meta SET memory_epoch=memory_epoch+1 WHERE singleton=1")
-                conn.commit()
-            return json.dumps(consolidation_payload(sources[0]), ensure_ascii=False)
+            sqlite_backup(core.storage.path, backup)
+            authorize(core, ctx, source, mode="suppress")
+            core.forget(ctx, request(source, mode="suppress"), remaining_seconds=10)
+            _restore(core, ctx, backup)
+            return json.dumps(consolidation_payload(sources[0], claims=[draft(source)]), ensure_ascii=False)
 
     with core.storage.write(ctx) as tx:
         leased = tx.work.claim_next("worker-a", clock.utc_now(), lease_seconds=60, limit=1)[0]
@@ -946,10 +1003,85 @@ def test_C10_restore_epoch_fences_late_consolidation(worker_app):
         disposition, code, state = future.result()
 
     assert disposition == "retry" and code == "memory_epoch_changed"
-    assert core.status(ctx).memory_epoch == epoch_before + 1
+    assert core.status(ctx).memory_epoch > epoch_before
+    assert core.source(ctx, source.ref, source.revision).suppressed
     assert claim_count(core, ctx) == 0
     row = next(row for row in work_rows(core) if row[0] == "consolidate" and row[1] == source.ref)
     assert row[3] == "pending" and row[6] == "memory_epoch_changed"
+
+
+def test_restore_of_an_older_backup_during_extraction_fences_late_consolidation(worker_app, tmp_path):
+    """A restore to a backup older than the pre-call read is detected by itself.
+
+    Nothing the result cites changed: the source missing from the backup is in
+    another project.  The rows the fence marked no longer exist, so the result
+    is still discarded as it was when any epoch move discarded it.
+    """
+    from dataclasses import replace
+
+    from test_v11_deletion import sqlite_backup
+
+    core, ctx, clock = worker_app
+    source = capture(core, ctx, "TEST-project 配色 蓝色。")
+    _mark_embed_done(core)
+    with core.storage.write(ctx) as tx:
+        leased = tx.work.claim_next("worker-a", clock.utc_now(), lease_seconds=60, limit=1)[0]
+    assert leased.subject_ref == source.ref
+    backup = tmp_path / "TEST-older-backup.sqlite3"
+    sqlite_backup(core.storage.path, backup)
+    capture(core, replace(ctx, project_id="TEST-elsewhere"), "TEST 备份之后的另一个项目消息。")
+
+    class RestoringModel:
+        def propose(self, sources, *, episode_ref=None, remaining_seconds=1.0):
+            _restore(core, ctx, backup)
+            return json.dumps(consolidation_payload(*sources, claims=[draft(source)]), ensure_ascii=False)
+
+    from scope_recall.core.worker import _process_consolidate
+
+    result = _process_consolidate(core.storage, clock, ctx, leased, model=RestoringModel(),
+                                  started=clock.monotonic(), budget=30)
+    assert result == ("retry", "memory_epoch_changed", "pending")
+    assert claim_count(core, ctx) == 0
+
+
+def test_restore_that_reuses_claim_version_rowids_fences_late_consolidation(worker_app, tmp_path):
+    """A slot written after a restore can reuse the rowid the fence marked.
+
+    Claim versions written during the call are found by rowid order.  Here the
+    restored backup lacks the last version the fence saw, and the slot's new
+    head is written into that same rowid; only the changed identity of the
+    marked row shows the ordering can no longer be trusted.  Accepting would
+    have filed the stale proposal as late history under the newer head.
+    """
+    from test_v11_deletion import sqlite_backup
+
+    core, ctx, clock = worker_app
+    subject = capture(core, ctx, "TEST-project 配色 蓝色。")
+    unrelated = capture(core, ctx, "TEST-other 字体 宋体。")
+    newer = capture(core, ctx, "TEST-project 配色 绿色。", when="2026-09-03T12:00:00Z")
+    with sqlite3.connect(core.storage.path) as conn:
+        conn.execute("UPDATE work_items SET state='done' WHERE NOT (work_type='consolidate' AND subject_ref=?)", (subject.ref,))
+        conn.commit()
+    with core.storage.write(ctx) as tx:
+        leased = tx.work.claim_next("worker-a", clock.utc_now(), lease_seconds=60, limit=1)[0]
+    assert leased.subject_ref == subject.ref
+    backup = tmp_path / "TEST-rowid-backup.sqlite3"
+    sqlite_backup(core.storage.path, backup)
+    accept(core, ctx, draft(unrelated, "宋体", subject="TEST-other", predicate="字体"))
+    slot = {}
+
+    class RestoringModel:
+        def propose(self, sources, *, episode_ref=None, remaining_seconds=1.0):
+            _restore(core, ctx, backup)
+            slot["ref"] = accept(core, ctx, draft(newer, "绿色")).items[0].ref
+            return json.dumps(consolidation_payload(*sources, claims=[draft(subject)]), ensure_ascii=False)
+
+    from scope_recall.core.worker import _process_consolidate
+
+    result = _process_consolidate(core.storage, clock, ctx, leased, model=RestoringModel(),
+                                  started=clock.monotonic(), budget=30)
+    assert result == ("retry", "memory_epoch_changed", "pending")
+    assert [version.payload["value_text"] for version in core.claim_history(ctx, slot["ref"])] == ["绿色"]
 
 
 def test_release_stale_and_claim_respect_trusted_context(worker_app):
