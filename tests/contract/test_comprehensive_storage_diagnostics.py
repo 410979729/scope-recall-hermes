@@ -11,6 +11,7 @@ from scope_recall._version import __version__
 from scope_recall.contracts import ContractError
 from scope_recall.core import CoreConfig, MemoryCore
 from scope_recall.core.admission import AdmissionPolicy
+from scope_recall.core.recall_policy import SPACE_ID
 from scope_recall.maintenance import doctor
 from test_autonomous_admission import app_at, capture
 
@@ -126,6 +127,60 @@ def test_doctor_checks_actual_target_version_not_import_success(tmp_path, monkey
     if expected_gap:
         assert expected_gap in result.capability_gaps
     assert app.storage.path.read_bytes() == before
+
+
+def _write_runtime_config(ctx, **changes):
+    binding = ctx.binding
+    raw = {
+        'binding': {'agent_id': binding.agent_id, 'installation_id': binding.installation_id,
+                    'data_directory': str(binding.data_directory), 'scope_ids': sorted(binding.scope_ids),
+                    'test_mode': binding.test_mode},
+        'session_id': 'TEST-doctor-session',
+        'allowed_scope_ids': sorted(binding.scope_ids),
+        'auxiliary': {'external_embedding': True, 'external_consolidation': False,
+                      'embedding': {'credential_env': 'TEST_EMBED_KEY'}},
+        'vector': {'backend': 'lancedb', 'storage_dir': str(binding.data_directory/'vectors'/SPACE_ID),
+                   'table_name': 'TEST_vectors', 'dimensions': 3072},
+        **changes,
+    }
+    (binding.data_directory/'runtime-config.json').write_text(json.dumps(raw), encoding='utf-8')
+
+
+def test_doctor_names_vector_recall_configured_without_a_threshold(tmp_path, monkeypatch):
+    """No installer writes vector_threshold, and without it recall refuses every
+    vector hit while sources are still embedded; the doctor has to say so."""
+    app, ctx = _doctor_app(tmp_path, monkeypatch)
+    _write_runtime_config(ctx)
+    before = app.storage.path.read_bytes()
+    result = doctor.run_doctor(host='hermes', instance_root=ctx.binding.data_directory)
+    assert 'vector_threshold_unconfigured' in result.capability_gaps
+    [check] = [item for item in result.checks if item['name'] == 'vector_threshold']
+    assert check['result'] == 'unconfigured'
+    for fragment in ('runtime-config.json', 'gemini-embedding-2', 'no vector_threshold', 'lexical only'):
+        assert fragment in check['detail']
+    assert app.storage.path.read_bytes() == before
+    # Worth a look, not a fault: recall still answers lexically.
+    alone = doctor.DoctorReport(host='hermes', status='degraded', capability_gaps=['vector_threshold_unconfigured'])
+    doctor._classify_status(alone)
+    assert alone.status == 'attention'
+
+    _write_runtime_config(ctx, vector_threshold=0.653189984350642)
+    result = doctor.run_doctor(host='hermes', instance_root=ctx.binding.data_directory)
+    assert 'vector_threshold_unconfigured' not in result.capability_gaps
+    assert {'name': 'vector_threshold', 'result': 'configured', 'detail': '0.653189984350642'} in result.checks
+
+    # Without an approved embedding route no vector hit exists to refuse.
+    _write_runtime_config(ctx, auxiliary={'external_embedding': False, 'external_consolidation': False,
+                                          'embedding': {'credential_env': 'TEST_EMBED_KEY'}})
+    result = doctor.run_doctor(host='hermes', instance_root=ctx.binding.data_directory)
+    assert 'vector_threshold_unconfigured' not in result.capability_gaps
+    assert not [item for item in result.checks if item['name'] == 'vector_threshold']
+
+    # A config the hosts would refuse cannot answer the question; the doctor still finishes.
+    (ctx.binding.data_directory/'runtime-config.json').write_text('{}', encoding='utf-8')
+    result = doctor.run_doctor(host='hermes', instance_root=ctx.binding.data_directory)
+    assert {'name': 'vector_threshold', 'result': 'invalid', 'detail': 'ValueError'} in result.checks
+    assert 'vector_threshold_unconfigured' not in result.capability_gaps
 
 
 def test_doctor_exposes_deferred_work_even_when_no_job_was_enqueued(tmp_path, monkeypatch):
