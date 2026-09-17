@@ -19,7 +19,7 @@ from .worker_consolidation import (
     _process_consolidate,
     build_consolidation_model,
 )
-from .worker_outcomes import _model_exception_outcome, _remaining
+from .worker_outcomes import BUDGET_PAUSE_ERRORS, _model_exception_outcome, _remaining
 from .worker_projection import EmbedPort, PurgePort, _process_embed, _process_purge, _process_rebuild_projection
 
 __all__ = [
@@ -236,9 +236,11 @@ def drain_worker(
         # Standing a work type down for the rest of the pass.  The per-item
         # backoff still decides when each item returns; this only decides how
         # many of one type are tried in one pass.
-        if disposition == "deferred":
-            # The port refused before any attempt (budget, credentials), or a
-            # chunked item checkpointed and is already pending again.
+        if disposition == "deferred" and error_code in BUDGET_PAUSE_ERRORS:
+            # The port refused before any attempt (budget, credentials) and
+            # would refuse the next item the same way.  A long source that
+            # checkpointed a page is deferred too, but without a refusal code:
+            # it is pending again and says nothing about the port.
             allowed = allowed - {item.work_type}
         if str(error_code or "").lower() in _RATE_LIMITED_ERRORS:
             # A provider that just answered 429 will answer 429 to the next item
