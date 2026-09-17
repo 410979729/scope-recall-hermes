@@ -137,6 +137,29 @@ def test_P08_lexical_skips_terms_too_common_to_separate_anything(app):
         assert _discriminating_terms(tx, ("boilerplate",)) == ("boilerplate",)
         # A term the index has never seen has no frequency and is never pruned.
         assert _discriminating_terms(tx, ("neverindexed",)) == ("neverindexed",)
+        # A kept term survives however common it is.
+        assert _discriminating_terms(tx, ("quarkonium", "boilerplate"), keep=("boilerplate",)) == ("quarkonium", "boilerplate")
+
+
+def test_P08_lexical_never_prunes_a_common_hard_identifier(app):
+    """Hydration still requires the identifier, so SQL must still search for it.
+
+    With 65 sources naming ``rc28`` the term clears the document-frequency
+    floor.  Pruned in favour of the query's rarer (here unindexed) terms, SQL
+    matched nothing hydration would admit: 63 sources were found, 64 were not.
+    """
+    from scope_recall.core.retrieval_storage import _LEXICAL_DF_FLOOR
+
+    core, ctx = app
+    for index in range(_LEXICAL_DF_FLOOR):
+        capture(core, ctx, f"rc28 构建日志 第{index}条", key=f"TEST-p08/common-identifier/{index}",
+                when="2026-09-02T12:00:00Z")
+    target = capture(core, ctx, "现在还是 rc28，旧记忆和设置没动。", key="TEST-p08/common-identifier/target",
+                     when="2026-09-03T12:00:00Z")
+    reader = replace(ctx, session_id="TEST-p08-common-identifier-reader")
+    for mode in ("auto", "current", "history"):
+        result = core.recall(reader, recall_request(query="rc28 升级结果", mode=mode), deadline_seconds=5)
+        assert result.items and result.items[0].ref == target.ref, mode
 
 
 def test_P08_lexical_pool_ranks_rows_naming_the_hard_identifier_first(app):
