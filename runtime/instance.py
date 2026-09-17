@@ -154,10 +154,10 @@ class RuntimeInstanceConfig:
         if self.hook_processing_seconds < self.auto_recall_seconds:
             raise ValueError("hook_processing_seconds_must_cover_auto_recall")
         strict_float("lease_seconds", self.lease_seconds, minimum=self.request_seconds, maximum=3600.0)
-        if self.vector_threshold is not None:
-            from ..core.recall_policy import RecallPolicy
-
-            RecallPolicy(vector_threshold=self.vector_threshold)
+        # The policy ``build_runtime_instance`` constructs, checked while the
+        # config loads: a bad threshold, or an embedding route that describes no
+        # valid space, is an invalid configuration rather than a failed build.
+        self.recall_policy()
         self._check_vector_binding()
 
     def _check_vector_binding(self) -> None:
@@ -190,6 +190,17 @@ class RuntimeInstanceConfig:
         from ..core.recall_policy import embedding_space_id
 
         return embedding_space_id(self.embedding_space())
+
+    def recall_policy(self):
+        """The admission policy recall runs with, bound to this instance's embedding space.
+
+        The vector ports search partitions of, and stamp candidates with,
+        ``embedding_space_id()``.  Admission has to compare against that same
+        digest; against the shipped default every hit of a named route is refused.
+        """
+        from ..core.recall_policy import RecallPolicy
+
+        return RecallPolicy(vector_threshold=self.vector_threshold, embedding_space_id=self.embedding_space_id())
 
     @classmethod
     def from_mapping(cls, raw: Mapping[str, Any]) -> "RuntimeInstanceConfig":
@@ -625,15 +636,13 @@ def build_runtime_instance(
 ) -> RuntimeInstance:
     if not isinstance(config, RuntimeInstanceConfig):
         raise TypeError("config must be RuntimeInstanceConfig")
-    from ..core.recall_policy import RecallPolicy
-
     auxiliary = build_auxiliary_runtime(config.auxiliary) if config.auxiliary is not None else None
     core = MemoryCore(
         CoreConfig(config.binding, auto_recall_seconds=config.auto_recall_seconds),
         storage=SQLiteStorage(config.binding),
         vectors=vectors,
         consolidation=consolidation if consolidation is not None else getattr(auxiliary, "consolidation", None),
-        retrieval_policy=RecallPolicy(vector_threshold=config.vector_threshold),
+        retrieval_policy=config.recall_policy(),
     )
     ingress_authorizer = None
     if config.host_adapter == "hermes":

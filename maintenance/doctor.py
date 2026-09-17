@@ -290,7 +290,11 @@ TERMINAL_FAILURE_COUNT = """
 #: carries no signal when something actually breaks.
 #: ``worker_capability_unavailable`` fires because the operator declined
 #: external consolidation, so the work type is unavailable by configuration.
+#: ``vector_threshold_unconfigured`` is vector recall wired without a threshold:
+#: recall still answers lexically, and no value can be supplied for the operator
+#: because a threshold is calibrated for one embedding model.
 _NON_ACTIONABLE_GAPS = frozenset({
+    "vector_threshold_unconfigured",
     "work_failed_terminal_only",
     "work_needs_review",
     "worker_capability_unavailable",
@@ -613,6 +617,37 @@ def _check_autostart(report: DoctorReport, binding, data_directory: Path) -> flo
     return wake_seconds
 
 
+def _check_vector_threshold(report: DoctorReport, binding, data_directory: Path) -> None:
+    """Vector recall that is wired but admits nothing, named instead of silent.
+
+    Reads the ``runtime-config.json`` every host loads by default.  With a
+    vector store and an approved embedding route but no ``vector_threshold``,
+    sources and queries are still embedded while recall refuses every vector hit
+    as ``vector_threshold_unconfigured``.  No threshold is assumed here.
+    """
+    from ..runtime.instance import RuntimeInstanceConfig
+
+    try:
+        raw = _read_control_file(data_directory / "runtime-config.json")
+        config = None if raw is None else RuntimeInstanceConfig.from_mapping(raw)
+    except Exception as exc:  # noqa: BLE001 - an unusable config is a finding, not a crash.
+        _record(report, "vector_threshold", "invalid", type(exc).__name__)
+        return
+    auxiliary = getattr(config, "auxiliary", None)
+    if (config is None or config.binding != binding or config.vector is None or auxiliary is None
+            or auxiliary.external_embedding is not True or auxiliary.embedding is None):
+        return
+    if config.vector_threshold is not None:
+        _record(report, "vector_threshold", "configured", str(config.vector_threshold))
+        return
+    model = str(config.embedding_space()["model"])[:64]
+    report.capability_gaps.append("vector_threshold_unconfigured")
+    _record(report, "vector_threshold", "unconfigured",
+            f"runtime-config.json configures vector recall with embedding model {model} but no "
+            "vector_threshold; every vector hit is refused as vector_threshold_unconfigured and recall "
+            "is lexical only until a threshold calibrated for this model is set")
+
+
 def _check_schema(report: DoctorReport) -> None:
     if report.schema_version != SCHEMA_VERSION:
         report.capability_gaps.append("schema_version_mismatch")
@@ -708,6 +743,7 @@ def run_doctor(
     binding, data_directory = bound
     _check_running_code(report, data_directory)
     package_health.apply_package_health(report, instance, probe)
+    _check_vector_threshold(report, binding, data_directory)
 
     readable = _check_storage(report, binding, data_directory)
     if readable:

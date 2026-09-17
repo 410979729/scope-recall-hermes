@@ -58,8 +58,9 @@ def canonical_embedding_space(value: dict) -> dict:
     # deployment could not choose its own provider even though the vector store
     # keys everything on the space digest and would have rebuilt cleanly.
     # Identity is still enforced, one layer out and where it belongs — a vector
-    # whose space digest differs from the active one is refused admission in
-    # `RecallPolicy.vector_admission`.
+    # whose space digest differs from the one its `RecallPolicy` is bound to
+    # (`embedding_space_id`, the configured route's space in a runtime
+    # instance) is refused admission in `RecallPolicy.vector_admission`.
     if type(value.get("model")) is not str or not 1 <= len(value["model"]) <= 200:
         raise ContractError("INPUT_INVALID", "embedding_space")
     if type(value.get("dimensions")) is not int or not 8 <= value["dimensions"] <= 16384:
@@ -159,7 +160,7 @@ def encode_embedding_text(raw_text: str, *, kind: str) -> str:
 
     The one choke point every embedded body passes through -- source, claim and
     query alike -- which is why the input bound lives here rather than in each
-    caller.  Six sources on tianshu were permanently unembeddable because there
+    caller.  Six sources on alpha were permanently unembeddable because there
     was no bound at all; see ``core/embedding_budget.py``.
     """
 
@@ -216,6 +217,10 @@ class RecallPolicy:
     vector_threshold: float | None
     lexical_min_terms: int = 1
     rrf_k: int = 60
+    #: Digest of the space the query is embedded in; only vectors from that
+    #: space are comparable to it.  The shipped space is the default, so a Core
+    #: or an installation that names no embedding route keeps its behavior.
+    embedding_space_id: str = SPACE_ID
 
     def __post_init__(self) -> None:
         threshold = _finite_score(self.vector_threshold)
@@ -225,13 +230,15 @@ class RecallPolicy:
             raise ContractError("INPUT_INVALID", "lexical_min_terms")
         if type(self.rrf_k) is not int or self.rrf_k < 1:
             raise ContractError("INPUT_INVALID", "rrf_k")
+        if type(self.embedding_space_id) is not str or not self.embedding_space_id.strip():
+            raise ContractError("INPUT_INVALID", "embedding_space_id")
 
     def vector_admission(self, candidate: CandidateRef) -> tuple[bool, str | None]:
         if candidate.source != "vector":
             return False, "not_vector"
         if type(candidate.vector_id) is not str or not candidate.vector_id:
             return False, "vector_id_missing"
-        if candidate.embedding_space != SPACE_ID:
+        if candidate.embedding_space != self.embedding_space_id:
             return False, "embedding_space_mismatch"
         score = _finite_score(candidate.vector_score)
         if score is None:
