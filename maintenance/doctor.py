@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from contextlib import closing, suppress
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import importlib.metadata
 import json
 import os
@@ -60,6 +60,8 @@ class DoctorReport:
     oldest_pending_age_seconds: float | None = None
     work_error_counts: dict[str, int] = field(default_factory=dict)
     recent_work_errors: list[dict[str, Any]] = field(default_factory=list)
+    #: Model answers cut off at the output limit in the last hour.
+    recent_output_truncations: int = 0
     capture_inbox: int = 0
     capture_inbox_blocked: int = 0
     extraction_outcomes: dict[str, int] = field(default_factory=dict)
@@ -511,6 +513,10 @@ def _check_storage(report: DoctorReport, binding, data_directory: Path) -> bool:
             report.capture_inbox = conn.execute("SELECT count(*) FROM capture_inbox").fetchone()[0]
             report.capture_inbox_blocked = conn.execute("SELECT count(*) FROM capture_inbox WHERE last_error_code IS NOT NULL AND last_error_code NOT IN ('STORAGE_UNAVAILABLE','DEADLINE_EXCEEDED')").fetchone()[0]
             report.recent_work_errors = [dict(r) for r in conn.execute("SELECT work_id,lease_token,stage,error_code,error_field,recorded_at FROM work_error_details ORDER BY detail_id DESC LIMIT 16")]
+            hour_ago = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+            report.recent_output_truncations = conn.execute(
+                "SELECT count(*) FROM work_error_details WHERE error_field='model_output_truncated' AND recorded_at>=?",
+                (hour_ago,)).fetchone()[0]
             report.extraction_outcomes = dict(conn.execute("SELECT disposition,count(*) FROM consolidation_outcomes GROUP BY disposition").fetchall())
             terminal_failures = conn.execute(TERMINAL_FAILURE_COUNT).fetchone()[0]
             report.needs_review_work = conn.execute(NEEDS_REVIEW_COUNT).fetchone()[0]
@@ -700,6 +706,24 @@ def _check_candidates(report: DoctorReport) -> None:
         _record(report, "candidate_failures", "retained", str(report.candidate_failed))
 
 
+#: Cut-off answers in an hour that mean the route's output limit is wrong, not
+#: that one source was long.  beta's DeepSeek V4 Flash thought by default,
+#: its reasoning counted against max_tokens, and most consolidation answers were
+#: cut off while the backlog stood still -- visible only in recent_work_errors.
+OUTPUT_TRUNCATION_ALERT = 5
+
+
+def _check_model_output(report: DoctorReport) -> None:
+    if report.recent_output_truncations < OUTPUT_TRUNCATION_ALERT:
+        return
+    report.capability_gaps.append("model_output_truncated")
+    _record(report, "model_output", "truncated",
+            f"{report.recent_output_truncations} model answers were cut off at the output limit in the last "
+            "hour and failed as model_output_truncated; raise the route's max_output_tokens, or turn the "
+            "provider's thinking off when its reasoning counts against that limit "
+            "(DeepSeek: \"thinking\": {\"type\": \"disabled\"})")
+
+
 def _check_ledger(report: DoctorReport) -> None:
     """A gap only once a lifetime cap is close enough to need action; the ratio
     itself is always in ``ledger_headroom`` so it is visible long before that."""
@@ -752,6 +776,7 @@ def run_doctor(
         _check_schema(report)
         _check_backlog(report, wake_seconds)
         _check_candidates(report)
+        _check_model_output(report)
         _check_ledger(report)
         _classify_status(report)
     _check_index(report, data_directory, store_readable=readable)

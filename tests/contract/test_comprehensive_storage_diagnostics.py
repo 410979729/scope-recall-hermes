@@ -183,6 +183,31 @@ def test_doctor_names_vector_recall_configured_without_a_threshold(tmp_path, mon
     assert 'vector_threshold_unconfigured' not in result.capability_gaps
 
 
+def test_doctor_names_answers_cut_off_at_the_output_limit(tmp_path, monkeypatch):
+    """beta's consolidation model reasoned into its max_tokens and most answers
+    were cut off; only recent_work_errors showed it, sixteen rows at a time."""
+    from datetime import datetime, timedelta, timezone
+
+    app, ctx = _doctor_app(tmp_path, monkeypatch)
+    now = datetime.now(timezone.utc)
+    with sqlite3.connect(app.storage.path) as conn:
+        for n in range(doctor.OUTPUT_TRUNCATION_ALERT):
+            conn.execute("INSERT INTO work_error_details(work_id,lease_token,stage,error_code,error_field,recorded_at) VALUES (?,?,?,?,?,?)",
+                         (n + 1, 1, 'prepare_or_model', 'DERIVATION_INVALID', 'model_output_truncated', (now - timedelta(minutes=n)).isoformat()))
+    before = app.storage.path.read_bytes()
+    result = doctor.run_doctor(host='hermes', instance_root=ctx.binding.data_directory)
+    assert result.recent_output_truncations == doctor.OUTPUT_TRUNCATION_ALERT
+    assert 'model_output_truncated' in result.capability_gaps and result.status == 'degraded'
+    [check] = [item for item in result.checks if item['name'] == 'model_output']
+    assert 'max_output_tokens' in check['detail'] and 'thinking' in check['detail']
+    assert app.storage.path.read_bytes() == before
+
+    with sqlite3.connect(app.storage.path) as conn:
+        conn.execute("UPDATE work_error_details SET recorded_at=?", ((now - timedelta(hours=2)).isoformat(),))
+    result = doctor.run_doctor(host='hermes', instance_root=ctx.binding.data_directory)
+    assert result.recent_output_truncations == 0 and 'model_output_truncated' not in result.capability_gaps
+
+
 def test_doctor_exposes_deferred_work_even_when_no_job_was_enqueued(tmp_path, monkeypatch):
     app, ctx = _doctor_app(tmp_path, monkeypatch)
     capture(app, ctx, 'TEST-full', 'TEST substantive first source')
