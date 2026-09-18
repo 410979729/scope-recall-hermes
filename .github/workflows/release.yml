@@ -79,7 +79,9 @@ jobs:
             successful="$(gh api --paginate \
               -H 'Accept: application/vnd.github+json' \
               "repos/${GITHUB_REPOSITORY}/commits/${RELEASE_SHA}/check-runs" \
-              --jq ".check_runs[] | select(.name == \"${required_job}\" and .status == \"completed\" and .conclusion == \"success\") | .name")"
+              --jq ".check_runs[] | select(.name == \"${required_job}\" and .status == \"completed\" and .conclusion == \"success\") | .name" | sort -u)"
+            # One name, however many runs reported it: a re-run of the same
+            # required check is still that check passing.
             test "${successful}" = "${required_job}"
           done
       - name: Resolve model evidence tag

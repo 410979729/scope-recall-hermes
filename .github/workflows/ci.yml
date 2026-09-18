@@ -2,6 +2,10 @@ name: CI
 
 on:
   push:
+    # A tag push would start a second ci-required run on the same commit,
+    # and the release gate compares the successful check names as one
+    # string: two successes read as neither.
+    tags-ignore: ['**']
   pull_request:
   schedule:
     - cron: "23 3 * * *"

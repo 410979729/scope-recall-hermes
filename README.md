@@ -39,7 +39,7 @@ checks yourself; do not ask the user to execute commands or govern old memories.
 Step-by-step Hermes and Codex instructions: [docs/install.md](docs/install.md).
 
 Build the local candidate first, then install that wheel into the same isolated
-Python environment used by the host. The package is not published to PyPI:
+Python environment used by the host. The 3.1.0 candidates are not published to PyPI:
 
 ```text
 python -m build --wheel
