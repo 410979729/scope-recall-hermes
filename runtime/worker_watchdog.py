@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+from collections import deque
 from contextlib import redirect_stdout
 from io import StringIO
 import json
@@ -10,6 +11,7 @@ from pathlib import Path
 import signal
 import subprocess
 import sys
+import threading
 import time
 
 from .validation import utc_now
@@ -215,6 +217,55 @@ def _release_worker(child: subprocess.Popen[str]) -> None:
     child.stdin = None
 
 
+class _ChildOutput:
+    """Read the child's pipes while it runs, so its receipt cannot wedge it.
+
+    A pipe holds a few kilobytes.  A pass that reports two hundred items writes a
+    receipt larger than that, and an owner that waits for exit before reading
+    leaves the child blocked in ``write`` with its work already committed: it
+    could never exit, so every pass burned its whole drain window and was
+    reported as a timeout.  Measured before this: 200 items done in 34.8s, the
+    owner returning 124 after 125.4s, once per pass, for days.
+
+    The readers are daemon threads and the buffers are bounded, so a descendant
+    that inherited the pipes cannot hold this owner up and a runaway child cannot
+    grow its memory without limit.  The receipt is the last line, which is the
+    line a bounded tail keeps.
+    """
+
+    #: Lines kept per stream.  The protocol is one compact JSON receipt; the rest
+    #: is diagnostic context for the failure that swallowed it.
+    LINES = 64
+
+    def __init__(self, child: subprocess.Popen[str]) -> None:
+        self._buffers: dict[str, deque[str]] = {}
+        self._threads: list[threading.Thread] = []
+        for name in ("stdout", "stderr"):
+            stream = getattr(child, name, None)
+            if stream is None:
+                continue
+            buffer: deque[str] = deque(maxlen=self.LINES)
+            self._buffers[name] = buffer
+            thread = threading.Thread(target=self._read, args=(stream, buffer),
+                                      name=f"scope-recall-worker-{name}", daemon=True)
+            thread.start()
+            self._threads.append(thread)
+
+    @staticmethod
+    def _read(stream, buffer: deque[str]) -> None:
+        try:
+            for line in stream:
+                buffer.append(line)
+        except (OSError, ValueError):
+            pass  # The stream was closed under us; what was read is kept.
+
+    def collect(self, *, timeout: float = 5.0) -> tuple[str, str]:
+        """Everything read, after giving the readers a bounded chance to finish."""
+        for thread in self._threads:
+            thread.join(timeout=timeout)
+        return ("".join(self._buffers.get("stdout", ())), "".join(self._buffers.get("stderr", ())))
+
+
 def _wait_for_exit(child: subprocess.Popen[str], deadline: float) -> bool:
     while child.poll() is None:
         if time.monotonic() >= deadline:
@@ -284,6 +335,10 @@ def _run_once(config_path: Path, python_executable: Path, *, cleanup_config: boo
         child = _spawn_worker(config_path, python_executable, deadline)
         if not job.assign(child):
             raise OSError("worker_job_assignment_failed")
+        # Read while it runs: a receipt is larger than a pipe, and an owner that
+        # waits for exit first leaves the child blocked in write with its work
+        # already done.
+        output = _ChildOutput(child)
         _release_worker(child)
         if not _wait_for_exit(child, deadline + KILL_GRACE_SECONDS):
             _kill_tree(child, job)
@@ -292,10 +347,11 @@ def _run_once(config_path: Path, python_executable: Path, *, cleanup_config: boo
                        "installation_id": config.binding.installation_id}
             return report(payload, 124)
         # Descendants may have inherited the pipes and outlived their parent.
-        # Stop the owned tree before reading EOF, rather than waiting on them.
+        # Stop the owned tree rather than waiting on them for EOF.
         _kill_tree(child, job)
         tree_stopped = True
-        stdout, stderr = child.communicate(timeout=5.0)
+        stdout, stderr = output.collect()
+        reap_process(child)
         _relay_output(stdout, stderr, result_sink)
         if child.returncode and not stdout.strip():
             save({"status": "degraded", "capability_gaps": ["worker_process_failed"]}, int(child.returncode))
