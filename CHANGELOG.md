@@ -6,68 +6,70 @@ All notable changes to `scope-recall` will be documented in this file.
 
 Thank you for waiting, and sorry it took this long. We did not patch 2.0 — we rebuilt the project. Production code went from **141,044 lines to 48,289**.
 
-2.0 was not a careless system. It had designed most of what 3.x does. The difference is that it now happens — and that a lot of what 2.0 also did, we decided not to keep.
+2.0 was not a careless system. It had designed most of what 3.x does. The difference is that it now works — and that a lot of what 2.0 also did, we decided not to keep.
 
-### Memory matures now, instead of being sorted on the way in
+### Saying something once no longer turns it into a fact
 
-This is the real change, and it is what we set out to build.
+This is the real change.
 
-2.0 decided at write time. A piece of content either passed the gate into the claim lane or it fell through to unstructured memory — one decision, on first sight, from a single mention.
+**In 2.0, the plugin decided the moment you said something.** One sentence arrived, and it judged on the spot: does this count as a fact? If yes, into the fact store. If no, kept as an ordinary note. One sentence, one chance, decided immediately.
 
-In 3.x a memory has a life. It is captured verbatim first, before anything judges it. Candidate meanings gather evidence across sources. A quiet window lets a candidate settle, so a passing remark does not harden into a fact. Corroboration strengthens it, consolidation turns it into a claim, and claims carry versions — so a memory is revised, not overwritten, and a correction leaves the old reading recoverable. Later evidence can requalify it. Duplicates collapse. And relevant memory surfaces without being asked, because you do not query your own memory and the agent should not have to either.
+**In 3.x it waits.** What you said is stored word for word first, and nothing judges it yet. If the same thing comes up again somewhere else, those mentions are collected together. Only when there is enough, and a while has passed with nothing new contradicting it, is it written down as a fact. Change your mind later and the fact gets a new version — the old wording is still there, not overwritten. If new evidence turns up after that, it gets looked at again. Two memories that turn out to be the same thing get merged into one.
 
-Every one of those stages is new in 3.x.
+And you no longer have to ask. Relevant memory is put in front of the model on its own, because you do not search your own memory before answering a question, and the agent should not have to either.
 
-Here is what it was worth. Same machine: the 2.0.1 database we handed to the migration, and the 3.x instance that replaced it.
+Every one of those steps is new in 3.x.
+
+Here is what it was worth. Same machine: the 2.0.1 database we handed to the migration tool, and the 3.x instance that replaced it.
 
 | | 2.0.1 | 3.1.0 |
 | --- | --- | --- |
-| Sources held | 4,688 | **167,117** |
-| Facts in the claim layer | **0** | **490** |
-| Evidence links | — | **147,816** |
+| Things it was holding | 4,688 | **167,117** |
+| Facts in the fact store | **0** | **490** |
+| Links from a fact to its evidence | — | **147,816** |
 
-**2.0's claim layer was empty in production.** Not small — zero. The design was there, the code was there, the tests were there, and after the whole 2.0 era not one memory had made it through the gate.
+**2.0's fact store was empty.** Not nearly empty — nothing in it. The design was there, the code was there, the tests were there, and in all the months 2.0 ran, not one memory ever got through that gate.
 
-That is the gap this release closed.
+2.0 designed this and never managed it. That is what changed.
 
-### Scope Recall is now a general-purpose memory plugin
+### It is not just for Hermes any more
 
-2.0 was called *Scope Recall for Hermes*, and that is what it was. 3.x is a memory core with hosts as adapters in front of it.
+2.0 was called *Scope Recall for Hermes*, and that is all it could be.
 
-**Hermes and Codex both work today**, against the same memory. **Claude Code and the DeepSeek harness are next**, and the list is meant to keep growing — adding a host is writing an adapter now, not touching memory code.
+**Hermes and Codex both work today**, reading and writing the same memory. **Claude Code and the DeepSeek harness are next**, and we mean to keep adding — supporting a new program is now a small adapter, not surgery on the memory code.
 
-If you use more than one agent tool, this is the change that matters most to you. Your memory stops belonging to whichever program happened to write it.
+If you use more than one agent tool, this is the change that matters most to you. What you tell one, you can ask the other.
 
 ### Three other things worth knowing
 
-**The worker left your agent's process.** In 2.0 the memory pipeline ran as threads inside the host, so a wedged agent wedged memory with it. 3.x runs a separate worker with a supervisor and leases. Unglamorous, and possibly the most valuable change here.
+**The background work moved out of your agent.** In 2.0 it ran inside the host program, so if the agent hung, memory hung with it. Now it is a separate process. Not exciting, possibly the most useful change here.
 
-**You can throw the vector index away.** A vector row now carries no text — every answerable byte is in SQLite. 2.0's rows carried their own copy, which quietly made the index a second store. Delete it, corrupt it, change embedding model, move machine: rebuild and lose nothing.
+**You can delete the vector index and rebuild it.** Nothing is stored only there any more — the text lives in SQLite, and the index just points at it. In 2.0 the index held its own copy of the text, so deleting it meant losing something. Now you can wipe it, switch embedding model, move to another machine, rebuild, and lose nothing.
 
-**A claim has to quote its source exactly.** Storage checks that the quoted span really is in that source revision, and refuses the claim otherwise. It is a large part of why the claim layer has rows in it at all.
+**A fact has to quote its source exactly.** Before storing a fact, the plugin checks that the quoted sentence really does appear in the thing it came from, and throws the fact away if it does not. This is a big part of why the fact store finally has anything in it.
 
-### The tool surface got much smaller, on purpose
+### The model gets 8 tools now, down from about 37
 
-2.0 gave the model about 37 tools, half of them maintenance — `dedupe`, `govern`, `purge`, `repair`, and a playbook family with a bridge that generated skills automatically.
+Half of 2.0's tools were housekeeping: delete duplicates, clean up, repair, purge, plus a playbook family and something that turned playbooks into skills automatically.
 
-3.x gives it eight, all cognitive: `recall`, `remember`, `revise`, `forget`, `trace`, `inspect` and a reference pair. Maintenance moved to the CLI.
+3.x gives the model eight, all about remembering and recalling: `recall`, `remember`, `revise`, `forget`, `trace`, `inspect` and a reference pair. Housekeeping moved to commands you run yourself.
 
-The skill bridge deserved to go — about half of what it generated just restated an existing skill, with no evidence behind it. And a model that can `purge` its own store can lose your memory.
+**That automatic skill generator had to go.** We checked what it produced: about half of it just repeated a skill that already existed, with nothing to back it up. And a tool that lets the model wipe its own memory is a tool that can lose yours.
 
-The price is real: **the model can no longer maintain its own store.** Deduplication, governance and repair are yours to run now.
+The downside is real: **the model can't tidy up after itself any more.** Removing duplicates and repairing things are jobs for you now.
 
-### What this gives you
+### What you get out of it
 
-- Memory that follows you between tools.
-- Facts that actually form.
-- A revision history — a corrected memory keeps what it used to say.
-- An answer to "why do you believe that", with the sentence that supports it.
-- Deletion you can trust, including through an index rebuild.
-- "I don't know" as a real answer, instead of a plausible-sounding one.
-- Memory that survives a wedged agent.
-- Costs you can read, metered before each call.
+- Memory that follows you from one tool to another.
+- Facts that actually get recorded.
+- Old versions kept when something is corrected.
+- An answer to "why do you think that" — the sentence it came from.
+- Deleting something actually deletes it, even after the index is rebuilt.
+- "I don't know" when the answer isn't there, instead of something that sounds right.
+- Memory that keeps working when the agent hangs.
+- A running total of what the model calls have cost you.
 
-On a 167,000-source corpus, building or rebuilding a vector store moved from days to hours. On two question sets we wrote by hand, correct answers went from 17/30 to 27/30 and 14/25 to 20/25, with no regression on exact facts or on questions the corpus cannot answer.
+On a corpus of 167,000 items, building the vector index went from days to hours. On two sets of test questions we wrote ourselves, correct answers went from 17/30 to 27/30 and from 14/25 to 20/25, and nothing got worse.
 
 ### Upgrading from 2.0.x
 
@@ -113,50 +115,50 @@ Worth knowing before you start:
 - **Deleted memories stay deleted**, including their dependency closure.
 - **Allow real time for it.** It depends on your data volume. Measure it on a copy first if that matters to you.
 
-### About cost — please read this before enabling the model routes
+### About cost — read this before you turn the model routes on
 
-**3.x prices differently from 2.0, and this is the thing most likely to surprise you.**
+**3.x costs money differently from 2.0, and this is what will catch you out.**
 
-2.0 embedded only the memories it had already selected — a few thousand over an instance's whole life. 3.x embeds the event stream. Semantic search stopped being "hope the summary mentioned it" and became "the original text is searchable", which is a genuine improvement, but it means **your bill now scales with how much you talk, not with how many memories you keep.**
+2.0 only paid to embed the memories it had already picked out — a few thousand over an instance's entire life. 3.x embeds everything that comes in. That is why searching by meaning actually works now instead of depending on whether a summary happened to mention the thing. But it means **your bill follows how much you talk, not how many memories you keep.**
 
 The rest, briefly:
 
-- **Watch the quota in the first week, not at the end of the month.** Every call is priced into a local ledger before it is made. `scope-recall doctor` shows the standing.
-- **We suggest MiniMax M3.** On the same forty consolidations, two runs per model, it matched a well-regarded alternative in quality at meaningfully lower cost per call.
-- **Turn the model's thinking mode off.** Measured: adaptive thinking made the pass six times slower, timed out three calls and broke the JSON envelope on three more. Structured extraction under a strict output format is a task where reasoning tokens hurt. It ships disabled — leave it that way unless you have measured otherwise.
-- **Prompt caching matters more than the headline price.** Our prompts repeat heavily, so an effective cache can cost a third of the same nominal rate without one.
-- **The daily work limit is not a spend gate.** It caps how many queue items are attempted and knows nothing about what they cost. Set below your real rate it does not save money, it creates a permanent backlog. Money is bounded by the ledger.
-- **Nothing is sent anywhere you did not configure.**
+- **Check your usage in the first week, not at the end of the month.** Every call is priced and recorded locally before it goes out. `scope-recall doctor` shows the total.
+- **We suggest MiniMax M3.** Same forty jobs, two runs each: it was as good as a well-known alternative and clearly cheaper per call.
+- **Turn the model's thinking mode off.** We measured it: thinking made the run six times slower, three calls timed out, and three more came back with broken JSON. When you need the model to fill in a fixed format, letting it think first makes things worse. It ships turned off — leave it off unless you have tested otherwise.
+- **Prompt caching matters more than the price per token.** Our prompts repeat a lot, so a provider that caches them well can cost a third of one that doesn't at the same advertised rate.
+- **The daily work limit will not cap your spending.** It limits how many queued jobs are attempted in a day and knows nothing about what any of them costs. Set it too low and you don't save money, you just build a backlog that never clears. Spending is capped by the ledger, not by this.
+- **Nothing gets sent anywhere you didn't configure.**
 
-### What is not finished
+### What isn't finished
 
-Real gaps. These are things 2.0 could do that 3.x cannot yet.
+Things 2.0 could do that 3.x can't yet.
 
-- **There is no recall-quality regression suite.** This is the serious one. 2.0 shipped 33 benchmark files — golden recall cases, negative retrieval, LoCoMo runs. 3.x ships none, which means the accuracy numbers above cannot be re-run by you or automatically by us. It is first in the queue.
-- **The independent evaluation gate has no receipt.** Treat our numbers as evidence, not as an audit.
-- **Quoting tool output is the largest source of lost memories.** Faced with a JSON tool result — a file listing with line-number gutters, an escaped API response — models often cannot reproduce a span byte for byte, and the claim is rejected. The memory is still captured and searchable; it just does not become a fact. This is the next functional fix.
-- **There is no way to sit down and review your memory.** 2.0 had a browser and dashboard reports. A review interface is on the roadmap.
-- **Retrieval scoring is not explained to you.** 2.0 exposed `explain`. 3.x computes the diagnostics but does not surface them.
-- **The model cannot deliberately reflect.** 2.0's `reflect` let it introspect on purpose. The mechanism needs redesigning rather than restoring, but the capability is missed.
-- **Session switching is not wired.** Two host hooks have no equivalent yet.
-- **Maintenance is CLI-only.** The model cannot clean up after itself.
-- **The vector companion has no explicit ANN index.** Fine at our corpus sizes; a much larger store wants a built one.
-- **The artifact layer is built but unused, and the episode layer is thin.** The plumbing works; the practice is new.
-- **Background scheduling and CI are Windows-only.** The plugin runs on Linux and macOS, but you schedule the worker yourself.
+- **There is no automated test for recall quality.** This is the bad one. 2.0 came with 33 benchmark files — sets of questions with known right answers. 3.x has none, which means **you can't re-run the accuracy numbers above, and neither can we without doing it by hand.** It's first in line.
+- **Nobody outside this project has checked our numbers.** We said we would run a frozen, independently judged evaluation before release. We haven't. Treat the figures as ours, not as an audit.
+- **The biggest cause of lost memories is tool output.** When something a tool printed is the source — a file listing with line numbers down the side, an escaped API response — the model usually can't copy a sentence out of it exactly, so the fact gets thrown away. The text is still stored and still searchable; it just doesn't become a fact. This is the next thing we fix.
+- **There's nowhere to sit and read through your own memory.** 2.0 had a browser and reports. A review screen is planned.
+- **It won't tell you why one result ranked above another.** 2.0 had a tool for that. 3.x works it out internally but doesn't show you.
+- **The model can't stop and reflect on purpose.** 2.0 let it. In 3.x memories only form in the background. This needs redesigning rather than putting back, but it's missed.
+- **Switching sessions doesn't trigger anything.** Two of 2.0's hooks have no replacement yet.
+- **Housekeeping is command-line only.**
+- **The vector index isn't a real search index.** It relies on LanceDB's defaults. Fine at our sizes; a much bigger store would want a proper one built.
+- **Two newer layers barely get used.** The attachment tables are empty, and there aren't many episodes yet. The machinery works; we haven't leaned on it.
+- **Automatic scheduling and our CI are Windows-only.** It runs on Linux and macOS, but you'll start the background worker yourself.
 
-Dropped on purpose. We do not plan to bring these back.
+Things we removed and won't bring back.
 
-- **The automatic skill bridge**, for the reason above.
-- **Model-facing maintenance tools.**
-- **`fact_evolution`'s auto-apply ladder** — versioned claims and an explicit `revise` cover it with less machinery and no automatic rewriting.
-- **68 operations scripts**, now ten CLI commands. Most of the difference in code size lived here.
-- **The 2.x compatibility layer is a one-way migration tool**, not a bridge. There is no path back.
+- **The automatic skill generator**, for the reason above.
+- **Housekeeping tools the model could call itself.**
+- **`fact_evolution`'s auto-apply path** — versioned facts plus an explicit `revise` do the same job with far less machinery and nothing rewriting itself.
+- **68 operations scripts**, now ten commands. Most of the difference in size was here.
+- **The 2.x compatibility layer reads the old format once, for migration.** It is not a bridge, and there is no going back.
 
-2.0 was a Swiss army knife. 3.x is a scalpel. Most of that is deliberate; the list above is where it is not, and we would rather hand it to you than have you find it.
+2.0 was a Swiss army knife. 3.x is a scalpel. Most of that was on purpose; the list above is where it wasn't, and we would rather tell you than let you find out.
 
 ### Thanks
 
-To everyone who filed an issue against 2.0.1 and then waited: the reliability work here started from your reports. And to the contributors who sent code — the embedder retry and backoff, the configurable retry delays, the vector admission floor, the secret-pattern word boundary, and the MiniMax embedder that a good part of this release now recommends — thank you.
+To everyone who filed an issue against 2.0.1 and then waited: the reliability work here started with your reports. And to the people who sent code — the embedder retry and backoff, the configurable retry delays, the vector admission floor, the secret-pattern word boundary, and the MiniMax embedder this release now recommends — thank you.
 
 ## [Unreleased]
 
