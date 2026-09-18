@@ -10,7 +10,7 @@ from dataclasses import replace
 from functools import partial
 
 from ..contracts import ContractError
-from .candidate_lifecycle import CandidateEvaluator, candidate_subject_matches
+from .candidate_lifecycle import CandidateEvaluator, candidate_identity_restored
 from .failure_retry import validation_feedback
 from .worker_consolidation import _decode_consolidation_result
 from .worker_outcomes import (
@@ -76,12 +76,10 @@ def _apply_verdict(tx, item, current, value, live_sources, now):
     proposal = normalize_frame(proposal, tx.claims.roots(evidence_refs(proposal)))
     expected_candidate = replace(current.candidate, payload=normalize_frame(
         current.candidate.payload, tx.claims.roots(evidence_refs(current.candidate.payload))))
-    for field in ("kind", "predicate"):
-        if proposal.get(field) != expected_candidate.payload.get(field):
-            raise ContractError("DERIVATION_INVALID", f"candidate_{field}")
     authorized_sources = tuple(source for source in live_sources if source is not None)
-    if not candidate_subject_matches(expected_candidate, authorized_sources, proposal.get("subject")):
-        raise ContractError("DERIVATION_INVALID", "candidate_subject")
+    # What the candidate is was recorded before the call; the verdict decides
+    # whether the evidence supports it, with what value and on which quote.
+    proposal = candidate_identity_restored(expected_candidate, authorized_sources, proposal)
     applied = apply_claim(tx, proposal, item.scope_id, now)
     applied_version = tx.claims.version(applied.ref, applied.revision)
     if (

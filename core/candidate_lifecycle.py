@@ -8,6 +8,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import json
 import re
+import unicodedata
 from typing import TYPE_CHECKING, Protocol
 
 from ..contracts import ContractError
@@ -20,6 +21,8 @@ SOURCE_MATCH_LIMIT = 16
 PROCESS_BATCH_LIMIT = 8
 DORMANCY_DAYS = 30
 _SELF_SUBJECTS = frozenset({"user", "current_user", "用户", "我"})
+#: Everything a name may be written with that does not change which name it is.
+_NOT_NAME = re.compile(r"[\s\"'`*_（）()【】\[\]「」“”‘’]+")
 
 
 @dataclass(frozen=True)
@@ -150,6 +153,71 @@ def candidate_subject_matches(
     return proposed_subject == expected
 
 
+def _plain(text: object) -> str:
+    """One name with nothing that changes how it reads: escapes, spacing, width, case."""
+    if not isinstance(text, str) or not text:
+        return ""
+    unescaped = text
+    for _round in range(2):  # a candidate stored through two encodings carries \\"
+        try:
+            decoded = json.loads(f'"{unescaped}"')
+        except ValueError:
+            break
+        if not isinstance(decoded, str) or decoded == unescaped:
+            break
+        unescaped = decoded
+    return _NOT_NAME.sub("", unicodedata.normalize("NFKC", unescaped)).casefold()
+
+
+def candidate_name_matches(expected: object, proposed: object) -> bool:
+    """Whether a proposed subject or predicate is the candidate's own, written differently.
+
+    Replayed against the real model on alpha's terminally failed evaluations,
+    every rejected name was the candidate's: ``embedding_retry.py`` came back as
+    ``embedding_retry.py 全文`` from the document's heading, a subject holding
+    ``\\"看图\\"`` came back with plain quotes, and a predicate of a whole clause
+    came back as its first word with the rest moved into ``value_text``.  So one
+    name containing the other, once nothing that changes how it reads is left, is
+    the same name -- and ``kimi`` against ``ollama`` still is not.
+    """
+    left, right = _plain(expected), _plain(proposed)
+    if not left or not right:
+        return False
+    return left in right or right in left
+
+
+def candidate_identity_restored(
+    candidate: CandidateSnapshot,
+    sources: tuple[StoredSource, ...],
+    proposal: dict,
+) -> dict:
+    """The proposal carrying the candidate's own identity, or a rejection.
+
+    What the candidate is -- its kind, subject and predicate -- is already
+    recorded; an evaluation decides whether the evidence supports it, with what
+    value and on which quote.  A name written differently is restored rather than
+    rejected, because re-asking cost a second model call and usually came back
+    written differently again: one of alpha's candidates was refused four times
+    over its predicate.  A name that is not the candidate's is still refused, and
+    a kind never is: it is one of a fixed set, so there is nothing to write
+    differently.  A verified human principal keeps the existing rule -- the model
+    must say a self label and ``apply_claim`` performs the binding.
+    """
+    for field in ("kind", "predicate"):
+        expected = candidate.payload.get(field)
+        if proposal.get(field) == expected:
+            continue
+        if field == "kind" or not candidate_name_matches(expected, proposal.get(field)):
+            raise ContractError("DERIVATION_INVALID", f"candidate_{field}")
+        proposal = {**proposal, field: expected}
+    if candidate_subject_matches(candidate, sources, proposal.get("subject")):
+        return proposal
+    subject = candidate.payload.get("subject")
+    if subject in _verified_human_principal_refs(sources) or not candidate_name_matches(subject, proposal.get("subject")):
+        raise ContractError("DERIVATION_INVALID", "candidate_subject")
+    return {**proposal, "subject": subject}
+
+
 #: Candidate re-evaluation carries the whole consolidation prompt (about 11.5 KB
 #: of instruction prose and inlined schema) plus a candidate block of its own,
 #: so the shared 16 KB consolidation ceiling left roughly 3.4 KB for evidence.
@@ -258,5 +326,6 @@ __all__ = [
     "CandidateSnapshot", "CandidateRegistration",
     "CandidateSourceTrigger", "CandidateEvaluationSnapshot", "CandidateSummary",
     "CandidateEvaluator", "candidate_evaluation_messages", "candidate_model_subject",
+    "candidate_identity_restored", "candidate_name_matches",
     "candidate_subject_matches",
 ]

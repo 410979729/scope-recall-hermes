@@ -321,6 +321,7 @@ CORE_RELEASE_CONTRACTS += [
     "tests/contract/test_rc37_identifier_forms.py",
     "tests/contract/test_rc37_interrupted_attempts.py",
     "tests/contract/test_rc37_turn_replies.py",
+    "tests/contract/test_rc38_candidate_identity.py",
 ]
 
 RUNTIME_BOUNDARY_TESTS = [
