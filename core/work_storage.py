@@ -11,6 +11,10 @@ from .schema import SCHEMA_VERSION
 
 MAX_RECOVERABLE_ATTEMPTS = 3
 MAX_OPERATOR_RETRIES = 2
+#: Work items one claim may lease.  Matches what one pass may hold
+#: (``core/worker.py``'s ``max_items``), because a pass that claims its embedding
+#: group together claims as much of itself as it is allowed to process.
+MAX_CLAIM_PAGE = 200
 DERIVATION_RETRY_MARKER = "derivation_retry:1"
 INTERRUPTED_RETRY_MARKER = "interrupted_retry:1"
 OPERATOR_ORIGINS = frozenset({"human_direct", "host_generated"})
@@ -449,7 +453,11 @@ class WorkItems:
         page.  Without fresh work the result is exactly the FIFO claim.
         """
         conn = self._tx._check(write=True)
-        if type(owner) is not str or not owner or type(limit) is not int or not 1 <= limit <= 32:
+        # The page is bounded by what one pass may hold, which is the worker's
+        # own ``max_items`` (``core/worker.py``: up to 200).  It was 32 while a
+        # pass was, and a pass that claims its embed group in one page then
+        # asked for more than it was allowed to.
+        if type(owner) is not str or not owner or type(limit) is not int or not 1 <= limit <= MAX_CLAIM_PAGE:
             raise ContractError("INPUT_INVALID", "work_claim")
         if type(lease_seconds) not in (int, float) or not math.isfinite(lease_seconds) or lease_seconds <= 0:
             raise ContractError("INPUT_INVALID", "lease_seconds")
