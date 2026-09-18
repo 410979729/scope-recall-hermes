@@ -18,6 +18,7 @@ import pytest
 
 from scope_recall.adapters.models import (
     AuxiliaryModelError,
+    EMBED_REQUEST_CONCURRENCY,
     MAX_EMBED_BATCH,
     build_gemini_embed_body,
 )
@@ -152,3 +153,55 @@ class GroupEmbed:
     def publish_source(self, prepared, *, source, lease_token, lease_owner, lease_guard, remaining_seconds=1.0):
         assert prepared == {"ref": source.ref, "revision": source.revision}
         assert lease_guard()
+
+
+def test_a_group_asks_its_requests_at_the_same_time():
+    """The last serial cost in a pass.
+
+    A pass of a thousand documents is ten requests of a hundred; asked one at a time they were
+    38 of its 55 seconds, while the provider allows three thousand requests a minute.  The
+    answers must still come back in the order they were asked, and no more than
+    ``EMBED_REQUEST_CONCURRENCY`` may be in flight, because each one is a helper process.
+    """
+    import threading
+    import time
+
+    class Concurrent(Recording):
+        def __init__(self) -> None:
+            super().__init__()
+            self._lock = threading.Lock()
+            self.live = 0
+            self.most = 0
+
+        def _embed_many(self, texts, *, remaining_seconds):
+            with self._lock:
+                self.live += 1
+                self.most = max(self.most, self.live)
+            try:
+                time.sleep(0.05)                      # a request is mostly waiting
+                return super()._embed_many(texts, remaining_seconds=remaining_seconds)
+            finally:
+                with self._lock:
+                    self.live -= 1
+
+    from scope_recall.adapters.models import GeminiEmbeddingAdapter
+
+    adapter = Concurrent()
+    adapter.embed_texts = GeminiEmbeddingAdapter.embed_texts.__get__(adapter, Concurrent)
+    count = 6 * MAX_EMBED_BATCH
+    began = time.perf_counter()
+    vectors = adapter.embed_texts([f"TEST {index}" for index in range(count)], remaining_seconds=60)
+    elapsed = time.perf_counter() - began
+    assert len(vectors) == count
+    assert adapter.most > 1, "the requests were still made one at a time"
+    assert adapter.most <= EMBED_REQUEST_CONCURRENCY, f"{adapter.most} requests were in flight at once"
+    assert elapsed < 6 * 0.05, f"six requests took {elapsed:.2f}s, which is serial"
+    # Order is what lets a vector be matched to the source that asked for it.
+    assert [int(first) for first, _second in vectors[:MAX_EMBED_BATCH]] == list(range(MAX_EMBED_BATCH))
+
+
+def test_one_request_is_not_sent_through_a_pool():
+    """A single chunk keeps the path the query leg and every small pass already use."""
+    adapter = _adapter()
+    assert len(adapter.embed_texts(["TEST one"], remaining_seconds=30)) == 1
+    assert adapter.requests == [1]

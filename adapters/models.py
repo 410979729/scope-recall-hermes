@@ -15,6 +15,7 @@ import threading
 import time
 import urllib.parse
 from collections.abc import Callable, Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from types import MappingProxyType
 from typing import Any, Protocol
 
@@ -32,6 +33,14 @@ from ..core.secret_patterns import contains_secret_like_text
 
 MAX_CHAT_RESPONSE_BYTES = 1_048_576
 MAX_EMBED_RESPONSE_BYTES = 16 * 1024 * 1024
+#: Embedding requests one group may have in flight.  A document request spawns its
+#: own bounded HTTP helper and shares no state, so this is threads waiting on
+#: sockets; the ledger reserves and settles each on its own connection.  It is the
+#: last serial cost in a pass: with a hundred documents per request at 3.8s each,
+#: a pass of a thousand spent 38 of its 55 seconds waiting for one request at a
+#: time, while the provider allows three thousand requests a minute and the pass
+#: was making ten.
+EMBED_REQUEST_CONCURRENCY = 4
 #: Documents one embedding request may carry, measured against the live provider
 #: rather than assumed: 32 texts answered in 2.6s, 64 in 3.2s, 100 in 3.8s, and
 #: 250 was refused with HTTP 400.  A hundred 3072-wide vectors is about 4 MB of
@@ -872,10 +881,21 @@ class GeminiEmbeddingAdapter:
         if not texts:
             return ()
         deadline = time.monotonic() + validate_timeout_seconds(remaining_seconds)
+        chunks = [texts[start:start + MAX_EMBED_BATCH] for start in range(0, len(texts), MAX_EMBED_BATCH)]
+        if len(chunks) == 1:
+            return tuple(self._embed_many(chunks[0], remaining_seconds=_remaining_seconds(deadline)))
+
+        def request(chunk: list[str]) -> tuple[tuple[float, ...], ...]:
+            # Each task reads the clock when it starts, not when it was queued, so
+            # a later request is bounded by what is actually left.
+            return self._embed_many(chunk, remaining_seconds=_remaining_seconds(deadline))
+
         vectors: list[tuple[float, ...]] = []
-        for start in range(0, len(texts), MAX_EMBED_BATCH):
-            chunk = texts[start:start + MAX_EMBED_BATCH]
-            vectors.extend(self._embed_many(chunk, remaining_seconds=_remaining_seconds(deadline)))
+        with ThreadPoolExecutor(max_workers=min(EMBED_REQUEST_CONCURRENCY, len(chunks)),
+                                thread_name_prefix="scope-recall-embed") as pool:
+            answers = [pool.submit(request, chunk) for chunk in chunks]
+            for answer in answers:                     # in the order they were asked
+                vectors.extend(answer.result())
         return tuple(vectors)
 
     def embed_text(self, text: str, *, remaining_seconds: float) -> Sequence[float]:
