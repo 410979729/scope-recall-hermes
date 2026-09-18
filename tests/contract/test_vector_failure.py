@@ -159,3 +159,19 @@ def test_the_one_remote_fallback_carries_the_type():
     assert source.count("raise _remote_failure(error_type, message)") == 1
     # The bare fallback must be gone, or the fix is half applied.
     assert "raise RuntimeError(message)" not in source
+
+
+def test_a_refused_call_says_which_answer_the_provider_gave():
+    """For seven hours on 2026-09-17 Google refused every embedding call, and the
+    gap said only ``http_status`` -- what a malformed request would also say."""
+    from scope_recall.adapters.models import AuxiliaryModelError
+    from scope_recall.core.vector_failure import vector_failure_label
+
+    assert vector_failure_label(AuxiliaryModelError("http_status", detail="429")) == \
+        "AuxiliaryModelError:http_status:429"
+    assert vector_failure_label(AuxiliaryModelError("http_status", detail="400")) == \
+        "AuxiliaryModelError:http_status:400"
+    # Anything that is not one provider answer keeps the name it had.
+    assert vector_failure_label(AuxiliaryModelError("http_status")) == "AuxiliaryModelError:http_status"
+    assert vector_failure_label(AuxiliaryModelError("http_status", detail="4x9")) == "AuxiliaryModelError:http_status"
+    assert vector_failure_label(AuxiliaryModelError("timeout")) == "AuxiliaryModelError:timeout"

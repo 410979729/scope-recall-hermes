@@ -9,7 +9,7 @@ mid-frame, the worker was never running, a request deadline was exhausted, a
 fence handshake mismatched, the table is not open, lancedb is not installed --
 and every one of them reaches the operator as the single word ``RuntimeError``.
 
-Measured on tianshu: every recall on 2026-09-15 reported ``vector_unavailable``
+Measured on alpha: every recall on 2026-09-15 reported ``vector_unavailable``
 together with ``vector_error:RuntimeError``, the semantic channel was lost on all
 of them, and *which* of those faults it was could not be recovered from anywhere.
 The exception is caught and discarded, so the message survives nowhere else --
@@ -74,7 +74,15 @@ def vector_failure_label(exc: BaseException) -> str:
     label = type(exc).__name__
     kind = getattr(exc, "error_type", None)
     if type(kind) is str and kind.isascii() and kind.replace("_", "").isalnum():
-        # A closed vocabulary already names the fault.
+        # A closed vocabulary already names the fault.  One of its names stands
+        # for every answer a provider gives, so the status comes with it: for
+        # seven hours on 2026-09-17 Google refused every embedding call, and
+        # every recall of those hours reported only ``http_status`` -- the same
+        # gap a malformed request would have left.  The status is three digits
+        # the exception already kept, and a closed set of its own.
+        status = getattr(exc, "detail", None)
+        if kind == "http_status" and type(status) is str and status.isdigit() and len(status) == 3:
+            return f"{label}:{kind}:{status}"
         return f"{label}:{kind}"
     try:
         message = str(exc)
