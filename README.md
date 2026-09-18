@@ -46,7 +46,7 @@ python -m pip install "<absolute-path-to-wheel>"
 python -m pip install "<absolute-path-to-wheel>[codex]"
 ```
 
-The current release candidate is `3.1.0rc36`; these commands are local
+The current release candidate is `3.1.0rc37`; these commands are local
 placeholders until a reviewed wheel is built. They do not claim that full host
 runtime wiring or production registration has been accepted.
 

@@ -12,6 +12,7 @@ from .schema import SCHEMA_VERSION
 MAX_RECOVERABLE_ATTEMPTS = 3
 MAX_OPERATOR_RETRIES = 2
 DERIVATION_RETRY_MARKER = "derivation_retry:1"
+INTERRUPTED_RETRY_MARKER = "interrupted_retry:1"
 OPERATOR_ORIGINS = frozenset({"human_direct", "host_generated"})
 _OPERATION_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}")
 _OPERATOR_TOKEN = re.compile(r"(?:^|\|prior:)operator_retry:([A-Za-z0-9][A-Za-z0-9_.-]{0,63})(?=\||$)")
@@ -611,6 +612,48 @@ class WorkItems:
             ("pending" if fits else "failed", now if fits else None,
              f"{marker}:{SCHEMA_VERSION}|input_invalid", work_id),
         ).rowcount
+
+    def recover_interrupted_attempts(self, *, now: str, allowed_work_types: frozenset[str], limit: int = 8) -> int:
+        """Grant one fresh attempt to an evaluation whose attempt no process finished.
+
+        The at-most-once fence is committed before the model call, so a worker
+        killed after it -- a gateway stop, a lost lease, a machine restart --
+        leaves the candidate failed with nothing recorded and nothing to look at:
+        24 of beta's candidates and 5 of alpha's sat there. Waiting for new
+        evidence never comes for a candidate whose evidence is already in.
+
+        One attempt: the marker says it was given, and ``attempt`` bounds it even
+        when a later failure overwrites the marker -- an interruption observed as
+        a lost lease reports ``lease_exhausted`` and keeps no history.  So a row
+        interrupted again and again is offered to the model at most
+        ``MAX_RECOVERABLE_ATTEMPTS`` times in its life, whatever it is called
+        each time.  A retry revalidates source and epoch authority first, exactly
+        as the first attempt did.
+        """
+        conn = self._tx._check(write=True)
+        if type(limit) is not int or not 1 <= limit <= 200:
+            raise ContractError("INPUT_INVALID", "retry_limit")
+        if "evaluate_candidate" not in allowed_work_types:
+            return 0
+        visible, params = self._visible_filter()
+        rows = conn.execute(
+            f"""SELECT work_id,last_error_code FROM work_items
+                WHERE state='failed' AND work_type='evaluate_candidate' AND {visible}
+                AND (lower(last_error_code)='candidate_attempt_interrupted'
+                     OR lower(last_error_code) LIKE '%|candidate_attempt_interrupted')
+                AND last_error_code NOT LIKE ? AND attempt < ? ORDER BY work_id LIMIT ?""",
+            (*params, f"%{INTERRUPTED_RETRY_MARKER}|%", MAX_RECOVERABLE_ATTEMPTS, limit),
+        ).fetchall()
+        recovered = 0
+        for row in rows:
+            if not self._tx.candidates.reopen_evaluation(row["work_id"], now=now, reason="interrupted_retry"):
+                continue
+            recovered += conn.execute(
+                """UPDATE work_items SET state='pending',available_at=?,lease_owner=NULL,
+                   lease_until=NULL,last_error_code=? WHERE work_id=? AND state='failed'""",
+                (now, f"{INTERRUPTED_RETRY_MARKER}|{row['last_error_code']}"[:1024], row["work_id"]),
+            ).rowcount
+        return recovered
 
     def recover_invalid_derivations(self, *, now: str, allowed_work_types: frozenset[str], limit: int = 32) -> int:
         """Grant legacy invalid results the same single extra attempt as new work.

@@ -183,6 +183,10 @@ def _recover_failed_work(storage, clock, context, config: WorkerConfig, allowed:
             # it never reaches these rows.
             recovered += tx.candidates.recover_oversized_evaluations(
                 now=clock.utc_now(), formatter=candidate_evaluation_messages, limit=min(8, config.max_items))
+            # An attempt begun and never finished leaves nothing recorded; the
+            # candidate would wait for evidence it already has.
+            recovered += tx.work.recover_interrupted_attempts(
+                now=clock.utc_now(), allowed_work_types=allowed, limit=min(8, config.max_items))
         recovered += tx.work.recover_transient_failures(
             now=clock.utc_now(), allowed_work_types=allowed,
             cooldown_seconds=config.auto_retry_cooldown_seconds,
