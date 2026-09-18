@@ -582,6 +582,40 @@ def _check_worker_status(report: DoctorReport, binding, data_directory: Path) ->
         report.capability_gaps.append("worker_capability_unavailable")
 
 
+def _check_supervisor(report: DoctorReport, data_directory: Path) -> None:
+    """Whether the loop that drains the queue is still accepting wakes.
+
+    A supervisor that met a hard worker failure used to mark itself non-accepting and
+    return, leaving the processing loop stopped until the next autostart wake -- and
+    saying so nowhere.  It was found by reading a control file by hand, at
+    ``drains=217`` with 180 items still queued.  It is now bounded by consecutive
+    failures instead of one, and either state is reported here: a loop that stood down
+    is a finding, and so is one that is limping.
+    """
+    newest: dict[str, Any] | None = None
+    try:
+        for path in sorted(data_directory.glob("runtime-supervisor-*.json")):
+            control = _read_control_file(path)
+            if control is None or control.get("finished_at") is not None and control.get("state") == "paused":
+                continue                      # An operator pause is not a failure.
+            if newest is None or str(control.get("started_at") or "") > str(newest.get("started_at") or ""):
+                newest = control
+    except (OSError, ValueError):
+        report.capability_gaps.append("supervisor_state_unreadable")
+        return
+    if newest is None:
+        return
+    state = str(newest.get("state") or "")
+    exit_code = newest.get("exit_code")
+    failures = newest.get("worker_failures") or 0
+    _record(report, "supervisor", state or "unknown",
+            f"drains={newest.get('drains')} failures={failures}")
+    if state == "failed":
+        report.capability_gaps.append(f"supervisor_stood_down:{exit_code if exit_code is not None else 'unknown'}")
+    elif failures:
+        report.capability_gaps.append(f"worker_failures:{int(failures)}")
+
+
 def _check_autostart(report: DoctorReport, binding, data_directory: Path) -> float | None:
     """Autostart registration, plus the budget state its runtime config points at.
 
@@ -773,6 +807,7 @@ def run_doctor(
     if readable:
         _check_worker_status(report, binding, data_directory)
         wake_seconds = _check_autostart(report, binding, data_directory)
+        _check_supervisor(report, data_directory)
         _check_schema(report)
         _check_backlog(report, wake_seconds)
         _check_candidates(report)

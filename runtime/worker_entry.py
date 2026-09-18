@@ -504,13 +504,47 @@ def run_retry_failed(
             instance.close()
 
 
+def load_credential_environment(config_path: str | Path, env_file: str | Path) -> int:
+    """Put the credential names this instance's config declares into this process.
+
+    A pass started by hand reaches every provider with nothing: the scheduled wake
+    carries the environment, and this entry point had no way to be given it.  So the
+    pass refused each item with ``credential_missing``, stood the work types down, and
+    exited 0 -- an operator watching a receipt saw a success that had done nothing.
+
+    Reads under the same contract as the autostart wake and the Codex hook: only the
+    names the trusted runtime config declares, never an interpolated dotenv, and never
+    overwriting a variable this process was already given, so the wake's own
+    environment always wins.  Returns how many names were set, never their values.
+    """
+    from .resume_entry import credential_environment
+
+    added = 0
+    for name, value in credential_environment(load_config(config_path), str(env_file)).items():
+        if name not in os.environ:
+            os.environ[name] = value
+            added += 1
+    return added
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="scope_recall.runtime.worker_entry")
     parser.add_argument("--config", required=True)
+    parser.add_argument("--env-file", help="Absolute file holding the credential names this "
+                                           "instance's runtime config declares; a scheduled wake "
+                                           "carries them in its environment instead.")
     parser.add_argument("--retry-failed", nargs="+", type=int, metavar="WORK_ID")
     parser.add_argument("--retry-operation-id")
     parser.add_argument("--memory-epoch", type=int)
     args = parser.parse_args(argv)
+    if args.env_file is not None:
+        try:
+            load_credential_environment(args.config, args.env_file)
+        except (OSError, ValueError) as exc:
+            # Never run a pass believing it has credentials it does not: a pass that
+            # cannot ask is the failure this argument exists to prevent.
+            sys.stderr.write(f"worker_entry:env_file_invalid:{type(exc).__name__}\n")
+            return 2
     if args.retry_failed:
         return run_retry_failed(
             args.config,

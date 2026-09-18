@@ -24,6 +24,14 @@ from .worker_entry import DAILY_COUNTER_MAX, _atomic_metadata, _metadata_path, _
 #: maintenance write was met with a pass every few seconds; failing instead
 #: stopped the supervisor until the next autostart wake.
 BUSY_BACKOFF_SECONDS = 30.0
+#: Hard worker failures in a row before a supervisor stops accepting wakes.
+#: One is not a broken worker: a pass can raise on one item, lose a lease to a
+#: maintenance command, or meet a bound nobody had met before.  Standing down on
+#: the first one stopped the processing loop until the next five-minute wake and
+#: said so nowhere -- observed on a live instance at ``drains=217`` with 180
+#: items still queued.  Three in a row, each after a backoff, is a worker that
+#: is not going to work, and then standing down is right.
+MAX_CONSECUTIVE_WORKER_FAILURES = 3
 
 
 def _daily_budget_spent(config, used: int) -> bool:
@@ -270,6 +278,7 @@ def supervise(config_path: Path, drain_once, *, delay_seconds=0.0, clock=time.mo
     deadline = clock() + config.supervisor_seconds
     wall_deadline = utc_now() + timedelta(seconds=config.supervisor_seconds)
     count = 0
+    failures = 0
     last_drain = None
     last_code = 0
     unavailable_until = {}
@@ -327,13 +336,24 @@ def supervise(config_path: Path, drain_once, *, delay_seconds=0.0, clock=time.mo
             unavailable = set(payload.get('unavailable_work_types', ())) & {'embed', 'consolidate', 'evaluate_candidate'}
             unavailable_until = {kind: utc_now() + timedelta(seconds=min(config.auto_retry_cooldown_seconds, 300))
                                  for kind in unavailable}
-            if code not in (0, 75, 124):
-                control.update(accepting=False, state='failed', reason='worker_failed', exit_code=code,
-                               drains=count, finished_at=_stamp(utc_now()))
-                return code
+            if code in (0, 75, 124):
+                failures = 0
+            else:
+                failures += 1
+                if failures >= MAX_CONSECUTIVE_WORKER_FAILURES:
+                    control.update(accepting=False, state='failed', reason='worker_failed', exit_code=code,
+                                   drains=count, worker_failures=failures, finished_at=_stamp(utc_now()))
+                    return code
+                # Not a broken worker yet: wait as long as a busy pass waits and
+                # try again, leaving the failure in the control file so the
+                # doctor reports a loop that is limping rather than a silent one.
+                busy_until = clock() + BUSY_BACKOFF_SECONDS
+                control.update(state='degraded', reason='worker_failed', last_exit_code=code,
+                               drains=count, worker_failures=failures)
+                continue
             # Busy/timeout is bounded by the same supervisor limit. Work and
             # cost reservations remain authoritative in their own ledgers.
-            control.update(drains=count, last_exit_code=code)
+            control.update(drains=count, last_exit_code=code, worker_failures=0)
     except BaseException:
         control.update(accepting=False, state='failed', reason='supervisor_failed', drains=count,
                        finished_at=_stamp(utc_now()))
