@@ -32,7 +32,16 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
-        tier: [unit, contract, packaging]
+        tier: [unit, contract, packaging, migration]
+        # host and native ran in no pull-request workflow at all. Both are
+        # added here on Windows, where they are known to pass; native is gated
+        # on LanceDB rather than on Windows and host holds the only
+        # Task Scheduler paths, so moving either to Linux is its own change.
+        include:
+          - os: windows-latest
+            tier: host
+          - os: windows-latest
+            tier: native
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
