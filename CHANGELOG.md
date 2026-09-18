@@ -6,28 +6,38 @@ All notable changes to `scope-recall` will be documented in this file.
 
 First: thank you for waiting, and sorry it took this long. 2.0.1 shipped at the end of August and it has been quiet here since. The reason is that we did not write a patch on top of 2.0 — we rebuilt most of the project. Storage, retrieval, the background worker, the host boundary and the deletion path are all new code, and a few of them are new ideas rather than new implementations of old ones. That is a long time to leave people on a version we had already decided to replace, and we should have said so sooner.
 
-This release is the result. It keeps everything 2.0 was for and changes almost everything about how it gets there.
+### The headline: this is no longer a Hermes plugin
 
-### What is different from 2.0
+2.0 was called *Scope Recall for Hermes*, and it was exactly that: 197 modules in one flat package, shaped around a single host from top to bottom. 3.x is a memory core with a host boundary in front of it — four files at the top level, and everything else behind `core/`, `adapters/`, `runtime/`, `vector/` and `maintenance/`, with each host living in its own adapter.
 
-**SQLite is now the only authority, and every vector index is disposable.** In 2.0 a memory's truth was spread across `memories`, `journal_entries`, `fact_claims` and the Lance rows, and the vector store held text of its own. In 3.x the answerable text lives in SQLite alone (`source_events`, `claims`, `claim_versions`, `evidence_links`, schema 1108); the vector store holds metadata and a vector with an empty payload. You can delete the whole index and rebuild it without losing a single memory. That one decision is what makes deletion, migration and recovery tractable.
+**Codex works today**, through MCP tools and hooks, against the same memory as Hermes. **Claude Code and the DeepSeek harness are next**, and the list is meant to keep growing — adding a host is now writing an adapter, not touching memory code. If you use more than one agent tool, this is the change that matters most to you: your memory stops belonging to whichever program happened to write it.
 
-**A claim has to quote its source, word for word.** Every fact the plugin records names the exact span of an exact source revision that supports it, and the code checks the span is really there before the claim is stored. Nothing is remembered because a model asserted it — this is why recall can show you *why* it believes something, and why a wrong memory can be traced to the sentence that caused it.
+### What else is different from 2.0
 
-**Deletion reaches everywhere.** One deletion record, applied in dependency order, covering sources, claims, evidence links, episode membership and the vector rows, with the derived layer fenced so a rebuild cannot resurrect what you removed.
+**The vector index is now genuinely disposable.** 2.0 already said SQLite was the truth — but its vector rows carried their own copy of the text, so the index was a second store in practice, and deleting or rebuilding it was never quite safe. In 3.x a vector row holds metadata and a vector with an **empty payload**; every answerable byte comes from SQLite. You can throw the whole index away and rebuild it without losing a memory. That one difference is what makes deletion, migration and recovery tractable instead of delicate.
 
-**Hosts are adapters, not assumptions.** 2.0 was Hermes-shaped throughout. 3.x has a host boundary with a Hermes adapter and a Codex adapter (MCP tools and hooks) behind the same core, so adding a host does not mean touching memory code.
+**A claim has to quote its source, word for word, and the code checks.** Every fact the plugin records names the exact span of an exact source revision that supports it, and storage verifies the span is really in that source before the claim exists. Nothing is remembered because a model asserted it.
 
-**Background work is bounded and fenced.** Consolidation, embedding, candidate evaluation, projection rebuilds and purges are durable work items with leases, attempt limits and at-most-once publication. A crashed pass loses nothing; a provider outage parks work instead of failing it; every failure is recorded with the field that caused it.
+**Deletion reaches the derived layer.** One deletion record, applied in dependency order across sources, claims, evidence links, episode membership and vector rows, with a fence so that rebuilding an index cannot resurrect what you removed.
 
-**Recall is five channels and a packet.** Exact reference, lexical, claim, recent and vector, fused by reciprocal rank, then assembled into a packet with an explicit answerability verdict — including "this corpus cannot answer that", which 2.0 had no way to say.
+**Background work is durable and bounded.** Consolidation, embedding, candidate evaluation, projection rebuilds and purges are work items with leases, attempt limits and at-most-once publication. A crashed pass loses nothing, a provider outage parks work instead of failing it, and every failure records the field that caused it.
 
-### What this buys you, measured
+**Memory forms from accumulated evidence, not from one mention.** Candidates gather evidence, settle after a quiet window, and are judged once — rather than a passing remark becoming a fact.
 
-- **Rebuilding a vector store went from days to hours.** One embedding request now carries up to a hundred documents, a pass carries up to a thousand items, and a group's vectors are written in one fenced commit. On a store of 162,000 sources this moved from 96 items a minute to 1,250.
-- **Recall accuracy on real corpora improved substantially.** On two instances' benchmark question sets, correct answers went from 17/30 to 27/30 and from 14/25 to 20/25, with no regression on exact facts (60/60) or on questions the corpus genuinely cannot answer (20/20).
-- **The queue can no longer feed itself.** A pass queues no more candidate evaluations than it can also perform, so a backlog cannot grow while nothing new is being said.
-- **Failures say what went wrong.** A rejected payload names the field (`as_of`, `source_refs`, `evidence_quote`) rather than a schema keyword, and the repair attempt gets that name.
+**Recall is five channels and an answerability verdict.** Exact reference, lexical, claim, recent and vector, fused by reciprocal rank, assembled into a packet that can say *this corpus cannot answer that* — something 2.0 had no way to express.
+
+**Model spend is metered before it happens.** Every auxiliary call is reserved against a local ledger with its model, tokens and charge, so cost is a number you can read rather than a surprise at the end of the month.
+
+### What that means in practice
+
+- **Your memory follows you between tools.** Ask Codex about something you told Hermes.
+- **You can ask why.** Every fact can produce the sentence that supports it, in the source revision it came from.
+- **You can delete something and know it is gone** — including from the index, and including after a rebuild.
+- **You can throw the index away.** Corrupt it, change embedding model, move machine: rebuild and lose nothing.
+- **"I don't know" is an answer it can give.** A question your corpus cannot support does not get a plausible-sounding one.
+- **You can see the cost before the bill does.** Every model call is priced into a local ledger as it is made, so "what is this costing me" is a query, not a guess.
+
+3.1.0 also makes the derived layer fast enough to live with: building or rebuilding a vector store moved from days to hours on a 162,000-source corpus, and on two instances' benchmark question sets correct answers went from 17/30 to 27/30 and 14/25 to 20/25, with no regression on exact facts or on questions the corpus genuinely cannot answer.
 
 ### Upgrading from 2.0.x
 
