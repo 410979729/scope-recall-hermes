@@ -4,6 +4,15 @@ All notable changes to `scope-recall` will be documented in this file.
 
 ## [Unreleased]
 
+### Scope Recall 3.1.0rc37 a question reaches the reply it was given, one name written two ways is one name - 2026-09-17
+
+Found by the QA benchmark over real questions and their answers on alpha and beta snapshots, where rc36 answered 17 of 30 and 14 of 25.
+
+- A reply was joined to its question only through episode membership, which is spent on every event of the episode in id order, so a question that was recalled at all could use the whole relation bound before reaching what it was told. The turn a person's message opened is now followed first, for every seed: the assistant's visible messages in the same scope and session, in capture order, until the person speaks again, within thirty minutes and at most three. They may take at most half the relation bound, so the claims and episodes reached from the same seed are still inspected.
+- A question asked about `DLSS5` and `glm5.3-flash`; the replies wrote `DLSS 5` and `glm-5.3-flash`, and hydration refused them as naming something else. What is offered is now read both ways, with and without the space, hyphen or underscore where letters meet digits. The query is not read that way: `H100 exact identifier` would have asked for `H100as`, and `give me 3 options` would have demanded an answer containing `me3`.
+
+Measured on the same snapshots at one wall clock, rc36 against rc37: alpha QA 17/30 to 27/30, beta QA 14/25 to 20/25. Facts (60/60), no_match (20/20), supersession (2/2), questions (58/60), beta scenario and complaint sets are unchanged.
+
 ### Scope Recall 3.1.0rc36 claims survive an unqualified summary, evidence has to speak to its candidate, a held writer is busy - 2026-09-17
 
 Found while rc35 ran on all four instances and while epsilon was migrated from 2.0.1.
