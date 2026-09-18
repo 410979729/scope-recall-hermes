@@ -4,41 +4,48 @@ All notable changes to `scope-recall` will be documented in this file.
 
 ## [3.1.0] - 2026-09-18
 
-First: thank you for waiting, and sorry it took this long. 2.0.1 shipped at the end of August and it has been quiet here since. The reason is that we did not write a patch on top of 2.0 — we rebuilt most of the project. Storage, retrieval, the background worker, the host boundary and the deletion path are all new code, and a few of them are new ideas rather than new implementations of old ones. That is a long time to leave people on a version we had already decided to replace, and we should have said so sooner.
+Thank you for waiting, and sorry it took this long. 2.0.1 shipped at the end of August and it has been quiet here since — because we were not writing a patch on top of 2.0. We rebuilt the project.
 
-### The headline: this is no longer a Hermes plugin
+Concretely: **1,114 files changed, 177 commits, 96,108 lines added and 286,764 removed.** Eight packages that did not exist in 2.0 — `core/`, `adapters/`, `runtime/`, `vector/`, `maintenance/`, `verification/`, `contracts/`, `probes/` — hold **52,182 lines of new code**, and the flat top-level package that used to *be* Scope Recall gave up **100,145 lines** to make room for them. 197 modules in one directory became four files at the top level and everything else behind a boundary. The database went from **93 tables to 36**, on a new schema (1108).
 
-2.0 was called *Scope Recall for Hermes*, and it was exactly that: 197 modules in one flat package, shaped around a single host from top to bottom. 3.x is a memory core with a host boundary in front of it — four files at the top level, and everything else behind `core/`, `adapters/`, `runtime/`, `vector/` and `maintenance/`, with each host living in its own adapter.
+2.0 was not a small system — it was 197 modules and 3,322 tests, and it had a version of almost everything. What changed in 3.x is not the feature list. It is that the same job is now done **once, in one place, with the rule enforced** instead of several times across modules that had to agree with each other. That is the kind of change you cannot ship as a patch, and it is what took the time.
 
-**Codex works today**, through MCP tools and hooks, against the same memory as Hermes. **Claude Code and the DeepSeek harness are next**, and the list is meant to keep growing — adding a host is now writing an adapter, not touching memory code. If you use more than one agent tool, this is the change that matters most to you: your memory stops belonging to whichever program happened to write it.
+### Scope Recall is now a general-purpose memory plugin
 
-### What else is different from 2.0
+2.0 was called *Scope Recall for Hermes*, and it was exactly that — shaped around a single host from top to bottom. 3.x is a memory core with hosts as adapters in front of it.
 
-**The vector index is now genuinely disposable.** 2.0 already said SQLite was the truth — but its vector rows carried their own copy of the text, so the index was a second store in practice, and deleting or rebuilding it was never quite safe. In 3.x a vector row holds metadata and a vector with an **empty payload**; every answerable byte comes from SQLite. You can throw the whole index away and rebuild it without losing a memory. That one difference is what makes deletion, migration and recovery tractable instead of delicate.
+**Hermes and Codex both work today**, through MCP tools and hooks, against the same memory. **Claude Code and the DeepSeek harness are next**, and the list is meant to keep growing: adding a host is now writing an adapter, not touching memory code.
 
-**A claim has to quote its source, word for word, and the code checks.** Every fact the plugin records names the exact span of an exact source revision that supports it, and storage verifies the span is really in that source before the claim exists. Nothing is remembered because a model asserted it.
+If you use more than one agent tool, this is the change that matters most to you. Your memory stops belonging to whichever program happened to write it — you can tell one tool something and ask another about it.
 
-**Deletion reaches the derived layer.** One deletion record, applied in dependency order across sources, claims, evidence links, episode membership and vector rows, with a fence so that rebuilding an index cannot resurrect what you removed.
+### What the rewrite actually bought
 
-**Background work is durable and bounded.** Consolidation, embedding, candidate evaluation, projection rebuilds and purges are work items with leases, attempt limits and at-most-once publication. A crashed pass loses nothing, a provider outage parks work instead of failing it, and every failure records the field that caused it.
+**One authoritative store instead of four.** In 2.0 a memory's truth was spread across `memories`, `journal_entries`, `fact_claims`, `reflection_events` and the vector rows. In 3.x every answerable byte lives in `source_events`, `claims`, `claim_versions` and `evidence_links`, and nowhere else — a vector row carries metadata and a vector with an **empty payload**. 2.0's vector rows carried their own copy of the text, which quietly made the index a second store; now it is a pure derivative. Delete it, corrupt it, change embedding model, move machine, rebuild: nothing is lost.
 
-**Memory forms from accumulated evidence, not from one mention.** Candidates gather evidence, settle after a quiet window, and are judged once — rather than a passing remark becoming a fact.
+**One evidence rule, enforced before the claim exists.** 2.0 checked quotes as well, but on normalised text, in a module whose own docstring disclaimed entailment. In 3.x a claim's quote must resolve to a **literal slice of a specific stored source revision**, and storage refuses the claim if it does not. The same intention, turned into a precondition — which is what lets recall show you *why* it believes something, and lets a wrong memory be traced to the sentence that caused it.
 
-**Recall is five channels and an answerability verdict.** Exact reference, lexical, claim, recent and vector, fused by reciprocal rank, assembled into a packet that can say *this corpus cannot answer that* — something 2.0 had no way to express.
+**One work queue instead of four background paths.** 2.0 ran nightly digests, reflection passes, journal consolidation and embedding down separate roads with their own leases. 3.x has a single durable queue: leases, attempt limits, at-most-once publication. A crashed pass loses nothing, a provider outage parks work rather than failing it, and a pass now queues no more evaluations than it can also perform — so a backlog cannot grow while nothing new is being said.
 
-**Model spend is metered before it happens.** Every auxiliary call is reserved against a local ledger with its model, tokens and charge, so cost is a number you can read rather than a surprise at the end of the month.
+**One deletion path, and it reaches the derived layer.** In place of `forgetting.py` and `privacy_purge.py`: one deletion record, applied in dependency order across sources, claims, evidence links, episode membership and vector rows, with a fence so that rebuilding an index cannot resurrect what you removed.
 
-### What that means in practice
+**Retrieval that reports its own limits.** Five channels — exact reference, lexical, claim, recent, vector — fused by reciprocal rank into a packet carrying an explicit answerability verdict, including *this corpus cannot answer that*. 2.0 had no way to say it.
 
-- **Your memory follows you between tools.** Ask Codex about something you told Hermes.
-- **You can ask why.** Every fact can produce the sentence that supports it, in the source revision it came from.
-- **You can delete something and know it is gone** — including from the index, and including after a rebuild.
-- **You can throw the index away.** Corrupt it, change embedding model, move machine: rebuild and lose nothing.
-- **"I don't know" is an answer it can give.** A question your corpus cannot support does not get a plausible-sounding one.
-- **You can see the cost before the bill does.** Every model call is priced into a local ledger as it is made, so "what is this costing me" is a query, not a guess.
+**A spend ledger in front of every model call.** 2.0 called models from four modules with no accounting at all. In 3.x each auxiliary call is reserved against a local ledger — model, tokens, charge — **before the request leaves the machine**.
 
-3.1.0 also makes the derived layer fast enough to live with: building or rebuilding a vector store moved from days to hours on a 162,000-source corpus, and on two instances' benchmark question sets correct answers went from 17/30 to 27/30 and 14/25 to 20/25, with no regression on exact facts or on questions the corpus genuinely cannot answer.
+**Candidates settle before they are judged.** They accumulate evidence, wait out a quiet window, and are evaluated once. A passing remark no longer becomes a fact because it was said one time.
 
+### What that gives you
+
+- **Memory that follows you between tools**, instead of one plugin for one program.
+- **An answer to "why do you believe that"** — the supporting sentence, in the source revision it came from.
+- **Deletion you can trust**, including through an index rebuild.
+- **A disposable index.** The expensive, fragile part of a memory system is now the part you are allowed to lose.
+- **"I don't know" as a real answer.** A question your corpus cannot support does not get a plausible-sounding one.
+- **Visible cost.** What memory is spending is a query, not a guess.
+- **Failures that name the field.** A rejected payload says `as_of` or `evidence_quote`, not a schema keyword, and the repair attempt gets that name too.
+- **A smaller thing to reason about.** 36 tables and a boundary, rather than 93 tables and 197 modules that all had to agree.
+
+3.1.0 in particular made the derived layer fast enough to live with: on a 162,000-source corpus, building or rebuilding a vector store moved from days to hours. On two benchmark question sets, correct answers went from 17/30 to 27/30 and from 14/25 to 20/25, with no regression on exact facts or on questions the corpus genuinely cannot answer.
 ### Upgrading from 2.0.x
 
 **There is no in-place upgrade, and that is deliberate.** The two schemas are different enough that a silent conversion would be the kind of thing you only discover was wrong months later. Migration is an explicit, resumable, offline job that leaves your 2.0 database untouched.
