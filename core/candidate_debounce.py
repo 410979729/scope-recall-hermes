@@ -2,7 +2,7 @@
 
 The measured problem: every source that mentions a candidate adds evidence,
 every addition changes the evidence fingerprint, and every new fingerprint
-queued a fresh evaluation while superseding the ones still waiting.  On TianShu
+queued a fresh evaluation while superseding the ones still waiting.  On one instance
 that produced 11,158 evaluations of which **7,802 were retired before anyone
 judged them** -- 69.9%, nearly all ``superseded_by_new_evidence`` -- and exactly
 **2** ever reached ``resolved / fact_active``.  The queue could not outrun its

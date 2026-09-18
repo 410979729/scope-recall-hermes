@@ -1,7 +1,7 @@
 r"""Where a claim's subject is allowed to be found, verbatim, in its evidence.
 
 The gate requires a subject to appear literally in what was quoted, which is
-what stops a model from inventing one.  Measured on tianshu's 92 live
+what stops a model from inventing one.  Measured on one instance's 92 live
 ``subject_not_bound`` head versions, that is refusing three different things at
 once:
 

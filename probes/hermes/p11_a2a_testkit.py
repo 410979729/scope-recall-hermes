@@ -31,7 +31,10 @@ HERMES_CONFIG = (HERMES_HOME / "config.yaml").resolve()
 BUDGET_CONFIG = (STATE / "budget-policy.json").resolve()
 # Default P11 diagnostic/shared-ledger binding. Isolated P18 formal runs must
 # resolve the hash-bound TEST config instead of monkeypatching this constant.
-LEDGER = Path(r"F:\SCOPERECALL更新项目\worktrees\scope-recall-v1.1\.execution\TEST-MODEL-BUDGET-V1\call-budget.sqlite3").resolve()
+# A test ledger, never a live one: the path keeps the marker the isolation
+# contract checks for, and no longer names one operator's machine.
+LEDGER = Path(os.environ.get("SCOPE_RECALL_TEST_LEDGER",
+                             ".execution/TEST-MODEL-BUDGET-V1/call-budget.sqlite3")).resolve()
 LEDGER_BINDING_SCHEMA = "scope-recall.p18-original-ledger.v1"
 ARCHIVE = (STATE / "archive").resolve()
 STOP_FILE = (STATE / "STOP-P11-A2A").resolve()

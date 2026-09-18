@@ -211,7 +211,7 @@ class CandidateIntake(CandidateTables):
 
         A shared term is enough for first-hand testimony, which can confirm a
         value without repeating it and lend a promotion its authority.  Any
-        other source must restate the candidate or name its subject: on alpha
+        other source must restate the candidate or name its subject: on one instance
         a shared bigram had attached 116,000 sources to 1,215 live candidates,
         and 6% of them restated the candidate they were attached to.
         """

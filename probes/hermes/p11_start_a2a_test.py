@@ -28,7 +28,7 @@ from probes.hermes.p11_a2a_testkit import (
     port_status, scrub, write_json,
 )
 
-VAULT_HELPER = Path(r"F:\Agents\shared\beidou\access-vault\bin\beidou-secret.py")
+VAULT_HELPER = Path(os.environ.get("SCOPE_RECALL_VAULT_HELPER", "fleet-secret.py"))
 ZERO_MODEL_DIAGNOSTIC_DUMMY = "TEST_ZERO_MODEL_DIAGNOSTIC_DUMMY"
 GATEWAY_READINESS_MARKER = "Press Ctrl+C to stop"
 GATEWAY_READINESS_LOG = HERMES_HOME / "logs" / "gateway.log"
@@ -38,7 +38,7 @@ def _load_authorized_test_key() -> str:
     if not VAULT_HELPER.is_file():
         raise RuntimeError("authorized TEST credential loader missing")
     completed = subprocess.run(
-        [sys.executable, "-B", str(VAULT_HELPER), "get", "api:yuheng-instance-env", "--instance", "tianji"],
+        [sys.executable, "-B", str(VAULT_HELPER), "get", os.environ.get("SCOPE_RECALL_VAULT_ENTRY", "api:instance-env"), "--instance", os.environ.get("SCOPE_RECALL_VAULT_INSTANCE", "default")],
         capture_output=True, timeout=12,
     )
     raw = completed.stdout

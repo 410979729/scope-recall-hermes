@@ -9,7 +9,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 from .backup import _safe_path
-from .legacy_tianshu_compat import (
+from .legacy_v2_compat import (
     BRIDGE_TABLE, BRIDGE_COLUMNS, IMPORT_LEDGER_TABLE, IMPORT_LEDGER_COLUMNS,
 )
 from .migration_records import MigrationError, _canon, _columns, _open_immutable, _tables

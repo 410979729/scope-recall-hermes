@@ -242,8 +242,8 @@ def _claim_answers(hits: int, covered: float, term_count: int, *, proposed: bool
 #: How far back a reply's turn is looked for.  A turn that ran longer than this
 #: is judged from its last two hours only.
 _TURN_LOOKBACK = timedelta(hours=2)
-#: Memory lookups in one turn that make its reply a restatement.  On alpha and
-#: beta the replies that tested recall ran 3 to 15 of them; replies that used
+#: Memory lookups in one turn that make its reply a restatement.  On one instance and
+#: another instance the replies that tested recall ran 3 to 15 of them; replies that used
 #: memory to answer a question mostly ran one or two, and those stay evidence.
 RECALL_ECHO_MIN_LOOKUPS = 3
 #: What a lookup that returned memory looks like: recall items, entity
@@ -260,7 +260,7 @@ def _second_precision(moment) -> str:
 def recall_echo(tx, source) -> bool:
     """Whether an assistant reply restates what memory lookups in its turn returned.
 
-    beta tested her own recall and reported the queries and what came back;
+    another instance tested her own recall and reported the queries and what came back;
     the report then came back first for those very queries, above the evidence
     it quoted.  The turn is the stretch since the session's last user message,
     which the host captures before any tool runs, and the reply is dated as the
@@ -318,7 +318,7 @@ def _claim_statement_content(version) -> str:
     """What a reader is shown for a claim: its payload without the quoted spans.
 
     The spans are verbatim evidence, and a tool-derived claim quotes escaped
-    JSON: two such claims used most of a 4096-unit packet on alpha and pushed
+    JSON: two such claims used most of a 4096-unit packet on one instance and pushed
     the answering messages out.  The item's evidence_refs already name every
     source, the full payload stays in metadata, and nothing on the read path
     matches against the quotes.
@@ -444,7 +444,7 @@ class RetrievalStorage:
 
         The lexical, vector and recent channels all yield events, so a fact used
         to reach recall only through relation expansion out of an event that was
-        retrieved first.  On alpha's benchmark 19 of the 29 facts recall missed
+        retrieved first.  On one instance's benchmark 19 of the 29 facts recall missed
         were never reached at all: newer talk about the same subject filled the
         lexical pool before the fact's own evidence.  A claim is short and
         structured, so it is matched on its statement, with its own rule

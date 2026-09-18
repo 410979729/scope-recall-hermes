@@ -159,7 +159,7 @@ def test_what_counts_as_only_asking():
 
     for text in ("你目前有记忆债务没？", "dlss到底是什么", "5个实例都升级完了吗", "What do you see in this image?"):
         assert asks_without_answering(text), text
-    for text in ("去看下阿戊怎么了", "不管什么情况都要先备份", "名称错了，是joy广州服务器",
+    for text in ("去看下阿戊怎么了", "不管什么情况都要先备份", "名称错了，是华南那台服务器",
                  "确认了？" + "我身上已经用上新版插件，网关和 worker 都在运行新版。" * 5):
         assert not asks_without_answering(text), text
 

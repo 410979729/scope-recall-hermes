@@ -1,9 +1,0 @@
-........................................................................ [ 76%]
-......................                                                   [100%]
-============================ slowest 10 durations =============================
-0.10s call     tests/contract/test_v11_inputs.py::test_raw_text_routes_all_validate_without_claim_preseeding
-0.02s setup    tests/unit/test_v11_context.py::test_model_cannot_supply_trusted_identity[database_path]
-0.01s call     tests/contract/test_v11_protocol.py::test_oversize_and_deep_payloads_are_rejected
-
-(7 durations < 0.005s hidden.  Use -vv to show these durations.)
-94 passed in 0.55s

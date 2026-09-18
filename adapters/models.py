@@ -389,7 +389,7 @@ def _unreported_output_tokens(usage: Mapping[str, Any]) -> int | None:
     """Billed tokens ``total_tokens`` counts beyond the prompt and the completion.
 
     A thinking model can bill its reasoning without counting it in
-    ``completion_tokens``: beta's Gemini 2.5 Flash route recorded a median of
+    ``completion_tokens``: another instance's Gemini 2.5 Flash route recorded a median of
     325 completion tokens a call while the provider's console showed roughly
     8,000.  OpenAI-style routes count reasoning inside ``completion_tokens`` and
     report a total equal to the sum, so nothing is counted twice.

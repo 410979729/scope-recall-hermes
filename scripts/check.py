@@ -18,7 +18,9 @@ from model_receipt_evidence import HERMES_METHOD_ID, METHOD_ID, PROTOCOL_HOST_ME
 
 
 ROOT = Path(__file__).resolve().parents[1]
-_DEFAULT_PACKAGING_UV = r"<instance root>\hermes-beta\bin\uv.exe"
+#: No default path: a machine without uv says so, rather than asserting that
+#: one operator's directory exists on it.
+_DEFAULT_PACKAGING_UV = ""
 _PACKAGING_HELPER_TIERS = frozenset({"packaging", "release"})
 DEFAULT_WATCHDOG_SECONDS = 180
 RELEASE_WATCHDOG_SECONDS = 600
@@ -78,6 +80,8 @@ def packaging_helper_env(tier: str) -> dict[str, str]:
     if tier not in _PACKAGING_HELPER_TIERS:
         return {}
     packaging_uv = os.environ.get("SCOPE_RECALL_UV") or shutil.which("uv") or _DEFAULT_PACKAGING_UV
+    if not packaging_uv:
+        return {}
     return {"SCOPE_RECALL_TEST_PACKAGING_HELPER_ROOTS": str(Path(packaging_uv).resolve().parent)}
 
 
@@ -87,6 +91,7 @@ SCRIPT_GATE_TESTS = [
     "tests/packaging/test_model_evidence_extractor.py",
     "tests/packaging/test_check_selection.py",
     "tests/packaging/test_package_manifest.py",
+    "tests/packaging/test_release_notes.py",
 ]
 SUITES = {
     "unit": ["tests/unit/test_v11_context.py", "tests/unit/test_check_runner.py"],

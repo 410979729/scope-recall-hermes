@@ -707,7 +707,7 @@ def _check_candidates(report: DoctorReport) -> None:
 
 
 #: Cut-off answers in an hour that mean the route's output limit is wrong, not
-#: that one source was long.  beta's DeepSeek V4 Flash thought by default,
+#: that one source was long.  another instance's DeepSeek V4 Flash thought by default,
 #: its reasoning counted against max_tokens, and most consolidation answers were
 #: cut off while the backlog stood still -- visible only in recent_work_errors.
 OUTPUT_TRUNCATION_ALERT = 5

@@ -166,7 +166,7 @@ def _queued_work_types(storage, clock, context, started: float, budget: float, k
 #: Scheduling settled candidates is how a candidate whose evidence stopped
 #: arriving is finally judged, and it ran every pass however deep the queue
 #: already was.  A pass evaluates at most ``candidate_batch_limit`` of them, so
-#: on beta the queue grew by eight a pass -- 941 waiting, the oldest ten hours
+#: on another instance the queue grew by eight a pass -- 941 waiting, the oldest ten hours
 #: old -- while every one of them cost a model call to get there.  Above this
 #: depth the work is already recorded and waiting; adding more only ages it.
 #: Twelve passes' worth, an hour at the default wake, so an idle instance clears
@@ -301,7 +301,7 @@ def drain_worker(
             allowed = allowed - {item.work_type}
             # Reported like a missing port, so the supervisor sleeps the type
             # instead of starting the next pass at once for the next item:
-            # delta, with no embedding credential, parked one of 2,548 items
+            # a fourth instance, with no embedding credential, parked one of 2,548 items
             # every seven seconds.
             paused.append(item.work_type)
         if str(error_code or "").lower() in _RATE_LIMITED_ERRORS:
@@ -312,7 +312,7 @@ def drain_worker(
             # The batch limit is there so a busy candidate queue never holds
             # captured conversation back.  With nothing else ready there is
             # nothing to hold back, and standing down anyway is what let a
-            # backlog outlive the passes meant to drain it: beta evaluated
+            # backlog outlive the passes meant to drain it: another instance evaluated
             # eight a pass while its schedulers queued up to sixteen, so the
             # queue grew by eight a pass with no new conversation at all.
             if candidate_ceiling < config.max_items and not _other_work_ready(

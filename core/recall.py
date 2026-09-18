@@ -45,8 +45,8 @@ MINIMUM_HYDRATION_CAP = 16
 CLAIM_CANDIDATES = 16
 #: Share of its fusion score context-only evidence keeps in live modes: a bare
 #: question, or a reply restating what a recall tool returned in its turn.
-#: Asked again, alpha returned five earlier questions like the query ahead of
-#: the reply that answered one, and beta's recall test report came back ahead
+#: Asked again, one instance returned five earlier questions like the query ahead of
+#: the reply that answered one, and another instance's recall test report came back ahead
 #: of the evidence it quoted.  At 0.6 a first-ranked one falls below a reply that
 #: ranked in the mid-teens, and still ranks as context when nothing answers.
 CONTEXT_ONLY_WEIGHT = 0.6

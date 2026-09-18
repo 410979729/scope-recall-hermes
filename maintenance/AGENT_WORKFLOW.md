@@ -112,7 +112,7 @@ and out of automatic memory/skill discovery.
 4. Inspect the structured blockers. `prepared` means the snapshot/catalog/target
    binding are fixed, not that migration is complete.
 5. Run `scope-recall migrate run --job <job-dir> --source-quiesced`.
-   Supply `--legacy-reader-contract tianshu-2.0.1/memories-physical-scope-in-accessible-scopes`
+   Supply `--legacy-reader-contract one instance-2.0.1/memories-physical-scope-in-accessible-scopes`
    only after verifying the matching old runtime/schema. Do not apply it to other
    reader semantics. Completed bridge records are archived without replay.
    Known OpenClaw import ledgers are preserved as verified, non-searchable audit

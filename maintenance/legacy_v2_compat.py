@@ -1,4 +1,4 @@
-"""Narrow, opt-in Tianshu 2.0.1 migration compatibility; no live writes.
+"""Narrow, opt-in one instance 2.0.1 migration compatibility; no live writes.
 
 Reader evidence: old scope.py accessible_scope_ids selects explicit local/shared
 identities; memory_queries.py inspect_memory and recall queries authorize with
@@ -61,7 +61,7 @@ _MEMORY_SCHEMA = tuple(
     (name, "INTEGER" if name == "last_recalled_turn" else "TEXT", int(name in _MEMORY_REQUIRED), int(name == "id"))
     for name in _MEMORY_COLUMNS
 )
-MEMORY_READER_CONTRACT = "tianshu-2.0.1/memories-physical-scope-in-accessible-scopes"
+MEMORY_READER_CONTRACT = "legacy-2.0.1/memories-physical-scope-in-accessible-scopes"
 _ARCHIVE_FORMAT = "scope-recall-completed-bridge-audit/1"
 IMPORT_LEDGER_TABLE = "import_ledger"
 IMPORT_LEDGER_COLUMNS = tuple(

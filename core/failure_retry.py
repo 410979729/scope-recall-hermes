@@ -1,7 +1,7 @@
 """Give a failed work item one more attempt, once, when a fix has shipped.
 
 A failure that nothing clears is not automatically a failure nobody should look
-at again.  Measured on alpha, the 249 failed work items were:
+at again.  Measured on one instance, the 249 failed work items were:
 
     derivation_invalid            213   model returned an invalid payload
     timeout                        15   transient; the automatic budget ran out

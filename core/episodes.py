@@ -12,7 +12,7 @@ from .source_qualification import AUTHORITY_QUESTION,preserves_qualifiers
 
 TOPIC_BREAK = re.compile(r'换个话题|另一个话题|转去|转到|接下来讨论|switch (?:topic|to)|new topic',re.I)
 #: ``如果``/``假如``/``假设`` had no English counterpart, so an English
-#: conditional read as an assertion.  Measured on tianshu: "If a tool failed
+#: conditional read as an assertion.  Measured on one instance: "If a tool failed
 #: because of setup state, capture the FIX" was taken as a report that the
 #: episode had failed.
 UNSETTLED = re.compile(r'假设|假如|如果|也许|可能|引用|据说|他说|她说|suppose|hypothetical|perhaps|maybe|quoted|\bif\b|\bin case\b',re.I)
@@ -26,7 +26,7 @@ WORK_REQUEST = re.compile(r'请|帮我|麻烦|我要|我想(?:做|把|写|完成
 #: The three terminal markers, each required to name *what* reached that state.
 #: ``failed`` used to be the exception -- a bare ``失败``/``failed`` anywhere in
 #: a source ended the episode -- while ``cancelled`` and ``completed`` both
-#: demanded the task noun.  On tianshu that produced 32 failed episode versions
+#: demanded the task noun.  On one instance that produced 32 failed episode versions
 #: and not one of them was a real failure: the only live source that still
 #: reaches this rule says "two prior failed questions remain in evidence",
 #: an adjective, 4 KB into a 7,674-character tool transcript.  A wrongly failed

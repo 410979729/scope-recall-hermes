@@ -1,6 +1,6 @@
 """How much of a source may be handed to the embedding model.
 
-Measured on tianshu: of 1,852 embedding attempts, **six failed with http_400
+Measured on one instance: of 1,852 embedding attempts, **six failed with http_400
 and every one of them was an oversized source** -- 16,505 / 17,531 / 36,650 /
 52,410 / 52,451 / 65,536 characters.  The largest that ever succeeded was
 16,770, and the 99th percentile of successes is 5,536, so the provider's

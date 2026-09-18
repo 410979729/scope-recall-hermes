@@ -12,7 +12,7 @@ import json
 import re
 from typing import Any, Mapping, cast
 
-from scope_recall.maintenance.legacy_tianshu_compat import resolve_memory_scope
+from scope_recall.maintenance.legacy_v2_compat import resolve_memory_scope
 
 from .legacy_catalog import _DIGEST_TABLES, _HISTORY
 from .legacy_plan import Conversion, Row

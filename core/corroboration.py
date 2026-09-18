@@ -5,7 +5,7 @@ Every gate in this system asks one question of one piece of evidence: does
 source saying exactly the same thing is dropped as a duplicate -- the identical
 assertion returns ``Mutation(..., "duplicate", ...)`` and its evidence is never
 recorded.  So the system has no way to get stronger by hearing something twice,
-which is why 401 claims on tianshu produced 36 active ones.
+which is why 401 claims on one instance produced 36 active ones.
 
 This is the missing dimension, and it is deliberately the *only* one being
 added.  Nothing here loosens a single judgement about a single source.  What it

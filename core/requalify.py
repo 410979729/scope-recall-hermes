@@ -2,7 +2,7 @@
 
 A claim is judged once, when it is written.  Nothing ever looks at it again, so
 a gate repair only ever helps claims captured *after* the repair ships -- the
-366 proposals already in TianShu's store would keep their original verdicts
+366 proposals already in one instance's store would keep their original verdicts
 forever, including the ones refused by a rule that has since been fixed.
 
 This is the bounded way to let a rule change reach them.  It re-runs exactly

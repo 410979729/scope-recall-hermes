@@ -6,13 +6,26 @@ include CONTRIBUTING.md
 include CONTRIBUTORS.md
 include .env.example
 include py.typed
-recursive-include docs *.md
+# Docs ship by name, the way modules do. ``recursive-include docs *.md`` put
+# every internal note in the sdist as soon as anyone wrote one: a recovery plan
+# naming the fleet's machines and a handoff quoting one operator's directory
+# tree were both published to PyPI that way.
+include docs/install.md
+include docs/configuration.md
+include docs/capture-contract.md
+include docs/claim-mutation-contract.md
+include docs/deletion-contract.md
+include docs/episode-artifact-contract.md
+include docs/upgrade-contract.md
+include docs/core-storage-mapping.md
+include docs/codex-cli-consolidation.md
+include docs/autonomous-memory.md
 prune tests
 recursive-include packaging_hooks *.py
 include packaging/v11-module-allowlist.json
 include scripts/check.py
 include scripts/build.package_manifest.py
-recursive-include .github/scripts *.py
+include .github/scripts/extract_changelog_release_notes.py
 recursive-include constraints *.txt
 recursive-include .github/workflows *.yml
 recursive-exclude * __pycache__

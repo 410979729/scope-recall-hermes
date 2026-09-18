@@ -39,7 +39,7 @@ def estimate_tokens(text: str) -> int:
 #: Fusion scores are reciprocal ranks, 1/61 at the top and 1/80 twenty places
 #: down, so a size factor overrules them easily: at a 256-unit quantum a
 #: 690-unit reply that answered the question counted for half of a 15-unit
-#: question and lost its slot to it on alpha.  Weighed against the packet, a
+#: question and lost its slot to it on one instance.  Weighed against the packet, a
 #: compact hit still takes the one slot a bulky repeat ranked a few percent
 #: above it, and a medium reply is not traded for a handful of snippets.
 DENSITY_QUANTUM_UNITS = 4096

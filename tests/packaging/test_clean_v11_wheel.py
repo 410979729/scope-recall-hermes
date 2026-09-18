@@ -34,8 +34,7 @@ def _build_wheel(dist_dir: Path) -> Path:
     uv = (
         os.environ.get("SCOPE_RECALL_UV")
         or shutil.which("uv")
-        or r"F:\Agents\runtime\windows\hermes-tianji\bin\uv.exe"
-    )
+        )
     completed = subprocess.run(
         [uv, "build", "--wheel", "--out-dir", str(dist_dir)],
         cwd=REPO_ROOT,

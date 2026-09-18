@@ -172,7 +172,7 @@ def _plain(text: object) -> str:
 def candidate_name_matches(expected: object, proposed: object) -> bool:
     """Whether a proposed subject or predicate is the candidate's own, written differently.
 
-    Replayed against the real model on alpha's terminally failed evaluations,
+    Replayed against the real model on one instance's terminally failed evaluations,
     every rejected name was the candidate's: ``embedding_retry.py`` came back as
     ``embedding_retry.py 全文`` from the document's heading, a subject holding
     ``\\"看图\\"`` came back with plain quotes, and a predicate of a whole clause
@@ -197,7 +197,7 @@ def candidate_identity_restored(
     recorded; an evaluation decides whether the evidence supports it, with what
     value and on which quote.  A name written differently is restored rather than
     rejected, because re-asking cost a second model call and usually came back
-    written differently again: one of alpha's candidates was refused four times
+    written differently again: one of one instance's candidates was refused four times
     over its predicate.  A name that is not the candidate's is still refused, and
     a kind never is: it is one of a fixed set, so there is nothing to write
     differently.  A verified human principal keeps the existing rule -- the model
@@ -221,7 +221,7 @@ def candidate_identity_restored(
 #: Candidate re-evaluation carries the whole consolidation prompt (about 11.5 KB
 #: of instruction prose and inlined schema) plus a candidate block of its own,
 #: so the shared 16 KB consolidation ceiling left roughly 3.4 KB for evidence.
-#: Measured against alpha's live database that admitted none of the 115
+#: Measured against one instance's live database that admitted none of the 115
 #: oversized evaluations: the smallest was already 2,892 characters of evidence.
 #: This ceiling is the request's real bound — the candidate block is counted
 #: inside it, not appended past it — and stays far below the auxiliary model's
@@ -231,7 +231,7 @@ CANDIDATE_EVALUATION_INPUT_BUDGET = 64000
 
 #: A source longer than this reaches a candidate evaluation as a window around
 #: the candidate's value (its subject when the value is absent), not whole.
-#: Tool output dominated the evidence: replayed over alpha's evaluations, the
+#: Tool output dominated the evidence: replayed over one instance's evaluations, the
 #: calls still made after the verdict limit carried 28 M characters, and windows
 #: of this size keep 44% of them.  Qualification reads the complete stored source
 #: around each quote, so a window changes what the model reads, never what a

@@ -36,7 +36,7 @@ CAPACITY_REFUSALS = frozenset({"http_429", "rate_limited", "http_502", "http_503
 #: The provider declining the account rather than this request: payment
 #: required, key rejected, access forbidden.  No payload changes that answer, so
 #: the worker parks the item without an attempt (``BUDGET_PAUSE_ERRORS``) until
-#: someone fixes the account.  On alpha a DeepSeek balance that ran out
+#: someone fixes the account.  On one instance a DeepSeek balance that ran out
 #: answered 402 for fifteen minutes and failed 100 candidate evaluations
 #: outright, none of which an operator command could reopen afterwards.
 ACCOUNT_REFUSALS = frozenset({"http_401", "http_402", "http_403"})
@@ -327,7 +327,7 @@ _RETRY_SUBJECT_REASON = {
 }
 #: The work types ``recover_transient_failures`` can reopen.  The planner wakes
 #: only for these: a candidate evaluation failed for good was counted as due, and
-#: alpha ran a pass every twenty seconds that recovered nothing.
+#: one instance ran a pass every twenty seconds that recovered nothing.
 AUTO_RECOVERABLE_WORK_TYPES = frozenset(_RETRY_SUBJECT_REASON)
 
 
@@ -644,7 +644,7 @@ class WorkItems:
         The at-most-once fence is committed before the model call, so a worker
         killed after it -- a gateway stop, a lost lease, a machine restart --
         leaves the candidate failed with nothing recorded and nothing to look at:
-        24 of beta's candidates and 5 of alpha's sat there. Waiting for new
+        24 of another instance's candidates and 5 of one instance's sat there. Waiting for new
         evidence never comes for a candidate whose evidence is already in.
 
         One attempt: the marker says it was given, and ``attempt`` bounds it even

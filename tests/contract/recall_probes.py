@@ -27,25 +27,28 @@ from __future__ import annotations
 
 import re
 
-#: Questions the corpus can answer, with a predicate identifying a correct
-#: answer. Measured on TianShu 2026-09-14: 8/8 answered, MRR 0.833.
+#: Questions a corpus can answer, with a predicate identifying a correct answer.
+#: The shape is the contract; the corpus is whoever runs it.  These read as an
+#: operator's own notes because that is what the set is for -- the earlier
+#: version quoted one instance's real conversations, an installation id and a
+#: project id, in a repository anyone can read.
 ANSWERABLE: tuple[tuple[str, str], ...] = (
-    ("天枢这个实例的 installation_id 是什么？",
-     r"hermes-install:797f237b4e3fd14d3202efa36bf6bbf0"),
-    ("Kimi K3 用的是什么 API 协议？上下文多大？",
-     r"(?is)kimi[ -]?k3.{0,400}(provider|协议|上下文|context)"),
-    ("跨实例继承记忆库要注意什么？",
-     r"跨实例记忆(继承|治理).{0,40}(工作流|整库灌入)"),
-    ("windows-ocr.ps1 是做什么的？",
-     r"(?is)windows-ocr\.ps1.{0,600}(Windows\.Media\.Ocr|built-in OCR)"),
-    ("受控记忆验收项目 SRLIVE-de5a0ba54dbe 的唯一标识是什么？",
-     r"SRLIVE-de5a0ba54dbe"),
-    ("只清掉 source_events.suppressed 会有什么后果？",
-     r"(?is)第一轮恢复只清了|只清.{0,12}suppressed.{0,200}(还|仍|不够|没有)"),
-    ("天枢的 hermes 版本落后官方多少个提交？",
-     r"落后官方 99 个提交"),
-    ("clawlore 的记忆捕获准入是怎么回事？",
-     r"clawlore 记忆捕获的内容准入失守"),
+    ("What installation id does this instance report?",
+     r"install:[0-9a-f]{8,}"),
+    ("Which API protocol does the configured chat model speak, and how large is its context?",
+     r"(?is)(protocol|格式|协议).{0,400}(context|上下文)"),
+    ("What has to be watched when one instance inherits another's memory?",
+     r"(?is)(inherit|继承).{0,40}(workflow|工作流|bulk|整库)"),
+    ("What does the screen-reading helper script do?",
+     r"(?is)ocr.{0,600}(recognis|识别|screen|截图)"),
+    ("Which identifier does the acceptance project use?",
+     r"[A-Z]{3,}-[0-9a-f]{6,}"),
+    ("What happens if only the suppressed flag is cleared during a recovery?",
+     r"(?is)(suppressed).{0,200}(not enough|still|仍|不够)"),
+    ("How far behind its upstream is the host application?",
+     r"(?is)(behind|落后).{0,20}\d+"),
+    ("What went wrong with capture admission on the other host?",
+     r"(?is)(capture|捕获).{0,40}(admission|准入)"),
 )
 
 #: Questions the corpus cannot answer. The packet must say so rather than
@@ -53,9 +56,9 @@ ANSWERABLE: tuple[tuple[str, str], ...] = (
 #: not ``supported``. A question whose *identifier* genuinely appears in the
 #: store is answerable -- "there is no such project" is an answer.
 UNANSWERABLE: tuple[str, ...] = (
-    "UNRECORDED-7a047b41a2c607 这个项目的唯一标识是什么？",
-    "我最喜欢的颜色是什么？",
-    "2019 年的季度营收是多少？",
+    "What identifier does project UNRECORDED-7a047b41a2c607 use?",
+    "What is my favourite colour?",
+    "What was the quarterly revenue in 2019?",
 )
 
 GOLD = tuple((query, re.compile(pattern)) for query, pattern in ANSWERABLE)

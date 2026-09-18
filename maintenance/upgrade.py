@@ -216,7 +216,7 @@ def run_upgrade(job, *, source_quiesced=False, legacy_reader_contract=None) -> d
                 kwargs = {}
                 if legacy_reader_contract is not None:
                     kwargs["legacy_memory_reader_contract"] = legacy_reader_contract
-                from .legacy_tianshu_compat import (
+                from .legacy_v2_compat import (
                     build_completed_bridge_archive, build_import_ledger_archive,
                 )
 

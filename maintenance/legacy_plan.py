@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping
 
-from .legacy_tianshu_compat import MemoryStorageAuthority
+from .legacy_v2_compat import MemoryStorageAuthority
 
 Row = dict[str, Any]
 

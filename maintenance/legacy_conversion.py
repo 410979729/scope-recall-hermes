@@ -20,7 +20,7 @@ from scope_recall.core.events import lexical_terms
 from scope_recall.core.schema import SCHEMA_VERSION
 from scope_recall.core.storage import SQLiteStorage
 from scope_recall.maintenance.legacy_episode_membership import plan_legacy_episode_memberships
-from scope_recall.maintenance.legacy_tianshu_compat import (
+from scope_recall.maintenance.legacy_v2_compat import (
     BRIDGE_TABLE, IMPORT_LEDGER_TABLE, LegacyCompatibilityError,
     prepare_memory_storage_authority, verify_completed_bridge_archive, verify_import_ledger_archive,
 )

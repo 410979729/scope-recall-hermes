@@ -161,7 +161,7 @@ def encode_embedding_text(raw_text: str, *, kind: str) -> str:
 
     The one choke point every embedded body passes through -- source, claim and
     query alike -- which is why the input bound lives here rather than in each
-    caller.  Six sources on alpha were permanently unembeddable because there
+    caller.  Six sources on one instance were permanently unembeddable because there
     was no bound at all; see ``core/embedding_budget.py``.
     """
 
@@ -372,9 +372,9 @@ def query_is_specific(
 
 
 #: Characters that only ask: 什么, 怎么, 哪个, 多少 and the sentence-final
-#: particles.  The index holds overlapping bigrams, so "阿乙当前是什么模型"
+#: particles.  The index holds overlapping bigrams, so "这个实例当前是什么模型"
 #: searched 是什, 什么 and 么模 too -- terms every earlier question shares and
-#: no answer does -- and beta returned "你现在是什么模型呀" as the best match.
+#: no answer does -- and another instance returned "你现在是什么模型呀" as the best match.
 #: A bigram holding one of these asks rather than names, so it proves nothing.
 #: The few nouns built on them (酒吧, 哪吒) are the price of that rule.
 _ASKING_CHARACTERS = frozenset("什么吗呢呀吧嘛哪啥")
@@ -407,11 +407,11 @@ _TRAILING = re.compile(r"[\s。！!~～…,.，、)）\]】\"'”’]+$")
 def asks_without_answering(text: str) -> bool:
     """Whether a message only asks.
 
-    Asking again, alpha returned five earlier questions like the query and
+    Asking again, one instance returned five earlier questions like the query and
     not the reply that answered one: a question shares every content word with
     a later one and is short, so it outranks its own answer.  A short message
     with a question mark, or ending on an asking particle, is such a question.
-    "去看下阿戊怎么了" is a request, and "不管什么情况都要先备份" a rule.
+    "去看下那台机器怎么了" is a request, and "不管什么情况都要先备份" a rule.
     """
     if type(text) is not str:
         return False
@@ -430,8 +430,8 @@ def meaningful_query_terms(query: str) -> tuple[str, ...]:
 
 #: Chinese words that agent-operations conversations use interchangeably.
 #:
-#: The lexical index holds overlapping CJK bigrams, so "阿乙装上了吗" and
-#: "阿乙已经安装好了" share no term for the one word they both use.  A query
+#: The lexical index holds overlapping CJK bigrams, so "这个实例装上了吗" and
+#: "这个实例已经安装好了" share no term for the one word they both use.  A query
 #: naming a member also searches for the others (``synonym_expansions``); that
 #: happens at query time only, so nothing is stored and nothing is re-indexed.
 #:
@@ -468,7 +468,7 @@ def synonym_expansions(query: str) -> dict[str, str]:
 
     Writing another member in place of a group member changes three bigrams:
     the word's own and the two it forms with its neighbours.  Swapping 安装 for
-    装上 in "阿乙装上了吗" turns 姬装, 装上 and 上了 into 姬安, 安装 and 装了.
+    装上 in "这个实例装上了吗" turns 姬装, 装上 and 上了 into 姬安, 安装 and 装了.
     Each changed bigram is credited to the query term at its position, so a
     source phrased with the synonym matches at most the terms the question
     written with that synonym would have matched, and one synonym term never

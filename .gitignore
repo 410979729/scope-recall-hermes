@@ -40,3 +40,14 @@ review-report.*.md
 # .gitignore does not touch them.
 verification/**/*-[0-9]*.log
 verification/**/*-[0-9]*.json
+
+# Verification receipts are evidence of a local gate run, not public material:
+# the fleet inventory, the run logs and the provider receipts named machines,
+# paths and credential entries. Only the files a gate reads stay tracked.
+verification/*
+!verification/README.md
+!verification/functional_traceability.json
+!verification/G0/
+verification/G0/*
+!verification/G0/g0-appserver-method-adjudication-v2.json
+!verification/G0/g0-hermes-cli-method-adjudication-v1.json

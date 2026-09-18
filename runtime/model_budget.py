@@ -475,7 +475,7 @@ def provider_refusals(ledger_path, *, now: float | None = None) -> list[str]:
 #: in a row, from a minute to half an hour, and over at the first answer.  Each
 #: pass already stood a refused work type down, but the next pass asked again at
 #: once: through a monthly spend cap Google refused every embedding for seven
-#: hours while gamma, alpha and beta kept asking about 5,000 times a day.
+#: hours while a third instance, one instance and another instance kept asking about 5,000 times a day.
 #: Half an hour between asks is still quick to notice the cap was raised.
 PROVIDER_HOLD_FIRST_SECONDS = 60.0
 PROVIDER_HOLD_LONGEST_SECONDS = 1800.0

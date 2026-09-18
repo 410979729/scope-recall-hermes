@@ -145,7 +145,7 @@
     "maintenance/legacy_lifecycle.py",
     "maintenance/legacy_plan.py",
     "maintenance/legacy_sources.py",
-    "maintenance/legacy_alpha_compat.py",
+    "maintenance/legacy_v2_compat.py",
     "maintenance/migrate.py",
     "maintenance/migrate_v2.py",
     "maintenance/migration_activation.py",

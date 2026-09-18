@@ -5,7 +5,7 @@ something the evidence does not support.  None of them is a reason to overrule
 a person who reads a proposal and says "yes, that one, keep it".  Until now
 there was no way for them to say it: ``revise`` targets claims that are already
 active, ``propose_memory`` makes new proposals, and the 366 refused proposals on
-tianshu had no route forward at all.
+one instance had no route forward at all.
 
 This is the mirror of ``capture_correction``: model-free, human-only, and
 recognised in ordinary conversation rather than behind a tool call, because

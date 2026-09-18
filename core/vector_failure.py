@@ -9,7 +9,7 @@ mid-frame, the worker was never running, a request deadline was exhausted, a
 fence handshake mismatched, the table is not open, lancedb is not installed --
 and every one of them reaches the operator as the single word ``RuntimeError``.
 
-Measured on alpha: every recall on 2026-09-15 reported ``vector_unavailable``
+Measured on one instance: every recall on 2026-09-15 reported ``vector_unavailable``
 together with ``vector_error:RuntimeError``, the semantic channel was lost on all
 of them, and *which* of those faults it was could not be recovered from anywhere.
 The exception is caught and discarded, so the message survives nowhere else --
