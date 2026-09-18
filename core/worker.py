@@ -161,6 +161,27 @@ def _queued_work_types(storage, clock, context, started: float, budget: float, k
     return tuple(kind for kind in kinds if kind in queued)
 
 
+#: Candidate evaluations allowed to wait before a pass stops queueing more.
+#:
+#: Scheduling settled candidates is how a candidate whose evidence stopped
+#: arriving is finally judged, and it ran every pass however deep the queue
+#: already was.  A pass evaluates at most ``candidate_batch_limit`` of them, so
+#: on beta the queue grew by eight a pass -- 941 waiting, the oldest ten hours
+#: old -- while every one of them cost a model call to get there.  Above this
+#: depth the work is already recorded and waiting; adding more only ages it.
+#: Twelve passes' worth, an hour at the default wake, so an idle instance clears
+#: the ceiling before the next sweep.
+CANDIDATE_QUEUE_CEILING = PROCESS_BATCH_LIMIT * 12
+
+
+def _other_work_ready(storage, clock, context, started: float, budget: float, kinds: frozenset[str]) -> bool:
+    """Whether work this pass can still do, other than candidate evaluation, is ready now."""
+    if not kinds:
+        return False
+    with storage.read(context, remaining_seconds=_remaining(started, clock, budget)) as tx:
+        return tx.work.other_work_ready(now=clock.utc_now(), kinds=kinds)
+
+
 def _recover_failed_work(storage, clock, context, config: WorkerConfig, allowed: frozenset[str],
                          started: float, budget: float) -> int:
     """Grant bounded fresh attempts to failures a later fix or budget may have cured."""
@@ -174,8 +195,13 @@ def _recover_failed_work(storage, clock, context, config: WorkerConfig, allowed:
             # Evidence stops arriving silently, so something has to notice.
             # observe_source no longer schedules while a candidate is still
             # collecting; this is where a settled one finally gets its one
-            # evaluation.  See core/candidate_debounce.py.
-            tx.candidates.schedule_settled_candidates(now=clock.utc_now(), limit=min(16, config.max_items))
+            # evaluation.  See core/candidate_debounce.py.  A pass queues at
+            # most what it can also evaluate, and stops queueing entirely once
+            # the queue is deeper than passes can reach, so a backlog cannot
+            # grow on its own: what is not queued now waits and is queued later.
+            if tx.work.pending_depth("evaluate_candidate") < CANDIDATE_QUEUE_CEILING:
+                tx.candidates.schedule_settled_candidates(
+                    now=clock.utc_now(), limit=min(config.candidate_batch_limit, config.max_items))
             recovered += tx.candidates.reschedule_budget_blocked_candidates(
                 now=clock.utc_now(), limit=min(8, config.max_items))
             # The candidate twin of recover_oversized_consolidations, which
@@ -243,6 +269,7 @@ def drain_worker(
     model_bound = frozenset(ports)
     reserve = 0.0 if config.request_seconds is None else config.request_seconds + FINALIZE_MARGIN_SECONDS
     paused: list[str] = []
+    candidate_ceiling = min(config.candidate_batch_limit, config.max_items)
     while len(receipts) < config.max_items and _remaining(started, clock, budget) > 0:
         if _remaining(started, clock, budget) < reserve:
             allowed = allowed - model_bound
@@ -281,8 +308,18 @@ def drain_worker(
             # A provider that just answered 429 will answer 429 to the next item
             # too.  Each item backing off on its own is no backoff at all.
             allowed = allowed - {item.work_type}
-        if claimed_types["evaluate_candidate"] >= config.candidate_batch_limit:
-            allowed = allowed - {"evaluate_candidate"}
+        if "evaluate_candidate" in allowed and claimed_types["evaluate_candidate"] >= candidate_ceiling:
+            # The batch limit is there so a busy candidate queue never holds
+            # captured conversation back.  With nothing else ready there is
+            # nothing to hold back, and standing down anyway is what let a
+            # backlog outlive the passes meant to drain it: beta evaluated
+            # eight a pass while its schedulers queued up to sixteen, so the
+            # queue grew by eight a pass with no new conversation at all.
+            if candidate_ceiling < config.max_items and not _other_work_ready(
+                    storage, clock, context, started, budget, allowed - {"evaluate_candidate"}):
+                candidate_ceiling = config.max_items
+            else:
+                allowed = allowed - {"evaluate_candidate"}
         if _remaining(started, clock, budget) <= 0:
             break
     return WorkerReceipt(

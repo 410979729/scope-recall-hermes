@@ -365,6 +365,31 @@ class WorkItems:
             (*scopes, context.project_id, context.branch_id),
         )
 
+    def pending_depth(self, work_type: str) -> int:
+        """How many rows of one type are pending, whether or not they are ready yet."""
+        visible, params = self._visible_filter()
+        return int(self._tx._check().execute(
+            f"SELECT count(*) FROM work_items WHERE state='pending' AND work_type=? AND {visible}",
+            (work_type, *params),
+        ).fetchone()[0])
+
+    def other_work_ready(self, *, now: str, kinds: frozenset[str]) -> bool:
+        """Whether any of these work types has a row ready to claim now.
+
+        The caller passes what this pass can still do, so a queue it cannot
+        touch -- an instance with no embedding credential holds thousands --
+        does not count as work waiting behind anything.
+        """
+        if not kinds:
+            return False
+        visible, params = self._visible_filter()
+        marks = _marks(sorted(kinds))
+        return self._tx._check().execute(
+            f"""SELECT 1 FROM work_items WHERE state='pending' AND work_type IN ({marks})
+                AND available_at<=? AND {visible} LIMIT 1""",
+            (*sorted(kinds), now, *params),
+        ).fetchone() is not None
+
     def _context_denial(self, row) -> str | None:
         """Why this context may not act on the row, or None when it may."""
         context = self._tx.context

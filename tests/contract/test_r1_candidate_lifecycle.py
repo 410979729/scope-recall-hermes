@@ -381,13 +381,21 @@ def test_r1_candidate_no_new_evidence_means_no_second_model_attempt(app):
     assert replay.disposition == "unchanged" and replay.work_queued is False
 
 
-def test_r1_candidate_batch_is_capped_at_eight_and_persists_remainder(app):
+def test_r1_candidate_batch_stops_at_the_pass_bound_and_persists_remainder(app):
+    """A pass takes what it is allowed and leaves the rest standing.
+
+    The eight-per-pass batch limit still holds candidates behind conversation
+    work, and now lifts once nothing else is waiting, because a limit meant to
+    protect that work was also keeping a backlog alive: see
+    tests/contract/test_rc38_queue_backpressure.py.  What a pass does not reach
+    is still exactly where it was.
+    """
     core, ctx = app
     for index in range(10):
         _candidate(core, ctx, value=f"value{index}", key=f"TEST-r1/batch/{index}")
     _finish_source_work(core)
     evaluator = Evaluator()
-    receipt = core.drain_worker(ctx, max_items=32, remaining_seconds=20, consolidation=evaluator)
+    receipt = core.drain_worker(ctx, max_items=8, remaining_seconds=20, consolidation=evaluator)
     _lifecycle, _evaluations, work = _candidate_rows(core)
     assert evaluator.calls == receipt.processed == 8
     assert sum(row["state"] == "pending" for row in work) == 2
