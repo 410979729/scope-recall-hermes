@@ -100,6 +100,42 @@ _EMBED_SUBJECTS = {
 }
 
 
+def prepare_embed_group(storage, clock, context, items, *, embed, started: float, budget: float) -> dict:
+    """Embed the group's live sources in one request; the result is keyed by subject.
+
+    A subject missing from the map is prepared on its own, which is also what
+    happens when the port cannot batch, when the group holds claims, or when
+    the request fails.  Sharing a request changes what the provider is asked,
+    never what is read, fenced or published: every item still goes through
+    ``_process_embed`` and answers for itself.
+    """
+    batch = getattr(embed, "prepare_sources", None)
+    if not callable(batch) or len(items) < 2 or _remaining(started, clock, budget) <= 0:
+        return {}
+    subjects = []
+    try:
+        with storage.read(context, remaining_seconds=_remaining(started, clock, budget)) as tx:
+            for item in items:
+                if item.subject_ref.startswith("claim-"):
+                    continue
+                source = _live_source(tx, item.subject_ref, item.subject_revision)
+                if source is not None:
+                    subjects.append(source)
+    except ContractError:
+        return {}
+    if len(subjects) < 2:
+        return {}
+    try:
+        prepared = batch(subjects, remaining_seconds=_remaining(started, clock, budget))
+    except Exception:
+        # The group's request failed as a whole. Each item now asks for itself,
+        # so each one records its own outcome and spends its own attempt.
+        return {}
+    if len(prepared) != len(subjects):
+        return {}
+    return {(subject.ref, subject.revision): vector for subject, vector in zip(subjects, prepared)}
+
+
 def _process_embed(
     storage,
     clock,
@@ -109,6 +145,7 @@ def _process_embed(
     embed: EmbedPort | None,
     started: float,
     budget: float,
+    prepared_group: dict | None = None,
 ) -> tuple[str, str | None, str]:
     """Embed one source or claim revision so the derived layer is searchable.
 
@@ -135,10 +172,12 @@ def _process_embed(
         # A port without support for this subject is a capability gap, not a
         # failure: the item waits instead of burning its attempts.
         return finish("retry", "model_unavailable")
-    try:
-        prepared = prepare(subject, remaining_seconds=_remaining(started, clock, budget))
-    except Exception as exc:
-        return finish(*_port_failure(exc))
+    prepared = None if prepared_group is None else prepared_group.get((item.subject_ref, item.subject_revision))
+    if prepared is None:
+        try:
+            prepared = prepare(subject, remaining_seconds=_remaining(started, clock, budget))
+        except Exception as exc:
+            return finish(*_port_failure(exc))
     if _remaining(started, clock, budget) <= 0:
         return _deadline_result(storage, context, item)
 

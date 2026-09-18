@@ -32,6 +32,11 @@ from ..core.secret_patterns import contains_secret_like_text
 
 MAX_CHAT_RESPONSE_BYTES = 1_048_576
 MAX_EMBED_RESPONSE_BYTES = 16 * 1024 * 1024
+#: Documents one embedding request may carry.  Google documents a hundred
+#: per ``batchEmbedContents`` call; the ceiling here is lower so one refused
+#: request costs less work, and so a batch of 3072-wide vectors stays far
+#: inside the response cap above.
+MAX_EMBED_BATCH = 32
 EMBED_RESERVE_FLOOR = 8192
 RESERVE_ENVELOPE_MARGIN = 256
 MAX_CREDENTIAL_BYTES = 8192
@@ -417,31 +422,44 @@ def _cached_prompt_tokens(usage: Mapping[str, Any]) -> int | None:
     return None
 
 
-def build_gemini_embed_body(encoded_text: str, *, model: str | None = None, dimensions: int | None = None) -> bytes:
+def build_gemini_embed_body(encoded_text: str | Sequence[str], *, model: str | None = None,
+                            dimensions: int | None = None) -> bytes:
+    """One ``batchEmbedContents`` request for one or many already-encoded texts.
+
+    The endpoint is a batch endpoint and always was; sending arrays of one is
+    what made a vector rebuild cost one HTTP request per source.
+    """
     model = model or EMBEDDING_SPACE["model"]
+    texts = [encoded_text] if type(encoded_text) is str else list(encoded_text)
+    if not texts or any(type(text) is not str for text in texts):
+        raise AuxiliaryModelError("unsupported_request_shape")
     body = {
         "requests": [
             {
                 "model": f"models/{model}",
-                "content": {"parts": [{"text": encoded_text}]},
+                "content": {"parts": [{"text": text}]},
                 "embedContentConfig": {
                     "outputDimensionality": dimensions or EMBEDDING_SPACE["dimensions"],
                     "autoTruncate": False,
                 },
             }
+            for text in texts
         ]
     }
     return _json_bytes(body)
 
 
-def build_openai_embed_body(encoded_text: str, *, model: str, dimensions: int) -> bytes:
+def build_openai_embed_body(encoded_text: str | Sequence[str], *, model: str, dimensions: int) -> bytes:
     """The /v1/embeddings request shape MiniMax, Qwen and OpenAI all accept.
 
     ``dimensions`` is sent because the space digest commits to a width: a
     provider that silently returned a different one would produce vectors the
     store cannot compare, and the length check on the response catches it.
     """
-    return _json_bytes({"model": model, "input": [encoded_text], "dimensions": dimensions})
+    texts = [encoded_text] if type(encoded_text) is str else list(encoded_text)
+    if not texts or any(type(text) is not str for text in texts):
+        raise AuxiliaryModelError("unsupported_request_shape")
+    return _json_bytes({"model": model, "input": texts, "dimensions": dimensions})
 
 
 def _embedding_usage(payload: Mapping[str, Any], *, dialect: str) -> dict[str, int] | None:
@@ -467,6 +485,43 @@ def _embedding_vector(payload: Mapping[str, Any], *, dialect: str, dimensions: i
     if not isinstance(data, list) or len(data) != 1 or not isinstance(data[0], dict):
         raise AuxiliaryModelError("unsupported_response_shape")
     return validate_embedding_vector(data[0].get("embedding"), dimensions=dimensions)
+
+
+def _embedding_vectors(payload: Mapping[str, Any], *, dialect: str, dimensions: int,
+                       count: int) -> tuple[tuple[float, ...], ...]:
+    """Exactly ``count`` vectors, in the order the texts were sent.
+
+    A provider that returns a different number has not answered this request:
+    the vectors could not be matched to their sources, and a vector written
+    against the wrong source is worse than no vector at all.
+    """
+    if dialect == "gemini":
+        rows = payload.get("embeddings")
+        if not isinstance(rows, list) or len(rows) != count:
+            raise AuxiliaryModelError("unsupported_response_shape")
+        for row in rows:
+            if not isinstance(row, dict) or set(row) != {"values"}:
+                raise AuxiliaryModelError("unsupported_response_shape")
+        return tuple(validate_embedding_vector(row["values"], dimensions=dimensions) for row in rows)
+    data = payload.get("data")
+    if not isinstance(data, list) or len(data) != count or any(not isinstance(row, dict) for row in data):
+        raise AuxiliaryModelError("unsupported_response_shape")
+    # OpenAI's shape carries the position of each vector; honour it when it is
+    # there rather than trusting the order the list happens to have.
+    if all(type(row.get("index")) is int for row in data):
+        if sorted(row["index"] for row in data) != list(range(count)):
+            raise AuxiliaryModelError("unsupported_response_shape")
+        data = sorted(data, key=lambda row: row["index"])
+    return tuple(validate_embedding_vector(row.get("embedding"), dimensions=dimensions) for row in data)
+
+
+def parse_embedding_batch_response(payload: object, *, dialect: str, dimensions: int,
+                                   count: int) -> tuple[tuple[tuple[float, ...], ...], dict[str, int] | None]:
+    """Read ``count`` vectors, and any usage the provider reported, from one response."""
+    if not isinstance(payload, dict):
+        raise AuxiliaryModelError("unsupported_response_shape")
+    usage = _embedding_usage(payload, dialect=dialect)
+    return _embedding_vectors(payload, dialect=dialect, dimensions=dimensions, count=count), usage
 
 
 def parse_embedding_response(payload: object, *, dialect: str, dimensions: int) -> tuple[tuple[float, ...], dict[str, int] | None]:
@@ -794,6 +849,25 @@ class GeminiEmbeddingAdapter:
         encoded = encode_embedding_text(source.event["content"], kind="document")
         return self._embed(encoded, remaining_seconds=remaining_seconds)
 
+    def embed_sources(self, sources: Sequence[StoredSource], *, remaining_seconds: float) -> tuple[tuple[float, ...], ...]:
+        """One request for many documents, answered in the order they were sent.
+
+        The provider charges per token either way; what a batch saves is the
+        request, and a store with a hundred thousand sources is a hundred
+        thousand requests to rebuild one at a time.
+        """
+        encoded = [encode_embedding_text(source.event["content"], kind="document") for source in sources]
+        return self.embed_texts(encoded, remaining_seconds=remaining_seconds)
+
+    def embed_texts(self, encoded: Sequence[str], *, remaining_seconds: float) -> tuple[tuple[float, ...], ...]:
+        """Embed already-encoded document texts in one request."""
+        texts = list(encoded)
+        if not texts:
+            return ()
+        if len(texts) > MAX_EMBED_BATCH:
+            raise AuxiliaryModelError("unsupported_request_shape")
+        return self._embed_many(texts, remaining_seconds=remaining_seconds)
+
     def embed_text(self, text: str, *, remaining_seconds: float) -> Sequence[float]:
         """Embed already-rendered text as a document.
 
@@ -803,6 +877,32 @@ class GeminiEmbeddingAdapter:
         """
         encoded = encode_embedding_text(text, kind="document")
         return self._embed(encoded, remaining_seconds=remaining_seconds)
+
+    def _embed_many(self, texts: list[str], *, remaining_seconds: float) -> tuple[tuple[float, ...], ...]:
+        """The one-request path, for any number of texts; identical bounds to ``_embed``."""
+        deadline = time.monotonic() + validate_timeout_seconds(remaining_seconds)
+        for text in texts:
+            _reject_secrets(text)
+        if self._dialect == "gemini":
+            body = build_gemini_embed_body(texts, model=self._model, dimensions=self._dimensions)
+        else:
+            body = build_openai_embed_body(texts, model=self._model, dimensions=self._dimensions)
+        if _remaining_seconds(deadline) <= 0:
+            raise AuxiliaryModelError("timeout")
+        if self._ledger.provider_hold_until(self._model) is not None:
+            raise AuxiliaryModelError("provider_hold")
+        key = _load_credential(self._route.credential_env)
+        auth = {"x-goog-api-key": key} if self._dialect == "gemini" else {"Authorization": f"Bearer {key}"}
+        return _metered_post(
+            ledger=self._ledger, settle=self._ledger.finish_embedding, model=self._model, body=body,
+            reserved_input=conservative_embed_reserve(body), reserved_output=0, deadline=deadline,
+            transport=self._transport, endpoint=self._endpoint,
+            headers={"Content-Type": "application/json", **auth, "User-Agent": "ScopeRecall-AuxiliaryEmbed/1.1"},
+            max_response_bytes=MAX_EMBED_RESPONSE_BYTES,
+            read_usage=partial(_embedding_usage, dialect=self._dialect),
+            read_result=partial(_embedding_vectors, dialect=self._dialect, dimensions=self._dimensions,
+                                count=len(texts)),
+        )
 
     def _embed(self, encoded_text: str, *, remaining_seconds: float, transport: HttpTransport | None = None) -> Sequence[float]:
         deadline = time.monotonic() + validate_timeout_seconds(remaining_seconds)

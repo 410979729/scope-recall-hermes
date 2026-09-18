@@ -330,6 +330,7 @@ CORE_RELEASE_CONTRACTS += [
     "tests/contract/test_rc38_queue_backpressure.py",
     "tests/contract/test_rc38_empty_episode.py",
     "tests/contract/test_rc38_rejection_names_the_field.py",
+    "tests/contract/test_rc40_embed_batch.py",
 ]
 
 RUNTIME_BOUNDARY_TESTS = [

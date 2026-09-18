@@ -20,7 +20,14 @@ from .worker_consolidation import (
     build_consolidation_model,
 )
 from .worker_outcomes import BUDGET_PAUSE_ERRORS, _model_exception_outcome, _remaining
-from .worker_projection import EmbedPort, PurgePort, _process_embed, _process_purge, _process_rebuild_projection
+from .worker_projection import (
+    EmbedPort,
+    PurgePort,
+    _process_embed,
+    _process_purge,
+    _process_rebuild_projection,
+    prepare_embed_group,
+)
 
 __all__ = [
     "FINALIZE_MARGIN_SECONDS",
@@ -58,6 +65,10 @@ _HOLDABLE_WORK_TYPES = frozenset({"consolidate", "embed", "evaluate_candidate"})
 #: one page a pass, a source matching a thousand candidates took sixty passes,
 #: started back to back, each paying a whole pass to link sixteen of them.
 SOURCE_PAGES_PER_PASS = 16
+#: Source embeddings one request may carry.  Matches the adapter's own ceiling
+#: (``adapters/models.py``); a pass claims at most this many embed items at once
+#: so one refused request costs one group, not a pass.
+EMBED_BATCH_LIMIT = 32
 
 
 @dataclass(frozen=True)
@@ -70,6 +81,10 @@ class WorkerConfig:
     purge_only: bool = False
     admission_policy: object | None = None
     candidate_batch_limit: int = PROCESS_BATCH_LIMIT
+    #: Source embeddings a pass may ask for in one request.  One request per
+    #: source is what made a vector store of a hundred thousand sources days of
+    #: wall clock to rebuild, for minutes of tokens.
+    embed_batch_limit: int = EMBED_BATCH_LIMIT
     #: The bound the caller clamps every model and embedding request to (the
     #: runtime's ``request_seconds``).  None means the ports are unbounded and
     #: each call gets whatever the pass has left, so no reserve can be known.
@@ -93,6 +108,8 @@ class WorkerConfig:
             raise ValueError("purge_only")
         if type(self.candidate_batch_limit) is not int or not 1 <= self.candidate_batch_limit <= PROCESS_BATCH_LIMIT:
             raise ValueError("candidate_batch_limit")
+        if type(self.embed_batch_limit) is not int or not 1 <= self.embed_batch_limit <= EMBED_BATCH_LIMIT:
+            raise ValueError("embed_batch_limit")
         if self.request_seconds is not None and (
                 type(self.request_seconds) not in (int, float) or not math.isfinite(self.request_seconds)
                 or self.request_seconds <= 0):
@@ -172,6 +189,22 @@ def _queued_work_types(storage, clock, context, started: float, budget: float, k
 #: Twelve passes' worth, an hour at the default wake, so an idle instance clears
 #: the ceiling before the next sweep.
 CANDIDATE_QUEUE_CEILING = PROCESS_BATCH_LIMIT * 12
+
+
+def _release_group(storage, clock, context, members, error_code, started: float, budget: float) -> None:
+    """Return leased work nobody will look at this pass, without spending its attempt."""
+    if not members or _remaining(started, clock, budget) <= 0:
+        return
+    try:
+        with storage.write(context, remaining_seconds=_remaining(started, clock, budget)) as tx:
+            now = clock.utc_now()
+            for member in members:
+                tx.work.defer_without_attempt(*member.lease, now=now,
+                                              error_code=str(error_code or "pass_ended"), seconds=0)
+    except ContractError:
+        # The lease expires on its own; a failure to hand work back early is
+        # never worth failing a pass over.
+        return
 
 
 def _other_work_ready(storage, clock, context, started: float, budget: float, kinds: frozenset[str]) -> bool:
@@ -284,12 +317,41 @@ def drain_worker(
         if not claimed:
             break
         item = claimed[0]
-        claimed_types[item.work_type] += 1
-        outcome = processors[item.work_type](storage, clock, context, item, started=started, budget=budget)
-        disposition, error_code, state = outcome
-        dispositions[disposition] += 1
-        receipts.append(WorkerItemReceipt(item.work_id, item.work_type, disposition, state, error_code,
-                                          getattr(outcome, "detail", None)))
+        group: tuple = (item,)
+        prepared_group: dict = {}
+        if item.work_type == "embed" and embed is not None:
+            # Embedding is one request per source; asking for the pass's other
+            # ready sources in the same one is the difference between a rebuild
+            # measured in hours and one measured in days.  The extra items are
+            # leased exactly as this one was and are processed right here, so
+            # none is left leased on a pass that ends early.
+            room = min(config.embed_batch_limit, config.max_items - len(receipts)) - 1
+            if room > 0:
+                with storage.write(context, remaining_seconds=_remaining(started, clock, budget)) as tx:
+                    group = (item, *tx.work.claim_next(
+                        config.owner_id, clock.utc_now(), lease_seconds=config.lease_seconds,
+                        limit=room, allowed_work_types=frozenset({"embed"})))
+                prepared_group = prepare_embed_group(storage, clock, context, group,
+                                                     embed=embed, started=started, budget=budget)
+        stood_down = False
+        for index, member in enumerate(group):
+            claimed_types[member.work_type] += 1
+            run = (partial(_process_embed, embed=embed, prepared_group=prepared_group)
+                   if member.work_type == "embed" else processors[member.work_type])
+            outcome = run(storage, clock, context, member, started=started, budget=budget)
+            disposition, error_code, state = outcome
+            dispositions[disposition] += 1
+            receipts.append(WorkerItemReceipt(member.work_id, member.work_type, disposition, state, error_code,
+                                              getattr(outcome, "detail", None)))
+            item = member
+            stood_down = (disposition == "deferred" and error_code in BUDGET_PAUSE_ERRORS) or (
+                str(error_code or "").lower() in _RATE_LIMITED_ERRORS)
+            if stood_down or _remaining(started, clock, budget) <= 0:
+                # The rest of this group was leased for a request that is not
+                # going to be made. Hand it back unspent rather than holding it
+                # until the lease expires.
+                _release_group(storage, clock, context, group[index + 1:], error_code, started, budget)
+                break
         # Standing a work type down for the rest of the pass.  The per-item
         # backoff still decides when each item returns; this only decides how
         # many of one type are tried in one pass.

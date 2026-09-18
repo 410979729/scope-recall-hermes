@@ -145,6 +145,40 @@ class LanceEmbedPort:
     def prepare_source(self, source: StoredSource, *, remaining_seconds: float = 1.0) -> PreparedSourceEmbedding:
         return self._prepare(source, lambda budget: _embed(self._embed_source, source, budget), remaining_seconds)
 
+    def prepare_sources(self, sources: Sequence[StoredSource], *,
+                        remaining_seconds: float = 1.0) -> tuple[PreparedSourceEmbedding, ...]:
+        """Prepare many sources with one embedding request, in order.
+
+        Each prepared vector is published on its own fence exactly as a single
+        one is; sharing the request changes what the provider is asked, not
+        what the store is told.  A port whose embedding cannot batch falls back
+        to one request each, so nothing depends on the capability.
+        """
+        subjects = list(sources)
+        if not subjects:
+            return ()
+        if remaining_seconds <= 0:
+            raise ContractError("DEADLINE_EXCEEDED")
+        batch = getattr(self._source_embedding, "embed_sources", None)
+        if not callable(batch) or len(subjects) == 1:
+            return tuple(self.prepare_source(source, remaining_seconds=remaining_seconds) for source in subjects)
+        vectors = batch(subjects, remaining_seconds=remaining_seconds)
+        if len(vectors) != len(subjects):
+            raise ContractError("DERIVATION_INVALID", "embedding_batch_shape")
+        return tuple(
+            PreparedSourceEmbedding(
+                source_ref=source.ref,
+                source_revision=source.revision,
+                scope_id=source.scope_id,
+                project_id=source.project_id,
+                branch_id=source.branch_id,
+                vector_id=f"p10:{source.ref}@{source.revision}:{self._embedding_space}",
+                embedding_space=self._embedding_space,
+                embedding=_finite_embedding(vector),
+            )
+            for source, vector in zip(subjects, vectors)
+        )
+
     def prepare_claim(self, claim: Any, *, remaining_seconds: float = 1.0) -> PreparedSourceEmbedding:
         """Embed one claim version so search can reach the derived layer.
 
