@@ -24,6 +24,7 @@ from .worker_projection import (
     EmbedPort,
     PurgePort,
     _process_embed,
+    publish_embed_group,
     _process_purge,
     _process_rebuild_projection,
     prepare_embed_group,
@@ -319,6 +320,7 @@ def drain_worker(
         item = claimed[0]
         group: tuple = (item,)
         prepared_group: dict = {}
+        published_group: frozenset = frozenset()
         if item.work_type == "embed" and embed is not None:
             # Embedding is one request per source; asking for the pass's other
             # ready sources in the same one is the difference between a rebuild
@@ -333,9 +335,16 @@ def drain_worker(
                         limit=room, allowed_work_types=frozenset({"embed"})))
                 prepared_group = prepare_embed_group(storage, clock, context, group,
                                                      embed=embed, started=started, budget=budget)
+                # One commit for the group's vectors, for the same reason as one
+                # request for its texts: the per-item cost was the store's lock,
+                # not the work.
+                published_group = publish_embed_group(storage, clock, context, group, embed=embed,
+                                                      prepared_group=prepared_group,
+                                                      started=started, budget=budget)
         for index, member in enumerate(group):
             claimed_types[member.work_type] += 1
-            run = (partial(_process_embed, embed=embed, prepared_group=prepared_group)
+            run = (partial(_process_embed, embed=embed, prepared_group=prepared_group,
+                           published_group=published_group)
                    if member.work_type == "embed" else processors[member.work_type])
             outcome = run(storage, clock, context, member, started=started, budget=budget)
             disposition, error_code, state = outcome

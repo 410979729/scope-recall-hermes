@@ -136,6 +136,80 @@ def prepare_embed_group(storage, clock, context, items, *, embed, started: float
     return {(subject.ref, subject.revision): vector for subject, vector in zip(subjects, prepared)}
 
 
+def publish_embed_group(storage, clock, context, items, *, embed, prepared_group: dict,
+                        started: float, budget: float) -> frozenset:
+    """Write a whole group's vectors in one fenced commit; answer for whom it wrote.
+
+    The store's write API is plural and the adapter used it one row at a time, so a pass paid
+    a lock-held handshake and a dataset commit per source -- nine times the cost of one commit
+    carrying the group.  The fence does not weaken: the guard verifies every member's lease,
+    subject and derivation while the helper holds the lock, and a group it refuses writes
+    nothing, leaving every member to publish on its own fence exactly as before.
+    """
+    publish = getattr(embed, "publish_sources", None)
+    if not callable(publish) or len(items) < 2 or not prepared_group:
+        return frozenset()
+    if _remaining(started, clock, budget) <= 0:
+        return frozenset()
+    members, prepared, fences = [], [], {}
+    try:
+        with storage.read(context, remaining_seconds=_remaining(started, clock, budget)) as tx:
+            for item in items:
+                vector = prepared_group.get((item.subject_ref, item.subject_revision))
+                if vector is None:
+                    continue
+                source = _live_source(tx, item.subject_ref, item.subject_revision)
+                if source is None:
+                    continue
+                fences[item.work_id] = read_derivation_fence(
+                    tx, scope_id=item.scope_id, sources=(source,), claims=())
+                members.append((item, source))
+                prepared.append(vector)
+    except ContractError:
+        return frozenset()
+    if len(members) < 2:
+        return frozenset()
+    owners = {item.lease_owner for item, _ in members}
+    if len(owners) != 1:
+        return frozenset()
+
+    def lease_guard() -> bool:
+        """True only while every member of the group may still be published."""
+        remaining = _remaining(started, clock, budget)
+        if remaining <= 0:
+            return False
+        try:
+            with storage.read(context, remaining_seconds=remaining) as tx:
+                for item, _source in members:
+                    if not tx.work._verify_lease(*item.lease, now=clock.utc_now()):
+                        return False
+                    current = _live_source(tx, item.subject_ref, item.subject_revision)
+                    if current is None or current.scope_id not in context.allowed_scope_ids:
+                        return False
+                    if (current.project_id, current.branch_id) != (context.project_id, context.branch_id):
+                        return False
+                    if derivation_changed(tx, fences[item.work_id]) is not None:
+                        return False
+                return True
+        except ContractError:
+            return False
+
+    try:
+        publish(
+            tuple(prepared),
+            sources=tuple(source for _item, source in members),
+            lease_tokens=tuple(item.lease_token for item, _source in members),
+            lease_owner=next(iter(owners)),
+            lease_guard=lease_guard,
+            remaining_seconds=_remaining(started, clock, budget),
+        )
+    except Exception:
+        # Nothing was written, or the guard refused the group: each member now
+        # publishes on its own fence and records its own outcome.
+        return frozenset()
+    return frozenset((item.subject_ref, item.subject_revision) for item, _source in members)
+
+
 def _process_embed(
     storage,
     clock,
@@ -146,6 +220,7 @@ def _process_embed(
     started: float,
     budget: float,
     prepared_group: dict | None = None,
+    published_group: frozenset | None = None,
 ) -> tuple[str, str | None, str]:
     """Embed one source or claim revision so the derived layer is searchable.
 
@@ -211,15 +286,17 @@ def _process_embed(
         if dependency_changed:
             return finish("retry", "memory_epoch_changed")
         return finish("obsolete", "authority_revoked")
+    already_published = published_group is not None and (item.subject_ref, item.subject_revision) in published_group
     try:
-        publish(
-            prepared,
-            **{kind.keyword: subject},
-            lease_token=item.lease_token,
-            lease_owner=item.lease_owner,
-            lease_guard=lease_guard,
-            remaining_seconds=_remaining(started, clock, budget),
-        )
+        if not already_published:
+            publish(
+                prepared,
+                **{kind.keyword: subject},
+                lease_token=item.lease_token,
+                lease_owner=item.lease_owner,
+                lease_guard=lease_guard,
+                remaining_seconds=_remaining(started, clock, budget),
+            )
     except Exception as exc:
         if dependency_changed and isinstance(exc, ContractError):
             return finish("retry", "memory_epoch_changed")

@@ -640,10 +640,14 @@ class _BoundedCandidate(_Bounded):
 
 
 class _BoundedEmbed(_Bounded):
-    # prepare_sources is the batch of prepare_source, and it has to be listed
-    # here or the worker probes for it, does not find it through this wrapper,
-    # and asks for one document per request as if the capability did not exist.
-    methods = ("prepare_source", "prepare_sources", "publish_source", "prepare_claim", "publish_claim")
+    # prepare_sources and publish_sources are the group forms of prepare_source
+    # and publish_source, and each has to be listed here or the worker probes
+    # for it, does not find it through this wrapper, and falls back to one
+    # document per request and one commit per vector as if the capability did
+    # not exist.  That is exactly how rc40's batching reached production doing
+    # nothing.
+    methods = ("prepare_source", "prepare_sources", "publish_source", "publish_sources",
+               "prepare_claim", "publish_claim")
 
 
 class _BoundedPurge(_Bounded):

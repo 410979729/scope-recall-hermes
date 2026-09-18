@@ -332,6 +332,7 @@ CORE_RELEASE_CONTRACTS += [
     "tests/contract/test_rc38_rejection_names_the_field.py",
     "tests/contract/test_rc40_embed_batch.py",
     "tests/contract/test_rc42_pass_statistics.py",
+    "tests/contract/test_rc42_group_publish.py",
 ]
 
 RUNTIME_BOUNDARY_TESTS = [
