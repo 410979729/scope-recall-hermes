@@ -4,11 +4,34 @@ All notable changes to `scope-recall` will be documented in this file.
 
 ## [3.1.0] - 2026-09-18
 
-Thank you for waiting, and sorry it took this long. 2.0.1 shipped at the end of August and it has been quiet here since — because we were not writing a patch on top of 2.0. We rebuilt the project.
+Thank you for waiting, and sorry it took this long. 2.0.1 shipped at the end of August and it has been quiet here since, because we were not writing a patch on top of 2.0. We rebuilt the project.
 
-Concretely: **1,114 files changed, 177 commits, 96,108 lines added and 286,764 removed.** Eight packages that did not exist in 2.0 — `core/`, `adapters/`, `runtime/`, `vector/`, `maintenance/`, `verification/`, `contracts/`, `probes/` — hold **52,182 lines of new code**, and the flat top-level package that used to *be* Scope Recall gave up **100,145 lines** to make room for them. 197 modules in one directory became four files at the top level and everything else behind a boundary. The database went from **93 tables to 36**, on a new schema (1108).
+**1,114 files changed, 177 commits, 96,108 lines added and 286,764 removed.** 197 modules in one flat directory became four files at the top level with everything else behind `core/`, `adapters/`, `runtime/`, `vector/` and `maintenance/`. Production code went from **141,044 lines to 48,289** — about a third of what it was, doing more.
 
-2.0 was not a small system — it was 197 modules and 3,322 tests, and it had a version of almost everything. What changed in 3.x is not the feature list. It is that the same job is now done **once, in one place, with the rule enforced** instead of several times across modules that had to agree with each other. That is the kind of change you cannot ship as a patch, and it is what took the time.
+2.0 was not a small or careless system. It was 197 modules, 3,322 tests, and a specification that described two-layer memory authority, claim-backed facts, durable work with leases and poison isolation, candidate semantics and a context compiler. Most of what 3.x does, 2.0 had designed. What changed is that it now **happens**.
+
+### Memory matures now, instead of being sorted on the way in
+
+This is the real difference, and it is the one we set out to build.
+
+In 2.0, a piece of content was routed **at write time**. It either met the conditions for the claim lane — canonical type on the allowlist, valid structured proposal, acceptable provenance, strict authority router, confidence and identity and temporal checks — or it fell through to unstructured memory. One decision, made on first sight, from a single mention.
+
+In 3.x a memory has a life. It is captured verbatim first. Candidate meanings **accumulate evidence** across sources rather than being judged on one remark. A **quiet window** lets a candidate settle before anything evaluates it, so a passing comment does not harden into a fact. **Corroboration** across independent sources strengthens it. **Consolidation** turns what survived into a claim with a version. **Requalification** revisits that claim when later evidence arrives, and **duplicate collapse** merges what turns out to be the same memory said twice. **Episodes** group what happened together. And **background context** surfaces what is relevant without being asked — you do not query your own memory, and neither should the agent have to.
+
+Every one of those stages — `candidate_debounce`, `consolidation_chunks`, `requalify`, `duplicate_collapse`, `episode_storage`, `background_context` — is new in 3.x. None of them existed in 2.0.1.
+
+Here is what that is worth, measured on the same machine. This is the 2.0.1 database that was handed to the migration, beside the 3.x instance that replaced it:
+
+| | 2.0.1 | 3.1.0 |
+| --- | --- | --- |
+| Sources held | 4,688 memories | **167,117** |
+| Facts in the claim layer | **0** | **490**, in 685 versions |
+| Evidence links | — | **147,816** |
+| Tables | 76 | 32 |
+
+**2.0's claim layer was empty in production.** Not small — zero. The design was there, the code was there, the tests were there, and after the whole 2.0 era not one memory had made it through the gate. 3.x carries 490 claims backed by 147,816 pieces of evidence, and holds thirty-six times the source material, on one third of the code.
+
+That gap between a specification and a row in a table is what this release closed.
 
 ### Scope Recall is now a general-purpose memory plugin
 
@@ -18,34 +41,29 @@ Concretely: **1,114 files changed, 177 commits, 96,108 lines added and 286,764 r
 
 If you use more than one agent tool, this is the change that matters most to you. Your memory stops belonging to whichever program happened to write it — you can tell one tool something and ask another about it.
 
-### What the rewrite actually bought
+### The store underneath was rebuilt
 
-**One authoritative store instead of four.** In 2.0 a memory's truth was spread across `memories`, `journal_entries`, `fact_claims`, `reflection_events` and the vector rows. In 3.x every answerable byte lives in `source_events`, `claims`, `claim_versions` and `evidence_links`, and nowhere else — a vector row carries metadata and a vector with an **empty payload**. 2.0's vector rows carried their own copy of the text, which quietly made the index a second store; now it is a pure derivative. Delete it, corrupt it, change embedding model, move machine, rebuild: nothing is lost.
+Both versions keep truth in SQLite with a LanceDB companion; that part never changed. What changed is everything about how the tables are defined and what the vector rows are for.
 
-**One evidence rule, enforced before the claim exists.** 2.0 checked quotes as well, but on normalised text, in a module whose own docstring disclaimed entailment. In 3.x a claim's quote must resolve to a **literal slice of a specific stored source revision**, and storage refuses the claim if it does not. The same intention, turned into a precondition — which is what lets recall show you *why* it believes something, and lets a wrong memory be traced to the sentence that caused it.
+**The schema is one file now.** In 2.0, 22 different modules each created their own tables. In 3.x, four do, and the memory core's 32 tables and 16 indexes live in a single 371-line schema — which is why a migration can be verified, and why the table count fell from 76 to 32 while the corpus grew thirty-six fold.
 
-**One work queue instead of four background paths.** 2.0 ran nightly digests, reflection passes, journal consolidation and embedding down separate roads with their own leases. 3.x has a single durable queue: leases, attempt limits, at-most-once publication. A crashed pass loses nothing, a provider outage parks work rather than failing it, and a pass now queues no more evaluations than it can also perform — so a backlog cannot grow while nothing new is being said.
+**A vector row carries no text.** Its payload is empty; every answerable byte comes from SQLite. 2.0's vector rows carried their own copy of the content, which quietly made the index a second store. Now it is a pure derivative, with a process-isolated driver and its own compaction: delete it, corrupt it, change embedding model, move machine, rebuild — nothing is lost. The vector subsystem does this in 2,722 lines where 2.0 needed 12,776.
 
-**One deletion path, and it reaches the derived layer.** In place of `forgetting.py` and `privacy_purge.py`: one deletion record, applied in dependency order across sources, claims, evidence links, episode membership and vector rows, with a fence so that rebuilding an index cannot resurrect what you removed.
-
-**Retrieval that reports its own limits.** Five channels — exact reference, lexical, claim, recent, vector — fused by reciprocal rank into a packet carrying an explicit answerability verdict, including *this corpus cannot answer that*. 2.0 had no way to say it.
-
-**A spend ledger in front of every model call.** 2.0 called models from four modules with no accounting at all. In 3.x each auxiliary call is reserved against a local ledger — model, tokens, charge — **before the request leaves the machine**.
-
-**Candidates settle before they are judged.** They accumulate evidence, wait out a quiet window, and are evaluated once. A passing remark no longer becomes a fact because it was said one time.
+**The claim's quote must be a literal slice of a stored source revision.** 2.0 checked quotes too, but against normalised text, in a module whose own docstring declined to claim entailment. In 3.x the check is a precondition: storage refuses the claim if the span is not really there. It is a large part of why the claim layer has rows in it at all.
 
 ### What that gives you
 
 - **Memory that follows you between tools**, instead of one plugin for one program.
+- **Facts that actually form.** Accumulated evidence and a settling window, rather than a gate almost nothing passed.
 - **An answer to "why do you believe that"** — the supporting sentence, in the source revision it came from.
 - **Deletion you can trust**, including through an index rebuild.
-- **A disposable index.** The expensive, fragile part of a memory system is now the part you are allowed to lose.
+- **A disposable index.** The expensive, fragile part of a memory system is the part you are allowed to lose.
 - **"I don't know" as a real answer.** A question your corpus cannot support does not get a plausible-sounding one.
-- **Visible cost.** What memory is spending is a query, not a guess.
-- **Failures that name the field.** A rejected payload says `as_of` or `evidence_quote`, not a schema keyword, and the repair attempt gets that name too.
-- **A smaller thing to reason about.** 36 tables and a boundary, rather than 93 tables and 197 modules that all had to agree.
+- **Visible cost.** Every model call is priced into a local ledger before the request leaves the machine.
+- **A third of the code** to read, audit and fix when something is wrong.
 
-3.1.0 in particular made the derived layer fast enough to live with: on a 162,000-source corpus, building or rebuilding a vector store moved from days to hours. On two benchmark question sets, correct answers went from 17/30 to 27/30 and from 14/25 to 20/25, with no regression on exact facts or on questions the corpus genuinely cannot answer.
+3.1.0 in particular made the derived layer fast enough to live with: on a 167,000-source corpus, building or rebuilding a vector store moved from days to hours. On two benchmark question sets, correct answers went from 17/30 to 27/30 and from 14/25 to 20/25, with no regression on exact facts or on questions the corpus genuinely cannot answer.
+
 ### Upgrading from 2.0.x
 
 **There is no in-place upgrade, and that is deliberate.** The two schemas are different enough that a silent conversion would be the kind of thing you only discover was wrong months later. Migration is an explicit, resumable, offline job that leaves your 2.0 database untouched.
@@ -107,6 +125,7 @@ We would rather list these than let you find them:
 
 - **The independent evaluation gate has no receipt yet.** The project declares a frozen, adjudicated evaluation campaign as a release criterion, and it has never been executed. Everything above is measured, but by us, on our own corpora. Treat the accuracy numbers as evidence, not as an audit.
 - **Quoting tool output is still the largest source of lost memories.** When a source is a JSON tool result — a file listing with line-number gutters, an escaped API response — models frequently cannot reproduce a span byte for byte, and the claim is rejected. The memory is captured and searchable; it just does not become a claim. We are working on this and it is the next thing we intend to fix.
+- **The vector companion has no explicit ANN index yet.** It relies on LanceDB's defaults, and the SQLite fallback is honest brute force. At our corpus sizes this is fine; on a much larger store you would want a built index, and building one is on the list.
 - **Background scheduling is Windows-only.** Autostart uses Task Scheduler. On Linux and macOS the plugin works, but you schedule the worker yourself.
 - **CI covers Windows.** The host, native and integration tiers run on Windows only; other platforms are tested by hand.
 - **The 2.x compatibility layer is a one-way migration tool, not a bridge.** It reads the old format once. It is not maintained as a permanent compatibility surface, and there is no path back.
