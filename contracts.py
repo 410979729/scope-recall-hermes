@@ -651,8 +651,14 @@ def validate_proposal_references(
     for claim in result["claim_proposals"]:
         for span in claim["evidence_spans"]:
             key = f"{span['source_ref']}@{span['source_revision']}"
-            if key not in declared or span["quote"] not in available[key].content:
-                raise ContractError("DERIVATION_INVALID", "evidence_span")
+            # Two findings once shared one name, so every rejection read
+            # ``evidence_span`` whether the model had cited a source it never
+            # declared or quoted one it had.  Only the second is about the words
+            # it wrote, and only the second is what the quote ladder can repair.
+            if key not in declared:
+                raise ContractError("DERIVATION_INVALID", "evidence_undeclared_source")
+            if span["quote"] not in available[key].content:
+                raise ContractError("DERIVATION_INVALID", "evidence_quote")
         for ref in claim.get("procedure", {}).get("counterexample_refs", []):
             if ref not in declared:
                 raise ContractError("SOURCE_MISSING")

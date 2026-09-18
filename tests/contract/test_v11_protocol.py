@@ -104,7 +104,13 @@ def test_evidence_must_quote_exact_accessible_source_revision(tmp_path):
         with pytest.raises(ContractError, match="SOURCE_MISSING"):
             validate_proposal_references(result, (bad,), context(tmp_path))
     result["claim_proposals"][0]["evidence_spans"][0]["quote"] = "不存在的引文"
-    with pytest.raises(ContractError, match="evidence_span"):
+    with pytest.raises(ContractError, match="evidence_quote"):
+        validate_proposal_references(result, (source,), context(tmp_path))
+    # A span naming a source the proposal never declared is a different finding
+    # and says so, because the repair for one is no repair for the other.
+    result["claim_proposals"][0]["evidence_spans"][0]["quote"] = source.content[:8]
+    result["claim_proposals"][0]["evidence_spans"][0]["source_revision"] = 9
+    with pytest.raises(ContractError, match="evidence_undeclared_source"):
         validate_proposal_references(result, (source,), context(tmp_path))
 
 

@@ -329,8 +329,16 @@ class Claims:
                          (revision,slot_key,proposal['subject'],proposal['predicate'],ref))
         for span in proposal["evidence_spans"]:
             source = self._tx.source(span["source_ref"], span["source_revision"])
-            if source is None or (source.scope_id,source.project_id,source.branch_id) != (scope_id,ctx.project_id,ctx.branch_id) or span["quote"] not in source.event["content"]:
-                raise ContractError("DERIVATION_INVALID", "evidence_span")
+            # Three different findings once shared one name, so a diagnostic record
+            # said ``evidence_span`` and left an operator to guess which: a source
+            # that is not there, one that belongs to someone else, or a quote that
+            # is in neither.  Only the third is about what the model wrote.
+            if source is None:
+                raise ContractError("DERIVATION_INVALID", "evidence_source_missing")
+            if (source.scope_id, source.project_id, source.branch_id) != (scope_id, ctx.project_id, ctx.branch_id):
+                raise ContractError("DERIVATION_INVALID", "evidence_scope")
+            if span["quote"] not in source.event["content"]:
+                raise ContractError("DERIVATION_INVALID", "evidence_quote")
             self.require_live_source(source.ref, source.revision)
             if source.suppressed:
                 conn.execute("UPDATE claims SET suppressed=1 WHERE claim_id=?",(ref,))
