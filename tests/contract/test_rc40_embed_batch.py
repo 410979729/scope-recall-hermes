@@ -158,3 +158,24 @@ def test_the_batch_has_a_ceiling():
     with pytest.raises(AuxiliaryModelError):
         build_gemini_embed_body([])
     assert MAX_EMBED_BATCH >= 8
+
+
+def test_the_runtime_boundary_offers_the_batch_it_bounds():
+    """The worker probes the port it is handed, which is the bounded one.
+
+    The first version of this change listed four methods on that wrapper and
+    not the fifth, so the capability existed everywhere except where it is
+    asked for, and every request carried one document.
+    """
+    from scope_recall.runtime.instance import _BoundedEmbed
+
+    class Port:
+        def prepare_sources(self, sources, *, remaining_seconds=1.0):
+            return [("v", remaining_seconds) for _ in sources]
+
+        def prepare_source(self, source, *, remaining_seconds=1.0):
+            return ("v", remaining_seconds)
+
+    bounded = _BoundedEmbed(Port(), 45.0)
+    assert callable(getattr(bounded, "prepare_sources", None))
+    assert bounded.prepare_sources([1, 2], remaining_seconds=120.0) == [("v", 45.0), ("v", 45.0)], "still clamped"

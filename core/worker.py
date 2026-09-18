@@ -333,7 +333,6 @@ def drain_worker(
                         limit=room, allowed_work_types=frozenset({"embed"})))
                 prepared_group = prepare_embed_group(storage, clock, context, group,
                                                      embed=embed, started=started, budget=budget)
-        stood_down = False
         for index, member in enumerate(group):
             claimed_types[member.work_type] += 1
             run = (partial(_process_embed, embed=embed, prepared_group=prepared_group)
@@ -344,9 +343,9 @@ def drain_worker(
             receipts.append(WorkerItemReceipt(member.work_id, member.work_type, disposition, state, error_code,
                                               getattr(outcome, "detail", None)))
             item = member
-            stood_down = (disposition == "deferred" and error_code in BUDGET_PAUSE_ERRORS) or (
+            refused = (disposition == "deferred" and error_code in BUDGET_PAUSE_ERRORS) or (
                 str(error_code or "").lower() in _RATE_LIMITED_ERRORS)
-            if stood_down or _remaining(started, clock, budget) <= 0:
+            if refused or _remaining(started, clock, budget) <= 0:
                 # The rest of this group was leased for a request that is not
                 # going to be made. Hand it back unspent rather than holding it
                 # until the lease expires.
