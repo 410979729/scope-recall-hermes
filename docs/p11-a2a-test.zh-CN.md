@@ -3,7 +3,7 @@
 本目录只准备隔离测试，不启动 gateway，不发送模型请求。v4 状态限定在
 `.execution/TEST-P11-A2A-v4`；v3 失败证据和 v3 zero-API diagnostic 证据原样保留，
 正式五实例和生产聊天库不读取、不修改。Frozen H 只读宿主来自
-`F:/SCOPERECALL更新项目/TEST-Hermes-runtime-v1`，固定版本 `0.21.0`、HEAD
+`<instance root>/TEST-Hermes-runtime-v1`，固定版本 `0.21.0`、HEAD
 `79445a496c86a19332ad786494b8384d2167e2d0`。
 
 ## 准备与启动
@@ -11,13 +11,13 @@
 在仓库根目录执行：
 
 ```powershell
-$HermesPython = 'F:\SCOPERECALL更新项目\TEST-Hermes-runtime-v1\venv\Scripts\python.exe'
+$HermesPython = '<hermes runtime root>\venv\Scripts\python.exe'
 & $HermesPython -B probes/hermes/p11_prepare_a2a_test.py
 ```
 
 准备脚本只建立 TEST Hermes home、Scope Recall manifest/Core SQLite、
 `runtime-config.json`、`config.yaml`、插件 wrapper 和脱敏 receipt；预算账本只读复用
-冻结的 `F:/SCOPERECALL更新项目/worktrees/scope-recall-v1.1/.execution/TEST-MODEL-BUDGET-V1/call-budget.sqlite3`，
+冻结的 `<instance root>/call-budget.sqlite3`，
 不在 TEST 家目录创建第二本账。
 它会先检查 `127.0.0.1:19921` 与 `127.0.0.1:29991`；任一端口占用时只报告并退出，
 不会结束他人进程。
@@ -25,7 +25,7 @@ $HermesPython = 'F:\SCOPERECALL更新项目\TEST-Hermes-runtime-v1\venv\Scripts\
 复核准备 receipt 后，完整启动命令为：
 
 ```powershell
-$HermesPython = 'F:\SCOPERECALL更新项目\TEST-Hermes-runtime-v1\venv\Scripts\python.exe'
+$HermesPython = '<hermes runtime root>\venv\Scripts\python.exe'
 & $HermesPython -B probes/hermes/p11_start_a2a_test.py --duration-seconds 600
 ```
 
@@ -46,14 +46,14 @@ allowlisted TEST 环境变量在网络时、进程内读取，绝不写入 confi
 默认请求是 dry-run，不访问 A2A：
 
 ```powershell
-$HermesPython = 'F:\SCOPERECALL更新项目\TEST-Hermes-runtime-v1\venv\Scripts\python.exe'
+$HermesPython = '<hermes runtime root>\venv\Scripts\python.exe'
 & $HermesPython -B probes/hermes/p11_request_a2a_test.py
 ```
 
 真实普通 A2A 请求必须显式执行一次：
 
 ```powershell
-$HermesPython = 'F:\SCOPERECALL更新项目\TEST-Hermes-runtime-v1\venv\Scripts\python.exe'
+$HermesPython = '<hermes runtime root>\venv\Scripts\python.exe'
 & $HermesPython -B probes/hermes/p11_request_a2a_test.py --run
 ```
 
@@ -67,7 +67,7 @@ reserve 为 32768 tokens，主路由输出 reserve 为 4096，MiMo 辅助输出 
 停止只创建 TEST stop file，由启动器回收自己创建的两个子进程：
 
 ```powershell
-$HermesPython = 'F:\SCOPERECALL更新项目\TEST-Hermes-runtime-v1\venv\Scripts\python.exe'
+$HermesPython = '<hermes runtime root>\venv\Scripts\python.exe'
 & $HermesPython -B probes/hermes/p11_stop_a2a_test.py --wait
 ```
 

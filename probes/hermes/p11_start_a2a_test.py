@@ -28,7 +28,7 @@ from probes.hermes.p11_a2a_testkit import (
     port_status, scrub, write_json,
 )
 
-VAULT_HELPER = Path(os.environ.get("SCOPE_RECALL_VAULT_HELPER", "fleet-secret.py"))
+VAULT_HELPER = Path(os.environ.get("SCOPE_RECALL_VAULT_HELPER", "secret-helper.py"))
 ZERO_MODEL_DIAGNOSTIC_DUMMY = "TEST_ZERO_MODEL_DIAGNOSTIC_DUMMY"
 GATEWAY_READINESS_MARKER = "Press Ctrl+C to stop"
 GATEWAY_READINESS_LOG = HERMES_HOME / "logs" / "gateway.log"
