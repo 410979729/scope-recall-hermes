@@ -2,6 +2,102 @@
 
 All notable changes to `scope-recall` will be documented in this file.
 
+## [3.1.0] - 2026-09-18
+
+First: thank you for waiting, and sorry it took this long. 2.0.1 shipped at the end of August and it has been quiet here since. The reason is that we did not write a patch on top of 2.0 — we rebuilt most of the project. Storage, retrieval, the background worker, the host boundary and the deletion path are all new code, and a few of them are new ideas rather than new implementations of old ones. That is a long time to leave people on a version we had already decided to replace, and we should have said so sooner.
+
+This release is the result. It keeps everything 2.0 was for and changes almost everything about how it gets there.
+
+### What is different from 2.0
+
+**SQLite is now the only authority, and every vector index is disposable.** In 2.0 a memory's truth was spread across `memories`, `journal_entries`, `fact_claims` and the Lance rows, and the vector store held text of its own. In 3.x the answerable text lives in SQLite alone (`source_events`, `claims`, `claim_versions`, `evidence_links`, schema 1108); the vector store holds metadata and a vector with an empty payload. You can delete the whole index and rebuild it without losing a single memory. That one decision is what makes deletion, migration and recovery tractable.
+
+**A claim has to quote its source, word for word.** Every fact the plugin records names the exact span of an exact source revision that supports it, and the code checks the span is really there before the claim is stored. Nothing is remembered because a model asserted it — this is why recall can show you *why* it believes something, and why a wrong memory can be traced to the sentence that caused it.
+
+**Deletion reaches everywhere.** One deletion record, applied in dependency order, covering sources, claims, evidence links, episode membership and the vector rows, with the derived layer fenced so a rebuild cannot resurrect what you removed.
+
+**Hosts are adapters, not assumptions.** 2.0 was Hermes-shaped throughout. 3.x has a host boundary with a Hermes adapter and a Codex adapter (MCP tools and hooks) behind the same core, so adding a host does not mean touching memory code.
+
+**Background work is bounded and fenced.** Consolidation, embedding, candidate evaluation, projection rebuilds and purges are durable work items with leases, attempt limits and at-most-once publication. A crashed pass loses nothing; a provider outage parks work instead of failing it; every failure is recorded with the field that caused it.
+
+**Recall is five channels and a packet.** Exact reference, lexical, claim, recent and vector, fused by reciprocal rank, then assembled into a packet with an explicit answerability verdict — including "this corpus cannot answer that", which 2.0 had no way to say.
+
+### What this buys you, measured
+
+- **Rebuilding a vector store went from days to hours.** One embedding request now carries up to a hundred documents, a pass carries up to a thousand items, and a group's vectors are written in one fenced commit. On a store of 162,000 sources this moved from 96 items a minute to 1,250.
+- **Recall accuracy on real corpora improved substantially.** On two instances' benchmark question sets, correct answers went from 17/30 to 27/30 and from 14/25 to 20/25, with no regression on exact facts (60/60) or on questions the corpus genuinely cannot answer (20/20).
+- **The queue can no longer feed itself.** A pass queues no more candidate evaluations than it can also perform, so a backlog cannot grow while nothing new is being said.
+- **Failures say what went wrong.** A rejected payload names the field (`as_of`, `source_refs`, `evidence_quote`) rather than a schema keyword, and the repair attempt gets that name.
+
+### Upgrading from 2.0.x
+
+**There is no in-place upgrade, and that is deliberate.** The two schemas are different enough that a silent conversion would be the kind of thing you only discover was wrong months later. Migration is an explicit, resumable, offline job that leaves your 2.0 database untouched.
+
+Read `docs/upgrade-contract.md` before you start. The short version:
+
+1. **Stop the old plugin from writing.** Shut down the agent, or at least the memory provider. A migration from a live database is refused.
+2. **Back up the old store yourself.** The tool keeps its own isolated copy, but take your own first. This is the only irreplaceable thing in the process.
+3. **Install 3.1.0 fresh and let the installer create an empty instance**, with its official installation manifest. Do not point the new plugin at the old directory.
+4. **Prepare the job**, naming the old database, a fresh job directory and that manifest:
+
+   ```
+   scope-recall migrate prepare --source <old memory.sqlite3> --job <job dir> \
+       --installation-manifest <installation.json> --host hermes
+   ```
+
+   If the old store has more than one scope, supply `--scope-map` mapping each old scope to an audience the new instance is actually bound to. Migration will refuse to guess, refuse to merge two old scopes into one audience, and refuse to widen a permission it cannot read.
+5. **Run it**, then read the report:
+
+   ```
+   scope-recall migrate run --job <job dir> --source-quiesced
+   scope-recall migrate verify --job <job dir>
+   scope-recall migrate status --job <job dir>
+   ```
+
+6. **Queue the index** when you are satisfied with what came across:
+
+   ```
+   scope-recall migrate queue-index --job <job dir>
+   ```
+
+   Embeddings are generated in the background afterwards, bounded by your own budget. Until that finishes, recall works on the exact, lexical, claim and recent channels — semantic search is the part that arrives last.
+
+**Things worth knowing before you migrate**
+
+- **Re-running is safe.** The job is idempotent: interrupt it, lose power, run it again. It resumes rather than duplicating.
+- **A blocked report is a real answer, not a failure to retry around.** If migration reports `blocked`, your old database is intact and the new one is explicitly incomplete. Do not start using the new instance until the block is resolved — an incomplete store will not pretend to be complete.
+- **Migration never calls a model.** No re-summarisation, no embeddings, no memory leaves your machine during the job itself. The index step afterwards is the only thing that spends anything, and only through the route you configured.
+- **Old vectors are not reused unless they can be proven equivalent** — same model, dimensions, encoding, segmentation and source mapping. Otherwise they stay in the old snapshot and the new index is built fresh. Row counts matching is not evidence that memories match.
+- **What cannot be expressed losslessly goes to an archive rather than being approximated.** You will see it in the report. We would rather tell you a memory is in cold storage than quietly change its meaning.
+- **Deleted memories stay deleted.** Deletion state and its dependency closure are applied before anything becomes readable or indexable.
+- **Allow real time for it.** The duration depends on your data volume, not on a number we can promise here. Measure it on a copy first if that matters to you.
+
+### About cost — please read this before enabling the model routes
+
+3.x calls a language model of your choice for consolidation and candidate evaluation, and an embedding model for semantic recall. **This is where your money goes, and it is easy to underestimate.** A busy instance can make several thousand model calls in a day.
+
+Some honest guidance from running this on real workloads:
+
+- **Watch the quota from day one.** Every call is metered in a local ledger before it is made, with the model, tokens and charge recorded. `scope-recall doctor` shows the standing. Look at it in the first week rather than at the end of the month.
+- **We suggest MiniMax M3 as the plugin's model.** On a controlled comparison — the same forty consolidations, two runs per model — it matched a well-regarded alternative in quality while costing meaningfully less per call. It is not the only good choice, but it is a good default.
+- **Turn the model's thinking mode off for this job.** Measured on the same set: with adaptive thinking the pass took six times as long, three calls exceeded the request bound and were reported as timeouts, and three answers broke the JSON envelope. Structured extraction under a strict output format is a task where reasoning tokens hurt. The shipped configuration has it disabled; leave it that way unless you have measured otherwise.
+- **Prompt caching matters more than the headline price.** Our prompts repeat heavily, so a provider with effective prompt caching can cost a third of one without it at the same nominal rate. Include that in any comparison you make.
+- **Nothing is sent anywhere you did not configure.** Routes are explicit, credentials come from your own environment file, and a route you have not approved is simply not called.
+
+### What is not finished
+
+We would rather list these than let you find them:
+
+- **The independent evaluation gate has no receipt yet.** The project declares a frozen, adjudicated evaluation campaign as a release criterion, and it has never been executed. Everything above is measured, but by us, on our own corpora. Treat the accuracy numbers as evidence, not as an audit.
+- **Quoting tool output is still the largest source of lost memories.** When a source is a JSON tool result — a file listing with line-number gutters, an escaped API response — models frequently cannot reproduce a span byte for byte, and the claim is rejected. The memory is captured and searchable; it just does not become a claim. We are working on this and it is the next thing we intend to fix.
+- **Background scheduling is Windows-only.** Autostart uses Task Scheduler. On Linux and macOS the plugin works, but you schedule the worker yourself.
+- **CI covers Windows.** The host, native and integration tiers run on Windows only; other platforms are tested by hand.
+- **The 2.x compatibility layer is a one-way migration tool, not a bridge.** It reads the old format once. It is not maintained as a permanent compatibility surface, and there is no path back.
+
+### Thanks
+
+To everyone who filed an issue against 2.0.1 and then waited: the reliability work in this release started from your reports. And to the contributors who sent code — the embedder retry and backoff, the configurable retry delays, the vector admission floor, the secret-pattern word boundary, and the MiniMax embedder that a good part of this release now recommends — thank you.
+
 ## [Unreleased]
 
 ### Scope Recall 3.1.0rc42 a drain spends its seconds on the work - 2026-09-18
