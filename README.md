@@ -2,9 +2,10 @@
 
 Scope Recall v3 is a bounded local memory core with SQLite as the authority and rebuildable vector companions. It provides host adapters for Hermes and Codex, including Codex MCP tools when the optional `codex` extra is installed. The public package is `hermes-scope-recall`; the Python import is `scope_recall`; the host wrapper identity remains `scope-recall`.
 
-This checkout is release candidate `3.1.0rc41`. One embedding request now
-carries a pass's sources instead of one each, so building or rebuilding a vector
-store is hours rather than days. rc39 stopped a candidate backlog feeding
+This checkout is release candidate `3.1.0rc42`. A drain now spends its seconds
+on the work: a pass no longer re-counts the backlog it is there to shrink, a
+group's vectors are committed once instead of one at a time, and one request
+carries a hundred documents. rc39 stopped a candidate backlog feeding
 itself, made a rejected payload say which field to fix, and gave up the packet
 slot an episode with no summary was taking. rc38 kept a candidate's own name
 when an evaluation wrote it differently. rc37 made a recalled question reach the
@@ -47,7 +48,7 @@ python -m pip install "<absolute-path-to-wheel>"
 python -m pip install "<absolute-path-to-wheel>[codex]"
 ```
 
-The current release candidate is `3.1.0rc41`; these commands are local
+The current release candidate is `3.1.0rc42`; these commands are local
 placeholders until a reviewed wheel is built. They do not claim that full host
 runtime wiring or production registration has been accepted.
 

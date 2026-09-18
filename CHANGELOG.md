@@ -4,6 +4,16 @@ All notable changes to `scope-recall` will be documented in this file.
 
 ## [Unreleased]
 
+### Scope Recall 3.1.0rc42 a drain spends its seconds on the work - 2026-09-18
+
+Found by timing every SQL statement of one pass on an instance with 150,000 queued embeddings: of 20 seconds, 8.7 went to five whole-store statistics queries that ran twice, 2.5 to the one embedding request, 1.0 to 32 vector commits, and every statement that was actually about an item took under half a millisecond. The queue was not slow because SQLite was too small; it was slow because each pass re-counted the backlog it was there to shrink.
+
+- A pass called `status()` twice. The second call existed only to prove the database it had opened was the bound one, and discarded the answer: six whole-store aggregates and a JSON scan of every source's admission record, 4.4 seconds on that instance. Proving the binding is now one indexed row, and the receipt asks for the queue without the admission counts it never read -- it reports `source_only` from its own items.
+- The native store's write API is plural and the Lance writer handed it one row at a time, so a pass of 32 sources took 32 lock-held handshakes and 32 dataset commits. Measured on a real store at real dimensions: 0.95s for 32 one at a time against 0.11s for one call carrying all 32. A group is now committed once, guarded once for every member -- lease, live subject, scope, project, branch, derivation epoch -- and a group the guard refuses writes nothing, leaving each member to publish on its own fence exactly as before.
+- A pass was bounded at 32 items, a number set when each source was its own request and each vector its own commit. With both shared, that bound only decided how often a pass paid for its process start and its queue report. A pass may now carry up to 200, which is the core's own long-standing bound rather than a second number beside it, and the provider's real batch ceiling is measured rather than assumed: 32 texts answered in 2.6s, 64 in 3.2s, 100 in 3.8s, 250 refused with HTTP 400. One request carries a hundred and a longer group is sent as consecutive full requests, so a pass of two hundred sources asks twice instead of seven times.
+
+Measured and not changed: the provider. At Tier 1 the account was using 0.6% of its requests a minute and 0.5% of its tokens a minute while the queue moved at 96 items a minute; every second of the difference was local.
+
 ### Scope Recall 3.1.0rc41 the batch reaches the worker - 2026-09-18
 
 - rc40's batched embedding did not run: the worker probes the port it is handed, which is the runtime's bounded wrapper, and `prepare_sources` was not among the methods that wrapper forwards by name. A live drain still sent 183 single-document requests in six minutes. The wrapper now offers it, and the contract test asserts the capability through the seam the product uses rather than only against the port itself.
