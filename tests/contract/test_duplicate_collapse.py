@@ -2,7 +2,7 @@
 
 Covers ``core/duplicate_collapse.py`` and its use in the retrieval pipeline.
 The pipeline de-duplicated on ``(kind, ref, revision)`` -- identity, not
-content -- which is correct for rows and wrong for packets: on TianShu, where a
+content -- which is correct for rows and wrong for packets: on Alpha, where a
 legacy import re-delivered the same bodies under fresh identities, one document
 took four of six delivered slots and the document that answered the question
 was never delivered at all.

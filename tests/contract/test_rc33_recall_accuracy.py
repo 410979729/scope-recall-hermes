@@ -228,7 +228,7 @@ def test_the_claim_channel_names_its_candidates(app):
 def test_asking_words_are_not_evidence_terms():
     from scope_recall.core.recall_policy import meaningful_query_terms
 
-    assert set(meaningful_query_terms("阿乙当前是什么模型")) == {"阿乙", "姬当", "当前", "前是", "模型"}
+    assert set(meaningful_query_terms("阿乙当前是什么模型")) == {"阿乙", "乙当", "当前", "前是", "模型"}
     assert set(meaningful_query_terms("Scope Recall 的整理模型怎么配置？")) >= {"scope", "recall", "整理", "模型", "配置"}
     assert not {"怎么", "么配"} & set(meaningful_query_terms("Scope Recall 的整理模型怎么配置？"))
     assert set(meaningful_query_terms("which model does beta use")) == {"model", "beta", "use"}

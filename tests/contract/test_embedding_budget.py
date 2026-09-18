@@ -1,7 +1,7 @@
 """An oversized source must still get a vector, not be silently unsearchable.
 
 Covers ``core/embedding_budget.py`` and the bound it puts on
-``encode_embedding_text``.  Six sources on tianshu were permanently
+``encode_embedding_text``.  Six sources on alpha were permanently
 unembeddable -- 16,505 to 65,536 characters, rejected with ``http_400``, which
 is not auto-recoverable -- so their content was in SQLite and in the lexical
 index but never in the vector index, for the life of the instance.
@@ -18,7 +18,7 @@ from scope_recall.core.embedding_budget import (
 )
 from scope_recall.core.recall_policy import claim_embedding_text, encode_embedding_text
 
-#: The observed failure floor on tianshu.  The bound has to stay under it.
+#: The observed failure floor on alpha.  The bound has to stay under it.
 LOWEST_OBSERVED_FAILURE = 16505
 #: The 99th percentile of bodies that already embed successfully.
 SUCCESSFUL_P99 = 5536

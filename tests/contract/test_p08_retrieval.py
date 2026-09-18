@@ -263,7 +263,7 @@ def test_P08_lexical_synonym_reaches_a_paraphrase_without_the_query_word(app, mo
     # credited once, and coverage is still counted against the query's five.
     [candidate] = _lexical_pool(core, reader, query, mode=mode)
     assert (candidate.ref, candidate.lexical_score, candidate.matched_query_terms) == (
-        target.ref, 3.0, ("上了", "阿乙", "装上"))
+        target.ref, 3.0, ("上了", "装上", "阿乙"))
     # The source leads; its capture episode may follow by relation.
     assert _recalled(core, reader, query, mode)[:1] == [target.ref]
 
@@ -286,7 +286,7 @@ def test_P08_lexical_admission_counts_only_the_query_s_own_terms():
     query = "阿乙装上了吗"
     policy = RecallPolicy(vector_threshold=None)
     credited = CandidateRef("event", "event-TEST", 1, "lexical", lexical_score=3.0,
-                            matched_query_terms=("上了", "阿乙", "装上"))
+                            matched_query_terms=("上了", "装上", "阿乙"))
     assert policy.lexical_admission(credited, query) == (True, None)
     # The same count reported over synonym terms is one query term, not three.
     inflated = replace(credited, matched_query_terms=("安装", "装上", "装好"))

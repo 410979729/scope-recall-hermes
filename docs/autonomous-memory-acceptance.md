@@ -1,8 +1,8 @@
 # Autonomous memory candidate: frozen scope
 
-Baseline: Yuheng's private 3.0.0 wheel SHA-256
+Baseline: Epsilon's private 3.0.0 wheel SHA-256
 `68bd9c70807b8364a2d99b755e29a83437ecf23020b82c01aaf3d42e0732c2a5`.
-The baseline source and byte manifest are preserved in `F:/T/SR-AUTO-20260912`.
+The baseline source and byte manifest are preserved in `<work root>/SR-AUTO-20260912`.
 
 This iteration implements the user's September 12 request: memory must work
 without a person reviewing candidates or clearing Journal queues. Sources remain

@@ -35,7 +35,7 @@ def test_terminal_state_requires_affirmative_assertion_in_actual_core(app,text,e
 
 
 @pytest.mark.parametrize('origin,text',[
-    # The exact shape behind tianshu's 32 failed episode versions: the word is
+    # The exact shape behind alpha's 32 failed episode versions: the word is
     # an adjective on something else, deep inside a long tool transcript.
     ('tool_observation','TEST 巡检报告：' + 'x' * 400 + ' legacy recall is verified; two prior failed questions remain in evidence.'),
     # An English conditional. 如果/假如/假设 were covered; if / in case were not.

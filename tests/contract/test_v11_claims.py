@@ -571,7 +571,7 @@ def test_explicit_revision_cannot_borrow_unrelated_sentence_deadline(app):
 
 # The model is shown ``json.dumps(content, ensure_ascii=False)``, so a quote it
 # copies faithfully can be the escaped form rather than the stored bytes.  On
-# tianshu, 109 of the 111 sources behind the evidence_span failures change under
+# alpha, 109 of the 111 sources behind the evidence_span failures change under
 # that encoding.
 
 
@@ -633,7 +633,7 @@ def test_claim_quoted_from_the_encoded_source_is_accepted_and_stored_as_raw_byte
 
 
 def _escaped_envelope():
-    # The shape every one of tianshu's 16 question_not_asserted rejections had:
+    # The shape every one of alpha's 16 question_not_asserted rejections had:
     # a tool envelope stored as an escaped JSON body, so the only line breaks
     # are two-character \n sequences and the first *real* punctuation after the
     # quoted line is a question mark hundreds of characters away.

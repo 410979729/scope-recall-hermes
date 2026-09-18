@@ -146,7 +146,7 @@ def test_a_subject_two_sentences_away_is_still_refused():
 # --------------------------------------------------------------------------
 
 def test_a_quote_ending_a_sentence_does_not_read_the_next_sentence():
-    """Found on tianshu: a question in the *following* sentence vetoed a claim.
+    """Found on alpha: a question in the *following* sentence vetoed a claim.
 
     The source said, in so many words, that the question was not a
     confirmation -- and the question gate refused the assertion anyway, because

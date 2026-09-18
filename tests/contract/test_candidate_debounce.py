@@ -1,7 +1,7 @@
 """Candidate evaluations are scheduled once a candidate settles, not per source.
 
 Covers ``core/candidate_debounce.py`` and the sweep that replaced per-arrival
-scheduling.  The property that matters is the one measured on tianshu: 7,802 of
+scheduling.  The property that matters is the one measured on alpha: 7,802 of
 11,158 evaluations were retired before anyone judged them, because each new
 piece of evidence minted a fresh evaluation and superseded the ones waiting.
 """
@@ -238,7 +238,7 @@ def _evidence_rows(core, candidate_ref=None):
 def test_reinjected_memory_is_refused_as_candidate_evidence(app):
     """It is this system's own output coming back: it adds nothing the store
     did not already hold, and it stops a candidate ever going quiet. On
-    TianShu it was 594 of 3,669 evidence rows behind the re-judgement churn."""
+    Alpha it was 594 of 3,669 evidence rows behind the re-judgement churn."""
     core, ctx = app
     _register(core, ctx, 1)
     echo = capture(core, ctx, "entity1 property1 sharedtoken 值1。",

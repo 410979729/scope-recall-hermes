@@ -211,11 +211,11 @@ def _age(path, *, minutes: int) -> None:
 
 def test_a_future_modification_time_is_ignored(tmp_path):
     """An unpacking tool that mishandles the archive's local-time entries would
-    otherwise make every process look stale forever.  On TianShu one extraction
+    otherwise make every process look stale forever.  On Alpha one extraction
     shifted 31 of 135 files four hours ahead."""
     package = tmp_path / "pkg"
     package.mkdir()
-    past, future = time.time() - 600, time.time() + 4 * 3600  # the real TianShu skew
+    past, future = time.time() - 600, time.time() + 4 * 3600  # the real Alpha skew
     (package / "a.py").write_text("x", encoding="utf-8")
     (package / "b.py").write_text("x", encoding="utf-8")
     os.utime(package / "a.py", (past, past))
