@@ -66,10 +66,12 @@ _HOLDABLE_WORK_TYPES = frozenset({"consolidate", "embed", "evaluate_candidate"})
 #: one page a pass, a source matching a thousand candidates took sixty passes,
 #: started back to back, each paying a whole pass to link sixteen of them.
 SOURCE_PAGES_PER_PASS = 16
-#: Source embeddings one request may carry.  Matches the adapter's own ceiling
-#: (``adapters/models.py``); a pass claims at most this many embed items at once
-#: so one refused request costs one group, not a pass.
-EMBED_BATCH_LIMIT = 32
+#: Source embeddings one group may carry.  The adapter sends them as consecutive
+#: full provider requests (``adapters/models.py``: a hundred each), so this is
+#: how many items share one read, one group commit and one set of per-pass costs
+#: -- the numbers a drain is actually paying.  A pass still claims no more than
+#: its own ``max_items``.
+EMBED_BATCH_LIMIT = 200
 
 
 @dataclass(frozen=True)

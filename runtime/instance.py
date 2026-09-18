@@ -91,7 +91,11 @@ _SECONDS_BOUNDS = {
     "supervisor_seconds": (1, 86400),
 }
 _COUNT_BOUNDS = {
-    "max_items": (1, 32),
+    # A pass's own bound, matching the core's (``core/worker.py``: 1..200).  Held
+    # at 32 while every embedding was its own request and every vector its own
+    # commit; now that a group shares both, the per-pass costs -- process start,
+    # the queue report -- are what a bigger pass amortises.
+    "max_items": (1, 200),
     "daily_work_limit": (0, 1_000_000),
     "max_auto_recoveries": (0, 4),
     "supervisor_max_drains": (1, 1024),
