@@ -11,7 +11,7 @@ from .admission import resume_deferred
 from .candidate_lifecycle import PROCESS_BATCH_LIMIT, CandidateEvaluator, candidate_evaluation_messages
 from .consolidate import consolidation_messages
 from .storage import SQLiteStorage
-from .work_storage import CAPACITY_REFUSALS
+from .work_storage import CAPACITY_REFUSALS, MAX_RECOVERY_PAGE
 from .worker_candidates import _process_candidate_evaluation
 from .worker_consolidation import (
     ConsolidationModel,
@@ -222,8 +222,9 @@ def _recover_failed_work(storage, clock, context, config: WorkerConfig, allowed:
                          started: float, budget: float) -> int:
     """Grant bounded fresh attempts to failures a later fix or budget may have cured."""
     with storage.write(context, remaining_seconds=_remaining(started, clock, budget)) as tx:
+        recovery_page = min(MAX_RECOVERY_PAGE, config.max_items)
         recovered = tx.work.recover_invalid_derivations(
-            now=clock.utc_now(), allowed_work_types=allowed, limit=config.max_items)
+            now=clock.utc_now(), allowed_work_types=allowed, limit=recovery_page)
         if "consolidate" in allowed:
             recovered += tx.work.recover_oversized_consolidations(
                 now=clock.utc_now(), formatter=consolidation_messages, limit=min(8, config.max_items))
@@ -252,7 +253,7 @@ def _recover_failed_work(storage, clock, context, config: WorkerConfig, allowed:
         recovered += tx.work.recover_transient_failures(
             now=clock.utc_now(), allowed_work_types=allowed,
             cooldown_seconds=config.auto_retry_cooldown_seconds,
-            max_recoveries=config.max_auto_recoveries, limit=config.max_items)
+            max_recoveries=config.max_auto_recoveries, limit=recovery_page)
     return recovered
 
 

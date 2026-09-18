@@ -11,6 +11,11 @@ from .schema import SCHEMA_VERSION
 
 MAX_RECOVERABLE_ATTEMPTS = 3
 MAX_OPERATOR_RETRIES = 2
+#: Failed rows one pass may reopen.  Reopening a failure is not the same kind of
+#: work as claiming a ready item: each reopened row becomes a model call later,
+#: so it keeps its own page however large a pass of cheap work may be.  It was
+#: ``max_items`` while the two were the same size.
+MAX_RECOVERY_PAGE = 200
 #: Work items one claim may lease.  Matches what one pass may hold
 #: (``core/worker.py``'s ``max_items``), because a pass that claims its embedding
 #: group together claims as much of itself as it is allowed to process.
@@ -534,7 +539,7 @@ class WorkItems:
         conn = self._tx._check(write=True)
         if not allowed_work_types <= ALLOWED_WORK_TYPES or not 0 <= max_recoveries <= 4:
             raise ContractError("INPUT_INVALID", "auto_recovery")
-        if not math.isfinite(cooldown_seconds) or not 60 <= cooldown_seconds <= 86400 or not 1 <= limit <= 200:
+        if not math.isfinite(cooldown_seconds) or not 60 <= cooldown_seconds <= 86400 or not 1 <= limit <= MAX_RECOVERY_PAGE:
             raise ContractError("INPUT_INVALID", "auto_recovery_budget")
         cutoff = _after(now, -cooldown_seconds)
         kinds = sorted(allowed_work_types & frozenset(_RETRY_SUBJECT_REASON))
@@ -664,7 +669,7 @@ class WorkItems:
         as the first attempt did.
         """
         conn = self._tx._check(write=True)
-        if type(limit) is not int or not 1 <= limit <= 200:
+        if type(limit) is not int or not 1 <= limit <= MAX_RECOVERY_PAGE:
             raise ContractError("INPUT_INVALID", "retry_limit")
         if "evaluate_candidate" not in allowed_work_types:
             return 0
@@ -696,7 +701,7 @@ class WorkItems:
         The durable marker is independent of schema generation and attempts.
         """
         conn = self._tx._check(write=True)
-        if type(limit) is not int or not 1 <= limit <= 200:
+        if type(limit) is not int or not 1 <= limit <= MAX_RECOVERY_PAGE:
             raise ContractError("INPUT_INVALID", "retry_limit")
         kinds = sorted(allowed_work_types & {"consolidate", "evaluate_candidate"})
         if not kinds:

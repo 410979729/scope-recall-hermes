@@ -21,7 +21,7 @@ from scope_recall.adapters.models import (
     MAX_EMBED_BATCH,
     build_gemini_embed_body,
 )
-from scope_recall.core.work_storage import MAX_CLAIM_PAGE
+from scope_recall.core.work_storage import MAX_CLAIM_PAGE, MAX_RECOVERY_PAGE
 from scope_recall.core.worker import EMBED_BATCH_LIMIT, WorkerConfig
 from scope_recall.runtime.instance import _COUNT_BOUNDS
 
@@ -97,6 +97,25 @@ def test_a_pass_may_be_as_large_as_the_core_allows():
         WorkerConfig(owner_id="TEST-owner", max_items=high + 1)
     with pytest.raises(ValueError):
         WorkerConfig(owner_id="TEST-owner", embed_batch_limit=EMBED_BATCH_LIMIT + 1)
+
+
+def test_reopening_failures_keeps_its_own_page(app):
+    """A pass of a thousand cheap items must not reopen a thousand failures.
+
+    Every bound that said ``max_items`` meant "one pass" while a pass was 32 items of the
+    same kind.  Reopening a failure is a model call later, not an embedding now, so it keeps
+    its own page -- and a pass larger than that page must still run, which is how this was
+    found: a 600-item pass was rejected as ``INPUT_INVALID: retry_limit`` before it started.
+    """
+    core, ctx = app
+    assert MAX_RECOVERY_PAGE < 1000, "the recovery page is not the pass bound"
+    made = [capture(core, ctx, f"TEST 恢复分页第{index}条。", key=f"TEST-recover/{index}") for index in range(3)]
+    with sqlite3.connect(core.storage.path) as conn:
+        conn.execute("UPDATE work_items SET state='done' WHERE work_type='consolidate'")
+        conn.commit()
+    receipt = core.drain_worker(ctx, max_items=1000, remaining_seconds=30, owner_id="TEST-recover",
+                               embed=GroupEmbed())
+    assert receipt.completed == len(made), receipt
 
 
 def test_a_full_pass_claims_and_finishes_more_than_one_claim_page(app):
