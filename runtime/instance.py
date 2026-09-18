@@ -91,11 +91,15 @@ _SECONDS_BOUNDS = {
     "supervisor_seconds": (1, 86400),
 }
 _COUNT_BOUNDS = {
-    # A pass's own bound, matching the core's (``core/worker.py``: 1..200).  Held
+    # A pass's own bound, matching the core's (``core/worker.py``: 1..1000).  Held
     # at 32 while every embedding was its own request and every vector its own
-    # commit; now that a group shares both, the per-pass costs -- process start,
-    # the queue report -- are what a bigger pass amortises.
-    "max_items": (1, 200),
+    # commit; now that a group shares both, what a bigger pass amortises is the
+    # cost of starting a pass at all -- measured at 8 of the 18 seconds a pass of
+    # two hundred took.  Model-bound work keeps its own per-pass bounds
+    # (``candidate_batch_limit``, and the deadline for consolidation), so this
+    # number decides how much cheap work shares one start, not how much money one
+    # pass may spend.
+    "max_items": (1, 1000),
     "daily_work_limit": (0, 1_000_000),
     "max_auto_recoveries": (0, 4),
     "supervisor_max_drains": (1, 1024),
@@ -409,9 +413,10 @@ class RuntimeInstance:
         self._vector_store = resource
         self._vector_port = port
 
-    def status(self, *, include_admission: bool = True) -> Any:
+    def status(self, *, include_admission: bool = True, include_queue_age: bool = True) -> Any:
         self._ensure_open()
-        return self.core.status(self.config.context(), include_admission=include_admission)
+        return self.core.status(self.config.context(), include_admission=include_admission,
+                                include_queue_age=include_queue_age)
 
     def memory_epoch(self) -> int:
         """Read the authority fence without counting the backlog.

@@ -90,7 +90,7 @@ def test_one_request_still_carries_every_text_it_is_given():
 def test_a_pass_may_be_as_large_as_the_core_allows():
     """The runtime's bound, the core's, and the claim page's are one number, not three that drift."""
     low, high = _COUNT_BOUNDS["max_items"]
-    assert (low, high) == (1, 200)
+    assert (low, high) == (1, 1000)
     assert MAX_CLAIM_PAGE == high, "a pass claims as much of itself as it may process"
     WorkerConfig(owner_id="TEST-owner", max_items=high, embed_batch_limit=EMBED_BATCH_LIMIT)
     with pytest.raises(ValueError):

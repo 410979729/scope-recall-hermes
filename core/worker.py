@@ -71,7 +71,7 @@ SOURCE_PAGES_PER_PASS = 16
 #: how many items share one read, one group commit and one set of per-pass costs
 #: -- the numbers a drain is actually paying.  A pass still claims no more than
 #: its own ``max_items``.
-EMBED_BATCH_LIMIT = 200
+EMBED_BATCH_LIMIT = 1000
 
 
 @dataclass(frozen=True)
@@ -101,8 +101,8 @@ class WorkerConfig:
             raise ValueError("owner_id is required")
         if type(self.lease_seconds) not in (int, float) or not math.isfinite(self.lease_seconds) or self.lease_seconds <= 0:
             raise ValueError("lease_seconds must be positive")
-        if type(self.max_items) is not int or not 1 <= self.max_items <= 200:
-            raise ValueError("max_items must be between 1 and 200")
+        if type(self.max_items) is not int or not 1 <= self.max_items <= 1000:
+            raise ValueError("max_items must be between 1 and 1000")
         if type(self.auto_retry_cooldown_seconds) not in (int, float) or not math.isfinite(self.auto_retry_cooldown_seconds) or not 60 <= self.auto_retry_cooldown_seconds <= 86400:
             raise ValueError("auto_retry_cooldown_seconds")
         if type(self.max_auto_recoveries) is not int or not 0 <= self.max_auto_recoveries <= 4:

@@ -320,9 +320,11 @@ def _drain_once(config: RuntimeInstanceConfig, instance: Any, deadline: float) -
     payload["ingress_cancelled"] = sum(r.disposition == "cancelled" for r in ingress)
     payload["source_only"] = sum(item.disposition == "source_only" for item in receipt.items)
     payload["daily_queue_used"] = budget_state["used"]
-    # The admission counts are a diagnostic scan of every source's JSON; this
-    # pass reports ``source_only`` from its own items, so it does not ask.
-    _apply_queue_status(payload, gaps, instance.status(include_admission=False), receipt, background_gaps)
+    # The admission counts scan every source's JSON and the queue age walks every
+    # queued row; a pass reports ``source_only`` from its own items and its depth
+    # from a count, and the doctor is where the age is read.
+    _apply_queue_status(payload, gaps, instance.status(include_admission=False, include_queue_age=False),
+                        receipt, background_gaps)
     return payload
 
 

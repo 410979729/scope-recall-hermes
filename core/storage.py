@@ -167,7 +167,8 @@ class Transaction:
             "SELECT memory_epoch FROM instance_meta WHERE singleton=1"
         ).fetchone()[0])
 
-    def status(self, *, include_all_projects: bool = False, include_admission: bool = False) -> StoreStatus:
+    def status(self, *, include_all_projects: bool = False, include_admission: bool = False,
+               include_queue_age: bool = True) -> StoreStatus:
         conn = self._check()
         meta = conn.execute("SELECT schema_version,memory_epoch,config_version FROM instance_meta WHERE singleton=1").fetchone()
         scopes = sorted(self.context.allowed_scope_ids)
@@ -177,13 +178,22 @@ class Transaction:
         if include_all_projects:
             # Metadata-only installation diagnostics; scope isolation remains.
             context_filter, params = "", tuple(scopes)
-        source_count = conn.execute(f"SELECT count(*) FROM source_events WHERE read_blocked=0 AND scope_id IN ({marks}) {context_filter}", params).fetchone()[0]
+        # The store's own size and the age of the oldest queued item are what an
+        # operator reads; a pass reports its queue depth and its own items.  Both
+        # walk every row, so a pass that asked for them paid for them once per
+        # pass and more the fuller the queue was -- the wrong way round for a
+        # report whose job is to say the queue is deep.
+        source_count = 0
+        if include_queue_age:
+            source_count = conn.execute(f"SELECT count(*) FROM source_events WHERE read_blocked=0 AND scope_id IN ({marks}) {context_filter}", params).fetchone()[0]
         work_count = conn.execute(f"SELECT count(*) FROM work_items WHERE state IN ('pending','leased') AND scope_id IN ({marks}) {context_filter}", params).fetchone()[0]
         failed_count = conn.execute(f"SELECT count(*) FROM work_items WHERE state='failed' AND scope_id IN ({marks}) {context_filter}", params).fetchone()[0]
         leased_count = conn.execute(f"SELECT count(*) FROM work_items WHERE state='leased' AND scope_id IN ({marks}) {context_filter}", params).fetchone()[0]
-        oldest = conn.execute(f"""SELECT MIN(COALESCE((SELECT e.persisted_at FROM source_events e
-            WHERE e.event_id=work_items.subject_ref AND e.source_revision=work_items.subject_revision),available_at))
-            FROM work_items WHERE state IN ('pending','leased') AND scope_id IN ({marks}) {context_filter}""", params).fetchone()[0]
+        oldest = None
+        if include_queue_age:
+            oldest = conn.execute(f"""SELECT MIN(COALESCE((SELECT e.persisted_at FROM source_events e
+                WHERE e.event_id=work_items.subject_ref AND e.source_revision=work_items.subject_revision),available_at))
+                FROM work_items WHERE state IN ('pending','leased') AND scope_id IN ({marks}) {context_filter}""", params).fetchone()[0]
         # Detailed source processing counts are diagnostic-only; avoid a JSON
         # scan of all sources on every internal epoch/queue status read.
         admission = (None, None, None)

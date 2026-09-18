@@ -14,7 +14,7 @@ MAX_OPERATOR_RETRIES = 2
 #: Work items one claim may lease.  Matches what one pass may hold
 #: (``core/worker.py``'s ``max_items``), because a pass that claims its embedding
 #: group together claims as much of itself as it is allowed to process.
-MAX_CLAIM_PAGE = 200
+MAX_CLAIM_PAGE = 1000
 DERIVATION_RETRY_MARKER = "derivation_retry:1"
 INTERRUPTED_RETRY_MARKER = "interrupted_retry:1"
 OPERATOR_ORIGINS = frozenset({"human_direct", "host_generated"})
