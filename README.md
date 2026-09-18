@@ -2,12 +2,13 @@
 
 Scope Recall v3 is a bounded local memory core with SQLite as the authority and rebuildable vector companions. It provides host adapters for Hermes and Codex, including Codex MCP tools when the optional `codex` extra is installed. The public package is `hermes-scope-recall`; the Python import is `scope_recall`; the host wrapper identity remains `scope-recall`.
 
-This checkout is release candidate `3.1.0rc37`. A recalled question now reaches
-the reply its turn was given, and one name written two ways -- DLSS5 and DLSS 5
--- is one name. rc36 kept a consolidation's claims when a summary beside them did
-not qualify, made a source evidence only when it can speak to the candidate, and
-let a worker pass find the truth writer busy rather than failed. rc35 ended the
-last worker passes that started back to back without progress.
+This checkout is release candidate `3.1.0rc38`. A candidate keeps its own name
+when an evaluation writes it differently, and an attempt no process finished is
+offered once more instead of waiting forever for evidence it already has. rc37
+made a recalled question reach the reply its turn was given, and one name written
+two ways -- DLSS5 and DLSS 5 -- one name. rc36 kept a consolidation's claims when
+a summary beside them did not qualify and let a worker pass find the truth writer
+busy rather than failed.
 SQLite remains the only fact authority; host adapters share the same contracts.
 This is a local candidate, not a published release or a claim of live deployment.
 
@@ -46,7 +47,7 @@ python -m pip install "<absolute-path-to-wheel>"
 python -m pip install "<absolute-path-to-wheel>[codex]"
 ```
 
-The current release candidate is `3.1.0rc37`; these commands are local
+The current release candidate is `3.1.0rc38`; these commands are local
 placeholders until a reviewed wheel is built. They do not claim that full host
 runtime wiring or production registration has been accepted.
 

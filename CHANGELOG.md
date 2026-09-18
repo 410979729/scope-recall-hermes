@@ -4,6 +4,13 @@ All notable changes to `scope-recall` will be documented in this file.
 
 ## [Unreleased]
 
+### Scope Recall 3.1.0rc38 a candidate keeps its own name, an unfinished attempt is offered once more - 2026-09-18
+
+Found by replaying alpha's terminally failed candidate evaluations against the real model in a private sandbox: of eight, three settled, three broke the format again, and two had been overtaken by their own claim.
+
+- Every name an evaluation was rejected over was the candidate's own, written differently: `embedding_retry.py` came back as `embedding_retry.py 全文` from the document's heading, a subject holding `\"看图\"` came back with plain quotes, and a predicate of a whole clause came back as its first word with the rest moved into `value_text`. One candidate had been refused four times over its predicate, each refusal a model call, and the feedback retry came back written differently again. What a candidate is -- kind, subject, predicate -- was recorded before the call, so a name that is the candidate's once escapes, spacing, width, quoting and case are set aside is restored to what was recorded. A name that is not the candidate's is still refused, and a kind never is: it is one of a fixed set. Replayed on the same eight candidates and the same provider, five settle instead of three; the one that still fails wrote a different word for its predicate, which is a disagreement, not a spelling.
+- The at-most-once fence is committed before the model call, so a worker killed after it -- a gateway stop, a lost lease, a machine restart -- left the candidate failed with nothing recorded and nothing to look at. 24 of beta's candidates and 5 of alpha's sat there, waiting for evidence they already had. A pass now reopens such a row once, bounded by `attempt` as well as by a marker, because an interruption observed as a lost lease reports `lease_exhausted` and keeps no history.
+
 ### Scope Recall 3.1.0rc37 a question reaches the reply it was given, one name written two ways is one name - 2026-09-17
 
 Found by the QA benchmark over real questions and their answers on alpha and beta snapshots, where rc36 answered 17 of 30 and 14 of 25.
