@@ -4,6 +4,17 @@ All notable changes to `scope-recall` will be documented in this file.
 
 ## [Unreleased]
 
+### Scope Recall 3.1.0rc39 a queue that cannot feed itself, and rejections that say what went wrong - 2026-09-18
+
+Found while beta tested its own memory and reported a stalled consolidation queue, a broken vector channel, a protocol bug and an empty summary layer. Three of the four were real; the fourth was the provider.
+
+- A pass evaluated at most eight candidates while its schedulers queued up to sixteen more, so on a snapshot replayed with a model that answers instantly the queue grew by eight a pass with no new conversation at all: 941 waiting, the oldest ten hours old, each one having cost a model call to get there. A pass now queues at most what it can also evaluate and stops queueing once the queue is deeper than passes can reach; the eight-per-pass limit still holds candidates behind conversation work and lifts when nothing else this pass can do is waiting. Replayed again, 885 pending became 724 over six passes where before it grew to 913.
+- A recall asking for a day's memory with `as_of` written in a local offset was rejected as `INPUT_INVALID` with field `format`, the schema keyword rather than the field; a missing property came back as `required`. The name is now taken from the error's own path, so a failed derivation also hands the model `source_refs` instead of `required` on its one repair attempt. The recall tool now states what `as_of` accepts and what each mode is for.
+- Every plain chat turn opens an episode whose resume stays unwritten until a consolidation summarises it, and recall delivered that placeholder -- `{"state": "unknown"}` -- as an item of a six-item packet. Asked for by name it is still delivered.
+- From 05:26Z to 12:27Z on 2026-09-17 Google refused every embedding call on beta, 296 in a row with no success in the two minutes after any of them, and each of those recalls reported `vector_error:AuxiliaryModelError:http_status` -- what a malformed request also reports. The provider's status now joins the label.
+
+Measured and not changed: retrying a refused query embedding, because across all 296 refusals no call succeeded within two minutes of one.
+
 ### Scope Recall 3.1.0rc38 a candidate keeps its own name, an unfinished attempt is offered once more - 2026-09-18
 
 Found by replaying alpha's terminally failed candidate evaluations against the real model in a private sandbox: of eight, three settled, three broke the format again, and two had been overtaken by their own claim.
