@@ -4,6 +4,10 @@ All notable changes to `scope-recall` will be documented in this file.
 
 ## [Unreleased]
 
+### Scope Recall 3.1.0rc41 the batch reaches the worker - 2026-09-18
+
+- rc40's batched embedding did not run: the worker probes the port it is handed, which is the runtime's bounded wrapper, and `prepare_sources` was not among the methods that wrapper forwards by name. A live drain still sent 183 single-document requests in six minutes. The wrapper now offers it, and the contract test asserts the capability through the seam the product uses rather than only against the port itself.
+
 ### Scope Recall 3.1.0rc40 one embedding request carries a pass's sources - 2026-09-18
 
 Found while an instance migrated from 2.x sat twelve days from having semantic recall over its own memory: 153,000 sources waiting to be embedded, moving at 960 an hour.
