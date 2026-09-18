@@ -8,7 +8,7 @@ Thank you for waiting, and sorry it took this long. 2.0.1 shipped at the end of 
 
 **1,114 files changed, 177 commits, 96,108 lines added and 286,764 removed.** 197 modules in one flat directory became four files at the top level with everything else behind `core/`, `adapters/`, `runtime/`, `vector/` and `maintenance/`. Production code went from **141,044 lines to 48,289** — about a third of what it was, doing more.
 
-2.0 was not a small or careless system. It was 197 modules, 3,322 tests, and a specification that described two-layer memory authority, claim-backed facts, durable work with leases and poison isolation, candidate semantics and a context compiler. Most of what 3.x does, 2.0 had designed. What changed is that it now **happens**.
+2.0 was not a small or careless system. It was 197 modules, 3,322 tests, 76 tables, and a specification that described two-layer memory authority, claim-backed facts, durable work with leases and poison isolation, candidate semantics and a context compiler. Most of what 3.x does, 2.0 had designed. What changed is that it now **happens** — and that a great deal of what 2.0 also did, we decided not to keep.
 
 ### Memory matures now, instead of being sorted on the way in
 
@@ -16,22 +16,33 @@ This is the real difference, and it is the one we set out to build.
 
 In 2.0, a piece of content was routed **at write time**. It either met the conditions for the claim lane — canonical type on the allowlist, valid structured proposal, acceptable provenance, strict authority router, confidence and identity and temporal checks — or it fell through to unstructured memory. One decision, made on first sight, from a single mention.
 
-In 3.x a memory has a life. It is captured verbatim first. Candidate meanings **accumulate evidence** across sources rather than being judged on one remark. A **quiet window** lets a candidate settle before anything evaluates it, so a passing comment does not harden into a fact. **Corroboration** across independent sources strengthens it. **Consolidation** turns what survived into a claim with a version. **Requalification** revisits that claim when later evidence arrives, and **duplicate collapse** merges what turns out to be the same memory said twice. **Episodes** group what happened together. And **background context** surfaces what is relevant without being asked — you do not query your own memory, and neither should the agent have to.
+In 3.x a memory has a life:
 
-Every one of those stages — `candidate_debounce`, `consolidation_chunks`, `requalify`, `duplicate_collapse`, `episode_storage`, `background_context` — is new in 3.x. None of them existed in 2.0.1.
+- It is **captured verbatim** first, into an immutable event stream. Nothing is judged before it is stored.
+- Candidate meanings **accumulate evidence** across sources instead of being decided on one remark.
+- A **quiet window** lets a candidate settle before anything evaluates it, so a passing comment does not harden into a fact.
+- **Corroboration** across independent sources strengthens it.
+- **Consolidation** turns what survived into a claim — and claims carry **versions**, so a memory is *revised*, not overwritten. A correction leaves the history intact and the earlier reading recoverable. Conflicting updates that cannot be settled are parked as unresolved rather than silently picked between.
+- **Requalification** revisits a claim when later evidence arrives; **duplicate collapse** merges what turns out to be the same memory said twice.
+- **Episodes** group what happened together, at task scale.
+- **Background context** surfaces what is relevant without being asked — you do not query your own memory, and the agent should not have to either.
 
-Here is what that is worth, measured on the same machine. This is the 2.0.1 database that was handed to the migration, beside the 3.x instance that replaced it:
+Every one of those stages — `candidate_debounce`, `consolidation_chunks`, `requalify`, `duplicate_collapse`, `episode_storage`, `background_context` — is new in 3.x. None existed in 2.0.1.
+
+Underneath it, **every claim is wired to the events that produced it**, with the relationship named: on the reference instance, 147,816 evidence links, of which 147,248 are `derived_from` and 568 `supports`. 2.0's memory rows had no equivalent — a memory could not tell you which event it came out of.
+
+Here is what that is worth, measured on one machine: the 2.0.1 database that was handed to the migration, beside the 3.x instance that replaced it.
 
 | | 2.0.1 | 3.1.0 |
 | --- | --- | --- |
-| Sources held | 4,688 memories | **167,117** |
+| Sources held | 4,688 memories | **167,117** events |
 | Facts in the claim layer | **0** | **490**, in 685 versions |
 | Evidence links | — | **147,816** |
 | Tables | 76 | 32 |
 
-**2.0's claim layer was empty in production.** Not small — zero. The design was there, the code was there, the tests were there, and after the whole 2.0 era not one memory had made it through the gate. 3.x carries 490 claims backed by 147,816 pieces of evidence, and holds thirty-six times the source material, on one third of the code.
+**2.0's claim layer was empty in production.** Not small — zero. The design was there, the code was there, the tests were there, and after the whole 2.0 era not one memory had made it through the gate. 3.x carries 490 claims backed by 147,816 pieces of evidence, and holds thirty-six times the source material, on a third of the code.
 
-That gap between a specification and a row in a table is what this release closed.
+The gap between a specification and a row in a table is what this release closed.
 
 ### Scope Recall is now a general-purpose memory plugin
 
@@ -41,28 +52,52 @@ That gap between a specification and a row in a table is what this release close
 
 If you use more than one agent tool, this is the change that matters most to you. Your memory stops belonging to whichever program happened to write it — you can tell one tool something and ask another about it.
 
+### The worker left your agent's process
+
+In 2.0 the memory pipeline ran as threads inside the host. If the agent wedged, memory wedged with it.
+
+3.x runs a **worker sidecar** with a supervisor, leases and autostart. Consolidation, embedding, candidate evaluation, projection rebuilds and purges are durable work items with attempt limits and at-most-once publication. A crashed pass loses nothing, a provider outage parks work instead of failing it, and failures are **classified** — actionable ones can be retried idempotently from the CLI, terminal ones are not resurrected. Of the reference instance's 164,240 work items, the 165 recorded failures each name the field that caused them.
+
+This is the least glamorous change in the release and possibly the most valuable.
+
 ### The store underneath was rebuilt
 
-Both versions keep truth in SQLite with a LanceDB companion; that part never changed. What changed is everything about how the tables are defined and what the vector rows are for.
+Both versions keep truth in SQLite with a LanceDB companion and a lexical index; that three-layer shape never changed, and two generations have now validated it. What changed is how the tables are defined and what the vector rows are for.
 
-**The schema is one file now.** In 2.0, 22 different modules each created their own tables. In 3.x, four do, and the memory core's 32 tables and 16 indexes live in a single 371-line schema — which is why a migration can be verified, and why the table count fell from 76 to 32 while the corpus grew thirty-six fold.
+**The schema is one file now.** In 2.0, 22 modules each created their own tables. In 3.x four do, and the memory core's 32 tables and 16 indexes live in a single 371-line schema — which is why a migration can be verified, and why the table count fell from 76 to 32 while the corpus grew thirty-six fold.
 
 **A vector row carries no text.** Its payload is empty; every answerable byte comes from SQLite. 2.0's vector rows carried their own copy of the content, which quietly made the index a second store. Now it is a pure derivative, with a process-isolated driver and its own compaction: delete it, corrupt it, change embedding model, move machine, rebuild — nothing is lost. The vector subsystem does this in 2,722 lines where 2.0 needed 12,776.
 
 **The claim's quote must be a literal slice of a stored source revision.** 2.0 checked quotes too, but against normalised text, in a module whose own docstring declined to claim entailment. In 3.x the check is a precondition: storage refuses the claim if the span is not really there. It is a large part of why the claim layer has rows in it at all.
 
+**The lexical layer is ours.** A dedicated projection — 5,017,233 rows on the reference instance — in place of shadow FTS5 tables. Heavier to build, but we control what it contains and when it is rebuilt.
+
+### A deliberately smaller surface
+
+2.0 offered the model around 37 tools, roughly half of them maintenance: `dedupe`, `govern`, `repair`, `hygiene`, `purge`, `evolve`, and a seven-tool playbook family with a bridge that generated skills automatically.
+
+3.x offers **eight, all cognitive** — `recall`, `remember`, `revise`, `forget`, `trace`, `inspect` and the reference/artifact pair — and moves maintenance to ten CLI commands. Host hooks went from five to three, chosen to sit on real control points.
+
+Some of that is a plain win. The automatic skill bridge, in particular, was a pollution source: we checked, and roughly half of what it generated was a restatement of an existing skill with no evidence chain behind it. A model that can call `govern` and `purge` on its own memory is also a model that can damage it.
+
+The cost is real too, and we would rather state it than let you discover it: **the model can no longer maintain its own store.** Deduplication, governance and repair are things you run. See *What is not finished* for the rest of what went with them.
+
+`trace` is the one tool that got more powerful: 2.0's `related` walked one hop, `trace` walks up to three.
+
 ### What that gives you
 
 - **Memory that follows you between tools**, instead of one plugin for one program.
 - **Facts that actually form.** Accumulated evidence and a settling window, rather than a gate almost nothing passed.
-- **An answer to "why do you believe that"** — the supporting sentence, in the source revision it came from.
+- **A revision history.** A corrected memory keeps what it used to say.
+- **An answer to "why do you believe that"** — the supporting sentence, in the source revision it came from, with the relationship named.
 - **Deletion you can trust**, including through an index rebuild.
 - **A disposable index.** The expensive, fragile part of a memory system is the part you are allowed to lose.
 - **"I don't know" as a real answer.** A question your corpus cannot support does not get a plausible-sounding one.
+- **Memory that survives a wedged agent.**
 - **Visible cost.** Every model call is priced into a local ledger before the request leaves the machine.
 - **A third of the code** to read, audit and fix when something is wrong.
 
-3.1.0 in particular made the derived layer fast enough to live with: on a 167,000-source corpus, building or rebuilding a vector store moved from days to hours. On two benchmark question sets, correct answers went from 17/30 to 27/30 and from 14/25 to 20/25, with no regression on exact facts or on questions the corpus genuinely cannot answer.
+3.1.0 in particular made the derived layer fast enough to live with: on a 167,000-source corpus, building or rebuilding a vector store moved from days to hours. On two hand-built question sets, correct answers went from 17/30 to 27/30 and from 14/25 to 20/25, with no regression on exact facts or on questions the corpus genuinely cannot answer.
 
 ### Upgrading from 2.0.x
 
@@ -109,26 +144,49 @@ Read `docs/upgrade-contract.md` before you start. The short version:
 
 ### About cost — please read this before enabling the model routes
 
-3.x calls a language model of your choice for consolidation and candidate evaluation, and an embedding model for semantic recall. **This is where your money goes, and it is easy to underestimate.** A busy instance can make several thousand model calls in a day.
+**3.x prices differently from 2.0, and this is the single thing most likely to surprise you.**
+
+2.0 embedded only the memories it had already selected — on the reference instance, about 4,700 items across its whole life. 3.x embeds the event stream: 167,117 sources on the same machine, from the same history. Semantic search stopped being "hope the summary mentioned it" and became "the original text is searchable", and that is a genuine improvement — but it means **your bill now scales with how much you talk, not with how many memories you keep.** Budget for conversation volume, not for a memory count.
+
+It also changed shape at the other end. 2.0 ran many small consolidation calls in a background thread; 3.x makes fewer, heavier ones at episode scale. Better evidence granularity and better real-time behaviour, with a fatter single call and a larger blast radius when one fails.
 
 Some honest guidance from running this on real workloads:
 
-- **Watch the quota from day one.** Every call is metered in a local ledger before it is made, with the model, tokens and charge recorded. `scope-recall doctor` shows the standing. Look at it in the first week rather than at the end of the month.
+- **Watch the quota from day one.** Every call is metered in a local ledger before it is made, with the model, tokens and charge recorded, under five independent caps enforced in a `BEGIN IMMEDIATE` transaction. `scope-recall doctor` shows the standing. Look at it in the first week rather than at the end of the month.
 - **We suggest MiniMax M3 as the plugin's model.** On a controlled comparison — the same forty consolidations, two runs per model — it matched a well-regarded alternative in quality while costing meaningfully less per call. It is not the only good choice, but it is a good default.
 - **Turn the model's thinking mode off for this job.** Measured on the same set: with adaptive thinking the pass took six times as long, three calls exceeded the request bound and were reported as timeouts, and three answers broke the JSON envelope. Structured extraction under a strict output format is a task where reasoning tokens hurt. The shipped configuration has it disabled; leave it that way unless you have measured otherwise.
 - **Prompt caching matters more than the headline price.** Our prompts repeat heavily, so a provider with effective prompt caching can cost a third of one without it at the same nominal rate. Include that in any comparison you make.
+- **Do not use the daily work limit as a spend gate.** It caps how many queue items are attempted per day and knows nothing about what any of them costs. Set below your real production rate it does not save money, it creates a permanent backlog: on a lightly used instance, 127 native sources in a day produced 1,913 work items, so the old default of 256 cleared 13% of them and the backlog grew by about 1,650 daily, forever. Money is bounded by the ledger, not by this number.
 - **Nothing is sent anywhere you did not configure.** Routes are explicit, credentials come from your own environment file, and a route you have not approved is simply not called.
 
-### What is not finished
+### What is not finished, and what we chose to drop
 
-We would rather list these than let you find them:
+Two different lists, and it matters which is which.
 
-- **The independent evaluation gate has no receipt yet.** The project declares a frozen, adjudicated evaluation campaign as a release criterion, and it has never been executed. Everything above is measured, but by us, on our own corpora. Treat the accuracy numbers as evidence, not as an audit.
-- **Quoting tool output is still the largest source of lost memories.** When a source is a JSON tool result — a file listing with line-number gutters, an escaped API response — models frequently cannot reproduce a span byte for byte, and the claim is rejected. The memory is captured and searchable; it just does not become a claim. We are working on this and it is the next thing we intend to fix.
-- **The vector companion has no explicit ANN index yet.** It relies on LanceDB's defaults, and the SQLite fallback is honest brute force. At our corpus sizes this is fine; on a much larger store you would want a built index, and building one is on the list.
-- **Background scheduling is Windows-only.** Autostart uses Task Scheduler. On Linux and macOS the plugin works, but you schedule the worker yourself.
-- **CI covers Windows.** The host, native and integration tiers run on Windows only; other platforms are tested by hand.
-- **The 2.x compatibility layer is a one-way migration tool, not a bridge.** It reads the old format once. It is not maintained as a permanent compatibility surface, and there is no path back.
+**Real gaps. These are things 2.0 could do that 3.x cannot yet, and we intend to fix them.**
+
+- **There is no recall-quality regression suite.** This is the most serious one. 2.0 shipped 33 benchmark files — golden recall cases, a negative-retrieval benchmark, curated quality cases, LoCoMo runs — and 3.x ships none. The accuracy figures above were measured by hand on question sets we wrote; you cannot re-run them, and neither can we, automatically. Everything else in this list is smaller than this. It is first in the queue.
+- **The independent evaluation gate has no receipt.** The project declares a frozen, adjudicated evaluation campaign as a release criterion and it has never been executed. Treat our numbers as evidence, not as an audit.
+- **Quoting tool output is the largest source of lost memories.** When a source is a JSON tool result — a file listing with line-number gutters, an escaped API response — models frequently cannot reproduce a span byte for byte, and the claim is rejected. The memory is captured and searchable; it just does not become a claim. This is the next functional fix.
+- **There is no way to sit down and review your memory.** 2.0 had a browser and dashboard reports. 3.x has `inspect` and the CLI, which is not the same thing. A review interface is on the roadmap.
+- **Retrieval scoring is not explained to you.** 2.0 exposed `explain` and an inspector. 3.x computes the diagnostics internally but does not surface them as a tool.
+- **The model cannot deliberately reflect.** 2.0's `reflect` let it introspect and write candidates on purpose; in 3.x memory only forms through the background pass. The mechanism needs redesigning rather than restoring, but the capability is missed.
+- **Two host hooks are gone.** `on_memory_write` and `on_session_switch` have no equivalent, so memory does not react when you switch sessions.
+- **Maintenance is CLI-only.** Deduplication, governance, repair and hygiene are yours to run; the model cannot clean up after itself.
+- **The vector companion has no explicit ANN index.** It relies on LanceDB's defaults, and the SQLite fallback is honest brute force. Fine at our corpus sizes; a much larger store wants a built index.
+- **The artifact and object-dependency layer is built but unused.** The tables are there and empty. Treat it as unproven.
+- **The episode layer is thin.** 154 episodes on the reference instance, and most of those arrived as legacy imports. The plumbing works; the practice is new.
+- **Background scheduling is Windows-only**, and CI covers Windows only. The plugin runs on Linux and macOS, but you schedule the worker yourself and other platforms are tested by hand.
+
+**Deliberately dropped. We do not plan to bring these back.**
+
+- **The automatic playbook-to-skill bridge.** It generated procedures with no evidence chain, about half of them restating a skill that already existed. It was a pollution source.
+- **Model-facing maintenance tools.** See above: a model that can `purge` its own store can lose your memory.
+- **`fact_evolution`'s preview / auto-apply / reviewed-apply ladder.** Claims with versions and an explicit `revise` cover the same ground with less machinery and no automatic rewriting.
+- **68 operations scripts.** They are ten CLI commands now. Most of the 6× difference in code size lived here.
+- **The 2.x compatibility layer is a one-way migration tool**, not a bridge. It reads the old format once, and there is no path back.
+
+2.0 was a Swiss army knife: an extremely wide surface, and 281,000 lines in which a lot of low-value automation had accumulated. 3.x is a scalpel. Most of the difference is deliberate; the list above is where it is not, and we would rather hand you that list than have you find it.
 
 ### Thanks
 
