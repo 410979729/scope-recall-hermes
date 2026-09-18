@@ -94,6 +94,12 @@ def _empty_result(context: SearchContext, gap: str) -> RetrievalResult:
     return RetrievalResult((), (), None, (gap,), "unknown", "unknown", 0, 0, request_id=context.request_id)
 
 
+def _says_only_its_state(content: str) -> bool:
+    """Whether an episode body is the placeholder a never-consolidated resume leaves."""
+    payload = optional_json(content)
+    return isinstance(payload, dict) and set(payload) <= {"state"}
+
+
 def _statement_text(obj: RetrievedObject) -> str:
     """What a claim asserts, for term matching; other kinds match on content."""
     if obj.kind != "claim":
@@ -237,6 +243,12 @@ class RetrievalPipeline:
             if unicodedata.normalize("NFKC", obj.content).strip() == unicodedata.normalize("NFKC", query).strip():
                 return None
         if candidate.source != "exact_ref" and not identifiers_compatible(context.query, obj.content):
+            return None
+        # An episode whose resume was never consolidated carries nothing but its
+        # own state: `{"state": "unknown"}` fills a packet slot and answers
+        # nothing.  Every plain chat turn opens one.  Named directly it is still
+        # delivered, because then the caller asked for that object.
+        if candidate.source != "exact_ref" and obj.kind == "episode" and _says_only_its_state(obj.content):
             return None
         return obj
 
