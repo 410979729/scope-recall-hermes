@@ -4,13 +4,17 @@ All notable changes to `scope-recall` will be documented in this file.
 
 ## [3.1.0] - 2026-09-18
 
+### From remembering what was said to knowing what is worth keeping
+
 Thank you for waiting, and sorry it took this long. We did not patch 2.0 — we rebuilt the project. Production code went from **141,044 lines to 48,289**.
+
+AI memory has mostly meant one thing: **keep a copy of what was said.** What 3.1.0 is trying to do is different: **work out which of it is worth keeping, and use it correctly later.**
 
 2.0 was not a careless system. It had designed most of what 3.x does. The difference is that it now works — and that a lot of what 2.0 also did, we decided not to keep.
 
-### Saying something once no longer turns it into a fact
+### 1. Saying something once no longer turns it into a fact
 
-This is the real change.
+This is the change everything else rests on.
 
 **In 2.0, the plugin decided the moment you said something.** One sentence arrived, and it judged on the spot: does this count as a fact? If yes, into the fact store. If no, kept as an ordinary note. One sentence, one chance, decided immediately.
 
@@ -28,50 +32,125 @@ Here is what it was worth. Same machine: the 2.0.1 database we handed to the mig
 | Facts in the fact store | **0** | **490** |
 | Links from a fact to its evidence | — | **147,816** |
 
-**2.0's fact store was empty.** Not nearly empty — nothing in it. The design was there, the code was there, the tests were there, and in all the months 2.0 ran, not one memory ever got through that gate.
+**2.0's fact store was empty.** Not nearly empty — nothing in it. The design was there, the code was there, the tests were there, and in all the months 2.0 ran, not one memory was ever judged to be a fact.
 
 2.0 designed this and never managed it. That is what changed.
 
-### It is not just for Hermes any more
+### 2. There are three kinds of memory now
+
+An exchange is no longer just a stored block of text. It travels:
+
+```
+what you said / what a tool printed
+                ↓
+        stored verbatim (the source)
+                ↓
+              distilled
+                ↓
+        fact / task history
+                ↓
+          evidence checked
+                ↓
+        recalled later
+```
+
+**The source** — where a memory came from. Your input, the agent's output, a tool result, a document, a host event. Every memory knows what it came out of.
+
+**The fact** — important information turned into something structured.
+
+Before, this was stored:
+
+```
+The user likes black.
+```
+
+Now this is:
+
+```
+Fact:     the user's visual preference is a black palette
+From:     which sentence, in which design discussion
+When:     when that sentence was said
+Version:  which revision, and what it said before
+```
+
+When the information changes, a new version supersedes the old one instead of leaving two memories that contradict each other.
+
+**The task history** — how a whole piece of work went, not just how it ended: what the goal was, what was done, how many times the plan changed, where it stands, what to watch out for next time.
+
+### 3. The real problem is not forgetting, it is remembering wrongly
+
+Every important memory keeps a line you can follow back: which source it came from, what the original words were, how many times it has been revised, what state it is in, whether it was deleted.
+
+And **what the model says does not become a fact on its own.** Before storing a fact, the plugin checks that the quoted sentence really does appear in the source it claims — and **throws the fact away if it does not.** This is a big part of why the fact store finally has anything in it.
+
+### 4. Recall uses six ways of looking at once
+
+Not one kind of search:
+
+* by exact reference
+* by word
+* by fact
+* by recency
+* by relationship
+* by meaning (vector)
+
+**And what the vector search returns is a candidate, not the memory itself.** Before anything reaches the agent it still has to clear four checks: are the permissions right, is this the current version, has it been deleted, does it still hold at this point in time.
+
+When the answer is not there, it says so, instead of producing something that sounds right.
+
+### 5. Memory can be corrected, and it can really be deleted
+
+Running for a long time, the hard part is not remembering. It is: how do I fix this, and how do I get rid of it?
+
+**Correct (`revise`)** — update an existing memory. The old version stays.
+
+**Delete (`forget`)** — hide it, or really remove it along with everything attached. A deletion is a recorded operation, not a row quietly vanishing from a table. **Deleting something actually deletes it, even after the index is rebuilt.**
+
+**Candidate review** — new information does not become permanent memory directly. Sources, candidates and confirmed facts are three separate layers, **so what the AI itself said does not silently become a fact about you.**
+
+### 6. It is not just for Hermes any more
 
 2.0 was called *Scope Recall for Hermes*, and that is all it could be.
 
-**Hermes and Codex both work today**, reading and writing the same memory. **Claude Code and the DeepSeek harness are next**, and we mean to keep adding — supporting a new program is now a small adapter, not surgery on the memory code.
+**Hermes and Codex both work today**, reading and writing the same memory:
 
-If you use more than one agent tool, this is the change that matters most to you. What you tell one, you can ask the other.
+```
+Agent
+  |
+adapter
+  |
+Scope Recall core
+  |
+memory store
+```
 
-### Three other things worth knowing
+**Claude Code and the DeepSeek harness are next**, and we mean to keep adding — supporting a new program is now a small adapter, not surgery on the memory code.
 
-**The background work moved out of your agent.** In 2.0 it ran inside the host program, so if the agent hung, memory hung with it. Now it is a separate process. Not exciting, possibly the most useful change here.
+If you use more than one agent tool, this is the change that matters most to you. **What you tell one, you can ask the other.**
 
-**You can delete the vector index and rebuild it.** Nothing is stored only there any more — the text lives in SQLite, and the index just points at it. In 2.0 the index held its own copy of the text, so deleting it meant losing something. Now you can wipe it, switch embedding model, move to another machine, rebuild, and lose nothing.
+### 7. Built to keep running
 
-**A fact has to quote its source exactly.** Before storing a fact, the plugin checks that the quoted sentence really does appear in the thing it came from, and throws the fact away if it does not. This is a big part of why the fact store finally has anything in it.
+**The background work moved out of your agent.** In 2.0 it ran inside the host program, so if the agent hung, memory hung with it. Now it is a separate process, with a queue ceiling, leases, timeouts and a limited number of automatic recoveries, so it cannot grow without bound. **Memory keeps working when the agent hangs.**
 
-### The model gets 8 tools now, down from about 37
+**You can delete the vector index and rebuild it.** Nothing is stored only there any more — the text lives in SQLite, and the index just points at it. In 2.0 the index held its own copy, so deleting it meant losing something. Now you can wipe it, switch embedding model, move machine, rebuild, and lose nothing.
+
+**Spending is accounted for.** Calls, tokens and charges for the auxiliary models are tracked in their own ledger, so a long-running instance cannot quietly spend a number you never see.
+
+**Chat cannot change what it is allowed to see.** Identity comes from host authentication, the installation and the scope mapping — **not from the model's guess.** Nothing anyone types grants access.
+
+### 8. The model gets 8 tools now, down from about 37
 
 Half of 2.0's tools were housekeeping: delete duplicates, clean up, repair, purge, plus a playbook family and something that turned playbooks into skills automatically.
 
-3.x gives the model eight, all about remembering and recalling: `recall`, `remember`, `revise`, `forget`, `trace`, `inspect` and a reference pair. Housekeeping moved to commands you run yourself.
+3.x gives the model eight, all about recalling and correcting: `recall`, `trace`, `inspect`, `profile`, `entity`, `revise`, `forget` and `status`. Housekeeping moved to commands you run yourself.
+
+Note what is not on that list: **there is no "remember this" tool.** The model does not decide what gets stored. Capture is automatic, facts form in the background, and the model can only recall, correct and delete.
 
 **That automatic skill generator had to go.** We checked what it produced: about half of it just repeated a skill that already existed, with nothing to back it up. And a tool that lets the model wipe its own memory is a tool that can lose yours.
 
 The downside is real: **the model can't tidy up after itself any more.** Removing duplicates and repairing things are jobs for you now.
 
-### What you get out of it
-
-- Memory that follows you from one tool to another.
-- Facts that actually get recorded.
-- Old versions kept when something is corrected.
-- An answer to "why do you think that" — the sentence it came from.
-- Deleting something actually deletes it, even after the index is rebuilt.
-- "I don't know" when the answer isn't there, instead of something that sounds right.
-- Memory that keeps working when the agent hangs.
-- A running total of what the model calls have cost you.
-
-On a corpus of 167,000 items, building the vector index went from days to hours. On two sets of test questions we wrote ourselves, correct answers went from 17/30 to 27/30 and from 14/25 to 20/25, and nothing got worse.
-
-### Upgrading from 2.0.x
+### 9. Upgrading from 2.0.x
 
 **There is no in-place upgrade, and that is deliberate.** A silent conversion between these two schemas is the kind of thing you only discover was wrong months later. Migration is an explicit, resumable, offline job, and your 2.0 database is never touched.
 
@@ -103,7 +182,7 @@ Read `docs/upgrade-contract.md` first. The short version:
    scope-recall migrate queue-index --job <job dir>
    ```
 
-   Embeddings are generated in the background afterwards, within your budget. Until that finishes recall still works on the exact, lexical, claim and recent channels — semantic search is the part that arrives last.
+   Embeddings are generated in the background afterwards, within your budget. Until that finishes every way of looking still works except by meaning — that is the part that arrives last.
 
 Worth knowing before you start:
 
@@ -115,7 +194,7 @@ Worth knowing before you start:
 - **Deleted memories stay deleted**, including their dependency closure.
 - **Allow real time for it.** It depends on your data volume. Measure it on a copy first if that matters to you.
 
-### About cost — read this before you turn the model routes on
+### 10. About cost — read this before you turn the model routes on
 
 **3.x costs money differently from 2.0, and this is what will catch you out.**
 
@@ -124,13 +203,13 @@ Worth knowing before you start:
 The rest, briefly:
 
 - **Check your usage in the first week, not at the end of the month.** Every call is priced and recorded locally before it goes out. `scope-recall doctor` shows the total.
-- **We suggest MiniMax M3.** Same forty jobs, two runs each: it was as good as a well-known alternative and clearly cheaper per call.
+- **We suggest MiniMax M3 as the plugin's model.** Same forty jobs, two runs each: it was as good as a well-known alternative and clearly cheaper per call.
 - **Turn the model's thinking mode off.** We measured it: thinking made the run six times slower, three calls timed out, and three more came back with broken JSON. When you need the model to fill in a fixed format, letting it think first makes things worse. It ships turned off — leave it off unless you have tested otherwise.
 - **Prompt caching matters more than the price per token.** Our prompts repeat a lot, so a provider that caches them well can cost a third of one that doesn't at the same advertised rate.
 - **The daily work limit will not cap your spending.** It limits how many queued jobs are attempted in a day and knows nothing about what any of them costs. Set it too low and you don't save money, you just build a backlog that never clears. Spending is capped by the ledger, not by this.
 - **Nothing gets sent anywhere you didn't configure.**
 
-### What isn't finished
+### 11. What isn't finished
 
 Things 2.0 could do that 3.x can't yet.
 
@@ -143,7 +222,7 @@ Things 2.0 could do that 3.x can't yet.
 - **Switching sessions doesn't trigger anything.** Two of 2.0's hooks have no replacement yet.
 - **Housekeeping is command-line only.**
 - **The vector index isn't a real search index.** It relies on LanceDB's defaults. Fine at our sizes; a much bigger store would want a proper one built.
-- **Two newer layers barely get used.** The attachment tables are empty, and there aren't many episodes yet. The machinery works; we haven't leaned on it.
+- **The task-history layer is thin.** The machinery works, but not much has accumulated yet, and the attachment tables are still empty.
 - **Automatic scheduling and our CI are Windows-only.** It runs on Linux and macOS, but you'll start the background worker yourself.
 
 Things we removed and won't bring back.
@@ -155,6 +234,23 @@ Things we removed and won't bring back.
 - **The 2.x compatibility layer reads the old format once, for migration.** It is not a bridge, and there is no going back.
 
 2.0 was a Swiss army knife. 3.x is a scalpel. Most of that was on purpose; the list above is where it wasn't, and we would rather tell you than let you find out.
+
+### 12. What it is good for
+
+**A long-running assistant** — your preferences, how you like things done, what you are working towards.
+
+**A coding agent** — the background of a project, why it was built this way, what went wrong before and how it was fixed.
+
+**A personal knowledge assistant** — decisions, conclusions and hard-won detail scattered across many conversations, collected into something you can query.
+
+### 13. Where this goes next
+
+* learning from experience more strongly
+* memory that spans long-running tasks
+* tidying memory up automatically
+* something closer to how people actually remember
+
+The aim is an agent that does not merely have context, but **actually gets better to work with over time.**
 
 ### Thanks
 
