@@ -249,7 +249,9 @@ def test_flaky_model_derivation_recovers_on_bounded_retry(worker_app):
     from scope_recall.core.worker import build_consolidation_model
     from scope_recall.runtime.instance import _BoundedConsolidation
     payloads = []
-    hint = 'validation_error={"code":"INPUT_INVALID","field":"required"}'
+    # The field names the property the model left out, not the schema keyword
+    # that caught it: "required" told the model nothing it could act on.
+    hint = 'validation_error={"code":"INPUT_INVALID","field":"source_refs"}'
 
     class RepairPort:
         def propose(self, messages, *, remaining_seconds):

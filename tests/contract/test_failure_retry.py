@@ -468,7 +468,7 @@ def test_invalid_candidate_gets_one_extra_attempt_repair_or_visible_review(app, 
         def propose(self, messages, *, remaining_seconds):
             calls.append(json.dumps(messages))
             expected = {"code": "DERIVATION_INVALID" if legacy else "INPUT_INVALID",
-                        "field": "payload" if legacy or not repair_success else "required"}
+                        "field": "payload" if legacy or not repair_success else "source_refs"}
             hint = "validation_error=" + json.dumps(expected, sort_keys=True, separators=(",", ":"))
             if repair_success:
                 if any(hint in message["content"] for message in messages if message["role"] == "system"):
@@ -491,7 +491,7 @@ def test_invalid_candidate_gets_one_extra_attempt_repair_or_visible_review(app, 
     lifecycle, evaluations, work = _candidate_rows(core)
     assert len(calls) == (1 if legacy else 2), (work, evaluations)
     hint = {"code": "DERIVATION_INVALID" if legacy else "INPUT_INVALID",
-            "field": "payload" if legacy or not repair_success else "required"}
+            "field": "payload" if legacy or not repair_success else "source_refs"}
     assert "validation_error=" + json.dumps(hint, sort_keys=True, separators=(",", ":")) in " ".join(
         message["content"] for message in json.loads(calls[-1]))
     assert "FAILED_BODY_SENTINEL" not in calls[-1]

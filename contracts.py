@@ -397,6 +397,26 @@ _CROSS_FIELD_CHECKS = {
 }
 
 
+def _offending_field(error) -> str:
+    """The property a validation error is about, or the keyword when it is about the whole payload.
+
+    The failing keyword alone does not say what to fix.  A recall asking for a
+    day's memory with ``as_of`` written in a local offset came back as
+    ``INPUT_INVALID`` / ``format``, and an evaluation missing one property came
+    back as ``required``: in both cases the name is already in the error, in its
+    path or in the keyword's own value, and was thrown away.  The same field is
+    what a failed derivation feeds back to the model on its one repair attempt.
+    """
+    named = [part for part in error.absolute_path if isinstance(part, str)]
+    if named:
+        return named[-1]
+    if error.validator == "required" and isinstance(error.instance, dict):
+        missing = [name for name in (error.validator_value or ()) if name not in error.instance]
+        if missing:
+            return missing[0]
+    return str(error.validator or "schema")
+
+
 def validate_payload(name: str, value: str | bytes | dict) -> dict:
     if name not in _SCHEMAS:
         raise ContractError("INPUT_INVALID", "schema_name")
@@ -406,7 +426,7 @@ def validate_payload(name: str, value: str | bytes | dict) -> dict:
     checker.checks("date-time")(_utc_time)
     error = next(Draft202012Validator(schema, format_checker=checker).iter_errors(payload), None)
     if error is not None:
-        raise ContractError("INPUT_INVALID", str(error.validator or "schema"))
+        raise ContractError("INPUT_INVALID", _offending_field(error))
     check = _CROSS_FIELD_CHECKS.get(name)
     if check is not None:
         check(payload)

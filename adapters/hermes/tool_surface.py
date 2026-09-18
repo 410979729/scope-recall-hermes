@@ -38,8 +38,14 @@ _TOOL_SCHEMAS: tuple[dict[str, Any], ...] = (
                 "protocol_version": {"type": "string", "const": "1.1"},
                 "request_id": {"type": "string", "minLength": 1, "maxLength": 100},
                 "query": {"type": "string", "minLength": 1, "maxLength": MAX_CONTENT},
-                "mode": {"type": "string", "enum": ["auto", "current", "history", "as_of", "method"]},
-                "as_of": {"type": "string", "minLength": 1, "maxLength": 240},
+                "mode": {"type": "string", "enum": ["auto", "current", "history", "as_of", "method"],
+                         "description": "current: what holds now. history: what was believed before, with what "
+                                        "replaced it. as_of: what held at one instant, which requires as_of. "
+                                        "method: how something is done. auto: background context."},
+                "as_of": {"type": "string", "minLength": 1, "maxLength": 240,
+                          "description": "Required by mode as_of, and ignored otherwise. One UTC instant written "
+                                         "2026-09-17T12:00:00Z (a +00:00 suffix is also accepted). A date alone, a "
+                                         "space instead of the T, or a local offset such as +08:00 is refused."},
                 "max_items": {"type": "integer"},
                 "budget_tokens": {"type": "integer"},
                 "focus_refs": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 240}},
