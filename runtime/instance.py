@@ -405,9 +405,21 @@ class RuntimeInstance:
         self._vector_store = resource
         self._vector_port = port
 
-    def status(self) -> Any:
+    def status(self, *, include_admission: bool = True) -> Any:
         self._ensure_open()
-        return self.core.status(self.config.context())
+        return self.core.status(self.config.context(), include_admission=include_admission)
+
+    def memory_epoch(self) -> int:
+        """Read the authority fence without counting the backlog.
+
+        A pass used to call ``status()`` to prove its database was the bound
+        one, which cost six whole-store aggregates and a JSON scan of every
+        source -- measured at 4.4 seconds on an instance with 150,000 queued
+        items, for a value that was discarded.  The epoch read proves the same
+        binding from one indexed row.
+        """
+        self._ensure_open()
+        return self.core.memory_epoch(self.config.context())
 
     def recall(self, request: Mapping[str, Any], *, current_source_refs: tuple[str, ...] = ()) -> Any:
         return self.core.recall(self.config.context(), dict(request), current_source_refs=current_source_refs,

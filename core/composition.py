@@ -99,9 +99,11 @@ class MemoryCore:
         """Explicit initialization or an identity-checked supported schema upgrade."""
         return self.storage.initialize()
 
-    def status(self, context: TrustedContext) -> StoreStatus:
+    def status(self, context: TrustedContext, *, include_admission: bool = True) -> StoreStatus:
+        """Queue and store standing.  The admission counts scan every source's
+        JSON, so a caller that only needs the queue says so and skips them."""
         with self.storage.read(context) as tx:
-            return tx.status(include_admission=True)
+            return tx.status(include_admission=include_admission)
 
     def memory_epoch(self, context: TrustedContext) -> int:
         """Fresh identity-checked fence; diagnostics are a separate operation."""

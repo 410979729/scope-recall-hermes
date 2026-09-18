@@ -320,7 +320,9 @@ def _drain_once(config: RuntimeInstanceConfig, instance: Any, deadline: float) -
     payload["ingress_cancelled"] = sum(r.disposition == "cancelled" for r in ingress)
     payload["source_only"] = sum(item.disposition == "source_only" for item in receipt.items)
     payload["daily_queue_used"] = budget_state["used"]
-    _apply_queue_status(payload, gaps, instance.status(), receipt, background_gaps)
+    # The admission counts are a diagnostic scan of every source's JSON; this
+    # pass reports ``source_only`` from its own items, so it does not ask.
+    _apply_queue_status(payload, gaps, instance.status(include_admission=False), receipt, background_gaps)
     return payload
 
 
@@ -384,7 +386,7 @@ def run_worker(config_path: str | Path, *, output: TextIO | None = None,
         deadline = _pass_deadline(config, deadline_epoch)
         preflight_gap = _vector_preflight_gap(config)
         instance = build_runtime_instance(config)
-        instance.status()  # Validate the bound database before writing metadata.
+        instance.memory_epoch()  # Validate the bound database before writing metadata.
         lock_path = _metadata_path(config, "runtime-worker.lock")
         try:
             with advisory_file_lock(lock_path, timeout_seconds=max(0, deadline - time.monotonic())):
