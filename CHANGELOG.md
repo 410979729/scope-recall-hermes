@@ -4,6 +4,12 @@ All notable changes to `scope-recall` will be documented in this file.
 
 ## [Unreleased]
 
+### Scope Recall 3.1.0rc40 one embedding request carries a pass's sources - 2026-09-18
+
+Found while an instance migrated from 2.x sat twelve days from having semantic recall over its own memory: 153,000 sources waiting to be embedded, moving at 960 an hour.
+
+- Both embedding dialects take an array -- Google's endpoint is literally `batchEmbedContents` and OpenAI's `input` is a list -- and the adapter sent arrays of one, so a store of 167,000 sources was 167,000 requests to rebuild. A pass now claims its ready embed items together and asks for them in one request, while each is still read, fenced, published and finished by itself. A group whose request fails, whose port cannot batch, or whose answer counts differently than it was asked falls back to one request each, so an answer can never be attributed to the wrong source; a refusal that stands the work type down still stops the pass, and the items it would have covered go back without spending an attempt. Verified against the real provider: eight documents in one request, eight distinct 3072-wide vectors, 2.0 s, one ledger row.
+
 ### Scope Recall 3.1.0rc39 a queue that cannot feed itself, and rejections that say what went wrong - 2026-09-18
 
 Found while another instance tested its own memory and reported a stalled consolidation queue, a broken vector channel, a protocol bug and an empty summary layer. Three of the four were real; the fourth was the provider.

@@ -1,100 +1,212 @@
-# 安装与使用 Scope Recall（3.0.0 本地候选）
+# Installing Scope Recall
 
-> **当前状态：** 版本 `3.0.0` 为本地开发候选，**未发布到 PyPI**，**P18 正式宿主验收尚未通过**。本文只描述仓库内已实现的安装与诊断路径，不表示可公开发布或全部测试已通过。
+Scope Recall is a bounded local memory core for coding agents: SQLite holds the
+truth, vector indexes are rebuildable companions, and a bounded background worker
+does the consolidating and embedding. It ships host adapters for Hermes and for
+Codex, the latter as a set of native hooks plus an MCP server.
 
-包名 `hermes-scope-recall`（导入 `scope_recall`），维护 CLI 别名 `scope-recall` 与 `hermes-scope-recall` 相同。v3 **不提供**旧版 `update` / `upgrade` / `rollback` 等自动升级命令；从旧库迁数据见 [`upgrade-guide.zh-CN.md`](upgrade-guide.zh-CN.md)。
+> **Status.** This is version `3.1.0rc39`, a release candidate. The package is
+> **not on PyPI**; you build the wheel from the source tree and install that file.
+> The distribution name is `hermes-scope-recall`, the Python import is
+> `scope_recall`, and the host plugin identity is `scope-recall`.
 
-## 1. 安装 wheel
+v3 has no automatic `update` / `upgrade` / `rollback` commands. Moving data from an
+older database is a separate, explicit operation — see
+[upgrade-guide.zh-CN.md](upgrade-guide.zh-CN.md).
 
-在源码目录构建 wheel，并装入**与宿主相同的隔离 Python 环境**（Python 3.11 或 3.12）：
+## 1. Requirements
+
+- **Python 3.11 or 3.12.** `pyproject.toml` declares `requires-python = ">=3.11,<3.13"`;
+  3.13 and newer are not supported.
+- Install into **the same isolated Python environment the host uses**. Host
+  discovery goes through that environment's package metadata.
+- Runtime dependencies are small and pure-Python: `PyYAML`, `jsonschema`,
+  `packaging`, and `tzdata` on Windows only.
+
+Two optional extras:
+
+| Extra | Adds | What it enables |
+|-------|------|-----------------|
+| `lancedb` | `lancedb`, `pyarrow` | The LanceDB vector companion, which is the `vector.backend` default. Without it, use `sqlite-bruteforce`, which needs no extra. |
+| `codex` | `mcp`, `pydantic` | The Codex MCP server. Without it, the Core and Hermes paths still import and the Codex hooks still run, but the MCP server cannot start. |
+
+A third extra, `dev`, adds `build`, `pytest`, `ruff`, `pyright` and packaging
+tools. You need `build` (or the `dev` extra) to produce the wheel.
+
+## 2. Build and install the wheel
+
+### Windows
 
 ```powershell
-cd F:\你的路径\scope-recall-runtime-integration
+cd C:\path\to\scope-recall-source
 py -m pip install build
 py -m build --wheel
-py -m pip install "F:\你的路径\scope-recall-runtime-integration\dist\hermes_scope_recall-3.0.0-py3-none-any.whl[lancedb]"
-# Codex MCP 可选：在同一 wheel 后加 [codex]
+py -m pip install "C:\path\to\scope-recall-source\dist\hermes_scope_recall-3.1.0rc39-py3-none-any.whl[lancedb]"
 ```
 
-路径含中文或空格时，PowerShell 请用双引号包住整个参数。`lancedb` extra 用于 LanceDB 向量伴生目录；`codex` extra 安装 MCP SDK，供 Codex MCP 适配器使用。
+### Linux and macOS
 
-wheel 向 Hermes 0.21+ 声明正式 entry point：组 `hermes_agent.memory_providers`、名称 `scope-recall`、目标 `scope_recall.distribution.hermes:register`（现有绝对导入包装，`register(ctx)` 再调用 `register_adapter(ctx)`）。宿主发现走已安装包的 pip entry point，不依赖把包装目录放进 `$HERMES_HOME/plugins`，也不要用手工 copy/symlink 冒充发现。
+```bash
+cd /path/to/scope-recall-source
+python3 -m pip install build
+python3 -m build --wheel
+python3 -m pip install "/path/to/scope-recall-source/dist/hermes_scope_recall-3.1.0rc39-py3-none-any.whl[lancedb]"
+```
 
-安装后可用下列命令确认 CLI 可用（两条等价）：
+Quote the whole argument: the `[extra]` suffix is shell metacharacters in both
+shells, and the path may contain spaces. To install both extras, write
+`...whl[lancedb,codex]`.
+
+Two console entry points are installed, and they are the same program:
 
 ```powershell
 scope-recall --help
 hermes-scope-recall --help
 ```
 
-## 2. 三个状态（不要混为一谈）
+They are aliases for the current v3 maintenance CLI only. Neither promises
+compatibility with an older command set.
 
-| 状态 | CLI 负责 | 完成后标志 |
-|------|----------|------------|
-| **已安装** | `plan-install` → `apply-install` | 插件包装文件与安装回执已写入 |
-| **宿主已启用** | 由 Hermes / Codex 正常配置完成 | 宿主实际加载插件并可使用记忆能力 |
-| **钩子已信任**（仅 Codex） | 在 Codex 中批准插件原生钩子 | Codex 允许 `hooks/hooks.json` 中的命令执行 |
+For Hermes, the wheel also declares an entry point: group
+`hermes_agent.memory_providers`, name `scope-recall`, target
+`scope_recall.distribution.hermes:register`. **Host discovery uses that entry
+point of the installed package.** Do not try to fake discovery by copying or
+symlinking a directory into the host's plugin folder.
 
-`apply-install` **不会**修改 Hermes 的 `config.yaml`，也不会替你在宿主里注册插件或信任钩子。安装回执（`<instance-root>\.scope-recall-install-receipt.json`）记录的是**安装时刻**的状态，其中 `host_registration_pending: true`（Codex 另含 `hook_trust_pending: true`）描述当时宿主尚未完成注册/信任；宿主后续启用或信任**不会改写**这份历史回执。当前是否已注册、钩子是否已信任，请以 `doctor` 输出和宿主实际行为为准。
+## 3. Three states, kept separate
 
-安装模式是显式边界：`plan-install` 和 `apply-install` 默认以生产模式创建绑定（`test_mode=false`）。只有隔离的 TEST 根目录才应在**两个命令**上同时追加 `--test-mode`；`apply-install` 会把计划中的模式重新校验后再初始化实例，不会隐式改变部署模式。测试模式不是生产安装的默认值，也不会自动探测用户目录。
+| State | Who does it | Done when |
+|-------|-------------|-----------|
+| **Installed** | `plan-install` then `apply-install` | The wrapper files and the install receipt exist |
+| **Enabled in the host** | you, in the host's own configuration | The host actually loads the plugin and the memory tools work |
+| **Hooks trusted** (Codex only) | you, in Codex | Codex is willing to run the commands in `hooks/hooks.json` |
 
-## 3. Hermes
+`apply-install` does the first row and nothing else. It does not edit the host's
+own configuration, register the plugin for you, or approve hooks. The receipt at
+`<instance-root>\.scope-recall-install-receipt.json` records the state **at
+install time**: `host_registration_pending: true`, plus `hook_trust_pending: true`
+for Codex. Later enabling or trusting does not rewrite that historical receipt.
+For the current state, read `doctor` and the host's actual behaviour.
 
-路径须为**绝对路径**。`instance-root` 可以是**已有** Hermes 主目录（如 `C:\Users\你\.hermes`）：安装器只管理其中的 `scope-recall\` 命名空间与回执文件，不会把 `config.yaml`、`SOUL.md`、会话或其他插件当成 foreign。已有未知/未绑定/冲突的 `scope-recall\` 目录仍会拒绝，也不会收养陌生托管目录。
+Installation mode is an explicit boundary. Both `plan-install` and `apply-install`
+create a production binding (`test_mode=false`) by default. Only an isolated TEST
+root should carry `--test-mode`, and it must be passed to **both** commands;
+`apply-install` re-plans and re-checks the mode before it initialises anything.
 
-`target-plugin-dir` **不能**落在 `instance-root` 内部（根重叠守卫未放宽）。因此不要使用 `$HERMES_HOME\plugins\scope-recall` 作为包装目标；把包装写到 HOME 外的目录。发现由已安装 wheel 的 `hermes_agent.memory_providers` entry point 完成。`project-root` 为当前工作区根目录。
+There is no single `install` command. There is an agent-facing router,
+`scope-recall setup --host <hermes|codex> --home <instance-home>`, which inspects
+a directory and reports whether it needs a fresh install, an ordinary update, or a
+legacy migration; `scope-recall setup --workflow` prints the bundled workflow.
+The commands below are the install itself.
 
-`--agent-id` 必须等于宿主 `initialize` 发送的 `agent_identity`（`get_active_profile_name()`）。隔离 HOME 下该函数通常返回 `default`，**不是** `main`。默认 `--agent-workspace` 为 `hermes`，与 Hermes 0.21+ `_memory_provider_init_kwargs` 硬编码值一致；只有宿主实际发送其他值时才应显式覆盖。绑定不一致时安装仍会成功，但捕获会因 audience 无法映射而拒绝（不会放宽 workspace/`scope_mismatch` 守卫）。
+## 4. Install for a Hermes host
+
+All paths must be absolute.
+
+`--instance-root` may be an **existing** Hermes home. The installer manages only
+the `scope-recall\` namespace and the receipt inside it; it does not treat
+`config.yaml`, sessions or other plugins as foreign. It will refuse an existing
+`scope-recall\` directory that no receipt explains, and it never adopts an unknown
+managed directory.
+
+`--target-plugin-dir` must **not** sit inside `--instance-root` — the three roots
+may not overlap in either direction. So do not use the host's own
+`plugins\scope-recall` path as the wrapper target; put the wrapper outside the
+home. Discovery comes from the entry point, not from that location. The directory
+name itself must match `^[a-z][a-z0-9-]*$`.
+
+`--agent-id` must equal the `agent_identity` the host sends on `initialize`: the
+adapter compares them and raises `agent_identity conflict` when they differ
+(`adapters/hermes/identity.py`). `--agent-workspace` defaults to `hermes`, which
+is the value the host's memory-provider init contract uses; override it only if
+your host really sends something else, and then pass the same value to plan and
+apply. A mismatch still installs, but capture is refused later because the
+audience cannot be mapped.
+
+TODO(verify): which identity string your host actually sends is decided by the
+host's own active-profile lookup, which is not in this source tree. Read it from
+the host rather than guessing; on an isolated home it is commonly `default`, but
+this repository cannot confirm that.
 
 ```powershell
-$Hermes  = "C:\Users\你\.hermes"
-$Plugin  = "D:\scope-recall-wrapper\scope-recall"
-$Project = "D:\我的项目\repo"
-$Python  = "C:\Python312\python.exe"
+$Instance = "C:\path\to\hermes-home"
+$Plugin   = "C:\path\to\wrappers\scope-recall"
+$Project  = "C:\path\to\your\repo"
+$Python   = "C:\path\to\python.exe"
 
 scope-recall plan-install --host hermes `
-  --target-plugin-dir $Plugin --instance-root $Hermes `
+  --target-plugin-dir $Plugin --instance-root $Instance `
   --project-root $Project --agent-id default --python $Python
 
 scope-recall apply-install --host hermes `
-  --target-plugin-dir $Plugin --instance-root $Hermes `
+  --target-plugin-dir $Plugin --instance-root $Instance `
   --project-root $Project --agent-id default --python $Python
 ```
 
-显式选择工作区（plan 与 apply 必须一致）：
+```bash
+INSTANCE=/path/to/hermes-home
+PLUGIN=/path/to/wrappers/scope-recall
+PROJECT=/path/to/your/repo
+PYTHON=/path/to/python
 
-```powershell
-scope-recall plan-install --host hermes `
-  --target-plugin-dir $Plugin --instance-root $Hermes `
-  --project-root $Project --agent-id default --agent-workspace hermes --python $Python
+scope-recall plan-install --host hermes \
+  --target-plugin-dir "$PLUGIN" --instance-root "$INSTANCE" \
+  --project-root "$PROJECT" --agent-id default --python "$PYTHON"
+
+scope-recall apply-install --host hermes \
+  --target-plugin-dir "$PLUGIN" --instance-root "$INSTANCE" \
+  --project-root "$PROJECT" --agent-id default --python "$PYTHON"
 ```
 
-- `plan-install` 输出 JSON；有 `conflicts` 时**退出码为 1**，须先解决冲突再 `apply-install`。
-- `apply-install` 成功时退出码为 0，并写出 `files_written`、`installation_id`、`backups`（覆盖前会把旧包装文件备份到 `<instance-root>\.scope-recall-backups\` 下）。
-- 计划与回执含 `agent_workspace`。Codex **不接受** `--agent-workspace`。
+- `plan-install` prints JSON. When `conflicts` is non-empty it **exits 1**; resolve
+  the conflicts before applying.
+- `apply-install` exits 0 and prints `files_written`, `installation_id`,
+  `receipt_path` and `backups`. Files it overwrites are copied first into
+  `<instance-root>\.scope-recall-backups\`.
+- Both the plan and the receipt carry `agent_workspace`. Codex rejects that flag.
+- `--env-file` is refused for `--host hermes`: Hermes processes inherit the
+  gateway environment.
 
-安装完成后，在**该实例的** Hermes 配置中把记忆提供者设为 `scope-recall`（例如 `memory.provider: scope-recall`）。不要改生产/兄弟 HOME。然后运行诊断：
+It writes two wrapper files into the plugin directory (`__init__.py`,
+`plugin.yaml`) and a setup skill at
+`<instance-root>\skills\scope-recall-setup\SKILL.md`.
 
-```powershell
-scope-recall doctor --host hermes --instance-root $Hermes --python $Python
+**Then enable it in the host.** Hermes registration means two things at once: the
+entry point is importable in that interpreter, **and** that instance's
+`<instance-root>\config.yaml` selects the provider:
+
+```yaml
+memory:
+  provider: scope-recall
 ```
 
-- `doctor` 仅接受 `--host`、`--instance-root`、`--python`；不接受安装时的 `target-plugin-dir` / `project-root` / `agent-id`。
-- `status` 为 `ok` 时退出码 0；存在 `capability_gaps` 时为 `degraded`，退出码 1。
-- `host_registration_status` 在只读诊断中通常仍为 `pending`；是否真正接入请以 Hermes 能否加载插件并调用记忆工具为准。
+Do not edit a sibling or production home to do it. Until that key is set,
+`doctor` reports `host_registration_status: "host_config_missing"` or
+`"not_selected"` and the gap `host_registration_incomplete`.
 
-Core 数据目录默认为 `<instance-root>\scope-recall\`（含 `memory.sqlite3` 与可选 `vectors\` 伴生目录）。
+The Core data directory is `<instance-root>\scope-recall\`, holding
+`memory.sqlite3` and, once configured, a `vectors\` companion directory. Hermes
+tools exposed by the adapter are `recall`, `inspect`, `profile`, `entity`,
+`trace`, `revise`, `forget` and `status`, and it subscribes to the host hooks
+`pre_llm_call`, `post_tool_call` and `api_request_error`.
 
-## 4. Codex
+## 5. Install the Codex MCP path
 
-参数含义相同；`--host codex`。`instance-root` 存放 `codex-installation.json` 与 `data\`；`target-plugin-dir` 为 Codex 插件目录；`project-root` 为工作区根。
+Same arguments, with `--host codex`. Here `--instance-root` holds
+`codex-installation.json` and `data\`; `--target-plugin-dir` is the Codex plugin
+directory; `--project-root` is the workspace root, which the installer writes
+into `.mcp.json` as the MCP server's `--workspace`.
+
+For Codex there is no host-sent identity to match: `--agent-id` is an identifier
+you choose and the installation record keeps. It must stay the same across
+re-installs of that instance, or `plan-install` reports an `agent_id mismatch`.
+`--agent-workspace` is refused here; it is a Hermes concept.
 
 ```powershell
-$Instance = "C:\Users\你\.codex\scope-recall"
-$Plugin   = "C:\Users\你\.codex\plugins\scope-recall"
-$Project  = "D:\我的项目\repo"
-$Python   = "C:\Python312\python.exe"
+$Instance = "C:\path\to\codex-home\scope-recall"
+$Plugin   = "C:\path\to\codex-home\plugins\scope-recall"
+$Project  = "C:\path\to\your\repo"
+$Python   = "C:\path\to\python.exe"
 
 scope-recall plan-install --host codex `
   --target-plugin-dir $Plugin --instance-root $Instance `
@@ -107,81 +219,312 @@ scope-recall apply-install --host codex `
   --env-file "$Instance\embedding.env"
 ```
 
-`--env-file`（仅 Codex）：Codex 用自己的环境变量拉起 MCP 服务与钩子进程，其中没有 `runtime-config.json` 声明的凭据名（如嵌入 API key）。给出该文件后，安装器把 `--env-file` 写进 `.mcp.json`、`hooks.json` 与 hook 启动器，入口进程只读取配置声明的那几个名字（与 worker 的 `autostart --env-file` 同一契约，不解释 dotenv）。不给则 MCP 内的 recall 退化为纯词法。同一份文件通常也传给 `autostart enable --env-file`。Hermes 进程继承 gateway 环境，`--host hermes` 拒绝该参数。
+`--env-file` is Codex-only and worth understanding. It must be an absolute path to
+a file that already exists; the installer checks that before planning. Codex starts
+the MCP server and the hook processes with its own environment, which does not
+contain the credential variable names your `runtime-config.json` declares. Given this file,
+the installer writes its path into `.mcp.json`, `hooks.json` and the hook
+launcher, and each entry process reads **only** the names the trusted config
+declares — it is not a dotenv loader. Without it, `recall` inside Codex degrades
+to purely lexical. Usually the same file is passed to `autostart enable`.
 
-`apply-install` 会在插件目录写入：
+`apply-install` writes, into the plugin directory:
 
 - `.codex-plugin\plugin.json`
-- `hooks\hooks.json`（六个原生钩子事件，见下）与 `hooks\scope-recall-hook.cmd`（Windows 启动器）
-- `.mcp.json`（MCP 服务定义；需安装 `[codex]` extra 才能实际启动 MCP）
+- `hooks\hooks.json` and `hooks\scope-recall-hook.cmd` (the Windows launcher)
+- `.mcp.json`, defining the MCP server named `scope-recall`
+- `skills\scope-recall-setup\SKILL.md`
 
-这些文件由安装器独占：不要手工改写或在插件目录放自己的启动脚本，否则下次 `plan-install` 会把它们报成 `edited prior file` / `unrelated plugin file` 并拒绝。需要改行为就改安装器。
+The installer owns these files exclusively. Do not hand-edit them or add your own
+scripts to that directory: the next `plan-install` will report them as
+`edited prior file` or `unrelated plugin file` and refuse. Change the installer if
+you need different behaviour.
 
-六个钩子事件（与 `maintenance/install.py` 中 `CODEX_HOOK_EVENTS` 一致）：`SessionStart`、`UserPromptSubmit`、`PostToolUse`、`Stop`、`Interrupt`、`SessionEnd`。每条钩子通过隔离 Python 调用 `scope_recall.adapters.codex.hook_entry`。
+Six native hook events are registered, each invoking
+`scope_recall.adapters.codex.hook_entry` through the isolated interpreter with a
+2-second timeout: `Interrupt`, `PostToolUse`, `SessionEnd`, `SessionStart`,
+`Stop`, `UserPromptSubmit`.
 
-**接入步骤：**
+**Then enable it in Codex:**
 
-1. 在 Codex 的宿主配置中启用已写入的 `hooks\hooks.json`；安装器只生成文件，不替宿主完成信任或批准。
-2. 若使用 MCP 工具，确认 wheel 带 `[codex]` extra，并按 Codex 实际支持的 MCP 配置流程允许服务 `scope-recall`。
-3. 运行诊断：
+1. Trust the written `hooks\hooks.json` in Codex. The installer generates files;
+   it cannot approve them for you.
+2. For the MCP tools, confirm the wheel was installed with the `[codex]` extra,
+   and allow the server `scope-recall` through Codex's own MCP configuration. Its
+   tools are `recall`, `inspect`, `profile`, `trace`, `entity`,
+   `propose_memory`, `revise`, `forget` and `status`.
 
-```powershell
-scope-recall doctor --host codex --instance-root $Instance --python $Python
-```
+`hook_trust_status` stays `pending` in a read-only diagnosis; this project ships
+no GUI and no separate trust command. Whether hooks really run is visible only in
+Codex's own behaviour.
 
-Codex 的 `hook_trust_status` 在只读诊断中通常仍为 `pending`；本项目不提供桌面 GUI 或独立信任命令，是否真正接入请以 Codex 实际是否执行 hooks 文件中的命令为准。
+TODO(verify): the concrete Codex-side steps for trusting a plugin's native hooks
+and allowing an MCP server are defined by Codex, not by this repository, and are
+not derivable from this source tree. Follow Codex's own documentation for the
+version you run; this installer only writes the files those steps consume.
 
-Core 数据目录为 `<instance-root>\data\`（含 `memory.sqlite3`）。
+The Core data directory is `<instance-root>\data\`, holding `memory.sqlite3`.
 
-可选的 Codex CLI 订阅整合走已有后台 worker，不另建调度服务。`gpt-5.6-luna` 的显式启用配置、无工具启动约束与 calls/tokens 预算见 [`codex-cli-consolidation.md`](codex-cli-consolidation.md)；插件已安装不等于该模型路径已验收或持续运行已启用。
-
-## 5. 向量与平台边界
-
-- **LanceDB**：安装时带 `[lancedb]` extra；数据目录路径宜短（如 `C:\ScopeRecall\my-agent`）。LanceDB 会在该路径下追加表名与临时文件；过长可能触发 `native_vector_path_too_long`。
-- **PostgreSQL / pgvector**：**不在** v3 发行物内；若配置 pgvector 会报错，请保留旧安装并参阅迁移指南。
-- **runtime-config**：不会从当前目录自动生成；需要时在 Core 数据目录下自行提供 `runtime-config.json`。缺失时 Core 以基础能力运行，并在诊断中报告能力缺口。省略的自动召回时限默认为 `auto_recall_seconds=5.0`、钩子兜底 `hook_processing_seconds=6.0`（均为现有上限）；超时后词法降级，显式更短时限仍生效。
-
-## 6. 从旧版迁移
-
-自旧 Hermes Scope Recall（官方 578b SQLite 基线）迁数据为**离线、显式**操作，与日常 `apply-install` 分离：
-
-1. 停止旧插件写入，备份旧 `memory.sqlite3`（及可选 `vectors\` 目录）。
-2. 在新实例目录完成本节第 3 或第 4 步的空实例安装。
-3. 按 [`upgrade-guide.zh-CN.md`](upgrade-guide.zh-CN.md) 执行 `python -m scope_recall.maintenance.migrate`。
-4. 核对迁移报告与抽样记忆后，再切换宿主到新插件；**旧库与旧安装保留**，确认无误后再手动清理。
-
-v3 不承诺一键自动升级，也不保留旧版长期兼容层。
-
-## 7. 卸载（默认保留记忆）
-
-卸载依据安装回执，**默认只移除插件包装文件，保留 Core 数据库**。先检查计划，无冲突后再应用：
+## 6. Verify with `doctor`
 
 ```powershell
-scope-recall plan-uninstall --instance-root $Hermes
-scope-recall apply-uninstall --instance-root $Hermes
+scope-recall doctor --host hermes --instance-root C:\path\to\hermes-home --python C:\path\to\python.exe
 ```
 
-- `plan-uninstall` 有 `conflicts` 时退出码为 1。
-- `--target-plugin-dir` 可省略（从回执读取）。
-- 普通 `plan-uninstall` **不会**评估 purge，输出中 `purge_allowed` 恒为 `false`。
+```bash
+scope-recall doctor --host codex --instance-root /path/to/codex-home/scope-recall --python /path/to/python
+```
 
-若要删除经回执校验的、安装器拥有的 Core 数据，须**单独**用 `--purge` 做显式检查与应用（两步都带 `--purge`）：
+`doctor` accepts only `--host`, `--instance-root` and `--python`. It does not take
+the install-time `--target-plugin-dir`, `--project-root` or `--agent-id`. With
+`--python` it probes that interpreter and reports the package version, location
+and any mismatch it finds there; without it, it measures itself, which cannot tell
+you whether the host's environment has the new wheel.
+
+`doctor` writes nothing. It prints one JSON object with about fifty fields, sorted
+by key, and exits `0` only when `status` is `"ok"`.
+
+### Reading the result
+
+`status` has exactly three values:
+
+| `status` | Exit | Meaning |
+|----------|------|---------|
+| `ok` | 0 | No gaps, no failed work, no blocked capture. |
+| `attention` | 1 | No gap from the actionable set, but at least one from the non-actionable set below, or failed work, pending capture, or partial extractions. Worth a look, not an emergency. |
+| `degraded` | 1 | At least one gap an operator must act on. It is also the fail-safe default when the database cannot be read at all. |
+
+The four gaps that yield `attention` rather than `degraded` are
+`vector_threshold_unconfigured`, `work_failed_terminal_only`, `work_needs_review`
+and `worker_capability_unavailable`. Everything else forces `degraded`.
+
+### A healthy report
+
+Abridged — the real output has about fifty fields and more `checks` rows. These
+are the ones to read first, from a healthy Hermes install:
+
+```json
+{
+  "status": "ok",
+  "capability_gaps": [],
+  "host": "hermes",
+  "host_registration_status": "registered",
+  "hook_trust_status": "unknown",
+  "binding_ok": true,
+  "database_present": true,
+  "package_ok": true,
+  "package_version": "3.1.0rc39",
+  "expected_package_version": "3.1.0rc39",
+  "pending_work": 0,
+  "failed_work": 0,
+  "needs_review_work": 0,
+  "capture_inbox": 0,
+  "capture_inbox_blocked": 0,
+  "checks": [
+    {"name": "host_registration", "result": "registered"},
+    {"name": "adapter_binding", "result": "ok"},
+    {"name": "database", "result": "ok"},
+    {"name": "schema", "result": "ok"},
+    {"name": "work_backlog", "result": "idle"},
+    {"name": "candidate_processing", "result": "idle"}
+  ]
+}
+```
+
+Things that look wrong in a healthy report and are not:
+
+- `hook_trust_status: "unknown"` is the only value Hermes ever reports, and
+  `"pending"` is the only value Codex ever reports. Neither produces a gap.
+- On Codex, `host_registration_status: "pending"` is the healthy value —
+  registration is not verified for that host, and `pending` is explicitly
+  exempt from the gap.
+- `running_code` with `result: "no_records"` simply means no process has bound
+  this instance yet. A host registers when it binds an identity for a session.
+- `worker_status: {}` means the worker has never written a receipt.
+- `autostart_status: "not_registered"` and `ledger_headroom: {}` mean you have
+  not configured those things, which is not a fault.
+- `terminal_failed_work: null` on a clean queue.
+
+### Common gaps and what they mean
+
+| Gap | Cause | Fix |
+|-----|-------|-----|
+| `host_registration_incomplete` | For Hermes: the entry point is missing from the probed interpreter, or `config.yaml` is absent, or `memory.provider` is not `scope-recall`. Read `host_registration_status` for which. | Install the wheel into the host's environment, or set the provider key. A fresh install always shows this until you do. |
+| `installation_config_missing` | The installer's own record is not there. | The install did not complete. Re-run `plan-install` and `apply-install`. |
+| `binding_invalid:<Error>` | The installation record exists but will not load. | Do not hand-edit it; re-install. |
+| `database_missing` | No `memory.sqlite3` in the Core data directory. | Nothing has initialised the instance. `apply-install` does that. |
+| `storage_read:<Error>` | The database could not be read. `status` stays `degraded`. | Check permissions and whether another process holds it. To inspect the data without contending with a live writer, take a verified snapshot first with `scope-recall backup --database <db> --output <new-file>`, which refuses to overwrite anything and writes a manifest beside it. |
+| `python_executable_missing` | The `--python` path is not a file. | Point it at the host's real interpreter. |
+| `python_package_missing` | That interpreter could not report the package. | The wheel is not installed in that environment. |
+| `python_package_version_mismatch` / `python_package_metadata_mismatch` | The loaded version differs from this tree's, or from the installed distribution metadata. | Reinstall the wheel; do not patch files in place. "It imports" is not "it is installed". |
+| `hot_patched` | Installed files no longer match the wheel's recorded digests. | Reinstall. Editing installed files is the usual cause. |
+| `dependency_drift` | A declared requirement is missing or outside its pin. Extras you did not install are *not* drift. | Reinstall with the pins, or install the extra properly. |
+| `version_mismatch` | Receipt, distribution, imported and running versions disagree. | Stop the old processes, then reinstall. |
+| `stale_process` | A live process is running code older than what is on disk. | Restart the host, or let the running worker finish. |
+| `schema_version_mismatch` | The database schema is not the version this code expects. | Do not run against it. Back it up and use the migration path. |
+| `vector_threshold_unconfigured` | A vector store and an approved embedding route are configured, but no threshold is set, so every vector hit is refused and recall stays lexical. `attention`. | Set a `vector_threshold` calibrated for that embedding model — see [configuration.md](configuration.md). |
+| `work_failed` | At least one recoverable failure is queued. | Fix the cause, then `scope-recall retry-failures --config <file> --apply`. |
+| `work_failed_terminal_only` / `work_needs_review` | All failures are by design, or were already retried once. `attention`. | Inspect them; `--include-terminal` re-runs them only if you mean to. |
+| `work_backlog_stalled` | Work is pending and the worker has not succeeded for more than twice `supervisor_seconds`. | The worker is not running. See the next section. |
+| `worker_capability_unavailable` | Work is pending and the last pass reported work types it could not do. `attention`. | Usually a missing model route, credential or budget. |
+| `capture_ingress_blocked` | Inbox rows carry a real error code. Always `degraded`. | Read `capture_inbox_blocked` and the recent work errors. |
+| `autostart_registration_missing` | The control file says enabled, but the scheduled task is gone. | Re-run `autostart enable`. |
+| `autostart_configuration_invalid` | `runtime-autostart.json` is unusable, or points at a config that will not load or does not match the binding. | Re-run `autostart enable` with the correct `--config`. |
+| `ledger_missing:<file>` | An external route is approved but its budget ledger file does not exist. | Create the ledger — see [configuration.md](configuration.md). |
+| `model_not_approved:<role>:<model>` | The route's model is not in `budget.approved_models`. | Add it, with pricing. |
+| `model_refused:<model>:<code>` | Over the last hour, most calls to that model were refused by the provider. | A credential, quota or spend-cap problem at the provider. |
+| `auxiliary_budget_pressure` | A lifetime call or token cap is at 90 % or more. | Raise the cap deliberately, or accept the stop. |
+
+A note on the shape: `checks[]` entries use the key `result`, not `status`, and
+their vocabulary is per-check. The value `attention` appears only in the report's
+own top-level `status`.
+
+## 7. Enable background work
+
+Consolidation and embedding happen in a bounded worker, not a resident service.
+Hosts wake it as they capture; a scheduled wake covers the idle case.
+
+### Windows: the scheduled task
+
+Autostart is **Windows Task Scheduler only**. `maintenance/autostart.py` drives
+`schtasks.exe`, and `apply` refuses anything else with `autostart_windows_only`.
+There is no cron, systemd or launchd integration anywhere in this distribution.
 
 ```powershell
-scope-recall plan-uninstall --instance-root $Hermes --purge
-# 仅当上一步 purge_allowed 为 true 且无 conflicts 时：
-scope-recall apply-uninstall --instance-root $Hermes --purge
+scope-recall autostart plan --config C:\path\to\instance-root\scope-recall\runtime-config.json --python C:\path\to\python.exe
+scope-recall autostart enable --config C:\path\to\instance-root\scope-recall\runtime-config.json --python C:\path\to\python.exe --env-file C:\path\to\instance-root\scope-recall\embedding.env
+scope-recall autostart pause  --config C:\path\to\instance-root\scope-recall\runtime-config.json
+scope-recall autostart remove --config C:\path\to\instance-root\scope-recall\runtime-config.json
 ```
 
-purge 会校验安装身份、数据目录归属、是否存在活跃写入方、`restore-required.json` 等；不满足则 `purge_refused:*` 并拒绝删除。**不要把 purge 当作常规卸载步骤**；日常卸载无需 `--purge`。
+- `plan` builds and prints the task XML and validates everything without
+  registering: absolute `--config` and `--python`, the config sitting directly
+  inside the binding's data directory, a readable database, and an absolute
+  existing `--env-file` if given. It changes nothing.
+- `enable` registers the task. `pause` disables it; `remove` deletes it. Both read
+  the control file the registration wrote.
+- `--python` defaults to the interpreter running the command, which is usually not
+  what you want — pass the host's interpreter explicitly. `--user-id` defaults to
+  the current account.
+- Failures print one JSON object with a `code` and exit 2.
 
-## 命名对照
+The registered task triggers at that user's logon and then every 5 minutes, runs
+hidden at least privilege with a 1-minute execution limit, and invokes
+`scope_recall.runtime.resume_entry`, which decides whether a wake is actually due
+and launches a detached worker if so. `supervisor_enabled: false` in
+`runtime-config.json` makes every wake a no-op without unregistering the task.
 
-| 概念 | 值 |
-|------|-----|
-| PyPI 包名 | `hermes-scope-recall` |
-| Python 导入 | `scope_recall` |
-| 宿主插件 ID | `scope-recall` |
-| 安装回执 | `<instance-root>\.scope-recall-install-receipt.json` |
-| Hermes 安装清单 | `<instance-root>\scope-recall\installation.json` |
-| Codex 安装清单 | `<instance-root>\codex-installation.json` |
+Two caveats on non-Windows: `autostart plan` still succeeds there, because it only
+builds XML — a successful `plan` is not a registration. And `pause` / `remove`
+call `schtasks.exe` unconditionally, so on Linux or macOS they raise rather than
+printing the usual error object.
+
+### Everywhere: run a pass by hand
+
+One bounded pass, in the foreground:
+
+```powershell
+C:\path\to\python.exe -m scope_recall.runtime.worker_entry --config C:\path\to\instance-root\scope-recall\runtime-config.json
+```
+
+```bash
+/path/to/python -m scope_recall.runtime.worker_entry --config /path/to/instance-root/scope-recall/runtime-config.json
+```
+
+`--config` must be absolute. It prints one compact JSON line — `status`,
+`processed`, `completed`, `failed`, `capability_gaps`, the queue counts — and
+exits `0` when the pass ran (including a `degraded` or `idle` pass), `75` when
+another worker or the truth writer held the lock, and `1` on an unexpected error.
+It is a single pass with no supervisor loop: run it again, or from your own
+scheduler, wherever autostart is unavailable.
+
+This command has no `--env-file`. If an external route is configured, export the
+credential variable named by `credential_env` into your shell before running it.
+
+To re-open failures after shipping a fix:
+
+```bash
+scope-recall retry-failures --config /path/to/instance-root/scope-recall/runtime-config.json --apply
+```
+
+Without `--apply` nothing is written. `--include-terminal` also re-runs failures
+that are terminal by design.
+
+## 8. Uninstall (memory is retained by default)
+
+Uninstall is driven by the install receipt. **By default it removes only the
+plugin wrapper files and keeps the Core database.** It also removes the Windows
+wake task bound to that instance, if one is registered. Inspect the plan first:
+
+```powershell
+scope-recall plan-uninstall --instance-root C:\path\to\instance-root
+scope-recall apply-uninstall --instance-root C:\path\to\instance-root
+```
+
+- `plan-uninstall` exits 1 when `conflicts` is non-empty.
+- `--target-plugin-dir` may be omitted; it is read from the receipt.
+- A plain `plan-uninstall` does not evaluate a purge at all: `purge_allowed` is
+  always `false` in its output.
+- `apply-uninstall` reports `memory_retained: true` while `memory.sqlite3` is
+  still there. Files it cannot verify against the receipt are listed as
+  `edited_files` and left alone.
+
+Deleting the Core data is a **separate**, explicitly flagged operation, and
+`--purge` must be on both steps:
+
+```powershell
+scope-recall plan-uninstall --instance-root C:\path\to\instance-root --purge
+# only if that printed purge_allowed: true with no conflicts
+scope-recall apply-uninstall --instance-root C:\path\to\instance-root --purge
+```
+
+A purge verifies the installation identity, that the data directory is really
+owned by this installation, that no writer is active, and that no restore is
+outstanding. If any check fails it refuses with a `purge_refused:*` reason and
+deletes nothing. **Do not treat purge as a normal uninstall step.** Ordinary
+uninstall does not need it.
+
+## 9. Coming from an older database
+
+Migrating from the legacy Hermes Scope Recall SQLite baseline is an offline,
+explicit operation, separate from a normal install:
+
+1. Stop the old plugin from writing and back up its `memory.sqlite3` (and any
+   `vectors\` directory).
+2. Do the empty-instance install above, in a new instance directory.
+3. Follow [upgrade-guide.zh-CN.md](upgrade-guide.zh-CN.md) to run the migration job.
+4. Check the migration report and sample the migrated memories **before**
+   pointing the host at the new plugin. Keep the old database and the old
+   install; clean up by hand only once you are satisfied.
+
+There is no one-click upgrade and no long-term v3 compatibility layer for old
+versions.
+
+## 10. Platform and storage boundaries
+
+- **LanceDB** needs the `lancedb` extra. Keep the data directory short, for
+  example `C:\ScopeRecall\my-agent`: LanceDB appends index, table and temporary
+  file names below it, and the worker reports `native_vector_path_too_long`
+  before touching LanceDB or the embedding API when the result is too long.
+- **PostgreSQL / pgvector** is not in this distribution. Configuring it is an
+  explicit error; keep the old installation and use the migration guide.
+- **`runtime-config.json` is never generated.** Without it the Core runs with
+  basic capability and the host reports a capability gap. Everything it can set —
+  the budgets, the vector store, the model routes — is documented in
+  [configuration.md](configuration.md).
+
+## Names and paths
+
+| Concept | Value |
+|---------|-------|
+| Distribution name | `hermes-scope-recall` |
+| Python import | `scope_recall` |
+| Host plugin identity | `scope-recall` |
+| Console commands | `scope-recall`, `hermes-scope-recall` |
+| Install receipt | `<instance-root>\.scope-recall-install-receipt.json` |
+| Overwrite backups | `<instance-root>\.scope-recall-backups\` |
+| Hermes installation record | `<instance-root>\scope-recall\installation.json` |
+| Hermes Core data directory | `<instance-root>\scope-recall\` |
+| Codex installation record | `<instance-root>\codex-installation.json` |
+| Codex Core data directory | `<instance-root>\data\` |
+| Runtime config | `<core-data-directory>\runtime-config.json` |
