@@ -209,11 +209,14 @@ def _anchored(value, dir_fd=None):
 
     The fd-based ``shutil.rmtree`` on POSIX passes bare names plus a
     directory descriptor to ``os.remove``/``os.rmdir``; judging a bare name
-    against the process cwd would assess the wrong file. An fd anchor is
-    re-anchored through ``/proc/self/fd`` (POSIX); a path anchor is joined.
-    Absolute values pass through untouched, and Windows' path-based rmtree
-    always passes absolute paths, so this only widens what the hook accepts,
-    never what it denies.
+    against the process cwd would assess the wrong file. The descriptor is
+    re-anchored by reading its ``/proc/self/fd`` link (POSIX only, where the
+    fd-based rmtree exists). A directory whose ancestors were removed
+    already still owns its children, but its readlink target carries the
+    kernel's ``(deleted)`` suffix; stripping that suffix recovers the real
+    location of the file being unlinked. An fd that cannot be read is an
+    anchor we cannot verify, so the bare name passes through and will be
+    denied against the cwd -- fail closed.
     """
 
     if dir_fd is None or not isinstance(value, (str, bytes, os.PathLike)):
@@ -223,10 +226,11 @@ def _anchored(value, dir_fd=None):
         return value
     try:
         if isinstance(dir_fd, int):
-            anchor = Path(f"/proc/self/fd/{dir_fd}")
-        else:
-            anchor = Path(os.fsdecode(dir_fd))
-        return os.path.join(str(anchor), logical)
+            anchor = os.readlink(f"/proc/self/fd/{dir_fd}")
+            if anchor.endswith(" (deleted)"):
+                anchor = anchor[: -len(" (deleted)")]
+            return os.path.join(anchor, logical)
+        return os.path.join(os.fsdecode(dir_fd), logical)
     except (TypeError, ValueError, OSError):
         return value
 
