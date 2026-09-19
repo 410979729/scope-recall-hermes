@@ -73,7 +73,12 @@ jobs:
             test "${DISPATCH_RUN_ID}" = "${RELEASE_RUN_ID}"
           fi
           MODEL_EVIDENCE_TAG="${DISPATCH_MODEL_EVIDENCE_TAG:-${INPUT_MODEL_EVIDENCE_TAG:-${DEFAULT_MODEL_EVIDENCE_TAG}}}"
-          test -n "${MODEL_EVIDENCE_TAG}"
+          # Same contract as release.yml: 3.1.0 ships without a P18 receipt
+          # (none exists), so an absent evidence tag is a warning, not a
+          # failure. The SHA/run/origin gates above are unchanged.
+          if [ -z "${MODEL_EVIDENCE_TAG}" ]; then
+            echo "::warning title=No model evidence receipt::Publishing without a P18 formal acceptance receipt."
+          fi
           RELEASE_RUN_JSON="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${RELEASE_RUN_ID}")"
           test "$(jq -er '.path' <<<"${RELEASE_RUN_JSON}")" = ".github/workflows/release.yml"
           test "$(jq -er '.head_sha' <<<"${RELEASE_RUN_JSON}")" = "${SOURCE_SHA}"
@@ -140,12 +145,12 @@ jobs:
           python -m pip install --require-hashes -r constraints/release-hashed.txt
           python -m pip install --no-deps ".[lancedb,codex,dev]"
       - name: Download and verify model evidence bundle
+        if: ${{ needs.verify_release_origin.outputs.model_evidence_tag != '' }}
         env:
           GH_TOKEN: ${{ github.token }}
           MODEL_EVIDENCE_TAG: ${{ needs.verify_release_origin.outputs.model_evidence_tag }}
         run: |
           set -euo pipefail
-          test -n "${MODEL_EVIDENCE_TAG}"
           SOURCE_SHA="$(git rev-parse HEAD)"
           ARCHIVE_NAME="scope-recall-model-evidence-${SOURCE_SHA}.zip"
           rm -rf .execution/model-evidence
