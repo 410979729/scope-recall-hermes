@@ -203,7 +203,7 @@ def _check_path(value, writing=False):
         # path must be printed, not only carried.
         import sys as _sys
         print(
-            f"TEST_BOUNDARY deny: writing={writing} isolated={_ISOLATED} judged={path} raw={value!r} dir_fd={dir_fd!r}",
+            f"TEST_BOUNDARY deny: writing={writing} isolated={_ISOLATED} judged={path} raw={value!r}",
             file=_sys.stderr,
             flush=True,
         )
