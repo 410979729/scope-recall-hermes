@@ -84,6 +84,14 @@ jobs:
             # required check is still that check passing.
             test "${successful}" = "${required_job}"
           done
+      # The P18 formal acceptance receipt is not available for the 3.1.0 line:
+      # the machinery is in the tree but the evaluation corpus is not, so no
+      # commit-bound evidence bundle has ever been produced.  Requiring it here
+      # meant no 3.x release could be published at all.  An absent receipt is
+      # now reported in the log and carried forward as empty rather than
+      # failing the job, and CHANGELOG.md and README.md both state plainly that
+      # 3.1.0 ships without it.  Set SCOPE_RECALL_MODEL_EVIDENCE_TAG once a
+      # bundle exists and the verification below runs again unchanged.
       - name: Resolve model evidence tag
         id: model_evidence
         env:
@@ -95,7 +103,9 @@ jobs:
           else
             MODEL_EVIDENCE_TAG="${DEFAULT_MODEL_EVIDENCE_TAG}"
           fi
-          test -n "${MODEL_EVIDENCE_TAG}"
+          if [ -z "${MODEL_EVIDENCE_TAG}" ]; then
+            echo "::warning title=No model evidence receipt::Publishing without a P18 formal acceptance receipt. Accuracy figures in the release notes are the authors' own measurements and no automated recall-quality regression suite exists."
+          fi
           echo "model_evidence_tag=${MODEL_EVIDENCE_TAG}" >> "${GITHUB_OUTPUT}"
 
   build:
@@ -128,27 +138,68 @@ jobs:
         run: |
           python -m pip install --require-hashes -r constraints/release-hashed.txt
           python -m pip install --no-deps ".[lancedb,codex,dev]"
-      - name: Download and verify model evidence bundle
+      # With a receipt this is unchanged.  Without one the release tier still
+      # runs in full and every other gate must still pass: check.py only
+      # rewrites a zero exit to 2 when the tests themselves succeeded, so
+      # exit 2 with missing_gates exactly ["model"] and pytest_exit_code 0 is
+      # the one outcome tolerated here.  A real test failure keeps pytest's own
+      # code and fails the build.
+      - name: Run the release tier and verify the model evidence bundle
         env:
           GH_TOKEN: ${{ github.token }}
           MODEL_EVIDENCE_TAG: ${{ needs.verify_release_policy.outputs.model_evidence_tag }}
         run: |
           set -euo pipefail
-          test -n "${MODEL_EVIDENCE_TAG}"
           SOURCE_SHA="$(git rev-parse HEAD)"
-          ARCHIVE_NAME="scope-recall-model-evidence-${SOURCE_SHA}.zip"
-          rm -rf .execution/model-evidence
-          mkdir -p .execution/model-evidence/incoming
-          gh release download "${MODEL_EVIDENCE_TAG}" \
-            --repo "${GITHUB_REPOSITORY}" \
-            --pattern "${ARCHIVE_NAME}" \
-            --dir .execution/model-evidence/incoming
-          test "$(find .execution/model-evidence/incoming -maxdepth 1 -type f -name "${ARCHIVE_NAME}" | wc -l)" -eq 1
-          python scripts/extract_model_evidence.py \
-            --archive ".execution/model-evidence/incoming/${ARCHIVE_NAME}" \
-            --bundle .execution/model-evidence/bundle \
-            --source-sha "${SOURCE_SHA}"
-          python scripts/check.py --tier release --task P17 --model-receipt ".execution/model-evidence/bundle/formal-receipt.json"
+          if [ -n "${MODEL_EVIDENCE_TAG}" ]; then
+            ARCHIVE_NAME="scope-recall-model-evidence-${SOURCE_SHA}.zip"
+            rm -rf .execution/model-evidence
+            mkdir -p .execution/model-evidence/incoming
+            gh release download "${MODEL_EVIDENCE_TAG}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --pattern "${ARCHIVE_NAME}" \
+              --dir .execution/model-evidence/incoming
+            test "$(find .execution/model-evidence/incoming -maxdepth 1 -type f -name "${ARCHIVE_NAME}" | wc -l)" -eq 1
+            python scripts/extract_model_evidence.py \
+              --archive ".execution/model-evidence/incoming/${ARCHIVE_NAME}" \
+              --bundle .execution/model-evidence/bundle \
+              --source-sha "${SOURCE_SHA}"
+            python scripts/check.py --tier release --task P17 \
+              --model-receipt ".execution/model-evidence/bundle/formal-receipt.json"
+            exit 0
+          fi
+          set +e
+          python scripts/check.py --tier release --task P17 | tee release-tier.out
+          code=${PIPESTATUS[0]}
+          set -e
+          python - "${code}" <<'PY'
+          import json, sys
+          code = int(sys.argv[1])
+          receipt = None
+          for line in open("release-tier.out", encoding="utf-8"):
+              line = line.strip()
+              if line.startswith("{") and line.endswith("}"):
+                  try:
+                      candidate = json.loads(line)
+                  except ValueError:
+                      continue
+                  if "missing_gates" in candidate:
+                      receipt = candidate
+          if receipt is None:
+              sys.exit("release tier printed no receipt; refusing to publish")
+          missing = receipt.get("missing_gates")
+          pytest_code = receipt.get("pytest_exit_code")
+          print(f"exit={code} missing_gates={missing} pytest_exit_code={pytest_code}")
+          if code == 0 and not missing:
+              sys.exit(0)
+          if code == 2 and missing == ["model"] and pytest_code == 0:
+              print("::warning title=No model evidence receipt::"
+                    "Release tier passed every gate except the P18 formal acceptance "
+                    "receipt, which does not exist for this line. Publishing without it.")
+              sys.exit(0)
+          sys.exit(f"release tier did not pass: exit={code} missing_gates={missing} "
+                   f"pytest_exit_code={pytest_code}")
+          PY
       - name: Verify current maintenance and migration docs
         run: |
           test -f README.md

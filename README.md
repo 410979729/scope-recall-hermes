@@ -1,30 +1,26 @@
-# Scope Recall 3.1 autonomous memory candidate
+# Scope Recall 3.1 autonomous memory
 
 Scope Recall v3 is a bounded local memory core with SQLite as the authority and rebuildable vector companions. It provides host adapters for Hermes and Codex, including Codex MCP tools when the optional `codex` extra is installed. The public package is `hermes-scope-recall`; the Python import is `scope_recall`; the host wrapper identity remains `scope-recall`.
 
-This checkout is release candidate `3.1.0rc42`. A drain now spends its seconds
-on the work: a pass is read while it runs instead of after it exits, carries up
-to a thousand items, asks its embedding requests at the same time, commits their
-vectors once, and no longer re-counts the backlog it is there to shrink.
-Measured on one instance: 96 items a minute before, 1,250 after. rc39 stopped a candidate backlog feeding
-itself, made a rejected payload say which field to fix, and gave up the packet
-slot an episode with no summary was taking. rc38 kept a candidate's own name
-when an evaluation wrote it differently. rc37 made a recalled question reach the
-reply its turn was given.
-SQLite remains the only fact authority; host adapters share the same contracts.
-This is a local candidate, not a published release or a claim of live deployment.
+This checkout is `3.1.0`. It is a rebuild rather than a patch on 2.0: production
+code went from 141,044 lines to 48,289, memory now accumulates evidence before a
+fact is written rather than judging one sentence on sight, and hosts sit behind
+adapters instead of the core being shaped around Hermes. The release notes are
+the `[3.1.0]` section of [CHANGELOG.md](CHANGELOG.md), and section 9 there is the
+migration procedure for a 2.0.1 memory database. SQLite remains the only fact
+authority; host adapters share the same contracts.
 
-**Why it is a candidate and not a release.** `scripts/check.py --tier release`
-runs 900 tests with none failing, but exits 2 and reports
-`missing_gates: ["model"]`. That gate does not clear by making model calls: it
-wants a P18 formal acceptance receipt, which requires denominators of 120
-independent core items and 240 paired variants, evidence marked `real`, a method
-adjudication accepted by a party independent of whoever wrote the code, and an
-independent semantic scorer. The P18 machinery is in this tree; the evaluation
-corpus is not -- `tests/eval/public_fixture.jsonl` holds two rows, both flagged
-`"simulation": true`. Read a green test count here as exactly that, and never as
-a passing release gate: reporting the count without the exit code is how that
-mistake was made before. Integration is 1223/0 and packaging 114/0, both exit 0.
+**What is not verified.** `scripts/check.py --tier release` runs 900 tests with
+none failing, but reports `missing_gates: ["model"]`. That gate wants a P18
+formal acceptance receipt: denominators of 120 independent core items and 240
+paired variants, evidence marked `real`, a method adjudication accepted by a
+party independent of whoever wrote the code, and an independent semantic scorer.
+The P18 machinery is in this tree; the evaluation corpus is not. **3.1.0 ships
+without that receipt.** Every accuracy figure in the notes was measured by us, on
+our own corpora, by hand, and there is no regression suite you or we can re-run
+automatically -- that is the first item in *What is not finished*. Read a green
+test count as exactly that, never as a passing release gate. Integration is
+1223/0 and packaging 129/0, both exit 0.
 
 ## For agents: install or upgrade on the user's behalf
 
@@ -36,22 +32,29 @@ New users go directly to installation; only detected legacy databases go through
 Perform path discovery, backup, audience binding, migration, indexing and host
 checks yourself; do not ask the user to execute commands or govern old memories.
 
-## Install the current candidate
+## Install
 
 Step-by-step Hermes and Codex instructions: [docs/install.md](docs/install.md).
 
-Build the local candidate first, then install that wheel into the same isolated
-Python environment used by the host. The 3.1.0 candidates are not published to PyPI:
+The wheel and sdist for `3.1.0` are attached to the
+[GitHub Release](https://github.com/410979729/scope-recall-hermes/releases/tag/v3.1.0)
+alongside `SHA256SUMS`. Install into the same isolated Python environment the
+host uses:
+
+```text
+python -m pip install "<path-to-wheel>"
+python -m pip install "<path-to-wheel>[codex]"
+```
+
+`3.1.0` is not on PyPI. To build it yourself from this checkout instead:
 
 ```text
 python -m build --wheel
-python -m pip install "<absolute-path-to-wheel>"
-python -m pip install "<absolute-path-to-wheel>[codex]"
 ```
 
-The current release candidate is `3.1.0rc42`; these commands are local
-placeholders until a reviewed wheel is built. They do not claim that full host
-runtime wiring or production registration has been accepted.
+Upgrading from 2.0.x is not an in-place upgrade. Read section 9 of
+[CHANGELOG.md](CHANGELOG.md) before you start; your old database needs a
+one-time offline migration and there are two errors people commonly hit.
 
 The two console names `scope-recall` and `hermes-scope-recall` invoke the same v3 maintenance CLI. They are aliases for the current CLI only; neither is a compatibility promise for an older command set.
 
@@ -86,7 +89,7 @@ On Windows, choose a short data directory such as `C:\ScopeRecall\my-agent`. Lan
 
 ## Profile and entity read views
 
-This candidate adds two shared read-only Core methods, `profile` and `entity`, and exposes them on both Hermes tools and Codex MCP. They return a deterministic categorized current-fact view, or an exact one-hop statement view, over admitted consolidated claims only. Raw chat is never silently turned into a profile. Incoming relations match the full scalar `value_text` only and keep recorded conditions and validity. Explicit project-name aliases may resolve when they are already admitted and still live; person aliases are not generalized. A `budget_tokens` value too small for even the minimal truthful envelope is a validation error, not an oversized view. See [docs/profile-entity.zh-CN.md](docs/profile-entity.zh-CN.md). These tools exist on this candidate checkout; an older installed wheel does not gain them until that candidate is reviewed, packaged, and installed.
+3.1.0 adds two shared read-only Core methods, `profile` and `entity`, and exposes them on both Hermes tools and Codex MCP. They return a deterministic categorized current-fact view, or an exact one-hop statement view, over admitted consolidated claims only. Raw chat is never silently turned into a profile. Incoming relations match the full scalar `value_text` only and keep recorded conditions and validity. Explicit project-name aliases may resolve when they are already admitted and still live; person aliases are not generalized. A `budget_tokens` value too small for even the minimal truthful envelope is a validation error, not an oversized view. See [docs/profile-entity.zh-CN.md](docs/profile-entity.zh-CN.md). An older installed wheel does not gain these tools until 3.1.0 is installed.
 
 ## Bounded multi-hop evidence paths
 

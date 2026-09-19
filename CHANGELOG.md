@@ -2,9 +2,9 @@
 
 All notable changes to `scope-recall` will be documented in this file.
 
-## [3.1.0rc42] - 2026-09-18
+## [3.1.0] - 2026-09-18
 
-This is the 3.1.0 release candidate. We are sorry it took so long. The last release, 2.0.1, went out at the end of August, and it has been quiet here since, because we did not keep patching 2.0. We rebuilt the whole project. Production code went from 141,044 lines down to 48,289.
+We are sorry this took so long. The last release, 2.0.1, went out at the end of August, and it has been quiet here since, because we did not keep patching 2.0. We rebuilt the whole project. Production code went from 141,044 lines down to 48,289.
 
 If you are on 2.0.1 today, read section 9 first. Your old memory database cannot be opened directly. It has to go through a migration, and there are a few places where that can go wrong, so we have written it out in detail.
 
