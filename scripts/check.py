@@ -24,6 +24,11 @@ _DEFAULT_PACKAGING_UV = ""
 _PACKAGING_HELPER_TIERS = frozenset({"packaging", "release"})
 DEFAULT_WATCHDOG_SECONDS = 180
 RELEASE_WATCHDOG_SECONDS = 600
+#: GitHub's Windows runner executes the integration baseline roughly an order
+#: of magnitude slower than the Linux runners; the 118-file selection needs
+#: tens of minutes of real work there. Cap the integration tier so the
+#: watchdog bounds a hang, not a slow-but-healthy suite.
+INTEGRATION_WATCHDOG_SECONDS = 2700
 #: Headroom granted per selected test file, on top of the historical floor.
 #: The integration tier grew to 1,048 tests across 66 files and began timing
 #: out at a flat 180s -- nothing hung, the suite simply got bigger, and a gate
@@ -47,6 +52,11 @@ def pytest_watchdog_seconds(tier: str, selected_files: int = 0) -> int:
     if type(selected_files) is not int or type(selected_files) is bool or selected_files < 0:
         selected_files = 0
     scaled = DEFAULT_WATCHDOG_SECONDS + WATCHDOG_SECONDS_PER_FILE * selected_files
+    if tier == "integration":
+        # The GitHub Windows runner executes the 118-file integration baseline
+        # tens of times slower than Linux; the per-file headroom cannot express
+        # that, so the integration tier carries its own floor instead.
+        return max(scaled, INTEGRATION_WATCHDOG_SECONDS)
     return min(max(DEFAULT_WATCHDOG_SECONDS, scaled), RELEASE_WATCHDOG_SECONDS)
 
 

@@ -110,6 +110,11 @@ def test_watchdog_seconds_are_bounded_and_release_is_600() -> None:
     assert check.pytest_watchdog_seconds("contract") == 180
     assert check.pytest_watchdog_seconds("packaging") == 180
     assert check.pytest_watchdog_seconds("release") == 600
+    # The GitHub Windows runner needs tens of minutes for the 118-file
+    # integration baseline; the tier's floor must exceed the release budget.
+    assert check.pytest_watchdog_seconds("integration", 118) == check.INTEGRATION_WATCHDOG_SECONDS
+    assert check.INTEGRATION_WATCHDOG_SECONDS > check.RELEASE_WATCHDOG_SECONDS
+    assert check.pytest_watchdog_seconds("integration", 0) == check.INTEGRATION_WATCHDOG_SECONDS
 
 
 def test_release_wrapper_records_actual_600s_watchdog(monkeypatch, tmp_path: Path) -> None:

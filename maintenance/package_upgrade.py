@@ -19,6 +19,7 @@ import zipfile
 
 from ..core.file_lock import advisory_file_lock
 from .backup import _atomic_json as _write_receipt, _safe_path, _sha256
+from .install_common import _safe_interpreter
 
 
 class PackageUpgradeError(RuntimeError):
@@ -88,7 +89,7 @@ def replace_package(python, wheel, backup, *, source_quiesced=False, uv=None) ->
     """
     if source_quiesced is not True:
         raise PackageUpgradeError('stop_all_target_writers_and_restarters_first')
-    python = _safe_path(python, must_exist=True, error_type=PackageUpgradeError)
+    python = _safe_interpreter(python, error_type=PackageUpgradeError)
     wheel = _safe_path(wheel, must_exist=True, error_type=PackageUpgradeError)
     backup = _safe_path(backup, error_type=PackageUpgradeError)
     # Never silently choose another agent's PATH wrapper. The operator selects

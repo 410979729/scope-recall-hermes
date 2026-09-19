@@ -23,6 +23,7 @@ from .install_common import (
     _norm,
     _require_absolute,
     _require_file,
+    _require_interpreter,
     _validate_agent_id,
     _validate_host,
     _validate_plugin_name,
@@ -92,7 +93,7 @@ def plan_install(
     target = _require_absolute(Path(target_plugin_dir), "target_plugin_dir")
     instance = _require_absolute(Path(instance_root), "instance_root")
     project = _require_absolute(Path(project_root), "project_root")
-    python = _require_file(Path(python_executable), "python_executable")
+    python = _require_interpreter(Path(python_executable), "python_executable")
     agent = _validate_agent_id(agent_id)
     workspace, credentials = adapter.validate_options(agent_workspace, env_file)
     if type(test_mode) is not bool:

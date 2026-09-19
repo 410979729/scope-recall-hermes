@@ -30,6 +30,26 @@ with tempfile.TemporaryDirectory(prefix="scope-recall-578b-") as td:
     archive = subprocess.check_output(["git", "-C", str(repo), "archive", commit])
     with tarfile.open(fileobj=io.BytesIO(archive), mode="r:") as tf:
         tf.extractall(package)
+    # A stale namespace stub of this very package can already sit in
+    # ``sys.modules`` before the child imports anything: a ``tests`` entry
+    # on PYTHONPATH makes the finder treat the repository root (directory
+    # name ``scope-recall``, resolved above it) as the package location.
+    # Python 3.11+ never re-resolves a namespace package once recorded, so
+    # the extracted 578b package would be unreachable ("unknown location").
+    # Evict every trace, drop the shadowing path entries, and re-insert the
+    # extraction directory at the front so the frozen revision wins.
+    for module_name in [name for name in list(sys.modules) if name == "scope_recall" or name.startswith("scope_recall.")]:
+        del sys.modules[module_name]
+    retained = []
+    for entry in sys.path:
+        try:
+            resolved = pathlib.Path(entry).resolve() if entry else None
+        except OSError:
+            resolved = None
+        if resolved is not None and (resolved.name == "scope_recall" or resolved == repo):
+            continue
+        retained.append(entry)
+    sys.path[:] = retained
     sys.path.insert(0, td)
     from scope_recall import journal_store, privacy_purge_schema, sql_store, temporal_facts
     conn = sqlite3.connect(target)

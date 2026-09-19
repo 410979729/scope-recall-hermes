@@ -182,6 +182,43 @@ def _require_absolute(path: Path, field: str) -> Path:
     return resolved
 
 
+def _require_interpreter(path: Path, field: str) -> Path:
+    """Resolve an interpreter path to its real target before validating it.
+
+    Managed interpreter layouts (hostedtoolcache, pyenv, homebrew) expose
+    ``python`` as a symlink; the chain check must inspect the destination,
+    not reject every launcher link. A redirect inside the resolved chain is
+    still rejected, so a trusted interpreter cannot smuggle a redirected
+    file system into the plan.
+    """
+
+    expanded = _absolute(path, field)
+    resolved = expanded.resolve()
+    _reject_symlink_chain(resolved)
+    if not resolved.is_file():
+        raise InstallError(f"{field} must reference an existing file")
+    return resolved
+
+
+def _safe_interpreter(path: Path, *, error_type=InstallError) -> Path:
+    """``_safe_path`` for interpreter executables: resolve, then verify the chain.
+
+    Managed interpreter layouts (hostedtoolcache, pyenv, homebrew) expose
+    ``python`` as a symlink into a versioned directory; the chain check must
+    inspect the resolved destination instead of rejecting every launcher
+    link. Redirects deeper than that single hop are still refused.
+    """
+
+    expanded = Path(path).expanduser()
+    if not expanded.is_absolute():
+        expanded = Path.cwd() / expanded
+    resolved = expanded.resolve(strict=True)
+    _reject_symlink_chain(resolved)
+    if not resolved.is_file():
+        raise error_type(f"{resolved} must reference an existing file")
+    return resolved
+
+
 def _require_file(path: Path, field: str) -> Path:
     resolved = _require_absolute(path, field)
     if not resolved.is_file():
