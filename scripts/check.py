@@ -42,21 +42,25 @@ WATCHDOG_SECONDS_PER_FILE = 5
 def pytest_watchdog_seconds(tier: str, selected_files: int = 0) -> int:
     """Bounded suite watchdog, scaled to how much this run selected.
 
-    Release keeps its own fixed budget. Every other tier keeps the historical
-    180s as a floor and adds room for what it actually runs, capped at the
-    release budget so no run -- hung or merely large -- waits forever.
+    Release and integration keep their own fixed budgets: release's historical
+    600s, integration's 2700s sized to the GitHub Windows runner's measured
+    need for the 118-file baseline. Every other tier keeps the historical 180s
+    as a floor and adds room for what it actually runs, capped at the release
+    budget so no run -- hung or merely large -- waits forever.
     """
 
     if tier == "release":
         return RELEASE_WATCHDOG_SECONDS
     if type(selected_files) is not int or type(selected_files) is bool or selected_files < 0:
         selected_files = 0
-    scaled = DEFAULT_WATCHDOG_SECONDS + WATCHDOG_SECONDS_PER_FILE * selected_files
     if tier == "integration":
         # The GitHub Windows runner executes the 118-file integration baseline
-        # tens of times slower than Linux; the per-file headroom cannot express
-        # that, so the integration tier carries its own floor instead.
-        return max(scaled, INTEGRATION_WATCHDOG_SECONDS)
+        # tens of times slower than Linux; the receipt shows the shared cap
+        # firing at 600s with the suite 25% done and still printing progress.
+        # The tier carries its own fixed budget, sized to that receipt, exactly
+        # the way release carries 600s.
+        return INTEGRATION_WATCHDOG_SECONDS
+    scaled = DEFAULT_WATCHDOG_SECONDS + WATCHDOG_SECONDS_PER_FILE * selected_files
     return min(max(DEFAULT_WATCHDOG_SECONDS, scaled), RELEASE_WATCHDOG_SECONDS)
 
 

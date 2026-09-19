@@ -182,9 +182,10 @@ def test_a_small_selection_keeps_the_historical_floor() -> None:
 
 
 def test_a_bigger_selection_gets_more_room() -> None:
-    """The integration tier grew past a flat 180s without anything hanging."""
-    small = check.pytest_watchdog_seconds("integration", 10)
-    large = check.pytest_watchdog_seconds("integration", 60)
+    """Other tiers grow with their selection; integration's fixed budget
+    already covers its whole real baseline, so it stays put."""
+    small = check.pytest_watchdog_seconds("contract", 10)
+    large = check.pytest_watchdog_seconds("contract", 60)
     assert large > small >= check.DEFAULT_WATCHDOG_SECONDS
 
 
@@ -192,18 +193,28 @@ def test_the_real_integration_selection_is_not_at_its_own_limit() -> None:
     """The regression this replaced: the gate timed out instead of reporting."""
     selected, _details = check.select_tests("integration", changed=[])
     budget = check.pytest_watchdog_seconds("integration", len(selected))
-    assert budget >= 2 * check.DEFAULT_WATCHDOG_SECONDS, (
-        f"{len(selected)} files share a {budget}s budget; the suite already "
-        "needed more than 180s to finish")
+    # The GitHub Windows receipt: 600s fired with the suite 25% done and still
+    # printing progress; the whole baseline needs tens of minutes there.
+    assert budget >= check.INTEGRATION_WATCHDOG_SECONDS
+
+
+def test_the_integration_budget_is_its_own_not_the_release_budget() -> None:
+    """Integration carries a fixed budget sized to the Windows runner, exactly
+    the way release carries 600s; the two must not collapse into one number."""
+    assert check.pytest_watchdog_seconds("integration", 0) == check.INTEGRATION_WATCHDOG_SECONDS
+    assert check.pytest_watchdog_seconds("integration", 10_000) == check.INTEGRATION_WATCHDOG_SECONDS
+    assert check.INTEGRATION_WATCHDOG_SECONDS > check.RELEASE_WATCHDOG_SECONDS
 
 
 def test_no_run_can_wait_longer_than_the_release_budget() -> None:
-    assert check.pytest_watchdog_seconds("integration", 10_000) == check.RELEASE_WATCHDOG_SECONDS
+    assert check.pytest_watchdog_seconds("contract", 10_000) == check.RELEASE_WATCHDOG_SECONDS
 
 
 def test_a_nonsense_count_falls_back_to_the_floor() -> None:
     for bad in (None, -1, "12", 1.5, True):
-        assert check.pytest_watchdog_seconds("integration", bad) == check.DEFAULT_WATCHDOG_SECONDS
+        assert check.pytest_watchdog_seconds("contract", bad) == check.DEFAULT_WATCHDOG_SECONDS
+        assert check.pytest_watchdog_seconds("integration", bad) == (
+            check.INTEGRATION_WATCHDOG_SECONDS)
 
 
 # --------------------------------------------------------------------------
