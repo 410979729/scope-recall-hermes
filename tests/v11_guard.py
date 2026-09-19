@@ -204,6 +204,33 @@ def _check_path(value, writing=False):
     raise PermissionError("TEST_BOUNDARY: protected data access")
 
 
+def _anchored(value, dir_fd=None):
+    """Anchor a possibly dir_fd-relative audit path before resolving it.
+
+    The fd-based ``shutil.rmtree`` on POSIX passes bare names plus a
+    directory descriptor to ``os.remove``/``os.rmdir``; judging a bare name
+    against the process cwd would assess the wrong file. An fd anchor is
+    re-anchored through ``/proc/self/fd`` (POSIX); a path anchor is joined.
+    Absolute values pass through untouched, and Windows' path-based rmtree
+    always passes absolute paths, so this only widens what the hook accepts,
+    never what it denies.
+    """
+
+    if dir_fd is None or not isinstance(value, (str, bytes, os.PathLike)):
+        return value
+    logical = os.fsdecode(value)
+    if Path(logical).is_absolute():
+        return value
+    try:
+        if isinstance(dir_fd, int):
+            anchor = Path(f"/proc/self/fd/{dir_fd}")
+        else:
+            anchor = Path(os.fsdecode(dir_fd))
+        return os.path.join(str(anchor), logical)
+    except (TypeError, ValueError, OSError):
+        return value
+
+
 def _audit(event, args):
     if event.startswith("socket."):
         if _ALLOW_LOOPBACK and event == "socket.__new__":
@@ -227,10 +254,10 @@ def _audit(event, args):
     if event in {"os.listdir", "os.scandir", "os.chdir"}:
         _check_path(args[0])
     if event in {"os.remove", "os.rmdir", "os.mkdir", "os.chmod", "os.utime"}:
-        _check_path(args[0], True)
+        _check_path(_anchored(args[0], args[1] if event in {"os.remove", "os.rmdir"} and len(args) > 1 else None), True)
     if event in {"os.rename", "os.link", "os.symlink"}:
-        _check_path(args[0], True)
-        _check_path(args[1], True)
+        _check_path(_anchored(args[0], args[-2] if event == "os.rename" and len(args) > 2 else None), True)
+        _check_path(_anchored(args[1], args[-1] if event == "os.rename" and len(args) > 2 else None), True)
 
 
 sys.addaudithook(_audit)

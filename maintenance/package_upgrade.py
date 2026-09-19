@@ -89,7 +89,17 @@ def replace_package(python, wheel, backup, *, source_quiesced=False, uv=None) ->
     """
     if source_quiesced is not True:
         raise PackageUpgradeError('stop_all_target_writers_and_restarters_first')
-    python = _safe_interpreter(python, error_type=PackageUpgradeError)
+    # Validate the interpreter's resolved target, then keep executing through
+    # the launcher the caller passed: a venv's ``bin/python`` symlink is how
+    # CPython finds the venv's ``pyvenv.cfg``, and a probe run with the
+    # resolved base interpreter reports the base prefix instead of the venv
+    # (observed on Ubuntu's hostedtoolcache layout), which then misjudges the
+    # helper's containment. The resolved path is still the safety anchor.
+    launcher = Path(python).expanduser()
+    if not launcher.is_absolute():
+        launcher = Path.cwd() / launcher
+    _safe_interpreter(launcher, error_type=PackageUpgradeError)
+    python = launcher
     wheel = _safe_path(wheel, must_exist=True, error_type=PackageUpgradeError)
     backup = _safe_path(backup, error_type=PackageUpgradeError)
     # Never silently choose another agent's PATH wrapper. The operator selects
