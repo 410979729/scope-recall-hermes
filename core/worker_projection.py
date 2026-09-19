@@ -252,7 +252,7 @@ def _process_embed(
         try:
             prepared = prepare(subject, remaining_seconds=_remaining(started, clock, budget))
         except Exception as exc:
-            return finish(*_port_failure(exc))
+            return finish(*_port_failure(exc), error_detail=_refusal_field(exc))
     if _remaining(started, clock, budget) <= 0:
         return _deadline_result(storage, context, item)
 
@@ -300,7 +300,7 @@ def _process_embed(
     except Exception as exc:
         if dependency_changed and isinstance(exc, ContractError):
             return finish("retry", "memory_epoch_changed")
-        return finish(*_port_failure(exc))
+        return finish(*_port_failure(exc), error_detail=_refusal_field(exc))
     now = clock.utc_now()
     if _remaining(started, clock, budget) <= 0:
         return _deadline_result(storage, context, item)
@@ -329,6 +329,17 @@ def _process_rebuild_projection(storage, clock, context, item, *, started: float
             # inaccessible claim revision is obsolete, not an indexing failure.
             return _mark_obsolete(tx, item, now)
         return _work_result(tx.work.complete(*item.lease, now=now))
+
+
+def _refusal_field(exc: BaseException) -> str | None:
+    """The field a port named when it refused, so the receipt says why.
+
+    ``storage_unavailable`` alone told an operator nothing when the companion
+    simply had no fenced write (#85); the contract field it carried never
+    reached ``work_error_details``.
+    """
+    field = getattr(exc, "field", None) if isinstance(exc, ContractError) else None
+    return field if isinstance(field, str) and field and field != "payload" else None
 
 
 def _storage_code(exc: BaseException) -> str:

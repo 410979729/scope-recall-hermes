@@ -13,7 +13,7 @@ import sqlite3
 import stat
 import threading
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 from . import VectorStore, VectorStoreCompatibilityError
 
@@ -275,6 +275,30 @@ class SQLiteBruteForceVectorStore(VectorStore):
                     ),
                 )
             conn.commit()
+
+    def fenced_upsert_records(
+        self, rows: Iterable[dict[str, Any]], *, guard: Callable[[], bool], remaining_seconds: float,
+    ) -> bool:
+        """Write ``rows`` as one group, only if ``guard`` still approves under this store's lock.
+
+        The worker publishes every embedding through this fenced form (see
+        ``adapters.lance.LanceIndexWriter``), so a companion without it cannot
+        be written to at all.  The store's own lock is the fence boundary: the
+        guard is evaluated with the write already serialized, a refusing guard
+        writes nothing, and ``upsert_records`` commits the group once.
+        """
+        if not callable(guard):
+            raise TypeError("guard must be callable")
+        if type(remaining_seconds) not in (int, float) or not math.isfinite(float(remaining_seconds)) or remaining_seconds <= 0:
+            raise RuntimeError("vector fence deadline exhausted")
+        payload = list(rows)
+        if not payload:
+            return True
+        with self._lock:
+            if not guard():
+                return False
+            self.upsert_records(payload)
+        return True
 
     def delete_by_ids(self, ids: list[str]) -> None:
         ids = [str(item) for item in ids if str(item)]

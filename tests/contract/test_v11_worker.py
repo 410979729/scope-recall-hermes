@@ -1496,3 +1496,29 @@ def test_M39_worker_expired_intention_without_valid_to_stays_proposed(worker_app
         refs = tx.claims.list_refs(predicate="散热检查")
     assert refs
     assert core.claim_history(ctx, refs[0])[-1].state == "proposed"
+
+
+def test_a_port_refusal_names_its_reason(worker_app):
+    """A companion without a fenced write refused every embed with
+    STORAGE_UNAVAILABLE and the field ``fenced_upsert_unsupported``; only the
+    code reached the operator (#85).  The field is recorded with it."""
+    core, ctx, clock = worker_app
+    capture(core, ctx, "TEST 向量拒绝。")
+    with sqlite3.connect(core.storage.path) as conn:
+        conn.execute("UPDATE work_items SET state='done' WHERE work_type='consolidate'")
+        conn.commit()
+
+    class RefusingEmbed:
+        def prepare_source(self, source, *, remaining_seconds=1.0):
+            return {"ref": source.ref}
+
+        def publish_source(self, prepared, *, source, lease_token, lease_owner, lease_guard, remaining_seconds=1.0):
+            raise ContractError("STORAGE_UNAVAILABLE", "fenced_upsert_unsupported")
+
+    receipt = core.drain_worker(ctx, max_items=1, remaining_seconds=5, owner_id="embed-refused", embed=RefusingEmbed())
+    assert receipt.retried == 1 and receipt.items[0].error_code == "STORAGE_UNAVAILABLE"
+    with sqlite3.connect(core.storage.path) as conn:
+        detail = conn.execute(
+            "SELECT stage,error_code,error_field FROM work_error_details ORDER BY detail_id DESC LIMIT 1"
+        ).fetchone()
+    assert detail == ("process", "STORAGE_UNAVAILABLE", "fenced_upsert_unsupported")
