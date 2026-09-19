@@ -246,6 +246,34 @@ def _anchored(value, dir_fd=None):
         return value
 
 
+def _anchored_dir(value, dir_fd=None):
+    """Locate the directory that an fd-relative delete acts within.
+
+    Deleting is a write to the containing directory, not to the unlinked
+    name: a venv's ``bin/python3.12`` is a symlink to the real
+    interpreter, so resolving the joined name would judge the interpreter's
+    install prefix instead of the directory the test owns and wrongly deny
+    the unlink. Return the directory itself (its ``/proc`` anchor with the
+    kernel's ``(deleted)`` suffix stripped, or the dir_fd path); the
+    absolute joined name is returned unchanged for path-based callers.
+    """
+
+    if dir_fd is None or not isinstance(value, (str, bytes, os.PathLike)):
+        return value
+    logical = os.fsdecode(value)
+    if Path(logical).is_absolute():
+        return value
+    try:
+        if isinstance(dir_fd, int):
+            anchor = os.readlink(f"/proc/self/fd/{dir_fd}")
+            if anchor.endswith(" (deleted)"):
+                anchor = anchor[: -len(" (deleted)")]
+            return anchor
+        return os.fsdecode(dir_fd)
+    except (TypeError, ValueError, OSError):
+        return value
+
+
 def _audit(event, args):
     if event.startswith("socket."):
         if _ALLOW_LOOPBACK and event == "socket.__new__":
@@ -268,8 +296,18 @@ def _audit(event, args):
         _check_path(args[0], writing)
     if event in {"os.listdir", "os.scandir", "os.chdir"}:
         _check_path(args[0])
-    if event in {"os.remove", "os.rmdir", "os.mkdir", "os.chmod", "os.utime"}:
-        _check_path(_anchored(args[0], args[1] if event in {"os.remove", "os.rmdir"} and len(args) > 1 else None), True)
+    if event in {"os.remove", "os.rmdir"}:
+        # A delete writes the containing directory; judge that directory,
+        # not the resolved name (which may be a symlink to anywhere).
+        dir_fd = args[1] if len(args) > 1 else None
+        anchored = _anchored_dir(args[0], dir_fd)
+        if anchored is not args[0] and dir_fd is not None:
+            _check_path(anchored, True)
+        else:
+            parent = Path(os.fsdecode(args[0]) if isinstance(args[0], (str, bytes, os.PathLike)) else ".").parent
+            _check_path(str(parent) if str(parent) else ".", True)
+    if event in {"os.mkdir", "os.chmod", "os.utime"}:
+        _check_path(args[0], True)
     if event in {"os.rename", "os.link", "os.symlink"}:
         _check_path(_anchored(args[0], args[-2] if event == "os.rename" and len(args) > 2 else None), True)
         _check_path(_anchored(args[1], args[-1] if event == "os.rename" and len(args) > 2 else None), True)
