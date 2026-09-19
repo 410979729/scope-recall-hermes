@@ -198,6 +198,15 @@ def _check_path(value, writing=False):
     if path == Path(os.devnull).resolve():
         return
     if writing and not path.is_relative_to(_ISOLATED):
+        # Diagnostics stay on stderr: an OSError's filename rendering
+        # replaces the message in shutil's re-raise chain, so the judged
+        # path must be printed, not only carried.
+        import sys as _sys
+        print(
+            f"TEST_BOUNDARY deny: writing={writing} isolated={_ISOLATED} judged={path} raw={value!r} dir_fd={dir_fd!r}",
+            file=_sys.stderr,
+            flush=True,
+        )
         raise PermissionError(
             "TEST_BOUNDARY: write outside isolated test directory (%s)" % path
         )
