@@ -65,7 +65,9 @@ def plan(config_path, python_executable, *, user_id, env_file=None):
     node(action, "Arguments", subprocess.list2cmdline(["-I", "-B", "-m", "scope_recall.runtime.resume_entry", "--config", str(config_path.resolve())]))
     node(action, "WorkingDirectory", str(config.binding.data_directory))
     return dict(installation_id=config.binding.installation_id, enabled=True, task_name=name,
-                config_path=str(config_path.resolve()), python_executable=str(python.resolve()),
+                # The interpreter is recorded as given: the task must start the
+                # venv launcher, not the base interpreter its symlink points at.
+                config_path=str(config_path.resolve()), python_executable=str(python),
                 env_file=str(Path(env_file).resolve()) if env_file else None,
                 trigger="user_logon_and_every_5_minutes", xml=ET.tostring(task, encoding="unicode"))
 

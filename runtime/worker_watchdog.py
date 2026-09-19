@@ -8,6 +8,7 @@ from io import StringIO
 import json
 import os
 from pathlib import Path
+import re
 import signal
 import subprocess
 import sys
@@ -17,6 +18,9 @@ import time
 from .validation import utc_now
 from .worker_entry import load_config, persist_worker_status
 from .worker_launch import detached_creationflags, reap_process, taskkill_tree, validate_wake_arguments
+
+#: ``ExceptionClass: message`` -- the last line of a traceback, and nothing else.
+_TRACEBACK_TAIL = re.compile(r"^[A-Za-z_][\w.]*(?:Error|Exception|Exit|Interrupt)\b.*")
 
 #: Seconds an owned child may outlive the deadline it was handed.  A child that
 #: honours that deadline has already written its receipt and exited; one still
@@ -274,6 +278,22 @@ def _wait_for_exit(child: subprocess.Popen[str], deadline: float) -> bool:
     return True
 
 
+def _failure_reason(stderr: str) -> str | None:
+    """The one line of a child's stderr that names why it died, or None.
+
+    Only the last line of a Python traceback qualifies (``ModuleNotFoundError:
+    No module named 'scope_recall'``): bounded, no paths, no model text.  A
+    line that looks like a credential is dropped rather than recorded.
+    """
+    from ..core.secret_patterns import contains_secret_like_text
+
+    for line in reversed(stderr.splitlines()):
+        line = line.strip()
+        if _TRACEBACK_TAIL.match(line) and not contains_secret_like_text(line):
+            return line[:200]
+    return None
+
+
 def _relay_output(stdout: str, stderr: str, result_sink: dict | None) -> None:
     if result_sink is not None and stdout.strip():
         try:
@@ -345,6 +365,9 @@ def _run_once(config_path: Path, python_executable: Path, *, cleanup_config: boo
             tree_stopped = True
             payload = {**_degraded("worker_watchdog_timeout"), "owner_id": config.owner_id,
                        "installation_id": config.binding.installation_id}
+            reason = _failure_reason(output.collect(timeout=1.0)[1])
+            if reason:
+                payload["worker_error"] = reason
             return report(payload, 124)
         # Descendants may have inherited the pipes and outlived their parent.
         # Stop the owned tree rather than waiting on them for EOF.
@@ -354,7 +377,13 @@ def _run_once(config_path: Path, python_executable: Path, *, cleanup_config: boo
         reap_process(child)
         _relay_output(stdout, stderr, result_sink)
         if child.returncode and not stdout.strip():
-            save({"status": "degraded", "capability_gaps": ["worker_process_failed"]}, int(child.returncode))
+            # A child that died before its receipt is otherwise a bare exit
+            # code; the reason it printed is the only diagnosis there is (#87).
+            failure = {"status": "degraded", "capability_gaps": ["worker_process_failed"]}
+            reason = _failure_reason(stderr)
+            if reason:
+                failure["worker_error"] = reason
+            save(failure, int(child.returncode))
         return int(child.returncode or 0)
     except Exception as exc:
         return report(_degraded(f"watchdog_error:{type(exc).__name__}"), 1)
@@ -425,7 +454,12 @@ def main(argv: list[str] | None = None) -> int:
     if not config_raw.is_absolute() or not python_raw.is_absolute():
         raise SystemExit("absolute paths required")
     config_path = config_raw.resolve()
-    python_executable = python_raw.resolve()
+    # The interpreter is executed exactly as given.  Resolving it follows a
+    # venv's bin/python symlink to the base interpreter, which then starts
+    # without the venv on sys.path and cannot import the package it was asked
+    # to run (#87); Windows venvs copy the interpreter, which is why only POSIX
+    # installs saw it.
+    python_executable = python_raw
     if os.name != "nt":
         # WorkerProcess.terminate() signals the watchdog's process group.
         # Run the finally block to reap the child's separate process group.

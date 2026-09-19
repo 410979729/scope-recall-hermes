@@ -8,6 +8,8 @@ import subprocess
 import sys
 import time
 
+import pytest
+
 from scope_recall.adapters.codex import install_codex_scope_recall
 from scope_recall.adapters.runtime_wiring import write_ephemeral_worker_config
 from scope_recall.runtime.worker_entry import FINALIZE_MARGIN_SECONDS
@@ -330,3 +332,88 @@ def test_worker_config_cleanup_is_explicit_and_bounded(tmp_path: Path):
     owned.communicate(timeout=5.0)
     assert persistent.exists()
     assert not ephemeral.exists()
+
+
+# --- #87: the interpreter is executed as given ---------------------------------
+
+def _linked_interpreter(tmp_path: Path) -> Path:
+    """The interpreter reached through a link, as a venv's bin/python is on POSIX.
+
+    A Windows account without symlink privilege gets a directory junction to
+    the interpreter's folder instead; ``Path.resolve`` follows both the same way.
+    """
+    from plugin_source import linked_interpreter
+
+    link = linked_interpreter(tmp_path)
+    if link is None:
+        pytest.skip("no link to an interpreter can be created here")
+    return link
+
+
+def test_main_hands_run_the_interpreter_path_as_given(tmp_path: Path, monkeypatch):
+    """A venv's bin/python is a symlink to the base interpreter.  Resolving it
+    started the child outside the venv, where this package is not importable,
+    and every wake died in 60 ms with nothing but ``worker_process_failed``."""
+    link = _linked_interpreter(tmp_path)
+    config = tmp_path / "runtime.json"
+    config.write_text("{}", encoding="utf-8")
+    seen: dict[str, Path] = {}
+
+    def fake_run(config_path, python_executable, *, cleanup_config, after_pid=None, delay_seconds=0.0):
+        seen["python"] = python_executable
+        return 0
+
+    monkeypatch.setattr(worker_watchdog, "run", fake_run)
+    assert worker_watchdog.main(["--config", str(config), "--python", str(link)]) == 0
+    assert seen["python"] == link
+    assert seen["python"] != link.resolve()
+
+
+def test_autostart_records_the_interpreter_path_as_given(tmp_path: Path):
+    from scope_recall.maintenance import autostart
+
+    link = _linked_interpreter(tmp_path)
+    config_path, _ = _runtime_payload(tmp_path, drain_seconds=5.0)
+    payload = json.loads(config_path.read_text(encoding="utf-8"))
+    bound = Path(payload["binding"]["data_directory"]) / "runtime-config.json"
+    bound.write_text(json.dumps(payload), encoding="utf-8")
+    prepared = autostart.plan(bound, link, user_id="TEST-user")
+    assert prepared["python_executable"] == str(link)
+    assert str(link.resolve()) not in prepared["python_executable"]
+
+
+def test_a_child_that_dies_before_its_receipt_names_the_reason(tmp_path: Path, monkeypatch, capsys):
+    """The failure above left ``exit_code: 1`` and no cause anywhere: the child's
+    stderr was read and dropped.  The last line of its traceback is the one
+    line worth keeping, bounded, and it reaches the status file and the doctor."""
+    from scope_recall.maintenance.doctor import run_doctor
+
+    config_path, _ = _runtime_payload(tmp_path, drain_seconds=5.0)
+    payload = json.loads(config_path.read_text(encoding="utf-8"))
+    payload["supervisor_enabled"] = False
+    config_path.write_text(json.dumps(payload), encoding="utf-8")
+    data = Path(payload["binding"]["data_directory"])
+    real_popen = subprocess.Popen
+
+    def spawn(command, **kwargs):
+        if len(command) > 2 and str(command[2]).endswith("_worker_bootstrap.py"):
+            command = [command[0], "-c",
+                       "import sys; sys.stdin.read(1); raise ModuleNotFoundError(\"No module named 'scope_recall'\")"]
+        return real_popen(command, **kwargs)
+
+    monkeypatch.setattr(worker_watchdog.subprocess, "Popen", spawn)
+    assert worker_watchdog.run(config_path, Path(sys.executable), cleanup_config=False) == 1
+    capsys.readouterr()
+    status = json.loads((data / "runtime-worker-status.json").read_text(encoding="utf-8"))
+    assert status["exit_code"] == 1 and status["capability_gaps"] == ["worker_process_failed"]
+    assert status["worker_error"] == "ModuleNotFoundError: No module named 'scope_recall'"
+    report = run_doctor(host="codex", instance_root=tmp_path / "install")
+    assert report.worker_status["worker_error"] == status["worker_error"]
+    assert "worker_last_exit_failed" in report.capability_gaps
+
+
+def test_only_a_traceback_tail_is_kept_as_the_reason():
+    assert worker_watchdog._failure_reason("Traceback (most recent call last):\n  File x\nKeyError: 'k'\n") == "KeyError: 'k'"
+    assert worker_watchdog._failure_reason("just some chatter\n/some/path: not a reason\n") is None
+    assert worker_watchdog._failure_reason("") is None
+    assert worker_watchdog._failure_reason("RuntimeError: token sk-ant-api03-" + "A" * 40 + "\n") is None

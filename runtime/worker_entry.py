@@ -180,6 +180,10 @@ def _persist_worker_status_unlocked(config: RuntimeInstanceConfig, payload: dict
             "pending_work", "failed_work", "terminal_failed_work",
             "oldest_pending_at") if key in payload}
     safe["capability_gaps"] = [str(value)[:120] for value in payload.get("capability_gaps", ())][:16]
+    # One bounded line naming why a child died, chosen by the watchdog from the
+    # tail of a traceback; never the stream itself.
+    if isinstance(payload.get("worker_error"), str) and payload["worker_error"].strip():
+        safe["worker_error"] = payload["worker_error"].strip()[:200]
     safe["unavailable_work_types"] = [str(value)[:32] for value in payload.get("unavailable_work_types", ())][:4]
     for key in ("ingress_replayed", "ingress_cancelled", "source_only"):
         if type(payload.get(key)) is int:

@@ -183,13 +183,15 @@ def _require_absolute(path: Path, field: str) -> Path:
 
 
 def _require_interpreter(path: Path, field: str) -> Path:
-    """Resolve an interpreter path to its real target before validating it.
+    """Validate an interpreter through its real target, but keep the path as given.
 
-    Managed interpreter layouts (hostedtoolcache, pyenv, homebrew) expose
-    ``python`` as a symlink; the chain check must inspect the destination,
-    not reject every launcher link. A redirect inside the resolved chain is
-    still rejected, so a trusted interpreter cannot smuggle a redirected
-    file system into the plan.
+    Managed interpreter layouts (hostedtoolcache, pyenv, homebrew) and every
+    POSIX venv expose ``python`` as a symlink; the chain check inspects the
+    destination rather than rejecting every launcher link, and a redirect
+    inside the resolved chain is still refused.  What is recorded and later
+    executed -- hooks, MCP launchers, the autostart task, the worker -- is the
+    link itself: a venv's ``bin/python`` started by its resolved target runs
+    without the venv on ``sys.path`` and cannot import this package (#87).
     """
 
     expanded = _absolute(path, field)
@@ -197,7 +199,7 @@ def _require_interpreter(path: Path, field: str) -> Path:
     _reject_symlink_chain(resolved)
     if not resolved.is_file():
         raise InstallError(f"{field} must reference an existing file")
-    return resolved
+    return expanded
 
 
 def _safe_interpreter(path: Path, *, error_type=InstallError) -> Path:

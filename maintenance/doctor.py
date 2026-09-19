@@ -316,7 +316,7 @@ _WORKER_STATUS_KEYS = frozenset({
     "status", "installation_id", "started_at", "finished_at", "exit_code", "worker_pid",
     "last_success_at", "completed", "failed", "retried", "deferred", "recovered",
     "daily_queue_used", "capability_gaps", "unavailable_work_types",
-    "pending_work", "failed_work", "oldest_pending_at",
+    "pending_work", "failed_work", "oldest_pending_at", "worker_error",
 })
 
 
@@ -438,8 +438,15 @@ def _check_host_registration(report: DoctorReport, instance: Path, python_execut
 
 
 def _check_python_package(report: DoctorReport, python: Path) -> dict[str, Any]:
-    """Measure the package the target interpreter loads; returns its probe."""
-    python = _require_absolute(python, "python_executable")
+    """Measure the package the target interpreter loads; returns its probe.
+
+    The interpreter is probed as given: resolving a venv's ``bin/python``
+    symlink would probe the base interpreter, which has no venv on its path
+    and would report the package missing from an install that is fine (#87).
+    """
+    python = python.expanduser()
+    if not python.is_absolute():
+        raise ValueError("python_executable must be absolute")
     if not python.is_file():
         report.capability_gaps.append("python_executable_missing")
         _record(report, "python_executable", "missing")

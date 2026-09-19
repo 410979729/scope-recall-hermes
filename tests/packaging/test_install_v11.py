@@ -1283,3 +1283,27 @@ def test_package_health_doctor_three_way_versions(tmp_path, monkeypatch):
         assert gap not in check().capability_gaps
     record_path.unlink()
     assert check().package_health["version_mismatch"]["status"] == "incomplete"
+
+
+def test_plan_install_keeps_a_symlinked_interpreter_as_given(tmp_path):
+    """On POSIX a venv's ``bin/python`` is a symlink to the base interpreter.
+    Recording its target meant hooks, the MCP launcher and the autostart task
+    started an interpreter with no venv on its path, which cannot import this
+    package (#87).  The chain is still validated through the target."""
+    from plugin_source import linked_interpreter
+
+    link = linked_interpreter(tmp_path)
+    if link is None:
+        pytest.skip("no link to an interpreter can be created here")
+    instance, plugin, project = _install_paths(tmp_path, host="codex")
+    plan = plan_install(host="codex", target_plugin_dir=plugin, instance_root=instance, project_root=project,
+                        agent_id="TEST-venv-link", python_executable=link)
+    assert Path(plan.python_executable) == link
+    apply_install(plan)
+    hooks = json.loads((plugin / "hooks" / "hooks.json").read_text(encoding="utf-8"))
+    mcp = json.loads((plugin / ".mcp.json").read_text(encoding="utf-8"))
+    assert mcp["mcpServers"]["scope-recall"]["command"] == str(link)
+    commands = [hook["command"] for group in hooks["hooks"].values() for entry in group for hook in entry["hooks"]]
+    assert commands and all(str(link) in command for command in commands)
+    resolved = str(link.resolve())
+    assert resolved != str(link) and all(resolved not in command for command in commands)
