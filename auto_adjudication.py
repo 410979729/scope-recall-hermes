@@ -157,12 +157,18 @@ def _checkpoint_l4_progress(
     hermes_home: Path,
     db_path: Path,
     receipts: Sequence[L4ReviewReceipt],
+    admission_stamp: dict[str, Any] | None = None,
     batch_id: str,
     at: str,
     queue_id: str,
     last_selected_id: str,
 ) -> None:
-    """Persist a bounded L4 receipt/cursor checkpoint in one short transaction."""
+    """Persist a bounded L4 receipt/cursor checkpoint in one short transaction.
+
+    An optional admission stamp (metadata-only, never a lifecycle change)
+    commits atomically with its receipt, so a verdict can never outlive the
+    evidence it was grounded in.
+    """
 
     with holding_truth_writer_lease(
         Path(hermes_home) / "scope-recall", role="auto_adjudication_progress"
@@ -181,6 +187,24 @@ def _checkpoint_l4_progress(
                 queue_id=queue_id,
                 last_selected_id=last_selected_id,
             )
+            if admission_stamp:
+                stamp_memory_id = str(admission_stamp.get("memory_id") or "")
+                stamp_updates = admission_stamp.get("updates") or {}
+                if stamp_memory_id and isinstance(stamp_updates, dict) and stamp_updates:
+                    metadata_row = write_conn.execute(
+                        "SELECT metadata FROM memories WHERE id = ?",
+                        (stamp_memory_id,),
+                    ).fetchone()
+                    if metadata_row is not None:
+                        stamped = load_metadata(metadata_row["metadata"])
+                        stamped.update(stamp_updates)
+                        write_conn.execute(
+                            "UPDATE memories SET metadata = ? WHERE id = ?",
+                            (
+                                json.dumps(stamped, ensure_ascii=False),
+                                stamp_memory_id,
+                            ),
+                        )
             write_conn.commit()
         except Exception:
             if write_conn.in_transaction:
@@ -205,7 +229,13 @@ def _run_l4_advisory(
     scope_ids: Sequence[str],
     all_scopes: bool,
 ) -> None:
-    """Review held candidates without owning truth-writer or lifecycle authority."""
+    """Review held candidates; verdicts advise and may stamp admission review.
+
+    A "supported" verdict stamps ``admission_reviewed_at`` so the next
+    deterministic-lane run can promote the row under its own confidence and
+    importance thresholds. Lifecycle transitions remain owned by the
+    deterministic lanes; untrusted model output never moves lifecycle alone.
+    """
 
     conn = connect_memory_db(db_path, apply=False, timeout=30.0)
     conn.row_factory = sqlite3.Row
@@ -377,6 +407,36 @@ def _run_l4_advisory(
             summary["l4"]["reviewed"] += 1
             summary["l4"][verdict] += 1
             summary["l4"]["advisory_only"] += 1
+            admission_stamp = None
+            if verdict == "supported":
+                candidate_meta = load_metadata(row.get("metadata"))
+                candidate_admission = candidate_meta.get("automatic_admission")
+                time_sensitive = bool(
+                    isinstance(candidate_admission, dict)
+                    and candidate_admission.get("time_sensitive")
+                )
+                freshness_state = str(
+                    candidate_meta.get("freshness_status")
+                    or candidate_meta.get("fact_freshness_status")
+                    or ""
+                ).strip().lower()
+                if not (time_sensitive and freshness_state != "current"):
+                    # Grounded-review pass of the admission gate. Metadata-only:
+                    # the next deterministic-lane run still applies its own
+                    # confidence/importance thresholds before any promotion.
+                    admission_stamp = {
+                        "memory_id": memory_id,
+                        "updates": {
+                            "candidate_reviewed_at": at,
+                            "admission_reviewed_at": at,
+                            "l4_admission_review": {
+                                "verdict": verdict,
+                                "reviewed_at": at,
+                                "fingerprint": fingerprint,
+                                "batch_id": batch_id,
+                            },
+                        },
+                    }
             receipt = L4ReviewReceipt(
                 memory_id=memory_id,
                 scope_id=str(row.get("scope_id") or ""),
@@ -389,6 +449,7 @@ def _run_l4_advisory(
                     hermes_home=hermes_home,
                     db_path=db_path,
                     receipts=(receipt,),
+                    admission_stamp=admission_stamp,
                     batch_id=batch_id,
                     at=at,
                     queue_id=queue_id,
