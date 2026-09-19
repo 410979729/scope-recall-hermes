@@ -198,7 +198,9 @@ def _check_path(value, writing=False):
     if path == Path(os.devnull).resolve():
         return
     if writing and not path.is_relative_to(_ISOLATED):
-        raise PermissionError("TEST_BOUNDARY: write outside isolated test directory")
+        raise PermissionError(
+            "TEST_BOUNDARY: write outside isolated test directory (%s)" % path
+        )
     if any(path.is_relative_to(root) for root in (_ROOT, _ISOLATED, *_RUNTIME, _SYSTEM)):
         return
     raise PermissionError("TEST_BOUNDARY: protected data access")
