@@ -424,6 +424,12 @@ Thank you also to the people who sent code: the embedder connection retry and ba
 
 ## [Unreleased]
 
+### Scope Recall 3.1.1rc1 two reports from a Linux install - 2026-09-19
+
+- The `sqlite-bruteforce` companion can be published to. The worker writes every embedding through the fenced form of the index writer, and only the LanceDB driver implemented it, so on the documented no-extra fallback -- and on every host where LanceDB cannot load -- each embed item failed with a bare `storage_unavailable` and semantic recall never became available (#85, reported by 849506054). `SQLiteBruteForceVectorStore.fenced_upsert_records` evaluates the guard under the store's own lock and commits the group once. A port's refusal now also carries its field into `work_error_details`, so a `fenced_upsert_unsupported` is visible to the operator instead of collapsing to the code.
+- An interpreter path is executed as given, never as resolved. On POSIX a venv's `bin/python` is a symlink to the base interpreter; the watchdog, the installer (hook and MCP launchers, receipts), the autostart control and the doctor's package probe all resolved it, so the worker started outside the venv and died with `ModuleNotFoundError` on every wake, and the only trace was `worker_process_failed` (#87, reported by 849506054). Validation still follows the link to check the chain. The last line of a child's traceback now reaches `runtime-worker-status.json` as `worker_error`, bounded and secret-screened, and the doctor reports it.
+- The version moves to `3.1.1rc1`: the packaging gate refuses a tree that carries an already published version, so every change after the `v3.1.0` tag needs this.
+
 ### Scope Recall 3.1.0rc42 a drain spends its seconds on the work - 2026-09-18
 
 Found by timing every SQL statement, then every second, of one pass on an instance with 150,000 queued embeddings. Of 20 seconds, 8.7 went to five whole-store statistics queries that ran twice, 2.5 to the one embedding request, 1.0 to 32 vector commits, and every statement that was actually about an item took under half a millisecond. Then the owner of that pass turned out to be waiting 91 seconds after it finished. The queue was not slow because SQLite was too small, or because the provider throttled anything: it was slow because each pass re-counted the backlog it was there to shrink, and because nobody read what the pass said until its window ran out.

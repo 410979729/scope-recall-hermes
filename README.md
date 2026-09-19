@@ -2,7 +2,8 @@
 
 Scope Recall v3 is a bounded local memory core with SQLite as the authority and rebuildable vector companions. It provides host adapters for Hermes and Codex, including Codex MCP tools when the optional `codex` extra is installed. The public package is `hermes-scope-recall`; the Python import is `scope_recall`; the host wrapper identity remains `scope-recall`.
 
-This checkout is `3.1.0`. It is a rebuild rather than a patch on 2.0: production
+This checkout is `3.1.1rc1`, the candidate line after the `3.1.0` release.
+3.1 is a rebuild rather than a patch on 2.0: production
 code went from 141,044 lines to 48,289, memory now accumulates evidence before a
 fact is written rather than judging one sentence on sight, and hosts sit behind
 adapters instead of the core being shaped around Hermes. The release notes are
