@@ -2,6 +2,426 @@
 
 All notable changes to `scope-recall` will be documented in this file.
 
+## [3.1.0] - 2026-09-18
+
+We are sorry this took so long. The last release, 2.0.1, went out at the end of August, and it has been quiet here since, because we did not keep patching 2.0. We rebuilt the whole project. Production code went from 141,044 lines down to 48,289.
+
+If you are on 2.0.1 today, read section 9 first. Your old memory database cannot be opened directly. It has to go through a migration, and there are a few places where that can go wrong, so we have written it out in detail.
+
+---
+
+### 1. What gets remembered
+
+Here is a concrete example.
+
+You tell the agent: "Let's use PostgreSQL for this project."
+
+2.0 would decide right then whether that counted as a fact about you. If it decided yes, it stored it: this person uses PostgreSQL. Next time you started a different project, it would assume the same thing. But what you actually said only applied to that one project.
+
+3.1.0 works differently. The sentence is stored word for word first, and nothing judges it yet. If you mention it again elsewhere, or something else supports it, only then does it get written down as a preference. If you change your mind later and say "actually, let's switch to SQLite", the new statement becomes the current version, and what you said before stays in the record where you can still look it up.
+
+What decides it is whether the supporting passage itself is enough. When one source is enough on its own, that is all it takes. When one source falls just short, another independent source saying the same thing can carry it, and two sources are needed.
+
+There are cases where adding sources does not help: the sentence is a question, it is hypothetical, it is repeating what somebody else said, or the thing it is about does not actually appear in the text. Those are not short on weight, they are the wrong kind.
+
+If something new turns up later, the fact is judged again. If two records turn out to be about the same thing, they are merged into one.
+
+You also do not have to ask for any of this. Relevant memory shows up in front of the model by itself. You do not search your own memory before answering somebody's question, and the agent should not have to either.
+
+---
+
+### 2. What a fact looks like now
+
+This is what used to be stored:
+
+```
+The user likes black.
+```
+
+This is what is stored now:
+
+```
+Fact:     this person's visual preference is a black palette
+From:     which sentence, in which design discussion
+When:     when that sentence was said
+Version:  which revision this is, and what the previous one said
+```
+
+When the information changes, the new version takes over from the old one, instead of leaving two records that contradict each other.
+
+Two other kinds of thing get stored alongside facts.
+
+One is the source. What you said, what the agent said, what a tool printed, documents you gave it — all kept as they were. Every fact knows which source it came out of.
+
+The other is task history. It records how a whole piece of work went, not just how it ended: what the goal was, what was done along the way, how many times the plan changed, where it stands now, what to watch out for next time.
+
+---
+
+### 3. Making sure it has not remembered wrong
+
+Every important memory keeps a line you can follow back: which source it came from, what the original words were, how many versions it has been through, what state it is in, whether it was deleted.
+
+One more thing that matters: what the model itself says does not become a fact directly.
+
+Before a fact is stored, the plugin checks whether the sentence it quotes really does appear in the source it claims. If that check fails, the fact is thrown away.
+
+---
+
+### 4. Six ways of looking, used together
+
+It does not rely on any single kind of search:
+
+- by exact reference
+- by keyword
+- by facts already confirmed
+- by how recent something is
+- by how things relate to each other
+- by meaning, which is the vector search
+
+What the vector search turns up are candidates, not memories you can use directly. Four more checks happen before anything reaches the agent: are the permissions right, is this the current version, has it been deleted, does it still hold as of now.
+
+If the answer genuinely is not there, it says it does not know, rather than giving you something that sounds about right.
+
+---
+
+### 5. You can correct it, and you can really delete things
+
+Over a long time the hard part is usually not remembering. It is what to do when something is wrong, and how to get rid of what you no longer want.
+
+When you correct something, the new content becomes the current version and the old version stays in the record.
+
+Deletion comes in two kinds. You can stop something appearing, or you can really remove it along with all the data attached to it. A deletion is a recorded operation, not a row quietly disappearing from a table. What you delete does not come back after the vector index is rebuilt.
+
+Also, incoming content does not become permanent memory straight away. Sources, candidates and confirmed facts are three separate layers, so what the agent said itself does not automatically turn into a fact about you.
+
+---
+
+### 6. It is not only Hermes any more
+
+2.0 was called Scope Recall for Hermes, and at the time it really could only work with Hermes.
+
+Hermes and Codex both work now, reading and writing the same memory. Something you said in Hermes you can ask about in Codex.
+
+The shape of it:
+
+```
+agent
+  │
+adapter
+  │
+Scope Recall core
+  │
+memory store
+```
+
+Claude Code and the DeepSeek harness are next, and we will keep adding after that. Supporting a new program now means writing an adapter, not changing anything in the memory layer.
+
+If you normally have more than one agent tool on the go, this is probably the change in this release that affects you most.
+
+---
+
+### 7. It holds up when left running
+
+Background processing moved out of the agent. In 2.0 it ran as threads inside the host program, so if the agent got stuck, memory processing stopped with it. Now it is a separate process, with a queue ceiling, leases, timeouts and a limited number of automatic recoveries, so it cannot pile up without bound. When the agent gets stuck, memory carries on.
+
+The vector index can be deleted and rebuilt. Nothing is stored only inside the index any more. The text is in SQLite and the index just points at it. In 2.0 the index held its own copy of the text, so deleting it meant losing content. Now you can wipe the index, change the embedding model, or move to another machine, and after a rebuild nothing is missing.
+
+Spending has its own ledger. Auxiliary model calls, token usage and charges are all recorded in it, so a long-running instance cannot spend an amount you never see.
+
+Permissions cannot be changed by chat content. Identity comes from host authentication, the installation configuration and the scope mapping, not from a guess by the model. Nobody can get it to see something it should not by typing a sentence.
+
+---
+
+### 8. The model's tools went from about 37 down to 8
+
+Half of 2.0's tools for the model were chores: remove duplicates, clean up, repair, purge, a set of playbook tools, and something that turned playbooks into skills automatically.
+
+3.1.0 gives the model eight tools, all to do with recalling and correcting memory: `recall`, `trace`, `inspect`, `profile`, `entity`, `revise`, `forget`, `status`. The chores became commands you run yourself.
+
+There is no "remember this" tool in that list. The model does not get to decide what should be stored. Storing happens automatically, facts form in the background afterwards, and the model can only recall, correct and delete.
+
+That automatic skill generator had to go. We checked what it produced, and about half of it just restated a skill that already existed with nothing behind it. Also, a tool that lets the model empty its own memory store is a tool that can lose your memory.
+
+There is a real downside: the model can no longer tidy up its own store. Removing duplicates and repairing things are yours to do.
+
+---
+
+### 9. Migrating a 2.0.1 memory database to 3.1.0
+
+Please read this whole section before you start. The migration itself is safe, and your old database is never modified, but there are a few places where things easily go wrong, and the results are easy to misread afterwards.
+
+#### 9.1 This is not an upgrade, it is a move
+
+There is no in-place upgrade, and that is on purpose. The two schemas are too different. A silent automatic conversion is the kind of thing you only discover was wrong months later, and by then you no longer have a clean old database.
+
+So migration is a separate, offline job that you can interrupt and continue. It reads from the old database and writes into a newly created empty instance. It never touches your old database, never goes online, and never calls a model.
+
+The 3.1.0 plugin does not read the old format at all. The code that reads it exists only inside this one-time migration tool. Once you have migrated there is no way back. The old database stays where it is as your own backup, but the new one cannot be turned back into the old format.
+
+#### 9.2 What you need before you start
+
+First, where the old database file is. Usually `memory.sqlite3`. If you changed the configuration, go by the file your host configuration actually points at.
+
+Second, an empty directory for the migration job. Job state, reports and receipts are written there. **Every fresh migration needs a new empty directory.** If the tool finds an existing report or receipt in there it refuses to run, saying it will not overwrite existing evidence. That is to stop you destroying the results of the previous attempt.
+
+Third, enough disk space. The job keeps an isolated copy of your old database inside the job directory, so allow at least twice the size of the old database.
+
+Fourth, time. How long it takes depends entirely on how much data you have, and we cannot promise a number here. If that matters to you, run it once on a copy first and see.
+
+#### 9.3 Step one: stop the old database being written to, and get a clean file
+
+**This is the step that most often goes wrong. Please read it carefully.**
+
+Shut down the agent, or at least stop the memory plugin. Migrating from a database that is still being written to is refused outright.
+
+But killing the process is not enough. In WAL mode, SQLite leaves `memory.sqlite3-wal` and `memory.sqlite3-shm` next to the database. If you just end the process, committed data may still be sitting in the WAL file and not yet written back into the main database. When that happens the migration tool refuses with:
+
+```
+offline source has a nonempty WAL or journal; use a consistent SQLite backup
+```
+
+This does not mean your data is damaged. It means this file cannot be used as offline input, because the tool will not risk missing committed content sitting in the WAL, and will not pretend that content is not there.
+
+**The right thing to do is make a consistent copy yourself.** Either let the old plugin shut down properly and write the WAL back, or use SQLite's own command:
+
+```
+sqlite3 <old memory.sqlite3> "VACUUM INTO '<copy path>'"
+```
+
+The copy this produces has no WAL and is internally consistent, and can be used as migration input directly. Use that copy for every step from here on, not the original file.
+
+Once you have the copy, **do not open the old database again, and do not let the agent start back up.** The reason is in 9.6.
+
+#### 9.4 Step two: install 3.1.0 fresh
+
+Install 3.1.0 the normal way for your host, and let the installer create an **empty** instance along with its installation manifest.
+
+**Do not point the new plugin at the old directory.** The old and new instances are two separate things and cannot share a directory.
+
+The migration tool reads the target directory, the agent identity and the installation identity out of that manifest, so you do not fill those values in by hand. For the same reason, the manifest has to be the one this new instance actually generated. It cannot be copied from another machine, and it cannot be hand-written.
+
+#### 9.5 Step three: prepare the job
+
+```
+scope-recall migrate prepare \
+    --source <the copy you made in 9.3> \
+    --job <empty job directory> \
+    --installation-manifest <installation.json> \
+    --host hermes
+```
+
+`--host` is either `hermes` or `codex`, whichever host you are actually going to use.
+
+This step changes no data. It reads the old database, takes inventory, and writes out a catalogue and the job state. It also computes and records digests of the source and the catalogue, which have to match later when you run it.
+
+**About scope mapping.** If your old database has only one scope, you usually do not need to supply anything. Scope identifiers that match exactly are mapped across automatically.
+
+If the old database has more than one scope, you need to supply a mapping file and point `--scope-map` at it:
+
+```
+scope-recall migrate prepare ... --scope-map <mapping.json>
+```
+
+The mapping file is a flat JSON object. Keys and values must all be strings. Each old scope maps to an audience the new instance **has actually been bound to**:
+
+```json
+{
+  "old scope identifier": "audience name on the new instance",
+  "another old scope": "another audience name"
+}
+```
+
+There are three things the tool will always refuse to do rather than decide for you:
+
+- It will not guess. If an old scope is left unmapped, it blocks.
+- It will not merge two old scopes into the same audience. Write it that way and it blocks.
+- It will not widen a permission it cannot read. If the old database has a permission meaning it cannot translate with confidence, it blocks and leaves you on the old installation rather than handing you something broader.
+
+Please do not edit the metadata in the database to get the migration through. The consequence of that is a permission quietly widened, and the report will not tell you.
+
+#### 9.6 Step four: run it
+
+```
+scope-recall migrate run --job <job directory> --source-quiesced
+```
+
+`--source-quiesced` is you telling the tool that the old database has stopped being written to. You do actually have to have done that.
+
+While it runs, the tool first makes an isolated backup of the old database inside the job directory, keeping it as it was, and only then starts converting.
+
+**There is an easy trap here:** between `prepare` and `run`, the old database file must not change. The tool recorded digests during `prepare` and checks them again during `run`. If they do not match, you get:
+
+```
+source or catalog digest does not match the current files
+```
+
+The usual reasons the digest changes: you started the agent once more after preparing, you opened the database by hand, or you used the original file instead of the copy from 9.3 and its WAL got written back. The cleanest way out of this error is to make a fresh copy, use a new job directory, and start again from `prepare`.
+
+**An interruption is not a problem.** The job can be resumed and is idempotent. Power cut, manual interruption, machine restart — run the same job directory again and it picks up where it left off without producing duplicate data.
+
+#### 9.7 Step five: check the result
+
+```
+scope-recall migrate verify --job <job directory>
+scope-recall migrate status --job <job directory>
+```
+
+Please actually read the report rather than skipping past it. There are three things to confirm.
+
+First, the status. If it says `blocked`, **that is a conclusion, not a failure you can retry your way past.** Your old database and the full backup are both still there, and the new database is explicitly in an unfinished state. **Do not start using the new instance until the cause is resolved.** An unfinished database will not pretend to be finished, and the installer will not treat it as migrated, but if you force your way into using it anyway you will get a memory store with content missing, and that is not easy to notice.
+
+Second, what went into the archive. Some old data cannot be expressed in the new format without loss. That content goes into an archive rather than being approximated into something roughly similar. The report lists what. **Content in the archive does not mean the migration finished.** We would rather tell you a memory is in cold storage than quietly change what it means.
+
+Third, spot-check some memories yourself. Pick a few things you remember clearly and see whether they are still right in the new database, including both the current statement and the older statements that were corrected.
+
+#### 9.8 What gets blocked, specifically
+
+These are the situations that make the migration report `blocked`. They are listed so that you know what the report is talking about when you see one:
+
+- The old database has tables or columns the tool does not recognise. This usually means you are not on the publicly released 2.0.1 but on something you modified or an intermediate build. The old formats we publicly support are only the ones actually verified.
+- The old database is missing a column the tool needs.
+- A memory cannot find its source.
+- A scope in the historical records cannot be resolved.
+- A fact is marked as current but is not the latest version on record.
+- A deletion record points at something that was not mapped across, or a deletion did not finish.
+- The old database still has unfinished outbound work queued.
+- Attachment metadata or contents cannot be carried across without loss.
+- Aliases or reference relationships cannot be carried across without loss.
+
+One more word on attachments: if an attachment file is no longer where it used to be, the report says it is missing. **It does not fabricate an attachment**, and it does not move the host's own original session files.
+
+#### 9.9 Step six: queue the vector index
+
+Only once everything above is in order:
+
+```
+scope-recall migrate queue-index --job <job directory>
+```
+
+This only queues the indexing work. It does not finish it on the spot. Embeddings are generated in the background, and how much that costs is bounded by your own budget.
+
+**Until indexing finishes, searching by meaning does not work.** The other ways of looking all do: exact reference, keyword, confirmed facts, recency, and how things relate. Please expect this, rather than assuming semantic search works the moment migration ends.
+
+On whether old vectors can be reused directly: only if the embedding model and version, the dimensions, the input encoding, the segmentation, the text hashes and the source mapping can all be verified as identical. If any one of those does not match or cannot be accounted for, the old vectors stay in the old snapshot and the new index is built from scratch. **Matching row counts do not prove matching content**, so we do not accept row counts as evidence.
+
+Also, deleted content and everything that depends on it is handled before anything becomes readable or indexable. What you deleted in the old database does not reappear because of an import or an index rebuild.
+
+#### 9.10 What to do when something goes wrong
+
+The old database is always intact. That is the most important thing in this whole design. When a migration fails, no partial new data is written over your old database.
+
+If you have already switched to the new database, used it for a while, and then want to go back to 2.0.1: **there is no path for that.** Sources and deletion records created after the switch live in the new database, and the old format cannot express them without loss. What we do in that case is keep the new database and stop dangerous writes, rather than copying the old snapshot back over the top and calling it a lossless rollback. So please take the checks in 9.7 seriously. That is where your real decision point is.
+
+If you need to start over: leave the copy of the old database untouched, use a new empty job directory, and begin again from `prepare`. Do not reuse the previous job directory.
+
+#### 9.11 A checklist
+
+```
+1. Shut down the agent and let the old plugin exit properly
+2. sqlite3 <old db> "VACUUM INTO '<copy>'"       <- a consistent copy with no WAL
+3. Install 3.1.0 fresh, get installation.json
+4. scope-recall migrate prepare --source <copy> --job <new empty dir> \
+       --installation-manifest <installation.json> --host hermes
+   (add --scope-map <mapping.json> if there is more than one scope)
+5. scope-recall migrate run --job <job dir> --source-quiesced
+6. scope-recall migrate verify --job <job dir>
+   scope-recall migrate status --job <job dir>
+   <- only continue once the status is not blocked, you have read the
+      archive list, and you have spot-checked some memories
+7. scope-recall migrate queue-index --job <job dir>
+8. Enable the new plugin per your host's instructions
+```
+
+`scope-recall setup --workflow` also prints the full built-in procedure, which you can follow along with.
+
+---
+
+### 10. About cost, please read this before turning the model routes on
+
+3.1.0 spends money differently from 2.0, and this is where you are most likely to get caught out.
+
+2.0 only paid to embed the memories it had already selected, a few thousand over an instance's entire life. 3.1.0 embeds everything that comes in. That is exactly why searching by meaning is genuinely useful now, instead of depending on whether a summary happened to mention the thing. But it means **your bill follows how much you talk, not how many memories you keep.**
+
+Look at your usage in the first week, not at the end of the month. Every call is priced and recorded locally before it goes out, and `scope-recall doctor` shows the total.
+
+We suggest MiniMax M3 as the model the plugin uses. Same forty jobs, two runs per model: its quality matched a well-known alternative, and the cost per call was clearly lower.
+
+Turn the model's thinking mode off. We measured it: with it on, a pass took six times as long, three calls timed out, and three more came back with broken JSON. When you need the model to fill in a fixed format, having it think first makes things worse. It ships turned off. Unless you have tested it yourself, leave it off.
+
+Prompt caching matters more than the per-token price. Our prompts repeat heavily, so a provider that caches them well can cost a third as much at the same advertised rate.
+
+The daily work limit will not cap your spending. It limits how many queued jobs are attempted in a day, and it knows nothing about what any one of them costs. Set it below the rate you actually generate work and you do not save money, you just build a backlog that never clears. Spending is bounded by the ledger, not by this number.
+
+Nothing is sent anywhere you have not configured.
+
+---
+
+### 11. What is not finished
+
+We would rather write these down here than let you run into them.
+
+#### Things 2.0 could do that 3.1.0 cannot yet
+
+**There is no automated test for recall quality. This is the bad one.** 2.0 shipped 33 benchmark files, sets of questions with known correct answers. 3.1.0 has none. This is first on the list of what we have to put back.
+
+The main cause of lost memories is tool output. When a source is something a tool printed — a file listing with line numbers down the left, an escaped API response — the model usually cannot copy a sentence out of it exactly, so the fact gets thrown away. The text is still stored and still searchable, it just does not become a fact. This is the first functional problem we are going to fix.
+
+There is nowhere to sit down and read through your own memory. 2.0 had a browser interface and reports. Now there is only the command line. A review interface is planned.
+
+It will not tell you why one result ranked above another. 2.0 had a tool for exactly that. 3.1.0 computes the information internally but does not show it to you.
+
+The model cannot deliberately stop and reflect. 2.0 could. In 3.1.0 memories only form in the background. This mechanism needs redesigning rather than simply restoring, but the capability is missed.
+
+Switching sessions does not trigger anything. 2.0 had two hooks for it and there is no equivalent now.
+
+The chores are command-line only.
+
+The vector index is not a real search index; it relies on LanceDB's defaults. At our data volumes this is fine, but a much larger store should have one properly built.
+
+The task history layer is still thin. The mechanism works, but not much history has actually accumulated. The attachment tables are empty for now.
+
+Automatic scheduling and our CI are Windows-only. The plugin itself runs on Linux and macOS, but you will start the background process yourself.
+
+#### Things we removed on purpose and do not plan to bring back
+
+The automatic skill generator, for the reason in section 8.
+
+Chore tools the model could call itself.
+
+`fact_evolution`'s auto-apply path. Versioned facts plus an explicit correction do the same job with far less machinery, and nothing rewrites itself.
+
+Sixty-eight operations scripts, now ten commands. Most of the difference in code size was here.
+
+The layer that reads the old 2.0 format is used once, during migration. It is not a long-term bridge, and there is no way back.
+
+---
+
+### 12. What this is good for
+
+A long-running assistant, remembering your preferences, the way you like things done, and what you are working towards.
+
+An agent that writes code, remembering the background of a project, why it was designed that way, what went wrong before, and how it was fixed.
+
+A personal knowledge assistant, collecting the decisions, conclusions and experience scattered across many conversations into something you can look up.
+
+---
+
+### 13. What comes next
+
+The first thing is putting the recall quality regression tests back. That is the biggest gap right now.
+
+After that: fixing the problem where tool output cannot be quoted exactly, building a review interface, redesigning the mechanism for deliberate reflection, and making memory across long-running tasks more useful.
+
+What we want is an agent that does not merely have context, but genuinely becomes better to work with over time.
+
+---
+
+### Thanks
+
+Thank you to everyone who filed an issue against 2.0.1 and then waited. The reliability work in this release started from your reports.
+
+Thank you also to the people who sent code: the embedder connection retry and backoff, the configurable retry delays, the vector admission floor, the word boundary in the secret-scanning pattern, and the MiniMax embedder this release now recommends.
+
 ## [Unreleased]
 
 ### Scope Recall 3.1.0rc42 a drain spends its seconds on the work - 2026-09-18
