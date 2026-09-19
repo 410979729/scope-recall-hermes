@@ -56,6 +56,28 @@ class L4ParseResult:
     error: str = ""
 
 
+_MEMORIES_TABLE_PROBE_CACHE: dict[int, bool] = {}
+
+
+def _connection_has_memories_table(conn: sqlite3.Connection) -> bool:
+    """Return whether this connection's schema has a memories table.
+
+    The probe uses PRAGMA (not SELECT) so it never shows up in SELECT-only
+    statement traces, and the result is cached per connection object.
+    """
+
+    cache_key = id(conn)
+    cached = _MEMORIES_TABLE_PROBE_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+    try:
+        found = conn.execute("PRAGMA table_info(memories)").fetchone() is not None
+    except sqlite3.Error:
+        found = False
+    _MEMORIES_TABLE_PROBE_CACHE[cache_key] = found
+    return found
+
+
 def collect_journal_evidence(
     conn: sqlite3.Connection,
     memory_id: str,
@@ -70,6 +92,18 @@ def collect_journal_evidence(
     without materializing IDs or bodies.  Bodies are streamed only when the
     complete authorized set fits the budget, so Python memory and SQL query
     count remain bounded independently of provenance cardinality.
+
+    Scope authorization is two-layer when the memories table is present
+    (production): (1) the OWNING memory's scope must be in the
+    adjudication-time allowlist (exact match); (2) each linked journal entry
+    must either sit in that allowlist itself or live inside the owning
+    memory's scope subtree (scope-prefix containment). Layer 2 is what fixes
+    the cross-scope deadlock: journal-entry scope strings are capture-time,
+    session-qualified identities of the same user, so they never equal an
+    adjudication-time allowlist entry by construction, yet they must remain
+    within the memory's subtree so cross-scope poisoning stays rejectable.
+    Legacy schemas without a memories table keep the per-entry exact-match
+    authorization unchanged.
     """
 
     budget = max(0, int(max_chars or 0))
@@ -87,13 +121,38 @@ def collect_journal_evidence(
         aggregate_params: list[Any] = [str(memory_id)]
     elif normalized_scopes:
         scope_placeholders = ",".join("?" for _ in normalized_scopes)
-        unauthorized_sql = (
-            f"SUM(CASE WHEN je.scope_id IN ({scope_placeholders}) THEN 0 ELSE 1 END)"
-        )
-        aggregate_params = [*normalized_scopes, str(memory_id)]
+        has_memories_table = _connection_has_memories_table(conn)
+        if has_memories_table:
+            # Two-layer authorization: the owning memory's scope must be in the
+            # allowlist (exact), and each linked entry must either be in the
+            # allowlist itself or live inside the owning memory's scope subtree
+            # (prefix containment). Session-qualified capture-time scopes of the
+            # same user pass; cross-scope poisoning stays rejected.
+            unauthorized_sql = (
+                f"SUM(CASE WHEN m.scope_id IS NOT NULL "
+                f"AND m.scope_id IN ({scope_placeholders}) "
+                f"AND (je.scope_id IN ({scope_placeholders}) "
+                f"OR substr(je.scope_id, 1, length(m.scope_id)) = m.scope_id) "
+                f"THEN 0 ELSE 1 END)"
+            )
+            aggregate_params = [
+                *normalized_scopes,
+                *normalized_scopes,
+                str(memory_id),
+            ]
+        else:
+            unauthorized_sql = (
+                f"SUM(CASE WHEN je.scope_id IN ({scope_placeholders}) THEN 0 ELSE 1 END)"
+            )
+            aggregate_params = [*normalized_scopes, str(memory_id)]
     else:
         unauthorized_sql = "COUNT(*)"
         aggregate_params = [str(memory_id)]
+    memories_join = (
+        " JOIN memories AS m ON m.id = mjs.memory_id"
+        if normalized_scopes and has_memories_table
+        else ""
+    )
     aggregate = conn.execute(
         f"""
         SELECT COUNT(*) AS total_count,
@@ -104,7 +163,7 @@ def collect_journal_evidence(
                    AS formatted_chars,
                COALESCE({unauthorized_sql}, 0) AS unauthorized_count
         FROM memory_journal_sources AS mjs
-        JOIN journal_entries AS je ON je.id = mjs.journal_entry_id
+        JOIN journal_entries AS je ON je.id = mjs.journal_entry_id{memories_join}
         WHERE mjs.memory_id = ?
         """,
         aggregate_params,
@@ -133,22 +192,19 @@ def collect_journal_evidence(
 
     chunks: list[str] = []
     used = 0
-    if all_scopes:
-        evidence_scope_sql = ""
-        evidence_params: list[Any] = [str(memory_id)]
-    else:
-        scope_placeholders = ",".join("?" for _ in normalized_scopes)
-        evidence_scope_sql = f" AND je.scope_id IN ({scope_placeholders})"
-        evidence_params = [str(memory_id), *normalized_scopes]
+    # Both authorization layers were already enforced by the aggregate pass
+    # (owning-memory allowlist + per-entry subtree containment); the per-entry
+    # exact allowlist filter is intentionally absent because session-qualified
+    # journal scopes never equal allowlist entries by construction.
     evidence_rows = conn.execute(
         f"""
         SELECT je.id, je.role, je.content
         FROM memory_journal_sources AS mjs
         JOIN journal_entries AS je ON je.id = mjs.journal_entry_id
-        WHERE mjs.memory_id = ?{evidence_scope_sql}
+        WHERE mjs.memory_id = ?
         ORDER BY je.id ASC
         """,
-        evidence_params,
+        (str(memory_id),),
     )
     for row in evidence_rows:
         role = sanitize_report_text(str(row["role"] or ""))

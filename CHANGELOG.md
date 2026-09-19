@@ -4,6 +4,13 @@ All notable changes to `scope-recall` will be documented in this file.
 
 ## [Unreleased]
 
+## [2.0.2] - 2026-09-19
+
+### Fixed
+- L4 candidate deadlock on cross-scope deployments: journal evidence now authorized by the owning memory's scope (allowlist + subtree containment) instead of exact match against session-qualified capture-time scopes.
+- A supported L4 verdict now stamps admission_reviewed_at so deterministic lanes can promote on the next run under existing thresholds.
+
+
 ## [2.0.1] - 2026-08-30
 
 This patch is cumulative since the last public release, `2.0.0`. It completes the production managed upgrade path for ordinary users and hardens the 2.0 memory runtime: one fixed official stable source, an external resumable idempotent operation journal, strict state transitions, exact-Hermes-home restart control, zero-signal recall admission, candidate isolation, and explicit observability ownership.
