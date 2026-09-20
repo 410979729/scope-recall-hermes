@@ -2,7 +2,7 @@
 
 ## Supported versions
 
-Security fixes are applied to the current `1.x` release line. Older local development snapshots are not supported as public release lines.
+Security fixes are applied to the current `3.1.x` release line. The `2.0.x` line and everything before it are no longer maintained and receive no further releases, security fixes included; section 9 of [CHANGELOG.md](CHANGELOG.md) describes the one-time offline migration from 2.0.x to 3.1.
 
 ## Reporting a vulnerability
 
