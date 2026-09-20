@@ -240,8 +240,15 @@ jobs:
       - name: Stage validated distributions
         env:
           RELEASE_TAG: ${{ steps.release_tag.outputs.release_tag }}
+          WORKFLOW_SHA: ${{ github.workflow_sha }}
         run: |
-          python .github/scripts/stage_release_assets.py \
+          # The release tag carries the source under review, while the workflow
+          # commit owns the current publication control plane. Load the staging
+          # helper from that immutable workflow commit rather than from the tag.
+          git fetch --no-tags --depth=1 origin "${WORKFLOW_SHA}"
+          git show "${WORKFLOW_SHA}:.github/scripts/stage_release_assets.py" \
+            > "${RUNNER_TEMP}/stage_release_assets.py"
+          python "${RUNNER_TEMP}/stage_release_assets.py" \
             --source-dir release-download \
             --packages-dir release-staging/packages \
             --metadata-dir release-staging/metadata \
