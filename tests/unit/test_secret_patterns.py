@@ -24,3 +24,20 @@ def test_a_real_assignment_is_still_caught_after_serialisation():
     document = "AppSecret: 9f8e7d6c5b4a3f2e\r\nnext line"
     assert contains_secret_like_text(document)
     assert contains_secret_like_text(json.dumps({"content": document}))
+
+
+def test_a_break_escaped_twice_does_not_leave_a_backslash_as_the_value():
+    """A tool output that is JSON holding JSON writes a line break as backslash, backslash, n."""
+    once = "AppSecret:" + chr(92) + "n" + "next line of the template"
+    twice = "AppSecret:" + chr(92) * 2 + "n" + "next line of the template"
+    thrice = "AppSecret:" + chr(92) * 3 + "n" + "next line of the template"
+    for text in (once, twice, thrice):
+        assert not contains_secret_like_text(text), text
+        assert len(secret_scan_shadow(text)) == len(text), "positions in the shadow stay valid"
+
+
+def test_an_escaped_tab_still_separates_a_key_from_its_secret():
+    """A tab is spacing, not a line end: the value after it is still the key's value."""
+    for slashes in (1, 2):
+        assert contains_secret_like_text("password:" + chr(92) * slashes + "t" + "hunter2-not-a-placeholder")
+

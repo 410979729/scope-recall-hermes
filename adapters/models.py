@@ -342,6 +342,23 @@ def _reject_secrets(value: str) -> None:
         raise AuxiliaryModelError("sensitive_request")
 
 
+def _reject_secrets_outside_contents(build_body: Callable[[list[dict]], bytes], messages: list[dict]) -> None:
+    """The body gate: everything a request carries besides its message contents.
+
+    ``validate_chat_messages`` has already scanned every content as it was
+    written.  Scanning the serialised body scanned each of them again through
+    one more layer of escaping, where a line break inside a content reads
+    ``\\\\n``: the scanner's break rule restored the break and left a backslash
+    behind it, which an empty credential slot ("AppSecret:" and nothing after
+    it) then took as its value.  On one instance 124 of 124 candidate
+    evaluations passed the contents gate and were refused here, none holding a
+    secret.  The same builder is run on the same messages with their contents
+    blanked, so the model, the route's fields and the message roles are still
+    scanned, and each text is scanned once.
+    """
+    _reject_secrets(build_body([dict(message, content="") for message in messages]).decode("utf-8"))
+
+
 def validate_chat_messages(messages: object, *, roles: frozenset[str] = _CHAT_ROLES) -> None:
     """Exactly role and content per message, a role from the closed set, no secret-like text.
 
@@ -1088,7 +1105,7 @@ class OpenAIConsolidationAdapter:
         deadline = time.monotonic() + validate_timeout_seconds(remaining_seconds)
         validate_chat_messages(messages)
         body = self._chat_body(messages)
-        _reject_secrets(body.decode("utf-8"))
+        _reject_secrets_outside_contents(self._chat_body, messages)
         reserved_output = model_output_reserve(self._ledger.policy, self._route.model, self._route.max_output_tokens)
         if _remaining_seconds(deadline) <= 0:
             raise AuxiliaryModelError("timeout")
@@ -1241,7 +1258,7 @@ class ResponsesConsolidationAdapter:
         deadline = time.monotonic() + validate_timeout_seconds(remaining_seconds)
         validate_chat_messages(messages, roles=_RESPONSES_ROLES)
         body = self._responses_body(messages)
-        _reject_secrets(body.decode("utf-8"))
+        _reject_secrets_outside_contents(self._responses_body, messages)
         reserved_output = model_output_reserve(self._ledger.policy, self._route.model, self._route.max_output_tokens)
         if _remaining_seconds(deadline) <= 0:
             raise AuxiliaryModelError("timeout")

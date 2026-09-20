@@ -133,8 +133,8 @@ class SecretTextMatch:
     text: str
 
 
-_ESCAPED_BREAK_RE = re.compile(r"\\([nrt])")
-_ESCAPED_BREAKS = {"n": "\n\n", "r": "\r\r", "t": "\t\t"}
+_ESCAPED_BREAK_RE = re.compile(r"\\+([nrt])")
+_ESCAPED_BREAKS = {"n": "\n", "r": "\r", "t": "\t"}
 
 
 def secret_scan_shadow(value: Any) -> str:
@@ -144,12 +144,16 @@ def secret_scan_shadow(value: Any) -> str:
     stands for.  Serialised into a model request, a document template with an
     empty credential slot ("AppSecret:" and nothing after it) had the next line
     swallowed as its value and was refused as ``sensitive_request``: 369
-    candidate evaluations on one instance, none holding a secret.  The
+    candidate evaluations on one instance, none holding a secret.  Text that
+    was serialised more than once (a tool output that is itself JSON holding
+    JSON) writes the same break as ``\\\\n``; treating only the last two
+    characters as the break left a backslash after the slot, which then read
+    as its value, so the whole run of backslashes belongs to the break.  The
     substitution keeps the length, so every match position stays valid.
     """
 
     normalized = unicodedata.normalize("NFKC", str(value or ""))
-    normalized = _ESCAPED_BREAK_RE.sub(lambda match: _ESCAPED_BREAKS[match.group(1)], normalized)
+    normalized = _ESCAPED_BREAK_RE.sub(lambda match: _ESCAPED_BREAKS[match.group(1)] * len(match.group(0)), normalized)
     return "".join(
         character
         for character in normalized
