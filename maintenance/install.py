@@ -22,7 +22,6 @@ from .install_common import (
     UninstallResult,
     _norm,
     _require_absolute,
-    _require_file,
     _require_interpreter,
     _validate_agent_id,
     _validate_host,

@@ -2,9 +2,15 @@ name: CI
 
 on:
   push:
-    # A tag push would start a second ci-required run on the same commit,
-    # and the release gate compares the successful check names as one
-    # string: two successes read as neither.
+    # With tags-ignore alone GitHub ran this workflow for no push at all: a
+    # filter on one kind of ref leaves the other kind undefined, so a merge
+    # to main went unchecked until the nightly run.  main is named here; a
+    # pull request's branch is covered by pull_request below.
+    branches: [main]
+    # A tag push would start a second ci-required run on a commit main has
+    # already checked.  The release gate reads the check name once however
+    # many runs reported it, so that run would be harmless and is simply
+    # not needed.
     tags-ignore: ['**']
   pull_request:
   schedule:
@@ -32,7 +38,12 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
-        tier: [unit, contract, packaging, migration]
+        # storage, capture, claims, deletion, episodes and retrieval ran in
+        # no workflow at all, and the nightly integration baseline does not
+        # select their newest files (test_storage_growth.py,
+        # test_vector_retention.py, test_v11_aliases.py), so those tests had
+        # only ever run on a developer's machine.
+        tier: [unit, contract, storage, capture, claims, deletion, episodes, retrieval, packaging, migration]
         # host and native ran in no pull-request workflow at all. Both are
         # added here on Windows, where they are known to pass; native is gated
         # on LanceDB rather than on Windows and host holds the only
@@ -56,6 +67,59 @@ jobs:
         run: python -m pip install ".[lancedb,codex,dev]" uv
       - name: Run tier (no implicit retries)
         run: python scripts/check.py --tier ${{ matrix.tier }} --task P17
+
+  # The instances this plugin runs on are Python 3.11 and requires-python
+  # admits it, yet every job above is 3.12: a construct only 3.12 parses would
+  # pass there and fail at import in production.  One job per system runs the
+  # in-process tiers on 3.11; the process tiers stay on 3.12 above.
+  test-py311:
+    name: ${{ matrix.os }}-py3.11
+    if: github.event_name != 'schedule'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.11"
+          cache: pip
+      - name: Install test dependencies
+        env:
+          PIP_CONSTRAINT: constraints/release.txt
+        run: python -m pip install ".[lancedb,codex,dev]" uv
+      - name: Run the in-process tiers (no implicit retries)
+        shell: bash
+        run: |
+          failed=""
+          for tier in unit contract storage capture claims deletion episodes retrieval; do
+            python scripts/check.py --tier "${tier}" --task P17 || failed="${failed} ${tier}"
+          done
+          test -z "${failed}" || { echo "failed tiers:${failed}"; exit 1; }
+
+  # Nothing linted a pull request: one arrived with three findings that only
+  # a reviewer's own run caught.  The rule set and the excluded trees are
+  # pyproject.toml's, so a contributor's `ruff check .` sees what this sees.
+  lint:
+    name: lint
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install ruff
+        env:
+          PIP_CONSTRAINT: constraints/release.txt
+        run: python -m pip install ruff
+      - name: Lint everything that ships or gates a release
+        run: ruff check .
 
   windows-daily:
     name: windows-${{ matrix.tier }}
@@ -123,6 +187,8 @@ jobs:
     permissions: {}
     needs:
       - test
+      - test-py311
+      - lint
       - windows-daily
       - release-gate
     runs-on: ubuntu-latest
@@ -130,5 +196,7 @@ jobs:
       - name: Require every CI dependency to succeed
         run: |
           test "${{ needs.test.result }}" = "${{ github.event_name == 'schedule' && 'skipped' || 'success' }}"
+          test "${{ needs.test-py311.result }}" = "${{ github.event_name == 'schedule' && 'skipped' || 'success' }}"
+          test "${{ needs.lint.result }}" = "${{ github.event_name == 'schedule' && 'skipped' || 'success' }}"
           test "${{ needs.windows-daily.result }}" = "${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 'success' || 'skipped' }}"
           test "${{ needs.release-gate.result }}" = "success" || test "${{ needs.release-gate.result }}" = "skipped"

@@ -105,7 +105,11 @@ build_py = "packaging_hooks.v11_build.AllowlistedBuildPy"
 ]
 
 [tool.ruff]
-extend-exclude = [".hermes-agent-src"]
+# tests/ keeps pytest's fixture-import pattern (an imported fixture reads as
+# unused, then as redefined) and probes/ is one-statement-per-semicolon
+# operator scratch; neither ships.  A file named on the command line is still
+# linted, which is how a new test file is kept clean.
+extend-exclude = [".hermes-agent-src", "tests", "probes"]
 
 [tool.ruff.lint]
 # Preserve Ruff <=0.15's explicit default contract across the 0.16 default-rule expansion.
