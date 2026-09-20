@@ -138,9 +138,10 @@ class RuntimeInstanceConfig:
     #: Queue items a day may attempt; 0 means no cap.  This is not the spend
     #: guard: money, calls and tokens are governed by the auxiliary ledger
     #: (``runtime/model_budget.py``) before every request.  A cap below the
-    #: arrival rate is not conservative, it is a permanent leak: a lightly used
-    #: instance produced ~15 work items per captured source, so the old 256
-    #: default could never drain its own daily output.
+    #: arrival rate is not conservative, it is a permanent leak.  Measured on a
+    #: 3.1 instance: 1.4 work items per captured source (an embed and, for
+    #: most, a consolidation) plus 1.2 evaluations per candidate, so even the
+    #: old 256 default could not drain a busy day's output.
     daily_work_limit: int = 0
     auto_retry_cooldown_seconds: float = 3600.0
     max_auto_recoveries: int = 2

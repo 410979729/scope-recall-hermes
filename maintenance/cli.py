@@ -241,6 +241,89 @@ def _doctor(args: argparse.Namespace) -> int:
     return 0 if report.status == "ok" else 1
 
 
+def _add_upgrade_store_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--host", required=True, choices=("hermes", "codex"))
+    parser.add_argument("--instance-root", required=True)
+    parser.add_argument("--backup-dir", help="take a verified snapshot of memory.sqlite3 here before touching it")
+    parser.add_argument("--wait-seconds", type=float, default=30.0,
+                        help="how long to wait for a running worker to release the store (at most 30)")
+
+
+def _upgrade_store(args: argparse.Namespace) -> int:
+    """Bring one store forward to this release's schema now, with the budget no hook has.
+
+    A store at a known older schema is otherwise brought forward by its first
+    ordinary open, except that a store above 100 MB waits for a caller with a
+    minute of budget (the worker's pass or apply-install), because the 1109
+    step rebuilds the lexical index: 95 s on a 1.4 GB store.  This is that
+    caller, for an operator who installed the wheel and wants the upgrade
+    done now, with a snapshot first.  The worker must not be running: its
+    lease is waited for, never taken.
+    """
+    import sqlite3
+    import time
+    from datetime import datetime, timezone
+
+    from scope_recall.contracts import ContractError
+    from scope_recall.core.schema import SCHEMA_VERSION, UPGRADE_CHAIN
+    from scope_recall.core.storage import SQLiteStorage
+    from scope_recall.core.writer_lease import TruthWriterBusyError
+    from .backup import backup_sqlite
+    from .doctor import _journal_mode, _load_binding, _schema_on_disk
+
+    instance = _path(args.instance_root, "instance_root")
+    binding, data_directory = _load_binding(args.host, instance)
+    database = data_directory / "memory.sqlite3"
+    before = _schema_on_disk(database)
+    result: dict[str, Any] = {"schema_before": before, "schema_target": SCHEMA_VERSION}
+    if before == SCHEMA_VERSION:
+        result.update(status="current", journal_mode=_journal_mode(database))
+        _emit(result)
+        return 0
+    if before not in UPGRADE_CHAIN:
+        result.update(status="unsupported", error="schema_not_in_upgrade_chain")
+        _emit(result)
+        return 2
+    if not args.backup_dir:
+        result.update(status="not_upgraded", error="backup_required",
+                      hint="provide --backup-dir for the verified pre-upgrade snapshot")
+        _emit(result)
+        return 2
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    snapshot = _path(args.backup_dir, "backup_dir") / f"memory-{before}-{stamp}.sqlite3"
+    backup_sqlite(database, snapshot, manifest=snapshot.with_suffix(".json"))
+    result["backup"] = str(snapshot)
+    wait = min(max(float(args.wait_seconds), 0.0), 30.0)
+    started = time.monotonic()
+    deadline = started + wait
+    while True:
+        remaining = max(0.0, deadline - time.monotonic())
+        try:
+            status = SQLiteStorage(binding, timeout_seconds=remaining).initialize()
+            break
+        except TruthWriterBusyError as exc:
+            if remaining > 0:
+                time.sleep(min(0.1, remaining))
+                continue
+            result.update(status="not_upgraded", error="store_busy", detail=type(exc).__name__,
+                          hint="stop the worker (autostart pause) and run again")
+            _emit(result)
+            return 2
+        except sqlite3.OperationalError as exc:
+            result.update(status="not_upgraded", error="store_busy", detail=type(exc).__name__,
+                          hint="stop the worker (autostart pause) and run again")
+            _emit(result)
+            return 2
+        except ContractError as exc:
+            result.update(status="not_upgraded", error=exc.code, detail=exc.field)
+            _emit(result)
+            return 2
+    result.update(status="upgraded", schema_after=status.schema_version,
+                  seconds=round(time.monotonic() - started, 1), journal_mode=_journal_mode(database))
+    _emit(result)
+    return 0
+
+
 def _add_uninstall_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--instance-root", required=True)
     parser.add_argument("--target-plugin-dir")
@@ -276,6 +359,7 @@ _COMMANDS: tuple[tuple[str, str | None, Callable[[argparse.ArgumentParser], None
     ("plan-install", None, _add_install_arguments, _plan_install),
     ("apply-install", None, _add_install_arguments, _apply_install),
     ("doctor", None, _add_doctor_arguments, _doctor),
+    ("upgrade-store", "bring one store forward to this release's schema now, with a snapshot first", _add_upgrade_store_arguments, _upgrade_store),
     ("plan-uninstall", None, _add_uninstall_arguments, _plan_uninstall),
     ("apply-uninstall", None, _add_uninstall_arguments, _apply_uninstall),
 )

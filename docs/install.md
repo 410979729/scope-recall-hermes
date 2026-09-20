@@ -509,7 +509,15 @@ the upgrade itself. Take a `backup` first if you want one. On a store above
 100 MB a step that rebuilds an index (3.1.1's lexical index: about a minute
 and a half for five million index rows) is left to a caller with the time
 for it, the worker's next pass or `apply-install`; a hook's open reports
-`SCHEMA_UNSUPPORTED / upgrade_pending` until then.
+`SCHEMA_UNSUPPORTED / upgrade_pending` until then. To do it now, with a
+snapshot first and the worker stopped:
+
+```bash
+python -I -X utf8 -m scope_recall.maintenance.cli upgrade-store --host hermes --instance-root <instance root> --backup-dir <a new directory>
+```
+
+It reports the schema before and after, the seconds taken and the journal
+mode, and leaves a store a running worker holds untouched (`store_busy`).
 
 ## 10. Platform and storage boundaries
 

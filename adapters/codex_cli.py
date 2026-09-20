@@ -82,17 +82,90 @@ def _child_env() -> dict[str, str]:
     return env
 
 
-def _kill_tree(process: subprocess.Popen) -> None:
-    """Only the tree created by this invocation; never kill by image name."""
-    if process.poll() is not None:
-        return
-    if os.name == "nt":
-        subprocess.run([str(Path(os.environ.get("SYSTEMROOT", "C:/Windows")) / "System32/taskkill.exe"),
-                        "/PID", str(process.pid), "/T", "/F"], stdin=subprocess.DEVNULL,
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=3, check=False)
-    else:
-        os.killpg(process.pid, signal.SIGKILL)
-    process.wait(timeout=1)
+def _kernel32():
+    import ctypes
+    from ctypes import wintypes
+
+    kernel = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel.CreateJobObjectW.restype = wintypes.HANDLE
+    kernel.CreateJobObjectW.argtypes = [wintypes.LPVOID, wintypes.LPCWSTR]
+    kernel.SetInformationJobObject.argtypes = [wintypes.HANDLE, ctypes.c_int, wintypes.LPVOID, wintypes.DWORD]
+    kernel.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+    kernel.TerminateJobObject.argtypes = [wintypes.HANDLE, wintypes.UINT]
+    kernel.CloseHandle.argtypes = [wintypes.HANDLE]
+    return kernel
+
+
+def _job_for(process: subprocess.Popen) -> int | None:
+    """A job object holding this invocation's tree, so a timeout ends every descendant at once.
+
+    ``taskkill /T`` walks the process table through WMI: on a host with 800
+    processes it took 3.2 s, past the bound the fallback below still carries,
+    which reported a plain timeout as ``codex_start_failed`` and left the
+    tree running.  A job needs no enumeration.  None when no job can be made
+    (a Windows before 8 already holding this process in one), and the
+    taskkill walk remains the fallback.
+    """
+    if os.name != "nt":
+        return None
+    import ctypes
+    from ctypes import wintypes
+
+    class _BasicLimits(ctypes.Structure):
+        _fields_ = [("PerProcessUserTimeLimit", ctypes.c_longlong), ("PerJobUserTimeLimit", ctypes.c_longlong),
+                    ("LimitFlags", wintypes.DWORD), ("MinimumWorkingSetSize", ctypes.c_size_t),
+                    ("MaximumWorkingSetSize", ctypes.c_size_t), ("ActiveProcessLimit", wintypes.DWORD),
+                    ("Affinity", ctypes.c_size_t), ("PriorityClass", wintypes.DWORD), ("SchedulingClass", wintypes.DWORD)]
+
+    class _IoCounters(ctypes.Structure):
+        _fields_ = [(name, ctypes.c_ulonglong) for name in ("ReadOperationCount", "WriteOperationCount", "OtherOperationCount",
+                                                           "ReadTransferCount", "WriteTransferCount", "OtherTransferCount")]
+
+    class _ExtendedLimits(ctypes.Structure):
+        _fields_ = [("BasicLimitInformation", _BasicLimits), ("IoInfo", _IoCounters), ("ProcessMemoryLimit", ctypes.c_size_t),
+                    ("JobMemoryLimit", ctypes.c_size_t), ("PeakProcessMemoryUsed", ctypes.c_size_t), ("PeakJobMemoryUsed", ctypes.c_size_t)]
+
+    kernel = _kernel32()
+    job = kernel.CreateJobObjectW(None, None)
+    if not job:
+        return None
+    limits = _ExtendedLimits()
+    limits.BasicLimitInformation.LimitFlags = 0x2000  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+    process_handle = getattr(process, "_handle", None)
+    if (process_handle is not None
+            and kernel.SetInformationJobObject(job, 9, ctypes.byref(limits), ctypes.sizeof(limits))  # JobObjectExtendedLimitInformation
+            and kernel.AssignProcessToJobObject(job, int(process_handle))):
+        return job
+    kernel.CloseHandle(job)
+    return None
+
+
+def _kill_tree(process: subprocess.Popen, job: int | None = None) -> None:
+    """Only the tree created by this invocation; never kill by image name.
+
+    Nothing here may raise past the caller's pending error: a survivor is
+    reported through ``cleanup_process_state`` instead.
+    """
+    if job is not None:
+        kernel = _kernel32()
+        if process.poll() is None:
+            kernel.TerminateJobObject(job, 1)
+        kernel.CloseHandle(job)  # KILL_ON_JOB_CLOSE ends any straggler of a finished turn as well
+    elif process.poll() is None:
+        if os.name == "nt":
+            try:
+                subprocess.run([str(Path(os.environ.get("SYSTEMROOT", "C:/Windows")) / "System32/taskkill.exe"),
+                                "/PID", str(process.pid), "/T", "/F"], stdin=subprocess.DEVNULL,
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10, check=False)
+            except subprocess.TimeoutExpired:
+                pass
+        else:
+            os.killpg(process.pid, signal.SIGKILL)
+    if process.poll() is None:
+        try:
+            process.wait(timeout=1)
+        except subprocess.TimeoutExpired:
+            pass
 
 
 #: Stream event kinds the CLI emits, each with the ``_Transcript`` step that folds it in.
@@ -246,6 +319,7 @@ def _run(command: list[str], *, cwd: Path, prompt: bytes, seconds: float,
                                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                start_new_session=os.name != "nt",
                                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+    job = _job_for(process)
     inspector = _StreamInspector(diag)
     readers = [threading.Thread(target=inspector.read, args=(pipe, stdout), daemon=True)
                for pipe, stdout in ((process.stdout, True), (process.stderr, False))]
@@ -270,7 +344,7 @@ def _run(command: list[str], *, cwd: Path, prompt: bytes, seconds: float,
         diag["process_state"] = "still_running" if process.poll() is None else "exited"
         diag["exit_code"] = process.poll()
         try:
-            _kill_tree(process)
+            _kill_tree(process, job)
         finally:
             _close_pipes(process, readers, writer)
             diag["cleanup_process_state"] = "still_running" if process.poll() is None else "exited"
