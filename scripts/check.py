@@ -293,6 +293,7 @@ CORE_RELEASE_CONTRACTS = [
 CORE_RELEASE_CONTRACTS += [
     "tests/test_vector_runtime.py",
     "tests/contract/test_candidate_debounce.py",
+    "tests/contract/test_candidate_evidence_window.py",
     "tests/contract/test_confirmation.py",
     "tests/contract/test_corroboration.py",
     "tests/contract/test_coverage_gaps.py",
