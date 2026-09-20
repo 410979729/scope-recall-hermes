@@ -191,14 +191,28 @@ def _embedded_objects(db_path: Path) -> int | None:
     return None
 
 
-def _check_index(report: DoctorReport, data_directory: Path, *, store_readable: bool) -> None:
+def _expired_vectors(db_path: Path) -> int | None:
+    """Tool-output vectors the retention window expired (``runtime/vector_retention.py``)."""
+    with suppress(sqlite3.Error, OSError, ValueError):
+        with closing(sqlite3.connect(f"file:{db_path.as_posix()}?mode=ro", uri=True, timeout=5)) as db:
+            return int(db.execute("SELECT COUNT(*) FROM expired_vectors").fetchone()[0] or 0)
+    return None
+
+
+def _check_index(report: DoctorReport, data_directory: Path, *, store_readable: bool, config: Any = None) -> None:
     """Optional vector-index facts. Reported, never acted on."""
     metadata: dict[str, Any] = {"vectors_dir_present": (data_directory / "vectors").is_dir()}
     embedded = _embedded_objects(data_directory / "memory.sqlite3") if store_readable else None
+    expired = _expired_vectors(data_directory / "memory.sqlite3") if store_readable else None
     if embedded is not None:
         metadata["embedded_objects"] = embedded
         metadata["vector_scan_comfort_limit"] = _VECTOR_SCAN_COMFORT_LIMIT
-        metadata["vector_index_advised"] = embedded > _VECTOR_SCAN_COMFORT_LIMIT
+        metadata["vector_index_advised"] = embedded - (expired or 0) > _VECTOR_SCAN_COMFORT_LIMIT
+    if expired is not None:
+        metadata["expired_vectors"] = expired
+    vector = getattr(config, "vector", None)
+    if vector is not None:
+        metadata["tool_output_retention_days"] = vector.tool_output_retention_days
     # Fragment count is what a missed compaction shows up as first, and the one
     # cost an operator can verify with a plain file listing.
     try:
@@ -664,6 +678,20 @@ def _check_autostart(report: DoctorReport, binding, data_directory: Path) -> flo
     return wake_seconds
 
 
+def _runtime_config(data_directory: Path):
+    """The instance's runtime-config.json as the worker loads it, or ``None``.
+
+    An unusable file is ``None`` here; ``_check_vector_threshold`` names it.
+    """
+    from ..runtime.instance import RuntimeInstanceConfig
+
+    try:
+        raw = _read_control_file(data_directory / "runtime-config.json")
+        return None if raw is None else RuntimeInstanceConfig.from_mapping(raw)
+    except Exception:  # noqa: BLE001 - reporting must not fail the report.
+        return None
+
+
 def _check_vector_threshold(report: DoctorReport, binding, data_directory: Path) -> None:
     """Vector recall that is wired but admits nothing, named instead of silent.
 
@@ -811,6 +839,7 @@ def run_doctor(
     _check_vector_threshold(report, binding, data_directory)
 
     readable = _check_storage(report, binding, data_directory)
+    config = _runtime_config(data_directory)
     if readable:
         _check_worker_status(report, binding, data_directory)
         wake_seconds = _check_autostart(report, binding, data_directory)
@@ -821,5 +850,5 @@ def run_doctor(
         _check_model_output(report)
         _check_ledger(report)
         _classify_status(report)
-    _check_index(report, data_directory, store_readable=readable)
+    _check_index(report, data_directory, store_readable=readable, config=config)
     return report

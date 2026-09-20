@@ -28,8 +28,13 @@ from .validation import utc_now
 RESERVE_SECONDS = 8.0
 
 
-def compact_if_due(store: Any, vector_config: Any, *, available_seconds: float) -> dict[str, Any] | None:
+def compact_if_due(store: Any, vector_config: Any, *, available_seconds: float,
+                   reason: str | None = None) -> dict[str, Any] | None:
     """Compact when the policy says so.  Returns the receipt, or ``None``.
+
+    ``reason`` names a cause the caller already knows, such as a retention
+    pass that just deleted rows; it skips the threshold and the cooldown, which
+    guard against compacting for nothing.
 
     Never raises.  A compaction that cannot run leaves the store exactly as it
     was, and the next drain will try again; letting it fail a drain would trade
@@ -45,7 +50,7 @@ def compact_if_due(store: Any, vector_config: Any, *, available_seconds: float) 
     db_path = storage_dir / "lancedb"
     try:
         footprint = measure_footprint(db_path, vector_config.table_name)
-        reason = compaction_due(footprint, read_state(storage_dir))
+        reason = reason or compaction_due(footprint, read_state(storage_dir))
     except OSError:
         return None
     if reason is None:

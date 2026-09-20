@@ -109,6 +109,7 @@ def test_upgrade_1108_keeps_the_earliest_copy_of_every_episode_lineage_row(app):
         for revision in (1, 2):
             conn.execute("INSERT INTO evidence_links VALUES ('claim','TEST-claim',?,?,1,'supports','TEST',NULL)", (revision, sources[0].ref))
         assert conn.execute("SELECT count(*) FROM evidence_links WHERE object_kind='episode'").fetchone()[0] == 10
+        conn.execute("DROP TABLE expired_vectors")  # a real 1108 database has no retention ledger
         conn.execute("UPDATE instance_meta SET schema_version=1108 WHERE singleton=1")
         conn.execute("PRAGMA user_version=1108")
         conn.commit()

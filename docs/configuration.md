@@ -155,6 +155,7 @@ The block is a mapping:
 | `dimensions` | int | required, 1–8192 | Must equal the active embedding space's width, or the file is refused with `VECTOR_DIMENSIONS_MISMATCH`. The shipped space is 3072. |
 | `metric` | `"cosine"` | `"cosine"` | The only supported metric. |
 | `test_injection_override` | boolean | `false` | A test seam. It is refused unless `binding.test_mode` is true, and it skips the dimension and path checks above. Do not set it in a real installation. |
+| `tool_output_retention_days` | int | `180` | Days a tool output's vector is kept after its source entered the store. A worker pass then deletes the vector, up to 2,000 per pass and hourly once caught up, and the following compaction reclaims the space. The source text, its lexical index and everything derived from it stay, so the output is still found by its words and through what cites it, never again by meaning alone. `0` keeps every vector. |
 
 The embedding space id is the SHA-256 digest of the active space descriptor. For
 the shipped space it is
