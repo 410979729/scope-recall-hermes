@@ -361,7 +361,8 @@ Things that look wrong in a healthy report and are not:
 | `dependency_drift` | A declared requirement is missing or outside its pin. Extras you did not install are *not* drift. | Reinstall with the pins, or install the extra properly. |
 | `version_mismatch` | Receipt, distribution, imported and running versions disagree. | Stop the old processes, then reinstall. |
 | `stale_process` | A live process is running code older than what is on disk. | Restart the host, or let the running worker finish. |
-| `schema_version_mismatch` | The database schema is not the version this code expects. | Do not run against it. Back it up and use the migration path. |
+| `schema_upgrade_pending` | The store is at an older schema this code knows how to bring forward. | Nothing to run: the next capture, recall or worker pass applies it in one transaction, rolled back whole if it fails. Take a `backup` first if you want one. |
+| `schema_version_mismatch` | The database schema is one this code cannot bring forward. | Do not run against it. Back it up and use the migration path. |
 | `vector_threshold_unconfigured` | A vector store and an approved embedding route are configured, but no threshold is set, so every vector hit is refused and recall stays lexical. `attention`. | Set a `vector_threshold` calibrated for that embedding model — see [configuration.md](configuration.md). |
 | `work_failed` | At least one recoverable failure is queued. | Fix the cause, then `scope-recall retry-failures --config <file> --apply`. |
 | `work_failed_terminal_only` / `work_needs_review` | All failures are by design, or were already retried once. `attention`. | Inspect them; `--include-terminal` re-runs them only if you mean to. |
@@ -497,8 +498,14 @@ explicit operation, separate from a normal install:
    pointing the host at the new plugin. Keep the old database and the old
    install; clean up by hand only once you are satisfied.
 
-There is no one-click upgrade and no long-term v3 compatibility layer for old
-versions.
+There is no one-click upgrade from 2.x and no long-term v3 compatibility
+layer for it.
+
+Upgrading between 3.x versions is different. Install the new wheel; the first
+ordinary open of the store afterwards (a capture, a recall, a worker pass)
+applies the schema upgrade in one transaction and rolls it back whole if it
+fails. `doctor` reports `schema_upgrade_pending` until then and never applies
+the upgrade itself. Take a `backup` first if you want one.
 
 ## 10. Platform and storage boundaries
 

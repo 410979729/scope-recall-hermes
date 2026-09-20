@@ -7,9 +7,6 @@ thousand rows for eight episodes in one day, quadratic in the segment length.
 from dataclasses import replace
 import sqlite3
 
-import pytest
-
-from scope_recall.contracts import ContractError
 from scope_recall.core.episodes import source_watermark
 from scope_recall.core.retrieval import CandidateRef
 from scope_recall.core.schema import SCHEMA_VERSION
@@ -109,13 +106,13 @@ def test_upgrade_1108_keeps_the_earliest_copy_of_every_episode_lineage_row(app):
         for revision in (1, 2):
             conn.execute("INSERT INTO evidence_links VALUES ('claim','TEST-claim',?,?,1,'supports','TEST',NULL)", (revision, sources[0].ref))
         assert conn.execute("SELECT count(*) FROM evidence_links WHERE object_kind='episode'").fetchone()[0] == 10
-        conn.execute("DROP TABLE expired_vectors")  # a real 1108 database has no retention ledger
+        for table in ("source_authorizations", "authorization_payloads", "expired_vectors"):
+            conn.execute(f"DROP TABLE {table}")  # a real 1108 database has none of the 1109 tables
         conn.execute("UPDATE instance_meta SET schema_version=1108 WHERE singleton=1")
         conn.execute("PRAGMA user_version=1108")
         conn.commit()
-    with pytest.raises(ContractError, match="SCHEMA_UNSUPPORTED"):
-        core.status(ctx)
-    assert core.initialize().schema_version == SCHEMA_VERSION == 1109
+    # A known older schema is brought forward by the first ordinary open.
+    assert core.status(ctx).schema_version == SCHEMA_VERSION == 1109
     assert _lineage(core, episode.ref) == [(index + 1, s.ref) for index, s in enumerate(sources)]
     assert _dependencies(core, episode.ref) == [(2,)]
     with sqlite3.connect(core.storage.path) as conn:

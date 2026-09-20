@@ -17,7 +17,7 @@ from typing import Any, Callable, Iterable, Mapping
 
 from scope_recall.contracts import InstanceBinding, TrustedContext
 from scope_recall.core.events import lexical_terms
-from scope_recall.core.schema import SCHEMA_VERSION
+from scope_recall.core.schema import SCHEMA_VERSION, normalize_scope_authorizations
 from scope_recall.core.storage import SQLiteStorage
 from scope_recall.maintenance.legacy_episode_membership import plan_legacy_episode_memberships
 from scope_recall.maintenance.legacy_v2_compat import (
@@ -481,6 +481,7 @@ def _write_target(cv: Conversion, storage: SQLiteStorage, context: TrustedContex
         link_history_records(cv, conn)
         write_deletions(cv, tx)
         _project_lexical_terms(cv, conn)
+        normalize_scope_authorizations(conn)
         # Preserve the old ordinary-recall lifecycle policy using the same Core
         # suppression/group/dependency mechanism as runtime governance. Run
         # after all sources and derived links exist, before commit.

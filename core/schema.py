@@ -1,6 +1,9 @@
 """Versioned target DDL. Only explicit initialization/maintenance executes this."""
 
 SCHEMA_VERSION = 1109
+#: Schemas a store may carry and be brought forward from, oldest first.  Any
+#: other version is unsupported and never touched.
+UPGRADE_CHAIN = (1105, 1106, 1107, 1108)
 APPLICATION_ID = 0x5352434C
 
 WORK_ITEMS_STATEMENT = """CREATE TABLE work_items (
@@ -25,6 +28,21 @@ EXPIRED_VECTORS_STATEMENT = """CREATE TABLE expired_vectors (
         expired_at TEXT NOT NULL,
         PRIMARY KEY(source_ref,source_revision)
     ) STRICT, WITHOUT ROWID"""
+#: The scope authorization a migrated source was admitted under.  The 2.0
+#: conversion wrote the same 600-byte record into every source's extra_json:
+#: 97 distinct payloads across 167,000 sources, 102 MB, on one instance.  It is
+#: audit evidence, so it is kept once per distinct payload and linked.
+AUTHORIZATION_STATEMENTS = (
+    """CREATE TABLE authorization_payloads (
+        authorization_id INTEGER PRIMARY KEY,
+        payload TEXT NOT NULL UNIQUE CHECK(json_valid(payload))
+    ) STRICT""",
+    """CREATE TABLE source_authorizations (
+        event_id TEXT NOT NULL, source_revision INTEGER NOT NULL CHECK(source_revision>=1),
+        authorization_id INTEGER NOT NULL REFERENCES authorization_payloads(authorization_id),
+        PRIMARY KEY(event_id,source_revision)
+    ) STRICT, WITHOUT ROWID""",
+)
 CANDIDATE_STATEMENTS = (
     """CREATE TABLE candidate_lifecycle (
         candidate_ref TEXT NOT NULL, candidate_revision INTEGER NOT NULL CHECK(candidate_revision>=1),
@@ -303,6 +321,7 @@ STATEMENTS = (
     ) STRICT, WITHOUT ROWID""",
     "CREATE INDEX object_dependents ON object_dependencies(dependency_kind,dependency_ref,dependency_revision)",
     EXPIRED_VECTORS_STATEMENT,
+    *AUTHORIZATION_STATEMENTS,
 ) + RECOVERY_STATEMENTS + CANDIDATE_STATEMENTS
 
 
@@ -388,7 +407,9 @@ def upgrade_1108(connection):
     link rows for 200 sources.  Readers now take every row at or below the
     revision they ask for, which makes the earliest copy the one to keep.
 
-    The same step adds the retention ledger, ``expired_vectors``.
+    The same step adds the retention ledger, ``expired_vectors``, and moves
+    the migrated scope authorizations out of every source row (8.5 s for
+    167,000 sources on a 1.4 GB store).
     """
     # A row goes when an earlier copy of it exists.  The probe runs on the
     # evidence_dependents index: four seconds for 180,000 rows on a 1.4 GB store,
@@ -402,5 +423,25 @@ def upgrade_1108(connection):
         AND k.dependency_kind=object_dependencies.dependency_kind AND k.dependency_ref=object_dependencies.dependency_ref
         AND k.dependency_revision=object_dependencies.dependency_revision AND k.object_revision<object_dependencies.object_revision)""")
     connection.execute(EXPIRED_VECTORS_STATEMENT)
+    for statement in AUTHORIZATION_STATEMENTS:
+        connection.execute(statement)
+    normalize_scope_authorizations(connection)
     connection.execute("UPDATE instance_meta SET schema_version=1109 WHERE singleton=1")
     connection.execute("PRAGMA user_version=1109")
+
+
+def normalize_scope_authorizations(connection) -> int:
+    """Move each source's ``scope_authorization`` out of its extra_json, kept once per distinct payload.
+
+    Returns the number of sources rewritten.  Safe to repeat: a source already
+    moved has nothing left to move.
+    """
+    connection.execute("""INSERT OR IGNORE INTO authorization_payloads(payload)
+        SELECT DISTINCT json_extract(extra_json,'$.scope_authorization') FROM source_events
+        WHERE json_type(extra_json,'$.scope_authorization') IS NOT NULL""")
+    connection.execute("""INSERT OR IGNORE INTO source_authorizations(event_id,source_revision,authorization_id)
+        SELECT e.event_id,e.source_revision,p.authorization_id FROM source_events e
+        JOIN authorization_payloads p ON p.payload=json_extract(e.extra_json,'$.scope_authorization')
+        WHERE json_type(e.extra_json,'$.scope_authorization') IS NOT NULL""")
+    return connection.execute("""UPDATE source_events SET extra_json=json_remove(extra_json,'$.scope_authorization')
+        WHERE json_type(extra_json,'$.scope_authorization') IS NOT NULL""").rowcount

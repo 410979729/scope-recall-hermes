@@ -13,7 +13,7 @@ import sqlite3
 
 from ..contracts import ContractError, InstanceBinding, SourceEvent, TrustedContext, validate_capture
 from .truth_connection import TruthDatabaseMode, connect_truth_database
-from .schema import APPLICATION_ID, SCHEMA_VERSION, STATEMENTS, upgrade_1105, upgrade_1106, upgrade_1107, upgrade_1108
+from .schema import APPLICATION_ID, SCHEMA_VERSION, STATEMENTS, UPGRADE_CHAIN, upgrade_1105, upgrade_1106, upgrade_1107, upgrade_1108
 from .events import lexical_terms, prepare_capture, query_terms
 
 
@@ -432,6 +432,13 @@ class Transaction:
         semantic = "not_scheduled" if work is None else {"pending":"pending", "leased":"pending", "done":"ready", "failed":"failed", "obsolete":"obsolete"}[work[0]]
         return lexical, semantic
 
+    def source_authorization(self, ref: str, revision: int) -> dict | None:
+        """The scope authorization a migrated source was admitted under, or ``None``."""
+        row = self._check().execute(
+            """SELECT p.payload FROM source_authorizations a JOIN authorization_payloads p ON p.authorization_id=a.authorization_id
+               WHERE a.event_id=? AND a.source_revision=?""", (ref, revision)).fetchone()
+        return None if row is None else json.loads(row[0])
+
     def search_sources(self, query: str, *, limit: int = 20, history: bool = False, automatic: bool = False) -> tuple[StoredSource, ...]:
         conn = self._check()
         if type(limit) is not int or not 1 <= limit <= 200 or type(history) is not bool or type(automatic) is not bool:
@@ -467,13 +474,21 @@ class Transaction:
 
 
 class SQLiteStorage:
-    def __init__(self, binding: InstanceBinding, *, timeout_seconds: float = 1.0) -> None:
+    def __init__(self, binding: InstanceBinding, *, timeout_seconds: float = 1.0, upgrade_on_open: bool = True) -> None:
         if not isinstance(binding, InstanceBinding):
             raise ContractError("IDENTITY_UNBOUND")
         if type(timeout_seconds) not in (int, float) or not math.isfinite(timeout_seconds) or not 0 <= timeout_seconds <= 30:
             raise ContractError("INPUT_INVALID", "storage_timeout")
+        if type(upgrade_on_open) is not bool:
+            raise ContractError("INPUT_INVALID", "upgrade_on_open")
         self.__binding = binding
         self.timeout_seconds = float(timeout_seconds)
+        #: A store left at an older known schema by a package upgrade is brought
+        #: forward by the first transaction that opens it (``initialize``: one
+        #: transaction, identity-verified, rolled back whole on failure), so
+        #: ``pip install -U`` alone is enough.  The doctor turns this off: it
+        #: reports a pending upgrade and never applies one.
+        self.upgrade_on_open = upgrade_on_open
         self.__pending_close: list[sqlite3.Connection] = []
 
     @property
@@ -518,6 +533,11 @@ class SQLiteStorage:
                 raise ContractError("DEADLINE_EXCEEDED")
             timeout = min(timeout, remaining_seconds)
         return connect_truth_database(self.path, mode=mode, timeout=timeout, isolation_level=None)
+
+    @staticmethod
+    def _upgrade_pending(conn: sqlite3.Connection) -> bool:
+        """Whether the store carries an older schema this code brings forward."""
+        return conn.execute("PRAGMA user_version").fetchone()[0] in UPGRADE_CHAIN
 
     def _verify(self, conn: sqlite3.Connection, *, expected_schema: int = SCHEMA_VERSION) -> None:
         if conn.execute("PRAGMA application_id").fetchone()[0] != APPLICATION_ID or conn.execute("PRAGMA user_version").fetchone()[0] != expected_schema:
@@ -588,6 +608,10 @@ class SQLiteStorage:
     def _transaction(self, context: TrustedContext, *, writable: bool, remaining_seconds: float | None, restoring: bool = False) -> Iterator[Transaction]:
         self._context_check(context)
         conn = self._open("rw" if writable else "ro", remaining_seconds,restoring=restoring)
+        if self.upgrade_on_open and not restoring and self._upgrade_pending(conn):
+            self._close(conn, None)
+            self.initialize()
+            conn = self._open("rw" if writable else "ro", remaining_seconds,restoring=restoring)
         tx = Transaction(conn, context, writable=writable)
         original = None
         try:

@@ -196,7 +196,7 @@ def test_1106_failure_upgrade_preserves_history_and_requeues_exactly_once(worker
         for table in ('candidate_source_triggers','candidate_evaluations','candidate_trigger_terms',
                       'candidate_evidence','candidate_lifecycle','candidate_scan_cursors',
                       'capture_inbox','work_error_details','consolidation_fragments','consolidation_outcomes',
-                      'expired_vectors'):
+                      'expired_vectors','source_authorizations','authorization_payloads'):
             db.execute(f'DROP TABLE {table}')
         db.execute("UPDATE work_items SET state='failed',attempt=3,last_error_code='DERIVATION_INVALID' WHERE work_type='consolidate'")
         db.execute('UPDATE instance_meta SET schema_version=1106')

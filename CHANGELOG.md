@@ -426,7 +426,10 @@ Thank you also to the people who sent code: the embedder connection retry and ba
 
 ### Scope Recall 3.1.1rc1 the upgrade applies itself, and a refusal that was never a secret - 2026-09-20
 
+- A store at an older known schema is brought forward by its first ordinary open. `pip install -U` used to leave every capture, recall and worker pass failing with `SCHEMA_UNSUPPORTED` until someone re-ran the installer, with nothing saying so. The first transaction that opens such a store now runs the same identity-verified, single-transaction upgrade the installer runs; `doctor` reports `schema_upgrade_pending` until then and never applies it itself.
 - The secret guard no longer refuses a request for a line break. Serialised into a model request, a source's line breaks become the two characters `\n`, which are not whitespace, so a document template with an empty credential slot had the next line swallowed as its "value" and every request carrying it was refused as `sensitive_request`: 369 candidate evaluations on one instance, none holding a secret. The scan now treats an escaped line break as the break it stands for. `sensitive_request` is also terminal and never retried; `retry-failures --include-terminal` re-runs the rows an older release left behind.
+- The migration tier upgrades a store written by the previous release's own code (`git archive v3.1.0`), not a fresh store downgraded by hand, which is how a wrong version stamp in the 1107 step went unnoticed.
+- The 1109 upgrade also moves the migrated `scope_authorization` records out of every source row into `authorization_payloads` and `source_authorizations`: the 2.0 conversion wrote the same 600-byte record into 167,000 sources on one instance, 102 MB for 97 distinct payloads. The record is kept once per distinct payload and linked (`Transaction.source_authorization`); the conversion writes the compact layout from the start.
 
 ### Scope Recall 3.1.1rc1 memory growth on a busy instance - 2026-09-19
 

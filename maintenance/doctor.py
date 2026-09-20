@@ -20,7 +20,8 @@ from typing import Any, Literal
 import scope_recall
 from scope_recall.contracts import TrustedContext
 from scope_recall.core import CoreConfig, MemoryCore
-from scope_recall.core.schema import SCHEMA_VERSION
+from scope_recall.core.schema import SCHEMA_VERSION, UPGRADE_CHAIN
+from scope_recall.core.storage import SQLiteStorage
 from scope_recall.core.failure_retry import NEEDS_REVIEW_COUNT
 from scope_recall.runtime.model_budget import pre_request_refusals, provider_refusals
 from scope_recall.runtime.running_code import live_records, stale_records
@@ -187,6 +188,14 @@ def _load_binding(host: HostChoice, instance_root: Path):
 #: in milliseconds. Reported rather than acted on, so the day the corpus crosses
 #: it is visible instead of arriving as unexplained latency.
 _VECTOR_SCAN_COMFORT_LIMIT = 100_000
+
+
+def _schema_on_disk(db_path: Path) -> int | None:
+    """The store's own schema stamp, read without opening it as a store."""
+    with suppress(sqlite3.Error, OSError, ValueError):
+        with closing(sqlite3.connect(f"file:{db_path.as_posix()}?mode=ro", uri=True, timeout=5)) as db:
+            return int(db.execute("PRAGMA user_version").fetchone()[0])
+    return None
 
 
 def _embedded_objects(db_path: Path) -> int | None:
@@ -534,9 +543,17 @@ def _check_storage(report: DoctorReport, binding, data_directory: Path) -> bool:
         _record(report, "database", "missing")
         return False
     _record(report, "database", "ok")
+    found = _schema_on_disk(data_directory / "memory.sqlite3")
+    if found in UPGRADE_CHAIN:
+        # Reported, never applied here: the doctor is read-only.
+        report.schema_version = found
+        report.capability_gaps.append("schema_upgrade_pending")
+        _record(report, "schema", "upgrade_pending",
+                f"{found} -> {SCHEMA_VERSION}; the next capture, recall or worker pass applies it in one transaction")
+        return False
     context = TrustedContext(binding, "doctor-readonly", binding.scope_ids, "origin_unknown")
     try:
-        core = MemoryCore(CoreConfig(binding))
+        core = MemoryCore(CoreConfig(binding), storage=SQLiteStorage(binding, upgrade_on_open=False))
         with core.storage.read(context) as transaction:
             status = transaction.status(include_all_projects=True, include_admission=True)
             conn = transaction._check()

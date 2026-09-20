@@ -250,6 +250,28 @@ def test_doctor_reports_the_footprint_the_growth_and_a_budget(tmp_path, monkeypa
     assert result.to_dict()['index_metadata']['tool_output_retention_days'] == 180
 
 
+def test_doctor_reports_a_pending_schema_upgrade_without_applying_it(tmp_path, monkeypatch):
+    """A package upgrade leaves the store one schema behind until its first
+    ordinary open brings it forward.  The doctor is read-only, so it names the
+    pending step instead of failing on a store it will not touch."""
+    app, ctx = _doctor_app(tmp_path, monkeypatch)
+    capture(app, ctx, 'TEST-upgrade/1', 'TEST pending upgrade')
+    with sqlite3.connect(app.storage.path) as conn:
+        for table in ('source_authorizations', 'authorization_payloads', 'expired_vectors'):
+            conn.execute(f'DROP TABLE {table}')
+        conn.execute('UPDATE instance_meta SET schema_version=1108 WHERE singleton=1')
+        conn.execute('PRAGMA user_version=1108')
+        conn.commit()
+    before = app.storage.path.read_bytes()
+    result = doctor.run_doctor(host='hermes', instance_root=ctx.binding.data_directory)
+    assert 'schema_upgrade_pending' in result.capability_gaps and result.schema_version == 1108
+    assert next(item for item in result.checks if item['name'] == 'schema')['result'] == 'upgrade_pending'
+    assert app.storage.path.read_bytes() == before
+    assert app.status(ctx).schema_version == 1109
+    result = doctor.run_doctor(host='hermes', instance_root=ctx.binding.data_directory)
+    assert 'schema_upgrade_pending' not in result.capability_gaps and result.schema_version == 1109
+
+
 def test_a_secret_refusal_is_a_terminal_failure_not_a_degraded_instance(tmp_path, monkeypatch):
     app, ctx = _doctor_app(tmp_path, monkeypatch)
     capture(app, ctx, 'TEST-refusal/1', 'TEST refused evaluation')

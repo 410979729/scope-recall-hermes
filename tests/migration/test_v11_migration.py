@@ -1,6 +1,7 @@
 """Small synthetic P15 migration, idempotence, deletion, and rollback drills."""
 from __future__ import annotations
 
+from dataclasses import replace
 import json
 from pathlib import Path
 import sqlite3
@@ -11,8 +12,11 @@ from maintenance.backup import backup_sqlite
 from maintenance.migrate_v2 import _stable, migrate_legacy
 from maintenance.rollback import rollback_to_verified_snapshot
 from legacy_fixture import build_official_578b_fixture
+from release_fixture import PREVIOUS_SCHEMA, build_previous_release_store
 from scope_recall.contracts import ContractError, InstanceBinding, TrustedContext
 from scope_recall.core.restore import InstallationMaintenance, begin_restore, export_deletion_ledger, ledger_digest, replay_deletion_ledger
+from scope_recall.core import CoreConfig, MemoryCore
+from scope_recall.core.schema import SCHEMA_VERSION
 from scope_recall.core.storage import SQLiteStorage
 from scope_recall.core.capture import record_event
 
@@ -298,3 +302,29 @@ def test_migration_public_facade_has_real_responsibility_owners():
                    migration_activation, migration_index, migration_records):
         tree = ast.parse(Path(module.__file__).read_text(encoding='utf-8'))
         assert not any(isinstance(n, ast.ImportFrom) and n.module == 'migrate_v2' for n in ast.walk(tree))
+
+
+def test_a_store_written_by_the_previous_release_upgrades_on_first_open(tmp_path: Path) -> None:
+    """Built by v3.1.0's own code, not by downgrading a fresh store.  Opening it
+    with this release brings it forward in one transaction; nothing is run by
+    hand, and what that release wrote is still there afterwards."""
+    path = build_previous_release_store(tmp_path / "previous", repo_root=Path.cwd(), sources=12)
+    with sqlite3.connect(path) as conn:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == PREVIOUS_SCHEMA
+        copies = conn.execute("SELECT count(*) FROM evidence_links WHERE object_kind='episode'").fetchone()[0]
+        work = conn.execute("SELECT count(*) FROM work_items").fetchone()[0]
+    assert copies == 12 * 13 // 2, "one copied lineage row per revision: the growth 1109 removes"
+    binding = InstanceBinding("TEST-agent", "TEST-installation", tmp_path / "previous", frozenset({"TEST-scope"}), True)
+    context = TrustedContext(binding, "TEST-session", frozenset({"TEST-scope"}), "human_direct")
+    core = MemoryCore(CoreConfig(binding))
+    status = core.status(context)
+    assert status.schema_version == SCHEMA_VERSION == 1109 and status.sources == 12
+    with sqlite3.connect(path) as conn:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 1109
+        assert conn.execute("SELECT count(*) FROM evidence_links WHERE object_kind='episode'").fetchone()[0] == 12
+        assert conn.execute("SELECT count(*) FROM work_items").fetchone()[0] == work
+        tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    assert {"expired_vectors", "authorization_payloads", "source_authorizations"} <= tables
+    episode, = core.episodes(replace(context, task_anchor="TEST-previous-release"))
+    assert len(episode.evidence_refs) == 12
+    assert core.initialize().schema_version == 1109
