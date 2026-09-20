@@ -284,24 +284,40 @@ def _upgrade_store(args: argparse.Namespace) -> int:
         result.update(status="unsupported", error="schema_not_in_upgrade_chain")
         _emit(result)
         return 2
-    if args.backup_dir:
-        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
-        snapshot = _path(args.backup_dir, "backup_dir") / f"memory-{before}-{stamp}.sqlite3"
-        backup_sqlite(database, snapshot, manifest=snapshot.with_suffix(".json"))
-        result["backup"] = str(snapshot)
+    if not args.backup_dir:
+        result.update(status="not_upgraded", error="backup_required",
+                      hint="provide --backup-dir for the verified pre-upgrade snapshot")
+        _emit(result)
+        return 2
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    snapshot = _path(args.backup_dir, "backup_dir") / f"memory-{before}-{stamp}.sqlite3"
+    backup_sqlite(database, snapshot, manifest=snapshot.with_suffix(".json"))
+    result["backup"] = str(snapshot)
     wait = min(max(float(args.wait_seconds), 0.0), 30.0)
     started = time.monotonic()
-    try:
-        status = SQLiteStorage(binding, timeout_seconds=wait).initialize()
-    except (sqlite3.OperationalError, TruthWriterBusyError) as exc:
-        result.update(status="not_upgraded", error="store_busy", detail=type(exc).__name__,
-                      hint="stop the worker (autostart pause) and run again")
-        _emit(result)
-        return 2
-    except ContractError as exc:
-        result.update(status="not_upgraded", error=exc.code, detail=exc.field)
-        _emit(result)
-        return 2
+    deadline = started + wait
+    while True:
+        remaining = max(0.0, deadline - time.monotonic())
+        try:
+            status = SQLiteStorage(binding, timeout_seconds=remaining).initialize()
+            break
+        except TruthWriterBusyError as exc:
+            if remaining > 0:
+                time.sleep(min(0.1, remaining))
+                continue
+            result.update(status="not_upgraded", error="store_busy", detail=type(exc).__name__,
+                          hint="stop the worker (autostart pause) and run again")
+            _emit(result)
+            return 2
+        except sqlite3.OperationalError as exc:
+            result.update(status="not_upgraded", error="store_busy", detail=type(exc).__name__,
+                          hint="stop the worker (autostart pause) and run again")
+            _emit(result)
+            return 2
+        except ContractError as exc:
+            result.update(status="not_upgraded", error=exc.code, detail=exc.field)
+            _emit(result)
+            return 2
     result.update(status="upgraded", schema_after=status.schema_version,
                   seconds=round(time.monotonic() - started, 1), journal_mode=_journal_mode(database))
     _emit(result)
