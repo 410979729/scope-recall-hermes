@@ -173,7 +173,7 @@ def test_purge_removes_source_claim_quote_and_lexical_payloads_and_reports_remai
     with sqlite3.connect(core.storage.path) as conn:
         for table,column in (("source_events","content"),("source_events","extra_json"),("claim_versions","payload_json"),("evidence_links","quote"),("claims","subject"),("deletion_operations","layers_json")):
             assert not any("TEST_ERASE_PAYLOAD_937591" in r[0] for r in conn.execute(f"SELECT {column} FROM {table}"))
-        assert not conn.execute("SELECT 1 FROM lexical_projection WHERE event_id=?",(source.ref,)).fetchone()
+        assert not conn.execute("SELECT 1 FROM lexical_postings WHERE source_id IN (SELECT source_id FROM source_events WHERE event_id=?)",(source.ref,)).fetchone()
         assert conn.execute("PRAGMA integrity_check").fetchone()[0]=="ok"
     before = core.storage.path.read_bytes()
     assert core.purge_sqlite(ctx,deleted["operation_id"],remaining_seconds=10)==result

@@ -93,6 +93,7 @@
     "core/gating.py",
     "core/index_rebuild.py",
     "core/inspect_service.py",
+    "core/lexical_index.py",
     "core/lineage.py",
     "core/mutate.py",
     "core/read_views.py",

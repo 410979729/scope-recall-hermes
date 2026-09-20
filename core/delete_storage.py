@@ -6,7 +6,7 @@ import hashlib
 import json
 
 from ..contracts import ContractError
-from . import lineage
+from . import lexical_index, lineage
 from .claims import canonical_time
 
 OBJECT_TABLES = {'event':('source_events','event_id'),'claim':('claims','claim_id'),
@@ -230,7 +230,7 @@ class Deletions:
                 for group in groups:
                     replacement = "removed-"+hashlib.sha256(group[0].encode()).hexdigest()
                     conn.execute("UPDATE source_events SET source_group_key=? WHERE source_group_key=?",(replacement,group[0]))
-                conn.execute("DELETE FROM lexical_projection WHERE event_id=?",(ref,))
+                lexical_index.forget(conn, ref)
                 conn.execute("""UPDATE source_events SET content='',source_event_key='removed-'||event_id,
                     extra_json='{"evidence_refs":[]}',source_original_origin=NULL,dataset_id=NULL,
                     capture_state='gap',capture_gaps_json='["deleted"]' WHERE event_id=?""",(ref,))

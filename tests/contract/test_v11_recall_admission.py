@@ -309,7 +309,7 @@ def test_P08_release_suffix_query_reaches_full_version_sources(tmp_path):
     # a vector hit can reach it until it is re-indexed; hydration admits it.
     # The paraphrase avoids the synonym table: 装好 would reach 已安装 lexically.
     with closing(sqlite3.connect(core.storage.path)) as conn, conn:
-        conn.execute("DELETE FROM lexical_projection WHERE term IN ('rc28','rc29')")
+        conn.execute("DELETE FROM lexical_postings WHERE term_id IN (SELECT term_id FROM lexical_terms WHERE term IN ('rc28','rc29'))")
     vectors.candidates = (_candidate(other), _candidate(full, score=0.90))
     query = "rc28 就绪了吗"
     assert synonym_expansions(query) == {}

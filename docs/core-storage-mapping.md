@@ -29,7 +29,7 @@ P03 首先落实 instance_meta、授权 scope、source_events、work_items 的�
 | intention、preference、constraint、decision | 同一 claims/claim_versions / P05、P07 | 意图 cue/target/state/conditions/completion_or_cancel_evidence（协议字段 state_evidence_refs）；pending 不能因交付提醒变 completed；各类保留条件、来源和时间 |
 | journal_digest_runs、Journal 处理列、nightly_digest_runs、vector_outbox | work_items / P03、P10、P14 | 逻辑唯一键、subject/version、pending/leased/done/failed/obsolete、attempt、available_at、lease token/until、输入水位、错误/进度。旧任务只由迁移器转换，不由三套 worker 并行继续写 |
 | vector_generations、vector_generation_state、向量状态 | projection_state / P08、P14 | 对象/版本、空间（模型/维度/预处理/距离/归一化）、generation、就绪/错误。可重建，不持有当前正文权威 |
-| memories_fts、fact_claims_fts | lexical_projection / P04、P08 | 只保留对象/版本与可重建词项；返回前仍查 SQLite 当前 scope/版本/删除 |
+| memories_fts、fact_claims_fts | lexical_terms / lexical_postings / P04、P08 | 只保留对象/版本与可重建词项；返回前仍查 SQLite 当前 scope/版本/删除 |
 | privacy_purge_operations/tombstones/source_tombstones/vector_intents | deletion_operations 与目标栅栏 / P06、P14 | op、目标及依赖、scope、epoch、deny_active、各层清理状态与时间；尽量不保留正文，迁移和恢复必须重放栅栏 |
 | fact_action_receipts | operation_receipts / P05–P06、P14 | 幂等键、请求哈希、scope、动作、结果状态、版本、错误与时间；收据不是证据，删除时清除含正文的旧收据 |
 

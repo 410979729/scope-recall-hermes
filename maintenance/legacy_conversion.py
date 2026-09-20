@@ -17,6 +17,7 @@ from typing import Any, Callable, Iterable, Mapping
 
 from scope_recall.contracts import InstanceBinding, TrustedContext
 from scope_recall.core.events import lexical_terms
+from scope_recall.core import lexical_index
 from scope_recall.core.schema import SCHEMA_VERSION, normalize_scope_authorizations
 from scope_recall.core.storage import SQLiteStorage
 from scope_recall.maintenance.legacy_episode_membership import plan_legacy_episode_memberships
@@ -591,15 +592,14 @@ def _insert_episodes(cv: Conversion, conn: sqlite3.Connection) -> None:
 
 
 def _project_lexical_terms(cv: Conversion, conn: sqlite3.Connection) -> None:
+    # The converter inserts sources by name; they take their integer identity here.
+    conn.execute("""UPDATE source_events SET source_id=rowid+(SELECT COALESCE(MAX(source_id),0) FROM source_events)
+        WHERE source_id IS NULL""")
     for item in cv.sources:
-        if conn.execute("SELECT read_blocked FROM source_events WHERE event_id=?", (item["event_id"],)).fetchone()[0]:
+        row = conn.execute("SELECT read_blocked,source_id FROM source_events WHERE event_id=?", (item["event_id"],)).fetchone()
+        if row[0]:
             continue
-        for term in lexical_terms(item["content"]):
-            conn.execute(
-                "INSERT INTO lexical_projection(term,event_id,source_revision) VALUES (?,?,?) ON CONFLICT DO NOTHING",
-                (term, item["event_id"], 1),
-            )
-            cv.inserted["lexical_projection"] += 1
+        cv.inserted["lexical_projection"] += lexical_index.index_terms(conn, row[1], lexical_terms(item["content"]))
 
 
 # --- the report ------------------------------------------------------------

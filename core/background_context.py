@@ -10,6 +10,7 @@ from dataclasses import replace
 import hashlib
 import json
 
+from . import lexical_index
 from .coverage import note_truncation
 from .retrieval import CandidateRef, RetrievedObject, SearchContext
 from .source_qualification import conditions_match
@@ -107,16 +108,15 @@ def _profile_rows(tx, context: SearchContext, gaps: list[str] | None = None):
     if terms:
         scopes = tuple(sorted(context.trusted_context.allowed_scope_ids))
         matched = conn.execute(
-            f"""SELECT c.claim_id,c.current_revision,COUNT(DISTINCT p.term) AS hits
-            FROM lexical_projection p JOIN source_events e
-              ON e.event_id=p.event_id AND e.source_revision=p.source_revision
+            f"""SELECT c.claim_id,c.current_revision,COUNT(DISTINCT t.term) AS hits
+            FROM {lexical_index.JOIN}
             JOIN evidence_links l ON l.source_ref=e.event_id AND l.source_revision=e.source_revision
             JOIN claims c ON l.object_kind='claim' AND l.object_ref=c.claim_id
               AND l.object_revision=c.current_revision
             JOIN claim_versions v ON v.claim_id=c.claim_id AND v.revision=c.current_revision
             WHERE {where} AND c.kind IN ('preference','constraint')
               AND v.state IN ('active','disputed','retracted') AND l.relation='supports'
-              AND p.term IN ({','.join('?' for _ in terms)})
+              AND t.term IN ({','.join('?' for _ in terms)})
               AND e.scope_id IN ({','.join('?' for _ in scopes)}) AND e.read_blocked=0 AND e.suppressed=0
               AND NOT EXISTS(SELECT 1 FROM object_blocks b WHERE b.object_kind='event'
                              AND b.object_ref=e.event_id AND (b.read_blocked=1 OR b.suppressed=1))

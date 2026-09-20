@@ -462,3 +462,33 @@ def test_a_long_read_does_not_block_the_writer(store):
     assert time.monotonic() - started < 1.0
     reader.join()
     assert snapshot(storage, ctx).sources == 1
+
+
+def test_a_heavy_upgrade_waits_for_a_caller_with_the_budget():
+    """The 1109 step rebuilds the lexical index: 95 s for 5.2 million rows on a
+    1.4 GB store.  A hook's few seconds cannot carry that; the worker's pass
+    and the installer can, and a small store is brought forward by anyone."""
+    from scope_recall.core.storage import HEAVY_UPGRADE_BYTES, HEAVY_UPGRADE_SECONDS, upgrade_fits
+    assert upgrade_fits(HEAVY_UPGRADE_BYTES * 10, None)
+    assert upgrade_fits(HEAVY_UPGRADE_BYTES * 10, HEAVY_UPGRADE_SECONDS)
+    assert not upgrade_fits(HEAVY_UPGRADE_BYTES * 10, 6.0)
+    assert upgrade_fits(HEAVY_UPGRADE_BYTES - 1, 1.0)
+
+
+def test_source_versions_carry_an_integer_identity_and_the_lexical_index_names_them_by_it(store):
+    storage, ctx = store
+    with storage.write(ctx) as tx:
+        first = put(tx, key="TEST-id/1", content="TEST 蓝色 identity one")
+        second = put(tx, key="TEST-id/2", content="TEST 蓝色 identity two")
+        tx.index_source(first.ref, first.revision)
+        tx.index_source(second.ref, second.revision)
+    with sqlite3.connect(storage.path) as conn:
+        ids = [row[0] for row in conn.execute("SELECT source_id FROM source_events ORDER BY source_id")]
+        assert ids == [1, 2]
+        shared = conn.execute(
+            """SELECT count(*) FROM lexical_terms t JOIN lexical_postings p ON p.term_id=t.term_id
+               WHERE t.term=(SELECT term FROM lexical_terms WHERE term LIKE '%蓝色%' LIMIT 1)""").fetchone()[0]
+        assert shared == 2, "one term row, one posting per source"
+    with storage.read(ctx) as tx:
+        assert tx.source_projection_status(first.ref, first.revision)[0] == "ready"
+        assert [s.ref for s in tx.search_sources("identity")] == [second.ref, first.ref] or len(tx.search_sources("identity")) == 2

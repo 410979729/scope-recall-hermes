@@ -13,6 +13,7 @@ import sqlite3
 
 from ..contracts import ContractError, InstanceBinding, SourceEvent, TrustedContext, validate_capture
 from .truth_connection import TruthDatabaseMode, connect_truth_database
+from . import lexical_index
 from .schema import APPLICATION_ID, SCHEMA_VERSION, STATEMENTS, UPGRADE_CHAIN, upgrade_1105, upgrade_1106, upgrade_1107, upgrade_1108
 from .events import lexical_terms, prepare_capture, query_terms
 
@@ -405,8 +406,8 @@ class Transaction:
         conn.execute("""INSERT INTO source_events(event_id,source_revision,scope_id,session_id,project_id,branch_id,
             source_event_key,origin,role,content,occurred_at,recorded_at,time_precision,capture_state,
             content_sha256,event_sha256,persisted_at,source_original_origin,dataset_id,extra_json,
-            source_group_key,segment_index,segment_total,capture_gaps_json,import_provenance_sha256)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (ref, revision, scope_id, self.context.session_id, self.context.project_id, self.context.branch_id,
+            source_group_key,segment_index,segment_total,capture_gaps_json,import_provenance_sha256,source_id)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,(SELECT COALESCE(MAX(source_id),0)+1 FROM source_events))""", (ref, revision, scope_id, self.context.session_id, self.context.project_id, self.context.branch_id,
             *(event[k] for k in columns), hashlib.sha256(event["content"].encode("utf-8")).hexdigest(), fingerprint, persisted_at,
             event.get("source_original_origin"), event.get("dataset_id"), _json(extras), group_key, segment_index, segment_total, _json(capture_gaps), provenance_hash))
         if (group_policy is not None and group_policy["suppressed"]) or self._inherits_suppression(conn, scope_id, event["content"]):
@@ -419,14 +420,14 @@ class Transaction:
         source = self.source(ref, revision)
         if source is None:
             raise ContractError("SOURCE_MISSING")
-        conn.executemany("INSERT INTO lexical_projection(term,event_id,source_revision) VALUES (?,?,?) ON CONFLICT DO NOTHING", [(term, ref, revision) for term in lexical_terms(source.event["content"])])
+        lexical_index.index_terms(conn, lexical_index.source_id(conn, ref, revision), lexical_terms(source.event["content"]))
 
     def source_projection_status(self, ref: str, revision: int) -> tuple[str, str]:
         conn = self._check()
         source = self.source(ref, revision)
         if source is None:
             raise ContractError("SOURCE_MISSING")
-        actual = tuple(r[0] for r in conn.execute("SELECT term FROM lexical_projection WHERE event_id=? AND source_revision=? ORDER BY term", (ref, revision)))
+        actual = lexical_index.terms_of(conn, lexical_index.source_id(conn, ref, revision))
         lexical = "ready" if actual == lexical_terms(source.event["content"]) else "not_ready"
         work = conn.execute("SELECT state FROM work_items WHERE work_type='embed' AND subject_ref=? AND subject_revision=?", (ref, revision)).fetchone()
         semantic = "not_scheduled" if work is None else {"pending":"pending", "leased":"pending", "done":"ready", "failed":"failed", "obsolete":"obsolete"}[work[0]]
@@ -451,9 +452,8 @@ class Transaction:
         scope_marks = ",".join("?" for _ in scopes)
         current = "" if history else "AND NOT EXISTS (SELECT 1 FROM source_events newer WHERE newer.source_group_key=e.source_group_key AND newer.source_revision>e.source_revision)"
         suppression = "AND e.suppressed=0 AND NOT EXISTS(SELECT 1 FROM object_blocks b WHERE b.object_kind='event' AND b.object_ref=e.event_id AND b.suppressed=1)" if automatic else ""
-        rows = conn.execute(f"""SELECT e.event_id,e.source_revision,count(*) AS hits FROM lexical_projection p
-            JOIN source_events e ON e.event_id=p.event_id AND e.source_revision=p.source_revision
-            WHERE p.term IN ({term_marks}) AND e.scope_id IN ({scope_marks}) AND e.read_blocked=0
+        rows = conn.execute(f"""SELECT e.event_id,e.source_revision,count(*) AS hits FROM {lexical_index.JOIN}
+            WHERE t.term IN ({term_marks}) AND e.scope_id IN ({scope_marks}) AND e.read_blocked=0
             AND (e.project_id IS NULL OR e.project_id=?) AND (e.branch_id IS NULL OR e.branch_id=?)
             AND NOT EXISTS(SELECT 1 FROM object_blocks b WHERE b.object_kind='event' AND b.object_ref=e.event_id AND b.read_blocked=1)
             {current} {suppression}
@@ -471,6 +471,22 @@ class Transaction:
         conn.execute("""INSERT INTO work_items(work_type,subject_ref,subject_revision,scope_id,project_id,branch_id,available_at)
             VALUES (?,?,?,?,?,?,?) ON CONFLICT(work_type,subject_ref,subject_revision) DO NOTHING""",
             (work_type,ref,revision,source.scope_id,source.project_id,source.branch_id,available_at))
+
+
+#: A store this large is brought forward only by a caller with this much
+#: budget: the 1109 step rebuilds the lexical index, 95 s for 5.2 million
+#: rows on a 1.4 GB store, which no hook can carry and every worker pass can.
+HEAVY_UPGRADE_BYTES = 100_000_000
+HEAVY_UPGRADE_SECONDS = 60.0
+
+
+def upgrade_fits(store_bytes: int, remaining_seconds: float | None) -> bool:
+    """Whether an open with this budget may bring a store of this size forward."""
+    return remaining_seconds is None or remaining_seconds >= HEAVY_UPGRADE_SECONDS or store_bytes < HEAVY_UPGRADE_BYTES
+
+
+def _store_bytes(conn: sqlite3.Connection) -> int:
+    return conn.execute("PRAGMA page_count").fetchone()[0] * conn.execute("PRAGMA page_size").fetchone()[0]
 
 
 def _ensure_wal(conn: sqlite3.Connection) -> None:
@@ -575,6 +591,13 @@ class SQLiteStorage:
         conn = self._open("rwc")
         original = None
         try:
+            version = conn.execute("PRAGMA user_version").fetchone()[0]
+            if version in UPGRADE_CHAIN:
+                # Verified as this store's own before anything is written, and
+                # switched to WAL first, so readers keep reading through a
+                # long upgrade instead of waiting on the rollback journal.
+                self._verify(conn, expected_schema=version)
+                _ensure_wal(conn)
             conn.execute("BEGIN IMMEDIATE")
             exists = conn.execute("SELECT 1 FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' LIMIT 1").fetchone()
             if exists:
@@ -622,6 +645,12 @@ class SQLiteStorage:
         conn = self._open("rw" if writable else "ro", remaining_seconds,restoring=restoring)
         version = conn.execute("PRAGMA user_version").fetchone()[0]
         if self.upgrade_on_open and not restoring and version in UPGRADE_CHAIN:
+            if not upgrade_fits(_store_bytes(conn), remaining_seconds):
+                # A hook's few seconds cannot carry a rebuild that takes a
+                # minute on a large store; the worker's pass or the installer
+                # brings it forward, and the doctor names the pending step.
+                self._close(conn, None)
+                raise ContractError("SCHEMA_UNSUPPORTED", "upgrade_pending")
             self._close(conn, None)
             self.initialize()
             conn = self._open("rw" if writable else "ro", remaining_seconds,restoring=restoring)

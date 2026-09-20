@@ -745,7 +745,7 @@ def test_rebuild_projection_is_the_existing_queue_type(worker_app):
     core, ctx, clock = worker_app
     source = capture(core, ctx, "TEST projection rebuild anchor。")
     with sqlite3.connect(core.storage.path) as conn:
-        conn.execute("DELETE FROM lexical_projection WHERE event_id=? AND source_revision=?", (source.ref, source.revision))
+        conn.execute("DELETE FROM lexical_postings WHERE source_id=(SELECT source_id FROM source_events WHERE event_id=? AND source_revision=?)", (source.ref, source.revision))
         conn.execute("UPDATE work_items SET state='done' WHERE work_type IN ('consolidate','embed') AND subject_ref=?", (source.ref,))
         conn.commit()
     with core.storage.write(ctx) as tx:

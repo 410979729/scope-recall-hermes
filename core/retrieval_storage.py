@@ -20,7 +20,7 @@ from .claim_storage import parse_source_ref
 from .claims import canonical_time, select_effective, select_proposal
 from .delete_storage import canonical
 from .episodes import source_origin
-from . import lineage
+from . import lexical_index, lineage
 from .events import lexical_terms
 from .recall_policy import (
     applicability,
@@ -131,13 +131,7 @@ def _discriminating_terms(tx, terms: tuple[str, ...], keep: tuple[str, ...] = ()
     reach a single source hydration would admit.
     """
     conn = tx._check()
-    frequencies = {
-        row[0]: int(row[1])
-        for row in conn.execute(
-            f"SELECT term,COUNT(*) FROM lexical_projection WHERE term IN ({_marks(terms)}) GROUP BY term",
-            terms,
-        ).fetchall()
-    }
+    frequencies = lexical_index.document_frequency(conn, terms)
     if not frequencies:
         return terms
     ceiling = _common_term_ceiling(conn)
@@ -166,13 +160,7 @@ def _discriminating_synonyms(tx, synonyms: dict[str, str], terms: tuple[str, ...
     if not live:
         return {}
     conn = tx._check()
-    frequencies = {
-        row[0]: int(row[1])
-        for row in conn.execute(
-            f"SELECT term,COUNT(*) FROM lexical_projection WHERE term IN ({_marks(live)}) GROUP BY term",
-            tuple(live),
-        ).fetchall()
-    }
+    frequencies = lexical_index.document_frequency(conn, live)
     if not frequencies:
         return {}
     ceiling = _common_term_ceiling(conn)
@@ -391,11 +379,11 @@ class RetrievalStorage:
         # and matched terms still count the query's own terms, once each.
         # Without a synonym the statement and its parameters are unchanged.
         synonyms = _discriminating_synonyms(tx, synonym_expansions(context.query), terms)
-        credit = f"CASE p.term {' '.join('WHEN ? THEN ?' for _ in synonyms)} ELSE p.term END" if synonyms else "p.term"
+        credit = f"CASE t.term {' '.join('WHEN ? THEN ?' for _ in synonyms)} ELSE t.term END" if synonyms else "t.term"
         credits = tuple(value for pair in synonyms.items() for value in pair)
         scopes = tuple(sorted(context.trusted_context.allowed_scope_ids))
         term_marks, scope_marks = _marks((*terms, *synonyms)), _marks(scopes)
-        identified = f"MAX(p.term IN ({_marks(identifiers)})) DESC," if identifiers else ""
+        identified = f"MAX(t.term IN ({_marks(identifiers)})) DESC," if identifiers else ""
         current = "" if context.mode in {"history", "as_of"} else "AND NOT EXISTS (SELECT 1 FROM source_events newer WHERE newer.source_group_key=e.source_group_key AND newer.source_revision>e.source_revision)"
         as_of = ""
         params: list[object] = [*terms, *synonyms, *scopes, context.trusted_context.project_id, context.trusted_context.branch_id]
@@ -405,9 +393,8 @@ class RetrievalStorage:
         rows = tx._check().execute(
             f"""SELECT e.event_id,e.source_revision,COUNT(DISTINCT {credit}) AS hits,
                        GROUP_CONCAT(DISTINCT hex({credit})) AS matched_term_hexes
-                FROM lexical_projection p JOIN source_events e
-                ON e.event_id=p.event_id AND e.source_revision=p.source_revision
-                WHERE p.term IN ({term_marks}) AND e.scope_id IN ({scope_marks})
+                FROM {lexical_index.JOIN}
+                WHERE t.term IN ({term_marks}) AND e.scope_id IN ({scope_marks})
                   AND e.read_blocked=0 AND (e.project_id IS NULL OR e.project_id=?)
                   AND (e.branch_id IS NULL OR e.branch_id=?)
                   AND NOT EXISTS(SELECT 1 FROM object_blocks b WHERE b.object_kind='event'

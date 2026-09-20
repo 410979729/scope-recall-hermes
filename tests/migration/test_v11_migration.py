@@ -106,7 +106,7 @@ def _legacy(path: Path) -> None:
 def _counts(path: Path) -> dict[str, int]:
     conn = sqlite3.connect(path)
     try:
-        return {table: conn.execute(f"SELECT count(*) FROM {table}").fetchone()[0] for table in ("source_events", "deletion_operations", "episodes", "claims", "lexical_projection")}
+        return {table: conn.execute(f"SELECT count(*) FROM {table}").fetchone()[0] for table in ("source_events", "deletion_operations", "episodes", "claims", "lexical_postings")}
     finally:
         conn.close()
 
@@ -313,6 +313,7 @@ def test_a_store_written_by_the_previous_release_upgrades_on_first_open(tmp_path
         assert conn.execute("PRAGMA user_version").fetchone()[0] == PREVIOUS_SCHEMA
         copies = conn.execute("SELECT count(*) FROM evidence_links WHERE object_kind='episode'").fetchone()[0]
         work = conn.execute("SELECT count(*) FROM work_items").fetchone()[0]
+        projection = conn.execute("SELECT count(*) FROM lexical_projection").fetchone()[0]
     assert copies == 12 * 13 // 2, "one copied lineage row per revision: the growth 1109 removes"
     binding = InstanceBinding("TEST-agent", "TEST-installation", tmp_path / "previous", frozenset({"TEST-scope"}), True)
     context = TrustedContext(binding, "TEST-session", frozenset({"TEST-scope"}), "human_direct")
@@ -324,6 +325,8 @@ def test_a_store_written_by_the_previous_release_upgrades_on_first_open(tmp_path
         assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal", "the previous release wrote a rollback-journal store"
         assert conn.execute("SELECT count(*) FROM evidence_links WHERE object_kind='episode'").fetchone()[0] == 12
         assert conn.execute("SELECT count(*) FROM work_items").fetchone()[0] == work
+        assert conn.execute("SELECT count(*) FROM lexical_postings").fetchone()[0] == projection > 0
+        assert conn.execute("SELECT count(*) FROM source_events WHERE source_id IS NULL").fetchone()[0] == 0
         tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     assert {"expired_vectors", "authorization_payloads", "source_authorizations"} <= tables
     episode, = core.episodes(replace(context, task_anchor="TEST-previous-release"))

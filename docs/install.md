@@ -505,7 +505,11 @@ Upgrading between 3.x versions is different. Install the new wheel; the first
 ordinary open of the store afterwards (a capture, a recall, a worker pass)
 applies the schema upgrade in one transaction and rolls it back whole if it
 fails. `doctor` reports `schema_upgrade_pending` until then and never applies
-the upgrade itself. Take a `backup` first if you want one.
+the upgrade itself. Take a `backup` first if you want one. On a store above
+100 MB a step that rebuilds an index (3.1.1's lexical index: about a minute
+and a half for five million index rows) is left to a caller with the time
+for it, the worker's next pass or `apply-install`; a hook's open reports
+`SCHEMA_UNSUPPORTED / upgrade_pending` until then.
 
 ## 10. Platform and storage boundaries
 

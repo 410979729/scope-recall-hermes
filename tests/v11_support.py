@@ -89,9 +89,21 @@ def raw_case_inputs(case_id, directory, clock):
 #: What each schema step added.  A fabricated older store is a fresh one with
 #: the later objects removed; every test that needs one goes through here, so a
 #: new step is added in one place instead of in each of them.
+_LEXICAL_PROJECTION_1108 = (
+    """CREATE TABLE lexical_projection (
+        term TEXT NOT NULL, event_id TEXT NOT NULL, source_revision INTEGER NOT NULL,
+        PRIMARY KEY(term,event_id,source_revision)
+    ) STRICT, WITHOUT ROWID""",
+    """INSERT INTO lexical_projection(term,event_id,source_revision)
+        SELECT t.term,e.event_id,e.source_revision FROM lexical_postings p
+        JOIN lexical_terms t ON t.term_id=p.term_id JOIN source_events e ON e.source_id=p.source_id""",
+    "CREATE INDEX lexical_source ON lexical_projection(event_id,source_revision)",
+)
 _SCHEMA_STEPS = {
-    1109: {"indexes": ("source_content",),
-           "tables": ("source_authorizations", "authorization_payloads", "expired_vectors")},
+    1109: {"before": _LEXICAL_PROJECTION_1108,
+           "indexes": ("source_content", "lexical_postings_source", "source_ids"),
+           "tables": ("source_authorizations", "authorization_payloads", "expired_vectors", "lexical_postings", "lexical_terms"),
+           "columns": (("source_events", "source_id"),)},
     1108: {"tables": ("candidate_source_triggers", "candidate_evaluations", "candidate_trigger_terms",
                       "candidate_evidence", "candidate_lifecycle", "candidate_scan_cursors")},
     1107: {"tables": ("capture_inbox", "work_error_details", "consolidation_fragments", "consolidation_outcomes")},
@@ -106,6 +118,8 @@ def downgrade_store(path, version: int) -> None:
     with sqlite3.connect(path) as conn:
         for step in sorted((step for step in _SCHEMA_STEPS if step > version), reverse=True):
             objects = _SCHEMA_STEPS[step]
+            for statement in objects.get("before", ()):
+                conn.execute(statement)
             for index in objects.get("indexes", ()):
                 conn.execute(f"DROP INDEX {index}")
             for table in objects.get("tables", ()):

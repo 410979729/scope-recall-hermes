@@ -23,7 +23,7 @@ def counts(app):
     conn = sqlite3.connect(f"{app.storage.path.as_uri()}?mode=ro", uri=True)
     try:
         return {name: conn.execute(f"SELECT count(*) FROM {name}").fetchone()[0]
-                for name in ("source_events", "lexical_projection", "work_items")}
+                for name in ("source_events", "lexical_postings", "work_items")}
     finally:
         conn.close()
 

@@ -27,7 +27,7 @@ def capture(core, ctx, key="TEST-message/1", **changes):
 def rows(core):
     conn = sqlite3.connect(f"{core.storage.path.as_uri()}?mode=ro", uri=True)
     try:
-        return {table: conn.execute(f"SELECT count(*) FROM {table}").fetchone()[0] for table in ("source_events", "lexical_projection", "work_items")}
+        return {table: conn.execute(f"SELECT count(*) FROM {table}").fetchone()[0] for table in ("source_events", "lexical_postings", "work_items")}
     finally:
         conn.close()
 
@@ -43,7 +43,7 @@ def test_C14_real_occurrences_not_trivial_filter_and_duplicate_is_zero_mutation(
     assert replay.mutation == "none" and replay.semantic_state == "not_scheduled"
     assert replay.gaps == () and replay.admission == ("admission_source_only:acknowledgement",)
     assert app.storage.path.read_bytes() == before
-    assert rows(app) == {"source_events": 2, "lexical_projection": 2, "work_items": 0}
+    assert rows(app) == {"source_events": 2, "lexical_postings": 2, "work_items": 0}
 
 
 def test_source_conflict_never_claims_persisted_or_adds_work(core):
@@ -75,7 +75,7 @@ def test_empty_message_reports_non_persistence_but_explicit_gap_is_retained(core
     app, ctx = core
     result = capture(app, ctx, content=value)
     assert result.durability == "not_persisted" and result.error_code == "empty_source"
-    assert rows(app) == {"source_events": 0, "lexical_projection": 0, "work_items": 0}
+    assert rows(app) == {"source_events": 0, "lexical_postings": 0, "work_items": 0}
     gap = capture(app, ctx, content=value, capture_state="gap")
     assert app.source(ctx, gap.event_refs[0].ref, 1).event["capture_state"] == "gap"
 
@@ -91,7 +91,7 @@ def test_credentials_rejected_before_any_source_hash_index_or_work(core, secret)
     assert result.error_code == "plaintext_secret_rejected"
     assert result.durability == "not_persisted" and result.event_refs == ()
     assert secret not in repr(result)
-    assert rows(app) == {"source_events": 0, "lexical_projection": 0, "work_items": 0}
+    assert rows(app) == {"source_events": 0, "lexical_postings": 0, "work_items": 0}
     assert secret.encode() not in app.storage.path.read_bytes()
 
 

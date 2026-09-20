@@ -75,7 +75,7 @@ def test_a_tool_output_older_than_the_window_loses_its_vector_and_nothing_else(a
     assert _count(core, "SELECT count(*) FROM expired_vectors") == 3
     # The source, its lexical index and its finished work item are untouched...
     assert _count(core, "SELECT count(*) FROM source_events") == 5
-    assert _count(core, "SELECT count(*) FROM lexical_projection WHERE event_id=?", old_tools[0].ref) > 0
+    assert _count(core, "SELECT count(*) FROM lexical_postings WHERE source_id IN (SELECT source_id FROM source_events WHERE event_id=?)", old_tools[0].ref) > 0
     assert core.source(ctx, old_tools[0].ref, 1) is not None
     assert _count(core, "SELECT count(*) FROM work_items WHERE work_type='embed' AND state='done'") == 5
     # ...so nothing refills an embed for an expired source.

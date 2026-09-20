@@ -107,6 +107,7 @@ def test_upgrade_1108_keeps_the_earliest_copy_of_every_episode_lineage_row(app):
         for revision in (1, 2):
             conn.execute("INSERT INTO evidence_links VALUES ('claim','TEST-claim',?,?,1,'supports','TEST',NULL)", (revision, sources[0].ref))
         assert conn.execute("SELECT count(*) FROM evidence_links WHERE object_kind='episode'").fetchone()[0] == 10
+        postings = conn.execute("SELECT count(*) FROM lexical_postings").fetchone()[0]
         conn.commit()
     downgrade_store(core.storage.path, 1108)
     # A known older schema is brought forward by the first ordinary open.
@@ -116,7 +117,10 @@ def test_upgrade_1108_keeps_the_earliest_copy_of_every_episode_lineage_row(app):
     with sqlite3.connect(core.storage.path) as conn:
         assert conn.execute("SELECT count(*) FROM evidence_links WHERE object_kind='claim'").fetchone()[0] == 2
         assert conn.execute("PRAGMA user_version").fetchone()[0] == 1109
-        assert "source_content" in {row[1] for row in conn.execute("PRAGMA index_list(source_events)")}
+        assert {"source_content", "source_ids"} <= {row[1] for row in conn.execute("PRAGMA index_list(source_events)")}
+        # the lexical index was rebuilt from the text projection the old store carried
+        assert conn.execute("SELECT count(*) FROM lexical_postings").fetchone()[0] == postings
+        assert conn.execute("SELECT count(DISTINCT source_id) FROM source_events").fetchone()[0] == 4
     assert set(core.episodes(ctx)[0].evidence_refs) == {ref(s) for s in sources}
     assert core.initialize().schema_version == 1109
 
