@@ -645,7 +645,7 @@ def test_r1_candidate_1107_migration_preserves_work_ids_leases_and_error_history
         )
         for table in (
             "candidate_source_triggers", "candidate_evaluations", "candidate_trigger_terms",
-            "candidate_evidence", "candidate_lifecycle", "candidate_scan_cursors",
+            "candidate_evidence", "candidate_lifecycle", "candidate_scan_cursors", "expired_vectors",
         ):
             conn.execute(f"DROP TABLE {table}")
         conn.execute("UPDATE instance_meta SET schema_version=1107 WHERE singleton=1")

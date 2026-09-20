@@ -52,6 +52,7 @@ def test_existing_1105_source_upgrades_explicitly_and_resumes_to_exact_end(worke
             "candidate_source_triggers", "candidate_evaluations", "candidate_trigger_terms",
             "candidate_evidence", "candidate_lifecycle", "candidate_scan_cursors",
             "capture_inbox", "work_error_details", "consolidation_fragments", "consolidation_outcomes",
+            "expired_vectors",
         ):
             db.execute(f"DROP TABLE {table}")
         db.execute("ALTER TABLE work_items DROP COLUMN consolidation_offset")
