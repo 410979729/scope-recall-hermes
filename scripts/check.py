@@ -108,7 +108,7 @@ SCRIPT_GATE_TESTS = [
     "tests/packaging/test_release_notes.py",
 ]
 SUITES = {
-    "unit": ["tests/unit/test_v11_context.py", "tests/unit/test_check_runner.py", "tests/unit/test_secret_patterns.py"],
+    "unit": ["tests/unit/test_v11_context.py", "tests/unit/test_check_runner.py", "tests/unit/test_secret_patterns.py", "tests/unit/test_contract_schemas.py"],
     "contract": ["tests/contract/test_v11_protocol.py", "tests/contract/test_v11_inputs.py", "tests/contract/test_p13_configurable_budget.py", "tests/contract/test_autostart_cli.py", "tests/contract/test_companion_publish.py"],
     "storage": ["tests/contract/test_v11_storage.py"],
     "capture": ["tests/contract/test_v11_capture.py"],

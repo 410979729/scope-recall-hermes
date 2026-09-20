@@ -304,3 +304,27 @@ def test_frozen_hermes_cli_dispatches_registered_status_tool_once():
         destination = Path(capture_path)
         destination.parent.mkdir(parents=True, exist_ok=True)
         destination.write_text(json.dumps(capture, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+def _untyped_properties(schema, trail=()):
+    found = []
+    if not isinstance(schema, dict):
+        return found
+    for name, spec in (schema.get("properties") or {}).items():
+        if isinstance(spec, dict) and "type" not in spec and not any(key in spec for key in ("anyOf", "oneOf", "allOf", "$ref")):
+            found.append("/".join((*trail, name)))
+        found.extend(_untyped_properties(spec, (*trail, name)))
+    for key in ("items", "additionalProperties"):
+        if isinstance(schema.get(key), dict):
+            found.extend(_untyped_properties(schema[key], (*trail, key)))
+    return found
+
+
+def test_every_tool_parameter_declares_a_type_for_a_strict_provider(adapter):
+    """Kimi Code's k3 endpoint refuses a tool whose parameter has no explicit
+    type, and every tool travels with every request, so the trace tool's
+    untyped direction enum failed all chat on that route after the 3.1.0
+    upgrade (#89).  The tools a host receives are checked here as a set."""
+    provider, _clock = adapter
+    for schema in provider.get_tool_schemas():
+        assert _untyped_properties(schema["parameters"]) == [], schema["name"]

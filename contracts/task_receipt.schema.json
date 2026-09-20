@@ -10,6 +10,7 @@
       "pattern": "^P(0[0-9]|1[0-9])$"
     },
     "status": {
+      "type": "string",
       "enum": [
         "blocked",
         "completed"

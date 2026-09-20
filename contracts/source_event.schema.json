@@ -6,6 +6,7 @@
   "additionalProperties": false,
   "properties": {
     "protocol_version": {
+      "type": "string",
       "const": "1.1"
     },
     "source_event_key": {
@@ -18,6 +19,7 @@
       "minimum": 1
     },
     "origin": {
+      "type": "string",
       "enum": [
         "human_direct",
         "assistant_visible",
@@ -30,6 +32,7 @@
       ]
     },
     "role": {
+      "type": "string",
       "enum": [
         "user",
         "assistant",
@@ -55,6 +58,7 @@
       "format": "date-time"
     },
     "time_precision": {
+      "type": "string",
       "enum": [
         "instant",
         "day",
@@ -63,6 +67,7 @@
       ]
     },
     "capture_state": {
+      "type": "string",
       "enum": [
         "complete",
         "partial",
@@ -90,6 +95,7 @@
       "uniqueItems": true
     },
     "source_original_origin": {
+      "type": "string",
       "enum": [
         "human_direct",
         "assistant_visible",
@@ -165,6 +171,7 @@
       ],
       "properties": {
         "kind": {
+          "type": "string",
           "enum": [
             "human",
             "assistant",
@@ -175,6 +182,7 @@
           ]
         },
         "resolution": {
+          "type": "string",
           "enum": [
             "verified",
             "unresolved"
@@ -233,6 +241,7 @@
       ],
       "properties": {
         "order": {
+          "type": "string",
           "enum": [
             "observed",
             "unknown"

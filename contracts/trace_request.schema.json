@@ -5,6 +5,7 @@
   "additionalProperties": false,
   "properties": {
     "protocol_version": {
+      "type": "string",
       "const": "1.1"
     },
     "request_id": {
@@ -38,6 +39,7 @@
       "maximum": 30
     },
     "direction": {
+      "type": "string",
       "enum": [
         "incoming",
         "outgoing",

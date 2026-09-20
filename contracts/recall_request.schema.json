@@ -6,6 +6,7 @@
   "additionalProperties": false,
   "properties": {
     "protocol_version": {
+      "type": "string",
       "const": "1.1"
     },
     "request_id": {
@@ -19,6 +20,7 @@
       "maxLength": 8192
     },
     "mode": {
+      "type": "string",
       "enum": [
         "auto",
         "current",

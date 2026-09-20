@@ -3,6 +3,7 @@
   "additionalProperties": false,
   "properties": {
     "protocol_version": {
+      "type": "string",
       "const": "1.1"
     },
     "source_refs": {
@@ -24,6 +25,7 @@
         "additionalProperties": false,
         "properties": {
           "kind": {
+            "type": "string",
             "enum": [
               "fact",
               "preference",
@@ -59,6 +61,7 @@
             }
           },
           "statement_kind": {
+            "type": "string",
             "enum": [
               "assertion",
               "decision",
@@ -124,6 +127,7 @@
                 }
               },
               "verification_basis": {
+                "type": "string",
                 "enum": [
                   "user_accepted",
                   "observed_once",
@@ -174,6 +178,7 @@
                 }
               },
               "state": {
+                "type": "string",
                 "enum": [
                   "pending",
                   "completed",
@@ -474,6 +479,7 @@
             "maxLength": 2048
           },
           "next_step_basis": {
+            "type": "string",
             "enum": [
               "user_requested",
               "existing_plan",
@@ -554,6 +560,7 @@
             "maxLength": 240
           },
           "resolution": {
+            "type": "string",
             "enum": [
               "resolved",
               "ambiguous",

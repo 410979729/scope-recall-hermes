@@ -5,6 +5,7 @@
   "additionalProperties": false,
   "properties": {
     "protocol_version": {
+      "type": "string",
       "const": "1.1"
     },
     "request_id": {
@@ -13,6 +14,7 @@
       "maxLength": 100
     },
     "status": {
+      "type": "string",
       "enum": [
         "ok",
         "partial",
@@ -84,6 +86,7 @@
               ],
               "properties": {
                 "direction": {
+                  "type": "string",
                   "enum": [
                     "outgoing",
                     "incoming"
@@ -113,6 +116,7 @@
                   "minimum": 1
                 },
                 "kind": {
+                  "type": "string",
                   "enum": [
                     "fact",
                     "preference",
@@ -130,6 +134,7 @@
                   }
                 },
                 "temporal_status": {
+                  "type": "string",
                   "enum": [
                     "current",
                     "historical",
@@ -138,6 +143,7 @@
                   ]
                 },
                 "claim_state": {
+                  "type": "string",
                   "enum": [
                     "active",
                     "disputed"
@@ -167,6 +173,7 @@
                   }
                 },
                 "basis": {
+                  "type": "string",
                   "enum": [
                     "direct_report",
                     "observed",
@@ -209,6 +216,7 @@
             "maximum": 3
           },
           "basis": {
+            "type": "string",
             "const": "recorded_relations"
           }
         },
@@ -228,12 +236,14 @@
       "maxItems": 16
     },
     "coverage": {
+      "type": "string",
       "enum": [
         "bounded",
         "unknown"
       ]
     },
     "answerability": {
+      "type": "string",
       "enum": [
         "unknown",
         "supported_paths_only"
@@ -248,9 +258,11 @@
       "type": "boolean"
     },
     "budget_unit": {
+      "type": "string",
       "const": "utf8_bytes"
     },
     "facts_written": {
+      "type": "integer",
       "const": 0
     }
   },

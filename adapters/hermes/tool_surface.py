@@ -123,7 +123,7 @@ _TOOL_SCHEMAS: tuple[dict[str, Any], ...] = (
                 "request_id": {"type": "string", "minLength": 1, "maxLength": 100},
                 "target_ref": {"type": "string", "minLength": 1, "maxLength": 240},
                 "expected_revision": {"type": "integer", "minimum": 1},
-                "new_value": {},
+                "new_value": {"type": ["string", "number", "boolean", "object", "array", "null"]},
                 "conditions": {"type": "array", "items": {"type": "string", "maxLength": MAX_CONTENT}},
                 "source_evidence_refs": {"type": "array", "maxItems": MAX_REFS, "items": {"type": "string", "minLength": 1, "maxLength": 240}},
                 "valid_from": {"type": ["string", "null"]},
