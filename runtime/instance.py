@@ -110,6 +110,7 @@ _COUNT_BOUNDS = {
     "daily_work_limit": (0, 1_000_000),
     "max_auto_recoveries": (0, 4),
     "supervisor_max_drains": (1, 1024),
+    "storage_budget_bytes": (0, 1 << 50),
 }
 #: Fields assembled from nested mappings rather than copied from the top level.
 _COMPOSED_FIELDS = frozenset({"binding", "allowed_scope_ids", "auxiliary", "vector"})
@@ -147,6 +148,9 @@ class RuntimeInstanceConfig:
     supervisor_enabled: bool = True
     supervisor_seconds: float = 21600.0
     supervisor_max_drains: int = 256
+    #: Bytes the store and its vectors may occupy before the doctor reports
+    #: ``storage_budget_exceeded``; 0 sets no budget.  Nothing is deleted for it.
+    storage_budget_bytes: int = 0
 
     def __post_init__(self) -> None:
         if not isinstance(self.binding, InstanceBinding):

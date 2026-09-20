@@ -126,6 +126,7 @@ defaults a standalone worker pass uses.
 | `supervisor_seconds` | number | `21600.0` (6 h) | 1–86400 | Total lifetime of one supervised window. On expiry the window suspends. |
 | `supervisor_max_drains` | int | `256` | 1–1024 | Most passes one supervised window may run before it suspends. |
 | `daily_work_limit` | int | `0` | 0–1000000 | Queue items a UTC day may attempt. **`0` means no cap** and is the default. When a cap is spent, the pass runs deletion cleanup only, reports the gap `daily_queue_budget`, and the next wake moves to the next UTC midnight. |
+| `storage_budget_bytes` | int | `0` | 0–2^50 | Bytes `memory.sqlite3` and `vectors/` together may occupy before `doctor` reports the gap `storage_budget_exceeded`. **`0` sets no budget.** Nothing is deleted for it; it is a warning, and `doctor` reports the bytes and the day's growth either way. |
 | `auto_retry_cooldown_seconds` | number | `3600.0` | 60–86400 | Delay added before a recoverable failure becomes due again. The same value, clamped to 300 s, is the stand-down for a work type a pass reported unavailable. |
 | `max_auto_recoveries` | int | `2` | 0–4 | Automatic retries a recoverable failure gets. `0` disables automatic recovery; the failure then waits for `retry-failures`. |
 | `auto_recall_seconds` | number | `5.0` | 0.001–5.0 | Deadline for *automatic* recall on the read path. On timeout, recall degrades to lexical. |
