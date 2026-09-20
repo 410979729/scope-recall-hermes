@@ -10,6 +10,8 @@ from pathlib import Path
 import shutil
 import sqlite3
 import sys
+import threading
+import time
 
 import pytest
 
@@ -434,3 +436,29 @@ def test_test_dataset_is_rejected_by_production_binding(tmp_path):
         with pytest.raises(ContractError, match="dataset_id"):
             put(tx, dataset_id="SYNTHETIC_TEST_ONLY")
     assert snapshot(storage, ctx).sources == 0
+
+
+def test_a_long_read_does_not_block_the_writer(store):
+    """Under the rollback journal a two-second read left a writer "database is
+    locked" after its whole timeout, so any operator query could fail a worker
+    pass.  The store runs in WAL mode, where readers and the writer coexist."""
+    storage, ctx = store
+    with sqlite3.connect(storage.path) as conn:
+        assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+    holding = threading.Event()
+
+    def long_read():
+        with storage.read(ctx) as tx:
+            tx.status()
+            holding.set()
+            time.sleep(1.5)
+
+    reader = threading.Thread(target=long_read)
+    reader.start()
+    assert holding.wait(5)
+    started = time.monotonic()
+    with storage.write(ctx) as tx:
+        put(tx)
+    assert time.monotonic() - started < 1.0
+    reader.join()
+    assert snapshot(storage, ctx).sources == 1

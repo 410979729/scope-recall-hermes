@@ -473,6 +473,22 @@ class Transaction:
             (work_type,ref,revision,source.scope_id,source.project_id,source.branch_id,available_at))
 
 
+def _ensure_wal(conn: sqlite3.Connection) -> None:
+    """Keep the store in WAL mode, where readers and the writer coexist.
+
+    Under the rollback journal a two-second read left a writer "database is
+    locked" after its whole timeout; under WAL it commits in 20 ms.  The mode
+    is persistent in the file, so this is one pragma read almost always.  It
+    runs only on a store this code has verified as its own, outside any
+    transaction (where SQLite allows the switch); a concurrent connection can
+    make SQLite decline the switch, and the next writable open tries again.
+    Backups (maintenance/backup.py) already write their snapshot in rollback
+    mode, and every read-only open reads a WAL store in every file state.
+    """
+    if conn.execute("PRAGMA journal_mode").fetchone()[0].lower() != "wal":
+        conn.execute("PRAGMA journal_mode=WAL")
+
+
 class SQLiteStorage:
     def __init__(self, binding: InstanceBinding, *, timeout_seconds: float = 1.0, upgrade_on_open: bool = True) -> None:
         if not isinstance(binding, InstanceBinding):
@@ -534,11 +550,6 @@ class SQLiteStorage:
             timeout = min(timeout, remaining_seconds)
         return connect_truth_database(self.path, mode=mode, timeout=timeout, isolation_level=None)
 
-    @staticmethod
-    def _upgrade_pending(conn: sqlite3.Connection) -> bool:
-        """Whether the store carries an older schema this code brings forward."""
-        return conn.execute("PRAGMA user_version").fetchone()[0] in UPGRADE_CHAIN
-
     def _verify(self, conn: sqlite3.Connection, *, expected_schema: int = SCHEMA_VERSION) -> None:
         if conn.execute("PRAGMA application_id").fetchone()[0] != APPLICATION_ID or conn.execute("PRAGMA user_version").fetchone()[0] != expected_schema:
             raise ContractError("SCHEMA_UNSUPPORTED")
@@ -590,6 +601,7 @@ class SQLiteStorage:
                 conn.execute(f"PRAGMA application_id={APPLICATION_ID}")
                 conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
             conn.commit()
+            _ensure_wal(conn)
         except BaseException as exc:
             original = exc
             try:
@@ -608,10 +620,13 @@ class SQLiteStorage:
     def _transaction(self, context: TrustedContext, *, writable: bool, remaining_seconds: float | None, restoring: bool = False) -> Iterator[Transaction]:
         self._context_check(context)
         conn = self._open("rw" if writable else "ro", remaining_seconds,restoring=restoring)
-        if self.upgrade_on_open and not restoring and self._upgrade_pending(conn):
+        version = conn.execute("PRAGMA user_version").fetchone()[0]
+        if self.upgrade_on_open and not restoring and version in UPGRADE_CHAIN:
             self._close(conn, None)
             self.initialize()
             conn = self._open("rw" if writable else "ro", remaining_seconds,restoring=restoring)
+        elif writable and version == SCHEMA_VERSION:
+            _ensure_wal(conn)
         tx = Transaction(conn, context, writable=writable)
         original = None
         try:

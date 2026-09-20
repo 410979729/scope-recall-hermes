@@ -509,6 +509,13 @@ the upgrade itself. Take a `backup` first if you want one.
 
 ## 10. Platform and storage boundaries
 
+- **The store is a WAL-mode SQLite file.** `memory.sqlite3-wal` and
+  `memory.sqlite3-shm` sit beside `memory.sqlite3` while any process has it
+  open. Never copy the files by hand while the host or the worker runs;
+  `scope-recall backup` takes a consistent snapshot and writes it in
+  rollback-journal mode. Readers and the writer coexist, so an operator
+  query no longer fails a worker pass.
+
 - **LanceDB** needs the `lancedb` extra. Keep the data directory short, for
   example `C:\ScopeRecall\my-agent`: LanceDB appends index, table and temporary
   file names below it, and the worker reports `native_vector_path_too_long`

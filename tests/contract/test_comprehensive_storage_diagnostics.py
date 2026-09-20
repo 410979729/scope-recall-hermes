@@ -241,8 +241,10 @@ def test_doctor_reports_the_footprint_the_growth_and_a_budget(tmp_path, monkeypa
     _write_runtime_config(ctx, storage_budget_bytes=512)
     result = doctor.run_doctor(host='hermes', instance_root=ctx.binding.data_directory)
     assert (result.sources_last_24h, result.sources_last_7d) == (1, 2)
-    assert result.store_bytes == app.storage.path.stat().st_size and result.vector_bytes == 1024
+    # WAL and shared-memory files come and go beside the store; the main file is the floor.
+    assert result.store_bytes >= app.storage.path.stat().st_size and result.vector_bytes == 1024
     assert result.storage_budget_bytes == 512 and 'storage_budget_exceeded' in result.capability_gaps
+    assert result.journal_mode == 'wal'
     footprint = next(item for item in result.checks if item['name'] == 'storage_footprint')
     assert footprint['result'] == 'over_budget' and 'sources +1 in 24h, +2 in 7d' in footprint['detail']
     _write_runtime_config(ctx)

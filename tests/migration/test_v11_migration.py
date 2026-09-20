@@ -321,6 +321,7 @@ def test_a_store_written_by_the_previous_release_upgrades_on_first_open(tmp_path
     assert status.schema_version == SCHEMA_VERSION == 1109 and status.sources == 12
     with sqlite3.connect(path) as conn:
         assert conn.execute("PRAGMA user_version").fetchone()[0] == 1109
+        assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal", "the previous release wrote a rollback-journal store"
         assert conn.execute("SELECT count(*) FROM evidence_links WHERE object_kind='episode'").fetchone()[0] == 12
         assert conn.execute("SELECT count(*) FROM work_items").fetchone()[0] == work
         tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}

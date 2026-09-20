@@ -51,6 +51,8 @@ class DoctorReport:
     binding_ok: bool = False
     database_present: bool = False
     schema_version: int | None = None
+    #: ``wal`` on every store this release has opened; readers and the writer coexist.
+    journal_mode: str | None = None
     memory_epoch: int | None = None
     pending_work: int | None = None
     failed_work: int | None = None
@@ -188,6 +190,13 @@ def _load_binding(host: HostChoice, instance_root: Path):
 #: in milliseconds. Reported rather than acted on, so the day the corpus crosses
 #: it is visible instead of arriving as unexplained latency.
 _VECTOR_SCAN_COMFORT_LIMIT = 100_000
+
+
+def _journal_mode(db_path: Path) -> str | None:
+    with suppress(sqlite3.Error, OSError, ValueError):
+        with closing(sqlite3.connect(f"file:{db_path.as_posix()}?mode=ro", uri=True, timeout=5)) as db:
+            return str(db.execute("PRAGMA journal_mode").fetchone()[0]).lower()
+    return None
 
 
 def _schema_on_disk(db_path: Path) -> int | None:
@@ -545,7 +554,8 @@ def _check_storage(report: DoctorReport, binding, data_directory: Path) -> bool:
         report.capability_gaps.append("database_missing")
         _record(report, "database", "missing")
         return False
-    _record(report, "database", "ok")
+    report.journal_mode = _journal_mode(data_directory / "memory.sqlite3")
+    _record(report, "database", "ok", f"journal_mode={report.journal_mode}")
     found = _schema_on_disk(data_directory / "memory.sqlite3")
     if found in UPGRADE_CHAIN:
         # Reported, never applied here: the doctor is read-only.
@@ -742,7 +752,7 @@ def _check_footprint(report: DoctorReport, data_directory: Path, config) -> None
     store outgrow its disk before it does.  A configured budget turns the
     comparison into a gap; nothing is deleted for it."""
     store = 0
-    for name in ("memory.sqlite3", "memory.sqlite3-journal", "memory.sqlite3-wal"):
+    for name in ("memory.sqlite3", "memory.sqlite3-journal", "memory.sqlite3-wal", "memory.sqlite3-shm"):
         with suppress(OSError):
             store += (data_directory / name).stat().st_size
     report.store_bytes = store
