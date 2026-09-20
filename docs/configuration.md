@@ -285,6 +285,51 @@ The default kind is an OpenAI-compatible chat-completions route
 | `n` | int | `1` | Must stay `1`. |
 | `headers` | mapping or absent | absent | Extra request headers, validated before use. A second `Authorization` cannot be smuggled in this way. |
 
+Setting `"kind": "openai_responses"` selects a Responses-API route instead of
+chat completions. It targets the documented contract of DeepSeek
+`POST https://api.deepseek.com/responses`; nothing about it is claimed for
+another provider, and streaming is not implemented:
+
+| Key | Type | Default | Meaning |
+|-----|------|---------|---------|
+| `model` | string, non-empty | required | Model name, for example `deepseek-flash`. It must also be in `budget.approved_models` and `budget.pricing`. |
+| `endpoint` | `https://` URL | required | Full Responses URL. Not a base URL: no path is appended. |
+| `credential_env` | string matching `^[A-Z][A-Z0-9_]{0,127}$` | required | Name of the environment variable holding the API key. It is read per request and never written to the ledger; the key travels only in the `Authorization` header, as a `Bearer` token that extra `headers` cannot override. |
+| `max_output_tokens` | int, 1–131072 | required | Sent as `max_output_tokens`. On a thinking route this bounds the visible answer **and** the reasoning tokens. |
+| `reasoning_effort` | `"none"`/`"low"`/`"high"`/`"max"`, or absent | absent | Sent as `reasoning.effort`; absent leaves the provider's own default. |
+| `text_format` | `{"type": "json_object"}` or absent | absent | Sent as `text.format`. Plain text is the default and is expressed by omitting the key; a JSON schema is refused rather than forwarded unvalidated. |
+| `stream` | boolean | `false` | Must stay `false`; streaming is refused. |
+| `kind` | `"openai_responses"` | required | Selects this route. |
+Unknown keys in this block are rejected (`consolidation_unknown_config`) rather
+than ignored, the way the `codex_cli` block already behaves: this dialect is new
+and has no legacy key to stay compatible with.
+
+The request explicitly carries `store: false`. DeepSeek documents this parameter
+as unsupported/ignored and its API as stateless; this flag is not a substitute
+for checking another provider's retention policy. Context must be supplied on
+every call. Each message becomes one `input` item in its original position,
+including interleaved `system` messages. Text parts use `input_text` for `system`
+and `user`, and `output_text` for `assistant`. A `tool` message is refused
+(`input_invalid`): function-call item pairs are not implemented by this adapter.
+
+Only a response whose own `status` is `completed` is an answer. `incomplete`
+currently fails as `DERIVATION_INVALID` on
+`model_output_truncated`, exactly like a chat answer cut off at the output
+limit (the diagnostic does not yet distinguish content filtering from the
+token limit); `failed` fails as `response_status_failed`. From a completed response the
+adapter reads only the `output_text` parts of `assistant` message items —
+`reasoning` items and `reasoning_text` parts are never treated as an answer, a
+refusal part fails as `model_refused`, and an answer with no text fails as
+`empty_output`. The text is handed to the existing proposal validator
+unchanged, with no JSON repair.
+
+Usage is read as `input_tokens`/`output_tokens`, with
+`input_tokens_details.cached_tokens` recorded for observation.
+`output_tokens` already counts the reasoning tokens the provider reports
+separately in `output_tokens_details.reasoning_tokens`, so those are never
+billed a second time. A missing or malformed `usage` block keeps the reserved
+charge, and a `200` that carries an error object is not a free call either.
+
 Setting `"kind": "codex_cli"` selects the local Codex CLI subscription route
 instead, which calls a signed local executable rather than an HTTP endpoint. Its
 keys are `executable` (absolute path), `executable_sha256` (64 lowercase hex
@@ -398,13 +443,17 @@ C:\path\to\python.exe -c "import json,pathlib;from scope_recall.core.recall_poli
 ### Consolidation
 
 The consolidation route has no dialect switch: it is the OpenAI-compatible
-chat-completions shape, or the local `codex_cli` kind. To move it to another
+chat-completions shape (`kind` absent or `"openai"`), the Responses-API shape
+(`"kind": "openai_responses"`, see `auxiliary.consolidation` above), or the
+local `codex_cli` kind. To move it to another
 provider, change `model`, `endpoint` and `credential_env`, set
 `output_limit_field` to whichever of `max_tokens` / `max_completion_tokens` that
 provider accepts, and add the model to `budget.approved_models` and
 `budget.pricing`. Reasoning controls differ between providers: `thinking`,
 `reasoning_effort` and `response_format` are validated, and a value a route does
-not accept is refused rather than sent.
+not accept is refused rather than sent. The Responses kind states
+`max_output_tokens` instead of `output_limit_field`, and its reasoning and text
+controls are `reasoning_effort` and `text_format`.
 
 Changing the consolidation model does **not** touch the vector store. Only the
 embedding space feeds the digest.

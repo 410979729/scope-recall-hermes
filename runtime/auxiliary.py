@@ -10,11 +10,14 @@ from types import MappingProxyType
 from typing import Any, Mapping
 
 from ..adapters.models import (
+    RESPONSES_KIND,
     ConsolidationRouteConfig,
     EmbeddingRouteConfig,
     GeminiEmbeddingAdapter,
     HttpTransport,
     OpenAIConsolidationAdapter,
+    ResponsesConsolidationAdapter,
+    ResponsesRouteConfig,
 )
 from ..adapters.codex_cli import CodexCliConsolidationAdapter, CodexCliRouteConfig
 from .subscription_budget import SubscriptionBudgetLedger
@@ -26,7 +29,7 @@ from .model_budget import (
     load_hermes_attempt_authorization,
     read_auxiliary_budget_status,
 )
-from .validation import absolute_path, mapping, positive_int, strict_bool, text
+from .validation import absolute_path, mapping, only_keys, positive_int, strict_bool, text
 
 
 DEFAULT_LEDGER_NAME = "auxiliary-budget.sqlite3"
@@ -40,7 +43,7 @@ class AuxiliaryRuntimeConfig:
     ledger_path: Path | None
     budget: BudgetPolicy
     embedding: EmbeddingRouteConfig | None
-    consolidation: ConsolidationRouteConfig | CodexCliRouteConfig | None
+    consolidation: ConsolidationRouteConfig | ResponsesRouteConfig | CodexCliRouteConfig | None
     consolidation_reserve_input: int
 
     @staticmethod
@@ -72,7 +75,7 @@ class AuxiliaryRuntimeConfig:
 class AuxiliaryRuntime:
     source_embedding: GeminiEmbeddingAdapter | None
     query_embedding: GeminiEmbeddingAdapter | None
-    consolidation: OpenAIConsolidationAdapter | CodexCliConsolidationAdapter | None
+    consolidation: OpenAIConsolidationAdapter | ResponsesConsolidationAdapter | CodexCliConsolidationAdapter | None
     capability_gaps: tuple[str, ...]
     ledger_path: Path | None
 
@@ -185,13 +188,39 @@ def _embedding_route_from_mapping(raw: object) -> EmbeddingRouteConfig | None:
     )
 
 
-def _consolidation_route_from_mapping(raw: object) -> ConsolidationRouteConfig | CodexCliRouteConfig | None:
+#: Every key the Responses route block may state.  This dialect is new, so it
+#: has no legacy to stay compatible with and an unknown key is a setting nobody
+#: reads rather than a field to ignore.
+_RESPONSES_ROUTE_KEYS = (
+    "kind", "model", "endpoint", "credential_env", "max_output_tokens",
+    "reasoning_effort", "text_format", "stream",
+)
+
+
+def _responses_route_from_mapping(raw: Mapping[str, Any]) -> ResponsesRouteConfig:
+    """Translate a ``kind: "openai_responses"`` block; the dataclass owns the rules."""
+    only_keys("consolidation_unknown_config", raw, _RESPONSES_ROUTE_KEYS)
+    return ResponsesRouteConfig(
+        model=text("model", raw.get("model")),
+        endpoint=text("endpoint", raw.get("endpoint")),
+        credential_env=text("credential_env", raw.get("credential_env")),
+        max_output_tokens=positive_int("max_output_tokens", raw.get("max_output_tokens")),
+        reasoning_effort=raw.get("reasoning_effort"),
+        text_format=raw.get("text_format"),
+        stream=raw.get("stream", False),
+        kind=raw.get("kind", RESPONSES_KIND),
+    )
+
+
+def _consolidation_route_from_mapping(raw: object) -> ConsolidationRouteConfig | ResponsesRouteConfig | CodexCliRouteConfig | None:
     if raw is None:
         return None
     raw = mapping("consolidation_mapping_required", raw)
     kind = raw.get("kind", "openai")
     if kind == "codex_cli":
         return CodexCliRouteConfig.from_mapping(raw)
+    if kind == RESPONSES_KIND:
+        return _responses_route_from_mapping(raw)
     if kind != "openai":
         raise ValueError("consolidation_kind")
     thinking = raw.get("thinking")
@@ -247,6 +276,12 @@ def build_auxiliary_runtime(
         consolidation_adapter = CodexCliConsolidationAdapter(
             config.consolidation,
             ledger=SubscriptionBudgetLedger(ledger.path, config.consolidation.subscription_budget),
+        )
+    elif isinstance(config.consolidation, ResponsesRouteConfig):
+        # Same ledger, transport, deadline, response cap and settlement; only
+        # the request dialect and the answer extraction differ.
+        consolidation_adapter = ResponsesConsolidationAdapter(
+            config.consolidation, ledger=ledger, reserve_input=reserve_input, transport=transport,
         )
     else:
         consolidation_adapter = OpenAIConsolidationAdapter(
