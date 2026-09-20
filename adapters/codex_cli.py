@@ -131,8 +131,10 @@ def _job_for(process: subprocess.Popen) -> int | None:
         return None
     limits = _ExtendedLimits()
     limits.BasicLimitInformation.LimitFlags = 0x2000  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
-    if (kernel.SetInformationJobObject(job, 9, ctypes.byref(limits), ctypes.sizeof(limits))  # JobObjectExtendedLimitInformation
-            and kernel.AssignProcessToJobObject(job, int(process._handle))):
+    process_handle = getattr(process, "_handle", None)
+    if (process_handle is not None
+            and kernel.SetInformationJobObject(job, 9, ctypes.byref(limits), ctypes.sizeof(limits))  # JobObjectExtendedLimitInformation
+            and kernel.AssignProcessToJobObject(job, int(process_handle))):
         return job
     kernel.CloseHandle(job)
     return None
