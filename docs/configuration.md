@@ -258,6 +258,7 @@ C:\path\to\python.exe -c "import json, pathlib; from scope_recall.runtime import
 | `endpoint` | `https://` URL, ≤ 2048 chars | absent | Full request URL. Not a base URL: no path is appended. |
 | `dimensions` | int, 8–16384 | absent | Vector width. It is sent in the request and the response length is checked against it. |
 | `dialect` | `"gemini"` or `"openai"` | absent | Wire shape. See the next section. |
+| `dimensions_field` | string, a JSON field name | `"dimensions"` | The request field the `openai` dialect sends the width in. Voyage calls it `output_dimension` and refuses `dimensions`. A wire detail: it does not change the embedding space. |
 
 `model`, `endpoint`, `dimensions` and `dialect` move together. Omit all four and
 the route addresses the shipped Gemini space, so an existing installation keeps
@@ -349,6 +350,22 @@ URL, for example `https://api.example.com/v1/embeddings`.
     "dimensions": 1024,
     "dialect": "openai"
   }
+}
+```
+
+Voyage AI is OpenAI-shaped in every respect but one: the width field is
+`output_dimension`, and a request carrying `dimensions` is refused. Name the
+field on the route; nothing else changes, and the space digest is the same as
+for the field's default name.
+
+```json
+"embedding": {
+  "credential_env": "VOYAGE_API_KEY",
+  "model": "voyage-4-large",
+  "endpoint": "https://api.voyageai.com/v1/embeddings",
+  "dimensions": 2048,
+  "dialect": "openai",
+  "dimensions_field": "output_dimension"
 }
 ```
 

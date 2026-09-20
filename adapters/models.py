@@ -459,17 +459,19 @@ def build_gemini_embed_body(encoded_text: str | Sequence[str], *, model: str | N
     return _json_bytes(body)
 
 
-def build_openai_embed_body(encoded_text: str | Sequence[str], *, model: str, dimensions: int) -> bytes:
+def build_openai_embed_body(encoded_text: str | Sequence[str], *, model: str, dimensions: int,
+                            dimensions_field: str = "dimensions") -> bytes:
     """The /v1/embeddings request shape MiniMax, Qwen and OpenAI all accept.
 
-    ``dimensions`` is sent because the space digest commits to a width: a
-    provider that silently returned a different one would produce vectors the
-    store cannot compare, and the length check on the response catches it.
+    The width is sent because the space digest commits to one: a provider that
+    silently returned a different width would produce vectors the store cannot
+    compare, and the length check on the response catches it.  Voyage names
+    the field ``output_dimension`` (#88), so the route may name it.
     """
     texts = [encoded_text] if type(encoded_text) is str else list(encoded_text)
     if not texts or any(type(text) is not str for text in texts):
         raise AuxiliaryModelError("unsupported_request_shape")
-    return _json_bytes({"model": model, "input": texts, "dimensions": dimensions})
+    return _json_bytes({"model": model, "input": texts, dimensions_field: dimensions})
 
 
 def _embedding_usage(payload: Mapping[str, Any], *, dialect: str) -> dict[str, int] | None:
@@ -663,6 +665,10 @@ def model_output_reserve(policy: BudgetPolicy, model: str, requested_output: int
     return max(requested_output, floor)
 
 
+#: A JSON request field name a provider could accept.
+_REQUEST_FIELD_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,63}")
+
+
 @dataclass(frozen=True)
 class EmbeddingRouteConfig:
     #: The embedding model, its endpoint and its wire dialect are configuration,
@@ -676,6 +682,13 @@ class EmbeddingRouteConfig:
     endpoint: str | None = None
     dimensions: int | None = None
     dialect: str | None = None
+    #: The request field the ``openai`` dialect sends the width in.  Voyage's
+    #: /v1/embeddings is OpenAI-shaped in every other respect but calls it
+    #: ``output_dimension`` and refuses ``dimensions`` outright (#88); a request
+    #: that omits the width silently gets the model's default geometry, so the
+    #: name is the only lever.  A wire detail, not a geometry: it does not enter
+    #: the space digest, and the response length is still checked.
+    dimensions_field: str = "dimensions"
 
     def __post_init__(self) -> None:
         _validate_credential_env_name(self.credential_env)
@@ -686,6 +699,8 @@ class EmbeddingRouteConfig:
             raise ValueError("embedding_route_partial_space")
         if self.dialect is not None and self.dialect not in EMBEDDING_DIALECTS:
             raise ValueError("embedding_route_dialect")
+        if type(self.dimensions_field) is not str or not _REQUEST_FIELD_RE.fullmatch(self.dimensions_field):
+            raise ValueError("embedding_route_dimensions_field")
 
     def space(self) -> dict:
         """The embedding space this route addresses, defaults included."""
@@ -843,6 +858,7 @@ class GeminiEmbeddingAdapter:
         self._endpoint = space["endpoint"]
         self._model = space["model"]
         self._dimensions = space["dimensions"]
+        self._dimensions_field = route.dimensions_field
         self._dialect = route.wire_dialect()
 
     def embed_query(self, text: str, *, remaining_seconds: float) -> Sequence[float]:
@@ -916,7 +932,8 @@ class GeminiEmbeddingAdapter:
         if self._dialect == "gemini":
             body = build_gemini_embed_body(texts, model=self._model, dimensions=self._dimensions)
         else:
-            body = build_openai_embed_body(texts, model=self._model, dimensions=self._dimensions)
+            body = build_openai_embed_body(texts, model=self._model, dimensions=self._dimensions,
+                                           dimensions_field=self._dimensions_field)
         if _remaining_seconds(deadline) <= 0:
             raise AuxiliaryModelError("timeout")
         if self._ledger.provider_hold_until(self._model) is not None:
@@ -940,7 +957,8 @@ class GeminiEmbeddingAdapter:
         if self._dialect == "gemini":
             body = build_gemini_embed_body(encoded_text, model=self._model, dimensions=self._dimensions)
         else:
-            body = build_openai_embed_body(encoded_text, model=self._model, dimensions=self._dimensions)
+            body = build_openai_embed_body(encoded_text, model=self._model, dimensions=self._dimensions,
+                                           dimensions_field=self._dimensions_field)
         if _remaining_seconds(deadline) <= 0:
             raise AuxiliaryModelError("timeout")
         if self._ledger.provider_hold_until(self._model) is not None:

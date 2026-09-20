@@ -205,3 +205,29 @@ def test_P08_embedding_wire_dialects_round_trip_both_shapes():
     # space digest commits to it, so a mismatched vector is unusable.
     with pytest.raises(AuxiliaryModelError):
         parse_embedding_response({"data": [{"embedding": [0.5] * 63}]}, dialect="openai", dimensions=64)
+
+
+def test_P08_an_openai_route_may_name_the_field_that_carries_the_width():
+    """Voyage's /v1/embeddings is OpenAI-shaped but calls the width
+    output_dimension and refuses dimensions outright (#88); a request that
+    omits the width silently gets the model's default geometry, so the field
+    name is the only lever.  It is a wire detail: the digest does not move."""
+    from scope_recall.adapters.models import EmbeddingRouteConfig, build_openai_embed_body
+    from scope_recall.runtime.auxiliary import _embedding_route_from_mapping
+
+    body = json.loads(build_openai_embed_body("t", model="voyage-4-large", dimensions=2048, dimensions_field="output_dimension"))
+    assert body == {"model": "voyage-4-large", "input": ["t"], "output_dimension": 2048}
+    assert json.loads(build_openai_embed_body("t", model="m", dimensions=64)) == {"model": "m", "input": ["t"], "dimensions": 64}
+    voyage = _embedding_route_from_mapping({
+        "credential_env": "TEST_EMBED_KEY", "model": "voyage-4-large",
+        "endpoint": "https://api.voyageai.com/v1/embeddings", "dimensions": 2048, "dialect": "openai",
+        "dimensions_field": "output_dimension",
+    })
+    plain = EmbeddingRouteConfig(credential_env="TEST_EMBED_KEY", model="voyage-4-large",
+                                 endpoint="https://api.voyageai.com/v1/embeddings", dimensions=2048, dialect="openai")
+    assert voyage.dimensions_field == "output_dimension" and plain.dimensions_field == "dimensions"
+    assert embedding_space_id(voyage.space()) == embedding_space_id(plain.space())
+    for bad in ("", "output dimension", "x" * 65, 3):
+        with pytest.raises(ValueError, match="dimensions_field"):
+            EmbeddingRouteConfig(credential_env="TEST_EMBED_KEY", model="m", endpoint="https://e",
+                                 dimensions=64, dialect="openai", dimensions_field=bad)
