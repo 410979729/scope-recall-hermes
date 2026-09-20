@@ -25,7 +25,9 @@ def test_mcp_stdio_exposes_public_tools_and_strict_boundary(tmp_path: Path) -> N
         config, _core = install_codex_scope_recall(tmp_path / "安装 data", project_root=project)
         env = dict(os.environ)
         repo = Path(__file__).parents[3]
-        env["PYTHONPATH"] = str(repo)
+        # The checkout first, the gate's own path kept: a child that drops it
+        # resolves scope_recall through whatever the interpreter has installed.
+        env["PYTHONPATH"] = os.pathsep.join(part for part in (str(repo), env.get("PYTHONPATH", "")) if part)
         params = StdioServerParameters(
             command=sys.executable,
             args=["-m", "scope_recall.adapters.codex.mcp_entry", "--config", str(config.config_path), "--workspace", str(project)],
@@ -108,7 +110,9 @@ def test_mcp_stdio_all_tools_and_host_thread_bound_mutations(tmp_path: Path) -> 
     async def run() -> None:
         env = dict(os.environ)
         repo = Path(__file__).parents[3]
-        env["PYTHONPATH"] = str(repo)
+        # The checkout first, the gate's own path kept: a child that drops it
+        # resolves scope_recall through whatever the interpreter has installed.
+        env["PYTHONPATH"] = os.pathsep.join(part for part in (str(repo), env.get("PYTHONPATH", "")) if part)
         params = StdioServerParameters(
             command=sys.executable,
             args=["-m", "scope_recall.adapters.codex.mcp_entry", "--config", str(config.config_path), "--workspace", str(project)],
@@ -303,7 +307,9 @@ def test_mcp_inspect_resolves_old_episode_by_explicit_ref(tmp_path: Path) -> Non
     async def run() -> None:
         env = dict(os.environ)
         repo = Path(__file__).parents[3]
-        env["PYTHONPATH"] = str(repo)
+        # The checkout first, the gate's own path kept: a child that drops it
+        # resolves scope_recall through whatever the interpreter has installed.
+        env["PYTHONPATH"] = os.pathsep.join(part for part in (str(repo), env.get("PYTHONPATH", "")) if part)
         params = StdioServerParameters(
             command=sys.executable,
             args=["-m", "scope_recall.adapters.codex.mcp_entry", "--config", str(config.config_path), "--workspace", str(project)],
@@ -391,7 +397,9 @@ def test_mcp_public_schema_advertises_only_protocol_1_1(tmp_path: Path) -> None:
     async def run() -> None:
         env = dict(os.environ)
         repo = Path(__file__).parents[3]
-        env["PYTHONPATH"] = str(repo)
+        # The checkout first, the gate's own path kept: a child that drops it
+        # resolves scope_recall through whatever the interpreter has installed.
+        env["PYTHONPATH"] = os.pathsep.join(part for part in (str(repo), env.get("PYTHONPATH", "")) if part)
         params = StdioServerParameters(
             command=sys.executable,
             args=["-m", "scope_recall.adapters.codex.mcp_entry", "--config", str(config.config_path), "--workspace", str(project)],
@@ -455,7 +463,9 @@ def test_mcp_recall_budget_schema_default_and_description(tmp_path: Path) -> Non
     async def run() -> None:
         env = dict(os.environ)
         repo = Path(__file__).parents[3]
-        env["PYTHONPATH"] = str(repo)
+        # The checkout first, the gate's own path kept: a child that drops it
+        # resolves scope_recall through whatever the interpreter has installed.
+        env["PYTHONPATH"] = os.pathsep.join(part for part in (str(repo), env.get("PYTHONPATH", "")) if part)
         params = StdioServerParameters(
             command=sys.executable,
             args=["-m", "scope_recall.adapters.codex.mcp_entry", "--config", str(config.config_path), "--workspace", str(project)],
@@ -528,7 +538,9 @@ def test_mcp_recall_budget_default_tiny_clip_and_invalid_types(tmp_path: Path) -
     async def run() -> None:
         env = dict(os.environ)
         repo = Path(__file__).parents[3]
-        env["PYTHONPATH"] = str(repo)
+        # The checkout first, the gate's own path kept: a child that drops it
+        # resolves scope_recall through whatever the interpreter has installed.
+        env["PYTHONPATH"] = os.pathsep.join(part for part in (str(repo), env.get("PYTHONPATH", "")) if part)
         params = StdioServerParameters(
             command=sys.executable,
             args=["-m", "scope_recall.adapters.codex.mcp_entry", "--config", str(config.config_path), "--workspace", str(project)],
@@ -578,7 +590,9 @@ def test_mcp_illegal_protocol_values_rejected_and_legal_strict_path_kept(tmp_pat
     async def run() -> None:
         env = dict(os.environ)
         repo = Path(__file__).parents[3]
-        env["PYTHONPATH"] = str(repo)
+        # The checkout first, the gate's own path kept: a child that drops it
+        # resolves scope_recall through whatever the interpreter has installed.
+        env["PYTHONPATH"] = os.pathsep.join(part for part in (str(repo), env.get("PYTHONPATH", "")) if part)
         params = StdioServerParameters(
             command=sys.executable,
             args=["-m", "scope_recall.adapters.codex.mcp_entry", "--config", str(config.config_path), "--workspace", str(project)],

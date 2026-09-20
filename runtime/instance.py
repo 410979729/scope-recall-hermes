@@ -37,6 +37,7 @@ from .validation import (
     strict_int,
     utc_now,
 )
+from .vector_retention import expire_if_due
 from .vector_upkeep import compact_if_due
 
 
@@ -57,6 +58,10 @@ class VectorRuntimeConfig:
     #: Low-dimensional stores are permitted only for an explicitly injected
     #: test seam; formal configuration is fixed to the approved embedding space.
     test_injection_override: bool = False
+    #: Days a tool output's vector is kept after its source entered the store;
+    #: 0 keeps every vector (``runtime/vector_retention.py``).  The text, the
+    #: lexical index and everything derived from the source are never expired.
+    tool_output_retention_days: int = 180
 
     def __post_init__(self) -> None:
         member("vector_backend", self.backend, _VECTOR_BACKENDS)
@@ -66,6 +71,7 @@ class VectorRuntimeConfig:
         strict_int("vector_dimensions", self.dimensions, minimum=1, maximum=8192)
         member("vector_metric", self.metric, ("cosine",))
         strict_bool("vector_test_injection_override", self.test_injection_override)
+        strict_int("vector_tool_output_retention_days", self.tool_output_retention_days, minimum=0, maximum=36500)
 
     @classmethod
     def from_mapping(cls, raw: object) -> "VectorRuntimeConfig":
@@ -77,6 +83,7 @@ class VectorRuntimeConfig:
             dimensions=raw.get("dimensions"),
             metric=raw.get("metric", "cosine"),
             test_injection_override=raw.get("test_injection_override", False),
+            tool_output_retention_days=raw.get("tool_output_retention_days", 180),
         )
 
 
@@ -103,6 +110,7 @@ _COUNT_BOUNDS = {
     "daily_work_limit": (0, 1_000_000),
     "max_auto_recoveries": (0, 4),
     "supervisor_max_drains": (1, 1024),
+    "storage_budget_bytes": (0, 1 << 50),
 }
 #: Fields assembled from nested mappings rather than copied from the top level.
 _COMPOSED_FIELDS = frozenset({"binding", "allowed_scope_ids", "auxiliary", "vector"})
@@ -140,6 +148,9 @@ class RuntimeInstanceConfig:
     supervisor_enabled: bool = True
     supervisor_seconds: float = 21600.0
     supervisor_max_drains: int = 256
+    #: Bytes the store and its vectors may occupy before the doctor reports
+    #: ``storage_budget_exceeded``; 0 sets no budget.  Nothing is deleted for it.
+    storage_budget_bytes: int = 0
 
     def __post_init__(self) -> None:
         if not isinstance(self.binding, InstanceBinding):
@@ -351,6 +362,8 @@ class RuntimeInstance:
     ingress_receipts: tuple[Any, ...] = ()
     #: Receipt of the vector compaction this drain ran, or ``None``.
     vector_compaction: dict | None = None
+    #: Receipt of the vector retention pass this drain ran, or ``None``.
+    vector_retention: dict | None = None
     #: Work types this drain left alone, each with the held model and when its
     #: hold ends (runtime/model_budget.py ``provider_holds``).
     provider_holds: dict = field(default_factory=dict)
@@ -446,9 +459,15 @@ class RuntimeInstance:
         # Upkeep comes before the queue, not after it: on a busy instance the
         # budget is gone by the time the queue drains, so upkeep at the end is
         # upkeep that only ever runs when it is not needed.
+        self.vector_retention = expire_if_due(
+            self._vector_store, self.config, self.core.storage, self.config.context(),
+            available_seconds=max(0.0, deadline - time.monotonic()),
+        )
+        expired = (self.vector_retention or {}).get("expired", 0)
         self.vector_compaction = compact_if_due(
             self._vector_store, self.config.vector,
             available_seconds=max(0.0, deadline - time.monotonic()),
+            reason=f"vectors_expired:{expired}" if expired else None,
         )
         from ..core.worker import WorkerConfig, drain_worker
 

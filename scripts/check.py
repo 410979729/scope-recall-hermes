@@ -114,8 +114,8 @@ SUITES = {
     "capture": ["tests/contract/test_v11_capture.py"],
     "claims": ["tests/contract/test_v11_claims.py"],
     "deletion": ["tests/contract/test_v11_deletion.py"],
-    "episodes": ["tests/contract/test_v11_episodes.py","tests/contract/test_v11_retained_artifacts.py","tests/contract/test_v11_episode_authority.py","tests/contract/test_v11_consolidation_input.py","tests/contract/test_v11_aliases.py"],
-    "retrieval": ["tests/contract/test_p08_retrieval.py", "tests/contract/test_p08_evidence_followup.py", "tests/contract/test_v11_recall_admission.py", "tests/contract/test_v11_retrieval_history_state.py", "tests/contract/test_v11_vector_timeout_fallback.py", "tests/contract/test_auto_query_echo.py"],
+    "episodes": ["tests/contract/test_v11_episodes.py","tests/contract/test_v11_retained_artifacts.py","tests/contract/test_v11_episode_authority.py","tests/contract/test_v11_consolidation_input.py","tests/contract/test_v11_aliases.py","tests/contract/test_storage_growth.py"],
+    "retrieval": ["tests/contract/test_p08_retrieval.py", "tests/contract/test_p08_evidence_followup.py", "tests/contract/test_v11_recall_admission.py", "tests/contract/test_v11_retrieval_history_state.py", "tests/contract/test_v11_vector_timeout_fallback.py", "tests/contract/test_auto_query_echo.py", "tests/contract/test_vector_retention.py"],
     "model_runtime": ["tests/host/test_eval_model_runtime.py"],
     "native": [
         "tests/contract/test_v11_lance_embed_fence.py",

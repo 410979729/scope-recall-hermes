@@ -1,5 +1,6 @@
 """Real SQLite diagnostic and durable replay boundaries; no models or production data."""
 from dataclasses import replace
+from datetime import datetime, timedelta, timezone
 import json
 import sqlite3
 import subprocess
@@ -220,3 +221,30 @@ def test_doctor_exposes_deferred_work_even_when_no_job_was_enqueued(tmp_path, mo
     assert 'source_processing_deferred' in result.capability_gaps
     assert result.to_dict()['deferred_sources'] == 1
     assert app.storage.path.read_bytes() == before
+
+
+def test_doctor_reports_the_footprint_the_growth_and_a_budget(tmp_path, monkeypatch):
+    """Bytes on disk and the week's growth are what an operator needs to see a
+    store outgrow its disk before it does; a budget makes that a gap."""
+    app, ctx = _doctor_app(tmp_path, monkeypatch)
+    for index in range(3):
+        capture(app, ctx, f'TEST-growth/{index}', f'TEST growth {index}')
+    moment = datetime.now(timezone.utc)
+    with sqlite3.connect(app.storage.path) as conn:
+        refs = [row[0] for row in conn.execute('SELECT event_id FROM source_events ORDER BY event_id')]
+        for ref, age in zip(refs, (timedelta(hours=2), timedelta(days=3), timedelta(days=30))):
+            conn.execute('UPDATE source_events SET persisted_at=? WHERE event_id=?', ((moment - age).isoformat(), ref))
+        conn.commit()
+    (ctx.binding.data_directory / 'vectors').mkdir()
+    (ctx.binding.data_directory / 'vectors' / 'TEST.bin').write_bytes(b'x' * 1024)
+    _write_runtime_config(ctx, storage_budget_bytes=512)
+    result = doctor.run_doctor(host='hermes', instance_root=ctx.binding.data_directory)
+    assert (result.sources_last_24h, result.sources_last_7d) == (1, 2)
+    assert result.store_bytes == app.storage.path.stat().st_size and result.vector_bytes == 1024
+    assert result.storage_budget_bytes == 512 and 'storage_budget_exceeded' in result.capability_gaps
+    footprint = next(item for item in result.checks if item['name'] == 'storage_footprint')
+    assert footprint['result'] == 'over_budget' and 'sources +1 in 24h, +2 in 7d' in footprint['detail']
+    _write_runtime_config(ctx)
+    result = doctor.run_doctor(host='hermes', instance_root=ctx.binding.data_directory)
+    assert result.storage_budget_bytes == 0 and 'storage_budget_exceeded' not in result.capability_gaps
+    assert result.to_dict()['index_metadata']['tool_output_retention_days'] == 180

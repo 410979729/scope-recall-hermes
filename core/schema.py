@@ -1,6 +1,6 @@
 """Versioned target DDL. Only explicit initialization/maintenance executes this."""
 
-SCHEMA_VERSION = 1108
+SCHEMA_VERSION = 1109
 APPLICATION_ID = 0x5352434C
 
 WORK_ITEMS_STATEMENT = """CREATE TABLE work_items (
@@ -17,6 +17,14 @@ WORK_ITEMS_STATEMENT = """CREATE TABLE work_items (
         UNIQUE(work_type,subject_ref,subject_revision)
     ) STRICT"""
 
+#: Tool-output vectors the retention window expired (``runtime/vector_retention.py``).
+#: The source stays; the row says its vector is gone on purpose, so nothing
+#: counts it as missing or embeds it again.
+EXPIRED_VECTORS_STATEMENT = """CREATE TABLE expired_vectors (
+        source_ref TEXT NOT NULL, source_revision INTEGER NOT NULL CHECK(source_revision>=1),
+        expired_at TEXT NOT NULL,
+        PRIMARY KEY(source_ref,source_revision)
+    ) STRICT, WITHOUT ROWID"""
 CANDIDATE_STATEMENTS = (
     """CREATE TABLE candidate_lifecycle (
         candidate_ref TEXT NOT NULL, candidate_revision INTEGER NOT NULL CHECK(candidate_revision>=1),
@@ -294,6 +302,7 @@ STATEMENTS = (
         PRIMARY KEY(object_kind,object_ref,object_revision,dependency_kind,dependency_ref,dependency_revision)
     ) STRICT, WITHOUT ROWID""",
     "CREATE INDEX object_dependents ON object_dependencies(dependency_kind,dependency_ref,dependency_revision)",
+    EXPIRED_VECTORS_STATEMENT,
 ) + RECOVERY_STATEMENTS + CANDIDATE_STATEMENTS
 
 
@@ -367,5 +376,31 @@ def upgrade_1107(connection):
     connection.execute("DROP TABLE _r1_outcomes")
     for statement in CANDIDATE_STATEMENTS:
         connection.execute(statement)
-    connection.execute("UPDATE instance_meta SET schema_version=? WHERE singleton=1", (SCHEMA_VERSION,))
-    connection.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
+    connection.execute("UPDATE instance_meta SET schema_version=1108 WHERE singleton=1")
+    connection.execute("PRAGMA user_version=1108")
+
+
+def upgrade_1108(connection):
+    """Keep each episode lineage row once, at the revision its source entered.
+
+    Every attach copied the previous revision's evidence links and object
+    dependencies onto the new revision, so a 200-event segment held 20,100
+    link rows for 200 sources.  Readers now take every row at or below the
+    revision they ask for, which makes the earliest copy the one to keep.
+
+    The same step adds the retention ledger, ``expired_vectors``.
+    """
+    # A row goes when an earlier copy of it exists.  The probe runs on the
+    # evidence_dependents index: four seconds for 180,000 rows on a 1.4 GB store,
+    # where a row-value NOT IN over the grouped minimum took eight minutes.
+    connection.execute("""DELETE FROM evidence_links WHERE object_kind='episode' AND EXISTS (
+        SELECT 1 FROM evidence_links k WHERE k.source_ref=evidence_links.source_ref AND k.source_revision=evidence_links.source_revision
+        AND k.object_kind='episode' AND k.object_ref=evidence_links.object_ref AND k.object_revision<evidence_links.object_revision
+        AND k.relation=evidence_links.relation AND k.quote=evidence_links.quote)""")
+    connection.execute("""DELETE FROM object_dependencies WHERE object_kind='episode' AND EXISTS (
+        SELECT 1 FROM object_dependencies k WHERE k.object_kind='episode' AND k.object_ref=object_dependencies.object_ref
+        AND k.dependency_kind=object_dependencies.dependency_kind AND k.dependency_ref=object_dependencies.dependency_ref
+        AND k.dependency_revision=object_dependencies.dependency_revision AND k.object_revision<object_dependencies.object_revision)""")
+    connection.execute(EXPIRED_VECTORS_STATEMENT)
+    connection.execute("UPDATE instance_meta SET schema_version=1109 WHERE singleton=1")
+    connection.execute("PRAGMA user_version=1109")

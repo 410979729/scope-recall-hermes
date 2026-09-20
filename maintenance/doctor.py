@@ -68,6 +68,14 @@ class DoctorReport:
     autostart_status: str = "not_registered"
     worker_status: dict[str, Any] = field(default_factory=dict)
     sources: int | None = None
+    #: Bytes of memory.sqlite3 with its journal, and of everything under vectors/.
+    store_bytes: int | None = None
+    vector_bytes: int | None = None
+    #: Sources that entered the store in the last day and the last week.
+    sources_last_24h: int | None = None
+    sources_last_7d: int | None = None
+    #: runtime-config.json ``storage_budget_bytes``; 0 when none is set.
+    storage_budget_bytes: int = 0
     source_only_sources: int | None = None
     deferred_sources: int | None = None
     oldest_deferred_at: str | None = None
@@ -191,14 +199,28 @@ def _embedded_objects(db_path: Path) -> int | None:
     return None
 
 
-def _check_index(report: DoctorReport, data_directory: Path, *, store_readable: bool) -> None:
+def _expired_vectors(db_path: Path) -> int | None:
+    """Tool-output vectors the retention window expired (``runtime/vector_retention.py``)."""
+    with suppress(sqlite3.Error, OSError, ValueError):
+        with closing(sqlite3.connect(f"file:{db_path.as_posix()}?mode=ro", uri=True, timeout=5)) as db:
+            return int(db.execute("SELECT COUNT(*) FROM expired_vectors").fetchone()[0] or 0)
+    return None
+
+
+def _check_index(report: DoctorReport, data_directory: Path, *, store_readable: bool, config: Any = None) -> None:
     """Optional vector-index facts. Reported, never acted on."""
     metadata: dict[str, Any] = {"vectors_dir_present": (data_directory / "vectors").is_dir()}
     embedded = _embedded_objects(data_directory / "memory.sqlite3") if store_readable else None
+    expired = _expired_vectors(data_directory / "memory.sqlite3") if store_readable else None
     if embedded is not None:
         metadata["embedded_objects"] = embedded
         metadata["vector_scan_comfort_limit"] = _VECTOR_SCAN_COMFORT_LIMIT
-        metadata["vector_index_advised"] = embedded > _VECTOR_SCAN_COMFORT_LIMIT
+        metadata["vector_index_advised"] = embedded - (expired or 0) > _VECTOR_SCAN_COMFORT_LIMIT
+    if expired is not None:
+        metadata["expired_vectors"] = expired
+    vector = getattr(config, "vector", None)
+    if vector is not None:
+        metadata["tool_output_retention_days"] = vector.tool_output_retention_days
     # Fragment count is what a missed compaction shows up as first, and the one
     # cost an operator can verify with a plain file listing.
     try:
@@ -520,7 +542,11 @@ def _check_storage(report: DoctorReport, binding, data_directory: Path) -> bool:
             report.capture_inbox = conn.execute("SELECT count(*) FROM capture_inbox").fetchone()[0]
             report.capture_inbox_blocked = conn.execute("SELECT count(*) FROM capture_inbox WHERE last_error_code IS NOT NULL AND last_error_code NOT IN ('STORAGE_UNAVAILABLE','DEADLINE_EXCEEDED')").fetchone()[0]
             report.recent_work_errors = [dict(r) for r in conn.execute("SELECT work_id,lease_token,stage,error_code,error_field,recorded_at FROM work_error_details ORDER BY detail_id DESC LIMIT 16")]
-            hour_ago = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+            moment = datetime.now(timezone.utc)
+            hour_ago = (moment - timedelta(hours=1)).isoformat()
+            growth = conn.execute(
+                "SELECT sum(persisted_at>=?),sum(persisted_at>=?) FROM source_events",
+                ((moment - timedelta(days=1)).isoformat(), (moment - timedelta(days=7)).isoformat())).fetchone()
             report.recent_output_truncations = conn.execute(
                 "SELECT count(*) FROM work_error_details WHERE error_field='model_output_truncated' AND recorded_at>=?",
                 (hour_ago,)).fetchone()[0]
@@ -541,6 +567,8 @@ def _check_storage(report: DoctorReport, binding, data_directory: Path) -> bool:
     report.schema_version = status.schema_version
     report.memory_epoch = status.memory_epoch
     report.sources = status.sources
+    report.sources_last_24h = int(growth[0] or 0)
+    report.sources_last_7d = int(growth[1] or 0)
     report.pending_work = status.pending_work
     report.failed_work = status.failed_work
     # Only meaningful next to a failure count; stays None on a clean queue.
@@ -662,6 +690,55 @@ def _check_autostart(report: DoctorReport, binding, data_directory: Path) -> flo
         report.autostart_status = "invalid"
         report.capability_gaps.append("autostart_configuration_invalid")
     return wake_seconds
+
+
+def _runtime_config(data_directory: Path):
+    """The instance's runtime-config.json as the worker loads it, or ``None``.
+
+    An unusable file is ``None`` here; ``_check_vector_threshold`` names it.
+    """
+    from ..runtime.instance import RuntimeInstanceConfig
+
+    try:
+        raw = _read_control_file(data_directory / "runtime-config.json")
+        return None if raw is None else RuntimeInstanceConfig.from_mapping(raw)
+    except Exception:  # noqa: BLE001 - reporting must not fail the report.
+        return None
+
+
+def _directory_bytes(path: Path) -> int:
+    total = 0
+    with suppress(OSError):
+        for item in path.rglob("*"):
+            with suppress(OSError):
+                if item.is_file():
+                    total += item.stat().st_size
+    return total
+
+
+def _check_footprint(report: DoctorReport, data_directory: Path, config) -> None:
+    """Bytes on disk and the week's growth: what an operator needs to see a
+    store outgrow its disk before it does.  A configured budget turns the
+    comparison into a gap; nothing is deleted for it."""
+    store = 0
+    for name in ("memory.sqlite3", "memory.sqlite3-journal", "memory.sqlite3-wal"):
+        with suppress(OSError):
+            store += (data_directory / name).stat().st_size
+    report.store_bytes = store
+    report.vector_bytes = _directory_bytes(data_directory / "vectors")
+    detail = f"store {store / 1e6:.0f} MB, vectors {report.vector_bytes / 1e6:.0f} MB"
+    if report.sources_last_24h is not None:
+        detail += f", sources +{report.sources_last_24h} in 24h, +{report.sources_last_7d} in 7d"
+    budget = getattr(config, "storage_budget_bytes", 0) if config is not None else 0
+    if budget:
+        report.storage_budget_bytes = budget
+        used = store + report.vector_bytes
+        detail += f", budget {budget / 1e6:.0f} MB ({used / budget:.0%} used)"
+        if used > budget:
+            report.capability_gaps.append("storage_budget_exceeded")
+            _record(report, "storage_footprint", "over_budget", detail)
+            return
+    _record(report, "storage_footprint", "ok", detail)
 
 
 def _check_vector_threshold(report: DoctorReport, binding, data_directory: Path) -> None:
@@ -811,6 +888,8 @@ def run_doctor(
     _check_vector_threshold(report, binding, data_directory)
 
     readable = _check_storage(report, binding, data_directory)
+    config = _runtime_config(data_directory)
+    _check_footprint(report, data_directory, config)
     if readable:
         _check_worker_status(report, binding, data_directory)
         wake_seconds = _check_autostart(report, binding, data_directory)
@@ -821,5 +900,5 @@ def run_doctor(
         _check_model_output(report)
         _check_ledger(report)
         _classify_status(report)
-    _check_index(report, data_directory, store_readable=readable)
+    _check_index(report, data_directory, store_readable=readable, config=config)
     return report

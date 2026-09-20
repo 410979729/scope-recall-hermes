@@ -52,6 +52,7 @@ def test_existing_1105_source_upgrades_explicitly_and_resumes_to_exact_end(worke
             "candidate_source_triggers", "candidate_evaluations", "candidate_trigger_terms",
             "candidate_evidence", "candidate_lifecycle", "candidate_scan_cursors",
             "capture_inbox", "work_error_details", "consolidation_fragments", "consolidation_outcomes",
+            "expired_vectors",
         ):
             db.execute(f"DROP TABLE {table}")
         db.execute("ALTER TABLE work_items DROP COLUMN consolidation_offset")
@@ -65,7 +66,7 @@ def test_existing_1105_source_upgrades_explicitly_and_resumes_to_exact_end(worke
     with sqlite3.connect(core.storage.path) as db:
         assert db.execute("PRAGMA user_version").fetchone()[0] == 1105
         assert "consolidation_offset" not in {r[1] for r in db.execute("PRAGMA table_info(work_items)")}
-    assert core.initialize().schema_version == SCHEMA_VERSION == 1108
+    assert core.initialize().schema_version == SCHEMA_VERSION == 1109
     windows, contents = [], []
 
     def build(sources, **kwargs):

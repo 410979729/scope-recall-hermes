@@ -1453,9 +1453,11 @@ def test_p09_episode_hydration_binds_history_revision_pairs(app, monkeypatch):
             "UPDATE episode_versions SET resume_json=? WHERE episode_id=? AND revision=?",
             (json.dumps(resume, ensure_ascii=False), episode_ref, episode_revision),
         )
+        # Lineage rows sit at the revision each source entered and a revision
+        # reads every row at or below it, so the retained set is rebuilt whole.
         conn.execute(
-            "DELETE FROM evidence_links WHERE object_kind='episode' AND object_ref=? AND object_revision=?",
-            (episode_ref, episode_revision),
+            "DELETE FROM evidence_links WHERE object_kind='episode' AND object_ref=?",
+            (episode_ref,),
         )
         for source in (sources[0], sources[-1]):
             conn.execute(

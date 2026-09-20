@@ -126,6 +126,7 @@ defaults a standalone worker pass uses.
 | `supervisor_seconds` | number | `21600.0` (6 h) | 1–86400 | Total lifetime of one supervised window. On expiry the window suspends. |
 | `supervisor_max_drains` | int | `256` | 1–1024 | Most passes one supervised window may run before it suspends. |
 | `daily_work_limit` | int | `0` | 0–1000000 | Queue items a UTC day may attempt. **`0` means no cap** and is the default. When a cap is spent, the pass runs deletion cleanup only, reports the gap `daily_queue_budget`, and the next wake moves to the next UTC midnight. |
+| `storage_budget_bytes` | int | `0` | 0–2^50 | Bytes `memory.sqlite3` and `vectors/` together may occupy before `doctor` reports the gap `storage_budget_exceeded`. **`0` sets no budget.** Nothing is deleted for it; it is a warning, and `doctor` reports the bytes and the day's growth either way. |
 | `auto_retry_cooldown_seconds` | number | `3600.0` | 60–86400 | Delay added before a recoverable failure becomes due again. The same value, clamped to 300 s, is the stand-down for a work type a pass reported unavailable. |
 | `max_auto_recoveries` | int | `2` | 0–4 | Automatic retries a recoverable failure gets. `0` disables automatic recovery; the failure then waits for `retry-failures`. |
 | `auto_recall_seconds` | number | `5.0` | 0.001–5.0 | Deadline for *automatic* recall on the read path. On timeout, recall degrades to lexical. |
@@ -155,6 +156,7 @@ The block is a mapping:
 | `dimensions` | int | required, 1–8192 | Must equal the active embedding space's width, or the file is refused with `VECTOR_DIMENSIONS_MISMATCH`. The shipped space is 3072. |
 | `metric` | `"cosine"` | `"cosine"` | The only supported metric. |
 | `test_injection_override` | boolean | `false` | A test seam. It is refused unless `binding.test_mode` is true, and it skips the dimension and path checks above. Do not set it in a real installation. |
+| `tool_output_retention_days` | int | `180` | Days a tool output's vector is kept after its source entered the store. A worker pass then deletes the vector, up to 2,000 per pass and hourly once caught up, and the following compaction reclaims the space. The source text, its lexical index and everything derived from it stay, so the output is still found by its words and through what cites it, never again by meaning alone. `0` keeps every vector. |
 
 The embedding space id is the SHA-256 digest of the active space descriptor. For
 the shipped space it is
