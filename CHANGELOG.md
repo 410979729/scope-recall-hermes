@@ -424,6 +424,10 @@ Thank you also to the people who sent code: the embedder connection retry and ba
 
 ## [Unreleased]
 
+### Scope Recall 3.1.1rc1 memory growth on a busy instance - 2026-09-19
+
+- An episode's lineage rows are written once, at the revision the source entered. Every attach copied the previous revision's evidence links and object dependencies onto the new revision, so a 200-event segment held 20,100 link rows for 200 sources, and one instance wrote a hundred thousand such rows for eight episodes in a single day. Readers take every row at or below the revision they ask for, and relation expansion names an episode at its head. Schema 1108 becomes 1109; the upgrade keeps the earliest copy of each row and runs when the plugin is installed over the existing data directory, as the 1108 upgrade did.
+
 ### Scope Recall 3.1.1rc1 two reports from a Linux install - 2026-09-19
 
 - The `sqlite-bruteforce` companion can be published to. The worker writes every embedding through the fenced form of the index writer, and only the LanceDB driver implemented it, so on the documented no-extra fallback -- and on every host where LanceDB cannot load -- each embed item failed with a bare `storage_unavailable` and semantic recall never became available (#85, reported by 849506054). `SQLiteBruteForceVectorStore.fenced_upsert_records` evaluates the guard under the store's own lock and commits the group once. A port's refusal now also carries its field into `work_error_details`, so a `fenced_upsert_unsupported` is visible to the operator instead of collapsing to the code.

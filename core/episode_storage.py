@@ -57,7 +57,7 @@ class Episodes:
         if row is None:
             return None
         links = conn.execute(
-            "SELECT source_ref,source_revision FROM evidence_links WHERE object_kind='episode' AND object_ref=? AND object_revision=? ORDER BY source_ref,source_revision",
+            "SELECT DISTINCT source_ref,source_revision FROM evidence_links WHERE object_kind='episode' AND object_ref=? AND object_revision<=? ORDER BY source_ref,source_revision",
             (ref, row["revision"]),
         ).fetchall()
         gaps = []
@@ -258,27 +258,12 @@ class Episodes:
             "INSERT INTO episode_events(episode_id,source_ref,source_revision,membership,environment_revision) VALUES (?,?,?,?,?)",
             (ref, source.ref, source.revision, "anchored" if kind != "session" else "provisional", ctx.environment_revision),
         )
-        if previous:
-            self._carry_lineage(ref, previous.revision, revision)
+        # One lineage row per source, at the revision it entered: a revision's
+        # evidence is every row at or below it, so nothing is copied forward.
         conn.execute(
             """INSERT INTO evidence_links(object_kind,object_ref,object_revision,source_ref,source_revision,relation,quote)
             VALUES ('episode',?,?,?,?,'derived_from','') ON CONFLICT DO NOTHING""",
             (ref, revision, source.ref, source.revision),
-        )
-
-    def _carry_lineage(self, ref: str, from_revision: int, to_revision: int) -> None:
-        """A new episode revision inherits the previous one's evidence and dependencies."""
-        conn = self.tx._check(write=True)
-        conn.execute(
-            """INSERT INTO evidence_links(object_kind,object_ref,object_revision,source_ref,source_revision,relation,quote)
-            SELECT 'episode',object_ref,?,source_ref,source_revision,relation,quote FROM evidence_links
-            WHERE object_kind='episode' AND object_ref=? AND object_revision=?""",
-            (to_revision, ref, from_revision),
-        )
-        conn.execute(
-            """INSERT INTO object_dependencies SELECT object_kind,object_ref,?,dependency_kind,dependency_ref,dependency_revision
-            FROM object_dependencies WHERE object_kind='episode' AND object_ref=? AND object_revision=?""",
-            (to_revision, ref, from_revision),
         )
 
     def sources(self, ref, *, after_sequence=0, limit=32):
@@ -386,12 +371,22 @@ class Episodes:
         )
         conn.execute("UPDATE episodes SET current_revision=? WHERE episode_id=?", (revision, ref))
         for source in sources:
+            # A cited source is a member and already carries its lineage row;
+            # the insert covers a converted episode that never had one.
             conn.execute(
-                """INSERT INTO evidence_links VALUES ('episode',?,?,?,?,'derived_from','',NULL)""",
-                (ref, revision, source.ref, source.revision),
+                """INSERT INTO evidence_links(object_kind,object_ref,object_revision,source_ref,source_revision,relation,quote)
+                SELECT 'episode',?,?,?,?,'derived_from','' WHERE NOT EXISTS (
+                    SELECT 1 FROM evidence_links WHERE object_kind='episode' AND object_ref=? AND object_revision<=?
+                    AND source_ref=? AND source_revision=? AND relation='derived_from' AND quote='')""",
+                (ref, revision, source.ref, source.revision, ref, revision, source.ref, source.revision),
             )
         for artifact in payload["artifact_refs"]:
             target, version = parse_source_ref(artifact)
-            conn.execute("INSERT INTO object_dependencies VALUES ('episode',?,?,'artifact',?,?)", (ref, revision, target, version))
+            conn.execute(
+                """INSERT INTO object_dependencies SELECT 'episode',?,?,'artifact',?,? WHERE NOT EXISTS (
+                    SELECT 1 FROM object_dependencies WHERE object_kind='episode' AND object_ref=? AND object_revision<=?
+                    AND dependency_kind='artifact' AND dependency_ref=? AND dependency_revision=?)""",
+                (ref, revision, target, version, ref, revision, target, version),
+            )
         conn.execute("UPDATE instance_meta SET memory_epoch=memory_epoch+1 WHERE singleton=1")
         return self.get(ref)

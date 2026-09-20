@@ -671,7 +671,7 @@ def test_r1_candidate_1107_migration_preserves_work_ids_leases_and_error_history
     monkeypatch.setattr(storage_module, "upgrade_1107", original)
     status = core.initialize()
     with sqlite3.connect(core.storage.path) as conn:
-        assert status.schema_version == SCHEMA_VERSION == 1108
+        assert status.schema_version == SCHEMA_VERSION == 1109
         assert conn.execute("SELECT state,attempt,lease_token,lease_owner,last_error_code FROM work_items WHERE work_id=?", (work_id,)).fetchone() == (
             "leased", 2, 7, "TEST-owner", "held",
         )

@@ -37,6 +37,10 @@ from .visibility import CLOSED_INTENTION_STATES, OBJECT_KINDS, allowed
 
 #: Modes in which a delivered source must still be live, not merely visible.
 LIVE_MODES = frozenset({"auto", "current", "method"})
+# An episode's lineage rows sit at the revision each source or artifact entered
+# (Episodes.attach); the episode they name is the one at its head.
+_HEAD_REVISION = ("CASE WHEN object_kind='episode' THEN COALESCE((SELECT current_revision FROM episodes "
+                  "WHERE episode_id=object_ref),object_revision) ELSE object_revision END")
 _EXACT_REF = re.compile(r"(?:event|claim|episode|artifact|reference)-[A-Za-z0-9._/-]+@\d+")
 _HEAD_TABLES = {
     "episode": ("episodes", "episode_id"),
@@ -591,12 +595,12 @@ class RetrievalStorage:
 
     def related(self, tx, candidate: CandidateRef, *, limit: int) -> tuple[CandidateRef, ...]:
         rows = tx._check().execute(
-            """SELECT object_kind,object_ref,object_revision FROM evidence_links
+            f"""SELECT object_kind,object_ref,{_HEAD_REVISION} AS object_revision FROM evidence_links
                WHERE source_ref=? UNION SELECT 'event',source_ref,source_revision
                FROM evidence_links WHERE object_kind=? AND object_ref=?
                UNION SELECT dependency_kind,dependency_ref,dependency_revision
                FROM object_dependencies WHERE object_kind=? AND object_ref=?
-               UNION SELECT object_kind,object_ref,object_revision
+               UNION SELECT object_kind,object_ref,{_HEAD_REVISION}
                FROM object_dependencies WHERE dependency_kind=? AND dependency_ref=?
                ORDER BY object_kind,object_ref,object_revision LIMIT ?""",
             (candidate.ref, candidate.kind, candidate.ref, candidate.kind, candidate.ref, candidate.kind, candidate.ref, limit),
@@ -617,8 +621,9 @@ class RetrievalStorage:
 
     def _evidence(self, tx, kind: str, ref: str, revision: int, context: SearchContext) -> tuple[str, ...] | None:
         """The object's evidence refs, or ``None`` when any of them is not deliverable in this mode."""
+        bound = "<=" if kind == "episode" else "="  # episode lineage sits at the entering revision
         rows = tx._check().execute(
-            "SELECT source_ref,source_revision FROM evidence_links WHERE object_kind=? AND object_ref=? AND object_revision=? ORDER BY source_ref,source_revision",
+            f"SELECT DISTINCT source_ref,source_revision FROM evidence_links WHERE object_kind=? AND object_ref=? AND object_revision{bound}? ORDER BY source_ref,source_revision",
             (kind, ref, revision),
         ).fetchall()
         refs = []

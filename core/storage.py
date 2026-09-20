@@ -13,7 +13,7 @@ import sqlite3
 
 from ..contracts import ContractError, InstanceBinding, SourceEvent, TrustedContext, validate_capture
 from .truth_connection import TruthDatabaseMode, connect_truth_database
-from .schema import APPLICATION_ID, SCHEMA_VERSION, STATEMENTS, upgrade_1105, upgrade_1106, upgrade_1107
+from .schema import APPLICATION_ID, SCHEMA_VERSION, STATEMENTS, upgrade_1105, upgrade_1106, upgrade_1107, upgrade_1108
 from .events import lexical_terms, prepare_capture, query_terms
 
 
@@ -556,6 +556,9 @@ class SQLiteStorage:
                 if conn.execute("PRAGMA user_version").fetchone()[0] == 1107:
                     self._verify(conn, expected_schema=1107)
                     upgrade_1107(conn)
+                if conn.execute("PRAGMA user_version").fetchone()[0] == 1108:
+                    self._verify(conn, expected_schema=1108)
+                    upgrade_1108(conn)
                 self._verify(conn)
             else:
                 if conn.execute("PRAGMA user_version").fetchone()[0] != 0 or conn.execute("PRAGMA application_id").fetchone()[0] != 0:
