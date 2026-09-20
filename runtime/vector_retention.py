@@ -19,6 +19,7 @@ the native delete (the store's ``delete_by_ids``), or reclaiming the space
 """
 from __future__ import annotations
 
+from collections import Counter
 from datetime import datetime, timedelta, timezone
 import json
 import os
@@ -61,15 +62,16 @@ def expire_if_due(store: Any, config: Any, storage: Any, context: Any, *,
     started = time.monotonic()
     receipt: dict[str, Any] = {"started_at": _stamp(moment), "retention_days": days, "cutoff": cutoff}
     try:
-        expired = expire_tool_vectors(
+        by_reason = expire_tool_vectors(
             storage, context, delete, embedding_space=config.embedding_space_id(),
             cutoff=cutoff, limit=BATCH_LIMIT, remaining_seconds=available_seconds,
         )
     except Exception as exc:  # noqa: BLE001 - see docstring; upkeep never fails a drain.
         receipt.update(outcome="failed", error=type(exc).__name__, expired=0, backlog=False)
     else:
+        expired = sum(by_reason.values())
         receipt.update(outcome="expired" if expired else "nothing_due", expired=expired,
-                       backlog=expired >= BATCH_LIMIT)
+                       by_reason=dict(sorted(by_reason.items())), backlog=expired >= BATCH_LIMIT)
     elapsed = time.monotonic() - started
     receipt.update(finished_at=_stamp(moment + timedelta(seconds=elapsed)), seconds=round(elapsed, 3))
     write_state(storage_dir, receipt)
@@ -84,14 +86,29 @@ def pass_due(state: dict[str, Any], days: int, *, now: datetime) -> bool:
     return last is None or now - last >= PASS_INTERVAL
 
 
+#: A tool output the capture filter withheld, in this release's form and the
+#: 2.0 release's (see ``core/admission.py``).  Cheap enough to test first.
+_OMITTED = ("e.content LIKE 'Tool execution summary%' AND "
+            "(e.content LIKE '%output omitted%' OR e.content LIKE '%output_preview=omitted%')")
+#: An earlier, still readable tool output in the same scope with the same content.
+_REPEATED = """EXISTS (SELECT 1 FROM source_events f WHERE f.scope_id=e.scope_id AND f.role='tool'
+    AND f.content_sha256=e.content_sha256 AND f.read_blocked=0
+    AND COALESCE(json_extract(f.extra_json,'$._scope_recall_admission.disposition'),'')!='source_only'
+    AND (f.persisted_at<e.persisted_at OR (f.persisted_at=e.persisted_at AND f.event_id<e.event_id)))"""
+
+
 def expire_tool_vectors(storage: Any, context: Any, delete: Callable[[list[str]], Any], *,
-                        embedding_space: str, cutoff: str, limit: int, remaining_seconds: float) -> int:
-    """Delete the vectors of the oldest expired tool outputs, then record them.
+                        embedding_space: str, cutoff: str, limit: int, remaining_seconds: float) -> Counter:
+    """Delete the vectors of the oldest expired tool outputs, then record them by reason.
 
     A tool output is expired when it entered the store (``persisted_at``)
     before the cutoff, so imported history gets the full window from the day
-    of its import.  Only sources whose embed work finished are touched; one
-    still waiting to be embedded is left for a later pass.
+    of its import.  Two kinds go at once, whatever their age: a repeat of an
+    earlier tool output in the same scope (the earlier copy keeps its vector),
+    and a summary the capture filter left in place of an output it withheld.
+    Both are what the intake gate now keeps as sources only; the pass clears
+    what older releases embedded.  Only sources whose embed work finished are
+    touched; one still waiting to be embedded is left for a later pass.
 
     The store goes first.  A pass that dies between the two steps leaves
     vectors gone and rows unwritten, and the next pass repeats an idempotent
@@ -102,25 +119,28 @@ def expire_tool_vectors(storage: Any, context: Any, delete: Callable[[list[str]]
     marks = ",".join("?" for _ in scopes)
     with storage.read(context, remaining_seconds=remaining_seconds) as tx:
         rows = tx._check().execute(
-            f"""SELECT e.event_id,e.source_revision FROM source_events e
-            WHERE e.role='tool' AND e.persisted_at<? AND e.scope_id IN ({marks})
+            f"""SELECT e.event_id,e.source_revision,
+                   CASE WHEN {_OMITTED} THEN 'omitted' WHEN e.persisted_at<? THEN 'window' ELSE 'repeat' END AS reason
+            FROM source_events e
+            WHERE e.role='tool' AND e.scope_id IN ({marks})
+              AND (({_OMITTED}) OR e.persisted_at<? OR {_REPEATED})
               AND EXISTS (SELECT 1 FROM work_items w WHERE w.work_type='embed' AND w.subject_ref=e.event_id
                           AND w.subject_revision=e.source_revision AND w.state='done')
               AND NOT EXISTS (SELECT 1 FROM expired_vectors x WHERE x.source_ref=e.event_id
                               AND x.source_revision=e.source_revision)
             ORDER BY e.persisted_at,e.event_id LIMIT ?""",
-            (cutoff, *scopes, limit),
+            (cutoff, *scopes, cutoff, limit),
         ).fetchall()
     if not rows:
-        return 0
-    delete([f"p10:{ref}@{revision}:{embedding_space}" for ref, revision in rows])
+        return Counter()
+    delete([f"p10:{ref}@{revision}:{embedding_space}" for ref, revision, _reason in rows])
     expired_at = utc_now()
     with storage.write(context, remaining_seconds=remaining_seconds) as tx:
         tx._check(write=True).executemany(
-            "INSERT OR IGNORE INTO expired_vectors(source_ref,source_revision,expired_at) VALUES (?,?,?)",
-            [(ref, revision, expired_at) for ref, revision in rows],
+            "INSERT OR IGNORE INTO expired_vectors(source_ref,source_revision,expired_at,reason) VALUES (?,?,?,?)",
+            [(ref, revision, expired_at, reason) for ref, revision, reason in rows],
         )
-    return len(rows)
+    return Counter(reason for _ref, _revision, reason in rows)
 
 
 def read_state(storage_dir: Path) -> dict[str, Any]:

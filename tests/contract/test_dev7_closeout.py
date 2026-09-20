@@ -21,6 +21,7 @@ from test_v11_worker import worker_app as worker_app, app as app, capture, draft
 from test_v11_deletion import authorize, request
 from test_sprint_consolidation_chunks import long_source, row
 from test_finite_supervisor import fixture, queue, NOW
+from v11_support import downgrade_store
 from v11_support import source_event
 
 
@@ -192,15 +193,8 @@ def test_1106_failure_upgrade_preserves_history_and_requeues_exactly_once(worker
     core,ctx,_=worker_app
     source=capture(core,ctx,'TEST upgrade failure evidence')
     with sqlite3.connect(core.storage.path) as db:
-        # A real 1106 database cannot contain the later candidate tables.
-        for table in ('candidate_source_triggers','candidate_evaluations','candidate_trigger_terms',
-                      'candidate_evidence','candidate_lifecycle','candidate_scan_cursors',
-                      'capture_inbox','work_error_details','consolidation_fragments','consolidation_outcomes',
-                      'expired_vectors','source_authorizations','authorization_payloads'):
-            db.execute(f'DROP TABLE {table}')
         db.execute("UPDATE work_items SET state='failed',attempt=3,last_error_code='DERIVATION_INVALID' WHERE work_type='consolidate'")
-        db.execute('UPDATE instance_meta SET schema_version=1106')
-        db.execute('PRAGMA user_version=1106')
+    downgrade_store(core.storage.path, 1106)
     core.initialize()
     assert row(core,source)==('pending',0,0)
     with sqlite3.connect(core.storage.path) as db:

@@ -353,3 +353,36 @@ def test_unavailable_embedding_never_starves_consolidation_or_its_deferred_refil
     catchup = app.resume_deferred(ctx, limit=16, remaining_seconds=10)
     assert sum(item.queued_work for item in catchup) == 1
     assert app.resume_deferred(ctx, limit=16, remaining_seconds=10) == ()
+
+
+def test_a_repeated_tool_output_is_kept_as_a_source_only(tmp_path):
+    """77% of one instance's 132,000 tool outputs were byte-identical to an
+    earlier one, and each was embedded again.  The earlier copy carries the
+    vector and the lexical index lists both; a person saying it again is new."""
+    app, ctx = app_at(tmp_path)
+    tool = replace(ctx, actor_origin="tool_observation")
+    first = capture(app, tool, "TEST-tool/1", "TEST build log line 42", origin="tool_observation", role="tool")
+    second = capture(app, tool, "TEST-tool/2", "TEST build log line 42", origin="tool_observation", role="tool")
+    assert first.semantic_state == "pending" and first.admission == ()
+    assert second.semantic_state == "not_scheduled"
+    assert second.admission == ("admission_source_only:tool_output_repeat",)
+    assert counts(app)["source_events"] == 2 and counts(app)["work_items"] == 2
+    assert len(app.search_sources(ctx, "build log line")) == 2
+    human = capture(app, ctx, "TEST-user/1", "TEST build log line 42")
+    assert human.semantic_state == "pending" and human.admission == ()
+
+
+@pytest.mark.parametrize("text", [
+    "Tool execution summary (terminal): output omitted",
+    "Tool execution summary (patch): output omitted [REDACTED_PATH]",
+    "Tool execution summary (terminal): tool=terminal; output_chars=123; output_preview=omitted",
+])
+def test_a_withheld_tool_output_summary_is_kept_as_a_source_only(tmp_path, text):
+    """The capture filter's placeholder for an output it withheld, and the 2.0
+    release's form of it: nothing to search by meaning or to derive from."""
+    app, ctx = app_at(tmp_path)
+    receipt = capture(app, replace(ctx, actor_origin="tool_observation"), "TEST-summary", text,
+                      origin="tool_observation", role="tool")
+    assert receipt.semantic_state == "not_scheduled"
+    assert receipt.admission == ("admission_source_only:tool_output_omitted",)
+    assert counts(app)["source_events"] == 1 and counts(app)["work_items"] == 0

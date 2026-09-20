@@ -12,6 +12,7 @@ from scope_recall.core.retrieval import CandidateRef
 from scope_recall.core.schema import SCHEMA_VERSION
 from test_v11_claims import app, capture
 from test_v11_episodes import apply, artifact, ref, resume
+from v11_support import downgrade_store
 
 
 def _lineage(core, episode_ref):
@@ -106,11 +107,8 @@ def test_upgrade_1108_keeps_the_earliest_copy_of_every_episode_lineage_row(app):
         for revision in (1, 2):
             conn.execute("INSERT INTO evidence_links VALUES ('claim','TEST-claim',?,?,1,'supports','TEST',NULL)", (revision, sources[0].ref))
         assert conn.execute("SELECT count(*) FROM evidence_links WHERE object_kind='episode'").fetchone()[0] == 10
-        for table in ("source_authorizations", "authorization_payloads", "expired_vectors"):
-            conn.execute(f"DROP TABLE {table}")  # a real 1108 database has none of the 1109 tables
-        conn.execute("UPDATE instance_meta SET schema_version=1108 WHERE singleton=1")
-        conn.execute("PRAGMA user_version=1108")
         conn.commit()
+    downgrade_store(core.storage.path, 1108)
     # A known older schema is brought forward by the first ordinary open.
     assert core.status(ctx).schema_version == SCHEMA_VERSION == 1109
     assert _lineage(core, episode.ref) == [(index + 1, s.ref) for index, s in enumerate(sources)]
@@ -118,5 +116,6 @@ def test_upgrade_1108_keeps_the_earliest_copy_of_every_episode_lineage_row(app):
     with sqlite3.connect(core.storage.path) as conn:
         assert conn.execute("SELECT count(*) FROM evidence_links WHERE object_kind='claim'").fetchone()[0] == 2
         assert conn.execute("PRAGMA user_version").fetchone()[0] == 1109
+        assert "source_content" in {row[1] for row in conn.execute("PRAGMA index_list(source_events)")}
     assert set(core.episodes(ctx)[0].evidence_refs) == {ref(s) for s in sources}
     assert core.initialize().schema_version == 1109

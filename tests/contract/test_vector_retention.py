@@ -146,3 +146,23 @@ def test_the_doctor_counts_expired_vectors_and_names_the_window(app, tmp_path):
     doctor._check_index(report, core.storage.path.parent, store_readable=True, config=Config(_vector(tmp_path, 180)))
     assert report.index_metadata["expired_vectors"] == 1
     assert report.index_metadata["tool_output_retention_days"] == 180
+
+
+def test_a_repeated_or_withheld_tool_output_loses_its_vector_at_once(app, tmp_path):
+    """What the intake gate now keeps as sources only, older releases embedded:
+    the pass clears those whatever their age.  The earliest copy of a repeat
+    keeps its vector."""
+    core, ctx = app
+    first = capture(core, ctx, "TEST identical build output", origin="tool_observation")
+    repeat = capture(core, ctx, "TEST identical build output", origin="tool_observation")
+    omitted = capture(core, ctx, "Tool execution summary (terminal): output omitted", origin="tool_observation")
+    fresh = capture(core, ctx, "TEST a different, fresh output", origin="tool_observation")
+    _embedded(core, aged=())  # every source has finished embed work, all of it persisted today
+    store = Store()
+    receipt = _pass(core, ctx, store, tmp_path)
+    assert (receipt["expired"], receipt["by_reason"]) == (2, {"omitted": 1, "repeat": 1})
+    assert sorted(store.deleted[0]) == sorted([f"p10:{repeat.ref}@1:{SPACE}", f"p10:{omitted.ref}@1:{SPACE}"])
+    with sqlite3.connect(core.storage.path) as conn:
+        ledger = dict(conn.execute("SELECT source_ref,reason FROM expired_vectors").fetchall())
+    assert ledger == {repeat.ref: "repeat", omitted.ref: "omitted"}
+    assert first.ref not in ledger and fresh.ref not in ledger

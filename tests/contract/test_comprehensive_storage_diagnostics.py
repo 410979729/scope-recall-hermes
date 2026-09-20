@@ -15,6 +15,7 @@ from scope_recall.core.admission import AdmissionPolicy
 from scope_recall.core.recall_policy import SPACE_ID
 from scope_recall.maintenance import doctor
 from test_autonomous_admission import app_at, capture
+from v11_support import downgrade_store
 
 
 def test_admission_counts_show_current_visible_sources_and_clear_after_activation(tmp_path):
@@ -256,12 +257,7 @@ def test_doctor_reports_a_pending_schema_upgrade_without_applying_it(tmp_path, m
     pending step instead of failing on a store it will not touch."""
     app, ctx = _doctor_app(tmp_path, monkeypatch)
     capture(app, ctx, 'TEST-upgrade/1', 'TEST pending upgrade')
-    with sqlite3.connect(app.storage.path) as conn:
-        for table in ('source_authorizations', 'authorization_payloads', 'expired_vectors'):
-            conn.execute(f'DROP TABLE {table}')
-        conn.execute('UPDATE instance_meta SET schema_version=1108 WHERE singleton=1')
-        conn.execute('PRAGMA user_version=1108')
-        conn.commit()
+    downgrade_store(app.storage.path, 1108)
     before = app.storage.path.read_bytes()
     result = doctor.run_doctor(host='hermes', instance_root=ctx.binding.data_directory)
     assert 'schema_upgrade_pending' in result.capability_gaps and result.schema_version == 1108

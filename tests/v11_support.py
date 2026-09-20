@@ -84,3 +84,34 @@ def raw_case_inputs(case_id, directory, clock):
         event = source_event(**raw, recorded_at=clock.time(), occurred_at=None, time_precision="unknown", dataset_id="SYNTHETIC_TEST_ONLY")
         events.append(validate_capture(event, context(directory, raw["origin"])))
     return {"events": events, "query": {"session": case["query"]["session"], "text": case["query"]["text"]}}
+
+
+#: What each schema step added.  A fabricated older store is a fresh one with
+#: the later objects removed; every test that needs one goes through here, so a
+#: new step is added in one place instead of in each of them.
+_SCHEMA_STEPS = {
+    1109: {"indexes": ("source_content",),
+           "tables": ("source_authorizations", "authorization_payloads", "expired_vectors")},
+    1108: {"tables": ("candidate_source_triggers", "candidate_evaluations", "candidate_trigger_terms",
+                      "candidate_evidence", "candidate_lifecycle", "candidate_scan_cursors")},
+    1107: {"tables": ("capture_inbox", "work_error_details", "consolidation_fragments", "consolidation_outcomes")},
+    1106: {"columns": (("work_items", "consolidation_offset"),)},
+}
+
+
+def downgrade_store(path, version: int) -> None:
+    """Turn a fresh store into what a real store at ``version`` could hold, and stamp it."""
+    import sqlite3
+
+    with sqlite3.connect(path) as conn:
+        for step in sorted((step for step in _SCHEMA_STEPS if step > version), reverse=True):
+            objects = _SCHEMA_STEPS[step]
+            for index in objects.get("indexes", ()):
+                conn.execute(f"DROP INDEX {index}")
+            for table in objects.get("tables", ()):
+                conn.execute(f"DROP TABLE {table}")
+            for table, column in objects.get("columns", ()):
+                conn.execute(f"ALTER TABLE {table} DROP COLUMN {column}")
+        conn.execute("UPDATE instance_meta SET schema_version=? WHERE singleton=1", (version,))
+        conn.execute(f"PRAGMA user_version={int(version)}")
+        conn.commit()

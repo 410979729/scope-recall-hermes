@@ -208,11 +208,12 @@ def _embedded_objects(db_path: Path) -> int | None:
     return None
 
 
-def _expired_vectors(db_path: Path) -> int | None:
-    """Tool-output vectors the retention window expired (``runtime/vector_retention.py``)."""
+def _expired_vectors(db_path: Path) -> dict[str, int] | None:
+    """Tool-output vectors the retention pass expired, by reason (``runtime/vector_retention.py``)."""
     with suppress(sqlite3.Error, OSError, ValueError):
         with closing(sqlite3.connect(f"file:{db_path.as_posix()}?mode=ro", uri=True, timeout=5)) as db:
-            return int(db.execute("SELECT COUNT(*) FROM expired_vectors").fetchone()[0] or 0)
+            return {str(reason): int(count) for reason, count in
+                    db.execute("SELECT reason,COUNT(*) FROM expired_vectors GROUP BY reason ORDER BY reason")}
     return None
 
 
@@ -220,13 +221,15 @@ def _check_index(report: DoctorReport, data_directory: Path, *, store_readable: 
     """Optional vector-index facts. Reported, never acted on."""
     metadata: dict[str, Any] = {"vectors_dir_present": (data_directory / "vectors").is_dir()}
     embedded = _embedded_objects(data_directory / "memory.sqlite3") if store_readable else None
-    expired = _expired_vectors(data_directory / "memory.sqlite3") if store_readable else None
+    by_reason = _expired_vectors(data_directory / "memory.sqlite3") if store_readable else None
+    expired = None if by_reason is None else sum(by_reason.values())
     if embedded is not None:
         metadata["embedded_objects"] = embedded
         metadata["vector_scan_comfort_limit"] = _VECTOR_SCAN_COMFORT_LIMIT
         metadata["vector_index_advised"] = embedded - (expired or 0) > _VECTOR_SCAN_COMFORT_LIMIT
     if expired is not None:
         metadata["expired_vectors"] = expired
+        metadata["expired_vectors_by_reason"] = by_reason
     vector = getattr(config, "vector", None)
     if vector is not None:
         metadata["tool_output_retention_days"] = vector.tool_output_retention_days

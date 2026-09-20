@@ -26,6 +26,7 @@ WORK_ITEMS_STATEMENT = """CREATE TABLE work_items (
 EXPIRED_VECTORS_STATEMENT = """CREATE TABLE expired_vectors (
         source_ref TEXT NOT NULL, source_revision INTEGER NOT NULL CHECK(source_revision>=1),
         expired_at TEXT NOT NULL,
+        reason TEXT NOT NULL DEFAULT 'window' CHECK(reason IN ('window','repeat','omitted')),
         PRIMARY KEY(source_ref,source_revision)
     ) STRICT, WITHOUT ROWID"""
 #: The scope authorization a migrated source was admitted under.  The 2.0
@@ -170,6 +171,9 @@ STATEMENTS = (
         UNIQUE(source_group_key,source_revision,segment_index)
     ) STRICT""",
     "CREATE INDEX source_scope_time ON source_events(scope_id,occurred_at,event_id,source_revision)",
+    # A repeated tool output is found by its content hash at capture (core/admission.py)
+    # and by the retention pass (runtime/vector_retention.py).
+    "CREATE INDEX source_content ON source_events(scope_id,role,content_sha256)",
     WORK_ITEMS_STATEMENT,
     "CREATE INDEX work_ready ON work_items(state,available_at,work_id)",
     """CREATE TABLE lexical_projection (
@@ -407,9 +411,10 @@ def upgrade_1108(connection):
     link rows for 200 sources.  Readers now take every row at or below the
     revision they ask for, which makes the earliest copy the one to keep.
 
-    The same step adds the retention ledger, ``expired_vectors``, and moves
-    the migrated scope authorizations out of every source row (8.5 s for
-    167,000 sources on a 1.4 GB store).
+    The same step adds the retention ledger, ``expired_vectors``, the content
+    index a repeated tool output is found by, and moves the migrated scope
+    authorizations out of every source row (8.5 s for 167,000 sources on a
+    1.4 GB store).
     """
     # A row goes when an earlier copy of it exists.  The probe runs on the
     # evidence_dependents index: four seconds for 180,000 rows on a 1.4 GB store,
@@ -423,6 +428,7 @@ def upgrade_1108(connection):
         AND k.dependency_kind=object_dependencies.dependency_kind AND k.dependency_ref=object_dependencies.dependency_ref
         AND k.dependency_revision=object_dependencies.dependency_revision AND k.object_revision<object_dependencies.object_revision)""")
     connection.execute(EXPIRED_VECTORS_STATEMENT)
+    connection.execute("CREATE INDEX source_content ON source_events(scope_id,role,content_sha256)")
     for statement in AUTHORIZATION_STATEMENTS:
         connection.execute(statement)
     normalize_scope_authorizations(connection)

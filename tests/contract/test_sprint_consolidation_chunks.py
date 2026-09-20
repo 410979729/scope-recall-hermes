@@ -9,6 +9,7 @@ from scope_recall.contracts import ContractError
 from scope_recall.core import CoreConfig, MemoryCore
 from scope_recall.core.consolidate import consolidation_messages
 from scope_recall.core.schema import SCHEMA_VERSION
+from v11_support import downgrade_store
 from scope_recall.core.storage import SQLiteStorage
 from scope_recall.core.work_storage import WorkItems
 from test_v11_worker import (worker_app, app, capture, draft, consolidation_payload,
@@ -47,17 +48,7 @@ def test_existing_1105_source_upgrades_explicitly_and_resumes_to_exact_end(worke
     padding = ("这是一段归档资料；" * 8000)[:65536-len(FIRST)-len(LAST)-2]
     source = long_source(core, ctx, FIRST + "\n" + padding + "\n" + LAST)
     assert len(source.event["content"]) == 65536
-    with sqlite3.connect(core.storage.path) as db:
-        for table in (
-            "candidate_source_triggers", "candidate_evaluations", "candidate_trigger_terms",
-            "candidate_evidence", "candidate_lifecycle", "candidate_scan_cursors",
-            "capture_inbox", "work_error_details", "consolidation_fragments", "consolidation_outcomes",
-            "expired_vectors", "source_authorizations", "authorization_payloads",
-        ):
-            db.execute(f"DROP TABLE {table}")
-        db.execute("ALTER TABLE work_items DROP COLUMN consolidation_offset")
-        db.execute("UPDATE instance_meta SET schema_version=1105")
-        db.execute("PRAGMA user_version=1105")
+    downgrade_store(core.storage.path, 1105)
     # A foreign binding is refused before anything is touched...
     foreign = SQLiteStorage(replace(ctx.binding, installation_id="TEST-unrelated-installation"))
     with pytest.raises(ContractError, match="IDENTITY_UNBOUND"):

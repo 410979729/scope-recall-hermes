@@ -19,6 +19,7 @@ from scope_recall.runtime.scheduling import next_wake
 from test_finite_supervisor import NOW, fixture as supervisor_fixture, queue as queue_work
 from test_v11_claims import app, capture, draft
 from test_v11_deletion import authorize, request
+from v11_support import downgrade_store
 
 
 def _settle_evidence(core, *, seconds=None):
@@ -643,15 +644,8 @@ def test_r1_candidate_1107_migration_preserves_work_ids_leases_and_error_history
             """INSERT INTO capture_inbox(token,scope_id,project_id,branch_id,created_at,payload_json,last_error_code)
                VALUES ('TEST-inbox','TEST-scope','TEST-project','TEST-main','2026-09-06T12:00:00Z','{}','held')"""
         )
-        for table in (
-            "candidate_source_triggers", "candidate_evaluations", "candidate_trigger_terms",
-            "candidate_evidence", "candidate_lifecycle", "candidate_scan_cursors", "expired_vectors",
-            "source_authorizations", "authorization_payloads",
-        ):
-            conn.execute(f"DROP TABLE {table}")
-        conn.execute("UPDATE instance_meta SET schema_version=1107 WHERE singleton=1")
-        conn.execute("PRAGMA user_version=1107")
         conn.commit()
+    downgrade_store(core.storage.path, 1107)
 
     import scope_recall.core.schema as schema_module
     import scope_recall.core.storage as storage_module

@@ -8,6 +8,7 @@ persistence or lexical search.
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+import hashlib
 import json
 import re
 import unicodedata
@@ -68,6 +69,11 @@ _REINJECTION = AdmissionDecision("source_only", "memory_reinjection")
 _ACKS = frozenset({"好", "好的", "嗯", "嗯嗯", "哦", "噢", "收到", "明白", "了解", "谢谢", "谢谢你", "你好", "早上好", "晚上好", "晚安", "哈哈", "ok", "okay", "yes", "thanks", "thankyou", "hello", "hi", "goodnight", "ack", "acknowledged", "gotit"})
 _IMPORTANT = re.compile(r"更正|纠正|改为|改成|换成|调整为|取消|作废|不再|停止使用|停止采用|弃用|不要|必须|记住|偏好|喜欢|决定|采用|截止|完成|修复|失败|错误|\b(?:correct(?:ion)?|instead|cancel(?:led)?|no longer|switch to|discontinue|remember|prefer|decid\w*|deadline|must|error|fail\w*)\b", re.I)
 _TOOL_OK = re.compile(r"(?:success|successful|done|completed|ok|process exited with (?:code|exit code) 0|exit code:? 0)[.!\s]*", re.I)
+#: The capture filter's own placeholder for a tool output it withheld
+#: (``capture_filters.sanitize_report_text``), and the 2.0 release's form of
+#: it.  There is nothing in it to search for by meaning or to derive from: on
+#: one instance 132,000 of 168,000 sources were such lines, each embedded.
+_OMITTED_TOOL_SUMMARY = re.compile(r"Tool execution summary\b.*\b(?:output omitted|output_preview=omitted)\b", re.S)
 
 
 def _ack(text):
@@ -87,6 +93,8 @@ def classify(event, policy=None):
         # evidence refs that would otherwise raise its priority.
         return _REINJECTION
     text = event["content"]
+    if event.get("role") == "tool" and _OMITTED_TOOL_SUMMARY.match(text.strip()):
+        return AdmissionDecision("source_only", "tool_output_omitted")
     important = bool(event.get("artifact_refs") or event.get("evidence_refs") or event.get("segment") or _IMPORTANT.search(text))
     if important:
         return AdmissionDecision("schedule", "important_source", True)
@@ -135,11 +143,31 @@ def _available_types(tx, scope_id, policy, important, candidates=WORK_TYPES):
                      if pending_count(tx, scope_id, ceiling=ceiling, work_type=kind) < ceiling)
 
 
+def _repeated_tool_output(tx, scope_id, text) -> bool:
+    """Whether an earlier, still readable tool output in this scope has exactly this content.
+
+    On one instance 77% of 132,000 tool outputs were byte-identical to an
+    earlier one, and each was embedded again.  The earlier copy already carries
+    the vector and the lexical index lists both, so a repeat is kept as a
+    source only.  An earlier copy that was itself kept as a source only (recall
+    output, a repeat, a withheld summary) carries no vector and does not count.
+    Text from a person is never a repeat: saying it again is new.
+    """
+    digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    return tx._check().execute(
+        """SELECT 1 FROM source_events WHERE scope_id=? AND role='tool' AND content_sha256=? AND read_blocked=0
+           AND COALESCE(json_extract(extra_json,'$._scope_recall_admission.disposition'),'')!='source_only' LIMIT 1""",
+        (scope_id, digest),
+    ).fetchone() is not None
+
+
 def decide(tx, event, scope_id, policy=None):
     policy = policy or AdmissionPolicy()
     decision = classify(event, policy)
     if decision.disposition != "schedule":
         return decision
+    if event.get("role") == "tool" and _repeated_tool_output(tx, scope_id, event["content"]):
+        return AdmissionDecision("source_only", "tool_output_repeat")
     kinds = _available_types(tx, scope_id, policy, decision.important)
     if kinds != WORK_TYPES:
         return AdmissionDecision("deferred", "queue_capacity", decision.important, kinds)
