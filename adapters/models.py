@@ -51,6 +51,18 @@ EMBED_RESERVE_FLOOR = 8192
 RESERVE_ENVELOPE_MARGIN = 256
 MAX_CREDENTIAL_BYTES = 8192
 _ENV_NAME_RE = re.compile(r"^[A-Z][A-Z0-9_]{0,127}$")
+#: Route kind naming the Responses-API consolidation dialect.  A stated kind is
+#: required for it; the OpenAI-compatible chat route keeps accepting an absent
+#: kind or ``"openai"``, so no existing installation changes meaning.
+RESPONSES_KIND = "openai_responses"
+#: DeepSeek's ``reasoning.effort`` vocabulary for ``/responses``.  ``minimal``,
+#: ``medium`` and ``xhigh`` are also accepted by that endpoint and mapped there,
+#: but a route that does not say what it sends is refused instead.
+RESPONSES_EFFORTS = frozenset({"none", "low", "high", "max"})
+#: Message roles a Responses ``input`` item can carry here.  ``tool`` has no item
+#: shape in this adapter (``function_call``/``function_call_output`` are pairs,
+#: not messages), so a tool message is refused rather than rewritten.
+_RESPONSES_ROLES = frozenset({"system", "user", "assistant"})
 _CHAT_ROLES = frozenset({"system", "user", "assistant", "tool"})
 
 
@@ -330,13 +342,18 @@ def _reject_secrets(value: str) -> None:
         raise AuxiliaryModelError("sensitive_request")
 
 
-def validate_chat_messages(messages: object) -> None:
-    """Exactly role and content per message, a role from the closed set, no secret-like text."""
+def validate_chat_messages(messages: object, *, roles: frozenset[str] = _CHAT_ROLES) -> None:
+    """Exactly role and content per message, a role from the closed set, no secret-like text.
+
+    ``roles`` is the closed role set of the dialect being spoken: the Responses
+    route passes its own, because a role with no item shape in that dialect must
+    be refused rather than reworded into one.
+    """
     if not isinstance(messages, list) or not messages:
         raise AuxiliaryModelError("input_invalid")
     for message in messages:
         if (not isinstance(message, dict) or set(message) != {"role", "content"}
-                or message["role"] not in _CHAT_ROLES or type(message["content"]) is not str):
+                or message["role"] not in roles or type(message["content"]) is not str):
             raise AuxiliaryModelError("input_invalid")
         _reject_secrets(message["content"])
 
@@ -754,6 +771,62 @@ class ConsolidationRouteConfig:
         object.__setattr__(self, "headers", _validate_consolidation_headers(self.headers))
 
 
+def _validate_responses_text_format(value: object) -> Mapping[str, str] | None:
+    """Only JSON mode is implemented.
+
+    ``{"type": "text"}`` is the endpoint's default and is sent by omitting the
+    field; ``json_schema`` would need the schema it names to be validated here
+    rather than silently forwarded, so it is refused until that exists.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, Mapping) or dict(value) != {"type": "json_object"}:
+        raise ValueError("text_format")
+    return MappingProxyType({"type": "json_object"})
+
+
+@dataclass(frozen=True)
+class ResponsesRouteConfig:
+    """One non-streaming Responses-API consolidation route.
+
+    Implemented for the documented DeepSeek ``POST https://api.deepseek.com/responses`` contract
+    (``model: deepseek-flash``): that endpoint accepts a string or an item list in
+    ``input``, inserts ``instructions`` as the first system message, reports
+    ``status`` as ``completed``/``incomplete``/``failed``, and answers with an
+    ``output`` array of ``reasoning`` and ``message`` items.  Nothing here claims
+    streaming (``stream`` must be ``false``), OAuth, or another provider's
+    compatibility -- a route is configuration, and this one says exactly what
+    this adapter sends.
+    """
+
+    model: str
+    endpoint: str
+    credential_env: str
+    max_output_tokens: int
+    reasoning_effort: str | None = None
+    text_format: Mapping[str, str] | None = None
+    stream: bool = False
+    kind: str = RESPONSES_KIND
+
+    def __post_init__(self) -> None:
+        if type(self.model) is not str or not self.model:
+            raise ValueError("model")
+        if type(self.endpoint) is not str or not self.endpoint.startswith("https://"):
+            raise ValueError("endpoint")
+        _validate_credential_env_name(self.credential_env)
+        if type(self.max_output_tokens) is not int or not 1 <= self.max_output_tokens <= 131_072:
+            raise ValueError("max_output_tokens")
+        if self.reasoning_effort is not None and (
+            type(self.reasoning_effort) is not str or self.reasoning_effort not in RESPONSES_EFFORTS
+        ):
+            raise ValueError("reasoning_effort")
+        object.__setattr__(self, "text_format", _validate_responses_text_format(self.text_format))
+        if self.stream is not False:
+            raise ValueError("stream")
+        if self.kind != RESPONSES_KIND:
+            raise ValueError("kind")
+
+
 #: Ledger refusals that mean "not now" rather than "over budget".
 _BUDGET_UNAVAILABLE = frozenset({
     "ledger_not_initialized", "unsupported_model", "unsupported_model_or_size", "ledger_busy_timeout",
@@ -1030,4 +1103,162 @@ class OpenAIConsolidationAdapter:
             headers=_consolidation_request_headers(self._route, key),
             max_response_bytes=MAX_CHAT_RESPONSE_BYTES,
             read_usage=_chat_usage, read_result=_extract_chat_content,
+        )
+
+
+def _responses_usage(payload: Mapping[str, Any]) -> dict[str, int] | None:
+    """The ledger's prompt/completion pair from a Responses ``usage`` block.
+
+    ``output_tokens`` already counts the reasoning tokens the provider reports
+    separately in ``output_tokens_details.reasoning_tokens`` (the same tokens
+    ``max_output_tokens`` bounds), so reasoning is never billed a second time --
+    the anomaly guard that charges output outside ``completion_tokens`` on the
+    chat route does not apply here.  An absent or malformed block returns
+    ``None`` and the caller keeps the reserved charge, exactly as before.
+    """
+    candidate = payload.get("usage")
+    if not isinstance(candidate, dict):
+        return None
+    if any(type(candidate.get(name)) is not int or candidate[name] < 0
+           for name in ("input_tokens", "output_tokens")):
+        return None
+    usage = {"prompt_tokens": candidate["input_tokens"], "completion_tokens": candidate["output_tokens"]}
+    details = candidate.get("input_tokens_details")
+    cached = details.get("cached_tokens") if isinstance(details, dict) else None
+    if type(cached) is int and 0 <= cached <= candidate["input_tokens"]:
+        usage["cached_prompt_tokens"] = cached
+    return usage
+
+
+def _responses_output_text(payload: Mapping[str, Any]) -> str:
+    """The completed assistant answer, and nothing else.
+
+    Only a ``response`` whose own ``status`` is ``completed`` is an answer:
+    ``incomplete`` is a prefix cut off at the output limit (the same named
+    derivation failure the chat route raises for ``finish_reason: "length"``),
+    and ``failed`` produced nothing usable.  Reasoning items and
+    ``reasoning_text`` parts are never answer text, a refusal part is a refusal
+    rather than an empty proposal, and a tool-call item is a different protocol
+    that cannot be silently read as one.
+    """
+    status = payload.get("status")
+    if status != "completed":
+        if status == "incomplete":
+            raise ContractError("DERIVATION_INVALID", "model_output_truncated")
+        if status == "failed":
+            raise AuxiliaryModelError("response_status_failed")
+        raise AuxiliaryModelError("unsupported_response_shape")
+    output = payload.get("output")
+    if not isinstance(output, list):
+        raise AuxiliaryModelError("unsupported_response_shape")
+    answers: list[str] = []
+    for item in output:
+        if not isinstance(item, dict):
+            raise AuxiliaryModelError("unsupported_response_shape")
+        if item.get("type") == "reasoning":
+            continue
+        if item.get("type") != "message":
+            raise AuxiliaryModelError("unsupported_response_shape")
+        if item.get("role") != "assistant" or item.get("status") not in (None, "completed"):
+            # A message that is not this route's answer, or one the response
+            # marks unfinished while claiming to be complete, is a contradiction
+            # rather than something to assemble an answer out of.
+            raise AuxiliaryModelError("unsupported_response_shape")
+        content = item.get("content")
+        if not isinstance(content, list):
+            raise AuxiliaryModelError("unsupported_response_shape")
+        parts: list[str] = []
+        for part in content:
+            if not isinstance(part, dict):
+                raise AuxiliaryModelError("unsupported_response_shape")
+            if part.get("type") == "refusal":
+                raise AuxiliaryModelError("model_refused")
+            if part.get("type") != "output_text" or type(part.get("text")) is not str:
+                raise AuxiliaryModelError("unsupported_response_shape")
+            parts.append(part["text"])
+        answers.append("".join(parts))
+    text = "\n\n".join(answers)
+    if not text:
+        raise AuxiliaryModelError("empty_output")
+    return text
+
+
+class ResponsesConsolidationAdapter:
+    """One non-streaming Responses route on the shared consolidation boundary.
+
+    Reservation, transport, deadline, response cap, settlement and the raw
+    answer handed to the existing proposal validator are the chat route's; only
+    the request dialect and the answer extraction differ.
+    """
+
+    def __init__(
+        self,
+        route: ResponsesRouteConfig,
+        *,
+        ledger: AuxiliaryBudgetLedger,
+        reserve_input: int,
+        transport: HttpTransport | None = None,
+    ) -> None:
+        self._route = route
+        self._ledger = ledger
+        self._reserve_input = reserve_input
+        self._transport = transport if transport is not None else HttpsTransport()
+
+    def _responses_body(self, messages: list[dict]) -> bytes:
+        """Carry every message in ``input`` without moving system messages.
+
+        Each message becomes one item whose text part is typed for its role.
+        Using ``instructions`` would move interleaved system messages to the
+        beginning, so this adapter deliberately keeps them in ``input``.
+        ``store`` is false and the caller supplies all context explicitly.
+        """
+        route = self._route
+        items: list[dict[str, Any]] = []
+        for message in messages:
+            role, content = message["role"], message["content"]
+            items.append({
+                "type": "message",
+                "role": role,
+                "content": [{
+                    "type": "output_text" if role == "assistant" else "input_text",
+                    "text": content,
+                }],
+            })
+        body: dict[str, Any] = {
+            "model": route.model,
+            "max_output_tokens": route.max_output_tokens,
+            "stream": route.stream,
+            "store": False,
+        }
+        body["input"] = items
+        if route.reasoning_effort is not None:
+            body["reasoning"] = {"effort": route.reasoning_effort}
+        if route.text_format is not None:
+            body["text"] = {"format": dict(route.text_format)}
+        return _json_bytes(body)
+
+    def propose(self, messages: list[dict], *, remaining_seconds: float) -> str:
+        deadline = time.monotonic() + validate_timeout_seconds(remaining_seconds)
+        validate_chat_messages(messages, roles=_RESPONSES_ROLES)
+        body = self._responses_body(messages)
+        _reject_secrets(body.decode("utf-8"))
+        reserved_output = model_output_reserve(self._ledger.policy, self._route.model, self._route.max_output_tokens)
+        if _remaining_seconds(deadline) <= 0:
+            raise AuxiliaryModelError("timeout")
+        if self._ledger.provider_hold_until(self._route.model) is not None:
+            raise AuxiliaryModelError("provider_hold")
+        key = _load_credential(self._route.credential_env)
+        return _metered_post(
+            ledger=self._ledger, settle=self._ledger.finish, model=self._route.model, body=body,
+            reserved_input=conservative_consolidation_input_reserve(body, self._reserve_input),
+            reserved_output=reserved_output, deadline=deadline,
+            transport=self._transport, endpoint=self._route.endpoint,
+            headers={
+                "Authorization": f"Bearer {key}",
+                "Content-Type": "application/json",
+                "User-Agent": "ScopeRecall-AuxiliaryConsolidation/1.1",
+            },
+            # The consolidation answer cap, shared with the chat dialect.
+            max_response_bytes=MAX_CHAT_RESPONSE_BYTES,
+            read_usage=_responses_usage, read_result=_responses_output_text,
         )

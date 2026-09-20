@@ -355,6 +355,7 @@ CORE_RELEASE_CONTRACTS += [
 RUNTIME_BOUNDARY_TESTS = [
     "tests/contract/test_http_transport_boundary.py",
     "tests/contract/test_codex_cli_consolidation.py",
+    "tests/contract/test_responses_consolidation.py",
     "tests/contract/test_runtime_auxiliary.py",
     "tests/contract/test_runtime_worker_entry.py",
     "tests/host/test_runtime_watchdog.py",
