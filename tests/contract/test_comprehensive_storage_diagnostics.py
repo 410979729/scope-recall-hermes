@@ -248,3 +248,14 @@ def test_doctor_reports_the_footprint_the_growth_and_a_budget(tmp_path, monkeypa
     result = doctor.run_doctor(host='hermes', instance_root=ctx.binding.data_directory)
     assert result.storage_budget_bytes == 0 and 'storage_budget_exceeded' not in result.capability_gaps
     assert result.to_dict()['index_metadata']['tool_output_retention_days'] == 180
+
+
+def test_a_secret_refusal_is_a_terminal_failure_not_a_degraded_instance(tmp_path, monkeypatch):
+    app, ctx = _doctor_app(tmp_path, monkeypatch)
+    capture(app, ctx, 'TEST-refusal/1', 'TEST refused evaluation')
+    with sqlite3.connect(app.storage.path) as conn:
+        conn.execute("UPDATE work_items SET state='failed', last_error_code='sensitive_request' WHERE work_type='consolidate'")
+        conn.commit()
+    result = doctor.run_doctor(host='hermes', instance_root=ctx.binding.data_directory)
+    assert (result.failed_work, result.terminal_failed_work) == (1, 1)
+    assert 'work_failed' not in result.capability_gaps

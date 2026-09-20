@@ -304,6 +304,7 @@ TERMINAL_FAILURE_COUNT = """
         lower(last_error_code)='derivation_invalid'
         OR lower(last_error_code) LIKE '%|derivation_invalid'
         OR lower(last_error_code) LIKE 'budget_checked:%|input_invalid'
+        OR lower(last_error_code) LIKE '%sensitive_request'
     )
 """
 

@@ -73,9 +73,12 @@ ACTIONABLE_FAILURES = frozenset(
 ) | _OPERATOR_ONLY_FAILURES
 
 #: By-design outcomes.  Re-running them asserts that something upstream changed.
+#: ``sensitive_request`` is the request guard refusing to send secret-like text
+#: to a model; the payload is what it is, so a retry can only refuse again.
 TERMINAL_FAILURES = frozenset({
     "derivation_invalid",
     "input_invalid",
+    "sensitive_request",
 })
 
 #: Stamped on every row this grants a re-look, so the grant is visible and

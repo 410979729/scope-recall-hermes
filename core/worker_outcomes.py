@@ -18,6 +18,8 @@ _NON_RETRYABLE_MODEL_ERRORS = frozenset({
     "meter_breach",
     "input_invalid",
     "budget_unavailable",
+    # The request guard refused secret-like text; the payload will not change.
+    "sensitive_request",
 })
 
 #: Refusals that say nothing about the item: raised before any network attempt,

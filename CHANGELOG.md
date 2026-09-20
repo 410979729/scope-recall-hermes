@@ -424,6 +424,10 @@ Thank you also to the people who sent code: the embedder connection retry and ba
 
 ## [Unreleased]
 
+### Scope Recall 3.1.1rc1 the upgrade applies itself, and a refusal that was never a secret - 2026-09-20
+
+- The secret guard no longer refuses a request for a line break. Serialised into a model request, a source's line breaks become the two characters `\n`, which are not whitespace, so a document template with an empty credential slot had the next line swallowed as its "value" and every request carrying it was refused as `sensitive_request`: 369 candidate evaluations on one instance, none holding a secret. The scan now treats an escaped line break as the break it stands for. `sensitive_request` is also terminal and never retried; `retry-failures --include-terminal` re-runs the rows an older release left behind.
+
 ### Scope Recall 3.1.1rc1 memory growth on a busy instance - 2026-09-19
 
 - An episode's lineage rows are written once, at the revision the source entered. Every attach copied the previous revision's evidence links and object dependencies onto the new revision, so a 200-event segment held 20,100 link rows for 200 sources, and one instance wrote a hundred thousand such rows for eight episodes in a single day. Readers take every row at or below the revision they ask for, and relation expansion names an episode at its head. Schema 1108 becomes 1109; the upgrade keeps the earliest copy of each row and runs when the plugin is installed over the existing data directory, as the 1108 upgrade did.

@@ -133,10 +133,23 @@ class SecretTextMatch:
     text: str
 
 
+_ESCAPED_BREAK_RE = re.compile(r"\\([nrt])")
+_ESCAPED_BREAKS = {"n": "\n\n", "r": "\r\r", "t": "\t\t"}
+
+
 def secret_scan_shadow(value: Any) -> str:
-    """Return an NFKC scan view with invisible format controls removed."""
+    """Return an NFKC scan view with invisible format controls removed.
+
+    A serialised line break (the two characters ``\\n``) counts as the break it
+    stands for.  Serialised into a model request, a document template with an
+    empty credential slot ("AppSecret:" and nothing after it) had the next line
+    swallowed as its value and was refused as ``sensitive_request``: 369
+    candidate evaluations on one instance, none holding a secret.  The
+    substitution keeps the length, so every match position stays valid.
+    """
 
     normalized = unicodedata.normalize("NFKC", str(value or ""))
+    normalized = _ESCAPED_BREAK_RE.sub(lambda match: _ESCAPED_BREAKS[match.group(1)], normalized)
     return "".join(
         character
         for character in normalized
