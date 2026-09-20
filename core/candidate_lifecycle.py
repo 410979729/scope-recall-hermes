@@ -230,7 +230,8 @@ CANDIDATE_EVALUATION_INPUT_BUDGET = 64000
 
 
 #: A source longer than this reaches a candidate evaluation as a window around
-#: the candidate's value (its subject when the value is absent), not whole.
+#: the candidate's first verified saved quote, falling back to its value or
+#: subject when no saved quote matches this source version.
 #: Tool output dominated the evidence: replayed over one instance's evaluations, the
 #: calls still made after the verdict limit carried 28 M characters, and windows
 #: of this size keep 44% of them.  Qualification reads the complete stored source
@@ -248,8 +249,13 @@ def _needle_pattern(text: object) -> re.Pattern[str] | None:
     return re.compile(r"[\W_]*".join(re.escape(character) for character in characters), re.IGNORECASE)
 
 
-def evidence_window(source: StoredSource, needles) -> StoredSource:
-    """The part of a long source an evaluation needs: a window around the first needle found."""
+def evidence_window(source: StoredSource, needles, evidence_spans=()) -> StoredSource:
+    """Prefer the first exact saved quote for this source version, then a needle.
+
+    Several distant quotes cannot all fit one bounded contiguous window. Use
+    the first valid span in payload order, retaining context on both sides;
+    never concatenate fragments or treat a saved span as admission authority.
+    """
     from .consolidation_chunks import ChunkedSource, ConsolidationChunk
 
     content = str(source.event.get("content") or "")
@@ -257,13 +263,27 @@ def evidence_window(source: StoredSource, needles) -> StoredSource:
     if total <= EVIDENCE_WINDOW_THRESHOLD or getattr(source, "consolidation_window", None) is not None:
         return source
     start, end = 0, EVIDENCE_WINDOW_THRESHOLD
-    for needle in needles:
-        pattern = _needle_pattern(needle)
-        match = pattern.search(content) if pattern is not None else None
-        if match is not None:
-            start = max(0, match.start() - EVIDENCE_WINDOW_RADIUS)
-            end = min(total, match.end() + EVIDENCE_WINDOW_RADIUS)
+    anchor = None
+    for span in evidence_spans:
+        if not isinstance(span, dict) or (span.get("source_ref"), span.get("source_revision")) != (source.ref, source.revision):
+            continue
+        quote = span.get("quote")
+        if not isinstance(quote, str) or not quote:
+            continue
+        position = content.find(quote)
+        if position >= 0:
+            anchor = (position, position + len(quote))
             break
+    if anchor is None:
+        for needle in needles:
+            pattern = _needle_pattern(needle)
+            match = pattern.search(content) if pattern is not None else None
+            if match is not None:
+                anchor = (match.start(), match.end())
+                break
+    if anchor is not None:
+        start = max(0, anchor[0] - EVIDENCE_WINDOW_RADIUS)
+        end = min(total, anchor[1] + EVIDENCE_WINDOW_RADIUS)
     return ChunkedSource(**dict(source.__dict__, event=dict(source.event, content=content[start:end])),
                          consolidation_window=ConsolidationChunk(start, end, total), consolidation_seed=())
 
@@ -279,7 +299,8 @@ def candidate_evaluation_messages(
     from .consolidate import consolidation_messages
 
     needles = (candidate.payload.get("value_text"), candidate.payload.get("subject"))
-    sources = tuple(evidence_window(source, needles) for source in sources)
+    spans = candidate.payload.get("evidence_spans") or ()
+    sources = tuple(evidence_window(source, needles, spans) for source in sources)
     messages = consolidation_messages(sources, episode_ref=None, budget=budget,
                                       validation_feedback=validation_feedback)
     candidate_json = json.dumps(
