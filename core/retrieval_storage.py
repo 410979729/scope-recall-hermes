@@ -626,16 +626,18 @@ class RetrievalStorage:
             f"SELECT DISTINCT source_ref,source_revision FROM evidence_links WHERE object_kind=? AND object_ref=? AND object_revision{bound}? ORDER BY source_ref,source_revision",
             (kind, ref, revision),
         ).fetchall()
+        return self._deliverable(tx, tuple((row["source_ref"], row["source_revision"]) for row in rows), context)
+
+    def _deliverable(self, tx, pairs, context: SearchContext) -> tuple[str, ...] | None:
+        """The refs of these source versions, or ``None`` when one is not deliverable in this mode."""
         refs = []
-        for row in rows:
-            source = tx.source(row["source_ref"], row["source_revision"])
+        for source_ref, source_revision in pairs:
+            source = tx.source(source_ref, source_revision)
             if source is None or (source.suppressed and context.mode == "auto"):
                 return None
             if context.mode in LIVE_MODES and not _source_live(tx, source.ref, source.revision):
                 return None
-            if not in_time_window(source.event.get("occurred_at"), context):
-                return None
-            refs.append(_source_key(source.ref, source.revision))
+            refs.append(f"{source_ref}@{source_revision}")
         return tuple(refs)
 
     def hydrate(self, tx, candidate: CandidateRef, context: SearchContext) -> RetrievedObject | None:
@@ -760,7 +762,15 @@ class RetrievalStorage:
         object_gaps = getattr(obj, "gaps", ())
         if context.mode in LIVE_MODES and any(gap in object_gaps for gap in STALE_RESUME_GAPS):
             return None
-        evidence = self._evidence(tx, candidate.kind, candidate.ref, candidate.revision, context)
+        if candidate.kind == "episode" and getattr(obj, "resume", None):
+            # A resume is derived from what it cites.  The members are its
+            # context, not its evidence, and a 200-member list is not a packet
+            # item (fits_packet_schema): the cited versions are what is checked
+            # for delivery and what the packet carries.
+            refs = tuple(dict.fromkeys(ref for ref in resume_evidence_refs(obj.resume) if type(ref) is str and _is_source_ref(ref)))
+            evidence = self._deliverable(tx, tuple(parse_source_ref(ref) for ref in refs), context)
+        else:
+            evidence = self._evidence(tx, candidate.kind, candidate.ref, candidate.revision, context)
         if evidence is None:
             return None
         content, basis, status_unknown = _versioned_body(candidate.kind, obj)

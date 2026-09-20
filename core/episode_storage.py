@@ -38,6 +38,34 @@ class Episode:
     needs_revalidation: bool
 
 
+def _cited_pairs(resume) -> tuple[tuple[str, int], ...]:
+    """The source versions a resume cites, once each, in document order."""
+    from .resume_compaction import resume_evidence_refs
+
+    pairs = []
+    for ref in dict.fromkeys(resume_evidence_refs(resume)):
+        try:
+            pairs.append(parse_source_ref(ref))
+        except (ContractError, ValueError):
+            continue
+    return tuple(pairs)
+
+
+def _source_states(conn, pairs) -> dict:
+    """Visibility, liveness and capture gaps of the given source versions, in one query."""
+    if not pairs:
+        return {}
+    marks = ",".join("(?,?)" for _ in pairs)
+    rows = conn.execute(
+        f"""SELECT s.event_id,s.source_revision,s.read_blocked,s.scope_id,s.project_id,s.branch_id,s.capture_gaps_json,
+               EXISTS(SELECT 1 FROM source_events n WHERE n.source_group_key=s.source_group_key
+                      AND n.source_revision>s.source_revision) AS superseded
+            FROM source_events s WHERE (s.event_id,s.source_revision) IN ({marks})""",
+        [value for pair in pairs for value in pair],
+    ).fetchall()
+    return {(row["event_id"], row["source_revision"]): row for row in rows}
+
+
 class Episodes:
     def __init__(self, tx):
         self.tx = tx
@@ -60,24 +88,29 @@ class Episodes:
             "SELECT DISTINCT source_ref,source_revision FROM evidence_links WHERE object_kind='episode' AND object_ref=? AND object_revision<=? ORDER BY source_ref,source_revision",
             (ref, row["revision"]),
         ).fetchall()
-        gaps = []
         refs = tuple(f"{r[0]}@{r[1]}" for r in links)
-        for key in links:
-            source = self.tx.source(*key)
-            if source is None:
+        resume = json.loads(row["resume_json"]) if row["resume_json"] else None
+        # Once there is a resume its gaps are those of what it cites: the resume
+        # is derived from those sources, and an uncited member that changed
+        # does not invalidate it.  Without one every member counts.  Either way
+        # the sources are judged in one query, not loaded one by one: a
+        # 200-member episode cost 200 source loads per read, on every listing.
+        judged = _cited_pairs(resume) if resume else tuple((r[0], r[1]) for r in links)
+        gaps = []
+        states = _source_states(conn, judged)
+        for key in judged:
+            state = states.get(key)
+            if state is None or not self._visible(state):
                 return None
-            try:
-                self.tx.claims.require_live_source(*key)
-            except ContractError:
+            if state["superseded"] or (state["project_id"], state["branch_id"]) != (ctx.project_id, ctx.branch_id):
                 gaps.append("source_version_changed")
-            gaps.extend(source.capture_gaps)
+            gaps.extend(json.loads(state["capture_gaps_json"]))
         pending = conn.execute(
             "SELECT count(*) FROM episode_events WHERE episode_id=? AND sequence>?",
             (ref, row["processed_sequence"]),
         ).fetchone()[0]
         if pending:
             gaps.append("unprocessed_events")
-        resume = json.loads(row["resume_json"]) if row["resume_json"] else None
         changed = (
             row["environment_revision"] is not None
             and ctx.environment_revision != row["environment_revision"]
@@ -114,6 +147,13 @@ class Episodes:
             tuple(dict.fromkeys(gaps)),
             changed,
         )
+
+    def _visible(self, state) -> bool:
+        """What ``Transaction.source`` requires before it returns a source at all."""
+        ctx = self.tx.context
+        return (allowed(self.tx, "event", state["event_id"]) and not state["read_blocked"]
+                and state["scope_id"] in ctx.allowed_scope_ids
+                and state["project_id"] in (None, ctx.project_id) and state["branch_id"] in (None, ctx.branch_id))
 
     def list(self, *, limit=200):
         if type(limit) is not int or not 1 <= limit <= 200:
