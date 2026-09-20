@@ -8,6 +8,7 @@ import json
 import re
 
 from ..contracts import ContractError
+from . import lineage
 from .claim_storage import parse_source_ref
 from .delete_storage import canonical
 from .episodes import source_origin, UNSETTLED
@@ -297,13 +298,12 @@ class References:
                 (revision, ref),
             )
             # No stale dependent summary remains eligible after a binding change.
-            for row in conn.execute(
-                "SELECT DISTINCT object_ref FROM object_dependencies WHERE dependency_kind='reference' AND dependency_ref=? AND object_kind='episode'",
-                (ref,),
-            ):
+            for kind, episode_ref in lineage.dependents_on(conn, "reference", ref):
+                if kind != "episode":
+                    continue
                 conn.execute(
                     "UPDATE episode_versions SET processed_sequence=0 WHERE episode_id=?",
-                    (row[0],),
+                    (episode_ref,),
                 )
         else:
             conn.execute(
@@ -329,15 +329,9 @@ class References:
             ),
         )
         for source in sources:
-            conn.execute(
-                "INSERT INTO evidence_links VALUES ('reference',?,?,?,?,'derived_from','',NULL)",
-                (ref, revision, source.ref, source.revision),
-            )
+            lineage.link(conn, "reference", ref, revision, source.ref, source.revision, once=False)
         for item in candidates:
-            conn.execute(
-                "INSERT INTO object_dependencies VALUES ('reference',?,?,'artifact',?,?)",
-                (ref, revision, item.ref, item.revision),
-            )
+            lineage.depend(conn, "reference", ref, revision, "artifact", item.ref, item.revision)
         conn.execute(
             "UPDATE instance_meta SET memory_epoch=memory_epoch+1 WHERE singleton=1"
         )

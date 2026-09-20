@@ -7,6 +7,7 @@ import hashlib
 import json
 
 from ..contracts import ContractError
+from . import lineage
 from .claim_storage import parse_source_ref
 from .claims import canonical_time
 from .delete_storage import canonical
@@ -84,10 +85,7 @@ class Episodes:
         ).fetchone()
         if row is None:
             return None
-        links = conn.execute(
-            "SELECT DISTINCT source_ref,source_revision FROM evidence_links WHERE object_kind='episode' AND object_ref=? AND object_revision<=? ORDER BY source_ref,source_revision",
-            (ref, row["revision"]),
-        ).fetchall()
+        links = lineage.evidence(conn, "episode", ref, row["revision"])
         refs = tuple(f"{r[0]}@{r[1]}" for r in links)
         resume = json.loads(row["resume_json"]) if row["resume_json"] else None
         # Once there is a resume its gaps are those of what it cites: the resume
@@ -300,11 +298,7 @@ class Episodes:
         )
         # One lineage row per source, at the revision it entered: a revision's
         # evidence is every row at or below it, so nothing is copied forward.
-        conn.execute(
-            """INSERT INTO evidence_links(object_kind,object_ref,object_revision,source_ref,source_revision,relation,quote)
-            VALUES ('episode',?,?,?,?,'derived_from','') ON CONFLICT DO NOTHING""",
-            (ref, revision, source.ref, source.revision),
-        )
+        lineage.link(conn, "episode", ref, revision, source.ref, source.revision)
 
     def sources(self, ref, *, after_sequence=0, limit=32):
         if self.get(ref) is None:
@@ -412,21 +406,10 @@ class Episodes:
         conn.execute("UPDATE episodes SET current_revision=? WHERE episode_id=?", (revision, ref))
         for source in sources:
             # A cited source is a member and already carries its lineage row;
-            # the insert covers a converted episode that never had one.
-            conn.execute(
-                """INSERT INTO evidence_links(object_kind,object_ref,object_revision,source_ref,source_revision,relation,quote)
-                SELECT 'episode',?,?,?,?,'derived_from','' WHERE NOT EXISTS (
-                    SELECT 1 FROM evidence_links WHERE object_kind='episode' AND object_ref=? AND object_revision<=?
-                    AND source_ref=? AND source_revision=? AND relation='derived_from' AND quote='')""",
-                (ref, revision, source.ref, source.revision, ref, revision, source.ref, source.revision),
-            )
+            # the write covers a converted episode that never had one.
+            lineage.link_unless_carried(conn, "episode", ref, revision, source.ref, source.revision)
         for artifact in payload["artifact_refs"]:
             target, version = parse_source_ref(artifact)
-            conn.execute(
-                """INSERT INTO object_dependencies SELECT 'episode',?,?,'artifact',?,? WHERE NOT EXISTS (
-                    SELECT 1 FROM object_dependencies WHERE object_kind='episode' AND object_ref=? AND object_revision<=?
-                    AND dependency_kind='artifact' AND dependency_ref=? AND dependency_revision=?)""",
-                (ref, revision, target, version, ref, revision, target, version),
-            )
+            lineage.depend_unless_carried(conn, "episode", ref, revision, "artifact", target, version)
         conn.execute("UPDATE instance_meta SET memory_epoch=memory_epoch+1 WHERE singleton=1")
         return self.get(ref)

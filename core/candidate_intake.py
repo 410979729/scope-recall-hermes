@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 
 from ..contracts import ContractError
+from . import lineage
 from .candidate_lifecycle import (
     RULE_VERSION, SOURCE_MATCH_LIMIT, CandidateRegistration, CandidateSourceTrigger,
 )
@@ -122,13 +123,8 @@ class CandidateIntake(CandidateTables):
             "INSERT INTO candidate_trigger_terms(term,candidate_ref,candidate_revision) VALUES (?,?,?)",
             ((term, candidate.ref, candidate.revision) for term in _trigger_terms(candidate)),
         )
-        for link in conn.execute(
-            """SELECT source_ref,source_revision FROM evidence_links
-               WHERE object_kind='claim' AND object_ref=? AND object_revision=?
-               ORDER BY source_ref,source_revision""",
-            (candidate.ref, candidate.revision),
-        ).fetchall():
-            self._add_evidence(candidate, link["source_ref"], link["source_revision"], now)
+        for source_ref, source_revision in lineage.evidence(conn, "claim", candidate.ref, candidate.revision):
+            self._add_evidence(candidate, source_ref, source_revision, now)
 
     def _add_evidence(self, candidate, source_ref: str, source_revision: int, now: str) -> bool:
         source = self._tx.source(source_ref, source_revision)

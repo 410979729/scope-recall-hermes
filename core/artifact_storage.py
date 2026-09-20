@@ -7,6 +7,7 @@ import hashlib
 import json
 
 from ..contracts import ContractError
+from . import lineage
 from .secret_patterns import contains_secret_like_text
 from .claim_storage import parse_source_ref
 from .delete_storage import canonical
@@ -73,13 +74,8 @@ class Artifacts:
         ).fetchone()
         if row is None:
             return None
-        refs = tuple(
-            f"{r[0]}@{r[1]}"
-            for r in conn.execute(
-                "SELECT source_ref,source_revision FROM evidence_links WHERE object_kind='artifact' AND object_ref=? AND object_revision=? ORDER BY source_ref,source_revision",
-                (ref, row["revision"]),
-            )
-        )
+        refs = tuple(f"{source_ref}@{source_revision}"
+                     for source_ref, source_revision in lineage.evidence(conn, "artifact", ref, row["revision"]))
         if any(self.tx.source(*parse_source_ref(r)) is None for r in refs):
             return None
         blob = (
@@ -220,10 +216,7 @@ class Artifacts:
                 now,
             ),
         )
-        conn.execute(
-            "INSERT INTO evidence_links VALUES ('artifact',?,?,?,?,'derived_from',?,NULL)",
-            (ref, revision, source.ref, source.revision, description or ""),
-        )
+        lineage.link(conn, "artifact", ref, revision, source.ref, source.revision, quote=description or "", once=False)
         conn.execute(
             "UPDATE instance_meta SET memory_epoch=memory_epoch+1 WHERE singleton=1"
         )

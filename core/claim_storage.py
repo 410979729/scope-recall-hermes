@@ -6,6 +6,7 @@ import json
 from typing import TYPE_CHECKING
 
 from ..contracts import ClaimProposal, ContractError
+from . import lineage
 from .claims import ClaimVersion, Qualification, RootEvidence, canonical_time, claim_slot
 
 if TYPE_CHECKING:
@@ -256,8 +257,7 @@ class Claims:
                     source.import_provenance_sha256 is not None,source.capture_gaps,
                     source.event.get("source_principal"))
                 continue
-            links = conn.execute("SELECT source_ref,source_revision FROM evidence_links WHERE object_kind='event' AND object_ref=? AND object_revision=?", key).fetchall()
-            pending.extend((r[0],r[1]) for r in links)
+            pending.extend(lineage.evidence(conn, "event", *key))
         return tuple(roots[k] for k in sorted(roots))
 
     def link_source(self, ref: str, revision: int) -> None:
@@ -281,8 +281,7 @@ class Claims:
                 continue
             if (parent.scope_id,parent.project_id,parent.branch_id) != (source.scope_id,source.project_id,source.branch_id):
                 continue
-            conn.execute("""INSERT INTO evidence_links(object_kind,object_ref,object_revision,source_ref,source_revision,relation,quote)
-                VALUES ('event',?,?,?,?,'derived_from','') ON CONFLICT DO NOTHING""", (ref, revision, parent.ref, parent.revision))
+            lineage.link(conn, "event", ref, revision, parent.ref, parent.revision)
             if parent.suppressed:
                 conn.execute("UPDATE source_events SET suppressed=1 WHERE event_id=? AND source_revision=?",(ref,revision))
 
@@ -342,8 +341,8 @@ class Claims:
             self.require_live_source(source.ref, source.revision)
             if source.suppressed:
                 conn.execute("UPDATE claims SET suppressed=1 WHERE claim_id=?",(ref,))
-            conn.execute("""INSERT INTO evidence_links(object_kind,object_ref,object_revision,source_ref,source_revision,relation,quote,location)
-                VALUES ('claim',?,?,?,?,'supports',?,?) ON CONFLICT DO NOTHING""", (ref,revision,source.ref,source.revision,span["quote"],span.get("location")))
+            lineage.link(conn, "claim", ref, revision, source.ref, source.revision,
+                         relation="supports", quote=span["quote"], location=span.get("location"))
         for relation,refs in (("contradicts",proposal.get("procedure",{}).get("counterexample_refs",[])),
                               ("supports",proposal.get("intention",{}).get("state_evidence_refs",[]))):
             for evidence_ref in refs:
@@ -354,8 +353,7 @@ class Claims:
                     raise ContractError("SOURCE_MISSING")
                 if source.scope_id != scope_id:
                     raise ContractError("ACCESS_DENIED", "evidence_scope")
-                conn.execute("""INSERT INTO evidence_links(object_kind,object_ref,object_revision,source_ref,source_revision,relation,quote)
-                    VALUES ('claim',?,?,?,?,?,'') ON CONFLICT DO NOTHING""", (ref,revision,*key,relation))
+                lineage.link(conn, "claim", ref, revision, *key, relation=relation)
         conn.execute("UPDATE instance_meta SET memory_epoch=memory_epoch+1 WHERE singleton=1")
         if advance_head and qualification.state != "proposed":
             conn.execute("UPDATE work_items SET state='obsolete' WHERE subject_ref=? AND state IN ('pending','leased')", (ref,))

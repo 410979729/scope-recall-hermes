@@ -6,6 +6,7 @@ import hashlib
 import json
 
 from ..contracts import ContractError
+from . import lineage
 from .claims import canonical_time
 
 OBJECT_TABLES = {'event':('source_events','event_id'),'claim':('claims','claim_id'),
@@ -59,7 +60,7 @@ class Deletions:
         # not fabricated as a new human occurrence.
         for target in targets:
             if target.kind != 'event':
-                pending.extend(self.target(r[0]) for r in conn.execute("SELECT DISTINCT source_ref FROM evidence_links WHERE object_kind=? AND object_ref=?",(target.kind,target.ref)))
+                pending.extend(self.target(source_ref) for source_ref in lineage.sources_of(conn, target.kind, target.ref))
         while pending:
             target = pending.pop()
             key = (target.kind,target.ref)
@@ -71,13 +72,12 @@ class Deletions:
             if target.kind == "event":
                 siblings = conn.execute("SELECT DISTINCT event_id FROM source_events WHERE source_group_key IN (SELECT source_group_key FROM source_events WHERE event_id=?)",(target.ref,))
                 pending.extend(self.target(r[0]) for r in siblings)
-                dependents = conn.execute("SELECT DISTINCT object_kind,object_ref FROM evidence_links WHERE source_ref=?",(target.ref,))
-                for row in dependents:
+                for row in lineage.dependents(conn, target.ref):
                     if row[0] in OBJECT_TABLES:
                         pending.append(self.target(row[1]))
                     else:
                         raise ContractError("DERIVATION_INVALID","unresolved_dependency_kind")
-            for row in conn.execute('SELECT DISTINCT object_kind,object_ref FROM object_dependencies WHERE dependency_kind=? AND dependency_ref=?',(target.kind,target.ref)):
+            for row in lineage.dependents_on(conn, target.kind, target.ref):
                 if row[0] not in OBJECT_TABLES:
                     raise ContractError('DERIVATION_INVALID','unresolved_dependency_kind')
                 pending.append(self.target(row[1]))
@@ -247,11 +247,7 @@ class Deletions:
                 conn.execute("UPDATE reference_versions SET payload_json='{}' WHERE reference_id=?",(ref,))
             else:
                 raise ContractError("DERIVATION_INVALID","unresolved_purge_kind")
-            edges = conn.execute("""SELECT DISTINCT object_kind,object_ref,object_revision,source_ref,source_revision,relation
-                FROM evidence_links WHERE (object_kind=? AND object_ref=?) OR source_ref=?""",(kind,ref,ref)).fetchall()
-            conn.execute("DELETE FROM evidence_links WHERE (object_kind=? AND object_ref=?) OR source_ref=?",(kind,ref,ref))
-            conn.executemany("""INSERT INTO evidence_links(object_kind,object_ref,object_revision,source_ref,source_revision,relation,quote)
-                VALUES (?,?,?,?,?,?,'') ON CONFLICT DO NOTHING""",[tuple(edge) for edge in edges])
+            lineage.purge_quotes(conn, kind, ref)
         layers = receipt["layers"]
         layers["sqlite_active"] = "removed"
         conn.execute("UPDATE deletion_operations SET active_content_removed=0,layers_json=? WHERE operation_id=?",(canonical(layers),operation_id))
