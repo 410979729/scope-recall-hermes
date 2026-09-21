@@ -63,6 +63,11 @@ the current wheel; do not route wheel-based installations through that engine.
    MCP and workers through their real controllers. Wait for their exit and prevent
    automatic relaunch. `--source-quiesced` is the operator's attestation of this
    boundary, not a command to kill processes. Do not stop another instance.
+   A host that is shutting down launches one last detached wake. Under the pause
+   it leaves at once (a package up to 3.1.1 reads the pause only after its start
+   delay, up to `worker_min_interval_seconds`); a supervisor in the middle of a pass leaves when
+   that pass ends (`drain_seconds`). A host that runs elevated hides these children
+   from a normal shell's process listing, so an empty listing is not proof.
 3. From an independent helper/candidate environment outside the target venv run:
    `python -I -m scope_recall.maintenance.cli package-upgrade --python <target-python>
    --wheel <verified-offline-wheel> --backup <new-private-backup-dir>
@@ -72,6 +77,10 @@ the current wheel; do not route wheel-based installations through that engine.
    with `--no-index --no-deps --reinstall-package hermes-scope-recall`.
    It never bootstraps pip, changes dependencies, edits models or starts a host.
 4. Lock/access or backup failure before uv means no package uninstall occurred.
+   `"state": "blocked"` carries a `reason`. `installed_files_locked_or_not_replaceable`
+   means a process still runs from the package, usually the wake of step 2: nothing
+   was changed, so wait for it to leave and run step 3 again, or put the host back
+   up and come back later. Never kill a process to get past it.
    After `installing` is recorded, any failed/interrupted uv/import check requires
    retaining the backup and keeping hosts paused. Do not blindly retry or delete
    `~*` remnants. Inspect `package-upgrade.json`; use the previous verified wheel

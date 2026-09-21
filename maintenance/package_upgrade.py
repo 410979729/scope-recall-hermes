@@ -12,6 +12,7 @@ import argparse
 from contextlib import contextmanager
 import json
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -24,6 +25,10 @@ from .install_common import _safe_interpreter
 
 class PackageUpgradeError(RuntimeError):
     """A package step failed; the reason code contains no subprocess output."""
+
+
+_REASON_CODE = re.compile(r'[a-z][a-z0-9_]{2,79}')
+_LOCKED = 'installed_files_locked_or_not_replaceable'
 
 
 _PROBE = '''import importlib.metadata as m,json,sys
@@ -72,7 +77,7 @@ def _delete_access(paths):
             # DELETE, share read/write/delete, OPEN_EXISTING, BACKUP_SEMANTICS.
             handle = create(raw, 0x10000, 7, None, 3, 0x02000000, None)
             if handle == wintypes.HANDLE(-1).value:
-                raise PackageUpgradeError('installed_files_locked_or_not_replaceable')
+                raise PackageUpgradeError(_LOCKED)
             handles.append(handle)
         yield
     finally:
@@ -202,8 +207,15 @@ def main(argv=None) -> int:
         value = replace_package(args.python, args.wheel, args.backup,
                                 source_quiesced=args.source_quiesced, uv=args.uv)
     except (PackageUpgradeError, OSError, ValueError, TimeoutError, zipfile.BadZipFile) as exc:
-        print(json.dumps(dict(state='blocked', error_type=type(exc).__name__,
-                              host_restart_allowed=False)))
+        blocked = dict(state='blocked', error_type=type(exc).__name__, host_restart_allowed=False)
+        # A reason raised here is a fixed code. Anything else may carry a path; its type says enough.
+        if isinstance(exc, PackageUpgradeError) and _REASON_CODE.fullmatch(str(exc)):
+            blocked['reason'] = str(exc)
+            if blocked['reason'] == _LOCKED:
+                # Nothing was backed up or uninstalled. The usual holder is a background worker
+                # that has not read the operator pause yet; it lets go when it does.
+                blocked['next_action'] = 'nothing_changed_wait_for_package_processes_to_exit_then_run_again'
+        print(json.dumps(blocked))
         return 3
     print(json.dumps({k: v for k, v in value.items() if k != 'files'}, ensure_ascii=False))
     return 0

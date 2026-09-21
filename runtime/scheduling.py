@@ -32,6 +32,8 @@ BUSY_BACKOFF_SECONDS = 30.0
 #: items still queued.  Three in a row, each after a backoff, is a worker that
 #: is not going to work, and then standing down is right.
 MAX_CONSECUTIVE_WORKER_FAILURES = 3
+#: Seconds between two reads of the operator pause while a supervisor sleeps its start delay.
+PAUSE_POLL_SECONDS = 5.0
 
 
 def _daily_budget_spent(config, used: int) -> bool:
@@ -269,6 +271,8 @@ def supervise(config_path: Path, drain_once, *, delay_seconds=0.0, clock=time.mo
     An OS restart needs a separate startup integration. The finite window and
     drain count are never extended by coalesced requests.
     """
+    from .resume_entry import read_control  # it imports this module, so not at the top of the file
+
     config = load_config(config_path)
     control = SupervisorControl(config)
     control.request()
@@ -283,19 +287,33 @@ def supervise(config_path: Path, drain_once, *, delay_seconds=0.0, clock=time.mo
     last_code = 0
     unavailable_until = {}
     busy_until = None
+
+    def paused() -> bool:
+        background_control = read_control(config)
+        if background_control is None or background_control["enabled"]:
+            return False
+        control.update(accepting=False, state='paused', reason='operator_pause', drains=count,
+                       finished_at=_stamp(utc_now()))
+        return True
+
     try:
         control.update(accepting=True, state='running', reason='initial_wake', worker_pid=os.getpid(),
                        started_at=_stamp(utc_now()), deadline_at=_stamp(wall_deadline), drains=0,
                        next_wake_at=None, finished_at=None, exit_code=None, last_exit_code=None)
-        if delay_seconds:
-            sleep(min(delay_seconds, max(0, deadline - clock())))
+        # The start delay is slept in steps that read the operator pause.  This process runs from
+        # the package folder, and a host that is shutting down launches one last detached wake:
+        # slept in one piece, that wake held the folder for worker_min_interval_seconds after the
+        # operator had paused everything, and the package step of an upgrade refused.
+        delay_left = min(delay_seconds, max(0, deadline - clock())) if delay_seconds else 0.0
+        while delay_left > 0:
+            if paused():
+                return 0
+            step = min(delay_left, PAUSE_POLL_SECONDS)
+            sleep(step)
+            delay_left -= step
         plan = WakePlan(_stamp(utc_now()), 'initial_wake')
         while True:
-            from .resume_entry import read_control
-            background_control = read_control(config)
-            if background_control is not None and not background_control["enabled"]:
-                control.update(accepting=False, state='paused', reason='operator_pause', drains=count,
-                               finished_at=_stamp(utc_now()))
+            if paused():
                 return 0
             if clock() >= deadline or count >= config.supervisor_max_drains:
                 control.update(accepting=False, state='suspended', reason='supervisor_limit',
