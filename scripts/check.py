@@ -132,6 +132,7 @@ SUITES = {
         "tests/host/hermes/test_bounded_corrections.py",
         "tests/host/hermes/test_dedupe.py",
         "tests/host/hermes/test_identity.py",
+        "tests/host/hermes/test_local_surfaces.py",
         "tests/host/hermes/test_p11_a2a_prepare.py",
         "tests/host/hermes/test_prefetch.py",
         "tests/host/hermes/test_real_host_loader.py",

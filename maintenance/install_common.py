@@ -59,6 +59,7 @@ class InstallPlan:
     test_mode: bool = False
     agent_workspace: str = ""
     env_file: Path | None = None
+    local_platforms: tuple[str, ...] = ()
     changes: list[PlannedChange] = field(default_factory=list)
     conflicts: list[str] = field(default_factory=list)
     reuse_instance: bool = False
@@ -74,6 +75,7 @@ class InstallPlan:
             "test_mode": self.test_mode,
             "agent_workspace": self.agent_workspace,
             "env_file": str(self.env_file) if self.env_file is not None else None,
+            "local_platforms": list(self.local_platforms),
             "reuse_instance": self.reuse_instance,
             "conflicts": list(self.conflicts),
             "changes": [item.to_dict() for item in self.changes],

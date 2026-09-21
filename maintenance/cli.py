@@ -11,6 +11,7 @@ from .backup import BackupError
 from .doctor import run_doctor
 from .install import InstallError, apply_install, apply_uninstall, plan_install, plan_uninstall
 from .install_common import _absolute
+from .install_hermes import LOCAL_PLATFORM_CHOICES
 from .rollback import RollbackError
 
 
@@ -194,6 +195,15 @@ def _add_install_arguments(parser: argparse.ArgumentParser) -> None:
         "written into .mcp.json and hooks.json because Codex starts those processes without them.",
     )
     parser.add_argument(
+        "--local-platform",
+        action="append",
+        default=[],
+        choices=LOCAL_PLATFORM_CHOICES,
+        help="Hermes only, repeatable: approve a host surface that names no user (the Desktop chat panel, "
+        "hermes --tui) as the owner's own, the way the CLI is. Without it such a session is refused. Approve one "
+        "only where everyone who can reach that surface without logging in is the owner.",
+    )
+    parser.add_argument(
         "--test-mode",
         action="store_true",
         help="use isolated TEST binding semantics; omitted for production installation",
@@ -211,6 +221,7 @@ def _install_plan(args: argparse.Namespace):
         test_mode=args.test_mode,
         agent_workspace=args.agent_workspace,
         env_file=_optional_path(args.env_file, "env_file"),
+        local_platforms=tuple(args.local_platform),
     )
 
 

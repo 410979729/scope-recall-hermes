@@ -17,6 +17,7 @@ from scope_recall.contracts import (
     bounded_source_context,
 )
 
+from .audiences import LOCAL_PLATFORMS, LOCAL_USER_ID, approved_local_platforms
 from .installation import (
     HermesIdentityError,
     InstallationManifest,
@@ -50,15 +51,19 @@ def _normalize_platform(value: object) -> str:
     return text or "cli"
 
 
-def _normalize_user_id(platform: str, user_id: object, user_id_alt: object) -> str:
+def _normalize_user_id(platform: str, user_id: object, user_id_alt: object, local_platforms: frozenset[str] = frozenset()) -> str:
     primary = str(user_id or "").strip()
     alternate = str(user_id_alt or "").strip()
     if primary and alternate and primary != alternate:
         raise HermesIdentityError("conflicting user_id and user_id_alt")
     resolved = primary or alternate
-    if platform != "cli" and not resolved:
-        raise HermesIdentityError("user principal required for non-cli platform")
-    return resolved or "local"
+    # A session the host names no user for is the owner's on the CLI, and on a
+    # local surface the installer approved for this installation.  Anywhere
+    # else it is nobody's, and is refused.
+    if resolved or platform == "cli" or platform in local_platforms:
+        return resolved or LOCAL_USER_ID
+    hint = f"; approve it as the owner's local surface with apply-install --local-platform {platform}" if platform in LOCAL_PLATFORMS else ""
+    raise HermesIdentityError("user principal required for non-cli platform" + hint)
 
 
 def _normalize_chat_type(value: object) -> str:
@@ -300,7 +305,8 @@ def bind_hermes_identity(session_id: str, **kwargs: object) -> HermesIdentity:
         raise HermesIdentityError("verified core database is required")
 
     platform = _normalize_platform(kwargs.get("platform"))
-    user_id = _normalize_user_id(platform, kwargs.get("user_id"), kwargs.get("user_id_alt"))
+    local_platforms = approved_local_platforms(manifest.owner_principals)
+    user_id = _normalize_user_id(platform, kwargs.get("user_id"), kwargs.get("user_id_alt"), local_platforms)
     agent_identity = str(kwargs.get("agent_identity") or "").strip()
     agent_workspace = str(kwargs.get("agent_workspace") or "default").strip() or "default"
     agent_context = str(kwargs.get("agent_context") or "primary").strip() or "primary"
@@ -321,6 +327,14 @@ def bind_hermes_identity(session_id: str, **kwargs: object) -> HermesIdentity:
         chat_id = chat_id or "local"
         # Missing CLI routing uses the local default; explicit empty remains
         # an unthreaded route, including on session switch.
+        if "thread_id" not in kwargs:
+            thread_id = "main"
+    elif platform in local_platforms and user_id == LOCAL_USER_ID:
+        # The host names no chat on a local surface either; the route is the
+        # one the installer's grant declares.  A login there is a user like any
+        # other and keeps the route the host sent.
+        chat_type = chat_type or "private"
+        chat_id = chat_id or LOCAL_USER_ID
         if "thread_id" not in kwargs:
             thread_id = "main"
     scope = HermesRuntimeScope(

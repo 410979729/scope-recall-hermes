@@ -1108,6 +1108,106 @@ def test_hermes_cli_default_and_explicit_workspace(tmp_path, capsys):
     assert {row["agent_workspace"] for row in manifest["audiences"]} == {"hermes"}
 
 
+def _hermes_cli(tmp_path: Path, command: str, *extra: str) -> list[str]:
+    instance_root, plugin_dir, project_root = _install_paths(tmp_path, host="hermes")
+    return [command, "--host", "hermes", "--target-plugin-dir", str(plugin_dir), "--instance-root", str(instance_root),
+            "--project-root", str(project_root), "--agent-id", "default", "--python", str(Path(sys.executable)),
+            "--test-mode", *extra]
+
+
+def test_local_platform_is_approved_on_a_fresh_install_and_binds_a_session_that_names_no_user(tmp_path, capsys):
+    """Issue #94: Hermes Desktop sends no user_id without a dashboard login, and 3.x refused it outright."""
+    from scope_recall.adapters.hermes import HermesIdentityError, bind_hermes_identity
+    from scope_recall.maintenance import cli as maintenance_cli
+
+    instance_root = (tmp_path / "instance").resolve()
+    assert maintenance_cli.main(_hermes_cli(tmp_path, "apply-install", "--local-platform", "desktop")) == 0
+    capsys.readouterr()
+
+    manifest = json.loads((instance_root / "scope-recall" / "installation.json").read_text(encoding="utf-8"))
+    assert {"platform": "desktop", "user_id": "local"} in manifest["owner_principals"]
+    session = dict(hermes_home=str(instance_root), agent_identity="default", agent_workspace="hermes", agent_context="primary")
+    identity = bind_hermes_identity("TEST-desktop-session", platform="desktop", **session)
+    assert identity.runtime_audience.includes_owner_private and not identity.read_only
+    with pytest.raises(HermesIdentityError, match="--local-platform tui"):
+        bind_hermes_identity("TEST-tui-session", platform="tui", **session)
+
+
+def test_local_platform_is_added_to_an_existing_installation_in_place_and_once(tmp_path, capsys):
+    from scope_recall.adapters.hermes import bind_hermes_identity
+    from scope_recall.maintenance import cli as maintenance_cli
+    from scope_recall.maintenance.install_common import _norm
+
+    instance_root = (tmp_path / "instance").resolve()
+    manifest_path = instance_root / "scope-recall" / "installation.json"
+    assert maintenance_cli.main(_hermes_cli(tmp_path, "apply-install")) == 0
+    capsys.readouterr()
+    before = json.loads(manifest_path.read_text(encoding="utf-8"))
+    database = _sha256_file(instance_root / "scope-recall" / "memory.sqlite3")
+
+    assert maintenance_cli.main(_hermes_cli(tmp_path, "plan-install", "--local-platform", "desktop", "--local-platform", "tui")) == 0
+    planned = json.loads(capsys.readouterr().out)
+    assert planned["local_platforms"] == ["desktop", "tui"]
+    approvals = [change["detail"] for change in planned["changes"] if change["path"] == str(manifest_path)]
+    assert [detail.split(":")[0] for detail in approvals] == ["approve local platform desktop", "approve local platform tui"]
+    assert json.loads(manifest_path.read_text(encoding="utf-8")) == before, "a plan writes nothing"
+
+    assert maintenance_cli.main(_hermes_cli(tmp_path, "apply-install", "--local-platform", "desktop", "--local-platform", "tui")) == 0
+    applied = json.loads(capsys.readouterr().out)
+    after = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert after["audiences"][:len(before["audiences"])] == before["audiences"]
+    assert [(row["platform"], row["user_id"], row["kind"]) for row in after["audiences"][len(before["audiences"]):]]         == [("desktop", "local", "owner_private"), ("tui", "local", "owner_private")]
+    assert {key: after[key] for key in ("installation_id", "scope_ids", "audience_scopes")}         == {key: before[key] for key in ("installation_id", "scope_ids", "audience_scopes")}
+    assert _sha256_file(instance_root / "scope-recall" / "memory.sqlite3") == database, "the store is not touched"
+    kept = [Path(item) for item in applied["backups"] if item.endswith("installation.json")]
+    assert len(kept) == 1 and json.loads(kept[0].read_text(encoding="utf-8")) == before
+    receipt = json.loads((instance_root / ".scope-recall-install-receipt.json").read_text(encoding="utf-8"))
+    tracked = {item["path"]: item["sha256"] for item in receipt["files"]}
+    assert tracked[_norm(manifest_path)] == _sha256_file(manifest_path), "the receipt tracks the manifest as it now is"
+    session = dict(hermes_home=str(instance_root), agent_identity="default", agent_workspace="hermes", agent_context="primary")
+    for platform in ("desktop", "tui"):
+        assert bind_hermes_identity(f"TEST-{platform}-session", platform=platform, **session).runtime_audience.includes_owner_private
+
+    assert maintenance_cli.main(_hermes_cli(tmp_path, "plan-install", "--local-platform", "desktop")) == 0
+    again = json.loads(capsys.readouterr().out)
+    assert not [change for change in again["changes"] if change["path"] == str(manifest_path)], "approved once"
+
+
+def test_local_platform_approval_is_undone_when_the_install_fails_after_it(tmp_path, capsys, monkeypatch):
+    from scope_recall.maintenance import cli as maintenance_cli
+    from scope_recall.maintenance import install as install_module
+
+    instance_root = (tmp_path / "instance").resolve()
+    manifest_path = instance_root / "scope-recall" / "installation.json"
+    assert maintenance_cli.main(_hermes_cli(tmp_path, "apply-install")) == 0
+    capsys.readouterr()
+    before = manifest_path.read_bytes()
+
+    def fail(*_args, **_kwargs):
+        raise OSError("TEST receipt cannot be written")
+
+    monkeypatch.setattr(install_module, "_write_receipt", fail)
+    with pytest.raises(OSError, match="TEST receipt"):
+        maintenance_cli.main(_hermes_cli(tmp_path, "apply-install", "--local-platform", "desktop"))
+
+    assert manifest_path.read_bytes() == before, "an approval that did not install is not an approval"
+
+
+def test_local_platform_names_only_a_local_surface_and_only_on_hermes(tmp_path):
+    from scope_recall.maintenance import cli as maintenance_cli
+
+    with pytest.raises(SystemExit):
+        maintenance_cli.main(_hermes_cli(tmp_path, "plan-install", "--local-platform", "cron"))
+    instance_root, plugin_dir, project_root = _install_paths(tmp_path, host="hermes")
+    common = dict(target_plugin_dir=plugin_dir, instance_root=instance_root, project_root=project_root,
+                  agent_id="default", python_executable=Path(sys.executable), test_mode=True)
+    with pytest.raises(InstallError, match="local platform must be one of"):
+        plan_install(host="hermes", local_platforms=("telegram",), **common)
+    with pytest.raises(InstallError, match="only used for Hermes"):
+        plan_install(host="codex", local_platforms=("desktop",), **common)
+    assert not (instance_root / "scope-recall").exists()
+
+
 def test_codex_env_file_is_written_into_every_wrapper_and_hermes_rejects_it(tmp_path, capsys):
     """Codex starts the MCP server and hooks with its own environment, so the
     credential file the worker already uses must reach both wrappers verbatim

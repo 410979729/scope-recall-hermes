@@ -4,7 +4,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from scope_recall.adapters.hermes.installation import install_hermes_scope_recall, load_installation_manifest
+from scope_recall.adapters.hermes.audiences import LOCAL_PLATFORMS, HermesIdentityError, normalize_local_platforms
+from scope_recall.adapters.hermes.installation import (
+    approve_local_platforms as _approve_local_platforms,
+    install_hermes_scope_recall,
+    load_installation_manifest,
+    unapproved_local_platforms as _unapproved_local_platforms,
+    write_installation_manifest,
+)
 
 from .install_common import (
     REPO_ROOT,
@@ -44,6 +51,19 @@ def validate_options(agent_workspace: str | None, env_file: Path | str | None) -
     return workspace, None
 
 
+#: What ``--local-platform`` accepts.
+LOCAL_PLATFORM_CHOICES = tuple(sorted(LOCAL_PLATFORMS))
+
+
+def validate_local_platforms(values: object) -> tuple[str, ...]:
+    """Host surfaces that name no user, approved here as the owner's own: the
+    Desktop chat panel and ``hermes --tui``.  Anything else keeps failing closed."""
+    try:
+        return normalize_local_platforms(list(values or ()))
+    except (HermesIdentityError, TypeError) as exc:
+        raise InstallError(str(exc)) from exc
+
+
 def planned_files(plan: InstallPlan) -> dict[Path, str | bytes]:
     files: dict[Path, str | bytes] = {}
     for name in ("__init__.py", "plugin.yaml"):
@@ -70,9 +90,25 @@ def initialize_instance(plan: InstallPlan) -> str:
         platform="cli",
         user_id="local",
         agent_workspace=plan.agent_workspace,
+        local_platforms=plan.local_platforms,
         test_mode=plan.test_mode,
     )
     return binding.installation_id
+
+
+def unapproved_local_platforms(plan: InstallPlan) -> tuple[str, ...]:
+    """The requested local surfaces an existing installation has not approved yet."""
+    if not plan.local_platforms:
+        return ()
+    manifest = load_installation_manifest(plan.instance_root)
+    return _unapproved_local_platforms(manifest, plan.local_platforms, agent_workspace=_bound_workspace(manifest))
+
+
+def approve_local_platforms(plan: InstallPlan) -> None:
+    """Write the approvals into an existing installation's manifest; the store is not touched."""
+    manifest = load_installation_manifest(plan.instance_root)
+    write_installation_manifest(
+        _approve_local_platforms(manifest, plan.local_platforms, agent_workspace=_bound_workspace(manifest)))
 
 
 def installation_id(instance_root: Path) -> str:

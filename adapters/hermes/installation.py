@@ -1,7 +1,7 @@
 """Trusted Hermes installation manifest and explicit install helper."""
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import hashlib
 import json
 from pathlib import Path
@@ -12,8 +12,8 @@ from scope_recall.contracts import InstanceBinding
 from scope_recall.core import CoreConfig, MemoryCore
 
 from .audiences import (
-    HermesIdentityError, _audience_entry, _normalize_audience_entry,
-    is_archive_scope, normalize_retained_scope_ids, normalize_owner_principals,
+    EXACT_FIELDS, LOCAL_USER_ID, HermesIdentityError, _audience_entry, _normalize_audience_entry,
+    is_archive_scope, normalize_local_platforms, normalize_retained_scope_ids, normalize_owner_principals,
 )
 
 MANIFEST_FILENAME = "installation.json"
@@ -220,6 +220,44 @@ def _grant(scope_id: str, *, kind: str, chat_type: str, chat_id: str, route: dic
     )
 
 
+def _local_grant(owner_private_scope: str, *, platform: str, agent_workspace: str) -> dict[str, Any]:
+    """The owner's private scope on a local surface, routed the way the adapter routes a session there."""
+    route = dict(platform=platform, user_id=LOCAL_USER_ID, gateway_session_key="", agent_workspace=agent_workspace)
+    return _grant(owner_private_scope, kind="owner_private", chat_type="private", chat_id=LOCAL_USER_ID, route=route)
+
+
+def unapproved_local_platforms(manifest: InstallationManifest, platforms: Sequence[str], *, agent_workspace: str) -> tuple[str, ...]:
+    """Which of these local surfaces the manifest lacks the owner principal or the grant for."""
+    missing = []
+    for platform in normalize_local_platforms(list(platforms)):
+        grant = _local_grant(manifest.audience_scopes["owner_private"], platform=platform, agent_workspace=agent_workspace)
+        routed = any(all(row.get(name) == grant[name] for name in EXACT_FIELDS) for row in manifest.audiences)
+        if dict(platform=platform, user_id=LOCAL_USER_ID) not in manifest.owner_principals or not routed:
+            missing.append(platform)
+    return tuple(missing)
+
+
+def approve_local_platforms(manifest: InstallationManifest, platforms: Sequence[str], *, agent_workspace: str) -> InstallationManifest:
+    """The same manifest with each local surface approved as the owner's own.
+
+    Approval is two exact entries and nothing else: the owner principal
+    ``(platform, "local")`` and one grant of the owner's private scope on that
+    route.  The scope is one the manifest already registers, so the instance
+    binding, and with it the store, is unchanged.  A surface already approved,
+    or a route somebody declared by hand, is left as it is.
+    """
+    principals = list(manifest.owner_principals)
+    rows = list(manifest.audiences)
+    for platform in unapproved_local_platforms(manifest, platforms, agent_workspace=agent_workspace):
+        principal = dict(platform=platform, user_id=LOCAL_USER_ID)
+        if principal not in principals:
+            principals.append(principal)
+        grant = _local_grant(manifest.audience_scopes["owner_private"], platform=platform, agent_workspace=agent_workspace)
+        if not any(all(row.get(name) == grant[name] for name in EXACT_FIELDS) for row in rows):
+            rows.append(grant)
+    return replace(manifest, owner_principals=normalize_owner_principals(principals), audiences=tuple(rows))
+
+
 def _archive_maps(
     archive_source_scopes: Sequence[str] | Mapping[str, str] | None,
     archive_retention_scopes: Mapping[str, str] | None,
@@ -262,6 +300,7 @@ def build_installation_manifest(
     retained_scope_ids: Sequence[str] = (),
     owner_principals: Sequence[Mapping[str, str]] | None = None,
     audiences: Sequence[Mapping[str, Any]] | None = None,
+    local_platforms: Sequence[str] = (),
     test_mode: bool = False,
     archive_source_scopes: Sequence[str] | Mapping[str, str] | None = None,
     archive_retention_scopes: Mapping[str, str] | None = None,
@@ -272,6 +311,8 @@ def build_installation_manifest(
 
     v2 files require an explicit rebuild with attested principal/session/write
     grants. Retained IDs register originals for import, never runtime access.
+    ``local_platforms`` approves host surfaces that name no user as the owner's
+    own (see ``approve_local_platforms``).
     """
     home = hermes_home.expanduser().resolve()
     if not home.is_absolute():
@@ -352,7 +393,7 @@ def build_installation_manifest(
         ),
         test_mode=test_mode,
     )
-    return manifest
+    return approve_local_platforms(manifest, local_platforms, agent_workspace=workspace)
 
 
 def manifest_payload(manifest: InstallationManifest) -> dict[str, Any]:
@@ -572,6 +613,7 @@ def install_hermes_scope_recall(
     retained_scope_ids: Sequence[str] = (),
     owner_principals: Sequence[Mapping[str, str]] | None = None,
     audiences: Sequence[Mapping[str, Any]] | None = None,
+    local_platforms: Sequence[str] = (),
     legacy_audit_retention: bool = False,
     test_mode: bool = False,
     clock: Any | None = None,
@@ -592,6 +634,7 @@ def install_hermes_scope_recall(
         retained_scope_ids=retained_scope_ids,
         owner_principals=owner_principals,
         audiences=audiences,
+        local_platforms=local_platforms,
         archive_retention_scopes=AUDIT_RETENTION_SCOPES if legacy_audit_retention else None,
         test_mode=test_mode,
     )

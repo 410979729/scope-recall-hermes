@@ -36,6 +36,20 @@ The structured `route` selects exactly one branch:
 The common install CLI takes explicit host/instance/plugin/project/Python paths.
 Resolve these yourself from the host. Never ask a nontechnical user to fill them in.
 
+Find out which Hermes surface the user actually talks through. The CLI is the
+owner's by default. Hermes Desktop's chat panel (`desktop`) and `hermes --tui`
+(`tui`) name no user unless a dashboard login exists, and such a session is
+refused (`user principal required for non-cli platform`) until the installer
+approves the surface: add `--local-platform desktop` and/or `--local-platform tui`
+to plan-install and apply-install, on a fresh install or later on the same
+instance. Approve one only where everyone who can reach that surface without
+logging in is the owner; if you cannot tell, ask the user that one question.
+A legacy 2.x Desktop installation wrote under a minted `srdesk_*` principal. When
+the old runtime's own settings show that principal is the owner, map its private
+scope to `owner_private` in the migration scope map (section 2) and approve
+`desktop`, so the same person reads the same memory. Never approve anything for
+a scheduled (`cron`) run; the installer refuses it.
+
 ## 1.1 Current package upgrades (D14, including pip-less uv venvs)
 
 Reuse this workflow and the installed `maintenance.cli package-upgrade` command.

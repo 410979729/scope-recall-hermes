@@ -167,6 +167,45 @@ scope-recall apply-install --host hermes \
 - `--env-file` is refused for `--host hermes`: Hermes processes inherit the
   gateway environment.
 
+#### Hermes Desktop and `hermes --tui`: `--local-platform`
+
+A fresh install gives the owner's private memory to one surface, the CLI. Hermes
+Desktop's chat panel and `hermes --tui` reach the adapter as platform `desktop`
+and `tui`. The host passes a dashboard login as `user_id` there, and passes
+nothing when nobody logged in, which is the ordinary case for a local profile.
+A session that names no user is refused everywhere but the CLI:
+
+```
+Memory provider 'scope-recall' initialize failed: user principal required for non-cli platform; approve it as the owner's local surface with apply-install --local-platform desktop
+```
+
+Approve the surface when you install, or later on the same instance with the same
+other arguments. The flag is repeatable and takes `desktop` or `tui`:
+
+```powershell
+scope-recall apply-install --host hermes `
+  --target-plugin-dir $Plugin --instance-root $Instance `
+  --project-root $Project --agent-id default --python $Python `
+  --local-platform desktop
+```
+
+What it does: it adds the owner principal `(desktop, local)` and one grant of the
+owner's private scope on that route to `installation.json`, keeping a copy of the
+previous file under `.scope-recall-backups\`. The scopes, the installation id and
+`memory.sqlite3` are unchanged, so Desktop reads and writes the memory the CLI
+does. `plan-install` lists the approval as a change; an approved surface is not
+listed again. Restart the host surface afterwards so it binds again.
+
+What it does not do: it does not cover a session that carries a login. That one
+is a named user like any gateway user and gets only what an audience row gives
+it. It accepts no other platform: `cron` in particular stays refused, because
+nobody is speaking in a scheduled run, a job can be created from any chat, and its
+prompt would be captured as the owner's own words. Codex rejects the flag.
+
+Approve a surface only where everyone who can reach it without logging in is the
+owner. That is the same trust the CLI already has: whoever can run it against
+this home can read the store.
+
 It writes two wrapper files into the plugin directory (`__init__.py`,
 `plugin.yaml`) and a setup skill at
 `<instance-root>\skills\scope-recall-setup\SKILL.md`.

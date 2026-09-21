@@ -86,6 +86,7 @@ def plan_install(
     test_mode: bool = False,
     agent_workspace: str | None = None,
     env_file: Path | str | None = None,
+    local_platforms: tuple[str, ...] | list[str] = (),
 ) -> InstallPlan:
     host_choice = _validate_host(host)
     adapter = _HOSTS[host_choice]
@@ -95,6 +96,7 @@ def plan_install(
     python = _require_interpreter(Path(python_executable), "python_executable")
     agent = _validate_agent_id(agent_id)
     workspace, credentials = adapter.validate_options(agent_workspace, env_file)
+    approvals = adapter.validate_local_platforms(local_platforms)
     if type(test_mode) is not bool:
         raise InstallError("test_mode must be a boolean")
     _validate_plugin_name(target.name)
@@ -110,6 +112,7 @@ def plan_install(
         test_mode=test_mode,
         agent_workspace=workspace,
         env_file=credentials,
+        local_platforms=approvals,
     )
     receipt = _load_receipt(instance)
     owned: dict[str, str] = {}
@@ -137,6 +140,10 @@ def plan_install(
             plan.conflicts.append(str(exc))
         else:
             plan.changes.append(PlannedChange("validate", str(instance), "reuse initialized instance binding"))
+            for platform in adapter.unapproved_local_platforms(plan):
+                plan.changes.append(PlannedChange(
+                    "write", str(adapter.config_path(instance)),
+                    f"approve local platform {platform}: a session there that names no user binds as the local owner"))
     else:
         for path in adapter.foreign_instance_entries(instance):
             plan.conflicts.append(f"foreign instance content: {path}")
@@ -168,6 +175,7 @@ def apply_install(plan: InstallPlan) -> InstallResult:
         test_mode=plan.test_mode,
         agent_workspace=plan.agent_workspace or None,
         env_file=plan.env_file,
+        local_platforms=plan.local_platforms,
     )
     if plan.conflicts:
         raise InstallError("; ".join(plan.conflicts))
@@ -183,6 +191,15 @@ def apply_install(plan: InstallPlan) -> InstallResult:
     try:
         if plan.reuse_instance:
             installation_id = adapter.installation_id(plan.instance_root)
+            if adapter.unapproved_local_platforms(plan):
+                # The manifest is the adapter's, not a wrapper: it is rewritten in
+                # place, with the copy the rollback below restores, and the receipt
+                # tracks its new digest like any other state of it.
+                manifest_path = adapter.config_path(plan.instance_root)
+                manifest_backup = _backup_copy(manifest_path, backup_root, plan)
+                backups.append(str(manifest_backup))
+                touched.append((manifest_path, manifest_backup))
+                adapter.approve_local_platforms(plan)
         else:
             installation_id = adapter.initialize_instance(plan)
             instance_initialized = True

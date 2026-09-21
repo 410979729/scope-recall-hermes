@@ -48,6 +48,21 @@ def validate_options(agent_workspace: str | None, env_file: Path | str | None) -
     return "", _require_file(Path(env_file), "env_file")
 
 
+def validate_local_platforms(values: object) -> tuple[str, ...]:
+    """A Codex installation has one local user and no audiences to approve."""
+    if values:
+        raise InstallError("local_platform is only used for Hermes installation")
+    return ()
+
+
+def unapproved_local_platforms(plan: InstallPlan) -> tuple[str, ...]:
+    return ()
+
+
+def approve_local_platforms(plan: InstallPlan) -> None:
+    return None
+
+
 def _hook_argv(python_executable: Path, config: Path, *, env_file: Path | None = None) -> list[str]:
     argv = [str(python_executable), "-I", "-B", "-m", "scope_recall.adapters.codex.hook_entry", "--config", str(config)]
     if env_file is not None:

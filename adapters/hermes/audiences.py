@@ -32,6 +32,46 @@ class HermesIdentityError(RuntimeError):
     """Raised when documented host identity is missing or conflicts."""
 
 
+#: The principal of a session the host names no user for: the CLI's, and an
+#: approved local surface's.
+LOCAL_USER_ID = "local"
+
+#: Host surfaces a person types into on the machine the host runs on, where the
+#: host sends no ``user_id`` unless a dashboard login exists: the Desktop chat
+#: panel and ``hermes --tui`` (``tui_gateway/server.py`` resolves the platform to
+#: one of the two and passes the login, or nothing).  Each is refused like any
+#: other platform until the installer approves it for one installation, because
+#: only the owner knows whether everyone who can reach that surface without
+#: logging in is the owner.  ``cron`` is deliberately not here: nobody is
+#: speaking in a scheduled run, a job can be created from any chat, and its
+#: prompt would be captured as the owner's own words.
+LOCAL_PLATFORMS = frozenset({"desktop", "tui"})
+
+
+def normalize_local_platforms(values: object) -> tuple[str, ...]:
+    """The local surfaces an installer asks to approve, each a known one, once."""
+    if not isinstance(values, (list, tuple)):
+        raise HermesIdentityError("local_platforms must be an explicit sequence")
+    result: list[str] = []
+    for value in values:
+        if type(value) is not str or value not in LOCAL_PLATFORMS:
+            raise HermesIdentityError(f"local platform must be one of {sorted(LOCAL_PLATFORMS)}")
+        if value not in result:
+            result.append(value)
+    return tuple(result)
+
+
+def approved_local_platforms(owner_principals: Sequence[dict[str, str]]) -> frozenset[str]:
+    """The local surfaces this installation's owner approved.
+
+    The approval is the owner principal ``(platform, "local")`` itself, the same
+    shape the CLI's has, so a manifest needs no new field and an older package
+    still reads it.
+    """
+    return frozenset(item["platform"] for item in owner_principals
+                     if item["user_id"] == LOCAL_USER_ID and item["platform"] in LOCAL_PLATFORMS)
+
+
 EXACT_FIELDS = (
     "platform", "user_id", "chat_type", "chat_id", "thread_id",
     "gateway_session_key", "agent_workspace",
