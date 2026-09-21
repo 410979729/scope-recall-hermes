@@ -165,9 +165,16 @@ class CandidateSweeps(CandidateIntake):
         """Candidates waiting inside their window versus waiting for the sweep.
 
         Debouncing deliberately grows ``candidate_pending_evaluation``, so the
-        doctor has to tell "waiting on purpose" from "stuck".
+        doctor has to tell "waiting on purpose" from "stuck".  There is a
+        fourth state, and it is the large one on a live store: evidence that
+        has settled and that scheduling would ask nothing new about, because
+        the same evidence was already put to the evaluator (whatever came of
+        it) or none of it can be read.  Such a candidate is not work.  It
+        waits for new evidence, and counted as pending it made a queue that
+        never drains out of a thousand candidates nothing was ever going to
+        evaluate.
         """
-        summary = {"queued": 0, "collecting": 0, "settled_waiting_sweep": 0}
+        summary = {"queued": 0, "collecting": 0, "settled_waiting_sweep": 0, "settled_nothing_to_ask": 0}
         for row in self._settling_rows():
             if row["queued"]:
                 summary["queued"] += 1
@@ -175,6 +182,8 @@ class CandidateSweeps(CandidateIntake):
                 summary["settled_waiting_sweep"] += 1
             elif settled_reason(row, now) is None:
                 summary["collecting"] += 1
+            else:
+                summary["settled_nothing_to_ask"] += 1
         summary["quiet_seconds"] = QUIET_SECONDS
         summary["max_deferral_seconds"] = MAX_DEFERRAL_SECONDS
         return summary

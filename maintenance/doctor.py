@@ -845,7 +845,18 @@ def _check_candidates(report: DoctorReport) -> None:
         _record(report, "candidate_processing", "budget_paused", str(report.candidate_budget_paused))
         report.capability_gaps.append("candidate_budget_paused")
     elif report.candidate_pending_evaluation:
-        _record(report, "candidate_processing", "pending", str(report.candidate_pending_evaluation))
+        # ``pending_evaluation`` is a lifecycle state, not a queue.  What will be
+        # evaluated is what is queued, still collecting, or settled with a new
+        # question; a candidate whose evidence was already put to the evaluator
+        # waits for new evidence however long it keeps the state.  On one live
+        # store 1,031 of 1,032 were of that kind, and the bare "pending 1032"
+        # read as a backlog that never drains.  The state's count stays in the
+        # line; the settling figures are this context's and may cover less.
+        settling = report.candidate_settling
+        due = sum(int(settling.get(key, 0)) for key in ("queued", "collecting", "settled_waiting_sweep"))
+        _record(report, "candidate_processing", "pending",
+                f"due={due},nothing_new_to_ask={int(settling.get('settled_nothing_to_ask', 0))},"
+                f"pending_evaluation={report.candidate_pending_evaluation}")
     elif report.candidate_waiting_evidence or report.candidate_dormant:
         _record(report, "candidate_processing", "waiting_evidence",
                 f"waiting={report.candidate_waiting_evidence},dormant={report.candidate_dormant}")

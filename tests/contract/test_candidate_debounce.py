@@ -263,6 +263,28 @@ def test_an_ordinary_source_matching_the_same_candidate_is_still_admitted(app):
     assert more.ref in set(_evidence_rows(core)), "an ordinary source stopped being evidence"
 
 
+def test_a_settled_candidate_with_nothing_new_to_ask_is_counted_as_waiting_not_as_work(app):
+    """Its evidence was already put to the evaluator, so the sweep schedules nothing for it and it
+    keeps ``pending_evaluation`` until new evidence arrives.  On one live store that was 1,031 of
+    1,032 candidates, and the doctor's bare "pending 1032" read as a queue that never drains."""
+    from scope_recall.maintenance.doctor import DoctorReport, _check_candidates
+
+    core, ctx = app
+    _register(core, ctx, 0)
+    _settle(core)
+    with core.storage.write(ctx) as tx:
+        tx._check(write=True).execute("UPDATE candidate_evaluations SET state='failed'")
+        summary = tx.candidates.settling_summary(now=core.clock.utc_now())
+        assert tx.candidates.schedule_settled_candidates(now=core.clock.utc_now(), limit=64) == 0
+    assert (summary["queued"], summary["collecting"], summary["settled_waiting_sweep"], summary["settled_nothing_to_ask"]) == (0, 0, 0, 1)
+
+    report = DoctorReport(host="hermes", status="ok")
+    report.candidate_pending_evaluation, report.candidate_settling = 1, summary
+    _check_candidates(report)
+    line = next(check for check in report.checks if check["name"] == "candidate_processing")
+    assert (line["result"], line["detail"]) == ("pending", "due=0,nothing_new_to_ask=1,pending_evaluation=1")
+
+
 @pytest.mark.parametrize("excluded", ["unchanged", "revoked", "blocked", "suppressed", "old_revision", "no_evidence", "blocked_evidence"])
 def test_doctor_sweep_share_exact_eligibility(app, excluded):
     core, ctx = app
