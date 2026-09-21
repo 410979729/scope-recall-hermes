@@ -13,7 +13,7 @@ the `[3.1.0]` section of [CHANGELOG.md](CHANGELOG.md), and section 9 there is th
 migration procedure for a 2.0.1 memory database. SQLite remains the only fact
 authority; host adapters share the same contracts.
 
-**What is not verified.** `scripts/check.py --tier release` runs 2,183 tests with
+**What is not verified.** `scripts/check.py --tier release` runs 2,191 tests with
 none failing, but reports `missing_gates: ["model"]`. That gate wants a P18
 formal acceptance receipt: denominators of 120 independent core items and 240
 paired variants, evidence marked `real`, a method adjudication accepted by a

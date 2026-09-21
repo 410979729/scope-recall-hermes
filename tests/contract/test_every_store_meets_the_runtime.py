@@ -62,6 +62,15 @@ def test_the_store_chosen_for_this_platform_has_both(backend, tmp_path):
     assert callable(getattr(store, "purge_governed_members", None)), type(store).__name__
 
 
+@pytest.fixture(autouse=True)
+def native_import_in_this_interpreter(monkeypatch):
+    """LanceDB's import is rehearsed in a child process first, because a bad wheel kills the interpreter
+    rather than raising.  This tier forbids child processes, and a test interpreter is disposable."""
+    from scope_recall.vector import lance_native
+
+    monkeypatch.setattr(lance_native, "_native_import_safe", True)
+
+
 def _opened(backend: str, tmp_path):
     store = build_vector_store(backend, storage_dir=tmp_path, table_name="TEST_vectors", dimensions=2, metric="cosine")
     store.open()
