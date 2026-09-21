@@ -52,7 +52,7 @@ tree you built; the ones below are examples.
 cd C:\path\to\scope-recall-source
 py -m pip install build
 py -m build --wheel
-py -m pip install "C:\path\to\scope-recall-source\dist\hermes_scope_recall-3.1.0rc39-py3-none-any.whl[lancedb]"
+py -m pip install "C:\path\to\scope-recall-source\dist\hermes_scope_recall-<version>-py3-none-any.whl[lancedb]"
 ```
 
 ### Linux and macOS
@@ -61,7 +61,7 @@ py -m pip install "C:\path\to\scope-recall-source\dist\hermes_scope_recall-3.1.0
 cd /path/to/scope-recall-source
 python3 -m pip install build
 python3 -m build --wheel
-python3 -m pip install "/path/to/scope-recall-source/dist/hermes_scope_recall-3.1.0rc39-py3-none-any.whl[lancedb]"
+python3 -m pip install "/path/to/scope-recall-source/dist/hermes_scope_recall-<version>-py3-none-any.whl[lancedb]"
 ```
 
 Quote the whole argument: the `[extra]` suffix is shell metacharacters in both
