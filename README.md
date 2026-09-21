@@ -13,7 +13,7 @@ the `[3.1.0]` section of [CHANGELOG.md](CHANGELOG.md), and section 9 there is th
 migration procedure for a 2.0.1 memory database. SQLite remains the only fact
 authority; host adapters share the same contracts.
 
-**What is not verified.** `scripts/check.py --tier release` runs 2,191 tests with
+**What is not verified.** `scripts/check.py --tier release` runs about 2,200 tests with
 none failing, but reports `missing_gates: ["model"]`. That gate wants a P18
 formal acceptance receipt: denominators of 120 independent core items and 240
 paired variants, evidence marked `real`, a method adjudication accepted by a
@@ -22,8 +22,8 @@ The P18 machinery is in this tree; the evaluation corpus is not. **3.1.0 shipped
 without that receipt and so does 3.1.1.** Every accuracy figure in the notes was measured by us, on
 our own corpora, by hand, and there is no regression suite you or we can re-run
 automatically -- that is the first item in *What is not finished*. Read a green
-test count as exactly that, never as a passing release gate. Integration is
-2062/0 and packaging 136/0, both exit 0.
+test count as exactly that, never as a passing release gate. The integration
+(about 2,060 tests) and packaging (136) tiers both exit 0 with none failing.
 
 ## For agents: install or upgrade on the user's behalf
 
