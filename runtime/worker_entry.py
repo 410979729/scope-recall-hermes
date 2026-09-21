@@ -128,12 +128,37 @@ def _metadata_path(config: RuntimeInstanceConfig, name: str) -> Path:
     return target
 
 
+#: On Windows a file cannot be opened for the instant ``os.replace`` swaps it
+#: in, and cannot be replaced while a reader holds it open; either side gets
+#: ``PermissionError``.  The supervisor reads its control file beside the wake
+#: that rewrites it, outside the control lock, so the refusal ended a
+#: supervisor now and then (and a nightly CI run, which is how it was seen).
+#: The window is well under a millisecond, so both sides simply try again; a
+#: file that is really forbidden still fails, a fifth of a second later.
+_SHARING_RETRIES = 20
+_SHARING_PAUSE_SECONDS = 0.01
+
+
+def _beside_another_process(action):
+    for attempt in range(_SHARING_RETRIES):
+        try:
+            return action()
+        except PermissionError:
+            if attempt + 1 == _SHARING_RETRIES:
+                raise
+            time.sleep(_SHARING_PAUSE_SECONDS)
+
+
 def _read_metadata(path: Path) -> dict[str, Any]:
     if not path.exists():
         return {}
-    if path.stat().st_size > METADATA_LIMIT_BYTES:
-        raise ValueError("worker_metadata_oversized")
-    value = json.loads(path.read_text(encoding="utf-8"))
+
+    def read() -> str:
+        if path.stat().st_size > METADATA_LIMIT_BYTES:
+            raise ValueError("worker_metadata_oversized")
+        return path.read_text(encoding="utf-8")
+
+    value = json.loads(_beside_another_process(read))
     if not isinstance(value, dict):
         raise ValueError("worker_metadata_invalid")
     return value
@@ -152,7 +177,7 @@ def _atomic_metadata(path: Path, value: dict[str, Any]) -> None:
             os.fsync(stream.fileno())
         if path.is_symlink():
             raise ValueError("worker_metadata_not_regular")
-        os.replace(temporary, path)
+        _beside_another_process(lambda: os.replace(temporary, path))
     finally:
         temporary.unlink(missing_ok=True)
 
