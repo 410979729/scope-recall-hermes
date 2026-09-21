@@ -2,6 +2,7 @@
 takes a running worker's store from it."""
 import json
 import sqlite3
+import time
 
 from scope_recall.adapters.codex.config import install_codex_scope_recall
 from scope_recall.core.schema import SCHEMA_VERSION
@@ -75,6 +76,27 @@ def test_upgrade_store_retries_the_worker_lease_until_it_is_released(tmp_path, c
 
     assert code == 0, out
     assert attempts >= 2
+    assert (out["status"], out["schema_before"], out["schema_after"]) == ("upgraded", 1108, SCHEMA_VERSION)
+
+
+def test_upgrade_store_asks_storage_for_no_more_than_its_wait_when_the_clock_has_not_ticked(tmp_path, capsys, monkeypatch):
+    """Before Python 3.13 ``time.monotonic()`` ticks every 15.6 ms on Windows, so the loop's first
+    reading is the one the deadline was built from, and ``(started + 30.0) - started`` is
+    30.000000000000014 at this clock value.  Storage refuses a timeout above 30, so the command
+    took its snapshot and answered INPUT_INVALID / storage_timeout: one CI run in some dozens,
+    and any operator whose machine had been up for that long."""
+    project = tmp_path / "project"
+    project.mkdir()
+    _config, core = install_codex_scope_recall(tmp_path / "install", project_root=project)
+    downgrade_store(core.storage.path, 1108)
+    standing = 100.00000000000004
+    assert (standing + 30.0) - standing > 30.0
+    monkeypatch.setattr(time, "monotonic", lambda: standing)
+
+    code, out = _run(capsys, ["upgrade-store", "--host", "codex", "--instance-root", str(tmp_path / "install"),
+                              "--backup-dir", str(tmp_path / "backups")])
+
+    assert code == 0, out
     assert (out["status"], out["schema_before"], out["schema_after"]) == ("upgraded", 1108, SCHEMA_VERSION)
 
 

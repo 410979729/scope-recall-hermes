@@ -297,7 +297,10 @@ def _upgrade_store(args: argparse.Namespace) -> int:
     started = time.monotonic()
     deadline = started + wait
     while True:
-        remaining = max(0.0, deadline - time.monotonic())
+        # Never more than the wait itself: while the clock has not ticked since ``started``
+        # this is (started + wait) - started, which rounds to 30.000000000000014 for some
+        # clock values, and storage refuses a timeout above 30.
+        remaining = min(wait, max(0.0, deadline - time.monotonic()))
         try:
             status = SQLiteStorage(binding, timeout_seconds=remaining).initialize()
             break
