@@ -110,6 +110,10 @@ def _statement_text(obj: RetrievedObject) -> str:
     return " ".join(str(payload.get(key, "")) for key in ("subject", "predicate", "value_text", "conditions"))
 
 
+#: See ``RetrievalPipeline.RELATION_WEIGHT``.
+RELATION_WEIGHT = 0.5
+
+
 class RetrievalPipeline:
     """Collect, hydrate, admit, and rank candidates in one read-only pass."""
 
@@ -267,6 +271,31 @@ class RetrievalPipeline:
                 hydrated.append((candidate, obj))
                 known.add(candidate.key)
 
+    #: What an object reached by relation may score against the hit it was reached from.
+    #:
+    #: Every related object used to score by its place in its own seed's list, so
+    #: the first object related to the thirteenth hit scored 1/62, above every
+    #: direct hit but the first.  It did no harm while an episode's lineage was
+    #: copied onto each of its revisions: the rows of one episode at dozens of old
+    #: revisions spent the relation bound without becoming candidates, and about
+    #: one related object per query got through.  Writing that lineage once freed
+    #: the bound; sixteen arrived where one had, all scoring with the best hits,
+    #: and over one instance's real questions the reply that had answered each
+    #: was in the top five for 20 of 30 where it had been for 28, with fact
+    #: recall, no-match, supersession and question recall all unchanged.  Held to
+    #: the smaller of its own score and its seed's, times this, it is 28 again on
+    #: the same stores (0.8 gives the same; letting a related object continue its
+    #: seed's rank gives 27).  That is the 3.1.0 figure, and the price is the
+    #: other side of the same coin: on a second instance the freed bound had let
+    #: a related object answer one question of 25 that 3.1.0 missed (19 where it
+    #: had 18), and weighing gives that one back.  Both instances now recall what
+    #: 3.1.0 recalled, by rule.  At 0.5 the best it can score is 1/124 and the 48th
+    #: hit of one channel scores 1/108, so with the default pool a related object
+    #: sorts after every direct hit, and among themselves they keep the order of
+    #: the hits that led to them.  A turn's replies are not weighed: they are
+    #: what the question was told, and are read before the hops.
+    RELATION_WEIGHT = RELATION_WEIGHT
+
     def _expand(self, tx, context: SearchContext, seeds: tuple[CandidateRef, ...], gaps: list[str]) -> tuple[CandidateRef, ...]:
         """Bounded relation hops out of the seeds; every inspected object counts."""
         limits = context.limits
@@ -333,7 +362,10 @@ class RetrievalPipeline:
                         if bound_reached:
                             return stopped("relation_bound_reached")
                         continue
-                    candidate = replace(candidate, fusion_score=rrf_score((candidate.rank + 1,), k=self.policy.rrf_k))
+                    own = rrf_score((candidate.rank + 1,), k=self.policy.rrf_k)
+                    # A seed built by hand in a test may carry no fusion score; a real one always does.
+                    bound = min(own, seed.fusion_score) if seed.fusion_score > 0 else own
+                    candidate = replace(candidate, fusion_score=bound * self.RELATION_WEIGHT)
                     all_candidates.append(candidate)
                     next_frontier.append(candidate)
                     if bound_reached:
