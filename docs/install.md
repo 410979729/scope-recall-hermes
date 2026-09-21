@@ -5,10 +5,11 @@ truth, vector indexes are rebuildable companions, and a bounded background worke
 does the consolidating and embedding. It ships host adapters for Hermes and for
 Codex, the latter as a set of native hooks plus an MCP server.
 
-> **Status.** This is version `3.1.0rc39`, a release candidate. The package is
-> **not on PyPI**; you build the wheel from the source tree and install that file.
-> The distribution name is `hermes-scope-recall`, the Python import is
-> `scope_recall`, and the host plugin identity is `scope-recall`.
+> **Status.** This guide is for the 3.1 line. Releases are on PyPI and on the
+> GitHub releases page; a checkout between releases carries a candidate version
+> and is installed by building its wheel. The distribution name is
+> `hermes-scope-recall`, the Python import is `scope_recall`, and the host plugin
+> identity is `scope-recall`.
 
 v3 has no automatic `update` / `upgrade` / `rollback` commands. Moving data from an
 older database is a separate, explicit operation — see
@@ -33,7 +34,17 @@ Two optional extras:
 A third extra, `dev`, adds `build`, `pytest`, `ruff`, `pyright` and packaging
 tools. You need `build` (or the `dev` extra) to produce the wheel.
 
-## 2. Build and install the wheel
+## 2. Install the package
+
+From PyPI, into the host's environment:
+
+```text
+python -m pip install "hermes-scope-recall[lancedb]"
+```
+
+Or build the wheel from a source tree and install that file, which is how a
+candidate between releases is installed. The file name carries the version of the
+tree you built; the ones below are examples.
 
 ### Windows
 
@@ -207,8 +218,13 @@ owner. That is the same trust the CLI already has: whoever can run it against
 this home can read the store.
 
 It writes two wrapper files into the plugin directory (`__init__.py`,
-`plugin.yaml`) and a setup skill at
-`<instance-root>\skills\scope-recall-setup\SKILL.md`.
+`plugin.yaml`) and two skills under `<instance-root>\skills\`:
+`scope-recall-setup\SKILL.md`, for installing and upgrading, and
+`scope-recall-memory\SKILL.md`, which tells the agent how to answer what is
+remembered about the user, where a memory came from and whether it still holds,
+and what to say before it corrects, mutes or deletes one. A skill of the same
+name that the installer did not write is never overwritten; `plan-install`
+reports it as a conflict.
 
 **Then enable it in the host.** Hermes registration means two things at once: the
 entry point is importable in that interpreter, **and** that instance's

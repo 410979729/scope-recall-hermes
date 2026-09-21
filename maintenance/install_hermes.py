@@ -15,7 +15,7 @@ from scope_recall.adapters.hermes.installation import (
 
 from .install_common import (
     REPO_ROOT,
-    SETUP_SKILL,
+    SKILLS,
     InstallError,
     InstallPlan,
     _reject_symlink_chain,
@@ -37,8 +37,8 @@ def config_path(instance_root: Path) -> Path:
 
 
 def instance_wrapper_files(instance_root: Path) -> tuple[Path, ...]:
-    """The setup skill lives under the Hermes HOME, outside the plugin directory."""
-    return (instance_root / "skills" / "scope-recall-setup" / "SKILL.md",)
+    """The skills live under the Hermes HOME, outside the plugin directory."""
+    return tuple(instance_root / "skills" / name / "SKILL.md" for name in SKILLS)
 
 
 def validate_options(agent_workspace: str | None, env_file: Path | str | None) -> tuple[str, Path | None]:
@@ -71,8 +71,8 @@ def planned_files(plan: InstallPlan) -> dict[Path, str | bytes]:
         if not source.is_file():
             raise InstallError(f"distribution template missing: {source}")
         files[plan.target_plugin_dir / name] = source.read_text(encoding="utf-8")
-    for path in instance_wrapper_files(plan.instance_root):
-        files[path] = SETUP_SKILL.read_text(encoding="utf-8")
+    for name, source in SKILLS.items():
+        files[plan.instance_root / "skills" / name / "SKILL.md"] = source.read_text(encoding="utf-8")
     return files
 
 

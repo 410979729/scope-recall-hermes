@@ -738,17 +738,18 @@ def test_hermes_existing_home_coexistence_upgrade_uninstall_purge(tmp_path):
     assert _norm(home) not in owned_paths
     namespace = _norm(home / "scope-recall")
     plugin_norm = _norm(plugin_dir)
-    # The Hermes setup skill is the one owned file that deliberately lives
-    # outside the namespace: ``maintenance/install.py`` writes it to
-    # ``instance_root/skills`` and the uninstall path already carves out exactly
-    # this path.  The assertion was never updated when that landed.
-    setup_skill = _norm(home / "skills" / "scope-recall-setup" / "SKILL.md")
+    # The Hermes skills are the owned files that deliberately live outside the
+    # namespace: ``maintenance/install.py`` writes them to ``instance_root/skills``
+    # and the uninstall path already carves out exactly these paths.
+    from scope_recall.maintenance.install_common import SKILLS
+
+    skills = {_norm(home / "skills" / name / "SKILL.md") for name in SKILLS}
     assert owned_paths and all(
         item.startswith(namespace + os.sep)
         or item == namespace
         or item.startswith(plugin_norm + os.sep)
         or item == plugin_norm
-        or item == setup_skill
+        or item in skills
         or item.endswith(".scope-recall-install-receipt.json")
         for item in owned_paths
     )

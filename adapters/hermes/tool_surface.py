@@ -10,7 +10,7 @@ import uuid
 from scope_recall.contracts import ContractError, validate_model_request
 from scope_recall.core.read_views import DEFAULT_BUDGET_TOKENS, DEFAULT_MAX_ITEMS
 from scope_recall.core.trace import fence_trace_epoch, trace_tool_schema
-from ..runtime_wiring import READ_VIEW_BUDGET_GUIDANCE
+from ..runtime_wiring import FORGET_GUIDANCE, READ_VIEW_BUDGET_GUIDANCE, REVISE_GUIDANCE
 from ..tool_common import (
     FENCED_ENTITY,
     FENCED_PROFILE,
@@ -114,7 +114,7 @@ _TOOL_SCHEMAS: tuple[dict[str, Any], ...] = (
     },
     {
         "name": "revise",
-        "description": "Apply a Core-authorized, versioned revision.",
+        "description": REVISE_GUIDANCE,
         "parameters": {
             "type": "object",
             "additionalProperties": False,
@@ -133,7 +133,7 @@ _TOOL_SCHEMAS: tuple[dict[str, Any], ...] = (
     },
     {
         "name": "forget",
-        "description": "Apply a Core-authorized suppress or delete request.",
+        "description": FORGET_GUIDANCE,
         "parameters": {
             "type": "object",
             "additionalProperties": False,

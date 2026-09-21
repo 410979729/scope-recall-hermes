@@ -1,6 +1,6 @@
 {
   "schema": "scope-recall.v11-module-allowlist.v1",
-  "package_version": "3.1.1",
+  "package_version": "3.1.2rc1",
   "packages": [
     "scope_recall",
     "scope_recall.adapters",
@@ -208,7 +208,8 @@
     "contracts/trace_request.schema.json",
     "contracts/trace_view.schema.json",
     "maintenance/AGENT_WORKFLOW.md",
-    "maintenance/skills/scope-recall-setup/SKILL.md"
+    "maintenance/skills/scope-recall-setup/SKILL.md",
+    "maintenance/skills/scope-recall-memory/SKILL.md"
   ],
   "forbidden_wheel_substrings": [
     ".execution/",

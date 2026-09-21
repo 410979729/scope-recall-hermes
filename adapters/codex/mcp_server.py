@@ -22,7 +22,7 @@ from scope_recall.contracts import ContractError, Origin, SourceEvent, TrustedCo
 from scope_recall.core import CoreConfig, MemoryCore
 from scope_recall.core.read_views import DEFAULT_BUDGET_TOKENS, DEFAULT_MAX_ITEMS
 from scope_recall.core.trace import TRACE_GUIDANCE, fence_trace_epoch
-from ..runtime_wiring import READ_VIEW_BUDGET_GUIDANCE, RECALL_CONTEXT_GUIDANCE
+from ..runtime_wiring import FORGET_GUIDANCE, READ_VIEW_BUDGET_GUIDANCE, RECALL_CONTEXT_GUIDANCE, REVISE_GUIDANCE
 from ..tool_common import (
     FENCED_ENTITY,
     FENCED_PROFILE,
@@ -66,8 +66,8 @@ _TOOLS: tuple[tuple[str, str, ToolAnnotations], ...] = (
     ("trace", TRACE_GUIDANCE, _READ_ONLY),
     ("entity", "Read-only exact one-hop entity view. action=probe returns current facts about the subject; action=related returns direct recorded statements. Incoming matches full scalar value_text only. No multi-hop traversal or inferred identity merge. Protocol version 1.1. " + READ_VIEW_BUDGET_GUIDANCE + " " + RECALL_CONTEXT_GUIDANCE, _READ_ONLY),
     ("propose_memory", "Record an assistant-visible candidate without promoting it to authority. Protocol version 1.1.", ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=False, open_world_hint=False)),
-    ("revise", "Apply a Core-authorized, versioned revision. Protocol version 1.1.", ToolAnnotations(read_only_hint=False, destructive_hint=True, idempotent_hint=False, open_world_hint=False)),
-    ("forget", "Apply a Core-authorized suppress or delete request. Protocol version 1.1.", ToolAnnotations(read_only_hint=False, destructive_hint=True, idempotent_hint=True, open_world_hint=False)),
+    ("revise", REVISE_GUIDANCE + " Protocol version 1.1.",ToolAnnotations(read_only_hint=False, destructive_hint=True, idempotent_hint=False, open_world_hint=False)),
+    ("forget", FORGET_GUIDANCE + " Protocol version 1.1.",ToolAnnotations(read_only_hint=False, destructive_hint=True, idempotent_hint=True, open_world_hint=False)),
     ("status", "Read bounded Core status and adapter capability gaps. Protocol version 1.1.", _READ_ONLY),
 )
 

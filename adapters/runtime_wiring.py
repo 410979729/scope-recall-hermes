@@ -48,6 +48,24 @@ READ_VIEW_BUDGET_GUIDANCE = (
     "error wrapper is not a view result. "
     "If gaps include budget_token_cap, retry once with budget_tokens=4096."
 )
+#: What the two write tools do to a memory, and what the core asks of the user's
+#: own message before it allows either.  A model reads a tool's description
+#: whether or not it ever loads the memory skill, and "suppress or delete" told
+#: it nothing about the difference a person cares about: a deletion takes the
+#: whole source message, and every other fact drawn from it, with the one named.
+REVISE_GUIDANCE = (
+    "Correct or withdraw one remembered fact: writes a new version and keeps the "
+    "old one as history (new_value null withdraws it). Refused unless the user's "
+    "own latest message asks for it, contains the new value and names what is "
+    "being corrected."
+)
+FORGET_GUIDANCE = (
+    "suppress: stop using a memory unasked; it stays readable on request, and "
+    "nothing undoes this. delete: erase it together with the whole message it came "
+    "from and every other fact taken from that message; it cannot be undone. Tell "
+    "the user which before calling. Refused unless the user's own latest message "
+    "asks for it plainly and names the item."
+)
 
 
 def render_host_recall_context(canonical_text: str | None) -> str:

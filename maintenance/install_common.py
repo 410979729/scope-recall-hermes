@@ -22,6 +22,15 @@ from .backup import _first_link
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SETUP_SKILL = Path(__file__).with_name("skills") / "scope-recall-setup" / "SKILL.md"
+#: Every skill an install carries, under the folder name the host discovers it by.
+#: ``scope-recall-setup`` is for installing and upgrading.  ``scope-recall-memory``
+#: is for what a person asks about their own memory (what is remembered, where it
+#: came from, whether it still holds) and for correcting, muting and deleting, with
+#: what a deletion takes with it said before it is done.
+SKILLS: dict[str, Path] = {
+    "scope-recall-setup": SETUP_SKILL,
+    "scope-recall-memory": Path(__file__).with_name("skills") / "scope-recall-memory" / "SKILL.md",
+}
 PACKAGE_VERSION = __version__
 HostChoice = Literal["hermes", "codex"]
 RECEIPT_FILENAME = ".scope-recall-install-receipt.json"

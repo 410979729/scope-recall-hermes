@@ -11,7 +11,7 @@ from scope_recall.adapters.codex.config import CONFIG_FILENAME, install_codex_sc
 from .install_common import (
     BACKUP_DIRNAME,
     RECEIPT_FILENAME,
-    SETUP_SKILL,
+    SKILLS,
     InstallError,
     InstallPlan,
     _json_dump,
@@ -144,7 +144,8 @@ def planned_files(plan: InstallPlan) -> dict[Path, str | bytes]:
         plan.target_plugin_dir / "hooks" / "hooks.json": _json_dump(
             _hooks_json(plan.python_executable, config, windows_launcher=launcher, env_file=plan.env_file)
         ),
-        plan.target_plugin_dir / "skills" / "scope-recall-setup" / "SKILL.md": SETUP_SKILL.read_text(encoding="utf-8"),
+        **{plan.target_plugin_dir / "skills" / name / "SKILL.md": source.read_text(encoding="utf-8")
+           for name, source in SKILLS.items()},
         plan.target_plugin_dir / ".mcp.json": _json_dump(
             _mcp_json(plan.python_executable, config, plan.project_root, env_file=plan.env_file)
         ),

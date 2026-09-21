@@ -2,6 +2,12 @@
 
 All notable changes to `scope-recall` will be documented in this file.
 
+## [Unreleased]
+
+### Scope Recall 3.1.2rc1 the questions a person asks about their own memory - 2026-09-21
+
+- A second skill ships with every install, `scope-recall-memory`, and the two write tools say what they do. The capabilities were all there (`profile`, `recall`, `inspect`, `trace`, `revise`, `forget`), but nothing told an agent how to turn them into answers to the four things an owner asks: what do you remember about me, did I say that or did you work it out, is it still true, and what happens if I change it, stop you bringing it up, or delete it. The tool descriptions read "Apply a Core-authorized suppress or delete request", which says nothing about the difference a person cares about, and the core's rules for allowing either were discoverable only by being refused. The skill maps each question to the fields that answer it (`basis` and `origin` for who said it, `temporal_status` and `claim_state` for whether it holds, `evidence_refs` and `inspect` for the sentence it came from), and for the three changes it says what the core will ask of the user's own latest message: the wording it accepts, that the message must name the item, that a negated, hypothetical or quoted request does not count, and what each refusal code means. It is explicit about deletion, because the minimum unit is the whole source message: deleting one fact erases that message and every other fact taken from it, cannot be undone, and does not reach the chat app's history, the host's transcripts or an operator's backup; the agent is told to say so, and what else will go, before it asks for the confirmation. It is as explicit that muting has no tool that undoes it, and that there is no "don't record this" switch: a message is captured before the model sees it, so the honest offer is to delete it afterwards. `revise` and `forget` now carry a two-sentence description of the same facts on both hosts, since a model reads a tool's description whether or not it ever loads a skill. No runtime behaviour changes. `tests/packaging/test_memory_skill.py` checks every phrase the skill quotes against the core's own patterns, so the page cannot drift from what is enforced.
+
 ## [3.1.1] - 2026-09-21
 
 3.1.1 is what running 3.1.0 on real instances, ours and yours, turned up, fixed. What is remembered and how it is asked for do not change, and there is no new concept to learn.
