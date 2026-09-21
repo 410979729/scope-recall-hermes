@@ -2,6 +2,12 @@
 
 All notable changes to `scope-recall` will be documented in this file.
 
+## [Unreleased]
+
+### Scope Recall 3.1.3rc1 maintenance, written down - 2026-09-21
+
+- `AGENTS.md` says what changes this plugin accepts from 3.1.2 on: a bug with a reproduction, a security fix, a change a host made that the plugin has to follow. Anything else needs the owner's decision before any code, and an open-ended "what else could be improved" is not a task. It also records two things the 3.1.1 and 3.1.2 rollouts taught: a temporary setting on a running install is undone in the same piece of work that made it, and the first commit after a tag moves the version past it. The line about where wheels are built from named a release branch and `v3.1.0rcN` tags; releases are cut from `main` at `v<major>.<minor>.<patch>`. No code changes.
+
 ## [3.1.2] - 2026-09-21
 
 3.1.2 is three things that turned up on the day 3.1.1 went out, two of them while rolling 3.1.1 onto our own instances. What is remembered and how it is asked for do not change, and there is no schema step.
