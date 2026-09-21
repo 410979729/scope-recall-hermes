@@ -194,12 +194,24 @@ def _queued_work_types(storage, clock, context, started: float, budget: float, k
 CANDIDATE_QUEUE_CEILING = PROCESS_BATCH_LIMIT * 12
 
 
+#: Seconds a pass may still spend handing untouched leases back once its budget
+#: is gone.  The usual reason a group is cut short is that the pass ran out of
+#: time, and that was the one case in which nothing was handed back: every item
+#: claimed and never looked at kept its spent attempt, and after three such
+#: passes it was failed as ``lease_exhausted`` without having been tried once.
+#: Seen on an instance whose ``max_items`` had been left at 1000: 888 embeddings
+#: in an hour, through all four automatic recoveries.  This is one page of
+#: UPDATEs; the runtime keeps a margin of the handed deadline for what follows
+#: the drain and the watchdog waits ``KILL_GRACE_SECONDS`` beyond it.
+RELEASE_SECONDS = 1.0
+
+
 def _release_group(storage, clock, context, members, error_code, started: float, budget: float) -> None:
     """Return leased work nobody will look at this pass, without spending its attempt."""
-    if not members or _remaining(started, clock, budget) <= 0:
+    if not members:
         return
     try:
-        with storage.write(context, remaining_seconds=_remaining(started, clock, budget)) as tx:
+        with storage.write(context, remaining_seconds=max(_remaining(started, clock, budget), RELEASE_SECONDS)) as tx:
             now = clock.utc_now()
             for member in members:
                 tx.work.defer_without_attempt(*member.lease, now=now,

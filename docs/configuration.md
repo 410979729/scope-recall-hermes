@@ -117,7 +117,7 @@ defaults a standalone worker pass uses.
 
 | Key | Type | Default | Bounds | Meaning |
 |-----|------|---------|--------|---------|
-| `max_items` | int | `32` | 1–32 | Most work items one pass may reserve and claim. Also caps an operator retry, which takes at most `min(8, max_items)`. |
+| `max_items` | int | `32` | 1–1000 | Most work items one pass may reserve and claim. Also caps an operator retry, which takes at most `min(8, max_items)`. A pass claims its embedding group in one page of up to this many items; what it cannot finish inside `drain_seconds` is handed back unspent and claimed again by the next pass. A value far above the default is for a one-off drain of a large embedding backlog and buys nothing once that is gone: put it back afterwards. |
 | `drain_seconds` | number | `120.0` | 0.001–120.0 | Wall budget for the whole pass. The drain, the lock wait and the finalize share this one deadline, and it is the watchdog's kill budget. |
 | `request_seconds` | number | `45.0` | 0.001–45.0 | Per-call ceiling clamped onto every model and native boundary: consolidation, candidate evaluation, embedding, vector purge, and the vector-open slice. |
 | `lease_seconds` | number | `60.0` | `request_seconds`–3600.0 | How long a claimed item stays leased to `owner_id` before a later pass may reclaim it as stale. Must be at least `request_seconds`. |
