@@ -23,7 +23,7 @@ without that receipt and so does 3.1.1.** Every accuracy figure in the notes was
 our own corpora, by hand, and there is no regression suite you or we can re-run
 automatically -- that is the first item in *What is not finished*. Read a green
 test count as exactly that, never as a passing release gate. Integration is
-2061/0 and packaging 135/0, both exit 0.
+2062/0 and packaging 136/0, both exit 0.
 
 ## For agents: install or upgrade on the user's behalf
 
