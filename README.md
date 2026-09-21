@@ -2,26 +2,28 @@
 
 Scope Recall v3 is a bounded local memory core with SQLite as the authority and rebuildable vector companions. It provides host adapters for Hermes and Codex, including Codex MCP tools when the optional `codex` extra is installed. The public package is `hermes-scope-recall`; the Python import is `scope_recall`; the host wrapper identity remains `scope-recall`.
 
-This checkout is `3.1.1rc1`, the candidate line after the `3.1.0` release.
+This is `3.1.1`, a maintenance release of the 3.1 line: what running `3.1.0` on real
+instances turned up, fixed. Its notes are the `[3.1.1]` section of
+[CHANGELOG.md](CHANGELOG.md); upgrading from `3.1.0` is `pip install -U` and a host restart.
 3.1 is a rebuild rather than a patch on 2.0: production
 code went from 141,044 lines to 48,289, memory now accumulates evidence before a
 fact is written rather than judging one sentence on sight, and hosts sit behind
-adapters instead of the core being shaped around Hermes. The release notes are
+adapters instead of the core being shaped around Hermes. The notes for the rebuild are
 the `[3.1.0]` section of [CHANGELOG.md](CHANGELOG.md), and section 9 there is the
 migration procedure for a 2.0.1 memory database. SQLite remains the only fact
 authority; host adapters share the same contracts.
 
-**What is not verified.** `scripts/check.py --tier release` runs 900 tests with
+**What is not verified.** `scripts/check.py --tier release` runs 2,183 tests with
 none failing, but reports `missing_gates: ["model"]`. That gate wants a P18
 formal acceptance receipt: denominators of 120 independent core items and 240
 paired variants, evidence marked `real`, a method adjudication accepted by a
 party independent of whoever wrote the code, and an independent semantic scorer.
-The P18 machinery is in this tree; the evaluation corpus is not. **3.1.0 ships
-without that receipt.** Every accuracy figure in the notes was measured by us, on
+The P18 machinery is in this tree; the evaluation corpus is not. **3.1.0 shipped
+without that receipt and so does 3.1.1.** Every accuracy figure in the notes was measured by us, on
 our own corpora, by hand, and there is no regression suite you or we can re-run
 automatically -- that is the first item in *What is not finished*. Read a green
 test count as exactly that, never as a passing release gate. Integration is
-1223/0 and packaging 129/0, both exit 0.
+2061/0 and packaging 135/0, both exit 0.
 
 ## For agents: install or upgrade on the user's behalf
 
@@ -37,17 +39,18 @@ checks yourself; do not ask the user to execute commands or govern old memories.
 
 Step-by-step Hermes and Codex instructions: [docs/install.md](docs/install.md).
 
-The wheel and sdist for `3.1.0` are attached to the
-[GitHub Release](https://github.com/410979729/scope-recall-hermes/releases/tag/v3.1.0)
-alongside `SHA256SUMS`. Install into the same isolated Python environment the
-host uses:
+The package is `hermes-scope-recall` on PyPI. Install it into the same isolated Python
+environment the host uses:
 
 ```text
-python -m pip install "<path-to-wheel>"
-python -m pip install "<path-to-wheel>[codex]"
+python -m pip install hermes-scope-recall==3.1.1
+python -m pip install "hermes-scope-recall[codex]==3.1.1"
 ```
 
-`3.1.0` is not on PyPI. To build it yourself from this checkout instead:
+The same wheel and sdist are attached to the
+[GitHub Release](https://github.com/410979729/scope-recall-hermes/releases/tag/v3.1.1)
+alongside `SHA256SUMS` and `RELEASE-PROVENANCE.json`, for an offline install
+(`python -m pip install "<path-to-wheel>"`). To build it yourself from this checkout instead:
 
 ```text
 python -m build --wheel
