@@ -13,7 +13,7 @@ import time
 from contextlib import contextmanager
 from datetime import timedelta
 from pathlib import Path
-from typing import Any, Iterable, Iterator
+from typing import Any, Callable, Iterable, Iterator
 
 from ..core.file_lock import advisory_file_lock
 from . import VectorRecord, VectorStore, VectorStoreCompatibilityError
@@ -38,6 +38,50 @@ def _covers_id_only(index: Any) -> bool:
     columns = [str(name).strip() for name in (getattr(index, "columns", None) or ())]
     kind = str(getattr(index, "index_type", None) or "").strip().lower().replace("-", "_")
     return columns == ["id"] and (not kind or kind in _SCALAR_INDEX_TYPES)
+
+
+def purge_request(*, members, agent_id, installation_id, partitions):
+    """The validated targets and governed partitions of one purge, for whichever store carries it out."""
+    if not isinstance(agent_id, str) or not agent_id or not isinstance(installation_id, str) or not installation_id:
+        raise ValueError("trusted purge identity required")
+    targets = {(entry["kind"], entry["ref"]) for entry in members}
+    if any(kind not in _PURGE_KINDS or not isinstance(ref, str) or not ref for kind, ref in targets):
+        raise ValueError("invalid purge members")
+    governed = {(entry["scope_id"], entry["embedding_space"]): entry["physical_scope_id"] for entry in partitions}
+    return targets, governed
+
+
+def governed_row_ids(rows: Iterable[dict[str, Any]], *, targets, governed, agent_id, installation_id,
+                     project_id, branch_id, check_budget: Callable[[], None] = lambda: None) -> list[str] | None:
+    """Ids of the governed rows among ``rows``, or ``None`` when any row cannot be classified.
+
+    One rule for every companion store: a row whose writer metadata cannot be
+    read makes the whole inventory unknown, and an unknown inventory is never
+    acknowledged as empty.
+    """
+    scopes = {scope for scope, _ in governed}
+    matched: list[str] = []
+    seen: set[str] = set()
+    for row in rows:
+        check_budget()
+        row_id = row.get("id")
+        if type(row_id) is not str or not row_id or row_id in seen:
+            return None
+        seen.add(row_id)
+        metadata = _purge_metadata(row)
+        if metadata is None:
+            return None
+        if (metadata["agent_id"], metadata["installation_id"]) != (agent_id, installation_id):
+            continue
+        if (metadata["object_kind"], metadata["object_ref"]) not in targets:
+            continue
+        if metadata["logical_scope_id"] not in scopes or (metadata["project_id"], metadata["branch_id"]) != (project_id, branch_id):
+            continue
+        partition = governed.get((metadata["logical_scope_id"], metadata["embedding_space"]))
+        if partition is None or row["scope_id"] != partition:
+            return None
+        matched.append(row_id)
+    return matched
 
 
 def _purge_metadata(row: dict[str, Any]) -> dict[str, Any] | None:
@@ -168,9 +212,10 @@ class LanceVectorStore(VectorStore):
     # -- writes ----------------------------------------------------------------
 
     @contextmanager
-    def physical_write_lock(self) -> Iterator[None]:
+    def physical_write_lock(self, *, timeout_seconds: float | None = None) -> Iterator[None]:
         """Hold the cross-process Lance mutation lock."""
-        with advisory_file_lock(self.db_path.parent / f".{self.db_path.name}.scope-recall-write.lock"):
+        with advisory_file_lock(self.db_path.parent / f".{self.db_path.name}.scope-recall-write.lock",
+                                timeout_seconds=timeout_seconds):
             yield
 
     def upsert_records_locked(self, rows: Iterable[dict[str, Any]]) -> None:
@@ -194,6 +239,34 @@ class LanceVectorStore(VectorStore):
         with self.physical_write_lock():
             self.upsert_records_locked(rows)
 
+    def fenced_upsert_records(
+        self, rows: Iterable[dict[str, Any]], *, guard: Callable[[], bool], remaining_seconds: float,
+    ) -> bool:
+        """Commit ``rows`` in one Lance transaction, only if ``guard`` still approves under the native lock.
+
+        The worker publishes every embedding through this fenced form
+        (``adapters.lance.LanceIndexWriter``).  On Windows the store is the
+        helper-process one, and the helper asks the guard with the native lock
+        held (``_lance_worker.fenced_upsert``).  Everywhere else
+        ``build_vector_store`` selects this in-process store, which did not
+        have the method: every publication failed with
+        ``fenced_upsert_unsupported`` and the companion stayed empty (#99).
+        The order here is the helper's: lock, guard, one merge.
+        """
+        if not callable(guard):
+            raise TypeError("guard must be callable")
+        if type(remaining_seconds) not in (int, float) or not math.isfinite(float(remaining_seconds)) or remaining_seconds <= 0:
+            raise RuntimeError("native vector fence deadline exhausted")
+        payload = list(rows)
+        try:
+            with self.physical_write_lock(timeout_seconds=float(remaining_seconds)):
+                if not guard():
+                    return False
+                self.upsert_records_locked(payload)
+                return True
+        except TimeoutError as exc:
+            raise RuntimeError("native vector fence deadline exhausted") from exc
+
     def _delete_ids_locked(self, ids: Iterable[str]) -> None:
         quoted = ", ".join(_sql_quote(item) for item in ids)
         self._fresh_table().delete(f"id IN ({quoted})")
@@ -204,26 +277,30 @@ class LanceVectorStore(VectorStore):
         with self.physical_write_lock():
             self._delete_ids_locked(ids)
 
-    def purge_governed_members(self, *, members, agent_id, installation_id,
-                               partitions, project_id, branch_id, budget_seconds) -> bool:
+    def purge_governed_members(self, *, members, agent_id, installation_id, partitions, project_id, branch_id,
+                               budget_seconds: float | None = None, remaining_seconds: float | None = None) -> bool:
         """Remove every revision of the governed members and acknowledge only under the publication lock.
 
         Inputs are opaque identities authorized by the host; no truth database
         or model is touched here.  A row this store cannot classify makes the
         whole inventory unknown, and an unknown inventory is never acknowledged
         as empty.
+
+        The budget has two names because this method has two callers.  The
+        Windows helper process passes ``budget_seconds``, what is left of its
+        parent's deadline.  ``adapters.lance.LancePurgePort`` passes
+        ``remaining_seconds`` to whichever store it holds, and off Windows
+        that is this one: the keyword was refused with a ``TypeError`` the port
+        turns into "not purged", so a forget never finished there (#99).
         """
+        if budget_seconds is None:
+            budget_seconds = remaining_seconds
         if type(budget_seconds) not in (int, float) or not math.isfinite(budget_seconds) or budget_seconds <= 0:
             raise ValueError("positive finite purge budget required")
-        if not isinstance(agent_id, str) or not agent_id or not isinstance(installation_id, str) or not installation_id:
-            raise ValueError("trusted purge identity required")
         if not members or not partitions:
             return False
-        targets = {(entry["kind"], entry["ref"]) for entry in members}
-        if any(kind not in _PURGE_KINDS or not isinstance(ref, str) or not ref for kind, ref in targets):
-            raise ValueError("invalid purge members")
-        governed = {(entry["scope_id"], entry["embedding_space"]): entry["physical_scope_id"] for entry in partitions}
-        scopes = {scope for scope, _ in governed}
+        targets, governed = purge_request(members=members, agent_id=agent_id, installation_id=installation_id,
+                                          partitions=partitions)
         deadline = time.monotonic() + float(budget_seconds)
 
         def check_budget() -> None:
@@ -231,30 +308,11 @@ class LanceVectorStore(VectorStore):
                 raise RuntimeError("native vector purge deadline exhausted")
 
         def inventory() -> list[str] | None:
-            """Ids of governed rows, or ``None`` when any row cannot be classified."""
             check_budget()
-            matched: list[str] = []
-            seen: set[str] = set()
-            for row in self._table_rows(["id", "scope_id", "source", "target"]):
-                check_budget()
-                row_id = row.get("id")
-                if type(row_id) is not str or not row_id or row_id in seen:
-                    return None
-                seen.add(row_id)
-                metadata = _purge_metadata(row)
-                if metadata is None:
-                    return None
-                if (metadata["agent_id"], metadata["installation_id"]) != (agent_id, installation_id):
-                    continue
-                if (metadata["object_kind"], metadata["object_ref"]) not in targets:
-                    continue
-                if metadata["logical_scope_id"] not in scopes or (metadata["project_id"], metadata["branch_id"]) != (project_id, branch_id):
-                    continue
-                partition = governed.get((metadata["logical_scope_id"], metadata["embedding_space"]))
-                if partition is None or row["scope_id"] != partition:
-                    return None
-                matched.append(row_id)
-            return matched
+            return governed_row_ids(
+                self._table_rows(["id", "scope_id", "source", "target"]), targets=targets, governed=governed,
+                agent_id=agent_id, installation_id=installation_id, project_id=project_id, branch_id=branch_id,
+                check_budget=check_budget)
 
         check_budget()
         with self.physical_write_lock():

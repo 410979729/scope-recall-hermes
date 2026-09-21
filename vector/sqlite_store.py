@@ -300,6 +300,40 @@ class SQLiteBruteForceVectorStore(VectorStore):
             self.upsert_records(payload)
         return True
 
+    def purge_governed_members(self, *, members, agent_id, installation_id,
+                               partitions, project_id, branch_id, remaining_seconds: float) -> bool:
+        """Remove every revision of the governed members; acknowledge only an inventory verified empty.
+
+        This companion could not be purged at all.  That did not matter while
+        it could not be published to either (#85); once it could, a forget left
+        its vector rows behind and its purge work retrying for good.  The rules
+        are the native store's, from the same code: opaque identities only, a
+        row that cannot be classified makes the inventory unknown, and an
+        unknown inventory is never acknowledged.
+        """
+        from .store import governed_row_ids, purge_request
+
+        if type(remaining_seconds) not in (int, float) or not math.isfinite(float(remaining_seconds)) or remaining_seconds <= 0:
+            raise RuntimeError("vector purge deadline exhausted")
+        if not members or not partitions:
+            return False
+        targets, governed = purge_request(members=members, agent_id=agent_id, installation_id=installation_id,
+                                          partitions=partitions)
+        select = dict(targets=targets, governed=governed, agent_id=agent_id, installation_id=installation_id,
+                      project_id=project_id, branch_id=branch_id)
+
+        def rows() -> list[dict[str, Any]]:
+            found = self._require_conn().execute("SELECT id, scope_id, source, target FROM vector_records").fetchall()
+            return [dict(id=row["id"], scope_id=row["scope_id"], source=row["source"], target=row["target"]) for row in found]
+
+        with self._lock:
+            ids = governed_row_ids(rows(), **select)
+            if ids is None:
+                return False
+            if ids:
+                self.delete_by_ids(sorted(set(ids)))
+            return governed_row_ids(rows(), **select) == []
+
     def delete_by_ids(self, ids: list[str]) -> None:
         ids = [str(item) for item in ids if str(item)]
         if not ids:
