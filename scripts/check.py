@@ -140,6 +140,7 @@ SUITES = {
         "tests/host/hermes/test_runtime_bounds.py",
         "tests/host/hermes/test_runtime_wiring.py",
         "tests/host/hermes/test_operator_tools.py",
+        "tests/host/hermes/test_two_entries_one_store.py",
         "tests/host/hermes/test_reinjection.py",
         "tests/host/test_runtime_config_threshold.py",
         "tests/host/codex/test_env_file_credentials.py",

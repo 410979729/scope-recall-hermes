@@ -15,7 +15,7 @@ import stat
 import tempfile
 import threading
 import time
-from typing import Any
+from typing import Any, Mapping
 
 from scope_recall.contracts import InstanceBinding
 from scope_recall.core import CoreConfig, MemoryCore
@@ -68,8 +68,36 @@ FORGET_GUIDANCE = (
 )
 
 
-def render_host_recall_context(canonical_text: str | None) -> str:
-    return f"{RECALL_CONTEXT_GUIDANCE}\n{canonical_text}" if canonical_text else ""
+#: Added when an item came in through another entry of a shared store.  The
+#: reader has to know which entry it is itself, or every item looks like its own.
+ENTRY_GUIDANCE = (
+    "entries names the agent each item came in through. You are {name} ({entry_id}): "
+    "an item from another entry is that agent's experience, not yours; say which "
+    "agent it came from when you use it."
+)
+
+
+def render_host_recall_context(
+    canonical_text: str | None,
+    *,
+    context: Mapping[str, Any] | None = None,
+    entry: tuple[str, str] | None = None,
+) -> str:
+    """The injected memory: guidance, then the canonical items.
+
+    ``entry`` is the reader's own (id, display name) in a shared store, and
+    ``context`` the prepared items; together they decide the entry guidance.
+    """
+    if not canonical_text:
+        return ""
+    guidance = RECALL_CONTEXT_GUIDANCE
+    if entry is not None and context is not None and any(
+        label.get("id") != entry[0]
+        for item in context.get("items") or ()
+        for label in item.get("entries") or ()
+    ):
+        guidance = f"{guidance} {ENTRY_GUIDANCE.format(entry_id=entry[0], name=entry[1])}"
+    return f"{guidance}\n{canonical_text}"
 
 
 def _is_regular_nonreparse_file(path: Path) -> bool:
@@ -115,6 +143,7 @@ def _bindings_match(expected: InstanceBinding, actual: InstanceBinding) -> bool:
         and expected.data_directory.resolve() == actual.data_directory.resolve()
         and expected.scope_ids == actual.scope_ids
         and expected.test_mode == actual.test_mode
+        and expected.installation_kind == actual.installation_kind
     )
 
 
@@ -316,6 +345,10 @@ def launch_audience_worker(host: TrustedHostRuntime, *, session_id: str,
         runtime = host._runtime
         if runtime is None or host._config_path is None:
             return (GAP_UNCONFIGURED,)
+        if runtime.config.binding.installation_kind == "shared":
+            # A shared store has one worker of its own, with its own credentials;
+            # an entry's process carries the entry's (``runtime/worker_launch.py``).
+            return ()
         if (type(session_id) is not str or not session_id.strip()
                 or type(allowed_scope_ids) is not frozenset or not allowed_scope_ids
                 or not allowed_scope_ids <= runtime.config.binding.scope_ids):

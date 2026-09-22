@@ -11,7 +11,7 @@ import time
 
 import pytest
 
-from scope_recall.contracts import ContractError, InstanceBinding, MAX_BINDING_SCOPES, TrustedContext
+from scope_recall.contracts import ContractError, InstanceBinding, MAX_BINDING_SCOPES, MAX_SHARED_SCOPES, TrustedContext
 from scope_recall.core import capture_inbox
 from scope_recall.core.schema import SCHEMA_VERSION
 from scope_recall.core.storage import SQLiteStorage
@@ -211,12 +211,22 @@ def test_registering_scopes_lets_an_entry_with_them_open_the_store(shared):
 
 def test_the_store_never_holds_more_scopes_than_its_worker_can_bind(shared):
     storage, binding = shared
-    room = MAX_BINDING_SCOPES - len(SCOPES)
+    room = MAX_SHARED_SCOPES - len(SCOPES)
     with storage.write(shared_context(binding)) as tx:
         assert tx.register_scopes({f"TEST-g{i}" for i in range(room)}) == room
         with pytest.raises(ContractError) as exc:
             tx.register_scopes({"TEST-one-too-many"})
     assert (exc.value.code, exc.value.field) == ("INPUT_INVALID", "scope_limit")
+
+
+def test_a_shared_binding_carries_every_entry_s_scopes_and_a_local_one_what_it_did(tmp_path):
+    over_local = frozenset(f"TEST-g{i}" for i in range(MAX_BINDING_SCOPES + 1))
+    with pytest.raises(ContractError) as exc:
+        InstanceBinding("TEST-agent", "TEST-install", tmp_path, over_local, True)
+    assert (exc.value.code, exc.value.field) == ("IDENTITY_UNBOUND", "scope_ids")
+    assert shared_binding(tmp_path, over_local).scope_ids == over_local
+    with pytest.raises(ContractError):
+        shared_binding(tmp_path, frozenset(f"TEST-g{i}" for i in range(MAX_SHARED_SCOPES + 1)))
 
 
 # --- moving --------------------------------------------------------------------------------

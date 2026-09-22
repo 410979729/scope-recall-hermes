@@ -17,13 +17,14 @@ from scope_recall.contracts import (
     bounded_source_context,
 )
 
+from ..runtime_wiring import RUNTIME_CONFIG_FILENAME
 from .audiences import LOCAL_PLATFORMS, LOCAL_USER_ID, approved_local_platforms
 from .installation import (
     HermesIdentityError,
     InstallationManifest,
     assert_binding_matches_manifest,
     is_archive_scope,
-    load_installation_manifest,
+    load_binding_for_home,
     SCHEMA_VERSION,
 )
 
@@ -85,6 +86,10 @@ class HermesRuntimeScope:
     agent_workspace: str
     agent_context: str
     gateway_session_key: str = ""
+    #: The shared store entry this session speaks for; empty in a local store.  It
+    #: travels with a capture that waits in the inbox, so a replay is checked
+    #: against the grants of the entry that made it, not the replayer's.
+    entry_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -120,6 +125,32 @@ class HermesIdentity:
     def shared_scope_id(self) -> str:
         return self.manifest.audience_scopes.get("shared", self.owner_private_scope_id)
 
+    @property
+    def entry_id(self) -> str | None:
+        return self.manifest.entry_id
+
+    @property
+    def runtime_config_path(self) -> Path | None:
+        """An entry's own runtime config: its model routes, beside its pointer.
+
+        The store's directory holds the shared worker's, which is not the
+        entry's to load.  ``None`` for a local installation, whose default is
+        found beside its store.
+        """
+        if self.entry_id is None:
+            return None
+        return self.hermes_home / "scope-recall" / RUNTIME_CONFIG_FILENAME
+
+    def stored_session_id(self, session_id: str | None = None) -> str:
+        """The session id a context carries into storage.
+
+        Two entries of a shared store can see the same host session id, so there
+        it carries the entry.  Only what reaches storage does: the host
+        dispatches its hooks by its own id (``hooks._active_adapter``).
+        """
+        active = self.session_id if session_id is None else session_id
+        return f"{self.entry_id}:{active}" if self.entry_id is not None else active
+
     def trusted_context(
         self,
         *,
@@ -136,6 +167,7 @@ class HermesIdentity:
         active_session = session_id if session_id is not None else self.session_id
         if not active_session.strip():
             raise HermesIdentityError("session_id is required")
+        stored_session = self.stored_session_id(active_session)
         scopes = self.writable_scope_ids if mutation else self.runtime_audience.allowed_scope_ids
         if not scopes:
             raise ContractError("ACCESS_DENIED")
@@ -157,11 +189,11 @@ class HermesIdentity:
             self.scope.chat_id,
             self.scope.thread_id,
             self.scope.agent_workspace,
-            active_session,
+            stored_session,
         )
         return TrustedContext(
             self.binding,
-            active_session,
+            stored_session,
             scopes,
             cast(Origin, resolved_origin),
             project_id=project_id,
@@ -170,6 +202,7 @@ class HermesIdentity:
             environment_revision=environment_revision,
             recent_messages=recent_messages,
             source_principal=self.source_principal(cast(Origin, resolved_origin)),
+            entry_id=self.entry_id,
         )
 
     def source_principal(self, origin: Origin) -> TrustedSourcePrincipal:
@@ -188,17 +221,20 @@ class HermesIdentity:
                     self.scope.user_id,
                 ),
             )
+        # The owner is one person whichever entry is spoken to; each entry's
+        # assistant and host are its own.
+        entry = (self.entry_id,) if self.entry_id is not None else ()
         if origin == "assistant_visible":
             return TrustedSourcePrincipal(
                 "assistant",
                 "verified",
                 _opaque_ref(
-                    "hermes-assistant", self.binding.installation_id, self.scope.agent_identity,
+                    "hermes-assistant", self.binding.installation_id, self.scope.agent_identity, *entry,
                 ),
             )
         if origin == "host_generated":
             return TrustedSourcePrincipal(
-                "host", "verified", _opaque_ref("hermes-host", self.binding.installation_id),
+                "host", "verified", _opaque_ref("hermes-host", self.binding.installation_id, *entry),
             )
         kinds = {
             "tool_observation": "tool",
@@ -208,6 +244,18 @@ class HermesIdentity:
             "imported": "unknown",
         }
         return TrustedSourcePrincipal(cast(PrincipalKind, kinds.get(origin, "unknown")), "unresolved")
+
+
+def host_scope_payload(scope: HermesRuntimeScope) -> dict[str, str]:
+    """What a capture waiting in the inbox keeps of its host scope.
+
+    The entry is kept only in a shared store, so a local store's payload is
+    what it was.
+    """
+    payload = asdict(scope)
+    if not payload["entry_id"]:
+        del payload["entry_id"]
+    return payload
 
 
 def trusted_source_context(scope: HermesRuntimeScope) -> SourceContext | None:
@@ -299,10 +347,12 @@ def bind_hermes_identity(session_id: str, **kwargs: object) -> HermesIdentity:
     if not hermes_home.is_absolute():
         raise HermesIdentityError("hermes_home must be absolute")
 
-    manifest = load_installation_manifest(hermes_home)
+    manifest = load_binding_for_home(hermes_home)
     db_path = manifest.data_directory / "memory.sqlite3"
     if not db_path.is_file():
         raise HermesIdentityError("verified core database is required")
+    if manifest.entry_id is not None and len(manifest.entry_id) + 1 + len(session_id) > 240:
+        raise HermesIdentityError("session_id is required")
 
     platform = _normalize_platform(kwargs.get("platform"))
     local_platforms = approved_local_platforms(manifest.owner_principals)
@@ -347,6 +397,7 @@ def bind_hermes_identity(session_id: str, **kwargs: object) -> HermesIdentity:
         agent_identity=agent_identity,
         agent_workspace=agent_workspace,
         agent_context=agent_context,
+        entry_id=manifest.entry_id or "",
     )
     runtime_audience = resolve_runtime_audience(manifest, scope)
     binding = manifest.to_binding()
@@ -394,6 +445,9 @@ def assert_same_installation(current: HermesIdentity | None, fresh: HermesIdenti
         return
     if current.hermes_home != fresh.hermes_home:
         raise HermesIdentityError("hermes_home rebinding is not allowed")
+    if current.entry_id != fresh.entry_id:
+        # Two entries can hold the same scopes, and so the same binding.
+        raise HermesIdentityError("entry rebinding is not allowed")
     assert_binding_matches_manifest(current.binding, fresh.manifest)
     assert_binding_matches_manifest(fresh.binding, fresh.manifest)
     if current.binding != fresh.binding:

@@ -83,10 +83,15 @@ def host_source_key(
     event_kind: str,
     event_id: str,
     revision: int = 1,
+    entry_id: str | None = None,
 ) -> str:
     safe_kind = event_kind.strip() or "event"
     safe_id = event_id.strip() or "unknown"
-    return f"hermes:{installation_id}:{session_id}:{safe_kind}:{safe_id}@{revision}"
+    # Entries of a shared store share its installation id and can see the same
+    # host session and turn ids -- the owner talking to two bots -- so there the
+    # entry is part of the key.  A local store's keys are unchanged.
+    owner = f"{installation_id}:{entry_id}" if entry_id is not None else installation_id
+    return f"hermes:{owner}:{session_id}:{safe_kind}:{safe_id}@{revision}"
 
 
 def extract_user_text(value: object) -> str:
@@ -126,6 +131,7 @@ def pre_llm_source_event(
     return ledger.observe(
         source_event_key=host_source_key(
             installation_id=context.binding.installation_id,
+            entry_id=context.entry_id,
             session_id=session_id,
             event_kind="user",
             event_id=turn_id or "turn",
@@ -160,6 +166,7 @@ def sync_turn_source_events(
     user_event, user_gaps, user_identity = ledger.observe(
         source_event_key=host_source_key(
             installation_id=context.binding.installation_id,
+            entry_id=context.entry_id,
             session_id=session_id,
             event_kind="user",
             event_id=turn_id or "turn",
@@ -180,6 +187,7 @@ def sync_turn_source_events(
         assistant_event, assistant_gaps, assistant_identity = ledger.observe(
             source_event_key=host_source_key(
                 installation_id=context.binding.installation_id,
+                entry_id=context.entry_id,
                 session_id=session_id,
                 event_kind="sync_assistant",
                 event_id=turn_id or "turn",
@@ -224,6 +232,7 @@ def tool_call_source_event(
     return ledger.observe(
         source_event_key=host_source_key(
             installation_id=context.binding.installation_id,
+            entry_id=context.entry_id,
             session_id=session_id,
             event_kind="tool",
             event_id=tool_call_id or tool_name or "tool",

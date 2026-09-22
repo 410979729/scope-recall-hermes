@@ -1,7 +1,7 @@
 """Hermes MemoryProvider adapter that delegates recall/capture to the core boundary."""
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, replace
+from dataclasses import dataclass, replace
 import copy
 import inspect
 import json
@@ -32,11 +32,12 @@ from .identity import (
     HermesRuntimeScope,
     assert_same_installation,
     bind_hermes_identity,
+    host_scope_payload,
     resolve_runtime_audience,
     switch_hermes_identity,
     trusted_source_context,
 )
-from .installation import assert_binding_matches_manifest, assert_core_binding_matches, load_installation_manifest
+from .installation import assert_binding_matches_manifest, assert_core_binding_matches, load_binding_for_home
 from .outcomes import TurnOutcomeTracker
 from .protocol import PublicMemoryProvider
 from .runtime_wiring import GAP_WORKER_LAUNCH_FAILED, HermesHostRuntime, TrustedHostRuntime, attach_trusted_host_runtime
@@ -209,7 +210,7 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
         fresh = bind_hermes_identity(session_id, **kwargs)
         with self._lock:
             assert_same_installation(self._identity, fresh)
-            runtime_path = kwargs.get("trusted_runtime_config_path")
+            runtime_path = kwargs.get("trusted_runtime_config_path") or fresh.runtime_config_path
             if self._host_runtime is None:
                 self._host_runtime = attach_trusted_host_runtime(
                     config_path=runtime_path,
@@ -382,7 +383,7 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
             core = self._require_core()
             if isinstance(core, MemoryCore):
                 receipt = core.record_host_event(context, event, scope_id=scope_id,
-                    host_scope=asdict(self._retry_captures[identity].host_scope) if replay and identity in self._retry_captures else asdict(self._require_identity().scope),
+                    host_scope=host_scope_payload(self._retry_captures[identity].host_scope if replay and identity in self._retry_captures else self._require_identity().scope),
                     remaining_seconds=max(.001, remaining_seconds - (time.monotonic() - started)))
             else:
                 receipt = core.record_event(context, event, scope_id=scope_id,
@@ -407,7 +408,7 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
         if identity is not None:
             self._ledger.confirm(identity)
             self._retry_captures.pop(identity, None)
-        for write in receipt.event_refs if context.session_id == self._require_identity().session_id else ():
+        for write in receipt.event_refs if context.session_id == self._require_identity().stored_session_id() else ():
             ref = f"{write.ref}@{write.revision}"
             if ref in self._current_source_refs:
                 continue
@@ -462,7 +463,7 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
             return
         deadline = time.monotonic() + _CAPTURE_TIMEOUT_S
         try:
-            manifest = load_installation_manifest(identity.hermes_home)
+            manifest = load_binding_for_home(identity.hermes_home)
             assert_binding_matches_manifest(identity.binding, manifest)
             current_audience = resolve_runtime_audience(manifest, identity.scope)
         except (HermesIdentityError, ContractError, OSError, ValueError, TypeError):
@@ -514,7 +515,10 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
         self._diagnostics.last_prefetch_request_id = packet["request_id"]
         self._diagnostics.last_render_ref = preparation.render_ref
         self._pre_llm_pending = False
-        return render_host_recall_context(preparation.canonical_text)
+        return render_host_recall_context(
+            preparation.canonical_text, context=preparation.context,
+            entry=(identity.entry_id, identity.manifest.entry_name) if identity.entry_id is not None else None,
+        )
 
     def queue_prefetch(self, query: str, *, session_id: str = "") -> None:
         return None
@@ -711,6 +715,9 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
                     # Persisted work remains recoverable on the next wakeup.
                     pass
                 self._replace_worker_launch_gaps(gaps)
+                return
+            elif identity.entry_id is not None:
+                # A shared store is drained by its own worker, never by an entry.
                 return
             else:
                 # Basic mode retains the original bounded Core worker.  It is

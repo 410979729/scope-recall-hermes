@@ -232,6 +232,7 @@ class RuntimeInstanceConfig:
             data_directory=absolute_path("data_directory", binding_raw.get("data_directory")),
             scope_ids=frozenset(binding_raw.get("scope_ids") or ()),
             test_mode=binding_raw.get("test_mode", False),
+            installation_kind=binding_raw.get("installation_kind", "local"),
         )
         aux_raw = raw.get("auxiliary")
         if aux_raw is None:
@@ -701,7 +702,9 @@ def build_runtime_instance(
         retrieval_policy=config.recall_policy(),
     )
     ingress_authorizer = None
-    if config.host_adapter == "hermes":
+    # A shared store's inbox holds its Hermes entries' captures, whichever
+    # process replays them; each is checked against the entry that made it.
+    if config.host_adapter == "hermes" or config.binding.installation_kind == "shared":
         from ..adapters.hermes.authorization import build_ingress_authorizer
 
         ingress_authorizer = build_ingress_authorizer(config.binding)

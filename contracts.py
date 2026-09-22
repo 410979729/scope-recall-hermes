@@ -501,9 +501,13 @@ INSTALLATION_KINDS = frozenset({"local", "shared"})
 #: An entry names the agent a source came in through.  Operator-assigned, never
 #: model-supplied; ``local`` is what every row of a store that predates entries carries.
 ENTRY_ID = re.compile(r"[a-z][a-z0-9-]{1,31}")
-#: What one binding can carry.  A shared store's worker binds every scope the
-#: store holds, so attaching an entry is refused before it would pass this.
+#: What one local binding can carry.
 MAX_BINDING_SCOPES = 128
+#: What one shared binding can carry.  A shared store's worker binds every scope
+#: the store holds, and each instance brings its own: the three pilot instances
+#: have 221 distinct scopes between them, all five 369.  Attaching an entry is
+#: refused before the store would pass this.
+MAX_SHARED_SCOPES = 1024
 
 
 @dataclass(frozen=True)
@@ -521,14 +525,15 @@ class InstanceBinding:
                 raise ContractError("IDENTITY_UNBOUND")
         if not isinstance(self.data_directory, Path) or not self.data_directory.is_absolute():
             raise ContractError("IDENTITY_UNBOUND", "data_directory")
-        if type(self.scope_ids) is not frozenset or not self.scope_ids or len(self.scope_ids) > MAX_BINDING_SCOPES:
+        if type(self.installation_kind) is not str or self.installation_kind not in INSTALLATION_KINDS:
+            raise ContractError("IDENTITY_UNBOUND", "installation_kind")
+        limit = MAX_SHARED_SCOPES if self.installation_kind == "shared" else MAX_BINDING_SCOPES
+        if type(self.scope_ids) is not frozenset or not self.scope_ids or len(self.scope_ids) > limit:
             raise ContractError("IDENTITY_UNBOUND", "scope_ids")
         if any(type(s) is not str or not s.strip() or len(s) > 240 for s in self.scope_ids):
             raise ContractError("IDENTITY_UNBOUND", "scope_ids")
         if type(self.test_mode) is not bool:
             raise ContractError("IDENTITY_UNBOUND", "test_mode")
-        if type(self.installation_kind) is not str or self.installation_kind not in INSTALLATION_KINDS:
-            raise ContractError("IDENTITY_UNBOUND", "installation_kind")
 
 
 @dataclass(frozen=True)

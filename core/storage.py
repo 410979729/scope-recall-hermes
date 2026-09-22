@@ -11,7 +11,7 @@ import os
 from pathlib import Path
 import sqlite3
 
-from ..contracts import (ENTRY_ID, MAX_BINDING_SCOPES, ContractError, InstanceBinding, SourceEvent, TrustedContext,
+from ..contracts import (ENTRY_ID, MAX_SHARED_SCOPES, ContractError, InstanceBinding, SourceEvent, TrustedContext,
                          validate_capture)
 from .truth_connection import TruthDatabaseMode, connect_truth_database
 from . import lexical_index
@@ -460,7 +460,7 @@ class Transaction:
         if not scope_ids or any(type(s) is not str or not s.strip() or len(s) > 240 for s in scope_ids):
             raise ContractError("INPUT_INVALID", "scope_ids")
         existing = frozenset(r[0] for r in conn.execute("SELECT scope_id FROM instance_scopes"))
-        if len(existing | scope_ids) > MAX_BINDING_SCOPES:
+        if len(existing | scope_ids) > MAX_SHARED_SCOPES:
             raise ContractError("INPUT_INVALID", "scope_limit")
         added = sorted(scope_ids - existing)
         conn.executemany("INSERT INTO instance_scopes(scope_id) VALUES (?)", [(s,) for s in added])
