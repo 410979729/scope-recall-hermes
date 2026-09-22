@@ -100,6 +100,8 @@ _LEXICAL_PROJECTION_1108 = (
     "CREATE INDEX lexical_source ON lexical_projection(event_id,source_revision)",
 )
 _SCHEMA_STEPS = {
+    1110: {"tables": ("entries",),
+           "columns": (("source_events", "entry_id"), ("instance_meta", "installation_kind"))},
     1109: {"before": _LEXICAL_PROJECTION_1108,
            "indexes": ("source_content", "lexical_postings_source", "source_ids"),
            "tables": ("source_authorizations", "authorization_payloads", "expired_vectors", "lexical_postings", "lexical_terms"),

@@ -50,11 +50,18 @@ class DisplaySnapshotPayload(TypedDict):
 
 SOURCE_CONTEXT_MAX_LEN = 64
 SOURCE_CONTEXTS_MAX_ITEMS = 8
+ENTRY_LABELS_MAX_ITEMS = 16
 
 
 class SourceContext(TypedDict):
     platform: str
     chat_type: str
+
+
+class EntryLabel(TypedDict):
+    """Which agent a shared store's item came in through, as a reader is shown it."""
+    id: str
+    name: str
 
 
 class SourcePrincipal(TypedDict):
@@ -125,6 +132,10 @@ class RecallItem(TypedDict):
     #: a claim its newest evidence.  Without it a reader holding two answers to
     #: one question cannot tell which came later.
     occurred_at: NotRequired[str]
+    #: In a shared store, the agents the item came in through: one for a source,
+    #: every entry behind its evidence for a claim.  Another entry's memory is
+    #: that agent's experience, not the reader's.  Absent in a local store.
+    entries: NotRequired[list[EntryLabel]]
 
 
 class RecallPacket(TypedDict):
@@ -273,6 +284,29 @@ def bounded_source_contexts(value: object) -> list[SourceContext] | None:
         if len(collected) >= SOURCE_CONTEXTS_MAX_ITEMS:
             break
     return collected or None
+
+
+def bounded_entry_labels(value: object) -> list[EntryLabel] | None:
+    """Distinct entries, each exactly ``{id, name}``, ordered by id; omitted when none are known."""
+
+    if type(value) is not list:
+        return None
+    collected: list[EntryLabel] = []
+    for item in value:
+        if type(item) is not dict or set(item) != {"id", "name"}:
+            continue
+        entry_id, name = item["id"], item["name"]
+        if type(entry_id) is not str or not ENTRY_ID.fullmatch(entry_id):
+            continue
+        if type(name) is not str or not name.strip() or len(name) > 32:
+            continue
+        label: EntryLabel = {"id": entry_id, "name": name}
+        if label in collected:
+            continue
+        collected.append(label)
+        if len(collected) >= ENTRY_LABELS_MAX_ITEMS:
+            break
+    return sorted(collected, key=lambda label: label["id"]) or None
 
 
 def _utc_time(value: object) -> bool:
@@ -460,6 +494,18 @@ class DisplaySnapshot:
         return {"order": self.order, "items": [{"artifact_ref": item.artifact_ref, "revision": item.revision} for item in self.items]}
 
 
+#: ``local`` is one host's own store, bound to its directory and exact scope set.
+#: ``shared`` is one store several entries attach to: its identity is a fixed id
+#: that survives a move, and each entry binds a subset of its scopes.
+INSTALLATION_KINDS = frozenset({"local", "shared"})
+#: An entry names the agent a source came in through.  Operator-assigned, never
+#: model-supplied; ``local`` is what every row of a store that predates entries carries.
+ENTRY_ID = re.compile(r"[a-z][a-z0-9-]{1,31}")
+#: What one binding can carry.  A shared store's worker binds every scope the
+#: store holds, so attaching an entry is refused before it would pass this.
+MAX_BINDING_SCOPES = 128
+
+
 @dataclass(frozen=True)
 class InstanceBinding:
     agent_id: str
@@ -467,6 +513,7 @@ class InstanceBinding:
     data_directory: Path
     scope_ids: frozenset[str]
     test_mode: bool = False
+    installation_kind: str = "local"
 
     def __post_init__(self) -> None:
         for value in (self.agent_id, self.installation_id):
@@ -474,12 +521,14 @@ class InstanceBinding:
                 raise ContractError("IDENTITY_UNBOUND")
         if not isinstance(self.data_directory, Path) or not self.data_directory.is_absolute():
             raise ContractError("IDENTITY_UNBOUND", "data_directory")
-        if type(self.scope_ids) is not frozenset or not self.scope_ids or len(self.scope_ids) > 128:
+        if type(self.scope_ids) is not frozenset or not self.scope_ids or len(self.scope_ids) > MAX_BINDING_SCOPES:
             raise ContractError("IDENTITY_UNBOUND", "scope_ids")
         if any(type(s) is not str or not s.strip() or len(s) > 240 for s in self.scope_ids):
             raise ContractError("IDENTITY_UNBOUND", "scope_ids")
         if type(self.test_mode) is not bool:
             raise ContractError("IDENTITY_UNBOUND", "test_mode")
+        if type(self.installation_kind) is not str or self.installation_kind not in INSTALLATION_KINDS:
+            raise ContractError("IDENTITY_UNBOUND", "installation_kind")
 
 
 @dataclass(frozen=True)
@@ -557,10 +606,15 @@ class TrustedContext:
     task_anchor: str | None = None
     environment_revision: str | None = None
     source_principal: TrustedSourcePrincipal | None = None
+    #: The entry this context speaks for, filled by an adapter from its attachment
+    #: pointer.  ``None`` outside a shared store, and for the shared worker.
+    entry_id: str | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.binding, InstanceBinding):
             raise ContractError("IDENTITY_UNBOUND")
+        if self.entry_id is not None and (type(self.entry_id) is not str or not ENTRY_ID.fullmatch(self.entry_id)):
+            raise ContractError("IDENTITY_UNBOUND", "entry_id")
         if type(self.session_id) is not str or not self.session_id.strip() or len(self.session_id) > 240:
             raise ContractError("IDENTITY_UNBOUND", "session_id")
         if type(self.allowed_scope_ids) is not frozenset or not self.allowed_scope_ids <= self.binding.scope_ids:

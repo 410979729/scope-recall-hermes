@@ -319,9 +319,9 @@ def test_a_store_written_by_the_previous_release_upgrades_on_first_open(tmp_path
     context = TrustedContext(binding, "TEST-session", frozenset({"TEST-scope"}), "human_direct")
     core = MemoryCore(CoreConfig(binding))
     status = core.status(context)
-    assert status.schema_version == SCHEMA_VERSION == 1109 and status.sources == 12
+    assert status.schema_version == SCHEMA_VERSION == 1110 and status.sources == 12
     with sqlite3.connect(path) as conn:
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 1109
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 1110
         assert conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal", "the previous release wrote a rollback-journal store"
         assert conn.execute("SELECT count(*) FROM evidence_links WHERE object_kind='episode'").fetchone()[0] == 12
         assert conn.execute("SELECT count(*) FROM work_items").fetchone()[0] == work
@@ -331,4 +331,4 @@ def test_a_store_written_by_the_previous_release_upgrades_on_first_open(tmp_path
     assert {"expired_vectors", "authorization_payloads", "source_authorizations"} <= tables
     episode, = core.episodes(replace(context, task_anchor="TEST-previous-release"))
     assert len(episode.evidence_refs) == 12
-    assert core.initialize().schema_version == 1109
+    assert core.initialize().schema_version == 1110

@@ -15,7 +15,8 @@ import re
 import time
 from typing import Iterable, cast
 
-from ..contracts import SOURCE_CONTEXTS_MAX_ITEMS, ContractError, SourceContext, bounded_source_context
+from ..contracts import (ENTRY_LABELS_MAX_ITEMS, SOURCE_CONTEXTS_MAX_ITEMS, ContractError, EntryLabel, SourceContext,
+                         bounded_source_context)
 from .claim_storage import parse_source_ref
 from .claims import canonical_time, select_effective, select_proposal
 from .delete_storage import canonical
@@ -191,6 +192,32 @@ def _source_contexts_metadata(contexts: list[SourceContext]) -> tuple[tuple[str,
     if not contexts:
         return ()
     return (("source_contexts", json.dumps(contexts, ensure_ascii=False, separators=(",", ":"))),)
+
+
+def evidence_entries(tx, evidence: Iterable[str]) -> list[EntryLabel]:
+    """The distinct entries behind ``evidence`` refs, ordered by id; none outside a shared store."""
+    if tx.context.binding.installation_kind != "shared":
+        return []
+    collected: list[EntryLabel] = []
+    for ref in evidence:
+        try:
+            source_ref, source_revision = parse_source_ref(ref)
+        except ContractError:
+            continue
+        source = tx.source(source_ref, source_revision)
+        label = tx.entry_label(source.entry_id) if source is not None else None
+        if label is None or label in collected:
+            continue
+        collected.append(label)
+        if len(collected) >= ENTRY_LABELS_MAX_ITEMS:
+            break
+    return sorted(collected, key=lambda label: label["id"])
+
+
+def _entries_metadata(labels: list[EntryLabel]) -> tuple[tuple[str, str], ...]:
+    if not labels:
+        return ()
+    return (("entries", json.dumps(labels, ensure_ascii=False, separators=(",", ":"))),)
 
 
 #: Claims one query scores after the SQL prefilter.  Scoring loads a claim's
@@ -644,6 +671,7 @@ class RetrievalStorage:
             True,
             ("event",),
             metadata=(*_source_contexts_metadata([context_meta] if context_meta is not None else []),
+                      *_entries_metadata([label] if (label := tx.entry_label(source.entry_id)) is not None else []),
                       *_occurred_metadata(tx.witnessed_at(source)),
                       *((("recall_echo", "true"),) if context.mode in LIVE_MODES and recall_echo(tx, source) else ())),
         )
@@ -700,6 +728,8 @@ class RetrievalStorage:
             # unasserted question or a missing condition.
             ("qualification_reason", version.reason),
             *_source_contexts_metadata(evidence_source_contexts(tx, evidence)),
+            # Every entry any of its evidence came in through.
+            *_entries_metadata(evidence_entries(tx, evidence)),
             # A claim was last said when its newest evidence was.
             *_occurred_metadata(_newest(witnessed)),
         )
@@ -749,6 +779,7 @@ class RetrievalStorage:
             status = "current" if candidate.revision == head["current_revision"] else "historical"
         metadata = [("gaps", json.dumps(tuple(object_gaps), ensure_ascii=False))]
         metadata.extend(_source_contexts_metadata(evidence_source_contexts(tx, evidence)))
+        metadata.extend(_entries_metadata(evidence_entries(tx, evidence)))
         if candidate.kind == "episode":
             metadata.extend(self._episode_source_metadata(tx, candidate.ref, obj))
         applies = applicability(context, obj.project_id, obj.branch_id)

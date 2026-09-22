@@ -33,13 +33,21 @@ def _json(value):
 def _context_payload(context):
     if context.import_provenance is not None or context.actor_origin == "imported":
         raise ContractError("ACCESS_DENIED", "ingress_import_attestation")
-    return dict(session_id=context.session_id, actor_origin=context.actor_origin,
-                allowed_scope_ids=sorted(context.allowed_scope_ids), project_id=context.project_id,
-                branch_id=context.branch_id, task_anchor=context.task_anchor,
-                environment_revision=context.environment_revision,
-                source_principal=(context.source_principal.to_payload()
-                                  if context.source_principal is not None else None),
-                display_snapshot=context.display_snapshot.to_payload() if context.display_snapshot else None)
+    payload = dict(session_id=context.session_id, actor_origin=context.actor_origin,
+                   allowed_scope_ids=sorted(context.allowed_scope_ids), project_id=context.project_id,
+                   branch_id=context.branch_id, task_anchor=context.task_anchor,
+                   environment_revision=context.environment_revision,
+                   source_principal=(context.source_principal.to_payload()
+                                     if context.source_principal is not None else None),
+                   display_snapshot=context.display_snapshot.to_payload() if context.display_snapshot else None)
+    # The entry is part of the original actor a replay keeps.  Whoever replays --
+    # the shared worker, or another entry's provider -- otherwise files the
+    # capture under its own name, and a busy shared store sends more captures
+    # through here, not fewer.  Only present in a shared store, so a local
+    # store's payload is byte-for-byte what it was and an old row still matches.
+    if context.entry_id is not None:
+        payload["entry_id"] = context.entry_id
+    return payload
 
 
 def enqueue(storage, clock, context, value, *, scope_id, host_scope, remaining_seconds=1.0):

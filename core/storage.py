@@ -11,10 +11,12 @@ import os
 from pathlib import Path
 import sqlite3
 
-from ..contracts import ContractError, InstanceBinding, SourceEvent, TrustedContext, validate_capture
+from ..contracts import (ENTRY_ID, MAX_BINDING_SCOPES, ContractError, InstanceBinding, SourceEvent, TrustedContext,
+                         validate_capture)
 from .truth_connection import TruthDatabaseMode, connect_truth_database
 from . import lexical_index
-from .schema import APPLICATION_ID, SCHEMA_VERSION, STATEMENTS, UPGRADE_CHAIN, upgrade_1105, upgrade_1106, upgrade_1107, upgrade_1108
+from .schema import (APPLICATION_ID, SCHEMA_VERSION, STATEMENTS, UPGRADE_CHAIN, upgrade_1105, upgrade_1106, upgrade_1107,
+                     upgrade_1108, upgrade_1109)
 from .events import lexical_terms, prepare_capture, query_terms
 
 
@@ -63,6 +65,7 @@ class StoredSource:
     suppressed: bool
     capture_gaps: tuple[str, ...] = ()
     import_provenance_sha256: str | None = None
+    entry_id: str = "local"
 
 
 @dataclass(frozen=True)
@@ -82,6 +85,20 @@ class Transaction:
         self.__active = True
         self.__poisoned = False
         self.__savepoint_sequence = 0
+        self.__entry_labels: dict[str, dict[str, str]] | None = None
+
+    def entry_label(self, entry_id: str) -> dict[str, str] | None:
+        """The ``{id, name}`` a reader is shown for a source's entry, or None.
+
+        None in a local store, whose rows all say ``local`` and whose recall
+        output is exactly what it was.  Read once per transaction.
+        """
+        if self.context.binding.installation_kind != "shared":
+            return None
+        if self.__entry_labels is None:
+            self.__entry_labels = {key: {"id": key, "name": value["name"]} for key, value in self.entries().items()}
+        label = self.__entry_labels.get(entry_id)
+        return dict(label) if label is not None else None
 
     def _check(self, *, write: bool = False) -> sqlite3.Connection:
         if not self.__active or self.__poisoned:
@@ -303,7 +320,7 @@ class Transaction:
             count = conn.execute("SELECT count(*) FROM source_events WHERE source_group_key=? AND source_revision=? AND read_blocked=0", (row["source_group_key"], row["source_revision"])).fetchone()[0]
             if total is None or count != total or event["segment"]["truncated"]:
                 gaps.append("source_segments_incomplete")
-        return StoredSource(row["event_id"], row["source_revision"], row["scope_id"], row["session_id"], row["project_id"], row["branch_id"], event, row["content_sha256"], bool(row["suppressed"]), tuple(dict.fromkeys(gaps)), row["import_provenance_sha256"])
+        return StoredSource(row["event_id"], row["source_revision"], row["scope_id"], row["session_id"], row["project_id"], row["branch_id"], event, row["content_sha256"], bool(row["suppressed"]), tuple(dict.fromkeys(gaps)), row["import_provenance_sha256"], row["entry_id"])
 
     def source_current(self, ref: str) -> StoredSource | None:
         """Resolve the visible current source revision in one bounded lookup."""
@@ -382,6 +399,19 @@ class Transaction:
     def put_source(self, event: SourceEvent, *, scope_id: str, persisted_at: str, capture_gaps: tuple[str, ...] = ()) -> SourceWrite:
         conn = self._check(write=True)
         self._scope(scope_id)
+        # Every source in a shared store names the entry it came in through.  One
+        # arriving without is an adapter that forgot to say whose it is: refused,
+        # not filed under the store's name.  A local store's rows are all ``local``.
+        shared = self.context.binding.installation_kind == "shared"
+        if shared and self.context.entry_id is None:
+            raise ContractError("IDENTITY_UNBOUND", "entry_required")
+        if not shared and self.context.entry_id is not None:
+            raise ContractError("IDENTITY_UNBOUND", "entry_unexpected")
+        # The same statement records the entry's activity and proves it attached:
+        # an entry the store never registered has no row to update.
+        if shared and conn.execute("UPDATE entries SET last_seen=? WHERE entry_id=?",
+                                   (persisted_at, self.context.entry_id)).rowcount != 1:
+            raise ContractError("IDENTITY_UNBOUND", "entry_unregistered")
         event = self._admitted_source(event)
         provenance = self.context.import_provenance
         # First delivery's recorded_at is retained.  Transport retries may arrive
@@ -406,14 +436,59 @@ class Transaction:
         conn.execute("""INSERT INTO source_events(event_id,source_revision,scope_id,session_id,project_id,branch_id,
             source_event_key,origin,role,content,occurred_at,recorded_at,time_precision,capture_state,
             content_sha256,event_sha256,persisted_at,source_original_origin,dataset_id,extra_json,
-            source_group_key,segment_index,segment_total,capture_gaps_json,import_provenance_sha256,source_id)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,(SELECT COALESCE(MAX(source_id),0)+1 FROM source_events))""", (ref, revision, scope_id, self.context.session_id, self.context.project_id, self.context.branch_id,
+            source_group_key,segment_index,segment_total,capture_gaps_json,import_provenance_sha256,entry_id,source_id)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,(SELECT COALESCE(MAX(source_id),0)+1 FROM source_events))""", (ref, revision, scope_id, self.context.session_id, self.context.project_id, self.context.branch_id,
             *(event[k] for k in columns), hashlib.sha256(event["content"].encode("utf-8")).hexdigest(), fingerprint, persisted_at,
-            event.get("source_original_origin"), event.get("dataset_id"), _json(extras), group_key, segment_index, segment_total, _json(capture_gaps), provenance_hash))
+            event.get("source_original_origin"), event.get("dataset_id"), _json(extras), group_key, segment_index, segment_total, _json(capture_gaps), provenance_hash,
+            self.context.entry_id or "local"))
         if (group_policy is not None and group_policy["suppressed"]) or self._inherits_suppression(conn, scope_id, event["content"]):
             conn.execute("UPDATE source_events SET suppressed=1 WHERE event_id=? AND source_revision=?", (ref, revision))
         conn.execute("UPDATE instance_meta SET memory_epoch=memory_epoch+1 WHERE singleton=1")
         return SourceWrite("inserted", ref, revision)
+
+    def register_scopes(self, scope_ids) -> int:
+        """Add the scopes an attaching entry brings to a shared store; returns how many were new.
+
+        Refused on a local store, whose scope set is its binding.  The total is
+        held to what one binding carries, so the shared worker, which binds every
+        scope, can still be built after the entry attaches.
+        """
+        conn = self._check(write=True)
+        if self.context.binding.installation_kind != "shared":
+            raise ContractError("ACCESS_DENIED", "local_store")
+        scope_ids = frozenset(scope_ids)
+        if not scope_ids or any(type(s) is not str or not s.strip() or len(s) > 240 for s in scope_ids):
+            raise ContractError("INPUT_INVALID", "scope_ids")
+        existing = frozenset(r[0] for r in conn.execute("SELECT scope_id FROM instance_scopes"))
+        if len(existing | scope_ids) > MAX_BINDING_SCOPES:
+            raise ContractError("INPUT_INVALID", "scope_limit")
+        added = sorted(scope_ids - existing)
+        conn.executemany("INSERT INTO instance_scopes(scope_id) VALUES (?)", [(s,) for s in added])
+        return len(added)
+
+    def register_entry(self, entry_id: str, display_name: str, host: str, *, now: str) -> None:
+        """Record an entry of a shared store, or rename it; ``first_seen`` survives a rename."""
+        conn = self._check(write=True)
+        if self.context.binding.installation_kind != "shared":
+            raise ContractError("ACCESS_DENIED", "local_store")
+        if type(entry_id) is not str or not ENTRY_ID.fullmatch(entry_id):
+            raise ContractError("INPUT_INVALID", "entry_id")
+        for value, field in ((display_name, "display_name"), (host, "host")):
+            if type(value) is not str or not value.strip() or len(value) > 32:
+                raise ContractError("INPUT_INVALID", field)
+        if type(now) is not str or not now:
+            raise ContractError("INPUT_INVALID", "now")
+        conn.execute("""INSERT INTO entries(entry_id,display_name,host,first_seen,last_seen) VALUES (?,?,?,?,?)
+            ON CONFLICT(entry_id) DO UPDATE SET display_name=excluded.display_name, host=excluded.host""",
+            (entry_id, display_name, host, now, now))
+        self.__entry_labels = None
+
+    def entries(self) -> dict[str, dict[str, str]]:
+        """Every entry this store has registered, by id; empty for a local store."""
+        conn = self._check()
+        return {r["entry_id"]: {"name": r["display_name"], "host": r["host"],
+                                "first_seen": r["first_seen"], "last_seen": r["last_seen"]}
+                for r in conn.execute("SELECT * FROM entries ORDER BY entry_id")}
 
     def index_source(self, ref: str, revision: int) -> None:
         conn = self._check(write=True)
@@ -572,10 +647,25 @@ class SQLiteStorage:
         row = conn.execute("SELECT * FROM instance_meta WHERE singleton=1").fetchone()
         if row is None or row["schema_version"] != expected_schema:
             raise ContractError("SCHEMA_UNSUPPORTED")
-        if (row["agent_id"],row["installation_id"],row["data_directory"],row["test_mode"]) != (self.binding.agent_id,self.binding.installation_id,_directory(self.binding.data_directory),int(self.binding.test_mode)):
-            raise ContractError("IDENTITY_UNBOUND")
+        # A store from before 1110 has no kind column; it was a host's own store.
+        kind = row["installation_kind"] if "installation_kind" in row.keys() else "local"
+        if kind != self.binding.installation_kind:
+            raise ContractError("IDENTITY_UNBOUND", "installation_kind")
         scopes = frozenset(r[0] for r in conn.execute("SELECT scope_id FROM instance_scopes"))
-        if scopes != self.binding.scope_ids:
+        if kind == "local":
+            if (row["agent_id"],row["installation_id"],row["data_directory"],row["test_mode"]) != (self.binding.agent_id,self.binding.installation_id,_directory(self.binding.data_directory),int(self.binding.test_mode)):
+                raise ContractError("IDENTITY_UNBOUND")
+            if scopes != self.binding.scope_ids:
+                raise ContractError("IDENTITY_UNBOUND", "scope_binding")
+            return
+        # A shared store is its fixed id, not its directory: a copied store opens
+        # nowhere until ``adopt`` records the new place.  Entries each bind a
+        # subset of its scopes; the store grows as they attach.
+        if (row["agent_id"],row["installation_id"],row["test_mode"]) != (self.binding.agent_id,self.binding.installation_id,int(self.binding.test_mode)):
+            raise ContractError("IDENTITY_UNBOUND")
+        if row["data_directory"] != _directory(self.binding.data_directory):
+            raise ContractError("IDENTITY_UNBOUND", "store_moved:run_adopt")
+        if not self.binding.scope_ids <= scopes:
             raise ContractError("IDENTITY_UNBOUND", "scope_binding")
 
     def _close(self, conn: sqlite3.Connection, original: BaseException | None) -> None:
@@ -613,13 +703,16 @@ class SQLiteStorage:
                 if conn.execute("PRAGMA user_version").fetchone()[0] == 1108:
                     self._verify(conn, expected_schema=1108)
                     upgrade_1108(conn)
+                if conn.execute("PRAGMA user_version").fetchone()[0] == 1109:
+                    self._verify(conn, expected_schema=1109)
+                    upgrade_1109(conn)
                 self._verify(conn)
             else:
                 if conn.execute("PRAGMA user_version").fetchone()[0] != 0 or conn.execute("PRAGMA application_id").fetchone()[0] != 0:
                     raise ContractError("SCHEMA_UNSUPPORTED")
                 for statement in STATEMENTS:
                     conn.execute(statement)
-                conn.execute("INSERT INTO instance_meta(singleton,agent_id,installation_id,data_directory,schema_version,test_mode) VALUES (1,?,?,?,?,?)", (self.binding.agent_id,self.binding.installation_id,_directory(self.binding.data_directory),SCHEMA_VERSION,int(self.binding.test_mode)))
+                conn.execute("INSERT INTO instance_meta(singleton,agent_id,installation_id,data_directory,schema_version,test_mode,installation_kind) VALUES (1,?,?,?,?,?,?)", (self.binding.agent_id,self.binding.installation_id,_directory(self.binding.data_directory),SCHEMA_VERSION,int(self.binding.test_mode),self.binding.installation_kind))
                 conn.executemany("INSERT INTO instance_scopes(scope_id) VALUES (?)", [(s,) for s in sorted(self.binding.scope_ids)])
                 conn.execute(f"PRAGMA application_id={APPLICATION_ID}")
                 conn.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
@@ -638,6 +731,48 @@ class SQLiteStorage:
         context = TrustedContext(self.binding, "initialization", self.binding.scope_ids, "host_generated")
         with self.read(context) as tx:
             return tx.status()
+
+    def adopt(self) -> str:
+        """Record this binding's directory as where a copied shared store now lives.
+
+        A shared store is its fixed id, so a copy opens nowhere until this runs:
+        ``_verify`` refuses it with ``store_moved:run_adopt``.  Everything
+        ``_verify`` checks is checked here except the directory, which is then
+        written.  Returns the directory the store recorded before.  A local store
+        is its directory and is never adopted.
+        """
+        if self.binding.installation_kind != "shared":
+            raise ContractError("ACCESS_DENIED", "local_store")
+        conn = self._open("rw")
+        original = None
+        try:
+            if (conn.execute("PRAGMA application_id").fetchone()[0] != APPLICATION_ID
+                    or conn.execute("PRAGMA user_version").fetchone()[0] != SCHEMA_VERSION):
+                raise ContractError("SCHEMA_UNSUPPORTED")
+            conn.execute("BEGIN IMMEDIATE")
+            row = conn.execute("SELECT * FROM instance_meta WHERE singleton=1").fetchone()
+            if row is None or row["schema_version"] != SCHEMA_VERSION:
+                raise ContractError("SCHEMA_UNSUPPORTED")
+            if row["installation_kind"] != "shared":
+                raise ContractError("IDENTITY_UNBOUND", "installation_kind")
+            if (row["agent_id"],row["installation_id"],row["test_mode"]) != (self.binding.agent_id,self.binding.installation_id,int(self.binding.test_mode)):
+                raise ContractError("IDENTITY_UNBOUND")
+            if not self.binding.scope_ids <= frozenset(r[0] for r in conn.execute("SELECT scope_id FROM instance_scopes")):
+                raise ContractError("IDENTITY_UNBOUND", "scope_binding")
+            previous = row["data_directory"]
+            conn.execute("UPDATE instance_meta SET data_directory=? WHERE singleton=1", (_directory(self.binding.data_directory),))
+            conn.commit()
+            return previous
+        except BaseException as exc:
+            original = exc
+            try:
+                if conn.in_transaction:
+                    conn.rollback()
+            except BaseException as cleanup:
+                _cleanup_error(exc, cleanup, "rollback")
+            raise
+        finally:
+            self._close(conn, original)
 
     @contextmanager
     def _transaction(self, context: TrustedContext, *, writable: bool, remaining_seconds: float | None, restoring: bool = False) -> Iterator[Transaction]:

@@ -1,9 +1,9 @@
 """Versioned target DDL. Only explicit initialization/maintenance executes this."""
 
-SCHEMA_VERSION = 1109
+SCHEMA_VERSION = 1110
 #: Schemas a store may carry and be brought forward from, oldest first.  Any
 #: other version is unsupported and never touched.
-UPGRADE_CHAIN = (1105, 1106, 1107, 1108)
+UPGRADE_CHAIN = (1105, 1106, 1107, 1108, 1109)
 APPLICATION_ID = 0x5352434C
 
 WORK_ITEMS_STATEMENT = """CREATE TABLE work_items (
@@ -29,6 +29,15 @@ EXPIRED_VECTORS_STATEMENT = """CREATE TABLE expired_vectors (
         reason TEXT NOT NULL DEFAULT 'window' CHECK(reason IN ('window','repeat','omitted')),
         PRIMARY KEY(source_ref,source_revision)
     ) STRICT, WITHOUT ROWID"""
+#: The agents a shared store's sources came in through: each source row carries
+#: an ``entry_id``, and this is where that id gets the name a reader is shown.
+#: A local store leaves it empty; its rows all say ``local``.
+ENTRIES_STATEMENT = """CREATE TABLE entries (
+        entry_id TEXT PRIMARY KEY NOT NULL CHECK(length(entry_id) BETWEEN 2 AND 32),
+        display_name TEXT NOT NULL CHECK(length(display_name) BETWEEN 1 AND 32),
+        host TEXT NOT NULL CHECK(length(host) BETWEEN 1 AND 32),
+        first_seen TEXT NOT NULL, last_seen TEXT NOT NULL
+    ) STRICT"""
 #: The scope authorization a migrated source was admitted under.  The 2.0
 #: conversion wrote the same 600-byte record into every source's extra_json:
 #: 97 distinct payloads across 167,000 sources, 102 MB, on one instance.  It is
@@ -155,7 +164,8 @@ STATEMENTS = (
         data_directory TEXT NOT NULL, schema_version INTEGER NOT NULL,
         memory_epoch INTEGER NOT NULL DEFAULT 0 CHECK(memory_epoch>=0),
         config_version INTEGER NOT NULL DEFAULT 1 CHECK(config_version>=1),
-        test_mode INTEGER NOT NULL CHECK(test_mode IN (0,1))
+        test_mode INTEGER NOT NULL CHECK(test_mode IN (0,1)),
+        installation_kind TEXT NOT NULL DEFAULT 'local' CHECK(installation_kind IN ('local','shared'))
     ) STRICT""",
     """CREATE TABLE instance_scopes (scope_id TEXT PRIMARY KEY NOT NULL) STRICT""",
     """CREATE TABLE source_events (
@@ -180,6 +190,7 @@ STATEMENTS = (
         read_blocked INTEGER NOT NULL DEFAULT 0 CHECK(read_blocked IN (0,1)),
         suppressed INTEGER NOT NULL DEFAULT 0 CHECK(suppressed IN (0,1)),
         source_id INTEGER,
+        entry_id TEXT NOT NULL DEFAULT 'local',
         PRIMARY KEY(event_id,source_revision),
         UNIQUE(source_event_key,source_revision),
         UNIQUE(source_group_key,source_revision,segment_index)
@@ -337,6 +348,7 @@ STATEMENTS = (
     "CREATE INDEX object_dependents ON object_dependencies(dependency_kind,dependency_ref,dependency_revision)",
     EXPIRED_VECTORS_STATEMENT,
     *AUTHORIZATION_STATEMENTS,
+    ENTRIES_STATEMENT,
 ) + RECOVERY_STATEMENTS + CANDIDATE_STATEMENTS
 
 
@@ -458,6 +470,22 @@ def upgrade_1108(connection):
     connection.execute("DROP TABLE lexical_projection")
     connection.execute("UPDATE instance_meta SET schema_version=1109 WHERE singleton=1")
     connection.execute("PRAGMA user_version=1109")
+
+
+def upgrade_1109(connection):
+    """Name the kind of store this is, and the entry each source came in through.
+
+    Every row of a store that predates entries came in through its own host, so
+    both new columns take a constant default and SQLite adds them without
+    rewriting a row: the step costs the same on a 1.5 GB store as on an empty
+    one.  ``entries`` starts empty; a shared store fills it as entries attach.
+    """
+    connection.execute("""ALTER TABLE instance_meta ADD COLUMN installation_kind TEXT NOT NULL DEFAULT 'local'
+        CHECK(installation_kind IN ('local','shared'))""")
+    connection.execute("ALTER TABLE source_events ADD COLUMN entry_id TEXT NOT NULL DEFAULT 'local'")
+    connection.execute(ENTRIES_STATEMENT)
+    connection.execute("UPDATE instance_meta SET schema_version=1110 WHERE singleton=1")
+    connection.execute("PRAGMA user_version=1110")
 
 
 def normalize_scope_authorizations(connection) -> int:

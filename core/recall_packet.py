@@ -20,7 +20,7 @@ import threading
 import time
 from typing import Literal, Protocol, cast
 
-from ..contracts import Basis, ContractError, RecallItem, RecallPacket, bounded_source_contexts
+from ..contracts import Basis, ContractError, RecallItem, RecallPacket, bounded_entry_labels, bounded_source_contexts
 from .background_context import is_background, mark_background
 from .recall_budget import canonical_render_json, estimate_tokens, event_admission_order
 from .recall_diagnostics import RecallDiagnostics
@@ -129,6 +129,9 @@ def packet_item(obj: RetrievedObject, *, content: dict | None = None) -> RecallI
     occurred = metadata.get("occurred_at")
     if type(occurred) is str and 0 < len(occurred) <= _MAX_OCCURRED_AT_CHARS:
         item["occurred_at"] = occurred
+    entries = bounded_entry_labels(optional_json(metadata.get("entries")))
+    if entries:
+        item["entries"] = entries
     return item
 
 
@@ -641,6 +644,7 @@ class RecallPacketRenderer:
                     **({"source_contexts": [dict(context) for context in item["source_contexts"]]}
                        if "source_contexts" in item else {}),
                     **({"occurred_at": item["occurred_at"]} if "occurred_at" in item else {}),
+                    **({"entries": [dict(label) for label in item["entries"]]} if "entries" in item else {}),
                 }
                 for item in packet["items"]
             ],

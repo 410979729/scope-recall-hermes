@@ -57,8 +57,8 @@ def test_existing_1105_source_upgrades_explicitly_and_resumes_to_exact_end(worke
         assert db.execute("PRAGMA user_version").fetchone()[0] == 1105
         assert "consolidation_offset" not in {r[1] for r in db.execute("PRAGMA table_info(work_items)")}
     # ...and the bound store is brought forward through every step by its first open.
-    assert core.status(ctx).schema_version == SCHEMA_VERSION == 1109
-    assert core.initialize().schema_version == SCHEMA_VERSION == 1109
+    assert core.status(ctx).schema_version == SCHEMA_VERSION == 1110
+    assert core.initialize().schema_version == SCHEMA_VERSION == 1110
     windows, contents = [], []
 
     def build(sources, **kwargs):

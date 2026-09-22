@@ -4,6 +4,16 @@ All notable changes to `scope-recall` will be documented in this file.
 
 ## [Unreleased]
 
+### Scope Recall 3.2.0rc1 one store, many entries - 2026-09-22
+
+The owner decided on 2026-09-22 that every agent should read and write one memory store, each marked with the agent it came in through, and that moving to a new machine should mean moving one folder. This is the store side of that; adapters, the `attach` command and the rollout follow.
+
+- Schema 1110. A store records its kind, `local` or `shared`, and every source records its entry. Both columns take a constant default, so a 1109 store upgrades without a single row being rewritten: the step costs the same on a 1.5 GB store as on an empty one, and every existing row says `local`. A new `entries` table holds the name a reader is shown for each entry.
+- A shared store is its fixed id, not its directory. Copied elsewhere it opens nowhere, and says `store_moved:run_adopt`; `adopt` checks everything an open checks except the directory, then records the new one. An entry binds a subset of the store's scopes, and the store grows as entries attach, never past the 128 scopes one binding can carry, so the shared worker that binds every scope can always be built.
+- In a shared store every source names its entry. One that arrives without an entry, or with an entry the store never registered, is refused rather than filed under someone else's name; a local store refuses a source that names one.
+- A capture that waited in the inbox keeps the entry that made it. The inbox replays with whoever replays it, the shared worker or another entry, and a busy shared store sends more captures through the inbox, not fewer. The entry now travels in the queued payload, only in a shared store, so a local store's queued captures are byte-for-byte what they were.
+- Recall items in a shared store carry `entries`: the entry a source came in through, or every entry behind a claim's or an episode's evidence, once each. A local store's recall output is unchanged.
+
 ### Scope Recall 3.1.3rc1 maintenance, written down - 2026-09-21
 
 - `AGENTS.md` says what changes this plugin accepts from 3.1.2 on: a bug with a reproduction, a security fix, a change a host made that the plugin has to follow. Anything else needs the owner's decision before any code, and an open-ended "what else could be improved" is not a task. It also records two things the 3.1.1 and 3.1.2 rollouts taught: a temporary setting on a running install is undone in the same piece of work that made it, and the first commit after a tag moves the version past it. The line about where wheels are built from named a release branch and `v3.1.0rcN` tags; releases are cut from `main` at `v<major>.<minor>.<patch>`. No code changes.

@@ -111,18 +111,18 @@ def test_upgrade_1108_keeps_the_earliest_copy_of_every_episode_lineage_row(app):
         conn.commit()
     downgrade_store(core.storage.path, 1108)
     # A known older schema is brought forward by the first ordinary open.
-    assert core.status(ctx).schema_version == SCHEMA_VERSION == 1109
+    assert core.status(ctx).schema_version == SCHEMA_VERSION == 1110
     assert _lineage(core, episode.ref) == [(index + 1, s.ref) for index, s in enumerate(sources)]
     assert _dependencies(core, episode.ref) == [(2,)]
     with sqlite3.connect(core.storage.path) as conn:
         assert conn.execute("SELECT count(*) FROM evidence_links WHERE object_kind='claim'").fetchone()[0] == 2
-        assert conn.execute("PRAGMA user_version").fetchone()[0] == 1109
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 1110
         assert {"source_content", "source_ids"} <= {row[1] for row in conn.execute("PRAGMA index_list(source_events)")}
         # the lexical index was rebuilt from the text projection the old store carried
         assert conn.execute("SELECT count(*) FROM lexical_postings").fetchone()[0] == postings
         assert conn.execute("SELECT count(DISTINCT source_id) FROM source_events").fetchone()[0] == 4
     assert set(core.episodes(ctx)[0].evidence_refs) == {ref(s) for s in sources}
-    assert core.initialize().schema_version == 1109
+    assert core.initialize().schema_version == 1110
 
 
 def test_an_episode_read_judges_its_members_in_one_query(app):
