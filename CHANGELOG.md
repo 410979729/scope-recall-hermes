@@ -4,6 +4,10 @@ All notable changes to `scope-recall` will be documented in this file.
 
 ## [Unreleased]
 
+### Scope Recall 3.2.0rc2 - 2026-09-22
+
+- The version moves past the `v3.2.0rc1` tag, the candidate the pilot runs. No code changes.
+
 ### Scope Recall 3.2.0rc1 one store, many entries - 2026-09-22
 
 The owner decided on 2026-09-22 that every agent should read and write one memory store, each marked with the agent it came in through, and that moving to a new machine should mean moving one folder. This is the store, the Hermes side and the operator commands; how to use them is [docs/shared-store.md](docs/shared-store.md).

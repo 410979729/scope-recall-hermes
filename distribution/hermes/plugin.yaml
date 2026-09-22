@@ -1,5 +1,5 @@
 name: scope-recall
-version: 3.2.0rc1
+version: 3.2.0rc2
 description: Bounded Hermes adapter over the installed Scope Recall v1.1 core
 provider_entry: register:register
 hooks:

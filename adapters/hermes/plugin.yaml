@@ -1,5 +1,5 @@
 name: scope-recall-core
-version: 3.2.0rc1
+version: 3.2.0rc2
 description: Bounded Hermes adapter slice over the host-independent Scope Recall core
 provider_entry: scope_recall.adapters.hermes.register:register
 hooks:
