@@ -10,14 +10,19 @@ import math
 import os
 from pathlib import Path
 import sqlite3
+import time
 
 from ..contracts import (ENTRY_ID, MAX_SHARED_SCOPES, ContractError, InstanceBinding, SourceEvent, TrustedContext,
                          validate_capture)
 from .truth_connection import TruthDatabaseMode, connect_truth_database
+from .writer_lease import TruthWriterBusyError
 from . import lexical_index
 from .schema import (APPLICATION_ID, SCHEMA_VERSION, STATEMENTS, UPGRADE_CHAIN, upgrade_1105, upgrade_1106, upgrade_1107,
                      upgrade_1108, upgrade_1109)
 from .events import lexical_terms, prepare_capture, query_terms
+
+#: How often a writer looks again for another process's lease while it waits.
+_LEASE_POLL_SECONDS = 0.01
 
 
 def _json(value: object) -> str:
@@ -639,7 +644,21 @@ class SQLiteStorage:
             if type(remaining_seconds) not in (int, float) or not math.isfinite(remaining_seconds) or remaining_seconds <= 0:
                 raise ContractError("DEADLINE_EXCEEDED")
             timeout = min(timeout, remaining_seconds)
-        return connect_truth_database(self.path, mode=mode, timeout=timeout, isolation_level=None)
+        # The writer lease is taken without blocking and held for one
+        # transaction, so writers in separate processes -- a host and its
+        # worker, the entries of a shared store -- take turns.  A turn ends in
+        # milliseconds; failing at once on one sent captures to the memory-only
+        # retry (one in ten with three entries writing).  A writer waits for the
+        # lease as SQLite waits for its own lock: within this timeout.
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                return connect_truth_database(self.path, mode=mode, timeout=max(0.0, deadline - time.monotonic()),
+                                              isolation_level=None)
+            except TruthWriterBusyError:
+                if time.monotonic() + _LEASE_POLL_SECONDS >= deadline:
+                    raise
+                time.sleep(_LEASE_POLL_SECONDS)
 
     def _verify(self, conn: sqlite3.Connection, *, expected_schema: int = SCHEMA_VERSION) -> None:
         if conn.execute("PRAGMA application_id").fetchone()[0] != APPLICATION_ID or conn.execute("PRAGMA user_version").fetchone()[0] != expected_schema:

@@ -23,6 +23,7 @@ The owner decided on 2026-09-22 that every agent should read and write one memor
 - The first entry attached with routes gives the shared worker its `runtime-config.json`; later entries widen its scopes and keep its routes. An entry whose embedding model differs from the worker's is refused (`embedding_space_differs`): its query vectors would search a directory the worker never fills.
 - `plan-install`, `apply-install` and `doctor` recognize an attached home. The doctor names the store and the entry, and accepts the store's worker, which binds every entry's scopes, as the home's. An attached home is never purged from its home; `detach` it instead.
 - After a move, an entry whose old home no longer points at the store can be attached from a new home under the same id.
+- A writer waits its turn for the truth writer lease, within its deadline, instead of failing at once. Writers in separate processes take turns one transaction long; with three entries and the worker writing one store, one capture in ten failed on a turn that ended milliseconds later and was kept only in the host's memory until its next retry. The durable inbox could not catch those, since queueing a capture is a write under the same lease. A single host and its worker met the same, more rarely.
 
 ### Scope Recall 3.1.3rc1 maintenance, written down - 2026-09-21
 

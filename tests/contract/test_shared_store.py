@@ -356,3 +356,46 @@ def test_an_item_with_evidence_from_several_entries_names_each_once(tmp_path):
     d = _record(local_core, local, "TEST 本地一句。", "TEST-many/4")
     with local_core.storage.read(local) as tx:
         assert evidence_entries(tx, [f"{d.ref}@{d.revision}"]) == []
+
+
+# --- writers in separate processes take turns ----------------------------------------------
+
+def _busy_for(monkeypatch, attempts):
+    """Another process holds the writer lease for the next ``attempts`` writable opens."""
+    from scope_recall.core import storage as module
+    from scope_recall.core.writer_lease import TruthWriterBusyError
+    real, calls = module.connect_truth_database, []
+
+    def connect(path, *, mode, **kwargs):
+        if mode != "ro":
+            calls.append(mode)
+            if attempts is None or len(calls) <= attempts:
+                raise TruthWriterBusyError(role="truth_connection", scope="other_process")
+        return real(path, mode=mode, **kwargs)
+
+    monkeypatch.setattr(module, "connect_truth_database", connect)
+    return calls
+
+
+def test_a_writer_waits_for_another_process_s_turn_to_end(monkeypatch, shared):
+    """Soak of 2026-09-22: three entries and a worker, one capture in ten failed at once on a lease
+    released milliseconds later, and waited in memory for a retry the process might never reach."""
+    storage, binding = shared
+    calls = _busy_for(monkeypatch, 3)
+    started = time.monotonic()
+    saved = put(storage, shared_context(binding, "tianshu"), "TEST-turns/1")
+    assert saved.disposition == "inserted" and len(calls) == 4
+    assert time.monotonic() - started < 0.5
+
+
+def test_a_writer_gives_up_when_the_turn_outlasts_its_deadline(monkeypatch, shared):
+    from scope_recall.core.writer_lease import TruthWriterBusyError
+    storage, binding = shared
+    _busy_for(monkeypatch, None)
+    started = time.monotonic()
+    with pytest.raises(TruthWriterBusyError):
+        with storage.write(shared_context(binding, "tianshu"), remaining_seconds=0.1):
+            pass
+    assert 0.05 <= time.monotonic() - started < 0.5
+    with storage.read(shared_context(binding)) as tx:
+        assert tx.status() is not None, "a reader never waits for the writer lease"
