@@ -111,6 +111,13 @@ inferred facts. Cross-scope names and conditional relations are not silently
 joined. Node, path, time and explicit byte budgets bound its cost. See
 [the trace contract and boundaries](docs/trace.zh-CN.md).
 
+## One store for several agents
+
+Several agents can share one store instead of each keeping its own: each attaches as an
+entry, every memory is marked with the agent it came in through, and a deletion through
+any of them applies to all. Moving the memory to another machine is copying one directory.
+Only Hermes homes attach so far. See [docs/shared-store.md](docs/shared-store.md).
+
 ## Agent-operated migration
 
 Users ask their agent to upgrade. The bundled `scope-recall-setup` skill routes

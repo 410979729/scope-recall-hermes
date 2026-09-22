@@ -99,6 +99,9 @@ class DoctorReport:
     running_code: dict[str, Any] = field(default_factory=dict)
     package_health: dict[str, Any] = field(default_factory=dict)
     candidate_settling: dict[str, int] = field(default_factory=dict)
+    #: For a home attached to a shared store: the store's root, and this home's
+    #: entry.  Everything else in the report is then the shared store's.
+    shared_store: dict[str, str] = field(default_factory=dict)
     capability_gaps: list[str] = field(default_factory=list)
     checks: list[dict[str, str]] = field(default_factory=list)
 
@@ -120,6 +123,12 @@ def _hermes_data_dir(instance_root: Path) -> Path:
 
 def _codex_config_path(instance_root: Path) -> Path:
     return instance_root / "codex-installation.json"
+
+
+def _hermes_config_path(instance_root: Path) -> Path:
+    """What a Hermes home binds with: a shared store's pointer, or its own manifest."""
+    pointer = _hermes_data_dir(instance_root) / "attachment.json"
+    return pointer if pointer.is_file() else _hermes_data_dir(instance_root) / "installation.json"
 
 
 def _require_absolute(path: Path, name: str) -> Path:
@@ -174,9 +183,9 @@ def _probe_python_package(python: Path) -> dict[str, Any]:
 
 def _load_binding(host: HostChoice, instance_root: Path):
     if host == "hermes":
-        from scope_recall.adapters.hermes.installation import load_installation_manifest
+        from scope_recall.adapters.hermes.installation import load_binding_for_home
 
-        manifest = load_installation_manifest(instance_root)
+        manifest = load_binding_for_home(instance_root)
         return manifest.to_binding(), manifest.data_directory
     from scope_recall.adapters.codex.config import load_codex_config
 
@@ -527,7 +536,7 @@ def _check_current_package(report: DoctorReport) -> dict[str, Any]:
 
 def _check_binding(report: DoctorReport, instance: Path):
     """The adapter binding and its data directory; None when the instance has no usable one."""
-    config_path = _codex_config_path(instance) if report.host == "codex" else _hermes_data_dir(instance) / "installation.json"
+    config_path = _codex_config_path(instance) if report.host == "codex" else _hermes_config_path(instance)
     if not config_path.is_file():
         report.capability_gaps.append("installation_config_missing")
         _record(report, "adapter_config", "missing")
@@ -540,7 +549,28 @@ def _check_binding(report: DoctorReport, instance: Path):
         return None
     report.binding_ok = True
     _record(report, "adapter_binding", "ok", binding.installation_id)
+    if binding.installation_kind == "shared":
+        from scope_recall.adapters.hermes.installation import read_attachment
+
+        attachment = read_attachment(instance)
+        if attachment is not None:
+            report.shared_store = {"root": str(attachment.root), "entry_id": attachment.entry_id,
+                                   "entry_name": attachment.display_name}
     return binding, data_directory
+
+
+def _serves(worker, binding) -> bool:
+    """Whether the autostart's worker is the one for this binding.
+
+    A local store's worker binds exactly what the host does.  A shared store's
+    one worker binds every scope of the store, so an entry's are among them.
+    """
+    if binding.installation_kind != "shared":
+        return worker == binding
+    return ((worker.installation_kind, worker.installation_id, worker.agent_id, worker.test_mode,
+             worker.data_directory.resolve()) == (binding.installation_kind, binding.installation_id,
+             binding.agent_id, binding.test_mode, binding.data_directory.resolve())
+            and binding.scope_ids <= worker.scope_ids)
 
 
 def _check_storage(report: DoctorReport, binding, data_directory: Path) -> bool:
@@ -697,7 +727,7 @@ def _check_autostart(report: DoctorReport, binding, data_directory: Path) -> flo
         if entry is None:
             return None
         runtime_config = load_config(entry["config_path"])
-        if runtime_config.binding != binding:
+        if not _serves(runtime_config.binding, binding):
             raise ValueError("autostart_binding")
         wake_seconds = float(getattr(runtime_config, "supervisor_seconds", 0) or 0) or None
         aux = getattr(runtime_config, "auxiliary", None)

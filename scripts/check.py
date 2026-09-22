@@ -155,6 +155,7 @@ SUITES = {
         "tests/packaging/test_package_upgrade.py",
         "tests/packaging/test_install_v11.py",
         "tests/packaging/test_memory_skill.py",
+        "tests/packaging/test_shared_cli.py",
         "tests/packaging/test_windows_hook_command.py",
         *SCRIPT_GATE_TESTS,
     ],

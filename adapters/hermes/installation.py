@@ -559,6 +559,22 @@ def load_installation_manifest(hermes_home: Path | str) -> InstallationManifest:
     data_directory = Path(str(payload.get("data_directory") or "")).expanduser().resolve()
     if data_directory != (home / "scope-recall").resolve():
         raise HermesIdentityError("installation manifest data_directory mismatch")
+    return _manifest_from_payload(payload, home=home, data_directory=data_directory)
+
+
+def load_archived_installation(path: Path | str, hermes_home: Path | str) -> InstallationManifest:
+    """A home's own installation manifest, read from where it was moved aside.
+
+    Everything ``load_installation_manifest`` checks except where the file is:
+    it must still be that home's, by its id.  Used to carry the home's grants
+    into a shared store; nothing binds with it.
+    """
+    home = Path(str(hermes_home)).expanduser().resolve()
+    file = Path(str(path)).expanduser().resolve()
+    return _manifest_from_payload(_read_manifest(file), home=home, data_directory=file.parent)
+
+
+def _manifest_from_payload(payload: dict[str, Any], *, home: Path, data_directory: Path) -> InstallationManifest:
     fields = {name: check(payload.get(name)) for name, check in _REQUIRED_FIELDS}
     archive = {name: _archive_field(payload, name, check, absent) for name, check, absent in _ARCHIVE_FIELDS}
     test_mode = payload.get("test_mode")
@@ -676,6 +692,15 @@ def _same_path(left: Path | str, right: Path | str) -> bool:
 
 def attachment_path(hermes_home: Path) -> Path:
     return hermes_home / "scope-recall" / ATTACHMENT_FILENAME
+
+
+def _points_here(hermes_home: Path | str, store: Path, entry_id: str) -> bool:
+    """Whether a home's pointer still names this store and entry; an unreadable one counts as yes."""
+    try:
+        attachment = read_attachment(hermes_home)
+    except HermesIdentityError:
+        return True
+    return attachment is not None and attachment.entry_id == entry_id and _same_path(attachment.root, store)
 
 
 def read_attachment(hermes_home: Path | str) -> Attachment | None:
@@ -887,7 +912,10 @@ def attach_shared_entry(
                                  python_executable=python_executable)
     home = source.hermes_home
     for entry in payload["entries"]:
-        if entry["entry_id"] == record["entry_id"] and not _same_path(entry["home"], home):
+        if (entry["entry_id"] == record["entry_id"] and not _same_path(entry["home"], home)
+                and _points_here(entry["home"], store, entry["entry_id"])):
+            # A home that no longer points here gives its id up: the store was
+            # copied to another machine and adopted, or the home was detached.
             raise HermesIdentityError("entry_id is already attached from another home")
         if entry["entry_id"] != record["entry_id"] and _same_path(entry["home"], home) and not entry.get("detached_at"):
             raise HermesIdentityError("home is already attached as another entry")

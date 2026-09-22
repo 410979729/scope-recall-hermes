@@ -157,6 +157,7 @@
     "maintenance/package_health.py",
     "maintenance/package_upgrade.py",
     "maintenance/rollback.py",
+    "maintenance/shared.py",
     "maintenance/upgrade.py",
     "maintenance/upgrade_cli.py",
     "runtime/__init__.py",

@@ -26,6 +26,8 @@ source and still promise that retrieval will not repeat it. This can affect othe
 facts captured in the same message. The deletion receipt reports this broader
 dependency count. No redacted source is fabricated as a new human occurrence.
 The authorizing command is included because it can repeat the target's content.
+In a shared store ([shared-store.md](shared-store.md)) there is one copy of every
+memory, so a `forget` through any entry applies to every entry.
 Future Episode, reference and artifact repositories must extend the dependency
 closure before accepting their object types; currently unknown types fail closed.
 

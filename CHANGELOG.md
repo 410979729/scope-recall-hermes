@@ -6,7 +6,7 @@ All notable changes to `scope-recall` will be documented in this file.
 
 ### Scope Recall 3.2.0rc1 one store, many entries - 2026-09-22
 
-The owner decided on 2026-09-22 that every agent should read and write one memory store, each marked with the agent it came in through, and that moving to a new machine should mean moving one folder. This is the store side of that and the Hermes side; the `attach` command and the rollout follow.
+The owner decided on 2026-09-22 that every agent should read and write one memory store, each marked with the agent it came in through, and that moving to a new machine should mean moving one folder. This is the store, the Hermes side and the operator commands; how to use them is [docs/shared-store.md](docs/shared-store.md).
 
 - Schema 1110. A store records its kind, `local` or `shared`, and every source records its entry. Both columns take a constant default, so a 1109 store upgrades without a single row being rewritten: the step costs the same on a 1.5 GB store as on an empty one, and every existing row says `local`. A new `entries` table holds the name a reader is shown for each entry.
 - A shared store is its fixed id, not its directory. Copied elsewhere it opens nowhere, and says `store_moved:run_adopt`; `adopt` checks everything an open checks except the directory, then records the new one. An entry binds a subset of the store's scopes, and the store grows as entries attach, never past the scopes one shared binding can carry, so the shared worker that binds every scope can always be built. That bound is 1024 for a shared binding: our three pilot instances bring 221 distinct scopes between them and all five 369, mostly one per agent-to-agent conversation. A local binding keeps its 128.
@@ -19,6 +19,10 @@ The owner decided on 2026-09-22 that every agent should read and write one memor
 - A capture that waited in the inbox is re-checked against the grants of the entry that made it, whether the shared worker replays it or another entry does.
 - An entry never starts a worker: a shared store has one, with its own credentials, and an entry's process carries the entry's. An entry reads its model routes from its own `runtime-config.json` beside its pointer.
 - When an automatic recall brings back something another entry was told, the injected guidance says which entry is reading and that an item from another entry is that agent's experience. Nothing is added when every item is the reader's own.
+- New operator commands: `init-shared` makes a store; `attach` makes a Hermes home an entry, carrying over the audience rows and owner principals of the home's own installation (`--grants-from`, its `installation.json` moved aside) and binding its model routes to the store (`--runtime-config-from`); `detach` removes a home's pointer and keeps its record and memories; `adopt` records a copied store's new directory; `entries` lists who is attached and when each was last heard from. Each write keeps a copy of every file it replaces and a receipt under the store's `receipts\`.
+- The first entry attached with routes gives the shared worker its `runtime-config.json`; later entries widen its scopes and keep its routes. An entry whose embedding model differs from the worker's is refused (`embedding_space_differs`): its query vectors would search a directory the worker never fills.
+- `plan-install`, `apply-install` and `doctor` recognize an attached home. The doctor names the store and the entry, and accepts the store's worker, which binds every entry's scopes, as the home's. An attached home is never purged from its home; `detach` it instead.
+- After a move, an entry whose old home no longer points at the store can be attached from a new home under the same id.
 
 ### Scope Recall 3.1.3rc1 maintenance, written down - 2026-09-21
 

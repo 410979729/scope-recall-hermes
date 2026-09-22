@@ -594,6 +594,14 @@ mode, and leaves a store a running worker holds untouched (`store_busy`).
   the budgets, the vector store, the model routes — is documented in
   [configuration.md](configuration.md).
 
+## 11. One store for several agents
+
+Everything above installs one agent with its own store. Several agents can instead
+share one store, each attached to it as an entry, with every memory marked with the
+agent it came in through: [shared-store.md](shared-store.md). An attached home keeps
+only a pointer, `scope-recall\attachment.json`; `plan-install`, `apply-install` and
+`doctor` recognize it.
+
 ## Names and paths
 
 | Concept | Value |

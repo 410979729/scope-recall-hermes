@@ -48,11 +48,22 @@ def _autostart(argv: list[str]) -> int:
     return main(argv[1:])
 
 
+def _shared(argv: list[str]) -> int:
+    from .shared import main
+
+    return main(argv)
+
+
 _DELEGATED: dict[str, tuple[str, Callable[[list[str]], int]]] = {
     "setup": ("agent-operated fresh install/update/migration routing", _upgrade_cli),
     "migrate": ("prepare, resume, verify and index a legacy migration job", _upgrade_cli),
     "package-upgrade": ("offline wheel replacement after stopping all target writers", _package_upgrade),
     "autostart": ("plan, enable, pause or remove a bounded Windows background wake", _autostart),
+    "init-shared": ("create a shared store, the one store every agent attaches to", _shared),
+    "attach": ("make a host's home an entry of a shared store, with the grants it had", _shared),
+    "detach": ("stop a home being an entry of a shared store; its memories stay", _shared),
+    "adopt": ("record the directory a copied shared store now lives in", _shared),
+    "entries": ("list a shared store's entries and when each was last heard from", _shared),
 }
 
 

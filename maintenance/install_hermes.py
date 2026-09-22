@@ -7,7 +7,9 @@ from pathlib import Path
 from scope_recall.adapters.hermes.audiences import LOCAL_PLATFORMS, HermesIdentityError, normalize_local_platforms
 from scope_recall.adapters.hermes.installation import (
     approve_local_platforms as _approve_local_platforms,
+    attachment_path,
     install_hermes_scope_recall,
+    load_binding_for_home,
     load_installation_manifest,
     unapproved_local_platforms as _unapproved_local_platforms,
     write_installation_manifest,
@@ -33,7 +35,9 @@ def data_dir(instance_root: Path) -> Path:
 
 
 def config_path(instance_root: Path) -> Path:
-    return data_dir(instance_root) / "installation.json"
+    """What the home binds with: the pointer of a shared store's entry, or its own manifest."""
+    pointer = attachment_path(instance_root)
+    return pointer if pointer.is_file() else data_dir(instance_root) / "installation.json"
 
 
 def instance_wrapper_files(instance_root: Path) -> tuple[Path, ...]:
@@ -100,7 +104,7 @@ def unapproved_local_platforms(plan: InstallPlan) -> tuple[str, ...]:
     """The requested local surfaces an existing installation has not approved yet."""
     if not plan.local_platforms:
         return ()
-    manifest = load_installation_manifest(plan.instance_root)
+    manifest = load_binding_for_home(plan.instance_root)
     return _unapproved_local_platforms(manifest, plan.local_platforms, agent_workspace=_bound_workspace(manifest))
 
 
@@ -112,7 +116,7 @@ def approve_local_platforms(plan: InstallPlan) -> None:
 
 
 def installation_id(instance_root: Path) -> str:
-    return load_installation_manifest(instance_root).installation_id
+    return load_binding_for_home(instance_root).installation_id
 
 
 def _bound_workspace(manifest) -> str:
@@ -130,7 +134,7 @@ def _bound_workspace(manifest) -> str:
 
 
 def validate_reuse(plan: InstallPlan) -> None:
-    manifest = load_installation_manifest(plan.instance_root)
+    manifest = load_binding_for_home(plan.instance_root)
     if manifest.agent_id != plan.agent_id:
         raise InstallError("existing Hermes installation agent_id mismatch")
     if _bound_workspace(manifest) != plan.agent_workspace:
@@ -142,10 +146,17 @@ def validate_reuse(plan: InstallPlan) -> None:
         )
     if not (manifest.data_directory / "memory.sqlite3").is_file():
         raise InstallError("existing Hermes installation database is missing")
+    if manifest.entry_id is not None and _unapproved_local_platforms(
+            manifest, plan.local_platforms, agent_workspace=_bound_workspace(manifest)):
+        # Its grants live in the shared store's manifest, which this installer does not write.
+        raise InstallError("a shared store entry keeps the grants it was attached with; approve a local "
+                           "surface in the home's own installation before attaching it")
 
 
 def purge_identity(instance_root: Path) -> tuple[Path, str, str, Path]:
     """Data directory, installation id, agent id and manifest path from the signed manifest."""
+    if attachment_path(instance_root).exists():
+        raise InstallError("an entry of a shared store is never purged from its home; detach it instead")
     manifest = load_installation_manifest(instance_root)
     _reject_symlink_chain(manifest.data_directory)
     data_directory = manifest.data_directory.resolve()

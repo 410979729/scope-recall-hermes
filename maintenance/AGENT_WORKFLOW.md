@@ -97,6 +97,13 @@ The Windows preflight removes the known D14 held-handle path before uninstall.
 It is not a guarantee against disk failure or a new process started in violation
 of quiescence. Those failures remain explicit recovery, never a green upgrade.
 
+A home with `scope-recall\attachment.json` is an entry of a shared store
+([docs/shared-store.md](../docs/shared-store.md)); its memory and its worker live in
+the store's directory. The store's worker and every entry run the same package
+version: pause the store's worker and stop every attached host, upgrade the worker's
+environment first, then each entry's, then resume. `plan-install`/`apply-install`
+and `doctor` on an attached home work as on any other.
+
 ## 2. Prepare legacy identity and permissions
 
 Use the source catalog and the old runtime's actual audience/identity settings.

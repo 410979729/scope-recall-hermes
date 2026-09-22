@@ -27,6 +27,14 @@ human_direct` means the user typed it), `observed` was seen in a tool result,
 To show where it came from, `inspect` each of its `evidence_refs` and quote the
 line. If there is no evidence to show, say that.
 
+## Which agent heard it?
+
+When several agents share one memory, an item carries `entries`: the agent (id
+and name) each piece of its evidence came in through. An item from another
+agent is that agent's experience, not yours. When you use it, say which agent it
+came from, and never describe it as something you did or were told yourself.
+An item without `entries` comes from a memory only you use.
+
 ## Is it still true?
 
 `temporal_status` (`current`, `historical`, `disputed`, `unknown`) and

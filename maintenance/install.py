@@ -349,7 +349,8 @@ def apply_uninstall(plan: UninstallPlan, *, purge: bool = False) -> UninstallRes
 
     return UninstallResult(
         files_removed=removed,
-        memory_retained=False if purge else (data_dir / "memory.sqlite3").is_file(),
+        # An entry of a shared store keeps its memory in the store, which its pointer still names.
+        memory_retained=False if purge else any((data_dir / name).is_file() for name in ("memory.sqlite3", "attachment.json")),
         purged=bool(purge and purged_paths),
         edited_files=list(plan.edited_files),
         purged_paths=purged_paths,
