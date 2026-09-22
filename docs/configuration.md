@@ -33,7 +33,7 @@ Three more gaps come from the same code path:
   not validate, or an auto-discovered file is not directly inside the data directory.
 - `capability_gap:trusted_runtime_binding_mismatch` — the `binding` block does not
   match the identity the host bound: `agent_id`, `installation_id`,
-  `data_directory`, `scope_ids` and `test_mode` must all agree.
+  `data_directory`, `scope_ids`, `test_mode` and `installation_kind` must all agree.
 - `capability_gap:trusted_runtime_worker_busy` / `..._audience_capacity` — runtime
   is configured, but no further background worker could be started right now.
 
@@ -94,8 +94,9 @@ silent rebind.
 | `agent_id` | string, non-blank, ≤ 240 chars | required | The agent identity the host sends. Must equal the installed `agent_id`. |
 | `installation_id` | string, non-blank, ≤ 240 chars | required | The installation identity from the installation record. |
 | `data_directory` | absolute path | required | The Core data directory holding `memory.sqlite3`. |
-| `scope_ids` | array of strings | required | Every scope this installation owns. |
+| `scope_ids` | array of strings | required | Every scope this installation owns. In a shared store, an entry's own scopes, or every scope of the store for its worker. |
 | `test_mode` | boolean | `false` | Isolated TEST binding semantics. Production installs are `false`. |
+| `installation_kind` | `"local"` or `"shared"` | `"local"` | `"shared"` in the configs `attach` writes for an entry of a shared store and for the store's worker ([shared-store.md](shared-store.md)). A store opens only for its own kind. An entry's config sits beside its pointer in `<home>/scope-recall/`, its `data_directory` is the store's, and it never starts a worker. |
 
 ## Identity and partition
 
