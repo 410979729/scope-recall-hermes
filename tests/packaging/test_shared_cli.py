@@ -20,6 +20,7 @@ from scope_recall.adapters.hermes.installation import read_shared_payload
 from scope_recall.maintenance.doctor import run_doctor
 from scope_recall.maintenance.install import apply_install, plan_install
 from scope_recall.maintenance.shared import main
+from scope_recall.runtime.model_budget import read_auxiliary_budget_status
 from scope_recall.runtime.worker_entry import load_config
 
 AGENT = "TEST-agent"
@@ -56,7 +57,8 @@ def _routes(home, *, model=None):
         "session_id": "TEST-background",
         "allowed_scope_ids": manifest["scope_ids"],
         "owner_id": "TEST-worker",
-        "auxiliary": {"external_embedding": False, "external_consolidation": False, "embedding": embedding},
+        "auxiliary": {"external_embedding": False, "external_consolidation": False, "embedding": embedding,
+                      "installation_dir": manifest["data_directory"]},
     }
 
 
@@ -105,6 +107,14 @@ def test_a_home_moved_aside_attaches_with_the_grants_it_had(tmp_path, capsys, ro
     worker = load_config(root / "runtime-config.json")
     assert worker.binding.scope_ids == frozenset(read_shared_payload(root)["scope_ids"])
     assert (worker.session_id, worker.owner_id) == ("shared-background", "shared-scope-recall-worker")
+    # Every model request reserves in the spend ledger first, and nothing but an installer makes one.
+    assert entry.auxiliary.ledger_path == home / "scope-recall" / "auxiliary-budget.sqlite3"
+    assert worker.auxiliary.ledger_path == root / "auxiliary-budget.sqlite3"
+    assert sorted(result["ledgers_created"]) == sorted(str(path) for path in (entry.auxiliary.ledger_path,
+                                                                                  worker.auxiliary.ledger_path))
+    for ledger in (entry.auxiliary.ledger_path, worker.auxiliary.ledger_path):
+        assert read_auxiliary_budget_status(ledger) == {"ledger_exists": True, "requests": 0, "charge_micro_usd": 0,
+                                                         "meter_breach": False}
 
     # After an upgrade the installer runs again over the attached home.
     installed = apply_install(plan_install(**options))
@@ -156,8 +166,10 @@ def test_detach_leaves_the_memories_and_the_record(tmp_path, capsys, root):
     _attach(capsys, home, root, _moved_aside(home, _routes(home)), "tianshu", "天枢")
 
     code, result = _run(capsys, "detach", "--instance-root", str(home))
-    assert (code, result["status"]) == (0, "detached")
+    assert (code, result["status"], result["home_directory_left"]) == (0, "detached", False)
     assert not (home / "scope-recall").exists()
+    assert any(Path(kept).name == "entry-auxiliary-budget.sqlite3" for kept in json.loads(
+        Path(result["receipt"]).read_text(encoding="utf-8"))["backups"]), "the entry's spend record is kept"
     with pytest.raises(HermesIdentityError):
         _bind(home)
     record = read_shared_payload(root)["entries"][0]

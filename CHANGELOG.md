@@ -6,7 +6,8 @@ All notable changes to `scope-recall` will be documented in this file.
 
 ### Scope Recall 3.2.0rc2 - 2026-09-22
 
-- The version moves past the `v3.2.0rc1` tag, the candidate the pilot runs. No code changes.
+- The version moves past the `v3.2.0rc1` tag.
+- `attach` creates the spend ledger each runtime config it writes names, the entry's and the shared worker's. A ledger is only ever made on purpose and every model request reserves in it first, so with 3.2.0rc1 the shared worker refused every embedding and consolidation with `ledger_not_initialized`, and an entry had no query vectors. Found by reading the runtime before the pilot, not on an instance. `detach` moves the entry's ledger out with its receipt, whole, so the entry's folder is left empty and its spend record is kept. rc1 is not the pilot's candidate.
 
 ### Scope Recall 3.2.0rc1 one store, many entries - 2026-09-22
 

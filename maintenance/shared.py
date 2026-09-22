@@ -45,6 +45,7 @@ from ..contracts import ContractError, InstanceBinding, TrustedContext
 from ..core.storage import SQLiteStorage
 from ..runtime.auxiliary import DEFAULT_LEDGER_NAME
 from ..runtime.instance import RuntimeInstanceConfig
+from ..runtime.model_budget import initialize_auxiliary_budget_ledger
 from .install_hermes import DEFAULT_AGENT_WORKSPACE
 
 RECEIPTS_DIRNAME = "receipts"
@@ -161,6 +162,22 @@ def _worker_config(raw: dict[str, Any], binding: InstanceBinding) -> dict[str, A
     return out
 
 
+def _ledger_made(raw: dict[str, Any]) -> list[str]:
+    """Create the spend ledger a written config names, when it does not exist yet.
+
+    A ledger is only ever made on purpose (``runtime/model_budget.py``), and
+    every model request reserves in it first: a config naming a missing one
+    refuses every embedding and consolidation with ``ledger_not_initialized``.
+    The entry's moved aside with its old store, and the shared worker's is new.
+    """
+    auxiliary = RuntimeInstanceConfig.from_mapping(raw).auxiliary
+    ledger = getattr(auxiliary, "ledger_path", None)
+    if ledger is None or ledger.exists():
+        return []
+    initialize_auxiliary_budget_ledger(ledger, auxiliary.budget)
+    return [str(ledger)]
+
+
 def _store_binding(payload: dict[str, Any], root: Path, scope_ids: frozenset[str]) -> InstanceBinding:
     return InstanceBinding(payload["agent_id"], payload["installation_id"], root, scope_ids,
                            payload["test_mode"], "shared")
@@ -233,10 +250,11 @@ def attach(
     run.keep(entry_path, "entry")
     view = attach_shared_entry(root, source, entry_id=entry_id, display_name=display_name, now=now,
                                python_executable=str(python_executable) if python_executable else None)
-    if entry_config is not None:
-        _write_json(entry_path, entry_config)
-    if worker_config is not None:
-        _write_json(worker_path, worker_config)
+    ledgers = []
+    for path, config in ((entry_path, entry_config), (worker_path, worker_config)):
+        if config is not None:
+            _write_json(path, config)
+            ledgers += _ledger_made(config)
     result = {
         "status": "attached",
         "root": str(root),
@@ -249,6 +267,7 @@ def attach(
         "entry_runtime_config": str(entry_path) if entry_config is not None else None,
         "worker_runtime_config": str(worker_path) if worker_config is not None else None,
         "grants_from": str(grants_from) if grants_from is not None else None,
+        "ledgers_created": ledgers,
         "notes": notes,
     }
     result["receipt"] = run.receipt(result)
@@ -266,7 +285,14 @@ def detach(*, instance_root: Path, now: str | None = None) -> dict[str, Any]:
     if record is None:
         raise SharedStoreError("the shared store has no record of this entry")
     run = _Run(root, f"detach-{attachment.entry_id}", now)
-    pointer, entry_config = attachment_path(instance_root), instance_root / "scope-recall" / RUNTIME_CONFIG_FILENAME
+    entry_dir = attachment_path(instance_root).parent
+    pointer, entry_config = attachment_path(instance_root), entry_dir / RUNTIME_CONFIG_FILENAME
+    # The entry's spend ledger lives beside its pointer (attach made it); it is
+    # a record of what the entry spent, so it moves out with the receipt, whole.
+    ledger = getattr(RuntimeInstanceConfig.from_mapping(_read_json(entry_config)).auxiliary, "ledger_path", None) \
+        if entry_config.is_file() else None
+    ledgers = [path for path in ((ledger, Path(f"{ledger}-wal"), Path(f"{ledger}-shm")) if ledger is not None else ())
+               if path.parent.resolve() == entry_dir.resolve() and path.is_file()]
     run.keep(root / MANIFEST_FILENAME, "store")
     run.keep(pointer, "entry")
     run.keep(entry_config, "entry")
@@ -274,12 +300,16 @@ def detach(*, instance_root: Path, now: str | None = None) -> dict[str, Any]:
     # a capture it left in the inbox is still checked against its grants.
     record["detached_at"] = now
     write_shared_payload(root, payload)
+    for path in ledgers:
+        run.folder.mkdir(parents=True, exist_ok=True)
+        shutil.move(str(path), str(run.folder / f"entry-{path.name}"))
+        run.backups.append(str(run.folder / f"entry-{path.name}"))
     for path in (pointer, entry_config):
         path.unlink(missing_ok=True)
-    with_contents = pointer.parent
-    if with_contents.is_dir() and not any(with_contents.iterdir()):
-        with_contents.rmdir()
-    result = {"status": "detached", "root": str(root), "entry_id": attachment.entry_id, "home": str(instance_root)}
+    if entry_dir.is_dir() and not any(entry_dir.iterdir()):
+        entry_dir.rmdir()
+    result = {"status": "detached", "root": str(root), "entry_id": attachment.entry_id, "home": str(instance_root),
+              "home_directory_left": entry_dir.is_dir()}
     result["receipt"] = run.receipt(result)
     return result
 
