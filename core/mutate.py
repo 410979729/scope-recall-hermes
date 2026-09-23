@@ -158,8 +158,8 @@ def _order_against_head(tx, proposal, roots, previous, qualification, scope_id):
 def apply_claim(tx, proposal: ClaimProposal, scope_id: str, now: str, *,
                 _subject_bound: bool = False) -> Mutation:
     roots = tx.claims.roots(evidence_refs(proposal))
-    from .claim_normalization import normalize_frame
-    proposal = normalize_frame(proposal, roots)
+    from .claim_normalization import name_frame, normalize_frame
+    proposal = name_frame(normalize_frame(proposal, roots), roots)
     if _subject_bound:
         subject_bound, binding_issue = True, None
     else:

@@ -94,13 +94,66 @@ def normalize_frame(proposal, roots):
     return result
 
 
+#: Naming a thing, in the literal forms a person says it: "我的猫咪叫年糕", "…的名字是…", "My cat is called …".
+_NAMING = (
+    re.compile(r'(?P<subject>[^，,;；。!?！？\n]{1,60}?)\s*(?P<verb>叫做|名叫|名字叫|的名字是|名字是|叫)\s*(?P<name>[^，,;；。!?！？\n]{1,60})'),
+    re.compile(r'(?P<subject>[^,;.!?\n]{1,80}?)\s+(?P<verb>is called|is named)\s+(?P<name>[^,;.!?\n]{1,60})', re.I),
+)
+
+
+def name_frame(proposal, roots):
+    """An alias that names nothing already known is the thing's name: a fact, framed from the quote.
+
+    An alias attaches another name to an existing fact (``alias.target_ref`` names a claim), and is
+    held back until that link is proved.  Told "我的猫咪叫年糕" with nothing yet known about the cat,
+    the consolidation model filed "年糕" as an alias whose target was the message itself: it
+    could never be proved, stayed proposed, and no agent recalled the cat's name.  Only the literal
+    naming forms above are re-framed, and only from one complete first-hand statement; the subject,
+    verb and name are the quote's own words, so the fact is qualified like any other.
+    """
+    alias = proposal.get('alias')
+    if proposal['kind'] != 'alias' or not isinstance(alias, dict) or str(alias.get('target_ref') or '').startswith('claim-'):
+        return proposal
+    spans = proposal['evidence_spans']
+    if len(spans) != 1:
+        return proposal
+    span = spans[0]
+    matching = [r for r in roots if (r.ref, r.revision) == (span['source_ref'], span['source_revision'])]
+    if len(matching) != 1:
+        return proposal
+    root = matching[0]
+    principal = root.source_principal or {}
+    if (root.origin != 'human_direct' or root.capture_state != 'complete' or root.capture_gaps
+            or principal.get('resolution') != 'verified' or principal.get('kind') != 'human'):
+        return proposal
+    if not span['quote'] or root.content.count(span['quote']) != 1:
+        return proposal
+    from .claims import evidence_context
+
+    assertion = evidence_context(root.content, span['quote'])
+    if AUTHORITY_QUESTION.search(assertion) or UNASSERTED_UNCERTAINTY.search(assertion) or REPORTED_SPEECH.search(assertion):
+        return proposal
+    name = str(alias.get('name') or '').strip()
+    for clause in re.split(r'[，,;；。!?！？\n]', assertion):
+        clause = clause.strip()
+        for form in _NAMING:
+            found = form.fullmatch(clause)
+            if found and found.group('name').strip() == name:
+                result = {key: deepcopy(value) for key, value in proposal.items() if key != 'alias'}
+                result.update(kind='fact', subject=found.group('subject').strip(), predicate=found.group('verb'),
+                              value_text=name)
+                result['evidence_spans'][0]['quote'] = clause
+                return result
+    return proposal
+
+
 def expand_frames(proposal, roots):
     """Recover explicit sibling frames misplaced in a composite correction.
 
     No free extraction: only verbatim rendition assertions supplied in the
     model's conditions and independently present in the grounded assertion.
     """
-    primary = normalize_frame(proposal, roots)
+    primary = name_frame(normalize_frame(proposal, roots), roots)
     result = [primary]
     if not _COMPOSITE_VALUE.fullmatch(proposal['value_text']) or primary['value_text'] == proposal['value_text']:
         return result
