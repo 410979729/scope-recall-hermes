@@ -247,9 +247,15 @@ def _unavailable(result, gap):
     return result
 
 
-def fence_trace_epoch(view, current_epoch):
-    """Shared host-delivery fence; adapters do not invent visibility policy."""
+def fence_trace_epoch(view, current_epoch, *, retracted=None):
+    """Shared host-delivery fence; adapters do not invent visibility policy.
+
+    ``retracted(epoch)`` says whether a deletion or suppression in the caller's scopes came after
+    the view's epoch; any other move of the epoch is a capture, which withdraws nothing.
+    """
     if view["memory_epoch"] == current_epoch:
+        return view
+    if retracted is not None and type(view["memory_epoch"]) is int and not retracted(view["memory_epoch"]):
         return view
     return _unavailable(
         dict(view, memory_epoch=current_epoch), "memory_changed_before_delivery"

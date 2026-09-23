@@ -153,3 +153,19 @@ def test_default_runtime_config_rejects_symlink_when_supported(tmp_path: Path):
     assert not attached.configured
     assert "capability_gap:trusted_runtime_invalid" in attached.capability_gaps
     attached.close()
+
+
+def test_a_delivered_view_is_blanked_only_for_a_withdrawal_after_it():
+    """Every capture moves the epoch, and on a store several entries write to most views were
+    compiled one capture ago: blanking on any move blanked most explicit recalls there."""
+    from scope_recall.adapters.tool_common import FENCED_RECALL, fence_epoch
+
+    view = {"memory_epoch": 7, "status": "ok", "items": [{"content": "TEST 内容"}], "gaps": [], "unmet_needs": [],
+            "answerability": "supported", "coverage": "complete_for_query"}
+    assert fence_epoch(view, 7, FENCED_RECALL) is view
+    assert fence_epoch(view, 9, FENCED_RECALL, retracted=lambda since: False) is view, "only captures moved the epoch"
+    asked = []
+    blanked = fence_epoch(view, 9, FENCED_RECALL, retracted=lambda since: asked.append(since) or True)
+    assert asked == [7], "the check is asked about the epoch the view was compiled at"
+    assert (blanked["status"], blanked["items"], blanked["memory_epoch"]) == ("unavailable", [], 9)
+    assert fence_epoch(view, 9, FENCED_RECALL)["status"] == "unavailable", "without the check, every move still blanks"

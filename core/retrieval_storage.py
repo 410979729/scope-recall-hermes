@@ -19,7 +19,7 @@ from ..contracts import (ENTRY_LABELS_MAX_ITEMS, SOURCE_CONTEXTS_MAX_ITEMS, Cont
                          bounded_source_context)
 from .claim_storage import parse_source_ref
 from .claims import canonical_time, select_effective, select_proposal
-from .delete_storage import canonical
+from .delete_storage import canonical, retraction_after
 from .episodes import source_origin
 from . import lexical_index, lineage
 from .events import lexical_terms
@@ -387,6 +387,10 @@ class RetrievalStorage:
 
     def epoch(self, tx) -> int:
         return tx.memory_epoch()
+
+    def retracted_since(self, tx, context: SearchContext, since: int) -> bool:
+        """Whether a deletion or suppression in this recall's scopes was recorded after epoch ``since``."""
+        return retraction_after(tx._check(), context.trusted_context.allowed_scope_ids, since)
 
     # -- candidate channels ---------------------------------------------------
 

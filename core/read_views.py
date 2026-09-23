@@ -17,7 +17,7 @@ from .claims import ClaimVersion, effective_origin, select_effective
 from .mutate import evidence_refs
 from .recall_budget import canonical_render_json
 from .retrieval_storage import evidence_source_contexts
-from .visibility import CLOSED_INTENTION_STATES, ObjectRef, allowed, release_objects
+from .visibility import CLOSED_INTENTION_STATES, ObjectRef, allowed, epoch_retracted, release_objects
 
 
 DEFAULT_MAX_ITEMS = 16
@@ -291,7 +291,7 @@ def _release_selected(storage, clock, context, versions: tuple[ClaimVersion, ...
     refs = tuple(dict.fromkeys((*(ObjectRef("claim", version.ref, version.revision) for version in versions), *fence)))
     if not refs:
         with storage.read(context) as tx:
-            if tx.status().memory_epoch != epoch:
+            if epoch_retracted(tx, context, epoch):
                 raise ContractError("VERSION_CONFLICT", "memory_epoch")
         return ()
     return release_objects(storage, clock, context, refs, expected_epoch=epoch, automatic=False, history=False)
@@ -323,7 +323,7 @@ def _load_view(storage, clock, context: TrustedContext, lookup_subject: str, sel
                 selection = select(tx, now, resolution.subject or lookup_subject, resolution)
         released = _release_selected(storage, clock, context, selection.versions, resolution.fence, epoch)
         with storage.read(context) as tx:
-            if tx.status().memory_epoch != epoch:
+            if epoch_retracted(tx, context, epoch):
                 return _Unavailable(tx.status().memory_epoch)
             checked = _recheck_released(tx, released, selection.versions)
             if checked is None and selection.versions:

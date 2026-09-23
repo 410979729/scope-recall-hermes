@@ -18,7 +18,7 @@ import hashlib
 import json
 import threading
 import time
-from typing import Literal, Protocol, cast
+from typing import Callable, Literal, Protocol, cast
 
 from ..contracts import Basis, ContractError, RecallItem, RecallPacket, bounded_entry_labels, bounded_source_contexts
 from .background_context import is_background, mark_background
@@ -229,12 +229,22 @@ class _Draft:
     stale_drops: int = 0
     budget_drops: int = 0
 
-    def note_epoch(self, epoch: int, gap: str) -> bool:
-        """Record an epoch move; ``True`` means the verified set is no longer released."""
+    def note_epoch(self, epoch: int, gap: str, *, retracted: Callable[[int], bool] | None = None) -> bool:
+        """Record an epoch move; ``True`` means the verified set is no longer released.
+
+        Every capture moves the epoch.  With several entries writing to one store a recall rarely
+        finished without a move, and each one emptied the packet: on the pilot an agent asked about
+        something the owner had just told another agent while the worker was writing it down, and
+        got nothing.  Only a deletion or suppression in the recall's own scopes withdraws what was
+        verified (``retracted``, given the epoch of the last read); any other change is caught item
+        by item by the fresh reads.  Without ``retracted`` every move withdraws, as before.
+        """
         if self.memory_epoch is None or epoch == self.memory_epoch:
             return False
+        since, self.memory_epoch = self.memory_epoch, epoch
+        if retracted is not None and not retracted(since):
+            return False
         self.gaps.append(gap)
-        self.memory_epoch = epoch
         return True
 
     def discard(self, verified: list[Pair], gap: str | None = None) -> list[Pair]:
@@ -386,13 +396,19 @@ class RecallPacketCompiler:
             return None
         return mark_background(fresh) if candidate.source == "background" else fresh
 
+    def _retracted(self, tx, context: SearchContext) -> Callable[[int], bool] | None:
+        """This read's view of whether anything in the recall's scopes was withdrawn since an epoch."""
+        probe = getattr(self.storage_reader, "retracted_since", None)
+        return None if probe is None else (lambda since: probe(tx, context, since))
+
     def _verify(self, storage, draft: _Draft, ranked: list[Pair]) -> list[Pair]:
-        """Rehydrate every candidate in one fresh read; an epoch move empties it."""
+        """Rehydrate every candidate in one fresh read; a withdrawal in its scopes empties it."""
         context = draft.context
         verified: list[Pair] = []
         try:
             with self._read(storage, context) as tx:
-                draft.note_epoch(self.storage_reader.epoch(tx), "epoch_changed")
+                retracted = self._retracted(tx, context)
+                draft.note_epoch(self.storage_reader.epoch(tx), "epoch_changed", retracted=retracted)
                 for candidate, item in ranked:
                     if self._remaining_ms(context) == 0:
                         draft.gaps.append("deadline_exceeded_release")
@@ -402,7 +418,7 @@ class RecallPacketCompiler:
                         draft.stale_drops += 1
                         continue
                     verified.append((candidate, fresh))
-                if draft.note_epoch(self.storage_reader.epoch(tx), "epoch_changed_release"):
+                if draft.note_epoch(self.storage_reader.epoch(tx), "epoch_changed_release", retracted=retracted):
                     return draft.discard(verified)
         except Exception as exc:
             return draft.discard(verified, _sqlite_gap(exc))
@@ -421,14 +437,15 @@ class RecallPacketCompiler:
             return draft.discard(verified, "deadline_exceeded_release_fence")
         try:
             with self._read(storage, context) as tx:
-                if draft.note_epoch(self.storage_reader.epoch(tx), "epoch_changed_release_fence"):
+                retracted = self._retracted(tx, context)
+                if draft.note_epoch(self.storage_reader.epoch(tx), "epoch_changed_release_fence", retracted=retracted):
                     return draft.discard(verified)
                 for candidate, obj in verified:
                     if self._recheck(tx, context, candidate, obj, draft.gaps) is None:
                         return draft.discard(verified, "release_delete_fence")
                     if self._remaining_ms(context) == 0:
                         return draft.discard(verified, "deadline_exceeded_release_fence")
-                if draft.note_epoch(self.storage_reader.epoch(tx), "epoch_changed_release_fence"):
+                if draft.note_epoch(self.storage_reader.epoch(tx), "epoch_changed_release_fence", retracted=retracted):
                     return draft.discard(verified)
         except Exception as exc:
             return draft.discard(verified, _sqlite_gap(exc))

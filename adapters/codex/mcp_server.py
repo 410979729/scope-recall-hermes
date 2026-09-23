@@ -248,7 +248,8 @@ class CodexMCPServer:
         # mode is still clamped by the trusted CoreConfig budget.  A lookup
         # that finds nothing says so; the prompt hook keeps background.
         packet = self.core.recall_packet(context, body, deadline_seconds=5.0, background_without_evidence=False)
-        packet = fence_epoch(packet, self.core.memory_epoch(context), FENCED_RECALL)
+        packet = fence_epoch(packet, self.core.memory_epoch(context), FENCED_RECALL,
+                             retracted=lambda since: self.core.memory_retracted_since(context, since))
         _budget_retry_hint(packet)
         return self._reply(ctx, call_id, packet)
 
@@ -277,7 +278,8 @@ class CodexMCPServer:
         )
         context = self._request_context(ctx)
         view = self.core.profile(context, body)
-        view = fence_epoch(view, self.core.status(context).memory_epoch, FENCED_PROFILE)
+        view = fence_epoch(view, self.core.status(context).memory_epoch, FENCED_PROFILE,
+                           retracted=lambda since: self.core.memory_retracted_since(context, since))
         return self._reply(ctx, call_id, view)
 
     def trace(
@@ -299,7 +301,8 @@ class CodexMCPServer:
         )
         context = self._request_context(ctx)
         view = self.core.trace(context, body)
-        view = fence_trace_epoch(view, self.core.status(context).memory_epoch)
+        view = fence_trace_epoch(view, self.core.status(context).memory_epoch,
+                                 retracted=lambda since: self.core.memory_retracted_since(context, since))
         return self._reply(ctx, call_id, view)
 
     def entity(
@@ -320,7 +323,8 @@ class CodexMCPServer:
         )
         context = self._request_context(ctx)
         view = self.core.entity(context, body)
-        view = fence_epoch(view, self.core.status(context).memory_epoch, FENCED_ENTITY)
+        view = fence_epoch(view, self.core.status(context).memory_epoch, FENCED_ENTITY,
+                           retracted=lambda since: self.core.memory_retracted_since(context, since))
         return self._reply(ctx, call_id, view)
 
     def propose_memory(

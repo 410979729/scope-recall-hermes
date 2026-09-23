@@ -301,7 +301,8 @@ class HermesToolSurface:
             # A lookup that finds nothing says so; prefetch keeps background.
             background_without_evidence=False,
         )
-        packet = fence_epoch(packet, core.memory_epoch(context), FENCED_RECALL)
+        packet = fence_epoch(packet, core.memory_epoch(context), FENCED_RECALL,
+                             retracted=lambda since: core.memory_retracted_since(context, since))
         return self._reply(body["request_id"], packet)
 
     def _handle_inspect(self, args: object) -> str:
@@ -328,7 +329,8 @@ class HermesToolSurface:
         context = self._tool_context()
         core = self._require_core()
         view = core.profile(context, body)
-        view = fence_epoch(view, core.status(context).memory_epoch, FENCED_PROFILE)
+        view = fence_epoch(view, core.status(context).memory_epoch, FENCED_PROFILE,
+                           retracted=lambda since: core.memory_retracted_since(context, since))
         return self._reply(body["request_id"], view)
 
     def _handle_entity(self, args: object) -> str:
@@ -338,7 +340,8 @@ class HermesToolSurface:
         context = self._tool_context()
         core = self._require_core()
         view = core.entity(context, body)
-        view = fence_epoch(view, core.status(context).memory_epoch, FENCED_ENTITY)
+        view = fence_epoch(view, core.status(context).memory_epoch, FENCED_ENTITY,
+                           retracted=lambda since: core.memory_retracted_since(context, since))
         return self._reply(body["request_id"], view)
 
     def _handle_trace(self, args: object) -> str:
@@ -346,7 +349,8 @@ class HermesToolSurface:
         context = self._tool_context()
         core = self._require_core()
         view = core.trace(context, body)
-        view = fence_trace_epoch(view, core.status(context).memory_epoch)
+        view = fence_trace_epoch(view, core.status(context).memory_epoch,
+                                 retracted=lambda since: core.memory_retracted_since(context, since))
         return self._reply(body["request_id"], view)
 
     def _handle_revise(self, args: object) -> str:

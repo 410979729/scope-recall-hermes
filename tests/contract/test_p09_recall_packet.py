@@ -680,18 +680,41 @@ def test_p09_release_recheck_drops_stale_revision_conservatively(tmp_path):
     assert (second.ref, second.revision) not in refs or "stale_candidate" in "|".join(packet["gaps"])
 
 
-def test_p09_release_epoch_fence_drops_verified_items_after_epoch_flip(app):
-    core, ctx = app
-    capture(core, ctx, "P09 epoch fence item H100.", key="TEST-p09/epoch-fence")
-    result = core.recall(ctx, recall_request(query="H100", mode="current", request_id="TEST-p09-epoch-result"), deadline_seconds=5)
+class WithdrawnSinceStorage(EpochFlipStorage):
+    """The epoch moves between the release reads, and a deletion in the recall's scopes came with it."""
+
+    def retracted_since(self, tx, context, since):
+        return True
+
+
+def _epoch_fenced_packet(core, ctx, reader):
+    # The query has to find something, or an emptied packet and an empty one look the same.
+    capture(core, ctx, "P09 keeps H100 as an exact identifier.", key="TEST-p09/epoch-fence")
+    query = "H100 exact identifier"
+    result = core.recall(ctx, recall_request(query=query, mode="current", request_id="TEST-p09-epoch-result"), deadline_seconds=5)
+    assert result.items, "the fence has nothing to act on"
     search = SearchContext.from_request(
-        recall_request(query="H100", mode="current", request_id="TEST-p09-epoch-compile"),
+        recall_request(query=query, mode="current", request_id="TEST-p09-epoch-compile"),
         ctx,
         now=FixedClock.now,
         deadline=200.0,
     )
-    reader = EpochFlipStorage(clock=FixedClock())
-    packet = compile_recall_packet(search, result, core.storage, storage_reader=reader, clock=FixedClock())
+    return compile_recall_packet(search, result, core.storage, storage_reader=reader, clock=FixedClock())
+
+
+def test_p09_an_epoch_move_that_withdrew_nothing_keeps_the_verified_items(app):
+    """Every capture moves the epoch.  With several entries writing to one store a recall rarely
+    finished without a move, and each emptied the packet: on the pilot an agent asked about what the
+    owner had just told another one while the worker was writing it down, and got nothing."""
+    core, ctx = app
+    packet = _epoch_fenced_packet(core, ctx, EpochFlipStorage(clock=FixedClock()))
+    assert packet["items"], packet["gaps"]
+    assert not any(gap.startswith("epoch_changed") for gap in packet["gaps"]), packet["gaps"]
+
+
+def test_p09_an_epoch_move_that_withdrew_something_in_scope_still_empties_the_release(app):
+    core, ctx = app
+    packet = _epoch_fenced_packet(core, ctx, WithdrawnSinceStorage(clock=FixedClock()))
     assert not packet["items"]
     assert "epoch_changed_release" in packet["gaps"]
     assert packet["status"] in {"partial", "no_match"}

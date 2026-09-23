@@ -10,6 +10,7 @@ from dataclasses import dataclass, replace
 import hashlib
 
 from ..contracts import ContractError
+from .delete_storage import retraction_after
 from .failure_retry import validation_feedback
 from .work_storage import ACCOUNT_REFUSALS
 
@@ -245,11 +246,7 @@ def derivation_changed(tx, fence: DerivationFence, *, episode: bool = False, ref
     Captures and writes to anything else do not.  Callers keep their lease,
     visibility and newest-revision checks ahead of this one.
     """
-    if tx._check().execute(
-        """SELECT 1 FROM deletion_operations o WHERE o.memory_epoch>?
-           AND EXISTS(SELECT 1 FROM json_each(o.scope_ids_json) s WHERE s.value=?) LIMIT 1""",
-        (fence.memory_epoch, fence.scope_id),
-    ).fetchone() is not None:
+    if retraction_after(tx._check(), (fence.scope_id,), fence.memory_epoch):
         return "deletion_operation"
     if (_mark_moved(tx, "source_events", _SOURCE_IDENTITY, fence.source_mark)
             or _mark_moved(tx, "claim_versions", _CLAIM_IDENTITY, fence.claim_mark)):

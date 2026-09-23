@@ -203,6 +203,9 @@ def test_recall_epoch_race_scrubs_compiled_payload_surface(tmp_path: Path) -> No
         def memory_epoch(self, context):
             return real_core.memory_epoch(context)
 
+        def memory_retracted_since(self, context, epoch):
+            return real_core.memory_retracted_since(context, epoch)
+
     adapter = build_server(config, workspace=project, core=RaceCore())
     human_context = trusted_context(config, resolve_runtime_audience(config, str(project)), session_id=adapter.context.session_id, actor_origin="human_direct")
     scope_id = config.audience_scopes["project"]
@@ -516,6 +519,9 @@ def test_mcp_recall_budget_default_tiny_clip_and_invalid_types(tmp_path: Path) -
 
         def memory_epoch(self, context):
             return core.memory_epoch(context)
+
+        def memory_retracted_since(self, context, epoch):
+            return core.memory_retracted_since(context, epoch)
 
     adapter = build_server(config, workspace=project, core=CaptureCore())
     tool = adapter.server._tool_manager.get_tool("recall")

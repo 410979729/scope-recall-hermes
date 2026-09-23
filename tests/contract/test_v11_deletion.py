@@ -146,7 +146,8 @@ def test_C11_epoch_change_rejects_old_claim_release_without_vector_body_fallback
     item,source = initial(core,ctx,value="H100",kind="fact")
     epoch = core.status(ctx).memory_epoch
     capture(core,ctx,"刚才写错了，TEST-project 用H200。",when="2026-09-03T12:00:00Z")
-    with pytest.raises(ContractError,match="memory_epoch"):
+    # The correction supersedes revision 1: the release refuses it by its own revision, whatever the epoch did.
+    with pytest.raises(ContractError,match="VERSION_CONFLICT"):
         core.release_objects(ctx,(ObjectRef("claim",item.ref,1),),expected_epoch=epoch)
     assert core.current_claim(ctx,item.ref).payload["value_text"]=="H200"
 
@@ -331,6 +332,9 @@ def test_restore_epoch_never_reuses_any_pre_restore_packet_epoch(app,tmp_path):
     for index in range(8):
         capture(core,ctx,f"TEST unrelated event {index}")
     last_epoch = core.status(ctx).memory_epoch
+    # Deleted after a reader held last_epoch; the older file still has it, the replayed ledger does not.
+    authorize(core,ctx,item)
+    core.forget(ctx,request(item),remaining_seconds=10)
     ledger = export_deletion_ledger(core.storage,InstallationMaintenance(ctx))
     begin_restore(core.storage,InstallationMaintenance(ctx),expected_ledger_sha256=ledger_digest(ledger))
     sqlite_backup(backup,core.storage.path)
@@ -399,3 +403,20 @@ def test_restore_failed_commit_keeps_marker_closed_and_replay_retries(app,tmp_pa
         core.source(ctx,source.ref,1)
     replay_deletion_ledger(core.storage,authority,ledger)
     assert core.source(ctx,source.ref,1) is None and core.current_claim(ctx,item.ref) is None
+
+
+def test_a_capture_between_a_read_and_its_release_withdraws_nothing(app):
+    """Another entry's capture moves the epoch; only a deletion in the reader's scopes refuses the release."""
+    core,ctx = app
+    item,source = initial(core,ctx)
+    epoch = core.status(ctx).memory_epoch
+    capture(core,ctx,"TEST 另一个入口刚记下的一句无关的话。")
+    assert core.status(ctx).memory_epoch > epoch
+    assert not core.memory_retracted_since(ctx,epoch)
+    released = core.release_objects(ctx,(ObjectRef("claim",item.ref,item.revision),),expected_epoch=epoch)
+    assert [one.revision for one in released] == [item.revision]
+    authorize(core,ctx,item)
+    core.forget(ctx,request(item),remaining_seconds=10)
+    assert core.memory_retracted_since(ctx,epoch)
+    with pytest.raises(ContractError,match="memory_epoch"):
+        core.release_objects(ctx,(ObjectRef("event",source.ref,source.revision),),expected_epoch=epoch)

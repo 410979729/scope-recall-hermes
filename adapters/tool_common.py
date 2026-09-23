@@ -12,7 +12,7 @@ from datetime import datetime, tzinfo
 import json
 from pathlib import Path
 import re
-from typing import Any, cast
+from typing import Any, Callable, cast
 import uuid
 
 from scope_recall.contracts import ContractError
@@ -186,15 +186,21 @@ def scrub_no_content(value: object) -> object:
     return value
 
 
-def fence_epoch(view: dict[str, Any], current_epoch: object, empty: dict[str, Any]) -> dict[str, Any]:
-    """Never deliver a view compiled against an epoch a mutation has since advanced.
+def fence_epoch(view: dict[str, Any], current_epoch: object, empty: dict[str, Any], *,
+                retracted: Callable[[int], bool] | None = None) -> dict[str, Any]:
+    """Never deliver a view compiled before a withdrawal it may hold.
 
-    A mutation can race the read-only compiler.  Rather than hand a host a
+    A deletion can race the read-only compiler.  Rather than hand a host a
     stale packet, blank its content, mark it unavailable at the current epoch
     and tell the caller to retry; ``empty`` restores the view's own required
-    keys so hosts can still read the fenced shape.
+    keys so hosts can still read the fenced shape.  ``retracted`` answers
+    whether a deletion or suppression in the caller's scopes came after the
+    view's epoch: every capture moves the epoch, so without it every move
+    blanks, which on a store several entries write to was most views.
     """
     if view.get("memory_epoch") is None or view["memory_epoch"] == current_epoch:
+        return view
+    if retracted is not None and type(view["memory_epoch"]) is int and not retracted(view["memory_epoch"]):
         return view
     fenced = cast(dict[str, Any], scrub_no_content(view))
     fenced.update(

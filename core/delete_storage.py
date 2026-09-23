@@ -18,6 +18,25 @@ def canonical(value):
     return json.dumps(value,ensure_ascii=False,sort_keys=True,separators=(",",":"),allow_nan=False)
 
 
+def retraction_after(conn, scope_ids, epoch: int) -> bool:
+    """Whether a deletion or suppression touching any of ``scope_ids`` was recorded after ``epoch``.
+
+    Every capture and every derived write moves ``memory_epoch``; only these withdraw anything a
+    reader may already hold.  An operation records the epoch it moved the store to, so one recorded
+    above ``epoch`` came after a read at ``epoch`` -- and a restore replays each with its own, so a
+    deletion made after that read still counts once an older file is back.
+    """
+    scopes = sorted(set(scope_ids))
+    if not scopes:
+        return False
+    marks = ",".join("?" for _ in scopes)
+    return conn.execute(
+        f"""SELECT 1 FROM deletion_operations o WHERE o.memory_epoch>?
+            AND EXISTS(SELECT 1 FROM json_each(o.scope_ids_json) s WHERE s.value IN ({marks})) LIMIT 1""",
+        (epoch, *scopes),
+    ).fetchone() is not None
+
+
 def group_digest(binding,scope_id,project_id,branch_id,group_key):
     return hashlib.sha256(canonical([binding.installation_id,scope_id,project_id,branch_id,group_key]).encode()).hexdigest()
 

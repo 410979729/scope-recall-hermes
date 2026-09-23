@@ -5,6 +5,7 @@ from dataclasses import dataclass
 
 from ..contracts import ContractError
 from .claims import select_effective
+from .delete_storage import retraction_after
 
 OBJECT_KINDS = ("event", "claim", "episode", "artifact", "reference")
 #: Intention states that automatic exits never surface as current.
@@ -66,6 +67,17 @@ def _released_versioned(tx, clock, ref: ObjectRef, *, automatic: bool, history: 
 _RELEASE = {"event": _released_event, "claim": _released_claim}
 
 
+def epoch_retracted(tx, context, epoch: int) -> bool:
+    """Whether what a reader read at ``epoch`` may since have been withdrawn in this context's scopes.
+
+    The epoch moves with every capture: with several entries writing to one store, a read and its
+    release were rarely at the same epoch, and every such release was refused.  Only a deletion or
+    suppression in the reader's scopes withdraws; any other change is caught by each object's own
+    fresh load, which follows in the same transaction.
+    """
+    return tx.status().memory_epoch != epoch and retraction_after(tx._check(), context.allowed_scope_ids, epoch)
+
+
 def release_objects(storage, clock, context, refs: tuple[ObjectRef, ...], *, expected_epoch: int,
                     automatic: bool = True, history: bool = False) -> tuple:
     """Return freshly loaded SQLite objects; never echo cached/vector text.
@@ -77,7 +89,7 @@ def release_objects(storage, clock, context, refs: tuple[ObjectRef, ...], *, exp
             or type(expected_epoch) is not int or expected_epoch < 0):
         raise ContractError("INPUT_INVALID", "release_request")
     with storage.read(context) as tx:
-        if tx.status().memory_epoch != expected_epoch:
+        if epoch_retracted(tx, context, expected_epoch):
             raise ContractError("VERSION_CONFLICT", "memory_epoch")
         result = []
         for ref in refs:

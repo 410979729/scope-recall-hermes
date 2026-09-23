@@ -112,6 +112,18 @@ class MemoryCore:
         with self.storage.read(context) as tx:
             return tx.memory_epoch()
 
+    def memory_retracted_since(self, context: TrustedContext, epoch: int) -> bool:
+        """Whether a deletion or suppression in this context's scopes was recorded after ``epoch``.
+
+        A host fences what it delivers against this rather than against any epoch move: the epoch
+        moves with every capture, and on a store several entries write to, most views were
+        compiled one capture ago.
+        """
+        from .delete_storage import retraction_after
+
+        with self.storage.read(context) as tx:
+            return retraction_after(tx._check(), context.allowed_scope_ids, epoch)
+
     def source_by_event_key(self, context: TrustedContext, source_event_key: str, revision: int = 1, *, remaining_seconds: float | None = None) -> StoredSource | None:
         """Read first-capture timestamps for an authenticated host replay."""
         with self.storage.read(context, remaining_seconds=remaining_seconds) as tx:
