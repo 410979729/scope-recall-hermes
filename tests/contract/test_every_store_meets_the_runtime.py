@@ -15,7 +15,7 @@ helper-process store, on Windows.  So three gaps shipped unseen:
 
 The first test asks each store class for the two calls by signature.  It needs no native code, so it
 runs on every platform and in this tier, which forbids the child process and the socket LanceDB needs
-to load.  The behaviour is written once, as the three ``check_*`` functions below: this file runs them
+to load.  The behaviour is written once, as the ``check_*`` functions below: this file runs them
 against the SQLite companion, and ``tests/storage_native/test_in_process_lance_store.py`` runs them
 against the in-process LanceDB store in the native tier.
 """
@@ -55,6 +55,7 @@ def test_each_store_class_takes_the_two_calls_the_runtime_makes(store_class):
     purge = inspect.signature(store_class.purge_governed_members)
     purge.bind(None, members=[], agent_id=AGENT, installation_id=INSTALLATION, partitions=[],
                project_id=None, branch_id=None, remaining_seconds=1.0)
+    inspect.signature(store_class.search_scopes).bind(None, [1.0, 0.0], scope_ids=[], limit=1)
 
 
 @pytest.mark.parametrize("backend", ["lancedb", "sqlite-bruteforce"])
@@ -97,10 +98,35 @@ def check_a_row_that_cannot_be_classified_is_never_acknowledged_as_gone(store) -
     assert store.list_ids() == ["TEST:stray"], "and nothing is deleted on a guess"
 
 
+def check_a_search_over_several_partitions_filters_before_it_ranks(store) -> None:
+    """An entry holding a hundred scopes asks once, and rows it may not read never crowd out its own.
+
+    Filtering after the nearest rows were chosen would return nothing here: thirty rows of another
+    partition sit nearer the query than anything the listed partitions hold.
+    """
+    from scope_recall.adapters.lance import physical_partition_scope_id
+
+    def partition(scope: str) -> str:
+        return physical_partition_scope_id(agent_id=AGENT, installation_id=INSTALLATION, embedding_space=SPACE,
+                                           logical_scope_id=scope, project_id=None, branch_id=None)
+
+    crowd = [_record(f"event-crowd-{index}", (1.0, 0.001 * index), scope="TEST-crowded") for index in range(30)]
+    mine = [_record("event-near", (0.8, 0.6), scope="TEST-mine-a"), _record("event-far", (0.0, 1.0), scope="TEST-mine-b")]
+    assert LanceIndexWriter(store).upsert_fenced_many([*crowd, *mine], guard=lambda: True, remaining_seconds=5.0) is True
+
+    listed = [partition("TEST-mine-a"), partition("TEST-mine-b")]
+    rows = store.search_scopes([1.0, 0.0], scope_ids=listed, limit=5)
+    assert [row["id"] for row in rows] == ["TEST:event-near:1", "TEST:event-far:1"], "only the listed partitions, nearest first"
+    one_at_a_time = [row["id"] for scope in listed for row in store.search([1.0, 0.0], scope_id=scope, limit=5)]
+    assert sorted(one_at_a_time) == sorted(row["id"] for row in rows), "one request finds what a request per partition did"
+    assert store.search_scopes([1.0, 0.0], scope_ids=[], limit=5) == []
+
+
 CHECKS = (
     check_a_group_is_published_under_one_guard_check_and_a_refusal_writes_nothing,
     check_a_forget_removes_every_revision_of_its_members_and_only_those,
     check_a_row_that_cannot_be_classified_is_never_acknowledged_as_gone,
+    check_a_search_over_several_partitions_filters_before_it_ranks,
 )
 
 

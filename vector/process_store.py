@@ -28,7 +28,7 @@ from .lance_native import python_subprocess_options
 MAX_LANCE_FRAME_BYTES = 64 * 1024 * 1024
 LANCE_WORKER_METHODS = frozenset({
     "is_available", "open", "open_existing", "upsert_records", "fenced_upsert_records",
-    "delete_by_ids", "contains_id", "list_ids", "list_records", "search", "count_rows",
+    "delete_by_ids", "contains_id", "list_ids", "list_records", "search", "search_scopes", "count_rows",
     "compact", "purge_governed_members",
 })
 # Lance's Rust object writer appends table/data/temp components to the root and
@@ -672,6 +672,9 @@ class ProcessLanceVectorStore(VectorStore):
 
     def search(self, vector: list[float], *, scope_id: str, limit: int) -> list[dict[str, Any]]:
         return self._call("search", vector, scope_id=scope_id, limit=limit)
+
+    def search_scopes(self, vector: list[float], *, scope_ids, limit: int) -> list[dict[str, Any]]:
+        return self._call("search_scopes", vector, scope_ids=list(scope_ids), limit=limit)
 
     def count_rows(self) -> int:
         return int(self._call("count_rows"))

@@ -364,11 +364,15 @@ class SQLiteBruteForceVectorStore(VectorStore):
         return {str(record["id"]): record for record in map(self._row_to_record, self._rows())}
 
     def search(self, vector: list[float], *, scope_id: str, limit: int) -> list[dict[str, Any]]:
-        if not vector:
+        return self.search_scopes(vector, scope_ids=(scope_id,), limit=limit)
+
+    def search_scopes(self, vector: list[float], *, scope_ids, limit: int) -> list[dict[str, Any]]:
+        listed = list(dict.fromkeys(str(scope_id) for scope_id in scope_ids))
+        if not vector or not listed:
             return []
         query_vector = self._coerce_vector(vector)
         candidates: list[dict[str, Any]] = []
-        for row in self._rows("scope_id = ?", (str(scope_id),)):
+        for row in self._rows(f"scope_id IN ({','.join('?' for _ in listed)})", tuple(listed)):
             try:
                 record = self._row_to_record(row)
                 distance = self._distance(query_vector, record.pop("vector"))

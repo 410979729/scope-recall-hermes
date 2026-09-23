@@ -403,6 +403,15 @@ class LanceVectorStore(VectorStore):
         query = self._fresh_table().search(vector).metric(self.metric).where(f"scope_id = {_sql_quote(scope_id)}")
         return query.limit(int(limit)).to_list()
 
+    def search_scopes(self, vector: list[float], *, scope_ids: Iterable[str], limit: int) -> list[dict[str, Any]]:
+        """One nearest-neighbour request over a list of partitions, filtered before the search."""
+        listed = list(dict.fromkeys(str(scope_id) for scope_id in scope_ids))
+        if not vector or not listed:
+            return []
+        where = f"scope_id IN ({', '.join(_sql_quote(scope_id) for scope_id in listed)})"
+        query = self._fresh_table().search(vector).metric(self.metric).where(where, prefilter=True)
+        return query.limit(int(limit)).to_list()
+
     def count_rows(self) -> int:
         return int(self._fresh_table().count_rows())
 

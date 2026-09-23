@@ -80,6 +80,16 @@ class VectorStore(ABC):
     @abstractmethod
     def search(self, vector: list[float], *, scope_id: str, limit: int) -> list[dict[str, Any]]: ...
 
+    def search_scopes(self, vector: list[float], *, scope_ids: Iterable[str], limit: int) -> list[dict[str, Any]]:
+        """The ``limit`` nearest rows across several partitions, nearest first.
+
+        This default asks one partition at a time; a store that can filter by a list overrides it
+        with one request, which is what keeps an entry holding a hundred scopes inside its budget.
+        """
+        rows = [row for scope_id in dict.fromkeys(scope_ids) for row in self.search(vector, scope_id=scope_id, limit=limit)]
+        rows.sort(key=lambda row: float(row.get("_distance") or 0.0))
+        return rows[: max(0, int(limit))]
+
     @abstractmethod
     def count_rows(self) -> int: ...
 

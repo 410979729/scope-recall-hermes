@@ -79,7 +79,7 @@ import time
 
 for line in sys.stdin:
     request = json.loads(line)
-    if request["method"] == "search":
+    if request["method"] in ("search", "search_scopes"):
         if {crash_on_search!r}:
             sys.exit(17)
         time.sleep({search_delay!r})
@@ -166,3 +166,48 @@ def test_started_transport_failure_is_not_masked(tmp_path, monkeypatch: pytest.M
         assert store.requires_reopen is True
     finally:
         store.close()
+
+
+def test_an_entry_holding_a_hundred_scopes_searches_them_all_in_one_request(tmp_path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A request per partition, in sorted order, until the budget ran out.
+
+    On the pilot an entry held 110 scopes and searched seven of them before its budget ran out;
+    the owner's own scope sorted 105th and was never searched, so what the owner had just told
+    another agent was not found by meaning.  The whole trusted list is now one request.
+    """
+    from scope_recall.adapters.lance import physical_partition_scope_id
+    from scope_recall.contracts import InstanceBinding, TrustedContext
+
+    clock = ManualClock()
+    monkeypatch.setattr(request_deadline, "time", SimpleNamespace(monotonic=clock.monotonic))
+    scopes = [f"TEST-scope-{index:03d}" for index in range(110)]
+    binding = InstanceBinding("TEST-agent", "TEST-installation", tmp_path / "TEST-data", frozenset(scopes), True)
+    trusted = TrustedContext(binding, "TEST-session", frozenset(scopes), "human_direct")
+    context = SearchContext(query="PUBLIC semantic query", mode="auto", as_of=None, focus_refs=(), limits=SearchLimits(),
+                            deadline=clock.monotonic() + 1.0, now="2026-09-15T00:00:00Z", trusted_context=trusted)
+    last = scopes[-1]
+    wanted = physical_partition_scope_id(agent_id="TEST-agent", installation_id="TEST-installation",
+                                         embedding_space=SPACE_ID, logical_scope_id=last, project_id=None, branch_id=None)
+    metadata = {"object_kind": "event", "object_ref": "TEST-owner-told", "object_revision": 1, "vector_id": "TEST-vector",
+                "embedding_space": SPACE_ID, "agent_id": "TEST-agent", "installation_id": "TEST-installation",
+                "project_id": None, "branch_id": None, "logical_scope_id": last}
+
+    class Store:
+        def __init__(self) -> None:
+            self.requests: list[object] = []
+
+        def search(self, vector, *, scope_id, limit):
+            self.requests.append(scope_id)
+            clock.advance(0.15)
+            return []
+
+        def search_scopes(self, vector, *, scope_ids, limit):
+            self.requests.append(tuple(scope_ids))
+            clock.advance(0.15)
+            return [{"scope_id": wanted, "target": json.dumps(metadata), "score": 0.9}] if wanted in scope_ids else []
+
+    store = Store()
+    found = LanceVectorPort(store, SyntheticQueryEmbedding(), clock=clock.monotonic).search(
+        context, limit=6, remaining_seconds=1.0)
+    assert [candidate.ref for candidate in found] == ["TEST-owner-told"]
+    assert len(store.requests) == 1 and len(store.requests[0]) == len(scopes), "one request for every partition"

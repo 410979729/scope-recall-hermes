@@ -583,33 +583,55 @@ class LanceVectorPort:
     def _partition_hits(
         self, context: SearchContext, query_vector: list[float], limit: int, deadline: float,
     ) -> list[CandidateRef]:
-        """Query each (scope, project, branch) partition while the budget can cover one more."""
+        """Query every trusted (scope, project, branch) partition, in one request where the store allows.
+
+        Each partition used to be its own request, one after another until the deadline: about
+        150 ms apiece, so an entry holding 110 scopes searched the first seven of them in sorted
+        order and never reached the owner's own scope, ranked 105th.  The pilot's agents with that
+        many scopes were not finding by meaning what the owner had just told another agent.  One
+        request filters by the whole list of trusted partition literals; a store that cannot is
+        asked one partition at a time as before.
+        """
         trusted = context.trusted_context
         binding = trusted.binding
+        logical = {
+            physical_partition_scope_id(
+                agent_id=binding.agent_id,
+                installation_id=binding.installation_id,
+                embedding_space=self._expected_embedding_space,
+                logical_scope_id=logical_scope_id,
+                project_id=project_id,
+                branch_id=branch_id,
+            ): logical_scope_id
+            for logical_scope_id in sorted(trusted.allowed_scope_ids)
+            for project_id, branch_id in _project_branch_combinations(trusted)
+        }
         hits: list[CandidateRef] = []
+        search_scopes = getattr(self._store, "search_scopes", None)
+        if callable(search_scopes):
+            if deadline - self._clock() <= 0:
+                return hits
+            for row in search_scopes(query_vector, scope_ids=list(logical), limit=limit) or ():
+                partition = row.get("scope_id") if isinstance(row, Mapping) else None
+                if partition in logical:
+                    candidate = self._candidate_from_row(row, trusted, partition, logical[partition])
+                    if candidate is not None:
+                        hits.append(candidate)
+            return hits
         # The slowest completed partition is the reserve the next one needs:
         # request-local, so concurrent requests are not coupled and no fixed
         # timeout is invented.
         reserve = 0.0
-        for logical_scope_id in sorted(trusted.allowed_scope_ids):
-            for project_id, branch_id in _project_branch_combinations(trusted):
-                if deadline - self._clock() <= reserve:
-                    return hits
-                partition = physical_partition_scope_id(
-                    agent_id=binding.agent_id,
-                    installation_id=binding.installation_id,
-                    embedding_space=self._expected_embedding_space,
-                    logical_scope_id=logical_scope_id,
-                    project_id=project_id,
-                    branch_id=branch_id,
-                )
-                started = self._clock()
-                rows = self._store.search(query_vector, scope_id=partition, limit=limit)
-                reserve = max(reserve, self._clock() - started)
-                for row in rows or ():
-                    candidate = self._candidate_from_row(row, trusted, partition, logical_scope_id)
-                    if candidate is not None:
-                        hits.append(candidate)
+        for partition, logical_scope_id in logical.items():
+            if deadline - self._clock() <= reserve:
+                return hits
+            started = self._clock()
+            rows = self._store.search(query_vector, scope_id=partition, limit=limit)
+            reserve = max(reserve, self._clock() - started)
+            for row in rows or ():
+                candidate = self._candidate_from_row(row, trusted, partition, logical_scope_id)
+                if candidate is not None:
+                    hits.append(candidate)
         return hits
 
     def _candidate_from_row(
