@@ -116,7 +116,9 @@ autostart and start its gateway.
 
 The shared worker and every entry run the same package version. Upgrade the worker's
 environment first, then each entry's, and run `plan-install`/`apply-install` on each attached
-home as after any upgrade; they recognize the pointer.
+home as after any upgrade; they recognize the pointer. Until the last one is done, `doctor` on
+any entry may report `version_mismatch`. Each running process is judged against the package it
+was loaded from, so upgrading one entry never makes another entry's process look stale.
 
 ## Not yet
 

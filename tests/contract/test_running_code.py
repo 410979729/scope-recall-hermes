@@ -120,13 +120,41 @@ def test_same_version_reinstall_is_reported_by_package_mtime(tmp_path):
     """The ordinary development loop: rebuild, reinstall, same version string."""
     directory = rc.running_code_dir(tmp_path)
     loaded_at = datetime.now(timezone.utc) - timedelta(hours=21)
-    _write_record(directory, os.getpid(), first_record_at=loaded_at.isoformat())
     package_path = tmp_path / "package"
+    _write_record(directory, os.getpid(), first_record_at=loaded_at.isoformat(), package_path=str(package_path))
     package_path.mkdir()
     (package_path / "module.py").write_text("x = 1", encoding="utf-8")
     stale = rc.stale_records(tmp_path, disk_version=__version__, package_path=package_path)
     assert [item["reason"] for item in stale] == ["package_rewritten_after_load"]
     assert stale[0]["pid"] == os.getpid()
+
+
+def _package(folder, version, *, minutes_ago):
+    folder.mkdir()
+    (folder / "_version.py").write_text(f'__version__ = "{version}"\n', encoding="utf-8")
+    _age(folder / "_version.py", minutes=minutes_ago)
+    return folder
+
+
+def test_each_process_of_a_shared_store_is_judged_by_the_package_it_loaded(tmp_path):
+    """A shared store is written by every entry's host, each from its own environment.
+
+    Upgrading one entry rewrote only that entry's package, yet its doctor called
+    another entry's running host stale, and would have gone on saying so until
+    that host restarted.  A process is judged against the folder it loaded from.
+    """
+    directory = rc.running_code_dir(tmp_path)
+    upgraded = _package(tmp_path / "TEST-entry-a", "3.9.0", minutes_ago=5)
+    other = _package(tmp_path / "TEST-entry-b", "3.8.0", minutes_ago=60)
+    loaded_at = datetime.now(timezone.utc) - timedelta(minutes=30)
+    _write_record(directory, os.getpid(), version="3.8.0", first_record_at=loaded_at.isoformat(),
+                  package_path=str(other))
+    assert rc.stale_records(tmp_path, disk_version="3.9.0", package_path=upgraded) == []
+
+    (other / "_version.py").write_text('__version__ = "3.9.0"\n', encoding="utf-8")
+    stale = rc.stale_records(tmp_path, disk_version="3.9.0", package_path=upgraded)
+    assert [(item["reason"], item["disk_version"], item["package_path"]) for item in stale] == [
+        ("version_mismatch", "3.9.0", str(other))]
 
 
 def test_dead_process_records_are_not_reported_stale(tmp_path):

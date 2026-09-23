@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
@@ -226,6 +227,22 @@ def package_modified_at(package_path: Path, *, now: float | None = None) -> str 
     return datetime.fromtimestamp(newest, timezone.utc).isoformat()
 
 
+_VERSION_LINE = re.compile(r"""^__version__\s*=\s*["']([^"']+)["']""", re.MULTILINE)
+
+
+def _version_on_disk(package_path: Path) -> str | None:
+    """The version a restart would load from ``package_path``; ``None`` when it cannot be read."""
+    try:
+        match = _VERSION_LINE.search((package_path / "_version.py").read_text(encoding="utf-8"))
+    except OSError:
+        return None
+    return match.group(1) if match else None
+
+
+def _same_folder(left: str | Path, right: str | Path) -> bool:
+    return os.path.normcase(os.path.normpath(str(left))) == os.path.normcase(os.path.normpath(str(right)))
+
+
 def stale_records(
     data_directory: Path,
     *,
@@ -234,12 +251,32 @@ def stale_records(
 ) -> list[dict[str, Any]]:
     """Live processes provably not running the code now on disk.
 
+    ``disk_version`` and ``package_path`` describe the caller's own package.  A
+    shared store is written by every entry's host and by its worker, each from
+    its own environment, so a record that names another package folder is
+    judged against that folder: upgrading one entry says nothing about the
+    code another entry's process loaded.  When that folder's version cannot be
+    read, the record is compared with ``disk_version`` alone, as before.
+
     Each entry names its reason so a reader does not have to re-derive it.
     """
-    package_modified = package_modified_at(package_path) if package_path is not None else None
+    modified: dict[str, str | None] = {}
+
+    def modified_at(folder: Path) -> str | None:
+        if str(folder) not in modified:
+            modified[str(folder)] = package_modified_at(folder)
+        return modified[str(folder)]
+
     stale: list[dict[str, Any]] = []
     for record in live_records(data_directory):
-        if record.version != disk_version:
+        folder: Path | None = package_path
+        version = disk_version
+        if package_path is not None and not _same_folder(record.package_path, package_path):
+            foreign = _version_on_disk(Path(record.package_path))
+            folder = Path(record.package_path) if foreign is not None else None
+            version = foreign or disk_version
+        package_modified = modified_at(folder) if folder is not None else None
+        if record.version != version:
             reason = "version_mismatch"
         elif package_modified is not None and package_modified > record.first_record_at:
             reason = "package_rewritten_after_load"
@@ -250,10 +287,11 @@ def stale_records(
                 "pid": record.pid,
                 "reason": reason,
                 "loaded_version": record.version,
-                "disk_version": disk_version,
+                "disk_version": version,
                 "first_record_at": record.first_record_at,
                 "package_modified_at": package_modified,
                 "host_adapter": record.host_adapter,
+                "package_path": record.package_path,
             }
         )
     return stale
