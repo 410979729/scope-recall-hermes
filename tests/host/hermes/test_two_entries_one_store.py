@@ -10,6 +10,7 @@ from __future__ import annotations
 from contextlib import closing
 import json
 import sqlite3
+from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
@@ -244,3 +245,106 @@ def test_attach_refuses_an_entry_id_from_another_home_and_a_home_twice(tmp_path,
     wrong_agent = build_installation_manifest(tmp_path / "TEST-wrong-agent", agent_id="TEST-other-agent", user_id=OWNER)
     with pytest.raises(HermesIdentityError, match="agent_id or test_mode"):
         attach_shared_entry(root, wrong_agent, entry_id="wrong", display_name="错", now=NOW)
+
+
+# --- an entry brings the store it had before it attached ---------------------------------------
+
+def _old_store(home, scope_id, *said, installation_id="hermes-install:TEST-legacy", session="TEST-old-session"):
+    """The store a home had before it attached, moved aside.  Two of these share an installation id,
+    as the legacy migration left the pilot's stores, so one key gives both the same source id."""
+    from scope_recall.contracts import InstanceBinding, TrustedContext
+    from scope_recall.core import CoreConfig, MemoryCore
+    from v11_support import source_event
+
+    binding = InstanceBinding(AGENT, installation_id, home / "scope-recall.local-TEST", frozenset({scope_id}), False)
+    core = MemoryCore(CoreConfig(binding))
+    core.initialize()
+    context = TrustedContext(binding, session, frozenset({scope_id}), "human_direct")
+    refs = [core.record_event(context, source_event(source_event_key=f"legacy:memories:{index}", content=text),
+                              scope_id=scope_id, remaining_seconds=10).event_refs[0] for index, text in enumerate(said)]
+    return core, context, refs, binding.data_directory
+
+
+def _scope(home):
+    return bind_hermes_identity("TEST-probe", **_kwargs(home)).local_scope_id
+
+
+def test_each_entry_brings_its_old_store_and_the_same_old_id_stays_two_memories(root, entries):
+    from scope_recall.maintenance.shared_import import import_entry
+
+    tianshu, tianquan = entries
+    *_, shu_old = _old_store(tianshu, _scope(tianshu), "TEST 天枢旧库记着：仓库钥匙挂在北门 K-12。")
+    *_, quan_old = _old_store(tianquan, _scope(tianquan), "TEST 天权旧库记着：备用电源放在西侧 W-7。",
+                              session="TEST-old-session-2")
+    for entry, old in (("tianshu", shu_old), ("tianquan", quan_old)):
+        result = import_entry(root=root, entry_id=entry, source=old)
+        assert (result["status"], result["counts"]["sources"]) == ("imported", 1), result
+
+    rows = _query(root, "SELECT entry_id, session_id, source_event_key FROM source_events ORDER BY entry_id")
+    assert rows == [("tianquan", "tianquan:TEST-old-session-2", "import:tianquan:legacy:memories:0"),
+                    ("tianshu", "tianshu:TEST-old-session", "import:tianshu:legacy:memories:0")]
+    asked = _provider(tianshu)
+    try:
+        _guidance, items = _items(asked.prefetch("仓库钥匙 北门 K-12 挂在哪里"))
+    finally:
+        asked.shutdown()
+    brought = [item for item in items if "K-12" in item["content"]]
+    assert brought and all(item["entries"] == [{"id": "tianshu", "name": "天枢"}] for item in brought)
+    again = import_entry(root=root, entry_id="tianshu", source=shu_old)
+    assert again["status"] == "already_imported"
+    assert _query(root, "SELECT count(*) FROM source_events") == [(2,)]
+    # The embedding each old store had queued for it is queued again, under the source's new id.
+    assert _query(root, """SELECT count(*) FROM work_items w JOIN source_events e ON e.event_id=w.subject_ref
+                           WHERE w.work_type='embed' AND w.state='pending'""") == [(2,)]
+
+
+def test_an_id_two_old_stores_share_otherwise_refuses_the_second_and_writes_nothing(root, entries):
+    from scope_recall.maintenance.shared import SharedStoreError
+    from scope_recall.maintenance.shared_import import import_entry
+
+    tianshu, tianquan = entries
+    *_, shu_old = _old_store(tianshu, _scope(tianshu), "TEST 同一场旧对话，天枢这边。")
+    *_, quan_old = _old_store(tianquan, _scope(tianquan), "TEST 同一场旧对话，天权这边。")
+    import_entry(root=root, entry_id="tianshu", source=shu_old)
+    with pytest.raises(SharedStoreError, match="cannot be imported as it is"):
+        import_entry(root=root, entry_id="tianquan", source=quan_old)
+    assert _query(root, "SELECT entry_id, count(*) FROM source_events GROUP BY entry_id") == [("tianshu", 1)]
+
+
+def test_a_rehearsal_writes_nothing_and_another_homes_store_is_refused(root, entries):
+    from scope_recall.maintenance.shared import SharedStoreError
+    from scope_recall.maintenance.shared_import import import_entry
+
+    tianshu, _tianquan = entries
+    *_, old = _old_store(tianshu, _scope(tianshu), "TEST 只在排练里导入的一句话。")
+    assert import_entry(root=root, entry_id="tianshu", source=old, dry_run=True)["status"] == "rehearsed"
+    assert _query(root, "SELECT count(*) FROM source_events") == [(0,)]
+    with pytest.raises(SharedStoreError, match="not of this entry's home"):
+        import_entry(root=root, entry_id="tianquan", source=old)
+
+
+def test_what_an_old_store_forgot_stays_forgotten(root, entries):
+    from scope_recall.core.delete_storage import group_digest
+    from scope_recall.maintenance.shared_import import import_entry
+    from v11_support import source_event
+
+    tianshu, _tianquan = entries
+    scope = _scope(tianshu)
+    core, context, (secret,), old = _old_store(tianshu, scope, "TEST 旧库里的保险柜密码是 5520。")
+    core.record_event(context, source_event(source_event_key="legacy:memories:9", content=f"删除 {secret.ref}"),
+                      scope_id=scope, remaining_seconds=10)
+    core.forget(context, {"protocol_version": "1.1", "target_refs": [secret.ref], "mode": "delete",
+                          "expected_revisions": {secret.ref: secret.revision}}, remaining_seconds=10)
+
+    result = import_entry(root=root, entry_id="tianshu", source=old)
+    assert result["counts"]["group_blocks_without_sources"] == 0
+    # A deletion takes the message that asked for it along; both groups stay blocked under the store's id.
+    store = SimpleNamespace(installation_id=read_shared_payload(root)["installation_id"])
+    assert set(_query(root, "SELECT group_sha256 FROM source_group_blocks")) == {
+        (group_digest(store, scope, None, None, f"import:tianshu:legacy:memories:{index}"),) for index in (0, 9)}
+    asked = _provider(tianshu)
+    try:
+        injected = asked.prefetch("保险柜密码 5520")
+    finally:
+        asked.shutdown()
+    assert "5520" not in injected

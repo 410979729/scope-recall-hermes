@@ -77,6 +77,25 @@ removed; the shared store's worker does all background work.
 Attaching another agent later adds its scopes to the store. Agents already running keep working
 without a restart.
 
+## Bringing an agent's memories along
+
+`attach` starts an agent on the shared store without what its own store held. To bring that in,
+stop every attached host and pause the shared worker, then run for each agent:
+
+```text
+scope-recall import-entry --root F:\ScopeRecall\shared --entry tianshu --from <home>\scope-recall.local-<date>
+```
+
+The old store is opened read-only and copied in one transaction: sources, facts and their history,
+episodes, candidates, deletions and blocks. Every imported source is marked with the entry and
+gets an id of its own, since stores migrated from 2.x can share ids for different content; its
+key and session take the entry's prefix, and what the old store had forgotten stays forgotten.
+A fact whose slot is already filled is left out, and the receipt under `receipts\` names it; its
+sources are imported. No vector is copied: the embeddings the old store had are queued for the
+shared worker, and until it has made them those memories are found by their words.
+`--dry-run` runs the whole import and rolls it back. A store is imported once per entry; a
+second run is refused, and so is a store that was not this entry's home's.
+
 ## Check
 
 ```text

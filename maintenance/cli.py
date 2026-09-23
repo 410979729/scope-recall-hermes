@@ -64,6 +64,7 @@ _DELEGATED: dict[str, tuple[str, Callable[[list[str]], int]]] = {
     "detach": ("stop a home being an entry of a shared store; its memories stay", _shared),
     "adopt": ("record the directory a copied shared store now lives in", _shared),
     "entries": ("list a shared store's entries and when each was last heard from", _shared),
+    "import-entry": ("copy an entry's own store, moved aside at attach, into its shared store", _shared),
 }
 
 

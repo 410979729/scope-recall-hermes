@@ -866,7 +866,8 @@ def shared_entry_record(
     The audience rows are the ones the owner approved for that installation,
     unchanged, so every chat reaches what it reached before and the owner's
     chats meet in the scopes the installations already share.  Archive and
-    retained scopes stay with the old store: a shared store starts empty.
+    retained scopes stay with the old store: a shared store starts empty, and
+    ``import-entry`` brings the old store's memories in.
     """
     if source.installation_kind != "local":
         raise HermesIdentityError("an entry is carried over from a local installation")

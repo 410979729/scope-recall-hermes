@@ -5,7 +5,9 @@ host's home an entry of it, carrying over the grants the home's own
 installation had, and writes the runtime configs: the entry's, and the shared
 worker's.  ``detach`` undoes that for one home.  ``adopt`` records the store's
 new directory after the directory was copied elsewhere.  ``entries`` lists who
-is attached and when each was last heard from.
+is attached and when each was last heard from.  ``import-entry`` copies what
+an entry's own store held, moved aside at attach, into the shared store
+(``shared_import.py``).
 
 The store's directory holds everything memory needs, so moving to another
 machine is copying that directory, ``adopt``, and attaching each agent again.
@@ -412,6 +414,12 @@ def main(argv: list[str]) -> int:
     take.add_argument("--root", required=True)
     listing = sub.add_parser("entries", help="list a shared store's entries and when each was last heard from")
     listing.add_argument("--root", required=True)
+    bring = sub.add_parser("import-entry", help="copy an entry's own store, moved aside at attach, into the shared store")
+    bring.add_argument("--root", required=True)
+    bring.add_argument("--entry", required=True)
+    bring.add_argument("--from", dest="source", required=True,
+                       help="the entry's own store directory (scope-recall.local-<date>) or its memory.sqlite3")
+    bring.add_argument("--dry-run", action="store_true", help="run the whole import, then roll it back")
     args = parser.parse_args(argv)
     try:
         if args.command == "init-shared":
@@ -431,6 +439,10 @@ def main(argv: list[str]) -> int:
             result = detach(instance_root=_absolute(args.instance_root, "instance_root"))
         elif args.command == "adopt":
             result = adopt(root=_absolute(args.root, "root"))
+        elif args.command == "import-entry":
+            from .shared_import import import_entry
+            result = import_entry(root=_absolute(args.root, "root"), entry_id=args.entry,
+                                  source=_absolute(args.source, "from"), dry_run=args.dry_run)
         else:
             result = entries(root=_absolute(args.root, "root"))
     except ContractError as exc:
