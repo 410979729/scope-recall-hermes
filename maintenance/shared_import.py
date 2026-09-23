@@ -7,8 +7,10 @@ episode, reference, candidate, deletion and block, in one transaction, with the
 source store opened read-only.  SQLite is the authority; the vectors are
 derived, so none are copied.  The import queues, for the shared worker, the
 embeddings the source store had: every source it embedded whose vector its
-retention had not expired, and every fact's current version.  Until the
-worker has made them, those memories are found by their words.
+retention had not expired, and every fact's current version -- less the tool
+outputs retention would expire at once (a withheld output's summary, a repeat),
+which are recorded as expired instead.  Until the worker has made them, those
+memories are found by their words.
 
 Three things cannot be copied as they are.
 
@@ -51,6 +53,7 @@ from ..core.schema import SCHEMA_VERSION
 from ..core.truth_connection import connect_truth_database
 from ..core.writer_lease import TruthWriterBusyError
 from ..runtime.running_code import live_records
+from ..runtime.vector_retention import OMITTED_TOOL_OUTPUT, REPEATED_TOOL_OUTPUT
 
 #: Store versions whose tables this import reads.  An older store is upgraded first.
 SOURCE_SCHEMAS = frozenset({1109, 1110})
@@ -323,8 +326,33 @@ def _import_rows(conn, src, names: _Names, *, store_installation: str, store_sco
     conn.executemany("""INSERT INTO work_items(work_type,subject_ref,subject_revision,scope_id,project_id,branch_id,available_at)
                         VALUES ('embed',?,?,?,?,?,?) ON CONFLICT(work_type,subject_ref,subject_revision) DO NOTHING""", heads)
     counts["claim_embeddings_queued"] = len(heads)
+    counts["embeddings_retention_would_expire"] = _drop_expirable_embeddings(conn, names, now=now)
     conn.execute("UPDATE instance_meta SET memory_epoch=memory_epoch+1 WHERE singleton=1")
     return {"counts": counts, "claims_left_out": skipped}
+
+
+def _drop_expirable_embeddings(conn, names: _Names, *, now: str) -> int:
+    """Take back the imported tool outputs' embeddings that vector retention would expire at once.
+
+    A summary the capture filter left for an output it withheld, and a repeat of an earlier tool
+    output in the same scope, are what the intake gate keeps as sources only.  A store from an
+    earlier release embedded them anyway, and its embed history queued them again: the pilot's
+    import put 12,953 of them in front of the shared worker, each embedded and then deleted by
+    retention within the hour.  They are recorded as expired, under the reason retention gives,
+    and never asked for; the text and everything drawn from it stay, found by their words.
+    """
+    rows = conn.execute(
+        f"""SELECT w.work_id, e.event_id, e.source_revision,
+                   CASE WHEN {OMITTED_TOOL_OUTPUT} THEN 'omitted' ELSE 'repeat' END
+            FROM work_items w JOIN source_events e ON e.event_id=w.subject_ref AND e.source_revision=w.subject_revision
+            WHERE w.work_type='embed' AND w.state='pending' AND e.role='tool'
+              AND e.source_event_key>=? AND e.source_event_key<?
+              AND (({OMITTED_TOOL_OUTPUT}) OR {REPEATED_TOOL_OUTPUT})""",
+        (names.prefix, names.prefix[:-1] + ";")).fetchall()
+    conn.executemany("DELETE FROM work_items WHERE work_id=?", [(row[0],) for row in rows])
+    conn.executemany("INSERT OR IGNORE INTO expired_vectors(source_ref,source_revision,expired_at,reason) VALUES (?,?,?,?)",
+                     [(row[1], row[2], now, row[3]) for row in rows])
+    return len(rows)
 
 
 def import_entry(*, root: Path, entry_id: str, source: Path, dry_run: bool = False,

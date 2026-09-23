@@ -88,10 +88,12 @@ def pass_due(state: dict[str, Any], days: int, *, now: datetime) -> bool:
 
 #: A tool output the capture filter withheld, in this release's form and the
 #: 2.0 release's (see ``core/admission.py``).  Cheap enough to test first.
-_OMITTED = ("e.content LIKE 'Tool execution summary%' AND "
-            "(e.content LIKE '%output omitted%' OR e.content LIKE '%output_preview=omitted%')")
+#: Both conditions are read against ``source_events e``; ``maintenance/shared_import.py``
+#: uses them too, so an import never queues an embedding this pass would expire at once.
+OMITTED_TOOL_OUTPUT = ("e.content LIKE 'Tool execution summary%' AND "
+                       "(e.content LIKE '%output omitted%' OR e.content LIKE '%output_preview=omitted%')")
 #: An earlier, still readable tool output in the same scope with the same content.
-_REPEATED = """EXISTS (SELECT 1 FROM source_events f WHERE f.scope_id=e.scope_id AND f.role='tool'
+REPEATED_TOOL_OUTPUT = """EXISTS (SELECT 1 FROM source_events f WHERE f.scope_id=e.scope_id AND f.role='tool'
     AND f.content_sha256=e.content_sha256 AND f.read_blocked=0
     AND COALESCE(json_extract(f.extra_json,'$._scope_recall_admission.disposition'),'')!='source_only'
     AND (f.persisted_at<e.persisted_at OR (f.persisted_at=e.persisted_at AND f.event_id<e.event_id)))"""
@@ -120,10 +122,10 @@ def expire_tool_vectors(storage: Any, context: Any, delete: Callable[[list[str]]
     with storage.read(context, remaining_seconds=remaining_seconds) as tx:
         rows = tx._check().execute(
             f"""SELECT e.event_id,e.source_revision,
-                   CASE WHEN {_OMITTED} THEN 'omitted' WHEN e.persisted_at<? THEN 'window' ELSE 'repeat' END AS reason
+                   CASE WHEN {OMITTED_TOOL_OUTPUT} THEN 'omitted' WHEN e.persisted_at<? THEN 'window' ELSE 'repeat' END AS reason
             FROM source_events e
             WHERE e.role='tool' AND e.scope_id IN ({marks})
-              AND (({_OMITTED}) OR e.persisted_at<? OR {_REPEATED})
+              AND (({OMITTED_TOOL_OUTPUT}) OR e.persisted_at<? OR {REPEATED_TOOL_OUTPUT})
               AND EXISTS (SELECT 1 FROM work_items w WHERE w.work_type='embed' AND w.subject_ref=e.event_id
                           AND w.subject_revision=e.source_revision AND w.state='done')
               AND NOT EXISTS (SELECT 1 FROM expired_vectors x WHERE x.source_ref=e.event_id

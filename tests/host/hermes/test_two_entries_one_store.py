@@ -374,3 +374,44 @@ def test_a_legacy_source_id_is_renamed_wherever_the_old_store_names_it(root, ent
     assert _query(root, "SELECT count(*) FROM work_items WHERE subject_ref LIKE 'event-legacy-%'") == [(0,)]
     (extra,), = _query(root, f"SELECT extra_json FROM source_events WHERE event_id='{new}'")
     assert json.loads(extra)["TEST_cites"] == [f"{new}@1", "event-driven"], "an id-shaped word that is no id stays"
+
+
+def test_tool_outputs_retention_would_expire_at_once_are_not_queued_for_embedding(root, entries):
+    """A withheld output's summary and a repeated tool output are sources only; an import does not embed them.
+
+    Stores from earlier releases embedded both, and their embed history queued them again: the
+    pilot's import put 12,953 of them in front of the shared worker, each embedded and then deleted
+    by retention within the hour.  They are recorded as expired under retention's own reason instead.
+    """
+    from dataclasses import replace
+
+    from scope_recall.maintenance.shared_import import _Names, import_entry
+    from v11_support import source_event
+
+    tianshu, _tianquan = entries
+    scope = _scope(tianshu)
+    core, context, (said,), old = _old_store(tianshu, scope, "TEST 一句用户说过的话。")
+    tool = replace(context, actor_origin="tool_observation")
+    outputs = ("Tool execution summary: TEST-list-files (exit 0) — output omitted",
+               "TEST 工具输出：目录里有三个文件。", "TEST 工具输出：目录里有三个文件。")
+    made = [core.record_event(tool, source_event(source_event_key=f"legacy:tools:{index}", origin="tool_observation",
+                                                 role="tool", content=text), scope_id=scope,
+                              remaining_seconds=10).event_refs[0] for index, text in enumerate(outputs)]
+    summary, first, repeat = made
+    with closing(sqlite3.connect(old / "memory.sqlite3")) as db:
+        # The history an earlier release left: every source embedded, whatever it was.
+        for ref in (said, *made):
+            db.execute("""INSERT INTO work_items(work_type,subject_ref,subject_revision,scope_id,state,available_at)
+                          VALUES ('embed',?,?,?,'done','2026-09-01T00:00:00Z')
+                          ON CONFLICT(work_type,subject_ref,subject_revision) DO UPDATE SET state='done'""",
+                       (ref.ref, ref.revision, scope))
+        db.commit()
+
+    result = import_entry(root=root, entry_id="tianshu", source=old)
+    assert result["counts"]["embeddings_retention_would_expire"] == 2, result["counts"]
+    names = _Names("tianshu", frozenset({said.ref, *(ref.ref for ref in made)}))
+    queued = {row[0] for row in _query(root, "SELECT subject_ref FROM work_items WHERE work_type='embed' AND state='pending'")}
+    assert queued == {names.event(said.ref), names.event(first.ref)}, queued
+    assert set(_query(root, "SELECT source_ref, reason FROM expired_vectors")) == {
+        (names.event(summary.ref), "omitted"), (names.event(repeat.ref), "repeat")}
+    assert _query(root, "SELECT count(*) FROM source_events") == [(4,)], "every source is imported; only embedding is skipped"
