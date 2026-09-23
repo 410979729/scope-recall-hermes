@@ -4,6 +4,7 @@ The provider owns session/capture lifecycle. This mixin consumes that trusted
 identity and Core port; it never constructs identity from tool arguments.
 """
 from __future__ import annotations
+from datetime import tzinfo
 import json
 from typing import Any, Dict, List
 import uuid
@@ -43,9 +44,10 @@ _TOOL_SCHEMAS: tuple[dict[str, Any], ...] = (
                                         "replaced it. as_of: what held at one instant, which requires as_of. "
                                         "method: how something is done. auto: background context."},
                 "as_of": {"type": "string", "minLength": 1, "maxLength": 240,
-                          "description": "Required by mode as_of, and ignored otherwise. One UTC instant written "
-                                         "2026-09-17T12:00:00Z (a +00:00 suffix is also accepted). A date alone, a "
-                                         "space instead of the T, or a local offset such as +08:00 is refused."},
+                          "description": "Required by mode as_of, and ignored otherwise. One instant with its offset, "
+                                         "as memory times are written: 2026-09-17T08:00:00-04:00 or "
+                                         "2026-09-17T12:00:00Z. A date alone, a space instead of the T, or a time "
+                                         "without an offset is refused."},
                 "max_items": {"type": "integer"},
                 "budget_tokens": {"type": "integer"},
                 "focus_refs": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 240}},
@@ -171,6 +173,19 @@ def _dumps(payload: dict[str, Any]) -> str:
     return json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
 
 
+def display_zone() -> tzinfo | None:
+    """The zone this Hermes profile's prompt tells its model it is in; ``None`` is this machine's.
+
+    Hermes gives the model the date and its configured zone, not the time of
+    day, so a memory's time written in any other zone reads as a wrong hour.
+    """
+    try:
+        from hermes_time import get_timezone  # pyright: ignore[reportMissingImports]
+    except ImportError:
+        return None
+    return get_timezone()
+
+
 def _unfenced_turn_packet(request_id: str) -> dict[str, Any]:
     """The contract's unavailable recall packet, for a turn that overflowed its source fence.
 
@@ -258,7 +273,7 @@ class HermesToolSurface:
 
     def _reply(self, request_id: str, result: object) -> str:
         origin, gaps = self._tool_origin_and_gaps()
-        return _dumps(envelope(request_id, result, origin=origin, capability_gaps=gaps))
+        return _dumps(envelope(request_id, result, origin=origin, capability_gaps=gaps, zone=display_zone()))
 
     def _error_reply(self, code: str, field: str, request_id: str, *, memory_result: bool = True) -> str:
         try:

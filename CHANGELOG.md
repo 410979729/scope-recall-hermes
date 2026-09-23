@@ -4,9 +4,11 @@ All notable changes to `scope-recall` will be documented in this file.
 
 ## [Unreleased]
 
-### Scope Recall 3.2.0rc3 - 2026-09-22
+### Scope Recall 3.2.0rc3 - 2026-09-23
 
-- The version moves past the `v3.2.0rc2` tag, the candidate the pilot runs. No code changes.
+- The version moves past the `v3.2.0rc2` tag, the candidate the pilot runs.
+- A memory's time reaches the model in the zone its host tells it it is in, offset included: `2026-09-23T02:52:03-04:00`, not `2026-09-23T06:52:03Z`. On the pilot the owner asked one agent when another had been told something, and it answered "a little after 6:50 in the morning" while the computer's clock read 2:54: Hermes gives its model the date and its configured zone but not the hour, and the model read the UTC time as its own. Hermes uses the zone its own prompt names (`timezone` in its config, else the machine's); Codex uses the machine's. This covers the automatic injection and every tool reply. Storage, the contracts and everything compared stay in UTC, and what a memory says is never rewritten.
+- A model may write a time back the way it was shown one. `as_of` in a recall and `valid_from` in a revision accept an explicit offset and are read as the same UTC instant, as consolidation output already was; a date alone, a time without an offset and an impossible offset are still refused, naming the field.
 
 ### Scope Recall 3.2.0rc2 - 2026-09-22
 

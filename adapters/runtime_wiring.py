@@ -7,6 +7,7 @@ a side effect of an optional host hookup.
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
+from datetime import tzinfo
 import json
 import math
 import os
@@ -19,8 +20,10 @@ from typing import Any, Mapping
 
 from scope_recall.contracts import InstanceBinding
 from scope_recall.core import CoreConfig, MemoryCore
+from scope_recall.core.recall_budget import canonical_render_json
 from scope_recall.runtime.instance import RuntimeInstance, RuntimeInstanceConfig, build_runtime_instance
 from scope_recall.runtime.worker_entry import load_config
+from .tool_common import local_times
 
 GAP_UNCONFIGURED = "capability_gap:trusted_runtime_unconfigured"
 GAP_INVALID = "capability_gap:trusted_runtime_invalid"
@@ -82,11 +85,14 @@ def render_host_recall_context(
     *,
     context: Mapping[str, Any] | None = None,
     entry: tuple[str, str] | None = None,
+    zone: tzinfo | None = None,
 ) -> str:
-    """The injected memory: guidance, then the canonical items.
+    """The injected memory: guidance, then the canonical items, times in ``zone``.
 
     ``entry`` is the reader's own (id, display name) in a shared store, and
     ``context`` the prepared items; together they decide the entry guidance.
+    ``zone`` is the one the host tells its model it is in (``None``: this
+    machine's), see :func:`~scope_recall.adapters.tool_common.local_times`.
     """
     if not canonical_text:
         return ""
@@ -97,7 +103,7 @@ def render_host_recall_context(
         for label in item.get("entries") or ()
     ):
         guidance = f"{guidance} {ENTRY_GUIDANCE.format(entry_id=entry[0], name=entry[1])}"
-    return f"{guidance}\n{canonical_text}"
+    return f"{guidance}\n{canonical_render_json(local_times(json.loads(canonical_text), zone))}"
 
 
 def _is_regular_nonreparse_file(path: Path) -> bool:

@@ -32,6 +32,25 @@ def test_the_spellings_a_query_may_use_are_accepted():
         assert validate_payload("recall_request", _recall(mode="as_of", as_of=spelling))["as_of"] == spelling
 
 
+def test_a_model_writes_the_instant_back_in_the_zone_it_was_shown(tmp_path):
+    """Memory times reach a model in its host's zone; one it copies into a request is the same instant."""
+    from scope_recall.contracts import validate_model_request
+    from tests.v11_support import context
+
+    trusted = context(tmp_path / "TEST-db")
+    request = validate_model_request("recall_request", _recall(mode="as_of", as_of="2026-09-17T08:00:00.5-04:00"), trusted)
+    assert request["as_of"] == "2026-09-17T12:00:00.5Z"
+    revise = validate_model_request("revise_request", {
+        "protocol_version": "1.1", "target_ref": "TEST-claim", "expected_revision": 1, "new_value": "TEST",
+        "conditions": [], "source_evidence_refs": ["TEST-source@1"], "valid_from": "2026-09-17T20:00:00+08:00",
+    }, trusted)
+    assert revise["valid_from"] == "2026-09-17T12:00:00Z"
+    for spelling in ("2026-09-17", "2026-09-17T08:00:00", "2026-09-17T08:00:00-00:00", "2026-09-17T08:00:00+24:00"):
+        with pytest.raises(ContractError) as rejected:
+            validate_model_request("recall_request", _recall(mode="as_of", as_of=spelling), trusted)
+        assert (rejected.value.code, rejected.value.field) == ("INPUT_INVALID", "as_of"), spelling
+
+
 def test_a_missing_companion_field_is_named_too():
     with pytest.raises(ContractError) as rejected:
         validate_payload("recall_request", _recall(mode="as_of"))

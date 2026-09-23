@@ -246,6 +246,8 @@ _MODEL_REQUESTS = frozenset({
     "recall_request", "revise_request", "forget_request",
     "profile_request", "entity_request", "trace_request",
 })
+#: The instants a model writes into a request, rewritten to UTC before validation.
+_MODEL_INSTANTS = {"recall_request": ("as_of",), "revise_request": ("valid_from",)}
 _ORIGINS = frozenset(get_args(Origin))
 MAX_PAYLOAD_BYTES = 2 * 1024 * 1024
 MAX_DEPTH = 32
@@ -318,6 +320,34 @@ def _utc_time(value: object) -> bool:
         return datetime.fromisoformat(value).utcoffset() == timedelta(0)
     except ValueError:
         return False
+
+
+#: RFC 3339 date-time with a numeric offset: local time, fraction, sign, hours, minutes.
+_NUMERIC_OFFSET_TIME = re.compile(r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(\.\d+)?([+-])(\d{2}):(\d{2})", re.ASCII)
+
+
+def utc_instant(value: object) -> object:
+    """The same instant written in UTC, when a model used a non-zero offset.
+
+    The contract accepts only ``Z``/``+00:00``, so a model writing
+    ``2026-09-16T10:00:00+08:00`` was refused although it named a correct
+    instant; a model reads its memory's times in its host's zone and writes
+    them back that way.  Bare dates, naive times, zero offsets and impossible
+    dates or offsets are returned unchanged, so the validator still rejects
+    them as before.
+    """
+    match = _NUMERIC_OFFSET_TIME.fullmatch(value) if type(value) is str else None
+    if match is None:
+        return value
+    local, fraction, sign, hours, minutes = match.groups()
+    offset = timedelta(hours=int(hours), minutes=int(minutes))
+    if not offset or int(hours) > 23 or int(minutes) > 59:
+        return value
+    try:
+        instant = datetime.fromisoformat(local) - (offset if sign == "+" else -offset)
+    except (ValueError, OverflowError):
+        return value
+    return instant.isoformat(timespec="seconds") + (fraction or "") + "Z"
 
 
 def _json_tree(value: object, depth: int = 0) -> None:
@@ -644,7 +674,11 @@ def validate_model_request(name: str, value: str | bytes | dict, context: Truste
         raise ContractError("ACCESS_DENIED")
     if not isinstance(context, TrustedContext) or not context.allowed_scope_ids:
         raise ContractError("ACCESS_DENIED")
-    return validate_payload(name, value)
+    payload = decode_payload(value)
+    for key in _MODEL_INSTANTS.get(name, ()):
+        if key in payload:
+            payload[key] = utc_instant(payload[key])
+    return validate_payload(name, payload)
 
 
 def validate_capture(value: str | bytes | dict, context: TrustedContext) -> SourceEvent:

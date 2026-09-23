@@ -12,7 +12,7 @@ from scope_recall.contracts import InstanceBinding
 def test_host_context_keeps_canonical_diagnostics_as_evidence_metadata():
     from scope_recall.adapters.runtime_wiring import RECALL_CONTEXT_GUIDANCE, render_host_recall_context
 
-    canonical = '{"status":"partial","gaps":["budget_token_cap"],"unmet_needs":["expandable"],"items":[{"content":"keep the report and checklist together"}]}'
+    canonical = '{"gaps":["budget_token_cap"],"items":[{"content":"keep the report and checklist together"}],"status":"partial","unmet_needs":["expandable"]}'
     rendered = render_host_recall_context(canonical)
     guidance, payload = rendered.split("\n", 1)
     assert guidance == RECALL_CONTEXT_GUIDANCE
@@ -20,6 +20,43 @@ def test_host_context_keeps_canonical_diagnostics_as_evidence_metadata():
     assert payload == canonical
     assert json.loads(payload)["gaps"] == ["budget_token_cap"]
     assert render_host_recall_context(None) == render_host_recall_context("") == ""
+
+
+def test_memory_times_reach_the_model_in_the_hosts_zone():
+    """Stored in UTC, shown in the zone the host tells its model it is in, offset included.
+
+    A model shown 06:52:03+00:00, whose prompt named only the date and its
+    zone, told the user it was 6:52 in the morning; the host's clock read 2:52.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    from scope_recall.adapters.runtime_wiring import render_host_recall_context
+    from scope_recall.adapters.tool_common import envelope
+    from scope_recall.core.recall_budget import canonical_render_json
+
+    said = "TEST told at 2026-09-23T06:52:03Z"
+    packet = {"items": [{"content": said, "occurred_at": "2026-09-23T06:52:03.250000Z"}, {"content": "TEST undated"}],
+              "status": "ok"}
+    new_york, shanghai = timezone(timedelta(hours=-4)), timezone(timedelta(hours=8))
+
+    def shown(zone):
+        return json.loads(render_host_recall_context(canonical_render_json(packet), zone=zone).split("\n", 1)[1])["items"]
+
+    assert shown(new_york)[0]["occurred_at"] == "2026-09-23T02:52:03.250000-04:00"
+    assert shown(shanghai)[0]["occurred_at"] == "2026-09-23T14:52:03.250000+08:00"
+    assert shown(new_york)[0]["content"] == said, "what a memory says is never rewritten"
+    assert "occurred_at" not in shown(new_york)[1]
+    here = datetime(2026, 9, 23, 6, 52, 3, 250000, tzinfo=timezone.utc).astimezone().isoformat()
+    assert shown(None)[0]["occurred_at"] == here, "a host without a zone of its own gets this machine's"
+
+    result = envelope("TEST-reply", {
+        "as_of": "2026-09-23T06:52:03Z",
+        "items": [{"occurred_at": "2026-09-23T06:52:03+00:00", "valid_from": "2026-09-01T04:00:00Z", "valid_to": None,
+                   "recorded_at": "TEST not a time"}],
+    }, origin="memory_reinjection", zone=new_york)["result"]
+    assert result["as_of"] == result["items"][0]["occurred_at"] == "2026-09-23T02:52:03-04:00"
+    assert result["items"][0]["valid_from"] == "2026-09-01T00:00:00-04:00"
+    assert (result["items"][0]["valid_to"], result["items"][0]["recorded_at"]) == (None, "TEST not a time")
 
 
 def _runtime_payload(binding: InstanceBinding) -> dict:

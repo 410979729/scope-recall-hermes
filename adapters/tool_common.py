@@ -8,8 +8,10 @@ from __future__ import annotations
 
 import copy
 from dataclasses import asdict, is_dataclass
+from datetime import datetime, tzinfo
 import json
 from pathlib import Path
+import re
 from typing import Any, cast
 import uuid
 
@@ -34,6 +36,11 @@ FENCED_PROFILE: dict[str, Any] = {
     "disputed": [],
 }
 FENCED_ENTITY: dict[str, Any] = {"resolved_subject": None, "alias_resolution": "none", "statements": []}
+
+#: An instant as the contracts store it: always UTC.
+_UTC_INSTANT = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|\+00:00)", re.ASCII)
+#: Time fields besides the ``*_at`` ones.
+_TIME_KEYS = frozenset({"as_of", "valid_from", "valid_to"})
 
 
 def strict_object(value: object, *, allowed: frozenset[str], required: frozenset[str] = frozenset()) -> dict[str, Any]:
@@ -124,9 +131,37 @@ def json_value(value: object) -> object:
     return value
 
 
-def envelope(request_id: str, result: object, *, origin: str, capability_gaps: tuple[str, ...] = ()) -> dict[str, Any]:
-    """The bounded v1.1 reply; oversized or unserializable results fail as OUTPUT_LIMIT."""
-    converted = json_value(result)
+def local_times(value: object, zone: tzinfo | None = None) -> object:
+    """``value`` with every stored UTC instant written in ``zone``, offset included.
+
+    Storage and the contracts keep UTC.  A model shown ``06:52:03+00:00``, whose
+    prompt gave it only the date and its zone, told the user it was 6:52 in the
+    morning when the host's clock read 2:52; the same instant in the host's own
+    zone needs no arithmetic.  ``None`` is this machine's zone.  Only time fields
+    change, never what a memory says; an instant the zone cannot place stays UTC.
+    """
+    if isinstance(value, dict):
+        return {key: _local_instant(item, zone) if key in _TIME_KEYS or key.endswith("_at") else local_times(item, zone)
+                for key, item in value.items()}
+    if isinstance(value, list):
+        return [local_times(item, zone) for item in value]
+    return value
+
+
+def _local_instant(value: object, zone: tzinfo | None) -> object:
+    if type(value) is not str or not _UTC_INSTANT.fullmatch(value):
+        return value
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(zone).isoformat()
+    except (ValueError, OverflowError, OSError):
+        # Windows cannot place an instant before 1970 in the machine's zone.
+        return value
+
+
+def envelope(request_id: str, result: object, *, origin: str, capability_gaps: tuple[str, ...] = (),
+             zone: tzinfo | None = None) -> dict[str, Any]:
+    """The bounded v1.1 reply, times in the host's ``zone``; oversized or unserializable results fail as OUTPUT_LIMIT."""
+    converted = local_times(json_value(result), zone)
     try:
         encoded = json.dumps(converted, ensure_ascii=False, allow_nan=False)
     except (TypeError, ValueError, RecursionError):

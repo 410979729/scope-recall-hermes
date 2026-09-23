@@ -1,7 +1,10 @@
 """Single prefetch delivery path and render dedupe contracts."""
 from __future__ import annotations
 
+from datetime import timedelta, timezone
 import json
+import sys
+import types
 
 from scope_recall.adapters.hermes import bind_hermes_identity
 from scope_recall.adapters.hermes.gating import is_trivial_prompt
@@ -114,6 +117,25 @@ def test_explicit_resume_recall_still_returns_the_grounded_task(adapter):
 
     packet = _explicit_recall(provider, "继续")
     assert [item["ref"] for item in packet["items"] if item["kind"] == "episode"] == [episode.ref]
+
+
+def test_memory_times_come_in_the_zone_hermes_names_to_its_model(adapter, monkeypatch):
+    """Hermes gives its model the date and its configured zone, not the hour; a
+    memory's time comes in that zone, in the injection and in a tool's reply."""
+    shanghai = timezone(timedelta(hours=8))
+    monkeypatch.setitem(sys.modules, "hermes_time", types.SimpleNamespace(get_timezone=lambda: shanghai))
+    provider, _clock = adapter
+    text = "TEST 白鹭计划的代号是 BL-3。"
+    provider.on_turn_start(1, text, turn_id="TEST-turn-1", session_id="TEST-session-1")
+    provider.observe_pre_llm(session_id="TEST-session-1", turn_id="TEST-turn-1", user_message=text)
+    provider.sync_turn(text, "好的。", session_id="TEST-session-1")
+    provider.on_session_switch("TEST-session-2")
+
+    injected = json.loads(provider.prefetch("白鹭计划的代号 BL-3 是什么").split("\n", 1)[1])["items"]
+    replied = _explicit_recall(provider, "白鹭计划的代号 BL-3 是什么")["items"]
+    for items in (injected, replied):
+        told = [item for item in items if "BL-3" in item["content"]]
+        assert told and all(item["occurred_at"] == "2026-09-06T20:00:00+08:00" for item in told), items
 
 
 def _explicit_recall(provider, query: str) -> dict:

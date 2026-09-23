@@ -42,7 +42,7 @@ from .outcomes import TurnOutcomeTracker
 from .protocol import PublicMemoryProvider
 from .runtime_wiring import GAP_WORKER_LAUNCH_FAILED, HermesHostRuntime, TrustedHostRuntime, attach_trusted_host_runtime
 from .worker import AdapterWorker
-from .tool_surface import HermesToolSurface, _TOOL_NAMES
+from .tool_surface import HermesToolSurface, _TOOL_NAMES, display_zone
 
 _CAPTURE_TIMEOUT_S = 1.0
 _BOUNDED_MESSAGE_SCAN = 8
@@ -518,6 +518,7 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
         return render_host_recall_context(
             preparation.canonical_text, context=preparation.context,
             entry=(identity.entry_id, identity.manifest.entry_name) if identity.entry_id is not None else None,
+            zone=display_zone(),
         )
 
     def queue_prefetch(self, query: str, *, session_id: str = "") -> None:
