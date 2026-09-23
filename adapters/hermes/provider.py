@@ -69,6 +69,18 @@ def _is_scope_recall_tool_name(tool_name: object) -> bool:
     return type(tool_name) is str and tool_name in _TOOL_NAMES
 
 
+#: Hermes' own tools that hand back what was already said or remembered: its search over past
+#: sessions and its built-in memory notes.  Their output is recall, not a new observation.  Captured
+#: as one, a session search on the pilot came back as a page of old conversation, and consolidation
+#: turned it into six new facts that then filled the next automatic recall.  Like Scope Recall's own
+#: output it is kept as a source only.
+_HOST_MEMORY_TOOL_NAMES = frozenset({"session_search", "memory"})
+
+
+def _is_memory_tool_name(tool_name: object) -> bool:
+    return _is_scope_recall_tool_name(tool_name) or (type(tool_name) is str and tool_name in _HOST_MEMORY_TOOL_NAMES)
+
+
 def _same_stored_content(stored_event: dict, content: object) -> bool:
     """Whether a capture repeats what is already stored under its key.
 
@@ -604,7 +616,7 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
         elif result is None and "result" not in kwargs and "content" not in kwargs:
             outcome = "truncated"
             self._outcomes.mark_truncated(session_id, turn_id)
-        is_memory_tool = _is_scope_recall_tool_name(tool_name)
+        is_memory_tool = _is_memory_tool_name(tool_name)
         captured_origin = "memory_reinjection" if is_memory_tool else "tool_observation"
         context = identity.trusted_context(session_id=session_id, actor_origin=captured_origin, mutation=True)
         event, gaps, ledger_identity = tool_call_source_event(

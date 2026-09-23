@@ -51,3 +51,34 @@ def test_scope_recall_tool_result_is_memory_reinjection_and_external_tool_stays_
     origins = _source_origins(provider)
     assert origins["hermes:" + provider._identity.binding.installation_id + ":TEST-session-1:tool:scope-status-1@1"] == "memory_reinjection"
     assert origins["hermes:" + provider._identity.binding.installation_id + ":TEST-session-1:tool:external-1@1"] == "tool_observation"
+
+
+def test_hermes_own_memory_tools_are_recall_not_observation(adapter):
+    """A session search hands back old conversation; consolidated as news it made facts out of echoes.
+
+    On the pilot an agent searched its past sessions for "cat" and got a page of unrelated old
+    conversation; consolidation turned that page into six new facts which then filled the next
+    automatic recall.  Hermes' own memory tools are kept as sources only, like Scope Recall's.
+    """
+    provider, _clock = adapter
+    for call_id, name in (("session-search-1", "session_search"), ("memory-notes-1", "memory")):
+        provider.observe_post_tool_call(
+            session_id="TEST-session-1",
+            turn_id="turn-1",
+            tool_call_id=call_id,
+            tool_name=name,
+            result=json.dumps({"success": True, "mode": "discover", "query": "TEST",
+                               "results": [{"content": "TEST 旧对话里提过：仓库的备用钥匙在第二个抽屉。"}]}, ensure_ascii=False),
+            status="success",
+        )
+    origins = _source_origins(provider)
+    prefix = "hermes:" + provider._identity.binding.installation_id + ":TEST-session-1:tool:"
+    assert origins[prefix + "session-search-1@1"] == "memory_reinjection"
+    assert origins[prefix + "memory-notes-1@1"] == "memory_reinjection"
+    db_path = provider._identity.manifest.data_directory / "memory.sqlite3"
+    with sqlite3.connect(db_path) as connection:
+        queued = connection.execute(
+            """SELECT count(*) FROM work_items w JOIN source_events e ON e.event_id=w.subject_ref
+               WHERE e.source_event_key LIKE ? AND w.work_type IN ('consolidate','embed')""",
+            (prefix + "%",)).fetchone()[0]
+    assert queued == 0, "a recalled page earned consolidation or an embedding"
