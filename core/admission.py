@@ -271,9 +271,20 @@ def resume_deferred(storage, clock, context, policy=None, *, limit=16, remaining
         # later source whose healthy consolidation slot can be filled now.
         eligible = []
         eligibility_params = []
+        # The queue is counted once for every scope, not once per scope and
+        # type: a shared store binds hundreds of scopes, and with 32,000 items
+        # queued after an import the 442 separate counts took 90 s of a 120 s
+        # pass, so the watchdog ended every pass before it embedded anything.
+        kinds = sorted(WORK_TYPES)
+        queued = {(scope, kind): count for scope, kind, count in tx._check().execute(
+            f"""SELECT scope_id,work_type,count(*) FROM work_items
+                WHERE state IN ('pending','leased') AND scope_id IN ({marks}) AND project_id IS ? AND branch_id IS ?
+                AND work_type IN ({','.join('?' for _ in kinds)}) GROUP BY scope_id,work_type""",
+            (*scopes, context.project_id, context.branch_id, *kinds))}
         for scope in scopes:
-            for kind in sorted(WORK_TYPES):
-                count = pending_count(tx, scope, ceiling=_capacity(policy, True), work_type=kind)
+            tx._scope(scope)
+            for kind in kinds:
+                count = queued.get((scope, kind), 0)
                 ordinary = not policy.enabled or count < _capacity(policy, False)
                 priority = not policy.enabled or count < _capacity(policy, True)
                 if not priority:

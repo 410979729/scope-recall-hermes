@@ -348,3 +348,29 @@ def test_what_an_old_store_forgot_stays_forgotten(root, entries):
     finally:
         asked.shutdown()
     assert "5520" not in injected
+
+
+def test_a_legacy_source_id_is_renamed_wherever_the_old_store_names_it(root, entries):
+    """2.x migrations named sources event-legacy-<32 hex>; 3.2.0rc3 renamed them in columns only,
+    so their queued embeddings named no source and the worker dropped every one."""
+    from scope_recall.maintenance.shared_import import _Names, import_entry
+
+    tianshu, _tianquan = entries
+    _core, _context, (said,), old = _old_store(tianshu, _scope(tianshu), "TEST 一条从 2.x 迁移来的旧记录。")
+    legacy = "event-legacy-" + "0123456789abcdef" * 2
+    with closing(sqlite3.connect(old / "memory.sqlite3")) as db:
+        # The store as a 2.x migration left it: the legacy id in every column that names the source.
+        db.execute("PRAGMA foreign_keys=OFF")
+        for (table,) in db.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall():
+            for column in [row[1] for row in db.execute(f"PRAGMA table_info({table})") if row[2] == "TEXT"]:
+                db.execute(f"UPDATE {table} SET {column}=? WHERE {column}=?", (legacy, said.ref))
+        db.execute("UPDATE source_events SET extra_json=? WHERE event_id=?",
+                   (json.dumps({"TEST_cites": [f"{legacy}@1", "event-driven"]}), legacy))
+        db.commit()
+
+    import_entry(root=root, entry_id="tianshu", source=old)
+    new = _Names("tianshu").event(legacy)
+    assert _query(root, f"SELECT count(*) FROM work_items WHERE work_type='embed' AND subject_ref='{new}'") == [(1,)]
+    assert _query(root, "SELECT count(*) FROM work_items WHERE subject_ref LIKE 'event-legacy-%'") == [(0,)]
+    (extra,), = _query(root, f"SELECT extra_json FROM source_events WHERE event_id='{new}'")
+    assert json.loads(extra)["TEST_cites"] == [f"{new}@1", "event-driven"], "an id-shaped word that is no id stays"

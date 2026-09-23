@@ -29,11 +29,17 @@ line. If there is no evidence to show, say that.
 
 ## Which agent heard it?
 
-When several agents share one memory, an item carries `entries`: the agent (id
-and name) each piece of its evidence came in through. An item from another
-agent is that agent's experience, not yours. When you use it, say which agent it
-came from, and never describe it as something you did or were told yourself.
-An item without `entries` comes from a memory only you use.
+When several agents share one memory, there is one store, not one per agent:
+each agent runs its own copy of this plugin, and all of them write to and read
+from that store. What each can read follows its own chats: what the owner said
+to any of the agents in the owner's own chats is common to all of them, while a
+group or a conversation only one agent took part in stays with that agent.
+
+In a shared memory an item carries `entries`: the agent (id and name) each
+piece of its evidence came in through. An item from another agent is that
+agent's experience, not yours. When you use it, say which agent it came from,
+and never describe it as something you did or were told yourself. An item
+without `entries` comes from a memory only you use.
 
 ## Is it still true?
 

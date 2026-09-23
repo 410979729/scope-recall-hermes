@@ -6,7 +6,10 @@ All notable changes to `scope-recall` will be documented in this file.
 
 ### Scope Recall 3.2.0rc4 - 2026-09-23
 
-- The version moves past the `v3.2.0rc3` tag, the candidate the pilot runs. No code changes.
+- The version moves past the `v3.2.0rc3` tag, the candidate the pilot runs.
+- `import-entry` renames a source id wherever the old store names it, whatever the id's form. 3.2.0rc3 renamed the pilot's `event-legacy-<32 hex>` sources (85,112 of 87,033) in every column, but not inside JSON or in the work it queued: 28,155 embeddings named no source, and the shared worker dropped each as it came to it, while 195 JSON fields kept an old id. A token is now renamed only when it is exactly an id the old store holds, so a word shaped like an id is left alone. The pilot's store was repaired in place from the untouched old stores (kit `tools\repair_import_rc3.py`: 28,286 embeddings queued again, 184 fields rewritten, the other 11 already named sources their own store no longer had).
+- The memory skill says what a shared memory is: one store that each agent reads through its own chats, not one store per agent. Asked about it, an agent had described several stores sharing parts of themselves.
+- A worker pass counts the queue once for all its scopes before refilling deferred captures, instead of once per scope and work type. A shared store's worker binds every entry's scopes (221 on the pilot); with 32,000 embeddings queued after the import the 442 counts took 90 s of a 120 s pass on a copy and longer live, so the watchdog ended every pass before it embedded anything and the rebuild stood still from 09:28Z. The same pass now takes 7.6 s.
 
 ### Scope Recall 3.2.0rc3 - 2026-09-23
 

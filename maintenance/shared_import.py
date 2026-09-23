@@ -16,8 +16,11 @@ Three things cannot be copied as they are.
   different stores the same keys for different content: three pilot stores
   shared 13,073 ids.  Every imported source gets an id of its own,
   ``event-sha256(["import", entry, old id])``, and every reference to it --
-  columns and JSON alike -- is rewritten; keys and group keys take the prefix
-  ``import:<entry>:``, and sessions ``<entry>:``, as a live capture's do.
+  columns, JSON and the work that names it -- is rewritten; keys and group keys
+  take the prefix ``import:<entry>:``, and sessions ``<entry>:``, as a live
+  capture's do.  An id is renamed where the old store has it, whatever its
+  form: 85,112 of the pilot's sources were ``event-legacy-<32 hex>``, which
+  3.2.0rc3 renamed in columns but not in JSON or queued work.
 * Integer ids local to a store -- ``source_id``, episode sequences, lexical
   term ids, authorization payload ids -- are renumbered.
 * A group block's digest includes the installation id; it is recomputed for
@@ -51,7 +54,8 @@ from ..runtime.running_code import live_records
 
 #: Store versions whose tables this import reads.  An older store is upgraded first.
 SOURCE_SCHEMAS = frozenset({1109, 1110})
-_EVENT_REF = re.compile(r"(?<![0-9A-Za-z_-])event-[0-9a-f]{64}(?![0-9a-f])")
+#: Anything shaped like a source id; renamed only when the old store holds exactly that id.
+_EVENT_TOKEN = re.compile(r"(?<![0-9A-Za-z_-])event-[0-9A-Za-z_-]+")
 _CHUNK = 2000
 
 
@@ -70,9 +74,11 @@ def _canonical(value: object) -> str:
 class _Names:
     """The imported store's names in the shared store: one entry's namespace."""
 
-    def __init__(self, entry_id: str) -> None:
+    def __init__(self, entry_id: str, known: frozenset[str] = frozenset()) -> None:
         self.entry_id = entry_id
         self.prefix = f"import:{entry_id}:"
+        #: The source ids the old store holds: the only text renamed.
+        self.known = known
         self._events: dict[str, str] = {}
 
     def event(self, ref: str) -> str:
@@ -86,8 +92,15 @@ class _Names:
         return self.event(ref) if kind == "event" else ref
 
     def text(self, value: str | None) -> str | None:
-        """``value`` with every source id in it renamed; JSON stays valid, content is never passed here."""
-        return value if value is None else _EVENT_REF.sub(lambda match: self.event(match.group(0)), value)
+        """``value`` with every source id of the old store in it renamed; JSON stays valid.
+
+        A token is renamed only when it is exactly an id the old store holds,
+        so ``event-driven`` in a quoted value, or an id the old store no longer
+        has, is left as it was.  Content is never passed here.
+        """
+        if value is None:
+            return None
+        return _EVENT_TOKEN.sub(lambda m: self.event(m.group(0)) if m.group(0) in self.known else m.group(0), value)
 
     def key(self, key: str) -> str:
         return self.prefix + key
@@ -286,14 +299,19 @@ def _import_rows(conn, src, names: _Names, *, store_installation: str, store_sco
     expired = {(ref, revision) for ref, revision in src.execute("SELECT source_ref, source_revision FROM expired_vectors")}
 
     def pending(row):
-        """Pending work, as new work; and a source's embedding again wherever the source store had one."""
-        if row["scope_id"] not in store_scopes or row["subject_ref"] in left_out:
+        """Pending work, as new work; and a source's embedding again wherever the source store had one.
+
+        Work naming a source the old store no longer holds is left behind: nothing it could do remains.
+        """
+        subject = row["subject_ref"]
+        source = subject.startswith("event-")
+        if row["scope_id"] not in store_scopes or subject in left_out or (source and subject not in names.known):
             return None
-        embedded = (row["work_type"] == "embed" and row["subject_ref"].startswith("event-") and row["state"] != "obsolete"
-                    and (row["subject_ref"], row["subject_revision"]) not in expired)
+        embedded = (row["work_type"] == "embed" and source and row["state"] != "obsolete"
+                    and (subject, row["subject_revision"]) not in expired)
         if not embedded and row["state"] not in ("pending", "leased"):
             return None
-        return {"work_type": row["work_type"], "subject_ref": names.text(row["subject_ref"]),
+        return {"work_type": row["work_type"], "subject_ref": names.event(subject) if source else subject,
                 "subject_revision": row["subject_revision"], "scope_id": row["scope_id"], "project_id": row["project_id"],
                 "branch_id": row["branch_id"], "available_at": now}
 
@@ -326,11 +344,11 @@ def import_entry(*, root: Path, entry_id: str, source: Path, dry_run: bool = Fal
         raise SharedStoreError("--from is the shared store itself")
     if live_records(database.parent):
         raise SharedStoreError("a process still has the source store open; stop it first")
-    names = _Names(entry_id)
     started = time.monotonic()
     result: dict[str, Any] = {"root": str(root), "entry_id": entry_id, "source": str(database), "dry_run": dry_run}
     try:
         src = _open_source(database, record["home"])
+        names = _Names(entry_id, frozenset(row[0] for row in src.execute("SELECT event_id FROM source_events")))
     except (SourceRefused, sqlite3.Error) as exc:
         raise SharedStoreError(f"source refused: {exc}") from None
     try:

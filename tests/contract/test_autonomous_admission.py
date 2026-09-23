@@ -386,3 +386,21 @@ def test_a_withheld_tool_output_summary_is_kept_as_a_source_only(tmp_path, text)
     assert receipt.semantic_state == "not_scheduled"
     assert receipt.admission == ("admission_source_only:tool_output_omitted",)
     assert counts(app)["source_events"] == 1 and counts(app)["work_items"] == 0
+
+
+def test_refill_counts_the_queue_once_however_many_scopes_the_worker_binds(tmp_path, monkeypatch):
+    """A shared store's worker binds every entry's scopes.  After an import queued 32,000 embeddings,
+    counting the queue once per scope and type took 90 s of a 120 s pass, and every pass ended
+    before it embedded anything."""
+    import scope_recall.core.admission as admission
+    from scope_recall.contracts import InstanceBinding, TrustedContext
+
+    scopes = frozenset({"TEST-scope", *(f"TEST-scope-{index}" for index in range(40))})
+    binding = InstanceBinding("TEST-agent", "TEST-installation", tmp_path / "TEST-many-scopes", scopes, True)
+    app = MemoryCore(CoreConfig(binding, admission_policy=AdmissionPolicy()))
+    app.initialize()
+    worker = TrustedContext(binding, "TEST-worker", scopes, "host_generated")
+    counted = []
+    monkeypatch.setattr(admission, "pending_count", lambda *args, **kwargs: counted.append(args[1]) or 0)
+    assert app.resume_deferred(worker, remaining_seconds=10) == ()
+    assert counted == []
