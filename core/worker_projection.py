@@ -13,7 +13,9 @@ from ..contracts import ContractError
 from .file_lock import advisory_file_lock
 from .retained_artifacts import RetainedBlob, erase_retained
 from .storage import StoredSource
+from .work_storage import CAPACITY_REFUSALS
 from .worker_outcomes import (
+    BUDGET_PAUSE_ERRORS,
     _deadline_result,
     _epoch_changed,
     _finalize_work,
@@ -98,80 +100,139 @@ _EMBED_SUBJECTS = {
     "source": _EmbedSubject("source", _live_source, "prepare_source", "publish_source"),
     "claim": _EmbedSubject("claim", _live_claim, "prepare_claim", "publish_claim"),
 }
+#: A group's port methods per subject, and the keyword each group publish takes its subjects by.
+_GROUP_METHODS = {"source": ("prepare_sources", "publish_sources", "sources"),
+                  "claim": ("prepare_claims", "publish_claims", "claims")}
+#: Members recorded per write transaction when a group completes.  One transaction for a
+#: thousand would hold the store's write lock for as long as a capture waits for it.
+GROUP_RECORD_CHUNK = 200
+
+
+def _subject_kind(item) -> str:
+    return "claim" if item.subject_ref.startswith("claim-") else "source"
+
+
+class EmbedGroupRefused(Exception):
+    """The provider refused a group's request for capacity or budget; no member was tried."""
+
+    def __init__(self, error_code: str) -> None:
+        super().__init__(error_code)
+        self.error_code = error_code
+
+
+def _provider_refusal(error_code: str) -> bool:
+    """Whether a failed request says "ask less", which the group's size does not change."""
+    return error_code in BUDGET_PAUSE_ERRORS or error_code.lower() in CAPACITY_REFUSALS
 
 
 def prepare_embed_group(storage, clock, context, items, *, embed, started: float, budget: float) -> dict:
-    """Embed the group's live sources in one request; the result is keyed by subject.
+    """Embed the group's live sources and claims, each kind in as few requests as it allows.
 
-    A subject missing from the map is prepared on its own, which is also what
-    happens when the port cannot batch, when the group holds claims, or when
-    the request fails.  Sharing a request changes what the provider is asked,
-    never what is read, fenced or published: every item still goes through
-    ``_process_embed`` and answers for itself.
+    The result is keyed by subject.  A subject missing from it is prepared on its own, which is
+    also what happens when the port cannot batch a kind or a request fails for its payload's
+    sake.  Sharing a request changes what the provider is asked, never what is read, fenced or
+    published: every item still answers for itself.
+
+    A refusal that is the provider's -- capacity or budget -- raises ``EmbedGroupRefused``
+    instead.  Asking again one member at a time is the same refusal times the group's size:
+    a group of five hundred sent that way after one refused request spent its whole pass on
+    sixty-seven members and let the rest of the group's leases run out.
     """
-    batch = getattr(embed, "prepare_sources", None)
-    if not callable(batch) or len(items) < 2 or _remaining(started, clock, budget) <= 0:
+    if len(items) < 2 or _remaining(started, clock, budget) <= 0:
         return {}
-    subjects = []
+    subjects: dict[str, list] = {"source": [], "claim": []}
     try:
         with storage.read(context, remaining_seconds=_remaining(started, clock, budget)) as tx:
             for item in items:
-                if item.subject_ref.startswith("claim-"):
-                    continue
-                source = _live_source(tx, item.subject_ref, item.subject_revision)
-                if source is not None:
-                    subjects.append(source)
+                kind = _subject_kind(item)
+                subject = _EMBED_SUBJECTS[kind].live(tx, item.subject_ref, item.subject_revision)
+                if subject is not None:
+                    subjects[kind].append(subject)
     except ContractError:
         return {}
-    if len(subjects) < 2:
+    prepared_group: dict = {}
+    for kind, members in subjects.items():
+        batch = getattr(embed, _GROUP_METHODS[kind][0], None)
+        if callable(batch):
+            prepared_group.update(_prepare_in_halves(batch, members, clock=clock, started=started, budget=budget))
+    return prepared_group
+
+
+def _prepare_in_halves(batch, members: list, *, clock, started: float, budget: float) -> dict:
+    """Prepare ``members`` in one request, or, when it fails for its payload, each half the same way.
+
+    One text the request guard refuses -- a message holding something shaped like a key -- or
+    one the provider rejects fails the whole request.  Falling back to one request per member
+    made a single such text cost the group's size in requests, and a group larger than its lease
+    covers went back and failed the same way the next pass.  Halving costs a few requests and
+    leaves the one bad text, alone, to fail for itself.  A half of one is left to ask for itself.
+    """
+    if len(members) < 2 or _remaining(started, clock, budget) <= 0:
         return {}
     try:
-        prepared = batch(subjects, remaining_seconds=_remaining(started, clock, budget))
-    except Exception:
-        # The group's request failed as a whole. Each item now asks for itself,
-        # so each one records its own outcome and spends its own attempt.
+        prepared = batch(members, remaining_seconds=_remaining(started, clock, budget))
+    except Exception as exc:
+        _disposition, error_code = _port_failure(exc)
+        if _provider_refusal(error_code):
+            raise EmbedGroupRefused(error_code) from exc
+        middle = len(members) // 2
+        return {**_prepare_in_halves(batch, members[:middle], clock=clock, started=started, budget=budget),
+                **_prepare_in_halves(batch, members[middle:], clock=clock, started=started, budget=budget)}
+    if len(prepared) != len(members):
         return {}
-    if len(prepared) != len(subjects):
-        return {}
-    return {(subject.ref, subject.revision): vector for subject, vector in zip(subjects, prepared)}
+    return {(subject.ref, subject.revision): vector for subject, vector in zip(members, prepared)}
 
 
 def publish_embed_group(storage, clock, context, items, *, embed, prepared_group: dict,
-                        started: float, budget: float) -> frozenset:
-    """Write a whole group's vectors in one fenced commit; answer for whom it wrote.
+                        started: float, budget: float) -> dict:
+    """Write a group's vectors in one fenced commit per kind; answer with each written member's fence.
 
     The store's write API is plural and the adapter used it one row at a time, so a pass paid
     a lock-held handshake and a dataset commit per source -- nine times the cost of one commit
     carrying the group.  The fence does not weaken: the guard verifies every member's lease,
     subject and derivation while the helper holds the lock, and a group it refuses writes
     nothing, leaving every member to publish on its own fence exactly as before.
+
+    The result maps ``(subject_ref, subject_revision)`` to the derivation fence read before the
+    commit, which is what recording the member afterwards checks against.
     """
-    publish = getattr(embed, "publish_sources", None)
-    if not callable(publish) or len(items) < 2 or not prepared_group:
-        return frozenset()
-    if _remaining(started, clock, budget) <= 0:
-        return frozenset()
+    published: dict = {}
+    if len(items) < 2 or not prepared_group:
+        return published
+    for kind in ("source", "claim"):
+        members = [item for item in items if _subject_kind(item) == kind
+                   and (item.subject_ref, item.subject_revision) in prepared_group]
+        publish = getattr(embed, _GROUP_METHODS[kind][1], None)
+        if callable(publish) and len(members) >= 2 and _remaining(started, clock, budget) > 0:
+            published.update(_publish_kind(storage, clock, context, members, kind=kind, publish=publish,
+                                           prepared_group=prepared_group, started=started, budget=budget))
+    return published
+
+
+def _publish_kind(storage, clock, context, items, *, kind: str, publish, prepared_group: dict,
+                  started: float, budget: float) -> dict:
+    """One fenced commit for the group's members of one subject kind."""
+    live = _EMBED_SUBJECTS[kind].live
     members, prepared, fences = [], [], {}
     try:
         with storage.read(context, remaining_seconds=_remaining(started, clock, budget)) as tx:
             for item in items:
-                vector = prepared_group.get((item.subject_ref, item.subject_revision))
-                if vector is None:
-                    continue
-                source = _live_source(tx, item.subject_ref, item.subject_revision)
-                if source is None:
+                subject = live(tx, item.subject_ref, item.subject_revision)
+                if subject is None:
                     continue
                 fences[item.work_id] = read_derivation_fence(
-                    tx, scope_id=item.scope_id, sources=(source,), claims=())
-                members.append((item, source))
-                prepared.append(vector)
+                    tx, scope_id=item.scope_id,
+                    sources=(subject,) if kind == "source" else (),
+                    claims=((subject.ref, subject.revision),) if kind == "claim" else ())
+                members.append((item, subject))
+                prepared.append(prepared_group[(item.subject_ref, item.subject_revision)])
     except ContractError:
-        return frozenset()
+        return {}
     if len(members) < 2:
-        return frozenset()
+        return {}
     owners = {item.lease_owner for item, _ in members}
     if len(owners) != 1:
-        return frozenset()
+        return {}
 
     def lease_guard() -> bool:
         """True only while every member of the group may still be published."""
@@ -180,10 +241,10 @@ def publish_embed_group(storage, clock, context, items, *, embed, prepared_group
             return False
         try:
             with storage.read(context, remaining_seconds=remaining) as tx:
-                for item, _source in members:
+                for item, _subject in members:
                     if not tx.work._verify_lease(*item.lease, now=clock.utc_now()):
                         return False
-                    current = _live_source(tx, item.subject_ref, item.subject_revision)
+                    current = live(tx, item.subject_ref, item.subject_revision)
                     if current is None or current.scope_id not in context.allowed_scope_ids:
                         return False
                     if (current.project_id, current.branch_id) != (context.project_id, context.branch_id):
@@ -197,8 +258,8 @@ def publish_embed_group(storage, clock, context, items, *, embed, prepared_group
     try:
         publish(
             tuple(prepared),
-            sources=tuple(source for _item, source in members),
-            lease_tokens=tuple(item.lease_token for item, _source in members),
+            **{_GROUP_METHODS[kind][2]: tuple(subject for _item, subject in members)},
+            lease_tokens=tuple(item.lease_token for item, _subject in members),
             lease_owner=next(iter(owners)),
             lease_guard=lease_guard,
             remaining_seconds=_remaining(started, clock, budget),
@@ -206,8 +267,45 @@ def publish_embed_group(storage, clock, context, items, *, embed, prepared_group
     except Exception:
         # Nothing was written, or the guard refused the group: each member now
         # publishes on its own fence and records its own outcome.
-        return frozenset()
-    return frozenset((item.subject_ref, item.subject_revision) for item, _source in members)
+        return {}
+    return {(item.subject_ref, item.subject_revision): fences[item.work_id] for item, _subject in members}
+
+
+def complete_embed_group(storage, clock, context, items, *, published: dict,
+                         started: float, budget: float) -> dict:
+    """Record the group's published members together; each one's outcome by work id.
+
+    Each member used to answer for itself in three transactions -- read it, guard it, complete
+    it -- after the group's requests and its one commit had done the work.  At about sixty
+    milliseconds a member, a group of five hundred spent thirty seconds on that, and a group of
+    a thousand outlived its sixty-second lease: vectors already paid for were dropped as stale
+    and embedded again the next pass.  The checks are the single path's last ones, made under
+    the write transaction that records the verdict: the subject is still live, its derivation
+    has not moved since the commit's fence was read, and ``complete`` verifies the lease.  A
+    chunk that fails records nothing, and its members answer for themselves as before.
+    """
+    members = [item for item in items if (item.subject_ref, item.subject_revision) in published]
+    outcomes: dict = {}
+    for start in range(0, len(members), GROUP_RECORD_CHUNK):
+        if _remaining(started, clock, budget) <= 0:
+            break
+        chunk = members[start:start + GROUP_RECORD_CHUNK]
+        recorded: dict = {}
+        try:
+            with storage.write(context, remaining_seconds=_remaining(started, clock, budget)) as tx:
+                now = clock.utc_now()
+                for item in chunk:
+                    key = (item.subject_ref, item.subject_revision)
+                    if _EMBED_SUBJECTS[_subject_kind(item)].live(tx, *key) is None:
+                        recorded[item.work_id] = _mark_obsolete(tx, item, now)
+                    elif derivation_changed(tx, published[key]) is not None:
+                        recorded[item.work_id] = _epoch_changed(tx, item, now)
+                    else:
+                        recorded[item.work_id] = _work_result(tx.work.complete(*item.lease, now=now))
+        except ContractError:
+            continue
+        outcomes.update(recorded)
+    return outcomes
 
 
 def _process_embed(
@@ -230,7 +328,7 @@ def _process_embed(
     subject, or one whose suppression, blocks or identity changed, is observed
     here.  Captures and writes to other objects do not stop publication.
     """
-    kind = _EMBED_SUBJECTS["claim" if item.subject_ref.startswith("claim-") else "source"]
+    kind = _EMBED_SUBJECTS[_subject_kind(item)]
     finish = partial(_finalize_work, storage, clock, context, item, started=started, budget=budget)
     with storage.read(context, remaining_seconds=_remaining(started, clock, budget)) as tx:
         subject = kind.live(tx, item.subject_ref, item.subject_revision)

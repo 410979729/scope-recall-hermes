@@ -118,11 +118,11 @@ defaults a standalone worker pass uses.
 
 | Key | Type | Default | Bounds | Meaning |
 |-----|------|---------|--------|---------|
-| `max_items` | int | `32` | 1–1000 | Most work items one pass may reserve and claim. Also caps an operator retry, which takes at most `min(8, max_items)`. A pass claims its embedding group in one page of up to this many items; what it cannot finish inside `drain_seconds` is handed back unspent and claimed again by the next pass. A value far above the default is for a one-off drain of a large embedding backlog and buys nothing once that is gone: put it back afterwards. |
+| `max_items` | int | `32` | 1–1000 | Most work items one pass may reserve and claim. Also caps an operator retry, which takes at most `min(8, max_items)`. A pass claims its embedding group in one page of up to this many items: sources and claims each go a hundred to a request and into one commit, and the group is recorded together. What it cannot finish inside `drain_seconds` or its lease, or what the provider refuses for capacity, is handed back unspent and claimed again by a later pass. A value far above the default is for a one-off drain of a large embedding backlog and buys nothing once that is gone: put it back afterwards. |
 | `drain_seconds` | number | `120.0` | 0.001–120.0 | Wall budget for the whole pass. The drain, the lock wait and the finalize share this one deadline, and it is the watchdog's kill budget. |
 | `request_seconds` | number | `45.0` | 0.001–45.0 | Per-call ceiling clamped onto every model and native boundary: consolidation, candidate evaluation, embedding, vector purge, and the vector-open slice. |
 | `lease_seconds` | number | `60.0` | `request_seconds`–3600.0 | How long a claimed item stays leased to `owner_id` before a later pass may reclaim it as stale. Must be at least `request_seconds`. |
-| `worker_min_interval_seconds` | number | `30.0` | 1–3600 | Minimum gap between two passes. A supervised window sleeps out the remainder; a host coalesces wake-ups against it. |
+| `worker_min_interval_seconds` | number | `30.0` | 1–3600 | Minimum gap between two passes. A supervised window sleeps out the remainder; a host coalesces wake-ups against it. On a drain the passes themselves are short, so this gap is most of what an edit can win back. |
 | `supervisor_enabled` | boolean | `true` | — | When true, a scheduled wake runs a finite supervise loop of several passes. When false, a scheduled wake refuses to launch at all — this is the switch that turns background work off without unregistering it. |
 | `supervisor_seconds` | number | `21600.0` (6 h) | 1–86400 | Total lifetime of one supervised window. On expiry the window suspends. |
 | `supervisor_max_drains` | int | `256` | 1–1024 | Most passes one supervised window may run before it suspends. |
@@ -132,6 +132,10 @@ defaults a standalone worker pass uses.
 | `max_auto_recoveries` | int | `2` | 0–4 | Automatic retries a recoverable failure gets. `0` disables automatic recovery; the failure then waits for `retry-failures`. |
 | `auto_recall_seconds` | number | `5.0` | 0.001–5.0 | Deadline for *automatic* recall on the read path. On timeout, recall degrades to lexical. |
 | `hook_processing_seconds` | number | `6.0` | 0.001–6.0 | Total budget a trusted-host hook has to answer. Must be at least `auto_recall_seconds`, so the hook can cover a full automatic recall; a smaller value fails the file with `hook_processing_seconds_must_cover_auto_recall`. |
+
+A running supervisor reads the file again before each pass, so an edited setting takes effect at
+its next pass. Only a file that names another store ends it, as `suspended` with the reason
+`config_changed`; the next wake starts that store's own supervisor.
 
 `daily_work_limit` is not the spend guard. Money, calls and tokens are enforced
 per request by the auxiliary ledger (`runtime/model_budget.py`), which cannot see

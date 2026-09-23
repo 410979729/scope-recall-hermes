@@ -21,9 +21,11 @@ from .worker_consolidation import (
 )
 from .worker_outcomes import BUDGET_PAUSE_ERRORS, _model_exception_outcome, _remaining
 from .worker_projection import (
+    EmbedGroupRefused,
     EmbedPort,
     PurgePort,
     _process_embed,
+    complete_embed_group,
     publish_embed_group,
     _process_purge,
     _process_rebuild_projection,
@@ -72,6 +74,10 @@ SOURCE_PAGES_PER_PASS = 16
 #: -- the numbers a drain is actually paying.  A pass still claims no more than
 #: its own ``max_items``.
 EMBED_BATCH_LIMIT = 1000
+#: Least lease time a group member must have left to still ask for itself.  Members
+#: are claimed together, so the last ones asked one at a time were asked after the
+#: lease had run out and dropped as stale, with the attempt spent and the vector paid for.
+GROUP_REQUEST_FLOOR_SECONDS = 5.0
 
 
 @dataclass(frozen=True)
@@ -206,7 +212,8 @@ CANDIDATE_QUEUE_CEILING = PROCESS_BATCH_LIMIT * 12
 RELEASE_SECONDS = 1.0
 
 
-def _release_group(storage, clock, context, members, error_code, started: float, budget: float) -> None:
+def _release_group(storage, clock, context, members, error_code, started: float, budget: float,
+                   *, seconds: float = 0) -> None:
     """Return leased work nobody will look at this pass, without spending its attempt."""
     if not members:
         return
@@ -215,7 +222,7 @@ def _release_group(storage, clock, context, members, error_code, started: float,
             now = clock.utc_now()
             for member in members:
                 tx.work.defer_without_attempt(*member.lease, now=now,
-                                              error_code=str(error_code or "pass_ended"), seconds=0)
+                                              error_code=str(error_code or "pass_ended"), seconds=seconds)
     except ContractError:
         # The lease expires on its own; a failure to hand work back early is
         # never worth failing a pass over.
@@ -335,7 +342,9 @@ def drain_worker(
         item = claimed[0]
         group: tuple = (item,)
         prepared_group: dict = {}
-        published_group: frozenset = frozenset()
+        published_group: dict = {}
+        recorded: dict = {}
+        claimed_at = clock.monotonic()
         if item.work_type == "embed" and embed is not None:
             # Embedding is one request per source; asking for the pass's other
             # ready sources in the same one is the difference between a rebuild
@@ -348,20 +357,53 @@ def drain_worker(
                     group = (item, *tx.work.claim_next(
                         config.owner_id, clock.utc_now(), lease_seconds=config.lease_seconds,
                         limit=room, allowed_work_types=frozenset({"embed"})))
-                prepared_group = prepare_embed_group(storage, clock, context, group,
-                                                     embed=embed, started=started, budget=budget)
-                # One commit for the group's vectors, for the same reason as one
-                # request for its texts: the per-item cost was the store's lock,
-                # not the work.
-                published_group = publish_embed_group(storage, clock, context, group, embed=embed,
-                                                      prepared_group=prepared_group,
-                                                      started=started, budget=budget)
-        for index, member in enumerate(group):
+                claimed_at = clock.monotonic()
+                try:
+                    prepared_group = prepare_embed_group(storage, clock, context, group,
+                                                         embed=embed, started=started, budget=budget)
+                except EmbedGroupRefused as refusal:
+                    # The provider refused the group's request: no member was tried,
+                    # so the whole group goes back unspent, parked as long as one
+                    # refused member would be, and this pass asks for no more.
+                    _release_group(storage, clock, context, group, refusal.error_code, started, budget,
+                                   seconds=3600 if refusal.error_code in BUDGET_PAUSE_ERRORS else 0)
+                    recorded = {item.work_id: ("deferred", refusal.error_code, "pending")}
+                    group = (item,)
+                else:
+                    # One commit for the group's vectors, for the same reason as one
+                    # request for its texts: the per-item cost was the store's lock,
+                    # not the work.  Then one record for the members it wrote.
+                    published_group = publish_embed_group(storage, clock, context, group, embed=embed,
+                                                          prepared_group=prepared_group,
+                                                          started=started, budget=budget)
+                    recorded = complete_embed_group(storage, clock, context, group, published=published_group,
+                                                    started=started, budget=budget)
+        disposition, error_code = "skipped", None
+        for member in group:
+            if member.work_id not in recorded:
+                continue
+            claimed_types[member.work_type] += 1
+            disposition, error_code, state = recorded[member.work_id]
+            dispositions[disposition] += 1
+            receipts.append(WorkerItemReceipt(member.work_id, member.work_type, disposition, state, error_code))
+            item = member
+        # A member that still has to ask for itself is bounded by the lease it was
+        # claimed with, not only by the pass: asked after the lease ran out, its
+        # vector was paid for and dropped as stale.
+        lease_end = (claimed_at - started) + config.lease_seconds - FINALIZE_MARGIN_SECONDS
+        rest = [member for member in group if member.work_id not in recorded]
+        for index, member in enumerate(rest):
+            member_budget = budget
+            if len(group) > 1:
+                if _remaining(started, clock, lease_end) < GROUP_REQUEST_FLOOR_SECONDS:
+                    _release_group(storage, clock, context, rest[index:], "lease_ending", started, budget)
+                    break
+                member_budget = min(budget, lease_end)
             claimed_types[member.work_type] += 1
             run = (partial(_process_embed, embed=embed, prepared_group=prepared_group,
                            published_group=published_group)
                    if member.work_type == "embed" else processors[member.work_type])
-            outcome = run(storage, clock, context, member, started=started, budget=budget)
+            outcome = run(storage, clock, context, member, started=started, budget=member_budget)
             disposition, error_code, state = outcome
             dispositions[disposition] += 1
             receipts.append(WorkerItemReceipt(member.work_id, member.work_type, disposition, state, error_code,
@@ -373,7 +415,7 @@ def drain_worker(
                 # The rest of this group was leased for a request that is not
                 # going to be made. Hand it back unspent rather than holding it
                 # until the lease expires.
-                _release_group(storage, clock, context, group[index + 1:], error_code, started, budget)
+                _release_group(storage, clock, context, rest[index + 1:], error_code, started, budget)
                 break
         # Standing a work type down for the rest of the pass.  The per-item
         # backoff still decides when each item returns; this only decides how

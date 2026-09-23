@@ -22,7 +22,7 @@ from typing import Any, Protocol
 
 from ..contracts import ContractError, TrustedContext
 from ..core.deadline import RequestDeadline, using_request_deadline
-from ..core.recall_policy import SPACE_ID, claim_embedding_text
+from ..core.recall_policy import SPACE_ID, claim_embedding_text, encode_embedding_text
 from ..core.retrieval import CandidateRef, SearchContext
 from ..core.storage import StoredSource
 
@@ -165,19 +165,31 @@ class LanceEmbedPort:
         vectors = batch(subjects, remaining_seconds=remaining_seconds)
         if len(vectors) != len(subjects):
             raise ContractError("DERIVATION_INVALID", "embedding_batch_shape")
-        return tuple(
-            PreparedSourceEmbedding(
-                source_ref=source.ref,
-                source_revision=source.revision,
-                scope_id=source.scope_id,
-                project_id=source.project_id,
-                branch_id=source.branch_id,
-                vector_id=f"p10:{source.ref}@{source.revision}:{self._embedding_space}",
-                embedding_space=self._embedding_space,
-                embedding=_finite_embedding(vector),
-            )
-            for source, vector in zip(subjects, vectors)
-        )
+        return tuple(self._prepared(source, vector) for source, vector in zip(subjects, vectors))
+
+    def prepare_claims(self, claims: Sequence[Any], *,
+                       remaining_seconds: float = 1.0) -> tuple[PreparedSourceEmbedding, ...]:
+        """Prepare many claim versions in as few requests as sources take, in order.
+
+        A claim was one request each, asked one after another: about two seconds a claim, so a
+        store's two thousand claims took over an hour while the provider allows thousands of
+        requests a minute.  The text and its encoding are exactly ``prepare_claim``'s, so a
+        claim lands on the same vector either way.  A port that cannot batch falls back to one
+        request each.
+        """
+        subjects = list(claims)
+        if not subjects:
+            return ()
+        if remaining_seconds <= 0:
+            raise ContractError("DEADLINE_EXCEEDED")
+        batch = getattr(self._source_embedding, "embed_texts", None)
+        if not callable(batch) or len(subjects) == 1:
+            return tuple(self.prepare_claim(claim, remaining_seconds=remaining_seconds) for claim in subjects)
+        texts = [encode_embedding_text(claim_embedding_text(claim.payload), kind="document") for claim in subjects]
+        vectors = batch(texts, remaining_seconds=remaining_seconds)
+        if len(vectors) != len(subjects):
+            raise ContractError("DERIVATION_INVALID", "embedding_batch_shape")
+        return tuple(self._prepared(claim, vector) for claim, vector in zip(subjects, vectors))
 
     def prepare_claim(self, claim: Any, *, remaining_seconds: float = 1.0) -> PreparedSourceEmbedding:
         """Embed one claim version so search can reach the derived layer.
@@ -198,6 +210,10 @@ class LanceEmbedPort:
     ) -> PreparedSourceEmbedding:
         if remaining_seconds <= 0:
             raise ContractError("DEADLINE_EXCEEDED")
+        return self._prepared(subject, embed(remaining_seconds))
+
+    def _prepared(self, subject: Any, vector: Any) -> PreparedSourceEmbedding:
+        """The prepared row for one source or claim version and the vector it was given."""
         return PreparedSourceEmbedding(
             source_ref=subject.ref,
             source_revision=subject.revision,
@@ -206,7 +222,7 @@ class LanceEmbedPort:
             branch_id=subject.branch_id,
             vector_id=f"p10:{subject.ref}@{subject.revision}:{self._embedding_space}",
             embedding_space=self._embedding_space,
-            embedding=_finite_embedding(embed(remaining_seconds)),
+            embedding=_finite_embedding(vector),
         )
 
     def publish_source(
@@ -239,12 +255,31 @@ class LanceEmbedPort:
         answers for every member of the group while the helper holds the lock, and a group it
         refuses writes nothing, leaving each member to publish on its own fence.
         """
-        items, subjects, tokens = tuple(prepared), tuple(sources), tuple(lease_tokens)
-        if not items or len(items) != len(subjects) or len(items) != len(tokens):
+        self._publish_group("event", "prepared_source", prepared, sources, lease_tokens, lease_owner,
+                            lease_guard, remaining_seconds)
+
+    def publish_claims(
+        self,
+        prepared: Sequence[PreparedSourceEmbedding],
+        *,
+        claims: Sequence[Any],
+        lease_tokens: Sequence[int],
+        lease_owner: str,
+        lease_guard: Callable[[], bool],
+        remaining_seconds: float = 1.0,
+    ) -> None:
+        """Publish a group of claim vectors in one fenced commit, on the terms ``publish_sources`` sets."""
+        self._publish_group("claim", "prepared_claim", prepared, claims, lease_tokens, lease_owner,
+                            lease_guard, remaining_seconds)
+
+    def _publish_group(self, object_kind: str, subject_detail: str, prepared, subjects, lease_tokens,
+                       lease_owner: str, lease_guard: Callable[[], bool], remaining_seconds: float) -> None:
+        items, members, tokens = tuple(prepared), tuple(subjects), tuple(lease_tokens)
+        if not items or len(items) != len(members) or len(items) != len(tokens):
             raise ContractError("INPUT_INVALID", "prepared_group")
         records = tuple(
-            self._record("event", one, subject, "prepared_source", token, lease_owner)
-            for one, subject, token in zip(items, subjects, tokens)
+            self._record(object_kind, one, subject, subject_detail, token, lease_owner)
+            for one, subject, token in zip(items, members, tokens)
         )
         if remaining_seconds <= 0:
             raise ContractError("DEADLINE_EXCEEDED")

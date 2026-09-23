@@ -276,3 +276,56 @@ os._exit(0)
         assert row['state']=='done'
     budget=json.loads((cfg.binding.data_directory/'runtime-worker-day.json').read_text())
     assert budget['used']==1  # An explicit cap, never the uncapped default.
+
+
+def test_an_edited_setting_is_taken_up_without_failing_the_supervisor(tmp_path):
+    """Editing the pass size or the interval is operating a store, not breaking it.
+
+    A supervisor that met an edited config raised: each edit read as a failed supervisor to the
+    doctor and the patrol, and the store had none until the next scheduled wake, up to five
+    minutes later.  Seen on the pilot, four times in one morning, while its rebuild was sped up.
+    """
+    core, cfg, path = fixture(tmp_path)
+    queue(core, cfg, ref='TEST-first')
+    queue(core, cfg, ref='TEST-second')
+    elapsed = [0.0]
+    calls = []
+
+    def drain(_remaining):
+        calls.append(elapsed[0])
+        if len(calls) == 1:
+            raw = json.loads(path.read_text(encoding='utf-8'))
+            raw['worker_min_interval_seconds'] = 7
+            path.write_text(json.dumps(raw), encoding='utf-8')
+        with core.storage.write(cfg.context()) as tx:
+            cur = tx._check(write=True).execute("""UPDATE work_items SET state='done' WHERE work_id=(
+                SELECT work_id FROM work_items WHERE state='pending' ORDER BY work_id LIMIT 1)""")
+            return 0, {'completed': cur.rowcount}
+
+    assert supervise(path, drain, clock=lambda: elapsed[0], sleep=lambda t: elapsed.__setitem__(0, elapsed[0] + t),
+                     utc_now=lambda: NOW + timedelta(seconds=elapsed[0])) == 0
+    assert len(calls) >= 2 and calls[1] - calls[0] == 7, f"the next pass did not keep the edited interval: {calls}"
+    state = SupervisorControl(cfg).read()
+    assert state['state'] == 'idle' and state['reason'] != 'supervisor_failed', state
+
+
+def test_a_config_that_names_another_store_ends_the_supervisor_cleanly(tmp_path):
+    """The one edit a supervisor cannot take up: its control files belong to the store it started for."""
+    core, cfg, path = fixture(tmp_path)
+    queue(core, cfg, ref='TEST-first')
+    queue(core, cfg, ref='TEST-second')
+    elapsed = [0.0]
+    calls = []
+
+    def drain(_remaining):
+        calls.append(elapsed[0])
+        raw = json.loads(path.read_text(encoding='utf-8'))
+        raw['binding']['installation_id'] = 'TEST-another-installation'
+        path.write_text(json.dumps(raw), encoding='utf-8')
+        return 0, {'completed': 1}
+
+    assert supervise(path, drain, clock=lambda: elapsed[0], sleep=lambda t: elapsed.__setitem__(0, elapsed[0] + t),
+                     utc_now=lambda: NOW + timedelta(seconds=elapsed[0])) == 0
+    assert calls == [0], calls
+    state = SupervisorControl(cfg).read()
+    assert (state['state'], state['reason'], state['accepting']) == ('suspended', 'config_changed', False), state

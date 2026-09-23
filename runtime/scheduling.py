@@ -319,8 +319,20 @@ def supervise(config_path: Path, drain_once, *, delay_seconds=0.0, clock=time.mo
                 control.update(accepting=False, state='suspended', reason='supervisor_limit',
                                drains=count, next_wake_at=plan.due_at, finished_at=_stamp(utc_now()))
                 return last_code
-            if load_config(config_path) != config:
-                raise ValueError('supervisor_config_changed')
+            fresh = load_config(config_path)
+            if fresh != config:
+                if fresh.binding != config.binding:
+                    # Another store: this owner's control files are the old store's.  It closes
+                    # cleanly and the next wake starts the new store's own supervisor.
+                    control.update(accepting=False, state='suspended', reason='config_changed', drains=count,
+                                   next_wake_at=_stamp(utc_now()), finished_at=_stamp(utc_now()))
+                    return last_code
+                # A setting was edited (the pass size, the interval).  Every pass is its own process
+                # and reads the file anyway, so the supervisor takes the same values and carries on.
+                # Raising here reported each edit as a failed supervisor and left the store without
+                # one until the next scheduled wake, up to five minutes later.  The window and the
+                # drain count stay the ones it started with.
+                config = fresh
             revision = control.read().get('wake_revision', 0)
             if count:
                 plan = planner(config, now=utc_now(), unavailable_until=unavailable_until)

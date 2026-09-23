@@ -4,8 +4,10 @@ Both embedding dialects take an array -- Google's endpoint is literally
 ``batchEmbedContents`` -- and the adapter sent arrays of one, so a store of 167,000 sources
 was 167,000 requests to rebuild: days of wall clock for minutes of tokens.  Sharing the
 request changes what the provider is asked and nothing else: every item is still read,
-fenced, published and finished by itself, and a group that fails falls back to one request
-each rather than inventing a failure of its own.
+fenced, published and finished by itself.  A group whose request fails for what it carried
+falls back to one request each rather than inventing a failure of its own; a group the
+provider refuses for capacity goes back whole and unspent, because asking once per member is
+the same refusal times the group's size.
 """
 from __future__ import annotations
 
@@ -40,11 +42,14 @@ def _embed_rows(core):
 class Recording:
     """Answers both ways, and remembers how it was asked."""
 
-    def __init__(self, *, batch=True, short=False, fail=False) -> None:
+    #: How a failing group's request is answered: refused for what it carried, or for capacity.
+    FAILURES = {"payload": "400", "capacity": "429"}
+
+    def __init__(self, *, batch=True, short=False, fail=None, bad=()) -> None:
         self.groups: list[int] = []
         self.singles = 0
         self.published: list[str] = []
-        self._short, self._fail = short, fail
+        self._short, self._fail, self._bad = short, fail, set(bad)
         if not batch:
             # A port that offers no batch method at all, which is what every
             # port was until now.
@@ -53,12 +58,16 @@ class Recording:
     def prepare_sources(self, sources, *, remaining_seconds=1.0):
         self.groups.append(len(sources))
         if self._fail:
-            raise AuxiliaryModelError("http_status", detail="429")
+            raise AuxiliaryModelError("http_status", detail=self.FAILURES[self._fail])
+        if any(source.ref in self._bad for source in sources):
+            raise AuxiliaryModelError("sensitive_request")
         prepared = [{"ref": source.ref, "revision": source.revision} for source in sources]
         return prepared[:-1] if self._short else prepared
 
     def prepare_source(self, source, *, remaining_seconds=1.0):
         self.singles += 1
+        if source.ref in self._bad:
+            raise AuxiliaryModelError("sensitive_request")
         return {"ref": source.ref, "revision": source.revision}
 
     def publish_source(self, prepared, *, source, lease_token, lease_owner, lease_guard, remaining_seconds=1.0):
@@ -79,14 +88,57 @@ def test_a_pass_asks_for_its_ready_sources_in_one_request(app):
     assert set(_embed_rows(core).values()) == {"done"}
 
 
-def test_a_group_that_fails_leaves_each_item_to_ask_for_itself(app):
-    """A refused group is not a new way to fail: each item spends its own attempt."""
+def test_a_group_that_fails_for_its_payload_leaves_each_item_to_ask_for_itself(app):
+    """A request refused for what it carried is not a new way to fail: each item spends its own attempt.
+
+    The group is asked again in halves first; halves that keep failing come down to members that
+    ask for themselves.
+    """
     core, ctx = app
     made = _sources(core, ctx, 4, tag="fail")
-    port = Recording(fail=True)
+    port = Recording(fail="payload")
     core.drain_worker(ctx, max_items=16, remaining_seconds=20, owner_id="batch-fail", embed=port)
-    assert port.groups == [4] and port.singles == 4
+    assert port.groups == [4, 2, 2] and port.singles == 4
     assert sorted(port.published) == sorted(source.ref for source in made)
+
+
+def test_one_text_a_request_cannot_carry_does_not_cost_the_group_one_request_each(app):
+    """A message holding something shaped like a key is never sent, and failed the whole request.
+
+    Seen on the pilot's rebuild: one such message in a group of sixteen made all sixteen ask for
+    themselves, and a group of five hundred would have spent its lease the same way and met the
+    same text again the next pass.  Halving leaves it alone with one neighbour.
+    """
+    core, ctx = app
+    made = _sources(core, ctx, 8, tag="guard")
+    bad = made[5]
+    port = Recording(bad={bad.ref})
+    receipt = core.drain_worker(ctx, max_items=16, remaining_seconds=20, owner_id="batch-guard", embed=port)
+    assert port.groups == [8, 4, 4, 2, 2], port.groups
+    assert port.singles == 2, "only the refused text and the neighbour it was halved down with ask alone"
+    assert sorted(port.published) == sorted(source.ref for source in made if source is not bad)
+    rows = _embed_rows(core)
+    assert rows[bad.ref] == "failed" and sum(state == "done" for state in rows.values()) == len(made) - 1
+    assert receipt.failed == 1
+
+
+def test_a_group_the_provider_refuses_goes_back_whole_and_unspent(app):
+    """A capacity refusal says "ask less"; asking once per member is the same refusal times the group.
+
+    On the pilot one request of a group of five hundred was refused with 429, every member then
+    asked for itself, and the pass spent its two minutes on sixty-seven of them while the rest of
+    the group's leases ran out.
+    """
+    core, ctx = app
+    _sources(core, ctx, 4, tag="refused")
+    port = Recording(fail="capacity")
+    receipt = core.drain_worker(ctx, max_items=16, remaining_seconds=20, owner_id="batch-refused", embed=port)
+    assert port.groups == [4] and port.singles == 0, "the refusal was asked again one member at a time"
+    assert port.published == []
+    with sqlite3.connect(core.storage.path) as conn:
+        rows = conn.execute("SELECT state, attempt, last_error_code FROM work_items WHERE work_type='embed'").fetchall()
+    assert len(rows) == 4 and set(rows) == {("pending", 0, "http_429")}, rows
+    assert (receipt.deferred, receipt.completed) == (1, 0), receipt
 
 
 def test_a_short_answer_is_not_matched_to_the_wrong_sources(app):

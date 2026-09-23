@@ -58,6 +58,22 @@ def test_each_refusal_in_a_row_doubles_the_hold_up_to_half_an_hour(tmp_path):
     assert provider_hold_until(path, "m", now=now) == pytest.approx(now - 41 + PROVIDER_HOLD_LONGEST_SECONDS, abs=.01)
 
 
+def test_one_wave_of_concurrent_refusals_is_one_refusal(tmp_path):
+    """A group's requests go out together, so all of them refused is one refusal, not several in a row.
+
+    Counted one by one, a single wave of four refused requests held a pilot's embeddings for
+    eight minutes (sixteen with the refusal before it) where one refusal earns one.
+    """
+    one = tmp_path / "one"
+    one.mkdir()
+    path, now = _ledger(one, [("m", REFUSED, 10.3), ("m", REFUSED, 10.2), ("m", REFUSED, 10.1), ("m", REFUSED, 10.0)])
+    assert provider_hold_until(path, "m", now=now) == pytest.approx(now - 10 + PROVIDER_HOLD_FIRST_SECONDS, abs=.01)
+    two = tmp_path / "two"
+    two.mkdir()
+    path, now = _ledger(two, [("m", REFUSED, 90.2), ("m", REFUSED, 90.1), ("m", REFUSED, 10.1), ("m", REFUSED, 10.0)])
+    assert provider_hold_until(path, "m", now=now) == pytest.approx(now - 10 + 2 * PROVIDER_HOLD_FIRST_SECONDS, abs=.01)
+
+
 def test_an_answer_ends_the_hold(tmp_path):
     path, now = _ledger(tmp_path, [("m", REFUSED, 30), ("m", REFUSED, 20), ("m", "http_200", 10)])
     assert provider_hold_until(path, "m", now=now) is None

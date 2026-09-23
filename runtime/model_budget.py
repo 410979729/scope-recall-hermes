@@ -483,6 +483,11 @@ PROVIDER_HOLD_LONGEST_SECONDS = 1800.0
 _HOLD_LOOKBACK_ROWS = 32
 #: Rows that are no answer at all: still in flight, or lost on the way.
 _NO_ANSWER_PREFIXES = (_RESERVED, "network_error", "timeout")
+#: Refusals that started this close together were in flight at the same time --
+#: one group's concurrent requests -- and are one refusal, not several in a row.
+#: Counted one by one, a single wave of four refused requests held the model for
+#: eight minutes instead of one.
+_SAME_WAVE_NS = 1_000_000_000
 
 
 def _held_refusal(status: object) -> bool:
@@ -511,15 +516,19 @@ def provider_hold_until(ledger_path, model: object, *, now: float | None = None)
                               (model, _HOLD_LOOKBACK_ROWS)).fetchall()
     except (sqlite3.Error, OSError, ValueError):
         return None
-    streak, latest = 0, None
+    streak, latest, counted = 0, None, None
     for status, started_ns in rows:
         if str(status or "").startswith(_NO_ANSWER_PREFIXES):
             continue
         if not _held_refusal(status):
             break
-        streak += 1
         if latest is None and type(started_ns) is int:
             latest = started_ns
+        if type(started_ns) is int and counted is not None and abs(counted - started_ns) < _SAME_WAVE_NS:
+            continue  # asked together with the refusal just counted
+        streak += 1
+        if type(started_ns) is int:
+            counted = started_ns
     if not streak or latest is None:
         return None
     hold = min(PROVIDER_HOLD_LONGEST_SECONDS, PROVIDER_HOLD_FIRST_SECONDS * 2 ** min(streak - 1, 16))

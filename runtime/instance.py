@@ -677,7 +677,7 @@ class _BoundedEmbed(_Bounded):
     # not exist.  That is exactly how rc40's batching reached production doing
     # nothing.
     methods = ("prepare_source", "prepare_sources", "publish_source", "publish_sources",
-               "prepare_claim", "publish_claim")
+               "prepare_claim", "prepare_claims", "publish_claim", "publish_claims")
 
 
 class _BoundedPurge(_Bounded):
