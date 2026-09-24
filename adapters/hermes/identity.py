@@ -55,8 +55,10 @@ def _normalize_platform(value: object) -> str:
 def _normalize_user_id(platform: str, user_id: object, user_id_alt: object, local_platforms: frozenset[str] = frozenset()) -> str:
     primary = str(user_id or "").strip()
     alternate = str(user_id_alt or "").strip()
-    if primary and alternate and primary != alternate:
-        raise HermesIdentityError("conflicting user_id and user_id_alt")
+    # The host's user_id_alt is another stable id of the same sender in another namespace
+    # (Feishu's union_id beside its open_id, Signal's UUID), never a second person, so two
+    # different values are not a conflict (#116).  The principal stays user_id: the audience
+    # rows and owner principals every earlier release wrote are keyed on it.
     resolved = primary or alternate
     # A session the host names no user for is the owner's on the CLI, and on a
     # local surface the installer approved for this installation.  Anywhere

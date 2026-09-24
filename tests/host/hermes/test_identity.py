@@ -116,7 +116,9 @@ def test_missing_identity_fails_closed(initialize_kwargs, hermes_home):
         bind_hermes_identity("TEST-session-1", **kwargs)
 
 
-def test_conflicting_user_ids_fail_closed(initialize_kwargs, hermes_home):
+def test_an_alternate_user_id_is_the_same_sender_not_a_conflict(initialize_kwargs, hermes_home):
+    """#116: Feishu sends open_id as user_id and union_id as user_id_alt on every session.
+    Refusing the pair failed every Feishu session closed; the principal stays user_id."""
     install_hermes_scope_recall(
         hermes_home,
         agent_id=initialize_kwargs["agent_identity"],
@@ -125,9 +127,10 @@ def test_conflicting_user_ids_fail_closed(initialize_kwargs, hermes_home):
         agent_workspace=initialize_kwargs["agent_workspace"],
         test_mode=False,
     )
-    kwargs = dict(initialize_kwargs, user_id="one", user_id_alt="two")
-    with pytest.raises(HermesIdentityError, match="conflicting"):
-        bind_hermes_identity("TEST-session-1", **kwargs)
+    both = bind_hermes_identity("TEST-session-1", **dict(initialize_kwargs, user_id_alt="TEST-union-id"))
+    alone = bind_hermes_identity("TEST-session-2", **initialize_kwargs)
+    assert both.scope.user_id == alone.scope.user_id == initialize_kwargs["user_id"]
+    assert both.trusted_context().allowed_scope_ids == alone.trusted_context().allowed_scope_ids
 
 
 def test_hermes_home_rebind_fails_closed(adapter, initialize_kwargs, tmp_path):
