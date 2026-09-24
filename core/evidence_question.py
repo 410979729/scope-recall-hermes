@@ -170,12 +170,14 @@ def rooted_verdict(proposal: Mapping, quoted: Iterable[tuple[EvidenceText, str]]
     """Whether a verdict quoting ``quoted`` -- (source, quote) pairs -- may write a version.
 
     It must quote a complete root, and what the claim says must be in the root's words: the
-    value, inside a quote from a root, or every step of a procedure, in a root it quotes.  An
-    agent's echo of a tool output's value, or a person's fragment beside it, carries nothing.
-    Kinds proved without a value (intention, alias) need the root quote alone; ``qualify``
-    already asks a person of them.
+    value, inside a quote from a root and bound as ``qualify`` binds a literal (``80`` is not in
+    ``8080``), or every step of a procedure, in a root it quotes -- and a procedure names at
+    least one.  An agent's echo of a tool output's value, or a person's fragment beside it,
+    carries nothing.  Kinds proved without a value (intention, alias) need the root quote
+    alone; ``qualify`` already asks a person of them.
     """
     from .claims import _VALUE_FREE_KINDS
+    from .source_qualification import bound_literal
 
     roots = [(text, quote) for text, quote in quoted if text.complete and text.origin in DERIVATION_ROOT_ORIGINS]
     if not roots:
@@ -183,11 +185,11 @@ def rooted_verdict(proposal: Mapping, quoted: Iterable[tuple[EvidenceText, str]]
     kind = proposal.get("kind") if isinstance(proposal, Mapping) else None
     if kind == "procedure":
         method = (proposal.get("procedure") or {}).get("method") or ()
-        return all(any(step in text.content for text, _quote in roots) for step in method)
+        return bool(method) and all(any(step in text.content for text, _quote in roots) for step in method)
     value = str(proposal.get("value_text") or "")
     if kind in _VALUE_FREE_KINDS or not value.strip():
         return True
-    return any(value in quote for _text, quote in roots)
+    return any(bound_literal(quote, value) for _text, quote in roots)
 
 
 # --- questions worth asking at most so often ---------------------------------

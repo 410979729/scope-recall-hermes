@@ -297,3 +297,8 @@ def test_a_verdict_rests_on_what_a_person_or_a_document_said():
     assert not rooted_verdict(procedure, [(_said("先备份，再升级。", origin="tool_observation"), "先备份，再升级。"),
                                           (person, "另外该收尾了。")])
     assert rooted_verdict(procedure, [(_said("先备份，再升级。"), "先备份，再升级。")])
+    no_steps = dict(_payload(kind="procedure"), procedure={"method": []})
+    assert not rooted_verdict(no_steps, [(_said("先备份，再升级。"), "先备份，再升级。")])
+    port = dict(_payload(kind="fact"), value_text="80")
+    assert not rooted_verdict(port, [(_said("端口是 8080。"), "端口是 8080。")])
+    assert rooted_verdict(port, [(_said("端口是 80。"), "端口是 80。")])
