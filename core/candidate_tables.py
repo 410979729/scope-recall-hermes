@@ -17,7 +17,7 @@ import json
 from ..contracts import ContractError
 from .candidate_debounce import settle_reason
 from .candidate_lifecycle import CandidateSnapshot
-from .evidence_question import question_digest, restates
+from .evidence_question import DERIVATION_ROOT_ORIGINS, question_digest, restates
 
 #: Characters of evidence content one candidate evaluation may carry.
 #:
@@ -175,8 +175,6 @@ class CandidateTables:
         evaluation (``requalify.retire_rootless_proposals``).  A source that only shares a word with
         it -- on the pilot, 1,525 of 2,785 tool-derived proposals had one -- restates nothing.
         """
-        from .evidence_question import DERIVATION_ROOT_ORIGINS, restates
-
         origins = sorted(DERIVATION_ROOT_ORIGINS)
         contents = [row[0] for row in self._read().execute(
             f"""SELECT s.content FROM candidate_evidence e JOIN source_events s

@@ -39,8 +39,8 @@ import unicodedata
 FIRST_HAND_ORIGINS = frozenset({"human_direct"})
 
 #: The sources a claim may be derived from.  Consolidation shows the model only these
-#: (``worker_consolidation``), and the evaluator writes no claim version that cites none of them
-#: (``candidate_evaluations``, ``worker_candidates``).  Tool output is not one.  A tool output is
+#: (``worker_consolidation``), and the evaluator writes no claim version whose value none of them
+#: carries (``unanswerable_reason``, ``worker_candidates``).  Tool output is not one.  A tool output is
 #: what an agent read or ran while working, and derived claims from it were almost all file sizes,
 #: paths, ports and timestamps: one 2.5-hour task on the pilot left 787 of them, 93% of the store's
 #: 3,175 claims rested on tool output alone, and not one of the owner's 30 real questions was
@@ -91,7 +91,12 @@ def question_digest(evidence: object) -> str:
 # * value -- ``_value_preserved`` needs ``value_text`` inside the quotes for every
 #   kind but procedure, intention and alias, and a quote is an exact slice of a
 #   supplied source.  Compared here on letters and digits only, after NFKC and
-#   casefolding, so punctuation, spacing and dotted dates cannot hide a match.
+#   casefolding, so punctuation, spacing and dotted dates cannot hide a match;
+# * root -- the evaluator writes a version only when a quote from a derivation
+#   root carries the candidate (``worker_candidates._apply_verdict``): its value,
+#   or its subject for the kinds proved otherwise.  A tool output lends no
+#   authority of its own since 3.2.0, so evidence in which no person's or
+#   document's words restate the candidate cannot confirm it.
 #
 # Not covered: a verdict that changes the candidate's value.  The re-evaluation
 # keeps kind, subject and predicate but not the value; a new value reaches memory
@@ -125,6 +130,12 @@ def _letters_and_digits(value: object) -> str:
     return "".join(character for character in text if character.isalnum())
 
 
+def _rootless(payload: Mapping, items: tuple[EvidenceText, ...]) -> str | None:
+    """``NO_DERIVATION_ROOT_REASON`` unless a complete root source restates the candidate."""
+    roots = [item.content for item in items if item.complete and item.origin in DERIVATION_ROOT_ORIGINS]
+    return None if roots and restates(payload, roots) else NO_DERIVATION_ROOT_REASON
+
+
 def unanswerable_reason(payload: Mapping, evidence: Iterable[EvidenceText]) -> str | None:
     """Why no verdict on ``evidence`` could promote this candidate, or ``None``."""
     # The qualification rules own these sets; importing them keeps the two in step.
@@ -139,10 +150,10 @@ def unanswerable_reason(payload: Mapping, evidence: Iterable[EvidenceText]) -> s
         return "no_authoritative_evidence"
     value = _letters_and_digits(payload.get("value_text"))
     if kind in _VALUE_FREE_KINDS or not value:
-        return None
+        return _rootless(payload, items)
     if not any(value in _letters_and_digits(item.content) for item in items):
         return "value_not_in_evidence"
-    return None
+    return _rootless(payload, items)
 
 
 # --- questions worth asking at most so often ---------------------------------
@@ -210,6 +221,7 @@ def restates(payload: Mapping, contents: Iterable[str]) -> bool:
     return any(needle in _letters_and_digits(content) for content in contents)
 
 
-__all__ = ["AUTOMATIC_VERDICTS", "FIRST_HAND_ORIGINS", "IMPERSONAL_ORIGINS", "PERSON_ABSENT_REASON",
+__all__ = ["AUTOMATIC_VERDICTS", "DERIVATION_ROOT_ORIGINS", "FIRST_HAND_ORIGINS", "IMPERSONAL_ORIGINS",
+           "NO_DERIVATION_ROOT_REASON", "PERSON_ABSENT_REASON",
            "REPEAT_WITHOUT_RESTATEMENT_REASON", "EvidenceText", "evidence_text", "is_first_hand",
            "needs_absent_person", "question_digest", "restatement_needle", "restates", "unanswerable_reason"]
