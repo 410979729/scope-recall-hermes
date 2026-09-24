@@ -408,6 +408,7 @@ Things that look wrong in a healthy report and are not:
 | `installation_config_missing` | The installer's own record is not there. | The install did not complete. Re-run `plan-install` and `apply-install`. |
 | `binding_invalid:<Error>` | The installation record exists but will not load. | Do not hand-edit it; re-install. |
 | `database_missing` | No `memory.sqlite3` in the Core data directory. | Nothing has initialised the instance. `apply-install` does that. |
+| `runtime_config_missing` | `runtime-config.json` is gone from the Core data directory, but the store holds embeddings or consolidations that only a runtime config's routes could have run. Without it every host runs in basic mode and no worker runs. | Restore the file from its backup, or write it again (see [configuration.md](configuration.md)). A fresh install without one is not reported. |
 | `storage_read:<Error>` | The database could not be read. `status` stays `degraded`. | Check permissions and whether another process holds it. To inspect the data without contending with a live writer, take a verified snapshot first with `scope-recall backup --database <db> --output <new-file>`, which refuses to overwrite anything and writes a manifest beside it. |
 | `python_executable_missing` | The `--python` path is not a file. | Point it at the host's real interpreter. |
 | `python_package_missing` | That interpreter could not report the package. | The wheel is not installed in that environment. |

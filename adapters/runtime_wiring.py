@@ -23,6 +23,7 @@ from scope_recall.core import CoreConfig, MemoryCore
 from scope_recall.core.recall_budget import canonical_render_json
 from scope_recall.runtime.instance import RuntimeInstance, RuntimeInstanceConfig, build_runtime_instance
 from scope_recall.runtime.worker_entry import load_config
+from scope_recall.runtime.worker_launch import EPHEMERAL_CONFIG_INFIX
 from .tool_common import local_times
 
 GAP_UNCONFIGURED = "capability_gap:trusted_runtime_unconfigured"
@@ -314,7 +315,7 @@ def write_ephemeral_worker_config(
         mode="w",
         encoding="utf-8",
         suffix=".json",
-        prefix=f"{base_path.stem}-worker-",
+        prefix=f"{base_path.stem}{EPHEMERAL_CONFIG_INFIX}",
         dir=str(base_path.parent),
         delete=False,
     )

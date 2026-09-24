@@ -279,3 +279,24 @@ def test_a_secret_refusal_is_a_terminal_failure_not_a_degraded_instance(tmp_path
     result = doctor.run_doctor(host='hermes', instance_root=ctx.binding.data_directory)
     assert (result.failed_work, result.terminal_failed_work) == (1, 1)
     assert 'work_failed' not in result.capability_gaps
+
+
+def test_doctor_names_a_runtime_config_that_was_there_and_is_gone(tmp_path, monkeypatch):
+    """#118: with runtime-config.json deleted the hosts ran in basic mode -- no worker, no
+    model routes -- while the doctor reported ok with no gap.  A fresh install has no config
+    either, so the evidence is work only a config's routes could have run."""
+    app, ctx = _doctor_app(tmp_path, monkeypatch)
+    result = doctor.run_doctor(host='hermes', instance_root=ctx.binding.data_directory)
+    assert 'runtime_config_missing' not in result.capability_gaps, 'a fresh install is not a finding'
+    capture(app, ctx, 'TEST-embedded', 'TEST a source the worker once embedded')
+    with app.storage.write(ctx) as tx:
+        tx._check(write=True).execute("UPDATE work_items SET state='done' WHERE work_type='embed'")
+    before = app.storage.path.read_bytes()
+    result = doctor.run_doctor(host='hermes', instance_root=ctx.binding.data_directory)
+    assert 'runtime_config_missing' in result.capability_gaps and result.status == 'degraded'
+    [check] = [item for item in result.checks if item['name'] == 'runtime_config']
+    assert check['result'] == 'missing' and 'basic mode' in check['detail']
+    assert app.storage.path.read_bytes() == before
+    _write_runtime_config(ctx, vector_threshold=0.65)
+    result = doctor.run_doctor(host='hermes', instance_root=ctx.binding.data_directory)
+    assert 'runtime_config_missing' not in result.capability_gaps

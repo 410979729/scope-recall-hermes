@@ -819,6 +819,33 @@ def _check_footprint(report: DoctorReport, data_directory: Path, config) -> None
     _record(report, "storage_footprint", "ok", detail)
 
 
+def _finished_derived_work(db_path: Path) -> int:
+    """Embeddings and consolidations the worker finished, read through a separate read-only connection."""
+    with suppress(sqlite3.Error, OSError, ValueError):
+        with closing(sqlite3.connect(f"file:{db_path.as_posix()}?mode=ro", uri=True, timeout=5)) as db:
+            return int(db.execute("SELECT count(*) FROM work_items WHERE state='done'"
+                                  " AND work_type IN ('embed','consolidate')").fetchone()[0] or 0)
+    return 0
+
+
+def _check_runtime_config_present(report: DoctorReport, data_directory: Path) -> None:
+    """A runtime config that was there and is gone, named instead of a silent basic mode (#118).
+
+    Without ``runtime-config.json`` every host runs in basic mode -- no worker, no model
+    routes -- which is also how an install starts, so absence alone is not a finding.  A
+    store the worker has embedded or consolidated for had one: that work only runs from the
+    routes a runtime config names.
+    """
+    if os.path.lexists(data_directory / "runtime-config.json"):
+        return
+    finished = _finished_derived_work(data_directory / "memory.sqlite3")
+    if finished:
+        report.capability_gaps.append("runtime_config_missing")
+        _record(report, "runtime_config", "missing",
+                f"{finished} finished embeddings and consolidations came from routes a runtime-config.json "
+                "named; without it hosts run in basic mode and no worker runs")
+
+
 def _check_vector_threshold(report: DoctorReport, binding, data_directory: Path) -> None:
     """Vector recall that is wired but admits nothing, named instead of silent.
 
@@ -974,6 +1001,7 @@ def run_doctor(
     binding, data_directory = bound
     _check_running_code(report, data_directory)
     package_health.apply_package_health(report, instance, probe)
+    _check_runtime_config_present(report, data_directory)
     _check_vector_threshold(report, binding, data_directory)
 
     readable = _check_storage(report, binding, data_directory)

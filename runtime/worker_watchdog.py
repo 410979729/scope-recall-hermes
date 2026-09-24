@@ -17,7 +17,8 @@ import time
 
 from .validation import utc_now
 from .worker_entry import load_config, persist_worker_status
-from .worker_launch import detached_creationflags, reap_process, taskkill_tree, validate_wake_arguments
+from .worker_launch import (detached_creationflags, is_ephemeral_worker_config, reap_process, taskkill_tree,
+                            validate_wake_arguments)
 
 #: ``ExceptionClass: message`` -- the last line of a traceback, and nothing else.
 _TRACEBACK_TAIL = re.compile(r"^[A-Za-z_][\w.]*(?:Error|Exception|Exit|Interrupt)\b.*")
@@ -143,6 +144,15 @@ def _unlink_quietly(path: Path) -> None:
         path.unlink(missing_ok=True)
     except OSError:
         pass
+
+
+def _remove_ephemeral_config(path: Path) -> None:
+    """Delete the per-pass config copy this run was given; refuse any other file, and say so."""
+    if not is_ephemeral_worker_config(path):
+        print(json.dumps({"cleanup_config": "refused", "path": str(path),
+                          "reason": "not_an_ephemeral_worker_config"}), file=sys.stderr)
+        return
+    _unlink_quietly(path)
 
 
 def _wait_for_prior_worker(pid: int, deadline: float) -> bool:
@@ -393,7 +403,7 @@ def _run_once(config_path: Path, python_executable: Path, *, cleanup_config: boo
         elif job is not None:
             job.close()
         if cleanup_config:
-            _unlink_quietly(config_path)
+            _remove_ephemeral_config(config_path)
 
 
 def run(config_path: Path, python_executable: Path, *, cleanup_config: bool,
@@ -438,7 +448,7 @@ def run(config_path: Path, python_executable: Path, *, cleanup_config: bool,
         return 1
     finally:
         if cleanup_config:
-            _unlink_quietly(config_path)
+            _remove_ephemeral_config(config_path)
 
 
 def main(argv: list[str] | None = None) -> int:

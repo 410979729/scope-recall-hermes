@@ -10,6 +10,20 @@ import sys
 
 from .validation import absolute_path, strict_bool, strict_float, strict_int
 
+#: A per-pass copy of a runtime config is written beside it as ``<stem>-worker-<8 random>.json``
+#: (``adapters.runtime_wiring.write_ephemeral_worker_config``).  ``--cleanup-config`` deletes a
+#: file of that name and nothing else: given an operator's real ``runtime-config.json`` it
+#: deleted that, silently, and every host dropped to basic mode (#118).
+EPHEMERAL_CONFIG_INFIX = "-worker-"
+
+
+def is_ephemeral_worker_config(path: Path) -> bool:
+    """Whether ``path`` is named as a per-pass config copy, the only kind ``--cleanup-config`` removes."""
+    stem, infix, tail = path.name.rpartition(EPHEMERAL_CONFIG_INFIX)
+    random, _, suffix = tail.partition(".")
+    return bool(stem) and bool(infix) and suffix == "json" and len(random) == 8 and all(
+        character in "abcdefghijklmnopqrstuvwxyz0123456789_" for character in random)
+
 
 def validate_wake_arguments(after_pid: int | None, delay_seconds: float) -> None:
     """The follow-up pid and delay a host may attach to a wake; shared with the watchdog."""

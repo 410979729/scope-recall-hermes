@@ -334,6 +334,26 @@ def test_worker_config_cleanup_is_explicit_and_bounded(tmp_path: Path):
     assert not ephemeral.exists()
 
 
+def test_cleanup_config_never_deletes_a_config_it_did_not_write(tmp_path: Path):
+    """#118: --cleanup-config deleted whatever --config named.  Given an operator's real
+    runtime-config.json it deleted that without a trace, and every host dropped to basic mode."""
+    from scope_recall.runtime.worker_launch import is_ephemeral_worker_config
+
+    real, _installation = _runtime_payload(tmp_path / "real", drain_seconds=30.0)
+    worker = launch_worker(real, python_executable=sys.executable, cleanup_config=True)
+    assert worker.wait(timeout=30.0) == 0
+    _out, err = worker.communicate(timeout=5.0)
+    assert real.exists(), "a config the run did not write outlives the run"
+    assert "not_an_ephemeral_worker_config" in err, "the refusal is said, not silent"
+    ephemeral = write_ephemeral_worker_config(
+        real, session_id="TEST-naming",
+        allowed_scope_ids=frozenset(json.loads(real.read_text(encoding="utf-8"))["allowed_scope_ids"]))
+    assert is_ephemeral_worker_config(ephemeral), "the writer and the watchdog agree on the name"
+    for name in ("runtime-config.json", "runtime.json", "my-worker-config.json", "x-worker-abcdefgh.yaml"):
+        assert not is_ephemeral_worker_config(tmp_path / name), name
+    ephemeral.unlink()
+
+
 # --- #87: the interpreter is executed as given ---------------------------------
 
 def _linked_interpreter(tmp_path: Path) -> Path:
