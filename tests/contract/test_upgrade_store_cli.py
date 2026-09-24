@@ -205,3 +205,20 @@ def test_a_header_in_this_products_own_numbering_is_never_restamped(tmp_path, ca
     assert code == 2 and "header_restamped" not in out, out
     with sqlite3.connect(core.storage.path) as conn:
         assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION + 1
+
+
+def test_a_table_list_that_cannot_be_read_never_costs_the_restamp_its_result(tmp_path, capsys, monkeypatch):
+    """The restamp has committed and the snapshot exists: the result naming it is still printed."""
+    project = tmp_path / "project"
+    project.mkdir()
+    _config, core = install_codex_scope_recall(tmp_path / "install", project_root=project)
+    _stamp_header(core.storage.path, 10815)
+
+    def locked(database):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(cli, "_tables_not_in_schema", locked)
+    code, out = _run(capsys, ["upgrade-store", "--host", "codex", "--instance-root", str(tmp_path / "install"),
+                              "--backup-dir", str(tmp_path / "backups")])
+    assert code == 0 and out["status"] == "restamped" and out["backup"]
+    assert out["tables_not_in_schema_error"] == "OperationalError: database is locked" and out["warning"]

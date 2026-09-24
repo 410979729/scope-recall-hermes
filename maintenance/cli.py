@@ -442,7 +442,8 @@ def _report_other_tables(result: dict[str, Any], database: Path) -> None:
     try:
         others = _tables_not_in_schema(database)
     except sqlite3.Error as exc:
-        result["tables_not_in_schema_error"] = type(exc).__name__
+        result["tables_not_in_schema_error"] = f"{type(exc).__name__}: {exc}"
+        result["warning"] = "this file's other tables could not be listed; look at the snapshot before relying on it"
         return
     if others:
         result["tables_not_in_schema"] = others
