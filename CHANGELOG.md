@@ -15,6 +15,7 @@ Four reviews of everything since 3.1.2, each by a reader who had written none of
 - A Hermes CLI audience row is never relaxed on the session key (#124). The CLI sends none; Hermes reports a relayed `local` gateway session to plugins as platform `cli`, with its key, and the relaxed match gave such a session the CLI's owner scope.
 - A name said under a condition or as an example is not re-framed as the thing's name (`name_frame`): "如果我养猫的话，我的猫叫年糕" and "比如我家猫咪叫年糕" stay what the model proposed, as they were before 3.2.0rc5.
 - `import-entry` records an imported deletion at the epoch the import moves the store to, not at the old store's own. A deletion's epoch is compared with a read's (`retraction_after`), and an old store's higher numbers read as a deletion after every read in their scopes -- recall emptied, derived work failed with `memory_epoch_changed` -- until the shared store's own epoch passed them. The pilot's imports are past it: their highest was 22, and the store is at 4,178. `docs/shared-store.md` now also says that a deletion an agent's own store made before its import covers that agent's copies only.
+- The migration tier opens a store the 3.1.2 release's own code wrote: schema 1109 to 1110, every source kept and marked `local`. The older fixture, a 3.1.0 store, stays for the 1108 step.
 
 ### Scope Recall 3.2.0rc7 - 2026-09-24
 

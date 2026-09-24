@@ -12,7 +12,7 @@ from maintenance.backup import backup_sqlite
 from maintenance.migrate_v2 import _stable, migrate_legacy
 from maintenance.rollback import rollback_to_verified_snapshot
 from legacy_fixture import build_official_578b_fixture
-from release_fixture import PREVIOUS_SCHEMA, build_previous_release_store
+from release_fixture import LATEST_RELEASE, LATEST_SCHEMA, PREVIOUS_SCHEMA, build_previous_release_store
 from scope_recall.contracts import ContractError, InstanceBinding, TrustedContext
 from scope_recall.core.restore import InstallationMaintenance, begin_restore, export_deletion_ledger, ledger_digest, replay_deletion_ledger
 from scope_recall.core import CoreConfig, MemoryCore
@@ -332,3 +332,19 @@ def test_a_store_written_by_the_previous_release_upgrades_on_first_open(tmp_path
     episode, = core.episodes(replace(context, task_anchor="TEST-previous-release"))
     assert len(episode.evidence_refs) == 12
     assert core.initialize().schema_version == 1110
+
+
+def test_a_store_the_3_1_2_release_wrote_opens_at_1110_with_every_source_its_own(tmp_path):
+    """The step 3.2 users meet: 3.1.2's own code writes the store, this tree opens it once."""
+    path = build_previous_release_store(tmp_path / "latest", repo_root=Path.cwd(), sources=12, release=LATEST_RELEASE)
+    with sqlite3.connect(path) as conn:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == LATEST_SCHEMA
+    binding = InstanceBinding("TEST-agent", "TEST-installation", tmp_path / "latest", frozenset({"TEST-scope"}), True)
+    context = TrustedContext(binding, "TEST-session", frozenset({"TEST-scope"}), "human_direct")
+    status = MemoryCore(CoreConfig(binding)).status(context)
+    assert status.schema_version == SCHEMA_VERSION == 1110 and status.sources == 12
+    with sqlite3.connect(path) as conn:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 1110
+        assert conn.execute("SELECT installation_kind FROM instance_meta").fetchone()[0] == "local"
+        assert conn.execute("SELECT entry_id, count(*) FROM source_events GROUP BY entry_id").fetchall() == [("local", 12)]
+        assert conn.execute("SELECT count(*) FROM entries").fetchone()[0] == 0

@@ -15,10 +15,14 @@ from pathlib import Path
 
 PREVIOUS_RELEASE = "v3.1.0"
 PREVIOUS_SCHEMA = 1108
+#: The release users upgrade to 3.2 from: its store is the one the 1110 step meets most.
+LATEST_RELEASE = "v3.1.2"
+LATEST_SCHEMA = 1109
 
 
-def build_previous_release_store(directory: str | Path, *, repo_root: str | Path, sources: int = 12) -> Path:
-    """Return the ``memory.sqlite3`` the previous release wrote into ``directory``."""
+def build_previous_release_store(directory: str | Path, *, repo_root: str | Path, sources: int = 12,
+                                 release: str = PREVIOUS_RELEASE) -> Path:
+    """Return the ``memory.sqlite3`` that ``release`` wrote into ``directory``."""
     target = Path(directory).resolve()
     root = Path(repo_root).resolve()
     script = r'''
@@ -73,11 +77,11 @@ with tempfile.TemporaryDirectory(prefix="scope-recall-release-") as td:
 '''
     target.parent.mkdir(parents=True, exist_ok=True)
     try:
-        subprocess.run([sys.executable, "-c", script, str(target), str(root), PREVIOUS_RELEASE, str(sources)],
+        subprocess.run([sys.executable, "-c", script, str(target), str(root), release, str(sources)],
                        check=True, capture_output=True, text=True)
     except subprocess.CalledProcessError as exc:
         raise RuntimeError(exc.stderr or exc.stdout or "previous release fixture subprocess failed") from exc
     return target / "memory.sqlite3"
 
 
-__all__ = ["PREVIOUS_RELEASE", "PREVIOUS_SCHEMA", "build_previous_release_store"]
+__all__ = ["LATEST_RELEASE", "LATEST_SCHEMA", "PREVIOUS_RELEASE", "PREVIOUS_SCHEMA", "build_previous_release_store"]
