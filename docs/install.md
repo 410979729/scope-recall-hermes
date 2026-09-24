@@ -429,7 +429,7 @@ Things that look wrong in a healthy report and are not:
 | `dependency_drift` | A declared requirement is missing or outside its pin. Extras you did not install are *not* drift. | Reinstall with the pins, or install the extra properly. |
 | `version_mismatch` | Receipt, distribution, imported and running versions disagree. | Stop the old processes, then reinstall. |
 | `stale_process` | A live process is running code older than what is on disk. | Restart the host, or let the running worker finish. |
-| `schema_upgrade_pending` | The store is at an older schema this code knows how to bring forward. | Nothing to run: the next capture, recall or worker pass applies it in one transaction, rolled back whole if it fails. Take a `backup` first if you want one. |
+| `schema_upgrade_pending` | The store is at an older schema this code knows how to bring forward. | Nothing to run: the next capture, recall or worker pass applies it in one transaction, rolled back whole if it fails; on a store above 100 MB, a caller with a minute of budget does (section 9). A step is one way: take a `backup` first if you may want to go back. |
 | `schema_version_mismatch` | The database schema is one this code cannot bring forward. | Do not run against it. Back it up and use the migration path. |
 | `schema_header_stale` | The store's tables and its own record say one schema, the SQLite header another: another process stamped the header, typically a 2.0 plugin that opened the store after its migration. Every open is refused. | Stop that process, then run `upgrade-store` with `--backup-dir`: it snapshots the store and puts the recorded schema back into the header. |
 | `vector_threshold_unconfigured` | A vector store and an approved embedding route are configured, but no threshold is set, so every vector hit is refused and recall stays lexical. `attention`. | Set a `vector_threshold` calibrated for that embedding model — see [configuration.md](configuration.md). |
@@ -591,11 +591,20 @@ ordinary open of the store afterwards (a capture, a recall, a worker pass)
 applies the schema upgrade in one transaction and rolls it back whole if it
 fails. `doctor` reports `schema_upgrade_pending` until then and never applies
 the upgrade itself. Take a `backup` first if you want one. On a store above
-100 MB a step that rebuilds an index (3.1.1's lexical index: about a minute
-and a half for five million index rows) is left to a caller with the time
-for it, the worker's next pass or `apply-install`; a hook's open reports
-`SCHEMA_UNSUPPORTED / upgrade_pending` until then. To do it now, with a
-snapshot first and the worker stopped:
+100 MB any pending step is left to a caller with a minute of budget or none:
+the worker's next pass, `apply-install`, `upgrade-store`, or a Hermes session
+starting (its status read carries no deadline); a hook's bounded open reports
+`SCHEMA_UNSUPPORTED / upgrade_pending` until then. For scale, 3.1.1's lexical
+index took about a minute and a half for five million index rows, and 3.2.0's
+step reads every source row, about 3 s a gigabyte.
+
+A step is one way. Once a newer release has opened the store, an older one
+refuses it (`SCHEMA_UNSUPPORTED`) without touching it: a 3.1 process cannot
+open a store 3.2 has opened. Stop every host and worker of a store before
+upgrading, upgrade them together, and keep the pre-upgrade `backup`; going
+back means restoring it, and writes made since are lost.
+
+To bring a store forward now, with a snapshot first and the worker stopped:
 
 ```bash
 python -I -X utf8 -m scope_recall.maintenance.cli upgrade-store --host hermes --instance-root <instance root> --backup-dir <a new directory>

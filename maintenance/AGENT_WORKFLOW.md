@@ -86,7 +86,10 @@ the current wheel; do not route wheel-based installations through that engine.
    `~*` remnants. Inspect `package-upgrade.json`; use the previous verified wheel
    to restore the package under the same stopped boundary, then verify its
    imports/RECORD/version before restoring matching wrapper/receipt. Automatic
-   database rollback is NOT permitted; reconcile any new writes first.
+   database rollback is NOT permitted; reconcile any new writes first. Once the
+   new package has opened the store, the previous one may refuse it: 3.2's first
+   open moves a 3.1 store to schema 1110, which 3.1 cannot open. Going back then
+   needs the external pre-upgrade backup, and writes made since are lost.
 5. `package_verified` means only that package replacement and isolated import
    succeeded. Run existing plan-install/apply-install for the same binding and
    doctor, verify receipt/wrapper/package, then restore the original wake policy,

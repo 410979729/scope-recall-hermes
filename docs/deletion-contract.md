@@ -31,12 +31,15 @@ memory, so a `forget` through any entry applies to every entry.
 Future Episode, reference and artifact repositories must extend the dependency
 closure before accepting their object types; currently unknown types fail closed.
 
-All content exits rehydrate SQLite objects. `release_objects` checks the epoch,
-current source/Claim revision, read blocks and automatic suppression at its final
-read transaction. It never returns a cached or vector-stored body. Source search
+All content exits rehydrate SQLite objects. `release_objects` refuses what was read
+before a deletion or suppression in the reader's scopes was recorded
+(`retraction_after`), and checks the current source/Claim revision, read blocks and
+automatic suppression at its final read transaction. It never returns a cached or
+vector-stored body. Source search
 and counts enforce scope/project/branch before ranking or limiting. Project-global
 objects remain readable in their authorized scope; other projects and branches do
-not. Global epoch changes are an invalidation signal, not a count of visible items.
+not. An epoch move alone refuses nothing, since every capture moves it; it is not a
+count of visible items either.
 Text already delivered to the host lies outside a later local transaction.
 
 Physical SQLite cleanup runs separately after online blocking, under the existing

@@ -600,7 +600,9 @@ def _check_storage(report: DoctorReport, binding, data_directory: Path) -> bool:
         report.schema_version = found
         report.capability_gaps.append("schema_upgrade_pending")
         _record(report, "schema", "upgrade_pending",
-                f"{found} -> {SCHEMA_VERSION}; the next capture, recall or worker pass applies it in one transaction")
+                f"{found} -> {SCHEMA_VERSION}; the next capture, recall or worker pass applies it in one transaction "
+                "(on a store above 100 MB, a caller with a minute of budget: the worker pass, apply-install, "
+                "upgrade-store or a Hermes session start)")
         return False
     recorded = _recorded_schema_under_stale_header(data_directory / "memory.sqlite3")
     if recorded is not None:
