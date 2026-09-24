@@ -432,14 +432,24 @@ def _upgrade_store(args: argparse.Namespace) -> int:
 
 
 def _report_other_tables(result: dict[str, Any], database: Path) -> None:
-    """Name what a restamp leaves in the file that is not this store's, so it is never a silent success."""
-    others = _tables_not_in_schema(database)
+    """Name what a restamp leaves in the file that is not this store's, so it is never a silent success.
+
+    The restamp has already committed and the snapshot exists: a failure to read the tables is
+    reported beside them, never in place of the result that names the snapshot.
+    """
+    import sqlite3
+
+    try:
+        others = _tables_not_in_schema(database)
+    except sqlite3.Error as exc:
+        result["tables_not_in_schema_error"] = type(exc).__name__
+        return
     if others:
         result["tables_not_in_schema"] = others
         if any(others.values()):
-            result["warning"] = ("rows in these tables were written by another program, likely the 2.0 plugin "
-                                 "that stamped the header; they are not part of this store and are kept in the "
-                                 "file and in the snapshot")
+            result["warning"] = ("these tables are another program's, likely the 2.0 plugin that stamped the "
+                                 "header, and anything it captured is in them, not in this store; they are kept "
+                                 "in the file and in the snapshot")
 
 
 def _add_uninstall_arguments(parser: argparse.ArgumentParser) -> None:

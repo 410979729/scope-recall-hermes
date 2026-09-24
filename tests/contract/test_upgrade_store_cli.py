@@ -190,7 +190,7 @@ def test_rows_the_2_0_process_wrote_into_its_own_tables_are_named_not_passed_ove
     code, out = _run(capsys, ["upgrade-store", "--host", "codex", "--instance-root", str(tmp_path / "install"),
                               "--backup-dir", str(tmp_path / "backups")])
     assert code == 0 and out["status"] == "restamped", out
-    assert out["tables_not_in_schema"] == {"memories": 2} and "another program" in out["warning"]
+    assert out["tables_not_in_schema"] == {"memories": 2} and "another program's" in out["warning"]
 
 
 def test_a_header_in_this_products_own_numbering_is_never_restamped(tmp_path, capsys):

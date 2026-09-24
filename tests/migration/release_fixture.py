@@ -1,9 +1,10 @@
-"""Test-only builder for a store written by the previous release's own code.
+"""Test-only builder for a store written by an earlier release's own code.
 
-The child process imports the frozen ``v3.1.0`` tree from ``git archive``
-before anything of the current package, exactly as ``legacy_fixture`` does for
-the 2.0 baseline, so the fixture carries what that release really wrote:
-schema 1108, one copied lineage row per episode revision, its work queue.
+The child process imports a frozen release tree from ``git archive`` before
+anything of the current package, exactly as ``legacy_fixture`` does for the
+2.0 baseline, so the fixture carries what that release really wrote: ``v3.1.0``
+wrote schema 1108, one copied lineage row per episode revision, its work queue;
+``v3.1.2``, the release 3.2 users come from, wrote schema 1109.
 Every fixture the older upgrade tests used was a fresh store downgraded by
 hand, which is how a wrong version stamp in the 1107 step went unnoticed.
 """
