@@ -331,6 +331,10 @@ def test_what_an_old_store_forgot_stays_forgotten(root, entries):
     tianshu, _tianquan = entries
     scope = _scope(tianshu)
     core, context, (secret,), old = _old_store(tianshu, scope, "TEST 旧库里的保险柜密码是 5520。")
+    for index in range(1, 9):  # the old store ran for a while: its epoch is well past the new store's
+        core.record_event(context, source_event(source_event_key=f"legacy:memories:{index}",
+                                                content=f"TEST 旧库里的第 {index} 句话。"),
+                          scope_id=scope, remaining_seconds=10)
     core.record_event(context, source_event(source_event_key="legacy:memories:9", content=f"删除 {secret.ref}"),
                       scope_id=scope, remaining_seconds=10)
     core.forget(context, {"protocol_version": "1.1", "target_refs": [secret.ref], "mode": "delete",
@@ -338,6 +342,10 @@ def test_what_an_old_store_forgot_stays_forgotten(root, entries):
 
     result = import_entry(root=root, entry_id="tianshu", source=old)
     assert result["counts"]["group_blocks_without_sources"] == 0
+    # Recorded at the import, not at the old store's own epoch: one above this store's read as a
+    # deletion after every read in its scopes, emptying recall and failing derived work there.
+    [(epoch,)] = _query(root, "SELECT memory_epoch FROM instance_meta")
+    assert _query(root, "SELECT DISTINCT memory_epoch FROM deletion_operations") == [(epoch,)]
     # A deletion takes the message that asked for it along; both groups stay blocked under the store's id.
     store = SimpleNamespace(installation_id=read_shared_payload(root)["installation_id"])
     assert set(_query(root, "SELECT group_sha256 FROM source_group_blocks")) == {

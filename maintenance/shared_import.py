@@ -263,8 +263,14 @@ def _import_rows(conn, src, names: _Names, *, store_installation: str, store_sco
         **{k: v for k, v in r.items() if k != "evaluation_id"},
         "evidence_refs_json": names.text(r["evidence_refs_json"]), "work_id": None}, order="ORDER BY evaluation_id")
 
+    # A deletion is recorded at the epoch it moved its store to, and ``retraction_after`` compares that
+    # with the epoch a read was made at.  The old store's numbers mean nothing here: one above this
+    # store's read as a deletion after every read in its scopes -- recall emptied, derived work failed
+    # with memory_epoch_changed -- until this store's own epoch passed it.  Here they happen at the
+    # import, so they carry the epoch the import moves the store to.
+    imported_epoch = conn.execute("SELECT memory_epoch FROM instance_meta WHERE singleton=1").fetchone()[0] + 1
     counts["deletion_operations"] = _copy(conn, src, "deletion_operations", lambda r: {
-        **r, "requested_refs_json": names.text(r["requested_refs_json"]),
+        **r, "memory_epoch": imported_epoch, "requested_refs_json": names.text(r["requested_refs_json"]),
         "expected_revisions_json": names.text(r["expected_revisions_json"]), "layers_json": names.text(r["layers_json"])})
     counts["deletion_members"] = _copy(conn, src, "deletion_members", lambda r: None
                                        if r["object_kind"] == "claim" and r["object_ref"] in left_out
@@ -327,7 +333,7 @@ def _import_rows(conn, src, names: _Names, *, store_installation: str, store_sco
                         VALUES ('embed',?,?,?,?,?,?) ON CONFLICT(work_type,subject_ref,subject_revision) DO NOTHING""", heads)
     counts["claim_embeddings_queued"] = len(heads)
     counts["embeddings_retention_would_expire"] = _drop_expirable_embeddings(conn, names, now=now)
-    conn.execute("UPDATE instance_meta SET memory_epoch=memory_epoch+1 WHERE singleton=1")
+    conn.execute("UPDATE instance_meta SET memory_epoch=max(memory_epoch+1,?) WHERE singleton=1", (imported_epoch,))
     return {"counts": counts, "claims_left_out": skipped}
 
 

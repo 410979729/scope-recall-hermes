@@ -6,7 +6,8 @@ entry. What the owner tells one agent, another can recall, and the recall says w
 came in through. A deletion through any entry is gone for all of them. Moving the memory to
 another machine is copying one directory.
 
-A home without a pointer is unchanged: it keeps its own store and binds exactly as before.
+A home without a pointer keeps its own store and binds as its own installation says, as before
+(3.2.0 changes how some gateway sessions bind for every home; see the changelog).
 
 ## What is where
 
@@ -143,3 +144,7 @@ was loaded from, so upgrading one entry never makes another entry's process look
 
 Only Hermes homes attach. `recall` has no per-entry filter, and a deletion receipt does not list
 entries.
+
+A deletion an agent's own store made before `import-entry` covers that agent's copies only. The
+same thing told to another agent, in the same scope, comes in with that agent's store; delete it
+again through any entry once both are imported.
