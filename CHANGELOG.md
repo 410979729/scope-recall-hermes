@@ -7,6 +7,8 @@ All notable changes to `scope-recall` will be documented in this file.
 ### Scope Recall 3.3.0rc2 - 2026-09-24
 
 - The version moves past the `v3.3.0rc1` tag.
+- A client entry's session start reads nothing of the store. It counted the whole store as a local installation does, 7-8 s on the pilot's shared store, past the 2 s Codex gives a hook, at every Codex session start.
+- Claude Code's prompt hook runs the entry's `hook_processing_seconds` (at most 6 s; Claude Code waits 15 s) from the start instead of the 2 s Codex's hooks get. Recall on the pilot's shared store took 2.7-5.7 s, so with 2 s most automatic recalls came back empty. The prompt waits that long before the model answers; lower `hook_processing_seconds` in the entry's runtime config to trade recall for speed.
 
 ### Scope Recall 3.3.0rc1 - 2026-09-24
 

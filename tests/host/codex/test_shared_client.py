@@ -164,6 +164,26 @@ def test_a_session_start_on_an_entry_reads_nothing_of_the_store(store, monkeypat
         hook.close()
 
 
+def test_claude_code_s_prompt_runs_the_entry_s_budget_and_codex_keeps_its_two_seconds(store, tmp_path):
+    """Recall on the pilot's shared store took 2.7-5.7 s.  Claude Code waits 15 s for a prompt's hook,
+    Codex 2 s, and the runtime that carries the configured budget is attached only after the capture."""
+    _root, _homes, client, _capture = store
+    (client / "scope-recall" / "runtime-config.json").write_text(json.dumps({"hook_processing_seconds": 5.5}),
+                                                                 encoding="utf-8")
+    hook = _hook(client)
+    try:
+        assert hook._hook_budget() == 5.5
+    finally:
+        hook.close()
+    (client / "scope-recall" / "runtime-config.json").write_text(json.dumps({"hook_processing_seconds": 60}),
+                                                                 encoding="utf-8")
+    hook = _hook(client)
+    try:
+        assert hook._hook_budget() == 2.0, "an out-of-bounds budget falls back to the default"
+    finally:
+        hook.close()
+
+
 def test_a_queued_capture_replays_under_the_client_entry_s_grants_only(store):
     root, _homes, client, capture = store
     config = load_shared_client(client, "claude-code")

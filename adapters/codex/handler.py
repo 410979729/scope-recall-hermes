@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
 import math
+from pathlib import Path
 import sys
 import time
 from typing import Any, Callable, Protocol, cast
@@ -12,7 +13,7 @@ from typing import Any, Callable, Protocol, cast
 from scope_recall.contracts import ContractError, Origin, RecallRequest, TrustedContext
 from scope_recall.core import CoreConfig, MemoryCore
 from scope_recall.core.retrieval import AUTOMATIC_PACKET_BUDGET_UNITS
-from ..runtime_wiring import render_host_recall_context
+from ..runtime_wiring import _strict_hook_budget, render_host_recall_context
 
 from .boundary import (
     assistant_stop_source_event,
@@ -49,6 +50,12 @@ _SUPPORTED_EVENTS = frozenset(
 #: a tool result never becomes a memory, and a coding session's tool traffic would be most of
 #: the store for an embedding each.
 _TURN_FIELD = {"codex": "turn_id", "claude-code": "prompt_id"}
+#: Clients whose prompt hook may run the entry's ``hook_processing_seconds`` (at most 6 s) from the
+#: start.  Codex gives a hook 2 s (its hooks.json timeout), and the runtime that carries the longer
+#: budget is attached only after the capture, so a Codex prompt keeps the default.  Claude Code waits
+#: 15 s (``maintenance/install_claude_code.py``), and recall on the pilot's shared store took 2.7-5.7 s:
+#: with 2 s most automatic recalls would have come back empty.
+_CONFIGURED_PROMPT_BUDGET = frozenset({"claude-code"})
 _HOST_EVENTS = {"codex": _SUPPORTED_EVENTS,
                 "claude-code": frozenset({"UserPromptSubmit", "Stop", "SessionEnd"})}
 
@@ -116,6 +123,7 @@ class CodexHookHandler:
         ):
             raise CodexConfigError("invalid hook start time")
         self._hook_started_at = hook_started_at
+        self._prompt_budget: float | None = None
         self.diagnostics = HookDiagnostics(
             capability_gaps=host_runtime.capability_gaps if host_runtime is not None else (GAP_UNCONFIGURED,)
         )
@@ -169,6 +177,8 @@ class CodexHookHandler:
         core = MemoryCore(CoreConfig(config.to_binding()), clock=clock)
         handler = cls(config, core=core, clock=clock, hook_started_at=hook_started_at)
         handler._pending_runtime_config_path = trusted_runtime_config_path or str(config.runtime_config_path)
+        if host in _CONFIGURED_PROMPT_BUDGET:
+            handler._prompt_budget = _configured_budget(handler._pending_runtime_config_path)
         return handler
 
     # -- diagnostics and budget ------------------------------------------
@@ -194,7 +204,7 @@ class CodexHookHandler:
     def _hook_budget(self) -> float:
         """Read only the verified host runtime budget; payloads cannot tune it."""
         if self._host_runtime is None:
-            return _TOTAL_BUDGET_S
+            return self._prompt_budget or _TOTAL_BUDGET_S
         return self._host_runtime.hook_processing_seconds
 
     def _hook_deadline(self, budget: float) -> float:
@@ -561,6 +571,17 @@ class CodexHookHandler:
         context = self._context(audience, session_id, cast(Origin, origin))
         self._capture(context, audience, event, deadline=deadline, gaps=(*gaps, *tool_gaps))
         return {}
+
+
+def _configured_budget(runtime_config_path: str | None) -> float | None:
+    """The entry's ``hook_processing_seconds``, or ``None`` when its runtime config does not give a valid one."""
+    if not runtime_config_path:
+        return None
+    try:
+        raw = json.loads(Path(runtime_config_path).read_text(encoding="utf-8"))
+        return _strict_hook_budget(raw.get("hook_processing_seconds")) if isinstance(raw, dict) else None
+    except (OSError, UnicodeError, ValueError):
+        return None
 
 
 def _error_detail(code: object) -> str | None:
