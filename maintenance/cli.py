@@ -277,6 +277,23 @@ def _doctor(args: argparse.Namespace) -> int:
     return 0 if report.status == "ok" else 1
 
 
+def _restamp_header(database: Path, recorded: int, *, timeout: float) -> bool:
+    """Write ``recorded`` into the header if, inside the write transaction, it is still what the store records."""
+    import sqlite3
+    from contextlib import closing
+
+    from scope_recall.core.schema import stale_header_schema
+
+    with closing(sqlite3.connect(database.as_posix(), timeout=timeout, isolation_level=None)) as db:
+        db.execute("BEGIN IMMEDIATE")
+        if stale_header_schema(db) != recorded:
+            db.execute("ROLLBACK")
+            return False
+        db.execute(f"PRAGMA user_version={int(recorded)}")
+        db.execute("COMMIT")
+    return True
+
+
 def _add_upgrade_store_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--host", required=True, choices=("hermes", "codex"))
     parser.add_argument("--instance-root", required=True)
@@ -305,18 +322,19 @@ def _upgrade_store(args: argparse.Namespace) -> int:
     from scope_recall.core.storage import SQLiteStorage
     from scope_recall.core.writer_lease import TruthWriterBusyError
     from .backup import backup_sqlite
-    from .doctor import _journal_mode, _load_binding, _schema_on_disk
+    from .doctor import _journal_mode, _load_binding, _recorded_schema_under_stale_header, _schema_on_disk
 
     instance = _path(args.instance_root, "instance_root")
     binding, data_directory = _load_binding(args.host, instance)
     database = data_directory / "memory.sqlite3"
     before = _schema_on_disk(database)
+    recorded = _recorded_schema_under_stale_header(database)
     result: dict[str, Any] = {"schema_before": before, "schema_target": SCHEMA_VERSION}
-    if before == SCHEMA_VERSION:
+    if recorded is None and before == SCHEMA_VERSION:
         result.update(status="current", journal_mode=_journal_mode(database))
         _emit(result)
         return 0
-    if before not in UPGRADE_CHAIN:
+    if recorded is None and before not in UPGRADE_CHAIN:
         result.update(status="unsupported", error="schema_not_in_upgrade_chain")
         _emit(result)
         return 2
@@ -330,6 +348,27 @@ def _upgrade_store(args: argparse.Namespace) -> int:
     backup_sqlite(database, snapshot, manifest=snapshot.with_suffix(".json"))
     result["backup"] = str(snapshot)
     wait = min(max(float(args.wait_seconds), 0.0), 30.0)
+    if recorded is not None:
+        # The store records its own schema and only the header was overwritten (#117): put the
+        # header back, in a write transaction that checks it again, and carry on from there.
+        try:
+            restamped = _restamp_header(database, recorded, timeout=wait)
+        except sqlite3.OperationalError as exc:
+            result.update(status="not_upgraded", error="store_busy", detail=type(exc).__name__,
+                          hint="stop every process holding the store, including any 2.0 one, and run again")
+            _emit(result)
+            return 2
+        if not restamped:
+            result.update(status="not_upgraded", error="store_changed",
+                          hint="the header or the recorded schema changed while this ran; run again")
+            _emit(result)
+            return 2
+        result["header_restamped"] = {"from": before, "to": recorded,
+                                      "cause": "a 2.0 process opened this store after its migration; make sure none runs"}
+        if recorded == SCHEMA_VERSION:
+            result.update(status="restamped", schema_after=SCHEMA_VERSION, journal_mode=_journal_mode(database))
+            _emit(result)
+            return 0
     started = time.monotonic()
     deadline = started + wait
     while True:

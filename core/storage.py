@@ -17,8 +17,8 @@ from ..contracts import (ENTRY_ID, MAX_SHARED_SCOPES, ContractError, InstanceBin
 from .truth_connection import TruthDatabaseMode, connect_truth_database
 from .writer_lease import TruthWriterBusyError
 from . import lexical_index
-from .schema import (APPLICATION_ID, SCHEMA_VERSION, STATEMENTS, UPGRADE_CHAIN, upgrade_1105, upgrade_1106, upgrade_1107,
-                     upgrade_1108, upgrade_1109)
+from .schema import (APPLICATION_ID, SCHEMA_VERSION, STATEMENTS, UPGRADE_CHAIN, stale_header_schema, upgrade_1105,
+                     upgrade_1106, upgrade_1107, upgrade_1108, upgrade_1109)
 from .events import lexical_terms, prepare_capture, query_terms
 
 #: How often a writer looks again for another process's lease while it waits.
@@ -662,6 +662,9 @@ class SQLiteStorage:
 
     def _verify(self, conn: sqlite3.Connection, *, expected_schema: int = SCHEMA_VERSION) -> None:
         if conn.execute("PRAGMA application_id").fetchone()[0] != APPLICATION_ID or conn.execute("PRAGMA user_version").fetchone()[0] != expected_schema:
+            if stale_header_schema(conn) is not None:
+                # The store is intact and records its schema; only the header was overwritten.
+                raise ContractError("SCHEMA_UNSUPPORTED", "header_stale:run_upgrade_store")
             raise ContractError("SCHEMA_UNSUPPORTED")
         row = conn.execute("SELECT * FROM instance_meta WHERE singleton=1").fetchone()
         if row is None or row["schema_version"] != expected_schema:

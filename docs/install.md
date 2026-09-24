@@ -418,6 +418,7 @@ Things that look wrong in a healthy report and are not:
 | `stale_process` | A live process is running code older than what is on disk. | Restart the host, or let the running worker finish. |
 | `schema_upgrade_pending` | The store is at an older schema this code knows how to bring forward. | Nothing to run: the next capture, recall or worker pass applies it in one transaction, rolled back whole if it fails. Take a `backup` first if you want one. |
 | `schema_version_mismatch` | The database schema is one this code cannot bring forward. | Do not run against it. Back it up and use the migration path. |
+| `schema_header_stale` | The store's tables and its own record say one schema, the SQLite header another: another process stamped the header, typically a 2.0 plugin that opened the store after its migration. Every open is refused. | Stop that process, then run `upgrade-store` with `--backup-dir`: it snapshots the store and puts the recorded schema back into the header. |
 | `vector_threshold_unconfigured` | A vector store and an approved embedding route are configured, but no threshold is set, so every vector hit is refused and recall stays lexical. `attention`. | Set a `vector_threshold` calibrated for that embedding model — see [configuration.md](configuration.md). |
 | `work_failed` | At least one recoverable failure is queued. | Fix the cause, then `scope-recall retry-failures --config <file> --apply`. |
 | `work_failed_terminal_only` / `work_needs_review` | All failures are by design, or were already retried once. `attention`. | Inspect them; `--include-terminal` re-runs them only if you mean to. |
@@ -589,6 +590,16 @@ python -I -X utf8 -m scope_recall.maintenance.cli upgrade-store --host hermes --
 
 It reports the schema before and after, the seconds taken and the journal
 mode, and leaves a store a running worker holds untouched (`store_busy`).
+
+If a 2.0 plugin opens a migrated store, it stamps the SQLite header with the
+2.0 layout's schema (10815) while every 3.x table and the store's own record
+(`instance_meta.schema_version`) stay as they were, and every open is refused
+with `SCHEMA_UNSUPPORTED / header_stale:run_upgrade_store`; `doctor` reports
+`schema_header_stale`. Stop every 2.0 process first, then run the same
+`upgrade-store` command: after its snapshot it writes the recorded schema
+back into the header (`header_restamped` in its report) and, if that schema
+is an older one, brings the store forward as usual. A store that is not this
+product's, or records no schema this release knows, is still refused.
 
 ## 10. Platform and storage boundaries
 

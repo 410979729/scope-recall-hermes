@@ -111,3 +111,66 @@ def test_upgrade_store_requires_the_promised_snapshot_before_mutation(tmp_path, 
     assert code == 2 and (out["status"], out["error"]) == ("not_upgraded", "backup_required")
     with sqlite3.connect(core.storage.path) as conn:
         assert conn.execute("PRAGMA user_version").fetchone()[0] == 1108
+
+
+def _stamp_header(path, version, *, application_id=None):
+    """What a 2.0 process does to a migrated store it opens: its own layout's header stamp."""
+    with sqlite3.connect(path) as conn:
+        conn.execute(f"PRAGMA user_version={version}")
+        if application_id is not None:
+            conn.execute(f"PRAGMA application_id={application_id}")
+
+
+def test_a_header_a_2_0_process_overwrote_is_named_and_restamped(tmp_path, capsys):
+    """#117: every table and row is 3.x and instance_meta records the schema, but the header says
+    10815, so every open failed closed and upgrade-store called the store unsupported."""
+    import pytest
+    from scope_recall.contracts import ContractError
+    from scope_recall.core.storage import SQLiteStorage
+    from scope_recall.maintenance.doctor import run_doctor
+
+    project = tmp_path / "project"
+    project.mkdir()
+    _config, core = install_codex_scope_recall(tmp_path / "install", project_root=project)
+    _stamp_header(core.storage.path, 10815)
+    with pytest.raises(ContractError) as refused:
+        SQLiteStorage(core.storage.binding).initialize()
+    assert (refused.value.code, refused.value.field) == ("SCHEMA_UNSUPPORTED", "header_stale:run_upgrade_store")
+    report = run_doctor(host="codex", instance_root=tmp_path / "install")
+    assert "schema_header_stale" in report.capability_gaps and report.schema_version == 10815
+    root = ["upgrade-store", "--host", "codex", "--instance-root", str(tmp_path / "install")]
+    code, out = _run(capsys, root)
+    assert code == 2 and out["error"] == "backup_required"
+    code, out = _run(capsys, [*root, "--backup-dir", str(tmp_path / "backups")])
+    assert code == 0, out
+    assert (out["status"], out["schema_after"]) == ("restamped", SCHEMA_VERSION)
+    assert (out["header_restamped"]["from"], out["header_restamped"]["to"]) == (10815, SCHEMA_VERSION)
+    with sqlite3.connect(next((tmp_path / "backups").glob("memory-10815-*.sqlite3"))) as conn:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 10815, "the snapshot is the store as it was"
+    assert _run(capsys, root)[1]["status"] == "current"
+
+
+def test_a_restamped_older_store_is_then_brought_forward(tmp_path, capsys):
+    project = tmp_path / "project"
+    project.mkdir()
+    _config, core = install_codex_scope_recall(tmp_path / "install", project_root=project)
+    downgrade_store(core.storage.path, 1108)
+    _stamp_header(core.storage.path, 10815)
+    code, out = _run(capsys, ["upgrade-store", "--host", "codex", "--instance-root", str(tmp_path / "install"),
+                              "--backup-dir", str(tmp_path / "backups")])
+    assert code == 0, out
+    assert out["header_restamped"]["to"] == 1108
+    assert (out["status"], out["schema_after"]) == ("upgraded", SCHEMA_VERSION)
+
+
+def test_a_header_that_is_not_ours_is_still_refused(tmp_path, capsys):
+    """Only this product's store, recording a schema this release knows, is restamped."""
+    project = tmp_path / "project"
+    project.mkdir()
+    _config, core = install_codex_scope_recall(tmp_path / "install", project_root=project)
+    _stamp_header(core.storage.path, 10815, application_id=0)
+    code, out = _run(capsys, ["upgrade-store", "--host", "codex", "--instance-root", str(tmp_path / "install"),
+                              "--backup-dir", str(tmp_path / "backups")])
+    assert code == 2 and (out["status"], out["error"]) == ("unsupported", "schema_not_in_upgrade_chain")
+    with sqlite3.connect(core.storage.path) as conn:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == 10815

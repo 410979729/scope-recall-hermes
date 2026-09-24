@@ -352,6 +352,30 @@ STATEMENTS = (
 ) + RECOVERY_STATEMENTS + CANDIDATE_STATEMENTS
 
 
+def stale_header_schema(connection) -> int | None:
+    """The schema a store records for itself when its SQLite header says another, else None.
+
+    Every step here writes a store's schema twice in one transaction: the header
+    (``PRAGMA user_version``) and ``instance_meta.schema_version``.  The two disagree only
+    when something else wrote the header.  After a 2.0 store is migrated, a 2.0 process
+    that opens the new file stamps the header with the 2.0 layout's 10815 and leaves every
+    table and row in place (#117), and every open then fails closed.  The recorded schema
+    is returned only for this product's store (its application id) recording a schema this
+    release reads or brings forward, so ``upgrade-store`` may restamp the header with it.
+    """
+    header = connection.execute("PRAGMA user_version").fetchone()[0]
+    if connection.execute("PRAGMA application_id").fetchone()[0] != APPLICATION_ID:
+        return None
+    try:
+        row = connection.execute("SELECT schema_version FROM instance_meta WHERE singleton=1").fetchone()
+    except Exception:  # noqa: BLE001 - no instance_meta, no record to trust
+        return None
+    recorded = None if row is None else row[0]
+    if recorded == header or recorded not in (*UPGRADE_CHAIN, SCHEMA_VERSION):
+        return None
+    return recorded
+
+
 def upgrade_1105(connection):
     """Add a content-free consolidation checkpoint inside explicit initialization.
 
