@@ -99,6 +99,12 @@ _NAMING = (
     re.compile(r'(?P<subject>[^，,;；。!?！？\n]{1,60}?)\s*(?P<verb>叫做|名叫|名字叫|的名字是|名字是|叫)\s*(?P<name>[^，,;；。!?！？\n]{1,60})'),
     re.compile(r'(?P<subject>[^,;.!?\n]{1,80}?)\s+(?P<verb>is called|is named)\s+(?P<name>[^,;.!?\n]{1,60})', re.I),
 )
+#: A name said under a condition, or as an example, was not given: "如果我养猫的话，我的猫叫年糕".
+_UNASSERTED_NAMING = re.compile(
+    r'假设|假如|如果|要是|倘若|万一|除非|设想|虚构|假定|比如|例如|举例|'
+    r'\b(?:if|unless|suppose|supposing|imagine|hypothetical|fictional|for example)\b',
+    re.I,
+)
 
 
 def name_frame(proposal, roots):
@@ -131,7 +137,8 @@ def name_frame(proposal, roots):
     from .claims import evidence_context
 
     assertion = evidence_context(root.content, span['quote'])
-    if AUTHORITY_QUESTION.search(assertion) or UNASSERTED_UNCERTAINTY.search(assertion) or REPORTED_SPEECH.search(assertion):
+    if (AUTHORITY_QUESTION.search(assertion) or UNASSERTED_UNCERTAINTY.search(assertion)
+            or REPORTED_SPEECH.search(assertion) or _UNASSERTED_NAMING.search(assertion)):
         return proposal
     name = str(alias.get('name') or '').strip()
     for clause in re.split(r'[，,;；。!?！？\n]', assertion):

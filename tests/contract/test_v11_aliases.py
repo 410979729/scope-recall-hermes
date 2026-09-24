@@ -222,6 +222,9 @@ def test_naming_a_thing_nothing_is_known_about_is_a_fact_not_an_alias(said, name
     (_said("我家猫咪叫年糕"), "claim-" + "a" * 64),                        # a real alias, proved its own way
     (_said("我家猫咪叫年糕", principal=("human", "unresolved")), None),     # nobody verified said it
     (_said("我家猫咪叫年糕", origin="assistant_visible"), None),            # the agent said it
+    (_said("如果我养猫的话，我的猫叫年糕。"), None),                       # said under a condition
+    (_said("比如我家猫咪叫年糕"), None),                                  # said as an example
+    (_said("If I get a cat, my cat is called 年糕"), None),               # the same, in English
 ])
 def test_only_a_first_hand_naming_statement_is_reframed(root, target_ref):
     from scope_recall.core.claim_normalization import name_frame
@@ -252,3 +255,13 @@ def test_a_naming_alias_an_earlier_release_stored_is_repaired_into_the_fact(app,
     assert len(active) == 1 and not report["errors"], report
     fact = core.current_claim(owner, active[0]["ref"])
     assert tuple(fact.payload[key] for key in ("kind", "subject", "predicate", "value_text")) == ("fact", "我家猫咪", "叫", "年糕")
+
+
+def test_a_conditional_naming_quoted_by_its_clause_alone_is_not_reframed():
+    """The model may quote only the naming clause; the condition before it still decides."""
+    from scope_recall.core.claim_normalization import name_frame
+
+    root = _said("如果我养猫的话，我的猫叫年糕。")
+    proposal = _naming_alias(root, "年糕")
+    proposal["evidence_spans"][0]["quote"] = "我的猫叫年糕"
+    assert name_frame(proposal, (root,)) is proposal
