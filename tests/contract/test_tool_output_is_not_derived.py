@@ -14,7 +14,8 @@ import sqlite3
 import pytest
 
 from scope_recall.core.admission import AdmissionDecision, store_decision
-from test_v11_claims import app, capture  # noqa: F401 - app is a fixture
+from test_r1_candidate_lifecycle import Evaluator, _candidate_rows, _finish_source_work
+from test_v11_claims import app, capture, draft  # noqa: F401 - app is a fixture
 from test_v11_worker import Clock, FakeConsolidation, consolidation_payload, procedure_proposal
 
 
@@ -77,3 +78,51 @@ def test_a_deferred_tool_output_settles_on_refill_without_a_consolidation(worker
     assert _queued(core, read.ref) == ["embed"]
     receipt = core.schedule_source(ctx, read.ref, read.revision, remaining_seconds=10)
     assert receipt.queued_work == 0 and _queued(core, read.ref) == ["embed"]
+
+
+# --- the evaluator: the other path by which a claim version is written automatically ---------
+
+def _proposal_from(core, ctx, *sources, value="42GB"):
+    """A proposal citing ``sources``, registered with its first evaluation queued."""
+    from scope_recall.core.claims import Qualification
+
+    proposal = draft(sources[0], value, kind="fact", subject="entity-disk", predicate="property-disk")
+    proposal["evidence_spans"] = [dict(source_ref=s.ref, source_revision=s.revision, quote=s.event["content"])
+                                  for s in sources]
+    with core.storage.write(ctx) as tx:
+        saved = tx.claims.append("TEST-scope", proposal,
+                                 Qualification("proposed", "inferred_suggestion", "TEST_candidate"),
+                                 recorded_at=core.clock.utc_now())
+        assert tx.candidates.register(saved.ref, saved.revision, observed_at=core.clock.utc_now()).work_queued
+    _finish_source_work(core)
+    return saved
+
+
+def test_an_evaluation_of_a_proposal_tool_output_alone_supports_asks_no_model(app):
+    """Queued before 3.2.0 for a proposal derived from tool output, such an evaluation still reached
+    the model after the upgrade, and a verdict could make the proposal an active claim."""
+    core, ctx = app
+    read = capture(core, ctx, "entity-disk property-disk 42GB。", origin="tool_observation")
+    saved = _proposal_from(core, ctx, read)
+    evaluator = Evaluator(proposal=draft(read, "42GB", kind="fact", subject="entity-disk", predicate="property-disk"))
+    core.drain_worker(ctx, max_items=8, remaining_seconds=10, consolidation=evaluator)
+    _lifecycle, evaluations, work = _candidate_rows(core)
+    assert evaluator.calls == 0
+    assert [(row["state"], row["reason"]) for row in evaluations] == [("waiting_evidence", "no_derivation_root")]
+    assert [row["state"] for row in work] == ["done"]
+    assert core.claim_history(ctx, saved.ref)[-1].state == "proposed"
+
+
+def test_a_verdict_that_quotes_only_tool_output_writes_no_version(app):
+    """A person's proposal whose evaluation also carried a tool output: a verdict quoting only the
+    tool output would have written a claim version resting on tool output alone."""
+    core, ctx = app
+    said = capture(core, ctx, "entity-disk property-disk 42GB。")
+    read = capture(core, ctx, "entity-disk property-disk 42GB。", origin="tool_observation")
+    saved = _proposal_from(core, ctx, said, read)
+    evaluator = Evaluator(proposal=draft(read, "42GB", kind="fact", subject="entity-disk", predicate="property-disk"))
+    core.drain_worker(ctx, max_items=8, remaining_seconds=10, consolidation=evaluator)
+    _lifecycle, evaluations, _work = _candidate_rows(core)
+    assert evaluator.calls == 1
+    assert [(row["state"], row["reason"]) for row in evaluations] == [("waiting_evidence", "insufficient_evidence")]
+    assert [version.state for version in core.claim_history(ctx, saved.ref)] == ["proposed"]

@@ -80,6 +80,13 @@ def _apply_verdict(tx, item, current, value, live_sources, now):
     # What the candidate is was recorded before the call; the verdict decides
     # whether the evidence supports it, with what value and on which quote.
     proposal = candidate_identity_restored(expected_candidate, authorized_sources, proposal)
+    # A version the evaluator writes rests on a source a claim may be derived from, as a
+    # consolidation's does: a verdict that quotes only tool output confirms nothing.
+    from .evidence_question import DERIVATION_ROOT_ORIGINS, evidence_text
+    quoted = {(span["source_ref"], span["source_revision"]) for span in proposal["evidence_spans"]}
+    if not any(evidence_text(source).origin in DERIVATION_ROOT_ORIGINS
+               for source in authorized_sources if (source.ref, source.revision) in quoted):
+        return None
     applied = apply_claim(tx, proposal, item.scope_id, now)
     applied_version = tx.claims.version(applied.ref, applied.revision)
     if (

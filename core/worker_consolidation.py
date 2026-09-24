@@ -15,6 +15,7 @@ from .consolidate import ConsolidationWorkFence, accept_consolidation, consolida
 from .consolidation_chunks import source_chunk
 from .candidate_lifecycle import candidate_evaluation_messages
 from .episodes import source_origin
+from .evidence_question import DERIVATION_ROOT_ORIGINS
 from .worker_outcomes import (
     _Outcome,
     _deadline_result,
@@ -27,15 +28,6 @@ from .worker_outcomes import (
     derivation_changed,
     read_derivation_fence,
 )
-
-#: The sources a consolidation may derive a claim from; only these are shown to the model.  Tool
-#: output is not one.  A tool output is what an agent read or ran while working, and derived claims
-#: from it were almost all file sizes, paths, ports and timestamps: one 2.5-hour task on the pilot
-#: left 787 of them, 93% of the store's 3,175 claims rested on tool output alone, and not one of
-#: the owner's 30 real questions was answered by one.  The host distils how a task was done into
-#: skills; tool output stays a searchable source.  ``retire_rootless_proposals`` retires the
-#: unconfirmed claims derived before this changed.
-DERIVATION_ROOT_ORIGINS = frozenset({"human_direct", "external_document", "imported"})
 
 
 class ConsolidationModel(Protocol):

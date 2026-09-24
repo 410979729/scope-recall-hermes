@@ -167,6 +167,31 @@ class CandidateTables:
             origins.add(origin)
         return frozenset(origins)
 
+    def restated_by_a_root(self, ref: str, revision: int, payload) -> bool:
+        """Whether a live source a claim may be derived from, attached to this candidate version, restates it.
+
+        A person who says a proposal again is heard here and not in the claim's own evidence, because
+        ``apply_claim`` takes the restatement for a duplicate; such a proposal is left to its
+        evaluation (``requalify.retire_rootless_proposals``).  A source that only shares a word with
+        it -- on the pilot, 1,525 of 2,785 tool-derived proposals had one -- restates nothing.
+        """
+        from .evidence_question import DERIVATION_ROOT_ORIGINS, restates
+
+        origins = sorted(DERIVATION_ROOT_ORIGINS)
+        contents = [row[0] for row in self._read().execute(
+            f"""SELECT s.content FROM candidate_evidence e JOIN source_events s
+                  ON s.event_id=e.source_ref AND s.source_revision=e.source_revision
+                WHERE e.candidate_ref=? AND e.candidate_revision=? AND s.read_blocked=0 AND s.suppressed=0
+                  AND NOT EXISTS(SELECT 1 FROM object_blocks b WHERE b.object_kind='event'
+                      AND b.object_ref=e.source_ref AND (b.read_blocked=1 OR b.suppressed=1))
+                  AND (CASE WHEN s.origin<>'imported' THEN s.origin
+                            WHEN s.import_provenance_sha256 IS NOT NULL
+                            THEN COALESCE(s.source_original_origin,'origin_unknown')
+                            ELSE 'origin_unknown' END) IN ({','.join('?' for _ in origins)})""",
+            (ref, revision, *origins),
+        )]
+        return bool(contents) and restates(payload, contents)
+
     def _model_verdicts(self, ref: str, revision: int, *,
                         excluding: int | None = None) -> tuple[int, frozenset[tuple[str, int]]]:
         """Model verdicts this candidate already had, and every source they judged.

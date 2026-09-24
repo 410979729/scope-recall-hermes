@@ -12,6 +12,8 @@ from .candidate_lifecycle import CandidateEvaluationSnapshot
 from .candidate_tables import HEAD_COLUMNS, HEAD_JOINS, CandidateTables, is_live_head, parse_refs, snapshot
 from .evidence_question import (
     AUTOMATIC_VERDICTS,
+    DERIVATION_ROOT_ORIGINS,
+    NO_DERIVATION_ROOT_REASON,
     PERSON_ABSENT_REASON,
     REPEAT_WITHOUT_RESTATEMENT_REASON,
     evidence_text,
@@ -70,8 +72,13 @@ class CandidateEvaluations(CandidateTables):
         """
         candidate = evaluation.candidate
         answer = None
-        if needs_absent_person(candidate.payload, self._cited_origins(candidate.ref, candidate.revision)):
+        cited = self._cited_origins(candidate.ref, candidate.revision)
+        if needs_absent_person(candidate.payload, cited):
             answer = ("archived", PERSON_ABSENT_REASON)
+        elif not (cited | {evidence_text(source).origin for source in sources}) & DERIVATION_ROOT_ORIGINS:
+            # Nothing a claim may be derived from speaks to it: a proposal an earlier release took
+            # from tool output alone, which no verdict may now confirm.  It waits for a person.
+            answer = ("waiting_evidence", NO_DERIVATION_ROOT_REASON)
         else:
             reason = unanswerable_reason(candidate.payload, tuple(evidence_text(source) for source in sources))
             if reason is not None:

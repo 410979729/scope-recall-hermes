@@ -162,7 +162,7 @@ def _repeated_tool_output(tx, scope_id, text) -> bool:
 
 
 #: What a tool output earns: an embedding, so it is found by meaning.  It is not consolidated;
-#: tool output is no derivation root (``worker_consolidation.DERIVATION_ROOT_ORIGINS``), so a
+#: tool output is no derivation root (``evidence_question.DERIVATION_ROOT_ORIGINS``), so a
 #: consolidation of it would show the model nothing.
 TOOL_OUTPUT_WORK_TYPES = frozenset({"embed"})
 
@@ -306,11 +306,18 @@ def resume_deferred(storage, clock, context, policy=None, *, limit=16, remaining
                 priority = not policy.enabled or count < _capacity(policy, True)
                 if not priority:
                     continue
+                # A tool output is owed an embedding only (``wanted_work_types``), so it never holds
+                # a consolidation.  It is picked for one only once its embedding is queued, to settle
+                # a marker written before that rule; picked while its embedding waited for room, it
+                # came first on every pass and held the page.
+                owed = "" if kind in TOOL_OUTPUT_WORK_TYPES else """AND (e.role<>'tool' OR EXISTS(
+                    SELECT 1 FROM work_items o WHERE o.subject_ref=e.event_id
+                    AND o.subject_revision=e.source_revision AND o.work_type='embed'))"""
                 priority_filter, priority_params = "", ()
                 if not ordinary:
                     priority_filter = f"AND (json_extract(e.extra_json,'$._scope_recall_admission.important')=1 OR {fresh})"
                     priority_params = fresh_params
-                eligible.append(f"""(e.scope_id=? {priority_filter} AND NOT EXISTS(
+                eligible.append(f"""(e.scope_id=? {owed} {priority_filter} AND NOT EXISTS(
                     SELECT 1 FROM work_items w WHERE w.subject_ref=e.event_id
                     AND w.subject_revision=e.source_revision AND w.work_type=?))""")
                 eligibility_params.extend((scope, *priority_params, kind))

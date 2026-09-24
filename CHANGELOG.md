@@ -4,6 +4,14 @@ All notable changes to `scope-recall` will be documented in this file.
 
 ## [Unreleased]
 
+### Scope Recall 3.2.0rc7, the release audit - 2026-09-24
+
+Four reviews of everything since 3.1.2, each by a reader who had written none of it, before the tag. None found a memory reaching a reader outside its scopes; these are what they did find.
+
+- No automatic writer derives a claim from tool output alone any more; the candidate evaluator was still one. An evaluation queued before 3.2.0rc6 for a proposal derived from tool output still reached the model, and a verdict quoting only a tool output made it an active claim (the test that pins this fails on rc7 with the proposal resolved `fact_active`). Now an evaluation whose candidate cites no derivation root, and whose evidence holds none, settles without a model call (`waiting_evidence`, `no_derivation_root`) and waits for a person; and a verdict that quotes only tool output writes no version (`insufficient_evidence`). `DERIVATION_ROOT_ORIGINS` has one definition, in `core/evidence_question.py`, read by consolidation, the evaluator and `retire-rootless-claims`. The capture-time confirmation and correction paths already took only a person's words.
+- The deferred refill no longer picks a tool output for the consolidation it is not owed. While a scope's embedding queue was full, such a tool output matched the refill's consolidation clause, could not be scheduled either, came first on every pass and held the page, so a person's message deferred behind it was never refilled. It is picked for that clause only once its embedding is queued, to settle a marker an earlier release wrote.
+- `retire-rootless-claims` leaves a proposal a person has since restated to its evaluation (`restated_in_evaluation`). `apply_claim` takes a person saying a proposal again for a duplicate, so their words sit in the proposal's evaluation and not in its evidence, and retiring it dropped them. A message that only shares a word with it restates nothing: of the 2,785 proposals the pilot retired, 1,525 had such a message attached, 62 had a person's message containing the value, and the model had already judged 58 of those with that message and not promoted them.
+
 ### Scope Recall 3.2.0rc7 - 2026-09-24
 
 - The version moves past the `v3.2.0rc6` tag, the candidate the pilot runs.

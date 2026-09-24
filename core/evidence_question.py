@@ -38,6 +38,19 @@ import unicodedata
 #: witness is.
 FIRST_HAND_ORIGINS = frozenset({"human_direct"})
 
+#: The sources a claim may be derived from.  Consolidation shows the model only these
+#: (``worker_consolidation``), and the evaluator writes no claim version that cites none of them
+#: (``candidate_evaluations``, ``worker_candidates``).  Tool output is not one.  A tool output is
+#: what an agent read or ran while working, and derived claims from it were almost all file sizes,
+#: paths, ports and timestamps: one 2.5-hour task on the pilot left 787 of them, 93% of the store's
+#: 3,175 claims rested on tool output alone, and not one of the owner's 30 real questions was
+#: answered by one.  The host distils how a task was done into skills; tool output stays a
+#: searchable source.  ``requalify.retire_rootless_proposals`` retires the unconfirmed claims
+#: derived before this changed.
+DERIVATION_ROOT_ORIGINS = frozenset({"human_direct", "external_document", "imported"})
+#: Why a candidate nothing in ``DERIVATION_ROOT_ORIGINS`` speaks to is set aside.
+NO_DERIVATION_ROOT_REASON = "no_derivation_root"
+
 
 def is_first_hand(origin: object) -> bool:
     return origin in FIRST_HAND_ORIGINS

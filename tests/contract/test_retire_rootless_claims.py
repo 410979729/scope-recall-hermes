@@ -60,3 +60,27 @@ def test_retire_rootless_retires_only_proposals_resting_on_tool_output(app):
                               (rootless.ref,)).fetchone()[0]
     assert (waiting, queued) == (0, 0), "a retired proposal no longer waits for an evaluation"
     assert core.retire_rootless_proposals(ctx, limit=32, dry_run=False)["changed"] == []
+
+
+def test_a_proposal_a_person_has_since_said_is_left_to_its_evaluation(app):
+    """A person who says a tool-derived proposal again is heard in its evaluation, not in its own
+    evidence: ``apply_claim`` takes the restatement for a duplicate.  Retiring it would drop them."""
+    from scope_recall.core.claims import Qualification
+
+    core, ctx = app
+    tool = capture(core, ctx, "TEST-project 磁盘剩余 42GB。", origin="tool_observation")
+    with core.storage.write(ctx) as tx:
+        saved = tx.claims.append("TEST-scope", draft(tool, "42GB", kind="fact", predicate="磁盘剩余"),
+                                 Qualification("proposed", "inferred_suggestion", "TEST_candidate"),
+                                 recorded_at=core.clock.utc_now())
+        tx.candidates.register(saved.ref, saved.revision, observed_at=core.clock.utc_now(), schedule_initial=False)
+    said = capture(core, ctx, "TEST-project 磁盘剩余 42GB。")
+    with sqlite3.connect(core.storage.path) as conn:
+        heard = conn.execute("SELECT count(*) FROM candidate_evidence WHERE candidate_ref=? AND source_ref=?",
+                             (saved.ref, said.ref)).fetchone()[0]
+    assert heard == 1
+    preview = core.retire_rootless_proposals(ctx, limit=32, dry_run=True)
+    assert preview["changed"] == []
+    assert preview["skipped"] == [{"ref": saved.ref, "why": "restated_in_evaluation"}]
+    assert core.retire_rootless_proposals(ctx, limit=32, dry_run=False)["changed"] == []
+    assert core.claim_history(ctx, saved.ref)[-1].state == "proposed"

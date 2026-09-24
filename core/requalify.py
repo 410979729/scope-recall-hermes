@@ -27,6 +27,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ..contracts import ContractError
+from .evidence_question import DERIVATION_ROOT_ORIGINS, NO_DERIVATION_ROOT_REASON
 
 #: Page ceiling.  Matches ``repair_frames``: large enough to finish a real
 #: store in a few passes, small enough that one pass is an ordinary transaction.
@@ -144,7 +145,7 @@ def requalify_claims(tx, *, now: str, after_ref: str = "", limit: int = 16,
 
 
 #: The reason a retired proposal carries: none of its evidence is a source consolidation derives from.
-ROOTLESS_REASON = "no_derivation_root"
+ROOTLESS_REASON = NO_DERIVATION_ROOT_REASON
 
 
 def retire_rootless_proposals(tx, *, now: str, after_ref: str = "", limit: int = 16,
@@ -157,6 +158,8 @@ def retire_rootless_proposals(tx, *, now: str, after_ref: str = "", limit: int =
     ``ROOTLESS_REASON``, registered as the candidate's new head so its queued evaluations end.  Its
     sources and its earlier versions stay.  Active and disputed claims are left alone -- a claim that
     was proved stands on that proof -- and nothing is re-judged here; ``requalify_claims`` does that.
+    Nor is a proposal a person has restated since (``restated_by_a_root``): they are heard in its
+    evaluation, not in its own evidence, and the verdict on their words decides.
 
     Separate from ``requalify_claims`` on purpose: a re-judgement moves claims for every rule that
     changed since they were written (on the pilot, 154 of them, promotions included), and retiring
@@ -165,7 +168,6 @@ def retire_rootless_proposals(tx, *, now: str, after_ref: str = "", limit: int =
     from .claims import Qualification
     from .episodes import source_origin
     from .mutate import evidence_refs
-    from .worker_consolidation import DERIVATION_ROOT_ORIGINS
 
     if type(limit) is not int or type(limit) is bool or not 1 <= limit <= MAX_PAGE:
         raise ContractError("INPUT_INVALID", "requalify_limit")
@@ -196,6 +198,10 @@ def retire_rootless_proposals(tx, *, now: str, after_ref: str = "", limit: int =
             report.skipped.append({"ref": ref, "why": "evidence_unreadable"})
             continue
         if origins & DERIVATION_ROOT_ORIGINS:
+            continue
+        if tx.candidates.restated_by_a_root(ref, head.revision, head.payload):
+            # A person (or a document) has said it since; the verdict on their words decides.
+            report.skipped.append({"ref": ref, "why": "restated_in_evaluation"})
             continue
         entry = {"ref": ref, "was": f"{head.state}:{head.reason}", "now": f"retracted:{ROOTLESS_REASON}",
                  "origins": sorted(origins)}

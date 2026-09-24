@@ -390,6 +390,28 @@ def test_a_withheld_tool_output_summary_is_kept_as_a_source_only(tmp_path, text)
     assert counts(app)["source_events"] == 1 and counts(app)["work_items"] == 0
 
 
+def test_a_tool_output_waiting_for_an_embedding_slot_never_holds_the_refill_page(tmp_path):
+    """A deferred tool output matched the refill's consolidation clause, work it is no longer owed
+    (3.2.0rc6).  With the embedding queue full it could not be scheduled either, so it came first
+    on every pass and a person's message deferred behind it was never refilled."""
+    app, ctx, clock, _ = clocked_app(tmp_path, AdmissionPolicy(max_pending_work=2, important_reserve=0))
+    tool = replace(ctx, actor_origin="tool_observation")
+    capture(app, ctx, "TEST-fill", "TEST occupies the only consolidation and embedding slots")
+    clock.advance(iso="2026-09-05T12:00:01Z")
+    read = capture(app, tool, "TEST-tool/1", "TEST build log line 7", origin="tool_observation", role="tool")
+    clock.advance(iso="2026-09-05T12:00:02Z")
+    said = capture(app, ctx, "TEST-user/2", "TEST the owner's later message")
+    assert read.admission == said.admission == ("admission_deferred:queue_capacity",)
+    # The consolidation slot frees; the embedding queue stays full.
+    complete_work(app, ctx, clock, allowed_work_types=frozenset({"consolidate"}))
+    for _ in range(2):
+        resumed = app.resume_deferred(ctx, limit=1, remaining_seconds=10)
+        assert [(item.ref, item.disposition, item.queued_work) for item in resumed] in (
+            [(said.event_refs[0].ref, "partial", 1)], [])
+    assert work_for(app, said.event_refs[0].ref) == {"consolidate": "pending"}
+    assert work_for(app, read.event_refs[0].ref) == {}
+
+
 def test_refill_counts_the_queue_once_however_many_scopes_the_worker_binds(tmp_path, monkeypatch):
     """A shared store's worker binds every entry's scopes.  After an import queued 32,000 embeddings,
     counting the queue once per scope and type took 90 s of a 120 s pass, and every pass ended
