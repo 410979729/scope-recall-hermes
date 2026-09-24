@@ -68,8 +68,13 @@ COMMON_SECRET_PATTERNS: dict[str, re.Pattern[str]] = {
         r"^\s*(?:cookie|set-cookie)\s*:\s*[^=\n;,\s]+=[^\n]+$",
         re.IGNORECASE | re.MULTILINE,
     ),
+    # A bot's id stands alone, or follows ``bot`` in an API URL (``/bot<id>:<secret>/getMe``).  A digit
+    # run glued to other letters is part of something else: a Codex source key ends its hex installation
+    # id in eight digits about once in 45 installations and runs on into a session UUID
+    # (``...00de02721985:92051813-c57b-...``), which read as a token and refused every capture of that
+    # installation as a secret.
     "telegram_bot_token": re.compile(
-        r"(?<!\d)\d{8,12}:[A-Za-z0-9_-]{30,}(?![A-Za-z0-9_-])"
+        r"(?:(?<![A-Za-z0-9_-])|(?<=[Bb][Oo][Tt]))\d{8,12}:[A-Za-z0-9_-]{30,}(?![A-Za-z0-9_-])"
     ),
     "discord_token": re.compile(
         r"(?<![A-Za-z0-9_-])(?:mfa\.[A-Za-z0-9_-]{60,}|"

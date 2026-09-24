@@ -41,3 +41,23 @@ def test_an_escaped_tab_still_separates_a_key_from_its_secret():
     for slashes in (1, 2):
         assert contains_secret_like_text("password:" + chr(92) * slashes + "t" + "hunter2-not-a-placeholder")
 
+
+def _token():
+    # Built here so that nothing token-shaped is written into the repository.
+    return "1234567890" + ":" + "AAE" + "x7Q" * 10 + "k2"
+
+
+def test_a_digit_run_glued_to_an_id_is_not_a_telegram_token():
+    """A Codex source key: a hex installation id that happens to end in eight digits, then a session UUID.
+    About one installation in 45 has such an id, and every one of its captures was refused as a secret."""
+    key = "codex:codex-install:51777e7e4a0083087baf00de02721985:92051813-c57b-4903-badb-22a200155f71:user:turn-1@1"
+    assert not contains_secret_like_text(key)
+    assert not contains_secret_like_text("commit 4a0083087baf00de02721985:92051813-c57b-4903-badb-22a200155f71")
+
+
+def test_a_telegram_token_is_still_caught_where_one_appears():
+    token = _token()
+    for text in (token, f"TELEGRAM_BOT_TOKEN={token}", f'{{"token": "{token}"}}', f"token: {token} in the log",
+                 f"https://api.telegram.org/bot{token}/getMe", f"https://api.telegram.org/BOT{token}/getMe"):
+        assert contains_secret_like_text(text), text
+
