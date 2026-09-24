@@ -151,6 +151,19 @@ def test_the_client_s_tool_traffic_is_not_recorded_and_a_turn_needs_its_prompt_i
     assert _rows(root, "SELECT count(*) FROM source_events WHERE entry_id='claude-code'") == [(0,)]
 
 
+def test_a_session_start_on_an_entry_reads_nothing_of_the_store(store, monkeypatch):
+    """A local installation checks its store's status at a session start; on the pilot's shared store that
+    count took 7-8 s, past Codex's 2 s hook timeout.  An entry was checked when its config loaded."""
+    _root, _homes, client, _capture = store
+    hook = _hook(client)
+    monkeypatch.setattr(hook.core, "status", lambda *args, **kwargs: pytest.fail("status read at a session start"))
+    try:
+        assert hook.handle_payload({"hook_event_name": "SessionStart", "session_id": "TEST-cc-session",
+                                    "cwd": "C:/anywhere"}) == {}
+    finally:
+        hook.close()
+
+
 def test_a_queued_capture_replays_under_the_client_entry_s_grants_only(store):
     root, _homes, client, capture = store
     config = load_shared_client(client, "claude-code")

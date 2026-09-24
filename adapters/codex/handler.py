@@ -50,7 +50,7 @@ _SUPPORTED_EVENTS = frozenset(
 #: the store for an embedding each.
 _TURN_FIELD = {"codex": "turn_id", "claude-code": "prompt_id"}
 _HOST_EVENTS = {"codex": _SUPPORTED_EVENTS,
-                "claude-code": frozenset({"SessionStart", "UserPromptSubmit", "Stop", "SessionEnd"})}
+                "claude-code": frozenset({"UserPromptSubmit", "Stop", "SessionEnd"})}
 
 
 class HookClock(Protocol):
@@ -316,6 +316,11 @@ class CodexHookHandler:
         budget = self._hook_budget() if event == "UserPromptSubmit" else _TOTAL_BUDGET_S
         deadline = self._hook_deadline(budget)
         if event == "SessionStart":
+            if isinstance(self.config, SharedClientConfig):
+                # An entry starts no worker, and its binding was checked when the config loaded.  The
+                # status a local installation reads here counts the whole store: 7-8 s on the pilot's
+                # shared store of 277,000 sources, past Codex's 2 s hook timeout at every session start.
+                return {}
             if self._session_start(session_id, audience, deadline) and self._remaining(deadline) >= _RUNTIME_ATTACH_MIN_S:
                 self._ensure_host_runtime(audience)
                 self._maybe_launch_owned_worker(session_id, audience, require_persisted=False)
