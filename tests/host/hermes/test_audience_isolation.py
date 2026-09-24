@@ -242,3 +242,16 @@ def test_a_row_that_differs_only_in_the_plain_thread_is_named_not_granted(hermes
         assert "capability_gap:audience_thread_mismatch:row_says_main" in audience.capability_gaps
     finally:
         provider.shutdown()
+
+
+def test_a_session_key_never_rides_on_the_cli_route(installed_core, initialize_kwargs):
+    """The CLI sends no session key.  Hermes reports a relayed ``local`` gateway session to plugins
+    as platform ``cli``, with its key; relaxing the key there would hand it the CLI's owner scope."""
+    core, _clock = installed_core
+    for index, (key, granted) in enumerate((("", True), ("agent:main:local:dm:TEST-relay", False))):
+        provider = ScopeRecallHermesAdapter(core=core)
+        try:
+            provider.initialize(f"TEST-cli-{index}", **dict(initialize_kwargs, gateway_session_key=key))
+            assert bool(provider._identity.runtime_audience.allowed_scope_ids) is granted, key
+        finally:
+            provider.shutdown()

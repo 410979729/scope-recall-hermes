@@ -273,9 +273,11 @@ def _route_matches(row: Mapping[str, object], route: Mapping[str, str]) -> bool:
     it names beside it, all of which the row still matches exactly.  Rows the installer and
     most operators write leave it empty, while a gateway sends one on every session, so an
     exact empty key failed every gateway route closed (#124).  A row that names a key still
-    matches only that key.
+    matches only that key.  The CLI sends none, so a CLI row is never relaxed: Hermes reports a
+    relayed ``local`` gateway session to plugins as ``cli``, with its key, and that is not the CLI.
     """
-    return all(row.get(field) == value or (field == "gateway_session_key" and row.get(field) == "")
+    unpinned = row.get("gateway_session_key") == "" and route.get("platform") != "cli"
+    return all(row.get(field) == value or (field == "gateway_session_key" and unpinned)
                for field, value in route.items())
 
 
