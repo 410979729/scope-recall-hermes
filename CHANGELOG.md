@@ -4,6 +4,10 @@ All notable changes to `scope-recall` will be documented in this file.
 
 ## [Unreleased]
 
+### Scope Recall 3.3.0rc2 - 2026-09-24
+
+- The version moves past the `v3.3.0rc1` tag.
+
 ### Scope Recall 3.3.0rc1 - 2026-09-24
 
 - The version moves past the `v3.2.1rc1` tag, to the minor version in which Codex and Claude Code join a shared store.
