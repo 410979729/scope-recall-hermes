@@ -55,7 +55,11 @@ RECEIPTS_DIRNAME = "receipts"
 #: session with theirs; the worker keeps these.
 WORKER_SESSION = "shared-background"
 WORKER_OWNER = "shared-scope-recall-worker"
-_CONFIG_LIMIT = 65536
+#: What a runtime config these commands read or write may weigh.  The shared worker's lists every scope of the
+#: store twice (its binding and its allowed scopes), about 120 bytes a scope: the pilot's 221 scopes made 58 KB, and
+#: one more instance passed the 64 KB this once was, so the next attach refused the store's own worker config.  At
+#: MAX_SHARED_SCOPES, 1024 scopes, that is about 250 KB; the limit leaves room for longer scope ids.
+_CONFIG_LIMIT = 1024 * 1024
 
 
 class SharedStoreError(RuntimeError):
@@ -87,12 +91,22 @@ def _read_json(path: Path) -> dict[str, Any]:
     return value
 
 
+def _encoded(value: dict[str, Any]) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, indent=2) + "\n"
+
+
+def _fits(config: dict[str, Any] | None, what: str) -> None:
+    """Refuse, before anything is written, a runtime config these commands could not read back."""
+    if config is not None and len(_encoded(config).encode("utf-8")) > _CONFIG_LIMIT:
+        raise SharedStoreError(f"the {what} runtime config would pass {_CONFIG_LIMIT} bytes")
+
+
 def _write_json(path: Path, value: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     handle = tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path.parent, prefix=f".{path.stem}-",
                                          suffix=".json", delete=False)
     with handle:
-        handle.write(json.dumps(value, ensure_ascii=False, sort_keys=True, indent=2) + "\n")
+        handle.write(_encoded(value))
     for attempt in range(40):
         try:
             os.replace(handle.name, path)
@@ -244,6 +258,8 @@ def attach(
         worker_config = _bound(worker_now, _store_binding(payload, root, union))
     if worker_config is None:
         notes.append("worker_unconfigured: pass --runtime-config-from to give the shared worker its routes")
+    _fits(entry_config, "entry's")
+    _fits(worker_config, "shared worker's")
 
     run = _Run(root, f"attach-{record['entry_id']}", now)
     run.keep(root / MANIFEST_FILENAME, "store")

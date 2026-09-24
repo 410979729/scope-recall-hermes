@@ -209,3 +209,36 @@ def test_init_refuses_a_directory_in_use_or_inside_an_agent_home(tmp_path, capsy
     home, _options = _installed(tmp_path, "tianshu")
     code, result = _run(capsys, "init-shared", "--root", str(home / "shared"))
     assert code == 2 and "inside an agent's home" in result["error"]
+
+
+def _with_scopes(home, name, count):
+    """An installation that has seen many conversations: each brings a scope of its own."""
+    path = home / "scope-recall" / "installation.json"
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    for index in range(count):
+        scope = f"conversation:TEST-{name}-{index:03d}-{'x' * 64}"
+        manifest["scope_ids"].append(scope)
+        manifest["audiences"].append(dict(manifest["audiences"][0], kind="conversation", chat_type="group",
+                                          chat_id=f"TEST-group-{index:03d}", allowed_scope_ids=[scope],
+                                          writable_scope_ids=[scope], capture_scope_id=scope))
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+
+
+def test_a_worker_config_past_64_kb_still_takes_entries_and_detaches(tmp_path, capsys, root):
+    """The worker's config lists every scope of the store twice, about 120 bytes each.  The pilot's 221 scopes
+    made 58 KB; one more instance passed the 64 KB these commands read, and the next attach refused the store."""
+    homes = []
+    for name in ("tianshu", "tianji", "yuheng"):
+        home, _options = _installed(tmp_path, name)
+        _with_scopes(home, name, 120)
+        code, result = _attach(capsys, home, root, _moved_aside(home, _routes(home)), name, name)
+        assert (code, result["status"]) == (0, "attached"), result
+        homes.append(home)
+    assert (root / "runtime-config.json").stat().st_size > 65536
+    assert len(load_config(root / "runtime-config.json").binding.scope_ids) == len(read_shared_payload(root)["scope_ids"])
+    code, result = _run(capsys, "detach", "--instance-root", str(homes[-1]))
+    assert (code, result["status"]) == (0, "detached"), result
+    copy = tmp_path / "TEST-moved"
+    shutil.copytree(root, copy)
+    code, result = _run(capsys, "adopt", "--root", str(copy))
+    assert (code, result["status"]) == (0, "adopted"), result

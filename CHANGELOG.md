@@ -7,6 +7,7 @@ All notable changes to `scope-recall` will be documented in this file.
 ### Scope Recall 3.2.1rc1 - 2026-09-24
 
 - The version moves past the `v3.2.0` tag.
+- The shared store's commands read a worker runtime config sized for every scope a store may hold. The worker's config lists each scope twice, about 120 bytes a scope, and `attach`, `detach` and `adopt` read it only up to 64 KB, which the pilot's 221 scopes had nearly reached (58 KB). Rehearsing two more instances on copies of the live stores, the first attach took the store to 332 scopes and 85 KB, and the second was refused with `runtime-config.json is missing or too large`; `detach` and `adopt` would have been refused as well. The limit is now 1 MB, about four times what `MAX_SHARED_SCOPES` (1024) needs, and `attach` refuses before it writes a config it could not read back. The worker and its wake never had the 64 KB limit, so no running store stopped.
 
 ## [3.2.0] - 2026-09-24
 
