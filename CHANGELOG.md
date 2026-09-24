@@ -7,6 +7,7 @@ All notable changes to `scope-recall` will be documented in this file.
 ### Scope Recall 3.2.0rc6 - 2026-09-24
 
 - The version moves past the `v3.2.0rc5` tag, the candidate the pilot runs.
+- A tool output is kept, lexically indexed and embedded, but no longer consolidated into claims: it is not a derivation root any more (`DERIVATION_ROOT_ORIGINS`), and admission queues it an embedding only (`wanted_work_types`, shared by capture, the deferred refill and on-demand scheduling). What an agent read or ran is not what it should remember. On the pilot one 2.5-hour task left 787 claims derived from its tool output -- file sizes, paths, ports, creation times -- and 2,946 of the store's 3,175 claims rested on tool output alone; of the owner's 30 real questions, none was answered by one, and hiding all of them lost none of the 30 (and freed a slot that found one more). All 53 consolidations that failed validation that day were of tool output, as was 86% of the consolidation work. How a task was done is distilled by the host into skills; the output itself is still found by its words and by meaning. The cost, measured on the same copy: asked a question worded exactly like one of those claims, recall found the answer 38 times in 40 with them and 12 without. A consolidation queued before the change finishes without a model call, and a deferred tool output settles on its next refill.
 
 ### Scope Recall 3.2.0rc5 - 2026-09-23
 

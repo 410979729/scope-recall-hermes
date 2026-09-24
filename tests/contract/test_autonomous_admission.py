@@ -109,7 +109,8 @@ def test_memory_reinjection_is_source_only_at_capture_refill_and_on_demand(tmp_p
         work = conn.execute("SELECT subject_ref,work_type FROM work_items ORDER BY work_id").fetchall()
     finally:
         conn.close()
-    assert work == [(observed.event_refs[0].ref, "consolidate"), (observed.event_refs[0].ref, "embed")]
+    # A tool output is embedded, not consolidated: it is no derivation root (3.2.0rc6).
+    assert work == [(observed.event_refs[0].ref, "embed")]
     assert ref in {source.ref for source in app.search_sources(ctx, "TEST-ECHO-ANCHOR")}
     # An explicit request creates no work either, and writes nothing.
     before = app.storage.path.read_bytes()
@@ -122,7 +123,7 @@ def test_memory_reinjection_is_source_only_at_capture_refill_and_on_demand(tmp_p
     resumed = app.resume_deferred(ctx, remaining_seconds=10)
     assert [(item.ref, item.disposition, item.queued_work) for item in resumed] == [(ref, "source_only", 0)]
     assert app.resume_deferred(ctx, remaining_seconds=10) == ()
-    assert counts(app)["work_items"] == 2
+    assert counts(app)["work_items"] == 1
     status = app.status(ctx)
     assert status.source_only_sources == 1 and status.deferred_sources == 0
 
@@ -366,7 +367,8 @@ def test_a_repeated_tool_output_is_kept_as_a_source_only(tmp_path):
     assert first.semantic_state == "pending" and first.admission == ()
     assert second.semantic_state == "not_scheduled"
     assert second.admission == ("admission_source_only:tool_output_repeat",)
-    assert counts(app)["source_events"] == 2 and counts(app)["work_items"] == 2
+    # The first copy is embedded; a tool output is not consolidated (3.2.0rc6).
+    assert counts(app)["source_events"] == 2 and counts(app)["work_items"] == 1
     assert len(app.search_sources(ctx, "build log line")) == 2
     human = capture(app, ctx, "TEST-user/1", "TEST build log line 42")
     assert human.semantic_state == "pending" and human.admission == ()

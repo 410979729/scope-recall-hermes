@@ -357,6 +357,7 @@ CORE_RELEASE_CONTRACTS += [
     "tests/contract/test_rc42_receipt_larger_than_a_pipe.py",
     "tests/contract/test_rc43_the_loop_keeps_going.py",
     "tests/contract/test_embed_group_bookkeeping.py",
+    "tests/contract/test_tool_output_is_not_derived.py",
 ]
 
 RUNTIME_BOUNDARY_TESTS = [

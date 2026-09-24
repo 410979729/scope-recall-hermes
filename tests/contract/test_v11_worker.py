@@ -471,6 +471,8 @@ def test_M31_procedure_reuse_requires_accepted_method(worker_app):
 
 
 def test_M32_single_success_does_not_generalize_without_acceptance(worker_app):
+    # Since 3.2.0rc6 a tool output is no derivation root: a single observed success is not even
+    # proposed as a method, and the model is never asked about it.
     core, ctx, clock = worker_app
     observed = capture(core, ctx, "TEST 导出成功，exit.code=0。", origin="tool_observation")
     model = FakeConsolidation(lambda sources, episode_ref=None: consolidation_payload(
@@ -478,14 +480,17 @@ def test_M32_single_success_does_not_generalize_without_acceptance(worker_app):
     core.drain_worker(ctx, consolidation=model, max_items=2, remaining_seconds=10)
     with core.storage.read(ctx) as tx:
         refs = tx.claims.list_refs(predicate="导出方法")
-    assert refs
-    assert core.claim_history(ctx, refs[0])[-1].state == "proposed"
+        queued = tx._check().execute("SELECT work_type FROM work_items WHERE subject_ref=?", (observed.ref,)).fetchall()
+    assert not refs and model.calls == 0
+    assert [row[0] for row in queued] == ["embed"]
 
 
 def test_M33_counterexample_kept_in_procedure(worker_app):
     core, ctx, clock = worker_app
     source = capture(core, ctx, "TEST 导出前先检查透明背景；未安装设备时不适用。这是我认可的方法。")
-    counter = capture(core, ctx, "TEST 未安装设备时导出失败。", origin="tool_observation", when="2026-09-02T13:00:00Z")
+    # Reported by the person: a tool output is no derivation root since 3.2.0rc6, so the model is
+    # not shown one to cite.
+    counter = capture(core, ctx, "TEST 我试过，未安装设备时导出失败。", when="2026-09-02T13:00:00Z")
 
     def builder(sources, episode_ref=None):
         claim = procedure_proposal(source)

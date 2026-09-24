@@ -28,7 +28,14 @@ from .worker_outcomes import (
     read_derivation_fence,
 )
 
-_ROOT_ORIGINS = frozenset({"human_direct", "tool_observation", "external_document", "imported"})
+#: The sources a consolidation may derive a claim from; only these are shown to the model.  Tool
+#: output is not one.  A tool output is what an agent read or ran while working, and derived claims
+#: from it were almost all file sizes, paths, ports and timestamps: one 2.5-hour task on the pilot
+#: left 787 of them, 93% of the store's 3,175 claims rested on tool output alone, and not one of
+#: the owner's 30 real questions was answered by one.  The host distils how a task was done into
+#: skills; tool output stays a searchable source.  ``retire_rootless_proposals`` retires the
+#: unconfirmed claims derived before this changed.
+DERIVATION_ROOT_ORIGINS = frozenset({"human_direct", "external_document", "imported"})
 
 
 class ConsolidationModel(Protocol):
@@ -124,7 +131,7 @@ def _root_only_sources(tx, sources: tuple[StoredSource, ...]) -> tuple[StoredSou
     seen: set[tuple[str, int]] = set()
     for source in sources:
         origin = source_origin(source)
-        if origin not in _ROOT_ORIGINS:
+        if origin not in DERIVATION_ROOT_ORIGINS:
             continue
         key = (source.ref, source.revision)
         if key in seen:

@@ -161,6 +161,17 @@ def _repeated_tool_output(tx, scope_id, text) -> bool:
     ).fetchone() is not None
 
 
+#: What a tool output earns: an embedding, so it is found by meaning.  It is not consolidated;
+#: tool output is no derivation root (``worker_consolidation.DERIVATION_ROOT_ORIGINS``), so a
+#: consolidation of it would show the model nothing.
+TOOL_OUTPUT_WORK_TYPES = frozenset({"embed"})
+
+
+def wanted_work_types(event) -> frozenset[str]:
+    """The derived work a scheduled source is owed: every kind, or an embedding alone for tool output."""
+    return TOOL_OUTPUT_WORK_TYPES if event.get("role") == "tool" else WORK_TYPES
+
+
 def decide(tx, event, scope_id, policy=None):
     policy = policy or AdmissionPolicy()
     decision = classify(event, policy)
@@ -168,8 +179,9 @@ def decide(tx, event, scope_id, policy=None):
         return decision
     if event.get("role") == "tool" and _repeated_tool_output(tx, scope_id, event["content"]):
         return AdmissionDecision("source_only", "tool_output_repeat")
-    kinds = _available_types(tx, scope_id, policy, decision.important)
-    if kinds != WORK_TYPES:
+    wanted = wanted_work_types(event)
+    kinds = _available_types(tx, scope_id, policy, decision.important, wanted)
+    if kinds != wanted:
         return AdmissionDecision("deferred", "queue_capacity", decision.important, kinds)
     return replace(decision, work_types=kinds)
 
@@ -211,8 +223,13 @@ def _schedule(tx, clock, ref, revision, policy, *, on_demand=True, fresh=False):
     conn = tx._check(write=True)
     existing = conn.execute("SELECT work_type FROM work_items WHERE subject_ref=? AND subject_revision=? AND work_type IN ('consolidate','embed')", (ref, revision)).fetchall()
     present = {row[0] for row in existing}
-    missing = WORK_TYPES - present
+    missing = wanted_work_types(source.event) - present
     if not missing:
+        # A tool output deferred before it stopped being owed a consolidation may already hold its
+        # embedding; settle its marker, or the refill would select it on every pass.
+        if decision_marker(tx, ref, revision) == "admission_deferred:queue_capacity":
+            conn.execute("""UPDATE source_events SET extra_json=json_remove(extra_json,'$._scope_recall_admission')
+                WHERE event_id=? AND source_revision=?""", (ref, revision))
         return SourceScheduleReceipt(ref, revision, "unchanged", "already_scheduled")
     decision = classify(source.event, policy)
     if decision == _REINJECTION:
