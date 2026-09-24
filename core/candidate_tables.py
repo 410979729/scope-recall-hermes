@@ -37,6 +37,15 @@ ECHO_ORIGINS = frozenset({"memory_reinjection"})
 #: Fact states a candidate may still be judged in.
 JUDGEABLE_STATES = frozenset({"proposed", "disputed"})
 
+#: A source's origin as the rules read it (``evidence_question.evidence_text``): an import
+#: speaks with the origin its provenance verified, an unverified one with none.  Stores an
+#: agent brought into a shared store are imports, so what the owner said there reads
+#: ``imported`` in the column and ``human_direct`` here.
+EFFECTIVE_ORIGIN_SQL = """(CASE WHEN s.origin<>'imported' THEN s.origin
+                            WHEN s.import_provenance_sha256 IS NOT NULL
+                            THEN COALESCE(s.source_original_origin,'origin_unknown')
+                            ELSE 'origin_unknown' END)"""
+
 #: Fingerprint of a candidate that has not been asked anything yet.
 EMPTY_FINGERPRINT = hashlib.sha256(b"[]").hexdigest()
 
@@ -182,10 +191,7 @@ class CandidateTables:
                 WHERE e.candidate_ref=? AND e.candidate_revision=? AND s.read_blocked=0 AND s.suppressed=0
                   AND NOT EXISTS(SELECT 1 FROM object_blocks b WHERE b.object_kind='event'
                       AND b.object_ref=e.source_ref AND (b.read_blocked=1 OR b.suppressed=1))
-                  AND (CASE WHEN s.origin<>'imported' THEN s.origin
-                            WHEN s.import_provenance_sha256 IS NOT NULL
-                            THEN COALESCE(s.source_original_origin,'origin_unknown')
-                            ELSE 'origin_unknown' END) IN ({','.join('?' for _ in origins)})""",
+                  AND {EFFECTIVE_ORIGIN_SQL} IN ({','.join('?' for _ in origins)})""",
             (ref, revision, *origins),
         )]
         return bool(contents) and restates(payload, contents)
@@ -302,9 +308,15 @@ class CandidateTables:
         )
 
     def _evaluation_evidence(self, ref: str, revision: int) -> list:
-        """The live, bounded evidence set an evaluation of this candidate would carry."""
+        """The live, bounded evidence set an evaluation of this candidate would carry.
+
+        What a person said comes first, an imported message of theirs too: ranked by the
+        stored column it sat behind every newer tool output, and the model was asked without
+        it (the 3.2.0 audit).  The origin handed on is the effective one as well, so the
+        question it poses (``question_digest``) counts that message as testimony.
+        """
         evidence = self._read().execute(
-            """SELECT e.source_ref,e.source_revision,e.observed_at,s.origin,
+            f"""SELECT e.source_ref,e.source_revision,e.observed_at,{EFFECTIVE_ORIGIN_SQL} AS origin,
                       LENGTH(s.content) AS content_length
                FROM candidate_evidence e JOIN source_events s
                  ON s.event_id=e.source_ref AND s.source_revision=e.source_revision
@@ -312,7 +324,7 @@ class CandidateTables:
                  AND s.read_blocked=0 AND s.suppressed=0
                  AND NOT EXISTS(SELECT 1 FROM object_blocks b WHERE b.object_kind='event'
                      AND b.object_ref=e.source_ref AND (b.read_blocked=1 OR b.suppressed=1))
-               ORDER BY (s.origin='human_direct') DESC,
+               ORDER BY ({EFFECTIVE_ORIGIN_SQL}='human_direct') DESC,
                         e.observed_at DESC,e.source_ref,e.source_revision DESC LIMIT 16""",
             (ref, revision),
         ).fetchall()

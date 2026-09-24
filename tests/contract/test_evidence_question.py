@@ -134,8 +134,39 @@ def test_a_person_speaking_is_judged_at_once(app):
     assert _queued(core) > before, "new testimony did not produce an evaluation"
 
 
-# --------------------------------------------------------------------------
-# A question no answer could settle is not asked
+def test_a_person_s_imported_words_are_in_the_window_as_testimony(app):
+    """An agent's store brought into a shared store arrives as imports that keep the origin their
+    provenance verified.  The window ranked by the stored column, so such a message sat behind every
+    newer tool output, and the question it posed did not count it (the 3.2.0 audit)."""
+    from test_candidate_debounce import _register
+
+    core, ctx = app
+    candidate = _register(core, ctx, 1)
+    said = capture(core, ctx, "entity1 property1 sharedtoken 我确认是值1。", origin="imported", attested=True,
+                   source_original_origin="human_direct", key="TEST-import/said")
+    noise = [capture(core, ctx, f"entity1 property1 sharedtoken 工具输出{index}。", origin="tool_observation",
+                     key=f"TEST-window-noise/{index}") for index in range(20)]
+    with core.storage.write(ctx, remaining_seconds=10) as tx:
+        for source in (said, *noise):
+            tx.candidates.observe_source(source.ref, source.revision, observed_at=core.clock.utc_now())
+    # Every tool output arrived after the person's words.
+    with sqlite3.connect(core.storage.path) as conn:
+        conn.execute("UPDATE candidate_evidence SET observed_at='2026-09-01T00:00:00Z' WHERE source_ref=?",
+                     (said.ref,))
+        for index, source in enumerate(noise):
+            conn.execute("UPDATE candidate_evidence SET observed_at=? WHERE source_ref=?",
+                         (f"2026-09-02T00:00:{index:02d}Z", source.ref))
+        conn.commit()
+    with core.storage.read(ctx, remaining_seconds=10) as tx:
+        window = {(row["source_ref"], row["source_revision"]): row["origin"]
+                  for row in tx.candidates._evaluation_evidence(candidate.ref, candidate.revision)}
+        _refs, digest = tx.candidates._question(candidate.ref, candidate.revision)
+    assert len(window) == 16 and sum(origin == "tool_observation" for origin in window.values()) == 14
+    assert window.get((said.ref, said.revision)) == "human_direct", "the person's imported words fell out"
+    own = next(ref for ref in window if ref != (said.ref, said.revision) and window[ref] == "human_direct")
+    assert digest == question_digest([(*own, "human_direct"), (said.ref, said.revision, "human_direct")])
+
+
 # --------------------------------------------------------------------------
 
 def _said(content, *, origin="human_direct", complete=True):

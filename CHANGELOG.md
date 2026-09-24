@@ -8,6 +8,7 @@ All notable changes to `scope-recall` will be documented in this file.
 
 - The version moves past the `v3.3.0rc1` tag.
 - A client entry's session start reads nothing of the store. It counted the whole store as a local installation does, 7-8 s on the pilot's shared store, past the 2 s Codex gives a hook, at every Codex session start.
+- A candidate's evaluation window ranks and names a source by its effective origin, as the promotion rules read it: a person's message that came in with an imported store is first-hand. Ranked by the stored column it sat behind every newer tool output, and the question it posed did not count it (found in the 3.2.0 audit). On the pilot's store no waiting candidate holds such a message yet (80 of 489,203 evidence rows point at imported sources, none a person's), so no evaluation is asked again because of this.
 - Claude Code's prompt hook runs the entry's `hook_processing_seconds` (at most 6 s; Claude Code waits 15 s) from the start instead of the 2 s Codex's hooks get. Recall on the pilot's shared store took 2.7-5.7 s, so with 2 s most automatic recalls came back empty. The prompt waits that long before the model answers; lower `hook_processing_seconds` in the entry's runtime config to trade recall for speed.
 
 ### Scope Recall 3.3.0rc1 - 2026-09-24
