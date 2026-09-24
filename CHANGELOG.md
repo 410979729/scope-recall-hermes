@@ -7,6 +7,7 @@ All notable changes to `scope-recall` will be documented in this file.
 ### Scope Recall 3.2.0rc7 - 2026-09-24
 
 - The version moves past the `v3.2.0rc6` tag, the candidate the pilot runs.
+- The embedding input bound is an estimate of tokens, not a count of characters (#125). Providers limit tokens, and a Chinese character is about one: against a 3,072-token provider the 8,000-character bound let through more than that for any text denser than about a quarter Chinese, so ordinary Chinese sources failed with `http_400` for good and never reached the vector channel, while 12,271 ASCII characters passed. The estimate counts one token for every character outside ASCII and one for every three ASCII characters, and the bound is 2,000 of them: 6,000 ASCII characters or 2,000 Chinese ones, under the provider limit for every input the report measured. The cut keeps the longest prefix that fits and still carries the truncation marker. The embedding space is unchanged, so no stored vector is rebuilt.
 
 ### Scope Recall 3.2.0rc6 - 2026-09-24
 
