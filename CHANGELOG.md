@@ -7,6 +7,10 @@ All notable changes to `scope-recall` will be documented in this file.
 ### Scope Recall 3.3.0rc1 - 2026-09-24
 
 - The version moves past the `v3.2.1rc1` tag, to the minor version in which Codex and Claude Code join a shared store.
+- Codex and Claude Code attach to a shared store as entries ([docs/shared-store.md](docs/shared-store.md)). A local client brings no grants of its own: `attach --host codex|claude-code` gives it the owner grants of attached Hermes entries (`--grants-like`) and captures into a scope every owner row reads (`--capture-like`), so what the owner types into it reaches every agent and no other entry's binding changes. The Codex adapter serves both clients; `--home` replaces `--config` for an attached home, whose audience does not depend on the workspace, and its prompts are the owner's, verified by the attach the way the Hermes CLI's are.
+- `apply-install --host claude-code` writes a Claude Code plugin (hooks, MCP stdio server, the memory skill) into `~/.claude/skills/scope-recall`, which every session of that user loads. Prompts and final replies are recorded; tool calls are not. Changing a memory through Claude Code's MCP tools is refused: they carry no conversation id. `doctor --host claude-code` checks it. `--project-root` is needed only by a Codex that keeps its own store.
+- An entry's runtime config searches the shared worker's vector table. An entry whose routes came from a store that named its table otherwise searched a table nothing fills, and its recall lost the vector half; tianji's did, from its own 3.1 store, after it joined the pilot store on 2026-09-24.
+- An `attach` that leaves the shared worker's config as it was no longer rewrites it: any write makes the running worker restart.
 
 ### Scope Recall 3.2.1rc1 - 2026-09-24
 

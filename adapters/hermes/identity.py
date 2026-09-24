@@ -38,6 +38,16 @@ def _opaque_ref(prefix: str, *parts: str) -> str:
     return f"principal:{prefix}:v1:{hashlib.sha256(payload).hexdigest()}"
 
 
+def principal_ref(kind: str, installation_id: str, *parts: str) -> str:
+    """A store's opaque ``kind`` principal (human, assistant or host).
+
+    Every entry of a shared store derives its principals here, a local client's
+    the way a Hermes home's does: the owner on a route is ``(installation, platform,
+    user)``, an entry's assistant and host carry the entry.
+    """
+    return _opaque_ref(f"hermes-{kind}", installation_id, *parts)
+
+
 def _context_ref(prefix: str, *parts: str) -> str:
     payload = "\x1f".join(parts).encode("utf-8")
     return f"context:{prefix}:v1:{hashlib.sha256(payload).hexdigest()}"
@@ -216,12 +226,7 @@ class HermesIdentity:
             return TrustedSourcePrincipal(
                 "human",
                 "verified",
-                _opaque_ref(
-                    "hermes-human",
-                    self.binding.installation_id,
-                    self.scope.platform,
-                    self.scope.user_id,
-                ),
+                principal_ref("human", self.binding.installation_id, self.scope.platform, self.scope.user_id),
             )
         # The owner is one person whichever entry is spoken to; each entry's
         # assistant and host are its own.
@@ -230,13 +235,11 @@ class HermesIdentity:
             return TrustedSourcePrincipal(
                 "assistant",
                 "verified",
-                _opaque_ref(
-                    "hermes-assistant", self.binding.installation_id, self.scope.agent_identity, *entry,
-                ),
+                principal_ref("assistant", self.binding.installation_id, self.scope.agent_identity, *entry),
             )
         if origin == "host_generated":
             return TrustedSourcePrincipal(
-                "host", "verified", _opaque_ref("hermes-host", self.binding.installation_id, *entry),
+                "host", "verified", principal_ref("host", self.binding.installation_id, *entry),
             )
         kinds = {
             "tool_observation": "tool",

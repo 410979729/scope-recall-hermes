@@ -8,7 +8,7 @@ import shutil
 from types import ModuleType
 import uuid
 
-from . import install_codex, install_hermes
+from . import install_claude_code, install_codex, install_hermes
 from .backup import _atomic_write, _sha256
 from .doctor import _host_registration_status
 from .install_common import (
@@ -45,8 +45,8 @@ __all__ = [
     "plan_uninstall",
 ]
 
-# Both host modules expose the same functions; the entry picks one instead of branching.
-_HOSTS: dict[str, ModuleType] = {"codex": install_codex, "hermes": install_hermes}
+# Every host module exposes the same functions; the entry picks one instead of branching.
+_HOSTS: dict[str, ModuleType] = {"codex": install_codex, "claude-code": install_claude_code, "hermes": install_hermes}
 
 
 def _instance_files(host: ModuleType, instance_root: Path) -> tuple[Path, Path]:
@@ -79,7 +79,7 @@ def plan_install(
     *,
     target_plugin_dir: Path | str,
     instance_root: Path | str,
-    project_root: Path | str,
+    project_root: Path | str | None,
     agent_id: str,
     python_executable: Path | str,
     host: str,
@@ -92,7 +92,7 @@ def plan_install(
     adapter = _HOSTS[host_choice]
     target = _require_absolute(Path(target_plugin_dir), "target_plugin_dir")
     instance = _require_absolute(Path(instance_root), "instance_root")
-    project = _require_absolute(Path(project_root), "project_root")
+    project = _require_absolute(Path(project_root), "project_root") if project_root is not None else None
     python = _require_interpreter(Path(python_executable), "python_executable")
     agent = _validate_agent_id(agent_id)
     workspace, credentials = adapter.validate_options(agent_workspace, env_file)
@@ -100,7 +100,8 @@ def plan_install(
     if type(test_mode) is not bool:
         raise InstallError("test_mode must be a boolean")
     _validate_plugin_name(target.name)
-    _validate_roots((target, "target_plugin_dir"), (instance, "instance_root"), (project, "project_root"))
+    _validate_roots((target, "target_plugin_dir"), (instance, "instance_root"),
+                    *(((project, "project_root"),) if project is not None else ()))
 
     plan = InstallPlan(
         host=host_choice,

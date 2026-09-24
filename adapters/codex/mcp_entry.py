@@ -1,4 +1,9 @@
-"""CLI entry for the six-tool Codex MCP stdio server."""
+"""CLI entry for the six-tool Codex MCP stdio server.
+
+``--config`` with ``--workspace`` serves a local Codex installation's mapped
+project; ``--home`` with ``--host`` serves a client attached to a shared store,
+Codex or Claude Code, whose audience does not depend on a workspace.
+"""
 from __future__ import annotations
 
 import argparse
@@ -7,7 +12,7 @@ import sys
 from pathlib import Path
 
 from ...runtime.resume_entry import host_process_credential_environment
-from .config import CodexConfigError, CodexInstallationConfig, load_codex_config
+from .config import CodexConfigError, CodexInstallationConfig, SharedClientConfig, load_codex_config, load_shared_client
 from .mcp_server import build_server
 
 
@@ -19,7 +24,7 @@ def _absolute(value: str, field: str) -> Path:
 
 
 def apply_credential_environment(
-    config: CodexInstallationConfig,
+    config: CodexInstallationConfig | SharedClientConfig,
     env_file: Path,
     runtime_config: Path | None,
     *,
@@ -32,7 +37,9 @@ def apply_credential_environment(
     on stderr and the server still starts: a memory tool without its semantic channel
     is worth more than no memory tool.
     """
-    runtime_path = runtime_config or (config.data_directory / "runtime-config.json")
+    default = (config.runtime_config_path if isinstance(config, SharedClientConfig)
+               else config.data_directory / "runtime-config.json")
+    runtime_path = runtime_config or default
     try:
         loaded = host_process_credential_environment(runtime_path, env_file)
     except (OSError, ValueError) as exc:
@@ -46,8 +53,12 @@ def apply_credential_environment(
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Scope Recall Codex MCP server")
-    parser.add_argument("--config", required=True, help="absolute trusted installation config")
-    parser.add_argument("--workspace", required=True, help="absolute mapped Codex project workspace")
+    where = parser.add_mutually_exclusive_group(required=True)
+    where.add_argument("--config", help="absolute trusted installation config")
+    where.add_argument("--home", help="absolute home of a client attached to a shared store")
+    parser.add_argument("--host", choices=("codex", "claude-code"), default="codex",
+                        help="the client that starts this server, for --home")
+    parser.add_argument("--workspace", default=None, help="absolute mapped Codex project workspace, for --config")
     parser.add_argument("--runtime-config", default=None, help="absolute trusted local runtime worker config")
     parser.add_argument(
         "--env-file",
@@ -57,8 +68,14 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
     try:
-        config = load_codex_config(_absolute(args.config, "config"))
-        workspace = _absolute(args.workspace, "workspace")
+        if args.config is not None:
+            if not args.workspace:
+                raise ValueError("--workspace is required with --config")
+            config = load_codex_config(_absolute(args.config, "config"))
+            workspace = _absolute(args.workspace, "workspace")
+        else:
+            config = load_shared_client(_absolute(args.home, "home"), args.host)
+            workspace = None
         runtime_config = _absolute(args.runtime_config, "runtime-config") if args.runtime_config else None
         if args.env_file:
             apply_credential_environment(config, _absolute(args.env_file, "env-file"), runtime_config)

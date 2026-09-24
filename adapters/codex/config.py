@@ -1,4 +1,9 @@
-"""Immutable Codex installation config; hooks never infer identity from cwd."""
+"""Immutable Codex installation config; hooks never infer identity from cwd.
+
+The same adapter serves a local client that is an entry of a shared store
+(``SharedClientConfig``): Codex, or Claude Code, whose hooks and MCP stdio
+server speak the protocol Codex's were modelled on.
+"""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -10,7 +15,18 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Mapping
 
-from scope_recall.adapters.hermes.installation import bounded_text
+from scope_recall.adapters.hermes.audiences import LOCAL_USER_ID
+from scope_recall.adapters.hermes.identity import HermesRuntimeScope, RuntimeAudience, resolve_runtime_audience
+from scope_recall.adapters.hermes.installation import (
+    CLIENT_HOSTS,
+    HermesIdentityError,
+    InstallationManifest,
+    attachment_path,
+    bounded_text,
+    read_attachment,
+    shared_entry_manifest,
+)
+from scope_recall.adapters.runtime_wiring import RUNTIME_CONFIG_FILENAME
 from scope_recall.contracts import InstanceBinding
 from scope_recall.core import CoreConfig, MemoryCore
 
@@ -131,6 +147,90 @@ def load_codex_config(config_path: Path | str) -> CodexInstallationConfig:
     if not db_path.is_file():
         raise CodexConfigError("verified core database is required")
     return config
+
+
+@dataclass(frozen=True)
+class SharedClientConfig:
+    """A local client attached to a shared store as an entry (``attach --host codex|claude-code``).
+
+    The grants are the entry's, in the store's manifest; the home keeps the
+    pointer and the entry's runtime config.  Whoever types into the client here
+    is the owner, in whatever directory it runs, so the audience is fixed when
+    the config loads and a session's cwd plays no part in it.
+    """
+
+    host: str
+    home: Path
+    manifest: InstallationManifest
+    audience: RuntimeAudience
+    #: The route every capture records, re-checked against the entry's grants when it is replayed.
+    scope: HermesRuntimeScope
+
+    @property
+    def installation_id(self) -> str:
+        return self.manifest.installation_id
+
+    @property
+    def agent_id(self) -> str:
+        return self.manifest.agent_id
+
+    @property
+    def data_directory(self) -> Path:
+        return self.manifest.data_directory
+
+    @property
+    def scope_ids(self) -> frozenset[str]:
+        return self.manifest.scope_ids
+
+    @property
+    def test_mode(self) -> bool:
+        return self.manifest.test_mode
+
+    @property
+    def entry_id(self) -> str:
+        return str(self.manifest.entry_id)
+
+    @property
+    def entry_name(self) -> str:
+        return self.manifest.entry_name
+
+    @property
+    def runtime_config_path(self) -> Path:
+        """The entry's own runtime config beside its pointer; the store's directory holds the worker's."""
+        return attachment_path(self.home).parent / RUNTIME_CONFIG_FILENAME
+
+    def to_binding(self) -> InstanceBinding:
+        return self.manifest.to_binding()
+
+
+def load_shared_client(home: Path | str, host: str) -> SharedClientConfig:
+    """The entry ``home`` is of a shared store, for the client ``host``."""
+    if host not in CLIENT_HOSTS:
+        raise CodexConfigError(f"host must be one of {', '.join(CLIENT_HOSTS)}")
+    path = Path(home).expanduser()
+    if not path.is_absolute():
+        raise CodexConfigError("home must be absolute")
+    path = path.resolve()
+    try:
+        attachment = read_attachment(path)
+        if attachment is None:
+            raise CodexConfigError("home is not attached to a shared store")
+        manifest = shared_entry_manifest(attachment.root, attachment.entry_id, hermes_home=path)
+    except HermesIdentityError as exc:
+        raise CodexConfigError(str(exc)) from exc
+    if attachment.host != host or manifest.entry_host != host:
+        raise CodexConfigError(f"home is attached as a {attachment.host} entry, not {host}")
+    scope = HermesRuntimeScope(
+        platform=host, user_id=LOCAL_USER_ID, chat_type="private", chat_id=LOCAL_USER_ID, thread_id="main",
+        agent_identity=manifest.agent_id, agent_workspace="default", agent_context="primary",
+        entry_id=str(manifest.entry_id),
+    )
+    audience = resolve_runtime_audience(manifest, scope)
+    if not audience.allowed_scope_ids or audience.capture_scope_id is None:
+        raise CodexConfigError("the entry's grants give this client nothing to read or no scope to capture into")
+    if not (manifest.data_directory / "memory.sqlite3").is_file():
+        raise CodexConfigError("verified core database is required")
+    return SharedClientConfig(host, path, manifest, audience, scope)
 
 
 def write_codex_config(config: CodexInstallationConfig) -> None:

@@ -147,7 +147,7 @@ def _write_receipt(
         "agent_id": plan.agent_id,
         "target_plugin_dir": _norm(plan.target_plugin_dir),
         "instance_root": _norm(plan.instance_root),
-        "project_root": _norm(plan.project_root),
+        "project_root": _norm(plan.project_root) if plan.project_root is not None else None,
         "python_executable": _norm(plan.python_executable),
         "files": files,
     }

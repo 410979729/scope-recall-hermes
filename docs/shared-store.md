@@ -57,9 +57,10 @@ scope-recall attach --host hermes --instance-root <home> --root F:\ScopeRecall\s
 Without it the entry gets a fresh installation's grants: the CLI only. The old store stays where
 you moved it; its memories are not copied into the shared store.
 
-`--runtime-config-from` gives the entry its model routes, bound to the shared store. The first
-entry attached with one also gives the shared worker its routes, and its spend ledger moves to
-the store's directory. Every later entry must use the same embedding model as the worker: a
+`--runtime-config-from` gives the entry its model routes, bound to the shared store and to the
+worker's vector table, with the entry's spend ledger beside its pointer. The first entry attached
+with one also gives the shared worker its routes, and its spend ledger moves to the store's
+directory. Every later entry must use the same embedding model as the worker: a
 query vector from another model searches a directory the worker never fills, so `attach`
 refuses with `embedding_space_differs`. An entry attached without a runtime config recalls
 lexically only (`vector_recall_unavailable`).
@@ -96,6 +97,45 @@ sources are imported. No vector is copied: the embeddings the old store had are 
 shared worker, and until it has made them those memories are found by their words.
 `--dry-run` runs the whole import and rolls it back. A store is imported once per entry; a
 second run is refused, and so is a store that was not this entry's home's.
+
+## Attach Codex or Claude Code
+
+A local coding assistant brings no grants of its own: whoever types into it on this machine is
+the owner, as at the Hermes CLI. `attach` gives it the owner grants of Hermes entries already
+attached (`--grants-like`, their ids comma separated, or `all`): it reads every scope their owner
+rows read and may write where they may. What the owner types into it is captured into the scope
+another entry's owner captures into (`--capture-like`), which must be one every owner row of
+every attached Hermes entry reads, so that every agent hears it; otherwise `attach` refuses and
+names the rows that would not. No other entry's grants change and the worker keeps running.
+
+```text
+scope-recall attach --host claude-code --instance-root F:\ScopeRecall\claude-code ^
+    --root F:\ScopeRecall\shared --entry claude-code --display-name "Claude Code" ^
+    --grants-like all --capture-like tianshu ^
+    --runtime-config-from <an attached home>\scope-recall\runtime-config.json
+scope-recall apply-install --host claude-code --target-plugin-dir %USERPROFILE%\.claude\skills\scope-recall ^
+    --instance-root F:\ScopeRecall\claude-code --agent-id <the store's agent id> ^
+    --python F:\ScopeRecall\claude-code-venv\Scripts\python.exe --env-file <the file with the embedding key>
+```
+
+The plugin under `~/.claude/skills/` loads in every new Claude Code session of that user, the
+desktop app's included; `claude plugin disable scope-recall@skills-dir` stops it. Its hooks record
+each prompt as the owner's and each final reply as Claude Code's, and put what is remembered in
+front of the prompt; tool calls are not recorded. A turn is recorded under its prompt id, which
+Claude Code sends from 2.1.196. Claude Code runs a hook command through a shell (Git Bash, or
+PowerShell without it), so keep the interpreter, the home and the env file on ASCII paths without
+spaces; `apply-install` refuses others. Its MCP tools read the store. Changing a memory through
+them is refused, because the tools cannot tell which conversation asks: correct or delete through
+a Hermes agent or Codex.
+
+A Codex that keeps its own store today: pause its autostart, move `codex-installation.json` and
+`data` aside, attach it with `--host codex` (its routes are the moved `data\runtime-config.json`),
+and run `apply-install --host codex` without `--project-root`. Its hooks and MCP server then name
+the home and serve every workspace. Refresh Codex's plugin cache and approve the changed hooks in
+Codex. The moved store's memories are not imported.
+
+`doctor --host codex|claude-code --instance-root <home>` and `detach` work for these entries as
+for a Hermes home.
 
 ## Check
 
@@ -142,8 +182,7 @@ was loaded from, so upgrading one entry never makes another entry's process look
 
 ## Not yet
 
-Only Hermes homes attach. `recall` has no per-entry filter, and a deletion receipt does not list
-entries.
+`recall` has no per-entry filter, and a deletion receipt does not list entries.
 
 A deletion an agent's own store made before `import-entry` covers that agent's copies only. The
 same thing told to another agent, in the same scope, comes in with that agent's store; delete it

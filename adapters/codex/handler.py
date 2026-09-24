@@ -1,4 +1,4 @@
-"""Dispatch Codex hook events through the single MemoryCore boundary."""
+"""Dispatch Codex (and Claude Code) hook events through the single MemoryCore boundary."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -22,7 +22,7 @@ from .boundary import (
     turn_id_from_payload,
     user_prompt_source_event,
 )
-from .config import CodexConfigError, CodexInstallationConfig, load_codex_config
+from .config import CodexConfigError, CodexInstallationConfig, SharedClientConfig, load_codex_config, load_shared_client
 from .identity import resolve_runtime_audience, trusted_context
 from .runtime_wiring import (
     GAP_UNCONFIGURED,
@@ -44,6 +44,13 @@ _CAPTURE_ERROR_CODES = frozenset({
 _SUPPORTED_EVENTS = frozenset(
     {"SessionStart", "UserPromptSubmit", "Stop", "PostToolUse", "Interrupt", "SessionEnd"}
 )
+#: Where each client's hooks differ.  Claude Code's were the model for Codex's and send the
+#: same fields, except that a turn is named by ``prompt_id``.  Its tool output is not recorded:
+#: a tool result never becomes a memory, and a coding session's tool traffic would be most of
+#: the store for an embedding each.
+_TURN_FIELD = {"codex": "turn_id", "claude-code": "prompt_id"}
+_HOST_EVENTS = {"codex": _SUPPORTED_EVENTS,
+                "claude-code": frozenset({"SessionStart", "UserPromptSubmit", "Stop", "SessionEnd"})}
 
 
 class HookClock(Protocol):
@@ -91,6 +98,7 @@ class CodexHookHandler:
         hook_started_at: float | None = None,
     ) -> None:
         self.config = config
+        self.host = config.host if isinstance(config, SharedClientConfig) else "codex"
         self._host_runtime = host_runtime
         if host_runtime is not None:
             if core is not None and core is not host_runtime.core:
@@ -146,6 +154,23 @@ class CodexHookHandler:
             )
         return cls(config, core=core, host_runtime=host_runtime, clock=clock, hook_started_at=hook_started_at)
 
+    @classmethod
+    def from_home(
+        cls,
+        home: str,
+        host: str,
+        *,
+        clock: HookClock | None = None,
+        trusted_runtime_config_path: str | None = None,
+        hook_started_at: float | None = None,
+    ) -> "CodexHookHandler":
+        """A client attached to a shared store; its runtime config is the entry's, beside its pointer."""
+        config = load_shared_client(home, host)
+        core = MemoryCore(CoreConfig(config.to_binding()), clock=clock)
+        handler = cls(config, core=core, clock=clock, hook_started_at=hook_started_at)
+        handler._pending_runtime_config_path = trusted_runtime_config_path or str(config.runtime_config_path)
+        return handler
+
     # -- diagnostics and budget ------------------------------------------
 
     def _merge_runtime_gaps(self, gaps: tuple[str, ...] = ()) -> None:
@@ -192,7 +217,7 @@ class CodexHookHandler:
         if self._host_runtime is not None or self._runtime_attach_attempted:
             return
         self._runtime_attach_attempted = True
-        session_id = f"codex-runtime:{self.config.installation_id}"
+        session_id = f"{self.host}-runtime:{self.config.installation_id}"
         try:
             partition = self._context(audience, session_id, "host_generated") if audience is not None else None
             host_runtime = attach_trusted_host_runtime(
@@ -200,6 +225,7 @@ class CodexHookHandler:
                 expected_binding=self.config.to_binding(),
                 session_id=session_id,
                 allowed_scope_ids=self.config.scope_ids,
+                host_adapter=self.host,
                 core=self.core,
                 clock=self.clock,
                 project_id=partition.project_id if partition is not None else None,
@@ -253,7 +279,9 @@ class CodexHookHandler:
 
     def _session_id(self, payload: dict[str, Any]) -> str | None:
         session_id = payload.get("session_id")
-        if type(session_id) is not str or not session_id.strip() or len(session_id) > 240:
+        # A shared entry's stored session carries the entry (``identity.stored_session_id``).
+        limit = 240 - len(self.config.entry_id) - 1 if isinstance(self.config, SharedClientConfig) else 240
+        if type(session_id) is not str or not session_id.strip() or len(session_id.strip()) > limit:
             self._diag("invalid_session")
             return None
         return session_id.strip()
@@ -271,7 +299,7 @@ class CodexHookHandler:
         self.diagnostics = HookDiagnostics(capability_gaps=self.diagnostics.capability_gaps)
         event = payload.get("hook_event_name")
         self.diagnostics.last_event = str(event) if event is not None else None
-        if event not in _SUPPORTED_EVENTS:
+        if event not in _HOST_EVENTS[self.host]:
             self._diag("unsupported_event")
             return {}
         session_id = self._session_id(payload)
@@ -336,7 +364,7 @@ class CodexHookHandler:
                 context,
                 event,
                 scope_id=audience.capture_scope_id,
-                host_scope={"cwd": audience.matched_project_root},
+                host_scope=audience.host_scope,
                 remaining_seconds=min(_CAPTURE_TIMEOUT_S, self._remaining(deadline)),
             )
         except (ContractError, OSError, RuntimeError) as exc:
@@ -382,6 +410,7 @@ class CodexHookHandler:
         label = reason if type(reason) is str and reason.strip() else "unknown"
         event = lifecycle_source_event(
             installation_id=self.config.installation_id,
+            host=self.host,
             session_id=session_id,
             event_kind="session_end",
             event_id=session_id,
@@ -392,11 +421,12 @@ class CodexHookHandler:
         return {}
 
     def _interrupt(self, session_id: str, audience, payload: dict[str, Any], deadline: float) -> dict[str, Any]:
-        turn_id, gaps = turn_id_from_payload(payload, required=True)
+        turn_id, gaps = turn_id_from_payload(payload, required=True, field=_TURN_FIELD[self.host])
         if turn_id is None:
             gaps = (*gaps, "outcome_gap:interrupt_without_turn")
         event = lifecycle_source_event(
             installation_id=self.config.installation_id,
+            host=self.host,
             session_id=session_id,
             event_kind="interrupt",
             event_id=turn_id or session_id,
@@ -408,7 +438,7 @@ class CodexHookHandler:
         return {}
 
     def _user_prompt_submit(self, session_id: str, audience, payload: dict[str, Any], deadline: float) -> dict[str, Any]:
-        turn_id, gaps = turn_id_from_payload(payload, required=True)
+        turn_id, gaps = turn_id_from_payload(payload, required=True, field=_TURN_FIELD[self.host])
         if turn_id is None:
             self._diag("missing_turn_id", gaps=gaps)
             return {}
@@ -422,6 +452,7 @@ class CodexHookHandler:
             self._diag("attachment_gap", gaps=attachment_gaps)
         event = user_prompt_source_event(
             installation_id=self.config.installation_id,
+            host=self.host,
             session_id=session_id,
             turn_id=turn_id,
             prompt=prompt,
@@ -442,7 +473,7 @@ class CodexHookHandler:
             if not self._queued_this_call:
                 self._diag("capture_failed", gaps=capture_gaps)
             return {}
-        return self._auto_recall(context, prompt, f"codex-auto:{session_id}:{turn_id}", current_refs, deadline, capture_gaps)
+        return self._auto_recall(context, prompt, f"{self.host}-auto:{session_id}:{turn_id}", current_refs, deadline, capture_gaps)
 
     def _auto_recall(self, context, prompt: str, request_id: str, current_refs: tuple[str, ...], deadline: float, gaps: tuple[str, ...]) -> dict[str, Any]:
         """Render this turn's automatic recall context, or nothing once the budget is gone."""
@@ -467,13 +498,16 @@ class CodexHookHandler:
         if self._remaining(deadline) <= 0:
             self._diag("deadline_exceeded", gaps=gaps)
             return {}
-        text = render_host_recall_context(preparation.canonical_text)
+        # In a shared store the model is told which agent it is, so another entry's items read as theirs.
+        entry = ((self.config.entry_id, self.config.entry_name) if isinstance(self.config, SharedClientConfig)
+                 else None)
+        text = render_host_recall_context(preparation.canonical_text, context=preparation.context, entry=entry)
         if not text:
             return {}
         return {"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": text}}
 
     def _stop(self, session_id: str, audience, payload: dict[str, Any], deadline: float) -> dict[str, Any]:
-        turn_id, gaps = turn_id_from_payload(payload, required=True)
+        turn_id, gaps = turn_id_from_payload(payload, required=True, field=_TURN_FIELD[self.host])
         if turn_id is None:
             self._diag("missing_turn_id", gaps=gaps)
             return {}
@@ -483,6 +517,7 @@ class CodexHookHandler:
             message = ""
         event, outcome_gaps = assistant_stop_source_event(
             installation_id=self.config.installation_id,
+            host=self.host,
             session_id=session_id,
             turn_id=turn_id,
             message=message,
@@ -493,7 +528,7 @@ class CodexHookHandler:
         return {}
 
     def _post_tool_use(self, session_id: str, audience, payload: dict[str, Any], deadline: float) -> dict[str, Any]:
-        turn_id, gaps = turn_id_from_payload(payload, required=True)
+        turn_id, gaps = turn_id_from_payload(payload, required=True, field=_TURN_FIELD[self.host])
         if turn_id is None:
             self._diag("missing_turn_id", gaps=gaps)
             return {}
@@ -507,6 +542,7 @@ class CodexHookHandler:
             return {}
         event, tool_gaps, origin = tool_use_source_event(
             installation_id=self.config.installation_id,
+            host=self.host,
             session_id=session_id,
             turn_id=turn_id,
             tool_use_id=tool_use_id.strip(),

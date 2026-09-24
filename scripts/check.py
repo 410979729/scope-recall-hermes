@@ -148,6 +148,7 @@ SUITES = {
         "tests/host/codex/test_lifecycle_worker_wakeup.py",
         "tests/host/codex/test_mcp.py",
         "tests/host/codex/test_runtime_wiring.py",
+        "tests/host/codex/test_shared_client.py",
     ],
     "migration": ["tests/migration/test_v11_migration.py"],
     "packaging": [

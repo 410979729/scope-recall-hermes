@@ -1,12 +1,23 @@
 """Codex host: the plugin's hooks.json, .mcp.json, plugin.json and Windows hook
-launcher, plus the instance binding a receipt-backed uninstall verifies."""
+launcher, plus the instance binding a receipt-backed uninstall verifies.
+
+A Codex home is either an installation of its own (``codex-installation.json``
+and ``data/``) or, once ``scope-recall attach --host codex`` made it one, an
+entry of a shared store: its wrappers then name the home, not a config."""
 from __future__ import annotations
 
 from pathlib import Path
 import shlex
 from typing import Any
 
-from scope_recall.adapters.codex.config import CONFIG_FILENAME, install_codex_scope_recall, load_codex_config
+from scope_recall.adapters.codex.config import (
+    CONFIG_FILENAME,
+    CodexConfigError,
+    install_codex_scope_recall,
+    load_codex_config,
+    load_shared_client,
+)
+from scope_recall.adapters.hermes.installation import ATTACHMENT_FILENAME, attachment_path
 
 from .install_common import (
     BACKUP_DIRNAME,
@@ -24,12 +35,18 @@ CODEX_HOOK_EVENTS = frozenset({"SessionStart", "UserPromptSubmit", "PostToolUse"
 WINDOWS_HOOK_LAUNCHER = "scope-recall-hook.cmd"
 
 
+def attached(instance_root: Path) -> bool:
+    """Whether this home is an entry of a shared store."""
+    return attachment_path(instance_root).is_file()
+
+
 def data_dir(instance_root: Path) -> Path:
-    return instance_root / "data"
+    # An entry keeps its pointer and runtime config here; its memory is the store's.
+    return attachment_path(instance_root).parent if attached(instance_root) else instance_root / "data"
 
 
 def config_path(instance_root: Path) -> Path:
-    return instance_root / CONFIG_FILENAME
+    return attachment_path(instance_root) if attached(instance_root) else instance_root / CONFIG_FILENAME
 
 
 def instance_wrapper_files(instance_root: Path) -> tuple[Path, ...]:
@@ -63,8 +80,15 @@ def approve_local_platforms(plan: InstallPlan) -> None:
     return None
 
 
+def _binding_argv(config: Path) -> list[str]:
+    """How a hook or the MCP server finds its binding: an entry's pointer names the home, else the config."""
+    if config.name == ATTACHMENT_FILENAME:
+        return ["--home", str(config.parent.parent), "--host", "codex"]
+    return ["--config", str(config)]
+
+
 def _hook_argv(python_executable: Path, config: Path, *, env_file: Path | None = None) -> list[str]:
-    argv = [str(python_executable), "-I", "-B", "-m", "scope_recall.adapters.codex.hook_entry", "--config", str(config)]
+    argv = [str(python_executable), "-I", "-B", "-m", "scope_recall.adapters.codex.hook_entry", *_binding_argv(config)]
     if env_file is not None:
         argv += ["--env-file", str(env_file)]
     return argv
@@ -107,8 +131,10 @@ def _hooks_json(python_executable: Path, config: Path, *, windows_launcher: Path
     return {"hooks": {event: [{"hooks": [dict(hook)]}] for event in sorted(CODEX_HOOK_EVENTS)}}
 
 
-def _mcp_json(python_executable: Path, config: Path, workspace: Path, *, env_file: Path | None = None) -> dict[str, Any]:
-    args = ["-I", "-B", "-m", "scope_recall.adapters.codex.mcp_entry", "--config", str(config), "--workspace", str(workspace)]
+def _mcp_json(python_executable: Path, config: Path, workspace: Path | None, *, env_file: Path | None = None) -> dict[str, Any]:
+    # An entry's audience is the entry's wherever Codex runs; only an installation of its own maps a workspace.
+    mapped = ["--workspace", str(workspace)] if config.name != ATTACHMENT_FILENAME else []
+    args = ["-I", "-B", "-m", "scope_recall.adapters.codex.mcp_entry", *_binding_argv(config), *mapped]
     if env_file is not None:
         # Codex starts the server with its own environment; the key names the
         # runtime config declares are read from this file by the entry itself.
@@ -137,6 +163,8 @@ def _plugin_json(plugin_name: str) -> dict[str, Any]:
 
 def planned_files(plan: InstallPlan) -> dict[Path, str | bytes]:
     config = config_path(plan.instance_root)
+    if config.name != ATTACHMENT_FILENAME and plan.project_root is None:
+        raise InstallError("project_root is required for a Codex installation of its own")
     launcher = plan.target_plugin_dir / "hooks" / WINDOWS_HOOK_LAUNCHER
     return {
         plan.target_plugin_dir / ".codex-plugin" / "plugin.json": _json_dump(_plugin_json(plan.target_plugin_dir.name)),
@@ -170,12 +198,21 @@ def initialize_instance(plan: InstallPlan) -> str:
     return config.installation_id
 
 
+def _bound(instance_root: Path):
+    try:
+        if attached(instance_root):
+            return load_shared_client(instance_root, "codex")
+        return load_codex_config(config_path(instance_root))
+    except CodexConfigError as exc:
+        raise InstallError(f"existing Codex binding is unusable: {exc}") from exc
+
+
 def installation_id(instance_root: Path) -> str:
-    return load_codex_config(config_path(instance_root)).installation_id
+    return _bound(instance_root).installation_id
 
 
 def validate_reuse(plan: InstallPlan) -> None:
-    config = load_codex_config(config_path(plan.instance_root))
+    config = _bound(plan.instance_root)
     if config.agent_id != plan.agent_id:
         raise InstallError("existing Codex installation agent_id mismatch")
     if config.test_mode != plan.test_mode:
@@ -187,6 +224,8 @@ def validate_reuse(plan: InstallPlan) -> None:
 
 def purge_identity(instance_root: Path) -> tuple[Path, str, str, Path]:
     """Data directory, installation id, agent id and manifest path from the signed config."""
+    if attached(instance_root):
+        raise InstallError("an entry of a shared store is never purged from its home; detach it instead")
     path = config_path(instance_root)
     config = load_codex_config(path)
     _reject_symlink_chain(config.data_directory)

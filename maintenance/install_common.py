@@ -1,9 +1,9 @@
 """Types and primitives shared by the install module family.
 
-``install.py`` is the plan/apply entry.  ``install_codex.py`` and
-``install_hermes.py`` each render one host's wrapper files and bind its
-instance behind the same function names, so the entry picks a host module
-instead of branching on the host.  ``install_receipt.py`` signs and verifies
+``install.py`` is the plan/apply entry.  ``install_codex.py``,
+``install_claude_code.py`` and ``install_hermes.py`` each render one host's
+wrapper files and bind its instance behind the same function names, so the
+entry picks a host module instead of branching on the host.  ``install_receipt.py`` signs and verifies
 the receipt; ``install_purge.py`` inventories what an explicit purge may
 delete.
 """
@@ -32,7 +32,7 @@ SKILLS: dict[str, Path] = {
     "scope-recall-memory": Path(__file__).with_name("skills") / "scope-recall-memory" / "SKILL.md",
 }
 PACKAGE_VERSION = __version__
-HostChoice = Literal["hermes", "codex"]
+HostChoice = Literal["hermes", "codex", "claude-code"]
 RECEIPT_FILENAME = ".scope-recall-install-receipt.json"
 BACKUP_DIRNAME = ".scope-recall-backups"
 _MAX_IDENTIFIER_LEN = 240
@@ -62,7 +62,8 @@ class InstallPlan:
     host: HostChoice
     target_plugin_dir: Path
     instance_root: Path
-    project_root: Path
+    #: The Codex workspace a local Codex installation maps; a host that maps none has ``None``.
+    project_root: Path | None
     agent_id: str
     python_executable: Path
     test_mode: bool = False
@@ -78,7 +79,7 @@ class InstallPlan:
             "host": self.host,
             "target_plugin_dir": str(self.target_plugin_dir),
             "instance_root": str(self.instance_root),
-            "project_root": str(self.project_root),
+            "project_root": str(self.project_root) if self.project_root is not None else None,
             "agent_id": self.agent_id,
             "python_executable": str(self.python_executable),
             "test_mode": self.test_mode,
@@ -275,7 +276,9 @@ def _validate_host(host: str) -> HostChoice:
         return "hermes"
     if host == "codex":
         return "codex"
-    raise InstallError("host must be 'hermes' or 'codex'")
+    if host == "claude-code":
+        return "claude-code"
+    raise InstallError("host must be 'hermes', 'codex' or 'claude-code'")
 
 
 def _manifest_version(version: str = PACKAGE_VERSION) -> str:

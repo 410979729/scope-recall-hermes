@@ -15,11 +15,14 @@ import sys
 
 import pytest
 
+from scope_recall.adapters.codex.config import load_shared_client
 from scope_recall.adapters.hermes import HermesIdentityError, bind_hermes_identity
-from scope_recall.adapters.hermes.installation import read_shared_payload
+from scope_recall.adapters.hermes.installation import read_attachment, read_shared_payload
 from scope_recall.maintenance.doctor import run_doctor
 from scope_recall.maintenance.install import apply_install, plan_install
+from scope_recall.maintenance.install_common import InstallError
 from scope_recall.maintenance.shared import main
+from scope_recall.runtime.instance import RuntimeInstanceConfig
 from scope_recall.runtime.model_budget import read_auxiliary_budget_status
 from scope_recall.runtime.worker_entry import load_config
 
@@ -31,7 +34,7 @@ def _run(capsys, *argv):
     return code, json.loads(capsys.readouterr().out)
 
 
-def _installed(tmp_path, name):
+def _installed(tmp_path, name, *, workspace=None):
     """A Hermes home installed on its own, the way apply-install leaves one."""
     home = (tmp_path / f"TEST-{name}-home").resolve()
     plugin = (tmp_path / f"TEST-{name}-plugin" / "scope-recall").resolve()
@@ -39,7 +42,7 @@ def _installed(tmp_path, name):
     plugin.mkdir(parents=True)
     project.mkdir()
     options = dict(host="hermes", target_plugin_dir=plugin, instance_root=home, project_root=project,
-                   agent_id=AGENT, python_executable=Path(sys.executable))
+                   agent_id=AGENT, python_executable=Path(sys.executable), agent_workspace=workspace)
     apply_install(plan_install(**options))
     return home, options
 
@@ -242,3 +245,125 @@ def test_a_worker_config_past_64_kb_still_takes_entries_and_detaches(tmp_path, c
     shutil.copytree(root, copy)
     code, result = _run(capsys, "adopt", "--root", str(copy))
     assert (code, result["status"]) == (0, "adopted"), result
+
+
+def _hermes_pair(tmp_path, capsys, root, *, second_workspace=None):
+    """Two Hermes entries of the store, tianshu's routes the worker's."""
+    first, _options = _installed(tmp_path, "tianshu")
+    _attach(capsys, first, root, _moved_aside(first, _routes(first)), "tianshu", "天枢")
+    second, _options = _installed(tmp_path, "tianquan", workspace=second_workspace)
+    _attach(capsys, second, root, _moved_aside(second, _routes(second)), "tianquan", "天权")
+    return first, second
+
+
+def _attach_client(capsys, root, home, *, host="claude-code", like="all", capture="tianshu", routes=None):
+    argv = ["attach", "--host", host, "--instance-root", str(home), "--root", str(root), "--entry", host,
+            "--display-name", "Claude Code" if host == "claude-code" else "Codex", "--grants-like", like,
+            "--capture-like", capture]
+    if routes is not None:
+        argv += ["--runtime-config-from", str(routes)]
+    return _run(capsys, *argv)
+
+
+def test_a_client_attaches_as_the_owner_installs_and_is_checked_like_an_entry(tmp_path, capsys, root):
+    first, _second = _hermes_pair(tmp_path, capsys, root)
+    worker_before = (root / "runtime-config.json").read_bytes()
+    client = (tmp_path / "TEST-claude-code-home").resolve()
+    client.mkdir()
+
+    code, result = _attach_client(capsys, root, client, routes=first / "scope-recall" / "runtime-config.json")
+    assert (code, result["status"], result["new_scopes"]) == (0, "attached", 0), result
+    assert result["worker_runtime_config_written"] is False
+    assert (root / "runtime-config.json").read_bytes() == worker_before, "an unchanged worker is not restarted"
+    assert read_attachment(client).host == "claude-code"
+    config = load_shared_client(client, "claude-code")
+    tianshu_owner = next(row for row in read_shared_payload(root)["entries"][0]["audiences"]
+                         if row["kind"] == "owner_private")
+    assert config.audience.capture_scope_id == tianshu_owner["capture_scope_id"]
+    assert config.audience.allowed_scope_ids == frozenset(tianshu_owner["allowed_scope_ids"])
+    entry = load_config(client / "scope-recall" / "runtime-config.json")
+    assert entry.binding == config.to_binding() and entry.host_adapter == "claude-code"
+    assert (entry.session_id, entry.owner_id) == ("claude-code-background", "claude-code-scope-recall")
+    assert entry.auxiliary.ledger_path == client / "scope-recall" / "auxiliary-budget.sqlite3"
+    assert str(entry.auxiliary.ledger_path) in result["ledgers_created"]
+
+    plugin = (tmp_path / "TEST-claude" / "skills" / "scope-recall").resolve()
+    options = dict(host="claude-code", target_plugin_dir=plugin, instance_root=client, project_root=None,
+                   agent_id=AGENT, python_executable=Path(sys.executable))
+    installed = apply_install(plan_install(**options))
+    assert installed.installation_id == config.installation_id
+    hooks = json.loads((plugin / "hooks" / "hooks.json").read_text(encoding="utf-8"))["hooks"]
+    assert sorted(hooks) == ["SessionEnd", "Stop", "UserPromptSubmit"]
+    command = hooks["UserPromptSubmit"][0]["hooks"][0]["command"]
+    assert "--home " + client.as_posix() + " --host claude-code" in command
+    assert chr(92) not in command, "a shell would read a backslash as an escape"
+    server = json.loads((plugin / ".mcp.json").read_text(encoding="utf-8"))["mcpServers"]["scope-recall"]
+    assert server["args"][-4:] == ["--home", client.as_posix(), "--host", "claude-code"]
+    manifest = json.loads((plugin / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))
+    assert (manifest["hooks"], manifest["mcpServers"]) == ("./hooks/hooks.json", "./.mcp.json")
+    assert sorted(path.parent.name for path in (plugin / "skills").glob("*/SKILL.md")) == ["scope-recall-memory"]
+    assert apply_install(plan_install(**options)).installation_id == config.installation_id, "an upgrade reinstalls"
+
+    report = run_doctor(host="claude-code", instance_root=client, python_executable=Path(sys.executable))
+    assert report.binding_ok and report.database_present
+    assert report.shared_store == {"root": str(root), "entry_id": "claude-code", "entry_name": "Claude Code"}
+    code, listing = _run(capsys, "entries", "--root", str(root))
+    assert [(row["entry_id"], row["host"], row["pointer_present"]) for row in listing["entries"]][-1] == (
+        "claude-code", "claude-code", True)
+
+    code, result = _run(capsys, "detach", "--instance-root", str(client))
+    assert (code, result["status"]) == (0, "detached")
+    assert not (client / "scope-recall").exists()
+
+
+def test_a_client_writes_only_where_every_owner_row_reads(tmp_path, capsys, root):
+    _hermes_pair(tmp_path, capsys, root, second_workspace="TEST-other-workspace")
+    client = (tmp_path / "TEST-claude-code-home").resolve()
+    client.mkdir()
+    code, result = _attach_client(capsys, root, client)
+    assert code == 2 and "not read by these owner rows: tianquan:cli" in result["error"], result
+    code, result = _attach_client(capsys, root, client, like="tianshu,nobody")
+    assert code == 2 and "nobody" in result["error"], result
+    assert [entry["entry_id"] for entry in read_shared_payload(root)["entries"]] == ["tianshu", "tianquan"]
+    assert read_attachment(client) is None
+    with pytest.raises(InstallError):
+        apply_install(plan_install(host="claude-code", target_plugin_dir=(tmp_path / "TEST-plugin" / "scope-recall"),
+                                   instance_root=client, project_root=None, agent_id=AGENT,
+                                   python_executable=Path(sys.executable)))
+
+
+def test_a_codex_home_with_its_own_store_still_in_place_is_refused(tmp_path, capsys, root):
+    _hermes_pair(tmp_path, capsys, root)
+    codex = (tmp_path / "TEST-codex-home").resolve()
+    (codex / "data").mkdir(parents=True)
+    (codex / "codex-installation.json").write_text("{}", encoding="utf-8")
+    code, result = _attach_client(capsys, root, codex, host="codex")
+    assert code == 2 and "still has its own store" in result["error"], result
+    shutil.move(str(codex / "codex-installation.json"), str(tmp_path / "TEST-codex-aside.json"))
+    code, result = _attach_client(capsys, root, codex, host="codex")
+    assert (code, result["status"]) == (0, "attached"), result
+    assert load_shared_client(codex, "codex").entry_id == "codex"
+
+
+def test_an_entry_searches_the_worker_s_vector_table_whatever_its_routes_named(tmp_path, capsys, root):
+    """tianji's routes came from its own 3.1 store, which named its table source_embeddings; its entry then
+    searched a table the shared worker never fills, and recall lost its vector half (2026-09-24)."""
+    def with_table(home, table):
+        routes = _routes(home)
+        space = RuntimeInstanceConfig.from_mapping(routes)
+        routes["vector"] = {"storage_dir": str(Path(routes["binding"]["data_directory"]) / "vectors"
+                                               / space.embedding_space_id()),
+                            "table_name": table, "dimensions": space.embedding_space()["dimensions"]}
+        return routes
+
+    first, _options = _installed(tmp_path, "tianshu")
+    code, result = _attach(capsys, first, root, _moved_aside(first, with_table(first, "scope_recall")), "tianshu", "天枢")
+    assert code == 0, result
+    second, _options = _installed(tmp_path, "tianji")
+    code, result = _attach(capsys, second, root, _moved_aside(second, with_table(second, "source_embeddings")),
+                           "tianji", "天姬")
+    assert code == 0, result
+    worker = load_config(root / "runtime-config.json").vector
+    entry = load_config(second / "scope-recall" / "runtime-config.json").vector
+    assert entry.table_name == worker.table_name == "scope_recall"
+    assert entry.storage_dir == worker.storage_dir

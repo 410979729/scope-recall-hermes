@@ -44,7 +44,8 @@ from .vector_upkeep import compact_if_due
 _RUNTIME_ORIGINS: frozenset[Origin] = frozenset(
     {"human_direct", "tool_observation", "external_document", "imported"}
 )
-_HOST_ADAPTERS = frozenset({"hermes", "codex"})
+#: Claude Code runs the Codex adapter as an entry of a shared store (``adapters/codex/config.py``).
+_HOST_ADAPTERS = frozenset({"hermes", "codex", "claude-code"})
 _VECTOR_BACKENDS = frozenset({"lancedb", "sqlite-bruteforce"})
 
 

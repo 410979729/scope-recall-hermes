@@ -30,7 +30,7 @@ from scope_recall._version import __version__
 
 from . import package_health
 
-HostChoice = Literal["hermes", "codex"]
+HostChoice = Literal["hermes", "codex", "claude-code"]
 #: Run as a file by the target interpreter, so an installed package that
 #: predates these diagnostics is still measured. It imports no optional library.
 _PACKAGE_PROBE = Path(__file__).with_name("package_health.py")
@@ -122,7 +122,9 @@ def _hermes_data_dir(instance_root: Path) -> Path:
 
 
 def _codex_config_path(instance_root: Path) -> Path:
-    return instance_root / "codex-installation.json"
+    """What a client binds with: a shared store's pointer, or a Codex installation of its own."""
+    pointer = _hermes_data_dir(instance_root) / "attachment.json"
+    return pointer if pointer.is_file() else instance_root / "codex-installation.json"
 
 
 def _hermes_config_path(instance_root: Path) -> Path:
@@ -187,9 +189,10 @@ def _load_binding(host: HostChoice, instance_root: Path):
 
         manifest = load_binding_for_home(instance_root)
         return manifest.to_binding(), manifest.data_directory
-    from scope_recall.adapters.codex.config import load_codex_config
+    from scope_recall.adapters.codex.config import load_codex_config, load_shared_client
 
-    config = load_codex_config(_codex_config_path(instance_root))
+    path = _codex_config_path(instance_root)
+    config = load_shared_client(instance_root, host) if path.name == "attachment.json" else load_codex_config(path)
     return config.to_binding(), config.data_directory
 
 
@@ -544,7 +547,7 @@ def _check_current_package(report: DoctorReport) -> dict[str, Any]:
 
 def _check_binding(report: DoctorReport, instance: Path):
     """The adapter binding and its data directory; None when the instance has no usable one."""
-    config_path = _codex_config_path(instance) if report.host == "codex" else _hermes_config_path(instance)
+    config_path = _hermes_config_path(instance) if report.host == "hermes" else _codex_config_path(instance)
     if not config_path.is_file():
         report.capability_gaps.append("installation_config_missing")
         _record(report, "adapter_config", "missing")
@@ -986,8 +989,8 @@ def run_doctor(
     instance_root: Path | str,
     python_executable: Path | str | None = None,
 ) -> DoctorReport:
-    if host not in ("hermes", "codex"):
-        raise ValueError("host must be 'hermes' or 'codex'")
+    if host not in ("hermes", "codex", "claude-code"):
+        raise ValueError("host must be 'hermes', 'codex' or 'claude-code'")
     instance = _require_absolute(Path(instance_root), "instance_root")
     python = Path(python_executable) if python_executable is not None else None
     report = DoctorReport(host=host, status="degraded")

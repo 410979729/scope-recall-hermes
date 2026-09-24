@@ -99,6 +99,8 @@ class InstallationManifest:
     #: grants, the store's identity and directory.  ``None`` for a local installation.
     entry_id: str | None = None
     entry_name: str = ""
+    #: The host the entry attached from (``ENTRY_HOSTS``); a local installation is Hermes'.
+    entry_host: str = "hermes"
 
     def to_binding(self) -> InstanceBinding:
         return InstanceBinding(
@@ -641,15 +643,21 @@ SHARED_ID = re.compile(r"shared-install:[0-9a-f]{32}")
 _MAX_SHARED_MANIFEST_BYTES = 4 * 1024 * 1024
 _MAX_ATTACHMENT_BYTES = 4096
 _MAX_DISPLAY_NAME = 32
+#: The local coding assistants a shared store takes as entries beside Hermes homes.  Such an
+#: entry has no installation of its own to carry grants over from: it is the owner at this
+#: machine, with one owner row on the platform named after the client (``client_entry_record``).
+CLIENT_HOSTS = ("codex", "claude-code")
+ENTRY_HOSTS = ("hermes", *CLIENT_HOSTS)
 
 
 @dataclass(frozen=True)
 class Attachment:
-    """The pointer that makes a Hermes home an entry of a shared store."""
+    """The pointer that makes a home an entry of a shared store."""
 
     root: Path
     entry_id: str
     display_name: str
+    host: str = "hermes"
 
 
 def _read_json(path: Path, *, limit: int, what: str) -> dict[str, Any]:
@@ -711,12 +719,13 @@ def read_attachment(hermes_home: Path | str) -> Attachment | None:
     payload = _read_json(path, limit=_MAX_ATTACHMENT_BYTES, what="shared store attachment")
     if payload.get("schema") != ATTACHMENT_SCHEMA:
         raise HermesIdentityError("unsupported shared store attachment schema")
-    if payload.get("host") != "hermes":
-        raise HermesIdentityError("shared store attachment is not a Hermes entry")
+    if payload.get("host") not in ENTRY_HOSTS:
+        raise HermesIdentityError("shared store attachment names an unknown host")
     root = Path(str(payload.get("root") or ""))
     if not root.is_absolute():
         raise HermesIdentityError("shared store attachment root must be absolute")
-    return Attachment(root.resolve(), _entry_id(payload.get("entry_id")), _display_name(payload.get("display_name")))
+    return Attachment(root.resolve(), _entry_id(payload.get("entry_id")), _display_name(payload.get("display_name")),
+                      payload["host"])
 
 
 def read_shared_payload(root: Path | str) -> dict[str, Any]:
@@ -772,8 +781,8 @@ def shared_entry_manifest(root: Path | str, entry_id: str, *, hermes_home: Path 
 
 
 def _entry_view(store: Path, payload: dict[str, Any], record: Mapping[str, Any]) -> InstallationManifest:
-    if record.get("host") != "hermes":
-        raise HermesIdentityError("shared store entry is not a Hermes entry")
+    if record.get("host") not in ENTRY_HOSTS:
+        raise HermesIdentityError("shared store entry names an unknown host")
     home = Path(bounded_text(record.get("home"), field="home"))
     if not home.is_absolute():
         raise HermesIdentityError("shared store entry home must be absolute")
@@ -788,6 +797,7 @@ def _entry_view(store: Path, payload: dict[str, Any], record: Mapping[str, Any])
         installation_kind="shared",
         entry_id=_entry_id(record.get("entry_id")),
         entry_name=_display_name(record.get("display_name")),
+        entry_host=record["host"],
         **fields,
     )
     _validate_archive_fields(manifest, present=False, test_mode=payload["test_mode"])
@@ -806,7 +816,10 @@ def load_binding_for_home(hermes_home: Path | str) -> InstallationManifest:
         return load_installation_manifest(home)
     if os.path.lexists(home / "scope-recall" / MANIFEST_FILENAME):
         raise HermesIdentityError("home holds both its own installation and a shared store attachment")
-    return shared_entry_manifest(attachment.root, attachment.entry_id, hermes_home=home)
+    manifest = shared_entry_manifest(attachment.root, attachment.entry_id, hermes_home=home)
+    if attachment.host != "hermes" or manifest.entry_host != "hermes":
+        raise HermesIdentityError("this home is attached to a shared store as another host's entry")
+    return manifest
 
 
 def new_shared_payload(root: Path | str, *, agent_id: str = "default", test_mode: bool = False) -> dict[str, Any]:
@@ -889,6 +902,49 @@ def shared_entry_record(
     return record
 
 
+def client_entry_record(
+    *,
+    host: str,
+    home: Path | str,
+    entry_id: str,
+    display_name: str,
+    attached_at: str,
+    allowed_scope_ids: Sequence[str],
+    writable_scope_ids: Sequence[str],
+    capture_scope_id: str,
+    python_executable: str | None = None,
+) -> dict[str, Any]:
+    """A local client's entry: the owner at this machine, reading and writing what it is given.
+
+    A client names no user, like the Hermes CLI, so attaching it is the operator's
+    statement that whoever types into it here is the owner: the owner principal
+    ``(host, "local")`` and one owner row on that route.  The scopes are ones the store
+    already registers (``maintenance/shared.py`` takes them from the Hermes entries'
+    owner rows), so no other entry's binding changes.
+    """
+    if host not in CLIENT_HOSTS:
+        raise HermesIdentityError(f"a client entry's host is one of {', '.join(CLIENT_HOSTS)}")
+    row = _audience_entry(
+        platform=host, user_id=LOCAL_USER_ID, chat_type="private", chat_id=LOCAL_USER_ID, thread_id="main",
+        gateway_session_key="", agent_workspace="default", allowed_scope_ids=sorted(set(allowed_scope_ids)),
+        writable_scope_ids=sorted(set(writable_scope_ids)), capture_scope_id=capture_scope_id, kind="owner_private",
+    )
+    record: dict[str, Any] = {
+        "entry_id": _entry_id(entry_id),
+        "display_name": _display_name(display_name),
+        "host": host,
+        "home": str(Path(str(home)).expanduser().resolve()),
+        "attached_at": bounded_text(attached_at, field="attached_at"),
+        "scope_ids": list(row["allowed_scope_ids"]),
+        "owner_principals": [dict(platform=host, user_id=LOCAL_USER_ID)],
+        "audience_scopes": {"owner_private": capture_scope_id},
+        "audiences": [row],
+    }
+    if python_executable is not None:
+        record["python_executable"] = bounded_text(python_executable, field="python_executable")
+    return record
+
+
 def attach_shared_entry(
     root: Path | str,
     source: InstallationManifest,
@@ -898,7 +954,17 @@ def attach_shared_entry(
     now: str,
     python_executable: str | None = None,
 ) -> InstallationManifest:
-    """Make ``source``'s home an entry of the shared store at ``root``, with ``source``'s grants.
+    """Make ``source``'s home an entry of the shared store at ``root``, with ``source``'s grants."""
+    payload = read_shared_payload(root)
+    if (source.agent_id, source.test_mode) != (payload["agent_id"], payload["test_mode"]):
+        raise HermesIdentityError("installation agent_id or test_mode differs from the shared store's")
+    record = shared_entry_record(source, entry_id=entry_id, display_name=display_name, attached_at=now,
+                                 python_executable=python_executable)
+    return attach_shared_record(root, record, now=now)
+
+
+def attach_shared_record(root: Path | str, record: dict[str, Any], *, now: str) -> InstallationManifest:
+    """Make ``record``'s home an entry of the shared store at ``root``.
 
     Everything is checked before anything is written.  Then the store (its
     scopes, then the entry), the store's manifest, and last the pointer: stopped
@@ -907,11 +973,7 @@ def attach_shared_entry(
     """
     store = Path(str(root)).expanduser().resolve()
     payload = read_shared_payload(store)
-    if (source.agent_id, source.test_mode) != (payload["agent_id"], payload["test_mode"]):
-        raise HermesIdentityError("installation agent_id or test_mode differs from the shared store's")
-    record = shared_entry_record(source, entry_id=entry_id, display_name=display_name, attached_at=now,
-                                 python_executable=python_executable)
-    home = source.hermes_home
+    home = Path(record["home"])
     for entry in payload["entries"]:
         if (entry["entry_id"] == record["entry_id"] and not _same_path(entry["home"], home)
                 and _points_here(entry["home"], store, entry["entry_id"])):
@@ -940,10 +1002,10 @@ def attach_shared_entry(
     context = TrustedContext(storage.binding, "shared-store-attach", storage.binding.scope_ids, "host_generated")
     with storage.write(context) as tx:
         tx.register_scopes(after)
-        tx.register_entry(view.entry_id, view.entry_name, "hermes", now=now)
+        tx.register_entry(view.entry_id, view.entry_name, view.entry_host, now=now)
     write_shared_payload(store, updated)
     pointer = {"schema": ATTACHMENT_SCHEMA, "root": str(store), "entry_id": view.entry_id,
-               "display_name": view.entry_name, "host": "hermes", "attached_at": now}
+               "display_name": view.entry_name, "host": view.entry_host, "attached_at": now}
     path = attachment_path(home)
     path.parent.mkdir(parents=True, exist_ok=True)
     _replace_file(path.parent, path, json.dumps(pointer, ensure_ascii=False, sort_keys=True, indent=2) + "\n")

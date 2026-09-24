@@ -5,7 +5,9 @@ given a verified installation config and a verified project workspace once at
 startup; clients cannot supply identity, paths, scopes, or SQL.  The MCP
 session id is an adapter capability (there is no Codex conversation id on the
 stdio boundary), so it is reported as such and is never treated as a user
-identity.
+identity.  A client attached to a shared store (Codex or Claude Code) is given
+its entry instead, and has no workspace: its audience is the entry's.  Claude
+Code sends no conversation id at all, so its mutations are refused.
 """
 from __future__ import annotations
 
@@ -37,7 +39,7 @@ from ..tool_common import (
     revision_ref,
     strict_object,
 )
-from .config import CodexInstallationConfig
+from .config import CodexInstallationConfig, SharedClientConfig
 from .identity import CodexRuntimeAudience, resolve_runtime_audience, trusted_context
 from .runtime_wiring import TrustedHostRuntime, attach_trusted_host_runtime
 
@@ -53,6 +55,8 @@ _RECALL_BUDGET_GUIDANCE = (
     "If gaps include budget_token_cap or budget_packet_cap, retry once with budget_tokens=4096."
 )
 _BUDGET_CAP_GAPS = ("budget_token_cap", "budget_packet_cap")
+#: The request metadata a client binds a tool call to its conversation with.
+_THREAD_META = {"codex": "threadId"}
 
 _READ_ONLY = ToolAnnotations(read_only_hint=True, destructive_hint=False, idempotent_hint=True, open_world_hint=False)
 #: The public tool surface in registration order.  Each entry names the
@@ -94,17 +98,25 @@ class CodexMCPServer:
 
     def __init__(
         self,
-        config: CodexInstallationConfig,
+        config: CodexInstallationConfig | SharedClientConfig,
         *,
-        workspace: Path,
+        workspace: Path | None,
         core: MemoryCore | None = None,
         host_runtime: TrustedHostRuntime | None = None,
         trusted_runtime_config_path: str | Path | None = None,
     ) -> None:
-        if not workspace.is_absolute():
-            raise ValueError("workspace must be absolute")
+        shared = isinstance(config, SharedClientConfig)
+        self.host = config.host if shared else "codex"
         self.config = config
-        self.workspace = workspace.resolve()
+        if shared:
+            self.workspace = None
+            if trusted_runtime_config_path is None:
+                # The store's directory holds the worker's config; the entry's is beside its pointer.
+                trusted_runtime_config_path = config.runtime_config_path
+        else:
+            if workspace is None or not workspace.is_absolute():
+                raise ValueError("workspace must be absolute")
+            self.workspace = workspace.resolve()
         self.audience: CodexRuntimeAudience = resolve_runtime_audience(config, str(self.workspace))
         if self.audience.capability_gaps:
             raise ValueError("workspace is not mapped to a trusted project root")
@@ -115,14 +127,15 @@ class CodexMCPServer:
             partition_context = trusted_context(
                 config,
                 self.audience,
-                session_id=f"codex-mcp:{config.installation_id}",
+                session_id=f"{self.host}-mcp:{config.installation_id}",
                 actor_origin="host_generated",
             )
             host_runtime = attach_trusted_host_runtime(
                 config_path=trusted_runtime_config_path,
                 expected_binding=config.to_binding(),
-                session_id=f"codex-mcp:{config.installation_id}",
+                session_id=f"{self.host}-mcp:{config.installation_id}",
                 allowed_scope_ids=self.audience.allowed_scope_ids,
+                host_adapter=self.host,
                 core=core,
                 project_id=partition_context.project_id,
                 branch_id=partition_context.branch_id,
@@ -144,7 +157,7 @@ class CodexMCPServer:
             actor_origin="memory_reinjection",
         )
         self.server = MCPServer(
-            name="scope-recall-codex",
+            name=f"scope-recall-{self.host}",
             version=PROTOCOL_VERSION,
             description="Scoped read and explicitly authorized memory tools",
         )
@@ -169,11 +182,11 @@ class CodexMCPServer:
             return self.context
         return trusted_context(self.config, self.audience, session_id=self.session_id, actor_origin=origin)
 
-    @staticmethod
-    def _thread_id(ctx: Context) -> str | None:
-        """Codex's reserved MCP thread metadata, or None when absent or malformed."""
+    def _thread_id(self, ctx: Context) -> str | None:
+        """Codex's reserved MCP thread metadata, or None when absent, malformed or not sent by this client."""
+        key = _THREAD_META.get(self.host)
         meta = getattr(ctx.request_context, "meta", None) or {}
-        value = meta.get("threadId") if isinstance(meta, dict) else None
+        value = meta.get(key) if key is not None and isinstance(meta, dict) else None
         if not isinstance(value, str):
             return None
         try:
@@ -198,10 +211,12 @@ class CodexMCPServer:
             self._host_runtime.rebind_session(thread_id, self.audience.allowed_scope_ids)
         # Codex Hook stores the raw host session_id; MCP must use the same
         # value so Core current_human evidence can interoperate.
-        return trusted_context(self.config, self.audience, session_id=thread_id, actor_origin=origin)
+        return trusted_context(self.config, self.audience, session_id=thread_id, actor_origin=origin, mutation=mutation)
 
     def _capability_gaps(self, ctx: Context) -> tuple[str, ...]:
-        return () if self._thread_id(ctx) is not None else ("mcp_session_is_not_codex_conversation_id",)
+        if self._thread_id(ctx) is not None:
+            return ()
+        return (f"mcp_session_is_not_{self.host.replace('-', '_')}_conversation_id",)
 
     # -- per-call plumbing -----------------------------------------------
 
@@ -353,7 +368,7 @@ class CodexMCPServer:
         now = self.core.clock.utc_now()
         event: SourceEvent = {
             "protocol_version": PROTOCOL_VERSION,
-            "source_event_key": f"codex-mcp:{self.session_id}:{call_id}",
+            "source_event_key": f"{self.host}-mcp:{self.session_id}:{call_id}",
             "source_revision": 1,
             "origin": "assistant_visible",
             "role": "assistant",
@@ -415,17 +430,19 @@ class CodexMCPServer:
         result = {
             "status": self.core.status(self._request_context(ctx)),
             "session": "independent_mcp_server",
-            "workspace": str(self.workspace),
+            "workspace": str(self.workspace) if self.workspace is not None else None,
             "agent_id": self.config.agent_id,
             "installation_id": self.config.installation_id,
         }
+        if isinstance(self.config, SharedClientConfig):
+            result["entry"] = {"id": self.config.entry_id, "name": self.config.entry_name}
         return self._reply(ctx, call_id, result)
 
 
 def build_server(
-    config: CodexInstallationConfig,
+    config: CodexInstallationConfig | SharedClientConfig,
     *,
-    workspace: Path,
+    workspace: Path | None,
     core: MemoryCore | None = None,
     host_runtime: TrustedHostRuntime | None = None,
     trusted_runtime_config_path: str | Path | None = None,

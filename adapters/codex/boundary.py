@@ -18,8 +18,9 @@ def host_source_key(
     event_kind: str,
     event_id: str,
     revision: int = 1,
+    host: str = "codex",
 ) -> str:
-    return f"codex:{installation_id}:{session_id}:{event_kind}:{event_id}@{revision}"
+    return f"{host}:{installation_id}:{session_id}:{event_kind}:{event_id}@{revision}"
 
 
 def is_scope_recall_tool(tool_name: object) -> bool:
@@ -53,6 +54,7 @@ def user_prompt_source_event(
     turn_id: str,
     prompt: str,
     recorded_at: str,
+    host: str = "codex",
     gaps: tuple[str, ...] = (),
 ) -> SourceEvent | None:
     if not prompt.strip():
@@ -61,6 +63,7 @@ def user_prompt_source_event(
     return {
         "protocol_version": "1.1",
         "source_event_key": host_source_key(
+            host=host,
             installation_id=installation_id,
             session_id=session_id,
             event_kind="user",
@@ -85,6 +88,7 @@ def assistant_stop_source_event(
     turn_id: str,
     message: str,
     recorded_at: str,
+    host: str = "codex",
 ) -> tuple[SourceEvent | None, tuple[str, ...]]:
     gaps: list[str] = []
     if not message.strip():
@@ -93,6 +97,7 @@ def assistant_stop_source_event(
     return {
         "protocol_version": "1.1",
         "source_event_key": host_source_key(
+            host=host,
             installation_id=installation_id,
             session_id=session_id,
             event_kind="assistant",
@@ -120,6 +125,7 @@ def tool_use_source_event(
     tool_input: object,
     tool_response: object,
     recorded_at: str,
+    host: str = "codex",
 ) -> tuple[SourceEvent | None, tuple[str, ...], str]:
     origin = "memory_reinjection" if is_scope_recall_tool(tool_name) else "tool_observation"
     input_text, input_truncated = _serialize_tool_value(tool_input)
@@ -131,6 +137,7 @@ def tool_use_source_event(
     return {
         "protocol_version": "1.1",
         "source_event_key": host_source_key(
+            host=host,
             installation_id=installation_id,
             session_id=session_id,
             event_kind="tool",
@@ -156,11 +163,13 @@ def lifecycle_source_event(
     event_id: str,
     content: str,
     recorded_at: str,
+    host: str = "codex",
     gaps: tuple[str, ...] = (),
 ) -> SourceEvent:
     return {
         "protocol_version": "1.1",
         "source_event_key": host_source_key(
+            host=host,
             installation_id=installation_id,
             session_id=session_id,
             event_kind=event_kind,
@@ -178,8 +187,9 @@ def lifecycle_source_event(
     }
 
 
-def turn_id_from_payload(payload: dict[str, Any], *, required: bool) -> tuple[str | None, tuple[str, ...]]:
-    turn_id = _bounded_turn_id(payload.get("turn_id"))
+def turn_id_from_payload(payload: dict[str, Any], *, required: bool, field: str = "turn_id") -> tuple[str | None, tuple[str, ...]]:
+    """The host's id of this turn: Codex's ``turn_id``, Claude Code's ``prompt_id``."""
+    turn_id = _bounded_turn_id(payload.get(field))
     if turn_id is None and required:
         return None, ("capability_gap:missing_turn_id",)
     return turn_id, ()
