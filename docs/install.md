@@ -5,7 +5,7 @@ truth, vector indexes are rebuildable companions, and a bounded background worke
 does the consolidating and embedding. It ships host adapters for Hermes and for
 Codex, the latter as a set of native hooks plus an MCP server.
 
-> **Status.** This guide is for the 3.1 line. Releases are on PyPI and on the
+> **Status.** This guide covers 3.1 and 3.2. Releases are on PyPI and on the
 > GitHub releases page; a checkout between releases carries a candidate version
 > and is installed by building its wheel. The distribution name is
 > `hermes-scope-recall`, the Python import is `scope_recall`, and the host plugin
@@ -520,7 +520,7 @@ scope-recall retry-failures --config /path/to/instance-root/scope-recall/runtime
 Without `--apply` nothing is written. `--include-terminal` also re-runs failures
 that are terminal by design.
 
-Since 3.2.0rc6 a tool output is kept and embedded, found by its words and by
+Since 3.2.0 a tool output is kept and embedded, found by its words and by
 meaning, but no longer consolidated into claims: what an agent read or ran is
 not what it should remember, and how a task was done belongs to the host's
 skills. To retire the unconfirmed claims an earlier release derived from tool
@@ -535,6 +535,18 @@ until it comes back empty. Without `--apply` it only lists what it would retire,
 by reference, never by text. A retired claim gets a retracted version and stops
 waiting for evaluation; its sources, its earlier versions and every confirmed
 claim stay as they are.
+
+To re-frame the claims an earlier release stored in a frame this release would
+not write, among them a name given for the first time ("my cat is called ...")
+filed as an alias nothing could ever confirm:
+
+```bash
+scope-recall repair-claim-frames --config /path/to/instance-root/scope-recall/runtime-config.json --limit 16
+```
+
+It writes as it goes, one page at a time: carry the returned `cursor` into
+`--after-ref` until `done` is true. It makes no model calls and never rewrites
+source text or earlier versions; take a `backup` first.
 
 ## 8. Uninstall (memory is retained by default)
 

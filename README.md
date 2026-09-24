@@ -1,12 +1,14 @@
-# Scope Recall 3.1 autonomous memory
+# Scope Recall 3.2 autonomous memory
 
 Scope Recall v3 is a bounded local memory core with SQLite as the authority and rebuildable vector companions. It provides host adapters for Hermes and Codex, including Codex MCP tools when the optional `codex` extra is installed. The public package is `hermes-scope-recall`; the Python import is `scope_recall`; the host wrapper identity remains `scope-recall`.
 
-This checkout is `3.2.0rc7`, the line after the `3.1.2` release: one store that several agents share ([docs/shared-store.md](docs/shared-store.md)), whose candidate for the pilot is `3.2.0rc6`. A local store behaves exactly as it did in `3.1.2`.
-`3.1.2` is the second maintenance release of the 3.1 line: `3.1.1` was what running
-`3.1.0` on real instances turned up, fixed, and `3.1.2` is what rolling `3.1.1` out turned up.
-Their notes are the `[3.1.2]` and `[3.1.1]` sections of [CHANGELOG.md](CHANGELOG.md); upgrading
-from `3.1.0` or `3.1.1` is `pip install -U` and a host restart.
+This is `3.2.0`. Several Hermes agents can now keep one memory: each attaches to a shared
+store as an entry, what the owner tells one of them another can recall, and each memory says
+which agent it came in through ([docs/shared-store.md](docs/shared-store.md)). An agent that
+is not attached keeps its own store. A tool's output is still kept and found, but no longer
+turned into facts. The notes are the `[3.2.0]` section of [CHANGELOG.md](CHANGELOG.md);
+upgrading from `3.1.x` is `pip install -U`, `apply-install` and a host restart, and the store
+moves to schema 1110 the first time it is opened, after which a 3.1 process cannot open it.
 3.1 is a rebuild rather than a patch on 2.0: production
 code went from 141,044 lines to 48,289, memory now accumulates evidence before a
 fact is written rather than judging one sentence on sight, and hosts sit behind
@@ -15,17 +17,18 @@ the `[3.1.0]` section of [CHANGELOG.md](CHANGELOG.md), and section 9 there is th
 migration procedure for a 2.0.1 memory database. SQLite remains the only fact
 authority; host adapters share the same contracts.
 
-**What is not verified.** `scripts/check.py --tier release` runs about 2,200 tests with
+**What is not verified.** `scripts/check.py --tier release` runs about 2,300 tests with
 none failing, but reports `missing_gates: ["model"]`. That gate wants a P18
 formal acceptance receipt: denominators of 120 independent core items and 240
 paired variants, evidence marked `real`, a method adjudication accepted by a
 party independent of whoever wrote the code, and an independent semantic scorer.
 The P18 machinery is in this tree; the evaluation corpus is not. **3.1.0 shipped
-without that receipt and so does 3.1.1.** Every accuracy figure in the notes was measured by us, on
-our own corpora, by hand, and there is no regression suite you or we can re-run
+without that receipt, and so has every release since, 3.2.0 included.** Every
+accuracy figure in the notes was measured by us, on our own corpora, by hand,
+and there is no regression suite you or we can re-run
 automatically -- that is the first item in *What is not finished*. Read a green
 test count as exactly that, never as a passing release gate. The integration
-(about 2,060 tests) and packaging (136) tiers both exit 0 with none failing.
+(about 2,120 tests) and packaging (about 150) tiers both exit 0 with none failing.
 
 ## For agents: install or upgrade on the user's behalf
 
@@ -48,12 +51,12 @@ The package is `hermes-scope-recall` on PyPI. Install it into the same isolated 
 environment the host uses:
 
 ```text
-python -m pip install hermes-scope-recall==3.1.1
-python -m pip install "hermes-scope-recall[codex]==3.1.1"
+python -m pip install hermes-scope-recall==3.2.0
+python -m pip install "hermes-scope-recall[codex]==3.2.0"
 ```
 
 The same wheel and sdist are attached to the
-[GitHub Release](https://github.com/410979729/scope-recall-hermes/releases/tag/v3.1.1)
+[GitHub Release](https://github.com/410979729/scope-recall-hermes/releases/tag/v3.2.0)
 alongside `SHA256SUMS` and `RELEASE-PROVENANCE.json`, for an offline install
 (`python -m pip install "<path-to-wheel>"`). To build it yourself from this checkout instead:
 
