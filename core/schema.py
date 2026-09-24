@@ -352,6 +352,10 @@ STATEMENTS = (
 ) + RECOVERY_STATEMENTS + CANDIDATE_STATEMENTS
 
 
+#: The 2.x layouts number their schema from here up (2.0.x: 10815); 3.x numbers stay below it.
+LEGACY_LAYOUT_SCHEMA_FLOOR = 10000
+
+
 def stale_header_schema(connection) -> int | None:
     """The schema a store records for itself when its SQLite header says another, else None.
 
@@ -361,9 +365,13 @@ def stale_header_schema(connection) -> int | None:
     that opens the new file stamps the header with the 2.0 layout's 10815 and leaves every
     table and row in place (#117), and every open then fails closed.  The recorded schema
     is returned only for this product's store (its application id) recording a schema this
-    release reads or brings forward, so ``upgrade-store`` may restamp the header with it.
+    release reads or brings forward, under a header in the 2.x layouts' own numbering (from
+    10000 up), so ``upgrade-store`` may restamp the header with it.  A header in 3.x's range is
+    never another program's, and restamping it could move a store's header backwards.
     """
     header = connection.execute("PRAGMA user_version").fetchone()[0]
+    if header < LEGACY_LAYOUT_SCHEMA_FLOOR:
+        return None
     if connection.execute("PRAGMA application_id").fetchone()[0] != APPLICATION_ID:
         return None
     try:
@@ -501,8 +509,9 @@ def upgrade_1109(connection):
 
     Every row of a store that predates entries came in through its own host, so
     both new columns take a constant default and SQLite adds them without
-    rewriting a row: the step costs the same on a 1.5 GB store as on an empty
-    one.  ``entries`` starts empty; a shared store fills it as entries attach.
+    rewriting a row.  It still reads every source row as it adds the column,
+    about 3 s a gigabyte (0.3 s at 87 MB, 2.9 s at 873 MB, warm cache).
+    ``entries`` starts empty; a shared store fills it as entries attach.
     """
     connection.execute("""ALTER TABLE instance_meta ADD COLUMN installation_kind TEXT NOT NULL DEFAULT 'local'
         CHECK(installation_kind IN ('local','shared'))""")

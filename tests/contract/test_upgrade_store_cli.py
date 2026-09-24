@@ -145,6 +145,7 @@ def test_a_header_a_2_0_process_overwrote_is_named_and_restamped(tmp_path, capsy
     assert code == 0, out
     assert (out["status"], out["schema_after"]) == ("restamped", SCHEMA_VERSION)
     assert (out["header_restamped"]["from"], out["header_restamped"]["to"]) == (10815, SCHEMA_VERSION)
+    assert "tables_not_in_schema" not in out, "a store holding only its own tables names none"
     with sqlite3.connect(next((tmp_path / "backups").glob("memory-10815-*.sqlite3"))) as conn:
         assert conn.execute("PRAGMA user_version").fetchone()[0] == 10815, "the snapshot is the store as it was"
     assert _run(capsys, root)[1]["status"] == "current"
@@ -174,3 +175,33 @@ def test_a_header_that_is_not_ours_is_still_refused(tmp_path, capsys):
     assert code == 2 and (out["status"], out["error"]) == ("unsupported", "schema_not_in_upgrade_chain")
     with sqlite3.connect(core.storage.path) as conn:
         assert conn.execute("PRAGMA user_version").fetchone()[0] == 10815
+
+
+def test_rows_the_2_0_process_wrote_into_its_own_tables_are_named_not_passed_over(tmp_path, capsys):
+    """The process that stamped the header may also have captured turns into its own tables.  They
+    are not part of this store; a restamp that said only "restamped" would leave them unseen."""
+    project = tmp_path / "project"
+    project.mkdir()
+    _config, core = install_codex_scope_recall(tmp_path / "install", project_root=project)
+    with sqlite3.connect(core.storage.path) as conn:
+        conn.execute("CREATE TABLE memories(id INTEGER PRIMARY KEY, content TEXT)")
+        conn.executemany("INSERT INTO memories(content) VALUES (?)", [("TEST one",), ("TEST two",)])
+    _stamp_header(core.storage.path, 10815)
+    code, out = _run(capsys, ["upgrade-store", "--host", "codex", "--instance-root", str(tmp_path / "install"),
+                              "--backup-dir", str(tmp_path / "backups")])
+    assert code == 0 and out["status"] == "restamped", out
+    assert out["tables_not_in_schema"] == {"memories": 2} and "another program" in out["warning"]
+
+
+def test_a_header_in_this_products_own_numbering_is_never_restamped(tmp_path, capsys):
+    """Only a 2.x layout's stamp (10000 and up) is another program's; a 3.x number under a newer
+    record would be restamped backwards, so such a store stays refused as it was."""
+    project = tmp_path / "project"
+    project.mkdir()
+    _config, core = install_codex_scope_recall(tmp_path / "install", project_root=project)
+    _stamp_header(core.storage.path, SCHEMA_VERSION + 1)
+    code, out = _run(capsys, ["upgrade-store", "--host", "codex", "--instance-root", str(tmp_path / "install"),
+                              "--backup-dir", str(tmp_path / "backups")])
+    assert code == 2 and "header_restamped" not in out, out
+    with sqlite3.connect(core.storage.path) as conn:
+        assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION + 1

@@ -284,7 +284,9 @@ def _restamp_header(database: Path, recorded: int, *, timeout: float) -> bool:
 
     from scope_recall.core.schema import stale_header_schema
 
-    with closing(sqlite3.connect(database.as_posix(), timeout=timeout, isolation_level=None)) as db:
+    # mode=rw: a store that disappeared meanwhile is an error, never a new empty file.
+    with closing(sqlite3.connect(f"{database.as_uri()}?mode=rw", uri=True, timeout=timeout,
+                                 isolation_level=None)) as db:
         db.execute("BEGIN IMMEDIATE")
         if stale_header_schema(db) != recorded:
             db.execute("ROLLBACK")
@@ -292,6 +294,30 @@ def _restamp_header(database: Path, recorded: int, *, timeout: float) -> bool:
         db.execute(f"PRAGMA user_version={int(recorded)}")
         db.execute("COMMIT")
     return True
+
+
+def _tables_not_in_schema(database: Path) -> dict[str, int]:
+    """Tables a current store holds that this release's schema does not create, with their rows.
+
+    Read after a restamp once the store is at this release's schema, when every table an older
+    step used is gone: what is left is another program's.  A 2.0 process that stamped the header
+    may have captured turns into its own tables; those rows are not part of this store and would
+    otherwise stay in the file unseen.
+    """
+    import sqlite3
+    from contextlib import closing
+
+    from scope_recall.core.schema import STATEMENTS
+
+    with closing(sqlite3.connect(":memory:")) as scratch:
+        for statement in STATEMENTS:
+            scratch.execute(statement)
+        known = {row[0] for row in scratch.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    with closing(sqlite3.connect(f"{database.as_uri()}?mode=ro", uri=True)) as db:
+        names = [row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+                 if row[0] not in known and not row[0].startswith("sqlite_")]
+        return {name: db.execute('SELECT count(*) FROM "' + name.replace('"', '""') + '"').fetchone()[0]
+                for name in names}
 
 
 def _add_upgrade_store_arguments(parser: argparse.ArgumentParser) -> None:
@@ -367,6 +393,7 @@ def _upgrade_store(args: argparse.Namespace) -> int:
                                       "cause": "a 2.0 process opened this store after its migration; make sure none runs"}
         if recorded == SCHEMA_VERSION:
             result.update(status="restamped", schema_after=SCHEMA_VERSION, journal_mode=_journal_mode(database))
+            _report_other_tables(result, database)
             _emit(result)
             return 0
     started = time.monotonic()
@@ -398,8 +425,21 @@ def _upgrade_store(args: argparse.Namespace) -> int:
             return 2
     result.update(status="upgraded", schema_after=status.schema_version,
                   seconds=round(time.monotonic() - started, 1), journal_mode=_journal_mode(database))
+    if recorded is not None:
+        _report_other_tables(result, database)
     _emit(result)
     return 0
+
+
+def _report_other_tables(result: dict[str, Any], database: Path) -> None:
+    """Name what a restamp leaves in the file that is not this store's, so it is never a silent success."""
+    others = _tables_not_in_schema(database)
+    if others:
+        result["tables_not_in_schema"] = others
+        if any(others.values()):
+            result["warning"] = ("rows in these tables were written by another program, likely the 2.0 plugin "
+                                 "that stamped the header; they are not part of this store and are kept in the "
+                                 "file and in the snapshot")
 
 
 def _add_uninstall_arguments(parser: argparse.ArgumentParser) -> None:
