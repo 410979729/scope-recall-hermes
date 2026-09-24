@@ -92,11 +92,12 @@ def question_digest(evidence: object) -> str:
 #   kind but procedure, intention and alias, and a quote is an exact slice of a
 #   supplied source.  Compared here on letters and digits only, after NFKC and
 #   casefolding, so punctuation, spacing and dotted dates cannot hide a match;
-# * root -- the evaluator writes a version only when a quote from a derivation
-#   root carries the candidate (``worker_candidates._apply_verdict``): its value,
-#   or its subject for the kinds proved otherwise.  A tool output lends no
-#   authority of its own since 3.2.0, so evidence in which no person's or
-#   document's words restate the candidate cannot confirm it.
+# * root -- the evaluator writes a version only when it quotes a derivation root
+#   and, for a kind that carries a value, quotes the value from something other
+#   than tool output (``worker_candidates._apply_verdict``).  A person may
+#   confirm an agent's proposal without repeating it ("好的，就按这个"), but since
+#   3.2.0 a value only a tool output states is not remembered, so evidence with
+#   no root, or whose value only a tool output carries, cannot confirm it.
 #
 # Not covered: a verdict that changes the candidate's value.  The re-evaluation
 # keeps kind, subject and predicate but not the value; a new value reaches memory
@@ -130,10 +131,26 @@ def _letters_and_digits(value: object) -> str:
     return "".join(character for character in text if character.isalnum())
 
 
+def value_beyond_tool_output(payload: Mapping, quoted: Iterable[tuple[str, str]]) -> bool:
+    """Whether ``quoted`` -- (origin, text) pairs -- carries the candidate's value outside tool output.
+
+    True for a kind proved without its value, or a value with no letter or digit to find.
+    """
+    from .claims import _VALUE_FREE_KINDS
+
+    value = _letters_and_digits(payload.get("value_text")) if isinstance(payload, Mapping) else ""
+    if not value or payload.get("kind") in _VALUE_FREE_KINDS:
+        return True
+    return any(origin != "tool_observation" and value in _letters_and_digits(text) for origin, text in quoted)
+
+
 def _rootless(payload: Mapping, items: tuple[EvidenceText, ...]) -> str | None:
-    """``NO_DERIVATION_ROOT_REASON`` unless a complete root source restates the candidate."""
-    roots = [item.content for item in items if item.complete and item.origin in DERIVATION_ROOT_ORIGINS]
-    return None if roots and restates(payload, roots) else NO_DERIVATION_ROOT_REASON
+    """``NO_DERIVATION_ROOT_REASON`` without a complete root, or when only tool output states the value."""
+    if not any(item.complete and item.origin in DERIVATION_ROOT_ORIGINS for item in items):
+        return NO_DERIVATION_ROOT_REASON
+    if not value_beyond_tool_output(payload, ((item.origin, item.content) for item in items)):
+        return NO_DERIVATION_ROOT_REASON
+    return None
 
 
 def unanswerable_reason(payload: Mapping, evidence: Iterable[EvidenceText]) -> str | None:
@@ -222,6 +239,6 @@ def restates(payload: Mapping, contents: Iterable[str]) -> bool:
 
 
 __all__ = ["AUTOMATIC_VERDICTS", "DERIVATION_ROOT_ORIGINS", "FIRST_HAND_ORIGINS", "IMPERSONAL_ORIGINS",
-           "NO_DERIVATION_ROOT_REASON", "PERSON_ABSENT_REASON",
+           "NO_DERIVATION_ROOT_REASON", "PERSON_ABSENT_REASON", "value_beyond_tool_output",
            "REPEAT_WITHOUT_RESTATEMENT_REASON", "EvidenceText", "evidence_text", "is_first_hand",
            "needs_absent_person", "question_digest", "restatement_needle", "restates", "unanswerable_reason"]
