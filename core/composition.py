@@ -343,6 +343,19 @@ class MemoryCore:
             return _requalify(tx, now=self.clock.utc_now(), after_ref=after_ref,
                               limit=limit, dry_run=dry_run).to_dict()
 
+    def retire_rootless_proposals(self, context: TrustedContext, *, after_ref: str = "",
+                                  limit: int = 16, dry_run: bool = True,
+                                  remaining_seconds: float | None = None):
+        """Retire one bounded page of proposals no derivation root supports; a preview unless ``dry_run=False``."""
+        from .requalify import retire_rootless_proposals as _retire
+
+        seconds = (self.config.write_timeout_seconds if remaining_seconds is None
+                   else remaining_seconds)
+        opener = self.storage.read if dry_run else self.storage.write
+        with opener(context, remaining_seconds=seconds) as tx:
+            return _retire(tx, now=self.clock.utc_now(), after_ref=after_ref,
+                           limit=limit, dry_run=dry_run).to_dict()
+
     def retry_failed_work(self, context: TrustedContext, *, include_terminal: bool = False,
                           limit: int = 64, dry_run: bool = True,
                           remaining_seconds: float | None = None):

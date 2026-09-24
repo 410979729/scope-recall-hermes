@@ -143,4 +143,71 @@ def requalify_claims(tx, *, now: str, after_ref: str = "", limit: int = 16,
     return report
 
 
-__all__ = ["MAX_PAGE", "REQUALIFIABLE_STATES", "RequalifyReport", "requalify_claims"]
+#: The reason a retired proposal carries: none of its evidence is a source consolidation derives from.
+ROOTLESS_REASON = "no_derivation_root"
+
+
+def retire_rootless_proposals(tx, *, now: str, after_ref: str = "", limit: int = 16,
+                              dry_run: bool = True) -> RequalifyReport:
+    """Retire one bounded page of proposed claims that no derivation root supports.
+
+    Consolidation derives claims only from ``DERIVATION_ROOT_ORIGINS``; tool output left that set in
+    3.2.0rc6.  A proposal whose every evidence source is of another origin would not be derived
+    today, and it is still waiting for a proof nobody asked for: it gets a retracted version with
+    ``ROOTLESS_REASON``, registered as the candidate's new head so its queued evaluations end.  Its
+    sources and its earlier versions stay.  Active and disputed claims are left alone -- a claim that
+    was proved stands on that proof -- and nothing is re-judged here; ``requalify_claims`` does that.
+
+    Separate from ``requalify_claims`` on purpose: a re-judgement moves claims for every rule that
+    changed since they were written (on the pilot, 154 of them, promotions included), and retiring
+    these must not bring that along.  The report names refs and verdicts only, never claim text.
+    """
+    from .claims import Qualification
+    from .episodes import source_origin
+    from .mutate import evidence_refs
+    from .worker_consolidation import DERIVATION_ROOT_ORIGINS
+
+    if type(limit) is not int or type(limit) is bool or not 1 <= limit <= MAX_PAGE:
+        raise ContractError("INPUT_INVALID", "requalify_limit")
+    if type(after_ref) is not str:
+        raise ContractError("INPUT_INVALID", "requalify_cursor")
+    scopes = sorted(tx.context.allowed_scope_ids)
+    rows = tx._check().execute(
+        f"""SELECT claim_id FROM claims WHERE claim_id>? AND read_blocked=0 AND suppressed=0
+            AND scope_id IN ({','.join('?' for _ in scopes)})
+            AND project_id IS ? AND branch_id IS ?
+            ORDER BY claim_id LIMIT ?""",
+        (after_ref, *scopes, tx.context.project_id, tx.context.branch_id, limit),
+    ).fetchall()
+    report = RequalifyReport(applied=not dry_run)
+    for row in rows:
+        ref = row[0]
+        report.last_ref = ref
+        head = next((v for v in tx.claims.versions(ref) if v.revision == v.current_revision), None)
+        if head is None or head.state != "proposed":
+            continue
+        report.examined += 1
+        origins = set()
+        for evidence in evidence_refs(head.payload):
+            source_ref, _, revision = evidence.rpartition("@")
+            source = tx.source(source_ref, int(revision)) if revision.isdigit() else None
+            origins.add(source_origin(source) if source is not None else None)
+        if not origins or None in origins:
+            report.skipped.append({"ref": ref, "why": "evidence_unreadable"})
+            continue
+        if origins & DERIVATION_ROOT_ORIGINS:
+            continue
+        entry = {"ref": ref, "was": f"{head.state}:{head.reason}", "now": f"retracted:{ROOTLESS_REASON}",
+                 "origins": sorted(origins)}
+        if not dry_run:
+            retired = tx.claims.append(head.scope_id, head.payload,
+                                       Qualification("retracted", head.basis, ROOTLESS_REASON),
+                                       recorded_at=now, previous=head)
+            tx.candidates.register(retired.ref, retired.revision, observed_at=now, schedule_initial=False)
+            entry["revision"] = retired.revision
+        report.changed.append(entry)
+    return report
+
+
+__all__ = ["MAX_PAGE", "REQUALIFIABLE_STATES", "ROOTLESS_REASON", "RequalifyReport", "requalify_claims",
+           "retire_rootless_proposals"]

@@ -130,6 +130,19 @@ def _requalify(args: argparse.Namespace) -> int:
     )
 
 
+def _retire_rootless(args: argparse.Namespace) -> int:
+    return _run_core(
+        args,
+        lambda core, config: core.retire_rootless_proposals(
+            config.context(),
+            after_ref=args.after_ref,
+            limit=args.limit,
+            dry_run=not args.apply,
+            remaining_seconds=config.request_seconds,
+        ),
+    )
+
+
 def _add_retry_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--config", required=True)
     parser.add_argument("--limit", type=int, default=64)
@@ -379,6 +392,7 @@ def _apply_uninstall(args: argparse.Namespace) -> int:
 _COMMANDS: tuple[tuple[str, str | None, Callable[[argparse.ArgumentParser], None], Callable[[argparse.Namespace], int]], ...] = (
     ("repair-claim-frames", "revalidate a bounded page of legacy claim frames without model calls", _add_repair_arguments, _repair_claim_frames),
     ("requalify", "re-judge a bounded page of stored claims after a gate change", _add_requalify_arguments, _requalify),
+    ("retire-rootless-claims", "retire a bounded page of proposed claims no derivation root supports (tool output alone)", _add_requalify_arguments, _retire_rootless),
     ("retry-failures", "grant one bounded re-look to failed work after a fix has shipped", _add_retry_arguments, _retry_failures),
     ("backup", "create a new consistent SQLite snapshot and manifest", _add_backup_arguments, _backup),
     ("rollback", "inspect rollback; --apply may stop writes when new data must be reconciled", _add_rollback_arguments, _rollback),

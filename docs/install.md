@@ -506,6 +506,22 @@ scope-recall retry-failures --config /path/to/instance-root/scope-recall/runtime
 Without `--apply` nothing is written. `--include-terminal` also re-runs failures
 that are terminal by design.
 
+Since 3.2.0rc6 a tool output is kept and embedded, found by its words and by
+meaning, but no longer consolidated into claims: what an agent read or ran is
+not what it should remember, and how a task was done belongs to the host's
+skills. To retire the unconfirmed claims an earlier release derived from tool
+output alone:
+
+```bash
+scope-recall retire-rootless-claims --config /path/to/instance-root/scope-recall/runtime-config.json --limit 32 --apply
+```
+
+It works one page at a time: carry the printed `last_ref` into `--after-ref`
+until it comes back empty. Without `--apply` it only lists what it would retire,
+by reference, never by text. A retired claim gets a retracted version and stops
+waiting for evaluation; its sources, its earlier versions and every confirmed
+claim stay as they are.
+
 ## 8. Uninstall (memory is retained by default)
 
 Uninstall is driven by the install receipt. **By default it removes only the
