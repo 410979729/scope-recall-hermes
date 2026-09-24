@@ -217,6 +217,18 @@ Approve a surface only where everyone who can reach it without logging in is the
 owner. That is the same trust the CLI already has: whoever can run it against
 this home can read the store.
 
+A gateway route (Telegram, WeChat, Feishu, a Desktop login) is granted by an
+audience row in `installation.json`, matched field by field against what the host
+sends: `platform`, `user_id`, `chat_type`, `chat_id`, `thread_id`,
+`gateway_session_key` and `agent_workspace`. A row whose `gateway_session_key` is
+empty does not pin the host's session key, which is built from the platform, chat
+type and chat the row already matches; a row that names one matches only that key.
+For a plain, unthreaded chat a gateway sends an empty `thread_id`, so the row needs
+`"thread_id": ""`; `main` is what the CLI and an approved local surface default to,
+and an empty thread and `main` stay two routes. A session whose only near match
+differs there binds with no scope and names it in its gaps:
+`capability_gap:audience_thread_mismatch:row_says_main`.
+
 It writes two wrapper files into the plugin directory (`__init__.py`,
 `plugin.yaml`) and two skills under `<instance-root>\skills\`:
 `scope-recall-setup\SKILL.md`, for installing and upgrading, and

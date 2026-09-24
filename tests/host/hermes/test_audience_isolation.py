@@ -181,3 +181,64 @@ def test_unthreaded_mapping_requires_explicit_string(hermes_home, initialize_kwa
             agent_workspace=initialize_kwargs["agent_workspace"],
             audiences=[row], test_mode=False,
         )
+
+
+def _gateway_rows(user_id: str, workspace: str) -> list[dict[str, object]]:
+    """Weixin DM rows as #124 found them: the host's real key nowhere, one row per kind of thread."""
+    dm = {"platform": "weixin", "user_id": user_id, "chat_type": "dm", "chat_id": "", "gateway_session_key": "",
+          "agent_workspace": workspace, "kind": "conversation"}
+    return [
+        _owner_row(platform="weixin", user_id=user_id, workspace=workspace),
+        dict(dm, thread_id="", allowed_scope_ids=["scope:plain"], writable_scope_ids=["scope:plain"],
+             capture_scope_id="scope:plain"),
+        dict(dm, chat_id="pinned-chat", thread_id="", gateway_session_key="agent:main:weixin:dm:pinned-chat",
+             allowed_scope_ids=["scope:pinned"], writable_scope_ids=["scope:pinned"], capture_scope_id="scope:pinned"),
+        dict(dm, chat_id="main-chat", thread_id="main", allowed_scope_ids=["scope:main-row"],
+             writable_scope_ids=["scope:main-row"], capture_scope_id="scope:main-row"),
+    ]
+
+
+def test_a_row_naming_no_session_key_matches_the_key_a_gateway_sends(hermes_home, initialize_kwargs):
+    """#124: a gateway sends a session key on every session and the rows leave it empty, so
+    every weixin, feishu and desktop route failed closed; the other six fields still decide."""
+    workspace = initialize_kwargs["agent_workspace"]
+    _binding, core = install_hermes_scope_recall(
+        hermes_home, agent_id=initialize_kwargs["agent_identity"], platform="weixin", user_id="TEST-wx",
+        agent_workspace=workspace, audiences=_gateway_rows("TEST-wx", workspace), test_mode=False)
+    session = dict(initialize_kwargs, platform="weixin", user_id="TEST-wx", chat_type="dm", chat_id="")
+    session.pop("thread_id", None)
+    cases = [
+        (dict(gateway_session_key="agent:main:weixin:dm:TEST-wx"), {"scope:plain"}),
+        (dict(gateway_session_key=""), {"scope:plain"}),
+        (dict(chat_id="pinned-chat", gateway_session_key="agent:main:weixin:dm:pinned-chat"), {"scope:pinned"}),
+        (dict(chat_id="pinned-chat", gateway_session_key="agent:main:weixin:dm:someone-else"), set()),
+        (dict(chat_id="other-chat", gateway_session_key="agent:main:weixin:dm:other-chat"), set()),
+        (dict(user_id="TEST-other", gateway_session_key="agent:main:weixin:dm:TEST-wx"), set()),
+    ]
+    for index, (overrides, expected) in enumerate(cases):
+        provider = ScopeRecallHermesAdapter(core=core)
+        try:
+            provider.initialize(f"TEST-gateway-{index}", **dict(session, **overrides))
+            assert provider._identity.runtime_audience.allowed_scope_ids == frozenset(expected), overrides
+        finally:
+            provider.shutdown()
+
+
+def test_a_row_that_differs_only_in_the_plain_thread_is_named_not_granted(hermes_home, initialize_kwargs):
+    """The host sends an empty thread for a plain chat; a row copied with the CLI's "main" still
+    grants nothing there (the two are different routes), but the gap now says which field."""
+    workspace = initialize_kwargs["agent_workspace"]
+    _binding, core = install_hermes_scope_recall(
+        hermes_home, agent_id=initialize_kwargs["agent_identity"], platform="weixin", user_id="TEST-wx",
+        agent_workspace=workspace, audiences=_gateway_rows("TEST-wx", workspace), test_mode=False)
+    session = dict(initialize_kwargs, platform="weixin", user_id="TEST-wx", chat_type="dm", chat_id="main-chat",
+                   gateway_session_key="agent:main:weixin:dm:main-chat")
+    session.pop("thread_id", None)
+    provider = ScopeRecallHermesAdapter(core=core)
+    try:
+        provider.initialize("TEST-thread-near-miss", **session)
+        audience = provider._identity.runtime_audience
+        assert audience.allowed_scope_ids == frozenset()
+        assert "capability_gap:audience_thread_mismatch:row_says_main" in audience.capability_gaps
+    finally:
+        provider.shutdown()

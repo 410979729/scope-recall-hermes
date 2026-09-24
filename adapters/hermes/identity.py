@@ -4,7 +4,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 import hashlib
 from pathlib import Path
-from typing import cast
+from typing import Mapping, cast
 
 from scope_recall.contracts import (
     ContractError,
@@ -266,6 +266,19 @@ def trusted_source_context(scope: HermesRuntimeScope) -> SourceContext | None:
     return bounded_source_context({"platform": scope.platform, "chat_type": scope.chat_type})
 
 
+def _route_matches(row: Mapping[str, object], route: Mapping[str, str]) -> bool:
+    """Every exact field matches, except that a row naming no gateway_session_key does not pin one.
+
+    The session key is the host's own routing key, built from the platform, chat type and chat
+    it names beside it, all of which the row still matches exactly.  Rows the installer and
+    most operators write leave it empty, while a gateway sends one on every session, so an
+    exact empty key failed every gateway route closed (#124).  A row that names a key still
+    matches only that key.
+    """
+    return all(row.get(field) == value or (field == "gateway_session_key" and row.get(field) == "")
+               for field, value in route.items())
+
+
 def resolve_runtime_audience(manifest: InstallationManifest, scope: HermesRuntimeScope) -> RuntimeAudience:
     """Match one exact, installer-approved audience mapping.
 
@@ -291,10 +304,7 @@ def resolve_runtime_audience(manifest: InstallationManifest, scope: HermesRuntim
         "thread_id": scope.thread_id,
         "agent_workspace": scope.agent_workspace,
     }
-    matches = [
-        row for row in manifest.audiences
-        if all(row.get(field) == value for field, value in exact_fields.items())
-    ]
+    matches = [row for row in manifest.audiences if _route_matches(row, exact_fields)]
     allowed: set[str] = set()
     writable: set[str] = set()
     capture_scope: str | None = None
@@ -321,6 +331,13 @@ def resolve_runtime_audience(manifest: InstallationManifest, scope: HermesRuntim
             includes_owner_private = True
     if not matches:
         gaps.append("capability_gap:audience_unmapped")
+        # A row that differs only in how the plain chat's thread is written: the host sends
+        # an empty thread_id for an unthreaded chat, and rows copied from the CLI's "main"
+        # never match it (#124).  Named for the operator to correct; it grants nothing.
+        near = [row for row in manifest.audiences if row.get("thread_id") in {"", "main"}
+                and _route_matches(row, dict(exact_fields, thread_id=row.get("thread_id")))]
+        if near and scope.thread_id in {"", "main"}:
+            gaps.append(f"capability_gap:audience_thread_mismatch:row_says_{near[0].get('thread_id') or 'empty'}")
     elif not allowed:
         gaps.append("capability_gap:owner_unverified")
     if not includes_owner_private and owner_private_scope not in allowed:
