@@ -186,17 +186,9 @@ def test_a_person_only_kind_needs_a_person(kind):
     assert _unanswerable(_payload(kind=kind), evidence) == "no_authoritative_evidence"
 
 
-def test_a_fact_may_rest_on_a_document():
-    assert _unanswerable(_payload(kind="fact"), [_said("配色 蓝色", origin="external_document")]) is None
-
-
-def test_a_value_only_tool_output_states_is_not_asked_about():
-    """Since 3.2.0 tool output is no derivation root: alone, or beside a person who never states the
-    value, it cannot make a claim, so the question is answered without a model call."""
-    tool = _said("配色 蓝色", origin="tool_observation")
-    assert _unanswerable(_payload(kind="fact"), [tool]) == "no_derivation_root"
-    assert _unanswerable(_payload(kind="fact"), [tool, _said("TEST-project 该收尾了。")]) == "no_derivation_root"
-    assert _unanswerable(_payload(kind="fact"), [tool, _said("TEST-project 配色 蓝色。")]) is None
+@pytest.mark.parametrize("origin", ["tool_observation", "external_document"])
+def test_a_fact_may_rest_on_an_observation(origin):
+    assert _unanswerable(_payload(kind="fact"), [_said("配色 蓝色", origin=origin)]) is None
 
 
 @pytest.mark.parametrize("origin", ["assistant_visible", "memory_reinjection", "host_generated", "origin_unknown"])
@@ -277,13 +269,31 @@ def test_the_restatement_is_the_value_or_for_value_free_kinds_the_subject():
     assert restates({"kind": "decision", "value_text": "——", "subject": "——"}, ["还没定"]) is True
 
 
-def test_a_value_counts_from_anything_but_tool_output():
-    """The evaluator's own check (worker_candidates._apply_verdict) reads the same rule."""
-    from scope_recall.core.evidence_question import value_beyond_tool_output
+def test_a_candidate_nothing_rooted_speaks_to_is_not_asked_about():
+    from scope_recall.core.evidence_question import rootless
 
-    payload = _payload(kind="fact")
-    assert value_beyond_tool_output(payload, [("human_direct", "好的，就按这个。"),
-                                              ("assistant_visible", "TEST-project 配色 蓝色。")])
-    assert not value_beyond_tool_output(payload, [("human_direct", "另外 TEST-project 该收尾了。"),
-                                                  ("tool_observation", "TEST-project 配色 蓝色。")])
-    assert value_beyond_tool_output(_payload(kind="procedure"), [("human_direct", "这里没有那个值。")])
+    tool = _said("配色 蓝色", origin="tool_observation")
+    assert rootless({"tool_observation"}, [tool]) == "no_derivation_root"
+    assert rootless({"human_direct"}, [tool]) is None, "its own words are cited, whatever the window holds"
+    assert rootless({"tool_observation"}, [tool, _said("好的")]) is None, "a person spoke to it: the verdict decides"
+    assert rootless(set(), [_said("配色 蓝色", origin="external_document")]) is None
+
+
+def test_a_verdict_rests_on_what_a_person_or_a_document_said():
+    from scope_recall.core.evidence_question import rooted_verdict
+
+    line = "TEST-project 配色 蓝色。"
+    person = _said(line + "另外该收尾了。")
+    tool = _said(line, origin="tool_observation")
+    echo = _said(line, origin="assistant_visible")
+    fact = _payload(kind="fact")
+    assert rooted_verdict(fact, [(person, line)])
+    assert rooted_verdict(fact, [(_said(line, origin="external_document"), line)])
+    assert not rooted_verdict(fact, [(tool, line)])
+    assert not rooted_verdict(fact, [(tool, line), (person, "另外该收尾了。"), (echo, line)])
+    assert not rooted_verdict(fact, [(_said(line, complete=False), line)])
+    assert rooted_verdict(_payload(kind="intention"), [(person, "另外该收尾了。")])
+    procedure = dict(_payload(kind="procedure"), procedure={"method": ["先备份", "再升级"]})
+    assert not rooted_verdict(procedure, [(_said("先备份，再升级。", origin="tool_observation"), "先备份，再升级。"),
+                                          (person, "另外该收尾了。")])
+    assert rooted_verdict(procedure, [(_said("先备份，再升级。"), "先备份，再升级。")])

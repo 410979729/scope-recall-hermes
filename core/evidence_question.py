@@ -39,14 +39,14 @@ import unicodedata
 FIRST_HAND_ORIGINS = frozenset({"human_direct"})
 
 #: The sources a claim may be derived from.  Consolidation shows the model only these
-#: (``worker_consolidation``), and the evaluator writes no claim version whose value none of them
-#: carries (``unanswerable_reason``, ``worker_candidates``).  Tool output is not one.  A tool output is
-#: what an agent read or ran while working, and derived claims from it were almost all file sizes,
-#: paths, ports and timestamps: one 2.5-hour task on the pilot left 787 of them, 93% of the store's
-#: 3,175 claims rested on tool output alone, and not one of the owner's 30 real questions was
-#: answered by one.  The host distils how a task was done into skills; tool output stays a
-#: searchable source.  ``requalify.retire_rootless_proposals`` retires the unconfirmed claims
-#: derived before this changed.
+#: (``worker_consolidation``); the evaluator asks nothing of a candidate none of them speaks to
+#: (``rootless``) and writes no version their words do not carry (``rooted_verdict``).  Tool
+#: output is not one.  A tool output is what an agent read or ran while working, and derived
+#: claims from it were almost all file sizes, paths, ports and timestamps: one 2.5-hour task on
+#: the pilot left 787 of them, 93% of the store's 3,175 claims rested on tool output alone, and
+#: not one of the owner's 30 real questions was answered by one.  The host distils how a task was
+#: done into skills; tool output stays a searchable source.
+#: ``requalify.retire_rootless_proposals`` retires the unconfirmed claims derived before this changed.
 DERIVATION_ROOT_ORIGINS = frozenset({"human_direct", "external_document", "imported"})
 #: Why a candidate nothing in ``DERIVATION_ROOT_ORIGINS`` speaks to is set aside.
 NO_DERIVATION_ROOT_REASON = "no_derivation_root"
@@ -91,13 +91,7 @@ def question_digest(evidence: object) -> str:
 # * value -- ``_value_preserved`` needs ``value_text`` inside the quotes for every
 #   kind but procedure, intention and alias, and a quote is an exact slice of a
 #   supplied source.  Compared here on letters and digits only, after NFKC and
-#   casefolding, so punctuation, spacing and dotted dates cannot hide a match;
-# * root -- the evaluator writes a version only when it quotes a derivation root
-#   and, for a kind that carries a value, quotes the value from something other
-#   than tool output (``worker_candidates._apply_verdict``).  A person may
-#   confirm an agent's proposal without repeating it ("好的，就按这个"), but since
-#   3.2.0 a value only a tool output states is not remembered, so evidence with
-#   no root, or whose value only a tool output carries, cannot confirm it.
+#   casefolding, so punctuation, spacing and dotted dates cannot hide a match.
 #
 # Not covered: a verdict that changes the candidate's value.  The re-evaluation
 # keeps kind, subject and predicate but not the value; a new value reaches memory
@@ -131,28 +125,6 @@ def _letters_and_digits(value: object) -> str:
     return "".join(character for character in text if character.isalnum())
 
 
-def value_beyond_tool_output(payload: Mapping, quoted: Iterable[tuple[str, str]]) -> bool:
-    """Whether ``quoted`` -- (origin, text) pairs -- carries the candidate's value outside tool output.
-
-    True for a kind proved without its value, or a value with no letter or digit to find.
-    """
-    from .claims import _VALUE_FREE_KINDS
-
-    value = _letters_and_digits(payload.get("value_text")) if isinstance(payload, Mapping) else ""
-    if not value or payload.get("kind") in _VALUE_FREE_KINDS:
-        return True
-    return any(origin != "tool_observation" and value in _letters_and_digits(text) for origin, text in quoted)
-
-
-def _rootless(payload: Mapping, items: tuple[EvidenceText, ...]) -> str | None:
-    """``NO_DERIVATION_ROOT_REASON`` without a complete root, or when only tool output states the value."""
-    if not any(item.complete and item.origin in DERIVATION_ROOT_ORIGINS for item in items):
-        return NO_DERIVATION_ROOT_REASON
-    if not value_beyond_tool_output(payload, ((item.origin, item.content) for item in items)):
-        return NO_DERIVATION_ROOT_REASON
-    return None
-
-
 def unanswerable_reason(payload: Mapping, evidence: Iterable[EvidenceText]) -> str | None:
     """Why no verdict on ``evidence`` could promote this candidate, or ``None``."""
     # The qualification rules own these sets; importing them keeps the two in step.
@@ -167,10 +139,55 @@ def unanswerable_reason(payload: Mapping, evidence: Iterable[EvidenceText]) -> s
         return "no_authoritative_evidence"
     value = _letters_and_digits(payload.get("value_text"))
     if kind in _VALUE_FREE_KINDS or not value:
-        return _rootless(payload, items)
+        return None
     if not any(value in _letters_and_digits(item.content) for item in items):
         return "value_not_in_evidence"
-    return _rootless(payload, items)
+    return None
+
+
+# --- claims rest on what a person or a document said -------------------------
+#
+# Since 3.2.0 tool output is no derivation root: consolidation never shows it to
+# the model.  The evaluator is the other automatic writer, and the two rules below
+# hold it to the same line.  ``claims.qualify`` alone would not: it lends a tool
+# output authority and reads a value from any quote it cites, so a verdict quoting
+# a tool output's value beside any fragment of a person's message was written as
+# that person's report.
+
+def rootless(cited_origins: Iterable[str], evidence: Iterable[EvidenceText]) -> str | None:
+    """``NO_DERIVATION_ROOT_REASON`` for a candidate nothing a claim may be derived from speaks to.
+
+    Neither the sources it cites (imports resolved) nor its evidence hold a person's or a
+    document's words: a proposal an earlier release derived from tool output alone, which no
+    verdict may now confirm.  It waits for a person, without a model call.  A candidate whose
+    own words are cited is never set aside here, whatever its evidence window holds.
+    """
+    origins = set(cited_origins) | {item.origin for item in evidence}
+    return None if origins & DERIVATION_ROOT_ORIGINS else NO_DERIVATION_ROOT_REASON
+
+
+def rooted_verdict(proposal: Mapping, quoted: Iterable[tuple[EvidenceText, str]]) -> bool:
+    """Whether a verdict quoting ``quoted`` -- (source, quote) pairs -- may write a version.
+
+    It must quote a complete root, and what the claim says must be in the root's words: the
+    value, inside a quote from a root, or every step of a procedure, in a root it quotes.  An
+    agent's echo of a tool output's value, or a person's fragment beside it, carries nothing.
+    Kinds proved without a value (intention, alias) need the root quote alone; ``qualify``
+    already asks a person of them.
+    """
+    from .claims import _VALUE_FREE_KINDS
+
+    roots = [(text, quote) for text, quote in quoted if text.complete and text.origin in DERIVATION_ROOT_ORIGINS]
+    if not roots:
+        return False
+    kind = proposal.get("kind") if isinstance(proposal, Mapping) else None
+    if kind == "procedure":
+        method = (proposal.get("procedure") or {}).get("method") or ()
+        return all(any(step in text.content for text, _quote in roots) for step in method)
+    value = str(proposal.get("value_text") or "")
+    if kind in _VALUE_FREE_KINDS or not value.strip():
+        return True
+    return any(value in quote for _text, quote in roots)
 
 
 # --- questions worth asking at most so often ---------------------------------
@@ -239,6 +256,6 @@ def restates(payload: Mapping, contents: Iterable[str]) -> bool:
 
 
 __all__ = ["AUTOMATIC_VERDICTS", "DERIVATION_ROOT_ORIGINS", "FIRST_HAND_ORIGINS", "IMPERSONAL_ORIGINS",
-           "NO_DERIVATION_ROOT_REASON", "PERSON_ABSENT_REASON", "value_beyond_tool_output",
+           "NO_DERIVATION_ROOT_REASON", "PERSON_ABSENT_REASON", "rooted_verdict", "rootless",
            "REPEAT_WITHOUT_RESTATEMENT_REASON", "EvidenceText", "evidence_text", "is_first_hand",
            "needs_absent_person", "question_digest", "restatement_needle", "restates", "unanswerable_reason"]

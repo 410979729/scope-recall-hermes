@@ -27,6 +27,7 @@ from .evidence_question import (
     is_first_hand,
     needs_absent_person,
     restatement_needle,
+    rootless,
     unanswerable_reason,
 )
 
@@ -340,7 +341,8 @@ class CandidateIntake(CandidateTables):
                 # Unreadable evidence is the worker's fence to judge, not this one.
                 return None
             evidence.append(evidence_text(source))
-        return unanswerable_reason(payload, evidence)
+        return (unanswerable_reason(payload, evidence)
+                or rootless(self._cited_origins(candidate.ref, candidate.revision), evidence))
 
     def _record_unanswerable(self, candidate, refs, digest: str, reason: str, *, epoch: int, now: str,
                              rule_version: str) -> None:

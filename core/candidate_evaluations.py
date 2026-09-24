@@ -16,6 +16,7 @@ from .evidence_question import (
     REPEAT_WITHOUT_RESTATEMENT_REASON,
     evidence_text,
     needs_absent_person,
+    rootless,
     unanswerable_reason,
 )
 
@@ -70,10 +71,12 @@ class CandidateEvaluations(CandidateTables):
         """
         candidate = evaluation.candidate
         answer = None
-        if needs_absent_person(candidate.payload, self._cited_origins(candidate.ref, candidate.revision)):
+        cited = self._cited_origins(candidate.ref, candidate.revision)
+        if needs_absent_person(candidate.payload, cited):
             answer = ("archived", PERSON_ABSENT_REASON)
         else:
-            reason = unanswerable_reason(candidate.payload, tuple(evidence_text(source) for source in sources))
+            evidence = tuple(evidence_text(source) for source in sources)
+            reason = unanswerable_reason(candidate.payload, evidence) or rootless(cited, evidence)
             if reason is not None:
                 answer = ("waiting_evidence", reason)
             else:

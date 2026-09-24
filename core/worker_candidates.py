@@ -80,17 +80,13 @@ def _apply_verdict(tx, item, current, value, live_sources, now):
     # What the candidate is was recorded before the call; the verdict decides
     # whether the evidence supports it, with what value and on which quote.
     proposal = candidate_identity_restored(expected_candidate, authorized_sources, proposal)
-    # A version the evaluator writes rests on a source a claim may be derived from, as a
-    # consolidation's does, and says nothing only a tool output states: it quotes a root, and its
-    # value from something other than tool output.  A person confirming an agent's proposal is
-    # still confirmed; a tool output's value quoted beside any fragment of a person's message was
-    # written as that person's report.
-    from .evidence_question import DERIVATION_ROOT_ORIGINS, evidence_text, value_beyond_tool_output
-    origin = {(source.ref, source.revision): evidence_text(source).origin for source in authorized_sources}
-    quoted = [(origin.get((span["source_ref"], span["source_revision"]), "origin_unknown"), span["quote"])
-              for span in proposal["evidence_spans"]]
-    if (not any(source_origin in DERIVATION_ROOT_ORIGINS for source_origin, _quote in quoted)
-            or not value_beyond_tool_output(proposal, quoted)):
+    # A version the evaluator writes rests on a person's or a document's words, as a
+    # consolidation's does, and those words carry what it says (``rooted_verdict``).
+    from .evidence_question import evidence_text, rooted_verdict
+    texts = {(source.ref, source.revision): evidence_text(source) for source in authorized_sources}
+    quoted = [(texts[key], span["quote"]) for span in proposal["evidence_spans"]
+              if (key := (span["source_ref"], span["source_revision"])) in texts]
+    if not rooted_verdict(proposal, quoted):
         return None
     applied = apply_claim(tx, proposal, item.scope_id, now)
     applied_version = tx.claims.version(applied.ref, applied.revision)

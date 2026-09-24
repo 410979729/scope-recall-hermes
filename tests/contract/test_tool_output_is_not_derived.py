@@ -128,6 +128,7 @@ def test_an_evaluation_queued_before_the_upgrade_settles_without_a_model_call(ap
     read = capture(core, ctx, "entity-disk property-disk 42GB。", origin="tool_observation")
     with monkeypatch.context() as old_rule:
         old_rule.setattr(intake, "unanswerable_reason", lambda payload, evidence: None)
+        old_rule.setattr(intake, "rootless", lambda cited, evidence: None)
         saved, registration = _proposal_from(core, ctx, read)
     assert registration.work_queued
     evaluator = Evaluator(proposal=draft(read, "42GB", **DISK))
