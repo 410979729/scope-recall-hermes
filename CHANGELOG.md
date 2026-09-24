@@ -2,6 +2,12 @@
 
 All notable changes to `scope-recall` will be documented in this file.
 
+## [Unreleased]
+
+### Scope Recall 3.2.1rc1 - 2026-09-24
+
+- The version moves past the `v3.2.0` tag.
+
 ## [3.2.0] - 2026-09-24
 
 3.2.0 lets several agents keep one memory. Until now each agent had a store of its own, and what the owner told one of them the others could not recall. A shared store is one store that several Hermes agents read and write, each attached as an entry: what the owner tells one agent, another can recall, and the recall says which agent it came in through; a deletion through any of them is gone for all of them; and moving the memory to another machine is copying one directory. `import-entry` brings each agent's earlier memories along. Upgrading does not make a store shared: an agent that is not attached keeps its own store. Only Hermes agents attach so far; Codex keeps its own store. How to set one up is [docs/shared-store.md](https://github.com/410979729/scope-recall-hermes/blob/v3.2.0/docs/shared-store.md). We have run three of our own agents on one shared store since 2026-09-23, with their earlier stores imported (about 87,000 sources), and much of what follows is what that turned up.
