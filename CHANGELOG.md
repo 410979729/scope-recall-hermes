@@ -4,6 +4,10 @@ All notable changes to `scope-recall` will be documented in this file.
 
 ## [Unreleased]
 
+### Scope Recall 3.3.0rc5 - 2026-09-25
+
+- The version moves past the `v3.3.0rc4` tag.
+
 ### Scope Recall 3.3.0rc4 - 2026-09-25
 
 - The version moves past the `v3.3.0rc3` tag.
