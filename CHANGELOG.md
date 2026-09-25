@@ -7,6 +7,7 @@ All notable changes to `scope-recall` will be documented in this file.
 ### Scope Recall 3.3.0rc3 - 2026-09-24
 
 - The version moves past the `v3.3.0rc2` tag.
+- An embedding request stays within the ledger's `max_request_bytes` as well as the provider's hundred texts. The ledger refuses a larger body before it is sent, as `budget_unavailable`, and the worker defers the whole group an hour, so a group of long sources was refused every pass without a word: on the pilot's shared store the last 6,000 sources of a rebuild, a hundred of which made about 600 KB against 128 KB, waited eight hours with nothing sent. They go through as they come due; nothing has to be requeued.
 
 ### Scope Recall 3.3.0rc2 - 2026-09-24
 

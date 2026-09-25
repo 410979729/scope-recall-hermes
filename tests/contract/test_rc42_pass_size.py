@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+from types import SimpleNamespace
 
 import pytest
 
@@ -32,22 +33,28 @@ from test_v11_claims import app, capture  # noqa: F401  (fixtures)
 class Recording:
     """An adapter that records the shape of every request it is asked to make."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, max_request_bytes: int = 10**9) -> None:
         self.requests: list[int] = []
+        self.bodies: list[int] = []
+        self._ledger = SimpleNamespace(policy=SimpleNamespace(max_request_bytes=max_request_bytes))
+
+    def _request_body(self, texts):
+        return build_gemini_embed_body(texts)
 
     def _embed_many(self, texts, *, remaining_seconds):
         assert remaining_seconds > 0, "each request is bounded by what is left"
         assert len(texts) <= MAX_EMBED_BATCH, "a request must never exceed the provider's ceiling"
         self.requests.append(len(texts))
+        self.bodies.append(len(self._request_body(texts)))
         return tuple((float(index), 0.0) for index in range(len(texts)))
 
     embed_texts = None  # replaced below by the real method under test
 
 
-def _adapter():
+def _adapter(**options):
     from scope_recall.adapters.models import GeminiEmbeddingAdapter
 
-    made = Recording()
+    made = Recording(**options)
     made.embed_texts = GeminiEmbeddingAdapter.embed_texts.__get__(made, Recording)
     return made
 
@@ -205,3 +212,23 @@ def test_one_request_is_not_sent_through_a_pool():
     adapter = _adapter()
     assert len(adapter.embed_texts(["TEST one"], remaining_seconds=30)) == 1
     assert adapter.requests == [1]
+
+
+def test_long_texts_are_split_to_stay_within_the_ledger_s_request_size():
+    """The ledger refuses a body over its max_request_bytes before it is sent, and the worker then defers the
+    whole group an hour.  A hundred long sources made about 600 KB against 128 KB, every pass, for eight hours
+    on the pilot's store; the rebuild stalled on them without one request leaving."""
+    limit = 131072
+    adapter = _adapter(max_request_bytes=limit)
+    texts = [f"TEST {index} " + "长文" * 1500 for index in range(MAX_EMBED_BATCH)]
+    vectors = adapter.embed_texts(texts, remaining_seconds=60)
+    assert len(adapter.requests) > 1 and sum(adapter.requests) == len(texts)
+    assert max(adapter.bodies) <= limit, adapter.bodies
+    assert len(vectors) == len(texts)
+
+
+def test_a_text_too_long_for_any_request_still_goes_alone():
+    adapter = _adapter(max_request_bytes=1000)
+    adapter.embed_texts(["TEST short", "TEST " + "x" * 5000, "TEST also short"], remaining_seconds=60)
+    assert adapter.requests == [1, 1, 1]
+

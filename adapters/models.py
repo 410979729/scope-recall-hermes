@@ -493,6 +493,27 @@ def build_gemini_embed_body(encoded_text: str | Sequence[str], *, model: str | N
     return _json_bytes(body)
 
 
+def request_chunks(texts: Sequence[str], *, body: Callable[[Sequence[str]], bytes], limit: int) -> list[list[str]]:
+    """Consecutive requests of at most ``MAX_EMBED_BATCH`` texts whose body stays within ``limit`` bytes.
+
+    The ledger refuses a body over its ``max_request_bytes`` before it is sent, as
+    ``budget_unavailable``, and the worker defers the whole group an hour.  On the pilot's shared
+    store the last 6,000 sources of a rebuild were long ones: a hundred of them made about 600 KB
+    against the 128 KB limit, and every pass for eight hours was refused without one request
+    leaving.  A text whose own body passes the limit still goes, alone, so the refusal is its own.
+    """
+    chunks: list[list[str]] = []
+    chunk: list[str] = []
+    for text in texts:
+        if chunk and (len(chunk) == MAX_EMBED_BATCH or len(body([*chunk, text])) > limit):
+            chunks.append(chunk)
+            chunk = []
+        chunk.append(text)
+    if chunk:
+        chunks.append(chunk)
+    return chunks
+
+
 def build_openai_embed_body(encoded_text: str | Sequence[str], *, model: str, dimensions: int,
                             dimensions_field: str = "dimensions") -> bytes:
     """The /v1/embeddings request shape MiniMax, Qwen and OpenAI all accept.
@@ -981,13 +1002,14 @@ class GeminiEmbeddingAdapter:
         The provider takes ``MAX_EMBED_BATCH`` texts per request and refuses more, so a longer
         group is sent as consecutive full requests rather than refused: what a caller asks for
         is how many documents it has, not how the endpoint is shaped.  Measured against the
-        live provider: 32 texts in 2.6s, 100 in 3.8s, 250 refused with HTTP 400.
+        live provider: 32 texts in 2.6s, 100 in 3.8s, 250 refused with HTTP 400.  A request also
+        stays within the ledger's ``max_request_bytes`` (``request_chunks``).
         """
         texts = list(encoded)
         if not texts:
             return ()
         deadline = time.monotonic() + validate_timeout_seconds(remaining_seconds)
-        chunks = [texts[start:start + MAX_EMBED_BATCH] for start in range(0, len(texts), MAX_EMBED_BATCH)]
+        chunks = request_chunks(texts, body=self._request_body, limit=self._ledger.policy.max_request_bytes)
         if len(chunks) == 1:
             return tuple(self._embed_many(chunks[0], remaining_seconds=_remaining_seconds(deadline)))
 
@@ -1014,16 +1036,19 @@ class GeminiEmbeddingAdapter:
         encoded = encode_embedding_text(text, kind="document")
         return self._embed(encoded, remaining_seconds=remaining_seconds)
 
+    def _request_body(self, texts: Sequence[str]) -> bytes:
+        """The request body for ``texts`` in this route's dialect."""
+        if self._dialect == "gemini":
+            return build_gemini_embed_body(texts, model=self._model, dimensions=self._dimensions)
+        return build_openai_embed_body(texts, model=self._model, dimensions=self._dimensions,
+                                       dimensions_field=self._dimensions_field)
+
     def _embed_many(self, texts: list[str], *, remaining_seconds: float) -> tuple[tuple[float, ...], ...]:
         """The one-request path, for any number of texts; identical bounds to ``_embed``."""
         deadline = time.monotonic() + validate_timeout_seconds(remaining_seconds)
         for text in texts:
             _reject_secrets(text)
-        if self._dialect == "gemini":
-            body = build_gemini_embed_body(texts, model=self._model, dimensions=self._dimensions)
-        else:
-            body = build_openai_embed_body(texts, model=self._model, dimensions=self._dimensions,
-                                           dimensions_field=self._dimensions_field)
+        body = self._request_body(texts)
         if _remaining_seconds(deadline) <= 0:
             raise AuxiliaryModelError("timeout")
         if self._ledger.provider_hold_until(self._model) is not None:
