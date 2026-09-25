@@ -19,6 +19,7 @@ from . import transcript
 from .boundary import (
     assistant_stop_source_event,
     authorized_attachment_refs,
+    is_task_notification,
     lifecycle_source_event,
     recorded_source_event,
     tool_use_source_event,
@@ -549,6 +550,11 @@ class CodexHookHandler:
         prompt = payload.get("prompt")
         if type(prompt) is not str:
             self._diag("missing_prompt", gaps=(*gaps, "capability_gap:missing_prompt"))
+            return {}
+        if self.host == "claude-code" and is_task_notification(prompt):
+            # Claude Code's own notice that a background task finished: recorded as the owner's words it
+            # became a message they never wrote, and a recall on it answers nothing they asked.
+            self._diag("task_notification")
             return {}
         attachment_refs, attachment_gaps = authorized_attachment_refs(payload)
         gaps = (*gaps, *attachment_gaps)

@@ -126,9 +126,10 @@ At the end of each turn the Stop hook also reads the session record Claude Code 
 `transcript_path`) from where the last read stopped, and records what it shows being said: the
 owner's messages, those sent while a turn was running included, and the text Claude Code shows
 while it works. Tool calls and results, compaction summaries, task notifications and anything the
-record does not mark as the owner's or as shown text are not recorded. A message a hook already
-stored is recognised by its words and moment and not stored twice; one that cannot be written now
-is written at a later turn. A long session is read over several turns, at most 3 s each. Where a
+record does not mark as the owner's or as shown text are not recorded. A background task's
+completion notice, which Claude Code hands to the model as a prompt, is not the owner's and is
+neither recorded nor answered from memory. A message a hook already stored is recognised by its
+words and moment and not stored twice; one that cannot be written now is written at a later turn. A long session is read over several turns, at most 3 s each. Where a
 read stopped is kept in `<home>\scope-recall\transcripts`; deleting it only makes the next read
 start from the top. Claude Code runs a hook command through a shell (Git Bash, or
 PowerShell without it), so keep the interpreter, the home and the env file on ASCII paths without

@@ -47,6 +47,17 @@ def _serialize_tool_value(value: object) -> tuple[str, bool]:
     return encoded[:_MAX_TOOL_CHARS], len(encoded) > _MAX_TOOL_CHARS
 
 
+#: How Claude Code opens the prompt it hands the model when a background task finishes.  The session
+#: record marks such an entry ``origin.kind: task-notification``, never the owner's; the prompt hook sees
+#: only the text.
+TASK_NOTIFICATION_PREFIX = "<task-notification>"
+
+
+def is_task_notification(prompt: str) -> bool:
+    """Whether a prompt is Claude Code's notice that a background task finished, not the owner's words."""
+    return prompt.lstrip().startswith(TASK_NOTIFICATION_PREFIX)
+
+
 def user_prompt_source_event(
     *,
     installation_id: str,

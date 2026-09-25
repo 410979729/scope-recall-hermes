@@ -405,3 +405,18 @@ def test_codex_does_not_read_a_session_record(store, tmp_path):
     finally:
         hook.close()
     assert _rows(root, "SELECT count(*) FROM source_events WHERE entry_id='codex'") == [(0,)]
+
+
+def test_a_task_notification_is_not_the_owner_s_prompt(store):
+    """Claude Code hands the model a notice as a prompt when a background task finishes; on the pilot the
+    first such notice was stored as the owner's message."""
+    root, _homes, client, _capture = store
+    notice = "<task-notification>\n<task-id>TEST</task-id>\n<status>completed</status>\n</task-notification>"
+    hook = _hook(client)
+    try:
+        assert hook.handle_payload(_prompt(notice, prompt_id="TEST-prompt-9")) == {}
+        assert hook.diagnostics.last_reason == "task_notification"
+        hook.handle_payload(_prompt("TEST 一句真话。", prompt_id="TEST-prompt-10"))
+    finally:
+        hook.close()
+    assert [content for _role, _origin, content in _said_in_store(root)] == ["TEST 一句真话。"]
