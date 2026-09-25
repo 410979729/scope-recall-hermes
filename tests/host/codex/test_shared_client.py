@@ -8,6 +8,7 @@ Sources are synthetic; nothing here is a person's memory.
 from __future__ import annotations
 
 from contextlib import closing
+from datetime import datetime, timedelta, timezone
 import json
 import sqlite3
 
@@ -30,6 +31,7 @@ from scope_recall.adapters.hermes.installation import (
     write_shared_payload,
 )
 from scope_recall.contracts import ContractError, InstanceBinding
+from scope_recall.core.capture import CaptureReceipt
 
 NOW = "2026-09-24T20:00:00Z"
 AGENT = "TEST-agent"
@@ -228,3 +230,178 @@ def test_the_client_s_tools_read_the_store_and_refuse_to_change_it(store):
     with pytest.raises(ContractError):
         server.propose_memory(Ctx(), "1.1", "TEST a proposal")
     assert _rows(root, "SELECT count(*) FROM source_events WHERE entry_id='claude-code'") == [(0,)]
+
+
+# -- the session record ------------------------------------------------------
+# Claude Code's hooks carry a turn's prompt and last message; what the model says while it works, and
+# anything a hook could not write, is read from the session record at the end of the turn.
+
+
+def _moments():
+    start = datetime.now(timezone.utc) - timedelta(seconds=30)
+    return lambda seconds: (start + timedelta(seconds=seconds)).isoformat().replace("+00:00", "Z")
+
+
+def _line(kind, uuid, stamp, **fields):
+    return {"type": kind, "uuid": uuid, "timestamp": stamp, "sessionId": "TEST-cc-session", **fields}
+
+
+def _person(uuid, stamp, text):
+    return _line("user", uuid, stamp, origin={"kind": "human"}, promptId="TEST-prompt-1",
+                 message={"role": "user", "content": text})
+
+
+def _model(uuid, stamp, *blocks):
+    return _line("assistant", uuid, stamp, message={"role": "assistant", "model": "TEST-model", "content": list(blocks)})
+
+
+def _said(text):
+    return {"type": "text", "text": text}
+
+
+def _record(path, *rows):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8", newline="\n") as handle:
+        for row in rows:
+            handle.write(json.dumps(row, ensure_ascii=False) + "\n")
+    return path
+
+
+def _stop(record, last=None):
+    payload = {"hook_event_name": "Stop", "session_id": "TEST-cc-session", "prompt_id": "TEST-prompt-1",
+               "transcript_path": str(record), "cwd": "C:/x", "stop_hook_active": False}
+    if last is not None:
+        payload["last_assistant_message"] = last
+    return payload
+
+
+def _said_in_store(root):
+    return sorted(_rows(root, "SELECT role, origin, content FROM source_events WHERE entry_id='claude-code'"))
+
+
+def test_a_stop_records_what_the_session_record_shows_was_said_and_nothing_else(store, tmp_path):
+    root, _homes, client, _capture = store
+    at = _moments()
+    record = _record(
+        tmp_path / "TEST-projects" / "TEST-cc-session.jsonl",
+        _person("u1", at(0), "TEST 帮我查一下 QX-17 的进度。"),
+        _model("a1", at(1), {"type": "thinking", "thinking": "TEST unseen"}),
+        _model("a2", at(2), _said("TEST 我先看一下记录。")),
+        _model("a3", at(3), {"type": "tool_use", "id": "T1", "name": "Bash", "input": {"command": "ls"}}),
+        _line("user", "t1", at(4), message={"role": "user", "content": [
+            {"type": "tool_result", "tool_use_id": "T1", "content": "TEST tool output"}]}),
+        _line("attachment", "q1", at(5), attachment={
+            "type": "queued_command", "commandMode": "prompt", "origin": {"kind": "human"}, "prompt": "TEST 顺便看看 KZ-42。"}),
+        _line("attachment", "n1", at(6), attachment={
+            "type": "queued_command", "commandMode": "task-notification", "prompt": "<task-notification>TEST</task-notification>"}),
+        _line("user", "n2", at(7), origin={"kind": "task-notification"},
+              message={"role": "user", "content": "<task-notification>TEST</task-notification>"}),
+        _line("user", "s1", at(8), isCompactSummary=True, message={"role": "user", "content": "TEST summary of earlier work"}),
+        _line("user", "m1", at(9), isMeta=True, message={"role": "user", "content": "TEST meta"}),
+        _model("a4", at(10), _said("TEST QX-17 已经完成。")),
+    )
+    hook = _hook(client)
+    try:
+        hook.handle_payload(_prompt("TEST 帮我查一下 QX-17 的进度。"))
+        hook.handle_payload(_stop(record, last="TEST QX-17 已经完成。"))
+    finally:
+        hook.close()
+    # The prompt and the last message came through their hooks as well; each is stored once.
+    assert _said_in_store(root) == sorted([
+        ("user", "human_direct", "TEST 帮我查一下 QX-17 的进度。"),
+        ("assistant", "assistant_visible", "TEST 我先看一下记录。"),
+        ("user", "human_direct", "TEST 顺便看看 KZ-42。"),
+        ("assistant", "assistant_visible", "TEST QX-17 已经完成。"),
+    ])
+
+
+def test_what_could_not_be_written_is_recorded_at_the_next_stop_once(store, tmp_path, monkeypatch):
+    root, _homes, client, _capture = store
+    at = _moments()
+    record = _record(tmp_path / "TEST-projects" / "TEST-cc-session.jsonl",
+                     _person("u1", at(0), "TEST 第一句。"),
+                     _model("a1", at(1), _said("TEST 第一段。")),
+                     _model("a2", at(2), _said("TEST 第二段。")))
+    hook = _hook(client)
+    written = hook.core.record_event
+    calls = []
+
+    def busy_the_second_time(*args, **kwargs):
+        calls.append(None)
+        if len(calls) == 2:
+            # What the core answers when another process holds the writer lease past the wait.
+            return CaptureReceipt("unavailable", (), "unknown", "unknown", "unknown", error_code="STORAGE_UNAVAILABLE")
+        return written(*args, **kwargs)
+
+    monkeypatch.setattr(hook.core, "record_event", busy_the_second_time)
+    try:
+        hook.handle_payload(_stop(record))
+    finally:
+        hook.close()
+    assert [content for _role, _origin, content in _said_in_store(root)] == ["TEST 第一句。"], \
+        "the read stops at the message that could not be written"
+
+    _record(record, _model("a3", at(3), _said("TEST 第三段。")))
+    hook = _hook(client)
+    try:
+        hook.handle_payload(_stop(record))
+    finally:
+        hook.close()
+    assert sorted(content for _role, _origin, content in _said_in_store(root)) == sorted(
+        ["TEST 第一句。", "TEST 第一段。", "TEST 第二段。", "TEST 第三段。"])
+
+
+def test_a_lost_or_stale_read_position_costs_a_reread_and_never_a_duplicate(store, tmp_path):
+    root, _homes, client, _capture = store
+    at = _moments()
+    record = _record(tmp_path / "TEST-projects" / "TEST-cc-session.jsonl",
+                     _person("u1", at(0), "TEST 一。"), _model("a1", at(1), _said("TEST 二。")))
+    for _ in range(2):
+        hook = _hook(client)
+        try:
+            hook.handle_payload(_stop(record))
+        finally:
+            hook.close()
+        for kept in (client / "scope-recall" / "transcripts").glob("*.json"):
+            kept.unlink()
+    # The same name, another record: its opening lines differ, so it is read from the top.
+    record.write_text("", encoding="utf-8")
+    _record(record, _person("u9", at(5), "TEST 三。"), _person("u1", at(0), "TEST 一。"))
+    hook = _hook(client)
+    try:
+        hook.handle_payload(_stop(record))
+    finally:
+        hook.close()
+    assert sorted(content for _role, _origin, content in _said_in_store(root)) == sorted(["TEST 一。", "TEST 二。", "TEST 三。"])
+
+
+def test_only_the_session_s_own_record_is_read(store, tmp_path):
+    root, _homes, client, _capture = store
+    at = _moments()
+    other = _record(tmp_path / "TEST-projects" / "TEST-other-session.jsonl", _person("u1", at(0), "TEST 别的会话。"))
+    hook = _hook(client)
+    try:
+        hook.handle_payload(_stop(other))
+        assert "capture_gap:session_record_unavailable" in hook.diagnostics.capability_gaps
+        hook.handle_payload(_stop(tmp_path / "TEST-projects" / "missing" / "TEST-cc-session.jsonl"))
+    finally:
+        hook.close()
+    assert _said_in_store(root) == []
+
+
+def test_codex_does_not_read_a_session_record(store, tmp_path):
+    root, _homes, _client, _capture = store
+    owner = next(row for row in read_shared_payload(root)["entries"][0]["audiences"] if row["kind"] == "owner_private")
+    codex = tmp_path / "TEST-codex-home"
+    attach_shared_record(root, client_entry_record(
+        host="codex", home=codex, entry_id="codex", display_name="Codex", attached_at=NOW,
+        allowed_scope_ids=owner["allowed_scope_ids"], writable_scope_ids=owner["writable_scope_ids"],
+        capture_scope_id=owner["capture_scope_id"]), now=NOW)
+    at = _moments()
+    record = _record(tmp_path / "TEST-projects" / "TEST-cc-session.jsonl", _person("u1", at(0), "TEST 不读。"))
+    hook = CodexHookHandler.from_home(str(codex), "codex")
+    try:
+        hook.handle_payload({**_stop(record), "turn_id": "TEST-turn-1"})
+    finally:
+        hook.close()
+    assert _rows(root, "SELECT count(*) FROM source_events WHERE entry_id='codex'") == [(0,)]

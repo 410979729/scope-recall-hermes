@@ -115,6 +115,39 @@ def assistant_stop_source_event(
     }, tuple(gaps)
 
 
+def recorded_source_event(
+    *,
+    installation_id: str,
+    session_id: str,
+    entry_id: str,
+    role: str,
+    text: str,
+    occurred_at: str,
+    recorded_at: str,
+    host: str = "claude-code",
+) -> SourceEvent:
+    """A message read from the host's own session record, under the record's id for it."""
+    return {
+        "protocol_version": "1.1",
+        "source_event_key": host_source_key(
+            host=host,
+            installation_id=installation_id,
+            session_id=session_id,
+            event_kind="record",
+            event_id=entry_id,
+        ),
+        "source_revision": 1,
+        "origin": "human_direct" if role == "user" else "assistant_visible",
+        "role": role,
+        "content": text,
+        "occurred_at": occurred_at,
+        "recorded_at": recorded_at,
+        "time_precision": "instant",
+        "capture_state": "complete",
+        "evidence_refs": [],
+    }
+
+
 def tool_use_source_event(
     *,
     installation_id: str,

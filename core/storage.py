@@ -4,6 +4,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
+from datetime import datetime
 import hashlib
 import json
 import math
@@ -19,7 +20,7 @@ from .writer_lease import TruthWriterBusyError
 from . import lexical_index
 from .schema import (APPLICATION_ID, SCHEMA_VERSION, STATEMENTS, UPGRADE_CHAIN, stale_header_schema, upgrade_1105,
                      upgrade_1106, upgrade_1107, upgrade_1108, upgrade_1109)
-from .events import lexical_terms, prepare_capture, query_terms
+from .events import lexical_terms, prepare_capture, query_terms, stored_content_digest
 
 #: How often a writer looks again for another process's lease while it waits.
 _LEASE_POLL_SECONDS = 0.01
@@ -541,6 +542,25 @@ class Transaction:
             ORDER BY hits DESC,e.occurred_at DESC,e.event_id,e.source_revision DESC LIMIT ?""", (*terms, *scopes,self.context.project_id,self.context.branch_id,limit)).fetchall()
         return tuple(source for row in rows if (source := self.source(row["event_id"], row["source_revision"])) is not None)
 
+    def said_in_session(self, scope_id: str, items: tuple[tuple[str, str, str], ...], *,
+                        window_seconds: float) -> tuple[bool, ...]:
+        """For each (role, content, occurred_at): whether this session already holds those words from that role,
+        said within ``window_seconds`` of that time.
+
+        A host that records one message by two routes -- a hook as it happens, its session record later -- asks
+        this before the second: the two keys differ, the words and the moment do not.  The same words said again
+        later are a new message and are not matched.
+        """
+        self._scope(scope_id)
+        conn = self._check()
+        answers = []
+        for role, content, occurred_at in items:
+            stamps = conn.execute(
+                "SELECT occurred_at FROM source_events WHERE scope_id=? AND role=? AND content_sha256=? AND session_id=?",
+                (scope_id, role, stored_content_digest(content), self.context.session_id)).fetchall()
+            answers.append(any(_seconds_apart(stamp[0], occurred_at) <= window_seconds for stamp in stamps))
+        return tuple(answers)
+
     def enqueue_source(self, ref: str, revision: int, *, work_type: str, available_at: str) -> None:
         conn = self._check(write=True)
         if work_type not in {"consolidate", "embed"}:
@@ -558,6 +578,15 @@ class Transaction:
 #: rows on a 1.4 GB store, which no hook can carry and every worker pass can.
 HEAVY_UPGRADE_BYTES = 100_000_000
 HEAVY_UPGRADE_SECONDS = 60.0
+
+
+def _seconds_apart(first: object, second: object) -> float:
+    """How far apart two stored ISO times are; unreadable times are never close."""
+    try:
+        moments = [datetime.fromisoformat(str(value).replace("Z", "+00:00")) for value in (first, second)]
+        return abs((moments[0] - moments[1]).total_seconds())
+    except (TypeError, ValueError):
+        return math.inf
 
 
 def upgrade_fits(store_bytes: int, remaining_seconds: float | None) -> bool:

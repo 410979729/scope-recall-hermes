@@ -68,6 +68,11 @@ def prepare_capture(value: SourceEvent | dict | str | bytes, context: TrustedCon
     return PreparedCapture(tuple(events), gaps)
 
 
+def stored_content_digest(content: str) -> str:
+    """The ``content_sha256`` a capture of ``content`` is stored under: its first segment's, when it is split."""
+    return hashlib.sha256(sanitize_source_capture_text(content)[:MAX_SEGMENT_CHARS].encode("utf-8")).hexdigest()
+
+
 _CJK = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]+")
 _IDENTIFIER = re.compile(r"[a-z0-9]+(?:[._/-][a-z0-9]+)*")
 _FILENAME = re.compile(r"(?<![\w-])[\w-]+(?:\.[\w-]+)+", re.UNICODE)

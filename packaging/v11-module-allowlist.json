@@ -27,6 +27,7 @@
     "adapters/codex/mcp_entry.py",
     "adapters/codex/mcp_server.py",
     "adapters/codex/runtime_wiring.py",
+    "adapters/codex/transcript.py",
     "adapters/codex_cli.py",
     "adapters/hermes/__init__.py",
     "adapters/hermes/attachments.py",

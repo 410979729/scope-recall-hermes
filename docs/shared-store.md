@@ -121,8 +121,16 @@ scope-recall apply-install --host claude-code --target-plugin-dir %USERPROFILE%\
 The plugin under `~/.claude/skills/` loads in every new Claude Code session of that user, the
 desktop app's included; `claude plugin disable scope-recall@skills-dir` stops it. Its hooks record
 each prompt as the owner's and each final reply as Claude Code's, and put what is remembered in
-front of the prompt; tool calls are not recorded. A turn is recorded under its prompt id, which
-Claude Code sends from 2.1.196. Claude Code runs a hook command through a shell (Git Bash, or
+front of the prompt. A turn is recorded under its prompt id, which Claude Code sends from 2.1.196.
+At the end of each turn the Stop hook also reads the session record Claude Code keeps (the hook's
+`transcript_path`) from where the last read stopped, and records what it shows being said: the
+owner's messages, those sent while a turn was running included, and the text Claude Code shows
+while it works. Tool calls and results, compaction summaries, task notifications and anything the
+record does not mark as the owner's or as shown text are not recorded. A message a hook already
+stored is recognised by its words and moment and not stored twice; one that cannot be written now
+is written at a later turn. A long session is read over several turns, at most 3 s each. Where a
+read stopped is kept in `<home>\scope-recall\transcripts`; deleting it only makes the next read
+start from the top. Claude Code runs a hook command through a shell (Git Bash, or
 PowerShell without it), so keep the interpreter, the home and the env file on ASCII paths without
 spaces; `apply-install` refuses others. Its MCP tools read the store. Changing a memory through
 them is refused, because the tools cannot tell which conversation asks: correct or delete through

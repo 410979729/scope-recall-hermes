@@ -15,10 +15,12 @@ from scope_recall.core import CoreConfig, MemoryCore
 from scope_recall.core.retrieval import AUTOMATIC_PACKET_BUDGET_UNITS
 from ..runtime_wiring import _strict_hook_budget, render_host_recall_context
 
+from . import transcript
 from .boundary import (
     assistant_stop_source_event,
     authorized_attachment_refs,
     lifecycle_source_event,
+    recorded_source_event,
     tool_use_source_event,
     turn_id_from_payload,
     user_prompt_source_event,
@@ -56,6 +58,16 @@ _TURN_FIELD = {"codex": "turn_id", "claude-code": "prompt_id"}
 #: 15 s (``maintenance/install_claude_code.py``), and recall on the pilot's shared store took 2.7-5.7 s:
 #: with 2 s most automatic recalls would have come back empty.
 _CONFIGURED_PROMPT_BUDGET = frozenset({"claude-code"})
+#: Clients whose Stop and SessionEnd also read the session record (``transcript``): what the person said,
+#: whatever the prompt hook could not write, and what the model said while it worked.  Claude Code waits
+#: 10 s for these hooks; a turn's lines take well under a second, and a long backlog is read over several
+#: turns, at most ``_RECORD_READ_S`` each, so the end of a turn is not held up.
+_READS_RECORD = frozenset({"claude-code"})
+_RECORD_READ_S = 3.0
+#: A capture is started only with this much of the reading time left.
+_RECORD_CAPTURE_MIN_S = 0.5
+#: A hook's copy of a message and the record's are the same message when the words match and the moments are this close.
+_RECORD_SAME_MESSAGE_S = 120.0
 _HOST_EVENTS = {"codex": _SUPPORTED_EVENTS,
                 "claude-code": frozenset({"UserPromptSubmit", "Stop", "SessionEnd"})}
 
@@ -321,9 +333,9 @@ class CodexHookHandler:
         if self._host_runtime is not None:
             self._host_runtime.rebind_session(session_id, audience.allowed_scope_ids)
             self._merge_runtime_gaps()
-        # The extended trusted budget is only for the auto recall path.  The
-        # capture/lifecycle hooks retain their original short processing cap.
-        budget = self._hook_budget() if event == "UserPromptSubmit" else _TOTAL_BUDGET_S
+        # The extended trusted budget is for the auto recall path and for a client's
+        # read of its session record.  The other hooks keep their short processing cap.
+        budget = self._hook_budget() if event == "UserPromptSubmit" or self._reads_record(event) else _TOTAL_BUDGET_S
         deadline = self._hook_deadline(budget)
         if event == "SessionStart":
             if isinstance(self.config, SharedClientConfig):
@@ -343,6 +355,8 @@ class CodexHookHandler:
             return self._post_tool_use(session_id, audience, payload, deadline)
         capture = self._stop if event == "Stop" else self._session_end
         result = capture(session_id, audience, payload, deadline)
+        if self._reads_record(event):
+            self._read_record(session_id, audience, payload, deadline)
         self._wake_after_capture(session_id, audience, deadline)
         return result
 
@@ -362,8 +376,13 @@ class CodexHookHandler:
 
     # -- capture ---------------------------------------------------------
 
-    def _capture(self, context, audience, event, *, deadline: float, gaps: tuple[str, ...] = ()) -> tuple[tuple[str, ...], tuple[str, ...]]:
-        """Record one host event; returns the committed source refs and the accumulated gaps."""
+    def _capture(self, context, audience, event, *, deadline: float, gaps: tuple[str, ...] = (),
+                 via_inbox: bool = True) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        """Record one host event; returns the committed source refs and the accumulated gaps.
+
+        ``via_inbox=False`` is for a message read from the session record, which keeps it until it is
+        written: one write instead of the inbox's two.
+        """
         if event is None:
             return (), gaps
         started = time.monotonic()
@@ -375,13 +394,17 @@ class CodexHookHandler:
             self._diag("deadline_exceeded", gaps=gaps)
             return (), gaps
         try:
-            receipt = self.core.record_host_event(
-                context,
-                event,
-                scope_id=audience.capture_scope_id,
-                host_scope=audience.host_scope,
-                remaining_seconds=min(_CAPTURE_TIMEOUT_S, self._remaining(deadline)),
-            )
+            if via_inbox:
+                receipt = self.core.record_host_event(
+                    context,
+                    event,
+                    scope_id=audience.capture_scope_id,
+                    host_scope=audience.host_scope,
+                    remaining_seconds=min(_CAPTURE_TIMEOUT_S, self._remaining(deadline)),
+                )
+            else:
+                receipt = self.core.record_event(context, event, scope_id=audience.capture_scope_id,
+                                                 remaining_seconds=min(_CAPTURE_TIMEOUT_S, self._remaining(deadline)))
         except (ContractError, OSError, RuntimeError) as exc:
             self.diagnostics.capture_durability = "unknown"
             self.diagnostics.capture_error_type = type(exc).__name__
@@ -410,6 +433,72 @@ class CodexHookHandler:
         self.diagnostics.capture_stage = "source_committed"
         refs = tuple(f"{write.ref}@{write.revision}" for write in receipt.event_refs)
         return refs, (*gaps, *receipt.gaps)
+
+    def _reads_record(self, event: object) -> bool:
+        return (event in ("Stop", "SessionEnd") and self.host in _READS_RECORD
+                and isinstance(self.config, SharedClientConfig))
+
+    def _read_record(self, session_id: str, audience, payload: dict[str, Any], deadline: float) -> None:
+        """Record what the session record shows was said since the last read (see ``transcript``).
+
+        What a hook already stored is recognised by its words and moment and skipped.  A capture that
+        cannot be written now ends the read there; the next Stop starts again from that message.
+        """
+        record = transcript.record_path(payload.get("transcript_path"), session_id)
+        if record is None:
+            self._diag("session_record_unavailable", gaps=("capture_gap:session_record_unavailable",))
+            return
+        cursor = transcript.Cursor(self.config.home, session_id, record)
+        start = cursor.load()
+        try:
+            lines = transcript.read(record, start)
+        except OSError:
+            self._diag("session_record_unavailable", gaps=("capture_gap:session_record_unavailable",))
+            return
+        said = [entry for _end, entry in lines if entry is not None]
+        held: tuple[bool, ...] = ()
+        if said:
+            try:
+                held = self.core.said_in_session(
+                    self._context(audience, session_id, "host_generated"), audience.capture_scope_id,
+                    [(entry.role, entry.text, entry.occurred_at) for entry in said],
+                    window_seconds=_RECORD_SAME_MESSAGE_S)
+            except (ContractError, OSError, RuntimeError):
+                self._diag("session_record_check_failed")
+                return
+        known = {entry.entry_id for entry, stored in zip(said, held) if stored}
+        until = min(deadline, self.clock.monotonic() + _RECORD_READ_S)
+        position = start
+        for end, entry in lines:
+            if entry is not None and entry.entry_id not in known:
+                if self._remaining(until) < _RECORD_CAPTURE_MIN_S:
+                    break
+                event = recorded_source_event(
+                    installation_id=self.config.installation_id,
+                    host=self.host,
+                    session_id=session_id,
+                    entry_id=entry.entry_id,
+                    role=entry.role,
+                    text=entry.text,
+                    occurred_at=entry.occurred_at,
+                    recorded_at=self.clock.utc_now(),
+                )
+                origin = "human_direct" if entry.role == "user" else "assistant_visible"
+                if not self._captured_for_good(self._context(audience, session_id, origin), audience, event, until):
+                    break
+            position = end
+        if position != start:
+            cursor.save(position)
+
+    def _captured_for_good(self, context, audience, event, deadline: float) -> bool:
+        """Capture one record message; False when it may succeed later and the read must stop here."""
+        diagnostics = self.diagnostics
+        diagnostics.capture_disposition = diagnostics.capture_error_code = diagnostics.capture_error_type = None
+        self._capture(context, audience, event, deadline=deadline, via_inbox=False)
+        # Stored, or refused in a way no retry changes: a secret, an invalid message, its id already taken.
+        return (diagnostics.capture_durability == "persisted"
+                or diagnostics.capture_disposition in ("rejected", "conflict")
+                or diagnostics.capture_error_code in ("SECRET_DETECTED", "INPUT_INVALID", "VERSION_CONFLICT"))
 
     def _session_start(self, session_id: str, audience, deadline: float) -> bool:
         context = self._context(audience, session_id, "host_generated")
