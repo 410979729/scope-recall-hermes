@@ -17,10 +17,19 @@ older database is a separate, explicit operation — see
 
 ## 1. Requirements
 
-- **Python 3.11 or 3.12.** `pyproject.toml` declares `requires-python = ">=3.11,<3.13"`;
-  3.13 and newer are not supported.
+- **Python 3.11 to 3.14.** `pyproject.toml` declares `requires-python = ">=3.11,<3.15"`;
+  3.15 and newer are not supported yet.
 - Install into **the same isolated Python environment the host uses**. Host
   discovery goes through that environment's package metadata.
+- **A Hermes that builds its own environment** (Hermes Desktop's package manager builds the
+  environment it runs plugins in from what their manifests declare, and builds it again on
+  updates): the plugin `apply-install` writes declares the core it runs on,
+  `pip_dependencies: hermes-scope-recall[lancedb]==<version>`, so Hermes installs that release
+  into the environment it builds and keeps it there. Only a release published on PyPI is
+  declared. A candidate between releases declares nothing, because a requirement Hermes cannot
+  resolve fails its whole build: install a candidate by hand into the environment Hermes runs,
+  and again after Hermes rebuilds it. A plugin whose core is missing from that environment
+  says so when Hermes loads it.
 - Runtime dependencies are small and pure-Python: `PyYAML`, `jsonschema`,
   `packaging`, and `tzdata` on Windows only.
 

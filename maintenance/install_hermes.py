@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from packaging.version import Version
+
+from scope_recall._version import __version__
 from scope_recall.adapters.hermes.audiences import LOCAL_PLATFORMS, HermesIdentityError, normalize_local_platforms
 from scope_recall.adapters.hermes.installation import (
     approve_local_platforms as _approve_local_platforms,
@@ -68,13 +71,29 @@ def validate_local_platforms(values: object) -> tuple[str, ...]:
         raise InstallError(str(exc)) from exc
 
 
+def wrapper_manifest(template: str, version: str = __version__) -> str:
+    """The wrapper's ``plugin.yaml``: the template, plus the core it runs on when that is a release on PyPI.
+
+    Hermes builds the Python environment it runs plugins in from what their manifests declare
+    (``pip_dependencies``) and rebuilds it on updates, so a wrapper that declares nothing loses its core
+    whenever that happens (#135).  The pin is exact, as the wrapper and the core are one release.  A
+    pre-release, development or local build is not on PyPI, and a requirement that cannot be resolved fails
+    Hermes' whole build, so such a build declares nothing and is installed by hand.
+    """
+    release = Version(version)
+    if release.is_prerelease or release.is_devrelease or release.local is not None:
+        return template
+    return template.rstrip("\n") + f'\npip_dependencies:\n  - "hermes-scope-recall[lancedb]=={version}"\n'
+
+
 def planned_files(plan: InstallPlan) -> dict[Path, str | bytes]:
     files: dict[Path, str | bytes] = {}
     for name in ("__init__.py", "plugin.yaml"):
         source = DIST_HERMES / name
         if not source.is_file():
             raise InstallError(f"distribution template missing: {source}")
-        files[plan.target_plugin_dir / name] = source.read_text(encoding="utf-8")
+        text = source.read_text(encoding="utf-8")
+        files[plan.target_plugin_dir / name] = wrapper_manifest(text) if name == "plugin.yaml" else text
     for name, source in SKILLS.items():
         files[plan.instance_root / "skills" / name / "SKILL.md"] = source.read_text(encoding="utf-8")
     return files

@@ -7,6 +7,8 @@ All notable changes to `scope-recall` will be documented in this file.
 ### Scope Recall 3.3.0rc5 - 2026-09-25
 
 - The version moves past the `v3.3.0rc4` tag.
+- Python 3.13 and 3.14 are supported (`requires-python` `>=3.11,<3.15`), once every tier had run on 3.14 (#135: Hermes Desktop now builds its plugin environment on 3.14.7, which 3.2.0's `<3.13` shut out). One thing failed there and is fixed: on Windows, CPython 3.13 added `os.fchmod`, which the sqlite vector store then called on its files and was refused; as the truth database already did, it sets no POSIX mode on Windows. CI runs the in-process tiers on 3.11 and 3.14 on both systems, and `uv.lock`, which still held an earlier `pyproject.toml`'s specifiers, is regenerated.
+- The Hermes plugin that `apply-install` writes declares the core it runs on, `pip_dependencies: hermes-scope-recall[lancedb]==<version>`, when that version is a release on PyPI (#135). Hermes Desktop's package manager builds the environment it runs plugins in from those declarations and builds it again on updates; a plugin that declared nothing lost its core then, and Hermes logged only that the provider had no instance. A candidate, development or local build declares nothing, because a requirement Hermes cannot resolve fails its whole build, and is installed by hand. A plugin whose core is missing now says so when Hermes loads it. `docs/install.md` describes both.
 
 ### Scope Recall 3.3.0rc4 - 2026-09-25
 

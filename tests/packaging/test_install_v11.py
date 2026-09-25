@@ -1408,3 +1408,20 @@ def test_plan_install_keeps_a_symlinked_interpreter_as_given(tmp_path):
     assert commands and all(str(link) in command for command in commands)
     resolved = str(link.resolve())
     assert resolved != str(link) and all(resolved not in command for command in commands)
+
+
+def test_a_released_wrapper_declares_its_core_and_a_candidate_declares_nothing():
+    """Hermes builds the environment it runs plugins in from what their manifests declare, and rebuilds it
+    on updates: a wrapper that declares nothing loses its core then (#135).  A requirement Hermes cannot
+    resolve fails its whole build, so only a release on PyPI is declared."""
+    import yaml
+    from packaging.requirements import Requirement
+    from scope_recall.maintenance.install_hermes import wrapper_manifest
+
+    template = "name: scope-recall\nversion: 3.3.0\nprovider_entry: register:register\n"
+    (spec,) = yaml.safe_load(wrapper_manifest(template, "3.3.0"))["pip_dependencies"]
+    requirement = Requirement(spec)
+    assert (requirement.name, requirement.extras, str(requirement.specifier)) == (
+        "hermes-scope-recall", {"lancedb"}, "==3.3.0")
+    for build in ("3.3.0rc4", "3.3.0.dev1", "3.3.0+local"):
+        assert wrapper_manifest(template, build) == template

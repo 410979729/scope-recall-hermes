@@ -47,15 +47,17 @@ class SQLiteBruteForceVectorStore(VectorStore):
     def _harden_regular_file(descriptor: int, what: str) -> None:
         """Owner-only POSIX mode on an already-open regular file.
 
-        Windows uses ACL inheritance rather than POSIX mode bits and CPython
-        does not expose ``os.fchmod`` there.  The containing Hermes profile is
-        the Windows access-control boundary; pretending ``os.chmod(path)`` were
-        equivalent would reintroduce a path race.
+        Windows uses ACL inheritance rather than POSIX mode bits.  CPython 3.13
+        added ``os.fchmod`` there, but it only sets the read-only attribute and
+        is refused on a descriptor opened without attribute rights, so it is not
+        called on Windows (as ``core.truth_connection`` already does).  The
+        containing Hermes profile is the Windows access-control boundary;
+        pretending ``os.chmod(path)`` were equivalent would reintroduce a path race.
         """
         if not stat.S_ISREG(os.fstat(descriptor).st_mode):
             raise VectorStoreCompatibilityError(f"sqlite-bruteforce mutable {what} is not a regular file")
         fchmod = getattr(os, "fchmod", None)
-        if fchmod is not None:
+        if fchmod is not None and os.name != "nt":
             fchmod(descriptor, 0o600)
 
     def _prepare_mutable_storage(self) -> None:
