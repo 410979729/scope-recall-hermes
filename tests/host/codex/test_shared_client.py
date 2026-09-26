@@ -168,7 +168,8 @@ def test_a_session_start_on_an_entry_reads_nothing_of_the_store(store, monkeypat
 
 def test_claude_code_s_prompt_runs_the_entry_s_budget_and_codex_keeps_its_two_seconds(store, tmp_path):
     """Recall on the pilot's shared store took 2.7-5.7 s.  Claude Code waits 15 s for a prompt's hook,
-    Codex 2 s, and the runtime that carries the configured budget is attached only after the capture."""
+    Codex 2 s, and the runtime that carries the configured budget is attached only after the capture.
+    No installer writes ``hook_processing_seconds``: a config without it runs the worker's 6 s."""
     _root, _homes, client, _capture = store
     (client / "scope-recall" / "runtime-config.json").write_text(json.dumps({"hook_processing_seconds": 5.5}),
                                                                  encoding="utf-8")
@@ -177,11 +178,18 @@ def test_claude_code_s_prompt_runs_the_entry_s_budget_and_codex_keeps_its_two_se
         assert hook._hook_budget() == 5.5
     finally:
         hook.close()
+    (client / "scope-recall" / "runtime-config.json").write_text(json.dumps({"auto_recall_seconds": 5.0}),
+                                                                 encoding="utf-8")
+    hook = _hook(client)
+    try:
+        assert hook._hook_budget() == 6.0, "a config that does not name the budget runs the worker's default"
+    finally:
+        hook.close()
     (client / "scope-recall" / "runtime-config.json").write_text(json.dumps({"hook_processing_seconds": 60}),
                                                                  encoding="utf-8")
     hook = _hook(client)
     try:
-        assert hook._hook_budget() == 2.0, "an out-of-bounds budget falls back to the default"
+        assert hook._hook_budget() == 2.0, "an out-of-bounds budget falls back to the hook's 2 s"
     finally:
         hook.close()
 
