@@ -2,7 +2,52 @@
 
 All notable changes to `scope-recall` will be documented in this file.
 
-## [Unreleased]
+## [3.3.0] - 2026-09-26
+
+3.3.0 lets Hermes, Codex and Claude Code share one memory. In 3.2.0 only Hermes agents could attach to a shared store; now Codex and Claude Code attach to the same store as entries. What you tell any of them, the others can recall; each recalled item says which agent it came in through, and a deletion through any agent applies to all of them. An agent you do not attach keeps its own store. How to set one up: [docs/shared-store.md](https://github.com/410979729/scope-recall-hermes/blob/v3.3.0/docs/shared-store.md).
+
+### Requirements
+
+- Python 3.11 to 3.14. The wheel declares `>=3.11,<3.15` (#135).
+- Install the package into the same Python environment as the host. Codex and Claude Code need the `codex` extra, which carries their MCP server.
+- Claude Code 2.1.196 or later, the first to send the prompt id a turn is recorded under.
+- Hermes Desktop builds the environment it runs plugins in and builds it again on updates, which drops a core installed there by hand. Install its plugin into `<home>\plugins\scope-recall` (`--target-plugin-dir`): Hermes reads the core the plugin declares from there, and setting the provider up again after a rebuild installs it. See section 1 of [docs/install.md](https://github.com/410979729/scope-recall-hermes/blob/v3.3.0/docs/install.md) (#135).
+
+### Also in this release
+
+- Claude Code records each prompt and reply and, at the end of each turn, the text it showed while it worked; a message its hook could not write is recorded at a later turn. Tool calls and their output are not recorded.
+- Claude Code's automatic recall gets the entry's `hook_processing_seconds`, 6 s unless set lower, instead of 2 s, which cut most recalls on a large store short. Codex's hooks keep their 2 s.
+- A background task's completion notice is no longer stored as your own words.
+- An embedding request stays within the ledger's `max_request_bytes`; a group of long sources used to be refused on every pass.
+- A Codex installation whose id ends in eight digits no longer has every capture refused as a secret.
+- The shared store's commands and `doctor` read a worker config of up to 1 MB. Past 64 KB, a few hundred scopes, `attach` refused the store and `doctor` reported the config invalid.
+- An entry whose routes came from another store searches the shared worker's vector table, and an `attach` that changes nothing no longer restarts the worker.
+- A Hermes plugin whose core is missing says so; any other import error is shown as it is.
+
+### Upgrading from 3.2.x
+
+1. Stop the hosts and the Scope Recall worker, and take a `backup`.
+2. Install the 3.3.0 package, then run `plan-install` and `apply-install` for each host.
+3. Start the hosts again and run `doctor`.
+
+The store's schema is unchanged (1110), so a 3.2.x process can still open it. To attach Codex or Claude Code to a shared store, follow [docs/shared-store.md](https://github.com/410979729/scope-recall-hermes/blob/v3.3.0/docs/shared-store.md).
+
+This release ships without the P18 formal acceptance receipt. Every change, with its details, is in [CHANGELOG.md](https://github.com/410979729/scope-recall-hermes/blob/v3.3.0/CHANGELOG.md).
+
+## [3.3.0 candidates] - 2026-09-24 to 2026-09-26
+
+The changes as they were written when each landed, from the release audit back to 3.2.1rc1, which became 3.3.0rc1.
+
+### Scope Recall 3.3.0, the release audit - 2026-09-26
+
+Two AI reviews of everything since 3.2.0, before the tag. What they found and this release fixes:
+
+- Claude Code's hooks ran 2 s when the entry's runtime config did not name `hook_processing_seconds`, which no installer writes, so most automatic recalls on a large store came back empty. They run the worker's default, 6 s; a value out of bounds still falls back to 2 s.
+- `doctor` read a store's `runtime-config.json` only up to 64 KB, the limit 3.2.1rc1 lifted for `attach`, `detach` and `adopt`: a shared worker's config past it was reported as `vector_threshold: invalid` on every entry, and the storage budget went unchecked. It reads what the shared commands write, up to 1 MB.
+- The core 3.3.0rc5's Hermes plugin declares was never read by the Hermes it was for. Hermes reads a memory provider's `plugin.yaml` from `<home>/plugins/<name>/` or from the installed core's own directory, and the installer refused a plugin directory inside the home, so once a rebuild dropped the core nothing declared it. For Hermes, `<home>/plugins/scope-recall` is now accepted as `--target-plugin-dir`, the one plugin directory that may sit inside a home.
+- The Hermes plugin reported every import error as a missing core, and sent an operator to install a core that was there, older or missing a dependency. Only a missing `scope_recall` is reported as one now.
+- The docs still said only Hermes attaches to a shared store, that the install guide covers 3.1 and 3.2, and that security fixes go to 3.1.x; `constraints/runtime-min.txt` and `runtime-max.txt` said CI installs them, which no job does.
+- Not changed: six minor edge cases in how Claude Code's session record is read and matched against what its hooks stored, left for a later release.
 
 ### Scope Recall 3.3.0rc5 - 2026-09-25
 
@@ -33,7 +78,7 @@ All notable changes to `scope-recall` will be documented in this file.
 
 - The version moves past the `v3.2.1rc1` tag, to the minor version in which Codex and Claude Code join a shared store.
 - Codex and Claude Code attach to a shared store as entries ([docs/shared-store.md](docs/shared-store.md)). A local client brings no grants of its own: `attach --host codex|claude-code` gives it the owner grants of attached Hermes entries (`--grants-like`) and captures into a scope every owner row reads (`--capture-like`), so what the owner types into it reaches every agent and no other entry's binding changes. The Codex adapter serves both clients; `--home` replaces `--config` for an attached home, whose audience does not depend on the workspace, and its prompts are the owner's, verified by the attach the way the Hermes CLI's are.
-- `apply-install --host claude-code` writes a Claude Code plugin (hooks, MCP stdio server, the memory skill) into `~/.claude/skills/scope-recall`, which every session of that user loads. Prompts and final replies are recorded; tool calls are not. Changing a memory through Claude Code's MCP tools is refused: they carry no conversation id. `doctor --host claude-code` checks it. `--project-root` is needed only by a Codex that keeps its own store.
+- `apply-install --host claude-code` writes a Claude Code plugin (hooks, MCP stdio server, the memory skill) into `~/.claude/skills/scope-recall`, which every session of that user loads. Prompts and final replies are recorded; tool calls are not (from rc4 also the text Claude Code shows while it works, and messages sent while a turn runs). Changing a memory through Claude Code's MCP tools is refused: they carry no conversation id. `doctor --host claude-code` checks it. `--project-root` is needed only by a Codex that keeps its own store.
 - An entry's runtime config searches the shared worker's vector table. An entry whose routes came from a store that named its table otherwise searched a table nothing fills, and its recall lost the vector half; tianji's did, from its own 3.1 store, after it joined the pilot store on 2026-09-24.
 - An `attach` that leaves the shared worker's config as it was no longer rewrites it: any write makes the running worker restart.
 
@@ -44,32 +89,43 @@ All notable changes to `scope-recall` will be documented in this file.
 
 ## [3.2.0] - 2026-09-24
 
-3.2.0 lets several agents keep one memory. Until now each agent had a store of its own, and what the owner told one of them the others could not recall. A shared store is one store that several Hermes agents read and write, each attached as an entry: what the owner tells one agent, another can recall, and the recall says which agent it came in through; a deletion through any of them is gone for all of them; and moving the memory to another machine is copying one directory. `import-entry` brings each agent's earlier memories along. Upgrading does not make a store shared: an agent that is not attached keeps its own store. Only Hermes agents attach so far; Codex keeps its own store. How to set one up is [docs/shared-store.md](https://github.com/410979729/scope-recall-hermes/blob/v3.2.0/docs/shared-store.md). We have run three of our own agents on one shared store since 2026-09-23, with their earlier stores imported (about 87,000 sources), and much of what follows is what that turned up.
+3.2.0 lets several agents share one memory. Until now each agent had a store of its own, and what you told one of them the others could not recall. Attach each agent to a shared store, and what you tell one agent the others can recall; each recalled item says which agent it came in through, and a deletion through any agent applies to all of them. `import-entry` brings each agent's existing memories into the shared store. Upgrading does not make a store shared: an agent you do not attach keeps its own store. In 3.2.0 the agents that can attach are Hermes agents; Codex and Claude Code attach to the same store from 3.3.0. How to set one up: [docs/shared-store.md](https://github.com/410979729/scope-recall-hermes/blob/v3.2.0/docs/shared-store.md).
 
-These reach every store, shared or not:
+### Requirements
 
-- **A tool's output is kept, but no longer turned into facts.** It is still found by its words and by meaning. On our store 2,946 of 3,175 claims rested on tool output alone -- file sizes, paths, ports -- and none of them answered any of the owner's 30 real questions. A question worded exactly like one of those claims is now found less often; its entry below has the numbers. How a task was done belongs to the host's skills.
-- **Recall searches every scope an agent may read, in one vector request,** instead of one scope at a time until its budget ran out, and a recall is no longer emptied because something new was captured while it was being read.
-- **A memory's time is shown in the host's time zone,** not in UTC, which a model took for its own local time.
-- **A name given for the first time is kept as a fact** ("my cat is called ..."). It used to be filed as an alias, which nothing could ever confirm, so no agent recalled it.
-- **Embedding is faster and holds up better:** claims go a hundred to a request, and a provider's brief refusal no longer spends the attempt of every item that was waiting.
-- **Five reports from other installs are fixed:** long Chinese text the embedding provider refused (#125); Feishu sessions refused for carrying two ids of the same sender (#116); WeChat, Feishu and Desktop-login sessions refused because of the session key their gateway sends (#124); a store refused without a word after a 2.0 plugin had opened it (#117); and a watchdog flag that could delete the runtime config (#118).
+- Python 3.11 or 3.12. The wheel declares `>=3.11,<3.13`; Python 3.13 and later are not supported by this release (#135).
+- Install the package into the same Python environment as the Hermes host.
 
-Before the tag, four reviewers who had written none of this read everything since 3.1.2. None found a memory reaching a reader outside its scopes; what they did find is fixed, and listed first below.
+### Also in this release, for every store
 
-**Upgrading from 3.1.x.** Stop the host and its worker and take a `backup`. Install the package, run `plan-install` and `apply-install` for each host as after any upgrade, start the host again and run `doctor`. The first open by 3.2.0 moves the store from schema 1109 to 1110: two columns with a constant default and one new table, no row rewritten, though SQLite reads every source row as it adds the column, about 3 s a gigabyte. On a store above 100 MB that open is the worker's next pass, `apply-install`, `upgrade-store` or a Hermes session starting; a hook reports `upgrade_pending` until then. The step is one way: a 3.1 process refuses a 1110 store (`SCHEMA_UNSUPPORTED`) without touching it, so upgrade everything that opens one store together, and going back means restoring that backup. Then, if you want them, three one-off commands, each working a bounded page at a time and described in [docs/install.md](https://github.com/410979729/scope-recall-hermes/blob/v3.2.0/docs/install.md):
+- A tool's output is still stored and found by its words and meaning, but it is no longer turned into facts.
+- Recall searches every scope an agent may read in one vector request, and a capture made while a recall is being read no longer empties the result.
+- A memory's time is shown in the host's time zone instead of UTC.
+- A name given for the first time ("my cat is called …") is kept as a fact; it used to be filed as an alias that nothing could confirm.
+- Embedding is faster and holds up better when the provider refuses a request.
+- Fixed reports: long Chinese text refused by the embedding provider (#125); Feishu sessions refused for carrying two ids of one sender (#116); WeChat, Feishu and Desktop-login sessions refused because of their session key (#124); a store refused after a 2.0 plugin had opened it (#117); a watchdog flag that could delete the runtime config (#118).
 
-- `retire-rootless-claims` lists the unconfirmed claims an earlier release derived from tool output alone, and with `--apply` retires them; confirmed claims, every source, and a proposal a person has since restated stay.
-- `retry-failures --apply` re-opens the embeddings that failed with `http_400` on long Chinese text.
-- `repair-claim-frames` re-frames the first-time names an earlier release stored as aliases.
+### Upgrading from 3.1.x
 
-As with 3.1.2, this release ships without the P18 formal acceptance receipt; the figures here are our own measurements.
+1. Stop the Hermes host and the Scope Recall worker, and take a `backup`.
+2. Install the 3.2.0 package, then run `plan-install` and `apply-install` for each host.
+3. Start the host again and run `doctor`.
+
+The first time 3.2.0 opens a store it moves the schema from 1109 to 1110, which reads every source row once (about 3 s per gigabyte). The step is one way: a 3.1 process cannot open the upgraded store, so upgrade every process that opens the same store together, and keep the backup to roll back. On a store larger than 100 MB the step runs at the next worker pass, `apply-install`, `upgrade-store` or Hermes session; until then hooks report `upgrade_pending`.
+
+Optional one-off commands afterwards, described in [docs/install.md](https://github.com/410979729/scope-recall-hermes/blob/v3.2.0/docs/install.md):
+
+- `retire-rootless-claims --apply` retires the unconfirmed facts earlier releases derived from tool output alone.
+- `retry-failures --apply` retries the embeddings that failed with `http_400` on long Chinese text.
+- `repair-claim-frames` turns first-time names that earlier releases stored as aliases into facts.
+
+As with 3.1.2, this release ships without the P18 formal acceptance receipt.
 
 The entries below are the changes as they were written when each landed.
 
 ### What the release audit found
 
-Four reviews of everything since 3.1.2, each by a reader who had written none of it, before the tag. None found a memory reaching a reader outside its scopes; these are what they did find.
+Four AI reviews of everything since 3.1.2, none by the agent that wrote it, before the tag. None found a memory reaching a reader outside its scopes; these are what they did find.
 
 - No automatic writer derives a claim from tool output alone any more; the candidate evaluator was still one. An evaluation queued before 3.2.0rc6 for a proposal derived from tool output still reached the model, and a verdict quoting only a tool output made it an active claim (the test that pins this fails before this change, with the proposal resolved `fact_active`); a verdict quoting a tool output's value beside any fragment of a person's message was even written as that person's report. Now a verdict writes a version only when it quotes a person's or a document's words and those words carry what the claim says -- its value, or every step of a procedure (`rooted_verdict`); an agent's echo of a tool output carries nothing. A candidate that neither cites nor holds any such words is answered without a model call (`waiting_evidence`, `no_derivation_root`), whether it comes up at scheduling or was queued before the upgrade, and is asked again when a person speaks. `DERIVATION_ROOT_ORIGINS` has one definition, in `core/evidence_question.py`, read by consolidation, the evaluator and `retire-rootless-claims`. The capture-time confirmation and correction paths already took only a person's words.
 - The deferred refill no longer picks a tool output for the consolidation it is not owed. While a scope's embedding queue was full, such a tool output matched the refill's consolidation clause, could not be scheduled either, came first on every pass and held the page, so a person's message deferred behind it was never refilled. It is picked for that clause only once its embedding is queued, to settle a marker an earlier release wrote.

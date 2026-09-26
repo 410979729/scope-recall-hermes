@@ -2,7 +2,7 @@
 
 ## Supported versions
 
-Security fixes are applied to the current `3.1.x` release line. The `2.0.x` line and everything before it are no longer maintained and receive no further releases, security fixes included; section 9 of [CHANGELOG.md](CHANGELOG.md) describes the one-time offline migration from 2.0.x to 3.1.
+Security fixes are applied to the latest release line, currently `3.3.x`. The `2.0.x` line and everything before it are no longer maintained and receive no further releases, security fixes included; section 9 of [CHANGELOG.md](CHANGELOG.md) describes the one-time offline migration from 2.0.x to 3.x.
 
 ## Reporting a vulnerability
 
