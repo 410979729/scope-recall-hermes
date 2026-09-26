@@ -29,7 +29,7 @@ from scope_recall.vector.compaction import instance_vector_footprints
 from scope_recall._version import __version__
 
 from . import package_health
-from .shared import _CONFIG_LIMIT as _SHARED_CONFIG_LIMIT
+from .install_common import RUNTIME_CONFIG_LIMIT
 
 HostChoice = Literal["hermes", "codex", "claude-code"]
 #: Run as a file by the target interpreter, so an installed package that
@@ -38,7 +38,7 @@ _PACKAGE_PROBE = Path(__file__).with_name("package_health.py")
 #: Largest JSON control file the doctor will read from beside the store.
 _CONTROL_FILE_LIMIT = 65536
 #: A runtime config may weigh what the shared commands allow it to.
-_RUNTIME_CONFIG_LIMIT = _SHARED_CONFIG_LIMIT
+_RUNTIME_CONFIG_LIMIT = RUNTIME_CONFIG_LIMIT
 
 
 @dataclass
