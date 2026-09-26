@@ -13,6 +13,7 @@ from typing import Any, Callable, Protocol, cast
 from scope_recall.contracts import ContractError, Origin, RecallRequest, TrustedContext
 from scope_recall.core import CoreConfig, MemoryCore
 from scope_recall.core.retrieval import AUTOMATIC_PACKET_BUDGET_UNITS
+from scope_recall.runtime.instance import RuntimeInstanceConfig
 from ..runtime_wiring import _strict_hook_budget, render_host_recall_context
 
 from . import transcript
@@ -668,13 +669,24 @@ class CodexHookHandler:
         return {}
 
 
+#: What a runtime config that does not name ``hook_processing_seconds`` runs: the worker's default.  No
+#: installer writes the key, so without this an entry's hooks fell back to 2 s, and most automatic recalls
+#: came back empty.
+_DEFAULT_CONFIGURED_BUDGET_S = RuntimeInstanceConfig.hook_processing_seconds
+
+
 def _configured_budget(runtime_config_path: str | None) -> float | None:
-    """The entry's ``hook_processing_seconds``, or ``None`` when its runtime config does not give a valid one."""
+    """The entry's ``hook_processing_seconds``, the default when its runtime config does not name one, or
+    ``None`` when the config cannot be read or names an invalid one."""
     if not runtime_config_path:
         return None
     try:
         raw = json.loads(Path(runtime_config_path).read_text(encoding="utf-8"))
-        return _strict_hook_budget(raw.get("hook_processing_seconds")) if isinstance(raw, dict) else None
+        if not isinstance(raw, dict):
+            return None
+        if "hook_processing_seconds" not in raw:
+            return _DEFAULT_CONFIGURED_BUDGET_S
+        return _strict_hook_budget(raw["hook_processing_seconds"])
     except (OSError, UnicodeError, ValueError):
         return None
 
