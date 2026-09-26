@@ -55,6 +55,7 @@ from ..core.storage import SQLiteStorage
 from ..runtime.auxiliary import DEFAULT_LEDGER_NAME
 from ..runtime.instance import RuntimeInstanceConfig
 from ..runtime.model_budget import initialize_auxiliary_budget_ledger
+from .install_common import RUNTIME_CONFIG_LIMIT
 from .install_hermes import DEFAULT_AGENT_WORKSPACE
 
 RECEIPTS_DIRNAME = "receipts"
@@ -62,11 +63,8 @@ RECEIPTS_DIRNAME = "receipts"
 #: session with theirs; the worker keeps these.
 WORKER_SESSION = "shared-background"
 WORKER_OWNER = "shared-scope-recall-worker"
-#: What a runtime config these commands read or write may weigh.  The shared worker's lists every scope of the
-#: store twice (its binding and its allowed scopes), about 120 bytes a scope: the pilot's 221 scopes made 58 KB, and
-#: one more instance passed the 64 KB this once was, so the next attach refused the store's own worker config.  At
-#: MAX_SHARED_SCOPES, 1024 scopes, that is about 250 KB; the limit leaves room for longer scope ids.
-_CONFIG_LIMIT = 1024 * 1024
+#: What a runtime config these commands read or write may weigh.
+_CONFIG_LIMIT = RUNTIME_CONFIG_LIMIT
 
 
 class SharedStoreError(RuntimeError):

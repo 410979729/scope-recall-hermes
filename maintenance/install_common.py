@@ -35,6 +35,12 @@ PACKAGE_VERSION = __version__
 HostChoice = Literal["hermes", "codex", "claude-code"]
 RECEIPT_FILENAME = ".scope-recall-install-receipt.json"
 BACKUP_DIRNAME = ".scope-recall-backups"
+#: What a store's runtime-config.json may weigh, for the shared commands that write it and the doctor that
+#: reads it.  The shared worker's lists every scope of the store twice (its binding and its allowed scopes),
+#: about 120 bytes a scope: the pilot's 221 scopes made 58 KB, and one more instance passed the 64 KB this once
+#: was, so the next attach refused the store's own worker config.  At MAX_SHARED_SCOPES, 1024 scopes, that is
+#: about 250 KB; the limit leaves room for longer scope ids.
+RUNTIME_CONFIG_LIMIT = 1024 * 1024
 _MAX_IDENTIFIER_LEN = 240
 _IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 _PLUGIN_NAME_RE = re.compile(r"^[a-z][a-z0-9-]*$")
