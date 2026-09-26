@@ -42,6 +42,10 @@ def instance_wrapper_files(instance_root: Path) -> tuple[Path, ...]:
     return ()
 
 
+def home_plugin_dir(instance_root: Path) -> None:
+    return None
+
+
 def validate_options(agent_workspace: str | None, env_file: Path | str | None) -> tuple[str, Path | None]:
     """Claude Code starts hooks and the MCP server with its own environment, so the
     installer may hand them a credential file, as Codex's does."""
