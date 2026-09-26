@@ -1,15 +1,16 @@
-# Scope Recall 3.2 autonomous memory
+# Scope Recall 3.3 autonomous memory
 
-Scope Recall v3 is a bounded local memory core with SQLite as the authority and rebuildable vector companions. It provides host adapters for Hermes and Codex, including Codex MCP tools when the optional `codex` extra is installed. The public package is `hermes-scope-recall`; the Python import is `scope_recall`; the host wrapper identity remains `scope-recall`.
+Scope Recall v3 is a bounded local memory core with SQLite as the authority and rebuildable vector companions. It provides host adapters for Hermes, Codex and Claude Code (the last two share one adapter of hooks and an MCP server), with the MCP tools when the optional `codex` extra is installed. The public package is `hermes-scope-recall`; the Python import is `scope_recall`; the host wrapper identity remains `scope-recall`.
 
-This checkout is `3.3.0rc5`, a candidate after the `3.2.0` release in which Codex and Claude Code
-join a shared store too. In 3.2.0 several Hermes agents can keep one memory: each attaches to a shared
+This is `3.3.0`. Hermes, Codex and Claude Code can keep one memory: each attaches to a shared
 store as an entry, what the owner tells one of them another can recall, and each memory says
-which agent it came in through ([docs/shared-store.md](docs/shared-store.md)). An agent that
-is not attached keeps its own store. A tool's output is still kept and found, but no longer
-turned into facts. The notes are the `[3.2.0]` section of [CHANGELOG.md](CHANGELOG.md);
-upgrading from `3.1.x` is `pip install -U`, `apply-install` and a host restart, and the store
-moves to schema 1110 the first time it is opened, after which a 3.1 process cannot open it.
+which agent it came in through ([docs/shared-store.md](docs/shared-store.md)). Hermes agents
+could share a store from 3.2.0; Codex and Claude Code join in 3.3.0. An agent that is not
+attached keeps its own store. A tool's output is still kept and found, but no longer turned
+into facts. The notes are the `[3.3.0]` section of [CHANGELOG.md](CHANGELOG.md); upgrading
+from `3.2.x` is `pip install -U`, `apply-install` and a host restart, and the store's schema
+does not change. From `3.1.x` the store moves to schema 1110 the first time it is opened,
+after which a 3.1 process cannot open it.
 3.1 is a rebuild rather than a patch on 2.0: production
 code went from 141,044 lines to 48,289, memory now accumulates evidence before a
 fact is written rather than judging one sentence on sight, and hosts sit behind
@@ -24,7 +25,7 @@ formal acceptance receipt: denominators of 120 independent core items and 240
 paired variants, evidence marked `real`, a method adjudication accepted by a
 party independent of whoever wrote the code, and an independent semantic scorer.
 The P18 machinery is in this tree; the evaluation corpus is not. **3.1.0 shipped
-without that receipt, and so has every release since, 3.2.0 included.** Every
+without that receipt, and so has every release since, 3.3.0 included.** Every
 accuracy figure in the notes was measured by us, on our own corpora, by hand,
 and there is no regression suite you or we can re-run
 automatically -- that is the first item in *What is not finished*. Read a green
@@ -37,8 +38,8 @@ Users only need to ask "install Scope Recall" or "帮我升级一下 scoperecall
 Start with `scope-recall setup --host <hermes-or-codex> --home <actual-instance-home>`.
 New users go directly to installation; only detected legacy databases go through
 [the agent migration workflow](maintenance/AGENT_WORKFLOW.md). The installed
-`scope-recall-setup` skill makes this routing discoverable in both supported hosts.
-A second installed skill, `scope-recall-memory`, is for the owner's everyday questions:
+`scope-recall-setup` skill makes this routing discoverable in Hermes and Codex.
+A second installed skill, `scope-recall-memory`, which Claude Code gets too, is for the owner's everyday questions:
 what is remembered about me, did I say it or was it worked out, does it still hold, and
 what correcting, muting or deleting one memory does before it is done.
 Perform path discovery, backup, audience binding, migration, indexing and host
@@ -46,18 +47,20 @@ checks yourself; do not ask the user to execute commands or govern old memories.
 
 ## Install
 
-Step-by-step Hermes and Codex instructions: [docs/install.md](docs/install.md).
+Step-by-step Hermes and Codex instructions: [docs/install.md](docs/install.md). Claude Code
+installs only as an entry of a shared store, and Codex can join one too:
+[docs/shared-store.md](docs/shared-store.md).
 
 The package is `hermes-scope-recall` on PyPI. Install it into the same isolated Python
 environment the host uses:
 
 ```text
-python -m pip install hermes-scope-recall==3.2.0
-python -m pip install "hermes-scope-recall[codex]==3.2.0"
+python -m pip install hermes-scope-recall==3.3.0
+python -m pip install "hermes-scope-recall[codex]==3.3.0"
 ```
 
 The same wheel and sdist are attached to the
-[GitHub Release](https://github.com/410979729/scope-recall-hermes/releases/tag/v3.2.0)
+[GitHub Release](https://github.com/410979729/scope-recall-hermes/releases/tag/v3.3.0)
 alongside `SHA256SUMS` and `RELEASE-PROVENANCE.json`, for an offline install
 (`python -m pip install "<path-to-wheel>"`). To build it yourself from this checkout instead:
 
@@ -73,7 +76,10 @@ The two console names `scope-recall` and `hermes-scope-recall` invoke the same v
 
 Use explicit absolute paths for installation planning. Hermes `--agent-id` must match the host active profile (`get_active_profile_name()`, commonly `default` on an isolated home). Hermes default `--agent-workspace` is `hermes` to match the host memory-provider init contract; pass the same value on plan and apply if you override it. Codex does not accept `--agent-workspace`.
 
-If you talk to Hermes through the Desktop app or `hermes --tui` rather than the CLI, add `--local-platform desktop` (or `tui`) to both commands. Those surfaces name no user unless a dashboard login exists, and a session that names no user is refused everywhere but the CLI until the installer approves the surface; [docs/install.md](docs/install.md) says what the approval does and does not cover.
+If you talk to Hermes through the Desktop app or `hermes --tui` rather than the CLI, add `--local-platform desktop` (or `tui`) to both commands. Those surfaces name no user unless a dashboard login exists, and a session that names no user is refused everywhere but the CLI until the installer approves the surface; [docs/install.md](docs/install.md) says what the approval does and does not cover. Hermes Desktop also builds
+the Python environment it runs plugins in, and builds it again on updates: pass it
+`--target-plugin-dir <home>\plugins\scope-recall`, where Hermes finds the plugin and the core it declares
+even after a rebuild dropped the core (section 1 of [docs/install.md](docs/install.md)).
 
 ```text
 scope-recall plan-install --host hermes --target-plugin-dir <absolute-plugin-dir> --instance-root <absolute-instance-root> --project-root <absolute-project-root> --agent-id <agent-id> --python <absolute-python>
@@ -120,7 +126,8 @@ joined. Node, path, time and explicit byte budgets bound its cost. See
 Several agents can share one store instead of each keeping its own: each attaches as an
 entry, every memory is marked with the agent it came in through, and a deletion through
 any of them applies to all. Moving the memory to another machine is copying one directory.
-Only Hermes homes attach so far. See [docs/shared-store.md](docs/shared-store.md).
+Hermes homes attach as entries, and from 3.3.0 so do Codex and Claude Code
+(`attach --host codex|claude-code`). See [docs/shared-store.md](docs/shared-store.md).
 
 ## Agent-operated migration
 
@@ -138,7 +145,7 @@ the old installation. Index scheduling and actual live readiness remain separate
 
 ## Tree layout
 
-The package root holds only the entry (`__init__.py`), the version and the protocol contracts. `core/` is the host-independent memory core over SQLite truth; `vector/` the rebuildable vector companions; `adapters/` the Hermes and Codex host adapters and model transport; `runtime/` the background worker, budgets and scheduling; `maintenance/` install, doctor, upgrade and migration behind the operator CLI. Every shipped module is reachable by import from an entry point named in `packaging_hooks/module_inventory.py`; the wheel allowlist is derived from that, not typed.
+The package root holds only the entry (`__init__.py`), the version and the protocol contracts. `core/` is the host-independent memory core over SQLite truth; `vector/` the rebuildable vector companions; `adapters/` the Hermes and Codex host adapters (Claude Code runs through the Codex one) and model transport; `runtime/` the background worker, budgets and scheduling; `maintenance/` install, doctor, upgrade and migration behind the operator CLI. Every shipped module is reachable by import from an entry point named in `packaging_hooks/module_inventory.py`; the wheel allowlist is derived from that, not typed.
 
 ## Development checks
 

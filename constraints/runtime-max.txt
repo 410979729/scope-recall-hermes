@@ -1,4 +1,5 @@
-# Highest currently tested runtime dependency set within public bounds.
+# A higher runtime dependency set within public bounds. No CI job installs it; CI installs release.txt,
+# and the public bounds admit newer releases than these that no job runs.
 PyYAML==6.0.3
 jsonschema==4.26.0
 tzdata==2025.3 ; sys_platform == 'win32'

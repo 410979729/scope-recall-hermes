@@ -3,9 +3,12 @@
 Scope Recall is a bounded local memory core for coding agents: SQLite holds the
 truth, vector indexes are rebuildable companions, and a bounded background worker
 does the consolidating and embedding. It ships host adapters for Hermes and for
-Codex, the latter as a set of native hooks plus an MCP server.
+Codex, the latter as a set of native hooks plus an MCP server, which Claude Code
+uses too. This guide installs Hermes and Codex with a store of their own; Claude
+Code installs only as an entry of a shared store, and Codex can join one too
+(section 11).
 
-> **Status.** This guide covers 3.1 and 3.2. Releases are on PyPI and on the
+> **Status.** This guide covers 3.1 to 3.3. Releases are on PyPI and on the
 > GitHub releases page; a checkout between releases carries a candidate version
 > and is installed by building its wheel. The distribution name is
 > `hermes-scope-recall`, the Python import is `scope_recall`, and the host plugin
@@ -21,15 +24,20 @@ older database is a separate, explicit operation — see
   3.15 and newer are not supported yet.
 - Install into **the same isolated Python environment the host uses**. Host
   discovery goes through that environment's package metadata.
-- **A Hermes that builds its own environment** (Hermes Desktop's package manager builds the
-  environment it runs plugins in from what their manifests declare, and builds it again on
-  updates): the plugin `apply-install` writes declares the core it runs on,
-  `pip_dependencies: hermes-scope-recall[lancedb]==<version>`, so Hermes installs that release
-  into the environment it builds and keeps it there. Only a release published on PyPI is
-  declared. A candidate between releases declares nothing, because a requirement Hermes cannot
-  resolve fails its whole build: install a candidate by hand into the environment Hermes runs,
-  and again after Hermes rebuilds it. A plugin whose core is missing from that environment
-  says so when Hermes loads it.
+- **A Hermes that builds its own environment** (Hermes Desktop builds the environment it runs
+  plugins in, and builds it again on updates, which drops a core installed there by hand): the
+  plugin `apply-install` writes declares the core it runs on,
+  `pip_dependencies: hermes-scope-recall[lancedb]==<version>`, and Hermes installs what a memory
+  provider declares when the provider is set up (in its dashboard, or `hermes memory setup`).
+  Hermes reads that declaration from `<home>\plugins\scope-recall\` or from the installed
+  core's own directory, and once the core is gone only the first is left: give such a Hermes
+  that directory as `--target-plugin-dir` (section 4). A plugin whose core is missing says so
+  when Hermes loads it; setting the provider up again installs the declared release.
+  A final release is declared, which Hermes resolves from PyPI: a wheel installed before its
+  release reaches PyPI declares a requirement Hermes cannot resolve yet, so run `apply-install`
+  on such a home once it has. A candidate between releases declares nothing, because a
+  requirement Hermes cannot resolve fails its whole build: install a candidate by hand into the
+  environment Hermes runs, and again after Hermes rebuilds it.
 - Runtime dependencies are small and pure-Python: `PyYAML`, `jsonschema`,
   `packaging`, and `tzdata` on Windows only.
 
@@ -90,8 +98,9 @@ compatibility with an older command set.
 For Hermes, the wheel also declares an entry point: group
 `hermes_agent.memory_providers`, name `scope-recall`, target
 `scope_recall.distribution.hermes:register`. **Host discovery uses that entry
-point of the installed package.** Do not try to fake discovery by copying or
-symlinking a directory into the host's plugin folder.
+point of the installed package**, or the wrapper `apply-install` writes into
+`<home>\plugins\scope-recall` when you give it that directory (section 4). Do not
+copy or symlink a directory into the host's plugin folder by hand.
 
 ## 3. Three states, kept separate
 
@@ -129,11 +138,13 @@ the `scope-recall\` namespace and the receipt inside it; it does not treat
 `scope-recall\` directory that no receipt explains, and it never adopts an unknown
 managed directory.
 
-`--target-plugin-dir` must **not** sit inside `--instance-root` — the three roots
-may not overlap in either direction. So do not use the host's own
-`plugins\scope-recall` path as the wrapper target; put the wrapper outside the
-home. Discovery comes from the entry point, not from that location. The directory
-name itself must match `^[a-z][a-z0-9-]*$`.
+The three roots may not overlap in either direction, with one exception:
+`--target-plugin-dir` may be `<instance-root>\plugins\scope-recall`, the directory
+Hermes itself looks a memory provider up in. Use it for a Hermes that builds its
+own environment (section 1): Hermes then finds the plugin, and the core it
+declares, even after a rebuild dropped the core. Anywhere else the wrapper sits
+outside the home, and discovery comes from the installed package's entry point.
+The directory name itself must match `^[a-z][a-z0-9-]*$`.
 
 `--agent-id` must equal the `agent_identity` the host sends on `initialize`: the
 adapter compares them and raises `agent_identity conflict` when they differ
@@ -667,8 +678,9 @@ product's, or records no schema this release knows, is still refused.
 ## 11. One store for several agents
 
 Everything above installs one agent with its own store. Several agents can instead
-share one store, each attached to it as an entry, with every memory marked with the
-agent it came in through: [shared-store.md](shared-store.md). An attached home keeps
+share one store, Hermes agents and from 3.3.0 Codex and Claude Code, each attached to
+it as an entry, with every memory marked with the agent it came in through:
+[shared-store.md](shared-store.md). Claude Code installs only this way. An attached home keeps
 only a pointer, `scope-recall\attachment.json`; `plan-install`, `apply-install` and
 `doctor` recognize it.
 
