@@ -100,8 +100,14 @@ def plan_install(
     if type(test_mode) is not bool:
         raise InstallError("test_mode must be a boolean")
     _validate_plugin_name(target.name)
-    _validate_roots((target, "target_plugin_dir"), (instance, "instance_root"),
-                    *(((project, "project_root"),) if project is not None else ()))
+    roots = ((instance, "instance_root"), *(((project, "project_root"),) if project is not None else ()))
+    home_plugin = adapter.home_plugin_dir(instance)
+    if home_plugin is not None and _norm(target) == _norm(home_plugin):
+        # The one plugin directory a host reads from inside the home it serves; a project root that
+        # overlapped it would overlap the home too.
+        _validate_roots(*roots)
+    else:
+        _validate_roots((target, "target_plugin_dir"), *roots)
 
     plan = InstallPlan(
         host=host_choice,

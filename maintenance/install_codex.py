@@ -54,6 +54,11 @@ def instance_wrapper_files(instance_root: Path) -> tuple[Path, ...]:
     return ()
 
 
+def home_plugin_dir(instance_root: Path) -> None:
+    """Codex finds its plugin by its own configuration; no plugin directory sits inside the instance root."""
+    return None
+
+
 def validate_options(agent_workspace: str | None, env_file: Path | str | None) -> tuple[str, Path | None]:
     """Codex starts the MCP server and hooks with its own environment, so the
     installer may hand them a credential file; audience workspaces are a Hermes

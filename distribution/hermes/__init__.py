@@ -5,7 +5,9 @@ Keep the literal ``register_memory_provider`` string for Hermes user-plugin disc
 
 try:
     from scope_recall.adapters.hermes import register_adapter
-except ImportError as exc:  # the core package is not in the Python environment this Hermes runs
+except ModuleNotFoundError as exc:
+    if exc.name != "scope_recall":  # the core is installed; its own error says what is wrong with it
+        raise
     raise ImportError(
         "Scope Recall's core package (hermes-scope-recall) is not installed in the Python environment "
         "this Hermes runs; install the same release there (docs/install.md)"

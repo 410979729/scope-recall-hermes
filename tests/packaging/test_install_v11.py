@@ -351,6 +351,65 @@ def test_hermes_fresh_install_and_doctor(tmp_path):
     assert report.hook_trust_status == "unknown"
 
 
+def test_a_hermes_wrapper_may_sit_where_hermes_looks_a_provider_up(tmp_path):
+    """Hermes reads a memory provider's plugin.yaml, and the core the wrapper declares, from
+    ``<home>/plugins/<name>/`` or from the installed core's own directory; once the environment it
+    runs has lost the core, only the first is left (#135).  That one directory may sit inside the
+    home; any other plugin directory still may not."""
+    instance_root, _outside, project_root = _install_paths(tmp_path, host="hermes")
+    inside = instance_root / "plugins" / "scope-recall"
+    apply_install(plan_install(host="hermes", target_plugin_dir=inside, instance_root=instance_root,
+                               project_root=project_root, agent_id="TEST-P14-agent",
+                               python_executable=Path(sys.executable)))
+    assert "register_memory_provider" in (inside / "__init__.py").read_text(encoding="utf-8")
+    assert (inside / "plugin.yaml").is_file()
+    assert (instance_root / "scope-recall" / "memory.sqlite3").is_file()
+    uninstall = apply_uninstall(plan_uninstall(instance_root=instance_root))
+    assert not (inside / "plugin.yaml").exists() and not (inside / "__init__.py").exists()
+    assert uninstall.memory_retained is True
+
+    for host, target in (("hermes", instance_root / "plugins" / "other"),
+                         ("hermes", instance_root / "wrappers" / "scope-recall"),
+                         ("codex", instance_root / "plugins" / "scope-recall")):
+        with pytest.raises(InstallError, match="instance_root overlaps target_plugin_dir"):
+            plan_install(host=host, target_plugin_dir=target, instance_root=instance_root,
+                         project_root=project_root, agent_id="TEST-P14-agent",
+                         python_executable=Path(sys.executable))
+
+
+def test_hermes_wrapper_names_a_missing_core_and_passes_other_import_errors_through(tmp_path):
+    """Only a missing core is reported as one.  An older core, or a core missing one of its own
+    dependencies, is installed: calling it missing sent the operator to install what was there."""
+    wrapper = Path(__file__).resolve().parents[2] / "distribution" / "hermes" / "__init__.py"
+    probe = (
+        "import importlib.util, sys\n"
+        "if sys.argv[2] != '-':\n"
+        "    sys.path.insert(0, sys.argv[2])\n"
+        "spec = importlib.util.spec_from_file_location('TEST_wrapper', sys.argv[1])\n"
+        "try:\n"
+        "    spec.loader.exec_module(importlib.util.module_from_spec(spec))\n"
+        "except ImportError as exc:\n"
+        "    print(type(exc).__name__, exc)\n"
+    )
+
+    def load(core: str) -> str:
+        # -S: no site-packages, so no installed core unless ``core`` puts one on the path.
+        result = subprocess.run([sys.executable, "-I", "-S", "-c", probe, str(wrapper), core],
+                                capture_output=True, text=True, timeout=60)
+        assert result.returncode == 0, result.stderr
+        return result.stdout.strip()
+
+    assert load("-").startswith("ImportError Scope Recall's core package (hermes-scope-recall) is not installed")
+    older = tmp_path / "TEST-older-core"
+    (older / "scope_recall" / "adapters" / "hermes").mkdir(parents=True)
+    for package in ("scope_recall", "scope_recall/adapters", "scope_recall/adapters/hermes"):
+        (older / package / "__init__.py").write_text("", encoding="utf-8")
+    assert load(str(older)).startswith("ImportError cannot import name 'register_adapter'")
+    (older / "scope_recall" / "adapters" / "hermes" / "__init__.py").write_text(
+        "import TEST_missing_dependency\n", encoding="utf-8")
+    assert load(str(older)) == "ModuleNotFoundError No module named 'TEST_missing_dependency'"
+
+
 @pytest.mark.parametrize("host", ["hermes", "codex"])
 def test_install_mode_defaults_to_production_and_test_mode_is_explicit(tmp_path, host):
     instance_root, plugin_dir, project_root = _install_paths(tmp_path / "production", host=host)
