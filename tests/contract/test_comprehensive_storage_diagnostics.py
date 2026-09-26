@@ -253,6 +253,27 @@ def test_doctor_reports_the_footprint_the_growth_and_a_budget(tmp_path, monkeypa
     assert result.to_dict()['index_metadata']['tool_output_retention_days'] == 180
 
 
+def test_doctor_reads_a_shared_worker_config_past_64_kb(tmp_path, monkeypatch):
+    """A shared worker's runtime config lists every scope of the store twice; the pilot's passed 85 KB.
+    The doctor read it as a 64 KB control file: every entry reported ``vector_threshold: invalid`` and
+    the storage budget was never checked.  It is bounded where the shared commands write it."""
+    app, ctx = _doctor_app(tmp_path, monkeypatch)
+    scopes = sorted({*ctx.binding.scope_ids, *(f"conversation:TEST-{index:03d}-{'x' * 64}" for index in range(450))})
+    binding = {'agent_id': ctx.binding.agent_id, 'installation_id': ctx.binding.installation_id,
+               'data_directory': str(ctx.binding.data_directory), 'scope_ids': scopes,
+               'test_mode': ctx.binding.test_mode, 'installation_kind': 'shared'}
+    _write_runtime_config(ctx, binding=binding, allowed_scope_ids=scopes, storage_budget_bytes=512)
+    config = ctx.binding.data_directory / 'runtime-config.json'
+    assert config.stat().st_size > 65536
+    result = doctor.run_doctor(host='hermes', instance_root=ctx.binding.data_directory)
+    assert not [item for item in result.checks if item['name'] == 'vector_threshold' and item['result'] == 'invalid']
+    assert result.storage_budget_bytes == 512 and 'storage_budget_exceeded' in result.capability_gaps
+
+    config.write_text(json.dumps({'padding': 'x' * doctor._RUNTIME_CONFIG_LIMIT}), encoding='utf-8')
+    result = doctor.run_doctor(host='hermes', instance_root=ctx.binding.data_directory)
+    assert {'name': 'vector_threshold', 'result': 'invalid', 'detail': 'ValueError'} in result.checks
+
+
 def test_doctor_reports_a_pending_schema_upgrade_without_applying_it(tmp_path, monkeypatch):
     """A package upgrade leaves the store one schema behind until its first
     ordinary open brings it forward.  The doctor is read-only, so it names the

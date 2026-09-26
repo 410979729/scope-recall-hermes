@@ -29,6 +29,7 @@ from scope_recall.vector.compaction import instance_vector_footprints
 from scope_recall._version import __version__
 
 from . import package_health
+from .shared import _CONFIG_LIMIT as _SHARED_CONFIG_LIMIT
 
 HostChoice = Literal["hermes", "codex", "claude-code"]
 #: Run as a file by the target interpreter, so an installed package that
@@ -36,6 +37,8 @@ HostChoice = Literal["hermes", "codex", "claude-code"]
 _PACKAGE_PROBE = Path(__file__).with_name("package_health.py")
 #: Largest JSON control file the doctor will read from beside the store.
 _CONTROL_FILE_LIMIT = 65536
+#: A runtime config may weigh what the shared commands allow it to.
+_RUNTIME_CONFIG_LIMIT = _SHARED_CONFIG_LIMIT
 
 
 @dataclass
@@ -149,7 +152,10 @@ def _read_control_file(path: Path) -> dict[str, Any] | None:
     """
     if not path.exists():
         return None
-    if path.is_symlink() or path.stat().st_size > _CONTROL_FILE_LIMIT:
+    # A shared worker's runtime config lists every scope of the store and passes 64 KB at a few hundred
+    # scopes; it is bounded where the shared commands write it.
+    limit = _RUNTIME_CONFIG_LIMIT if path.name == "runtime-config.json" else _CONTROL_FILE_LIMIT
+    if path.is_symlink() or path.stat().st_size > limit:
         raise ValueError(f"{path.stem}_invalid")
     loaded = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(loaded, dict):
