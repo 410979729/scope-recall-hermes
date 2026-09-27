@@ -99,5 +99,8 @@ needs the new one.
 
 ## Limits
 
-Over a relayed path a request takes one to three round trips of the network. Codex gives each hook 2 s, so on
-a slow path its prompts may come back without recall, and its messages are then sent from the spool.
+Over a relayed path a request takes one to three round trips of the network: 0.4-1.2 s through a Tailscale relay
+on 2026-09-27, about 50 ms direct. A prompt's hook waits at most 15 s, as a local one does, and the server's
+work on it at most the entry's `hook_processing_seconds` (6 s unless set lower); both are ceilings, and the
+prompt goes on as soon as recall is done. Codex allows SessionEnd and Interrupt at most 3 s, so on a slow path
+those may time out, and a Codex hook that did is sent from the spool.

@@ -56,11 +56,11 @@ _SUPPORTED_EVENTS = frozenset(
 #: the store for an embedding each.
 _TURN_FIELD = {"codex": "turn_id", "claude-code": "prompt_id"}
 #: Clients whose prompt hook may run the entry's ``hook_processing_seconds`` (at most 6 s) from the
-#: start.  Codex gives a hook 2 s (its hooks.json timeout), and the runtime that carries the longer
-#: budget is attached only after the capture, so a Codex prompt keeps the default.  Claude Code waits
-#: 15 s (``maintenance/install_claude_code.py``), and recall on the pilot's shared store took 2.7-5.7 s:
-#: with 2 s most automatic recalls would have come back empty.
-_CONFIGURED_PROMPT_BUDGET = frozenset({"claude-code"})
+#: start.  Both wait 15 s for a prompt's hook (``maintenance/install_claude_code.py``,
+#: ``maintenance/install_codex.py``), and recall on the pilot's shared store took 2.7-5.7 s: with 2 s most
+#: automatic recalls came back empty, as Codex's did until 3.4.0rc5.  The budget bounds the work; the hook
+#: answers as soon as it is done.
+_CONFIGURED_PROMPT_BUDGET = frozenset({"claude-code", "codex"})
 #: Clients whose Stop and SessionEnd also read the session record (``transcript``): what the person said,
 #: whatever the prompt hook could not write, and what the model said while it worked.  Claude Code waits
 #: 10 s for these hooks; a turn's lines take well under a second, and a long backlog is read over several

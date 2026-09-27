@@ -216,6 +216,11 @@ def test_hook_command_quotes_spaces(tmp_path):
     assert "-I" in hook["command"]
     assert "-B" in hook["command"]
     assert "-m scope_recall.adapters.codex.hook_entry" in hook["command"]
+    from scope_recall.maintenance.install_codex import HOOK_TIMEOUTS
+
+    timeouts = {event: entries[0]["hooks"][0]["timeout"] for event, entries in hooks["hooks"].items()}
+    assert timeouts == HOOK_TIMEOUTS, "each event's own ceiling, not one 2 s for all"
+    assert timeouts["UserPromptSubmit"] == 15 and timeouts["PostToolUse"] == 2
 
 
 def test_preview_creates_nothing_and_codex_install_doctor_uninstall(tmp_path):

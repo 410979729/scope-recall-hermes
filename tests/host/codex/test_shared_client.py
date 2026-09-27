@@ -166,18 +166,30 @@ def test_a_session_start_on_an_entry_reads_nothing_of_the_store(store, monkeypat
         hook.close()
 
 
-def test_claude_code_s_prompt_runs_the_entry_s_budget_and_codex_keeps_its_two_seconds(store, tmp_path):
-    """Recall on the pilot's shared store took 2.7-5.7 s.  Claude Code waits 15 s for a prompt's hook,
-    Codex 2 s, and the runtime that carries the configured budget is attached only after the capture.
-    No installer writes ``hook_processing_seconds``: a config without it runs the worker's 6 s."""
-    _root, _homes, client, _capture = store
-    (client / "scope-recall" / "runtime-config.json").write_text(json.dumps({"hook_processing_seconds": 5.5}),
-                                                                 encoding="utf-8")
-    hook = _hook(client)
-    try:
-        assert hook._hook_budget() == 5.5
-    finally:
-        hook.close()
+def _codex_client(root, tmp_path):
+    owner = next(row for row in read_shared_payload(root)["entries"][0]["audiences"] if row["kind"] == "owner_private")
+    home = tmp_path / "TEST-codex-home"
+    attach_shared_record(root, client_entry_record(
+        host="codex", home=home, entry_id="codex", display_name="Codex", attached_at=NOW,
+        allowed_scope_ids=owner["allowed_scope_ids"], writable_scope_ids=owner["writable_scope_ids"],
+        capture_scope_id=owner["capture_scope_id"]), now=NOW)
+    return home
+
+
+def test_a_client_s_prompt_runs_the_entry_s_budget(store, tmp_path):
+    """Recall on the pilot's shared store took 2.7-5.7 s.  Claude Code waits 15 s for a prompt's hook and Codex
+    now as long, so both run the entry's configured budget; with 2 s most of Codex's automatic recalls came back
+    empty.  No installer writes ``hook_processing_seconds``: a config without it runs the worker's 6 s."""
+    root, _homes, client, _capture = store
+    codex = _codex_client(root, tmp_path)
+    for home, host in ((client, "claude-code"), (codex, "codex")):
+        (home / "scope-recall" / "runtime-config.json").write_text(json.dumps({"hook_processing_seconds": 5.5}),
+                                                                   encoding="utf-8")
+        hook = CodexHookHandler.from_home(str(home), host)
+        try:
+            assert hook._hook_budget() == 5.5, host
+        finally:
+            hook.close()
     (client / "scope-recall" / "runtime-config.json").write_text(json.dumps({"auto_recall_seconds": 5.0}),
                                                                  encoding="utf-8")
     hook = _hook(client)
@@ -192,6 +204,28 @@ def test_claude_code_s_prompt_runs_the_entry_s_budget_and_codex_keeps_its_two_se
         assert hook._hook_budget() == 2.0, "an out-of-bounds budget falls back to the hook's 2 s"
     finally:
         hook.close()
+
+
+def test_a_prompt_answers_when_its_work_is_done_not_at_its_ceiling(store, tmp_path):
+    """The budget bounds a prompt's capture and recall; it is not a wait.  A small store answers in well under
+    the 6 s a hook may take, and the client's prompt goes on as soon as it does."""
+    root, _homes, _client, _capture = store
+    codex = _codex_client(root, tmp_path)
+    # What attach writes: the routes, and no hook budget of its own.
+    (codex / "scope-recall" / "runtime-config.json").write_text(json.dumps({"auto_recall_seconds": 5.0}),
+                                                                encoding="utf-8")
+    hook = CodexHookHandler.from_home(str(codex), "codex")
+    try:
+        assert hook._hook_budget() == 6.0
+        started = datetime.now(timezone.utc)
+        hook.handle_payload({"hook_event_name": "UserPromptSubmit", "session_id": "TEST-codex-session",
+                             "turn_id": "TEST-turn-1", "prompt": "TEST 周五之前把 QX-17 的报价发出去。",
+                             "cwd": "C:/anywhere"})
+        elapsed = (datetime.now(timezone.utc) - started).total_seconds()
+    finally:
+        hook.close()
+    assert hook.diagnostics.last_reason is None, hook.diagnostics.last_reason
+    assert elapsed < 4.0, f"the hook took {elapsed:.1f} s of its 6 s on a store of a few sources"
 
 
 def test_a_queued_capture_replays_under_the_client_entry_s_grants_only(store):

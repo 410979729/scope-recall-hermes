@@ -32,6 +32,13 @@ from .install_common import (
 )
 
 CODEX_HOOK_EVENTS = frozenset({"SessionStart", "UserPromptSubmit", "PostToolUse", "Stop", "Interrupt", "SessionEnd"})
+#: Seconds Codex waits for each hook (hooks.json).  Codex holds a prompt until its hook answers and allows 600 s
+#: unless told otherwise; SessionEnd and Interrupt allow at most 3.  These are ceilings, not waits: a hook
+#: answers as soon as its work is done, and a prompt's work is bounded by the entry's ``hook_processing_seconds``
+#: (6 s unless set lower), as Claude Code's is.  With 2 s, most of Codex's automatic recalls on a large store came
+#: back empty.  PostToolUse runs at every tool call and records one observation, so it keeps 2 s.
+HOOK_TIMEOUTS = {"SessionStart": 5, "UserPromptSubmit": 15, "PostToolUse": 2, "Stop": 10, "Interrupt": 3,
+                 "SessionEnd": 3}
 WINDOWS_HOOK_LAUNCHER = "scope-recall-hook.cmd"
 
 
@@ -116,8 +123,8 @@ def _hook_command(
 ) -> tuple[str, str]:
     """POSIX command line plus the Windows launcher path Codex runs through ``cmd.exe /C``.
 
-    A PowerShell EncodedCommand wrapper costs ~0.5-1.0s and pushes capture past
-    the frozen 2s hook timeout; a UTF-8 .cmd next to hooks.json keeps
+    A PowerShell EncodedCommand wrapper costs ~0.5-1.0s of every hook, and
+    PostToolUse keeps a 2s timeout; a UTF-8 .cmd next to hooks.json keeps
     Unicode/space paths literal without that tax.
     """
     argv = _hook_argv(python_executable, config, env_file=env_file)
@@ -132,8 +139,9 @@ def _hooks_json(python_executable: Path, config: Path, *, windows_launcher: Path
     command, command_windows = _hook_command(
         python_executable, config, windows_launcher=windows_launcher, write_launcher=False, env_file=env_file
     )
-    hook = {"type": "command", "command": command, "commandWindows": command_windows, "timeout": 2}
-    return {"hooks": {event: [{"hooks": [dict(hook)]}] for event in sorted(CODEX_HOOK_EVENTS)}}
+    hook = {"type": "command", "command": command, "commandWindows": command_windows}
+    return {"hooks": {event: [{"hooks": [dict(hook, timeout=HOOK_TIMEOUTS[event])]}]
+                      for event in sorted(CODEX_HOOK_EVENTS)}}
 
 
 def _mcp_json(python_executable: Path, config: Path, workspace: Path | None, *, env_file: Path | None = None) -> dict[str, Any]:

@@ -306,6 +306,18 @@ def test_the_listen_address_is_one_private_interface(store):
     assert not remote_server.token_matches(None, hashlib.sha256(TOKEN.encode()).hexdigest())
 
 
+def test_a_remote_client_waits_as_long_as_a_local_one():
+    """The remote plugin's hooks wait what the local installers' do, for the events it forwards, and Codex's
+    SessionEnd and Interrupt stay within the 3 s Codex allows them."""
+    from scope_recall.maintenance import install_claude_code, install_codex
+
+    assert remote_client.HOOK_TIMEOUTS["claude-code"] == install_claude_code.HOOK_TIMEOUTS
+    codex = remote_client.HOOK_TIMEOUTS["codex"]
+    assert codex == {event: install_codex.HOOK_TIMEOUTS[event] for event in codex}
+    assert codex["UserPromptSubmit"] == install_claude_code.HOOK_TIMEOUTS["UserPromptSubmit"]
+    assert max(install_codex.HOOK_TIMEOUTS["SessionEnd"], install_codex.HOOK_TIMEOUTS["Interrupt"]) <= 3
+
+
 @pytest.mark.parametrize("host", remote_client.HOSTS)
 def test_the_plugin_sends_hooks_and_tools_to_the_server(tmp_path, host):
     config = _client(tmp_path, host, 18765)

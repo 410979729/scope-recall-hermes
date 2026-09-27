@@ -40,11 +40,12 @@ import urllib.parse
 from . import transcript
 
 HOSTS = ("claude-code", "codex")
-#: How long the client's host waits for each hook (the plugin's hooks.json).  Claude Code's are the local
-#: installer's; Codex gives every hook 2 s.
+#: How long the client's host waits for each hook (the plugin's hooks.json): the local installers' ceilings
+#: (``maintenance/install_claude_code.py``, ``maintenance/install_codex.py``), for the events forwarded.  A hook
+#: answers as soon as the server does; the server's work is bounded by the entry's budget.
 HOOK_TIMEOUTS = {
     "claude-code": {"UserPromptSubmit": 15, "Stop": 10, "SessionEnd": 10},
-    "codex": {"SessionStart": 2, "UserPromptSubmit": 2, "Stop": 2, "Interrupt": 2, "SessionEnd": 2},
+    "codex": {"SessionStart": 5, "UserPromptSubmit": 15, "Stop": 10, "Interrupt": 3, "SessionEnd": 3},
 }
 #: The part of each wait the request may use; the interpreter's start and the answer take the rest.
 _REQUEST_SHARE = 0.8
