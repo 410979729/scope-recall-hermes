@@ -124,8 +124,10 @@ def classify(event, policy=None):
 def pending_count(tx, scope_id, *, ceiling, work_type):
     """Bound the scan and keep other scope/project/branch queues private."""
     tx._scope(scope_id)
+    # Completed work dominates old stores; the planner otherwise scans it by work_type
+    # for every capture instead of starting from the small pending/leased set.
     return int(tx._check().execute("""SELECT count(*) FROM (
-        SELECT 1 FROM work_items WHERE work_type=?
+        SELECT 1 FROM work_items INDEXED BY work_ready WHERE work_type=?
         AND state IN ('pending','leased') AND scope_id=?
         AND project_id IS ? AND branch_id IS ? LIMIT ?)""",
         (work_type, scope_id, tx.context.project_id, tx.context.branch_id, ceiling)).fetchone()[0])
