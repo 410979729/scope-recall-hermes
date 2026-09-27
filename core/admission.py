@@ -280,9 +280,22 @@ def resume_deferred(storage, clock, context, policy=None, *, limit=16, remaining
     if context.actor_origin not in {"human_direct", "host_generated"}:
         raise ContractError("ACCESS_DENIED", "schedule_origin")
     policy = policy or AdmissionPolicy()
+    scopes = sorted(context.allowed_scope_ids)
+    marks = ",".join("?" for _ in scopes)
+    # Nothing deferred is the usual case, and finding that out is a scan of every source the context reaches.
+    # It is read without the writer lease: under it, every worker pass on the shared store held the lease for
+    # 9.8 s on 2026-09-27 with not one source deferred, and every capture waiting for it failed.
+    with storage.read(context, remaining_seconds=remaining_seconds) as tx:
+        waiting = tx._check().execute(
+            f"""SELECT 1 FROM source_events e
+                WHERE e.scope_id IN ({marks}) AND e.project_id IS ? AND e.branch_id IS ?
+                AND e.read_blocked=0 AND e.suppressed=0
+                AND json_extract(e.extra_json,'$._scope_recall_admission.disposition')='deferred'
+                AND json_extract(e.extra_json,'$._scope_recall_admission.reason')='queue_capacity' LIMIT 1""",
+            (*scopes, context.project_id, context.branch_id)).fetchone()
+    if waiting is None:
+        return ()
     with storage.write(context, remaining_seconds=remaining_seconds) as tx:
-        scopes = sorted(context.allowed_scope_ids)
-        marks = ",".join("?" for _ in scopes)
         origins = sorted(FRESH_CONVERSATION_ORIGINS)
         fresh = f"(e.persisted_at>=? AND e.origin IN ({','.join('?' for _ in origins)}))"
         fresh_params = (fresh_since(clock.utc_now()), *origins)
