@@ -157,6 +157,31 @@ def test_the_sweep_pages_and_finishes_across_passes(app):
     assert _sweep(core, ctx, limit=16) == 0, "and it stays settled"
 
 
+def test_settled_candidates_are_found_by_reading_and_queued_by_name(app):
+    """The worker finds the settled candidates with reads only, then queues just those under the writer lease.
+
+    Walking every settling candidate inside the write held the lease for 7.6 s of each pass on the shared store
+    (2026-09-27), and captures waiting for it failed.
+    """
+    core, ctx = app
+    for index in range(6):
+        _register(core, ctx, index)
+    _retire_live_evaluations(core)
+    _settle(core)
+    with core.storage.read(ctx) as tx:
+        found = tx.candidates.settled_to_schedule(now=core.clock.utc_now(), limit=64)
+    assert found, "the fixture leaves settled candidates with new evidence"
+    with core.storage.write(ctx) as tx:
+        assert tx.candidates.schedule_settled_candidates(now=core.clock.utc_now(), limit=64, refs=()) == 0
+    assert _queued(core) == 0, "no names, nothing queued"
+    with core.storage.write(ctx) as tx:
+        assert tx.candidates.schedule_settled_candidates(now=core.clock.utc_now(), limit=64, refs=found[:1]) == 1
+    with core.storage.write(ctx) as tx:
+        rest = tx.candidates.schedule_settled_candidates(now=core.clock.utc_now(), limit=64, refs=found)
+    assert rest == len(found) - 1, "the one already queued is checked again and skipped"
+    assert _sweep(core, ctx, limit=64) == 0, "the named ones were all the sweep had"
+
+
 def test_an_unchanged_evidence_set_can_never_be_scheduled_twice(app):
     """The fingerprint collision is the loop guard, so the sweep cannot spin."""
     core, ctx = app

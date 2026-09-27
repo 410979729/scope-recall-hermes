@@ -32,6 +32,19 @@ def capture(app, ctx, key, text, **changes):
     return app.record_event(ctx, source_event(source_event_key=key, content=text, **changes), scope_id="TEST-scope", remaining_seconds=10)
 
 
+def test_nothing_deferred_takes_no_writer_lease(tmp_path, monkeypatch):
+    """Finding that nothing is deferred scans every source; under the writer lease that held every worker pass on
+    the shared store for 9.8 s (2026-09-27) with nothing deferred, and captures waiting for the lease failed."""
+    app, ctx = app_at(tmp_path)
+    capture(app, ctx, "TEST-plain", "TEST an ordinary source that is not deferred")
+    writes = []
+    storage_type = type(app.storage)
+    real_write = storage_type.write
+    monkeypatch.setattr(storage_type, "write", lambda self, *args, **kwargs: writes.append(1) or real_write(self, *args, **kwargs))
+    assert app.resume_deferred(ctx, remaining_seconds=10) == ()
+    assert writes == []
+
+
 def test_pending_count_uses_ready_index_without_crossing_project_or_branch(tmp_path):
     app, ctx = app_at(tmp_path)
     for n in range(8):

@@ -254,6 +254,14 @@ def _other_work_ready(storage, clock, context, started: float, budget: float, ki
 def _recover_failed_work(storage, clock, context, config: WorkerConfig, allowed: frozenset[str],
                          started: float, budget: float) -> int:
     """Grant bounded fresh attempts to failures a later fix or budget may have cured."""
+    settled: tuple = ()
+    if "evaluate_candidate" in allowed:
+        # Which settled candidates to queue is read before the write: finding them walks every candidate still
+        # settling, and under the writer lease that was 7.6 s of each pass on the shared store (2026-09-27).
+        with storage.read(context, remaining_seconds=_remaining(started, clock, budget)) as tx:
+            if tx.work.pending_depth("evaluate_candidate") < CANDIDATE_QUEUE_CEILING:
+                settled = tx.candidates.settled_to_schedule(
+                    now=clock.utc_now(), limit=min(config.candidate_batch_limit, config.max_items))
     with storage.write(context, remaining_seconds=_remaining(started, clock, budget)) as tx:
         recovery_page = min(MAX_RECOVERY_PAGE, config.max_items)
         recovered = tx.work.recover_invalid_derivations(
@@ -269,9 +277,9 @@ def _recover_failed_work(storage, clock, context, config: WorkerConfig, allowed:
             # most what it can also evaluate, and stops queueing entirely once
             # the queue is deeper than passes can reach, so a backlog cannot
             # grow on its own: what is not queued now waits and is queued later.
-            if tx.work.pending_depth("evaluate_candidate") < CANDIDATE_QUEUE_CEILING:
+            if settled:
                 tx.candidates.schedule_settled_candidates(
-                    now=clock.utc_now(), limit=min(config.candidate_batch_limit, config.max_items))
+                    now=clock.utc_now(), limit=min(config.candidate_batch_limit, config.max_items), refs=settled)
             recovered += tx.candidates.reschedule_budget_blocked_candidates(
                 now=clock.utc_now(), limit=min(8, config.max_items))
             # The candidate twin of recover_oversized_consolidations, which

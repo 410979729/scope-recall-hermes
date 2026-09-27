@@ -92,29 +92,35 @@ class CandidateSweeps(CandidateIntake):
             params,
         ).rowcount
 
-    def _settling_rows(self):
+    def _settling_rows(self, refs: tuple[tuple[str, int], ...] | None = None):
         """Live candidates holding evidence, for the settle sweep and the doctor alike.
 
         ``waiting_evidence`` is included, not just ``pending_evaluation``: a
         candidate judged "not enough" while more evidence already sat in the
         table would otherwise never be looked at again.  ``authority_revoked``
         is the one reason that must not be revived -- that is a decision, not
-        a shortage.
+        a shortage.  ``refs`` narrows it to the named candidate versions.
         """
         context, params = self._context("l.")
+        only, only_params = "", ()
+        if refs is not None:
+            if not refs:
+                return []
+            only = f"AND (l.candidate_ref,l.candidate_revision) IN (VALUES {','.join('(?,?)' for _ in refs)})"
+            only_params = tuple(value for ref in refs for value in ref)
         return self._read().execute(
             f"""SELECT {HEAD_COLUMNS},l.last_evidence_at,l.last_evaluated_at,l.created_at,
                        EXISTS(SELECT 1 FROM candidate_evaluations e WHERE e.candidate_ref=l.candidate_ref
                          AND e.candidate_revision=l.candidate_revision AND e.state='queued') AS queued
                 FROM candidate_lifecycle l {HEAD_JOINS}
                 WHERE l.processing_state IN ('pending_evaluation','waiting_evidence')
-                  AND l.reason<>'authority_revoked' AND {context}
+                  AND l.reason<>'authority_revoked' AND {context} {only}
                   AND c.current_revision=l.candidate_revision AND c.read_blocked=0 AND c.suppressed=0
                   AND v.state IN ('proposed','disputed')
                   AND EXISTS(SELECT 1 FROM candidate_evidence ev
                       WHERE ev.candidate_ref=l.candidate_ref AND ev.candidate_revision=l.candidate_revision)
                 ORDER BY l.last_evidence_at,l.candidate_ref,l.candidate_revision""",
-            params,
+            (*params, *only_params),
         ).fetchall()
 
     def _settling_eligible(self, row, *, now: str, rule_version: str) -> str | None:
@@ -134,7 +140,26 @@ class CandidateSweeps(CandidateIntake):
         ).fetchone()
         return None if asked else reason
 
-    def schedule_settled_candidates(self, *, now: str, rule_version: str = RULE_VERSION, limit: int = 16) -> int:
+    def settled_to_schedule(self, *, now: str, rule_version: str = RULE_VERSION,
+                            limit: int = 16) -> tuple[tuple[str, int], ...]:
+        """The candidate versions ``schedule_settled_candidates`` would queue now, found with reads only.
+
+        Finding them walks every candidate still settling -- on the shared store on 2026-09-27, 7.6 s to find
+        none -- so the worker does it before its write and hands ``refs`` over, and the write rechecks just those.
+        """
+        if type(limit) is not int or not 1 <= limit <= 64:
+            raise ContractError("INPUT_INVALID", "settle_limit")
+        rule_version = rule(rule_version)
+        found = []
+        for row in self._settling_rows():
+            if len(found) >= limit:
+                break
+            if self._settling_eligible(row, now=now, rule_version=rule_version) is not None:
+                found.append((row["candidate_ref"], int(row["candidate_revision"])))
+        return tuple(found)
+
+    def schedule_settled_candidates(self, *, now: str, rule_version: str = RULE_VERSION, limit: int = 16,
+                                    refs: tuple[tuple[str, int], ...] | None = None) -> int:
         """Queue one evaluation for each candidate whose evidence has settled.
 
         ``observe_source`` does not schedule while evidence is still arriving,
@@ -143,12 +168,13 @@ class CandidateSweeps(CandidateIntake):
         page can never fill with candidates still collecting while a settled
         one waits behind them.  Idempotent: a queued evaluation excludes its
         candidate, and an unchanged evidence set collides on its fingerprint.
+        ``refs`` (from ``settled_to_schedule``) limits it to those candidates, each checked again here.
         """
         if type(limit) is not int or not 1 <= limit <= 64:
             raise ContractError("INPUT_INVALID", "settle_limit")
         rule_version = rule(rule_version)
         scheduled = 0
-        for row in self._settling_rows():
+        for row in self._settling_rows(refs):
             if scheduled >= limit:
                 break
             reason = self._settling_eligible(row, now=now, rule_version=rule_version)
