@@ -7,6 +7,7 @@ All notable changes to `scope-recall` will be documented in this file.
 ### Scope Recall 3.3.1rc1 - 2026-09-26
 
 - The version moves past the `v3.3.0` tag.
+- A capture's queue-capacity check starts from the pending work (the `work_ready` index) instead of every finished item of its type: about 0.3 s a capture on a store with 95,000 finished items, which the session-record read spent on each message.
 
 ## [3.3.0] - 2026-09-26
 
