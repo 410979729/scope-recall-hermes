@@ -73,6 +73,11 @@ SOURCE_PAGES_PER_PASS = 16
 #: and a hook waiting for the writer lease polls every 10 ms (``core/storage.py``): it rarely landed in the gap,
 #: so it waited behind every page of the pass instead of one.  Two polls' worth lets it in.
 PAGE_TURN_SECONDS = 0.02
+#: Seconds of those pages a pass spends at most.  A page holds the writer lease while it matches its source
+#: against the candidates sharing a term: 0.5-7 s a page on the shared store on 2026-09-27 (thousands of
+#: candidates), so sixteen pages still held it for half a minute of each pass.  A small store's pages take
+#: milliseconds and all sixteen still fit.
+SOURCE_PAGE_SECONDS = 5.0
 #: Source embeddings one group may carry.  The adapter sends them as consecutive
 #: full provider requests (``adapters/models.py``: a hundred each), so this is
 #: how many items share one read, one group commit and one set of per-pass costs
@@ -164,7 +169,8 @@ def _resume_admission(storage, clock, context, config: WorkerConfig, started: fl
     resume_deferred(storage, clock, context, config.admission_policy, limit=min(16, config.max_items),
                     remaining_seconds=min(1.0, _remaining(started, clock, budget)))
     # One write per page, so a capture never waits behind more than one; the
-    # pages may take at most half of the pass.
+    # pages may take at most half of the pass, and at most SOURCE_PAGE_SECONDS.
+    pages_started = time.monotonic()
     for _ in range(SOURCE_PAGES_PER_PASS):
         if _remaining(started, clock, budget) <= budget / 2:
             break
@@ -173,6 +179,8 @@ def _resume_admission(storage, clock, context, config: WorkerConfig, started: fl
                 break
             tx.candidates.resume_source_pages(now=clock.utc_now())
         time.sleep(PAGE_TURN_SECONDS)
+        if time.monotonic() - pages_started >= SOURCE_PAGE_SECONDS:
+            break
     page = min(config.candidate_batch_limit, config.max_items)
     with storage.write(context, remaining_seconds=min(1.0, _remaining(started, clock, budget))) as tx:
         tx.candidates.backfill(now=clock.utc_now(), limit=page)
