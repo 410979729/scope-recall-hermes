@@ -2,6 +2,12 @@
 
 All notable changes to `scope-recall` will be documented in this file.
 
+## [Unreleased]
+
+### Scope Recall 3.3.1rc1 - 2026-09-26
+
+- The version moves past the `v3.3.0` tag.
+
 ## [3.3.0] - 2026-09-26
 
 3.3.0 lets Hermes, Codex and Claude Code share one memory. In 3.2.0 only Hermes agents could attach to a shared store; now Codex and Claude Code attach to the same store as entries. What you tell any of them, the others can recall; each recalled item says which agent it came in through, and a deletion through any agent applies to all of them. An agent you do not attach keeps its own store. How to set one up: [docs/shared-store.md](https://github.com/410979729/scope-recall-hermes/blob/v3.3.0/docs/shared-store.md).
