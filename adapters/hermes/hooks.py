@@ -5,7 +5,7 @@ from typing import Any, Callable
 import threading
 import weakref
 
-_SUPPORTED_HOOKS = ("pre_llm_call", "api_request_error", "post_tool_call")
+_SUPPORTED_HOOKS = ("pre_llm_call", "api_request_error", "post_tool_call", "post_llm_call")
 _REGISTRY_LOCK = threading.RLock()
 _ADAPTERS: weakref.WeakSet[Any] = weakref.WeakSet()
 _REGISTERED_CONTEXTS: weakref.WeakSet[Any] = weakref.WeakSet()
@@ -71,6 +71,8 @@ def _global_callback(event: str) -> Callable[..., None]:
             _dispatch("observe_pre_llm", **kwargs)
         elif event == "post_tool_call":
             _dispatch("observe_post_tool_call", **kwargs)
+        elif event == "post_llm_call":
+            _dispatch("observe_post_llm_call", **kwargs)
         else:
             _dispatch("observe_api_request_error", **kwargs)
 
@@ -128,7 +130,6 @@ def unsupported_host_fields() -> dict[str, str]:
     """Documented public gaps for this bounded slice."""
 
     return {
-        "post_llm_call": "success-only capture remains on MemoryProvider.sync_turn",
         "on_session_reset": "unsupported_in_adapter_slice_use_on_session_switch",
         "provider_queue_prefetch": "optional_noop_when_prefetch_is_synchronous",
         "png_raw_attachment_bytes": "unsupported_host_shape_metadata_only",

@@ -170,6 +170,6 @@ def test_non_primary_context_is_read_only(hermes_home, initialize_kwargs):
 
 def test_unsupported_host_fields_are_documented():
     fields = unsupported_host_fields()
-    assert "post_llm_call" in fields
+    assert "post_llm_call" not in fields  # read at the end of a turn for what was shown on the way
     assert "png_raw_attachment_bytes" in fields
     assert "turn_cancelled_hook" in fields
