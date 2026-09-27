@@ -39,6 +39,10 @@ machine and stays there; this machine keeps its SHA-256.
    stored, the time taken), each request refused for want of the token and its own errors go to
    `<home>\scope-recall\remote-server.log`, kept to about 1 MB with two older copies.
 
+   On Windows start it with a `pythonw.exe` that opens no console, such as the one in a virtual environment
+   made by `python -m venv`. uv 0.12.1 writes `Scripts\pythonw.exe` as a copy of its console launcher: the
+   server then runs in a console that Windows Terminal shows as a window, and closing that window stops it.
+
 4. Let the client machine reach the port: an inbound firewall rule for that port, from the client's private
    address only.
 
