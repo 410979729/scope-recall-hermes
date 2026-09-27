@@ -9,7 +9,8 @@ streamable HTTP at ``/mcp``.
 
 Listen only on an address the client reaches privately, a tailnet one, and give each entry its own token.
 This machine keeps the token's SHA-256 in ``<home>/scope-recall/remote-server.json``; the token itself
-stays on the client's machine, where ``remote_client token`` made it.
+stays on the client's machine, where ``remote_client token`` made it.  ``serve`` runs without a console: each
+hook, each refused request and the server's own errors go to ``remote-server.log`` beside the config.
 
     python -m scope_recall.adapters.codex.remote_server configure --home <home> --host claude-code \
         --listen 100.64.0.5 --port 18765 --token-sha256 <hex>
@@ -24,6 +25,8 @@ import hashlib
 import hmac
 import ipaddress
 import json
+import logging
+import logging.handlers
 import os
 from pathlib import Path
 import re
@@ -36,11 +39,15 @@ from .config import CodexConfigError, load_shared_client
 from .handler import CodexHookHandler, RecordLines, SystemHookClock
 
 CONFIG_NAME = "remote-server.json"
+LOG_NAME = "remote-server.log"
+#: The log is kept to about this size, with two older copies.
+LOG_BYTES = 1024 * 1024
 #: A hook payload, as a local hook reads it from stdin.
 MAX_PAYLOAD_BYTES = 65536
 #: One request: the payload and the lines a client read from its record in one Stop.
 MAX_REQUEST_BYTES = 8 * 1024 * 1024
 _SHA256 = re.compile(r"[0-9a-f]{64}")
+_log = logging.getLogger("scope_recall.remote_server")
 
 
 class RemoteServerError(ValueError):
@@ -209,6 +216,7 @@ def build_app(config: RemoteServerConfig):
         started = time.monotonic()
         size = request.headers.get("content-length")
         if size is None or not size.isdigit() or int(size) > MAX_REQUEST_BYTES:
+            _log.warning("hook refused: %s bytes", size)
             return JSONResponse({"error": "request_too_large_or_unsized"}, status_code=413)
         raw = await request.body()
         if len(raw) > MAX_REQUEST_BYTES:
@@ -217,11 +225,17 @@ def build_app(config: RemoteServerConfig):
             body = json.loads(raw.decode("utf-8"))
             if not isinstance(body, dict):
                 raise RemoteServerError("body must be an object")
+            payload = body.get("payload")
+            event = str(payload.get("hook_event_name"))[:40] if isinstance(payload, dict) else None
             answer = await run_in_threadpool(handle_request, config, body, started=started)
         except (UnicodeError, ValueError) as exc:
+            _log.warning("hook refused: %s", str(exc)[:200])
             return JSONResponse({"error": "invalid_request", "detail": str(exc)[:200]}, status_code=400)
-        except CodexConfigError:
+        except CodexConfigError as exc:
+            _log.error("hook: the entry is unavailable: %s", str(exc)[:200])
             return JSONResponse({"error": "entry_unavailable"}, status_code=503)
+        _log.info("hook %s: %s, record through %s, %d ms", event, answer["reason"], answer["through"],
+                  round((time.monotonic() - started) * 1000))
         return JSONResponse(answer)
 
     async def health(request: Request) -> JSONResponse:
@@ -245,9 +259,23 @@ class _TokenGate:
             headers = dict(scope.get("headers") or ())
             if not token_matches(headers.get(b"authorization"), self.token_sha256):
                 from starlette.responses import JSONResponse
+                client = scope.get("client") or ("?", 0)
+                _log.warning("refused %s %s from %s: no valid token", scope.get("method"), scope.get("path"), client[0])
                 await JSONResponse({"error": "unauthorized"}, status_code=401)(scope, receive, send)
                 return
         await self.app(scope, receive, send)
+
+
+def log_to_file(home: Path) -> logging.Handler:
+    """Send this server's lines, and warnings from the libraries it runs, to ``remote-server.log``."""
+    handler = logging.handlers.RotatingFileHandler(config_path(home).with_name(LOG_NAME), maxBytes=LOG_BYTES,
+                                                   backupCount=2, encoding="utf-8")
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+    root = logging.getLogger()
+    root.addHandler(handler)
+    root.setLevel(logging.WARNING)
+    _log.setLevel(logging.INFO)
+    return handler
 
 
 def serve(config: RemoteServerConfig, *, env_file: Path | None = None) -> None:
@@ -256,7 +284,12 @@ def serve(config: RemoteServerConfig, *, env_file: Path | None = None) -> None:
     if env_file is not None:
         client = load_shared_client(config.home, config.host)
         os.environ.update(host_process_credential_environment(client.runtime_config_path, env_file))
-    uvicorn.run(build_app(config), host=config.listen, port=config.port, log_level="warning",
+    log_to_file(config.home)
+    from ..._version import __version__
+    _log.info("serving the %s entry at %s on %s:%d (%s)", config.host, config.home, config.listen, config.port,
+              __version__)
+    # log_config=None keeps uvicorn's own errors in the file above instead of a console there is none of.
+    uvicorn.run(build_app(config), host=config.listen, port=config.port, log_level="warning", log_config=None,
                 timeout_graceful_shutdown=5)
 
 

@@ -9,6 +9,8 @@ from contextlib import closing
 from datetime import datetime, timedelta, timezone
 import hashlib
 import json
+import logging
+import os
 from pathlib import Path
 import socket
 import sqlite3
@@ -178,6 +180,7 @@ def test_codex_keeps_what_it_could_not_send_and_sends_it_with_its_moment(served,
     spooled = list((offline["state_dir"] / "spool").glob("*.json"))
     assert len(spooled) == 1
     kept_at = json.loads(spooled[0].read_text(encoding="utf-8"))["observed_at"]
+    (offline["state_dir"] / "server-away").unlink()  # a minute later, the server back
     online = dict(offline, url=f"http://127.0.0.1:{ports['codex']}")
     _hook(online, {"hook_event_name": "Stop", "session_id": "TEST-codex-session", "turn_id": "TEST-t1",
                    "last_assistant_message": "TEST 记下了。", "cwd": "C:/work"})
@@ -189,6 +192,61 @@ def test_codex_keeps_what_it_could_not_send_and_sends_it_with_its_moment(served,
     assert list((offline["state_dir"] / "spool").glob("*.json")) == []
     _hook(online, prompt)
     assert len(_rows(root, "workpc-codex")) == 2, "the same hook sent again is the same source"
+
+
+def test_the_client_goes_to_the_server_itself_past_a_proxy(served, tmp_path, monkeypatch):
+    """A client machine's proxy (HTTP_PROXY on 127.0.0.1) is for the internet and cannot reach a private address."""
+    root, _homes, ports = served
+    for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"):
+        monkeypatch.setenv(name, "http://127.0.0.1:9")
+    for name in ("NO_PROXY", "no_proxy"):
+        monkeypatch.delenv(name, raising=False)
+    config = _client(tmp_path, "claude-code", ports["claude-code"])
+    _hook(config, {"hook_event_name": "UserPromptSubmit", "session_id": "TEST-work-session", "prompt_id": "TEST-p9",
+                   "prompt": "TEST 代理不该挡住这句。", "cwd": "C:/work"})
+    assert [content for _role, _origin, content, _at in _rows(root, "workpc-claude-code")] == ["TEST 代理不该挡住这句。"]
+
+
+def test_a_server_that_is_away_holds_hooks_up_once_a_minute(tmp_path, monkeypatch):
+    config = _client(tmp_path, "codex", _free_port())
+    prompt = {"hook_event_name": "UserPromptSubmit", "session_id": "TEST-codex-session", "turn_id": "TEST-t1",
+              "prompt": "TEST 服务器不在。", "cwd": "C:/work"}
+    assert _hook(config, prompt) == {}
+    marker = config["state_dir"] / "server-away"
+    assert marker.is_file()
+    tried = []
+    monkeypatch.setattr(remote_client, "_post", lambda *args: tried.append(args) or None)
+    assert _hook(config, dict(prompt, turn_id="TEST-t2")) == {}
+    assert tried == [], "a hook does not try while the server was away less than a minute ago"
+    assert len(list((config["state_dir"] / "spool").glob("*.json"))) == 2, "both are kept to be sent later"
+    old = time.time() - remote_client.AWAY_SECONDS - 1
+    os.utime(marker, (old, old))
+    _hook(config, dict(prompt, turn_id="TEST-t3"))
+    assert len(tried) == 1, "a minute later a hook tries again"
+    log = (config["state_dir"] / "remote-client.log").read_text(encoding="utf-8")
+    assert "UserPromptSubmit: no connection" in log and "UserPromptSubmit: not sent" in log
+
+
+def test_the_server_logs_each_hook_and_each_refused_request(served, tmp_path):
+    _root, homes, ports = served
+    root_logger = logging.getLogger()
+    level = root_logger.level
+    handler = remote_server.log_to_file(homes["claude-code"])
+    prompt = {"hook_event_name": "UserPromptSubmit", "session_id": "TEST-work-session", "prompt_id": "TEST-p7",
+              "prompt": "TEST 记一笔。", "cwd": "C:/work"}
+    try:
+        _hook(_client(tmp_path, "claude-code", ports["claude-code"]), prompt)
+        (tmp_path / "TEST-other").mkdir()
+        wrong = _client(tmp_path / "TEST-other", "claude-code", ports["claude-code"], token="TEST-not-the-token")
+        _hook(wrong, prompt)
+    finally:
+        root_logger.removeHandler(handler)
+        root_logger.setLevel(level)
+        handler.close()
+    log = (homes["claude-code"] / "scope-recall" / remote_server.LOG_NAME).read_text(encoding="utf-8")
+    assert "hook UserPromptSubmit: " in log
+    assert "refused POST /hook from 127.0.0.1: no valid token" in log
+    assert "UserPromptSubmit: HTTP 401" in (wrong["state_dir"] / "remote-client.log").read_text(encoding="utf-8")
 
 
 def test_the_entry_s_mcp_tools_answer_over_http_behind_the_token(served):
