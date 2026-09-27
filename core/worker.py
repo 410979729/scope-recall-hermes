@@ -5,6 +5,7 @@ from collections import Counter
 from dataclasses import dataclass
 from functools import partial
 import math
+import time
 
 from ..contracts import ContractError, TrustedContext
 from .admission import resume_deferred
@@ -68,6 +69,10 @@ _HOLDABLE_WORK_TYPES = frozenset({"consolidate", "embed", "evaluate_candidate"})
 #: one page a pass, a source matching a thousand candidates took sixty passes,
 #: started back to back, each paying a whole pass to link sixteen of them.
 SOURCE_PAGES_PER_PASS = 16
+#: Seconds a pass waits after each of those pages.  Each page is its own write, but the next one began at once,
+#: and a hook waiting for the writer lease polls every 10 ms (``core/storage.py``): it rarely landed in the gap,
+#: so it waited behind every page of the pass instead of one.  Two polls' worth lets it in.
+PAGE_TURN_SECONDS = 0.02
 #: Source embeddings one group may carry.  The adapter sends them as consecutive
 #: full provider requests (``adapters/models.py``: a hundred each), so this is
 #: how many items share one read, one group commit and one set of per-pass costs
@@ -167,6 +172,7 @@ def _resume_admission(storage, clock, context, config: WorkerConfig, started: fl
             if not tx.candidates.pending_source_pages():
                 break
             tx.candidates.resume_source_pages(now=clock.utc_now())
+        time.sleep(PAGE_TURN_SECONDS)
     page = min(config.candidate_batch_limit, config.max_items)
     with storage.write(context, remaining_seconds=min(1.0, _remaining(started, clock, budget))) as tx:
         tx.candidates.backfill(now=clock.utc_now(), limit=page)
