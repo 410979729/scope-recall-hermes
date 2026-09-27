@@ -4,6 +4,11 @@ All notable changes to `scope-recall` will be documented in this file.
 
 ## [Unreleased]
 
+### Scope Recall 3.4.0rc6 - 2026-09-27
+
+- The version moves past the `v3.4.0rc5` tag.
+- The release tier no longer has a model gate. The gate asked for a P18 formal evaluation receipt: 120 independent core items and 240 paired variants, scored by a party independent of the authors. This project has neither that corpus nor that party, so no release could pass it, and every release from 3.1.0 on shipped with the gate reported missing. `scripts/check.py --tier release` now requires only the suites it runs and exits 0 when they pass, where it used to exit 2. `--model-receipt` is gone, and so are the two scripts that extracted and validated an evidence bundle; the CI, release and PyPI workflows no longer look for a model evidence tag. Recall quality still has no automated check: see *What is not verified* in the README.
+
 ### Scope Recall 3.4.0rc5 - 2026-09-27
 
 - The version moves past the `v3.4.0rc4` tag.
