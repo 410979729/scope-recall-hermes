@@ -112,6 +112,36 @@ def said(row: object) -> Said | None:
     return Said(entry_id.strip(), role, text, occurred_at, prompt_id.strip() if prompt_id else None)
 
 
+#: The longest message a client on another machine may send in one read (characters).
+WIRE_TEXT_LIMIT = 1_000_000
+
+
+def said_to_wire(entry: Said) -> dict[str, object]:
+    """One message, as a client on another machine sends it to its entry's server."""
+    return {"entry_id": entry.entry_id, "role": entry.role, "text": entry.text,
+            "occurred_at": entry.occurred_at, "prompt_id": entry.prompt_id}
+
+
+def said_from_wire(value: object) -> Said | None:
+    """The message a client sent, held to what ``said`` itself would have produced, or None."""
+    if not isinstance(value, dict):
+        return None
+    entry_id, role, text = value.get("entry_id"), value.get("role"), value.get("text")
+    occurred_at, prompt_id = _stamp(value.get("occurred_at")), value.get("prompt_id")
+    if (type(entry_id) is not str or not entry_id.strip() or len(entry_id) > 100 or role not in ("user", "assistant")
+            or type(text) is not str or not text.strip() or len(text) > WIRE_TEXT_LIMIT or occurred_at is None):
+        return None
+    if prompt_id is not None and (role != "user" or type(prompt_id) is not str or not prompt_id.strip()
+                                  or len(prompt_id) > 240):
+        return None
+    try:
+        entry_id.encode("utf-8")
+        text.encode("utf-8")
+    except UnicodeEncodeError:
+        return None
+    return Said(entry_id.strip(), role, text, occurred_at, prompt_id.strip() if prompt_id else None)
+
+
 def record_path(value: object, session_id: str) -> Path | None:
     """The session's own record: an absolute path to an existing ``<session id>.jsonl``, or None."""
     if type(value) is not str or not value.strip():

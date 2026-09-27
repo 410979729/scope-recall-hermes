@@ -107,6 +107,20 @@ class HookDiagnostics:
     capture_elapsed_ms: int | None = None
 
 
+@dataclass
+class RecordLines:
+    """Lines a client on another machine read from its own session record, from ``start``.
+
+    Each is the offset just past the line and what it shows being said (``transcript.said``); a line that
+    shows nothing may be left out, as long as the last offset the client read is present.  The handler sets
+    ``through`` to the offset every stored line reaches, which is where that client's cursor may move.
+    """
+
+    start: int
+    lines: list[tuple[int, "transcript.Said | None"]]
+    through: int | None = None
+
+
 class CodexHookHandler:
     """Stateless per-process handler; durable idempotence lives in core SQLite."""
 
@@ -318,7 +332,7 @@ class CodexHookHandler:
             return None
         return audience
 
-    def handle_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
+    def handle_payload(self, payload: dict[str, Any], *, record: RecordLines | None = None) -> dict[str, Any]:
         self._persisted_this_call = False
         self._queued_this_call = False
         self.diagnostics = HookDiagnostics(capability_gaps=self.diagnostics.capability_gaps)
@@ -359,7 +373,7 @@ class CodexHookHandler:
         capture = self._stop if event == "Stop" else self._session_end
         result = capture(session_id, audience, payload, deadline)
         if self._reads_record(event):
-            self._read_record(session_id, audience, payload, deadline)
+            self._read_record(session_id, audience, payload, deadline, remote=record)
         self._wake_after_capture(session_id, audience, deadline)
         return result
 
@@ -441,23 +455,30 @@ class CodexHookHandler:
         return (event in ("Stop", "SessionEnd") and self.host in _READS_RECORD
                 and isinstance(self.config, SharedClientConfig))
 
-    def _read_record(self, session_id: str, audience, payload: dict[str, Any], deadline: float) -> None:
+    def _read_record(self, session_id: str, audience, payload: dict[str, Any], deadline: float, *,
+                     remote: RecordLines | None = None) -> None:
         """Record what the session record shows was said since the last read (see ``transcript``).
 
         What a hook already stored is recognised by its words and moment and skipped.  A capture that
-        cannot be written now ends the read there; the next Stop starts again from that message.
+        cannot be written now ends the read there; the next Stop starts again from that message.  A client
+        on another machine reads its record there and sends the lines (``remote``); the offset reached goes
+        back in ``remote.through`` for that client's own cursor.
         """
-        record = transcript.record_path(payload.get("transcript_path"), session_id)
-        if record is None:
-            self._diag("session_record_unavailable", gaps=("capture_gap:session_record_unavailable",))
-            return
-        cursor = transcript.Cursor(self.config.home, session_id, record)
-        start = cursor.load()
-        try:
-            lines = transcript.read(record, start)
-        except OSError:
-            self._diag("session_record_unavailable", gaps=("capture_gap:session_record_unavailable",))
-            return
+        cursor = None
+        if remote is not None:
+            start, lines = remote.start, remote.lines
+        else:
+            record = transcript.record_path(payload.get("transcript_path"), session_id)
+            if record is None:
+                self._diag("session_record_unavailable", gaps=("capture_gap:session_record_unavailable",))
+                return
+            cursor = transcript.Cursor(self.config.home, session_id, record)
+            start = cursor.load()
+            try:
+                lines = transcript.read(record, start)
+            except OSError:
+                self._diag("session_record_unavailable", gaps=("capture_gap:session_record_unavailable",))
+                return
         said = [entry for _end, entry in lines if entry is not None]
         held: tuple[bool, ...] = ()
         if said:
@@ -494,7 +515,9 @@ class CodexHookHandler:
                 if not self._captured_for_good(self._context(audience, session_id, origin), audience, event, until):
                     break
             position = end
-        if position != start:
+        if remote is not None:
+            remote.through = position
+        elif position != start:
             cursor.save(position)
 
     def _captured_for_good(self, context, audience, event, deadline: float) -> bool:

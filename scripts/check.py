@@ -149,6 +149,7 @@ SUITES = {
         "tests/host/codex/test_mcp.py",
         "tests/host/codex/test_runtime_wiring.py",
         "tests/host/codex/test_shared_client.py",
+        "tests/host/codex/test_remote.py",
     ],
     "migration": ["tests/migration/test_v11_migration.py"],
     "packaging": [
