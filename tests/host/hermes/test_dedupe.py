@@ -105,6 +105,37 @@ def test_success_sync_persists_with_trusted_context(adapter, hermes_home):
     assert count >= 1
 
 
+def test_what_the_assistant_showed_between_tool_calls_is_recorded_with_the_answer(adapter, hermes_home):
+    """Hermes hands ``sync_turn`` the answer only; the rest of the turn arrives with ``post_llm_call``."""
+    provider, _clock = adapter
+    provider.on_turn_start(4, "TEST 查一下 QX-17", turn_id="turn-4")
+    history = [
+        {"role": "user", "content": "TEST 上一轮"},
+        {"role": "assistant", "content": "TEST 上一轮说的话", "tool_calls": [{"id": "T0"}]},
+        {"role": "user", "content": "TEST 查一下 QX-17"},
+        {"role": "assistant", "content": "TEST 我先看记录。", "tool_calls": [{"id": "T1"}], "timestamp": 1790000000.25},
+        {"role": "tool", "tool_call_id": "T1", "content": "TEST 工具输出"},
+        {"role": "assistant", "content": "", "tool_calls": [{"id": "T2"}], "codex_message_items": [
+            {"type": "reasoning", "summary": [{"type": "summary_text", "text": "TEST unseen"}]},
+            {"type": "message", "phase": "commentary", "content": [{"type": "output_text", "text": "TEST 再看第二份。"}]}]},
+        {"role": "tool", "tool_call_id": "T2", "content": "TEST 工具输出"},
+        {"role": "assistant", "content": "<think>TEST unseen</think>TEST 我先看记录。", "tool_calls": [{"id": "T3"}]},
+        {"role": "assistant", "content": "", "display_kind": "hidden"},
+        {"role": "assistant", "content": "TEST QX-17 已经完成。"},
+    ]
+    provider.observe_post_llm_call(session_id="TEST-session-1", turn_id="turn-other",
+                                   assistant_response="TEST 别的回合", conversation_history=history)
+    provider.observe_post_llm_call(session_id="TEST-session-1", turn_id="turn-4",
+                                   assistant_response="TEST QX-17 已经完成。", conversation_history=history)
+    provider.sync_turn("TEST 查一下 QX-17", "TEST QX-17 已经完成。", session_id="TEST-session-1")
+    with sqlite3.connect(hermes_home / "scope-recall" / "memory.sqlite3") as conn:
+        said = conn.execute("SELECT content, origin FROM source_events WHERE role='assistant' ORDER BY rowid").fetchall()
+        first_at = conn.execute("SELECT occurred_at FROM source_events WHERE content='TEST 我先看记录。'").fetchone()[0]
+    assert said == [("TEST 我先看记录。", "assistant_visible"), ("TEST 再看第二份。", "assistant_visible"),
+                    ("TEST QX-17 已经完成。", "assistant_visible")]
+    assert first_at == "2026-09-21T14:13:20.250000Z", "said when Hermes stamped the message, not at sync"
+
+
 def test_live_turn_events_carry_witnessed_occurrence_time(tmp_path):
     """Live host turns are witnessed: occurred_at grounds to the turn time so
     current-mode recall can serve them (imports keep occurred_at=None)."""

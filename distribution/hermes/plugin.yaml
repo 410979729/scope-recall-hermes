@@ -6,3 +6,4 @@ hooks:
   - pre_llm_call
   - api_request_error
   - post_tool_call
+  - post_llm_call

@@ -275,7 +275,9 @@ The Core data directory is `<instance-root>\scope-recall\`, holding
 `memory.sqlite3` and, once configured, a `vectors\` companion directory. Hermes
 tools exposed by the adapter are `recall`, `inspect`, `profile`, `entity`,
 `trace`, `revise`, `forget` and `status`, and it subscribes to the host hooks
-`pre_llm_call`, `post_tool_call` and `api_request_error`.
+`pre_llm_call`, `post_tool_call`, `post_llm_call` and `api_request_error`.
+`post_llm_call` is read at the end of a turn for what the assistant showed
+between its tool calls; Hermes hands the memory provider only the answer.
 
 ## 5. Install the Codex MCP path
 

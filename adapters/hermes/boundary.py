@@ -2,6 +2,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
+import math
+import re
 from typing import Any, Literal, cast
 
 from scope_recall.contracts import Origin, SourceEvent, TrustedContext
@@ -207,6 +210,98 @@ def sync_turn_source_events(
     elif outcome == "success":
         gaps.append("outcome_gap:missing_assistant_body")
     return tuple(events), tuple(dict.fromkeys(gaps))
+
+
+#: The blocks Hermes strips from what a reply shows (its ``turn_truncation._THINK_TAG_RE`` tags).
+_HIDDEN_BLOCK = re.compile(r"<(think|thinking|reasoning|REASONING_SCRATCHPAD)\b[^>]*>.*?(?:</\1\s*>|\Z)",
+                           re.IGNORECASE | re.DOTALL)
+
+
+def _shown_text(message: dict[str, Any]) -> str:
+    """What one assistant message showed: its Codex commentary items if any, else its content."""
+    items = message.get("codex_message_items")
+    commentary = [
+        "".join(part["text"] for part in item["content"]
+                if isinstance(part, dict) and part.get("type") == "output_text" and isinstance(part.get("text"), str))
+        for item in (items if isinstance(items, list) else ())
+        if isinstance(item, dict) and item.get("type") == "message" and isinstance(item.get("content"), list)
+        and str(item.get("phase") or "").strip().lower() == "commentary"]
+    text: object = "\n\n".join(said.strip() for said in commentary if said.strip()) or message.get("content")
+    if isinstance(text, list):
+        text = "\n".join(part["text"] for part in text if isinstance(part, dict)
+                         and part.get("type") in ("text", "output_text") and isinstance(part.get("text"), str))
+    return _HIDDEN_BLOCK.sub("", text).strip() if isinstance(text, str) else ""
+
+
+def _message_time(message: dict[str, Any]) -> str | None:
+    """The epoch time Hermes stamps on each message it appends, in the adapter's UTC form."""
+    stamp = message.get("timestamp")
+    if type(stamp) not in (int, float) or not math.isfinite(stamp) or stamp <= 0:
+        return None
+    try:
+        return datetime.fromtimestamp(stamp, timezone.utc).isoformat().replace("+00:00", "Z")
+    except (OverflowError, OSError, ValueError):
+        return None
+
+
+def interim_messages(history: object, *, answer: str) -> tuple[tuple[str, str | None], ...]:
+    """What the assistant showed between its tool calls in the turn that ends ``history``, and when.
+
+    Hermes hands ``sync_turn`` only a turn's answer; what it said on the way stays in the conversation.
+    The turn is everything after the last user message.  Its closing message without a tool call, and any
+    words equal to ``answer``, are the answer and stay with ``sync_turn``; hidden rows and repeats are dropped.
+    """
+    if not isinstance(history, list):
+        return ()
+    turn: list[dict[str, Any]] = []
+    for message in reversed(history):
+        if not isinstance(message, dict):
+            continue
+        if message.get("role") == "user":
+            break
+        if message.get("role") == "assistant" and message.get("display_kind") != "hidden":
+            turn.append(message)
+    turn.reverse()
+    if turn and not turn[-1].get("tool_calls"):
+        turn.pop()
+    seen = {" ".join(answer.split())}
+    said: list[tuple[str, str | None]] = []
+    for message in turn:
+        text = _shown_text(message)
+        if text and text != "(empty)" and " ".join(text.split()) not in seen:
+            seen.add(" ".join(text.split()))
+            said.append((text, _message_time(message)))
+    return tuple(said)
+
+
+def interim_source_event(
+    ledger: SourceObservationLedger,
+    context: TrustedContext,
+    *,
+    session_id: str,
+    turn_id: str,
+    ordinal: int,
+    content: str,
+    recorded_at: str,
+    occurred_at: str | None = None,
+) -> tuple[SourceEvent | None, tuple[str, ...], SourceIdentity | None]:
+    """One thing the assistant showed on the way through a turn, named by its turn and place in it."""
+    return ledger.observe(
+        source_event_key=host_source_key(
+            installation_id=context.binding.installation_id,
+            entry_id=context.entry_id,
+            session_id=session_id,
+            event_kind="interim",
+            event_id=f"{turn_id or 'turn'}:{ordinal}",
+        ),
+        source_revision=1,
+        role="assistant",
+        content=content,
+        origin="assistant_visible",
+        recorded_at=recorded_at,
+        occurred_at=occurred_at or recorded_at,
+        capture_state="complete",
+    )
 
 
 def tool_call_source_event(

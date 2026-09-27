@@ -20,6 +20,8 @@ from ..runtime_wiring import render_host_recall_context
 from .boundary import (
     SourceIdentity,
     SourceObservationLedger,
+    interim_messages,
+    interim_source_event,
     pre_llm_source_event,
     sync_turn_source_events,
     tool_call_source_event,
@@ -156,6 +158,9 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
         self._turn_counter = 0
         self._active_turn_id = ""
         self._pre_llm_pending = False
+        #: What the assistant showed between tool calls, and when, by turn: read at ``post_llm_call`` on the
+        #: host's thread and written by ``sync_turn`` on its memory worker, where a write may wait.
+        self._interim_said: dict[str, tuple[tuple[str, str | None], ...]] = {}
         self._session_watermark = 0
         self._current_source_refs: list[str] = []
         #: This turn captured more sources than the fence holds; recall stays
@@ -252,6 +257,7 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
             self._turn_counter = 0
             self._active_turn_id = ""
             self._pre_llm_pending = False
+            self._interim_said.clear()
             self._session_watermark = 0
             self._reset_current_source_refs()
             self._current_task_message = ""
@@ -649,6 +655,23 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
         self._diagnostics.pending_outcome_gaps = self._outcomes.pending_gaps()
 
     @_serialized_host_event
+    def observe_post_llm_call(self, **kwargs) -> None:
+        """Keep what the assistant showed on the way through this turn for ``sync_turn`` to record.
+
+        Hermes calls this once, when a turn that has an answer ends, with a copy of the conversation.
+        """
+        identity = self._require_identity()
+        if identity.read_only or not identity.runtime_audience.allowed_scope_ids:
+            return
+        turn_id = str(kwargs.get("turn_id") or "").strip()
+        if not turn_id or turn_id != self._active_turn_id:
+            return
+        answer = kwargs.get("assistant_response")
+        said = interim_messages(kwargs.get("conversation_history"), answer=answer if isinstance(answer, str) else "")
+        if said:
+            self._interim_said[turn_id] = said
+
+    @_serialized_host_event
     def sync_turn(
         self,
         user_content: str,
@@ -666,6 +689,16 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
             self._diagnostics.capability_gaps = identity.runtime_audience.capability_gaps
             return
         context = identity.trusted_context(session_id=effective_session, mutation=True)
+        shown = identity.trusted_context(session_id=effective_session, actor_origin="assistant_visible", mutation=True)
+        interim, self._interim_said = self._interim_said, {}
+        for said_turn, said in interim.items():
+            for ordinal, (text, occurred_at) in enumerate(said, 1):
+                event, gaps, ledger_identity = interim_source_event(
+                    self._ledger, shown, session_id=effective_session, turn_id=said_turn, ordinal=ordinal,
+                    content=text, recorded_at=self._utc_now(), occurred_at=occurred_at)
+                if event is not None or gaps:
+                    self._capture_event(shown, event, identity=ledger_identity, gaps=gaps,
+                                        scope_id=identity.local_scope_id)
         outcome = "success"
         if not assistant_content.strip():
             outcome = "truncated"
@@ -760,6 +793,7 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
         self._current_task_message = ""
         self._active_turn_id = ""
         self._pre_llm_pending = False
+        self._interim_said.clear()
         self._identity = fresh
         runtime_audience = fresh.runtime_audience
         self._diagnostics.capability_gaps = tuple(
