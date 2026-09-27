@@ -1,0 +1,350 @@
+"""Claude Code or Codex on another machine: forward each hook to its entry's server over HTTP.
+
+This runs where the client runs.  It keeps no store, no model key and no memory: each hook's payload goes to
+the entry's server (``remote_server``) with the entry's token, and the server's answer is the hook's answer.
+A Claude Code Stop or SessionEnd also reads this machine's session record from a cursor kept here and sends
+what the record shows being said (``transcript.said``); the cursor moves only as far as the server stored.
+
+When the server cannot be reached the hook answers at once with nothing, so the client is never held up.
+Claude Code loses nothing by it: its record carries every message to the next Stop that gets through.  A
+Codex hook is kept in a spool here and sent, with the moment it happened, by the next hook that reaches the
+server.
+
+    python -m scope_recall.adapters.codex.remote_client token --config <client.json>
+    python -m scope_recall.adapters.codex.remote_client install --config <client.json> --plugin-dir <dir>
+    python -m scope_recall.adapters.codex.remote_client --config <client.json>        (the hook itself)
+    python -m scope_recall.adapters.codex.remote_client flush --config <client.json>  (started by a hook)
+
+``client.json`` holds ``url`` (the server, e.g. ``http://100.64.0.5:18765``), ``host`` (``claude-code`` or
+``codex``), ``token_file`` and ``state_dir``, all absolute.  The token never leaves this machine except in
+the requests' ``Authorization`` header.
+"""
+from __future__ import annotations
+
+import argparse
+from datetime import datetime, timezone
+import hashlib
+import json
+import os
+from pathlib import Path
+import secrets
+import subprocess
+import sys
+import time
+from typing import Any
+import urllib.error
+import urllib.request
+
+from . import transcript
+
+HOSTS = ("claude-code", "codex")
+#: How long the client's host waits for each hook (the plugin's hooks.json).  Claude Code's are the local
+#: installer's; Codex gives every hook 2 s.
+HOOK_TIMEOUTS = {
+    "claude-code": {"UserPromptSubmit": 15, "Stop": 10, "SessionEnd": 10},
+    "codex": {"SessionStart": 2, "UserPromptSubmit": 2, "Stop": 2, "Interrupt": 2, "SessionEnd": 2},
+}
+#: The part of each wait the request may use; the interpreter's start and the answer take the rest.
+_REQUEST_SHARE = 0.8
+#: A Stop sends at most this much of the record; a long backlog goes over several turns.
+RECORD_READ_BYTES = 2 * 1024 * 1024
+#: Codex hooks kept for later, oldest first; past this many the oldest is dropped.
+SPOOL_LIMIT = 256
+#: How long a flush of the spool may run, in its own process after a hook that got through.
+FLUSH_SECONDS = 60.0
+_SPOOLED = frozenset({"UserPromptSubmit", "Stop", "SessionEnd", "Interrupt"})
+_MAX_STDIN = 65536
+
+
+class RemoteClientError(ValueError):
+    pass
+
+
+def _absolute(value: object, field: str) -> Path:
+    if type(value) is not str or not value.strip():
+        raise RemoteClientError(f"{field} must be an absolute path")
+    path = Path(value).expanduser()
+    if not path.is_absolute():
+        raise RemoteClientError(f"{field} must be an absolute path")
+    return path
+
+
+def load_client_config(path: Path) -> dict[str, Any]:
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise RemoteClientError(f"unreadable client config {path}") from exc
+    if not isinstance(raw, dict) or raw.get("host") not in HOSTS:
+        raise RemoteClientError("client config needs host: claude-code or codex")
+    url = raw.get("url")
+    if type(url) is not str or not url.startswith("http://") and not url.startswith("https://"):
+        raise RemoteClientError("client config needs the server's url")
+    return {"url": url.rstrip("/"), "host": raw["host"], "token_file": _absolute(raw.get("token_file"), "token_file"),
+            "state_dir": _absolute(raw.get("state_dir"), "state_dir"), "config": path}
+
+
+def _now() -> str:
+    return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _post(config: dict[str, Any], body: dict[str, Any], timeout: float) -> dict[str, Any] | None:
+    """The server's answer, or None when it could not be reached in time or refused."""
+    token = config["token_file"].read_text(encoding="utf-8").strip()
+    request = urllib.request.Request(
+        f"{config['url']}/hook", data=json.dumps(body, ensure_ascii=False).encode("utf-8"), method="POST",
+        headers={"Content-Type": "application/json", "Authorization": f"Bearer {token}"})
+    try:
+        with urllib.request.urlopen(request, timeout=max(0.2, timeout)) as response:
+            answer = json.loads(response.read().decode("utf-8"))
+    except (urllib.error.URLError, OSError, ValueError):
+        return None
+    return answer if isinstance(answer, dict) else None
+
+
+# -- the spool (Codex) -------------------------------------------------------
+
+def _spool_dir(config: dict[str, Any]) -> Path:
+    return config["state_dir"] / "spool"
+
+
+def _spool(config: dict[str, Any], payload: dict[str, Any], observed_at: str) -> None:
+    folder = _spool_dir(config)
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+        kept = sorted(folder.glob("*.json"))
+        for stale in kept[:max(0, len(kept) - SPOOL_LIMIT + 1)]:
+            stale.unlink(missing_ok=True)
+        name = f"{time.time_ns():020d}-{os.getpid()}.json"
+        pending = folder / f"{name}.tmp"
+        pending.write_text(json.dumps({"payload": payload, "observed_at": observed_at}, ensure_ascii=False),
+                           encoding="utf-8")
+        os.replace(pending, folder / name)
+    except OSError:
+        pass
+
+
+def flush_spool(config: dict[str, Any], seconds: float = FLUSH_SECONDS) -> int:
+    """Send what earlier hooks could not, oldest first, within ``seconds``; stop at the first failure.
+
+    One flusher at a time (a lock file beside the spool).  Returns how many were sent.
+    """
+    folder = _spool_dir(config)
+    if not folder.is_dir():
+        return 0
+    lock = folder / "flush.lock"
+    try:
+        if lock.exists() and time.time() - lock.stat().st_mtime > 2 * seconds:
+            lock.unlink(missing_ok=True)
+        os.close(os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY))
+    except OSError:
+        return 0
+    sent = 0
+    until = time.monotonic() + seconds
+    try:
+        for item in sorted(folder.glob("*.json")):
+            left = until - time.monotonic()
+            if left < 1.0:
+                break
+            try:
+                kept = json.loads(item.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                item.unlink(missing_ok=True)
+                continue
+            if _post(config, kept, min(left, 30.0)) is None:
+                break
+            item.unlink(missing_ok=True)
+            sent += 1
+    finally:
+        lock.unlink(missing_ok=True)
+    return sent
+
+
+def _start_flush(config: dict[str, Any]) -> None:
+    """Flush the spool in a process of its own, so the hook itself answers inside its short wait."""
+    flags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
+    try:
+        subprocess.Popen([sys.executable, "-I", "-B", "-m", "scope_recall.adapters.codex.remote_client", "flush",
+                          "--config", str(config["config"])], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                         stderr=subprocess.DEVNULL, close_fds=True, creationflags=flags,
+                         start_new_session=os.name != "nt")
+    except OSError:
+        pass
+
+
+# -- the hook ----------------------------------------------------------------
+
+def _record_part(config: dict[str, Any], payload: dict[str, Any]) -> tuple[dict[str, Any], "transcript.Cursor"] | None:
+    """What this Stop sends of the session record, and the cursor to move on success."""
+    session_id = payload.get("session_id")
+    if type(session_id) is not str or not session_id.strip():
+        return None
+    record = transcript.record_path(payload.get("transcript_path"), session_id.strip())
+    if record is None:
+        return None
+    cursor = transcript.Cursor(config["state_dir"], session_id.strip(), record)
+    start = cursor.load()
+    try:
+        lines = transcript.read(record, start, limit=RECORD_READ_BYTES)
+    except OSError:
+        return None
+    if not lines:
+        return None
+    wire = [[end, transcript.said_to_wire(said)] for end, said in lines if said is not None]
+    if not wire or wire[-1][0] != lines[-1][0]:
+        wire.append([lines[-1][0], None])
+    return {"start": start, "lines": wire}, cursor
+
+
+def run_hook(config: dict[str, Any], raw: bytes, *, started: float | None = None) -> dict[str, Any]:
+    started = time.monotonic() if started is None else started
+    try:
+        payload = json.loads(raw.decode("utf-8"))
+    except (UnicodeError, ValueError):
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    event = payload.get("hook_event_name")
+    host = config["host"]
+    wait = HOOK_TIMEOUTS[host].get(event)
+    if wait is None:
+        return {}
+    until = started + wait * _REQUEST_SHARE
+    # Every request carries the moment the hook ran here.  A request that timed out here may still have been
+    # stored there, and its replay must then be the same event, not a second one with a later time.
+    observed_at = _now()
+    body: dict[str, Any] = {"payload": payload, "observed_at": observed_at}
+    cursor = None
+    if host == "claude-code" and event in ("Stop", "SessionEnd"):
+        part = _record_part(config, payload)
+        if part is not None:
+            body["record"], cursor = part
+    answer = _post(config, body, until - time.monotonic())
+    if answer is None:
+        if host == "codex" and event in _SPOOLED:
+            _spool(config, payload, observed_at)
+        return {}
+    through = answer.get("through")
+    if cursor is not None and type(through) is int and through > body["record"]["start"]:
+        cursor.save(through)
+    if host == "codex" and any(_spool_dir(config).glob("*.json")):
+        _start_flush(config)
+    result = answer.get("result")
+    return result if isinstance(result, dict) else {}
+
+
+# -- setup on this machine ---------------------------------------------------
+
+def make_token(config: dict[str, Any]) -> str:
+    """Create the entry's token here if there is none, readable by this user only; return its SHA-256."""
+    path = config["token_file"]
+    if not path.exists():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        pending = path.with_name(path.name + ".tmp")
+        pending.write_text(secrets.token_urlsafe(32), encoding="utf-8")
+        if os.name == "nt":
+            user = os.environ.get("USERNAME", "")
+            subprocess.run(["icacls", str(pending), "/inheritance:r", "/grant:r", f"{user}:F", "*S-1-5-18:F"],
+                           check=True, capture_output=True)
+        else:
+            pending.chmod(0o600)
+        os.replace(pending, path)
+    return hashlib.sha256(path.read_text(encoding="utf-8").strip().encode("utf-8")).hexdigest()
+
+
+def _hook_argv(config: dict[str, Any]) -> list[str]:
+    return [Path(sys.executable).as_posix(), "-I", "-B", "-m", "scope_recall.adapters.codex.remote_client",
+            "--config", config["config"].as_posix()]
+
+
+def plugin_files(config: dict[str, Any], plugin_dir: Path) -> dict[Path, str]:
+    """The plugin that sends this client's hooks and MCP calls to its entry's server."""
+    from ...maintenance.install_common import SKILLS, _manifest_version
+
+    host = config["host"]
+    token = config["token_file"].read_text(encoding="utf-8").strip()
+    argv = _hook_argv(config)
+    mcp_url = f"{config['url']}/mcp"
+    auth = {"Authorization": f"Bearer {token}"}
+    skill = SKILLS["scope-recall-memory"].read_text(encoding="utf-8")
+    dump = lambda value: json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n"  # noqa: E731
+    if host == "claude-code":
+        command = " ".join(argv)
+        hooks = {"hooks": {event: [{"hooks": [{"type": "command", "command": command, "timeout": timeout}]}]
+                           for event, timeout in sorted(HOOK_TIMEOUTS[host].items())}}
+        return {
+            plugin_dir / ".claude-plugin" / "plugin.json": dump({
+                "name": plugin_dir.name, "version": _manifest_version(), "author": {"name": "Local developer"},
+                "description": "Scope Recall: a shared memory store on another machine, in Claude Code",
+                "hooks": "./hooks/hooks.json", "mcpServers": "./.mcp.json"}),
+            plugin_dir / "hooks" / "hooks.json": dump(hooks),
+            plugin_dir / ".mcp.json": dump({"mcpServers": {"scope-recall": {"type": "http", "url": mcp_url,
+                                                                            "headers": auth}}}),
+            plugin_dir / "skills" / "scope-recall-memory" / "SKILL.md": skill,
+        }
+    cmd = plugin_dir / "hooks" / "scope-recall-hook.cmd"
+    windows = "@echo off\r\nchcp 65001 >nul\r\n" + " ".join(f'"{part}"' for part in argv) + "\r\nexit /b %ERRORLEVEL%\r\n"
+    hooks = {"hooks": {event: [{"hooks": [{"type": "command", "command": " ".join(f"'{part}'" for part in argv),
+                                            "commandWindows": str(cmd), "timeout": timeout}]}]
+                       for event, timeout in sorted(HOOK_TIMEOUTS[host].items())}}
+    return {
+        plugin_dir / ".codex-plugin" / "plugin.json": dump({
+            "name": plugin_dir.name, "version": _manifest_version().replace("rc", "-rc."),
+            "author": {"name": "Local developer"}, "mcpServers": "./.mcp.json",
+            "description": "Scope Recall: a shared memory store on another machine, in Codex",
+            "interface": {"displayName": "Scope Recall", "shortDescription": "Use Scope Recall in Codex.",
+                          "category": "Productivity", "capabilities": [], "developerName": "Local developer"}}),
+        plugin_dir / "hooks" / "hooks.json": dump(hooks),
+        cmd: windows,
+        plugin_dir / ".mcp.json": dump({"mcpServers": {"scope-recall": {"url": mcp_url, "http_headers": auth}}}),
+        plugin_dir / "skills" / "scope-recall-memory" / "SKILL.md": skill,
+    }
+
+
+def install(config: dict[str, Any], plugin_dir: Path) -> list[str]:
+    if not config["token_file"].exists():
+        raise RemoteClientError("no token yet: run remote_client token first")
+    written = []
+    for path, text in plugin_files(config, plugin_dir).items():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        pending = path.with_name(path.name + ".tmp")
+        pending.write_text(text, encoding="utf-8", newline="")
+        os.replace(pending, path)
+        written.append(str(path))
+    config["state_dir"].mkdir(parents=True, exist_ok=True)
+    return written
+
+
+def main(argv: list[str] | None = None) -> int:
+    started = time.monotonic()
+    args = list(sys.argv[1:] if argv is None else argv)
+    command = args.pop(0) if args and args[0] in ("token", "install", "flush") else "hook"
+    parser = argparse.ArgumentParser(prog="scope-recall-remote-client")
+    parser.add_argument("--config", required=True)
+    if command == "install":
+        parser.add_argument("--plugin-dir", required=True)
+    parsed = parser.parse_args(args)
+    try:
+        config = load_client_config(_absolute(parsed.config, "config"))
+        if command == "token":
+            print(json.dumps({"token_sha256": make_token(config)}))
+            return 0
+        if command == "install":
+            print(json.dumps({"written": install(config, _absolute(parsed.plugin_dir, "plugin_dir"))}, ensure_ascii=False))
+            return 0
+        if command == "flush":
+            print(json.dumps({"sent": flush_spool(config)}))
+            return 0
+    except RemoteClientError as exc:
+        if command == "hook":
+            sys.stdout.write("{}\n")
+            sys.stderr.write(f"SCOPE_RECALL_REMOTE:{exc}\n")
+            return 0
+        raise SystemExit(str(exc)) from None
+    raw = sys.stdin.buffer.read(_MAX_STDIN + 1)
+    result = run_hook(config, raw, started=started) if len(raw) <= _MAX_STDIN else {}
+    sys.stdout.write(json.dumps(result, ensure_ascii=False) + "\n")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -283,6 +283,9 @@ def _audit(event, args):
             host = address[0] if isinstance(address, tuple) and address else ""
             if host in {"127.0.0.1", "::1", "localhost"}:
                 return
+        # An HTTP client resolves even a numeric loopback host before it connects.
+        if _ALLOW_LOOPBACK and event == "socket.getaddrinfo" and args and args[0] in {"127.0.0.1", "::1", "localhost"}:
+            return
         raise PermissionError("TEST_BOUNDARY: network access denied")
     if event == "subprocess.Popen":
         _check_owned_child_process(args)

@@ -128,14 +128,18 @@ owner's messages, those sent while a turn was running included, and the text Cla
 while it works. Tool calls and results, compaction summaries, task notifications and anything the
 record does not mark as the owner's or as shown text are not recorded. A background task's
 completion notice, which Claude Code hands to the model as a prompt, is not the owner's and is
-neither recorded nor answered from memory. A message a hook already stored is recognised by its
-words and moment and not stored twice; one that cannot be written now is written at a later turn. A long session is read over several turns, at most 3 s each. Where a
+neither recorded nor answered from memory. A message a hook already stored, or one still waiting in
+the capture inbox, is recognised by its prompt id (one sent while a turn was running, which has none,
+by its words and moment) and not stored twice; one that cannot be written now is written at a later turn. A long session is read over several turns, at most 3 s each. Where a
 read stopped is kept in `<home>\scope-recall\transcripts`; deleting it only makes the next read
 start from the top. Claude Code runs a hook command through a shell (Git Bash, or
 PowerShell without it), so keep the interpreter, the home and the env file on ASCII paths without
 spaces; `apply-install` refuses others. Its MCP tools read the store. Changing a memory through
 them is refused, because the tools cannot tell which conversation asks: correct or delete through
 a Hermes agent or Codex.
+
+Claude Code or Codex on another machine attaches the same way, under a name of its own, and reaches
+its entry here over HTTP on a private network: [remote-entries.md](remote-entries.md).
 
 A Codex that keeps its own store today: pause its autostart, move `codex-installation.json` and
 `data` aside, attach it with `--host codex` (its routes are the moved `data\runtime-config.json`),

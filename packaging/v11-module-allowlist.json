@@ -26,6 +26,8 @@
     "adapters/codex/identity.py",
     "adapters/codex/mcp_entry.py",
     "adapters/codex/mcp_server.py",
+    "adapters/codex/remote_client.py",
+    "adapters/codex/remote_server.py",
     "adapters/codex/runtime_wiring.py",
     "adapters/codex/transcript.py",
     "adapters/codex_cli.py",
