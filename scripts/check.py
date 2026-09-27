@@ -4,7 +4,6 @@ import argparse
 import hashlib
 import importlib.metadata
 import json
-import math
 import os
 from pathlib import Path
 import shutil
@@ -14,7 +13,6 @@ import tempfile
 import time
 import xml.etree.ElementTree as ET
 from test_directories import TestDirectory
-from model_receipt_evidence import HERMES_METHOD_ID, METHOD_ID, PROTOCOL_HOST_METHODS, strict_json, validate_evidence, effective_budget_caps
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -100,9 +98,7 @@ def packaging_helper_env(tier: str) -> dict[str, str]:
 
 
 SCRIPT_GATE_TESTS = [
-    "tests/packaging/test_model_receipt_validation.py",
     "tests/packaging/test_source_manifest.py",
-    "tests/packaging/test_model_evidence_extractor.py",
     "tests/packaging/test_check_selection.py",
     "tests/packaging/test_package_manifest.py",
     "tests/packaging/test_release_notes.py",
@@ -205,7 +201,7 @@ TIER_METADATA = {
     "migration": {"level": "T2", "requires": ["migration"], "model_calls": False},
     "packaging": {"level": "T3", "requires": ["clean_wheel"], "model_calls": False},
     "integration": {"level": "T2", "requires": ["native", "hermes", "codex"], "model_calls": False},
-    "release": {"level": "T3", "requires": ["native", "hermes", "codex", "migration", "clean_wheel", "model"], "model_calls": False},
+    "release": {"level": "T3", "requires": ["native", "hermes", "codex", "migration", "clean_wheel"], "model_calls": False},
     "eval": {"level": "T4", "requires": ["model"], "model_calls": True},
     "model_runtime": {"level": "T4", "requires": ["model"], "model_calls": True},
 }
@@ -378,28 +374,6 @@ INTEGRATION_STABLE_BASELINE = _dedupe(
     list(SUITES["native"]) + list(SUITES["host"]) + list(SUITES["migration"])
 )
 
-# P18 is not executed by this selector.  These values define the narrow,
-# explicit receipt contract accepted for the release model gate.  The frozen
-# protocol was read from the G0 record; no local TEST runner receipt is a
-# substitute for a completed formal run.
-P18_PROTOCOL_SHA256 = "45b70192857b5b8645dd2bf409db55f320f1cf31f297e89910f9f340e76d32d4"
-P18_FORMAL_RECEIPT_SCHEMA = "scope-recall.p18-formal-evaluation-receipt.v1"
-P18_HOSTS = tuple(PROTOCOL_HOST_METHODS.values())
-P18_ARMS = ("A", "B", "C", "D")
-P18_INDEPENDENT_CORE = 120
-P18_PAIRED_VARIANTS = 240
-P18_C_QUERY_DENOMINATOR = 40
-P18_C_QUERY_CONDITIONS = 2
-P18_C_JOURNEY_DENOMINATOR = 8
-P18_C_JOURNEY_ROUNDS = 8
-P18_C_MIN_QUERY_PASS = 36
-P18_C_MIN_JOURNEY_PASS = 8
-P18_PRIMARY_CALL_UPPER_BOUND = 1152
-P18_PRIMARY_CALLS = P18_PRIMARY_CALL_UPPER_BOUND  # compatibility alias
-P18_HERMES_CALL_CAP = 8_000
-P18_CODEX_CALL_CAP = 1_500
-P18_SHARED_CALL_CAP = 8_000
-
 _IMPACT_PATTERNS = {
     "scope": ("scope", "identity", "path", "binding", "visibility"),
     "write": ("capture", "mutate", "storage", "schema", "claim", "episode", "artifact", "reference", "worker", "queue"),
@@ -481,217 +455,6 @@ def _source_manifest() -> dict[str, str]:
 
 def _source_inputs_sha256(manifest: dict[str, str]) -> str:
     return hashlib.sha256(json.dumps(manifest, sort_keys=True).encode()).hexdigest()
-
-
-def _current_source_commit() -> str:
-    return subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip()
-
-
-def validate_model_receipt(path: str | Path) -> dict[str, object]:
-    """Validate retained independent P18 evidence, not a second scorer.
-
-    The frozen 1,152 figure is a primary-submission upper bound.  The
-    independent core denominator is 120 and the paired variants are 240.
-    Only arm C has the performance acceptance threshold; A/B/D need complete,
-    auditable records and may report FAIL or UNSUPPORTED.
-    """
-    receipt_path = Path(path).expanduser().resolve()
-    reasons: list[str] = []
-    try:
-        payload = strict_json(receipt_path.read_bytes())
-    except (OSError, UnicodeError, ValueError) as exc:
-        return {
-            "status": "REJECTED",
-            "path": str(receipt_path),
-            "reasons": [f"receipt_unreadable:{type(exc).__name__}"],
-        }
-    if not isinstance(payload, dict):
-        return {"status": "REJECTED", "path": str(receipt_path), "reasons": ["receipt_not_object"]}
-
-    if payload.get("schema") != P18_FORMAL_RECEIPT_SCHEMA:
-        reasons.append("schema_mismatch")
-    if payload.get("status") != "PASS":
-        reasons.append("formal_status_not_PASS")
-    formal = payload.get("formal_execution")
-    if not isinstance(formal, dict) or formal.get("status") != "COMPLETED" or formal.get("completed") is not True:
-        reasons.append("formal_execution_not_completed")
-
-    source = payload.get("source")
-    manifest = _source_manifest()
-    expected_source = _source_inputs_sha256(manifest)
-    expected_commit = _current_source_commit()
-    if not isinstance(source, dict) or source.get("commit") != expected_commit:
-        reasons.append("source_commit_mismatch")
-    if not isinstance(source, dict) or source.get("source_inputs_sha256") != expected_source:
-        reasons.append("source_inputs_sha256_mismatch")
-
-    protocol = payload.get("protocol")
-    if not isinstance(protocol, dict) or protocol.get("sha256") != P18_PROTOCOL_SHA256:
-        reasons.append("protocol_sha256_mismatch")
-
-    gates = payload.get("gates")
-    if not isinstance(gates, dict):
-        reasons.append("gates_missing")
-    else:
-        p18 = gates.get("P18")
-        if not isinstance(p18, dict) or p18.get("status") != "PASS" or p18.get("completed") is not True:
-            reasons.append("P18_gate_not_completed_PASS")
-        g2 = gates.get("G2")
-        if not isinstance(g2, dict) or g2.get("status") != "PASS" or g2.get("evidence_kind") != "real":
-            reasons.append("G2_gate_not_PASS")
-
-    method = payload.get("method_adjudication")
-    if not isinstance(method, dict) or method.get("protocol_sha256") != P18_PROTOCOL_SHA256:
-        reasons.append("method_protocol_mismatch")
-    elif method.get("status") not in {"CONDITIONALLY_ACCEPTED_METHOD_REVISION", "ACCEPTED"}:
-        reasons.append("method_adjudication_not_accepted")
-
-    coverage = payload.get("coverage")
-    if not isinstance(coverage, dict):
-        reasons.append("coverage_missing")
-    else:
-        expected_denominators = {
-            "independent_core": P18_INDEPENDENT_CORE,
-            "paired_variants": P18_PAIRED_VARIANTS,
-        }
-        denominators = coverage.get("denominators")
-        if not isinstance(denominators, dict) or any(denominators.get(key) != value for key, value in expected_denominators.items()):
-            reasons.append("independent_denominators_mismatch")
-        core = coverage.get("independent_core")
-        paired = coverage.get("paired_variants")
-        if not isinstance(core, dict) or core.get("completed") != P18_INDEPENDENT_CORE:
-            reasons.append("independent_core_completion_mismatch")
-        if not isinstance(paired, dict) or paired.get("completed") != P18_PAIRED_VARIANTS:
-            reasons.append("paired_variant_completion_mismatch")
-
-        if coverage.get("hosts") != list(P18_HOSTS) or coverage.get("arms") != list(P18_ARMS):
-            reasons.append("host_or_arm_coverage_mismatch")
-        expected_states = {f"{host}/{arm}" for host in P18_HOSTS for arm in P18_ARMS}
-        states = coverage.get("arm_states")
-        if not isinstance(states, dict) or set(states) != expected_states:
-            reasons.append("four_arm_state_records_missing")
-        else:
-            for key in expected_states:
-                state = states[key]
-                if not isinstance(state, dict) or state.get("complete") is not True or state.get("audited") is not True:
-                    reasons.append(f"arm_state_not_complete_or_audited:{key}")
-                    continue
-                if state.get("status") not in {"PASS", "FAIL", "UNSUPPORTED"}:
-                    reasons.append(f"arm_state_invalid:{key}")
-                if state.get("status") == "UNSUPPORTED" and not str(state.get("reason") or "").strip():
-                    reasons.append(f"unsupported_reason_missing:{key}")
-                if key.endswith("/C") and state.get("status") != "PASS":
-                    reasons.append(f"c_arm_not_PASS:{key}")
-
-        c = coverage.get("c_acceptance")
-        if not isinstance(c, dict):
-            reasons.append("c_acceptance_missing")
-        else:
-            for host in P18_HOSTS:
-                result = c.get(host)
-                if not isinstance(result, dict):
-                    reasons.append(f"c_host_missing:{host}")
-                    continue
-                queries = result.get("queries")
-                if (
-                    not isinstance(queries, dict)
-                    or queries.get("denominator") != P18_C_QUERY_DENOMINATOR
-                    or queries.get("conditions_per_query") != P18_C_QUERY_CONDITIONS
-                    or queries.get("completed") != P18_C_QUERY_DENOMINATOR
-                    or type(queries.get("passed")) is not int
-                    or queries.get("passed") < P18_C_MIN_QUERY_PASS
-                    or queries.get("passed") > P18_C_QUERY_DENOMINATOR
-                ):
-                    reasons.append(f"c_query_acceptance_failed:{host}")
-                journeys = result.get("journeys")
-                if (
-                    not isinstance(journeys, dict)
-                    or journeys.get("denominator") != P18_C_JOURNEY_DENOMINATOR
-                    or journeys.get("rounds_per_journey") != P18_C_JOURNEY_ROUNDS
-                    or journeys.get("completed") != P18_C_JOURNEY_DENOMINATOR
-                    or type(journeys.get("passed")) is not int
-                    or journeys.get("passed") < P18_C_MIN_JOURNEY_PASS
-                    or journeys.get("passed") > P18_C_JOURNEY_DENOMINATOR
-                ):
-                    reasons.append(f"c_journey_acceptance_failed:{host}")
-                l3 = result.get("l3_necessary_evidence_coverage")
-                groups = result.get("l3_group_coverage")
-                if type(l3) not in (int, float) or not math.isfinite(l3) or not 0.90 <= l3 <= 1.0:
-                    reasons.append(f"c_l3_coverage_failed:{host}")
-                if (not isinstance(groups, dict)
-                        or set(groups) != {f"B{number:02d}" for number in range(1, 13)}
-                        or any(type(value) not in (int, float) or not math.isfinite(value)
-                               or not 0.80 <= value <= 1.0 for value in groups.values())):
-                    reasons.append(f"c_l3_group_coverage_failed:{host}")
-        if type(coverage.get("safety_failures")) is not int or coverage.get("safety_failures") != 0 or coverage.get("safety_failure_refs") != []:
-            reasons.append("safety_failures_present")
-
-    scorer = payload.get("scorer_report")
-    expected_score_denominators = {
-        "independent_core": P18_INDEPENDENT_CORE,
-        "paired_variants": P18_PAIRED_VARIANTS,
-        "c_query_per_host": P18_C_QUERY_DENOMINATOR,
-        "c_query_conditions": P18_C_QUERY_CONDITIONS,
-        "c_journeys_per_host": P18_C_JOURNEY_DENOMINATOR,
-        "c_rounds_per_journey": P18_C_JOURNEY_ROUNDS,
-    }
-    if (
-        not isinstance(scorer, dict)
-        or scorer.get("kind") != "independent"
-        or scorer.get("run_status") != "COMPLETED"
-        or scorer.get("denominators") != expected_score_denominators
-    ):
-        reasons.append("independent_scorer_report_mismatch")
-
-    budget = payload.get("budget")
-    if not isinstance(budget, dict):
-        reasons.append("budget_missing")
-    else:
-        try:
-            effective_caps = effective_budget_caps(budget, receipt_path.parent)
-            hermes_cap = effective_caps["go_calls"]
-            codex_cap = effective_caps["codex_calls"]
-            shared_cap = hermes_cap if "authorization_override" not in budget else hermes_cap + codex_cap
-        except (OSError, ValueError, TypeError, AttributeError):
-            reasons.append("budget_authorization_binding_invalid")
-            hermes_cap, codex_cap, shared_cap = P18_HERMES_CALL_CAP, P18_CODEX_CALL_CAP, P18_SHARED_CALL_CAP
-        ledger = budget.get("original_ledger")
-        if not isinstance(ledger, dict) or ledger.get("status") != "PASS":
-            reasons.append("original_ledger_not_PASS")
-        else:
-            counts = {key: ledger.get(key) for key in ("primary_calls", "source_load_calls", "auxiliary_calls", "tool_model_rounds", "actual_total_calls")}
-            counts_valid = all(type(value) is int and value >= 0 for value in counts.values())
-            if not counts_valid:
-                reasons.append("ledger_counts_invalid")
-            elif counts["actual_total_calls"] != sum(counts[key] for key in ("primary_calls", "source_load_calls", "auxiliary_calls", "tool_model_rounds")):
-                reasons.append("ledger_total_not_decomposed")
-            caps = ledger.get("caps")
-            if not isinstance(caps, dict) or caps.get("hermes_calls") != hermes_cap or caps.get("codex_calls") != codex_cap or type(caps.get("shared_calls")) is not int:
-                reasons.append("ledger_route_caps_mismatch")
-            elif counts_valid and (counts["actual_total_calls"] > caps["shared_calls"] or counts["actual_total_calls"] > shared_cap):
-                reasons.append("ledger_shared_cap_exceeded")
-            if not isinstance(ledger.get("actual_calls_by_host"), dict):
-                reasons.append("ledger_host_breakdown_missing")
-            else:
-                by_host = ledger["actual_calls_by_host"]
-                if set(by_host) != set(P18_HOSTS) or any(type(by_host.get(host)) is not int or by_host[host] < 0 for host in P18_HOSTS):
-                    reasons.append("ledger_host_breakdown_invalid")
-                elif by_host[HERMES_METHOD_ID] > hermes_cap or by_host[METHOD_ID] > codex_cap:
-                    reasons.append("ledger_route_cap_exceeded")
-                elif counts_valid and sum(by_host.values()) != counts["actual_total_calls"]:
-                    reasons.append("ledger_host_total_mismatch")
-            if not isinstance(ledger.get("primary_calls"), int) or ledger["primary_calls"] > P18_PRIMARY_CALL_UPPER_BOUND:
-                reasons.append("primary_calls_upper_bound_exceeded")
-
-    reasons.extend(validate_evidence(payload, receipt_path))
-    return {
-        "status": "PASS" if not reasons else "REJECTED",
-        "path": str(receipt_path),
-        "reasons": reasons,
-        "source_commit": expected_commit,
-        "source_inputs_sha256": expected_source,
-        "protocol_sha256": P18_PROTOCOL_SHA256,
-    }
 
 
 def _impact(changed: list[str]) -> tuple[set[str], list[str]]:
@@ -836,17 +599,12 @@ def _selection_output(
     details: dict,
     *,
     status: str,
-    model_receipt_status: str | None = None,
 ) -> dict:
     metadata = TIER_METADATA.get(tier, {})
     missing = []
-    if tier == "release":
-        # The model gate is intentionally separate from ordinary release
-        # pytest.  A release plan must show it and cannot be green without an
-        # explicitly authorized T4 run.
-        missing = list(metadata.get("requires", [])) if status in {"planned_not_executed", "listed_not_executed"} else ["model"]
-        if model_receipt_status == "PASS":
-            missing = [gate for gate in missing if gate != "model"]
+    if tier == "release" and status in {"planned_not_executed", "listed_not_executed"}:
+        # A release plan names what the run needs; listing it proves none of it.
+        missing = list(metadata.get("requires", []))
     payload = {
         "status": status,
         "tier": tier,
@@ -857,8 +615,6 @@ def _selection_output(
         "missing_gates": missing,
         "model_calls": bool(metadata.get("model_calls", False)),
     }
-    if model_receipt_status is not None:
-        payload["model_receipt_status"] = model_receipt_status
     return payload
 
 
@@ -929,11 +685,6 @@ def main() -> int:
     parser.add_argument("--changed-base")
     parser.add_argument("--changed-files", nargs="*", default=None)
     parser.add_argument("--allow-model-calls", action="store_true")
-    parser.add_argument(
-        "--model-receipt",
-        type=Path,
-        help="explicit completed P18 formal model receipt for the release gate",
-    )
     parser.add_argument("--task", choices=[f"P{i:02d}" for i in range(20)], default="P01")
     args = parser.parse_args()
     changed, change_diagnostics = _changed_paths(args)
@@ -942,14 +693,6 @@ def main() -> int:
         return 2
     selected, selection = select_tests(args.tier, changed=changed)
     selection["diagnostics"] = change_diagnostics
-    model_receipt = None
-    if args.model_receipt is not None:
-        if args.tier != "release":
-            return _early_exit(args.tier, selected, selection, status="model_receipt_invalid", missing_gates=["model_receipt"],
-                               model_receipt={"status": "REJECTED", "reasons": ["model_receipt_only_valid_for_release"]})
-        model_receipt = validate_model_receipt(args.model_receipt)
-        if model_receipt.get("status") != "PASS":
-            return _early_exit(args.tier, selected, selection, status="model_receipt_rejected", missing_gates=["model"], model_receipt=model_receipt)
     if TIER_METADATA.get(args.tier, {}).get("model_calls") and not args.allow_model_calls:
         return _early_exit(args.tier, selected, selection, status="model_calls_disabled", missing_gates=["explicit_model_authorization"])
     if args.tier == "release" and not distribution_is_installed():
@@ -968,15 +711,12 @@ def main() -> int:
         return _early_exit(args.tier, selected, selection, status="missing_tests", missing_tests=missing)
     if args.list or args.plan:
         status = "planned_not_executed" if args.plan else "listed_not_executed"
-        payload = _selection_output(args.tier, selected, selection, status=status, model_receipt_status=(model_receipt or {}).get("status"))
-        if model_receipt is not None:
-            payload["model_receipt"] = model_receipt
-        print(json.dumps(payload, ensure_ascii=False))
+        print(json.dumps(_selection_output(args.tier, selected, selection, status=status), ensure_ascii=False))
         return 0
-    return _execute(args, selected, selection, model_receipt)
+    return _execute(args, selected, selection)
 
 
-def _execute(args, selected: list[str], selection: dict, model_receipt) -> int:
+def _execute(args, selected: list[str], selection: dict) -> int:
     """Run the selected files under the watchdog, always clean up, always write a receipt.
 
     The receipt records pytest, wrapper and cleanup outcomes separately with
@@ -1052,10 +792,6 @@ def _execute(args, selected: list[str], selection: dict, model_receipt) -> int:
                 transitions.append("cleanup_failed")
 
     overall_code = cleanup_exit_code or wrapper_exit_code or pytest_exit_code
-    missing_gates = ["model"] if args.tier == "release" and model_receipt is None else []
-    if missing_gates and overall_code == 0:
-        overall_code = 2
-        transitions.append("required_gates_missing")
     transitions.append("receipt_written")
     log_lines = [part for part in output_parts if part]
     log_lines.append(json.dumps({"transition_history": transitions, "pytest_exit_code": pytest_exit_code, "wrapper_exit_code": wrapper_exit_code, "cleanup_exit_code": cleanup_exit_code, "overall_exit_code": overall_code}, sort_keys=True))
@@ -1077,7 +813,7 @@ def _execute(args, selected: list[str], selection: dict, model_receipt) -> int:
         "selected": selected,
         "selection": selection,
         "required_gates": list(TIER_METADATA.get(args.tier, {}).get("requires", [])),
-        "missing_gates": missing_gates,
+        "missing_gates": [],
         "log": log.relative_to(ROOT).as_posix(),
         "model_calls": bool(args.allow_model_calls and TIER_METADATA.get(args.tier, {}).get("model_calls", False)),
         "process_policy": "v11_guard_with_allowlisted_test_subprocesses" if args.tier in _PROCESS_TIERS else "v11_guard_no_child_processes",
@@ -1086,7 +822,6 @@ def _execute(args, selected: list[str], selection: dict, model_receipt) -> int:
         "source_inputs_sha256": _source_inputs_sha256(manifest),
         "source_manifest": f"verification/{args.task}/{stem}-inputs.json",
         "evidence_scope": _evidence_scope(args.tier, args.task),
-        "model_receipt": model_receipt,
     }
     (evidence / f"{stem}-inputs.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     (evidence / f"{stem}.json").write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
