@@ -5,10 +5,12 @@ the entry's server (``remote_server``) with the entry's token, and the server's 
 A Claude Code Stop or SessionEnd also reads this machine's session record from a cursor kept here and sends
 what the record shows being said (``transcript.said``); the cursor moves only as far as the server stored.
 
-When the server cannot be reached the hook answers at once with nothing, so the client is never held up.
-Claude Code loses nothing by it: its record carries every message to the next Stop that gets through.  A
-Codex hook is kept in a spool here and sent, with the moment it happened, by the next hook that reaches the
-server.
+When the server cannot be reached the hook answers with nothing, so the client is held up only briefly: a
+connection that has not opened in ``CONNECT_SECONDS`` is given up, and for ``AWAY_SECONDS`` after that no
+hook tries.  Claude Code loses nothing by it: its record carries every message to the next Stop that gets
+through.  A Codex hook is kept in a spool here and sent, with the moment it happened, by the next hook that
+reaches the server.  Requests go straight to the server, never through a proxy this machine has for the
+internet, which cannot reach a private address.  What did not get through is logged in the state folder.
 
     python -m scope_recall.adapters.codex.remote_client token --config <client.json>
     python -m scope_recall.adapters.codex.remote_client install --config <client.json> --plugin-dir <dir>
@@ -24,6 +26,7 @@ from __future__ import annotations
 import argparse
 from datetime import datetime, timezone
 import hashlib
+import http.client
 import json
 import os
 from pathlib import Path
@@ -32,8 +35,7 @@ import subprocess
 import sys
 import time
 from typing import Any
-import urllib.error
-import urllib.request
+import urllib.parse
 
 from . import transcript
 
@@ -52,6 +54,14 @@ RECORD_READ_BYTES = 2 * 1024 * 1024
 SPOOL_LIMIT = 256
 #: How long a flush of the spool may run, in its own process after a hook that got through.
 FLUSH_SECONDS = 60.0
+#: A connection to the server not open after this long is given up (over a tailnet relay one opens in about
+#: a second), so a prompt is not held for the hook's whole wait while the server is away.
+CONNECT_SECONDS = 3.0
+#: After a connection could not be opened, hooks do not try for this long: a client whose server is away is
+#: held up once in this time, not at every prompt.
+AWAY_SECONDS = 60.0
+#: The log of requests that did not get through is kept to about this size (one older copy is kept).
+LOG_BYTES = 256 * 1024
 _SPOOLED = frozenset({"UserPromptSubmit", "Stop", "SessionEnd", "Interrupt"})
 _MAX_STDIN = 65536
 
@@ -77,7 +87,8 @@ def load_client_config(path: Path) -> dict[str, Any]:
     if not isinstance(raw, dict) or raw.get("host") not in HOSTS:
         raise RemoteClientError("client config needs host: claude-code or codex")
     url = raw.get("url")
-    if type(url) is not str or not url.startswith("http://") and not url.startswith("https://"):
+    if type(url) is not str or urllib.parse.urlsplit(url).scheme not in ("http", "https") \
+            or not urllib.parse.urlsplit(url).hostname:
         raise RemoteClientError("client config needs the server's url")
     return {"url": url.rstrip("/"), "host": raw["host"], "token_file": _absolute(raw.get("token_file"), "token_file"),
             "state_dir": _absolute(raw.get("state_dir"), "state_dir"), "config": path}
@@ -87,17 +98,73 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
-def _post(config: dict[str, Any], body: dict[str, Any], timeout: float) -> dict[str, Any] | None:
-    """The server's answer, or None when it could not be reached in time or refused."""
-    token = config["token_file"].read_text(encoding="utf-8").strip()
-    request = urllib.request.Request(
-        f"{config['url']}/hook", data=json.dumps(body, ensure_ascii=False).encode("utf-8"), method="POST",
-        headers={"Content-Type": "application/json", "Authorization": f"Bearer {token}"})
+def _log(config: dict[str, Any], line: str) -> None:
+    """One line in the state folder's log: a request that did not get through, or what the spool did."""
+    path = config["state_dir"] / "remote-client.log"
     try:
-        with urllib.request.urlopen(request, timeout=max(0.2, timeout)) as response:
-            answer = json.loads(response.read().decode("utf-8"))
-    except (urllib.error.URLError, OSError, ValueError):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        if path.is_file() and path.stat().st_size > LOG_BYTES:
+            os.replace(path, path.with_name(path.name + ".1"))
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(f"{_now()} {line}\n")
+    except OSError:
+        pass
+
+
+def _away_marker(config: dict[str, Any]) -> Path:
+    return config["state_dir"] / "server-away"
+
+
+def _server_away(config: dict[str, Any]) -> bool:
+    """Whether a connection failed less than ``AWAY_SECONDS`` ago."""
+    try:
+        return time.time() - _away_marker(config).stat().st_mtime < AWAY_SECONDS
+    except OSError:
+        return False
+
+
+def _post(config: dict[str, Any], body: dict[str, Any], timeout: float) -> dict[str, Any] | None:
+    """The server's answer, or None when it could not be reached in time or refused.
+
+    The connection is opened to the server itself, never through a proxy: HTTP_PROXY and the system proxy
+    are for the internet, and one on 127.0.0.1 would take the request away from the private network.
+    """
+    event = (body.get("payload") or {}).get("hook_event_name")
+    token = config["token_file"].read_text(encoding="utf-8").strip()
+    url = urllib.parse.urlsplit(config["url"])
+    kind = http.client.HTTPSConnection if url.scheme == "https" else http.client.HTTPConnection
+    timeout = max(0.2, timeout)
+    until = time.monotonic() + timeout
+    connection = kind(url.hostname, url.port, timeout=min(CONNECT_SECONDS, timeout))
+    try:
+        try:
+            connection.connect()
+        except OSError as exc:
+            _log(config, f"{event}: no connection ({type(exc).__name__}); not trying for {AWAY_SECONDS:.0f} s")
+            try:
+                _away_marker(config).parent.mkdir(parents=True, exist_ok=True)
+                _away_marker(config).write_text(_now(), encoding="utf-8")
+            except OSError:
+                pass
+            return None
+        connection.sock.settimeout(max(0.2, until - time.monotonic()))
+        connection.request("POST", f"{url.path}/hook", body=json.dumps(body, ensure_ascii=False).encode("utf-8"),
+                           headers={"Content-Type": "application/json", "Authorization": f"Bearer {token}"})
+        response = connection.getresponse()
+        raw = response.read()
+        if response.status != 200:
+            _log(config, f"{event}: HTTP {response.status}")
+            return None
+        answer = json.loads(raw.decode("utf-8"))
+    except (OSError, http.client.HTTPException, ValueError) as exc:
+        _log(config, f"{event}: no answer in {timeout:.1f} s ({type(exc).__name__})")
         return None
+    finally:
+        connection.close()
+    try:
+        _away_marker(config).unlink(missing_ok=True)
+    except OSError:
+        pass
     return answer if isinstance(answer, dict) else None
 
 
@@ -156,6 +223,8 @@ def flush_spool(config: dict[str, Any], seconds: float = FLUSH_SECONDS) -> int:
             sent += 1
     finally:
         lock.unlink(missing_ok=True)
+    left = sum(1 for _item in folder.glob("*.json"))
+    _log(config, f"flush: sent {sent}, {left} still kept")
     return sent
 
 
@@ -218,7 +287,11 @@ def run_hook(config: dict[str, Any], raw: bytes, *, started: float | None = None
         part = _record_part(config, payload)
         if part is not None:
             body["record"], cursor = part
-    answer = _post(config, body, until - time.monotonic())
+    if _server_away(config):
+        _log(config, f"{event}: not sent, the server was away less than {AWAY_SECONDS:.0f} s ago")
+        answer = None
+    else:
+        answer = _post(config, body, until - time.monotonic())
     if answer is None:
         if host == "codex" and event in _SPOOLED:
             _spool(config, payload, observed_at)

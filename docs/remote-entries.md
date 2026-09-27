@@ -35,6 +35,10 @@ machine and stays there; this machine keeps its SHA-256.
    python -m scope_recall.adapters.codex.remote_server serve --home F:\ScopeRecall\workpc-claude-code --host claude-code --env-file <file>
    ```
 
+   The server has no console. Each hook it handles (its event, the handler's reason, how far a record was
+   stored, the time taken), each request refused for want of the token and its own errors go to
+   `<home>\scope-recall\remote-server.log`, kept to about 1 MB with two older copies.
+
 4. Let the client machine reach the port: an inbound firewall rule for that port, from the client's private
    address only.
 
@@ -69,17 +73,25 @@ stopped with the other processes on the store for an upgrade (`package-upgrade`)
 
 ## When the server cannot be reached
 
-A hook answers at once with nothing, so the client is never held up; it has no recall for that turn.
+A hook whose connection has not opened in 3 s gives up and answers with nothing; for a minute after that no
+hook tries, so while the server is away a prompt is held up once a minute at most, and it has no recall.
 Claude Code loses no message: its record carries them to the next Stop that reaches the server, and the
 cursor on the client moves only as far as the server stored. A Codex hook is kept in a spool on the client
 and sent, with the moment it happened, by a process a later hook starts once the server answers again; a hook
-sent twice is the same source, not two.
+sent twice is the same source, not two. What did not get through, and what the spool sent, is logged in the
+client's `state_dir\remote-client.log`.
+
+The client connects to the server itself and never through a proxy: `HTTP_PROXY` or a system proxy on the
+client machine is for the internet and cannot reach the tailnet address. Claude Code's and Codex's own MCP
+connection to `/mcp` follows their proxy settings, so the server's address must be in the client machine's
+`NO_PROXY` (an address, not only a range: not every client reads `100.64.0.0/10`).
 
 ## A new client machine
 
 The entry belongs to the store, not to the machine. On the new machine repeat the client steps with a new
-token, and on this machine run `configure` again with its digest: the old token stops working at once and the
-entry's memories stay under its name.
+token, and on this machine run `configure` again with its digest and restart the server: the old token stops
+working and the entry's memories stay under its name. A firewall rule that names the old machine's address
+needs the new one.
 
 ## Limits
 
