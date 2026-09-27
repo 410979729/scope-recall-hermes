@@ -151,6 +151,23 @@ def test_a_pass_gives_a_waiting_writer_its_turn_between_pages(app, monkeypatch):
     assert worker.PAGE_TURN_SECONDS >= 2 * 0.01, "at least two of a waiting writer's lease polls"
 
 
+def test_a_pass_stops_resuming_pages_once_their_time_is_spent(app, monkeypatch):
+    """A page on the shared store took 0.5-7 s under the writer lease (matching a long source against thousands of
+    candidates), so sixteen of them still held it for half a minute.  Past ``SOURCE_PAGE_SECONDS`` the pass leaves
+    the rest to the next one; the page that was running finishes."""
+    core, ctx = app
+    monkeypatch.setattr(worker, "SOURCE_PAGE_SECONDS", 0.0)
+    count = SOURCE_MATCH_LIMIT * 4 + 4
+    _candidates(core, ctx, count)
+    trigger = capture(core, ctx, "sharedtoken 提供了统一的新证据。", key="TEST-rc35/time")
+    _finish_source_work(core)
+    assert _trigger(core, trigger.ref) == (SOURCE_MATCH_LIMIT, 1)
+
+    core.drain_worker(ctx, max_items=32, remaining_seconds=10, consolidation=Evaluator())
+
+    assert _trigger(core, trigger.ref) == (SOURCE_MATCH_LIMIT * 2, 1), "one page, then the time is spent"
+
+
 def test_a_pass_resumes_at_most_its_page_allowance(app, monkeypatch):
     core, ctx = app
     monkeypatch.setattr(worker, "SOURCE_PAGES_PER_PASS", 2)
