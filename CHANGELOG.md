@@ -4,6 +4,11 @@ All notable changes to `scope-recall` will be documented in this file.
 
 ## [Unreleased]
 
+### Scope Recall 3.4.0rc4 - 2026-09-27
+
+- The version moves past the `v3.4.0rc3` tag.
+- Two more of a worker pass's start-up checks read without the writer lease. Whether any source waits deferred for queue capacity is a scan of every source (9.8 s on the shared store, with none waiting), and which settled candidates to queue walks every candidate still settling (7.6 s, with none due); both ran inside a write. The pass now reads both first and writes only for what it found. Timed on a copy of the shared store, one pass held the lease 23 s with 3.4.0rc3 and 6.8 s with this candidate, most of it the capped source pages.
+
 ### Scope Recall 3.4.0rc3 - 2026-09-27
 
 - The version moves past the `v3.4.0rc2` tag.
