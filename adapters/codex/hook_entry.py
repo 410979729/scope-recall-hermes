@@ -51,7 +51,7 @@ def main(argv: list[str] | None = None) -> int:
         emit_result({})
         return 0
     if args.env_file is not None:
-        # A hook must answer inside its 2 s budget whatever happens; a missing key
+        # A hook must answer inside its budget whatever happens; a missing key
         # only costs the semantic channel, so the failure is logged and not fatal.
         env_file = args.env_file.expanduser()
         if not env_file.is_absolute():
