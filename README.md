@@ -20,17 +20,16 @@ migration procedure for a 2.0.1 memory database. SQLite remains the only fact
 authority; host adapters share the same contracts.
 
 **What is not verified.** `scripts/check.py --tier release` runs about 2,300 tests with
-none failing, but reports `missing_gates: ["model"]`. That gate wants a P18
-formal acceptance receipt: denominators of 120 independent core items and 240
-paired variants, evidence marked `real`, a method adjudication accepted by a
-party independent of whoever wrote the code, and an independent semantic scorer.
-The P18 machinery is in this tree; the evaluation corpus is not. **3.1.0 shipped
-without that receipt, and so has every release since, 3.3.0 included.** Every
-accuracy figure in the notes was measured by us, on our own corpora, by hand,
-and there is no regression suite you or we can re-run
-automatically -- that is the first item in *What is not finished*. Read a green
-test count as exactly that, never as a passing release gate. The integration
-(about 2,120 tests) and packaging (about 150) tiers both exit 0 with none failing.
+none failing. They check contracts, storage and the hosts' wiring; none of them
+measures recall quality. Every accuracy figure in the notes was measured by us, on
+our own corpora, by hand, and there is no regression suite you or we can re-run
+automatically -- that is the first item in *What is not finished*. A formal
+model-evaluation gate (P18) was declared for that and never completed: it needed an
+evaluation corpus and a scorer independent of the authors, which this project does
+not have, so every release up to 3.4.0rc5 reported it missing. 3.4.0rc6 removes it
+rather than keep a gate nobody can pass. Read a green test count as exactly that.
+The integration (about 2,120 tests) and packaging (about 150) tiers both exit 0 with
+none failing.
 
 ## For agents: install or upgrade on the user's behalf
 

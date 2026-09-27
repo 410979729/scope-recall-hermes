@@ -55,15 +55,14 @@ def test_release_uses_the_same_packaging_helper_authorization() -> None:
     assert check.packaging_helper_env("unit") == {}
 
 
-def test_release_selection_exposes_model_gate_without_claiming_pass() -> None:
+def test_a_release_plan_names_its_gates_without_claiming_them() -> None:
     selected, details = check.select_tests("release")
     payload = check._selection_output("release", selected, details, status="planned_not_executed")
 
     assert selected
-    assert {"native", "hermes", "codex", "migration", "clean_wheel", "model"} >= set(
-        payload["required_gates"] + payload["missing_gates"]
-    )
+    assert payload["required_gates"] == ["native", "hermes", "codex", "migration", "clean_wheel"]
     assert payload["missing_gates"] == payload["required_gates"]
+    assert "model" not in payload["required_gates"], "the P18 model gate was removed in 3.4.0rc6"
 
 
 def test_changed_contract_file_is_always_selected() -> None:

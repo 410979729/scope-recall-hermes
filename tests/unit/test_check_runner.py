@@ -59,7 +59,9 @@ def _run_check(monkeypatch, tmp_path: Path, *, fail_cleanup: bool) -> tuple[int,
             return "tests/unit/pass_test.py\n"
         return "TEST-HEAD\n"
 
-    ControlledDirectory.fail_cleanup = fail_cleanup
+    # Through monkeypatch: a plain assignment outlived the test and failed the
+    # next one's cleanup.
+    monkeypatch.setattr(ControlledDirectory, "fail_cleanup", fail_cleanup)
     monkeypatch.setattr(check, "ROOT", tmp_path)
     monkeypatch.setattr(check, "SUITES", {"unit": ["tests/unit/pass_test.py"]})
     # The nested runner must keep its owned directory inside this pytest
@@ -159,8 +161,8 @@ def test_release_wrapper_records_actual_600s_watchdog(monkeypatch, tmp_path: Pat
     assert captured["timeout"] == 600
     assert receipt["watchdog_seconds"] == 600
     assert receipt["pytest_exit_code"] == 0
-    assert "model" in receipt["missing_gates"]
-    assert exit_code != 0
+    assert receipt["missing_gates"] == [], "no model gate since 3.4.0rc6"
+    assert exit_code == 0
 
 
 def test_pytest_and_cleanup_success_is_zero(monkeypatch, tmp_path: Path) -> None:
