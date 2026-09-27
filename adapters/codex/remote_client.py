@@ -229,8 +229,13 @@ def flush_spool(config: dict[str, Any], seconds: float = FLUSH_SECONDS) -> int:
 
 
 def _start_flush(config: dict[str, Any]) -> None:
-    """Flush the spool in a process of its own, so the hook itself answers inside its short wait."""
-    flags = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
+    """Flush the spool in a process of its own, so the hook itself answers inside its short wait.
+
+    On Windows with a console of its own that has no window, not detached: the interpreter is often a launcher
+    that starts python.exe as its child, and a console program started by a process without a console gets a
+    new console, which Windows Terminal shows as a window on the desktop.
+    """
+    flags = subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
     try:
         subprocess.Popen([sys.executable, "-I", "-B", "-m", "scope_recall.adapters.codex.remote_client", "flush",
                           "--config", str(config["config"])], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,

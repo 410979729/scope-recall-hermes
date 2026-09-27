@@ -227,6 +227,16 @@ def test_a_server_that_is_away_holds_hooks_up_once_a_minute(tmp_path, monkeypatc
     assert "UserPromptSubmit: no connection" in log and "UserPromptSubmit: not sent" in log
 
 
+@pytest.mark.skipif(os.name != "nt", reason="console windows are a Windows matter")
+def test_the_flush_process_opens_no_console_window(tmp_path, monkeypatch):
+    started = []
+    monkeypatch.setattr(remote_client.subprocess, "Popen", lambda argv, **options: started.append(options))
+    remote_client._start_flush(_client(tmp_path, "codex", 18766))
+    flags = started[0]["creationflags"]
+    assert flags & remote_client.subprocess.CREATE_NO_WINDOW, "a console without a window, for a launcher's child"
+    assert not flags & remote_client.subprocess.DETACHED_PROCESS, "a detached launcher's python.exe gets a window"
+
+
 def test_the_server_logs_each_hook_and_each_refused_request(served, tmp_path):
     _root, homes, ports = served
     root_logger = logging.getLogger()
