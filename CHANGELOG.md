@@ -4,6 +4,11 @@ All notable changes to `scope-recall` will be documented in this file.
 
 ## [Unreleased]
 
+### Scope Recall 3.4.0rc5 - 2026-09-27
+
+- The version moves past the `v3.4.0rc4` tag.
+- Codex's hooks wait as Claude Code's do: 15 s for a prompt's hook, 10 s for Stop, 5 s for SessionStart, and the 3 s Codex allows SessionEnd and Interrupt; PostToolUse keeps 2 s. A Codex entry's prompt hook runs the entry's `hook_processing_seconds` (6 s unless set lower) like Claude Code's. With 2 s, most of Codex's automatic recalls on a large store came back empty, and a remote Codex client spent most of them on the network. These are ceilings: a hook answers as soon as its capture and recall are done. Codex asks you to approve the changed hooks again.
+
 ### Scope Recall 3.4.0rc4 - 2026-09-27
 
 - The version moves past the `v3.4.0rc3` tag.
