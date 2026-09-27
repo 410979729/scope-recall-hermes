@@ -254,8 +254,8 @@ def _line(kind, uuid, stamp, **fields):
     return {"type": kind, "uuid": uuid, "timestamp": stamp, "sessionId": "TEST-cc-session", **fields}
 
 
-def _person(uuid, stamp, text):
-    return _line("user", uuid, stamp, origin={"kind": "human"}, promptId="TEST-prompt-1",
+def _person(uuid, stamp, text, *, prompt_id="TEST-prompt-1"):
+    return _line("user", uuid, stamp, origin={"kind": "human"}, promptId=prompt_id,
                  message={"role": "user", "content": text})
 
 
@@ -321,6 +321,138 @@ def test_a_stop_records_what_the_session_record_shows_was_said_and_nothing_else(
         ("user", "human_direct", "TEST 顺便看看 KZ-42。"),
         ("assistant", "assistant_visible", "TEST QX-17 已经完成。"),
     ])
+
+
+def test_later_identical_human_message_with_a_different_prompt_id_is_preserved(store, tmp_path):
+    root, _homes, client, _capture = store
+    at = _moments()
+    record = _record(tmp_path / "TEST-projects" / "TEST-cc-session.jsonl",
+                     _person("u1", at(0), "TEST 好"))
+    hook = _hook(client)
+    try:
+        hook.handle_payload(_prompt("TEST 好"))
+        hook.handle_payload(_stop(record))
+        _record(record, _person("u2", at(1), "TEST 好", prompt_id="TEST-prompt-2"))
+        hook.handle_payload(_stop(record))
+    finally:
+        hook.close()
+    store_id = read_shared_payload(root)["installation_id"]
+    assert sorted(_rows(root, "SELECT source_event_key FROM source_events WHERE role='user' AND entry_id='claude-code'")) == sorted([
+        (f"claude-code:{store_id}:TEST-cc-session:user:TEST-prompt-1@1",),
+        (f"claude-code:{store_id}:TEST-cc-session:record:u2@1",),
+    ])
+
+
+def test_malformed_record_character_does_not_hold_back_later_messages(store, tmp_path):
+    root, _homes, client, _capture = store
+    at = _moments()
+    record = tmp_path / "TEST-projects" / "TEST-cc-session.jsonl"
+    record.parent.mkdir(parents=True)
+    with record.open("w", encoding="utf-8", newline="\n") as handle:
+        handle.write(json.dumps(_person("bad", at(0), "TEST \ud800")) + "\n")
+        handle.write(json.dumps(_person("good", at(1), "TEST normal")) + "\n")
+    hook = _hook(client)
+    try:
+        hook.handle_payload(_stop(record))
+    finally:
+        hook.close()
+    assert [content for _role, _origin, content in _said_in_store(root)] == ["TEST normal"]
+
+
+def test_record_check_carries_stop_budget_and_defers_large_schema_upgrade(store, tmp_path, monkeypatch):
+    root, _homes, client, capture_scope = store
+    record = _record(tmp_path / "TEST-projects" / "TEST-cc-session.jsonl",
+                     _person("u1", _moments()(0), "TEST budgeted record"))
+    hook = _hook(client)
+    original = hook.core.said_in_session
+    budgets = []
+
+    def observed(context, scope_id, items, **kwargs):
+        budgets.append(kwargs["remaining_seconds"])
+        return original(context, scope_id, items, **kwargs)
+
+    monkeypatch.setattr(hook.core, "said_in_session", observed)
+    try:
+        hook.handle_payload(_stop(record))
+        assert budgets and 0 < budgets[0] < 60
+        assert ("user", "human_direct", "TEST budgeted record") in _said_in_store(root)
+
+        # Simulate a previously installed large truth store awaiting an upgrade.
+        # A Stop pre-check must refuse that upgrade rather than run it in the hook.
+        with sqlite3.connect(root / "memory.sqlite3") as db:
+            db.execute("PRAGMA user_version=1108")
+        monkeypatch.setattr("scope_recall.core.storage._store_bytes", lambda _conn: 200_000_000)
+        from scope_recall.contracts import TrustedContext
+        context = TrustedContext(hook.core.config.binding, "claude-code:TEST-cc-session",
+                                 hook.config.scope_ids, "host_generated")
+        with pytest.raises(ContractError, match="upgrade_pending"):
+            original(context, capture_scope, [("user", "TEST different", _moments()(1), None)], remaining_seconds=budgets[0])
+        with sqlite3.connect(root / "memory.sqlite3") as db:
+            assert db.execute("PRAGMA user_version").fetchone()[0] == 1108
+    finally:
+        hook.close()
+
+
+def test_two_record_messages_repeating_hook_text_are_not_both_suppressed(store, tmp_path):
+    root, _homes, client, _capture = store
+    at = _moments()
+    text = "TEST 好。"
+    record = _record(tmp_path / "TEST-projects" / "TEST-cc-session.jsonl",
+                     _person("u1", at(0), text), _person("u2", at(1), text, prompt_id="TEST-prompt-2"))
+    hook = _hook(client)
+    try:
+        hook.handle_payload(_prompt(text))
+        hook.handle_payload(_stop(record))
+        hook.handle_payload(_stop(record))
+    finally:
+        hook.close()
+    assert _said_in_store(root).count(("user", "human_direct", text)) == 2
+
+
+def test_a_queued_message_its_hook_stored_is_not_stored_again(store, tmp_path):
+    """The record's queued command carries no promptId; it is known by its words and moment instead."""
+    root, _homes, client, _capture = store
+    at = _moments()
+    record = _record(tmp_path / "TEST-projects" / "TEST-cc-session.jsonl",
+                     _person("u1", at(0), "TEST 帮我查一下 QX-17 的进度。"),
+                     _line("attachment", "q1", at(1), attachment={
+                         "type": "queued_command", "commandMode": "prompt", "origin": {"kind": "human"},
+                         "prompt": "TEST 顺便看看 KZ-42。"}))
+    hook = _hook(client)
+    try:
+        hook.handle_payload(_prompt("TEST 帮我查一下 QX-17 的进度。"))
+        hook.handle_payload(_prompt("TEST 顺便看看 KZ-42。", prompt_id="TEST-prompt-queued"))
+        hook.handle_payload(_stop(record))
+    finally:
+        hook.close()
+    assert [content for role, _origin, content in _said_in_store(root) if role == "user"] == sorted(
+        ["TEST 帮我查一下 QX-17 的进度。", "TEST 顺便看看 KZ-42。"])
+
+
+def test_a_prompt_still_in_the_inbox_is_not_stored_again_from_the_record(store, tmp_path, monkeypatch):
+    root, _homes, client, _capture = store
+    record = _record(tmp_path / "TEST-projects" / "TEST-cc-session.jsonl",
+                     _person("u1", _moments()(0), "TEST 帮我查一下 QX-17 的进度。"))
+    from scope_recall.core import capture_inbox
+
+    written = capture_inbox.record_event
+
+    def busy(*args, **kwargs):
+        raise sqlite3.OperationalError("TEST database is locked")
+
+    hook = _hook(client)
+    try:
+        monkeypatch.setattr(capture_inbox, "record_event", busy)
+        hook.handle_payload(_prompt("TEST 帮我查一下 QX-17 的进度。"))
+        assert hook.diagnostics.capture_stage == "durable_inbox"
+        monkeypatch.setattr(capture_inbox, "record_event", written)
+        hook.handle_payload(_stop(record))
+    finally:
+        hook.close()
+    stored = [content for role, _origin, content in _said_in_store(root) if role == "user"]
+    waiting = _rows(root, "SELECT count(*) FROM capture_inbox")[0][0]
+    assert len(stored) + waiting == 1, "the prompt is stored, or still waiting in the inbox, once"
+    assert _rows(root, "SELECT count(*) FROM source_events WHERE source_event_key LIKE '%:record:u1@1'") == [(0,)]
 
 
 def test_what_could_not_be_written_is_recorded_at_the_next_stop_once(store, tmp_path, monkeypatch):

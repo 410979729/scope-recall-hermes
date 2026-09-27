@@ -24,6 +24,10 @@ from .capture import CaptureReceipt, record_event
 from .events import PreparedCapture, prepare_capture
 
 _TRANSIENT = (sqlite3.Error, TruthDatabaseConnectionError, TruthWriterBusyError)
+#: Inbox rows a replay still stores, besides those never tried: a passing failure (``replay_inbox``), or a
+#: key another message already took (``resolve_conflicted_ingress`` stores it under a new key).  Any other
+#: code is terminal; the row stays for inspection only.
+STILL_REPLAYED = frozenset({"STORAGE_UNAVAILABLE", "DEADLINE_EXCEEDED", "VERSION_CONFLICT"})
 
 
 def _json(value):

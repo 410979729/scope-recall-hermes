@@ -7,6 +7,7 @@ All notable changes to `scope-recall` will be documented in this file.
 ### Scope Recall 3.3.1rc1 - 2026-09-26
 
 - The version moves past the `v3.3.0` tag.
+- Claude Code: a message read from the session record is matched to the prompt hook's copy by its prompt id, so the same short words said again are kept as a new message; a message sent while a turn runs carries no prompt id and is still matched by its words and moment. A prompt still waiting in the capture inbox is not stored a second time from the record. A record line holding an unpaired surrogate is skipped instead of stopping every later read, and the check runs within the Stop hook's time, so it never upgrades a store's schema.
 - A capture's queue-capacity check starts from the pending work (the `work_ready` index) instead of every finished item of its type: about 0.3 s a capture on a store with 95,000 finished items, which the session-record read spent on each message.
 
 ## [3.3.0] - 2026-09-26

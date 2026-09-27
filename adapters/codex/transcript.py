@@ -35,12 +35,13 @@ _HEAD_BYTES = 4096
 
 @dataclass(frozen=True)
 class Said:
-    """One message as shown: the record's id for it, whose it is, what it says and when."""
+    """One visible message and its host identity, if the record supplies one."""
 
     entry_id: str
     role: str
     text: str
     occurred_at: str
+    prompt_id: str | None = None
 
 
 def _human(origin: object) -> bool:
@@ -96,7 +97,19 @@ def said(row: object) -> Said | None:
         role, text = "assistant", _text(message.get("content"))
     else:
         return None
-    return Said(entry_id.strip(), role, text, occurred_at) if text.strip() else None
+    if not text.strip():
+        return None
+    try:
+        entry_id.encode("utf-8")
+        text.encode("utf-8")
+    except UnicodeEncodeError:
+        # A malformed JSON escape is not a durable source; skip its line so the
+        # cursor can advance to the next real message instead of stalling at Stop.
+        return None
+    prompt_id = row.get("promptId") if role == "user" else None
+    if type(prompt_id) is not str or not prompt_id.strip() or len(prompt_id) > 240:
+        prompt_id = None
+    return Said(entry_id.strip(), role, text, occurred_at, prompt_id.strip() if prompt_id else None)
 
 
 def record_path(value: object, session_id: str) -> Path | None:
