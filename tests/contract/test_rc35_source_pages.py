@@ -106,6 +106,51 @@ def test_one_pass_finishes_every_page_a_source_owes(app):
     assert _pending_pages(core, ctx) == 0
 
 
+def test_the_page_queries_read_the_triggers_first(app):
+    """Both page queries hold the page's write, so they must not start from every source of every scope.
+
+    On 2026-09-27 the shared store (8,819 triggers, 192 truncated, 379 scopes) took 2.7 s to count the pending
+    pages and 3.5 s to find the next one: SQLite started from ``source_events``, whose scope index it could use,
+    and looked up a trigger for every source.  A pass runs up to sixteen pages back to back, so the writer lease
+    was held for a minute at a time and every hook that waited its one second for it failed to capture.
+    """
+    core, ctx = app
+    _candidates(core, ctx, SOURCE_MATCH_LIMIT + 4)
+    capture(core, ctx, "sharedtoken 提供了统一的新证据。", key="TEST-rc35/plan")
+    statements = []
+    with core.storage.write(ctx) as tx:
+        connection = tx._check(write=True)
+        connection.set_trace_callback(statements.append)
+        tx.candidates.pending_source_pages()
+        tx.candidates.resume_source_pages(now=core.clock.utc_now())
+        connection.set_trace_callback(None)
+    page_queries = [sql for sql in statements
+                    if "candidate_source_triggers t" in sql and sql.lstrip().upper().startswith("SELECT")]
+    assert len(page_queries) == 2, statements
+    with sqlite3.connect(core.storage.path) as db:
+        for sql in page_queries:
+            plan = [row[3] for row in db.execute("EXPLAIN QUERY PLAN " + sql)]
+            assert plan[0].startswith("SCAN t"), plan
+
+
+def test_a_pass_gives_a_waiting_writer_its_turn_between_pages(app, monkeypatch):
+    """A page's write ends and the next begins at once; a hook polling for the lease every 10 ms rarely lands in
+    that gap.  The pass waits a moment after each page so a capture waits behind at most one page."""
+    core, ctx = app
+    monkeypatch.setattr(worker, "SOURCE_PAGES_PER_PASS", 3)
+    count = SOURCE_MATCH_LIMIT * 4 + 4
+    _candidates(core, ctx, count)
+    capture(core, ctx, "sharedtoken 提供了统一的新证据。", key="TEST-rc35/turn")
+    _finish_source_work(core)
+    naps = []
+    monkeypatch.setattr(worker.time, "sleep", naps.append)
+
+    core.drain_worker(ctx, max_items=32, remaining_seconds=10, consolidation=Evaluator())
+
+    assert naps.count(worker.PAGE_TURN_SECONDS) == 3, "one turn after each of the pass's three pages"
+    assert worker.PAGE_TURN_SECONDS >= 2 * 0.01, "at least two of a waiting writer's lease polls"
+
+
 def test_a_pass_resumes_at_most_its_page_allowance(app, monkeypatch):
     core, ctx = app
     monkeypatch.setattr(worker, "SOURCE_PAGES_PER_PASS", 2)
