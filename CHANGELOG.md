@@ -4,6 +4,12 @@ All notable changes to `scope-recall` will be documented in this file.
 
 ## [Unreleased]
 
+### Scope Recall 3.4.0rc2 - 2026-09-27
+
+- The version moves past the `v3.4.0rc1` tag.
+- A remote Codex client starts the flush of its spool with a console that has no window instead of detached. Detached, a launcher's `python.exe` child got a console of its own, which Windows Terminal shows as a window on the client machine's desktop.
+- `docs/remote-entries.md`: on Windows the server runs from a `pythonw.exe` that opens no console. uv 0.12.1's is a copy of its console launcher, and closing the window its console gets stops the server.
+
 ### Scope Recall 3.4.0rc1 - 2026-09-27
 
 - The version moves past the `v3.3.1rc1` tag, to 3.4.0: a client on another machine is a new capability.
