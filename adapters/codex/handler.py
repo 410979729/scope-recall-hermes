@@ -20,6 +20,7 @@ from . import transcript
 from .boundary import (
     assistant_stop_source_event,
     authorized_attachment_refs,
+    host_source_key,
     is_task_notification,
     lifecycle_source_event,
     recorded_source_event,
@@ -463,8 +464,12 @@ class CodexHookHandler:
             try:
                 held = self.core.said_in_session(
                     self._context(audience, session_id, "host_generated"), audience.capture_scope_id,
-                    [(entry.role, entry.text, entry.occurred_at) for entry in said],
-                    window_seconds=_RECORD_SAME_MESSAGE_S)
+                    [(entry.role, entry.text, entry.occurred_at,
+                      host_source_key(host=self.host, installation_id=self.config.installation_id,
+                                      session_id=session_id, event_kind="user", event_id=entry.prompt_id)
+                      if entry.role == "user" and entry.prompt_id else None) for entry in said],
+                    window_seconds=_RECORD_SAME_MESSAGE_S,
+                    remaining_seconds=max(0.0, self._remaining(deadline)))
             except (ContractError, OSError, RuntimeError):
                 self._diag("session_record_check_failed")
                 return

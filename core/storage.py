@@ -542,24 +542,69 @@ class Transaction:
             ORDER BY hits DESC,e.occurred_at DESC,e.event_id,e.source_revision DESC LIMIT ?""", (*terms, *scopes,self.context.project_id,self.context.branch_id,limit)).fetchall()
         return tuple(source for row in rows if (source := self.source(row["event_id"], row["source_revision"])) is not None)
 
-    def said_in_session(self, scope_id: str, items: tuple[tuple[str, str, str], ...], *,
+    def said_in_session(self, scope_id: str, items: tuple[tuple[str, str, str, str | None], ...], *,
                         window_seconds: float) -> tuple[bool, ...]:
-        """For each (role, content, occurred_at): whether this session already holds those words from that role,
-        said within ``window_seconds`` of that time.
+        """For each (role, content, occurred_at, host_key): whether this session already holds that message.
 
-        A host that records one message by two routes -- a hook as it happens, its session record later -- asks
-        this before the second: the two keys differ, the words and the moment do not.  The same words said again
-        later are a new message and are not matched.
+        A host that records one message by two routes -- a hook as it happens, its session record later --
+        asks this before the second.  A message the host names is held only under ``host_key``, the key its
+        hook wrote, so the same short words said again are a new message.  One it does not name is held by
+        its words said within ``window_seconds`` of that time.  Each copy answers for one message, and a
+        hook's capture still waiting in the inbox counts as held: the inbox stores it later.
         """
         self._scope(scope_id)
         conn = self._check()
-        answers = []
-        for role, content, occurred_at in items:
-            stamps = conn.execute(
-                "SELECT occurred_at FROM source_events WHERE scope_id=? AND role=? AND content_sha256=? AND session_id=?",
-                (scope_id, role, stored_content_digest(content), self.context.session_id)).fetchall()
-            answers.append(any(_seconds_apart(stamp[0], occurred_at) <= window_seconds for stamp in stamps))
+        waiting = self._waiting_in_inbox(scope_id)
+        waiting_keys = {key for found in waiting.values() for _stamp, key in found}
+        answers = [False] * len(items)
+        # Named messages first, so the same words said again cannot take the copy a named message owns.
+        named = {host_key for *_said, host_key in items if host_key is not None}
+        for index, (_role, _content, _occurred_at, host_key) in enumerate(items):
+            if host_key is not None:
+                answers[index] = host_key in waiting_keys or conn.execute(
+                    "SELECT 1 FROM source_events WHERE source_event_key=? AND scope_id=? AND session_id=? LIMIT 1",
+                    (host_key, scope_id, self.context.session_id)).fetchone() is not None
+        copies: dict[tuple[str, str], list[tuple[object, str]]] = {}
+        for index, (role, content, occurred_at, host_key) in enumerate(items):
+            if host_key is not None:
+                continue
+            digest = stored_content_digest(content)
+            if (role, digest) not in copies:
+                copies[role, digest] = [(stamp, key) for stamp, key in (*conn.execute(
+                    "SELECT occurred_at,source_event_key FROM source_events "
+                    "WHERE scope_id=? AND role=? AND content_sha256=? AND session_id=?",
+                    (scope_id, role, digest, self.context.session_id)).fetchall(),
+                    *waiting.get((role, digest), ())) if key not in named]
+            found = copies[role, digest]
+            near = [(distance, position) for position, (stamp, _key) in enumerate(found)
+                    if (distance := _seconds_apart(stamp, occurred_at)) <= window_seconds]
+            if near:
+                found.pop(min(near)[1])
+            answers[index] = bool(near)
         return tuple(answers)
+
+    def _waiting_in_inbox(self, scope_id: str) -> dict[tuple[str, str], list[tuple[object, str]]]:
+        """This session's captures a replay of the inbox will still store, by (role, content digest)."""
+        from .capture_inbox import STILL_REPLAYED
+
+        waiting: dict[tuple[str, str], list[tuple[object, str]]] = {}
+        for payload, code in self._check().execute(
+                "SELECT payload_json,last_error_code FROM capture_inbox WHERE scope_id=? AND project_id IS ? AND branch_id IS ?",
+                (scope_id, self.context.project_id, self.context.branch_id)):
+            if code is not None and code not in STILL_REPLAYED:
+                continue
+            try:
+                body = json.loads(payload)
+            except ValueError:
+                continue
+            if not isinstance(body, dict) or not isinstance(body.get("context"), dict) \
+                    or body["context"].get("session_id") != self.context.session_id:
+                continue
+            for event in body.get("events") or ():
+                if isinstance(event, dict) and type(event.get("content")) is str and type(event.get("role")) is str:
+                    waiting.setdefault((event["role"], stored_content_digest(event["content"])), []).append(
+                        (event.get("occurred_at"), str(event.get("source_event_key"))))
+        return waiting
 
     def enqueue_source(self, ref: str, revision: int, *, work_type: str, available_at: str) -> None:
         conn = self._check(write=True)

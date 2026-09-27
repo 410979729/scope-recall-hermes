@@ -182,9 +182,9 @@ class MemoryCore:
             return tx.search_sources(query, limit=limit, history=history, automatic=automatic)
 
     def said_in_session(self, context: TrustedContext, scope_id: str, items, *,
-                        window_seconds: float = 120.0) -> tuple[bool, ...]:
-        """Whether each (role, content, occurred_at) is already held in this session near that time."""
-        with self.storage.read(context) as tx:
+                        window_seconds: float = 120.0, remaining_seconds: float | None = None) -> tuple[bool, ...]:
+        """Whether each (role, content, occurred_at, host_key) is already held in this session; see ``Transaction``."""
+        with self.storage.read(context, remaining_seconds=remaining_seconds) as tx:
             return tx.said_in_session(scope_id, tuple(items), window_seconds=window_seconds)
 
     def recall(self, context: TrustedContext, request, *, current_source_refs: tuple[str, ...] = (), deadline_seconds: float | None = None,
