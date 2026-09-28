@@ -4,6 +4,15 @@ All notable changes to `scope-recall` will be documented in this file.
 
 ## [Unreleased]
 
+### Scope Recall 3.4.0rc10 - 2026-09-28
+
+- The version moves past the `v3.4.0rc9` tag.
+- A candidate's evaluation keeps its verdict when the model leaves a supplied source out of `source_refs` or miscopies one. Which sources a question carried is the evaluation's own record. Asked to echo every supplied ref, the model got it wrong in 5.2% of the pilot's evaluations with nine or more sources (2.8% with five to eight, none with one), and each such verdict failed for good as `derivation_invalid` (`candidate_source_refs`): 188 since 2026-09-20. With the other refusals, 7-8% of the model's evaluations failed on 2026-09-27 and 28. What a verdict cites (a span, a counterexample, a state reference) must still be one of the supplied sources. `scope-recall retry-failures --config <runtime-config.json> --include-terminal --apply` gives the evaluations that already failed one more look.
+- A task goes on in a new episode after its episode is deleted. Deleting a source deletes the episode whose resume rests on it, and a task names its episode series outright, so every later capture of the task landed on the deleted episode, was refused (`SOURCE_MISSING`, `episode_unavailable`) and stayed in the capture inbox for good, with doctor reporting `capture_ingress_blocked` from then on. On the pilot the Codex thread in which the owner sent a delete, and a work-computer thread whose test turns were deleted, stored nothing after it. A capture refused that way before this version (a bare `SOURCE_MISSING` in the inbox) is replayed once more; a missing source is now recorded with its field (`SOURCE_MISSING:<field>`), so a failure after that replay stays final.
+- The rest of a thread Codex opens to ask the model for suggestions is not stored either. 3.4.0rc9 kept out the request and its JSON answer, but the thread's tool calls and its end came through: four tool outputs of 2-11 kB and an end marker in one thread on the pilot. The thread is marked when its request is recognized (`scope-recall/host-threads/` beside an entry's pointer, or in the data directory of a store of its own), so that its later hooks, each a process of its own, can tell. The owner speaking in the thread, or its end, removes the mark, and a mark lasts a day at most.
+- A provider that answers that it is overloaded (HTTP 529, as MiniMax and Anthropic do) is refused for capacity, as 503 is: the item waits and is tried again, and the attempt is refunded. One such answer failed a candidate evaluation for good on 2026-09-28.
+- A Hermes gateway starts its vector helper when it first binds, on Windows. The first search opened the helper, and its LanceDB import (about 2 s) could outrun that recall's budget: a probe run as a gateway's first turn after a start came back without its vector search (`helper_open_deadline`).
+
 ### Scope Recall 3.4.0rc9 - 2026-09-28
 
 - The version moves past 3.4.0rc8, which was not tagged.
