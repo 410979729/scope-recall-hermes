@@ -8,6 +8,7 @@ import json
 from functools import wraps
 import logging
 import sqlite3
+import sys
 import threading
 import time
 from typing import Any, Dict, List, Optional
@@ -92,6 +93,23 @@ _HOST_MEMORY_TOOL_NAMES = frozenset({"session_search", "memory"})
 
 def _is_memory_tool_name(tool_name: object) -> bool:
     return _is_scope_recall_tool_name(tool_name) or (type(tool_name) is str and tool_name in _HOST_MEMORY_TOOL_NAMES)
+
+
+def _start_vector_helper(host_runtime) -> None:
+    """Start the vector search's helper when a gateway first binds (``vector.process_store.prestart``).
+
+    The first search opened it then, and its LanceDB import (about 2 s) could outrun that recall's budget: a probe
+    run as a gateway's first turn after a start came back without its vector search (``helper_open_deadline``).
+    """
+    runtime = getattr(host_runtime, "runtime", None)
+    if sys.platform != "win32" or runtime is None or runtime.config.vector is None:
+        return
+    try:
+        from ...vector.process_store import prestart
+        prestart()
+    except OSError as exc:
+        # The first search starts its own helper, as before: slower, never a reason not to bind.
+        _log.warning("could not start a vector helper ahead: %s", type(exc).__name__)
 
 
 def _same_stored_content(stored_event: dict, content: object) -> bool:
@@ -256,6 +274,7 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
                     core=self._core,
                     clock=self._clock,
                 )
+                _start_vector_helper(self._host_runtime)
             else:
                 self._host_runtime.rebind_session(
                     fresh.session_id,
