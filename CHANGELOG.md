@@ -4,6 +4,14 @@ All notable changes to `scope-recall` will be documented in this file.
 
 ## [Unreleased]
 
+### Scope Recall 3.4.0rc8 - 2026-09-28
+
+- The version moves past the `v3.4.0rc7` tag.
+- A remote client's time more than a minute ahead of this machine's is taken as this machine's now again. A recall finds nothing dated after its now, so with 3.4.0rc7, which kept the client's time so that a replayed hook stays one source, a message from a fast client clock was hidden from every recall until this machine's clock caught up. Within the minute the client's time is still kept.
+- The secret screen's exemptions match the whole value, in matching quotes or none. 3.4.0rc7 let `password: Changed!2024`, `<b>Xk9#mP2q</b>`, `letmein(2024)`, `"wrong horse battery staple"`, "the wifi password is now Sunflower2024", `<hunter2>` and `my.pass.word` through. Code it still refused is let through: `input("Password: ")`, `token := os.Getenv("TOKEN")`, `if token == nil`, `password: Yup.string().required()`, `"credentials": {`, "the token is sent in the header", "token是什么意思". Over a generated corpus of keys, separators and values, what the 3.3.0 screen refused and this one lets through is a mask of x's, `os.environ`, `getpass()` and `letmein()`, nothing else.
+- Four patterns of the secret screen are linear on adversarial text. They took seconds: a cookie header's spacing ran across blank lines (4.3 s for 20 kB), a backslash run with no break after it (1.4 s), repeated "credential" (1.0 s), repeated PEM BEGIN markers (14 s for 100 kB). The whole-block PEM pattern is gone: the BEGIN marker decides, and the block is redacted by itself.
+- Redaction replaces the union of every pattern's matches, found on the text before any is replaced. One pattern at a time, a password's match swallowed a token's key and left its value in the output.
+
 ### Scope Recall 3.4.0rc7 - 2026-09-28
 
 - The version moves past the `v3.4.0rc6` tag.
