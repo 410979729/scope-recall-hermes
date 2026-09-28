@@ -98,32 +98,44 @@ COMMON_SECRET_PATTERN_VALUES: tuple[re.Pattern[str], ...] = tuple(
     COMMON_SECRET_PATTERNS.values()
 )
 
-#: What follows a credential word without being a credential.  Every message that said "password: reset it
-#: from the login page", "the secret is out" or ``def login(user: str, password: str)`` was refused as a
-#: secret and never stored, and a model request carrying such a message was refused as
-#: ``sensitive_request``.  A value is not one when it holds no ASCII letter or digit (a mask, an empty
-#: quoted string, prose in another script), opens a placeholder or a code expression (``<your-key>``,
-#: ``${API_KEY}``, ``%API_KEY%``, ``[redacted]``), is a mask of x's, is a type or a word prose puts there
-#: ("required", "the", "None"), or is a call, a subscript or a dotted name without digits (``getpass()``,
-#: ``os.environ["KEY"]``, ``settings.DB_PASSWORD``).  Anything else after "password:" still counts,
-#: "sunshine" included.
+#: What follows a credential word without being a credential, kept narrow on purpose: a password can be any
+#: word in any script, so only what cannot be one is let through.  Every message that said
+#: ``def login(user: str, password: str)``, ``api_key: <your-api-key>`` or "the password is required" was refused
+#: as a secret and never stored, and a model request carrying one was refused as ``sensitive_request``.  Not a
+#: value: a placeholder (``<...>``, ``${...}``, ``$UPPER_NAME``, ``%NAME%``, ``{name}``, ``[REDACTED...]``), a mask
+#: (``***``, ``xxxx``) or an empty quoted string, a type or a null in code (``str``, ``Optional[str]``,
+#: ``None``), a word that says what the value is rather than being it (``required``, ``missing``, ``reset``,
+#: ``see``), a call or subscript on a lower-case name (``getpass()``, ``os.environ["KEY"]``), or a dotted name
+#: without digits (``settings.DB_PASSWORD``).  ``$unshine2024``, ``[hunter2]``, "correct horse battery staple"
+#: and a value in another script still count.
 _END = r"""(?=[\s,;:.!?)\]}>"'`|]|$)"""
+_QUOTE = r"""["'`]?"""
 _NOT_A_VALUE = (
-    r"(?!"
-    r"[^\sA-Za-z0-9]+(?=\s|$)"
-    r"|[\"'`]?[<{\[(%$]"
-    r"|[\"'`]?[xX]{3,}[\"'`]?" + _END +
-    r"|[\"'`]?(?:str|string|bytes|int|bool|float|none|null|nil|undefined|optional|any|secretstr|dict|list|"
-    r"object|required|missing|empty|unset|invalid|incorrect|wrong|expired|reset|changed|hidden|masked|"
-    r"redacted|omitted|removed|same|different|correct|valid|set|see|tbd|todo|true|false|yes|no|not|the|a|an|"
-    r"your|my|our|their|its|this|that|it|here|there|below|above)[\"'`]?" + _END +
-    r"|[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*[(\[]"
-    r"|[A-Za-z_]+(?:\.[A-Za-z_]+)+" + _END +
-    r")"
+    r"(?!" + _QUOTE + r"(?:"
+    r"<[^<>\s]{1,80}>"
+    r"|\$\{[^{}\s]{1,80}\}"
+    r"|(?-i:\$[A-Z][A-Z0-9_]*)" + _END +
+    r"|%[A-Za-z_][A-Za-z0-9_]*%"
+    r"|\{\{?[A-Za-z_][A-Za-z0-9_.]*\}\}?"
+    r"|\[(?:redacted|hidden|masked|omitted|removed)[^\]\s]*\]"
+    r"|[*\u2022\u00b7xX._-]{3,}" + _QUOTE + _END +
+    r"|(?:\"\"|''|``)" + _END +
+    r"|(?:str|string|bytes|int|bool|float|none|null|nil|undefined|optional|any|secretstr|dict|list|object|true|"
+    r"false)" + _QUOTE + r"(?=[\[\s,;:.!?)\]}>\"'`|]|$)"
+    r"|(?:required|missing|empty|unset|invalid|incorrect|wrong|expired|reset|changed|hidden|masked|redacted|"
+    r"omitted|removed|see|tbd|todo|n/a)" + _QUOTE + _END +
+    r"|(?-i:[a-z_][a-z_]*)(?:\.[A-Za-z_][A-Za-z0-9_]*)*[(\[]"
+    r"|[A-Za-z_]+(?:\.[A-Za-z_]+)+" + _QUOTE + _END +
+    r"))"
 )
-#: Prose: after "is", a plain lower-case word ("the password is required", "the token is expired").
-#: "password is hunter2" or "password is Tr0ub4dor&3" still reads as one.
-_IS_NOT_A_WORD = r"(?!(?-i:[a-z]+)" + _END + r")"
+#: Prose: after "is", one of the words that describe a value rather than give it ("the password is required",
+#: "the secret is out", "the token is expired").  "my password is iloveyou" still reads as one.
+_IS_NOT_A_WORD = (
+    r"(?!(?:required|optional|missing|empty|set|unset|invalid|incorrect|wrong|right|correct|valid|expired|"
+    r"revoked|changed|reset|stored|saved|hashed|encrypted|hidden|masked|redacted|needed|not|the|a|an|too|very|"
+    r"still|now|in|on|at|for|out|ok|fine|weak|strong|long|short|same|different|being|also|only|just|what|where|"
+    r"that|this|it|here|there|none|null|true|false)" + _END + r")"
+)
 _SEPARATOR = r"(?:[ \t]*(?::|=|是)[ \t]*|[ \t]+is[ \t]+" + _IS_NOT_A_WORD + r")"
 
 SECRET_ASSIGNMENT_RE = re.compile(
@@ -133,8 +145,10 @@ SECRET_ASSIGNMENT_RE = re.compile(
     re.IGNORECASE,
 )
 
+#: The name before ``token`` is at most 64 characters: unbounded, a long hyphenated line (a generated id, a
+#: kebab-case slug) was tried from every hyphen to its end, 18 s for 60,000 characters.
 TOKEN_ASSIGNMENT_RE = re.compile(
-    r"(?P<key>(?<![A-Za-z0-9_])(?:[A-Za-z_][A-Za-z0-9_-]*[_-])?token)[\"']?"
+    r"(?P<key>(?<![A-Za-z0-9_])(?:[A-Za-z_][A-Za-z0-9_-]{0,62}[_-])?token)[\"']?"
     + _SEPARATOR + _NOT_A_VALUE + r"[^\s]+",
     re.IGNORECASE,
 )

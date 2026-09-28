@@ -50,7 +50,6 @@ ORDINARY = [
     "the password is required for every login",
     "the secret is out",
     "token is expired, sign in again",
-    "secret: the meeting moved to Friday",
     "def login(user: str, password: str) -> bool:",
     "password: Optional[str] = None",
     'api_key = os.environ["API_KEY"]',
@@ -62,7 +61,9 @@ ORDINARY = [
     '{"password": null, "token": ""}',
     "password: ********",
     "token: xxxx",
-    "password" + chr(0xFF1A) + chr(0x5FD8) + chr(0x8BB0) + chr(0x4E86),   # full-width colon, then Chinese prose
+    "require_password: true",
+    "password: see the vault",
+    "password: [REDACTED_SECRET]",
 ]
 
 #: Values that are credentials, in the same shapes.
@@ -77,6 +78,21 @@ REAL = [
     "secret: 9f8e7d6c5b4a3f2e",
     "token: 8f14e45fceea167a5a36dedd4bea2543",
     "password = hunter2.backup9",
+    # Shapes the first narrowing let through (the core review of 2026-09-28): a password can be any word in any
+    # script, so only a placeholder's exact shape is exempt.
+    "password: $unshine2024",
+    '"password": "$ecret99!"',
+    "password: (Summer2024)",
+    "password: [hunter2]",
+    "password: $2b$12$abcdefghijklmnopqrstuv",
+    "password: Hunter2(backup)",
+    "api_key=abc123def456[prod]",
+    "my password is iloveyou",
+    "the wifi password is sunflower",
+    "the api key is abcdefghijklmnop",
+    "password: correct horse battery staple",
+    "password" + chr(0x662F) + chr(0x5929) + chr(0x738B) + chr(0x76D6) + chr(0x5730) + chr(0x864E),
+    "password: " + "".join(chr(code) for code in (0x43F, 0x430, 0x440, 0x43E, 0x43B, 0x44C)),
 ]
 
 
@@ -111,3 +127,14 @@ def test_a_telegram_token_is_still_caught_where_one_appears():
                  f"https://api.telegram.org/bot{token}/getMe", f"https://api.telegram.org/BOT{token}/getMe"):
         assert contains_secret_like_text(text), text
 
+
+
+def test_a_long_hyphenated_line_scans_in_linear_time():
+    """The name before ``token`` was unbounded: a 60,000-character kebab-case line was tried from every hyphen to
+    its end, 18 s in one scan, inside a capture or a model request."""
+    import time
+
+    line = "a-" * 30000
+    started = time.monotonic()
+    assert not contains_secret_like_text(line)
+    assert time.monotonic() - started < 2.0
