@@ -138,15 +138,22 @@ spaces; `apply-install` refuses others. Its MCP tools read the store. Changing a
 them is refused, because the tools cannot tell which conversation asks: correct or delete through
 a Hermes agent or Codex.
 
-Each hook is a process of its own, and one that starts LanceDB for its recall was often not ready
-before the recall's budget ran out (6 of 8 cold Claude Code hooks on the pilot recalled by words
-alone). So the entry's MCP server, which the client runs for as long as it is open, also answers the
-entry's hooks on this machine, with a LanceDB helper kept ready: it names itself in
-`<home>\scope-recall\hook-endpoints\<pid>.json` (its port on 127.0.0.1 and a token) and removes the
-file when it exits. A hook hands its payload to the newest server of its own version and prints the
-answer. With none running (the client closed, or its MCP server disabled), or none accepting the
-connection, the hook does the work itself as before; a server started before an upgrade is not asked
-until its client restarts.
+Each hook is a process of its own, and a prompt hook that starts LanceDB for its recall was often
+not ready before the recall's budget ran out (6 of 8 cold Claude Code prompts on the pilot recalled
+by words alone). So the entry's MCP server, which the client runs for as long as it is open, also
+answers the entry's prompt hooks on this machine, with a LanceDB helper kept ready. It listens on
+127.0.0.1 and names itself, with a token, in a folder of the user's own profile
+(`%LOCALAPPDATA%\scope-recall\hook-endpoints\`, or `~/.cache/scope-recall/hook-endpoints/`), not in
+the entry's home, and removes its name when it exits. A prompt hook hands the prompt to the newest
+server of its own version once that server has proved it holds the token, which is never sent. The
+other hooks store what was said and read no vectors, and do it in their own process as before.
+
+With no server running (the client closed, or its MCP server disabled), or none answering, the hook
+does the work itself. A server that took the prompt and did not answer within 7 s is named on stderr
+(`CODEX_HOOK:resident_timeout`) and passed over until it answers its own check again, and the hook
+stores and recalls that prompt itself. A server started before an upgrade is not asked until its
+client restarts. Each open client keeps one LanceDB helper ready: about 550 MB of committed memory,
+which the system pages out while it is idle.
 
 Claude Code or Codex on another machine attaches the same way, under a name of its own, and reaches
 its entry here over HTTP on a private network: [remote-entries.md](remote-entries.md).
