@@ -23,7 +23,7 @@ from .evidence_question import (
 #: Provider failures that keep the ordinary retry limit.  Invalid output and an
 #: uncertain timeout or crash do not: the at-most-once fence must not be
 #: cleared by a failure whose effect is unknown.
-RETRYABLE_CODES = frozenset({"http_429", "rate_limited", "http_500", "http_502", "http_503", "http_504"})
+RETRYABLE_CODES = frozenset({"http_429", "rate_limited", "http_500", "http_502", "http_503", "http_504", "http_529"})
 
 #: Where deleting or suppressing an object reaches candidate work.
 _FENCED_BY = {

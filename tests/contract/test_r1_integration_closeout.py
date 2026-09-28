@@ -111,8 +111,10 @@ def test_explicit_transition_preserves_new_value_and_rejects_unproven_frames(app
     assert receipt.items[0].state == expected
 
 
+@pytest.mark.parametrize("status", ["503", "529"])
 @pytest.mark.parametrize("always_rejected", [False, True])
-def test_explicit_http_rejection_recovers_without_new_evidence_and_stops_at_limit(app, always_rejected):
+def test_explicit_http_rejection_recovers_without_new_evidence_and_stops_at_limit(app, always_rejected, status):
+    """529 is a provider saying it is overloaded: one failed a candidate evaluation for good on 2026-09-28."""
     from scope_recall.adapters.models import AuxiliaryModelError
 
     core, ctx = app
@@ -125,7 +127,7 @@ def test_explicit_http_rejection_recovers_without_new_evidence_and_stops_at_limi
         def evaluate_candidate(self, candidate, sources, *, remaining_seconds):
             self.attempts += 1
             if always_rejected or self.attempts == 1:
-                raise AuxiliaryModelError("http_status", detail="503")
+                raise AuxiliaryModelError("http_status", detail=status)
             return super().evaluate_candidate(candidate, sources, remaining_seconds=remaining_seconds)
 
     evaluator = Recovering(proposal)
@@ -148,4 +150,4 @@ def test_explicit_http_rejection_recovers_without_new_evidence_and_stops_at_limi
     if not always_rejected:
         assert core.current_claim(ctx, saved.ref).state == "active"
     with sqlite3.connect(core.storage.path) as db:
-        assert db.execute("SELECT count(*) FROM work_error_details WHERE error_code='http_503'").fetchone()[0] == (2 if always_rejected else 1)
+        assert db.execute("SELECT count(*) FROM work_error_details WHERE error_code=?", (f"http_{status}",)).fetchone()[0] == (2 if always_rejected else 1)

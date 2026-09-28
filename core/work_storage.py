@@ -30,7 +30,7 @@ _AUTO_TOKEN = re.compile(r"(?:^|\|(?:prior:)?)auto_retry:([0-9]+)(?=\||$)")
 # Invalid derivations and rejected authority remain terminal and inspectable.
 AUTO_RECOVERABLE_ERRORS = frozenset({
     "model_unavailable", "model_timeout", "timeout", "network_error", "http_429",
-    "http_500", "http_502", "http_503", "http_504", "rate_limited",
+    "http_500", "http_502", "http_503", "http_504", "http_529", "rate_limited",
     "storage_unavailable", "STORAGE_UNAVAILABLE", "DEADLINE_EXCEEDED",
     "memory_epoch_changed", "lease_exhausted", "embedding_unavailable",
 })
@@ -39,8 +39,9 @@ AUTO_RECOVERABLE_ERRORS = frozenset({
 #: anyone says nothing about this payload -- unlike a timeout, which a large
 #: item can genuinely cause -- so the lease never got an attempt at all and the
 #: attempt is refunded.  Without the refund one four-hour provider outage pushed
-#: 195 items into ``failed`` at ``attempt=3`` apiece, each needing an operator.
-CAPACITY_REFUSALS = frozenset({"http_429", "rate_limited", "http_502", "http_503", "http_504"})
+#: 195 items into ``failed`` at ``attempt=3`` apiece, each needing an operator.  529 is a provider saying it is
+#: overloaded (MiniMax, Anthropic): one such answer failed a candidate evaluation for good on 2026-09-28.
+CAPACITY_REFUSALS = frozenset({"http_429", "rate_limited", "http_502", "http_503", "http_504", "http_529"})
 
 #: The provider declining the account rather than this request: payment
 #: required, key rejected, access forbidden.  No payload changes that answer, so

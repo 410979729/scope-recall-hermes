@@ -226,7 +226,7 @@ def test_every_transient_failure_the_worker_knows_is_operator_actionable():
 
 
 @pytest.mark.parametrize("code", ["model_unavailable", "model_timeout", "network_error",
-                                  "http_429", "http_503", "rate_limited"])
+                                  "http_429", "http_503", "http_529", "rate_limited"])
 def test_a_transient_model_failure_can_be_cleared(code):
     assert retry_class(code) == "actionable"
     assert selects(code, include_terminal=False, generation=SCHEMA_VERSION) is True
