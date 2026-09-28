@@ -118,10 +118,11 @@ def test_binding_directory_runtime_config_attaches_without_host_kwarg(hermes_hom
 def test_a_gateway_starts_its_vector_helper_when_it_first_binds(hermes_home, initialize_kwargs, monkeypatch):
     """The first search opened the vector helper, and its LanceDB import could outrun that recall's budget: a probe
     run as a gateway's first turn after a start came back without its vector search."""
-    from scope_recall.adapters.hermes import provider as provider_module
+    from scope_recall.vector import process_store
 
     started = []
-    monkeypatch.setattr(provider_module, "_start_vector_helper", started.append)
+    # The helper itself is the only stand-in: the host runtime, its config and its vector section are the real ones.
+    monkeypatch.setattr(process_store, "prestart", lambda **_options: started.append(True))
     binding, _core = install_hermes_scope_recall(
         hermes_home,
         agent_id=initialize_kwargs["agent_identity"],
@@ -130,15 +131,20 @@ def test_a_gateway_starts_its_vector_helper_when_it_first_binds(hermes_home, ini
         agent_workspace=initialize_kwargs["agent_workspace"],
         test_mode=False,
     )
-    config_path = _write_runtime_config(
-        hermes_home / "trusted-runtime.json",
-        _runtime_payload(binding, session_id="TEST-session-1", allowed_scope_ids=binding.scope_ids),
-    )
+    from scope_recall.core.recall_policy import EMBEDDING_SPACE, embedding_space_id
+
+    payload = _runtime_payload(binding, session_id="TEST-session-1", allowed_scope_ids=binding.scope_ids)
+    space = dict(EMBEDDING_SPACE)
+    payload["vector"] = {"backend": "lancedb", "table_name": "TEST_vectors", "dimensions": space["dimensions"],
+                         "storage_dir": str(binding.data_directory / "vectors" / embedding_space_id(space))}
+    config_path = _write_runtime_config(hermes_home / "trusted-runtime.json", payload)
     provider = ScopeRecallHermesAdapter()
     try:
         for session in ("TEST-session-1", "TEST-session-2"):
             provider.initialize(session, **{**initialize_kwargs, "trusted_runtime_config_path": str(config_path)})
-        assert len(started) == 1 and started[0] is provider._host_runtime
+        assert provider._host_runtime.configured, provider._host_runtime.capability_gaps
+        assert provider._host_runtime.runtime.config.vector is not None
+        assert started == ([True] if sys.platform == "win32" else []), "once, when the gateway first binds"
     finally:
         provider.shutdown()
 

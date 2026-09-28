@@ -317,9 +317,10 @@ def test_a_correction_with_no_claim_to_place_it_against_keeps_no_open_row(app):
             (said.ref,ctx.project_id,ctx.branch_id))
         conn.commit()
     assert len(core.unresolved_updates(ctx)) == 1
-    with core.storage.write(ctx) as tx:
-        assert tx.claims.close_unplaceable_updates() == 1
+    core.drain_worker(ctx, max_items=8, remaining_seconds=10)
     assert core.unresolved_updates(ctx) == ()
+    with core.storage.write(ctx) as tx:
+        assert tx.claims.close_unplaceable_updates() == 0, "closed once"
 
 
 def test_ambiguity_the_user_never_settled_is_still_reported(app):
