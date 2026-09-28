@@ -332,3 +332,84 @@ def test_the_plugin_sends_hooks_and_tools_to_the_server(tmp_path, host):
     command = hooks["Stop"][0]["hooks"][0]["command"]
     assert "scope_recall.adapters.codex.remote_client" in command and "--config" in command
     assert "skills/scope-recall-memory/SKILL.md" in by_name
+
+
+def test_the_hook_answers_in_ascii_whatever_the_code_page(tmp_path, monkeypatch, capsys):
+    """A pipe on Windows carries the system code page (GBK on a Chinese Windows, under -I whatever PYTHONUTF8
+    says), and the host reads UTF-8: recalled Chinese text written as it is arrived garbled or not at all."""
+    import io
+
+    config = _client(tmp_path, "claude-code", _free_port())
+    recalled = {"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": "TEST 天枢记得 QX-17。"}}
+    monkeypatch.setattr(remote_client, "run_hook", lambda *args, **kwargs: recalled)
+    monkeypatch.setattr(remote_client.sys, "stdin", type("Stdin", (), {"buffer": io.BytesIO(b"{}")})())
+    assert remote_client.main(["--config", str(config["config"])]) == 0
+    out = capsys.readouterr().out
+    assert out.isascii() and json.loads(out) == recalled
+
+
+def test_the_server_opens_no_path_a_request_names(served, tmp_path):
+    """A Stop that sent no record lines had nothing new to send.  The payload's transcript_path names a file on the
+    client's machine; sent on purpose it could name one here, which the server read as this entry's messages."""
+    root, homes, _ports = served
+    here = _record(tmp_path / "TEST-this-machine" / "TEST-work-session.jsonl",
+                   _line("user", "u9", _moments()(0), origin={"kind": "human"}, promptId="TEST-p9",
+                         message={"role": "user", "content": "TEST 这台机器上的记录"}))
+    config = remote_server.load_server_config(homes["claude-code"], "claude-code")
+    answer = remote_server.handle_request(config, {"payload": {
+        "hook_event_name": "Stop", "session_id": "TEST-work-session", "prompt_id": "TEST-p9", "cwd": "C:/work",
+        "transcript_path": str(here), "last_assistant_message": "TEST 好的。"}})
+    assert answer["through"] is None
+    said = [content for _role, _origin, content, _at in _rows(root, "workpc-claude-code")]
+    assert "TEST 这台机器上的记录" not in said and "TEST 好的。" in said
+
+
+def test_a_failed_capture_s_code_reaches_the_server_log(served, tmp_path, monkeypatch):
+    _root, homes, ports = served
+    monkeypatch.setattr(remote_server, "handle_request", lambda config, body, started=None: {
+        "result": {}, "through": None, "reason": "capture_failed", "error": "DEADLINE_EXCEEDED"})
+    root_logger = logging.getLogger()
+    level = root_logger.level
+    handler = remote_server.log_to_file(homes["codex"])
+    try:
+        _hook(_client(tmp_path, "codex", ports["codex"]), {"hook_event_name": "UserPromptSubmit",
+              "session_id": "TEST-codex-session", "turn_id": "TEST-t1", "prompt": "TEST 记一笔。", "cwd": "C:/work"})
+    finally:
+        root_logger.removeHandler(handler)
+        root_logger.setLevel(level)
+        handler.close()
+    log = (homes["codex"] / "scope-recall" / remote_server.LOG_NAME).read_text(encoding="utf-8")
+    assert "hook UserPromptSubmit: capture_failed (DEADLINE_EXCEEDED), record through None" in log
+
+
+def test_a_plugin_command_survives_the_shell_that_runs_it(tmp_path):
+    """Claude Code runs a hook through a shell: a path it would split is refused, as the local installer refuses
+    it.  Codex's POSIX command is quoted as shell words, a quote in a path included."""
+    import shlex
+
+    (tmp_path / "TEST with space").mkdir()
+    spaced = _client(tmp_path / "TEST with space", "claude-code", 18765)
+    with pytest.raises(remote_client.RemoteClientError):
+        remote_client.plugin_files(spaced, tmp_path / "TEST-plugin" / "scope-recall")
+    (tmp_path / "TEST-o'brien").mkdir()
+    quoted = _client(tmp_path / "TEST-o'brien", "codex", 18766)
+    files = remote_client.plugin_files(quoted, tmp_path / "TEST-codex-plugin" / "scope-recall-codex")
+    hooks = json.loads(next(text for path, text in files.items() if path.name == "hooks.json"))["hooks"]
+    assert shlex.split(hooks["Stop"][0]["hooks"][0]["command"]) == remote_client._hook_argv(quoted)
+
+
+def test_a_missing_token_file_answers_nothing_and_says_why(tmp_path):
+    config = _client(tmp_path, "claude-code", _free_port())
+    config["token_file"].unlink()
+    assert _hook(config, {"hook_event_name": "UserPromptSubmit", "session_id": "TEST-work-session",
+                          "prompt_id": "TEST-p1", "prompt": "TEST 没有令牌。", "cwd": "C:/work"}) == {}
+    assert "UserPromptSubmit: no token to send" in (config["state_dir"] / "remote-client.log").read_text(encoding="utf-8")
+
+
+def test_a_full_spool_drops_its_oldest_and_says_so(tmp_path, monkeypatch):
+    config = _client(tmp_path, "codex", _free_port())
+    monkeypatch.setattr(remote_client, "SPOOL_LIMIT", 2)
+    for turn in range(3):
+        remote_client._spool(config, {"hook_event_name": "Stop", "turn_id": f"TEST-t{turn}"}, NOW)
+    assert len(list((config["state_dir"] / "spool").glob("*.json"))) == 2
+    assert "spool full: dropped the 1 oldest" in (config["state_dir"] / "remote-client.log").read_text(encoding="utf-8")

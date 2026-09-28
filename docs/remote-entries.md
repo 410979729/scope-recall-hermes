@@ -7,8 +7,9 @@ names the entry it came in through, so "工作机 Claude Code" stays apart from 
 Nothing of the store moves. The client machine runs a small forwarder and holds only the entry's token:
 each hook goes to the entry's server here over HTTP, and this machine's handler records it, as it does for a
 local client. A Claude Code client reads its own session record on its machine and sends what the record
-shows being said, never the record itself. The entry's MCP tools are served over streamable HTTP. Tool calls
-and tool output are not recorded, as for a local client.
+shows being said, never the record itself; the server opens no path a request names. The entry's MCP tools
+are served over streamable HTTP. Tool calls and tool output are not recorded: the remote plugin does not
+forward them, where a local Codex client records its tool calls.
 
 The server listens on one private address this machine has on a network both machines are in (a tailnet),
 never on every interface, and refuses any request without the entry's token. The token is made on the client
@@ -35,8 +36,9 @@ machine and stays there; this machine keeps its SHA-256.
    python -m scope_recall.adapters.codex.remote_server serve --home F:\ScopeRecall\workpc-claude-code --host claude-code --env-file <file>
    ```
 
-   The server has no console. Each hook it handles (its event, the handler's reason, how far a record was
-   stored, the time taken), each request refused for want of the token and its own errors go to
+   The server has no console. Each hook it handles (its event, the handler's reason, the capture's error code
+   when it failed, how far a record was stored, the time taken), each request refused for want of the token
+   and its own errors go to
    `<home>\scope-recall\remote-server.log`, kept to about 1 MB with two older copies.
 
    On Windows start it with a `pythonw.exe` that opens no console, such as the one in a virtual environment
@@ -52,7 +54,9 @@ stopped with the other processes on the store for an upgrade (`package-upgrade`)
 ## On the client machine
 
 1. Install the package in a virtual environment. Claude Code must be 2.1.196 or later: a prompt from an
-   earlier one carries no prompt id and is refused.
+   earlier one carries no prompt id and is refused. Claude Code runs a hook through a shell, so its
+   interpreter and `client.json` must be on paths of ASCII letters, digits and `._-/:` only; `install`
+   refuses others.
 2. Write `client.json` with absolute paths:
 
    ```json
@@ -75,15 +79,19 @@ stopped with the other processes on the store for an upgrade (`package-upgrade`)
    `~/plugins/scope-recall-codex`, listed in the personal marketplace (`~/.agents/plugins/marketplace.json`)
    and enabled in Codex, which then asks you to approve its hooks.
 
+   The plugin's `.mcp.json` carries the token too, as the header the host sends to `/mcp`; like the token file
+   it stays in your profile.
+
 ## When the server cannot be reached
 
 A hook whose connection has not opened in 3 s gives up and answers with nothing; for a minute after that no
 hook tries, so while the server is away a prompt is held up once a minute at most, and it has no recall.
-Claude Code loses no message: its record carries them to the next Stop that reaches the server, and the
-cursor on the client moves only as far as the server stored. A Codex hook is kept in a spool on the client
-and sent, with the moment it happened, by a process a later hook starts once the server answers again; a hook
-sent twice is the same source, not two. What did not get through, and what the spool sent, is logged in the
-client's `state_dir\remote-client.log`.
+A Claude Code session's record carries what was said to that session's next Stop that reaches the server,
+and the cursor on the client moves only as far as the server stored; what a session had not sent when it
+ended stays unsent. A Codex hook is kept in a spool on the client and sent, with the moment it happened, by a
+process a later hook starts once the server answers again; a hook sent twice is the same source, not two.
+The spool keeps 256 hooks and drops its oldest past that. What did not get through, what the spool sent and
+what it dropped is logged in the client's `state_dir\remote-client.log`.
 
 The client connects to the server itself and never through a proxy: `HTTP_PROXY` or a system proxy on the
 client machine is for the internet and cannot reach the tailnet address. Claude Code's and Codex's own MCP

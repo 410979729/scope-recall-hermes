@@ -109,6 +109,13 @@ def said(row: object) -> Said | None:
     prompt_id = row.get("promptId") if role == "user" else None
     if type(prompt_id) is not str or not prompt_id.strip() or len(prompt_id) > 240:
         prompt_id = None
+    else:
+        try:
+            prompt_id.encode("utf-8")
+        except UnicodeEncodeError:
+            # An id the store cannot bind would stop every later read at this line; the message is still
+            # matched by its words and moment.
+            prompt_id = None
     return Said(entry_id.strip(), role, text, occurred_at, prompt_id.strip() if prompt_id else None)
 
 
@@ -137,6 +144,8 @@ def said_from_wire(value: object) -> Said | None:
     try:
         entry_id.encode("utf-8")
         text.encode("utf-8")
+        if prompt_id is not None:
+            prompt_id.encode("utf-8")
     except UnicodeEncodeError:
         return None
     return Said(entry_id.strip(), role, text, occurred_at, prompt_id.strip() if prompt_id else None)
