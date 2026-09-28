@@ -24,6 +24,7 @@
     "adapters/codex/handler.py",
     "adapters/codex/hook_entry.py",
     "adapters/codex/identity.py",
+    "adapters/codex/local_endpoint.py",
     "adapters/codex/mcp_entry.py",
     "adapters/codex/mcp_server.py",
     "adapters/codex/remote_client.py",

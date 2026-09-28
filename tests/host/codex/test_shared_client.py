@@ -844,3 +844,93 @@ def test_a_prompt_hook_starts_the_vector_helper_before_it_stores_the_prompt(monk
                                                    "last_assistant_message": "UserPromptSubmit"}).encode())
     hook_entry._prestart_vector_helper(b"not json")
     assert started == [{}]
+
+
+@pytest.fixture
+def resident(store, monkeypatch):
+    """The Claude Code entry's MCP server answering its hooks, without a LanceDB helper process."""
+    from scope_recall.adapters.codex import local_endpoint
+    from scope_recall.vector import process_store
+
+    monkeypatch.setattr(process_store, "prestart", lambda **kwargs: None)
+    root, _homes, client, _capture = store
+    endpoint = local_endpoint.serve(client, "claude-code")
+    assert endpoint is not None
+    try:
+        yield root, client, endpoint
+    finally:
+        endpoint.stop()
+
+
+def test_a_hook_is_answered_by_the_entry_s_running_mcp_server(resident):
+    """A cold hook's recall was often done before its LanceDB helper was ready: on the pilot 6 of 8 cold Claude Code
+    hooks recalled by words alone.  The client's MCP server lives as long as the client and answers the hooks warm."""
+    import time
+
+    from scope_recall.adapters.codex import local_endpoint
+
+    root, client, endpoint = resident
+    named = list(local_endpoint.endpoints(client).glob("*.json"))
+    assert [path.name for path in named] == [endpoint.path.name]
+    raw = json.dumps(_prompt("TEST 常驻进程收到的一句话。", prompt_id="TEST-prompt-resident")).encode()
+    answer = local_endpoint.ask(client, "claude-code", raw, started=time.monotonic(), budget=9.0)
+    assert answer is not None
+    _result, diagnostics = answer
+    assert diagnostics["capture_durability"] in ("persisted", "queued")
+    assert ("user", "human_direct", "TEST 常驻进程收到的一句话。") in _said_in_store(root)
+    endpoint.stop()
+    assert not endpoint.path.exists()
+
+
+def test_a_hook_does_the_work_itself_when_no_current_server_answers(store, tmp_path):
+    import socket
+    import time
+
+    from scope_recall._version import __version__
+    from scope_recall.adapters.codex import local_endpoint
+
+    _root, _homes, client, _capture = store
+    folder = local_endpoint.endpoints(client)
+    folder.mkdir(parents=True)
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    stale = folder / "111.json"
+    stale.write_text(json.dumps({"host": "claude-code", "port": port, "token": "TEST", "pid": 111,
+                                 "version": __version__}), encoding="utf-8")
+    older = folder / "222.json"
+    older.write_text(json.dumps({"host": "claude-code", "port": port, "token": "TEST", "pid": 222,
+                                 "version": "0.0.1"}), encoding="utf-8")
+    raw = json.dumps(_prompt("TEST 没人接。")).encode()
+    assert local_endpoint.ask(client, "claude-code", raw, started=time.monotonic(), budget=9.0) is None
+    # Nothing listens on the port it names: a server that ended without removing its name.  A server of another
+    # version is left alone, and not asked either: it runs the code it was started with.
+    assert not stale.exists() and older.exists()
+
+
+def test_a_server_answers_only_its_own_token(resident):
+    import http.client
+
+    _root, _client, endpoint = resident
+    port = json.loads(endpoint.path.read_text(encoding="utf-8"))["port"]
+    connection = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+    try:
+        connection.request("POST", "/hook", body=b'{"hook": "{}", "elapsed": 0}',
+                           headers={"X-Scope-Recall-Token": "TEST-wrong", "Content-Type": "application/json"})
+        assert connection.getresponse().status == 401
+    finally:
+        connection.close()
+
+
+def test_the_hook_entry_hands_its_hook_to_the_running_server(resident, monkeypatch, capsys):
+    from scope_recall.adapters.codex import hook_entry
+
+    root, client, _endpoint = resident
+    # Only a hook that does the work itself starts a helper of its own.
+    monkeypatch.setattr(hook_entry, "_prestart_vector_helper",
+                        lambda raw: (_ for _ in ()).throw(AssertionError("handled in process")))
+    raw = json.dumps(_prompt("TEST 由常驻进程保存。", prompt_id="TEST-prompt-entry")).encode()
+    monkeypatch.setattr(hook_entry.sys, "stdin", type("Stdin", (), {"buffer": __import__("io").BytesIO(raw)})())
+    assert hook_entry.main(["--home", str(client), "--host", "claude-code"]) == 0
+    assert json.loads(capsys.readouterr().out) is not None
+    assert ("user", "human_direct", "TEST 由常驻进程保存。") in _said_in_store(root)

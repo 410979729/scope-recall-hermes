@@ -84,7 +84,17 @@ def main(argv: list[str] | None = None) -> int:
             workspace=workspace,
             trusted_runtime_config_path=str(runtime_config) if runtime_config is not None else None,
         )
-        server.server.run(transport="stdio")
+        # The client runs this server for as long as it is open: its hooks, each a process of their own, are answered
+        # here, warm (``local_endpoint``).  An override of the runtime config is this server's alone.
+        endpoint = None
+        if isinstance(config, SharedClientConfig) and runtime_config is None:
+            from .local_endpoint import serve
+            endpoint = serve(config.home, config.host)
+        try:
+            server.server.run(transport="stdio")
+        finally:
+            if endpoint is not None:
+                endpoint.stop()
     except (CodexConfigError, ValueError) as exc:
         raise SystemExit(str(exc)) from None
     return 0

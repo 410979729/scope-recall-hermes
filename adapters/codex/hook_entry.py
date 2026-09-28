@@ -6,6 +6,7 @@ a client attached to a shared store, Codex or Claude Code.
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 import os
 import sys
@@ -14,7 +15,7 @@ from pathlib import Path
 
 from ...runtime.resume_entry import host_process_credential_environment
 from .config import load_codex_config, load_shared_client
-from .handler import CodexHookHandler, emit_result
+from .handler import CodexHookHandler, HookDiagnostics, emit_result
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -42,6 +43,9 @@ def main(argv: list[str] | None = None) -> int:
     # model or hook payload fields never participate in this timestamp.
     hook_started_at = time.monotonic()
     raw = sys.stdin.buffer.read(65537)
+    if (args.home is not None and args.runtime_config is None and len(raw) <= 65536
+            and _ask_resident(args.home.expanduser(), args.host, raw, hook_started_at)):
+        return 0
     _prestart_vector_helper(raw)
     location = (args.config if args.config is not None else args.home).expanduser()
     if not location.is_absolute():
@@ -93,6 +97,31 @@ def main(argv: list[str] | None = None) -> int:
     result = handler.handle_bytes(raw)
     emit_result(result, diagnostics=handler.diagnostics)
     return 0
+
+
+def _ask_resident(home: Path, host: str, raw: bytes, started: float) -> bool:
+    """Hand the hook to the entry's MCP server when one runs (``local_endpoint``); True once its answer is out.
+
+    False when none took it: the hook then does the work itself, as it did before there was one.
+    """
+    from .local_endpoint import ask, client_wait
+
+    try:
+        event = json.loads(raw).get("hook_event_name")
+    except (ValueError, AttributeError):
+        return False
+    wait = client_wait(host, event)
+    if wait is None or not home.is_absolute():
+        return False
+    answer = ask(home, host, raw, started=started, budget=wait)
+    if answer is None:
+        return False
+    result, fields = answer
+    known = {field.name for field in dataclasses.fields(HookDiagnostics)}
+    values = {key: (tuple(value) if key == "capability_gaps" else value)
+              for key, value in fields.items() if key in known}
+    emit_result(result, diagnostics=HookDiagnostics(**values) if values else None)
+    return True
 
 
 def _prestart_vector_helper(raw: bytes) -> None:
