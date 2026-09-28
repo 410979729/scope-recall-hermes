@@ -585,10 +585,12 @@ Without `--apply` nothing is written. `--include-terminal` also re-runs failures
 that are terminal by design. The same command returns to the replay the captures
 the inbox gave up after their tries (`inbox_given_up` in its output, and what gave
 them up in `inbox_by_kind`; without `--apply` it only counts them), each with its
-tries counted anew. It reaches the rows of the partition its config's worker
-replays, while doctor's `capture_inbox_given_up` counts the whole store. Run it
-after going back to an earlier release and forward again: a capture the earlier
-release could not read may have been given up meanwhile.
+tries counted anew. It reaches the rows of the partition its config replays, while
+doctor's `capture_inbox_given_up` counts the whole store: in a shared store, run it
+with the shared worker's config (`<root>\runtime-config.json`), since an entry's own
+config reaches only that entry's scopes. Run it after going back to an earlier
+release and forward again: a capture the earlier release could not read may have
+been given up meanwhile.
 
 Since 3.2.0 a tool output is kept and embedded, found by its words and by
 meaning, but no longer consolidated into claims: what an agent read or ran is

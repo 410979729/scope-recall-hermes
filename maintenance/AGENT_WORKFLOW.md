@@ -199,9 +199,11 @@ writes. Reconcile them before claiming a lossless rollback. Never overwrite the
 new database with an old snapshot. `scope-recall rollback` supplies the existing
 snapshot checks; it deliberately refuses unsafe replacement when new writes exist.
 After going back to an earlier release and forward again, run `scope-recall
-retry-failures --config <file>`, and with `--apply` if it counts any
-`inbox_given_up`: a capture the earlier release could not read may have been given
-up meanwhile, and nothing else takes it again.
+retry-failures --config <file>` (the shared worker's config for a shared store), and
+with `--apply` if it counts any `inbox_given_up`: a capture the earlier release could
+not read may have been given up meanwhile, and nothing else takes it again.
+`--apply` also re-opens the failed work a shipped fix may cure, which the preview
+lists (`retried`, `by_kind`).
 
 ## Completion report
 

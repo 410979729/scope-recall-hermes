@@ -526,18 +526,25 @@ def test_a_delete_keeps_a_row_that_took_the_deleted_message_s_key_for_other_word
     core, ctx, clock = worker_app
     first = capture(core, ctx, "TEST 第一条，要删掉。", key="TEST-taken")
     rekey = f"DEFERRED|{capture_inbox.__version__}|2026-09-06T13:00:00Z|1|rekey|IDENTITY_UNBOUND:TEST-host"
-    for session, content in (("TEST-session-2", "TEST 第二条，另一句话。"), ("TEST-session-3", "TEST 第一条，要删掉。")):
+    gave_up = f"GAVE_UP|{capture_inbox.__version__}|25|rekey|IDENTITY_UNBOUND:TEST-host"
+    for session, content, code in (("TEST-session-2", "TEST 第二条，另一句话。", rekey),
+                                   ("TEST-session-3", "TEST 第一条，要删掉。", rekey),
+                                   ("TEST-session-4", "TEST 第三条，放弃过的。", gave_up),
+                                   # A collision waiting for its new key wakes nothing, and can wait as long.
+                                   ("TEST-session-5", "TEST 第四条，等新键的。", "VERSION_CONFLICT")):
         token, _prepared = capture_inbox.enqueue(core.storage, clock, replace(ctx, session_id=session),
                                                  source_event(source_event_key="TEST-taken", content=content),
                                                  scope_id="TEST-scope", host_scope=None)
         with sqlite3.connect(core.storage.path) as conn:
-            conn.execute("UPDATE capture_inbox SET last_error_code=? WHERE token=?", (rekey, token))
+            conn.execute("UPDATE capture_inbox SET last_error_code=? WHERE token=?", (code, token))
             conn.commit()
     authorize(core, ctx, first)
     core.forget(ctx, request(first), remaining_seconds=5)
     with sqlite3.connect(core.storage.path) as conn:
-        left = [json.loads(row[0])["events"][0]["content"] for row in conn.execute("SELECT payload_json FROM capture_inbox")]
-    assert left == ["TEST 第二条，另一句话。"]
+        left = sorted(json.loads(row[0])["events"][0]["content"]
+                      for row in conn.execute("SELECT payload_json FROM capture_inbox"))
+    assert left == sorted(["TEST 第二条，另一句话。", "TEST 第三条，放弃过的。", "TEST 第四条，等新键的。"])
+    assert capture_inbox.deferred_path(gave_up) == "rekey" and capture_inbox.deferred_path("GAVE_UP|0.0.1|x") == "replay"
 
 
 def test_retry_failures_returns_only_the_rows_its_replay_takes(tmp_path):
@@ -585,6 +592,117 @@ def test_a_stored_context_this_release_cannot_read_is_named(worker_app):
     with sqlite3.connect(core.storage.path) as conn:
         [(code,)] = conn.execute("SELECT last_error_code FROM capture_inbox").fetchall()
     assert code.endswith("|1|replay|INPUT_INVALID:ingress_context")
+
+
+def test_a_stored_context_is_named_whatever_part_fails_and_its_own_contract_errors_kept(worker_app):
+    """Only a newer field was tested: a context with its scopes missing, or not an object at all, and a contract error
+    raised inside, which keeps its own code, went untested (review of rc10)."""
+    core, ctx, clock = worker_app
+
+    def put_off_as(change):
+        with sqlite3.connect(core.storage.path) as conn:
+            conn.execute("DELETE FROM capture_inbox")
+            conn.commit()
+        token, _prepared = capture_inbox.enqueue(core.storage, clock, ctx, source_event(
+            source_event_key="TEST-context-part", content="TEST 上下文的一部分。"), scope_id="TEST-scope", host_scope=None)
+        with sqlite3.connect(core.storage.path) as conn:
+            body = json.loads(conn.execute("SELECT payload_json FROM capture_inbox WHERE token=?", (token,)).fetchone()[0])
+            change(body)
+            conn.execute("UPDATE capture_inbox SET payload_json=? WHERE token=?",
+                         (json.dumps(body, ensure_ascii=False), token))
+            conn.commit()
+        capture_inbox.replay_inbox(core.storage, clock, ctx, authorize=lambda _: ctx.allowed_scope_ids)
+        with sqlite3.connect(core.storage.path) as conn:
+            return conn.execute("SELECT last_error_code FROM capture_inbox").fetchone()[0].rsplit("|", 1)[-1]
+
+    assert put_off_as(lambda body: body["context"].pop("allowed_scope_ids")) == "INPUT_INVALID:ingress_context"
+    assert put_off_as(lambda body: body.update(context=["TEST"])) == "INPUT_INVALID:ingress_context"
+    assert put_off_as(lambda body: body["context"].update(actor_origin="TEST-not-an-origin")) == \
+        "IDENTITY_UNBOUND:actor_origin"
+
+
+def test_a_busy_store_at_the_commit_or_at_a_deferral_is_said_as_pending(tmp_path, monkeypatch):
+    """A pass whose commit met a busy writer said nothing, and a deferral the store did not take was reported as put
+    off or given up, and reported again at the next pass (review of rc10)."""
+    from scope_recall.core.capture import CaptureReceipt
+    from scope_recall.core.writer_lease import TruthWriterBusyError
+    from scope_recall.runtime.instance import RuntimeInstance
+    from scope_recall.runtime.worker_entry import _ingress_report
+
+    core, cfg, _path = fixture(tmp_path)
+    context = cfg.context()
+    token, _prepared = capture_inbox.enqueue(core.storage, core.clock, context, source_event(
+        source_event_key="TEST-busy-commit", content="TEST 提交时忙。"), scope_id="TEST-a", host_scope=None)
+    unavailable = CaptureReceipt("unavailable", (), "unknown", "unknown", "unknown", error_code="STORAGE_UNAVAILABLE")
+    monkeypatch.setattr(capture_inbox, "record_event", lambda *args, **kwargs: unavailable)
+    fake = SimpleNamespace(config=cfg, _ingress_authorizer=lambda _: context.allowed_scope_ids, core=core,
+                           ingress_receipts=())
+    assert RuntimeInstance._replay_ingress(fake, 8.0) == (capture_inbox.INGRESS_PENDING_GAP,)
+    last = f"DEFERRED|{capture_inbox.__version__}|2026-01-01T00:00:00Z|{capture_inbox.DEFER_ATTEMPTS}|replay|TEST"
+    with sqlite3.connect(core.storage.path) as conn:
+        conn.execute("UPDATE capture_inbox SET last_error_code=? WHERE token=?", (last, token))
+        conn.commit()
+
+    def refused(*args, **kwargs):
+        raise ContractError("IDENTITY_UNBOUND", "TEST-host")
+
+    def busy(*args, **kwargs):
+        raise TruthWriterBusyError()
+
+    monkeypatch.setattr(capture_inbox, "_revalidated", refused)
+    monkeypatch.setattr(core.storage, "write", busy)
+    assert RuntimeInstance._replay_ingress(fake, 8.0) == (capture_inbox.INGRESS_PENDING_GAP,)
+    counts, _gaps = _ingress_report(fake.ingress_receipts)
+    assert (counts["ingress_given_up"], counts["ingress_deferred"]) == (0, 0), "the store never took the give-up"
+    monkeypatch.undo()
+    with sqlite3.connect(core.storage.path) as conn:
+        assert conn.execute("SELECT last_error_code FROM capture_inbox").fetchall() == [(last,)]
+
+
+def test_a_pass_says_pending_when_its_replay_stopped_or_raised_a_store_error(tmp_path, monkeypatch):
+    """Neither a pass reading the gap from its replay's receipts nor one catching a SQLite error from the first replay
+    was tested (review of rc10)."""
+    import sqlite3 as sqlite
+
+    from scope_recall.core.writer_lease import TruthWriterBusyError
+    from scope_recall.runtime.instance import RuntimeInstance
+
+    core, cfg, _path = fixture(tmp_path)
+    context = cfg.context()
+    capture_inbox.enqueue(core.storage, core.clock, context, source_event(
+        source_event_key="TEST-stopped", content="TEST 停在这里。"), scope_id="TEST-a", host_scope=None)
+
+    def busy(*args, **kwargs):
+        raise TruthWriterBusyError()
+
+    monkeypatch.setattr(capture_inbox, "_revalidated", busy)
+    fake = SimpleNamespace(config=cfg, _ingress_authorizer=lambda _: context.allowed_scope_ids, core=core,
+                           ingress_receipts=())
+    assert RuntimeInstance._replay_ingress(fake, 8.0) == (capture_inbox.INGRESS_PENDING_GAP,)
+    assert [receipt.error_code for receipt in fake.ingress_receipts] == ["STORAGE_UNAVAILABLE"]
+    ran = []
+
+    def locked(*args, **kwargs):
+        raise sqlite.OperationalError("database is locked")
+
+    monkeypatch.setattr(capture_inbox, "replay_inbox", locked)
+    monkeypatch.setattr(capture_inbox, "resolve_conflicted_ingress", lambda *args, **kwargs: ran.append(1) or ())
+    assert RuntimeInstance._replay_ingress(fake, 8.0) == (capture_inbox.INGRESS_PENDING_GAP,) and ran == [1]
+
+
+def test_a_given_up_row_of_the_rekey_path_goes_back_to_it(worker_app):
+    """Returned as never tried, a row the rekey path gave up met the old collision on the plain replay, and one put
+    off there was matched by a delete through the key it had taken (review of rc10)."""
+    core, ctx, clock = worker_app
+    token, _prepared = capture_inbox.enqueue(core.storage, clock, ctx, source_event(
+        source_event_key="TEST-rekey-given-up", content="TEST 换键时放弃的。"), scope_id="TEST-scope", host_scope=None)
+    with sqlite3.connect(core.storage.path) as conn:
+        conn.execute("UPDATE capture_inbox SET last_error_code=? WHERE token=?",
+                     (f"GAVE_UP|{capture_inbox.__version__}|25|rekey|IDENTITY_UNBOUND:TEST-host", token))
+        conn.commit()
+    assert core.retry_failed_work(ctx, limit=64, dry_run=False)["inbox_given_up"] == 1
+    with sqlite3.connect(core.storage.path) as conn:
+        assert conn.execute("SELECT last_error_code FROM capture_inbox").fetchall() == [("VERSION_CONFLICT",)]
 
 
 def test_a_busy_store_halfway_through_a_replay_keeps_what_it_did(worker_app, monkeypatch):

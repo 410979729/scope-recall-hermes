@@ -362,3 +362,22 @@ def test_doctor_names_a_runtime_config_that_was_there_and_is_gone(tmp_path, monk
     _write_runtime_config(ctx, vector_threshold=0.65)
     result = doctor.run_doctor(host='hermes', instance_root=ctx.binding.data_directory)
     assert 'runtime_config_missing' not in result.capability_gaps
+
+
+def test_the_downgrade_leaves_nothing_for_the_garbage_collector(tmp_path, monkeypatch):
+    """The schema test's byte comparison passed without the downgrade closing its connection unless the collector
+    ran at the wrong moment (review of rc10); with collection held back, a connection left to it shows."""
+    import gc
+
+    app, ctx = _doctor_app(tmp_path, monkeypatch)
+    capture(app, ctx, 'TEST-upgrade/2', 'TEST nothing left behind')
+    path = app.storage.path
+    gc.collect()
+    gc.disable()
+    try:
+        downgrade_store(path, 1108)
+        before = path.read_bytes()
+        gc.collect()
+        assert path.read_bytes() == before
+    finally:
+        gc.enable()

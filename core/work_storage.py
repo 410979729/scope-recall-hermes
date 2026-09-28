@@ -741,6 +741,7 @@ class WorkItems:
         Idempotent: every row is stamped with the schema generation that granted
         it, and a row already carrying this generation's stamp is skipped.
         """
+        from .capture_inbox import deferred_path
         from .failure_retry import selects, validate_page  # imports this module
 
         validate_page(limit)
@@ -785,8 +786,11 @@ class WorkItems:
             kind = str(code).rsplit("|", 1)[-1]
             report["inbox_by_kind"][kind] = report["inbox_by_kind"].get(kind, 0) + 1
         if not dry_run:
-            conn.executemany("UPDATE capture_inbox SET last_error_code=NULL WHERE token=?",
-                             [(token,) for token, _code in abandoned])
+            # One the rekey path gave up goes back to it: returned as never tried, the plain replay met the old
+            # collision, and a row it put off was matched by a delete through the key it had taken (review of rc10).
+            conn.executemany("UPDATE capture_inbox SET last_error_code=? WHERE token=?",
+                             [("VERSION_CONFLICT" if deferred_path(code) == "rekey" else None, token)
+                              for token, code in abandoned])
         return report
 
     def _reopen_failed(self, work_id: int, work_type: str, code: object, *, now: str, automatic: bool = False) -> bool:

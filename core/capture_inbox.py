@@ -155,12 +155,26 @@ def waiting(code: object) -> bool:
     return code is None or code in STILL_REPLAYED or (type(code) is str and code.startswith(_DEFERRED))
 
 
+def outlasts_a_delete(code: object) -> bool:
+    """Whether a delete keeps a row unless it holds a deleted message (``holds``): one put off or given up, which waits
+    for hours, or a key collision waiting for its new key, which wakes nothing and can wait as long (reviews of rc10).
+    Any other row of the partition is cancelled, so that a delayed capture cannot undo the delete."""
+    return put_off(code) or code == "VERSION_CONFLICT"
+
+
+def taking_a_new_key(code: object) -> bool:
+    """Whether a row is another message that took a stored one's key: a collision, or one the rekey path put off."""
+    return code == "VERSION_CONFLICT" or deferred_path(code) == "rekey"
+
+
 def holds(payload_json: object, digests: frozenset[str], groups: frozenset[str], *, rekeyed: bool = False) -> bool:
-    """Whether an inbox row's capture holds one of these stored contents (``content_sha256``) or source groups; a row
-    that cannot be read is taken to (a delete then cancels it, as it cancels every row it cannot look into).
+    """Whether an inbox row's capture holds one of these stored contents (``content_sha256``, segment by segment) or
+    source groups; a row that cannot be read is taken to (a delete then cancels it, as it cancels every row it cannot
+    look into).  A message that only quotes deleted words holds neither and is kept, as it would have been had it
+    been stored before the delete.
 
     A row being given a new key (``rekeyed``) is another message that took a stored one's key, so the group it names
-    is not its own and only its words count: deleting the first message cancelled the second (review of rc10)."""
+    is not its own and only its content counts: deleting the first message cancelled the second (review of rc10)."""
     from .events import stored_content_digest
 
     try:
@@ -285,7 +299,9 @@ def _commit(storage, clock, context, token, prepared, scope_id, policy, deadline
             pass
     except _TRANSIENT:
         code = "STORAGE_UNAVAILABLE"
-    return CaptureReceipt("queued", (), "queued", "pending", "pending", prepared.gaps, code)
+    # A row the next pass takes again says so: a pass that met a busy writer here said nothing (review of rc10).
+    pending = (INGRESS_PENDING_GAP,) if code in ("STORAGE_UNAVAILABLE", "DEADLINE_EXCEEDED") else ()
+    return CaptureReceipt("queued", (), "queued", "pending", "pending", (*prepared.gaps, *pending), code)
 
 
 #: Marker spliced into a re-keyed capture's source_event_key. Self-documenting on
@@ -465,7 +481,10 @@ def _defer(storage, clock, context, row, exc, deadline, *, path) -> CaptureRecei
         with storage.write(context, remaining_seconds=max(.001, deadline-time.monotonic())) as tx:
             tx._check(write=True).execute("UPDATE capture_inbox SET last_error_code=? WHERE token=?", (code, row["token"]))
     except (*_TRANSIENT, ContractError):
-        pass  # the row keeps its code, and the next pass takes it again
+        # Not written: the row keeps its code and a later pass takes it again.  Said as put off or given up, a pass
+        # reported a give-up the store never saw, and the next reported it again (review of rc10).
+        return CaptureReceipt("queued", (), "queued", "pending", "pending", (INGRESS_PENDING_GAP,),
+                              "STORAGE_UNAVAILABLE")
     return CaptureReceipt("queued", (), "queued", "pending", "pending",
                           error_code="GAVE_UP" if code.startswith(_GAVE_UP) else "DEFERRED")
 
