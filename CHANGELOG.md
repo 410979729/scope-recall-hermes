@@ -16,6 +16,7 @@ All notable changes to `scope-recall` will be documented in this file.
   - The worker builds a nearest-neighbour index once a store holds 10,000 vectors, at the start of a pass with the time for it. On the pilot's store that took 32.9 s. A search then takes 21 ms against 748 ms, with the exact scan's top ten in 998 of 1,000 places. Compaction adds later vectors to the index.
   - A search no longer returns each hit's vector through the helper's pipe; nothing read it.
   - Replayed on the store as it stood before the question, the recall now finds the pigeon. Without the vector channel it found two unrelated claims.
+  - A vector search whose helper was still opening the table when the recall's time ran out now reports `vector_error:TimeoutError:helper_open_deadline`. It returned no rows and no gap, as if the search had found nothing, so hooks lost the vector channel this way without a trace.
 - Codex's own request for suggestions of what to do next is no longer stored as the owner's words. Codex sends it through the prompt hook.
   - On the pilot four were stored, 11,000 to 15,000 characters each, and claims were drawn from them as if the owner had said them. One of those claims filled a background slot in every recall on the work computer.
   - The model's JSON answer to such a request is not stored as a reply either; nine were.

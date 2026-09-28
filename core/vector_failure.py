@@ -37,6 +37,7 @@ from __future__ import annotations
 NATIVE_VECTOR_FAULTS: tuple[tuple[str, str], ...] = (
     ("helper lock timeout", "helper_lock_timeout"),
     ("helper request deadline exhausted", "helper_request_deadline"),
+    ("helper open deadline exhausted", "helper_open_deadline"),
     ("helper teardown failed", "helper_teardown_failed"),
     ("helper teardown is still pending", "helper_teardown_pending"),
     ("worker exited or returned an invalid frame", "worker_exited_mid_frame"),

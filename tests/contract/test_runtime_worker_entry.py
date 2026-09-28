@@ -291,6 +291,65 @@ def test_lazy_vector_facade_opens_existing_store_for_each_core_search_context(tm
     instance.close()
 
 
+def test_a_store_open_that_uses_up_the_recall_s_time_is_a_gap_not_an_empty_search(tmp_path):
+    """A helper still opening the table keeps its answer for the next request.  The search then returned nothing
+    and the recall reported no gap: a Claude Code or Codex hook, which never makes a next request, lost its vector
+    search without a trace."""
+    binding = _binding(tmp_path / "data")
+    config = RuntimeInstanceConfig(
+        binding=binding,
+        session_id="construction-session",
+        allowed_scope_ids=binding.scope_ids,
+        auxiliary=AuxiliaryRuntimeConfig.from_mapping(
+            {"external_embedding": False, "external_consolidation": False}
+        ),
+        vector=VectorRuntimeConfig(
+            backend="lancedb",
+            storage_dir=tmp_path / "vectors",
+            table_name="TEST-vectors",
+            dimensions=2,
+            test_injection_override=True,
+        ),
+    )
+
+    class SlowStore:
+        def __init__(self):
+            self.search_calls = []
+
+        def open_existing(self):
+            time.sleep(0.3)
+
+        def search(self, vector, *, scope_id, limit):
+            self.search_calls.append(scope_id)
+            return []
+
+        def close(self):
+            pass
+
+    class QueryEmbedding:
+        def embed_query(self, text, *, remaining_seconds):
+            return (0.1, 0.2)
+
+    store = SlowStore()
+    instance = build_runtime_instance(config, vector_factory=lambda _: store)
+    instance.auxiliary = replace(instance.auxiliary, query_embedding=QueryEmbedding())
+    instance.core.initialize()
+    context = SearchContext(
+        query="TEST query",
+        mode="auto",
+        as_of=None,
+        focus_refs=(),
+        limits=SearchLimits(),
+        deadline=time.monotonic() + 0.25,
+        now="2026-09-05T12:00:00Z",
+        trusted_context=_context(binding, "slow-open-session"),
+    )
+    result = instance.core.recall_pipeline.search(context)
+    assert store.search_calls == []
+    assert "vector_error:TimeoutError:helper_open_deadline" in result.gaps, result.gaps
+    instance.close()
+
+
 def test_lazy_vector_facade_reopens_poisoned_cached_store_on_next_search(tmp_path):
     binding = _binding(tmp_path / "data")
     config = RuntimeInstanceConfig(

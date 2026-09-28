@@ -318,7 +318,10 @@ class _LazyVectorPort:
                 return ()
             remaining = min(remaining, deadline.remaining())
             if remaining <= 0.0:
-                return ()
+                # The helper is still opening the table: its answer waits for the next request, which a hook's
+                # process never makes.  Returned as nothing, this recall looked as if the search had found nothing
+                # and reported no gap; Claude Code and Codex lost their vector search this way unseen.
+                raise TimeoutError("native vector helper open deadline exhausted before the search")
             if prepared:
                 return port.search(context, limit=limit, remaining_seconds=remaining, _prepared_query=prepared[0])
             return port.search(context, limit=limit, remaining_seconds=remaining)
