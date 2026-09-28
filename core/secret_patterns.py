@@ -98,25 +98,33 @@ COMMON_SECRET_PATTERN_VALUES: tuple[re.Pattern[str], ...] = tuple(
 )
 
 #: What follows a credential word without being a credential, kept narrow on purpose: a password can be any
-#: word in any script, so only what cannot be one is let through, and only when it is the whole value.  Every
-#: message that said ``def login(user: str, password: str)``, ``api_key: <your-api-key>`` or "the password is
-#: required" was refused as a secret and never stored, and a model request carrying one was refused as
-#: ``sensitive_request``.  Not a value, in matching quotes or none:
+#: word in any script, so only what cannot be one is let through.  Every message that said
+#: ``def login(user: str, password: str)``, ``api_key: <your-api-key>`` or "the password is required" was refused
+#: as a secret and never stored, and a model request carrying one was refused as ``sensitive_request``.
+#: A value runs to its first space or the end of the text.  Not a value when it is all of that, in matching quotes
+#: or none, with closing punctuation only after it (an exemption that stopped earlier let through what followed
+#: it: ``<b>Xk9#mP2q</b>``, ``Changed!2024``, ``My.Secret.Pass#99``):
 #: - a placeholder: ``<your-key>``, ``${...}``, ``$UPPER_NAME``, ``%NAME%``, ``{name}``, ``[REDACTED...]``, the
 #:   bracketed names without digits (``<hunter2>`` and ``{hunter2}`` count);
-#: - a mask (``***``, ``xxxx``), or a value of punctuation alone (``""``, ``")``, ``=`` in ``token == nil``);
-#: - an opening brace or bracket alone (``"credentials": {``);
+#: - a mask (``***``, ``xxxx``), or an opening brace or bracket alone (``"credentials": {``);
 #: - a type or a null in code (``str``, ``Optional[str]``, ``None``), or a word that says what the value is
 #:   (``required``, ``missing``, ``reset``, ``see``);
-#: - code: a call or subscript on a dotted name (``os.environ["KEY"]``, ``Yup.string()``), a call on a lower-case
-#:   name with no argument or a quoted one (``getpass()``, ``input("Password: ")``), a dotted name from a code root
-#:   such as ``os``, ``settings``, ``self`` or ``process`` (``settings.DB_PASSWORD``);
+#: - a dotted name from a code root such as ``os``, ``settings``, ``self`` or ``process`` (``settings.DB_PASSWORD``).
+#: Not a value by how it begins, whatever follows:
+#: - a call or subscript on a dotted name (``os.environ["KEY"]``, ``Yup.string()``), or a call on a lower-case
+#:   name with no argument or a quoted one (``getpass()``, ``input("Password: ")``);
+#: - punctuation alone up to a space or a line's end (``""``, ``")``, ``=`` in ``token == nil``);
 #: - a Chinese question or description (``token是什么意思``).
-#: A value ends at a space or the end of the text, after closing punctuation only: an exemption that stopped
-#: earlier let through what followed it (``<b>Xk9#mP2q</b>``, ``Changed!2024``, ``My.Secret.Pass#99``).
 #: ``$unshine2024``, ``[hunter2]``, ``letmein(2024)``, "correct horse battery staple" and a value in any script
-#: still count.
-_END = r"""(?=[,;:.)\]}>"'`|]*(?:\s|$))"""
+#: still count.  Known gaps, credentials that pass: what follows a value's first space (``password: str Xk9#mP2q``,
+#: ``DB_PASSWORD: str = "..."``, ``settings.DB_PASSWORD or "..."``, ``password: { value: ... }``), what follows an
+#: exemption judged by how it begins (``password: Mr.Smith(1985)``, ``love()you``, a YAML ``|`` block), and a
+#: value of punctuation alone (``!@#$%^&*``).
+#: The quantifiers that meet another run of the same characters are possessive (``*+``, ``++``, ``{3,}+``): greedy,
+#: a run of dots after a key word was given back one dot at a time and the end tried again at each, 2.9 s for
+#: 20 kB and 7.5 s with 64 key starts.  Taking a run whole never changes a verdict: a shorter run is followed by
+#: another of its characters, where a space or the end of the text is needed.
+_END = r"""(?=[,;:.)\]}>"'`|]*+(?:\s|$))"""
 _EXEMPT_IN_QUOTES = (
     r"<[A-Za-z][A-Za-z _.-]{0,79}>"
     r"|\$\{[^{}\s]{1,80}\}"
@@ -124,7 +132,7 @@ _EXEMPT_IN_QUOTES = (
     r"|%[A-Za-z_][A-Za-z0-9_]*%"
     r"|\{\{?[A-Za-z_][A-Za-z_.]*\}\}?"
     r"|\[(?:redacted|hidden|masked|omitted|removed)[^\]\s]*\]"
-    r"|[*\u2022\u00b7xX._-]{3,}"
+    r"|[*\u2022\u00b7xX._-]{3,}+"
     r"|[{\[(]"
     r"|(?:str|string|bytes|int|bool|float|none|null|nil|undefined|optional|any|secretstr|dict|list|object|true|"
     r"false)(?:\[[^\]\s]{0,80}\])?"
@@ -138,7 +146,7 @@ _NOT_A_VALUE = (
     r"(?P<vq>[\"'`]?)(?:" + _EXEMPT_IN_QUOTES + r")(?P=vq)" + _END +
     r"|(?:[A-Za-z_][A-Za-z0-9_]*\.)+[A-Za-z_][A-Za-z0-9_]*[(\[]"
     r"|(?-i:[a-z_][a-z0-9_]*)\((?:\)|[\"'])"
-    r"|[^\s\w]+(?:\s|$)"
+    r"|[^\s\w]++(?:\s|$)"
     r"|(?:什么|多少|哪个|哪些|啥|怎么|怎样|如何|不是|是否|必须|必需|必填|可选|过期|无效|有效)"
     r")"
 )

@@ -180,6 +180,21 @@ def test_adversarial_text_scans_in_linear_time():
         assert time.monotonic() - started < 1.5, (text[:20], time.monotonic() - started)
 
 
+def test_a_run_of_punctuation_after_a_key_word_scans_in_linear_time():
+    """A value's end was greedy over dots, and so was a mask: a run of dots after a key word was given back one at a
+    time, 2.9 s for 20 kB, and 7.5 s to scan with 64 key starts before it."""
+    import time
+
+    for text in ("password: " + "." * 20000 + "a",
+                 "a-" * 63 + "token: " + "." * 4000 + "! " + "the quick brown fox. " * 800,
+                 "token: " + "*.-_x" * 4000 + "a",
+                 "secret = " + "!" * 20000 + "a"):
+        started = time.monotonic()
+        contains_secret_like_text(text)
+        redact_secret_like_text(text)
+        assert time.monotonic() - started < 0.5, (text[:20], time.monotonic() - started)
+
+
 def test_two_secrets_side_by_side_are_both_redacted():
     """One pattern at a time, the password's match swallowed the token's key and left its value."""
     for text in ('{"password":"x","api_token": "abc123def"}', "secret:x;auth_token = abc123def"):
