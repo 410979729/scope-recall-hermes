@@ -10,6 +10,7 @@ from functools import partial
 from typing import Callable, Protocol
 
 from ..contracts import ContractError
+from .delete_storage import purge_work_parts
 from .file_lock import advisory_file_lock
 from .retained_artifacts import RetainedBlob, erase_retained
 from .storage import StoredSource
@@ -465,7 +466,7 @@ def _process_purge(
 
 
 def _purge_layers(storage, clock, context, item, *, purge, started, budget, finish):
-    operation_id = item.subject_ref.rsplit(":", 1)[0]
+    operation_id, _scope_id = purge_work_parts(item.subject_ref)
     now = clock.utc_now()
     if _remaining(started, clock, budget) <= 0:
         return _deadline_result(storage, context, item)

@@ -162,13 +162,29 @@ def test_a_deletion_through_one_entry_is_gone_for_every_entry(root, entries):
         assert receipt["result"]["mode"] == "delete", receipt
         told.on_session_switch("TEST-session-2")
         injected = told.prefetch("储物柜密码 4471")
+        # The text itself is erased by the worker, which the deletion queued.  Its subject names the scope, and a
+        # scope id here holds colons: the worker split the subject at the last one, found no operation, and marked
+        # the purge obsolete, leaving the text on disk behind the read block.
+        purged = []
+
+        class Purge:
+            def purge_active(self, operation_id, *, receipt, remaining_seconds):
+                purged.append(operation_id)
+                return True
+
+        drained = deleting._require_core().drain_worker(deleting._tool_context(mutation=True), purge=Purge(),
+                                                         max_items=1, remaining_seconds=10)
     finally:
         told.shutdown()
         deleting.shutdown()
 
     assert "4471" not in injected
-    # The text itself is erased by the shared store's worker, which the deletion queued.
-    assert _query(root, "SELECT count(*) FROM work_items WHERE work_type='purge'") != [(0,)]
+    assert [(item.work_type, item.disposition) for item in drained.items] == [("purge", "completed")], drained
+    operation = receipt["result"]["operation_id"]
+    assert purged == [operation]
+    layers = json.loads(_query(root, f"SELECT layers_json FROM deletion_operations WHERE operation_id='{operation}'")[0][0])
+    assert layers["sqlite_active"] == "removed" and layers["vector_active"] == "removed", layers
+    assert _query(root, "SELECT count(*) FROM source_events WHERE content LIKE '%4471%'") == [(0,)]
 
 
 def test_an_entry_attached_later_leaves_a_running_one_bound_as_it_was(tmp_path, root, entries):

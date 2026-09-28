@@ -12,7 +12,7 @@ import os
 from dataclasses import dataclass
 
 from ..contracts import ContractError, TrustedContext
-from .delete_storage import DeleteTarget, canonical,OBJECT_TABLES
+from .delete_storage import DeleteTarget, canonical,OBJECT_TABLES,purge_work_ref
 from .schema import SCHEMA_VERSION
 
 
@@ -161,7 +161,8 @@ def replay_deletion_ledger(storage,authority: InstallationMaintenance,ledger,*,r
                             ON CONFLICT(work_type,subject_ref,subject_revision) DO UPDATE SET
                             state='pending',attempt=0,available_at=excluded.available_at,
                             lease_token=work_items.lease_token+1,lease_owner=NULL,lease_until=NULL,last_error_code=NULL""",
-                            (row["operation_id"]+":"+scope, scope, row["project_id"], row["branch_id"], row["created_at"]))
+                            (purge_work_ref(row["operation_id"], scope), scope, row["project_id"], row["branch_id"],
+                             row["created_at"]))
                 finally:
                     tx.context = previous_context
             count += len(targets)

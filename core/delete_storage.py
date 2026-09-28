@@ -37,6 +37,22 @@ def retraction_after(conn, scope_ids, epoch: int) -> bool:
     ).fetchone() is not None
 
 
+def purge_work_ref(operation_id: str, scope_id: str) -> str:
+    """The subject of one scope's purge work for a delete operation."""
+    return f"{operation_id}:{scope_id}"
+
+
+def purge_work_parts(ref: str) -> tuple[str, str]:
+    """``(operation_id, scope_id)`` of a purge work subject.
+
+    The operation id holds no colon and a scope id may hold several (``workspace:6:hermes|agent:7:...``): the
+    subject splits at its first colon.  The worker split it at the last, found no such operation, and marked every
+    delete's purge on such a store obsolete, leaving the deleted text and its vectors on disk behind the read block.
+    """
+    operation_id, _colon, scope_id = str(ref).partition(":")
+    return operation_id, scope_id
+
+
 def group_digest(binding,scope_id,project_id,branch_id,group_key):
     return hashlib.sha256(canonical([binding.installation_id,scope_id,project_id,branch_id,group_key]).encode()).hexdigest()
 
@@ -192,8 +208,39 @@ class Deletions:
         if delete:
             for scope in sorted({t.scope_id for t in targets}):
                 conn.execute("INSERT INTO work_items(work_type,subject_ref,subject_revision,scope_id,project_id,branch_id,available_at) VALUES ('purge',?,1,?,?,?,?)",
-                             (op+":"+scope,scope,ctx.project_id,ctx.branch_id,canonical_time(now)))
+                             (purge_work_ref(op,scope),scope,ctx.project_id,ctx.branch_id,canonical_time(now)))
         return op
+
+    def requeue_unfinished_purges(self,*,now: str,limit: int = 8) -> int:
+        """Give once more the purge a worker marked obsolete before it removed anything.
+
+        Up to 3.4.0rc8 the worker read a purge's operation id at the last colon of its subject (see
+        ``purge_work_parts``), so every delete's purge on a store whose scope ids hold colons was marked obsolete
+        and the operation's physical layers stayed pending.  Such a row, obsolete after one attempt, whose delete
+        operation still has a layer to remove, goes back to pending under a new lease token; one that ends
+        obsolete a second time stays so.
+        """
+        conn = self._tx._check(write=True)
+        rows = conn.execute("""SELECT work_id,subject_ref FROM work_items WHERE work_type='purge' AND state='obsolete'
+            AND last_error_code='authority_revoked' AND attempt<=1 ORDER BY work_id LIMIT ?""",(int(limit),)).fetchall()
+        requeued = 0
+        for row in rows:
+            operation_id,scope_id = purge_work_parts(row["subject_ref"])
+            if scope_id not in self._tx.context.allowed_scope_ids:
+                continue
+            try:
+                receipt = self.receipt(operation_id)
+            except ContractError:
+                continue
+            if receipt is None or receipt["mode"] != "delete":
+                continue
+            layers = receipt["layers"]
+            if layers.get("sqlite_active") == "removed" and layers.get("vector_active") == "removed":
+                continue
+            requeued += conn.execute("""UPDATE work_items SET state='pending',available_at=?,lease_token=lease_token+1,
+                lease_owner=NULL,lease_until=NULL,last_error_code='purge_requeued' WHERE work_id=? AND state='obsolete'""",
+                (now,row["work_id"])).rowcount
+        return requeued
 
     def apply_blocks(self,op,targets,*,delete: bool,now: str | None = None):
         conn = self._tx._check(write=True)

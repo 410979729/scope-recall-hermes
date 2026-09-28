@@ -298,6 +298,8 @@ def _recover_failed_work(storage, clock, context, config: WorkerConfig, allowed:
             now=clock.utc_now(), allowed_work_types=allowed,
             cooldown_seconds=config.auto_retry_cooldown_seconds,
             max_recoveries=config.max_auto_recoveries, limit=recovery_page)
+        if "purge" in allowed:
+            recovered += tx.deletions.requeue_unfinished_purges(now=clock.utc_now(), limit=min(8, config.max_items))
     return recovered
 
 

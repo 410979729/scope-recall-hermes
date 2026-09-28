@@ -251,7 +251,9 @@ def _source_or_claim_context(tx, ref: str, revision: int) -> tuple[str, str | No
 
 
 def _purge_context(tx, ref: str, revision: int) -> tuple[str, str | None, str | None]:
-    scope_id = ref.split(":", 1)[-1]
+    from .delete_storage import purge_work_parts
+
+    _operation_id, scope_id = purge_work_parts(ref)
     tx._scope(scope_id)
     return scope_id, tx.context.project_id, tx.context.branch_id
 
@@ -315,7 +317,9 @@ def _projection_retry_reason(tx, ref: str, revision: int, *, current_epoch: int 
 
 def _purge_retry_reason(tx, ref: str, revision: int, *, current_epoch: int | None = None) -> str | None:
     try:
-        receipt = tx.deletions.receipt(ref.rsplit(":", 1)[0])
+        from .delete_storage import purge_work_parts
+
+        receipt = tx.deletions.receipt(purge_work_parts(ref)[0])
     except ContractError:
         receipt = None
     if receipt is None or receipt.get("mode") != "delete":

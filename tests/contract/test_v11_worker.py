@@ -1354,6 +1354,38 @@ def test_deadline_expiry_returns_partial_receipt(worker_app):
     assert receipt.completed + receipt.failed + receipt.retried + receipt.skipped + receipt.obsolete + receipt.stale == receipt.processed
 
 
+def test_a_purge_marked_obsolete_before_it_removed_anything_is_given_once_more(worker_app):
+    """Up to 3.4.0rc8 the worker read a purge's operation id at the last colon of its subject and a scope id holds
+    colons, so every delete's purge was marked obsolete and its layers stayed pending.  The next pass queues such a
+    purge once more; one that ends obsolete again stays so."""
+    core, ctx, clock = worker_app
+    doomed = capture(core, ctx, "TEST 一次删了没清的话。", key="TEST-requeue/doomed")
+    authorize(core, ctx, doomed)
+    operation = core.forget(ctx, request(doomed), remaining_seconds=10)["operation_id"]
+    with core.storage.write(ctx) as tx:
+        tx._check(write=True).execute("""UPDATE work_items SET state='obsolete',attempt=1,last_error_code='authority_revoked'
+                                         WHERE work_type='purge'""")
+
+    class Purge:
+        calls = 0
+
+        def purge_active(self, operation_id, *, receipt, remaining_seconds):
+            Purge.calls += 1
+            return True
+
+    receipt = core.drain_worker(ctx, purge=Purge(), max_items=2, remaining_seconds=10)
+    assert [(item.work_type, item.disposition) for item in receipt.items][:1] == [("purge", "completed")], receipt
+    assert Purge.calls == 1
+    with core.storage.read(ctx) as tx:
+        assert tx.deletions.receipt(operation)["layers"]["sqlite_active"] == "removed"
+        # Nothing is left to requeue once the layers are removed, whatever the row says.
+        tx._check().execute("SELECT 1").fetchone()
+    with core.storage.write(ctx) as tx:
+        tx._check(write=True).execute("""UPDATE work_items SET state='obsolete',attempt=2,last_error_code='authority_revoked'
+                                         WHERE work_type='purge'""")
+        assert tx.deletions.requeue_unfinished_purges(now=clock.utc_now()) == 0
+
+
 def test_model_work_is_claimed_only_while_the_pass_covers_one_bounded_request(worker_app):
     from scope_recall.core.worker import FINALIZE_MARGIN_SECONDS, WorkerConfig, drain_worker
 
