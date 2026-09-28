@@ -1059,3 +1059,45 @@ def test_a_verdict_citing_a_source_it_was_not_given_is_still_refused(app):
         fields = {row[0] for row in conn.execute(
             "SELECT error_field FROM work_error_details WHERE stage='candidate_evaluation'")}
     assert fields == {"evidence_undeclared_source"}, fields
+
+
+def test_evidence_that_cannot_pose_a_new_question_does_not_wake_a_candidate(app):
+    """Only first-hand testimony changes what a candidate is asked.  Any other evidence marked it pending and reset
+    its clock: 2,045 candidates on the pilot waited for an evaluation nothing would schedule, and a tool output
+    every few days kept them from going dormant."""
+    core, ctx = app
+    _candidate(core, ctx)
+    _finish_source_work(core)
+    core.drain_worker(ctx, max_items=8, remaining_seconds=10, consolidation=Evaluator())
+    lifecycle, _evaluations, _work = _candidate_rows(core)
+    before = (lifecycle[0]["processing_state"], lifecycle[0]["reason"], lifecycle[0]["last_evidence_at"])
+    assert before[0] == "waiting_evidence"
+    tool = capture(core, ctx, "TEST 工具输出：entity-blue property-blue 蓝色。", origin="tool_observation",
+                   key="TEST-rc10/tool-evidence")
+    with sqlite3.connect(core.storage.path) as conn:
+        linked = conn.execute("SELECT count(*) FROM candidate_evidence WHERE source_ref=?", (tool.ref,)).fetchone()[0]
+    assert linked == 1, "the evidence is kept for the next evaluation"
+    lifecycle, _evaluations, _work = _candidate_rows(core)
+    assert (lifecycle[0]["processing_state"], lifecycle[0]["reason"], lifecycle[0]["last_evidence_at"]) == before
+    # First-hand testimony still wakes it.
+    assert _new_first_hand_evidence(core, ctx, "entity-blue property-blue 今天又讨论了一次。", "TEST-rc10/said") == 1
+
+
+def test_a_pass_returns_a_candidate_left_pending_with_nothing_to_ask_to_waiting(app):
+    """What releases before 3.4.0rc10 left: pending on a question already asked, with nothing to schedule it."""
+    core, ctx = app
+    _candidate(core, ctx)
+    _finish_source_work(core)
+    core.drain_worker(ctx, max_items=8, remaining_seconds=10, consolidation=Evaluator())
+    with sqlite3.connect(core.storage.path) as conn:
+        conn.execute("UPDATE candidate_lifecycle SET processing_state='pending_evaluation',reason='new_evidence'")
+        conn.commit()
+    _settle_evidence(core)
+    evaluator = Evaluator()
+    core.drain_worker(ctx, max_items=8, remaining_seconds=10, consolidation=evaluator)
+    lifecycle, _evaluations, _work = _candidate_rows(core)
+    assert (lifecycle[0]["processing_state"], lifecycle[0]["reason"]) == ("waiting_evidence", "no_new_question")
+    assert evaluator.calls == 0
+    assert _new_first_hand_evidence(core, ctx, "entity-blue property-blue 今天又讨论了一次。", "TEST-rc10/after") == 1
+    core.drain_worker(ctx, max_items=8, remaining_seconds=10, consolidation=evaluator)
+    assert evaluator.calls == 1

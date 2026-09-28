@@ -216,6 +216,10 @@ def _queued_work_types(storage, clock, context, started: float, budget: float, k
 #: the ceiling before the next sweep.
 CANDIDATE_QUEUE_CEILING = PROCESS_BATCH_LIMIT * 12
 
+#: Stale pending candidates a pass returns to waiting for evidence, each checked again under the writer lease; the
+#: 2,045 on the pilot take about 64 passes.
+STALE_PENDING_PAGE = 32
+
 
 #: Seconds a pass may still spend handing untouched leases back once its budget
 #: is gone.  The usual reason a group is cut short is that the pass ran out of
@@ -258,6 +262,7 @@ def _recover_failed_work(storage, clock, context, config: WorkerConfig, allowed:
                          started: float, budget: float) -> int:
     """Grant bounded fresh attempts to failures a later fix or budget may have cured."""
     settled: tuple = ()
+    stale: tuple = ()
     if "evaluate_candidate" in allowed:
         # Which settled candidates to queue is read before the write: finding them walks every candidate still
         # settling, and under the writer lease that was 7.6 s of each pass on the shared store (2026-09-27).
@@ -265,10 +270,13 @@ def _recover_failed_work(storage, clock, context, config: WorkerConfig, allowed:
             if tx.work.pending_depth("evaluate_candidate") < CANDIDATE_QUEUE_CEILING:
                 settled = tx.candidates.settled_to_schedule(
                     now=clock.utc_now(), limit=min(config.candidate_batch_limit, config.max_items))
+            stale = tx.candidates.stale_pending(now=clock.utc_now(), limit=STALE_PENDING_PAGE)
     with storage.write(context, remaining_seconds=_remaining(started, clock, budget)) as tx:
         recovery_page = min(MAX_RECOVERY_PAGE, config.max_items)
         recovered = tx.work.recover_invalid_derivations(
             now=clock.utc_now(), allowed_work_types=allowed, limit=recovery_page)
+        # Corrections recorded with no claim to settle them (``close_unplaceable_updates``).
+        tx.claims.close_unplaceable_updates(limit=64)
         if "consolidate" in allowed:
             recovered += tx.work.recover_oversized_consolidations(
                 now=clock.utc_now(), formatter=consolidation_messages, limit=min(8, config.max_items))
@@ -283,6 +291,9 @@ def _recover_failed_work(storage, clock, context, config: WorkerConfig, allowed:
             if settled:
                 tx.candidates.schedule_settled_candidates(
                     now=clock.utc_now(), limit=min(config.candidate_batch_limit, config.max_items), refs=settled)
+            # Pending with nothing new to ask, left by releases before 3.4.0rc10 (``stale_pending``).
+            if stale:
+                tx.candidates.settle_stale_pending(stale, now=clock.utc_now())
             recovered += tx.candidates.reschedule_budget_blocked_candidates(
                 now=clock.utc_now(), limit=min(8, config.max_items))
             # The candidate twin of recover_oversized_consolidations, which

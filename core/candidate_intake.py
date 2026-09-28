@@ -178,6 +178,12 @@ class CandidateIntake(CandidateTables):
         if prior is not None and not (_resume and prior["truncated"]):
             return CandidateSourceTrigger(source_ref, source_revision, "duplicate", prior["matched_count"],
                                           prior["scheduled_count"], bool(prior["truncated"]))
+        # Only first-hand testimony can pose a new question (``question_digest``).  Other evidence is recorded for
+        # the next evaluation without waking the candidate: marked pending and its clock reset, 2,045 candidates on
+        # the pilot waited for an evaluation nothing would schedule, and a tool output every few days kept them
+        # from ever going dormant.
+        first_hand = is_first_hand(evidence_text(source).origin)
+
         def link(rows: list[tuple[str, int]], *, recheck: bool) -> tuple[int, int]:
             matched = scheduled = 0
             for candidate_ref, candidate_revision in rows[:limit]:
@@ -193,6 +199,10 @@ class CandidateIntake(CandidateTables):
                 if not self._add_evidence(candidate, source_ref, source_revision, now):
                     continue
                 matched += 1
+                if not first_hand:
+                    conn.execute("UPDATE candidate_lifecycle SET updated_at=? WHERE candidate_ref=? AND candidate_revision=?",
+                                 (now, candidate.ref, candidate.revision))
+                    continue
                 conn.execute(
                     f"""UPDATE candidate_lifecycle SET processing_state='pending_evaluation',reason='new_evidence',
                         last_evidence_at=?,updated_at=?,dormant_at=NULL
