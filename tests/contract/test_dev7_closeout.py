@@ -308,3 +308,45 @@ def test_key_collided_capture_is_stored_under_its_own_identity(worker_app):
     assert capture_inbox.resolve_conflicted_ingress(
         core.storage, clock, other, authorize=lambda _: other.allowed_scope_ids, remaining_seconds=5
     ) == ()
+
+
+def test_a_long_message_whose_key_was_taken_is_stored_under_a_new_group(worker_app):
+    """Given a new key, each segment of a long message kept the first message's group, met it again and was never
+    stored (review of 3.4.0rc10).  The segments now move into one new group."""
+    core, ctx, clock = worker_app
+    first = source_event(source_event_key="TEST-turn-77", content="TEST 第一条很长的消息。" * 6000)
+    assert capture_inbox.durable_record_event(
+        core.storage, clock, ctx, first, scope_id="TEST-scope", host_scope=None).durability == "persisted"
+    other = replace(ctx, session_id="TEST-session-2")
+    collided = capture_inbox.durable_record_event(
+        core.storage, clock, other, dict(first, content="TEST 第二条很长的消息。" * 6000),
+        scope_id="TEST-scope", host_scope=None)
+    assert collided.disposition == "conflict"
+    receipts = capture_inbox.resolve_conflicted_ingress(
+        core.storage, clock, other, authorize=lambda _: other.allowed_scope_ids, remaining_seconds=5)
+    assert len(receipts) == 1 and receipts[0].durability == "persisted"
+    with sqlite3.connect(core.storage.path) as conn:
+        groups = conn.execute("SELECT source_group_key,count(*) FROM source_events GROUP BY 1 ORDER BY 1").fetchall()
+        assert conn.execute("SELECT count(*) FROM capture_inbox").fetchone()[0] == 0
+    assert [count for _group, count in groups] == [2, 2] and groups[0][0] == "TEST-turn-77"
+    assert groups[1][0].startswith("TEST-turn-77#rekey:")
+
+
+def test_a_capture_that_conflicts_again_under_its_new_key_stays_final(worker_app, monkeypatch):
+    """Written back as a bare conflict, such a row was given the same new key and refused on every pass, and it
+    woke the worker every 30 s (review of 3.4.0rc10)."""
+    core, ctx, clock = worker_app
+    first = source_event(source_event_key="TEST-turn-43", content="TEST first message")
+    capture_inbox.durable_record_event(core.storage, clock, ctx, first, scope_id="TEST-scope", host_scope=None)
+    other = replace(ctx, session_id="TEST-session-2")
+    capture_inbox.durable_record_event(core.storage, clock, other, dict(first, content="TEST second message"),
+                                       scope_id="TEST-scope", host_scope=None)
+    # A new key that collides as well.
+    monkeypatch.setattr(capture_inbox, "_rekeyed_event", lambda event, capture="": dict(event))
+    receipts = capture_inbox.resolve_conflicted_ingress(
+        core.storage, clock, other, authorize=lambda _: other.allowed_scope_ids, remaining_seconds=5)
+    assert [receipt.disposition for receipt in receipts] == ["conflict"]
+    with sqlite3.connect(core.storage.path) as conn:
+        assert conn.execute("SELECT last_error_code FROM capture_inbox").fetchall() == [("VERSION_CONFLICT:rekeyed",)]
+    assert capture_inbox.resolve_conflicted_ingress(
+        core.storage, clock, other, authorize=lambda _: other.allowed_scope_ids, remaining_seconds=5) == ()

@@ -35,15 +35,19 @@ _LEGACY_SOURCE_MISSING = "SOURCE_MISSING"
 STILL_REPLAYED = frozenset({"STORAGE_UNAVAILABLE", "DEADLINE_EXCEEDED", _LEGACY_SOURCE_MISSING, "VERSION_CONFLICT"})
 #: The codes ``replay_inbox`` itself retries; a ``VERSION_CONFLICT`` row is ``resolve_conflicted_ingress``'s.
 _RETRIED = tuple(sorted(STILL_REPLAYED - {"VERSION_CONFLICT"}))
+#: What a capture already given a new key leaves when it conflicts again: another try would conflict the same way.
+_REKEYED_CONFLICT = "VERSION_CONFLICT:rekeyed"
 
 
-def still_replayed_sql(column: str = "last_error_code") -> tuple[str, tuple[str, ...]]:
-    """The inbox rows a worker pass still stores, as SQL and its parameters: never tried, or a code in
-    ``STILL_REPLAYED``.  What wakes the worker and what the doctor calls blocked are read from this one place: the
-    wake had counted two of the four codes, so a row an older release left as ``SOURCE_MISSING`` waited for a pass
-    something else started, and the doctor called it blocked."""
-    codes = tuple(sorted(STILL_REPLAYED))
-    return f"({column} IS NULL OR {column} IN ({','.join('?' for _ in codes)}))", codes
+def retried_sql(column: str = "last_error_code") -> tuple[str, tuple[str, ...]]:
+    """The inbox rows ``replay_inbox`` tries again, as SQL and its parameters: never tried, or a code in ``_RETRIED``.
+
+    What wakes the worker, and all the doctor does not call blocked, is read from this one place: the wake had
+    counted two of the three codes, so a row an older release left as ``SOURCE_MISSING`` waited for a pass something
+    else started, and the doctor called it blocked.  A ``VERSION_CONFLICT`` row wakes nothing and is called blocked
+    until a pass has given it a new key: any pass does, and one the new key could not store would otherwise have
+    woken a pass every 30 s for good."""
+    return f"({column} IS NULL OR {column} IN ({','.join('?' for _ in _RETRIED)}))", _RETRIED
 
 
 def _terminal_code(exc: ContractError) -> str:
@@ -130,14 +134,17 @@ def durable_record_event(storage, clock, context, value, *, scope_id, host_scope
     return _commit(storage, clock, context, token, prepared, scope_id, admission_policy, deadline)
 
 
-def _commit(storage, clock, context, token, prepared, scope_id, policy, deadline):
+def _commit(storage, clock, context, token, prepared, scope_id, policy, deadline, *, rekeyed=False):
     try:
         receipt = record_event(storage, clock, context, {}, scope_id=scope_id,
                                admission_policy=policy, remaining_seconds=max(.001, deadline-time.monotonic()),
                                _prepared=prepared, _inbox_token=token)
         if receipt.disposition in {"conflict", "cancelled"}:
+            # A capture that conflicts under the key it was given for its content stays final: written back as a
+            # bare conflict, it was given the same key and refused again on every pass.
+            code = _REKEYED_CONFLICT if rekeyed and receipt.disposition == "conflict" else receipt.error_code
             with storage.write(context, remaining_seconds=max(.001, deadline-time.monotonic())) as tx:
-                tx._check(write=True).execute("UPDATE capture_inbox SET last_error_code=? WHERE token=?", (receipt.error_code, token))
+                tx._check(write=True).execute("UPDATE capture_inbox SET last_error_code=? WHERE token=?", (code, token))
             return receipt
         if receipt.durability == "persisted":
             return receipt
@@ -163,7 +170,14 @@ def _commit(storage, clock, context, token, prepared, scope_id, policy, deadline
 REKEY_MARKER = "#rekey:"
 
 
-def _rekeyed_event(event: dict) -> dict:
+def _capture_fingerprint(events) -> str:
+    """One fingerprint of a whole capture, which every segment of a long message shares."""
+    return hashlib.sha256(_json([[event["source_event_key"], event.get("content"), event.get("origin"),
+                                  event.get("role"), event.get("occurred_at")] for event in events]).encode("utf-8")
+                          ).hexdigest()[:16]
+
+
+def _rekeyed_event(event: dict, capture: str = "") -> dict:
     """Give one capture an identity derived from its own content.
 
     A host that reuses a turn number sends a second, different message under a
@@ -175,7 +189,21 @@ def _rekeyed_event(event: dict) -> dict:
 
     Distinct content therefore earns a distinct identity. The derivation is
     deterministic, so repairing the same payload twice is idempotent.
+
+    A segment of a long message moves with its group: the group key takes the
+    marker and the fingerprint of the whole capture (``capture``), and the
+    segment's own key is derived from the new group key as when it was split
+    (``events.prepare_capture``).  Only the segment's key had changed, so the
+    segments met the first message's group again and were never stored.
     """
+    segment = event.get("segment")
+    if segment:
+        group = str(segment["group_key"])
+        if REKEY_MARKER in group:
+            return dict(event)
+        group = f"{group}{REKEY_MARKER}{capture}"
+        prefix = "segmented-" + hashlib.sha256(group.encode("utf-8")).hexdigest()
+        return {**event, "source_event_key": f"{prefix}/{segment['index']}", "segment": {**segment, "group_key": group}}
     original = str(event["source_event_key"])
     if REKEY_MARKER in original:
         return dict(event)
@@ -229,13 +257,14 @@ def resolve_conflicted_ingress(storage, clock, context, *, authorize, admission_
             source_principal=TrustedSourcePrincipal(**principal) if principal is not None else None,
             **raw)
         events = []
+        capture = _capture_fingerprint(body["events"])
         for event in body["events"]:
-            checked = prepare_capture(_rekeyed_event(event), original)
+            checked = prepare_capture(_rekeyed_event(event, capture), original)
             if checked.rejection:
                 raise ContractError("ACCESS_DENIED", "ingress_payload")
             events.extend(checked.events)
         receipts.append(_commit(storage, clock, original, row["token"], PreparedCapture(tuple(events), tuple(body["gaps"])),
-                                row["scope_id"], admission_policy, deadline))
+                                row["scope_id"], admission_policy, deadline, rekeyed=True))
     return tuple(receipts)
 
 

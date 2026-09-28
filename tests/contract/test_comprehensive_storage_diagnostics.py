@@ -224,6 +224,25 @@ def test_doctor_exposes_deferred_work_even_when_no_job_was_enqueued(tmp_path, mo
     assert app.storage.path.read_bytes() == before
 
 
+def test_doctor_calls_blocked_the_inbox_rows_no_replay_will_store(tmp_path, monkeypatch):
+    """Rows never tried, passing failures and a bare ``SOURCE_MISSING`` an older release left are replayed; a key
+    collision is blocked until a pass gives it a new key, and a final failure stays blocked."""
+    from scope_recall.core import capture_inbox
+    from v11_support import source_event
+
+    app, ctx = _doctor_app(tmp_path, monkeypatch)
+    codes = (None, 'STORAGE_UNAVAILABLE', 'SOURCE_MISSING', 'VERSION_CONFLICT', 'VERSION_CONFLICT:rekeyed',
+             'SOURCE_MISSING:TEST-final')
+    for index, code in enumerate(codes):
+        event = source_event(source_event_key=f'TEST-inbox-{index}', content=f'TEST 第{index}条。')
+        token, _prepared = capture_inbox.enqueue(app.storage, app.clock, ctx, event, scope_id='TEST-scope',
+                                                 host_scope=None)
+        with app.storage.write(ctx) as tx:
+            tx._check(write=True).execute('UPDATE capture_inbox SET last_error_code=? WHERE token=?', (code, token))
+    result = doctor.run_doctor(host='hermes', instance_root=ctx.binding.data_directory)
+    assert (result.capture_inbox, result.capture_inbox_blocked) == (6, 3)
+
+
 def test_doctor_reports_the_footprint_the_growth_and_a_budget(tmp_path, monkeypatch):
     """Bytes on disk and the week's growth are what an operator needs to see a
     store outgrow its disk before it does; a budget makes that a gap."""
