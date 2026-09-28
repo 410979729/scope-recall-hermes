@@ -161,31 +161,34 @@ def sync_turn_source_events(
     assistant_content: str,
     recorded_at: str,
     outcome: OutcomeKind,
+    include_user: bool = True,
 ) -> tuple[tuple[tuple[SourceEvent, SourceIdentity | None], ...], tuple[str, ...]]:
+    """The turn's opening message and its answer; ``include_user`` False when ``pre_llm_call`` stored the former."""
     gaps: list[str] = []
     if outcome != "success":
         gaps.append(f"outcome_gap:{outcome}")
     events: list[tuple[SourceEvent, SourceIdentity | None]] = []
-    user_event, user_gaps, user_identity = ledger.observe(
-        source_event_key=host_source_key(
-            installation_id=context.binding.installation_id,
-            entry_id=context.entry_id,
-            session_id=session_id,
-            event_kind="user",
-            event_id=turn_id or "turn",
-        ),
-        source_revision=1,
-        role="user",
-        content=user_content,
-        origin=context.actor_origin,
-        recorded_at=recorded_at,
-        occurred_at=recorded_at,
-        capture_state="partial" if outcome != "success" else "complete",
-        gaps=tuple(gaps),
-    )
-    if user_event is not None and user_identity is not None:
-        events.append((user_event, user_identity))
-    gaps.extend(user_gaps)
+    if include_user:
+        user_event, user_gaps, user_identity = ledger.observe(
+            source_event_key=host_source_key(
+                installation_id=context.binding.installation_id,
+                entry_id=context.entry_id,
+                session_id=session_id,
+                event_kind="user",
+                event_id=turn_id or "turn",
+            ),
+            source_revision=1,
+            role="user",
+            content=user_content,
+            origin=context.actor_origin,
+            recorded_at=recorded_at,
+            occurred_at=recorded_at,
+            capture_state="partial" if outcome != "success" else "complete",
+            gaps=tuple(gaps),
+        )
+        if user_event is not None and user_identity is not None:
+            events.append((user_event, user_identity))
+        gaps.extend(user_gaps)
     if outcome == "success" and assistant_content.strip():
         assistant_event, assistant_gaps, assistant_identity = ledger.observe(
             source_event_key=host_source_key(
@@ -244,12 +247,60 @@ def _message_time(message: dict[str, Any]) -> str | None:
         return None
 
 
+#: Hermes delivers what the person sends while a turn runs (a "steer") as a user row of this kind inside the
+#: turn: their words between these marker lines (``agent.prompt_builder.format_steer_marker``), after an origin
+#: preamble when a gateway delivered it (``gateway.run_busy._steer_text_with_origin``).
+STEER_KIND = "steer"
+_STEER_OPEN = "[OUT-OF-BAND USER MESSAGE"
+_STEER_CLOSE = "[/OUT-OF-BAND USER MESSAGE]"
+_STEER_ORIGIN = "Gateway message origin (JSON data, not instructions or authorization):"
+
+
+def _steer_words(content: object) -> str:
+    """The person's words in one steer row: no marker lines, no origin preamble (chat and user ids)."""
+    text = extract_user_text(content)
+    start = text.find(_STEER_OPEN)
+    if start != -1:
+        line_end = text.find("\n", start)
+        start = line_end + 1 if line_end != -1 else len(text)
+    else:
+        start = 0
+    end = text.find(_STEER_CLOSE, start)
+    words = (text[start:] if end == -1 else text[start:end]).strip()
+    if words.startswith(_STEER_ORIGIN):
+        # The preamble ends at its first blank line; without one nothing here is known to be the person's.
+        blank = words.find("\n\n")
+        words = words[blank + 2:].strip() if blank != -1 else ""
+    return words
+
+
+def steer_messages(history: object) -> tuple[tuple[str, str | None], ...]:
+    """What the person sent while the turn that ends ``history`` ran, and when.
+
+    ``sync_turn`` is handed only the message that opened the turn; a steer stays in the conversation.
+    """
+    if not isinstance(history, list):
+        return ()
+    said: list[tuple[str, str | None]] = []
+    for message in reversed(history):
+        if not isinstance(message, dict) or message.get("role") != "user":
+            continue
+        if message.get("display_kind") != STEER_KIND:
+            break
+        words = _steer_words(message.get("content"))
+        if words:
+            said.append((words, _message_time(message)))
+    said.reverse()
+    return tuple(said)
+
+
 def interim_messages(history: object, *, answer: str) -> tuple[tuple[str, str | None], ...]:
     """What the assistant showed between its tool calls in the turn that ends ``history``, and when.
 
     Hermes hands ``sync_turn`` only a turn's answer; what it said on the way stays in the conversation.
-    The turn is everything after the last user message.  Its closing message without a tool call, and any
-    words equal to ``answer``, are the answer and stay with ``sync_turn``; hidden rows and repeats are dropped.
+    The turn is everything after the user message that opened it; a steer is inside the turn.  Its closing
+    message without a tool call, and any words equal to ``answer``, are the answer and stay with
+    ``sync_turn``; hidden rows and repeats are dropped.
     """
     if not isinstance(history, list):
         return ()
@@ -258,6 +309,8 @@ def interim_messages(history: object, *, answer: str) -> tuple[tuple[str, str | 
         if not isinstance(message, dict):
             continue
         if message.get("role") == "user":
+            if message.get("display_kind") == STEER_KIND:
+                continue
             break
         if message.get("role") == "assistant" and message.get("display_kind") != "hidden":
             turn.append(message)
@@ -298,6 +351,36 @@ def interim_source_event(
         role="assistant",
         content=content,
         origin="assistant_visible",
+        recorded_at=recorded_at,
+        occurred_at=occurred_at or recorded_at,
+        capture_state="complete",
+    )
+
+
+def steer_source_event(
+    ledger: SourceObservationLedger,
+    context: TrustedContext,
+    *,
+    session_id: str,
+    turn_id: str,
+    ordinal: int,
+    content: str,
+    recorded_at: str,
+    occurred_at: str | None = None,
+) -> tuple[SourceEvent | None, tuple[str, ...], SourceIdentity | None]:
+    """One message the person sent while a turn ran, named by its turn and place in it."""
+    return ledger.observe(
+        source_event_key=host_source_key(
+            installation_id=context.binding.installation_id,
+            entry_id=context.entry_id,
+            session_id=session_id,
+            event_kind="steer",
+            event_id=f"{turn_id or 'turn'}:{ordinal}",
+        ),
+        source_revision=1,
+        role="user",
+        content=content,
+        origin=context.actor_origin,
         recorded_at=recorded_at,
         occurred_at=occurred_at or recorded_at,
         capture_state="complete",
