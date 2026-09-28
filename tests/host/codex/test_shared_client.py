@@ -646,6 +646,8 @@ def test_a_prompt_longer_than_a_recall_query_is_still_recalled_for(store):
     finally:
         hook.close()
     assert hook.diagnostics.last_reason != "recall_exception"
+    # This store has no vector companion, and the hook says so where an operator can read it.
+    assert hook.diagnostics.recall_vector_gap == "vector_unavailable"
     body = result["hookSpecificOutput"]["additionalContext"].partition("\n")[2]
     assert any("KZ-42" in item["content"] for item in json.loads(body)["items"])
 

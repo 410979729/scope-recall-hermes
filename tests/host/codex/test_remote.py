@@ -402,6 +402,28 @@ def test_a_failed_recall_s_cause_reaches_the_server_log(served, tmp_path, monkey
     assert "hook UserPromptSubmit: recall_exception (ContractError:INPUT_INVALID), record through None" in log
 
 
+def test_a_recall_without_its_vector_search_is_named_in_the_server_log(served, tmp_path, monkeypatch):
+    """The work computer's recalls ran without their vector search for as long as anyone could tell: the packet
+    carried the gap to the model, and the server's log said nothing."""
+    _root, homes, ports = served
+    monkeypatch.setattr(remote_server, "handle_request", lambda config, body, started=None: {
+        "result": {}, "through": None, "reason": None, "error": None, "recall_error": None,
+        "recall_vector": "vector_error:TimeoutError:helper_open_deadline"})
+    root_logger = logging.getLogger()
+    level = root_logger.level
+    handler = remote_server.log_to_file(homes["codex"])
+    try:
+        _hook(_client(tmp_path, "codex", ports["codex"]), {"hook_event_name": "UserPromptSubmit",
+              "session_id": "TEST-codex-session", "turn_id": "TEST-t3", "prompt": "TEST 再问一句。", "cwd": "C:/work"})
+    finally:
+        root_logger.removeHandler(handler)
+        root_logger.setLevel(level)
+        handler.close()
+    log = (homes["codex"] / "scope-recall" / remote_server.LOG_NAME).read_text(encoding="utf-8")
+    assert ("hook UserPromptSubmit: None (recall without vectors: vector_error:TimeoutError:helper_open_deadline), "
+            "record through None") in log
+
+
 def test_a_plugin_command_survives_the_shell_that_runs_it(tmp_path):
     """Claude Code runs a hook through a shell: a path it would split is refused, as the local installer refuses
     it.  Codex's POSIX command is quoted as shell words, a quote in a path included."""

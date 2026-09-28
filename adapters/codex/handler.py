@@ -122,6 +122,10 @@ class HookDiagnostics:
     #: What stopped an automatic recall (``recall_exception``): the exception's class and, for a contract error,
     #: its code.  Without it the server's log said only that a recall had failed.
     recall_error_detail: str | None = None
+    #: The recall's first vector gap (``vector_error:...`` before ``vector_unavailable``), when it had one.  The
+    #: packet carried it to the model and nowhere else: Claude Code and Codex recalled without their vector search
+    #: for as long as anyone could tell, and no log showed it.
+    recall_vector_gap: str | None = None
 
     @property
     def capture_settled(self) -> bool:
@@ -687,6 +691,10 @@ class CodexHookHandler:
                 f"{type(exc).__name__}:{code}" if isinstance(code, str) else type(exc).__name__)
             self._diag("recall_exception", gaps=gaps)
             return {}
+        vector_gaps = [gap for gap in packet.get("gaps") or () if isinstance(gap, str) and gap.startswith("vector_")]
+        if vector_gaps:
+            self.diagnostics.recall_vector_gap = _error_detail(
+                next((gap for gap in vector_gaps if gap.startswith("vector_error:")), vector_gaps[0]))
         if self._remaining(deadline) <= 0:
             self._diag("deadline_exceeded", gaps=gaps)
             return {}
@@ -810,3 +818,5 @@ def emit_result(result: dict[str, Any], *, diagnostics: HookDiagnostics | None =
         sys.stderr.write("CODEX_CAPTURE:" + json.dumps(detail, ensure_ascii=True, separators=(",", ":")) + "\n")
     if diagnostics is not None and diagnostics.recall_error_detail:
         sys.stderr.write(f"CODEX_RECALL:{diagnostics.recall_error_detail}\n")
+    if diagnostics is not None and diagnostics.recall_vector_gap:
+        sys.stderr.write(f"CODEX_RECALL_VECTOR:{diagnostics.recall_vector_gap}\n")

@@ -237,6 +237,7 @@ def handle_request(config: RemoteServerConfig, body: dict[str, Any], *, started:
     return {"result": result, "through": record.through if record is not None else None,
             "reason": handler.diagnostics.last_reason, "error": handler.diagnostics.capture_error_detail,
             "recall_error": handler.diagnostics.recall_error_detail,
+            "recall_vector": handler.diagnostics.recall_vector_gap,
             "retry": not handler.diagnostics.capture_settled}
 
 
@@ -290,9 +291,10 @@ def build_app(config: RemoteServerConfig):
             _log.error("hook: the entry is unavailable: %s", str(exc)[:200])
             return JSONResponse({"error": "entry_unavailable"}, status_code=503)
         # The error is the capture's code (DEADLINE_EXCEEDED, SECRET_DETECTED, ...), never any of its text.
-        _log.info("hook %s: %s%s%s%s, record through %s, %d ms", event, answer["reason"],
+        _log.info("hook %s: %s%s%s%s%s, record through %s, %d ms", event, answer["reason"],
                   f" ({answer['error']})" if answer.get("error") else "",
                   f" ({answer['recall_error']})" if answer.get("recall_error") else "",
+                  f" (recall without vectors: {answer['recall_vector']})" if answer.get("recall_vector") else "",
                   (", not stored, to be sent again" if config.host == "codex" else ", not stored")
                   if answer.get("retry") else "", answer["through"],
                   round((time.monotonic() - started) * 1000))

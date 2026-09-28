@@ -23,7 +23,7 @@ All notable changes to `scope-recall` will be documented in this file.
   - Neither is recalled for.
 - A prompt the store was too busy to take is recalled by meaning as well. The vector search came only with a stored or queued capture, so a capture that failed left the turn to a recall by words alone: six prompts on the work computer's two entries in one night. A prompt refused as holding a credential still goes without it, so nothing of it reaches an embedding provider.
 - A prompt longer than a recall query's 8,192 characters is recalled for by its first 8,192, as Hermes does. Sent whole, the request was refused and the turn had no recall at all: three of the work computer's Codex prompts in one morning.
-- A failed automatic recall says what stopped it: the class of the error and, for a contract error, its code. It goes on the hook's stderr (`CODEX_RECALL:`) and on the remote server's log line. The work computer's server said only `recall_exception`.
+- A failed automatic recall says what stopped it: the class of the error and, for a contract error, its code. It goes on the hook's stderr (`CODEX_RECALL:`) and on the remote server's log line. The work computer's server said only `recall_exception`. A recall that ran without its vector search names the gap the same way (`CODEX_RECALL_VECTOR:`, and `recall without vectors: ...` on the server's line): until now only the model saw it.
 - `doctor` reports each vector store's index (`index_outcome`: `built`, `present`, `below_threshold`, `deferred` or `failed`). It no longer advises an index from 100,000 embedded objects: the scan cost 750 ms at 78,000.
 
 ### Scope Recall 3.4.0rc8 - 2026-09-28
