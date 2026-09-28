@@ -19,8 +19,8 @@ hook, each refused request and the server's own errors go to ``remote-server.log
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass
-from datetime import datetime, timezone
+from dataclasses import dataclass, replace
+from datetime import datetime, timedelta, timezone
 import hashlib
 import hmac
 import ipaddress
@@ -52,6 +52,19 @@ _log = logging.getLogger("scope_recall.remote_server")
 
 class RemoteServerError(ValueError):
     pass
+
+
+#: How far a client's clock may run ahead of this machine's.  A recall drops what is dated after its now, so a
+#: message dated a day ahead by a fast client clock was found by no recall for a day.  A later time is taken as
+#: this machine's now; within the minute it is kept as sent, so a correct client's hook sent again is the same
+#: source.  (A client more than a minute fast gets a new now each time, and a hook it sends twice may be stored
+#: twice: the lesser harm.)
+CLOCK_AHEAD_SECONDS = 60
+
+
+def _not_ahead(moment: datetime) -> datetime:
+    now = datetime.now(timezone.utc)
+    return now if moment > now + timedelta(seconds=CLOCK_AHEAD_SECONDS) else moment
 
 
 
@@ -146,7 +159,15 @@ def _observed_at(value: object) -> str | None:
         raise RemoteServerError("observed_at must be an ISO time") from None
     if moment.tzinfo is None:
         raise RemoteServerError("observed_at must carry its offset")
-    return moment.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+    return _not_ahead(moment.astimezone(timezone.utc)).isoformat().replace("+00:00", "Z")
+
+
+def _said_not_ahead(said: transcript.Said | None) -> transcript.Said | None:
+    if said is None:
+        return None
+    moment = datetime.fromisoformat(said.occurred_at.replace("Z", "+00:00"))
+    bounded = _not_ahead(moment)
+    return said if bounded is moment else replace(said, occurred_at=bounded.isoformat().replace("+00:00", "Z"))
 
 
 def record_from_wire(value: object) -> RecordLines | None:
@@ -164,7 +185,7 @@ def record_from_wire(value: object) -> RecordLines | None:
         if not isinstance(item, list) or len(item) != 2 or type(item[0]) is not int or item[0] <= position:
             raise RemoteServerError("record lines need increasing offsets past start")
         position = item[0]
-        checked.append((position, transcript.said_from_wire(item[1]) if item[1] is not None else None))
+        checked.append((position, _said_not_ahead(transcript.said_from_wire(item[1])) if item[1] is not None else None))
     return RecordLines(start=start, lines=checked)
 
 
@@ -179,9 +200,9 @@ def handle_request(config: RemoteServerConfig, body: dict[str, Any], *, started:
     # The client's transcript_path is a file on its own machine; nothing here opens a path a request names.
     payload = {key: value for key, value in payload.items() if key != "transcript_path"}
     observed_at = _observed_at(body.get("observed_at"))
-    # The hook's own times are the client's, so a hook sent again from the spool is the same source.  When it was
-    # stored, when its work falls due and a recall's now are this machine's: a client clock a day fast held a
-    # message's embedding back by a day.
+    # The hook's own times are the client's (bounded to a minute ahead, see CLOCK_AHEAD_SECONDS), so a hook sent
+    # again from the spool is the same source.  When it was stored, when its work falls due and a recall's now are
+    # this machine's: a client clock a day fast held back a message's embedding by a day.
     handler = CodexHookHandler.from_home(
         str(config.home), config.host,
         event_clock=_ObservedClock(observed_at) if observed_at is not None else None,
