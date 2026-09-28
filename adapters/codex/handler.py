@@ -40,9 +40,16 @@ from .runtime_wiring import (
 
 _MAX_STDIN_BYTES = 65536
 _CAPTURE_TIMEOUT_S = 1.0
+#: The owner's own message waits longer for the writer lease: another agent's long reply can hold it 1-2 s
+#: while it is matched against the candidates, and in the work computer's first day 12 of its 58 prompts
+#: waited their one second and were not stored.  The prompt hook's budget (``hook_processing_seconds``, 6 s)
+#: leaves the recall its time.
+_PROMPT_CAPTURE_TIMEOUT_S = 2.0
 _TOTAL_BUDGET_S = 2.0
 #: Attaching the trusted runtime after a capture needs this much budget left.
 _RUNTIME_ATTACH_MIN_S = 0.3
+#: Capture refusals a second attempt meets again.
+_SETTLED_CAPTURE_CODES = frozenset({"SECRET_DETECTED", "INPUT_INVALID", "VERSION_CONFLICT"})
 _CAPTURE_ERROR_CODES = frozenset({
     "ACCESS_DENIED", "IDENTITY_UNBOUND", "INPUT_INVALID", "VERSION_CONFLICT",
     "DEADLINE_EXCEEDED", "STORAGE_UNAVAILABLE", "SOURCE_MISSING", "SECRET_DETECTED",
@@ -105,6 +112,14 @@ class HookDiagnostics:
     #: never reaches the host.
     capture_error_detail: str | None = None
     capture_elapsed_ms: int | None = None
+
+    @property
+    def capture_settled(self) -> bool:
+        """No capture, or one stored, queued, or refused in a way no retry changes (a secret, an invalid message,
+        its id already taken).  Otherwise the store was busy or away, and the same hook sent again may store it."""
+        return (self.capture_stage is None or self.capture_durability in ("persisted", "queued")
+                or self.capture_disposition in ("rejected", "conflict")
+                or self.capture_error_code in _SETTLED_CAPTURE_CODES)
 
 
 @dataclass
@@ -398,7 +413,7 @@ class CodexHookHandler:
     # -- capture ---------------------------------------------------------
 
     def _capture(self, context, audience, event, *, deadline: float, gaps: tuple[str, ...] = (),
-                 via_inbox: bool = True) -> tuple[tuple[str, ...], tuple[str, ...]]:
+                 via_inbox: bool = True, wait: float = _CAPTURE_TIMEOUT_S) -> tuple[tuple[str, ...], tuple[str, ...]]:
         """Record one host event; returns the committed source refs and the accumulated gaps.
 
         ``via_inbox=False`` is for a message read from the session record, which keeps it until it is
@@ -421,11 +436,11 @@ class CodexHookHandler:
                     event,
                     scope_id=audience.capture_scope_id,
                     host_scope=audience.host_scope,
-                    remaining_seconds=min(_CAPTURE_TIMEOUT_S, self._remaining(deadline)),
+                    remaining_seconds=min(wait, self._remaining(deadline)),
                 )
             else:
                 receipt = self.core.record_event(context, event, scope_id=audience.capture_scope_id,
-                                                 remaining_seconds=min(_CAPTURE_TIMEOUT_S, self._remaining(deadline)))
+                                                 remaining_seconds=min(wait, self._remaining(deadline)))
         except (ContractError, OSError, RuntimeError) as exc:
             self.diagnostics.capture_durability = "unknown"
             self.diagnostics.capture_error_type = type(exc).__name__
@@ -529,10 +544,7 @@ class CodexHookHandler:
         diagnostics = self.diagnostics
         diagnostics.capture_disposition = diagnostics.capture_error_code = diagnostics.capture_error_type = None
         self._capture(context, audience, event, deadline=deadline, via_inbox=False)
-        # Stored, or refused in a way no retry changes: a secret, an invalid message, its id already taken.
-        return (diagnostics.capture_durability == "persisted"
-                or diagnostics.capture_disposition in ("rejected", "conflict")
-                or diagnostics.capture_error_code in ("SECRET_DETECTED", "INPUT_INVALID", "VERSION_CONFLICT"))
+        return diagnostics.capture_settled
 
     def _session_start(self, session_id: str, audience, deadline: float) -> bool:
         context = self._context(audience, session_id, "host_generated")
@@ -605,17 +617,21 @@ class CodexHookHandler:
         if event is not None and attachment_refs:
             event["artifact_refs"] = attachment_refs
         context = self._context(audience, session_id, "human_direct")
-        current_refs, capture_gaps = self._capture(context, audience, event, deadline=deadline, gaps=gaps)
+        current_refs, capture_gaps = self._capture(context, audience, event, deadline=deadline, gaps=gaps,
+                                                   wait=_PROMPT_CAPTURE_TIMEOUT_S)
         if self._captured_this_call() and self._remaining(deadline) >= _RUNTIME_ATTACH_MIN_S:
             self._ensure_host_runtime(audience)
             if self._queued_this_call:
                 self._maybe_launch_owned_worker(session_id, audience)
         if not prompt.strip():
             return {}
-        if event is not None and not current_refs:
-            if not self._queued_this_call:
-                self._diag("capture_failed", gaps=capture_gaps)
-            return {}
+        if event is not None and not current_refs and not self._queued_this_call:
+            self._diag("capture_failed", gaps=capture_gaps)
+        # The turn is recalled whether or not its message was stored.  A message that failed or still waits
+        # in the inbox is not among the sources a recall reads, so there is nothing of this turn to fence
+        # out; and one refused as a credential is refused by the embedding request guard as well, so its
+        # recall runs on the local lexical channel alone.  Skipping here left the turn without memory
+        # whenever the store was busy, which is when a writer holds the lease.
         return self._auto_recall(context, prompt, f"{self.host}-auto:{session_id}:{turn_id}", current_refs, deadline, capture_gaps)
 
     def _auto_recall(self, context, prompt: str, request_id: str, current_refs: tuple[str, ...], deadline: float, gaps: tuple[str, ...]) -> dict[str, Any]:

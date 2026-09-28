@@ -19,8 +19,8 @@ hook, each refused request and the server's own errors go to ``remote-server.log
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass
-from datetime import datetime, timezone
+from dataclasses import dataclass, replace
+from datetime import datetime, timedelta, timezone
 import hashlib
 import hmac
 import ipaddress
@@ -52,6 +52,17 @@ _log = logging.getLogger("scope_recall.remote_server")
 
 class RemoteServerError(ValueError):
     pass
+
+
+#: A client's clock may run this far ahead of this machine's; a time past it is this machine's now.  The time
+#: a hook carries dates the source and when its work falls due, so a work computer a day fast delayed its
+#: messages' embeddings by a day.  An earlier time is left alone: a hook sent late from the spool is one.
+CLOCK_AHEAD_SECONDS = 60
+
+
+def _not_ahead(moment: datetime) -> datetime:
+    now = datetime.now(timezone.utc)
+    return now if moment > now + timedelta(seconds=CLOCK_AHEAD_SECONDS) else moment
 
 
 @dataclass(frozen=True)
@@ -145,7 +156,15 @@ def _observed_at(value: object) -> str | None:
         raise RemoteServerError("observed_at must be an ISO time") from None
     if moment.tzinfo is None:
         raise RemoteServerError("observed_at must carry its offset")
-    return moment.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+    return _not_ahead(moment.astimezone(timezone.utc)).isoformat().replace("+00:00", "Z")
+
+
+def _said_not_ahead(said: transcript.Said | None) -> transcript.Said | None:
+    if said is None:
+        return None
+    moment = datetime.fromisoformat(said.occurred_at.replace("Z", "+00:00"))
+    bounded = _not_ahead(moment)
+    return said if bounded is moment else replace(said, occurred_at=bounded.isoformat().replace("+00:00", "Z"))
 
 
 def record_from_wire(value: object) -> RecordLines | None:
@@ -163,7 +182,7 @@ def record_from_wire(value: object) -> RecordLines | None:
         if not isinstance(item, list) or len(item) != 2 or type(item[0]) is not int or item[0] <= position:
             raise RemoteServerError("record lines need increasing offsets past start")
         position = item[0]
-        checked.append((position, transcript.said_from_wire(item[1]) if item[1] is not None else None))
+        checked.append((position, _said_not_ahead(transcript.said_from_wire(item[1])) if item[1] is not None else None))
     return RecordLines(start=start, lines=checked)
 
 
@@ -187,8 +206,11 @@ def handle_request(config: RemoteServerConfig, body: dict[str, Any], *, started:
         result = handler.handle_payload(payload, record=record, local_record=False)
     finally:
         handler.close()
+    # ``retry``: the store was busy or away and the event was not stored; a client that keeps its hooks sends
+    # this one again.  The answer (a recall) is good either way.
     return {"result": result, "through": record.through if record is not None else None,
-            "reason": handler.diagnostics.last_reason, "error": handler.diagnostics.capture_error_detail}
+            "reason": handler.diagnostics.last_reason, "error": handler.diagnostics.capture_error_detail,
+            "retry": not handler.diagnostics.capture_settled}
 
 
 def build_app(config: RemoteServerConfig):
@@ -202,6 +224,7 @@ def build_app(config: RemoteServerConfig):
     from .mcp_server import build_server
 
     client = load_shared_client(config.home, config.host)
+    host_name = f"[{config.listen}]" if ":" in config.listen else config.listen
     tools = build_server(client, workspace=None)
     app = tools.server.streamable_http_app(
         streamable_http_path="/mcp",
@@ -209,7 +232,8 @@ def build_app(config: RemoteServerConfig):
         host=config.listen,
         transport_security=TransportSecuritySettings(
             enable_dns_rebinding_protection=True,
-            allowed_hosts=[config.listen, f"{config.listen}:{config.port}"],
+            # An IPv6 address comes in the Host header in brackets; unbracketed, every /mcp call got 421.
+            allowed_hosts=[host_name, f"{host_name}:{config.port}"],
             allowed_origins=[],
         ),
     )
@@ -230,15 +254,18 @@ def build_app(config: RemoteServerConfig):
             payload = body.get("payload")
             event = str(payload.get("hook_event_name"))[:40] if isinstance(payload, dict) else None
             answer = await run_in_threadpool(handle_request, config, body, started=started)
-        except (UnicodeError, ValueError) as exc:
+        except (UnicodeError, json.JSONDecodeError, RemoteServerError) as exc:
+            # The request itself, which the client drops on a 400.  An error from the store (a ContractError is a
+            # ValueError too) is this machine's and answers 500, so the client keeps the hook to send again.
             _log.warning("hook refused: %s", str(exc)[:200])
             return JSONResponse({"error": "invalid_request", "detail": str(exc)[:200]}, status_code=400)
         except CodexConfigError as exc:
             _log.error("hook: the entry is unavailable: %s", str(exc)[:200])
             return JSONResponse({"error": "entry_unavailable"}, status_code=503)
         # The error is the capture's code (DEADLINE_EXCEEDED, SECRET_DETECTED, ...), never any of its text.
-        _log.info("hook %s: %s%s, record through %s, %d ms", event, answer["reason"],
-                  f" ({answer['error']})" if answer.get("error") else "", answer["through"],
+        _log.info("hook %s: %s%s%s, record through %s, %d ms", event, answer["reason"],
+                  f" ({answer['error']})" if answer.get("error") else "",
+                  ", not stored, to be sent again" if answer.get("retry") else "", answer["through"],
                   round((time.monotonic() - started) * 1000))
         return JSONResponse(answer)
 

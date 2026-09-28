@@ -88,10 +88,18 @@ A hook whose connection has not opened in 3 s gives up and answers with nothing;
 hook tries, so while the server is away a prompt is held up once a minute at most, and it has no recall.
 A Claude Code session's record carries what was said to that session's next Stop that reaches the server,
 and the cursor on the client moves only as far as the server stored; what a session had not sent when it
-ended stays unsent. A Codex hook is kept in a spool on the client and sent, with the moment it happened, by a
-process a later hook starts once the server answers again; a hook sent twice is the same source, not two.
-The spool keeps 256 hooks and drops its oldest past that. What did not get through, what the spool sent and
-what it dropped is logged in the client's `state_dir\remote-client.log`.
+ended stays unsent. A Codex hook is written to a spool on the client before it is sent and removed once the
+server has stored it; what stays is sent, with the moment it happened, by a process a later hook starts once
+the server answers again. A hook sent twice is the same source, not two. A hook the server answered but whose
+message the store was too busy to take stays in the spool too (the server log says `not stored, to be sent
+again`), and one the server refuses for good (HTTP 400 or 413: malformed, too large) is dropped rather than
+kept, since it would be refused again and would stop every later flush. The spool keeps 256 hooks and drops its
+oldest past that. What did not get through, what the spool sent and what it dropped is logged in the client's
+`state_dir\remote-client.log`.
+
+A client's clock may run up to a minute ahead of this machine's; a later time a hook or a record line carries is
+taken as this machine's now, since it dates the message and when its work falls due. An earlier time is kept:
+a hook sent late from the spool carries one.
 
 The client connects to the server itself and never through a proxy: `HTTP_PROXY` or a system proxy on the
 client machine is for the internet and cannot reach the tailnet address. Claude Code's and Codex's own MCP
@@ -111,4 +119,4 @@ Over a relayed path a request takes one to three round trips of the network: 0.4
 on 2026-09-27, about 50 ms direct. A prompt's hook waits at most 15 s, as a local one does, and the server's
 work on it at most the entry's `hook_processing_seconds` (6 s unless set lower); both are ceilings, and the
 prompt goes on as soon as recall is done. Codex allows SessionEnd and Interrupt at most 3 s, so on a slow path
-those may time out, and a Codex hook that did is sent from the spool.
+those may time out; the hook is already in the spool then, and is sent from there.

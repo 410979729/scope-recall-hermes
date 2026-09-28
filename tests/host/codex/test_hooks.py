@@ -320,24 +320,42 @@ def test_missing_turn_id_records_capability_gap_not_default_turn(handler, instal
         assert db.execute("SELECT count(*) FROM source_events").fetchone()[0] == 0
 
 
-def test_capture_failure_surfaces_without_recall(handler, installed):
+@pytest.mark.parametrize("receipt", [
+    ("unavailable", "unknown", "STORAGE_UNAVAILABLE"),   # the write failed
+    ("queued", "queued", None),                          # the writer was busy: the message waits in the inbox
+])
+def test_a_turn_whose_capture_did_not_commit_is_still_recalled(handler, installed, receipt):
     hook, project_root, config = handler
     _, core, clock, _ = installed
+    from scope_recall.contracts import TrustedContext
+    from scope_recall.core.capture import CaptureReceipt
 
-    class FailingCore:
+    trusted = TrustedContext(core.config.binding, "TEST-session-1", config.scope_ids, "human_direct")
+    core.record_event(trusted, source_event(content="TEST 白色偏好", source_event_key="busy-seed/1"),
+                      scope_id=config.audience_scopes["project"], remaining_seconds=5)
+    disposition, durability, code = receipt
+    fences: list[tuple[str, ...]] = []
+
+    class BusyCore:
         def __getattr__(self, name):
             return getattr(core, name)
 
         def record_host_event(self, *args, **kwargs):
-            from scope_recall.core.capture import CaptureReceipt
+            return CaptureReceipt(disposition, (), durability, "pending", "pending", error_code=code)
 
-            return CaptureReceipt("unavailable", (), "unknown", "unknown", "unknown", error_code="STORAGE_UNAVAILABLE")
+        def recall_packet(self, context, request, *, current_source_refs=(), deadline_seconds=2.0):
+            fences.append(current_source_refs)
+            return {
+                "protocol_version": "1.1", "request_id": request["request_id"], "status": "ok", "memory_epoch": 1,
+                "items": [recall_item(content="TEST 白色偏好")], "gaps": [], "diagnostic_ref": None,
+                "answerability": "supported", "coverage": "partial", "unmet_needs": [],
+            }
 
-        def recall_packet(self, *args, **kwargs):
-            raise AssertionError("recall after capture failure")
-
-    failing = CodexHookHandler(config, core=FailingCore(), clock=clock)
-    assert failing.handle_payload(_payload(project_root, "UserPromptSubmit", prompt="hello")) == {}
+    busy = CodexHookHandler(config, core=BusyCore(), clock=clock)
+    result = busy.handle_payload(_payload(project_root, "UserPromptSubmit", prompt="继续 TEST 项目"))
+    assert fences == [()]
+    assert "TEST 白色偏好" in result["hookSpecificOutput"]["additionalContext"]
+    assert busy.diagnostics.capture_durability == durability
 
 
 def test_attachment_without_authorization_records_gap(handler, installed):

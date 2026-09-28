@@ -66,6 +66,9 @@ AWAY_SECONDS = 60.0
 #: The log of requests that did not get through is kept to about this size (one older copy is kept).
 LOG_BYTES = 256 * 1024
 _SPOOLED = frozenset({"UserPromptSubmit", "Stop", "SessionEnd", "Interrupt"})
+#: The server refused the request itself (malformed, too large): sent again it is refused again, so it is
+#: dropped and said in the log rather than kept at the head of the spool, where it stopped every later flush.
+_REFUSED_FOR_GOOD = frozenset({400, 413})
 _MAX_STDIN = 65536
 
 
@@ -159,6 +162,9 @@ def _post(config: dict[str, Any], body: dict[str, Any], timeout: float) -> dict[
                            headers={"Content-Type": "application/json", "Authorization": f"Bearer {token}"})
         response = connection.getresponse()
         raw = response.read()
+        if response.status in _REFUSED_FOR_GOOD:
+            _log(config, f"{event}: HTTP {response.status}, refused for good: not kept")
+            return {"refused": response.status}
         if response.status != 200:
             _log(config, f"{event}: HTTP {response.status}")
             return None
@@ -181,7 +187,7 @@ def _spool_dir(config: dict[str, Any]) -> Path:
     return config["state_dir"] / "spool"
 
 
-def _spool(config: dict[str, Any], payload: dict[str, Any], observed_at: str) -> None:
+def _spool(config: dict[str, Any], payload: dict[str, Any], observed_at: str) -> Path | None:
     folder = _spool_dir(config)
     try:
         folder.mkdir(parents=True, exist_ok=True)
@@ -196,8 +202,9 @@ def _spool(config: dict[str, Any], payload: dict[str, Any], observed_at: str) ->
         pending.write_text(json.dumps({"payload": payload, "observed_at": observed_at}, ensure_ascii=False),
                            encoding="utf-8")
         os.replace(pending, folder / name)
+        return folder / name
     except OSError:
-        pass
+        return None
 
 
 def flush_spool(config: dict[str, Any], seconds: float = FLUSH_SECONDS) -> int:
@@ -224,13 +231,16 @@ def flush_spool(config: dict[str, Any], seconds: float = FLUSH_SECONDS) -> int:
                 break
             try:
                 kept = json.loads(item.read_text(encoding="utf-8"))
-            except (OSError, ValueError):
+            except (OSError, ValueError) as exc:
+                _log(config, f"flush: dropped an unreadable spool file ({type(exc).__name__})")
                 item.unlink(missing_ok=True)
                 continue
-            if _post(config, kept, min(left, 30.0)) is None:
+            answer = _post(config, kept, min(left, 30.0))
+            if answer is None or answer.get("retry"):
                 break
             item.unlink(missing_ok=True)
-            sent += 1
+            if not answer.get("refused"):
+                sent += 1
     finally:
         lock.unlink(missing_ok=True)
     left = sum(1 for _item in folder.glob("*.json"))
@@ -302,14 +312,20 @@ def run_hook(config: dict[str, Any], raw: bytes, *, started: float | None = None
         part = _record_part(config, payload)
         if part is not None:
             body["record"], cursor = part
+    # Kept before it is sent: Codex ends Interrupt and SessionEnd at 3 s, and with the interpreter's start and
+    # a connection that does not open that is all of it, so a hook that waited for the server was killed before
+    # it could keep anything.  An answer that stored it removes it again.
+    spooled = _spool(config, payload, observed_at) if host == "codex" and event in _SPOOLED else None
     if _server_away(config):
         _log(config, f"{event}: not sent, the server was away less than {AWAY_SECONDS:.0f} s ago")
         answer = None
     else:
         answer = _post(config, body, until - time.monotonic())
     if answer is None:
-        if host == "codex" and event in _SPOOLED:
-            _spool(config, payload, observed_at)
+        return {}
+    if spooled is not None and not answer.get("retry"):
+        spooled.unlink(missing_ok=True)
+    if answer.get("refused"):
         return {}
     through = answer.get("through")
     if cursor is not None and type(through) is int and through > body["record"]["start"]:

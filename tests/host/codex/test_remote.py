@@ -413,3 +413,96 @@ def test_a_full_spool_drops_its_oldest_and_says_so(tmp_path, monkeypatch):
         remote_client._spool(config, {"hook_event_name": "Stop", "turn_id": f"TEST-t{turn}"}, NOW)
     assert len(list((config["state_dir"] / "spool").glob("*.json"))) == 2
     assert "spool full: dropped the 1 oldest" in (config["state_dir"] / "remote-client.log").read_text(encoding="utf-8")
+
+
+def _big_prompt(turn: str) -> dict:
+    """A prompt the server refuses for good: it measures the payload as it serializes it, and this is past that."""
+    return {"hook_event_name": "UserPromptSubmit", "session_id": "TEST-codex-session", "turn_id": turn,
+            "prompt": "TEST " + "x" * remote_server.MAX_PAYLOAD_BYTES, "cwd": "C:/work"}
+
+
+def test_a_request_refused_for_good_neither_stays_nor_stops_the_spool(served, tmp_path, monkeypatch):
+    """A 400 or 413 is the request itself, refused again whenever it is sent.  Kept at the head of the spool it
+    stopped every later flush, until 256 newer ones pushed it out; and a live hook that got one was kept too."""
+    root, _homes, ports = served
+    monkeypatch.setattr(remote_client, "_start_flush", lambda config: None)
+    config = _client(tmp_path, "codex", ports["codex"])
+    folder = config["state_dir"] / "spool"
+    folder.mkdir(parents=True)
+    (folder / "00000000000000000001-1.json").write_text(
+        json.dumps({"payload": _big_prompt("TEST-big-1"), "observed_at": NOW}), encoding="utf-8")
+    remote_client._spool(config, {"hook_event_name": "UserPromptSubmit", "session_id": "TEST-codex-session",
+                                  "turn_id": "TEST-t2", "prompt": "TEST 后面这句要存下来。", "cwd": "C:/work"}, NOW)
+    assert remote_client.flush_spool(config, 20) == 1
+    assert list(folder.glob("*.json")) == []
+    assert [row[2] for row in _rows(root, "workpc-codex")] == ["TEST 后面这句要存下来。"]
+    assert _hook(config, _big_prompt("TEST-big-2")) == {}
+    assert list(folder.glob("*.json")) == [], "a live hook refused for good is not kept either"
+    assert "refused for good: not kept" in (config["state_dir"] / "remote-client.log").read_text(encoding="utf-8")
+
+
+def test_a_client_clock_ahead_does_not_date_its_messages_in_the_future(store):
+    """The time a hook carries dates the source and when its work falls due: a work computer a day fast held
+    back its messages' embedding and consolidation by a day."""
+    root, homes = store
+    remote_server.write_server_config(homes["codex"], "codex", listen="127.0.0.1", port=_free_port(),
+                                      token_sha256="0" * 64)
+    config = remote_server.load_server_config(homes["codex"], "codex")
+    ahead = (datetime.now(timezone.utc) + timedelta(days=1)).isoformat().replace("+00:00", "Z")
+    remote_server.handle_request(config, {"payload": {
+        "hook_event_name": "UserPromptSubmit", "session_id": "TEST-codex-session", "turn_id": "TEST-ahead",
+        "prompt": "TEST 时钟快了一天。", "cwd": "C:/work"}, "observed_at": ahead})
+    latest = datetime.now(timezone.utc) + timedelta(seconds=remote_server.CLOCK_AHEAD_SECONDS)
+    stored = next(at for _role, _origin, content, at in _rows(root, "workpc-codex") if content == "TEST 时钟快了一天。")
+    assert datetime.fromisoformat(stored.replace("Z", "+00:00")) <= latest
+    said = transcript.Said("TEST-e1", "user", "TEST 记录里的一句。", ahead)
+    lines = remote_server.record_from_wire({"start": 0, "lines": [[10, transcript.said_to_wire(said)]]})
+    assert datetime.fromisoformat(lines.lines[0][1].occurred_at.replace("Z", "+00:00")) <= latest
+    earlier = transcript.Said("TEST-e2", "user", "TEST 早先的一句。", NOW)
+    kept = remote_server.record_from_wire({"start": 0, "lines": [[10, transcript.said_to_wire(earlier)]]})
+    assert kept.lines[0][1].occurred_at == NOW, "an earlier time is left alone: a hook sent late is one"
+
+
+def test_a_codex_hook_is_kept_before_it_is_sent(tmp_path, monkeypatch):
+    """Codex ends SessionEnd and Interrupt at 3 s.  With the interpreter's start and a connection that does not
+    open, a hook that waited for the server was ended before it could keep anything."""
+    config = _client(tmp_path, "codex", _free_port())
+    folder = config["state_dir"] / "spool"
+    seen = []
+    monkeypatch.setattr(remote_client, "_post", lambda config, body, timeout:
+                        seen.append(len(list(folder.glob("*.json")))) or {"result": {}, "through": None})
+    monkeypatch.setattr(remote_client, "_start_flush", lambda config: None)
+    _hook(config, {"hook_event_name": "SessionEnd", "session_id": "TEST-codex-session", "reason": "exit",
+                   "cwd": "C:/work"})
+    assert seen == [1], "kept while it was being sent"
+    assert list(folder.glob("*.json")) == [], "and removed once it was stored"
+
+
+def test_a_hook_the_busy_store_did_not_store_is_kept_to_send_again(store, tmp_path, monkeypatch):
+    """The server answered 200 whatever became of the capture, and the client took that as delivered: a message
+    the busy store could not take was lost, where sending it again a minute later would have stored it."""
+    from scope_recall.contracts import ContractError
+    from scope_recall.core import MemoryCore
+
+    root, homes = store
+    remote_server.write_server_config(homes["codex"], "codex", listen="127.0.0.1", port=_free_port(),
+                                      token_sha256="0" * 64)
+    server = remote_server.load_server_config(homes["codex"], "codex")
+    body = {"payload": {"hook_event_name": "UserPromptSubmit", "session_id": "TEST-codex-session",
+                        "turn_id": "TEST-busy", "prompt": "TEST 忙的时候说的一句。", "cwd": "C:/work"}}
+
+    def busy(self, *args, **kwargs):
+        raise ContractError("DEADLINE_EXCEEDED", "writer_lease")
+
+    with monkeypatch.context() as patched:
+        patched.setattr(MemoryCore, "record_host_event", busy)
+        assert remote_server.handle_request(server, body)["retry"] is True
+    assert remote_server.handle_request(server, body)["retry"] is False
+
+    config = _client(tmp_path, "codex", _free_port())
+    recalled = {"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": "TEST 记忆"}}
+    monkeypatch.setattr(remote_client, "_post", lambda config, body, timeout:
+                        {"result": recalled, "through": None, "retry": True})
+    monkeypatch.setattr(remote_client, "_start_flush", lambda config: None)
+    assert _hook(config, body["payload"]) == recalled, "the recall is used"
+    assert len(list((config["state_dir"] / "spool").glob("*.json"))) == 1, "and the hook is kept to send again"
