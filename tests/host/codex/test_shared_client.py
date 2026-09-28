@@ -1395,27 +1395,35 @@ def _marker(text):
 
 def test_a_server_answer_without_its_vector_search_gives_way_to_the_hook_s_own(resident, small_reserve, monkeypatch,
                                                                               capsys):
-    """A server whose vector search failed (its key lost, say) answered every prompt by words alone, and the hook took
-    that though it had the key, the helper and the time (review of rc11).  The hook's own recall is used when it has
-    its vector search, and the server's words when it has not either."""
+    """A server whose vector search failed on its own (its key lost, say) answered every prompt by words alone, and
+    the hook took that though it had the key, the helper and the time (review of rc11).  The hook's own recall is
+    used when it has its vector search, and the server's words when it has not either.  A provider's refusal the hook
+    would meet as well: that answer is used as it is, and the hook does not recall a second time."""
     from scope_recall.adapters.codex import handler as handler_module
 
     _root, client, endpoint = resident
-    monkeypatch.setattr(endpoint, "recall", lambda request, **kwargs: (
-        {"result": _marker("TEST-server-marker"),
-         "diagnostics": {"recall_vectors": False, "recall_vector_gap": "vector_error:TEST"}}, lambda: None))
+    own_fault = "vector_error:AuxiliaryModelError:credential_missing"
     monkeypatch.setattr(handler_module.CodexHookHandler, "_vector_route", lambda self: True)
-    for own_vectors, expected, said in ((True, "TEST-own-marker", "without_vectors"),
-                                        (False, "TEST-server-marker", "answered")):
-        def recall(self, *args, own_vectors=own_vectors, **kwargs):
+    for index, (gap, own_vectors, expected, said) in enumerate((
+            (own_fault, True, "TEST-own-marker", f"without_vectors:{own_fault}"),
+            (own_fault, False, "TEST-server-marker", "answered"),
+            ("vector_error:AuxiliaryModelError:http_status:429", True, "TEST-server-marker", "answered"))):
+        monkeypatch.setattr(endpoint, "recall", lambda request, gap=gap, **kwargs: (
+            {"result": _marker("TEST-server-marker"),
+             "diagnostics": {"recall_vectors": False, "recall_vector_gap": gap}}, lambda: None))
+        own_calls = []
+
+        def recall(self, *args, own_vectors=own_vectors, own_calls=own_calls, **kwargs):
+            own_calls.append(1)
             self.diagnostics.recall_vectors = own_vectors
             return _marker("TEST-own-marker")
 
         monkeypatch.setattr(handler_module.CodexHookHandler, "_auto_recall", recall)
-        raw = json.dumps(_prompt(f"TEST 服务器没有向量 {own_vectors}。", prompt_id=f"TEST-prompt-v-{own_vectors}")).encode()
+        raw = json.dumps(_prompt(f"TEST 服务器没有向量 {index}。", prompt_id=f"TEST-prompt-v-{index}")).encode()
         assert _hook_entry(monkeypatch, raw, client) == 0
         captured = capsys.readouterr()
         assert expected in captured.out and f"CODEX_RECALL_RESIDENT:{said}\n" in captured.err
+        assert own_calls == ([] if "http_status" in gap else [1]), "a provider's refusal is not recalled again"
 
 
 def test_a_hook_whose_own_recall_went_without_vectors_waits_for_its_server(resident, monkeypatch, capsys):
@@ -1438,6 +1446,8 @@ def test_a_hook_whose_own_recall_went_without_vectors_waits_for_its_server(resid
     for own_vectors, expected, said in ((False, "TEST-server-marker", "answered"), (True, "TEST-own-marker", "slow")):
         def recall(self, *args, own_vectors=own_vectors, **kwargs):
             self.diagnostics.recall_vectors = own_vectors
+            if not own_vectors:
+                self._diag("deadline_exceeded")  # what the hook's own said, which is not what answered
             return _marker("TEST-own-marker")
 
         monkeypatch.setattr(handler_module.CodexHookHandler, "_auto_recall", recall)
@@ -1445,6 +1455,7 @@ def test_a_hook_whose_own_recall_went_without_vectors_waits_for_its_server(resid
         assert _hook_entry(monkeypatch, raw, client) == 0
         captured = capsys.readouterr()
         assert expected in captured.out and f"CODEX_RECALL_RESIDENT:{said}\n" in captured.err
+        assert "CODEX_HOOK:deadline_exceeded" not in captured.err
         time.sleep(1.0)  # the server's recall ends
 
 
@@ -1508,3 +1519,125 @@ def test_a_payload_nested_past_the_parser_s_limit_is_answered_empty(store, monke
     raw = b'{"hook_event_name": "PostToolUse", "tool_response": ' + b"[" * 1200 + b"]" * 1200 + b"}"
     assert _hook_entry(monkeypatch, raw, client) == 0
     assert json.loads(capsys.readouterr().out) == {}
+
+
+def test_a_server_answer_from_an_unreadable_store_gives_way_to_the_hook_s_own(resident, small_reserve, monkeypatch,
+                                                                              capsys):
+    """A server whose store could not be read answered with an empty packet, which read as nothing found and was
+    taken over the hook's own recall (review of rc11)."""
+    from scope_recall.adapters.codex import handler as handler_module
+
+    _root, client, endpoint = resident
+    monkeypatch.setattr(endpoint, "recall", lambda request, **kwargs: (
+        {"result": {}, "diagnostics": {"last_reason": "recall_incomplete",
+                                       "recall_error_detail": "sqlite_unavailable:DatabaseError"}}, lambda: None))
+    monkeypatch.setattr(handler_module.CodexHookHandler, "_auto_recall",
+                        lambda self, *args, **kwargs: _marker("TEST-own-marker"))
+    raw = json.dumps(_prompt("TEST 库读不到。", prompt_id="TEST-prompt-unreadable")).encode()
+    assert _hook_entry(monkeypatch, raw, client) == 0
+    captured = capsys.readouterr()
+    assert "TEST-own-marker" in captured.out
+    assert "CODEX_RECALL_RESIDENT:failed:recall_incomplete:sqlite_unavailable:DatabaseError\n" in captured.err
+
+
+def test_a_hook_knows_whether_its_own_runtime_has_a_vector_search(store):
+    """Nothing tested what a hook took its own vector route from (review of rc11)."""
+    from types import SimpleNamespace
+
+    _root, _homes, client, _capture = store
+    hook = _hook(client)
+    try:
+        for runtime, expected in ((None, False), (SimpleNamespace(runtime=None), False),
+                                  (SimpleNamespace(runtime=SimpleNamespace(config=SimpleNamespace(vector=None))), False),
+                                  (SimpleNamespace(runtime=SimpleNamespace(config=SimpleNamespace(vector=object()))),
+                                   True)):
+            hook._host_runtime = runtime
+            assert hook._vector_route() is expected
+    finally:
+        hook._host_runtime = None
+        hook.close()
+
+
+def test_a_request_the_server_cannot_read_is_refused_and_its_name_kept(resident, monkeypatch):
+    """A payload nested past what the server's parser takes was answered 400, which the hook took for another program
+    on the port, and it removed the server's name (review of rc11)."""
+    import hashlib
+    import http.client
+
+    from scope_recall.adapters.codex import local_endpoint
+
+    _root, client, endpoint = resident
+    body = b'{"payload": ' + b"[" * 1200 + b"]" * 1200 + b', "current_refs": [], "gaps": [], "remaining": 1.0}'
+    nonce = "a" * 32
+    connection = http.client.HTTPConnection("127.0.0.1", endpoint.port, timeout=5)
+    try:
+        connection.request("POST", "/recall", body=body, headers={
+            "X-Scope-Recall-Nonce": nonce, "X-Scope-Recall-Proof": local_endpoint._proof(
+                endpoint.token, "recall", nonce, hashlib.sha256(body).hexdigest())})
+        assert connection.getresponse().status == 400
+    finally:
+        connection.close()
+
+    def unreadable(body):
+        raise ValueError("TEST unreadable")
+
+    monkeypatch.setattr(local_endpoint, "_request", unreadable)
+    recaller = local_endpoint.Recaller(client, "claude-code")
+    assert recaller(_prompt("TEST 读不懂的请求。"), (), (), 3.0) is None
+    assert recaller.outcome == "refused" and endpoint.path.exists()
+
+
+def test_a_removed_name_comes_back_within_seconds(resident):
+    """A server that did not prove itself in time, being busy, was left out for 30 s (review of rc11)."""
+    import time
+
+    _root, _client, endpoint = resident
+    endpoint.path.unlink()
+    deadline = time.monotonic() + 6
+    while not endpoint.path.exists() and time.monotonic() < deadline:
+        time.sleep(0.1)
+    assert endpoint.path.exists()
+
+
+def test_a_first_read_of_the_key_that_raised_does_not_stop_the_server(store, monkeypatch, tmp_path):
+    """Only an OSError or a ValueError was caught at the server's first read of its key: another error kept the
+    endpoint from starting at all (review of rc11)."""
+    import os
+
+    from scope_recall.adapters.codex import local_endpoint
+    from scope_recall.vector import process_store
+
+    monkeypatch.setattr(process_store, "prestart", lambda **kwargs: None)
+    monkeypatch.delenv("TEST_SCOPE_RECALL_FIRST", raising=False)
+    _root, _homes, client, _capture = store
+    env_file = tmp_path / "TEST.env"
+    env_file.write_text("one\n", encoding="utf-8")
+    reads = {"fail": True}
+
+    def credentials():
+        if reads["fail"]:
+            raise TypeError("TEST config")
+        return {"TEST_SCOPE_RECALL_FIRST": "first"}
+
+    endpoint = local_endpoint.serve(client, "claude-code", env_file=env_file, credentials=credentials)
+    assert endpoint is not None
+    try:
+        reads["fail"] = False
+        endpoint._refresh_credentials()
+        assert os.environ.get("TEST_SCOPE_RECALL_FIRST") == "first"
+    finally:
+        endpoint.stop()
+        os.environ.pop("TEST_SCOPE_RECALL_FIRST", None)
+
+
+def test_a_session_record_line_or_reply_nested_past_the_parser_s_limit_is_passed_over(tmp_path):
+    """A record line nested past what the parser takes ended every later Stop of the session, and so did a Codex
+    reply of that shape (review of rc11)."""
+    from scope_recall.adapters.codex import transcript
+    from scope_recall.adapters.codex.boundary import is_codex_suggestions_reply
+
+    record = tmp_path / "TEST-record.jsonl"
+    record.write_bytes(b"[" * 1200 + b"]" * 1200 + b"\n")
+    lines = transcript.read(record, 0, limit=65536)
+    assert [(end, said) for end, said in lines] == [(2401, None)]
+    assert is_codex_suggestions_reply("{" + '"suggestions": ' + "[" * 1200 + "]" * 1200 + "}") is False

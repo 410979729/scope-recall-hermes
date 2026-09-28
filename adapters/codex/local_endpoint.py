@@ -7,8 +7,8 @@ LanceDB helper ready and answers the entry's prompt hooks on this machine with t
 
 Only the recall is asked for, and the server writes nothing.  The hook stores the prompt itself, as before, and asks
 for the recall after (``handler._resident_answer``), with all of its time; if the server has not answered when 1.5 s
-are left, the hook recalls as well and takes the server's answer if it comes meanwhile, and a late answer is
-dropped.  A first version had the server store the prompt as well: one that answered after the hook stopped waiting
+are left, the hook recalls as well and uses the answer that ran its vector search, and one that comes after the hook
+is done is dropped.  A first version had the server store the prompt as well: one that answered after the hook stopped waiting
 left the prompt stored twice.
 
 A hook asks the newest server of its entry, host and version (``Recaller``).  Servers name themselves in a folder of
@@ -48,7 +48,9 @@ MAX_REQUEST_BYTES = 7 * 65536
 #: milliseconds; one that does not loses its name, with time left to try the next (a hung first name took all of
 #: ``FIND_SECONDS``, and kept, it cost every later prompt its wait, reviews of rc11).
 CONNECT_SECONDS = 0.3
-PROOF_SECONDS = 0.3
+#: A server serving several recalls at once proves itself in 0.15-0.3 s (each hand-over of Python's lock waits for a
+#: timer tick on Windows): at 0.3 s such a server lost its name (review of rc11).
+PROOF_SECONDS = 0.5
 #: Servers a hook tries, newest first, and how long it may spend finding one.
 MAX_TRIED = 2
 FIND_SECONDS = 1.0
@@ -56,8 +58,9 @@ FIND_SECONDS = 1.0
 ANSWER_MARGIN_SECONDS = 0.3
 #: Recalls one server runs at once; a hook past that recalls itself.
 MAX_CONCURRENT = 8
-#: How often a server looks for its own name, and puts it back when a hook removed it.
-ADVERTISE_SECONDS = 30.0
+#: How often a server looks for its own name, and puts it back when a hook removed it: a busy server that did not
+#: prove itself in time was left out for 30 s (review of rc11).
+ADVERTISE_SECONDS = 2.0
 _NONCE = "X-Scope-Recall-Nonce"
 _PROOF = "X-Scope-Recall-Proof"
 
@@ -143,7 +146,7 @@ class _Handler(BaseHTTPRequestHandler):
             except Exception as exc:  # noqa: BLE001 - answered as a failed recall; the hook recalls itself
                 # Dropped, the hook took the server for another program and removed its name, which came back and
                 # failed the same way; and the log held only the error's class (review of rc11).
-                sys.stderr.write(f"SCOPE_RECALL_ENDPOINT:recall_failed\n{traceback.format_exc(limit=8)}")
+                sys.stderr.write(f"SCOPE_RECALL_ENDPOINT:recall_failed\n{traceback.format_exc(limit=-8)}")
                 code = getattr(exc, "code", None)
                 detail = f"{type(exc).__name__}:{code}" if isinstance(code, str) else type(exc).__name__
                 answer_body = {"result": {}, "diagnostics": {"last_reason": "recall_exception",
@@ -227,12 +230,13 @@ class Recaller:
     """The hook's side: asks the newest server of its entry for one prompt's recall (``handler.resident_recall``).
 
     ``outcome`` says how it went, for the hook's stderr: ``answered``; ``late`` (a server took the prompt and did not
-    answer in time); ``busy`` (its recalls all taken, or one of them stuck); ``unproven`` (no proof in time, a
+    answer in time); ``busy`` (its recalls all taken, or one of them stuck); ``refused`` (it could not read this
+    request); ``unproven`` (no proof in time, a
     program on the port, or a broken answer: the name is removed); ``none`` (no server of this entry, host and version
     runs).  The hook says what it did with an answer (``handler._resident_answer``): ``failed:<reason>`` when the
-    server's recall ran out of time or failed, ``without_vectors`` when the hook's own recall had its vector search and
-    the server's did not, ``slow`` when the hook's own, with it, was done first, and ``late`` when no answer came before
-    the hook's own time was up."""
+    server's recall ran out of time, failed or found the store unreadable, ``without_vectors:<gap>`` when the hook's
+    own recall had its vector search and the server's did not, ``slow`` when the hook's own, with it, was done first,
+    and ``late`` when no answer came before the hook's own time was up."""
 
     def __init__(self, home: Path | str, host: str) -> None:
         self.home = Path(home)
@@ -312,6 +316,8 @@ class Recaller:
                 return "unproven", None
             if response.status == 503:
                 return "busy", None
+            if response.status == 400:
+                return "refused", None  # this request, not the server: its name stays
             if response.status != 200 or not _proven(response.getheader(_PROOF), token, "answer", nonce,
                                                      hashlib.sha256(data).hexdigest()):
                 return "unproven", None

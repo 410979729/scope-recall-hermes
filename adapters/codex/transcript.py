@@ -179,7 +179,8 @@ def read(path: Path, offset: int, *, limit: int = READ_BYTES) -> list[tuple[int,
             position += len(line)
             try:
                 row = json.loads(line)
-            except ValueError:
+            except (ValueError, RecursionError):
+                # A line nested past what the parser takes failed every later Stop of the session (review of rc11).
                 row = None
             lines.append((position, said(row)))
     return lines

@@ -301,6 +301,27 @@ def test_interrupt_and_session_end_are_host_generated_without_model_calls(handle
     assert origins == ["host_generated", "host_generated"]
 
 
+def test_a_recall_that_found_the_store_unreadable_says_so(handler, installed):
+    """A recall whose store could not be read returned an empty packet that read as nothing found: an entry's server
+    answering so was taken over the hook's own recall (review of rc11)."""
+    _hook, project_root, config = handler
+    _, core, clock, _ = installed
+
+    class Unreadable:
+        def __getattr__(self, name):
+            return getattr(core, name)
+
+        def recall_packet(self, context, request, *, current_source_refs=(), deadline_seconds=2.0):
+            packet = core.recall_packet(context, request, current_source_refs=current_source_refs,
+                                        deadline_seconds=deadline_seconds)
+            return {**packet, "gaps": [*packet.get("gaps", ()), "sqlite_unavailable:DatabaseError"]}
+
+    guarded = CodexHookHandler(config, core=Unreadable(), clock=clock)
+    guarded.handle_payload(_payload(project_root, "UserPromptSubmit", prompt="TEST 读不到的库。"))
+    assert (guarded.diagnostics.last_reason, guarded.diagnostics.recall_error_detail) == (
+        "recall_incomplete", "sqlite_unavailable:DatabaseError")
+
+
 def test_missing_public_fields_do_not_capture(handler, installed):
     hook, project_root, config = handler
     payload = _payload(project_root, "UserPromptSubmit")

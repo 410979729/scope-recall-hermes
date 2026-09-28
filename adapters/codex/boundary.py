@@ -86,7 +86,7 @@ def is_codex_suggestions_reply(message: str) -> bool:
         return False
     try:
         value = json.loads(text)
-    except ValueError:
+    except (ValueError, RecursionError):
         return False
     return isinstance(value, dict) and set(value) == {"suggestions"} and isinstance(value["suggestions"], list)
 

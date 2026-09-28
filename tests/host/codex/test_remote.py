@@ -690,3 +690,16 @@ def test_a_hook_nested_past_the_parser_s_limit_is_answered_empty(tmp_path):
     config = _client(tmp_path, "claude-code", _free_port())
     raw = b'{"hook_event_name": "UserPromptSubmit", "prompt": ' + b"[" * 1200 + b"]" * 1200 + b"}"
     assert remote_client.run_hook(config, raw) == {}
+
+
+def test_the_server_refuses_a_body_nested_past_the_parser_s_limit(served):
+    """A request nested past what the parser takes raised out of the server as a 500, which a Codex client keeps to
+    send again for good (review of rc11)."""
+    _root, _homes, ports = served
+    body = b'{"payload": ' + b"[" * 1200 + b"]" * 1200 + b"}"
+    request = urllib.request.Request(f"http://127.0.0.1:{ports['claude-code']}/hook", data=body, method="POST",
+                                     headers={"Content-Type": "application/json",
+                                              "Authorization": f"Bearer {TOKEN}-claude-code"})
+    with pytest.raises(urllib.error.HTTPError) as refused:
+        urllib.request.urlopen(request, timeout=20)
+    assert refused.value.code == 400

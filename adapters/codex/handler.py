@@ -63,7 +63,11 @@ _LOCAL_RECALL_RESERVE_S = 1.5
 #: The least a server is asked with: in less it could not be found, prove itself and answer.
 _RESIDENT_MIN_S = 1.0
 #: What a server's recall may report of how it ended, besides its vector gap and its error.
-_RESIDENT_REASONS = frozenset({"deadline_exceeded", "recall_exception"})
+_RESIDENT_REASONS = frozenset({"deadline_exceeded", "recall_exception", "recall_incomplete"})
+#: What failed in a server's vector search that the hook's own may not meet: the server's key, its LanceDB helper,
+#: its embedding transport (``core.vector_failure`` names them).  A provider's refusal or time out the hook would meet
+#: as well, and a second recall then only cost the prompt its time (review of rc11).
+_SERVER_OWN_VECTOR_FAULTS = ("credential_", "helper_", "worker_", "fence_", "table_not_open", "transport_")
 #: Capture refusals a second attempt meets again.
 _SETTLED_CAPTURE_CODES = frozenset({"SECRET_DETECTED", "INPUT_INVALID", "VERSION_CONFLICT"})
 #: How a capture says it refused a message as holding a credential: as a code, or as the rejection it returns.
@@ -205,8 +209,9 @@ class CodexHookHandler:
         #: The entry's running MCP server, asked for a prompt's recall (``local_endpoint.Recaller``): given the
         #: payload, the stored refs, the gaps and the seconds it may take, the result and its diagnostics, or None.
         self.resident_recall: Callable[..., tuple[dict[str, Any], dict[str, Any]] | None] | None = None
-        #: How a prompt's recall went with the server, when the hook decided it (``_resident_answer``): ``late`` or
-        #: ``failed:<reason>``.  The hook's stderr says this, or else what ``resident_recall`` says of itself.
+        #: How a prompt's recall went with the server, when the hook decided it (``_resident_answer``): ``slow``,
+        #: ``late``, ``without_vectors:<gap>`` or ``failed:<reason>``.  The hook's stderr says this, or else what
+        #: ``resident_recall`` says of itself.
         self.resident_outcome: str | None = None
 
     @classmethod
@@ -738,7 +743,8 @@ class CodexHookHandler:
         answered.wait(max(0.0, self._remaining(deadline) - _LOCAL_RECALL_RESERVE_S))
         read = answered.is_set()
         server = self._resident_taken(answers[0]) if read else None
-        if server is not None and (server[1].get("recall_vectors") is True or not self._vector_route()):
+        if server is not None and (server[1].get("recall_vectors") is True or not self._vector_route()
+                                   or not _server_own_vector_fault(server[1].get("recall_vector_gap"))):
             return self._resident_used(server)
         reason = self.diagnostics.last_reason
         own = self._auto_recall(context, prompt, request_id, current_refs, deadline, gaps)
@@ -752,7 +758,8 @@ class CodexHookHandler:
             self.diagnostics.last_reason = reason  # what the hook's own recall said is not what answered
             return self._resident_used(server)
         if server is not None:
-            self.resident_outcome = "without_vectors"
+            gap = _error_detail(server[1].get("recall_vector_gap"))
+            self.resident_outcome = "without_vectors" + (f":{gap}" if gap else "")
         elif not read:
             self.resident_outcome = "slow" if own_vectors else "late"
         return own
@@ -779,7 +786,6 @@ class CodexHookHandler:
             value = fields.get(name)
             if value is None or type(value) is str:
                 setattr(self.diagnostics, name, _error_detail(value) if value else None)
-        self.diagnostics.recall_vectors = fields.get("recall_vectors") is True
         return result if isinstance(result, dict) else {}
 
     def _vector_route(self) -> bool:
@@ -842,6 +848,10 @@ class CodexHookHandler:
         self.diagnostics.recall_vectors = without is None
         if without is not None:
             self.diagnostics.recall_vector_gap = _error_detail(without)
+        incomplete = recall_incomplete(packet.get("gaps") or ())
+        if incomplete is not None:
+            self.diagnostics.recall_error_detail = _error_detail(incomplete)
+            self._diag("recall_incomplete", gaps=gaps)
         if self._remaining(deadline) <= 0:
             self._diag("deadline_exceeded", gaps=gaps)
             return {}
@@ -996,6 +1006,27 @@ _WITHOUT_VECTORS = (
     lambda gap: gap in ("deadline_exceeded", "deadline_exceeded_collect", "deadline_exceeded_vector"),
     lambda gap: gap.startswith("sqlite_unavailable"),
 )
+
+
+def recall_incomplete(gaps) -> str | None:
+    """The gap that says a recall failed whole (the store could not be read, or the time ran out before it was), or
+    None.  Its packet is empty like one that found nothing, and a server's such answer was taken over the hook's own
+    (review of rc11)."""
+    for gap in gaps:
+        if isinstance(gap, str) and (gap == "deadline_exceeded" or gap.startswith("sqlite_unavailable")):
+            return gap
+    return None
+
+
+def _server_own_vector_fault(gap: object) -> bool:
+    """Whether a server's recall went without its vector search for a reason of its own (``_SERVER_OWN_VECTOR_FAULTS``,
+    or no vector search at all), which the hook's own recall may not share."""
+    if gap == "vector_unavailable":
+        return True
+    if type(gap) is not str or not gap.startswith("vector_error:"):
+        return False
+    parts = gap.split(":")
+    return len(parts) >= 3 and parts[2].startswith(_SERVER_OWN_VECTOR_FAULTS)
 
 
 def recall_without_vectors(gaps) -> str | None:
