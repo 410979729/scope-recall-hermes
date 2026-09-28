@@ -178,33 +178,42 @@ class CandidateIntake(CandidateTables):
         if prior is not None and not (_resume and prior["truncated"]):
             return CandidateSourceTrigger(source_ref, source_revision, "duplicate", prior["matched_count"],
                                           prior["scheduled_count"], bool(prior["truncated"]))
-        if _matched is None:
-            rows = [(row["candidate_ref"], row["candidate_revision"])
-                    for row in self._candidates_mentioned_by(source, limit + 1)]
-        else:
-            rows = _matched
-        matched = scheduled = 0
-        for candidate_ref, candidate_revision in rows[:limit]:
-            candidate = self._tx.claims.version(candidate_ref, candidate_revision)
-            if candidate is None or candidate.current_revision != candidate.revision:
-                continue
-            if _matched is not None:
-                # Read before this write: it may have been archived, suppressed or resolved since.
-                lifecycle = self._lifecycle_row(candidate.ref, candidate.revision)
-                if (candidate.suppressed or lifecycle is None
-                        or not is_reachable(lifecycle["processing_state"], lifecycle["reason"])):
+        def link(rows: list[tuple[str, int]], *, recheck: bool) -> tuple[int, int]:
+            matched = scheduled = 0
+            for candidate_ref, candidate_revision in rows[:limit]:
+                candidate = self._tx.claims.version(candidate_ref, candidate_revision)
+                if candidate is None or candidate.current_revision != candidate.revision:
                     continue
-            if not self._add_evidence(candidate, source_ref, source_revision, now):
-                continue
-            matched += 1
-            conn.execute(
-                f"""UPDATE candidate_lifecycle SET processing_state='pending_evaluation',reason='new_evidence',
-                    last_evidence_at=?,updated_at=?,dormant_at=NULL
-                    WHERE candidate_ref=? AND candidate_revision=? AND {reachable_sql()}""",
-                (now, now, candidate.ref, candidate.revision),
-            )
-            _, queued = self._schedule_when_settled(candidate, now=now, rule_version=rule_version)
-            scheduled += int(queued)
+                if recheck:
+                    # Read before this write: it may have been archived, suppressed or resolved since.
+                    lifecycle = self._lifecycle_row(candidate.ref, candidate.revision)
+                    if (candidate.suppressed or lifecycle is None
+                            or not is_reachable(lifecycle["processing_state"], lifecycle["reason"])):
+                        continue
+                if not self._add_evidence(candidate, source_ref, source_revision, now):
+                    continue
+                matched += 1
+                conn.execute(
+                    f"""UPDATE candidate_lifecycle SET processing_state='pending_evaluation',reason='new_evidence',
+                        last_evidence_at=?,updated_at=?,dormant_at=NULL
+                        WHERE candidate_ref=? AND candidate_revision=? AND {reachable_sql()}""",
+                    (now, now, candidate.ref, candidate.revision),
+                )
+                _, queued = self._schedule_when_settled(candidate, now=now, rule_version=rule_version)
+                scheduled += int(queued)
+            return matched, scheduled
+
+        def here() -> list[tuple[str, int]]:
+            return [(row["candidate_ref"], row["candidate_revision"])
+                    for row in self._candidates_mentioned_by(source, limit + 1)]
+
+        rows = here() if _matched is None else _matched
+        matched, scheduled = link(rows, recheck=_matched is not None)
+        if _matched is not None and rows and not matched:
+            # Another drain linked this page between the read and this write.  Closing on it would leave the
+            # candidates past it without this source, so the next page is found here instead.
+            rows = here()
+            matched, scheduled = link(rows, recheck=False)
         # Evidence membership is the cursor, so a page that linked nothing puts
         # the same rows first in line again and resuming it can never finish.
         # Only a page that made progress keeps its remainder open.

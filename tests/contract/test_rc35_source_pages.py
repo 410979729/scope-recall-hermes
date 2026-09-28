@@ -234,3 +234,22 @@ def test_a_pass_resumes_at_most_its_page_allowance(app, monkeypatch):
     core.drain_worker(ctx, max_items=32, remaining_seconds=10, consolidation=Evaluator())
     assert _trigger(core, trigger.ref) == (count, 0)
     assert _pending_pages(core, ctx) == 0
+
+
+def test_a_page_another_drain_linked_first_does_not_close_the_trigger(app):
+    """Two drains read the same page; the first links it, the second finds every link taken.  Closing on that
+    empty page left the candidates past it without this source: the second write finds the next page itself."""
+    core, ctx = app
+    count = SOURCE_MATCH_LIMIT * 3 + 4
+    _candidates(core, ctx, count)
+    trigger = capture(core, ctx, "sharedtoken 提供了统一的新证据。", key="TEST-rc35/race")
+    with core.storage.read(ctx) as tx:
+        first = tx.candidates.next_source_page()
+    with core.storage.read(ctx) as tx:
+        second = tx.candidates.next_source_page()
+    assert first == second
+    with core.storage.write(ctx) as tx:
+        assert tx.candidates.resume_source_pages(now=core.clock.utc_now(), page=first) == SOURCE_MATCH_LIMIT
+    with core.storage.write(ctx) as tx:
+        assert tx.candidates.resume_source_pages(now=core.clock.utc_now(), page=second) == SOURCE_MATCH_LIMIT
+    assert _trigger(core, trigger.ref) == (SOURCE_MATCH_LIMIT * 3, 1)
