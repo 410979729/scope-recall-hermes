@@ -274,8 +274,9 @@ def _vectors(tmp_path, dimensions: int = 3072):
 
 
 def test_an_index_is_built_once_the_table_needs_one_and_the_pass_has_the_time(tmp_path):
-    """The pilot's store: 78,403 rows of 3,072 dimensions, built in 32.9 s; the estimate is twice that.  A pass that
-    could not finish it is not started on it: the watchdog would end the pass and the build would start over."""
+    """The pilot's store: 78,403 rows of 3,072 dimensions, built in 7.7 s on a copy; the estimate is four times that.
+    A pass that could not finish it is not started on it: the watchdog would end the pass and the build would start
+    over."""
     from scope_recall.vector.store import VECTOR_INDEX_MIN_ROWS
 
     now = datetime.now(timezone.utc)
@@ -284,7 +285,7 @@ def test_an_index_is_built_once_the_table_needs_one_and_the_pass_has_the_time(tm
     assert small.builds == []
     big = _FakeIndexStore(78_403)
     now += INDEX_RECHECK["below_threshold"]
-    tight = index_if_due(big, _vectors(tmp_path), available_seconds=60, now=now)
+    tight = index_if_due(big, _vectors(tmp_path), available_seconds=40, now=now)
     assert tight["outcome"] == "deferred" and big.builds == []
     now += INDEX_RECHECK["deferred"]
     assert index_if_due(big, _vectors(tmp_path), available_seconds=110, now=now)["outcome"] == "built"
@@ -344,6 +345,30 @@ def test_the_index_is_built_used_and_kept_current(tmp_path):
         store.compact()
         assert store.search(later[3]["vector"], scope_id="TEST-scope", limit=1)[0]["id"] == "TEST-vector-1203"
         assert store.search_scopes(later[3]["vector"], scope_ids=["TEST-scope"], limit=1)[0]["id"] == "TEST-vector-1203"
+    finally:
+        store.close()
+
+
+@pytest_native
+def test_a_vector_index_of_another_kind_is_replaced(tmp_path):
+    """The pilot's store was first indexed with HNSW by hand.  Half its rows share their vector with another row, and
+    over such duplicates the graph missed nearest rows and once returned 2 rows for 10: the kept index is IVF_SQ."""
+    from scope_recall.vector.store import LanceVectorStore
+
+    rows = _spread_rows(1200)
+    rows += [{**row, "id": f"TEST-copy-{index}"} for index, row in enumerate(rows[:600])]
+    store = LanceVectorStore(tmp_path / "lancedb", table_name="scope_recall", dimensions=8)
+    store.open()
+    try:
+        store.upsert_records(rows)
+        store._fresh_table().create_index(metric="cosine", vector_column_name="vector", index_type="IVF_HNSW_SQ")
+        assert store.ensure_vector_index(min_rows=1000)["outcome"] == "rebuilt"
+        kinds = [str(index.index_type) for index in store._fresh_table().list_indices()]
+        assert kinds == ["IvfSq"], kinds
+        assert store.ensure_vector_index(min_rows=1000)["outcome"] == "present"
+        for probe in (rows[17], rows[600]):
+            hits = store.search(probe["vector"], scope_id="TEST-scope", limit=2)
+            assert {hit["_distance"] for hit in hits} and min(hit["_distance"] for hit in hits) < 1e-6
     finally:
         store.close()
 

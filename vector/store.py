@@ -30,10 +30,12 @@ _SCALAR_INDEX_TYPES = frozenset({"bitmap", "btree", "label_list", "scalar"})
 #: What a nearest-neighbour search returns: the columns ``adapters.lance`` reads from a hit.  With every column the
 #: 3,072 floats of each of 40 hits crossed the helper's pipe as JSON on every search, and nothing read them.
 _HIT_COLUMNS = ["id", "scope_id", "source", "target", "_distance"]
-#: A search through the index re-ranks this many times its limit by exact distance.  On 78,000 vectors of 3,072
-#: dimensions that gave the exact scan's top 10 in 998 of 1,000 places, in 21 ms against 748 ms.  An exact scan,
-#: on a table without the index, ignores it.
+#: A search through the index re-ranks this many times its limit by exact distance, and probes every partition
+#: (LanceDB takes the partitions there are), so the index only makes each comparison cheaper and never decides which
+#: rows are compared.  On the pilot's 78,000 vectors of 3,072 dimensions: 10-40 ms against 748 ms, and in 6,600
+#: checks against the exact scan under three entries' filters (one a single scope) no nearest row was missed.  An exact scan ignores both.
 _REFINE_FACTOR = 5
+_ALL_PARTITIONS = 100_000
 #: Rows from which a table gets its nearest-neighbour index (``ensure_vector_index``).  Below this an exact scan
 #: costs about 100 ms, and an index would only be one more thing to keep current.
 VECTOR_INDEX_MIN_ROWS = 10_000
@@ -47,19 +49,28 @@ def _indexes_vector(index: Any) -> bool:
     return [str(name).strip() for name in (getattr(index, "columns", None) or ())] == ["vector"]
 
 
-def _create_vector_index(table: Any, metric: str) -> None:
-    """One HNSW index over quantized vectors, by whichever API the installed LanceDB has."""
+def _is_ivf_sq(index: Any) -> bool:
+    return str(getattr(index, "index_type", "") or "").replace("_", "").lower() == "ivfsq"
+
+
+def _create_vector_index(table: Any, metric: str, *, replace: bool) -> None:
+    """IVF over 8-bit quantized vectors, by whichever API the installed LanceDB has.
+
+    Not HNSW: half the pilot's rows share their vector with another row (the same words in several scopes and
+    revisions), and over such duplicates the graph left rows unreachable.  It missed 10 of 600 nearest rows and
+    once returned 2 rows for 10, whatever its search width.
+    """
     try:
-        from lancedb.index import HnswSq
+        from lancedb.index import IvfSq
     except ImportError:
-        HnswSq = None
-    if HnswSq is not None:
+        IvfSq = None
+    if IvfSq is not None:
         try:
-            table.create_index("vector", config=HnswSq(distance_type=metric), replace=False)
+            table.create_index("vector", config=IvfSq(distance_type=metric), replace=replace)
             return
         except TypeError:
             pass  # LanceDB 0.30 has no ``config``; the keyword form below builds the same index.
-    table.create_index(metric=metric, vector_column_name="vector", index_type="IVF_HNSW_SQ", replace=False)
+    table.create_index(metric=metric, vector_column_name="vector", index_type="IVF_SQ", replace=replace)
 
 
 def _covers_id_only(index: Any) -> bool:
@@ -397,14 +408,17 @@ class LanceVectorStore(VectorStore):
             raise ValueError("min_rows must be a positive integer")
         with self.physical_write_lock(timeout_seconds=30.0):
             table = self._fresh_table()
-            if any(_indexes_vector(index) for index in table.list_indices() or ()):
+            existing = [index for index in table.list_indices() or () if _indexes_vector(index)]
+            if any(_is_ivf_sq(index) for index in existing):
                 return {"outcome": "present"}
             rows = int(table.count_rows())
-            if rows < min_rows:
+            if rows < min_rows and not existing:
                 return {"outcome": "below_threshold", "rows": rows}
+            # A vector index of another kind (an HNSW one built by hand on the pilot) is replaced.
             started = time.monotonic()
-            _create_vector_index(table, self.metric)
-            return {"outcome": "built", "rows": rows, "seconds": round(time.monotonic() - started, 3)}
+            _create_vector_index(table, self.metric, replace=bool(existing))
+            return {"outcome": "rebuilt" if existing else "built", "rows": rows,
+                    "seconds": round(time.monotonic() - started, 3)}
 
     def _physical_footprint(self) -> dict[str, int]:
         # Read straight off the filesystem: the doctor must report the same
@@ -456,7 +470,7 @@ class LanceVectorStore(VectorStore):
         if not vector:
             return []
         query = (self._fresh_table().search(vector).metric(self.metric).where(f"scope_id = {_sql_quote(scope_id)}")
-                 .select(_HIT_COLUMNS).refine_factor(_REFINE_FACTOR))
+                 .select(_HIT_COLUMNS).nprobes(_ALL_PARTITIONS).refine_factor(_REFINE_FACTOR))
         return query.limit(int(limit)).to_list()
 
     def search_scopes(self, vector: list[float], *, scope_ids: Iterable[str], limit: int) -> list[dict[str, Any]]:
@@ -466,7 +480,7 @@ class LanceVectorStore(VectorStore):
             return []
         where = f"scope_id IN ({', '.join(_sql_quote(scope_id) for scope_id in listed)})"
         query = (self._fresh_table().search(vector).metric(self.metric).where(where, prefilter=True)
-                 .select(_HIT_COLUMNS).refine_factor(_REFINE_FACTOR))
+                 .select(_HIT_COLUMNS).nprobes(_ALL_PARTITIONS).refine_factor(_REFINE_FACTOR))
         return query.limit(int(limit)).to_list()
 
     def count_rows(self) -> int:

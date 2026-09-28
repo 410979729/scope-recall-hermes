@@ -86,17 +86,18 @@ def compact_if_due(store: Any, vector_config: Any, *, available_seconds: float,
     return receipt
 
 
-#: Seconds an index build takes per row and dimension: the first build on the pilot's shared store took 32.9 s
-#: for 78,403 rows of 3,072 dimensions, and this is twice that rate.  A pass builds only when the estimate fits in
+#: Seconds an index build takes per row and dimension: on a copy of the pilot's shared store the build took 7.7 s
+#: for 78,374 rows of 3,072 dimensions, and this is four times that rate.  A pass builds only when the estimate fits in
 #: what is left of it: the watchdog ends a pass that outlives its budget, and a build cut off that way would start
 #: over on every pass.
-INDEX_SECONDS_PER_ROW_DIMENSION = 2.8e-7
+INDEX_SECONDS_PER_ROW_DIMENSION = 1.3e-7
 #: Seconds of the pass kept free beside the estimate, for the drain that follows.
 INDEX_MARGIN_SECONDS = 20.0
 #: How long each outcome stands before a pass looks again.  A failure is not retried sooner than this; a store
 #: below the threshold or too large for the time left is looked at again as it grows or as a pass has more time.
 INDEX_RECHECK = {
     "built": timedelta(days=1),
+    "rebuilt": timedelta(days=1),
     "present": timedelta(days=1),
     "below_threshold": timedelta(hours=1),
     "deferred": timedelta(minutes=15),

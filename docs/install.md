@@ -389,13 +389,16 @@ and `worker_capability_unavailable`. Everything else forces `degraded`.
 
 Each store under `index_metadata.vector_stores` names its nearest-neighbour index
 in `index_outcome`. The worker builds the index once the store holds 10,000
-vectors, at the start of a pass that has the time for the build: about 33 s for
-78,000 vectors of 3,072 dimensions. The same outcome is in
+vectors, at the start of a pass that has the time for the build: about 8 s for
+78,000 vectors of 3,072 dimensions. It is IVF over 8-bit quantized vectors, and a
+search probes every partition and re-ranks its nearest candidates exactly, so it
+finds what an exact scan finds, in about 40 ms instead of 750. A vector index of
+another kind is replaced (`rebuilt`). The same outcome is in
 `vectors/<space>/index-state.json`.
 
 | `index_outcome` | Meaning |
 |-----------------|---------|
-| `built` or `present` | The store has its index; compaction keeps it current. |
+| `built`, `rebuilt` or `present` | The store has its index; compaction keeps it current. |
 | `below_threshold` | Fewer than 10,000 vectors; an exact scan is quick enough. |
 | `deferred` | The build did not fit the pass; a later pass with more time builds it. |
 | `failed` | The build failed; it is tried again six hours later. |
