@@ -20,6 +20,7 @@ from typing import Any, Literal
 import scope_recall
 from scope_recall.contracts import TrustedContext
 from scope_recall.core import CoreConfig, MemoryCore
+from scope_recall.core.capture_inbox import still_replayed_sql
 from scope_recall.core.schema import SCHEMA_VERSION, UPGRADE_CHAIN, stale_header_schema
 from scope_recall.core.storage import SQLiteStorage
 from scope_recall.core.failure_retry import NEEDS_REVIEW_COUNT
@@ -621,7 +622,9 @@ def _check_storage(report: DoctorReport, binding, data_directory: Path) -> bool:
             status = transaction.status(include_all_projects=True, include_admission=True)
             conn = transaction._check()
             report.capture_inbox = conn.execute("SELECT count(*) FROM capture_inbox").fetchone()[0]
-            report.capture_inbox_blocked = conn.execute("SELECT count(*) FROM capture_inbox WHERE last_error_code IS NOT NULL AND last_error_code NOT IN ('STORAGE_UNAVAILABLE','DEADLINE_EXCEEDED')").fetchone()[0]
+            waiting, codes = still_replayed_sql()
+            report.capture_inbox_blocked = conn.execute(
+                f"SELECT count(*) FROM capture_inbox WHERE NOT {waiting}", codes).fetchone()[0]
             report.recent_work_errors = [dict(r) for r in conn.execute("SELECT work_id,lease_token,stage,error_code,error_field,recorded_at FROM work_error_details ORDER BY detail_id DESC LIMIT 16")]
             moment = datetime.now(timezone.utc)
             hour_ago = (moment - timedelta(hours=1)).isoformat()

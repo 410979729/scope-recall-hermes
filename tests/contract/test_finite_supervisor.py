@@ -80,6 +80,27 @@ def test_next_due_preserves_audience_cooldown_budget_and_purge(tmp_path):
     assert plan.due_at is None and plan.reason=='failed_terminal' and plan.failed>0
 
 
+def test_an_inbox_row_a_pass_still_stores_wakes_the_worker(tmp_path):
+    """The wake counted rows never tried and two passing failures: a row an older release left as a bare
+    ``SOURCE_MISSING`` (replayed once more since 3.4.0rc10) or a key collision (stored under a new key) waited for a
+    pass something else started, and the doctor called both blocked.  A row whose failure is final wakes nothing."""
+    from scope_recall.core import capture_inbox
+
+    core, cfg, _path = fixture(tmp_path)
+    for index, code in enumerate(('SOURCE_MISSING', 'VERSION_CONFLICT', 'SOURCE_MISSING:TEST-final')):
+        event = source_event(source_event_key=f'TEST-inbox-{index}', content=f'TEST 第{index}条。')
+        token, _prepared = capture_inbox.enqueue(core.storage, core.clock, cfg.context(), event,
+                                                 scope_id='TEST-a', host_scope=None)
+        with core.storage.write(cfg.context()) as tx:
+            tx._check(write=True).execute('UPDATE capture_inbox SET last_error_code=? WHERE token=?', (code, token))
+    plan = next_wake(cfg, now=NOW)
+    assert (plan.reason, plan.pending) == ('durable_capture_ingress', 2)
+    waiting, codes = capture_inbox.still_replayed_sql()
+    with core.storage.read(cfg.context()) as tx:
+        blocked = tx._check().execute(f'SELECT count(*) FROM capture_inbox WHERE NOT {waiting}', codes).fetchone()[0]
+    assert blocked == 1, 'what the doctor calls blocked'
+
+
 def test_busy_day_counter_still_plans_and_both_readers_share_one_bound(tmp_path, monkeypatch):
     # The planner once rejected any counter above 10,000 while the worker kept
     # counting: every supervisor ended as failed after its first drain, and

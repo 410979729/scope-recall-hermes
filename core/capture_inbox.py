@@ -33,6 +33,17 @@ _LEGACY_SOURCE_MISSING = "SOURCE_MISSING"
 #: before the missing source was named, or a key another message already took (``resolve_conflicted_ingress``
 #: stores it under a new key).  Any other code is terminal; the row stays for inspection only.
 STILL_REPLAYED = frozenset({"STORAGE_UNAVAILABLE", "DEADLINE_EXCEEDED", _LEGACY_SOURCE_MISSING, "VERSION_CONFLICT"})
+#: The codes ``replay_inbox`` itself retries; a ``VERSION_CONFLICT`` row is ``resolve_conflicted_ingress``'s.
+_RETRIED = tuple(sorted(STILL_REPLAYED - {"VERSION_CONFLICT"}))
+
+
+def still_replayed_sql(column: str = "last_error_code") -> tuple[str, tuple[str, ...]]:
+    """The inbox rows a worker pass still stores, as SQL and its parameters: never tried, or a code in
+    ``STILL_REPLAYED``.  What wakes the worker and what the doctor calls blocked are read from this one place: the
+    wake had counted two of the four codes, so a row an older release left as ``SOURCE_MISSING`` waited for a pass
+    something else started, and the doctor called it blocked."""
+    codes = tuple(sorted(STILL_REPLAYED))
+    return f"({column} IS NULL OR {column} IN ({','.join('?' for _ in codes)}))", codes
 
 
 def _terminal_code(exc: ContractError) -> str:
@@ -239,9 +250,9 @@ def replay_inbox(storage, clock, context, *, authorize, admission_policy=None, l
     with storage.read(context, remaining_seconds=remaining_seconds) as tx:
         rows = tx._check().execute(f"""SELECT * FROM capture_inbox WHERE scope_id IN ({','.join('?' for _ in scopes)})
             AND project_id IS ? AND branch_id IS ?
-            AND (last_error_code IS NULL OR last_error_code IN ('STORAGE_UNAVAILABLE','DEADLINE_EXCEEDED',?))
+            AND (last_error_code IS NULL OR last_error_code IN ({','.join('?' for _ in _RETRIED)}))
             ORDER BY created_at,token LIMIT ?""",
-            (*scopes, context.project_id, context.branch_id, _LEGACY_SOURCE_MISSING, limit)).fetchall()
+            (*scopes, context.project_id, context.branch_id, *_RETRIED, limit)).fetchall()
     receipts = []
     for row in rows:
         if time.monotonic() >= deadline:

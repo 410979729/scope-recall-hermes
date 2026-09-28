@@ -13,6 +13,7 @@ import os
 from pathlib import Path
 import time
 
+from ..core.capture_inbox import still_replayed_sql
 from ..core.storage import SQLiteStorage
 from ..core.work_storage import AUTO_RECOVERABLE_ERRORS, AUTO_RECOVERABLE_WORK_TYPES
 from ..core.file_lock import advisory_file_lock
@@ -147,8 +148,9 @@ def next_wake(config, *, now: datetime | None = None, unavailable_until=None) ->
                 candidates.append(cooled(*budgeted(now, 'candidate_evidence_remainder'), cooldown))
             else:
                 blocked += source_pages
-        inbox = conn.execute(f"""SELECT count(*) FROM capture_inbox WHERE {base}
-            AND (last_error_code IS NULL OR last_error_code IN ('STORAGE_UNAVAILABLE','DEADLINE_EXCEEDED'))""", params).fetchone()[0]
+        waiting, codes = still_replayed_sql()
+        inbox = conn.execute(f"SELECT count(*) FROM capture_inbox WHERE {base} AND {waiting}",
+                             (*params, *codes)).fetchone()[0]
         if inbox:
             pending += inbox
             candidates.append((now, 'durable_capture_ingress'))
