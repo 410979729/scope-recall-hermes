@@ -56,12 +56,12 @@ def main() -> None:
     sys.modules["scope_recall"] = package
     if TYPE_CHECKING:
         from .core.capture_filters import sanitize_report_text
-        from .vector.lance_native import skip_native_probe
+        from .vector.lance_native import native_modules, skip_native_probe
         from .vector.process_store import LANCE_WORKER_METHODS, MAX_LANCE_FRAME_BYTES
         from .vector.store import LanceVectorStore
     else:
         from scope_recall.core.capture_filters import sanitize_report_text
-        from scope_recall.vector.lance_native import skip_native_probe
+        from scope_recall.vector.lance_native import native_modules, skip_native_probe
         from scope_recall.vector.process_store import LANCE_WORKER_METHODS, MAX_LANCE_FRAME_BYTES
         from scope_recall.vector.store import LanceVectorStore
 
@@ -75,6 +75,14 @@ def main() -> None:
     # contextlib and write directly to descriptor 1.
     output = os.fdopen(os.dup(sys.stdout.fileno()), "wb", buffering=0)
     os.dup2(sys.stderr.fileno(), sys.stdout.fileno())
+    # LanceDB is imported now rather than on the first request: a helper started ahead of its store
+    # (``process_store.prestart``) has then spent its 2 s of importing while its host stored the message.
+    # A failed import is left to that request, which reports it as before.
+    try:
+        with contextlib.redirect_stdout(sys.stderr):
+            native_modules()
+    except Exception:  # noqa: BLE001
+        pass
     try:
         def fenced_upsert(rows, nonce, *, request_id, guard_timeout_seconds):
             if not isinstance(nonce, str) or not nonce:

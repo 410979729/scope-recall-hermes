@@ -38,7 +38,7 @@ from .validation import (
     utc_now,
 )
 from .vector_retention import expire_if_due
-from .vector_upkeep import compact_if_due
+from .vector_upkeep import compact_if_due, index_if_due
 
 
 _RUNTIME_ORIGINS: frozenset[Origin] = frozenset(
@@ -365,6 +365,8 @@ class RuntimeInstance:
     ingress_receipts: tuple[Any, ...] = ()
     #: Receipt of the vector compaction this drain ran, or ``None``.
     vector_compaction: dict | None = None
+    #: Receipt of the look this drain took at the nearest-neighbour index, or ``None``.
+    vector_index: dict | None = None
     #: Receipt of the vector retention pass this drain ran, or ``None``.
     vector_retention: dict | None = None
     #: Work types this drain left alone, each with the held model and when its
@@ -458,7 +460,8 @@ class RuntimeInstance:
         strict_float("remaining_seconds", budget, minimum=.001, maximum=self.config.drain_seconds)
         deadline = time.monotonic() + budget
         ingress_gaps = self._replay_ingress(budget)
-        self.background_gaps = (*ingress_gaps, *self._open_vector_for_drain(deadline, budget))
+        vector_gaps = self._open_vector_for_drain(deadline, budget)
+        self.background_gaps = (*ingress_gaps, *vector_gaps)
         # Upkeep comes before the queue, not after it: on a busy instance the
         # budget is gone by the time the queue drains, so upkeep at the end is
         # upkeep that only ever runs when it is not needed.
@@ -471,6 +474,12 @@ class RuntimeInstance:
             self._vector_store, self.config.vector,
             available_seconds=max(0.0, deadline - time.monotonic()),
             reason=f"vectors_expired:{expired}" if expired else None,
+        )
+        # A store this pass could not open says nothing about its index; a look now would be recorded as a
+        # failure and put off the build for hours.
+        self.vector_index = None if vector_gaps else index_if_due(
+            self._vector_store, self.config.vector,
+            available_seconds=max(0.0, deadline - time.monotonic()),
         )
         from ..core.worker import WorkerConfig, drain_worker
 

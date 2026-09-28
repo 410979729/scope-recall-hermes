@@ -7,6 +7,7 @@ an uncertain physical outcome stays owned by the idempotent vector outbox.
 """
 from __future__ import annotations
 
+import atexit
 import json
 import math
 import os
@@ -29,7 +30,7 @@ MAX_LANCE_FRAME_BYTES = 64 * 1024 * 1024
 LANCE_WORKER_METHODS = frozenset({
     "is_available", "open", "open_existing", "upsert_records", "fenced_upsert_records",
     "delete_by_ids", "contains_id", "list_ids", "list_records", "search", "search_scopes", "count_rows",
-    "compact", "purge_governed_members",
+    "compact", "ensure_vector_index", "purge_governed_members",
 })
 # Lance's Rust object writer appends table/data/temp components to the root and
 # uses ordinary Win32 paths, so the extended-length prefix does not help.  The
@@ -102,6 +103,65 @@ def _worker_command() -> list[str]:
     # PYTHONPATH; isolated mode keeps a source-tree directory such as
     # ``packaging`` from shadowing the wheel installed in the interpreter.
     return [sys.executable, "-I", "-B", str(Path(__file__).resolve().parents[1] / "_lance_worker.py")]
+
+
+def _spawn_helper() -> subprocess.Popen:
+    return subprocess.Popen(
+        _worker_command(),
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+        **python_subprocess_options(),
+    )
+
+
+#: A helper started before any store asked for one (``prestart``), for the next store that starts a helper.
+_spare: subprocess.Popen | None = None
+_spare_lock = threading.Lock()
+_keep_spare = False
+
+
+def prestart(*, keep: bool = False) -> None:
+    """Start a helper now, for the next store that starts one to take.
+
+    A helper spends about 2 s importing LanceDB before it answers.  A Claude Code or Codex hook is a new process
+    for every prompt, and a helper started when its recall reached the vector search was not ready before that
+    search's budget ran out: those hosts' automatic recall answered from words alone.  Started when the hook
+    starts, the import runs while the message is stored and the words are searched.  ``keep`` is for a server
+    that runs on: each helper taken is replaced at once, so the next request finds one ready.
+    """
+    global _spare, _keep_spare
+    with _spare_lock:
+        _keep_spare = _keep_spare or keep
+        if _spare is None or _spare.poll() is not None:
+            _spare = _spawn_helper()
+
+
+def discard_spare() -> None:
+    """Let a spare that was never taken go: without its input it exits once its import is done."""
+    global _spare, _keep_spare
+    with _spare_lock:
+        spare, _spare, _keep_spare = _spare, None, False
+    if spare is not None:
+        for stream in (spare.stdin, spare.stdout):
+            if stream is not None:
+                stream.close()
+
+
+atexit.register(discard_spare)
+
+
+def _take_spare() -> subprocess.Popen | None:
+    global _spare
+    with _spare_lock:
+        spare, _spare = _spare, None
+        if _keep_spare:
+            _spare = _spawn_helper()
+    if spare is not None and spare.poll() is not None:
+        # It is gone already (its import failed): the store starts its own and meets the same failure there.
+        for stream in (spare.stdin, spare.stdout):
+            if stream is not None:
+                stream.close()
+        return None
+    return spare
 
 
 def _budget_exhausted() -> bool:
@@ -314,11 +374,7 @@ class ProcessLanceVectorStore(VectorStore):
     def _start(self) -> None:
         if self._teardown is not None:
             raise _helper_teardown_pending()
-        self._process = subprocess.Popen(
-            _worker_command(),
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-            **python_subprocess_options(),
-        )
+        self._process = _take_spare() or _spawn_helper()
         self._finalizer = weakref.finalize(self, _stop_worker, self._process)
         self._reader = threading.Thread(
             target=_read_worker_frames, args=(self._process.stdout, self._responses),
@@ -683,5 +739,18 @@ class ProcessLanceVectorStore(VectorStore):
         """Forward a bounded compaction to the helper that owns the table."""
         return dict(self._call("compact"))
 
+    def ensure_vector_index(self, *, min_rows: int, timeout_seconds: float) -> dict[str, Any]:
+        """Forward the index build, waiting for it up to ``timeout_seconds``: it can take longer than a request."""
+        if type(timeout_seconds) not in (int, float) or not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
+            raise ValueError("timeout_seconds must be positive and finite")
+        with self._helper_locked():
+            usual = self._request_timeout
+            self._request_timeout = max(usual, float(timeout_seconds))
+            try:
+                return dict(self._invoke_locked("ensure_vector_index", min_rows=min_rows))
+            finally:
+                self._request_timeout = usual
 
-__all__ = ["LANCE_WORKER_METHODS", "MAX_LANCE_FRAME_BYTES", "NativeVectorPathError", "ProcessLanceVectorStore"]
+
+__all__ = ["LANCE_WORKER_METHODS", "MAX_LANCE_FRAME_BYTES", "NativeVectorPathError", "ProcessLanceVectorStore",
+           "discard_spare", "prestart"]

@@ -16,10 +16,13 @@ Not responsible for: deciding the threshold, or performing the native work.
 from __future__ import annotations
 
 import time
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from ..vector.compaction import compaction_due, measure_footprint, read_state, write_state
+from ..vector.compaction import (INDEX_STATE_FILENAME, INDEX_STATE_SCHEMA, compaction_due, measure_footprint,
+                                 read_state, write_state)
+from ..vector.store import VECTOR_INDEX_MIN_ROWS
 from .validation import utc_now
 
 #: Seconds of the drain budget set aside for one pass.  Measured: 0.12 s when
@@ -83,4 +86,64 @@ def compact_if_due(store: Any, vector_config: Any, *, available_seconds: float,
     return receipt
 
 
-__all__ = ["RESERVE_SECONDS", "compact_if_due"]
+#: Seconds an index build takes per row and dimension: the first build on the pilot's shared store took 32.9 s
+#: for 78,403 rows of 3,072 dimensions, and this is twice that rate.  A pass builds only when the estimate fits in
+#: what is left of it: the watchdog ends a pass that outlives its budget, and a build cut off that way would start
+#: over on every pass.
+INDEX_SECONDS_PER_ROW_DIMENSION = 2.8e-7
+#: Seconds of the pass kept free beside the estimate, for the drain that follows.
+INDEX_MARGIN_SECONDS = 20.0
+#: How long each outcome stands before a pass looks again.  A failure is not retried sooner than this; a store
+#: below the threshold or too large for the time left is looked at again as it grows or as a pass has more time.
+INDEX_RECHECK = {
+    "built": timedelta(days=1),
+    "present": timedelta(days=1),
+    "below_threshold": timedelta(hours=1),
+    "deferred": timedelta(minutes=15),
+    "failed": timedelta(hours=6),
+}
+
+
+def index_if_due(store: Any, vector_config: Any, *, available_seconds: float,
+                 now: datetime | None = None) -> dict[str, Any] | None:
+    """Build the nearest-neighbour index when the table needs one and this pass has the time.  Returns the receipt.
+
+    The receipt goes to ``index-state.json`` beside the store, where the doctor reads it.  Never raises: without
+    the index a search is slower, never wrong, so a failed build is recorded and tried again after
+    ``INDEX_RECHECK["failed"]``, not on every pass.
+    """
+    build = getattr(store, "ensure_vector_index", None)
+    count = getattr(store, "count_rows", None)
+    if store is None or vector_config is None or not callable(build) or not callable(count):
+        return None
+    storage_dir = Path(vector_config.storage_dir)
+    moment = now or datetime.now(timezone.utc)
+    state = read_state(storage_dir, filename=INDEX_STATE_FILENAME, schema=INDEX_STATE_SCHEMA)
+    wait = INDEX_RECHECK.get(state.get("outcome"))
+    try:
+        checked = datetime.fromisoformat(str(state.get("checked_at")).replace("Z", "+00:00"))
+    except ValueError:
+        checked = None
+    if wait is not None and checked is not None and timedelta(0) <= moment - checked < wait:
+        return None
+    receipt: dict[str, Any] = {"checked_at": moment.isoformat().replace("+00:00", "Z")}
+    try:
+        rows = int(count())
+        estimate = rows * int(vector_config.dimensions) * INDEX_SECONDS_PER_ROW_DIMENSION
+        receipt.update(rows=rows, estimate_seconds=round(estimate, 1))
+        if rows < VECTOR_INDEX_MIN_ROWS:
+            receipt["outcome"] = "below_threshold"
+        elif estimate + INDEX_MARGIN_SECONDS > available_seconds:
+            receipt["outcome"] = "deferred"
+            receipt["available_seconds"] = round(available_seconds, 1)
+        else:
+            receipt.update(build(min_rows=VECTOR_INDEX_MIN_ROWS,
+                                 timeout_seconds=max(1.0, available_seconds - INDEX_MARGIN_SECONDS / 2)))
+    except Exception as exc:  # noqa: BLE001 - see docstring; upkeep never fails a drain.
+        receipt["outcome"] = "failed"
+        receipt["error"] = type(exc).__name__
+    write_state(storage_dir, receipt, filename=INDEX_STATE_FILENAME, schema=INDEX_STATE_SCHEMA)
+    return receipt
+
+
+__all__ = ["INDEX_RECHECK", "RESERVE_SECONDS", "compact_if_due", "index_if_due"]

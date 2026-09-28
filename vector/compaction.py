@@ -46,6 +46,9 @@ COOLDOWN = timedelta(minutes=15)
 #: from the thing it reports on.
 STATE_FILENAME = "compaction-state.json"
 STATE_SCHEMA = "scope-recall.vector-compaction.v1"
+#: The last look at the store's nearest-neighbour index (``runtime/vector_upkeep.index_if_due``), beside it too.
+INDEX_STATE_FILENAME = "index-state.json"
+INDEX_STATE_SCHEMA = "scope-recall.vector-index.v1"
 
 
 @dataclass(frozen=True)
@@ -115,6 +118,7 @@ def instance_vector_footprints(data_directory: Path) -> list[dict[str, Any]]:
         except OSError:
             continue
         state = read_state(space)
+        index = read_state(space, filename=INDEX_STATE_FILENAME, schema=INDEX_STATE_SCHEMA)
         for table in tables:
             footprint = measure_footprint(db_path, table.stem)
             reports.append(
@@ -126,31 +130,34 @@ def instance_vector_footprints(data_directory: Path) -> list[dict[str, Any]]:
                     "last_compaction_at": state.get("finished_at"),
                     "last_compaction_outcome": state.get("outcome"),
                     "compaction_overdue": footprint.fragments > FRAGMENT_THRESHOLD,
+                    "last_index_check_at": index.get("checked_at"),
+                    "index_outcome": index.get("outcome"),
                 }
             )
     return reports
 
 
-def read_state(storage_dir: Path) -> dict[str, Any]:
-    """Last compaction outcome, or an empty mapping when there has been none."""
+def read_state(storage_dir: Path, *, filename: str = STATE_FILENAME, schema: str = STATE_SCHEMA) -> dict[str, Any]:
+    """Last compaction outcome (or, with the index names, index outcome); empty when there has been none."""
     try:
-        raw = json.loads((Path(storage_dir) / STATE_FILENAME).read_text(encoding="utf-8"))
+        raw = json.loads((Path(storage_dir) / filename).read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
-    if not isinstance(raw, dict) or raw.get("schema") != STATE_SCHEMA:
+    if not isinstance(raw, dict) or raw.get("schema") != schema:
         return {}
     return raw
 
 
-def write_state(storage_dir: Path, payload: dict[str, Any]) -> None:
+def write_state(storage_dir: Path, payload: dict[str, Any], *, filename: str = STATE_FILENAME,
+                schema: str = STATE_SCHEMA) -> None:
     """Record an outcome.  Never raises: this is a report, not a commitment."""
     directory = Path(storage_dir)
-    record = {"schema": STATE_SCHEMA, **payload}
+    record = {"schema": schema, **payload}
     try:
         directory.mkdir(parents=True, exist_ok=True)
-        partial = directory / f"{STATE_FILENAME}.partial"
+        partial = directory / f"{filename}.partial"
         partial.write_text(json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8")
-        os.replace(partial, directory / STATE_FILENAME)
+        os.replace(partial, directory / filename)
     except OSError:
         return
 
@@ -189,6 +196,8 @@ def _parse_time(value: Any) -> datetime | None:
 __all__ = [
     "COOLDOWN",
     "FRAGMENT_THRESHOLD",
+    "INDEX_STATE_FILENAME",
+    "INDEX_STATE_SCHEMA",
     "STATE_FILENAME",
     "STATE_SCHEMA",
     "VectorFootprint",

@@ -202,13 +202,6 @@ def _load_binding(host: HostChoice, instance_root: Path):
     return config.to_binding(), config.data_directory
 
 
-#: Embedded objects beyond which a brute-force vector scan stops being free and
-#: an approximate index starts to earn its complexity. Below it an ANN index is
-#: a net loss: it costs build time and recall for a search that already answers
-#: in milliseconds. Reported rather than acted on, so the day the corpus crosses
-#: it is visible instead of arriving as unexplained latency.
-_VECTOR_SCAN_COMFORT_LIMIT = 100_000
-
 
 def _journal_mode(db_path: Path) -> str | None:
     with suppress(sqlite3.Error, OSError, ValueError):
@@ -260,8 +253,6 @@ def _check_index(report: DoctorReport, data_directory: Path, *, store_readable: 
     expired = None if by_reason is None else sum(by_reason.values())
     if embedded is not None:
         metadata["embedded_objects"] = embedded
-        metadata["vector_scan_comfort_limit"] = _VECTOR_SCAN_COMFORT_LIMIT
-        metadata["vector_index_advised"] = embedded - (expired or 0) > _VECTOR_SCAN_COMFORT_LIMIT
     if expired is not None:
         metadata["expired_vectors"] = expired
         metadata["expired_vectors_by_reason"] = by_reason
@@ -269,7 +260,8 @@ def _check_index(report: DoctorReport, data_directory: Path, *, store_readable: 
     if vector is not None:
         metadata["tool_output_retention_days"] = vector.tool_output_retention_days
     # Fragment count is what a missed compaction shows up as first, and the one
-    # cost an operator can verify with a plain file listing.
+    # cost an operator can verify with a plain file listing.  Each store also
+    # says whether its nearest-neighbour index was built (``index_outcome``).
     try:
         metadata["vector_stores"] = instance_vector_footprints(data_directory)
     except Exception:  # noqa: BLE001 - reporting must not fail the report.

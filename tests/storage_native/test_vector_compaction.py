@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 
 from scope_recall.vector import compaction as vc
-from scope_recall.runtime.vector_upkeep import RESERVE_SECONDS, compact_if_due
+from scope_recall.runtime.vector_upkeep import INDEX_RECHECK, RESERVE_SECONDS, compact_if_due, index_if_due
 
 
 def _footprint(fragments, manifests=1, transactions=1, size=0):
@@ -247,3 +247,143 @@ def test_a_reader_survives_a_compaction_performed_by_another_writer(tmp_path):
     finally:
         reader.close()
         writer.close()
+
+
+# --------------------------------------------------------------------------
+# The nearest-neighbour index: built once the table needs one, by a pass with the time for it
+# --------------------------------------------------------------------------
+
+class _FakeIndexStore:
+    def __init__(self, rows: int, failure: Exception | None = None):
+        self.rows = rows
+        self.failure = failure
+        self.builds: list[tuple[int, float]] = []
+
+    def count_rows(self) -> int:
+        return self.rows
+
+    def ensure_vector_index(self, *, min_rows: int, timeout_seconds: float) -> dict:
+        self.builds.append((min_rows, timeout_seconds))
+        if self.failure is not None:
+            raise self.failure
+        return {"outcome": "built", "rows": self.rows}
+
+
+def _vectors(tmp_path, dimensions: int = 3072):
+    return types.SimpleNamespace(storage_dir=tmp_path, table_name="scope_recall", dimensions=dimensions)
+
+
+def test_an_index_is_built_once_the_table_needs_one_and_the_pass_has_the_time(tmp_path):
+    """The pilot's store: 78,403 rows of 3,072 dimensions, built in 32.9 s; the estimate is twice that.  A pass that
+    could not finish it is not started on it: the watchdog would end the pass and the build would start over."""
+    from scope_recall.vector.store import VECTOR_INDEX_MIN_ROWS
+
+    now = datetime.now(timezone.utc)
+    small = _FakeIndexStore(VECTOR_INDEX_MIN_ROWS - 1)
+    assert index_if_due(small, _vectors(tmp_path), available_seconds=110, now=now)["outcome"] == "below_threshold"
+    assert small.builds == []
+    big = _FakeIndexStore(78_403)
+    now += INDEX_RECHECK["below_threshold"]
+    tight = index_if_due(big, _vectors(tmp_path), available_seconds=60, now=now)
+    assert tight["outcome"] == "deferred" and big.builds == []
+    now += INDEX_RECHECK["deferred"]
+    assert index_if_due(big, _vectors(tmp_path), available_seconds=110, now=now)["outcome"] == "built"
+    assert len(big.builds) == 1 and big.builds[0][1] <= 110
+    assert index_if_due(big, _vectors(tmp_path), available_seconds=110, now=now + timedelta(hours=1)) is None
+    state = vc.read_state(tmp_path, filename=vc.INDEX_STATE_FILENAME, schema=vc.INDEX_STATE_SCHEMA)
+    assert state["outcome"] == "built" and state["rows"] == 78_403
+
+
+def test_a_failed_index_build_is_recorded_and_not_tried_on_every_pass(tmp_path):
+    store = _FakeIndexStore(78_403, RuntimeError("lance said no"))
+    now = datetime.now(timezone.utc)
+    receipt = index_if_due(store, _vectors(tmp_path), available_seconds=110, now=now)
+    assert receipt["outcome"] == "failed" and receipt["error"] == "RuntimeError"
+    assert index_if_due(store, _vectors(tmp_path), available_seconds=110, now=now + timedelta(hours=1)) is None
+    assert len(store.builds) == 1
+    later = index_if_due(store, _vectors(tmp_path), available_seconds=110, now=now + INDEX_RECHECK["failed"])
+    assert later["outcome"] == "failed" and len(store.builds) == 2
+
+
+def test_index_upkeep_without_a_store_that_can_index_is_a_no_op(tmp_path):
+    assert index_if_due(None, _vectors(tmp_path), available_seconds=110) is None
+    assert index_if_due(types.SimpleNamespace(count_rows=lambda: 1), _vectors(tmp_path), available_seconds=110) is None
+    assert index_if_due(_FakeIndexStore(1), None, available_seconds=110) is None
+
+
+def _spread_rows(count: int, dimensions: int = 8) -> list[dict]:
+    import random
+
+    generator = random.Random(20260928)
+    return [{"id": f"TEST-vector-{index}", "scope_id": "TEST-scope", "source": "TEST-source", "target": "TEST-target",
+             "content": f"TEST content {index}", "summary": "TEST summary",
+             "updated_at": "2026-09-28T00:00:00+00:00",
+             "vector": [generator.uniform(-1.0, 1.0) for _ in range(dimensions)]}
+            for index in range(count)]
+
+
+@pytest_native
+def test_the_index_is_built_used_and_kept_current(tmp_path):
+    """Without the index every search read every vector (750 ms over the pilot's 78,000).  With it a search returns
+    the same nearest rows, the hit carries only what the port reads, and compaction adds what came after."""
+    from scope_recall.vector.store import LanceVectorStore
+
+    rows = _spread_rows(1200)
+    store = LanceVectorStore(tmp_path / "lancedb", table_name="scope_recall", dimensions=8)
+    store.open()
+    try:
+        store.upsert_records(rows)
+        assert store.ensure_vector_index(min_rows=2000)["outcome"] == "below_threshold"
+        assert store.ensure_vector_index(min_rows=1000)["outcome"] == "built"
+        assert store.ensure_vector_index(min_rows=1000)["outcome"] == "present"
+        hits = store.search(rows[17]["vector"], scope_id="TEST-scope", limit=5)
+        assert hits[0]["id"] == "TEST-vector-17"
+        assert set(hits[0]) == {"id", "scope_id", "source", "target", "_distance"}
+        later = _spread_rows(1300)[1200:]
+        store.upsert_records(later)
+        store.compact()
+        assert store.search(later[3]["vector"], scope_id="TEST-scope", limit=1)[0]["id"] == "TEST-vector-1203"
+        assert store.search_scopes(later[3]["vector"], scope_ids=["TEST-scope"], limit=1)[0]["id"] == "TEST-vector-1203"
+    finally:
+        store.close()
+
+
+pytest_windows_helper = pytest.mark.skipif(importlib.util.find_spec("lancedb") is None
+                                           or __import__("sys").platform != "win32",
+                                           reason="the helper process store is the Windows one")
+
+
+@pytest_windows_helper
+def test_a_helper_started_ahead_is_the_one_the_store_uses(tmp_path):
+    """A Claude Code or Codex hook starts the helper when the hook starts; the store takes that helper instead of
+    starting its own when its recall reaches the vector search, and a server keeps one ready for its next request."""
+    from scope_recall.vector import process_store
+    from scope_recall.vector.store import LanceVectorStore
+
+    seed = LanceVectorStore(tmp_path / "lancedb", table_name="scope_recall", dimensions=8)
+    seed.open()
+    seed.upsert_records(_spread_rows(1200))
+    seed.close()
+    try:
+        process_store.prestart()
+        spare = process_store._spare
+        assert spare is not None and spare.poll() is None
+        store = process_store.ProcessLanceVectorStore(tmp_path / "lancedb", table_name="scope_recall", dimensions=8)
+        store.open_existing()
+        try:
+            assert store._process is spare and process_store._spare is None
+            assert store.ensure_vector_index(min_rows=1000, timeout_seconds=120)["outcome"] == "built"
+            assert store.search(_spread_rows(1200)[5]["vector"], scope_id="TEST-scope", limit=1)[0]["id"] == "TEST-vector-5"
+        finally:
+            store.close()
+        process_store.prestart(keep=True)
+        kept = process_store._spare
+        again = process_store.ProcessLanceVectorStore(tmp_path / "lancedb", table_name="scope_recall", dimensions=8)
+        again.open_existing()
+        try:
+            assert again._process is kept
+            assert process_store._spare is not None and process_store._spare is not kept, "replaced at once"
+        finally:
+            again.close()
+    finally:
+        process_store.discard_spare()

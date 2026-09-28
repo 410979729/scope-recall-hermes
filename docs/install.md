@@ -387,6 +387,24 @@ The four gaps that yield `attention` rather than `degraded` are
 `vector_threshold_unconfigured`, `work_failed_terminal_only`, `work_needs_review`
 and `worker_capability_unavailable`. Everything else forces `degraded`.
 
+Each store under `index_metadata.vector_stores` names its nearest-neighbour index
+in `index_outcome`. The worker builds the index once the store holds 10,000
+vectors, at the start of a pass that has the time for the build: about 33 s for
+78,000 vectors of 3,072 dimensions. The same outcome is in
+`vectors/<space>/index-state.json`.
+
+| `index_outcome` | Meaning |
+|-----------------|---------|
+| `built` or `present` | The store has its index; compaction keeps it current. |
+| `below_threshold` | Fewer than 10,000 vectors; an exact scan is quick enough. |
+| `deferred` | The build did not fit the pass; a later pass with more time builds it. |
+| `failed` | The build failed; it is tried again six hours later. |
+| none | No pass has looked yet. |
+
+Without the index a search reads every vector. A Claude Code or Codex hook starts
+its search helper fresh for each prompt, so on a large store its automatic recall
+answers from words alone.
+
 ### A healthy report
 
 Abridged — the real output has about fifty fields and more `checks` rows. These
