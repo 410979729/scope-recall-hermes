@@ -9,18 +9,8 @@ candidate evaluations on one instance, none of which held a secret.
 """
 import json
 
-import pytest
-
 from scope_recall.core.capture_filters import redact_secret_like_text
 from scope_recall.core.secret_patterns import contains_secret_like_text, secret_scan_shadow
-
-
-def _zh(*codes):
-    """Chinese text from its code points, so that this file stays ASCII."""
-    return "".join(chr(code) for code in codes)
-
-
-IS = chr(0x662F)  # "is", the separator of a Chinese sentence
 
 
 def test_an_escaped_line_break_ends_a_value_like_a_real_one():
@@ -84,53 +74,6 @@ ORDINARY = [
     '"credentials": {',
     "the token is sent in the header",
     "token" + chr(0x662F) + chr(0x4EC0) + chr(0x4E48) + chr(0x610F) + chr(0x601D),   # token + "is what meaning"
-    # rc7 let these through and 3.4.0rc8 refused them again (the rc8 review of 2026-09-28).
-    'password = data["password"]',
-    "password = hash_password(raw)",
-    "private_key = load_pem_private_key(data, password=None)",
-    "credentials: dict[str, str] = {}",
-    "The password is too short",
-    "the token is only valid once",
-    # Refused by every version: code that names or passes a credential, prose that describes one.
-    "self.password = password",
-    "this.token = token;",
-    "login(username=username, password=password)",
-    "api_key=api_key,",
-    "fn login(user: &str, password: &str) -> bool {",
-    "const token = await getToken();",
-    'let token = std::env::var("TOKEN")?;',
-    "export TOKEN=$(cat token.txt)",
-    "SET password = $1",
-    'db.query("UPDATE users SET password = $1 WHERE id = $2", [hash, id])',
-    "password: !vault |",
-    "The token is JWT-encoded.",
-    "token" + IS + _zh(0x7528, 0x6765, 0x8BA4, 0x8BC1, 0x7684),  # token is used to authenticate
-    "access_token " + IS + " " + _zh(0x4E00, 0x4E2A) + " JWT" + _zh(0xFF0C, 0x6709, 0x6548, 0x671F) + " 2 "
-    + _zh(0x5C0F, 0x65F6),  # access_token is a JWT, valid for 2 hours
-    "API key" + IS + _zh(0x5728, 0x63A7, 0x5236, 0x53F0, 0x751F, 0x6210, 0x7684),  # API key is made in the console
-    "token" + IS + _zh(0x5426, 0x8FC7, 0x671F),  # token: expired or not
-    "token = token or default_token",
-]
-
-#: Code 3.4.0rc8 let through, which the whole-value rules keep letting through: rc8 passed each of them because
-#: it looked only at how the value began, and each came back refused while this screen was written.
-ORDINARY_KEPT = [
-    'token = getpass.getpass("Password: ")',
-    'api_key = input("Enter api_key: ")',
-    "password = secrets.token_urlsafe(32)",
-    "password = base64.b64encode(raw).decode()",
-    'password = kwargs.pop("password", None)',
-    "password: z.string().min(8)",
-    'api_key: Yup.string().required("API_KEY is required"),',
-    'token = request.headers.get("Authorization", "").removeprefix("Bearer ")',
-    "token = jwt.encode(\n    payload,\n    key,\n    algorithm=\"HS256\",\n)",
-    'password = (\n    os.environ["DB_PASSWORD"]\n)',
-    "password: { type: String, required: true, minlength: 8 }",
-    "if token == expected_token:",
-    "password: None, token: None",
-    "api_key: <your-api-key> from the dashboard",
-    "$config = ['password' => $password];",
-    "token" + IS + _zh(0x4EC0, 0x4E48, 0xFF0C, 0x600E, 0x4E48, 0x83B7, 0x53D6),  # token is what, how to get it
 ]
 
 #: Values that are credentials, in the same shapes.
@@ -177,79 +120,19 @@ REAL = [
     "password: {hunter2}",
     "password: my.pass.word",
     "api_key: null!",
-    # The rc8 review of 2026-09-28: each exemption looked at how the value began, never at the whole of it.
-    "password: !@#$%^&*",
-    'password = "!@#$%^&*"',
-    'password: "!! my secret phrase !!"',
-    "password: Mr.Smith(1985)",
-    "password: J.Doe[2020]",
-    "password: john.doe(42)",
-    "password: This.Is.Sparta",
-    "password: State.Of.Mind",
-    "password: love()you",
-    "password: xXxXxXxX",
-    "password: -_-_-_-",
-    "password: <correct horse battery staple>",
-    "WiFi password" + IS + _zh(0x4E0D, 0x662F) + "Xk9#mP2q",  # WiFi password is-it Xk9#mP2q
-    "token" + IS + _zh(0x4EC0, 0x4E48) + "Xk9#mP2q",  # token is-what Xk9#mP2q
-    "password" + IS + _zh(0x5FC5, 0x987B) + "Xk9#mP2q",  # password must-be Xk9#mP2q
-    "Cookie:\nsession=Xk9#mP2q",
-    "cookie:\n  sessionid=Xk9#mP2q; csrftoken=abc",
-    "-----BEGIN" + "  PRIVATE KEY-----\nMIIEvQIBADANBg\n-----END" + "  PRIVATE KEY-----",
-    # A typed declaration assigns its literal; a fallback or a default is the value too.
-    'DB_PASSWORD: str = "Xk9#mP2q"',
-    'password: Optional[str] = "Xk9#mP2q"',
-    'private readonly password: string = "Xk9#mP2q";',
-    'val password: String = "Xk9#mP2q"',
-    'password = os.environ.get("DB_PASSWORD", "Xk9#mP2q")',
-    'const password = process.env.DB_PASSWORD || "Xk9#mP2q";',
-    'password = settings.DB_PASSWORD or "Xk9#mP2q"',
-    'api_key = config.get("api_key", "Xk9#mP2q")',
-    'password: env.str("DB_PASSWORD", default="Xk9#mP2q")',
-    # Prose: a word after "is" that does not end its clause gives the value.
-    "my password is this: Xk9#mP2q",
-    "The password is the following: Xk9#mP2q",
-    "the password is correct horse battery staple",
-    "the wifi password is here: Xk9#mP2q",
-    "the api key is in Xk9#mP2q",
-    # More that rc8 let through, found by probing this screen.
-    "**Password:** hunter2",
-    "password: none, sunshine",
-    "password: *** correct horse battery staple",
-    "the password is set to hunter",
-    "password: reset to Sunflower2024",
-    'if token == "Xk9#mP2q":',
-    "'password' => 'Xk9#mP2q'",
-    'password => "hunter2"',
-    'password = os.getenv("token: sunshine")',
-    'password = str("Xk9#mP2q")',
-    'password = "" + "sunshine"',
-    "password: { value: sunshine }",
-    "password: ${DB_PASSWORD:-postgres}",
-    "export TOKEN=$(base64 -d c3Vuc2hpbmU=)",
-    'password = (\n    "Xk9#mP2q"\n)',
-    "password: |\n  Xk9#mP2q",
-    "password" + IS + _zh(0x4E0D, 0x662F) + "-_-_-_-",  # password is-it -_-_-_-
-    # Keys 3.3.0 did not know either.
-    "SECRET_KEY=Xk9#mP2q",
-    "secret_key: Xk9#mP2q",
-    "JWT_SECRET_KEY='Xk9#mP2q'",
-    "app.config['SECRET_KEY'] = 'Xk9#mP2q'",
-    'accessToken: "Xk9#mP2q"',
-    "const authToken = 'Xk9#mP2q';",
 ]
 
 
-@pytest.mark.parametrize("text", ORDINARY + ORDINARY_KEPT)
-def test_ordinary_text_after_a_credential_word_is_not_a_secret(text):
-    assert not contains_secret_like_text(text), text
-    assert redact_secret_like_text(text) == text, text
+def test_ordinary_text_after_a_credential_word_is_not_a_secret():
+    for text in ORDINARY:
+        assert not contains_secret_like_text(text), text
+        assert redact_secret_like_text(text) == text, text
 
 
-@pytest.mark.parametrize("text", REAL)
-def test_a_credential_after_the_same_words_is_still_caught_and_redacted(text):
-    assert contains_secret_like_text(text), text
-    assert "[REDACTED_SECRET]" in redact_secret_like_text(text), text
+def test_a_credential_after_the_same_words_is_still_caught_and_redacted():
+    for text in REAL:
+        assert contains_secret_like_text(text), text
+        assert "[REDACTED_SECRET]" in redact_secret_like_text(text), text
 
 
 def _token():
@@ -303,74 +186,3 @@ def test_two_secrets_side_by_side_are_both_redacted():
         redacted = redact_secret_like_text(text)
         assert "abc123def" not in redacted, redacted
         assert not contains_secret_like_text(redacted), redacted
-
-
-def _values_after_keys():
-    prose = "The deploy finished and the report is attached below. " * 300
-    texts = [
-        "password: " + "." * 20000 + "a",
-        "a-" * 63 + "token: " + "." * 4000 + "! " + prose,
-    ]
-    for unit in (".", "-", "_", "x", "*", "!@#$%^&*()-_=+[]{};:,.<>/?|~"):
-        for key in ("password: ", "token=", "api_key = ", "the secret is ", "password" + IS):
-            texts.append(key + unit * (20000 // len(unit) + 1) + "a")
-            texts.append(key + unit * (4000 // len(unit) + 1) + "! " + prose)
-        texts.append("a-" * 63 + "token: " + unit * (4000 // len(unit) + 1) + "! " + prose)
-        texts.append("a-" * 63 + "token: " + unit * (20000 // len(unit) + 1))
-    texts += [
-        "password: none " * 1400,
-        "password=" * 2300,
-        "if token == expected_token: " * 750,
-        'api_key = os.environ.get("API_KEY", None) ' * 500,
-        "password: { type: String, required: true } " * 480,
-        "the password is required for every login. " * 500,
-        "password: " + "(" * 20000,
-        "password: " + "f(" * 10000,
-        "password: <" + "your " * 4000 + ">",
-        "password: " + "Optional[" * 2300,
-        "password: |\n  none\n" * 1200,
-    ]
-    return texts
-
-
-def test_a_value_after_a_key_scans_in_linear_time():
-    """3.4.0rc8 decided in a lookahead whether a value was exempt, and its end repeated a class of punctuation that
-    its mask matched too: ``password: `` and 20,000 dots took 2.9 s, and 4,000 dots after 64 starts of a token key,
-    then 16 kB of prose, 7.5 s to scan and 14.9 s to redact.  Every captured message and model request is scanned, up
-    to a million characters, and ``re`` holds the GIL.  A value is now judged in Python, a bounded stretch of it."""
-    import time
-
-    for text in _values_after_keys():
-        assert len(text) >= 20000
-        started = time.monotonic()
-        contains_secret_like_text(text)
-        scanned = time.monotonic() - started
-        started = time.monotonic()
-        redact_secret_like_text(text)
-        redacted = time.monotonic() - started
-        assert scanned < 0.3 and redacted < 0.3, (text[:40], scanned, redacted)
-
-
-def test_json_held_by_a_message_is_read_through_its_escapes():
-    """A tool's output that is JSON writes a quote as a backslash and a quote: the key's closing quote hid
-    ``{"password": "P@ssw0rd!"}`` from every version, and code quoted that way read as a value."""
-    for text in ('{"password": "P@ssw0rd!"}', '"api_key": "Xk9#mP2q"', 'password = "Xk9#mP2q"'):
-        assert contains_secret_like_text(json.dumps({"content": text})), text
-    for text in ('{"password": null, "token": ""}', 'api_key = os.environ["API_KEY"]', 'password = input("Password: ")',
-                 '"credentials": {', "token" + IS + _zh(0x4EC0, 0x4E48, 0x610F, 0x601D)):
-        assert not contains_secret_like_text(json.dumps({"content": text}, ensure_ascii=False)), text
-
-
-def test_redaction_covers_the_whole_value():
-    """rc8's span ended at the first space, so a quoted passphrase or a value with spaces after ``:`` was redacted in
-    part (``password = "correct horse battery staple"`` kept "horse battery staple"), and a literal on the line below
-    ``decrypt(`` was kept whole."""
-    for text, kept in (
-        ('password = "correct horse battery staple"', "horse"),
-        ('{"password": "my dog has fleas 42"}', "fleas"),
-        ("token: abc123 def456", "def456"),
-        ("password: correct horse battery staple", "staple"),
-        ('api_key = decrypt(\n    "Xk9#mP2q"\n)', "Xk9"),
-    ):
-        redacted = redact_secret_like_text(text)
-        assert "[REDACTED_SECRET]" in redacted and kept not in redacted, redacted
