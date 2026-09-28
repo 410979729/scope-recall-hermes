@@ -19,8 +19,8 @@ hook, each refused request and the server's own errors go to ``remote-server.log
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass, replace
-from datetime import datetime, timedelta, timezone
+from dataclasses import dataclass
+from datetime import datetime, timezone
 import hashlib
 import hmac
 import ipaddress
@@ -53,16 +53,6 @@ _log = logging.getLogger("scope_recall.remote_server")
 class RemoteServerError(ValueError):
     pass
 
-
-#: A client's clock may run this far ahead of this machine's; a time past it is this machine's now.  The time
-#: a hook carries dates the source and when its work falls due, so a work computer a day fast delayed its
-#: messages' embeddings by a day.  An earlier time is left alone: a hook sent late from the spool is one.
-CLOCK_AHEAD_SECONDS = 60
-
-
-def _not_ahead(moment: datetime) -> datetime:
-    now = datetime.now(timezone.utc)
-    return now if moment > now + timedelta(seconds=CLOCK_AHEAD_SECONDS) else moment
 
 
 @dataclass(frozen=True)
@@ -156,15 +146,7 @@ def _observed_at(value: object) -> str | None:
         raise RemoteServerError("observed_at must be an ISO time") from None
     if moment.tzinfo is None:
         raise RemoteServerError("observed_at must carry its offset")
-    return _not_ahead(moment.astimezone(timezone.utc)).isoformat().replace("+00:00", "Z")
-
-
-def _said_not_ahead(said: transcript.Said | None) -> transcript.Said | None:
-    if said is None:
-        return None
-    moment = datetime.fromisoformat(said.occurred_at.replace("Z", "+00:00"))
-    bounded = _not_ahead(moment)
-    return said if bounded is moment else replace(said, occurred_at=bounded.isoformat().replace("+00:00", "Z"))
+    return moment.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
 
 
 def record_from_wire(value: object) -> RecordLines | None:
@@ -182,7 +164,7 @@ def record_from_wire(value: object) -> RecordLines | None:
         if not isinstance(item, list) or len(item) != 2 or type(item[0]) is not int or item[0] <= position:
             raise RemoteServerError("record lines need increasing offsets past start")
         position = item[0]
-        checked.append((position, _said_not_ahead(transcript.said_from_wire(item[1])) if item[1] is not None else None))
+        checked.append((position, transcript.said_from_wire(item[1]) if item[1] is not None else None))
     return RecordLines(start=start, lines=checked)
 
 
@@ -197,9 +179,12 @@ def handle_request(config: RemoteServerConfig, body: dict[str, Any], *, started:
     # The client's transcript_path is a file on its own machine; nothing here opens a path a request names.
     payload = {key: value for key, value in payload.items() if key != "transcript_path"}
     observed_at = _observed_at(body.get("observed_at"))
+    # The hook's own times are the client's, so a hook sent again from the spool is the same source.  When it was
+    # stored, when its work falls due and a recall's now are this machine's: a client clock a day fast held a
+    # message's embedding back by a day.
     handler = CodexHookHandler.from_home(
         str(config.home), config.host,
-        clock=_ObservedClock(observed_at) if observed_at is not None else None,
+        event_clock=_ObservedClock(observed_at) if observed_at is not None else None,
         hook_started_at=started if started is not None else time.monotonic(),
     )
     try:
@@ -265,7 +250,8 @@ def build_app(config: RemoteServerConfig):
         # The error is the capture's code (DEADLINE_EXCEEDED, SECRET_DETECTED, ...), never any of its text.
         _log.info("hook %s: %s%s%s, record through %s, %d ms", event, answer["reason"],
                   f" ({answer['error']})" if answer.get("error") else "",
-                  ", not stored, to be sent again" if answer.get("retry") else "", answer["through"],
+                  (", not stored, to be sent again" if config.host == "codex" else ", not stored")
+                  if answer.get("retry") else "", answer["through"],
                   round((time.monotonic() - started) * 1000))
         return JSONResponse(answer)
 

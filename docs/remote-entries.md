@@ -88,18 +88,19 @@ A hook whose connection has not opened in 3 s gives up and answers with nothing;
 hook tries, so while the server is away a prompt is held up once a minute at most, and it has no recall.
 A Claude Code session's record carries what was said to that session's next Stop that reaches the server,
 and the cursor on the client moves only as far as the server stored; what a session had not sent when it
-ended stays unsent. A Codex hook is written to a spool on the client before it is sent and removed once the
-server has stored it; what stays is sent, with the moment it happened, by a process a later hook starts once
-the server answers again. A hook sent twice is the same source, not two. A hook the server answered but whose
-message the store was too busy to take stays in the spool too (the server log says `not stored, to be sent
-again`), and one the server refuses for good (HTTP 400 or 413: malformed, too large) is dropped rather than
-kept, since it would be refused again and would stop every later flush. The spool keeps 256 hooks and drops its
-oldest past that. What did not get through, what the spool sent and what it dropped is logged in the client's
-`state_dir\remote-client.log`.
+ended stays unsent, and a message the store was too busy to take when its hook came (the server log says
+`not stored`) is stored from the record at the next Stop. A Codex hook is written to a spool on the client
+before it is sent and removed once the server has answered for it; what stays is sent, with the moment it
+happened, by a process a later hook starts once the server answers again. A hook sent twice is the same source,
+not two. A hook whose message the busy store could not take stays in the spool (the server log says `not stored,
+to be sent again`), and one the server refuses for good (HTTP 400 or 413: malformed, too large) is dropped
+rather than kept, since it would be refused again and would stop every later flush. The spool keeps 256 hooks
+and drops its oldest past that. What did not get through, what the spool sent and what it dropped is logged in
+the client's `state_dir\remote-client.log`.
 
-A client's clock may run up to a minute ahead of this machine's; a later time a hook or a record line carries is
-taken as this machine's now, since it dates the message and when its work falls due. An earlier time is kept:
-a hook sent late from the spool carries one.
+A message is dated by the client's clock, the moment its hook ran there, which is what makes a hook sent again
+the same source. When it was stored, when its work falls due and a recall's now are this machine's clock, so a
+client clock that runs fast or slow does not hold back the work on its messages.
 
 The client connects to the server itself and never through a proxy: `HTTP_PROXY` or a system proxy on the
 client machine is for the internet and cannot reach the tailnet address. Claude Code's and Codex's own MCP

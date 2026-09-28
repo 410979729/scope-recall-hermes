@@ -40,10 +40,10 @@ from .runtime_wiring import (
 
 _MAX_STDIN_BYTES = 65536
 _CAPTURE_TIMEOUT_S = 1.0
-#: The owner's own message waits longer for the writer lease: another agent's long reply can hold it 1-2 s
+#: The owner's own message may wait longer for the writer lease: another agent's long reply can hold it 1-2 s
 #: while it is matched against the candidates, and in the work computer's first day 12 of its 55 prompts
-#: waited their one second and were not stored.  The prompt hook's budget (``hook_processing_seconds``, 6 s)
-#: leaves the recall its time.
+#: waited their one second and were not stored.  It takes at most half of what the hook has left, and never
+#: less than the one second every other capture waits, so a 6 s budget waits 2 s and a 2 s one still 1 s.
 _PROMPT_CAPTURE_TIMEOUT_S = 2.0
 _TOTAL_BUDGET_S = 2.0
 #: Attaching the trusted runtime after a capture needs this much budget left.
@@ -213,13 +213,19 @@ class CodexHookHandler:
         host: str,
         *,
         clock: HookClock | None = None,
+        event_clock: HookClock | None = None,
         trusted_runtime_config_path: str | None = None,
         hook_started_at: float | None = None,
     ) -> "CodexHookHandler":
-        """A client attached to a shared store; its runtime config is the entry's, beside its pointer."""
+        """A client attached to a shared store; its runtime config is the entry's, beside its pointer.
+
+        ``event_clock``, when given, dates the hook's own events (a remote client's moment), while the store keeps
+        ``clock``'s time for when it stored them.
+        """
         config = load_shared_client(home, host)
         core = MemoryCore(CoreConfig(config.to_binding()), clock=clock)
-        handler = cls(config, core=core, clock=clock, hook_started_at=hook_started_at)
+        handler = cls(config, core=core, clock=event_clock if event_clock is not None else clock,
+                      hook_started_at=hook_started_at)
         handler._pending_runtime_config_path = trusted_runtime_config_path or str(config.runtime_config_path)
         if host in _CONFIGURED_PROMPT_BUDGET:
             handler._prompt_budget = _configured_budget(handler._pending_runtime_config_path)
@@ -617,8 +623,9 @@ class CodexHookHandler:
         if event is not None and attachment_refs:
             event["artifact_refs"] = attachment_refs
         context = self._context(audience, session_id, "human_direct")
+        wait = min(_PROMPT_CAPTURE_TIMEOUT_S, max(_CAPTURE_TIMEOUT_S, self._remaining(deadline) / 2))
         current_refs, capture_gaps = self._capture(context, audience, event, deadline=deadline, gaps=gaps,
-                                                   wait=_PROMPT_CAPTURE_TIMEOUT_S)
+                                                   wait=wait)
         if self._captured_this_call() and self._remaining(deadline) >= _RUNTIME_ATTACH_MIN_S:
             self._ensure_host_runtime(audience)
             if self._queued_this_call:
@@ -627,11 +634,11 @@ class CodexHookHandler:
             return {}
         if event is not None and not current_refs and not self._queued_this_call:
             self._diag("capture_failed", gaps=capture_gaps)
-        # The turn is recalled whether or not its message was stored.  A message that failed or still waits
-        # in the inbox is not among the sources a recall reads, so there is nothing of this turn to fence
-        # out; and one refused as a credential is refused by the embedding request guard as well, so its
-        # recall runs on the local lexical channel alone.  Skipping here left the turn without memory
-        # whenever the store was busy, which is when a writer holds the lease.
+        # The turn is recalled whether or not its message was stored; skipping here left it without memory
+        # whenever the store was busy, which is when a writer holds the lease.  A message that failed or still
+        # waits in the inbox is not among the sources a recall reads, so there is nothing of this turn to fence
+        # out.  One refused (a credential) attached no runtime above, so its recall has no vector channel and
+        # nothing of it goes to an embedding provider.
         return self._auto_recall(context, prompt, f"{self.host}-auto:{session_id}:{turn_id}", current_refs, deadline, capture_gaps)
 
     def _auto_recall(self, context, prompt: str, request_id: str, current_refs: tuple[str, ...], deadline: float, gaps: tuple[str, ...]) -> dict[str, Any]:

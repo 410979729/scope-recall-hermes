@@ -441,26 +441,31 @@ def test_a_request_refused_for_good_neither_stays_nor_stops_the_spool(served, tm
     assert "refused for good: not kept" in (config["state_dir"] / "remote-client.log").read_text(encoding="utf-8")
 
 
-def test_a_client_clock_ahead_does_not_date_its_messages_in_the_future(store):
-    """The time a hook carries dates the source and when its work falls due: a work computer a day fast held
-    back its messages' embedding and consolidation by a day."""
+def test_a_client_clock_ahead_neither_holds_back_the_work_nor_splits_a_replay(store):
+    """The time a hook carries dated when its work fell due: a work computer a day fast held its messages'
+    embedding and consolidation back by a day.  The message keeps the client's moment, so the same hook sent again
+    from the spool is the same source (bounding that moment to this machine's now made it a second one); when it
+    was stored and when its work falls due are this machine's time."""
     root, homes = store
     remote_server.write_server_config(homes["codex"], "codex", listen="127.0.0.1", port=_free_port(),
                                       token_sha256="0" * 64)
     config = remote_server.load_server_config(homes["codex"], "codex")
     ahead = (datetime.now(timezone.utc) + timedelta(days=1)).isoformat().replace("+00:00", "Z")
-    remote_server.handle_request(config, {"payload": {
-        "hook_event_name": "UserPromptSubmit", "session_id": "TEST-codex-session", "turn_id": "TEST-ahead",
-        "prompt": "TEST 时钟快了一天。", "cwd": "C:/work"}, "observed_at": ahead})
-    latest = datetime.now(timezone.utc) + timedelta(seconds=remote_server.CLOCK_AHEAD_SECONDS)
-    stored = next(at for _role, _origin, content, at in _rows(root, "workpc-codex") if content == "TEST 时钟快了一天。")
-    assert datetime.fromisoformat(stored.replace("Z", "+00:00")) <= latest
-    said = transcript.Said("TEST-e1", "user", "TEST 记录里的一句。", ahead)
-    lines = remote_server.record_from_wire({"start": 0, "lines": [[10, transcript.said_to_wire(said)]]})
-    assert datetime.fromisoformat(lines.lines[0][1].occurred_at.replace("Z", "+00:00")) <= latest
-    earlier = transcript.Said("TEST-e2", "user", "TEST 早先的一句。", NOW)
-    kept = remote_server.record_from_wire({"start": 0, "lines": [[10, transcript.said_to_wire(earlier)]]})
-    assert kept.lines[0][1].occurred_at == NOW, "an earlier time is left alone: a hook sent late is one"
+    body = {"payload": {"hook_event_name": "UserPromptSubmit", "session_id": "TEST-codex-session",
+                        "turn_id": "TEST-ahead", "prompt": "TEST 时钟快了一天。", "cwd": "C:/work"}, "observed_at": ahead}
+    remote_server.handle_request(config, body)
+    remote_server.handle_request(config, body)
+    rows = [row for row in _rows(root, "workpc-codex") if row[2] == "TEST 时钟快了一天。"]
+    assert len(rows) == 1 and rows[0][3] == ahead, rows
+    latest = datetime.now(timezone.utc) + timedelta(seconds=60)
+    with closing(sqlite3.connect(root / "memory.sqlite3")) as db:
+        persisted = db.execute("SELECT persisted_at FROM source_events WHERE content=?",
+                               ("TEST 时钟快了一天。",)).fetchone()[0]
+        due = [row[0] for row in db.execute(
+            "SELECT w.available_at FROM work_items w JOIN source_events e ON w.subject_ref=e.event_id "
+            "AND w.subject_revision=e.source_revision WHERE e.content=?", ("TEST 时钟快了一天。",))]
+    assert datetime.fromisoformat(persisted.replace("Z", "+00:00")) <= latest
+    assert due and all(datetime.fromisoformat(at.replace("Z", "+00:00")) <= latest for at in due), due
 
 
 def test_a_codex_hook_is_kept_before_it_is_sent(tmp_path, monkeypatch):
