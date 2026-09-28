@@ -27,6 +27,12 @@ def _optional_path(value: str | None, field: str) -> Path | None:
     return _path(value, field) if value else None
 
 
+def _interpreter(value: str | None, field: str) -> Path | None:
+    """An interpreter path as given, never resolved: a POSIX venv's ``bin/python`` is a symlink to the base
+    interpreter, which cannot import this package (#87, #141).  The installer and the doctor check the chain."""
+    return _absolute(value, field, error=SystemExit) if value else None
+
+
 # Sub-commands with their own parser: the first token routes to them before the
 # maintenance parser runs, and the stubs registered below only make ``--help``
 # list them.  Their modules load on demand to keep the common commands quick.
@@ -243,7 +249,7 @@ def _install_plan(args: argparse.Namespace):
         instance_root=_path(args.instance_root, "instance_root"),
         project_root=_optional_path(args.project_root, "project_root"),
         agent_id=args.agent_id,
-        python_executable=_path(args.python, "python"),
+        python_executable=_interpreter(args.python, "python"),
         host=args.host,
         test_mode=args.test_mode,
         agent_workspace=args.agent_workspace,
@@ -273,7 +279,7 @@ def _doctor(args: argparse.Namespace) -> int:
     report = run_doctor(
         host=args.host,
         instance_root=_path(args.instance_root, "instance_root"),
-        python_executable=_optional_path(args.python, "python"),
+        python_executable=_interpreter(args.python, "python"),
     )
     _emit(report.to_dict())
     return 0 if report.status == "ok" else 1

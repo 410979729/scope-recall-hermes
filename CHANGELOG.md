@@ -8,6 +8,8 @@ All notable changes to `scope-recall` will be documented in this file.
 
 - The version moves past the `v3.4.0rc5` tag.
 - The release tier no longer has a model gate. The gate asked for a P18 formal evaluation receipt: 120 independent core items and 240 paired variants, scored by a party independent of the authors. This project has neither that corpus nor that party, so no release could pass it, and every release from 3.1.0 on shipped with the gate reported missing. `scripts/check.py --tier release` now requires only the suites it runs and exits 0 when they pass, where it used to exit 2. `--model-receipt` is gone, and so are the two scripts that extracted and validated an evidence bundle; the CI, release and PyPI workflows no longer look for a model evidence tag. Recall quality still has no automated check: see *What is not verified* in the README.
+- `plan-install`, `apply-install` and `doctor` pass `--python` on as given. The CLI resolved it first, so on POSIX a venv's `bin/python` reached them as the base interpreter, which cannot import the package: the doctor reported `python_package_missing` and `entry_point_missing` on a healthy install, and the installer recorded the base interpreter for the worker, the autostart task and Codex's hooks and MCP launcher. 3.3.0 had fixed this (#87) below the CLI only (#141, reported by panxuewen0101).
+- Windows: when a host starts the base interpreter and adds a venv's packages to its path instead of starting that venv, the native vector helper still finds the venv's dependencies. Its launcher hint names the environment that owns the installed package instead of the base interpreter; the helper is still the base interpreter (#139, by JohnYinl).
 
 ### Scope Recall 3.4.0rc5 - 2026-09-27
 
