@@ -45,6 +45,39 @@ def test_nothing_deferred_takes_no_writer_lease(tmp_path, monkeypatch):
     assert writes == []
 
 
+def _count_writes(app, monkeypatch) -> list[int]:
+    writes: list[int] = []
+    storage_type = type(app.storage)
+    real_write = storage_type.write
+    monkeypatch.setattr(storage_type, "write", lambda self, *args, **kwargs: writes.append(1) or real_write(self, *args, **kwargs))
+    return writes
+
+
+def test_a_deferred_source_with_no_room_takes_no_writer_lease(tmp_path, monkeypatch):
+    """One source deferred and the queue still full: the refill's page was chosen under the writer lease, a scan of
+    every source, on every pass, and chose nothing.  It is chosen in a read now; an empty page writes nothing."""
+    app, ctx = app_at(tmp_path, AdmissionPolicy(max_pending_work=2, important_reserve=2))
+    capture(app, ctx, "TEST-first", "TEST plain substantive source")
+    deferred = capture(app, ctx, "TEST-deferred", "TEST second substantive source")
+    capture(app, ctx, "TEST-priority", "记住：TEST 选择蓝色")
+    assert deferred.admission == ("admission_deferred:queue_capacity",)
+    writes = _count_writes(app, monkeypatch)
+    assert app.resume_deferred(ctx, remaining_seconds=10) == ()
+    assert writes == []
+
+
+def test_an_older_revision_s_deferred_marker_takes_no_writer_lease(tmp_path, monkeypatch):
+    """A marker left on a revision a newer one replaced is never selected, so it held the lease on every pass."""
+    app, ctx = app_at(tmp_path)
+    first = capture(app, ctx, "TEST-revised", "TEST the first words of a revised source")
+    capture(app, ctx, "TEST-revised", "TEST the second words of a revised source", source_revision=2)
+    with app.storage.write(ctx, remaining_seconds=10) as tx:
+        store_decision(tx, first.event_refs[0].ref, 1, AdmissionDecision("deferred", "queue_capacity", False))
+    writes = _count_writes(app, monkeypatch)
+    assert app.resume_deferred(ctx, remaining_seconds=10) == ()
+    assert writes == []
+
+
 def test_pending_count_uses_ready_index_without_crossing_project_or_branch(tmp_path):
     app, ctx = app_at(tmp_path)
     for n in range(8):
