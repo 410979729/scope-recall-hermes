@@ -6,6 +6,7 @@ budget units merely because their encoding uses three bytes.
 """
 from __future__ import annotations
 
+from collections import Counter
 import json
 import math
 import re
@@ -34,9 +35,11 @@ def estimate_tokens(text: str) -> int:
     quarters = len(text) - whole + 4 * whole
     rest = _CJK.sub("", text)
     if not rest.isascii():
-        for char in {char for char in set(rest) if char > "\x7f"}:
-            if unicodedata.category(char)[0] not in "LNMPZ":
-                quarters += 4 * (len(char.encode("utf-8")) - 1) * rest.count(char)
+        # Counted once, not once per distinct symbol: a table of thousands of different glyphs made that
+        # quadratic, 1.2 s for one 65,536-character source.
+        for char, count in Counter(rest).items():
+            if char > "\x7f" and unicodedata.category(char)[0] not in "LNMPZ":
+                quarters += 4 * (len(char.encode("utf-8")) - 1) * count
     return max(1, (quarters + 3) // 4)
 
 

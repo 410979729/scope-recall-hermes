@@ -47,3 +47,15 @@ def test_the_estimate_is_unchanged_for_random_mixed_text():
     for _ in range(400):
         text = "".join(rng.choice(alphabet) for _ in range(rng.randint(0, 300)))
         assert estimate_tokens(text) == _reference(text), repr(text)
+
+
+def test_a_text_of_many_different_symbols_is_counted_in_linear_time():
+    """Counting each distinct symbol over the whole text again was quadratic in the number of different ones: a
+    glyph table of 65,536 private-use characters took 1.2 s, and every candidate is weighed at least twice."""
+    import time
+
+    text = "".join(chr(0xF0000 + index) for index in range(65000))
+    started = time.monotonic()
+    counted = estimate_tokens(text)
+    assert time.monotonic() - started < 0.3
+    assert counted == _reference(text)

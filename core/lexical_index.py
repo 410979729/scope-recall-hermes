@@ -9,11 +9,12 @@ and a document-frequency lookup in 18 ms.  ``source_id`` is a source
 version's integer identity (``source_events.source_id``), assigned at insert;
 the 1109 upgrade numbers the existing rows.
 
-Every reader and writer of the index goes through here.  The three ranking
-queries that join it (``storage.search_sources``, the lexical channel in
-``retrieval_storage`` and the preference match in ``background_context``)
-splice in ``JOIN`` below, so the tables are named in one place: filter on
-``t.term``, aggregate on ``e``.
+Every reader and writer of the index goes through here.  The two ranking
+queries that start from the terms (``storage.search_sources`` and the lexical
+channel in ``retrieval_storage``) splice in ``JOIN`` below, so the tables are
+named in one place: filter on ``t.term``, aggregate on ``e``.  The preference
+match in ``background_context`` starts from its few claims instead and names
+the tables itself.
 """
 from __future__ import annotations
 
