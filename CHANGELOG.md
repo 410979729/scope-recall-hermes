@@ -4,6 +4,11 @@ All notable changes to `scope-recall` will be documented in this file.
 
 ## [Unreleased]
 
+### Scope Recall 3.4.0rc7 - 2026-09-27
+
+- The version moves past the `v3.4.0rc6` tag.
+- The embedding bound counts every character as one token, whatever the script (#151, reported by panxuewen0101). It counted three ASCII characters as one, which held for prose and let 6,000 characters of a digit-dense body through as 2,000 tokens: digits cost one token each against Zhipu `embedding-3`, so logs, IDs, hashes and JSON were refused with `http_400` and never got a vector. Code and symbols, at 2.0-2.5 characters a token, also passed Gemini's 2,048-token limit. Chinese keeps its 2,000 characters; long ASCII prose is now embedded from its first 2,000 characters instead of 6,000, and all of it stays in the lexical index. Sources that already failed this way are re-opened by `scope-recall retry-failures --config <runtime-config.json> --apply` after the upgrade.
+
 ### Scope Recall 3.4.0rc6 - 2026-09-27
 
 - The version moves past the `v3.4.0rc5` tag.
