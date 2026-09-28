@@ -44,9 +44,9 @@ from typing import Any, Callable
 #: What a hook may send: its payload (a hook's own stdin is at most 64 KiB, and written as ASCII JSON a character
 #: of it takes up to six bytes) and the refs and gaps of its capture.
 MAX_REQUEST_BYTES = 7 * 65536
-#: Seconds a hook waits to connect, and then for the server's proof.  A live server on this machine answers in
-#: milliseconds; one that does not loses its name, with time left to try the next (a hung first name took all of
-#: ``FIND_SECONDS``, and kept, it cost every later prompt its wait, reviews of rc11).
+#: Seconds a hook waits to connect, and then for the server's proof.  A live server on this machine takes the
+#: connection at once; one that does not prove itself in time loses its name, with time left to try the next (a hung
+#: first name took all of ``FIND_SECONDS``, and kept, it cost every later prompt its wait, reviews of rc11).
 CONNECT_SECONDS = 0.3
 #: A server serving several recalls at once proves itself in 0.15-0.3 s (each hand-over of Python's lock waits for a
 #: timer tick on Windows): at 0.3 s such a server lost its name (review of rc11).
@@ -280,8 +280,8 @@ class Recaller:
             if outcome == "unproven":
                 _forget(path)
             self.outcome = outcome
-            if outcome == "late":
-                return None
+            if outcome in ("late", "refused"):
+                return None  # the next would take this request no differently
         return None
 
     def _exchange(self, port: int, token: str, request: dict[str, Any], *, until: float) -> tuple[str, Any]:
@@ -432,11 +432,14 @@ class HookEndpoint:
 
     def _keep_named(self) -> None:
         while not self._stopped.wait(ADVERTISE_SECONDS):
-            # A hook removed the name of a server that kept a prompt waiting.  It names itself again once none of
-            # its recalls is stuck and it proves itself as a hook would check it; a hung one cannot.
+            # A hook removed the name of a server that did not prove itself in time.  It names itself again once
+            # none of its recalls is stuck and it proves itself within a hook's wait, counted by the clock: from
+            # inside the server, the time its own busy threads held Python's lock did not count against the socket's,
+            # and a server hooks could not reach in time named itself again (review of rc11).
             if self.path.exists() or self._stuck():
                 continue
             connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=CONNECT_SECONDS)
+            started = time.monotonic()
             try:
                 connection.connect()
                 answers = _hello(connection, self.token) == "ok"
@@ -444,7 +447,7 @@ class HookEndpoint:
                 answers = False
             finally:
                 connection.close()
-            if answers and not self._stopped.is_set():
+            if answers and time.monotonic() - started <= PROOF_SECONDS and not self._stopped.is_set():
                 try:
                     self._advertise()
                 except OSError:

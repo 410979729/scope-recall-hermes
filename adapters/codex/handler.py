@@ -64,10 +64,14 @@ _LOCAL_RECALL_RESERVE_S = 1.5
 _RESIDENT_MIN_S = 1.0
 #: What a server's recall may report of how it ended, besides its vector gap and its error.
 _RESIDENT_REASONS = frozenset({"deadline_exceeded", "recall_exception", "recall_incomplete"})
-#: What failed in a server's vector search that the hook's own may not meet: the server's key, its LanceDB helper,
-#: its embedding transport (``core.vector_failure`` names them).  A provider's refusal or time out the hook would meet
-#: as well, and a second recall then only cost the prompt its time (review of rc11).
-_SERVER_OWN_VECTOR_FAULTS = ("credential_", "helper_", "worker_", "fence_", "table_not_open", "transport_")
+#: What a provider answered, or how long it took, when a server's vector search failed: the hook's own would meet the
+#: same, and a second recall only cost the prompt its time (review of rc11).  Any other fault is the server's own
+#: (``_server_own_vector_fault``).
+_PROVIDER_VECTOR_FAULTS = frozenset({
+    "http_status", "timeout", "provider_hold", "model_refused", "request_rejected", "request_limit", "request_invalid",
+    "response_limit", "response_status_failed", "budget_exhausted", "budget_unavailable", "meter_breach",
+    "invalid_json", "empty_output", "missing_usage", "input_invalid", "sensitive_request", "endpoint_invalid",
+})
 #: Capture refusals a second attempt meets again.
 _SETTLED_CAPTURE_CODES = frozenset({"SECRET_DETECTED", "INPUT_INVALID", "VERSION_CONFLICT"})
 #: How a capture says it refused a message as holding a credential: as a code, or as the rejection it returns.
@@ -719,12 +723,13 @@ class CodexHookHandler:
         The server is asked from a thread and given all of the hook's time but its answer's way back.  One that has
         not answered when ``_LOCAL_RECALL_RESERVE_S`` are left is recalled alongside, with the helper this hook
         started at its own start: given only what the hook did not keep back, a recall that needed most of the time
-        had none (review of rc11).  An answer that ran out of time or failed (``_RESIDENT_REASONS``), or none, leaves
-        the hook's own; so does one without its vector search while this hook has one, if the hook's own has it
-        (a server that lost its key recalled every prompt by words alone).  A hook whose own recall went without its
-        vector search waits for the server until its own time is up; one whose own had it does not.  The server
-        writes nothing: the prompt was stored here, so an answer that comes after the hook is done costs the turn
-        nothing but its warm vectors."""
+        had none (review of rc11).  The hook then uses the answer that ran its vector search, the server's when both
+        or neither did; one whose own went without it waits for the server until its own time is up.  An answer that
+        failed, ran out of time or came back empty because its read did not finish (``_RESIDENT_REASONS``), or none,
+        leaves the hook's own.  One without its vector search is used as it is unless what failed was the server's
+        own (``_server_own_vector_fault``) and this hook has a vector search: the hook then recalls as well (a server
+        that lost its key recalled every prompt by words alone).  The server writes nothing: the prompt was stored
+        here, so an answer that comes after the hook is done costs the turn nothing but its warm vectors."""
         remaining = self._remaining(deadline)
         if remaining < _RESIDENT_MIN_S:
             return self._auto_recall(context, prompt, request_id, current_refs, deadline, gaps)
@@ -848,7 +853,7 @@ class CodexHookHandler:
         self.diagnostics.recall_vectors = without is None
         if without is not None:
             self.diagnostics.recall_vector_gap = _error_detail(without)
-        incomplete = recall_incomplete(packet.get("gaps") or ())
+        incomplete = recall_incomplete(packet)
         if incomplete is not None:
             self.diagnostics.recall_error_detail = _error_detail(incomplete)
             self._diag("recall_incomplete", gaps=gaps)
@@ -1008,25 +1013,32 @@ _WITHOUT_VECTORS = (
 )
 
 
-def recall_incomplete(gaps) -> str | None:
-    """The gap that says a recall failed whole (the store could not be read, or the time ran out before it was), or
-    None.  Its packet is empty like one that found nothing, and a server's such answer was taken over the hook's own
-    (review of rc11)."""
-    for gap in gaps:
-        if isinstance(gap, str) and (gap == "deadline_exceeded" or gap.startswith("sqlite_unavailable")):
-            return gap
-    return None
+def recall_incomplete(packet) -> str | None:
+    """What says a recall came back empty because its read did not finish (the store could not be read, or its time
+    ran out at any step: ``status: unavailable``), or None.  Such a packet reads like one that found nothing, and a
+    server's was taken over the hook's own (reviews of rc11)."""
+    if not isinstance(packet, dict) or packet.get("status") != "unavailable":
+        return None
+    gaps = [gap for gap in packet.get("gaps") or () if isinstance(gap, str)]
+    cause = next((gap for gap in gaps if gap.startswith(("deadline_exceeded", "sqlite_unavailable"))), None)
+    return cause or (gaps[0] if gaps else "unavailable")
 
 
 def _server_own_vector_fault(gap: object) -> bool:
-    """Whether a server's recall went without its vector search for a reason of its own (``_SERVER_OWN_VECTOR_FAULTS``,
-    or no vector search at all), which the hook's own recall may not share."""
+    """Whether a server's recall went without its vector search for a reason of its own, which the hook's own recall
+    may not share: no vector search at all, its LanceDB helper or anything else in its process, its key, or its
+    connection to the provider (``core.vector_failure`` and ``AuxiliaryModelError`` name them).  What the provider
+    answered, or its time out, is not (``_PROVIDER_VECTOR_FAULTS``); nor is the search running out of time here."""
     if gap == "vector_unavailable":
         return True
     if type(gap) is not str or not gap.startswith("vector_error:"):
         return False
     parts = gap.split(":")
-    return len(parts) >= 3 and parts[2].startswith(_SERVER_OWN_VECTOR_FAULTS)
+    if len(parts) < 2 or not parts[1]:
+        return False
+    if parts[1] != "AuxiliaryModelError":
+        return True
+    return len(parts) >= 3 and parts[2] not in _PROVIDER_VECTOR_FAULTS
 
 
 def recall_without_vectors(gaps) -> str | None:

@@ -314,7 +314,8 @@ def test_a_recall_that_found_the_store_unreadable_says_so(handler, installed):
         def recall_packet(self, context, request, *, current_source_refs=(), deadline_seconds=2.0):
             packet = core.recall_packet(context, request, current_source_refs=current_source_refs,
                                         deadline_seconds=deadline_seconds)
-            return {**packet, "gaps": [*packet.get("gaps", ()), "sqlite_unavailable:DatabaseError"]}
+            return {**packet, "status": "unavailable", "items": [],
+                    "gaps": [*packet.get("gaps", ()), "sqlite_unavailable:DatabaseError"]}
 
     guarded = CodexHookHandler(config, core=Unreadable(), clock=clock)
     guarded.handle_payload(_payload(project_root, "UserPromptSubmit", prompt="TEST 读不到的库。"))

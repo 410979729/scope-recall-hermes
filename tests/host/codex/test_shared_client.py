@@ -1265,7 +1265,7 @@ def test_a_server_whose_recall_is_past_its_time_sends_hooks_on(resident, monkeyp
         return {"result": {}, "diagnostics": {}}, (lambda: None)
 
     monkeypatch.setattr(endpoint, "recall", recall)
-    assert local_endpoint.Recaller(client, "claude-code")(_prompt("TEST 超时的召回。"), (), (), 1.0) is None
+    assert local_endpoint.Recaller(client, "claude-code")(_prompt("TEST 超时的召回。"), (), (), 1.5) is None
     time.sleep(0.8)  # the recall above ends
     assert seen == [True], "stuck from the time its hook gave it"
     assert endpoint.path.exists(), "a late server keeps its name: it says it is busy while its recall is stuck"
@@ -1407,7 +1407,9 @@ def test_a_server_answer_without_its_vector_search_gives_way_to_the_hook_s_own(r
     for index, (gap, own_vectors, expected, said) in enumerate((
             (own_fault, True, "TEST-own-marker", f"without_vectors:{own_fault}"),
             (own_fault, False, "TEST-server-marker", "answered"),
-            ("vector_error:AuxiliaryModelError:http_status:429", True, "TEST-server-marker", "answered"))):
+            ("vector_error:AuxiliaryModelError:http_status:429", True, "TEST-server-marker", "answered"),
+            # A hook with no vector search of its own takes the server's as it is.
+            ("vector_error:AuxiliaryModelError:credential_missing", None, "TEST-server-marker", "answered"))):
         monkeypatch.setattr(endpoint, "recall", lambda request, gap=gap, **kwargs: (
             {"result": _marker("TEST-server-marker"),
              "diagnostics": {"recall_vectors": False, "recall_vector_gap": gap}}, lambda: None))
@@ -1419,11 +1421,14 @@ def test_a_server_answer_without_its_vector_search_gives_way_to_the_hook_s_own(r
             return _marker("TEST-own-marker")
 
         monkeypatch.setattr(handler_module.CodexHookHandler, "_auto_recall", recall)
+        monkeypatch.setattr(handler_module.CodexHookHandler, "_vector_route", lambda self, route=own_vectors is not None:
+                            route)
         raw = json.dumps(_prompt(f"TEST 服务器没有向量 {index}。", prompt_id=f"TEST-prompt-v-{index}")).encode()
         assert _hook_entry(monkeypatch, raw, client) == 0
         captured = capsys.readouterr()
         assert expected in captured.out and f"CODEX_RECALL_RESIDENT:{said}\n" in captured.err
-        assert own_calls == ([] if "http_status" in gap else [1]), "a provider's refusal is not recalled again"
+        assert own_calls == ([] if "http_status" in gap or own_vectors is None else [1]), \
+            "a provider's refusal is not recalled again, nor by a hook with no vector search"
 
 
 def test_a_hook_whose_own_recall_went_without_vectors_waits_for_its_server(resident, monkeypatch, capsys):
@@ -1641,3 +1646,106 @@ def test_a_session_record_line_or_reply_nested_past_the_parser_s_limit_is_passed
     lines = transcript.read(record, 0, limit=65536)
     assert [(end, said) for end, said in lines] == [(2401, None)]
     assert is_codex_suggestions_reply("{" + '"suggestions": ' + "[" * 1200 + "]" * 1200 + "}") is False
+
+
+def test_which_vector_faults_are_the_server_s_own():
+    """The list of the server's own faults missed its connection to the provider (``network_error``, what a dead
+    embedding worker raises) and anything its process raised unnamed (review of rc11)."""
+    from scope_recall.adapters.codex.handler import _server_own_vector_fault
+
+    for gap in ("vector_unavailable", "vector_error:AuxiliaryModelError:credential_missing",
+                "vector_error:AuxiliaryModelError:network_error", "vector_error:AuxiliaryModelError:transport_worker",
+                "vector_error:RuntimeError:helper_lock_timeout", "vector_error:RuntimeError:worker_not_running",
+                "vector_error:RuntimeError:table_not_open", "vector_error:RuntimeError", "vector_error:MemoryError"):
+        assert _server_own_vector_fault(gap), gap
+    for gap in ("vector_error:AuxiliaryModelError:http_status:429", "vector_error:AuxiliaryModelError:timeout",
+                "vector_error:AuxiliaryModelError:provider_hold", "vector_error:AuxiliaryModelError:budget_exhausted",
+                "deadline_exceeded_vector", "vector_error:", None, ""):
+        assert not _server_own_vector_fault(gap), gap
+
+
+def test_a_packet_emptied_because_its_read_did_not_finish_is_incomplete():
+    """Only a packet whose store was unreadable or whose time was gone before the read was taken for incomplete; one
+    whose time ran out later (collecting, compiling, releasing) came back empty as if nothing were found, and a server's
+    such answer was taken over the hook's own (review of rc11)."""
+    from scope_recall.adapters.codex.handler import recall_incomplete
+
+    assert recall_incomplete({"status": "unavailable", "gaps": ["vector_unavailable",
+                                                                "deadline_exceeded_release_fence"]}) == \
+        "deadline_exceeded_release_fence"
+    assert recall_incomplete({"status": "unavailable", "gaps": ["sqlite_unavailable:DatabaseError"]}) == \
+        "sqlite_unavailable:DatabaseError"
+    assert recall_incomplete({"status": "unavailable", "gaps": ["authority_TEST"]}) == "authority_TEST"
+    assert recall_incomplete({"status": "unavailable", "gaps": []}) == "unavailable"
+    for status in ("ok", "partial", "no_match"):
+        assert recall_incomplete({"status": status, "gaps": ["deadline_exceeded_collect"]}) is None
+
+
+def test_a_server_busy_for_less_than_a_hook_s_wait_is_answered(resident, monkeypatch):
+    """At 0.3 s, a server busy with other recalls did not prove itself in time and lost its name (review of rc11)."""
+    import time
+
+    from scope_recall.adapters.codex import local_endpoint
+
+    _root, client, endpoint = resident
+
+    def slow(*args, **kwargs):
+        time.sleep(0.4)  # what several recalls at once cost a proof on Windows
+        return False
+
+    monkeypatch.setattr(endpoint, "_stuck", slow)
+    monkeypatch.setattr(endpoint, "recall", lambda request, **kwargs: ({"result": {}, "diagnostics": {}}, lambda: None))
+    recaller = local_endpoint.Recaller(client, "claude-code")
+    assert recaller(_prompt("TEST 服务器有点忙。"), (), (), 3.0) is not None
+    assert recaller.outcome == "answered" and endpoint.path.exists()
+
+
+def test_a_server_names_itself_again_only_when_it_answers_within_a_hook_s_wait(store, monkeypatch):
+    """Checked from inside the server, a hello slowed by its own busy threads passed, and a server hooks could not
+    reach in time named itself again (review of rc11)."""
+    import time
+
+    from scope_recall.adapters.codex import local_endpoint
+    from scope_recall.vector import process_store
+
+    monkeypatch.setattr(process_store, "prestart", lambda **kwargs: None)
+    monkeypatch.setattr(local_endpoint, "ADVERTISE_SECONDS", 0.2)
+    real = local_endpoint._hello
+
+    def slow(connection, token):
+        time.sleep(local_endpoint.PROOF_SECONDS + 0.2)
+        return real(connection, token)
+
+    _root, _homes, client, _capture = store
+    endpoint = local_endpoint.serve(client, "claude-code")
+    try:
+        monkeypatch.setattr(local_endpoint, "_hello", slow)
+        endpoint.path.unlink()
+        time.sleep(2.0)
+        assert not endpoint.path.exists(), "not while it answers slower than a hook waits"
+        monkeypatch.setattr(local_endpoint, "_hello", real)
+        deadline = time.monotonic() + 5
+        while not endpoint.path.exists() and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert endpoint.path.exists()
+    finally:
+        endpoint.stop()
+
+
+def test_a_server_s_traceback_keeps_the_frame_that_raised(resident, monkeypatch, capsys):
+    """The server's traceback kept its outer frames and dropped the one that raised (review of rc11)."""
+    from scope_recall.adapters.codex import local_endpoint
+
+    _root, client, endpoint = resident
+
+    def dig(depth):
+        if depth == 0:
+            raise KeyError("TEST deep")
+        dig(depth - 1)
+
+    def broken(request, **kwargs):
+        dig(12)
+
+    monkeypatch.setattr(endpoint, "recall", broken)
+    assert local_endpoint.Recaller(client, "claude-code")(_prompt("TEST 很深的错误。"), (), (), 3.0) is not None
+    assert 'raise KeyError("TEST deep")' in capsys.readouterr().err

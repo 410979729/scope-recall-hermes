@@ -154,11 +154,13 @@ left. If the server has not answered when 1.5 s are left, the hook recalls as we
 helper it started when it started, and uses the answer that ran its vector search (the server's when
 both or neither did); a hook whose own recall went without it waits for the server until its own time
 is up. A server answer without its vector search is used as it is, unless what failed was the
-server's own (its key, its LanceDB helper, its embedding transport, or no vector search at all while
-the hook has one): the hook then recalls as well and uses its own if that ran its vector search. With
-no server running (the client closed, or its MCP server disabled), or one that says it is busy, the
-hook recalls itself at once, as before; an answer that comes after the hook is done is dropped, and
-one that ran out of time, failed or found the store unreadable is replaced by the hook's own. A prompt
+server's own (its key, its LanceDB helper or anything else in its process, its connection to the
+embedding provider, or no vector search at all while the hook has one) rather than the provider's
+answer or its time out: the hook then recalls as well and uses its own if that ran its vector search.
+With no server running (the client closed, or its MCP server disabled), or one that says it is busy,
+the hook recalls itself at once, as before; an answer that comes after the hook is done is dropped,
+and one that failed, or came back empty because its read did not finish (the store unreadable, or its
+time up), is replaced by the hook's own. A prompt
 hook that asked says how it went on stderr (`CODEX_RECALL_RESIDENT:answered`, `slow`, `late`,
 `without_vectors:<gap>`, `busy`, `refused`, `unproven`, `none`, or `failed:<reason>`). The server
 writes no memory; its query embedding's cost is recorded in the spend ledger like any other, and so is
