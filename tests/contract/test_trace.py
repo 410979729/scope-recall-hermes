@@ -420,3 +420,4 @@ def test_the_drain_s_backfill_keeps_its_place_and_looks_again_after_a_day(app, t
     later = _imported(core, ctx, "TEST 后来又导入的一句话。", role="user", key="TEST-import/later")
     looked = backfill_if_due(storage, ctx, vectors, now=now + EMBED_BACKFILL_RECHECK)
     assert looked["outcome"] == "finished" and later in _embeds(core)
+    assert looked["queued_total"] == 2, "the total runs on across the daily looks"

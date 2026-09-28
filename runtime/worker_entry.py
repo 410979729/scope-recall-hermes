@@ -343,8 +343,13 @@ def _drain_once(config: RuntimeInstanceConfig, instance: Any, deadline: float) -
     gaps = [*(getattr(instance.auxiliary, "capability_gaps", ()) or ()), *refusals, *holds, *background_gaps]
     if reserved == 0:
         gaps.append("daily_queue_budget")
-    payload = _receipt_payload(config, receipt, gaps)
     ingress = instance.ingress_receipts
+    # A row put off (``capture_inbox._DEFERRED``) is not stored yet; the pass says so.
+    deferred = sum(r.error_code == "DEFERRED" for r in ingress)
+    if deferred:
+        gaps.append("capture_gap:durable_ingress_deferred")
+    payload = _receipt_payload(config, receipt, gaps)
+    payload["ingress_deferred"] = deferred
     payload["ingress_replayed"] = sum(r.durability == "persisted" for r in ingress)
     payload["ingress_cancelled"] = sum(r.disposition == "cancelled" for r in ingress)
     payload["source_only"] = sum(item.disposition == "source_only" for item in receipt.items)

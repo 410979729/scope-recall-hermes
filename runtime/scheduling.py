@@ -13,7 +13,7 @@ import os
 from pathlib import Path
 import time
 
-from ..core.capture_inbox import retried_sql
+from ..core.capture_inbox import _RETRIED, REPLAY_CANDIDATES, deferred_until, replayable
 from ..core.storage import SQLiteStorage
 from ..core.work_storage import AUTO_RECOVERABLE_ERRORS, AUTO_RECOVERABLE_WORK_TYPES
 from ..core.file_lock import advisory_file_lock
@@ -148,9 +148,14 @@ def next_wake(config, *, now: datetime | None = None, unavailable_until=None) ->
                 candidates.append(cooled(*budgeted(now, 'candidate_evidence_remainder'), cooldown))
             else:
                 blocked += source_pages
-        waiting, codes = retried_sql()
-        inbox = conn.execute(f"SELECT count(*) FROM capture_inbox WHERE {base} AND {waiting}",
-                             (*params, *codes)).fetchone()[0]
+        inbox = 0
+        for (code,) in conn.execute(f"SELECT last_error_code FROM capture_inbox WHERE {base} AND {REPLAY_CANDIDATES}",
+                                    (*params, *_RETRIED)):
+            if replayable(code, now):
+                inbox += 1
+            elif (until := deferred_until(code)) is not None:
+                # A row put off wakes the worker when its hour is up.
+                candidates.append((until, 'durable_capture_deferred'))
         if inbox:
             pending += inbox
             candidates.append((now, 'durable_capture_ingress'))

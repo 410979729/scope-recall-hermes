@@ -562,11 +562,18 @@ class Transaction:
         # A message over 65,536 characters is stored in segments under keys of their own, grouped under the host's
         # key: looked up by the host's key alone, it was never found, and the Stop's read of the session record
         # stored a long prompt a second time.  A message stored whole is its own group.
+        # A named message that was deleted counts as said as well: once the delete is purged its rows no longer
+        # carry the key, and a record read stored the words again under a key of the record's (review of rc10).
+        from .delete_storage import group_digest
+
         for index, (_role, _content, _occurred_at, host_key) in enumerate(items):
             if host_key is not None:
                 answers[index] = host_key in waiting_keys or conn.execute(
                     "SELECT 1 FROM source_events WHERE source_group_key=? AND scope_id=? AND session_id=? LIMIT 1",
-                    (host_key, scope_id, self.context.session_id)).fetchone() is not None
+                    (host_key, scope_id, self.context.session_id)).fetchone() is not None or conn.execute(
+                    "SELECT 1 FROM source_group_blocks WHERE group_sha256=? AND read_blocked=1",
+                    (group_digest(self.context.binding, scope_id, self.context.project_id, self.context.branch_id,
+                                  host_key),)).fetchone() is not None
         copies: dict[tuple[str, str], list[tuple[object, str]]] = {}
         for index, (role, content, occurred_at, host_key) in enumerate(items):
             if host_key is not None:
@@ -588,13 +595,13 @@ class Transaction:
 
     def _waiting_in_inbox(self, scope_id: str) -> dict[tuple[str, str], list[tuple[object, str]]]:
         """This session's captures a replay of the inbox will still store, by (role, content digest)."""
-        from .capture_inbox import STILL_REPLAYED
+        from .capture_inbox import waiting as replays
 
         waiting: dict[tuple[str, str], list[tuple[object, str]]] = {}
         for payload, code in self._check().execute(
                 "SELECT payload_json,last_error_code FROM capture_inbox WHERE scope_id=? AND project_id IS ? AND branch_id IS ?",
                 (scope_id, self.context.project_id, self.context.branch_id)):
-            if code is not None and code not in STILL_REPLAYED:
+            if not replays(code):
                 continue
             try:
                 body = json.loads(payload)

@@ -332,9 +332,10 @@ def test_a_long_message_whose_key_was_taken_is_stored_under_a_new_group(worker_a
     assert groups[1][0].startswith("TEST-turn-77#rekey:")
 
 
-def test_a_row_that_no_longer_passes_is_final_and_the_rows_after_it_are_stored(worker_app, monkeypatch):
-    """A row whose stored capture raised on revalidation stopped its whole page, on every pass, and every collision
-    after it was never stored (review of 3.4.0rc10)."""
+def test_a_row_that_cannot_be_checked_again_is_put_off_and_the_rows_after_it_are_stored(worker_app, monkeypatch):
+    """A row whose stored capture raised on revalidation stopped its whole page, on every pass.  Made final instead,
+    a row this release merely could not read yet (a newer release's field, an installation being reinstalled) was
+    never stored (reviews of 3.4.0rc10).  It is put off: another release takes it at once, this one after an hour."""
     core, ctx, clock = worker_app
     other = replace(ctx, session_id="TEST-session-2")
     for key in ("TEST-turn-50", "TEST-turn-51"):
@@ -352,10 +353,37 @@ def test_a_row_that_no_longer_passes_is_final_and_the_rows_after_it_are_stored(w
     monkeypatch.setattr(capture_inbox, "prepare_capture", prepare)
     receipts = capture_inbox.resolve_conflicted_ingress(
         core.storage, clock, other, authorize=lambda _: other.allowed_scope_ids, remaining_seconds=5)
-    assert sorted(receipt.disposition for receipt in receipts) == ["inserted", "rejected"]
+    assert sorted(receipt.disposition for receipt in receipts) == ["inserted", "queued"]
     with sqlite3.connect(core.storage.path) as conn:
-        assert conn.execute("SELECT last_error_code FROM capture_inbox").fetchall() == [("INPUT_INVALID",)]
+        [(code,)] = conn.execute("SELECT last_error_code FROM capture_inbox").fetchall()
         assert conn.execute("SELECT count(*) FROM source_events WHERE content='TEST second TEST-turn-51'").fetchone()[0] == 1
+    assert code.startswith(f"DEFERRED|{capture_inbox.__version__}|") and code.endswith("|INPUT_INVALID")
+    # Not taken again within the hour; still waiting as far as a record read is concerned.
+    assert capture_inbox.replay_inbox(core.storage, clock, other, authorize=lambda _: other.allowed_scope_ids) == ()
+    assert capture_inbox.waiting(code)
+    # Another release (one that reads it) takes it at once, and the collision is then stored under a new key.
+    monkeypatch.setattr(capture_inbox, "prepare_capture", original)
+    monkeypatch.setattr(capture_inbox, "__version__", "9.9.9-TEST")
+    assert [r.disposition for r in capture_inbox.replay_inbox(
+        core.storage, clock, other, authorize=lambda _: other.allowed_scope_ids)] == ["conflict"]
+    assert [r.durability for r in capture_inbox.resolve_conflicted_ingress(
+        core.storage, clock, other, authorize=lambda _: other.allowed_scope_ids, remaining_seconds=5)] == ["persisted"]
+    with sqlite3.connect(core.storage.path) as conn:
+        assert conn.execute("SELECT count(*) FROM source_events WHERE content='TEST second TEST-turn-50'").fetchone()[0] == 1
+        assert conn.execute("SELECT count(*) FROM capture_inbox").fetchone()[0] == 0
+
+
+def test_a_named_message_that_was_deleted_still_counts_as_said(worker_app):
+    """Once a delete is purged, a named message's rows no longer carry its key, and a Stop's read of the session
+    record stored the words again under a key of the record's: deleted words came back (review of 3.4.0rc10)."""
+    core, ctx, _clock = worker_app
+    source = capture(core, ctx, "TEST 要删掉的一句话。", key="TEST-named-deleted")
+    authorize(core, ctx, source)
+    deleted = core.forget(ctx, request(source), remaining_seconds=5)
+    core.purge_sqlite(ctx, deleted["operation_id"], remaining_seconds=10)
+    said = core.said_in_session(ctx, "TEST-scope", [("user", "TEST 要删掉的一句话。", source.event["occurred_at"],
+                                                     "TEST-named-deleted")])
+    assert tuple(said) == (True,)
 
 
 def test_a_long_key_that_was_taken_is_cut_to_fit_its_new_key(worker_app):

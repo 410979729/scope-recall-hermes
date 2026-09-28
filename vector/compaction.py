@@ -172,7 +172,8 @@ def _backfill_report(space: Path, now: datetime) -> dict[str, Any]:
     return {
         "last_embed_backfill_at": latest.get("checked_at"),
         "embed_backfill_outcome": "failed" if failed else latest.get("outcome"),
-        "embed_backfill_error": failed[0].get("error") if failed else None,
+        "embed_backfill_error": (failed[0] if failed else latest).get("error") if (
+            failed or latest.get("outcome") == "failed") else None,
         "embed_backfill_queued_total": sum(int(state.get("queued_total") or 0) for state in states) if states else None,
     }
 

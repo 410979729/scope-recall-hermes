@@ -6,6 +6,7 @@ The inbox removal and all source effects commit in the same transaction.
 """
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 import sqlite3
@@ -18,6 +19,7 @@ from ..contracts import (
     TrustedContext,
     TrustedSourcePrincipal,
 )
+from .._version import __version__
 from .truth_connection import TruthDatabaseConnectionError
 from .writer_lease import TruthWriterBusyError
 from .capture import CaptureReceipt, record_event
@@ -39,15 +41,57 @@ _RETRIED = tuple(sorted(STILL_REPLAYED - {"VERSION_CONFLICT"}))
 _REKEYED_CONFLICT = "VERSION_CONFLICT:rekeyed"
 
 
-def retried_sql(column: str = "last_error_code") -> tuple[str, tuple[str, ...]]:
-    """The inbox rows ``replay_inbox`` tries again, as SQL and its parameters: never tried, or a code in ``_RETRIED``.
+#: A row whose stored capture this release could not check again is put off, never given up:
+#: ``DEFERRED|<release>|<until>|<code>``.  A newer release's field in its context, an installation being reinstalled
+#: (the host's authorizer refuses), a secret screen that differs between releases: each clears, so another release
+#: tries such a row at once and this one after an hour.  Given a final code, it was never stored, and a Claude Code
+#: Stop that had counted it as waiting did not store the words either (review of 3.4.0rc10); left in place, it stopped
+#: every row after it on every pass.
+_DEFERRED = "DEFERRED|"
+DEFER_SECONDS = 3600.0
+#: What a query takes for the rows a replay may store: never tried, a code in ``_RETRIED``, or put off.
+REPLAY_CANDIDATES = (f"(last_error_code IS NULL OR last_error_code IN ({','.join('?' for _ in _RETRIED)})"
+                     " OR last_error_code LIKE 'DEFERRED|%')")
 
-    What wakes the worker, and all the doctor does not call blocked, is read from this one place: the wake had
-    counted two of the three codes, so a row an older release left as ``SOURCE_MISSING`` waited for a pass something
-    else started, and the doctor called it blocked.  A ``VERSION_CONFLICT`` row wakes nothing and is called blocked
-    until a pass has given it a new key: any pass does, and one the new key could not store would otherwise have
-    woken a pass every 30 s for good."""
-    return f"({column} IS NULL OR {column} IN ({','.join('?' for _ in _RETRIED)}))", _RETRIED
+
+def _deferral(exc: BaseException, now: datetime) -> str:
+    kind = exc.code if isinstance(exc, ContractError) else type(exc).__name__
+    until = (now + timedelta(seconds=DEFER_SECONDS)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return f"{_DEFERRED}{__version__}|{until}|{kind}"
+
+
+def deferred_until(code: object) -> datetime | None:
+    """When this release tries a row it put off again; None for any other code, or another release's deferral."""
+    if type(code) is not str or not code.startswith(_DEFERRED):
+        return None
+    try:
+        _marker, release, until, _kind = code.split("|", 3)
+        moment = datetime.fromisoformat(until.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return moment if release == __version__ else None
+
+
+def replayable(code: object, now: datetime) -> bool:
+    """Whether a pass now stores a row with this code: never tried, a passing failure, a bare ``SOURCE_MISSING`` an
+    older release left, or a deferral another release made or whose hour is up.
+
+    What wakes the worker, and all the doctor does not call blocked, is read from here: the wake had counted two of
+    the three retried codes, so a row an older release left as ``SOURCE_MISSING`` waited for a pass something else
+    started, and the doctor called it blocked.  A ``VERSION_CONFLICT`` row wakes nothing and is called blocked until
+    a pass has given it a new key: any pass does, and one its new key could not store either would have woken a pass
+    every 30 s for good."""
+    if code is None or code in _RETRIED:
+        return True
+    if type(code) is not str or not code.startswith(_DEFERRED):
+        return False
+    until = deferred_until(code)
+    return until is None or until <= now
+
+
+def waiting(code: object) -> bool:
+    """Whether some pass will still store a row with this code: what a hook's record read counts as already said."""
+    return code is None or code in STILL_REPLAYED or (type(code) is str and code.startswith(_DEFERRED))
 
 
 def _terminal_code(exc: ContractError) -> str:
@@ -261,7 +305,7 @@ def _replay_rows(storage, clock, context, rows, authorize, admission_policy, dea
         try:
             revalidated = _revalidated(storage, context, row, authorize, deadline, rekey=rekey)
         except (ContractError, KeyError, TypeError, ValueError) as exc:
-            receipts.append(_settled(storage, context, row["token"], exc, deadline))
+            receipts.append(_defer(storage, context, row["token"], exc, deadline))
             continue
         if revalidated is None:
             receipts.append(CaptureReceipt("cancelled", (), "not_persisted", "unchanged", "unchanged", error_code="ACCESS_DENIED"))
@@ -300,16 +344,15 @@ def _revalidated(storage, context, row, authorize, deadline, *, rekey):
     return original, PreparedCapture(tuple(events), tuple(body["gaps"]))
 
 
-def _settled(storage, context, token, exc, deadline) -> CaptureReceipt:
-    """A row whose stored capture no longer passes keeps a final code.  Raised out of its page, it stopped every row
-    after it, on every pass (review of 3.4.0rc10)."""
-    code = _terminal_code(exc) if isinstance(exc, ContractError) else "INPUT_INVALID:ingress_payload"
+def _defer(storage, context, token, exc, deadline) -> CaptureReceipt:
+    """Put off a row whose stored capture this release could not check again (``_DEFERRED``)."""
+    code = _deferral(exc, datetime.now(timezone.utc))
     try:
         with storage.write(context, remaining_seconds=max(.001, deadline-time.monotonic())) as tx:
             tx._check(write=True).execute("UPDATE capture_inbox SET last_error_code=? WHERE token=?", (code, token))
     except (*_TRANSIENT, ContractError):
-        pass
-    return CaptureReceipt("rejected", (), "not_persisted", "unchanged", "unchanged", error_code=code.split(":")[0])
+        pass  # the row keeps its code, and the next pass takes it again
+    return CaptureReceipt("queued", (), "queued", "pending", "pending", error_code="DEFERRED")
 
 
 def replay_inbox(storage, clock, context, *, authorize, admission_policy=None, limit=8, remaining_seconds=1.0):
@@ -322,8 +365,10 @@ def replay_inbox(storage, clock, context, *, authorize, admission_policy=None, l
         return ()
     with storage.read(context, remaining_seconds=remaining_seconds) as tx:
         rows = tx._check().execute(f"""SELECT * FROM capture_inbox WHERE scope_id IN ({','.join('?' for _ in scopes)})
-            AND project_id IS ? AND branch_id IS ?
-            AND (last_error_code IS NULL OR last_error_code IN ({','.join('?' for _ in _RETRIED)}))
-            ORDER BY created_at,token LIMIT ?""",
-            (*scopes, context.project_id, context.branch_id, *_RETRIED, limit)).fetchall()
+            AND project_id IS ? AND branch_id IS ? AND {REPLAY_CANDIDATES}
+            ORDER BY created_at,token""",
+            (*scopes, context.project_id, context.branch_id, *_RETRIED)).fetchall()
+    # The inbox holds at most 256 rows; a row put off for another hour is passed over, not the head of the page.
+    now = datetime.now(timezone.utc)
+    rows = [row for row in rows if replayable(row["last_error_code"], now)][:limit]
     return _replay_rows(storage, clock, context, rows, authorize, admission_policy, deadline, rekey=False)

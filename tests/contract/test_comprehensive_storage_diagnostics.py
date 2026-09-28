@@ -231,8 +231,12 @@ def test_doctor_calls_blocked_the_inbox_rows_no_replay_will_store(tmp_path, monk
     from v11_support import source_event
 
     app, ctx = _doctor_app(tmp_path, monkeypatch)
+    from scope_recall._version import __version__
+
+    later = (datetime.now(timezone.utc) + timedelta(minutes=40)).strftime('%Y-%m-%dT%H:%M:%SZ')
     codes = (None, 'STORAGE_UNAVAILABLE', 'SOURCE_MISSING', 'VERSION_CONFLICT', 'VERSION_CONFLICT:rekeyed',
-             'SOURCE_MISSING:TEST-final')
+             'SOURCE_MISSING:TEST-final', f'DEFERRED|{__version__}|{later}|IDENTITY_UNBOUND',
+             f'DEFERRED|0.0.1|{later}|TypeError')
     for index, code in enumerate(codes):
         event = source_event(source_event_key=f'TEST-inbox-{index}', content=f'TEST 第{index}条。')
         token, _prepared = capture_inbox.enqueue(app.storage, app.clock, ctx, event, scope_id='TEST-scope',
@@ -240,7 +244,8 @@ def test_doctor_calls_blocked_the_inbox_rows_no_replay_will_store(tmp_path, monk
         with app.storage.write(ctx) as tx:
             tx._check(write=True).execute('UPDATE capture_inbox SET last_error_code=? WHERE token=?', (code, token))
     result = doctor.run_doctor(host='hermes', instance_root=ctx.binding.data_directory)
-    assert (result.capture_inbox, result.capture_inbox_blocked) == (6, 3)
+    # Put off by this release: blocked until its hour is up.  Put off by another: this one takes it now.
+    assert (result.capture_inbox, result.capture_inbox_blocked) == (8, 4)
 
 
 def test_doctor_reports_the_footprint_the_growth_and_a_budget(tmp_path, monkeypatch):
