@@ -46,12 +46,14 @@ _REKEYED_CONFLICT = "VERSION_CONFLICT:rekeyed"
 #: fails for now, a secret screen that differs between releases: each can clear.  Given a final code at once, such a
 #: row was never stored, and a Claude Code Stop that had counted it as waiting did not store the words either; left in
 #: place, it stopped every row after it on every pass (reviews of 3.4.0rc10).  It is tried again after a minute,
-#: doubling to an hour, by whichever release runs, and the tries are counted across releases: after
-#: ``DEFER_ATTEMPTS`` the row is given up (``GAVE_UP|<release>|<attempts>|<path>|<code>``), where doctor and the patrol
-#: show it, and ``retry-failures --apply`` returns it to the replay once its cause is fixed.  ``path`` is the replay
+#: doubling to an hour, by whichever release runs, and the tries are counted across releases: when its
+#: ``DEFER_ATTEMPTS``-th try again fails the row is given up (``GAVE_UP|<release>|<failures>|<path>|<code>``), where
+#: doctor and the patrol show it, and ``retry-failures --apply`` returns it to the replay once its cause is fixed.  ``path`` is the replay
 #: that put it off: a key collision's new key (``rekey``) is retried only by ``resolve_conflicted_ingress``, since a
 #: plain replay would only meet the collision again.
 _DEFERRED = "DEFERRED|"
+#: What a replay's last receipt carries when a busy store stopped its page: the rest waits for the next pass.
+INGRESS_PENDING_GAP = "capture_gap:durable_ingress_pending"
 _GAVE_UP = "GAVE_UP|"
 _PATHS = ("replay", "rekey")
 DEFER_FIRST_SECONDS = 60.0
@@ -94,7 +96,7 @@ def _deferral(previous: object, exc: BaseException, now: datetime, *, path: str)
     parsed = _parsed_deferral(previous)
     attempt = (parsed[1] if parsed is not None else 0) + 1
     if attempt > DEFER_ATTEMPTS:
-        return f"{_GAVE_UP}{__version__}|{attempt - 1}|{path}|{_kind(exc)}"
+        return f"{_GAVE_UP}{__version__}|{attempt}|{path}|{_kind(exc)}"
     delay = min(DEFER_MAX_SECONDS, DEFER_FIRST_SECONDS * 2 ** (attempt - 1))
     until = (now + timedelta(seconds=delay)).strftime("%Y-%m-%dT%H:%M:%SZ")
     return f"{_DEFERRED}{__version__}|{until}|{attempt}|{path}|{_kind(exc)}"
@@ -113,9 +115,14 @@ def deferred_until(code: object, now: datetime) -> datetime | None:
 
 
 def deferred_path(code: object) -> str | None:
-    """The replay a row was put off by (``replay`` or ``rekey``); None for any other code."""
+    """The replay a row was put off or given up by (``replay`` or ``rekey``); None for any other code."""
     parsed = _parsed_deferral(code)
-    return parsed[2] if parsed is not None else None
+    if parsed is not None:
+        return parsed[2]
+    if type(code) is str and code.startswith(_GAVE_UP):
+        parts = code.split("|", 4)
+        return parts[3] if len(parts) == 5 and parts[3] in _PATHS else "replay"
+    return None
 
 
 def replayable(code: object, now: datetime) -> bool:
@@ -148,9 +155,12 @@ def waiting(code: object) -> bool:
     return code is None or code in STILL_REPLAYED or (type(code) is str and code.startswith(_DEFERRED))
 
 
-def holds(payload_json: object, digests: frozenset[str], groups: frozenset[str]) -> bool:
+def holds(payload_json: object, digests: frozenset[str], groups: frozenset[str], *, rekeyed: bool = False) -> bool:
     """Whether an inbox row's capture holds one of these stored contents (``content_sha256``) or source groups; a row
-    that cannot be read is taken to (a delete then cancels it, as it cancels every row it cannot look into)."""
+    that cannot be read is taken to (a delete then cancels it, as it cancels every row it cannot look into).
+
+    A row being given a new key (``rekeyed``) is another message that took a stored one's key, so the group it names
+    is not its own and only its words count: deleting the first message cancelled the second (review of rc10)."""
     from .events import stored_content_digest
 
     try:
@@ -158,7 +168,7 @@ def holds(payload_json: object, digests: frozenset[str], groups: frozenset[str])
         for event in body["events"]:
             segment = event.get("segment")
             group = segment.get("group_key") if isinstance(segment, dict) else event.get("source_event_key")
-            if group in groups or stored_content_digest(event["content"]) in digests:
+            if (not rekeyed and group in groups) or stored_content_digest(event["content"]) in digests:
                 return True
     except (ValueError, KeyError, TypeError, AttributeError):
         return True
@@ -383,7 +393,11 @@ def _replay_rows(storage, clock, context, rows, authorize, admission_policy, dea
         try:
             revalidated = _revalidated(storage, context, row, authorize, deadline, rekey=rekey)
         except _TRANSIENT:
-            raise  # the store itself: the whole replay waits for the next pass, as before
+            # The store itself: the rest of the page waits for the next pass.  Raised, it lost what this replay had
+            # done, and the rekey replay after it did not run (review of rc10).
+            receipts.append(CaptureReceipt("queued", (), "queued", "pending", "pending", (INGRESS_PENDING_GAP,),
+                                           "STORAGE_UNAVAILABLE"))
+            break
         except (ContractError, KeyError, TypeError, ValueError, RuntimeError, OSError) as exc:
             # A host's check that raises (Hermes' identity errors are RuntimeErrors) put off this row only.
             receipts.append(_defer(storage, clock, context, row, exc, deadline, path="rekey" if rekey else "replay"))
@@ -401,18 +415,29 @@ def _revalidated(storage, context, row, authorize, deadline, *, rekey):
     """One row's stored capture, checked again: ``(its context, the capture)``, or None when the host no longer grants
     its scope (the row is then removed).  Raises when the stored envelope no longer passes."""
     body = json.loads(row["payload_json"])
-    raw = dict(body["context"])
-    allowed = frozenset(raw.pop("allowed_scope_ids")) & context.allowed_scope_ids & frozenset(authorize(body["host_scope"]))
+    try:
+        raw = dict(body["context"])
+        stored = frozenset(raw.pop("allowed_scope_ids"))
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ContractError("INPUT_INVALID", "ingress_context") from exc
+    allowed = stored & context.allowed_scope_ids & frozenset(authorize(body["host_scope"]))
     if row["scope_id"] not in allowed:
         with storage.write(context, remaining_seconds=max(.001, deadline-time.monotonic())) as tx:
             tx._check(write=True).execute("DELETE FROM capture_inbox WHERE token=?", (row["token"],))
         return None
-    snapshot = raw.pop("display_snapshot")
-    principal = raw.pop("source_principal", None)
-    original = TrustedContext(context.binding, allowed_scope_ids=allowed,
-        display_snapshot=DisplaySnapshot(snapshot["order"], tuple(ArtifactVersion(**i) for i in snapshot["items"])) if snapshot else None,
-        source_principal=TrustedSourcePrincipal(**principal) if principal is not None else None,
-        **raw)
+    try:
+        snapshot = raw.pop("display_snapshot")
+        principal = raw.pop("source_principal", None)
+        original = TrustedContext(context.binding, allowed_scope_ids=allowed,
+            display_snapshot=DisplaySnapshot(snapshot["order"], tuple(ArtifactVersion(**i) for i in snapshot["items"])) if snapshot else None,
+            source_principal=TrustedSourcePrincipal(**principal) if principal is not None else None,
+            **raw)
+    except ContractError:
+        raise
+    except (KeyError, TypeError, ValueError) as exc:
+        # A field a newer release wrote into the stored context, or one this release needs and it lacks: named, where
+        # a bare TypeError said nothing of where to look (review of rc10).
+        raise ContractError("INPUT_INVALID", "ingress_context") from exc
     # Revalidate the stored envelope; trust is from the captured context,
     # never inferred from a payload role or text claiming to be a user.
     capture = _capture_fingerprint(body["events"]) if rekey else ""

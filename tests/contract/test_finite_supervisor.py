@@ -11,7 +11,7 @@ import time
 
 import pytest
 
-from scope_recall.contracts import InstanceBinding
+from scope_recall.contracts import InstanceBinding, TrustedContext
 from scope_recall.core import CoreConfig, MemoryCore
 from scope_recall.runtime.instance import RuntimeInstanceConfig
 from scope_recall.runtime.scheduling import SupervisorControl, next_wake, supervise
@@ -102,6 +102,11 @@ def test_an_inbox_row_a_replay_will_store_wakes_the_worker(tmp_path):
                                                  scope_id='TEST-a', host_scope=None)
         with core.storage.write(cfg.context()) as tx:
             tx._check(write=True).execute('UPDATE capture_inbox SET last_error_code=? WHERE token=?', (code, token))
+    # A row of another partition (here none at all) is not this worker's to replay: counted, it woke a pass that
+    # never took it (review of rc10).
+    elsewhere = TrustedContext(cfg.binding, 'TEST-session', frozenset({'TEST-a'}), 'human_direct')
+    capture_inbox.enqueue(core.storage, core.clock, elsewhere, source_event(
+        source_event_key='TEST-inbox-elsewhere', content='TEST 别处的一条。'), scope_id='TEST-a', host_scope=None)
     plan = next_wake(cfg, now=NOW)
     assert (plan.reason, plan.pending) == ('durable_capture_ingress', 1)
     with core.storage.write(cfg.context()) as tx:

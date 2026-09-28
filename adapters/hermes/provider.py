@@ -521,12 +521,16 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
         core = self._require_core()
         if isinstance(core, MemoryCore) and not identity.read_only:
             try:
-                from ...core.capture_inbox import replay_inbox
-                replay_inbox(core.storage, core.clock, identity.trusted_context(),
+                from ...core.capture_inbox import INGRESS_PENDING_GAP, replay_inbox
+                receipts = replay_inbox(core.storage, core.clock, identity.trusted_context(),
                     authorize=build_ingress_authorizer(identity.binding), admission_policy=core.config.admission_policy,
                     remaining_seconds=_CAPTURE_TIMEOUT_S)
             except (ContractError, OSError, RuntimeError, sqlite3.Error, ValueError):
                 self._merge_gaps(("capture_gap:durable_ingress_pending",))
+            else:
+                # A busy store stops the replay's page with a receipt that says so, where it used to raise.
+                if any(INGRESS_PENDING_GAP in receipt.gaps for receipt in receipts):
+                    self._merge_gaps((INGRESS_PENDING_GAP,))
         self._retry_buffered_captures()
 
     def _retry_buffered_captures(self) -> None:

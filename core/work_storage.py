@@ -770,12 +770,23 @@ class WorkItems:
             report["by_kind"][kind] = report["by_kind"].get(kind, 0) + 1
             report["retried"] += 1
         # Captures a replay gave up after its tries (``capture_inbox._GAVE_UP``) go back to it, their tries counted
-        # anew: whatever kept them out has been fixed, or they are given up again, visibly.
-        abandoned = [token for (token,) in conn.execute(
-            f"SELECT token FROM capture_inbox WHERE last_error_code LIKE 'GAVE_UP|%' AND {visible}", params)]
+        # anew: whatever kept them out has been fixed, or they are given up again, visibly.  Only the partition this
+        # config's replay takes (``replay_inbox``): returned by what the config could see, a row of another went back
+        # to a replay that never takes it (review of rc10).
+        context = self._tx.context
+        scopes = sorted(context.allowed_scope_ids)
+        abandoned = conn.execute(
+            f"""SELECT token,last_error_code FROM capture_inbox WHERE last_error_code LIKE 'GAVE_UP|%'
+                AND scope_id IN ({_marks(scopes)}) AND project_id IS ? AND branch_id IS ?""",
+            (*scopes, context.project_id, context.branch_id)).fetchall()
         report["inbox_given_up"] = len(abandoned)
+        report["inbox_by_kind"] = {}
+        for _token, code in abandoned:
+            kind = str(code).rsplit("|", 1)[-1]
+            report["inbox_by_kind"][kind] = report["inbox_by_kind"].get(kind, 0) + 1
         if not dry_run:
-            conn.executemany("UPDATE capture_inbox SET last_error_code=NULL WHERE token=?", [(t,) for t in abandoned])
+            conn.executemany("UPDATE capture_inbox SET last_error_code=NULL WHERE token=?",
+                             [(token,) for token, _code in abandoned])
         return report
 
     def _reopen_failed(self, work_id: int, work_type: str, code: object, *, now: str, automatic: bool = False) -> bool:

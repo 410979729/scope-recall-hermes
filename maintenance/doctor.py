@@ -382,6 +382,7 @@ _WORKER_STATUS_KEYS = frozenset({
     "last_success_at", "completed", "failed", "retried", "deferred", "recovered",
     "daily_queue_used", "capability_gaps", "unavailable_work_types",
     "pending_work", "failed_work", "oldest_pending_at", "worker_error",
+    "ingress_deferred", "ingress_given_up",
 })
 
 

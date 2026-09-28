@@ -149,8 +149,11 @@ def next_wake(config, *, now: datetime | None = None, unavailable_until=None) ->
             else:
                 blocked += source_pages
         inbox = 0
-        for (code,) in conn.execute(f"SELECT last_error_code FROM capture_inbox WHERE {base} AND {REPLAY_CANDIDATES}",
-                                    (*params, *_RETRIED)):
+        # The partition a pass replays (``replay_inbox``): a row of another woke a pass that never took it.
+        for (code,) in conn.execute(
+                f"""SELECT last_error_code FROM capture_inbox WHERE scope_id IN ({marks})
+                    AND project_id IS ? AND branch_id IS ? AND {REPLAY_CANDIDATES}""",
+                (*scopes, config.project_id, config.branch_id, *_RETRIED)):
             if replayable(code, now):
                 inbox += 1
             elif (until := deferred_until(code, now)) is not None:

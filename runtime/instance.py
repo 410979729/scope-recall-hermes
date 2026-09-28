@@ -16,6 +16,7 @@ from dataclasses import MISSING, dataclass, field, fields, replace
 from functools import partial
 import math
 from pathlib import Path
+import sqlite3
 import time
 from typing import Any, Callable, Mapping
 
@@ -519,7 +520,7 @@ class RuntimeInstance:
 
     def _replay_ingress(self, budget: float) -> tuple[str, ...]:
         """Persist captured inbox payloads.  Ingress never spends the model-work budget."""
-        from ..core.capture_inbox import replay_inbox, resolve_conflicted_ingress
+        from ..core.capture_inbox import INGRESS_PENDING_GAP, replay_inbox, resolve_conflicted_ingress
 
         self.ingress_receipts = ()
         try:
@@ -529,16 +530,21 @@ class RuntimeInstance:
             options = dict(authorize=self._ingress_authorizer,
                            admission_policy=self.core.config.admission_policy,
                            remaining_seconds=min(2.0, budget / 4))
-            self.ingress_receipts = tuple(replay_inbox(self.core.storage, self.core.clock, context, **options))
-            # A key-collided capture is invisible to the replay above, which
-            # only retries failures that might clear by themselves; without
-            # this it stays in the inbox forever, captured but never stored.
-            self.ingress_receipts += tuple(
-                resolve_conflicted_ingress(self.core.storage, self.core.clock, context, **options)
-            )
-            return ()
         except (ContractError, OSError, RuntimeError, ValueError):
-            return ("capture_gap:durable_ingress_pending",)
+            return (INGRESS_PENDING_GAP,)
+        # A key-collided capture is invisible to the first replay, which only
+        # retries failures that might clear by themselves; without the second
+        # it stays in the inbox forever, captured but never stored.  Each runs
+        # whatever the other met: one that raised skipped the other.
+        pending = False
+        for replay in (replay_inbox, resolve_conflicted_ingress):
+            try:
+                self.ingress_receipts += tuple(replay(self.core.storage, self.core.clock, context, **options))
+            except (ContractError, OSError, RuntimeError, ValueError, sqlite3.Error):
+                pending = True
+        if pending or any(INGRESS_PENDING_GAP in receipt.gaps for receipt in self.ingress_receipts):
+            return (INGRESS_PENDING_GAP,)
+        return ()
 
     def _unauthorized_ingress_gaps(self, context: TrustedContext, budget: float) -> tuple[str, ...]:
         """Without an authorizer, pending ingress can only be reported, not replayed."""

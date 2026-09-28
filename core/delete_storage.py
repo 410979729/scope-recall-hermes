@@ -258,7 +258,7 @@ class Deletions:
         # A row put off (``capture_inbox.put_off``) can wait for hours, and
         # cancelling it lost words nothing had forgotten (review of rc10): it is
         # kept unless it holds a deleted source's content or group.
-        from .capture_inbox import holds, put_off
+        from .capture_inbox import deferred_path, holds, put_off
 
         digests, groups = set(), set()
         for target in targets:
@@ -273,7 +273,8 @@ class Deletions:
                     (scope, project, branch)).fetchall():
                 # A payload is read only for a row put off: the inbox holds up to 64 MB.
                 if not put_off(code) or holds(conn.execute("SELECT payload_json FROM capture_inbox WHERE token=?",
-                                                           (token,)).fetchone()[0], *forgotten):
+                                                           (token,)).fetchone()[0], *forgotten,
+                                              rekeyed=deferred_path(code) == "rekey"):
                     conn.execute("DELETE FROM capture_inbox WHERE token=?", (token,))
         for target in targets:
             conn.execute("DELETE FROM consolidation_fragments WHERE work_id IN (SELECT work_id FROM work_items WHERE subject_ref=?)", (target.ref,))

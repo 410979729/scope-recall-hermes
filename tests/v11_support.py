@@ -115,9 +115,12 @@ _SCHEMA_STEPS = {
 
 def downgrade_store(path, version: int) -> None:
     """Turn a fresh store into what a real store at ``version`` could hold, and stamp it."""
+    from contextlib import closing
     import sqlite3
 
-    with sqlite3.connect(path) as conn:
+    # Closed here: left to the garbage collector, the connection moved its pages from the WAL into the file at a
+    # moment nobody chose, and a byte comparison after it failed at random.
+    with closing(sqlite3.connect(path)) as conn:
         for step in sorted((step for step in _SCHEMA_STEPS if step > version), reverse=True):
             objects = _SCHEMA_STEPS[step]
             for statement in objects.get("before", ()):

@@ -386,7 +386,7 @@ def test_a_row_put_off_again_waits_longer_and_is_given_up_where_it_shows():
     assert waits[:4] == [60, 120, 240, 480] and waits[-1] == 3600
     assert code.endswith("|24|replay|IDENTITY_UNBOUND:TEST/host"), "the field is named, its bar replaced"
     given_up = capture_inbox._deferral(code, RuntimeError("TEST"), now, path="replay")
-    assert given_up == f"GAVE_UP|{capture_inbox.__version__}|24|replay|RuntimeError"
+    assert given_up == f"GAVE_UP|{capture_inbox.__version__}|25|replay|RuntimeError", "its failures, the first too"
     assert capture_inbox.given_up(given_up) and capture_inbox.put_off(given_up)
     assert not capture_inbox.replayable(given_up, now) and not capture_inbox.waiting(given_up)
     # Given up for every release, and the tries another release made count: a new release reset them, so a row
@@ -514,9 +514,148 @@ def test_retry_failures_returns_a_given_up_capture_to_the_replay(worker_app):
     assert (preview["inbox_given_up"], preview["applied"]) == (1, False)
     with sqlite3.connect(core.storage.path) as conn:
         assert conn.execute("SELECT last_error_code FROM capture_inbox").fetchall() == [(given_up,)]
+    assert preview["inbox_by_kind"] == {"IDENTITY_UNBOUND:TEST-host": 1}
     assert core.retry_failed_work(ctx, limit=64, dry_run=False)["inbox_given_up"] == 1
     assert [receipt.durability for receipt in replay()] == ["persisted"]
     assert core.retry_failed_work(ctx, limit=64, dry_run=True)["inbox_given_up"] == 0
+
+
+def test_a_delete_keeps_a_row_that_took_the_deleted_message_s_key_for_other_words(worker_app):
+    """A row being given a new key is another message that took a stored one's key: matched by that key, deleting the
+    first message cancelled the second, whose words nobody deleted (review of rc10).  Its words still count."""
+    core, ctx, clock = worker_app
+    first = capture(core, ctx, "TEST 第一条，要删掉。", key="TEST-taken")
+    rekey = f"DEFERRED|{capture_inbox.__version__}|2026-09-06T13:00:00Z|1|rekey|IDENTITY_UNBOUND:TEST-host"
+    for session, content in (("TEST-session-2", "TEST 第二条，另一句话。"), ("TEST-session-3", "TEST 第一条，要删掉。")):
+        token, _prepared = capture_inbox.enqueue(core.storage, clock, replace(ctx, session_id=session),
+                                                 source_event(source_event_key="TEST-taken", content=content),
+                                                 scope_id="TEST-scope", host_scope=None)
+        with sqlite3.connect(core.storage.path) as conn:
+            conn.execute("UPDATE capture_inbox SET last_error_code=? WHERE token=?", (rekey, token))
+            conn.commit()
+    authorize(core, ctx, first)
+    core.forget(ctx, request(first), remaining_seconds=5)
+    with sqlite3.connect(core.storage.path) as conn:
+        left = [json.loads(row[0])["events"][0]["content"] for row in conn.execute("SELECT payload_json FROM capture_inbox")]
+    assert left == ["TEST 第二条，另一句话。"]
+
+
+def test_retry_failures_returns_only_the_rows_its_replay_takes(tmp_path):
+    """Returned by what a config could see, rows of other partitions went back to a replay that never takes them;
+    and a row put off is not retry-failures' to return (review of rc10)."""
+    from scope_recall.contracts import TrustedContext
+
+    core, cfg, _path = fixture(tmp_path)
+    own = cfg.context()
+    given_up = f"GAVE_UP|{capture_inbox.__version__}|25|replay|IDENTITY_UNBOUND:TEST-host"
+    put_off = f"DEFERRED|{capture_inbox.__version__}|2026-09-06T13:00:00Z|3|replay|TypeError"
+    partitions = {"own": (own, given_up), "put off": (own, put_off),
+                  "unset": (TrustedContext(cfg.binding, "TEST-session", frozenset({"TEST-a"}), "human_direct"), given_up),
+                  "other project": (replace(own, project_id="TEST-other"), given_up)}
+    tokens = {}
+    for label, (context, code) in partitions.items():
+        token, _prepared = capture_inbox.enqueue(core.storage, core.clock, context, source_event(
+            source_event_key=f"TEST-{label}", content=f"TEST {label} 的一句。"), scope_id="TEST-a", host_scope=None)
+        with sqlite3.connect(core.storage.path) as conn:
+            conn.execute("UPDATE capture_inbox SET last_error_code=? WHERE token=?", (code, token))
+            conn.commit()
+        tokens[label] = token
+    preview = core.retry_failed_work(own, limit=64, dry_run=True)
+    assert (preview["inbox_given_up"], preview["inbox_by_kind"]) == (1, {"IDENTITY_UNBOUND:TEST-host": 1})
+    core.retry_failed_work(own, limit=64, dry_run=False)
+    with sqlite3.connect(core.storage.path) as conn:
+        codes = dict(conn.execute("SELECT token,last_error_code FROM capture_inbox").fetchall())
+    assert {label: codes[token] for label, token in tokens.items()} == {
+        "own": None, "put off": put_off, "unset": given_up, "other project": given_up}
+
+
+def test_a_stored_context_this_release_cannot_read_is_named(worker_app):
+    """A field a newer release wrote into a stored context left the row's code ending in a bare TypeError, which named
+    nothing to look at (review of rc10)."""
+    core, ctx, clock = worker_app
+    token, _prepared = capture_inbox.enqueue(core.storage, clock, ctx, source_event(
+        source_event_key="TEST-newer-context", content="TEST 新版本写的上下文。"), scope_id="TEST-scope", host_scope=None)
+    with sqlite3.connect(core.storage.path) as conn:
+        body = json.loads(conn.execute("SELECT payload_json FROM capture_inbox WHERE token=?", (token,)).fetchone()[0])
+        body["context"]["TEST_newer_field"] = "x"
+        conn.execute("UPDATE capture_inbox SET payload_json=? WHERE token=?", (json.dumps(body, ensure_ascii=False), token))
+        conn.commit()
+    receipts = capture_inbox.replay_inbox(core.storage, clock, ctx, authorize=lambda _: ctx.allowed_scope_ids)
+    assert [receipt.error_code for receipt in receipts] == ["DEFERRED"]
+    with sqlite3.connect(core.storage.path) as conn:
+        [(code,)] = conn.execute("SELECT last_error_code FROM capture_inbox").fetchall()
+    assert code.endswith("|1|replay|INPUT_INVALID:ingress_context")
+
+
+def test_a_busy_store_halfway_through_a_replay_keeps_what_it_did(worker_app, monkeypatch):
+    """Met on the second row, a busy store raised out of the replay: the first row's deferral went unsaid, and the
+    replay of collided keys after it did not run (review of rc10)."""
+    from scope_recall.core.writer_lease import TruthWriterBusyError
+
+    core, ctx, clock = worker_app
+    tokens = []
+    for index in range(3):
+        clock.advance(seconds=1, iso=f"2026-09-06T12:00:0{index}Z")
+        token, _prepared = capture_inbox.enqueue(core.storage, clock, ctx, source_event(
+            source_event_key=f"TEST-busy-{index}", content=f"TEST 第{index}条。"), scope_id="TEST-scope", host_scope=None)
+        tokens.append(token)
+
+    def revalidated(storage, context, row, authorize, deadline, *, rekey):
+        if row["token"] == tokens[0]:
+            raise ContractError("IDENTITY_UNBOUND", "TEST-host")
+        raise TruthWriterBusyError()
+
+    monkeypatch.setattr(capture_inbox, "_revalidated", revalidated)
+    receipts = capture_inbox.replay_inbox(core.storage, clock, ctx, authorize=lambda _: ctx.allowed_scope_ids)
+    assert [receipt.error_code for receipt in receipts] == ["DEFERRED", "STORAGE_UNAVAILABLE"]
+    assert capture_inbox.INGRESS_PENDING_GAP in receipts[1].gaps
+
+
+def test_a_pass_runs_both_replays_whatever_the_first_met(tmp_path, monkeypatch):
+    """A pass whose first replay raised skipped the replay of collided keys (review of rc10)."""
+    from scope_recall.core.capture import CaptureReceipt
+    from scope_recall.runtime.instance import RuntimeInstance
+
+    core, cfg, _path = fixture(tmp_path)
+    context = cfg.context()
+    stored = CaptureReceipt("inserted", (), "persisted", "indexed", "pending")
+
+    def raising(*args, **kwargs):
+        raise RuntimeError("TEST busy")
+
+    monkeypatch.setattr(capture_inbox, "replay_inbox", raising)
+    monkeypatch.setattr(capture_inbox, "resolve_conflicted_ingress", lambda *args, **kwargs: (stored,))
+    fake = SimpleNamespace(config=cfg, _ingress_authorizer=lambda _: context.allowed_scope_ids, core=core,
+                           ingress_receipts=())
+    assert RuntimeInstance._replay_ingress(fake, 8.0) == (capture_inbox.INGRESS_PENDING_GAP,)
+    assert fake.ingress_receipts == (stored,)
+
+
+def test_a_pass_says_and_keeps_what_its_replays_put_off_and_gave_up(tmp_path):
+    """Only the counting was tested: a pass that left the counts or the gaps out of its report, or a status file that
+    dropped them, passed; and doctor did not show them (review of rc10)."""
+    import time
+
+    from scope_recall.core.capture import CaptureReceipt
+    from scope_recall.maintenance import doctor
+    from scope_recall.runtime.worker_entry import _drain_once, persist_worker_status
+
+    core, cfg, _path = fixture(tmp_path)
+    receipt = SimpleNamespace(items=(), idle=False, retried=0, processed=0, completed=0, failed=0, skipped=0, stale=0,
+                              obsolete=0, deferred=0, recovered=0, unavailable_work_types=())
+    ingress = tuple(CaptureReceipt("queued", (), "queued", "pending", "pending", error_code=code)
+                    for code in ("GAVE_UP", "DEFERRED", "DEFERRED"))
+    queue_state = SimpleNamespace(work_error_counts=(), failed_work=0, pending_work=0, oldest_pending_at=None)
+    instance = SimpleNamespace(auxiliary=SimpleNamespace(ledger_path=None, capability_gaps=()),
+                               drain=lambda **kwargs: receipt, background_gaps=(), provider_holds={},
+                               ingress_receipts=ingress, status=lambda **kwargs: queue_state)
+    gaps = {"capture_gap:durable_ingress_deferred", "capture_gap:durable_ingress_given_up"}
+    payload = _drain_once(cfg, instance, time.monotonic() + 10)
+    assert (payload["ingress_deferred"], payload["ingress_given_up"]) == (2, 1) and gaps <= set(payload["capability_gaps"])
+    persist_worker_status(cfg, payload, started_at="2026-09-12T00:00:00Z", exit_code=0)
+    status = json.loads((cfg.binding.data_directory / "runtime-worker-status.json").read_text(encoding="utf-8"))
+    assert (status["ingress_deferred"], status["ingress_given_up"]) == (2, 1) and gaps <= set(status["capability_gaps"])
+    assert {"ingress_deferred", "ingress_given_up"} <= doctor._WORKER_STATUS_KEYS
 
 
 def test_a_pass_counts_the_inbox_rows_it_put_off_and_gave_up():

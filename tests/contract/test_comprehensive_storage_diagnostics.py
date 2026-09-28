@@ -313,19 +313,20 @@ def _schema_facts(path):
 def test_doctor_reports_a_pending_schema_upgrade_without_applying_it(tmp_path, monkeypatch):
     """A package upgrade leaves the store one schema behind until its first
     ordinary open brings it forward.  The doctor is read-only, so it names the
-    pending step instead of failing on a store it will not touch.  What the store
-    holds is compared, not its bytes: the step's own connection leaves its pages
-    in the WAL, and whichever connection closes last moves them into the file,
-    at a moment garbage collection picks (failed so on CI, 3.4.0rc10)."""
+    pending step instead of failing on a store it will not touch.  Both what the
+    store holds and its bytes are compared: the schema facts say no step was
+    applied, the bytes that nothing was written.  (The bytes failed at random on
+    CI while the step's own connection was left to the garbage collector, which
+    moved its pages from the WAL into the file when it pleased, 3.4.0rc10.)"""
     app, ctx = _doctor_app(tmp_path, monkeypatch)
     capture(app, ctx, 'TEST-upgrade/1', 'TEST pending upgrade')
     downgrade_store(app.storage.path, 1108)
-    before = _schema_facts(app.storage.path)
+    before, image = _schema_facts(app.storage.path), app.storage.path.read_bytes()
     assert before[:2] == (1108, 1108)
     result = doctor.run_doctor(host='hermes', instance_root=ctx.binding.data_directory)
     assert 'schema_upgrade_pending' in result.capability_gaps and result.schema_version == 1108
     assert next(item for item in result.checks if item['name'] == 'schema')['result'] == 'upgrade_pending'
-    assert _schema_facts(app.storage.path) == before
+    assert _schema_facts(app.storage.path) == before and app.storage.path.read_bytes() == image
     assert app.status(ctx).schema_version == 1110
     result = doctor.run_doctor(host='hermes', instance_root=ctx.binding.data_directory)
     assert 'schema_upgrade_pending' not in result.capability_gaps and result.schema_version == 1110
