@@ -6,7 +6,8 @@ unembeddable -- 16,505 to 65,536 characters, rejected with ``http_400``, which
 is not auto-recoverable -- so their content was in SQLite and in the lexical
 index but never in the vector index, for the life of the instance.  #125 found
 the same for ordinary Chinese sources under the old character bound: providers
-count tokens, and a Chinese character is about one.
+count tokens, and a Chinese character is about one.  #151 found it for
+digit-dense ASCII, one token a character, under an estimate of three.
 """
 from __future__ import annotations
 
@@ -14,7 +15,6 @@ import pytest
 
 from scope_recall.contracts import ContractError
 from scope_recall.core.embedding_budget import (
-    ASCII_CHARS_PER_TOKEN,
     EMBEDDING_INPUT_TOKENS,
     TRUNCATION_MARKER,
     bounded_embedding_text,
@@ -24,24 +24,38 @@ from scope_recall.core.recall_policy import claim_embedding_text, encode_embeddi
 
 #: The observed failure floor on alpha.  The bound has to stay under it.
 LOWEST_OBSERVED_FAILURE = 16505
-#: The 99th percentile of bodies that already embed successfully.
-SUCCESSFUL_P99 = 5536
 #: Zhipu embedding-3's documented and measured limit per input (#125).
 PROVIDER_TOKENS = 3072
+#: Gemini's embedding limit per input, the other provider in use.
+GEMINI_TOKENS = 2048
+#: Characters a token for each class of text, measured against embedding-3 by bisecting to the longest accepted
+#: prefix and reading ``usage.prompt_tokens`` (#151); Chinese from #125.
+MEASURED_CHARS_PER_TOKEN = {
+    "letters": ("a", 4.0), "hex": ("deadbeef", 2.66), "code": ("def f(x): return x+1\n", 2.46),
+    "symbols": ("(){}[]!@#$%^&*", 2.0), "base64": ("QUJDREVGR0hJSktM", 1.40), "digits": ("1029384756", 1.0),
+    "letters and digits": ("a1b2c3d4e5", 1.16), "chinese": ("测", 1.0),
+}
 
 
-def test_the_bound_sits_between_what_works_and_what_fails():
-    """Not tuned to a guess: measured against both sides of the real boundary."""
-    ascii_capacity = EMBEDDING_INPUT_TOKENS * ASCII_CHARS_PER_TOKEN
-    assert SUCCESSFUL_P99 < ascii_capacity < LOWEST_OBSERVED_FAILURE
-    assert EMBEDDING_INPUT_TOKENS < PROVIDER_TOKENS
+def test_the_bound_holds_for_the_densest_text_measured():
+    """One token a character is the most any measured text cost, so the bound is under both limits in use."""
+    assert max(1 / rate for _unit, rate in MEASURED_CHARS_PER_TOKEN.values()) == 1.0
+    assert EMBEDDING_INPUT_TOKENS < GEMINI_TOKENS < PROVIDER_TOKENS
+    assert EMBEDDING_INPUT_TOKENS < LOWEST_OBSERVED_FAILURE
+
+
+@pytest.mark.parametrize("kind", sorted(MEASURED_CHARS_PER_TOKEN))
+def test_what_the_bound_keeps_of_any_measured_class_fits_the_provider(kind):
+    """#151: 6,000 digits passed the old estimate as 2,000 tokens and cost 6,000; embedding-3 refused them for good."""
+    unit, chars_per_token = MEASURED_CHARS_PER_TOKEN[kind]
+    body, truncated = bounded_embedding_text(unit * (20000 // len(unit)))
+    assert truncated and estimated_tokens(body) <= EMBEDDING_INPUT_TOKENS
+    assert len(body) / chars_per_token <= GEMINI_TOKENS < PROVIDER_TOKENS
 
 
 def test_text_within_the_bound_is_untouched():
-    text = "x" * (EMBEDDING_INPUT_TOKENS * ASCII_CHARS_PER_TOKEN)
-    assert bounded_embedding_text(text) == (text, False)
-    chinese = "测" * EMBEDDING_INPUT_TOKENS
-    assert bounded_embedding_text(chinese) == (chinese, False)
+    for text in ("x" * EMBEDDING_INPUT_TOKENS, "测" * EMBEDDING_INPUT_TOKENS, "1" * EMBEDDING_INPUT_TOKENS):
+        assert bounded_embedding_text(text) == (text, False)
 
 
 def test_oversized_text_is_cut_rather_than_refused():
@@ -95,10 +109,10 @@ def test_what_the_bound_keeps_fits_under_every_measured_provider_limit(length, c
     assert estimated_tokens(body) <= EMBEDDING_INPUT_TOKENS
 
 
-def test_the_estimate_knows_the_script():
-    """The same number of characters is a different number of tokens; a character bound cannot see it."""
-    assert estimated_tokens("测" * 3000) == 3 * estimated_tokens("a" * 3000) == 3000
-    assert estimated_tokens("abc") == 1 and estimated_tokens("测试") == 2 and estimated_tokens("") == 0
+def test_every_character_counts_as_a_token_whatever_the_script():
+    """Three ASCII characters a token held for prose and let digits through at a third of their cost (#151)."""
+    assert estimated_tokens("测" * 3000) == estimated_tokens("1" * 3000) == estimated_tokens("a" * 3000) == 3000
+    assert estimated_tokens("abc") == 3 and estimated_tokens("测试") == 2 and estimated_tokens("") == 0
 
 
 # --------------------------------------------------------------------------
