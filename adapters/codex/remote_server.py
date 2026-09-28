@@ -13,7 +13,7 @@ stays on the client's machine, where ``remote_client token`` made it.  ``serve``
 hook, each refused request and the server's own errors go to ``remote-server.log`` beside the config.
 
     python -m scope_recall.adapters.codex.remote_server configure --home <home> --host claude-code \
-        --listen 100.64.0.5 --port 18765 --token-sha256 <hex>
+        --listen 100.64.0.10 --port 18765 --token-sha256 <hex>
     python -m scope_recall.adapters.codex.remote_server serve --home <home> --host claude-code [--env-file <file>]
 """
 from __future__ import annotations
