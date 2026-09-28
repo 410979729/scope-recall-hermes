@@ -57,12 +57,18 @@ def _active_adapter(kwargs: dict[str, Any]) -> Any | None:
 
 def _dispatch(method: str, **kwargs: Any) -> None:
     adapter = _active_adapter(kwargs)
-    if adapter is not None:
-        with adapter._lock:
-            # Session switch can occur after selection; never send that old
-            # callback through the replacement audience's identity.
-            if _active_adapter(kwargs) is adapter:
-                getattr(adapter, method)(**kwargs)
+    if adapter is None:
+        return
+    if method == "observe_post_llm_call":
+        # Runs before Hermes sends the reply and writes nothing: it keeps its copy under the adapter's own
+        # small lock, which also drops it when a session switch has cleared the turn meanwhile.
+        adapter.observe_post_llm_call(**kwargs)
+        return
+    with adapter._lock:
+        # Session switch can occur after selection; never send that old
+        # callback through the replacement audience's identity.
+        if _active_adapter(kwargs) is adapter:
+            getattr(adapter, method)(**kwargs)
 
 
 def _global_callback(event: str) -> Callable[..., None]:

@@ -270,3 +270,73 @@ def test_global_hook_dispatch_is_session_scoped_and_conflict_closed(tmp_path, in
     provider_b.shutdown()
     _unregister_adapter_instance(provider_a)
     _unregister_adapter_instance(provider_b)
+
+
+def test_post_llm_call_does_not_wait_for_the_adapter_lock(adapter, hermes_home):
+    """Hermes calls post_llm_call before it sends the reply, on a thread it waits for.  Under the adapter lock the
+    reply waited behind whatever held it, a capture on a busy store or a recall still running, and a callback
+    Hermes gave up on (30 s) was skipped for the rest of the session, with no gap anywhere."""
+    import time
+
+    provider, _clock = adapter
+    _register_adapter_instance(provider)
+    try:
+        provider.on_turn_start(9, "TEST 查一下 QX-29", turn_id="turn-9")
+        history = [
+            {"role": "user", "content": "TEST 查一下 QX-29"},
+            {"role": "assistant", "content": "TEST 我先看记录。", "tool_calls": [{"id": "T1"}]},
+            {"role": "tool", "tool_call_id": "T1", "content": "TEST 工具输出"},
+            {"role": "assistant", "content": "TEST QX-29 已经完成。"},
+        ]
+        held, release, done = threading.Event(), threading.Event(), threading.Event()
+
+        def busy_capture():
+            with provider._lock:
+                held.set()
+                release.wait(10)
+
+        holder = threading.Thread(target=busy_capture)
+        holder.start()
+        assert held.wait(5)
+        caller = threading.Thread(target=lambda: (_global_callback("post_llm_call")(
+            session_id="TEST-session-1", turn_id="turn-9", platform="cli", assistant_response="TEST QX-29 已经完成。",
+            conversation_history=history), done.set()))
+        started = time.monotonic()
+        caller.start()
+        returned = done.wait(1.0)
+        release.set()
+        holder.join(5)
+        caller.join(5)
+        assert returned, "post_llm_call waited for the adapter lock"
+        assert time.monotonic() - started < 1.0
+        provider.sync_turn("TEST 查一下 QX-29", "TEST QX-29 已经完成。", session_id="TEST-session-1")
+        with sqlite3.connect(hermes_home / "scope-recall" / "memory.sqlite3") as conn:
+            said = [row[0] for row in conn.execute("SELECT content FROM source_events WHERE role='assistant' ORDER BY rowid")]
+        assert said == ["TEST 我先看记录。", "TEST QX-29 已经完成。"]
+    finally:
+        _unregister_adapter_instance(provider)
+
+
+def test_a_turn_writes_at_most_64_interim_messages(adapter, monkeypatch):
+    """Each interim message is its own write after the reply, under the adapter lock and each waiting for the store:
+    a turn of 300 tool steps held that lock for minutes, and the next turn's start waited on it."""
+    from types import SimpleNamespace
+
+    provider, _clock = adapter
+    provider.on_turn_start(10, "TEST 跑三百步", turn_id="turn-10")
+    history = [{"role": "user", "content": "TEST 跑三百步"}]
+    for step in range(300):
+        history.append({"role": "assistant", "content": f"TEST 第 {step} 步。", "tool_calls": [{"id": f"T{step}"}]})
+        history.append({"role": "tool", "tool_call_id": f"T{step}", "content": "TEST 工具输出"})
+    history.append({"role": "assistant", "content": "TEST 三百步都跑完了。"})
+    provider.observe_post_llm_call(session_id="TEST-session-1", turn_id="turn-10",
+                                   assistant_response="TEST 三百步都跑完了。", conversation_history=history)
+    keys = []
+    queued = SimpleNamespace(durability="queued", disposition="queued", error_code=None, event_refs=(), gaps=())
+    monkeypatch.setattr(provider._core, "record_host_event",
+                        lambda _context, event, **kwargs: keys.append(event["source_event_key"]) or queued)
+    monkeypatch.setattr(provider._core, "source_by_event_key", lambda *args, **kwargs: None, raising=False)
+    provider.sync_turn("TEST 跑三百步", "TEST 三百步都跑完了。", session_id="TEST-session-1")
+    assert sum(":interim:" in key for key in keys) == 64
+    assert any(":sync_assistant:" in key for key in keys), keys[-3:]
+    assert "capture_gap:interim_limit" in provider._diagnostics.pending_outcome_gaps

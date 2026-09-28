@@ -55,6 +55,10 @@ _CAPTURE_TIMEOUT_S = 1.0
 _BOUNDED_MESSAGE_SCAN = 8
 #: Turns whose opening message ``pre_llm_call`` stored, remembered across a compression's session switch.
 _USER_CAPTURED_TURNS = 64
+#: What one turn showed between tool calls, written message by message after the reply: the first ones are
+#: kept, the answer is always written, and a turn past this says so (``capture_gap:interim_limit``).  With no
+#: bound a turn of three hundred tool steps held the adapter lock for minutes while each waited for the store.
+_INTERIM_PER_TURN = 64
 GAP_CURRENT_SOURCE_REFS_LIMIT = "degraded:current_source_refs_limit"
 
 def _serialized_host_event(method):
@@ -155,6 +159,9 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
         clock: Any | None = None,
     ) -> None:
         self._lock = threading.RLock()
+        #: Guards only ``_interim_said``/``_steer_said`` and the turn they belong to, never across I/O:
+        #: ``post_llm_call`` runs before Hermes sends the reply and must not wait behind a capture.
+        self._said_lock = threading.Lock()
         self._identity: HermesIdentity | None = None
         self._host_runtime = host_runtime
         self._core = host_runtime.core if host_runtime is not None else core
@@ -269,8 +276,9 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
             self._turn_counter = 0
             self._active_turn_id = ""
             self._pre_llm_pending = False
-            self._interim_said.clear()
-            self._steer_said.clear()
+            with self._said_lock:
+                self._interim_said.clear()
+                self._steer_said.clear()
             self._user_captured_turns.clear()
             self._session_watermark = 0
             self._reset_current_source_refs()
@@ -691,26 +699,31 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
         self._outcomes.mark_failure(session_id, turn_id, reason=status)
         self._diagnostics.pending_outcome_gaps = self._outcomes.pending_gaps()
 
-    @_serialized_host_event
     def observe_post_llm_call(self, **kwargs) -> None:
         """Keep what the assistant showed on the way through this turn for ``sync_turn`` to record.
 
-        Hermes calls this once, when a turn that has an answer ends, with a copy of the conversation.
+        Hermes calls this once, when a turn that has an answer ends, with a copy of the conversation, and
+        before it sends the reply.  It reads that copy and writes nothing, so it takes only ``_said_lock``: under
+        the adapter lock the reply waited behind whatever held it, a capture on a busy store or a recall, and
+        a callback Hermes gave up on was skipped for the rest of the session.
         """
         identity = self._require_identity()
         if identity.read_only or not identity.runtime_audience.allowed_scope_ids:
             return
         turn_id = str(kwargs.get("turn_id") or "").strip()
-        if not turn_id or turn_id != self._active_turn_id:
+        if not turn_id:
             return
         answer = kwargs.get("assistant_response")
         history = kwargs.get("conversation_history")
         said = interim_messages(history, answer=answer if isinstance(answer, str) else "")
-        if said:
-            self._interim_said[turn_id] = said
         steered = steer_messages(history)
-        if steered:
-            self._steer_said[turn_id] = steered
+        with self._said_lock:
+            if turn_id != self._active_turn_id:
+                return
+            if said:
+                self._interim_said[turn_id] = said
+            if steered:
+                self._steer_said[turn_id] = steered
 
     @_serialized_host_event
     def sync_turn(
@@ -734,8 +747,15 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
         self._retry_buffered_captures()
         context = identity.trusted_context(session_id=effective_session, mutation=True)
         shown = identity.trusted_context(session_id=effective_session, actor_origin="assistant_visible", mutation=True)
-        interim, self._interim_said = self._interim_said, {}
+        with self._said_lock:
+            interim, self._interim_said = self._interim_said, {}
+            steers, self._steer_said = self._steer_said, {}
+        limited = False
         for said_turn, said in interim.items():
+            if len(said) > _INTERIM_PER_TURN:
+                _log.warning("scope-recall: turn %s showed %d messages between tool calls; the first %d are kept",
+                             said_turn, len(said), _INTERIM_PER_TURN)
+                limited, said = True, said[:_INTERIM_PER_TURN]
             for ordinal, (text, occurred_at) in enumerate(said, 1):
                 event, gaps, ledger_identity = interim_source_event(
                     self._ledger, shown, session_id=effective_session, turn_id=said_turn, ordinal=ordinal,
@@ -743,7 +763,6 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
                 if event is not None or gaps:
                     self._capture_event(shown, event, identity=ledger_identity, gaps=gaps,
                                         scope_id=identity.local_scope_id)
-        steers, self._steer_said = self._steer_said, {}
         for said_turn, said in steers.items():
             for ordinal, (text, occurred_at) in enumerate(said, 1):
                 event, gaps, ledger_identity = steer_source_event(
@@ -786,6 +805,8 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
             )
         self._pre_llm_pending = False
         self._diagnostics.pending_outcome_gaps = self._outcomes.pending_gaps()
+        if limited:
+            self._merge_gaps(("capture_gap:interim_limit",))
 
     def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
         # Serialize the short process launch with shutdown, never the drain.
@@ -849,10 +870,13 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
         # said between tool calls, and what the person sent meanwhile, was never recorded.
         if reset or kwargs.get("reason") != "compression":
             self._current_task_message = ""
-            self._active_turn_id = ""
             self._pre_llm_pending = False
-            self._interim_said.clear()
-            self._steer_said.clear()
+            with self._said_lock:
+                # With the turn id cleared under the same lock, a post_llm_call of the old session that arrives
+                # late finds no turn to keep its copy for.
+                self._active_turn_id = ""
+                self._interim_said.clear()
+                self._steer_said.clear()
             self._user_captured_turns.clear()
         self._identity = fresh
         runtime_audience = fresh.runtime_audience
