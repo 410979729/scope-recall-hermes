@@ -479,8 +479,56 @@ def test_a_client_clock_ahead_neither_hides_its_messages_nor_holds_back_their_wo
     assert len(rows) == 1 and rows[0][3] == right, rows
 
     said = transcript.Said("TEST-e1", "user", "TEST 记录里的一句。", ahead)
-    lines = remote_server.record_from_wire({"start": 0, "lines": [[10, transcript.said_to_wire(said)]]})
+    _observed, lines = remote_server.client_times({"record": {"start": 0, "lines": [[10, transcript.said_to_wire(said)]]}})
     assert parse(lines.lines[0][1].occurred_at) <= latest
+
+
+def test_a_fast_client_s_turn_keeps_its_order(store, monkeypatch):
+    """Clamped one time at a time, a client 90 s fast lost its order: a reply said 10 s into the turn kept its time
+    (within the minute of the Stop that sent it), the next prompt was clamped to now, and the reply sorted after it
+    and joined the next turn.  Every time a request carries moves back by the same lead."""
+    root, homes = store
+    remote_server.write_server_config(homes["claude-code"], "claude-code", listen="127.0.0.1", port=_free_port(),
+                                      token_sha256="0" * 64)
+    config = remote_server.load_server_config(homes["claude-code"], "claude-code")
+    start = datetime.now(timezone.utc)
+
+    class Clock(datetime):
+        at = start
+
+        @classmethod
+        def now(cls, tz=None):
+            return cls.at
+
+    monkeypatch.setattr(remote_server, "datetime", Clock)
+
+    def client(seconds):   # the client's clock, 90 s fast
+        return (start + timedelta(seconds=90 + seconds)).isoformat().replace("+00:00", "Z")
+
+    def prompt(text, prompt_id, seconds):
+        remote_server.handle_request(config, {"payload": {
+            "hook_event_name": "UserPromptSubmit", "session_id": "TEST-fast-session", "prompt_id": prompt_id,
+            "prompt": text, "cwd": "C:/work"}, "observed_at": client(seconds)})
+
+    prompt("TEST 第一问", "TEST-p1", 0)
+    Clock.at = start + timedelta(seconds=60)
+    lines = [transcript.Said("TEST-u1", "user", "TEST 第一问", client(0), "TEST-p1"),
+             transcript.Said("TEST-a1", "assistant", "TEST 先答一句", client(10)),
+             transcript.Said("TEST-f1", "assistant", "TEST 答完了", client(59))]
+    remote_server.handle_request(config, {
+        "payload": {"hook_event_name": "Stop", "session_id": "TEST-fast-session", "prompt_id": "TEST-p1",
+                    "cwd": "C:/work", "last_assistant_message": "TEST 答完了"},
+        "record": {"start": 0, "lines": [[10 * (index + 1), transcript.said_to_wire(said)]
+                                         for index, said in enumerate(lines)]},
+        "observed_at": client(60)})
+    Clock.at = start + timedelta(seconds=70)
+    prompt("TEST 第二问", "TEST-p2", 70)
+    when = {}
+    for _role, _origin, content, at in _rows(root, "workpc-claude-code"):
+        when[content] = min(when.get(content, at), at)
+    assert when["TEST 第一问"] < when["TEST 先答一句"] < when["TEST 答完了"] < when["TEST 第二问"], when
+    assert all(datetime.fromisoformat(at.replace("Z", "+00:00")) <= start + timedelta(seconds=70)
+               for at in when.values()), when
 
 
 def test_a_codex_hook_is_kept_before_it_is_sent(tmp_path, monkeypatch):

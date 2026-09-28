@@ -55,17 +55,24 @@ class RemoteServerError(ValueError):
 
 
 #: How far a client's clock may run ahead of this machine's.  A recall drops what is dated after its now, so a
-#: message dated a day ahead by a fast client clock was found by no recall for a day.  A later time is taken as
-#: this machine's now; within the minute it is kept as sent, so a correct client's hook sent again is the same
-#: source.  (A client more than a minute fast gets a new now each time, and a hook it sends twice may be stored
-#: twice: the lesser harm.)
+#: message dated a day ahead by a fast client clock was found by no recall for a day.  Within the minute a time is
+#: kept as sent, so a correct client's hook sent again is the same source.  Beyond it every time in the request
+#: moves back by the same lead, so its latest is this machine's now and the order the turn was said in holds.  (A
+#: client more than a minute fast gets a new lead each time, and a hook it sends twice may be stored twice: the
+#: lesser harm.)
 CLOCK_AHEAD_SECONDS = 60
 
 
-def _not_ahead(moment: datetime) -> datetime:
-    now = datetime.now(timezone.utc)
-    return now if moment > now + timedelta(seconds=CLOCK_AHEAD_SECONDS) else moment
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
 
+
+def _moment(value: str) -> datetime:
+    return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(timezone.utc)
+
+
+def _stamp(moment: datetime) -> str:
+    return moment.isoformat().replace("+00:00", "Z")
 
 
 @dataclass(frozen=True)
@@ -148,7 +155,7 @@ class _ObservedClock(SystemHookClock):
         return self._observed_at
 
 
-def _observed_at(value: object) -> str | None:
+def _observed_at(value: object) -> datetime | None:
     if value is None:
         return None
     if type(value) is not str:
@@ -159,15 +166,28 @@ def _observed_at(value: object) -> str | None:
         raise RemoteServerError("observed_at must be an ISO time") from None
     if moment.tzinfo is None:
         raise RemoteServerError("observed_at must carry its offset")
-    return _not_ahead(moment.astimezone(timezone.utc)).isoformat().replace("+00:00", "Z")
+    return moment.astimezone(timezone.utc)
 
 
-def _said_not_ahead(said: transcript.Said | None) -> transcript.Said | None:
-    if said is None:
-        return None
-    moment = datetime.fromisoformat(said.occurred_at.replace("Z", "+00:00"))
-    bounded = _not_ahead(moment)
-    return said if bounded is moment else replace(said, occurred_at=bounded.isoformat().replace("+00:00", "Z"))
+def client_times(body: dict[str, Any]) -> tuple[str | None, RecordLines | None]:
+    """The hook's time and the record lines a request carries, moved back together if the client's clock is ahead.
+
+    Clamped one at a time, a fast client's turn fell out of order: a reply said early in the turn kept its time,
+    the prompt after it was clamped to now, and the reply was joined to the next turn.
+    """
+    observed = _observed_at(body.get("observed_at"))
+    record = record_from_wire(body.get("record"))
+    times = [observed] if observed is not None else []
+    if record is not None:
+        times.extend(_moment(said.occurred_at) for _offset, said in record.lines if said is not None)
+    lead = max(times) - _now() if times else timedelta(0)
+    if lead <= timedelta(seconds=CLOCK_AHEAD_SECONDS):
+        return (_stamp(observed) if observed is not None else None), record
+    if record is not None:
+        record = replace(record, lines=[
+            (offset, replace(said, occurred_at=_stamp(_moment(said.occurred_at) - lead)) if said is not None else None)
+            for offset, said in record.lines])
+    return (_stamp(observed - lead) if observed is not None else None), record
 
 
 def record_from_wire(value: object) -> RecordLines | None:
@@ -185,7 +205,7 @@ def record_from_wire(value: object) -> RecordLines | None:
         if not isinstance(item, list) or len(item) != 2 or type(item[0]) is not int or item[0] <= position:
             raise RemoteServerError("record lines need increasing offsets past start")
         position = item[0]
-        checked.append((position, _said_not_ahead(transcript.said_from_wire(item[1])) if item[1] is not None else None))
+        checked.append((position, transcript.said_from_wire(item[1]) if item[1] is not None else None))
     return RecordLines(start=start, lines=checked)
 
 
@@ -196,13 +216,12 @@ def handle_request(config: RemoteServerConfig, body: dict[str, Any], *, started:
         raise RemoteServerError("payload must be the hook's object")
     if len(json.dumps(payload, ensure_ascii=False).encode("utf-8")) > MAX_PAYLOAD_BYTES:
         raise RemoteServerError("payload too large")
-    record = record_from_wire(body.get("record"))
     # The client's transcript_path is a file on its own machine; nothing here opens a path a request names.
     payload = {key: value for key, value in payload.items() if key != "transcript_path"}
-    observed_at = _observed_at(body.get("observed_at"))
-    # The hook's own times are the client's (bounded to a minute ahead, see CLOCK_AHEAD_SECONDS), so a hook sent
-    # again from the spool is the same source.  When it was stored, when its work falls due and a recall's now are
-    # this machine's: a client clock a day fast held back a message's embedding by a day.
+    # The hook's own times are the client's (moved back if more than a minute ahead, see CLOCK_AHEAD_SECONDS), so a
+    # hook sent again from the spool is the same source.  When it was stored, when its work falls due and a recall's
+    # now are this machine's: a client clock a day fast held back a message's embedding by a day.
+    observed_at, record = client_times(body)
     handler = CodexHookHandler.from_home(
         str(config.home), config.host,
         event_clock=_ObservedClock(observed_at) if observed_at is not None else None,

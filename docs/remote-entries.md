@@ -99,9 +99,10 @@ and drops its oldest past that. What did not get through, what the spool sent an
 the client's `state_dir\remote-client.log`.
 
 A message is dated by the client's clock, the moment its hook ran there, which is what makes a hook sent again
-the same source. A time more than a minute ahead of this machine's is taken as this machine's now: a recall finds
-nothing dated after its now, so a message dated a day ahead would have stayed hidden for a day (a hook that such a
-client sends twice may then be stored twice). When it was stored, when its work falls due and a recall's now are
+the same source. When a request's latest time is more than a minute ahead of this machine's, every time in it
+moves back by that lead, so the latest is this machine's now and a turn keeps its order: a recall finds nothing
+dated after its now, so a message dated a day ahead would have stayed hidden for a day (a hook that such a client
+sends twice may then be stored twice). When it was stored, when its work falls due and a recall's now are
 this machine's clock, so a client clock that runs fast or slow does not hold back the work on its messages.
 
 The client connects to the server itself and never through a proxy: `HTTP_PROXY` or a system proxy on the
