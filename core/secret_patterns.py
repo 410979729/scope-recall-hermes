@@ -98,16 +98,44 @@ COMMON_SECRET_PATTERN_VALUES: tuple[re.Pattern[str], ...] = tuple(
     COMMON_SECRET_PATTERNS.values()
 )
 
+#: What follows a credential word without being a credential.  Every message that said "password: reset it
+#: from the login page", "the secret is out" or ``def login(user: str, password: str)`` was refused as a
+#: secret and never stored, and a model request carrying such a message was refused as
+#: ``sensitive_request``.  A value is not one when it holds no ASCII letter or digit (a mask, an empty
+#: quoted string, prose in another script), opens a placeholder or a code expression (``<your-key>``,
+#: ``${API_KEY}``, ``%API_KEY%``, ``[redacted]``), is a mask of x's, is a type or a word prose puts there
+#: ("required", "the", "None"), or is a call, a subscript or a dotted name without digits (``getpass()``,
+#: ``os.environ["KEY"]``, ``settings.DB_PASSWORD``).  Anything else after "password:" still counts,
+#: "sunshine" included.
+_END = r"""(?=[\s,;:.!?)\]}>"'`|]|$)"""
+_NOT_A_VALUE = (
+    r"(?!"
+    r"[^\sA-Za-z0-9]+(?=\s|$)"
+    r"|[\"'`]?[<{\[(%$]"
+    r"|[\"'`]?[xX]{3,}[\"'`]?" + _END +
+    r"|[\"'`]?(?:str|string|bytes|int|bool|float|none|null|nil|undefined|optional|any|secretstr|dict|list|"
+    r"object|required|missing|empty|unset|invalid|incorrect|wrong|expired|reset|changed|hidden|masked|"
+    r"redacted|omitted|removed|same|different|correct|valid|set|see|tbd|todo|true|false|yes|no|not|the|a|an|"
+    r"your|my|our|their|its|this|that|it|here|there|below|above)[\"'`]?" + _END +
+    r"|[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*[(\[]"
+    r"|[A-Za-z_]+(?:\.[A-Za-z_]+)+" + _END +
+    r")"
+)
+#: Prose: after "is", a plain lower-case word ("the password is required", "the token is expired").
+#: "password is hunter2" or "password is Tr0ub4dor&3" still reads as one.
+_IS_NOT_A_WORD = r"(?!(?-i:[a-z]+)" + _END + r")"
+_SEPARATOR = r"(?:[ \t]*(?::|=|是)[ \t]*|[ \t]+is[ \t]+" + _IS_NOT_A_WORD + r")"
+
 SECRET_ASSIGNMENT_RE = re.compile(
     r"(?:api[_ \t-]?key|secret|password|passwd|"
     r"credential(?:[_ \t-]?[a-z0-9_]+)?|private[_ \t-]?key)[\"']?"
-    r"(?:[ \t]*(?::|=|是)[ \t]*|[ \t]+is[ \t]+(?!(?:not|none|true|false)\b))[^\s]+",
+    + _SEPARATOR + _NOT_A_VALUE + r"[^\s]+",
     re.IGNORECASE,
 )
 
 TOKEN_ASSIGNMENT_RE = re.compile(
     r"(?P<key>(?<![A-Za-z0-9_])(?:[A-Za-z_][A-Za-z0-9_-]*[_-])?token)[\"']?"
-    r"(?:[ \t]*(?::|=|是)[ \t]*|[ \t]+is[ \t]+(?!(?:not|none|true|false)\b))[^\s]+",
+    + _SEPARATOR + _NOT_A_VALUE + r"[^\s]+",
     re.IGNORECASE,
 )
 

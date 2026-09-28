@@ -9,6 +9,7 @@ candidate evaluations on one instance, none of which held a secret.
 """
 import json
 
+from scope_recall.core.capture_filters import redact_secret_like_text
 from scope_recall.core.secret_patterns import contains_secret_like_text, secret_scan_shadow
 
 
@@ -40,6 +41,55 @@ def test_an_escaped_tab_still_separates_a_key_from_its_secret():
     """A tab is spacing, not a line end: the value after it is still the key's value."""
     for slashes in (1, 2):
         assert contains_secret_like_text("password:" + chr(92) * slashes + "t" + "hunter2-not-a-placeholder")
+
+
+#: Ordinary text that follows a credential word.  Every one of these was refused as a secret: the message was
+#: never stored, and a model request carrying it was refused as ``sensitive_request``.
+ORDINARY = [
+    "password: reset it from the login page",
+    "the password is required for every login",
+    "the secret is out",
+    "token is expired, sign in again",
+    "secret: the meeting moved to Friday",
+    "def login(user: str, password: str) -> bool:",
+    "password: Optional[str] = None",
+    'api_key = os.environ["API_KEY"]',
+    "password = getpass.getpass()",
+    "password = settings.DB_PASSWORD",
+    "api_key: <your-api-key>",
+    "API_KEY=${API_KEY}",
+    'set API_KEY=%API_KEY% before the run',
+    '{"password": null, "token": ""}',
+    "password: ********",
+    "token: xxxx",
+    "password" + chr(0xFF1A) + chr(0x5FD8) + chr(0x8BB0) + chr(0x4E86),   # full-width colon, then Chinese prose
+]
+
+#: Values that are credentials, in the same shapes.
+REAL = [
+    "password: hunter2",
+    "password is hunter2",
+    "the password is Tr0ub4dor&3",
+    "wifi password: sunshine",
+    "password=supersecret",
+    '{"password": "P@ssw0rd!"}',
+    "api_key: TEST_VALUE_ONLY",
+    "secret: 9f8e7d6c5b4a3f2e",
+    "token: 8f14e45fceea167a5a36dedd4bea2543",
+    "password = hunter2.backup9",
+]
+
+
+def test_ordinary_text_after_a_credential_word_is_not_a_secret():
+    for text in ORDINARY:
+        assert not contains_secret_like_text(text), text
+        assert redact_secret_like_text(text) == text, text
+
+
+def test_a_credential_after_the_same_words_is_still_caught_and_redacted():
+    for text in REAL:
+        assert contains_secret_like_text(text), text
+        assert "[REDACTED_SECRET]" in redact_secret_like_text(text), text
 
 
 def _token():
