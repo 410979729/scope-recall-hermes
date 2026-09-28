@@ -635,6 +635,11 @@ def test_codex_s_request_for_suggestions_is_neither_stored_nor_recalled(store, t
         assert hook.handle_payload({"hook_event_name": "Stop", "session_id": "TEST-codex-session",
                                     "turn_id": "TEST-turn-1", "cwd": "C:/TEST",
                                     "last_assistant_message": '{"suggestions":[{"title":"TEST 建议"}]}'}) == {}
+        assert hook.diagnostics.last_reason == "host_generated_thread"
+        # An answer in a thread whose request was not seen here is still told by what it is.
+        assert hook.handle_payload({"hook_event_name": "Stop", "session_id": "TEST-unmarked-session",
+                                    "turn_id": "TEST-turn-1", "cwd": "C:/TEST",
+                                    "last_assistant_message": '{"suggestions":[{"title":"TEST 建议"}]}'}) == {}
         assert hook.diagnostics.last_reason == "host_generated_reply"
         hook.handle_payload({"hook_event_name": "UserPromptSubmit", "session_id": "TEST-codex-session",
                              "turn_id": "TEST-turn-2", "prompt": "TEST 一句真话。", "cwd": "C:/TEST"})
@@ -645,6 +650,36 @@ def test_codex_s_request_for_suggestions_is_neither_stored_nor_recalled(store, t
     stored = _rows(root, "SELECT content FROM source_events WHERE entry_id='codex' AND role IN ('user', 'assistant') "
                          "ORDER BY rowid")
     assert stored == [("TEST 一句真话。",), ("TEST 好的。",)]
+
+
+def test_the_rest_of_codex_s_suggestions_thread_is_not_stored_either(store, tmp_path):
+    """The request and its answer were kept out, but the thread's tool calls and end came through: on the pilot one
+    thread left four tool outputs of 2-11 kB and an end marker.  Each hook is a process of its own, so the thread is
+    marked when its request is recognized, and its end removes the mark."""
+    root, _homes, _client, _capture = store
+    codex = _codex_client(root, tmp_path)
+
+    def hook(payload):
+        handler = CodexHookHandler.from_home(str(codex), "codex")
+        try:
+            handler.handle_payload({"cwd": "C:/TEST", **payload})
+            return handler.diagnostics.last_reason
+        finally:
+            handler.close()
+
+    thread = {"session_id": "TEST-suggestions-thread", "turn_id": "TEST-turn-1"}
+    tool = {"hook_event_name": "PostToolUse", "tool_name": "TEST-read", "tool_input": {"path": "C:/TEST/app.json"},
+            "tool_response": "TEST 一份文件的内容。"}
+    assert hook({"hook_event_name": "UserPromptSubmit", **thread, "prompt": SUGGESTIONS_PROMPT}) == "host_generated_prompt"
+    assert hook({**tool, **thread, "tool_use_id": "TEST-tool-1"}) == "host_generated_thread"
+    assert hook({"hook_event_name": "Interrupt", **thread}) == "host_generated_thread"
+    assert hook({"hook_event_name": "Stop", **thread, "last_assistant_message": "TEST 不是 JSON 的回答。"}) \
+        == "host_generated_thread"
+    assert hook({"hook_event_name": "SessionEnd", **thread, "reason": "other"}) == "host_generated_thread"
+    assert list((codex / "scope-recall" / "host-threads").iterdir()) == []
+    hook({**tool, "session_id": "TEST-owner-thread", "turn_id": "TEST-turn-1", "tool_use_id": "TEST-tool-2"})
+    stored = _rows(root, "SELECT role FROM source_events WHERE entry_id='codex'")
+    assert stored == [("tool",)]
 
 
 def test_a_prompt_longer_than_a_recall_query_is_still_recalled_for(store):

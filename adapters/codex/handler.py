@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import hashlib
 import json
 import math
 from pathlib import Path
@@ -408,6 +409,12 @@ class CodexHookHandler:
             return {}
         if event == "UserPromptSubmit":
             return self._user_prompt_submit(session_id, audience, payload, deadline)
+        if self.host == "codex" and _suggestions_thread(self.config, session_id, ended=event == "SessionEnd"):
+            # The rest of a thread Codex opened to ask the model for suggestions: its tool calls, its answer and its
+            # end are Codex's own activity.  On the pilot one thread left four tool outputs of 2-11 kB and an end
+            # marker after its request and answer had been kept out.
+            self._diag("host_generated_thread")
+            return {}
         if event == "Interrupt":
             return self._interrupt(session_id, audience, payload, deadline)
         if event == "PostToolUse":
@@ -629,9 +636,14 @@ class CodexHookHandler:
             return {}
         if self.host == "codex" and is_codex_suggestions_prompt(prompt):
             # Codex asking the model what the owner might do next, through the hook a message comes by: not their
-            # words, and nothing for a recall to answer.
+            # words, and nothing for a recall to answer.  The thread is marked, so that its later hooks, each a
+            # process of its own, keep the rest of it out too.
+            _mark_suggestions_thread(self.config, session_id)
             self._diag("host_generated_prompt")
             return {}
+        if self.host == "codex":
+            # The owner speaking in a marked thread makes the rest of it theirs.
+            _suggestions_thread(self.config, session_id, ended=True)
         attachment_refs, attachment_gaps = authorized_attachment_refs(payload)
         gaps = (*gaps, *attachment_gaps)
         if attachment_gaps:
@@ -763,6 +775,49 @@ class CodexHookHandler:
         context = self._context(audience, session_id, cast(Origin, origin))
         self._capture(context, audience, event, deadline=deadline, gaps=(*gaps, *tool_gaps))
         return {}
+
+
+#: How long a thread that asked for suggestions stays marked.  Its tool calls, answer and end follow within minutes;
+#: an older mark is removed the next time a thread is marked.
+_SUGGESTIONS_THREAD_SECONDS = 24 * 3600
+
+
+def _suggestions_mark(config, session_id: str) -> Path:
+    """One thread's mark: beside the pointer for an entry of a shared store, in its data for a store of its own."""
+    folder = (Path(config.home) / "scope-recall" if isinstance(config, SharedClientConfig)
+              else Path(config.data_directory)) / "host-threads"
+    return folder / hashlib.sha256(session_id.encode("utf-8")).hexdigest()[:32]
+
+
+def _mark_suggestions_thread(config, session_id: str) -> None:
+    """Remember a thread Codex opened to ask for suggestions; a mark that cannot be written lets only its rest in."""
+    mark = _suggestions_mark(config, session_id)
+    try:
+        mark.parent.mkdir(parents=True, exist_ok=True)
+        mark.touch()
+        cutoff = time.time() - _SUGGESTIONS_THREAD_SECONDS
+        for count, old in enumerate(mark.parent.iterdir()):
+            if count >= 256:
+                break
+            if old.stat().st_mtime < cutoff:
+                old.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
+def _suggestions_thread(config, session_id: str, *, ended: bool = False) -> bool:
+    """Whether a hook belongs to a thread ``_mark_suggestions_thread`` marked; the thread's end removes the mark."""
+    mark = _suggestions_mark(config, session_id)
+    try:
+        marked = time.time() - mark.stat().st_mtime < _SUGGESTIONS_THREAD_SECONDS
+    except OSError:
+        return False
+    if ended or not marked:
+        try:
+            mark.unlink(missing_ok=True)
+        except OSError:
+            pass
+    return marked
 
 
 #: What a runtime config that does not name ``hook_processing_seconds`` runs: the worker's default.  No
