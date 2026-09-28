@@ -1,4 +1,5 @@
 """Real SQLite diagnostic and durable replay boundaries; no models or production data."""
+from contextlib import closing
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 import json
@@ -301,18 +302,30 @@ def test_doctor_reads_a_shared_worker_config_past_64_kb(tmp_path, monkeypatch):
     assert {'name': 'vector_threshold', 'result': 'invalid', 'detail': 'ValueError'} in result.checks
 
 
+def _schema_facts(path):
+    """What a schema step changes: the recorded and stamped versions, and every table, index and column."""
+    with closing(sqlite3.connect(path.as_uri() + '?mode=ro', uri=True)) as conn:
+        return (conn.execute('PRAGMA user_version').fetchone()[0],
+                conn.execute('SELECT schema_version FROM instance_meta').fetchone()[0],
+                sorted(conn.execute('SELECT type,name,sql FROM sqlite_master').fetchall(), key=lambda row: row[:2]))
+
+
 def test_doctor_reports_a_pending_schema_upgrade_without_applying_it(tmp_path, monkeypatch):
     """A package upgrade leaves the store one schema behind until its first
     ordinary open brings it forward.  The doctor is read-only, so it names the
-    pending step instead of failing on a store it will not touch."""
+    pending step instead of failing on a store it will not touch.  What the store
+    holds is compared, not its bytes: the step's own connection leaves its pages
+    in the WAL, and whichever connection closes last moves them into the file,
+    at a moment garbage collection picks (failed so on CI, 3.4.0rc10)."""
     app, ctx = _doctor_app(tmp_path, monkeypatch)
     capture(app, ctx, 'TEST-upgrade/1', 'TEST pending upgrade')
     downgrade_store(app.storage.path, 1108)
-    before = app.storage.path.read_bytes()
+    before = _schema_facts(app.storage.path)
+    assert before[:2] == (1108, 1108)
     result = doctor.run_doctor(host='hermes', instance_root=ctx.binding.data_directory)
     assert 'schema_upgrade_pending' in result.capability_gaps and result.schema_version == 1108
     assert next(item for item in result.checks if item['name'] == 'schema')['result'] == 'upgrade_pending'
-    assert app.storage.path.read_bytes() == before
+    assert _schema_facts(app.storage.path) == before
     assert app.status(ctx).schema_version == 1110
     result = doctor.run_doctor(host='hermes', instance_root=ctx.binding.data_directory)
     assert 'schema_upgrade_pending' not in result.capability_gaps and result.schema_version == 1110
