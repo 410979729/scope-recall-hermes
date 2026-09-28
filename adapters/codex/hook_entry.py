@@ -42,10 +42,9 @@ def main(argv: list[str] | None = None) -> int:
     # model or hook payload fields never participate in this timestamp.
     hook_started_at = time.monotonic()
     raw = sys.stdin.buffer.read(65537)
-    # A prompt a running server recalls needs no helper here (``local_endpoint``); one started anyway imported LanceDB
-    # for nothing at every prompt.
-    if args.home is None or args.runtime_config is not None or not _resident(args.home.expanduser(), args.host):
-        _prestart_vector_helper(raw)
+    # Started whether or not the entry's server is asked: the hook recalls itself when the server has not answered in
+    # time, and without a helper started here that recall ran by words alone (review of rc11).
+    _prestart_vector_helper(raw)
     location = (args.config if args.config is not None else args.home).expanduser()
     if not location.is_absolute():
         sys.stderr.write("CODEX_HOOK:config_path_not_absolute\n")
@@ -103,18 +102,11 @@ def main(argv: list[str] | None = None) -> int:
         handler.resident_recall = recaller
     result = handler.handle_bytes(raw)
     emit_result(result, diagnostics=handler.diagnostics)
-    if recaller is not None and recaller.outcome is not None:
-        sys.stderr.write(f"CODEX_RECALL_RESIDENT:{recaller.outcome}\n")
+    if recaller is not None:
+        outcome = getattr(handler, "resident_outcome", None) or recaller.outcome
+        if outcome is not None:
+            sys.stderr.write(f"CODEX_RECALL_RESIDENT:{outcome}\n")
     return 0
-
-
-def _resident(home: Path, host: str) -> bool:
-    try:
-        from .local_endpoint import live_server
-
-        return home.is_absolute() and live_server(home, host)
-    except Exception:  # noqa: BLE001 - without an answer the hook prepares its own recall, as before
-        return False
 
 
 def _prestart_vector_helper(raw: bytes) -> None:

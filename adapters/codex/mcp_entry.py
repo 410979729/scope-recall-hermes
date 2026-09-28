@@ -90,7 +90,7 @@ def main(argv: list[str] | None = None) -> int:
         if isinstance(config, SharedClientConfig) and runtime_config is None:
             from .local_endpoint import serve
             env_file = _absolute(args.env_file, "env-file") if args.env_file else None
-            endpoint = serve(config.home, config.host, env_file=env_file,
+            endpoint = serve(config.home, config.host, env_file=env_file, runtime_config=config.runtime_config_path,
                              credentials=(lambda: host_process_credential_environment(config.runtime_config_path,
                                                                                       env_file))
                              if env_file is not None else None)

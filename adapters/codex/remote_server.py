@@ -36,6 +36,7 @@ from typing import Any
 
 from ...runtime.resume_entry import host_process_credential_environment
 from . import transcript
+from .boundary import without_lone_surrogates
 from .config import CodexConfigError, load_shared_client
 from .handler import CodexHookHandler, RecordLines, SystemHookClock
 
@@ -215,6 +216,9 @@ def handle_request(config: RemoteServerConfig, body: dict[str, Any], *, started:
     payload = body.get("payload")
     if not isinstance(payload, dict):
         raise RemoteServerError("payload must be the hook's object")
+    # Half of a broken emoji (a lone surrogate) is stored as U+FFFD, as a hook here stores it; it failed the size check
+    # below, and the client was told to keep the request for good (review of rc11).
+    payload = without_lone_surrogates(payload)
     if len(json.dumps(payload, ensure_ascii=False).encode("utf-8")) > MAX_PAYLOAD_BYTES:
         raise RemoteServerError("payload too large")
     # The client's transcript_path is a file on its own machine; nothing here opens a path a request names.

@@ -6,9 +6,10 @@ alone (``helper_request_deadline``).  The client's MCP server lives exactly as l
 LanceDB helper ready and answers the entry's prompt hooks on this machine with the prompt's recall (``serve``).
 
 Only the recall is asked for, and the server writes nothing.  The hook stores the prompt itself, as before, and asks
-for the recall after (``handler._resident_answer``); if the server does not answer in time the hook recalls itself
-in the time it kept back, and a late answer is dropped.  A first version had the server store the prompt as well:
-one that answered after the hook stopped waiting left the prompt stored twice.
+for the recall after (``handler._resident_answer``), with all of its time; if the server has not answered when 1.5 s
+are left, the hook recalls as well and takes the server's answer if it comes meanwhile, and a late answer is
+dropped.  A first version had the server store the prompt as well: one that answered after the hook stopped waiting
+left the prompt stored twice.
 
 A hook asks the newest server of its entry, host and version (``Recaller``).  Servers name themselves in a folder of
 the user's own profile (``endpoints``), not in the entry's home, which may sit on a drive every account can read:
@@ -16,8 +17,9 @@ whoever holds a server's token can read the owner's memory through it.  A name w
 process under a reused id (the start time is kept with the id), is removed without a connection.  Before a hook sends
 anything the server proves it holds the token; the hook proves it too, and the server signs its answer.  The token
 never crosses the socket, so a process that took over a stopped server's port learns nothing and cannot answer for
-it.  A hook says how its server answered on stderr (``CODEX_RECALL_RESIDENT:<outcome>``).  A server that kept a
-prompt waiting loses its name; it names itself again only once none of its recalls is stuck.
+it.  A hook says how its server answered on stderr (``CODEX_RECALL_RESIDENT:<outcome>``).  A server with a recall
+past the time its hook gave it answers every hook that it is busy until that recall ends, and one that kept a prompt
+waiting loses its name; it names itself again only once none of its recalls is stuck.
 """
 from __future__ import annotations
 
@@ -40,9 +42,11 @@ from typing import Any, Callable
 #: What a hook may send: its payload (a hook's own stdin is at most 64 KiB, and written as ASCII JSON a character
 #: of it takes up to six bytes) and the refs and gaps of its capture.
 MAX_REQUEST_BYTES = 7 * 65536
-#: Seconds a hook waits to connect, and then for the server's proof.  A live server on this machine answers at once.
+#: Seconds a hook waits to connect, and then for the server's proof.  A live server on this machine answers at once;
+#: one that does not is passed over as busy, with time left to try the next (a hung first name took all of
+#: ``FIND_SECONDS``, review of rc11).
 CONNECT_SECONDS = 0.3
-PROOF_SECONDS = 1.0
+PROOF_SECONDS = 0.3
 #: Servers a hook tries, newest first, and how long it may spend finding one.
 MAX_TRIED = 2
 FIND_SECONDS = 1.0
@@ -50,9 +54,6 @@ FIND_SECONDS = 1.0
 ANSWER_MARGIN_SECONDS = 0.3
 #: Recalls one server runs at once; a hook past that recalls itself.
 MAX_CONCURRENT = 8
-#: A recall running this much past the time its hook gave it is stuck: its server does not name itself again until
-#: it ends.
-STUCK_GRACE_SECONDS = 2.0
 #: How often a server looks for its own name, and puts it back when a hook removed it.
 ADVERTISE_SECONDS = 30.0
 _NONCE = "X-Scope-Recall-Nonce"
@@ -86,6 +87,10 @@ class _Server(ThreadingHTTPServer):
     #: Prompts from several sessions at once wait to be accepted rather than being refused.
     request_queue_size = 64
 
+    def handle_error(self, request, client_address) -> None:  # noqa: ANN001 - the base class's signature
+        # One line on the client's stderr, not a traceback: a hook that is done with its server closes its end.
+        sys.stderr.write(f"SCOPE_RECALL_ENDPOINT:{type(sys.exc_info()[1]).__name__}\n")
+
 
 class _Handler(BaseHTTPRequestHandler):
     server_version = "scope-recall-recall"
@@ -104,6 +109,12 @@ class _Handler(BaseHTTPRequestHandler):
             self._refuse(400)
             return
         body = self.rfile.read(int(size))
+        if endpoint._stuck():
+            # A recall is past the time its hook gave it, and what holds it may hold the next: hooks go on at once
+            # until it ends.  Counted 2 s later, a hung server answered, named itself again, and the next prompt
+            # waited on it (review of rc11).
+            self._refuse(503)
+            return
         if self.path == "/hello":
             self._answer(b"{}", endpoint.token, "hello", nonce)
             return
@@ -122,7 +133,7 @@ class _Handler(BaseHTTPRequestHandler):
         received = time.monotonic()
         close = None
         with endpoint.lock:
-            endpoint.inflight[id(self)] = received + request["remaining"] + STUCK_GRACE_SECONDS
+            endpoint.inflight[id(self)] = received + request["remaining"]
         try:
             answer_body, close = endpoint.recall(request, received=received)
             data = json.dumps(answer_body, ensure_ascii=True).encode("ascii")
@@ -162,17 +173,22 @@ def _request(body: bytes) -> dict[str, Any]:
     return {"payload": payload, "current_refs": tuple(refs), "gaps": tuple(gaps), "remaining": float(remaining)}
 
 
-def _hello(connection: http.client.HTTPConnection, token: str) -> bool:
-    """Whether the server on this open connection holds ``token``: it proves it, and the token is not sent."""
+def _hello(connection: http.client.HTTPConnection, token: str) -> str:
+    """Whether the server on this open connection holds ``token``: ``ok`` once it proves it (the token is not sent),
+    ``busy`` when it says so or does not answer in time, ``unproven`` otherwise."""
     nonce = secrets.token_hex(16)
     try:
         connection.sock.settimeout(PROOF_SECONDS)
         connection.request("POST", "/hello", body=b"", headers={_NONCE: nonce})
         hello = connection.getresponse()
         hello.read()
+    except (socket.timeout, TimeoutError):
+        return "busy"
     except (OSError, http.client.HTTPException):
-        return False
-    return hello.status == 200 and _proven(hello.getheader(_PROOF), token, "hello", nonce)
+        return "unproven"
+    if hello.status == 503:
+        return "busy"
+    return "ok" if hello.status == 200 and _proven(hello.getheader(_PROOF), token, "hello", nonce) else "unproven"
 
 
 def _forget(path: Path) -> None:
@@ -201,8 +217,10 @@ class Recaller:
     """The hook's side: asks the newest server of its entry for one prompt's recall (``handler.resident_recall``).
 
     ``outcome`` says how it went, for the hook's stderr: ``answered``; ``late`` (a server took the prompt and did not
-    answer in time, and loses its name); ``busy``; ``unproven`` (a program on the port, or a broken answer); ``none``
-    (no server of this entry, host and version runs)."""
+    answer in time, and loses its name); ``busy`` (its recalls all taken, one of them stuck, or no proof in time);
+    ``unproven`` (a program on the port, or a broken answer); ``none`` (no server of this entry, host and version
+    runs).  The hook says ``failed:<reason>`` instead when the server's recall ran out of time or failed, and ``late``
+    when the server had not answered once the hook's own recall was done (``handler._resident_answer``)."""
 
     def __init__(self, home: Path | str, host: str) -> None:
         self.home = Path(home)
@@ -257,8 +275,9 @@ class Recaller:
                 connection.connect()
             except OSError:
                 return "none", None  # busy or gone; the name stays for its process's own check above
-            if not _hello(connection, token):
-                return "unproven", None
+            proof = _hello(connection, token)
+            if proof != "ok":
+                return proof, None
             # The server's time is what is left now, after finding and checking it, less the answer's way back.
             wait = until - time.monotonic()
             if wait - ANSWER_MARGIN_SECONDS < 0.5:
@@ -296,6 +315,7 @@ class HookEndpoint:
     """The MCP server's side: a 127.0.0.1 HTTP server in a daemon thread, and the file that names it."""
 
     def __init__(self, home: Path | str, host: str, *, env_file: Path | None = None,
+                 runtime_config: Path | None = None,
                  credentials: Callable[[], dict[str, str]] | None = None) -> None:
         self.home = Path(home)
         self.host = host
@@ -308,22 +328,33 @@ class HookEndpoint:
         self._server: _Server | None = None
         self._stopped = threading.Event()
         # A key rotated in the env file is taken up at the next prompt, as a hook of its own would read it, and one
-        # taken out of it is taken out here too.
-        self._env_file, self._credentials = env_file, credentials
-        self._env_seen = self._env_stamp()
+        # taken out of it is taken out here too; so is a key the runtime config comes to name instead.  What cannot be
+        # read now is read at the next prompt: a server whose first read failed, here or at its own start, recalled
+        # by words alone until its client restarted (review of rc11).
+        self._watched = tuple(path for path in (env_file, runtime_config) if path is not None)
+        self._credentials = credentials
+        self._env_seen: tuple | None = None
         self._env_loaded: dict[str, str] = {}
         if credentials is not None:
+            stamp = self._env_stamp()
             try:
-                self._env_loaded = dict(credentials())  # what the server loaded at its start
+                loaded = dict(credentials())
             except (OSError, ValueError):
                 pass
+            else:
+                os.environ.update(loaded)
+                self._env_loaded, self._env_seen = loaded, stamp
 
-    def _env_stamp(self) -> tuple[int, int] | None:
-        try:
-            status = self._env_file.stat() if self._env_file is not None else None
-        except OSError:
-            return None
-        return (status.st_mtime_ns, status.st_size) if status is not None else None
+    def _env_stamp(self) -> tuple:
+        stamps = []
+        for path in self._watched:
+            try:
+                status = path.stat()
+            except OSError:
+                stamps.append(None)
+            else:
+                stamps.append((status.st_mtime_ns, status.st_size))
+        return tuple(stamps)
 
     def _refresh_credentials(self) -> None:
         with self.lock:
@@ -390,7 +421,7 @@ class HookEndpoint:
             connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=CONNECT_SECONDS)
             try:
                 connection.connect()
-                answers = _hello(connection, self.token)
+                answers = _hello(connection, self.token) == "ok"
             except OSError:
                 answers = False
             finally:
@@ -426,11 +457,11 @@ class HookEndpoint:
             server.server_close()
 
 
-def serve(home: Path | str, host: str, *, env_file: Path | None = None,
+def serve(home: Path | str, host: str, *, env_file: Path | None = None, runtime_config: Path | None = None,
           credentials: Callable[[], dict[str, str]] | None = None) -> HookEndpoint | None:
     """Answer this entry's prompt recalls from this process until it exits; None when that cannot start."""
     try:
-        endpoint = HookEndpoint(home, host, env_file=env_file, credentials=credentials)
+        endpoint = HookEndpoint(home, host, env_file=env_file, runtime_config=runtime_config, credentials=credentials)
     except Exception:  # noqa: BLE001 - the MCP server starts whatever this does; its hooks recall themselves
         return None
     try:
@@ -440,21 +471,3 @@ def serve(home: Path | str, host: str, *, env_file: Path | None = None,
         return None
     return endpoint
 
-
-def live_server(home: Path | str, host: str) -> bool:
-    """Whether a server of this entry, host and version names itself and its process runs: a prompt hook then starts
-    no LanceDB helper of its own, which its recall would not use."""
-    from ..._version import __version__
-    from ...runtime.process_probe import probe_process
-
-    for path in _named(endpoints(home)):
-        try:
-            info = json.loads(path.read_text(encoding="utf-8"))
-            if info.get("host") != host or info.get("version") != __version__:
-                continue
-            state = probe_process(int(info["pid"]))
-        except (OSError, ValueError, KeyError, TypeError):
-            continue
-        if state.running and state.start_token == info.get("start"):
-            return True
-    return False

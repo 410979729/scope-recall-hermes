@@ -8,6 +8,7 @@ import json
 import math
 from pathlib import Path
 import sys
+import threading
 import time
 from typing import Any, Callable, Protocol, cast
 
@@ -56,11 +57,11 @@ _RECALL_QUERY_CHARS = 8192
 _TOTAL_BUDGET_S = 2.0
 #: Attaching the trusted runtime after a capture needs this much budget left.
 _RUNTIME_ATTACH_MIN_S = 0.3
-#: What a prompt hook keeps for a recall of its own when it asks the entry's server for one (``resident_recall``).
+#: When a prompt hook that asked the entry's server (``resident_recall``) recalls as well, if the server has not
+#: answered: with this much left.  The helper the hook started at its own start is ready by then.
 _LOCAL_RECALL_RESERVE_S = 1.5
-#: The least the server is asked with: a prompt whose capture took most of the budget (the store was busy) recalls
-#: here, where the helper this hook started has had that time to get ready.
-_RESIDENT_MIN_S = 2.0
+#: The least a server is asked with: in less it could not be found, prove itself and answer.
+_RESIDENT_MIN_S = 1.0
 #: What a server's recall may report of how it ended, besides its vector gap and its error.
 _RESIDENT_REASONS = frozenset({"deadline_exceeded", "recall_exception"})
 #: Capture refusals a second attempt meets again.
@@ -202,6 +203,9 @@ class CodexHookHandler:
         #: The entry's running MCP server, asked for a prompt's recall (``local_endpoint.Recaller``): given the
         #: payload, the stored refs, the gaps and the seconds it may take, the result and its diagnostics, or None.
         self.resident_recall: Callable[..., tuple[dict[str, Any], dict[str, Any]] | None] | None = None
+        #: How a prompt's recall went with the server, when the hook decided it (``_resident_answer``): ``late`` or
+        #: ``failed:<reason>``.  The hook's stderr says this, or else what ``resident_recall`` says of itself.
+        self.resident_outcome: str | None = None
 
     @classmethod
     def from_config_path(
@@ -695,36 +699,67 @@ class CodexHookHandler:
         # waits in the inbox is not among the sources a recall reads, so there is nothing of this turn to fence
         # out.  One refused (a credential) attached no runtime above, so its recall has no vector channel and
         # nothing of it goes to an embedding provider.
+        request_id = f"{self.host}-auto:{session_id}:{turn_id}"
         if vectors and self.resident_recall is not None:
-            answered = self._resident_answer(payload, current_refs, capture_gaps, deadline)
-            if answered is not None:
-                return answered
-        return self._auto_recall(context, prompt, f"{self.host}-auto:{session_id}:{turn_id}", current_refs, deadline, capture_gaps)
+            return self._resident_answer(payload, context, prompt, request_id, current_refs, deadline, capture_gaps)
+        return self._auto_recall(context, prompt, request_id, current_refs, deadline, capture_gaps)
 
-    def _resident_answer(self, payload: dict[str, Any], current_refs: tuple[str, ...], gaps: tuple[str, ...],
-                         deadline: float) -> dict[str, Any] | None:
-        """The recall the entry's MCP server gives this prompt, with its vector search warm; None when it gives none
-        in time, and the hook then recalls itself in what it kept back.  The server writes nothing: the prompt was
-        stored here, so a late answer costs the turn nothing but its warm vectors."""
-        budget = self._remaining(deadline) - _LOCAL_RECALL_RESERVE_S
-        if budget < _RESIDENT_MIN_S or self.resident_recall is None:
-            return None
-        try:
-            answered = self.resident_recall(payload, current_refs, gaps, budget)
-        except Exception:  # noqa: BLE001 - the hook's own recall is always there to fall back on
-            return None
+    def _resident_answer(self, payload: dict[str, Any], context, prompt: str, request_id: str,
+                         current_refs: tuple[str, ...], deadline: float, gaps: tuple[str, ...]) -> dict[str, Any]:
+        """This prompt's recall from the entry's MCP server, with its vector search warm, or the hook's own.
+
+        The server is asked from a thread and given all of the hook's time but its answer's way back.  One that has
+        not answered when ``_LOCAL_RECALL_RESERVE_S`` are left is recalled alongside, with the helper this hook
+        started at its own start, and its answer is still taken if it comes in the meantime: given only what the hook
+        did not keep back, a recall that needed most of the time had none (review of rc11).  An answer that ran out
+        of time or failed (``_RESIDENT_REASONS``), or none, leaves the hook's own.  The server writes nothing: the
+        prompt was stored here, so a late answer costs the turn nothing but its warm vectors."""
+        remaining = self._remaining(deadline)
+        if remaining < _RESIDENT_MIN_S:
+            return self._auto_recall(context, prompt, request_id, current_refs, deadline, gaps)
+        answers: list[Any] = []
+        answered = threading.Event()
+
+        def ask() -> None:
+            try:
+                answers.append(self.resident_recall(payload, current_refs, gaps, remaining))
+            except Exception:  # noqa: BLE001 - the hook's own recall is always there to fall back on
+                answers.append(None)
+            finally:
+                answered.set()
+
+        threading.Thread(target=ask, name="scope-recall-resident", daemon=True).start()
+        if answered.wait(max(0.0, self._remaining(deadline) - _LOCAL_RECALL_RESERVE_S)):
+            taken = self._resident_taken(answers[0])
+            if taken is not None:
+                return taken
+            return self._auto_recall(context, prompt, request_id, current_refs, deadline, gaps)
+        reason = self.diagnostics.last_reason
+        own = self._auto_recall(context, prompt, request_id, current_refs, deadline, gaps)
+        if not answered.is_set():
+            self.resident_outcome = "late"
+            return own
+        taken = self._resident_taken(answers[0])
+        if taken is None:
+            return own
+        self.diagnostics.last_reason = reason  # what the hook's own recall said is not what answered
+        return taken
+
+    def _resident_taken(self, answered: tuple[dict[str, Any], dict[str, Any]] | None) -> dict[str, Any] | None:
+        """The server's answer, its diagnostics taken with it; None when there is none to take."""
         if answered is None:
             return None
         result, fields = answered
-        # One that ran out of time or failed is not the last word while this hook has time for a recall of its own.
-        if fields.get("last_reason") in _RESIDENT_REASONS:
+        reason = fields.get("last_reason")
+        if reason in _RESIDENT_REASONS:
+            # Said on the hook's stderr: a server whose recalls kept failing looked healthy there (review of rc11).
+            detail = _error_detail(fields.get("recall_error_detail"))
+            self.resident_outcome = f"failed:{reason}" + (f":{detail}" if detail else "")
             return None
         for name in ("recall_vector_gap", "recall_error_detail"):
             value = fields.get(name)
             if value is None or type(value) is str:
                 setattr(self.diagnostics, name, _error_detail(value) if value else None)
-        if fields.get("last_reason") in _RESIDENT_REASONS:
-            self._diag(fields["last_reason"], gaps=gaps)
         return result if isinstance(result, dict) else {}
 
     def resident_recall_for(self, payload: dict[str, Any], current_refs: tuple[str, ...], gaps: tuple[str, ...],

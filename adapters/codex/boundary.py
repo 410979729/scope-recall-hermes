@@ -292,11 +292,27 @@ _LONE_SURROGATE = re.compile("[\ud800-\udfff]")
 
 
 def without_lone_surrogates(value):
-    """``value`` with every lone surrogate in its strings replaced by U+FFFD, the character that stands for one."""
+    """``value`` with every lone surrogate in its strings replaced by U+FFFD, the character that stands for one.
+
+    It walks the value with a stack of its own: walked by calling itself, a payload nested deeper than the
+    interpreter allows (a tool's output, 499 levels on Python 3.11) ended the hook (review of rc11)."""
     if isinstance(value, str):
         return _LONE_SURROGATE.sub("\ufffd", value)
-    if isinstance(value, dict):
-        return {without_lone_surrogates(key): without_lone_surrogates(item) for key, item in value.items()}
-    if isinstance(value, list):
-        return [without_lone_surrogates(item) for item in value]
-    return value
+    if not isinstance(value, (dict, list)):
+        return value
+    top: dict | list = {} if isinstance(value, dict) else []
+    pending = [(value, top)]
+    while pending:
+        source, target = pending.pop()
+        for key, item in (source.items() if isinstance(source, dict) else enumerate(source)):
+            if isinstance(item, str):
+                item = _LONE_SURROGATE.sub("\ufffd", item)
+            elif isinstance(item, (dict, list)):
+                copy: dict | list = {} if isinstance(item, dict) else []
+                pending.append((item, copy))
+                item = copy
+            if isinstance(target, dict):
+                target[_LONE_SURROGATE.sub("\ufffd", key) if isinstance(key, str) else key] = item
+            else:
+                target.append(item)
+    return top

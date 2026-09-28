@@ -668,3 +668,18 @@ def test_a_refused_request_is_read_before_it_is_answered():
     asyncio.run(gate({"type": "http", "method": "POST", "path": "/mcp", "headers": [], "client": ("127.0.0.1", 1)},
                      receive, send))
     assert events[:3] == ["receive", "receive", "http.response.start"], events
+
+
+def test_half_of_a_broken_emoji_reaches_the_entry(served, tmp_path):
+    """Sent as strict UTF-8, a prompt holding a lone surrogate (half of a broken emoji, which JavaScript writes)
+    failed its request, and the turn had no recall; the server refused such a payload for good (review of rc11)."""
+    root, homes, ports = served
+    config = _client(tmp_path, "claude-code", ports["claude-code"])
+    _hook(config, {"hook_event_name": "UserPromptSubmit", "session_id": "TEST-work-session", "prompt_id": "TEST-p8",
+                   "prompt": "TEST 表情坏了" + chr(0xD83D), "cwd": "C:/work"})
+    server = remote_server.load_server_config(homes["claude-code"], "claude-code")
+    remote_server.handle_request(server, {"payload": {
+        "hook_event_name": "Stop", "session_id": "TEST-work-session", "prompt_id": "TEST-p8", "cwd": "C:/work",
+        "last_assistant_message": "TEST 回复也坏了" + chr(0xDC00)}})
+    said = [content for _role, _origin, content, _at in _rows(root, "workpc-claude-code")]
+    assert "TEST 表情坏了" + chr(0xFFFD) in said and "TEST 回复也坏了" + chr(0xFFFD) in said

@@ -149,17 +149,21 @@ the entry's home, and removes its name when it exits. A hook asks the newest ser
 version, once that server has proved it holds the token, which is never sent. The other hooks read
 no vectors and ask nothing.
 
-A prompt hook keeps back 1.5 s of its own budget, and asks only when at least 2 s would be left for
-the server (a prompt whose capture waited on a busy store recalls itself). With no server running
-(the client closed, or its MCP server disabled), or none answering in time, it recalls itself in
-what it kept back, as before; a late answer is dropped, and so is one that ran out of time or failed.
-A prompt hook that asked says how its server answered on stderr (`CODEX_RECALL_RESIDENT:answered`,
-`late`, `busy`, `unproven` or `none`). The server writes no memory; its query embedding's cost is
-recorded in the spend ledger like any other. A server whose recall ran past the time its hook gave it
-loses its name, and names itself again once none of its recalls has. A server started before an
-upgrade is not asked until its client restarts. Each open client keeps one LanceDB helper ready, about
-550 MB of committed memory that the system pages out while it is idle, and starts the next one in the
-background after each recall; a prompt hook whose server runs starts none of its own.
+A prompt hook gives the server all of its time but the answer's way back, whenever at least 1 s is
+left. If the server has not answered when 1.5 s are left, the hook recalls as well, with the LanceDB
+helper it started when it started, and takes the server's answer if it came meanwhile, its own
+otherwise. With no server running (the client closed, or its MCP server disabled), or one that says it
+is busy, it recalls itself at once, as before; a late answer is dropped, and one that ran out of time
+or failed is replaced by the hook's own. A prompt hook that asked says how its server answered on
+stderr (`CODEX_RECALL_RESIDENT:answered`, `late`, `busy`, `unproven`, `none`, or `failed:<reason>`).
+The server writes no memory; its query embedding's cost is recorded in the spend ledger like any
+other, and so is the hook's when both recalled. A server with a recall past the time its hook gave it
+tells every hook that it is busy until that recall ends. It reads its key again at the next prompt
+after its env file or the runtime config changed, or when it could not read them before. A server
+started before an upgrade is not asked until its client restarts. Each open client keeps one LanceDB
+helper ready, about 550 MB of committed memory that the system pages out while it is idle, and starts
+the next one in the background after each recall. Each prompt hook still starts one of its own, which
+ends with the hook, once its import is done, when the hook did not need it.
 
 Claude Code or Codex on another machine attaches the same way, under a name of its own, and reaches
 its entry here over HTTP on a private network: [remote-entries.md](remote-entries.md).
