@@ -1083,6 +1083,31 @@ def test_evidence_that_cannot_pose_a_new_question_does_not_wake_a_candidate(app)
     assert _new_first_hand_evidence(core, ctx, "entity-blue property-blue 今天又讨论了一次。", "TEST-rc10/said") == 1
 
 
+def test_a_tool_output_does_not_keep_a_quiet_candidate_from_going_dormant(app):
+    """A candidate with no first-hand evidence after its evaluation goes dormant by ``updated_at``, which in
+    3.4.0rc10 a tool output still set: one every few weeks kept it from ever going dormant."""
+    from datetime import datetime, timedelta
+
+    core, ctx = app
+    candidate, _source, _proposal, _registration = _candidate(core, ctx)
+    _finish_source_work(core)
+    core.drain_worker(ctx, max_items=8, remaining_seconds=10, consolidation=Evaluator())
+    start = datetime.fromisoformat(core.clock.utc_now().replace("Z", "+00:00"))
+    core.clock.now = (start + timedelta(days=20)).isoformat().replace("+00:00", "Z")
+    tool = capture(core, ctx, "TEST 工具输出：entity-blue property-blue 蓝色。", origin="tool_observation",
+                   key="TEST-rc10/tool-late")
+    conn = sqlite3.connect(core.storage.path)
+    try:
+        assert conn.execute("SELECT count(*) FROM candidate_evidence WHERE source_ref=?", (tool.ref,)).fetchone()[0]
+    finally:
+        conn.close()
+    core.clock.now = (start + timedelta(days=31)).isoformat().replace("+00:00", "Z")
+    core.drain_worker(ctx, max_items=8, remaining_seconds=10)
+    lifecycle, _evaluations, _work = _candidate_rows(core)
+    row = next(row for row in lifecycle if row["candidate_ref"] == candidate.ref)
+    assert (row["processing_state"], row["reason"]) == ("archived", "dormant_no_evidence")
+
+
 def test_a_pass_returns_a_candidate_left_pending_with_nothing_to_ask_to_waiting(app):
     """What releases before 3.4.0rc10 left: pending on a question already asked, with nothing to schedule it."""
     core, ctx = app
