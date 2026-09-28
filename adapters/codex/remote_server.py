@@ -278,6 +278,23 @@ def build_app(config: RemoteServerConfig):
     return _TokenGate(app, config.token_sha256)
 
 
+#: How much of a refused request is read before the 401 goes out.
+_DRAIN_BYTES = 1 << 20
+
+
+async def _drain(receive) -> None:
+    """Read what a refused client sent, up to ``_DRAIN_BYTES``.  Answered first, the connection was closed with the
+    request unread, and Windows resets such a socket: the client got WinError 10053 instead of the 401."""
+    read = 0
+    while read <= _DRAIN_BYTES:
+        message = await receive()
+        if message.get("type") != "http.request":
+            return
+        read += len(message.get("body") or b"")
+        if not message.get("more_body"):
+            return
+
+
 class _TokenGate:
     """Every HTTP request carries the entry's token or gets 401; lifespan events pass."""
 
@@ -292,6 +309,7 @@ class _TokenGate:
                 from starlette.responses import JSONResponse
                 client = scope.get("client") or ("?", 0)
                 _log.warning("refused %s %s from %s: no valid token", scope.get("method"), scope.get("path"), client[0])
+                await _drain(receive)
                 await JSONResponse({"error": "unauthorized"}, status_code=401)(scope, receive, send)
                 return
         await self.app(scope, receive, send)

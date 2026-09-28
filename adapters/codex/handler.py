@@ -41,7 +41,7 @@ from .runtime_wiring import (
 _MAX_STDIN_BYTES = 65536
 _CAPTURE_TIMEOUT_S = 1.0
 #: The owner's own message waits longer for the writer lease: another agent's long reply can hold it 1-2 s
-#: while it is matched against the candidates, and in the work computer's first day 12 of its 58 prompts
+#: while it is matched against the candidates, and in the work computer's first day 12 of its 55 prompts
 #: waited their one second and were not stored.  The prompt hook's budget (``hook_processing_seconds``, 6 s)
 #: leaves the recall its time.
 _PROMPT_CAPTURE_TIMEOUT_S = 2.0

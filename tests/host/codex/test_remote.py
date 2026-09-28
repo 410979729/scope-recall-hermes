@@ -506,3 +506,25 @@ def test_a_hook_the_busy_store_did_not_store_is_kept_to_send_again(store, tmp_pa
     monkeypatch.setattr(remote_client, "_start_flush", lambda config: None)
     assert _hook(config, body["payload"]) == recalled, "the recall is used"
     assert len(list((config["state_dir"] / "spool").glob("*.json"))) == 1, "and the hook is kept to send again"
+
+
+def test_a_refused_request_is_read_before_it_is_answered():
+    """Answered before its body was read, the connection closed with the request unread, and Windows resets such a
+    socket: the client got WinError 10053 instead of the 401 (CI, 2026-09-28)."""
+    import asyncio
+
+    events = []
+    chunks = [{"type": "http.request", "body": b"TEST" * 10, "more_body": True},
+              {"type": "http.request", "body": b"TEST", "more_body": False}]
+
+    async def receive():
+        events.append("receive")
+        return chunks.pop(0) if chunks else {"type": "http.disconnect"}
+
+    async def send(message):
+        events.append(message["type"])
+
+    gate = remote_server._TokenGate(None, "0" * 64)
+    asyncio.run(gate({"type": "http", "method": "POST", "path": "/mcp", "headers": [], "client": ("127.0.0.1", 1)},
+                     receive, send))
+    assert events[:3] == ["receive", "receive", "http.response.start"], events
