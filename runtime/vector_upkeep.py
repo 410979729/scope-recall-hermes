@@ -185,7 +185,8 @@ def backfill_if_due(storage: Any, context: Any, vector_config: Any, *, now: date
         if checked is not None and timedelta(0) <= moment - checked < EMBED_BACKFILL_RECHECK:
             return None
     after_key = None if finished else state.get("after_key")
-    earlier = 0 if finished else int(state.get("queued_total") or 0)
+    # The total runs on across the daily looks: the embeddings this partition queued so far.
+    earlier = int(state.get("queued_total") or 0)
     receipt: dict[str, Any] = {"checked_at": moment.isoformat().replace("+00:00", "Z")}
     try:
         from ..core.index_rebuild import queue_import_embeddings

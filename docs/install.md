@@ -415,14 +415,17 @@ embeddings its old store never had (`embed_backfill_outcome`, with
 so far). Every pass queues the next 64 of the owner's messages, replies,
 documents and notes that an import brought in without one, while fewer than 64
 embeddings wait, and once none is left looks again a day later. Each worker keeps
-its place in `vectors/<space>/embed-backfill-<partition>.json`.
+its place in `vectors/<space>/embed-backfill-<partition>.json`. Where several
+workers share a store (a local install keeps one for each project and branch),
+the outcome is a failed one's, else the latest; a worker's file that nobody has
+looked at for two days is left out of it.
 
 | `embed_backfill_outcome` | Meaning |
 |--------------------------|---------|
 | `progress` | A page was queued; the next pass goes on from there. |
-| `held` | Captured messages were waiting for their embeddings; nothing was queued. |
+| `held` | 64 or more embeddings were waiting, captured messages' or the previous page's; nothing was queued. |
 | `finished` | No import is left without one; looked at again after a day. |
-| `failed` | The page could not be read (`embed_backfill_error` names the error); every pass tries again. Those memories are found by their words until it passes. |
+| `failed` | The page could not be read (`embed_backfill_error` names the error); that worker tries again at every pass. Those memories are found by their words until it passes. |
 | none | No pass has looked yet, or the store has no embedding route. |
 
 ### A healthy report

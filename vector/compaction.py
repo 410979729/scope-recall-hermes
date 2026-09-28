@@ -28,6 +28,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -130,12 +131,7 @@ def instance_vector_footprints(data_directory: Path) -> list[dict[str, Any]]:
             continue
         state = read_state(space)
         index = read_state(space, filename=INDEX_STATE_FILENAME, schema=INDEX_STATE_SCHEMA)
-        # A backfill that failed was written down and tried again on every pass, and nothing read it.  Each worker
-        # partition keeps its own; a failed one is the store's outcome, else the latest.
-        backfills = [state for state in (read_state(space, filename=path.name, schema=EMBED_BACKFILL_STATE_SCHEMA)
-                                         for path in sorted(space.glob("embed-backfill-*.json"))) if state]
-        failed = [state for state in backfills if state.get("outcome") == "failed"]
-        latest = max(backfills, key=lambda state: str(state.get("checked_at") or ""), default={})
+        backfill = _backfill_report(space, datetime.now(timezone.utc))
         for table in tables:
             footprint = measure_footprint(db_path, table.stem)
             reports.append(
@@ -149,14 +145,36 @@ def instance_vector_footprints(data_directory: Path) -> list[dict[str, Any]]:
                     "compaction_overdue": footprint.fragments > FRAGMENT_THRESHOLD,
                     "last_index_check_at": index.get("checked_at"),
                     "index_outcome": index.get("outcome"),
-                    "last_embed_backfill_at": latest.get("checked_at"),
-                    "embed_backfill_outcome": "failed" if failed else latest.get("outcome"),
-                    "embed_backfill_error": failed[0].get("error") if failed else None,
-                    "embed_backfill_queued_total": (sum(int(state.get("queued_total") or 0) for state in backfills)
-                                                    if backfills else None),
+                    **backfill,
                 }
             )
     return reports
+
+
+#: A backfill partition looked at within this long still has a worker: each looks at least once a day.
+EMBED_BACKFILL_CURRENT = timedelta(days=2)
+_BACKFILL_NAME = re.compile(r"embed-backfill-[0-9a-f]{16}\.json")
+
+
+def _backfill_report(space: Path, now: datetime) -> dict[str, Any]:
+    """The import backfill's outcome for one vector store.  A backfill that failed was written down, tried again on
+    every pass and read by nothing.  Each worker partition keeps its own state (``embed_backfill_filename``): the
+    store's outcome is a failed one's, else the latest.  A partition no worker has looked at for
+    ``EMBED_BACKFILL_CURRENT`` (a retry lane, a workspace used once) is left out of it, or its last failure would
+    stand for good."""
+    states = [state for state in (read_state(space, filename=path.name, schema=EMBED_BACKFILL_STATE_SCHEMA)
+                                  for path in sorted(space.glob("embed-backfill-*.json"))
+                                  if _BACKFILL_NAME.fullmatch(path.name)) if state]
+    current = [state for state in states
+               if (checked := _parse_time(state.get("checked_at"))) is not None and now - checked <= EMBED_BACKFILL_CURRENT]
+    failed = [state for state in current if state.get("outcome") == "failed"]
+    latest = max(current or states, key=lambda state: str(state.get("checked_at") or ""), default={})
+    return {
+        "last_embed_backfill_at": latest.get("checked_at"),
+        "embed_backfill_outcome": "failed" if failed else latest.get("outcome"),
+        "embed_backfill_error": failed[0].get("error") if failed else None,
+        "embed_backfill_queued_total": sum(int(state.get("queued_total") or 0) for state in states) if states else None,
+    }
 
 
 def read_state(storage_dir: Path, *, filename: str = STATE_FILENAME, schema: str = STATE_SCHEMA) -> dict[str, Any]:

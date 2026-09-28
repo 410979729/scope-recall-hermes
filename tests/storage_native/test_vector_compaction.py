@@ -101,6 +101,27 @@ def test_a_failed_import_embedding_backfill_is_reported_beside_the_store(tmp_pat
     assert report["last_embed_backfill_at"] == receipt["checked_at"]
 
 
+def test_a_backfill_no_worker_looks_at_any_more_is_not_the_store_s_outcome(tmp_path):
+    """Each worker partition keeps its own state: one whose worker no longer runs (a retry lane, a workspace used
+    once) would have kept the store at its last outcome for good."""
+    from datetime import datetime, timedelta, timezone
+
+    space = tmp_path / "vectors" / "TEST-space"
+    (space / "lancedb" / "scope_recall.lance").mkdir(parents=True)
+    now = datetime.now(timezone.utc)
+    for scopes, checked, outcome, total in ((["TEST-a"], now - timedelta(days=5), "failed", 3),
+                                            (["TEST-b"], now - timedelta(hours=1), "finished", 5)):
+        vc.write_state(space, {"checked_at": checked.isoformat(), "outcome": outcome, "queued_total": total,
+                               "error": "RuntimeError" if outcome == "failed" else None},
+                       filename=vc.embed_backfill_filename(scopes, None, None), schema=vc.EMBED_BACKFILL_STATE_SCHEMA)
+    # An rc10 test store's single file is not a partition's.
+    vc.write_state(space, {"checked_at": now.isoformat(), "outcome": "failed"}, filename="embed-backfill-state.json",
+                   schema=vc.EMBED_BACKFILL_STATE_SCHEMA)
+    [report] = vc.instance_vector_footprints(tmp_path)
+    assert (report["embed_backfill_outcome"], report["embed_backfill_error"]) == ("finished", None)
+    assert report["embed_backfill_queued_total"] == 8
+
+
 # --------------------------------------------------------------------------
 # Orchestration: never fail a drain, never act without budget
 # --------------------------------------------------------------------------
