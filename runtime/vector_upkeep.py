@@ -20,8 +20,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from ..vector.compaction import (INDEX_STATE_FILENAME, INDEX_STATE_SCHEMA, compaction_due, measure_footprint,
-                                 read_state, write_state)
+from ..vector.compaction import (EMBED_BACKFILL_STATE_FILENAME, EMBED_BACKFILL_STATE_SCHEMA, INDEX_STATE_FILENAME,
+                                 INDEX_STATE_SCHEMA, compaction_due, measure_footprint, read_state, write_state)
 from ..vector.store import VECTOR_INDEX_MIN_ROWS
 from .validation import utc_now
 
@@ -153,11 +153,10 @@ def index_if_due(store: Any, vector_config: Any, *, available_seconds: float,
     return receipt
 
 
-#: Where the backfill of an import's embeddings (``core.index_rebuild.queue_import_embeddings``) stopped, beside the
-#: store's other upkeep.  The cursor is its progress: a pass the watchdog ends loses at most one page, and a page looked
-#: at twice queues nothing twice (an embedding already queued is not selected).
-EMBED_BACKFILL_STATE_FILENAME = "embed-backfill-state.json"
-EMBED_BACKFILL_STATE_SCHEMA = "scope-recall.embed-backfill.v1"
+#: The backfill of an import's embeddings (``core.index_rebuild.queue_import_embeddings``) keeps where it stopped in
+#: ``EMBED_BACKFILL_STATE_FILENAME`` beside the store's other upkeep, where the doctor reads its outcome.  The cursor
+#: is its progress: a pass the watchdog ends loses at most one page, and a page looked at twice queues nothing twice
+#: (an embedding already queued is not selected).
 #: How long a finished backfill stands before a pass looks through the imports again, for a later import's history.
 EMBED_BACKFILL_RECHECK = timedelta(days=1)
 #: Sources looked at per pass.  At most this many embeddings join the queue, and only while it is shallow.

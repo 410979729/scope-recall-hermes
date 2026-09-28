@@ -49,6 +49,9 @@ STATE_SCHEMA = "scope-recall.vector-compaction.v1"
 #: The last look at the store's nearest-neighbour index (``runtime/vector_upkeep.index_if_due``), beside it too.
 INDEX_STATE_FILENAME = "index-state.json"
 INDEX_STATE_SCHEMA = "scope-recall.vector-index.v1"
+#: Where the backfill of an import's embeddings stopped (``runtime/vector_upkeep.backfill_if_due``), beside them.
+EMBED_BACKFILL_STATE_FILENAME = "embed-backfill-state.json"
+EMBED_BACKFILL_STATE_SCHEMA = "scope-recall.embed-backfill.v1"
 
 
 @dataclass(frozen=True)
@@ -119,6 +122,8 @@ def instance_vector_footprints(data_directory: Path) -> list[dict[str, Any]]:
             continue
         state = read_state(space)
         index = read_state(space, filename=INDEX_STATE_FILENAME, schema=INDEX_STATE_SCHEMA)
+        # A backfill that failed was written down and tried again on every pass, and nothing read it.
+        backfill = read_state(space, filename=EMBED_BACKFILL_STATE_FILENAME, schema=EMBED_BACKFILL_STATE_SCHEMA)
         for table in tables:
             footprint = measure_footprint(db_path, table.stem)
             reports.append(
@@ -132,6 +137,10 @@ def instance_vector_footprints(data_directory: Path) -> list[dict[str, Any]]:
                     "compaction_overdue": footprint.fragments > FRAGMENT_THRESHOLD,
                     "last_index_check_at": index.get("checked_at"),
                     "index_outcome": index.get("outcome"),
+                    "last_embed_backfill_at": backfill.get("checked_at"),
+                    "embed_backfill_outcome": backfill.get("outcome"),
+                    "embed_backfill_error": backfill.get("error"),
+                    "embed_backfill_queued_total": backfill.get("queued_total"),
                 }
             )
     return reports
@@ -195,6 +204,8 @@ def _parse_time(value: Any) -> datetime | None:
 
 __all__ = [
     "COOLDOWN",
+    "EMBED_BACKFILL_STATE_FILENAME",
+    "EMBED_BACKFILL_STATE_SCHEMA",
     "FRAGMENT_THRESHOLD",
     "INDEX_STATE_FILENAME",
     "INDEX_STATE_SCHEMA",

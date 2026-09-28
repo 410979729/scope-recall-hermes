@@ -82,6 +82,25 @@ def test_footprint_counts_files_and_bytes(tmp_path):
     assert measured.bytes == 60
 
 
+def test_a_failed_import_embedding_backfill_is_reported_beside_the_store(tmp_path):
+    """A backfill that failed was written down, tried again on every pass, and read by nothing."""
+    from scope_recall.runtime.vector_upkeep import backfill_if_due
+
+    space = tmp_path / "vectors" / "TEST-space"
+    (space / "lancedb" / "scope_recall.lance").mkdir(parents=True)
+
+    class _Unreadable:
+        def read(self, *_args, **_kwargs):
+            raise RuntimeError("TEST store unavailable")
+
+    context = types.SimpleNamespace(allowed_scope_ids=frozenset({"TEST-scope"}), project_id=None, branch_id=None)
+    receipt = backfill_if_due(_Unreadable(), context, types.SimpleNamespace(storage_dir=space))
+    assert receipt["outcome"] == "failed"
+    [report] = vc.instance_vector_footprints(tmp_path)
+    assert (report["embed_backfill_outcome"], report["embed_backfill_error"]) == ("failed", "RuntimeError")
+    assert report["last_embed_backfill_at"] == receipt["checked_at"]
+
+
 # --------------------------------------------------------------------------
 # Orchestration: never fail a drain, never act without budget
 # --------------------------------------------------------------------------

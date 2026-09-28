@@ -372,6 +372,8 @@ class RuntimeInstance:
     vector_index: dict | None = None
     #: Receipt of the vector retention pass this drain ran, or ``None``.
     vector_retention: dict | None = None
+    #: Receipt of the page of an import's embeddings this drain queued (``backfill_if_due``), or ``None``.
+    embed_backfill: dict | None = None
     #: Work types this drain left alone, each with the held model and when its
     #: hold ends (runtime/model_budget.py ``provider_holds``).
     provider_holds: dict = field(default_factory=dict)

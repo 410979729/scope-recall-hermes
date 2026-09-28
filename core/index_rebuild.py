@@ -102,6 +102,9 @@ def queue_import_embeddings(storage, context, *, after_key=None, limit: int = 64
     ``after_key`` is where the last page stopped: a source the admission rules keep without one (an
     acknowledgement) is passed over, not looked at again on every page.  Nothing is queued while the embedding
     queue is at ``IMPORT_EMBED_QUEUE_CEILING``; the page is then ``held`` and the cursor stays where it was.
+    Only sources the context's worker would embed are looked at, those of its project and branch: an import kept
+    by another's (a store converted from 2.x keeps them) was queued where this worker neither counts nor claims
+    it, and every pass queued another page of them past the ceiling.
     """
     if type(limit) is not int or not 1 <= limit <= 200:
         raise ContractError("INPUT_INVALID", "import_embed_page")
@@ -118,6 +121,7 @@ def queue_import_embeddings(storage, context, *, after_key=None, limit: int = 64
         rows = tx._check().execute(
             f"""SELECT s.event_id,s.source_revision,s.scope_id,s.project_id,s.branch_id FROM source_events s
                 WHERE s.scope_id IN ({marks}) AND (s.event_id,s.source_revision)>(?,?)
+                  AND (s.project_id IS NULL OR s.project_id=?) AND (s.branch_id IS NULL OR s.branch_id=?)
                   AND s.import_provenance_sha256 IS NOT NULL AND s.role IN ({roles})
                   AND COALESCE(s.source_original_origin,'')<>'memory_reinjection'
                   AND s.read_blocked=0 AND s.suppressed=0
@@ -126,7 +130,7 @@ def queue_import_embeddings(storage, context, *, after_key=None, limit: int = 64
                   AND NOT EXISTS(SELECT 1 FROM work_items w WHERE w.work_type='embed'
                       AND w.subject_ref=s.event_id AND w.subject_revision=s.source_revision)
                 ORDER BY s.event_id,s.source_revision LIMIT ?""",
-            (*scopes, *after_key, *IMPORT_EMBED_ROLES, limit),
+            (*scopes, *after_key, context.project_id, context.branch_id, *IMPORT_EMBED_ROLES, limit),
         ).fetchall()
     now = datetime.now(timezone.utc).isoformat()
     groups: dict[tuple, list] = {}

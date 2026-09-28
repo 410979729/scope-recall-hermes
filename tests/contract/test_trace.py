@@ -311,6 +311,52 @@ def test_an_import_s_history_gets_the_embedding_its_store_never_had(app):
     assert again["queued"] == 0 and again["finished"]
 
 
+def test_the_backfill_queues_only_what_this_worker_embeds(app):
+    """An import in another project was queued where this worker neither counts nor claims it (84 of 84 in three
+    pages, the queue read empty); a deleted, a suppressed and a superseded import were never tested."""
+    import sqlite3
+
+    from scope_recall.core.index_rebuild import queue_import_embeddings
+    from scope_recall.core.storage import SQLiteStorage
+
+    core, ctx = app
+    said = _imported(core, ctx, "TEST 家里的猫叫小橘。", role="user", key="TEST-import/here")
+    elsewhere = _imported(core, ctx, "TEST 另一个项目里的话。", role="user", key="TEST-import/elsewhere")
+    deleted = _imported(core, ctx, "TEST 已经删掉的话。", role="user", key="TEST-import/deleted")
+    hidden = _imported(core, ctx, "TEST 被隐藏的话。", role="user", key="TEST-import/hidden")
+    old = _imported(core, ctx, "TEST 旧的说法。", role="user", key="TEST-import/revised")
+    conn = sqlite3.connect(core.storage.path)
+    try:
+        conn.execute("UPDATE source_events SET project_id='TEST-other-project' WHERE event_id=?", (elsewhere,))
+        conn.execute("UPDATE source_events SET read_blocked=1 WHERE event_id=?", (deleted,))
+        conn.execute("UPDATE source_events SET suppressed=1 WHERE event_id=?", (hidden,))
+        # A later revision of the same source: only it is current.
+        columns = [row[1] for row in conn.execute("PRAGMA table_info(source_events)")]
+        picked = ["source_revision+1" if name == "source_revision" else "NULL" if name == "source_id" else name
+                  for name in columns]
+        conn.execute(f"INSERT INTO source_events({','.join(columns)}) SELECT {','.join(picked)} FROM source_events"
+                     " WHERE event_id=?", (old,))
+        conn.commit()
+    finally:
+        conn.close()
+    storage = SQLiteStorage(ctx.binding)
+    after_key = None
+    for _ in range(10):
+        page = queue_import_embeddings(storage, ctx, after_key=after_key, limit=1)
+        after_key = page["after_key"]
+        if page["finished"]:
+            break
+    conn = sqlite3.connect(core.storage.path)
+    try:
+        queued = set(conn.execute("SELECT subject_ref,subject_revision FROM work_items WHERE work_type='embed'"))
+    finally:
+        conn.close()
+    assert (said, 1) in queued and (old, 2) in queued and (old, 1) not in queued
+    assert not {ref for ref, _revision in queued} & {elsewhere, deleted, hidden}
+    with storage.read(ctx) as tx:
+        assert tx.work.pending_depth("embed") == len(queued), "every queued embedding is one this worker claims"
+
+
 def test_the_backfill_waits_while_captured_messages_wait_for_their_embeddings(app):
     """A message captured now is never queued behind an import's history for its vector."""
     import sqlite3
