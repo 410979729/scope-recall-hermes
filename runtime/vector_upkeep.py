@@ -87,10 +87,10 @@ def compact_if_due(store: Any, vector_config: Any, *, available_seconds: float,
 
 
 #: Seconds an index build takes per row and dimension: on a copy of the pilot's shared store the build took 7.7 s
-#: for 78,374 rows of 3,072 dimensions, and this is four times that rate.  A pass builds only when the estimate fits in
-#: what is left of it: the watchdog ends a pass that outlives its budget, and a build cut off that way would start
-#: over on every pass.
-INDEX_SECONDS_PER_ROW_DIMENSION = 1.3e-7
+#: for 78,374 rows of 3,072 dimensions when the machine was quiet and 25.6 s when it was not, and this is three times
+#: the slow rate.  A pass builds only when the estimate fits in what is left of it: the watchdog ends a pass that
+#: outlives its budget.
+INDEX_SECONDS_PER_ROW_DIMENSION = 3.2e-7
 #: Seconds of the pass kept free beside the estimate, for the drain that follows.
 INDEX_MARGIN_SECONDS = 20.0
 #: How long each outcome stands before a pass looks again.  A failure is not retried sooner than this; a store
@@ -102,6 +102,9 @@ INDEX_RECHECK = {
     "below_threshold": timedelta(hours=1),
     "deferred": timedelta(minutes=15),
     "failed": timedelta(hours=6),
+    # Written before a build starts.  A pass the watchdog ended mid-build leaves it, and the next looks again only
+    # after this long, as after a failure, instead of starting the same build on every pass.
+    "started": timedelta(hours=6),
 }
 
 
@@ -132,12 +135,13 @@ def index_if_due(store: Any, vector_config: Any, *, available_seconds: float,
         rows = int(count())
         estimate = rows * int(vector_config.dimensions) * INDEX_SECONDS_PER_ROW_DIMENSION
         receipt.update(rows=rows, estimate_seconds=round(estimate, 1))
-        if rows < VECTOR_INDEX_MIN_ROWS:
-            receipt["outcome"] = "below_threshold"
-        elif estimate + INDEX_MARGIN_SECONDS > available_seconds:
+        if estimate + INDEX_MARGIN_SECONDS > available_seconds:
             receipt["outcome"] = "deferred"
             receipt["available_seconds"] = round(available_seconds, 1)
         else:
+            # The store decides: below the threshold it builds nothing, but an index of another kind is replaced.
+            write_state(storage_dir, {**receipt, "outcome": "started"}, filename=INDEX_STATE_FILENAME,
+                        schema=INDEX_STATE_SCHEMA)
             receipt.update(build(min_rows=VECTOR_INDEX_MIN_ROWS,
                                  timeout_seconds=max(1.0, available_seconds - INDEX_MARGIN_SECONDS / 2)))
     except Exception as exc:  # noqa: BLE001 - see docstring; upkeep never fails a drain.

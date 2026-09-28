@@ -254,9 +254,10 @@ def test_a_reader_survives_a_compaction_performed_by_another_writer(tmp_path):
 # --------------------------------------------------------------------------
 
 class _FakeIndexStore:
-    def __init__(self, rows: int, failure: Exception | None = None):
+    def __init__(self, rows: int, failure: Exception | None = None, outcome: str = "built"):
         self.rows = rows
         self.failure = failure
+        self.outcome = outcome
         self.builds: list[tuple[int, float]] = []
 
     def count_rows(self) -> int:
@@ -266,7 +267,7 @@ class _FakeIndexStore:
         self.builds.append((min_rows, timeout_seconds))
         if self.failure is not None:
             raise self.failure
-        return {"outcome": "built", "rows": self.rows}
+        return {"outcome": self.outcome, "rows": self.rows}
 
 
 def _vectors(tmp_path, dimensions: int = 3072):
@@ -274,18 +275,18 @@ def _vectors(tmp_path, dimensions: int = 3072):
 
 
 def test_an_index_is_built_once_the_table_needs_one_and_the_pass_has_the_time(tmp_path):
-    """The pilot's store: 78,403 rows of 3,072 dimensions, built in 7.7 s on a copy; the estimate is four times that.
-    A pass that could not finish it is not started on it: the watchdog would end the pass and the build would start
-    over."""
+    """The pilot's store: 78,403 rows of 3,072 dimensions, built in 7.7 s on a copy when quiet and 25.6 s when not;
+    the estimate is three times the slow rate.  A pass that could not finish it is not started on it: the watchdog
+    would end the pass and the build would start over."""
     from scope_recall.vector.store import VECTOR_INDEX_MIN_ROWS
 
     now = datetime.now(timezone.utc)
-    small = _FakeIndexStore(VECTOR_INDEX_MIN_ROWS - 1)
+    small = _FakeIndexStore(VECTOR_INDEX_MIN_ROWS - 1, outcome="below_threshold")
     assert index_if_due(small, _vectors(tmp_path), available_seconds=110, now=now)["outcome"] == "below_threshold"
-    assert small.builds == []
+    assert len(small.builds) == 1, "the store decides, so an index of another kind on a small table is replaced"
     big = _FakeIndexStore(78_403)
     now += INDEX_RECHECK["below_threshold"]
-    tight = index_if_due(big, _vectors(tmp_path), available_seconds=40, now=now)
+    tight = index_if_due(big, _vectors(tmp_path), available_seconds=80, now=now)
     assert tight["outcome"] == "deferred" and big.builds == []
     now += INDEX_RECHECK["deferred"]
     assert index_if_due(big, _vectors(tmp_path), available_seconds=110, now=now)["outcome"] == "built"
@@ -304,6 +305,24 @@ def test_a_failed_index_build_is_recorded_and_not_tried_on_every_pass(tmp_path):
     assert len(store.builds) == 1
     later = index_if_due(store, _vectors(tmp_path), available_seconds=110, now=now + INDEX_RECHECK["failed"])
     assert later["outcome"] == "failed" and len(store.builds) == 2
+
+
+def test_a_build_the_watchdog_ended_is_not_started_again_on_the_next_pass(tmp_path):
+    """Off Windows the build runs in the worker's own process, and a pass the watchdog ended mid-build wrote no
+    receipt: the next pass started the same build, and the next."""
+    class Killed(_FakeIndexStore):
+        def ensure_vector_index(self, *, min_rows, timeout_seconds):
+            self.builds.append((min_rows, timeout_seconds))
+            raise KeyboardInterrupt("TEST watchdog")
+
+    store = Killed(78_403)
+    now = datetime.now(timezone.utc)
+    with pytest.raises(KeyboardInterrupt):
+        index_if_due(store, _vectors(tmp_path), available_seconds=110, now=now)
+    state = vc.read_state(tmp_path, filename=vc.INDEX_STATE_FILENAME, schema=vc.INDEX_STATE_SCHEMA)
+    assert state["outcome"] == "started"
+    assert index_if_due(store, _vectors(tmp_path), available_seconds=110, now=now + timedelta(hours=1)) is None
+    assert len(store.builds) == 1
 
 
 def test_index_upkeep_without_a_store_that_can_index_is_a_no_op(tmp_path):
@@ -338,6 +357,7 @@ def test_the_index_is_built_used_and_kept_current(tmp_path):
         assert store.ensure_vector_index(min_rows=1000)["outcome"] == "built"
         assert store.ensure_vector_index(min_rows=1000)["outcome"] == "present"
         hits = store.search(rows[17]["vector"], scope_id="TEST-scope", limit=5)
+        assert hits[0]["_distance"] < 1e-6
         assert hits[0]["id"] == "TEST-vector-17"
         assert set(hits[0]) == {"id", "scope_id", "source", "target", "_distance"}
         later = _spread_rows(1300)[1200:]
@@ -369,6 +389,33 @@ def test_a_vector_index_of_another_kind_is_replaced(tmp_path):
         for probe in (rows[17], rows[600]):
             hits = store.search(probe["vector"], scope_id="TEST-scope", limit=2)
             assert {hit["_distance"] for hit in hits} and min(hit["_distance"] for hit in hits) < 1e-6
+    finally:
+        store.close()
+
+
+@pytest_native
+def test_index_segments_past_the_limit_are_built_again_as_one(tmp_path, monkeypatch):
+    """Each compaction that indexed new rows added a segment and nothing merged them: searches slowed as they
+    piled up (78 ms warm at 120 segments over 78,000 vectors, against 47)."""
+    from scope_recall.vector import store as store_module
+    from scope_recall.vector.store import LanceVectorStore
+
+    monkeypatch.setattr(store_module, "MAX_INDEX_SEGMENTS", 2)
+    rows = _spread_rows(1600)
+    store = LanceVectorStore(tmp_path / "lancedb", table_name="scope_recall", dimensions=8)
+    store.open()
+    try:
+        store.upsert_records(rows[:1200])
+        assert store.ensure_vector_index(min_rows=1000)["outcome"] == "built"
+        for start in (1200, 1300, 1400, 1500):
+            store.upsert_records(rows[start:start + 100])
+            store.compact()
+        segments = store._fresh_table().index_stats("vector_idx").num_indices
+        assert segments > 2, segments
+        assert store.ensure_vector_index(min_rows=1000)["outcome"] == "rebuilt"
+        assert store._fresh_table().index_stats("vector_idx").num_indices == 1
+        assert store.ensure_vector_index(min_rows=1000)["outcome"] == "present"
+        assert store.search(rows[1450]["vector"], scope_id="TEST-scope", limit=1)[0]["id"] == "TEST-vector-1450"
     finally:
         store.close()
 

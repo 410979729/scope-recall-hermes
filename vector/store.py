@@ -39,6 +39,10 @@ _ALL_PARTITIONS = 100_000
 #: Rows from which a table gets its nearest-neighbour index (``ensure_vector_index``).  Below this an exact scan
 #: costs about 100 ms, and an index would only be one more thing to keep current.
 VECTOR_INDEX_MIN_ROWS = 10_000
+#: Index segments above which the index is built again as one.  Each compaction that indexes new rows adds a
+#: segment and nothing merged them: at 120 segments a search over 78,000 vectors took 78 ms warm instead of 47, at
+#: 301 over 20,000 it took 297 ms instead of 16.
+MAX_INDEX_SEGMENTS = 16
 
 
 def _sql_quote(value: str) -> str:
@@ -51,6 +55,14 @@ def _indexes_vector(index: Any) -> bool:
 
 def _is_ivf_sq(index: Any) -> bool:
     return str(getattr(index, "index_type", "") or "").replace("_", "").lower() == "ivfsq"
+
+
+def _segments(table: Any, index: Any) -> int:
+    """How many segments the index has; 1 when LanceDB does not say."""
+    try:
+        return int(getattr(table.index_stats(getattr(index, "name", "vector_idx")), "num_indices", 1) or 1)
+    except Exception:  # noqa: BLE001 - a count it cannot read is no reason to rebuild
+        return 1
 
 
 def _create_vector_index(table: Any, metric: str, *, replace: bool) -> None:
@@ -409,8 +421,11 @@ class LanceVectorStore(VectorStore):
         with self.physical_write_lock(timeout_seconds=30.0):
             table = self._fresh_table()
             existing = [index for index in table.list_indices() or () if _indexes_vector(index)]
-            if any(_is_ivf_sq(index) for index in existing):
-                return {"outcome": "present"}
+            current = next((index for index in existing if _is_ivf_sq(index)), None)
+            if current is not None:
+                segments = _segments(table, current)
+                if segments <= MAX_INDEX_SEGMENTS:
+                    return {"outcome": "present", "segments": segments}
             rows = int(table.count_rows())
             if rows < min_rows and not existing:
                 return {"outcome": "below_threshold", "rows": rows}

@@ -154,7 +154,10 @@ def _take_spare() -> subprocess.Popen | None:
     with _spare_lock:
         spare, _spare = _spare, None
         if _keep_spare:
-            _spare = _spawn_helper()
+            try:
+                _spare = _spawn_helper()
+            except OSError:
+                _spare = None  # the next take starts one; the spare taken here is still good
     if spare is not None and spare.poll() is not None:
         # It is gone already (its import failed): the store starts its own and meets the same failure there.
         for stream in (spare.stdin, spare.stdout):
@@ -530,7 +533,7 @@ class ProcessLanceVectorStore(VectorStore):
                     request_id, only_if_ready=during_wait is not None and _budget_exhausted(),
                 )
         except _RequestBudgetExpired:
-            self._park_pending_response(request_id)
+            self._park_pending_response(request_id, method)
             if during_wait is not None:
                 return None
             raise
@@ -639,13 +642,15 @@ class ProcessLanceVectorStore(VectorStore):
             raise RuntimeError("native vector worker exited or returned an invalid frame")
         return response
 
-    def _park_pending_response(self, request_id: int) -> None:
+    def _park_pending_response(self, request_id: int, method: str) -> None:
         """Remember the frame a caller stopped waiting for; the helper stays up."""
         self._pending_response_id = request_id
+        self._pending_response_method = method
         self._pending_response_since = time.monotonic()
 
     def _clear_pending_response(self) -> None:
         self._pending_response_id: int | None = None
+        self._pending_response_method: str | None = None
         self._pending_response_since: float | None = None
 
     def _drain_pending_response_locked(self) -> None:
@@ -661,13 +666,21 @@ class ProcessLanceVectorStore(VectorStore):
                 "native vector worker unresponsive; SQLite truth is intact and unacknowledged outbox work remains pending"
             )
         try:
-            self._receive_response_locked(request_id)
+            response = self._receive_response_locked(request_id)
         except _RequestBudgetExpired:
             raise
         except (OSError, ValueError, queue.Empty, RuntimeError) as exc:
             self._detach_helper(failed=True)
             raise _worker_failed() from exc
+        method = self._pending_response_method
         self._clear_pending_response()
+        if not response.get("ok") and method in ("open", "open_existing"):
+            # A table open that ran out of its caller's time and then failed in the helper leaves no open table, and
+            # every later search said so until the host restarted: the store is closed for the next request to
+            # reopen.  Any other late failure (a purge out of its own time, say) was that request's; the helper holds
+            # its table and goes on.
+            self._detach_helper(failed=True)
+            self._response_result(response)
 
     @staticmethod
     def _response_result(response: dict[str, Any]) -> Any:

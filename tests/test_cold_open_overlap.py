@@ -107,3 +107,36 @@ def test_failed_overlap_reaps_owned_process_and_fresh_request_isolated(tmp_path,
             s.open_existing_with_work(lambda:None)
             assert s._call('search',[],scope_id='PUBLIC',limit=1)=='search'
     finally:s.close()
+
+
+def test_an_open_that_failed_after_its_caller_stopped_waiting_is_reopened(tmp_path,monkeypatch):
+    """A table open that ran out of its caller's time and then failed in the helper left no open table, and the
+    parked answer was taken without a look: a long-running host said "not open" on every search until restarted."""
+    s=store(tmp_path,monkeypatch,error=True,delay=.2)
+    try:
+        with using_request_deadline(RequestDeadline.from_budget(.05)):
+            s.open_existing_with_work(lambda:None)
+        assert s._pending_response_id is not None and not s.requires_reopen
+        time.sleep(.3)
+        with pytest.raises(RuntimeError):
+            with using_request_deadline(RequestDeadline.from_budget(2)):
+                s._call('search',[],scope_id='PUBLIC',limit=1)
+        assert s.requires_reopen, "the next request opens the table again"
+    finally:s.close()
+
+
+def test_a_spare_helper_is_kept_even_when_its_replacement_cannot_start(monkeypatch):
+    spawned=[]
+    class Alive:
+        stdin=stdout=None
+        def poll(self):return None
+    def spawn():
+        if spawned:raise OSError('PUBLIC no more processes')
+        spawned.append(Alive());return spawned[-1]
+    monkeypatch.setattr(native,'_spawn_helper',spawn)
+    monkeypatch.setattr(native,'_spare',None)
+    monkeypatch.setattr(native,'_keep_spare',False)
+    native.prestart(keep=True)
+    assert native._take_spare() is spawned[0], "the spare taken is kept although no replacement could start"
+    assert native._spare is None
+    monkeypatch.setattr(native,'_keep_spare',False)
