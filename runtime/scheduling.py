@@ -149,10 +149,12 @@ def next_wake(config, *, now: datetime | None = None, unavailable_until=None) ->
             else:
                 blocked += source_pages
         inbox = 0
-        # The partition a pass replays (``replay_inbox``): a row of another woke a pass that never took it.
+        # The partition a pass replays (``replay_inbox``): a row of another woke a pass that never took it.  A key
+        # collision is the pass's too (``resolve_conflicted_ingress``).
         for (code,) in conn.execute(
                 f"""SELECT last_error_code FROM capture_inbox WHERE scope_id IN ({marks})
-                    AND project_id IS ? AND branch_id IS ? AND {REPLAY_CANDIDATES}""",
+                    AND project_id IS ? AND branch_id IS ?
+                    AND ({REPLAY_CANDIDATES} OR last_error_code='VERSION_CONFLICT')""",
                 (*scopes, config.project_id, config.branch_id, *_RETRIED)):
             if replayable(code, now):
                 inbox += 1

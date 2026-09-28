@@ -257,22 +257,28 @@ class Deletions:
         # partition conservatively so a delayed event cannot undo forgetting.
         # A row put off can wait for hours, and so can a key collision waiting
         # for its new key; cancelling one lost words nothing had forgotten
-        # (reviews of rc10).  It is kept unless it holds a deleted source's
-        # content or group (``capture_inbox.outlasts_a_delete``, ``holds``).
-        from .capture_inbox import holds, outlasts_a_delete, taking_a_new_key
+        # (reviews of rc10).  It is kept unless it holds a deleted message
+        # (``capture_inbox.outlasts_a_delete``, ``holds``).  A suppress hides
+        # what comes later of the same group on its own, and cancelled nothing
+        # it had to.
+        from .capture_inbox import holds, outlasts_a_delete, taking_a_new_key, whitespace_folded
 
-        digests, groups = set(), set()
+        digests, groups, texts = set(), set(), set()
         for target in targets:
-            for digest, group in conn.execute("SELECT content_sha256,source_group_key FROM source_events WHERE event_id=?",
-                                              (target.ref,)):
+            for digest, group, revision in conn.execute(
+                    "SELECT content_sha256,source_group_key,source_revision FROM source_events WHERE event_id=?",
+                    (target.ref,)).fetchall():
                 digests.add(digest)
                 groups.add(group)
-        forgotten = (frozenset(digests), frozenset(groups))
-        for scope, project, branch in {(t.scope_id, t.project_id, t.branch_id) for t in targets}:
+                texts.add(whitespace_folded("".join(content for (content,) in conn.execute(
+                    "SELECT content FROM source_events WHERE source_group_key=? AND source_revision=? ORDER BY segment_index",
+                    (group, revision)))))
+        forgotten = (frozenset(digests), frozenset(groups), frozenset(text for text in texts if text))
+        for scope, project, branch in ({(t.scope_id, t.project_id, t.branch_id) for t in targets} if delete else ()):
             for token, code in conn.execute(
                     "SELECT token,last_error_code FROM capture_inbox WHERE scope_id=? AND project_id IS ? AND branch_id IS ?",
                     (scope, project, branch)).fetchall():
-                # A payload is read only for a row put off: the inbox holds up to 64 MB.
+                # A payload is read only for a row that outlasts a delete: the inbox holds up to 64 MB.
                 if not outlasts_a_delete(code) or holds(
                         conn.execute("SELECT payload_json FROM capture_inbox WHERE token=?", (token,)).fetchone()[0],
                         *forgotten, rekeyed=taking_a_new_key(code)):

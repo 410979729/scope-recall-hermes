@@ -54,6 +54,8 @@ _REKEYED_CONFLICT = "VERSION_CONFLICT:rekeyed"
 _DEFERRED = "DEFERRED|"
 #: What a replay's last receipt carries when a busy store stopped its page: the rest waits for the next pass.
 INGRESS_PENDING_GAP = "capture_gap:durable_ingress_pending"
+#: A commit's failures that leave its row for the next pass.
+_PASSING = frozenset({"STORAGE_UNAVAILABLE", "DEADLINE_EXCEEDED"})
 _GAVE_UP = "GAVE_UP|"
 _PATHS = ("replay", "rekey")
 DEFER_FIRST_SECONDS = 60.0
@@ -131,10 +133,11 @@ def replayable(code: object, now: datetime) -> bool:
 
     What wakes the worker, and all the doctor does not call blocked, is read from here: the wake had counted two of
     the three retried codes, so a row an older release left as ``SOURCE_MISSING`` waited for a pass something else
-    started, and the doctor called it blocked.  A ``VERSION_CONFLICT`` row wakes nothing and is called blocked until
-    a pass has given it a new key: any pass does, and one its new key could not store either would have woken a pass
-    every 30 s for good."""
-    if code is None or code in _RETRIED:
+    started, and the doctor called it blocked.  A key collision (``VERSION_CONFLICT``) is taken by the next pass's
+    ``resolve_conflicted_ingress``, which stores it under a new key, finds it final (``VERSION_CONFLICT:rekeyed``) or
+    puts it off, so its wake is never in vain; counted blocked, a collision, and a given-up row returned to the rekey
+    path, waited for a pass something else started (review of rc10)."""
+    if code is None or code in _RETRIED or code == "VERSION_CONFLICT":
         return True
     return type(code) is str and code.startswith(_DEFERRED) and deferred_until(code, now) is None
 
@@ -167,23 +170,36 @@ def taking_a_new_key(code: object) -> bool:
     return code == "VERSION_CONFLICT" or deferred_path(code) == "rekey"
 
 
-def holds(payload_json: object, digests: frozenset[str], groups: frozenset[str], *, rekeyed: bool = False) -> bool:
-    """Whether an inbox row's capture holds one of these stored contents (``content_sha256``, segment by segment) or
-    source groups; a row that cannot be read is taken to (a delete then cancels it, as it cancels every row it cannot
-    look into).  A message that only quotes deleted words holds neither and is kept, as it would have been had it
-    been stored before the delete.
+def whitespace_folded(text: object) -> str:
+    """``text`` with every run of whitespace one space, and none at its ends: what a delete compares (``holds``)."""
+    return " ".join(str(text).split())
+
+
+def holds(payload_json: object, digests: frozenset[str], groups: frozenset[str], texts: frozenset[str] = frozenset(),
+          *, rekeyed: bool = False) -> bool:
+    """Whether an inbox row's capture holds a deleted message: one of its stored segments (``content_sha256``), the
+    whole of its text anywhere in the row's (``texts``, compared by ``whitespace_folded``), or its source group.  A row
+    that cannot be read is taken to (a delete then cancels it, as it cancels every row it cannot look into).  A message
+    that quotes only part of a deleted one is kept.
 
     A row being given a new key (``rekeyed``) is another message that took a stored one's key, so the group it names
-    is not its own and only its content counts: deleting the first message cancelled the second (review of rc10)."""
+    is not its own and only its content counts: deleting the first message cancelled the second.  Compared by digest
+    alone, the same words with a line break more, or a long message with a character before it, were kept and stored
+    after the delete (reviews of rc10)."""
     from .events import stored_content_digest
 
     try:
         body = json.loads(payload_json)
-        for event in body["events"]:
+        events = body["events"]
+        for event in events:
             segment = event.get("segment")
             group = segment.get("group_key") if isinstance(segment, dict) else event.get("source_event_key")
             if (not rekeyed and group in groups) or stored_content_digest(event["content"]) in digests:
                 return True
+        if texts:
+            ordered = sorted(events, key=lambda event: (event.get("segment") or {}).get("index", 0))
+            whole = whitespace_folded("".join(event["content"] for event in ordered))
+            return any(text in whole for text in texts)
     except (ValueError, KeyError, TypeError, AttributeError):
         return True
     return False
@@ -290,17 +306,20 @@ def _commit(storage, clock, context, token, prepared, scope_id, policy, deadline
         code = receipt.error_code or "STORAGE_UNAVAILABLE"
     except ContractError as exc:
         code = exc.code
-        # Terminal failures remain inspectable, but are not replayed forever.
-        try:
-            with storage.write(context, remaining_seconds=max(.001, deadline-time.monotonic())) as tx:
-                tx._check(write=True).execute("UPDATE capture_inbox SET last_error_code=? WHERE token=?",
-                                              (_terminal_code(exc), token))
-        except (*_TRANSIENT, ContractError):
-            pass
+        # Terminal failures remain inspectable, but are not replayed forever.  A passing one (the store busy, the time
+        # up) leaves the row's code as it was: written over, a collision left its path, and a row put off its tries
+        # and its place across a delete (review of rc10).
+        if code not in _PASSING:
+            try:
+                with storage.write(context, remaining_seconds=max(.001, deadline-time.monotonic())) as tx:
+                    tx._check(write=True).execute("UPDATE capture_inbox SET last_error_code=? WHERE token=?",
+                                                  (_terminal_code(exc), token))
+            except (*_TRANSIENT, ContractError):
+                pass
     except _TRANSIENT:
         code = "STORAGE_UNAVAILABLE"
     # A row the next pass takes again says so: a pass that met a busy writer here said nothing (review of rc10).
-    pending = (INGRESS_PENDING_GAP,) if code in ("STORAGE_UNAVAILABLE", "DEADLINE_EXCEEDED") else ()
+    pending = (INGRESS_PENDING_GAP,) if code in _PASSING else ()
     return CaptureReceipt("queued", (), "queued", "pending", "pending", (*prepared.gaps, *pending), code)
 
 

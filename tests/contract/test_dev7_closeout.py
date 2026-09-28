@@ -547,6 +547,96 @@ def test_a_delete_keeps_a_row_that_took_the_deleted_message_s_key_for_other_word
     assert capture_inbox.deferred_path(gave_up) == "rekey" and capture_inbox.deferred_path("GAVE_UP|0.0.1|x") == "replay"
 
 
+def test_a_delete_cancels_a_collision_that_holds_the_deleted_message(worker_app):
+    """A key collision is kept across a delete unless it holds the deleted message; compared by digest alone, the
+    same words with a line break more, or a long message with a character before it, were kept and stored after the
+    delete, and no test guarded the collisions that had to go (review of rc10)."""
+    core, ctx, clock = worker_app
+    short = capture(core, ctx, "TEST 要删掉的这一句。", key="TEST-collided-short")
+    long_text = "TEST 很长的要删掉的消息。" * 6000
+    long_ = capture(core, ctx, long_text, key="TEST-collided-long")
+    rows = (("TEST-collided-short", "TEST 要删掉的这一句。", "exact"),
+            ("TEST-collided-short", "TEST 要删掉的这一句。\n", "a line break more"),
+            ("TEST-collided-short", "TEST 另外一句话。", "other words"),
+            ("TEST-collided-short", "TEST 引用了：要删掉的这一句", "a part quoted"),
+            ("TEST-collided-long", long_text, "long exact"),
+            ("TEST-collided-long", "X" + long_text, "long, a character before"),
+            ("TEST-collided-long", "TEST 另一条很长的消息。" * 6000, "long, other words"))
+    for index, (key, content, _label) in enumerate(rows):
+        token, _prepared = capture_inbox.enqueue(core.storage, clock, replace(ctx, session_id=f"TEST-session-c{index}"),
+                                                 source_event(source_event_key=key, content=content),
+                                                 scope_id="TEST-scope", host_scope=None)
+        with sqlite3.connect(core.storage.path) as conn:
+            conn.execute("UPDATE capture_inbox SET last_error_code='VERSION_CONFLICT' WHERE token=?", (token,))
+            conn.commit()
+    authorize(core, ctx, short, long_)
+    core.forget(ctx, request(short, long_), remaining_seconds=5)
+    with sqlite3.connect(core.storage.path) as conn:
+        kept = {json.loads(payload)["events"][0]["content"][:20] for (payload,) in
+                conn.execute("SELECT payload_json FROM capture_inbox")}
+    assert kept == {"TEST 另外一句话。", "TEST 引用了：要删掉的这一句", ("TEST 另一条很长的消息。" * 2)[:20]}
+
+
+def test_a_passing_failure_keeps_a_row_on_its_path(worker_app, monkeypatch):
+    """A store error that passes (the store busy) was written over a collision's code, which took it off the rekey
+    path and out of what a delete keeps (review of rc10)."""
+    core, ctx, clock = worker_app
+    first = source_event(source_event_key="TEST-turn-70", content="TEST first TEST-turn-70")
+    capture_inbox.durable_record_event(core.storage, clock, ctx, first, scope_id="TEST-scope", host_scope=None)
+    other = replace(ctx, session_id="TEST-session-2")
+    capture_inbox.durable_record_event(core.storage, clock, other, dict(first, content="TEST second TEST-turn-70"),
+                                       scope_id="TEST-scope", host_scope=None)
+
+    def busy(*args, **kwargs):
+        raise ContractError("STORAGE_UNAVAILABLE", "connection_cleanup")
+
+    monkeypatch.setattr(capture_inbox, "record_event", busy)
+    receipts = capture_inbox.resolve_conflicted_ingress(
+        core.storage, clock, other, authorize=lambda _: other.allowed_scope_ids, remaining_seconds=5)
+    assert [receipt.error_code for receipt in receipts] == ["STORAGE_UNAVAILABLE"]
+    assert capture_inbox.INGRESS_PENDING_GAP in receipts[0].gaps
+    with sqlite3.connect(core.storage.path) as conn:
+        assert conn.execute("SELECT last_error_code FROM capture_inbox").fetchall() == [("VERSION_CONFLICT",)]
+
+
+def test_a_commit_left_for_the_next_pass_says_so_and_a_refused_one_does_not(worker_app, monkeypatch):
+    """Only a busy store was tested: a commit whose time ran out said nothing either, and a refusal must not say it
+    is pending (review of rc10)."""
+    from scope_recall.core.capture import CaptureReceipt
+
+    core, ctx, clock = worker_app
+    token, _prepared = capture_inbox.enqueue(core.storage, clock, ctx, source_event(
+        source_event_key="TEST-commit-outcome", content="TEST 提交的结果。"), scope_id="TEST-scope", host_scope=None)
+    late = CaptureReceipt("unavailable", (), "unknown", "unknown", "unknown", error_code="DEADLINE_EXCEEDED")
+    monkeypatch.setattr(capture_inbox, "record_event", lambda *args, **kwargs: late)
+    [receipt] = capture_inbox.replay_inbox(core.storage, clock, ctx, authorize=lambda _: ctx.allowed_scope_ids)
+    assert receipt.error_code == "DEADLINE_EXCEEDED" and capture_inbox.INGRESS_PENDING_GAP in receipt.gaps
+
+    def refused(*args, **kwargs):
+        raise ContractError("INPUT_INVALID", "TEST-content")
+
+    monkeypatch.setattr(capture_inbox, "record_event", refused)
+    [receipt] = capture_inbox.replay_inbox(core.storage, clock, ctx, authorize=lambda _: ctx.allowed_scope_ids)
+    assert receipt.error_code == "INPUT_INVALID" and capture_inbox.INGRESS_PENDING_GAP not in receipt.gaps
+    with sqlite3.connect(core.storage.path) as conn:
+        assert conn.execute("SELECT last_error_code FROM capture_inbox WHERE token=?", (token,)).fetchone()[0] == \
+            "INPUT_INVALID"
+
+
+def test_a_suppress_leaves_the_inbox_alone(worker_app):
+    """The partition's inbox was cancelled for a suppress as well as a delete, though a suppressed group already
+    hides what comes of it later (review of rc10)."""
+    core, ctx, clock = worker_app
+    source = capture(core, ctx, "TEST 别再主动提这件事。", key="TEST-suppressed")
+    capture_inbox.enqueue(core.storage, clock, ctx, source_event(source_event_key="TEST-unrelated-waiting",
+                                                                 content="TEST 无关的等待中的一句。"),
+                          scope_id="TEST-scope", host_scope=None)
+    authorize(core, ctx, source, mode="suppress")
+    core.forget(ctx, request(source, mode="suppress"), remaining_seconds=5)
+    with sqlite3.connect(core.storage.path) as conn:
+        assert conn.execute("SELECT count(*) FROM capture_inbox").fetchone()[0] == 1
+
+
 def test_retry_failures_returns_only_the_rows_its_replay_takes(tmp_path):
     """Returned by what a config could see, rows of other partitions went back to a replay that never takes them;
     and a row put off is not retry-failures' to return (review of rc10)."""

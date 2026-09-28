@@ -585,7 +585,8 @@ Without `--apply` nothing is written. `--include-terminal` also re-runs failures
 that are terminal by design. The same command returns to the replay the captures
 the inbox gave up after their tries (`inbox_given_up` in its output, and what gave
 them up in `inbox_by_kind`; without `--apply` it only counts them), each with its
-tries counted anew. It reaches the rows of the partition its config replays, while
+tries counted anew (one given up while it was being given a new key goes back to that
+step). It reaches the rows of the partition its config replays, while
 doctor's `capture_inbox_given_up` counts the whole store: in a shared store, run it
 with the shared worker's config (`<root>\runtime-config.json`), since an entry's own
 config reaches only that entry's scopes. Run it after going back to an earlier

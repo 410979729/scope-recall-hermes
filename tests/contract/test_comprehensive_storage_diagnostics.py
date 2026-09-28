@@ -226,9 +226,9 @@ def test_doctor_exposes_deferred_work_even_when_no_job_was_enqueued(tmp_path, mo
 
 
 def test_doctor_calls_blocked_the_inbox_rows_no_replay_will_store(tmp_path, monkeypatch):
-    """Rows never tried, passing failures and a bare ``SOURCE_MISSING`` an older release left are replayed; a key
-    collision is blocked until a pass gives it a new key, a final failure stays blocked, and so does a row given up,
-    which is counted apart for ``retry-failures``."""
+    """Rows never tried, passing failures, a bare ``SOURCE_MISSING`` an older release left and a key collision are
+    taken by the next pass; a final failure stays blocked, and so does a row given up, which is counted apart for
+    ``retry-failures``."""
     from scope_recall.core import capture_inbox
     from v11_support import source_event
 
@@ -248,7 +248,7 @@ def test_doctor_calls_blocked_the_inbox_rows_no_replay_will_store(tmp_path, monk
             tx._check(write=True).execute('UPDATE capture_inbox SET last_error_code=? WHERE token=?', (code, token))
     result = doctor.run_doctor(host='hermes', instance_root=ctx.binding.data_directory)
     # Put off, by any release: blocked until its time is up; given up: blocked until an operator returns it.
-    assert (result.capture_inbox, result.capture_inbox_blocked, result.capture_inbox_given_up) == (10, 7, 2)
+    assert (result.capture_inbox, result.capture_inbox_blocked, result.capture_inbox_given_up) == (10, 6, 2)
     assert 'capture_ingress_blocked' in result.capability_gaps
 
 

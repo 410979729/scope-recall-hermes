@@ -83,8 +83,8 @@ def test_next_due_preserves_audience_cooldown_budget_and_purge(tmp_path):
 def test_an_inbox_row_a_replay_will_store_wakes_the_worker(tmp_path):
     """The wake counted rows never tried and two passing failures, so a row an older release left as a bare
     ``SOURCE_MISSING`` (replayed once more since 3.4.0rc10) waited for a pass something else started.  A key
-    collision wakes nothing: any pass gives it a new key, and one its new key could not store woke a pass every
-    30 s (review of rc10).  Nor does a row whose failure is final."""
+    collision wakes it too: its pass gives it a new key, and one its new key cannot store either is final
+    (``VERSION_CONFLICT:rekeyed``), which wakes nothing (reviews of rc10).  Nor does a row whose failure is final."""
     from scope_recall.core import capture_inbox
 
     from scope_recall._version import __version__
@@ -108,7 +108,7 @@ def test_an_inbox_row_a_replay_will_store_wakes_the_worker(tmp_path):
     capture_inbox.enqueue(core.storage, core.clock, elsewhere, source_event(
         source_event_key='TEST-inbox-elsewhere', content='TEST 别处的一条。'), scope_id='TEST-a', host_scope=None)
     plan = next_wake(cfg, now=NOW)
-    assert (plan.reason, plan.pending) == ('durable_capture_ingress', 1)
+    assert (plan.reason, plan.pending) == ('durable_capture_ingress', 2)
     with core.storage.write(cfg.context()) as tx:
         tx._check(write=True).execute("DELETE FROM capture_inbox WHERE last_error_code NOT LIKE 'DEFERRED|%'")
     plan = next_wake(cfg, now=NOW)

@@ -203,7 +203,7 @@ retry-failures --config <file>` (the shared worker's config for a shared store),
 with `--apply` if it counts any `inbox_given_up`: a capture the earlier release could
 not read may have been given up meanwhile, and nothing else takes it again.
 `--apply` also re-opens the failed work a shipped fix may cure, which the preview
-lists (`retried`, `by_kind`).
+counts (`retried`, `by_kind`).
 
 ## Completion report
 

@@ -314,9 +314,10 @@ def test_replayed_turn_keeps_its_first_witnessed_time(installed_core, initialize
     assert times["TEST 整理好了。"] == ("2026-09-06T13:15:04Z", "2026-09-06T13:15:04Z")
 
 
-def test_a_busy_store_at_a_session_s_start_replay_says_pending(adapter, installed_core, monkeypatch):
-    """A busy store met by a Hermes session's start replay stops it with a receipt that says so, where it used to
-    raise; the session's gap had come only from the raise (review of rc10)."""
+def test_a_busy_store_met_by_a_session_s_capture_retry_says_pending(adapter, installed_core, monkeypatch):
+    """A busy store met by a Hermes session's retry of its captures (at its end, before a compression) stops the
+    replay with a receipt that says so, where it used to raise; the session's gap had come only from the raise
+    (review of rc10)."""
     from contextlib import closing
 
     from scope_recall.adapters.hermes.identity import host_scope_payload
