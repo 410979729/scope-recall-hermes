@@ -66,6 +66,22 @@ def test_a_deferred_source_with_no_room_takes_no_writer_lease(tmp_path, monkeypa
     assert writes == []
 
 
+def test_an_older_revision_s_deferred_marker_starts_no_page_scan(tmp_path, monkeypatch):
+    """Nothing clears a marker a newer revision left behind, and the probe did not ask for the newest revision
+    as the page does: one such marker started the page's scan of every source on every pass, selecting nothing."""
+    from scope_recall.core import admission
+
+    app, ctx = app_at(tmp_path)
+    first = capture(app, ctx, "TEST-revised", "TEST the first words of a revised source")
+    capture(app, ctx, "TEST-revised", "TEST the second words of a revised source", source_revision=2)
+    with app.storage.write(ctx, remaining_seconds=10) as tx:
+        store_decision(tx, first.event_refs[0].ref, 1, AdmissionDecision("deferred", "queue_capacity", False))
+    pages, real_page = [], admission._deferred_page
+    monkeypatch.setattr(admission, "_deferred_page", lambda *args: pages.append(1) or real_page(*args))
+    assert app.resume_deferred(ctx, remaining_seconds=10) == ()
+    assert pages == [], "a superseded marker started the page scan"
+
+
 def test_an_older_revision_s_deferred_marker_takes_no_writer_lease(tmp_path, monkeypatch):
     """A marker left on a revision a newer one replaced is never selected, so it held the lease on every pass."""
     app, ctx = app_at(tmp_path)

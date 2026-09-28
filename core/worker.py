@@ -168,16 +168,19 @@ def _resume_admission(storage, clock, context, config: WorkerConfig, started: fl
     """Wake deferred captures and settle candidate pages before any claim."""
     resume_deferred(storage, clock, context, config.admission_policy, limit=min(16, config.max_items),
                     remaining_seconds=min(1.0, _remaining(started, clock, budget)))
-    # One write per page, so a capture never waits behind more than one; the
-    # pages may take at most half of the pass, and at most SOURCE_PAGE_SECONDS.
+    # Each page is chosen in a read and linked in a write of its own, so a capture waits behind at most one
+    # page's links, never its matching; the pages may take at most half of the pass, and at most
+    # SOURCE_PAGE_SECONDS.
     pages_started = time.monotonic()
     for _ in range(SOURCE_PAGES_PER_PASS):
         if _remaining(started, clock, budget) <= budget / 2:
             break
+        with storage.read(context, remaining_seconds=min(1.0, _remaining(started, clock, budget))) as tx:
+            page = tx.candidates.next_source_page()
+        if page is None:
+            break
         with storage.write(context, remaining_seconds=min(1.0, _remaining(started, clock, budget))) as tx:
-            if not tx.candidates.pending_source_pages():
-                break
-            tx.candidates.resume_source_pages(now=clock.utc_now())
+            tx.candidates.resume_source_pages(now=clock.utc_now(), page=page)
         time.sleep(PAGE_TURN_SECONDS)
         if time.monotonic() - pages_started >= SOURCE_PAGE_SECONDS:
             break

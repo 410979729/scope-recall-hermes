@@ -106,6 +106,58 @@ def test_one_pass_finishes_every_page_a_source_owes(app):
     assert _pending_pages(core, ctx) == 0
 
 
+def test_a_page_matches_its_source_outside_the_writer_lease(app, monkeypatch):
+    """Matching a source against every candidate that shares a term is most of a page: inside the page's write it
+    held the writer lease 0.5-7.4 s a page on the shared store (median 1.3 s), and a hook that waited its second
+    for the lease meanwhile lost its capture.  The pass finds the candidates in a read; the write only links."""
+    from scope_recall.contracts import ContractError
+    from scope_recall.core.candidate_intake import CandidateIntake
+
+    core, ctx = app
+    count = SOURCE_MATCH_LIMIT * 3 + 4
+    _candidates(core, ctx, count)
+    trigger = capture(core, ctx, "sharedtoken 提供了统一的新证据。", key="TEST-rc35/read")
+    _finish_source_work(core)
+    under_write, real = [], CandidateIntake._candidates_mentioned_by
+
+    def spy(self, source, limit):
+        try:
+            self._tx._check(write=True)
+            under_write.append(True)
+        except ContractError:
+            under_write.append(False)
+        return real(self, source, limit)
+
+    monkeypatch.setattr(CandidateIntake, "_candidates_mentioned_by", spy)
+    core.drain_worker(ctx, max_items=32, remaining_seconds=10, consolidation=Evaluator())
+
+    assert under_write and not any(under_write), under_write
+    assert _linked(core, trigger.ref) == count
+    assert _trigger(core, trigger.ref) == (count, 0)
+
+
+def test_a_candidate_archived_after_the_page_was_read_takes_no_evidence(app):
+    core, ctx = app
+    refs = _candidates(core, ctx, SOURCE_MATCH_LIMIT * 2 + 4)
+    trigger = capture(core, ctx, "sharedtoken 提供了统一的新证据。", key="TEST-rc35/archived")
+    before = _linked(core, trigger.ref)
+    with core.storage.read(ctx) as tx:
+        page = tx.candidates.next_source_page()
+    assert page is not None and page[0] == trigger.ref and page[2]
+    archived = page[2][0]
+    with sqlite3.connect(core.storage.path) as db:
+        db.execute("UPDATE candidate_lifecycle SET processing_state='archived',reason='TEST_archived' "
+                   "WHERE candidate_ref=? AND candidate_revision=?", archived)
+    with core.storage.write(ctx) as tx:
+        linked = tx.candidates.resume_source_pages(now=core.clock.utc_now(), page=page)
+    assert linked == min(SOURCE_MATCH_LIMIT, len(page[2])) - 1
+    assert _linked(core, trigger.ref) == before + linked
+    with sqlite3.connect(core.storage.path) as db:
+        assert db.execute("SELECT count(*) FROM candidate_evidence WHERE source_ref=? AND candidate_ref=?",
+                          (trigger.ref, archived[0])).fetchone()[0] == 0
+    assert archived[0] in refs
+
+
 def test_the_page_queries_read_the_triggers_first(app):
     """Both page queries hold the page's write, so they must not start from every source of every scope.
 

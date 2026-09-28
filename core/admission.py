@@ -286,14 +286,18 @@ def resume_deferred(storage, clock, context, policy=None, *, limit=16, remaining
     # it: all read without the writer lease, and the write touches only the page found, each source checked
     # again there by ``_schedule`` (its revision, visibility and the queue's room).  Under the lease the scan held
     # it 9.8 s on 2026-09-27 with nothing deferred; with one deferred source that had no room, or an older
-    # revision's marker the page never selects, it ran on every pass and selected nothing.
+    # revision's marker the page never selects, it ran on every pass and selected nothing.  The probe asks
+    # for the newest revision as the page does: nothing clears an older revision's marker, so one was
+    # enough to start the page's scan on every pass, forever.
     with storage.read(context, remaining_seconds=remaining_seconds) as tx:
         waiting = tx._check().execute(
             f"""SELECT 1 FROM source_events e
                 WHERE e.scope_id IN ({marks}) AND e.project_id IS ? AND e.branch_id IS ?
                 AND e.read_blocked=0 AND e.suppressed=0
                 AND json_extract(e.extra_json,'$._scope_recall_admission.disposition')='deferred'
-                AND json_extract(e.extra_json,'$._scope_recall_admission.reason')='queue_capacity' LIMIT 1""",
+                AND json_extract(e.extra_json,'$._scope_recall_admission.reason')='queue_capacity'
+                AND NOT EXISTS(SELECT 1 FROM source_events n WHERE n.source_group_key=e.source_group_key
+                               AND n.source_revision>e.source_revision) LIMIT 1""",
             (*scopes, context.project_id, context.branch_id)).fetchone()
         rows = () if waiting is None else _deferred_page(tx, clock, context, policy, scopes, marks, limit)
     if not rows:
