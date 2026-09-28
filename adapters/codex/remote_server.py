@@ -175,6 +175,8 @@ def handle_request(config: RemoteServerConfig, body: dict[str, Any], *, started:
     if len(json.dumps(payload, ensure_ascii=False).encode("utf-8")) > MAX_PAYLOAD_BYTES:
         raise RemoteServerError("payload too large")
     record = record_from_wire(body.get("record"))
+    # The client's transcript_path is a file on its own machine; nothing here opens a path a request names.
+    payload = {key: value for key, value in payload.items() if key != "transcript_path"}
     observed_at = _observed_at(body.get("observed_at"))
     handler = CodexHookHandler.from_home(
         str(config.home), config.host,
@@ -182,11 +184,11 @@ def handle_request(config: RemoteServerConfig, body: dict[str, Any], *, started:
         hook_started_at=started if started is not None else time.monotonic(),
     )
     try:
-        result = handler.handle_payload(payload, record=record)
+        result = handler.handle_payload(payload, record=record, local_record=False)
     finally:
         handler.close()
     return {"result": result, "through": record.through if record is not None else None,
-            "reason": handler.diagnostics.last_reason}
+            "reason": handler.diagnostics.last_reason, "error": handler.diagnostics.capture_error_detail}
 
 
 def build_app(config: RemoteServerConfig):
@@ -234,7 +236,9 @@ def build_app(config: RemoteServerConfig):
         except CodexConfigError as exc:
             _log.error("hook: the entry is unavailable: %s", str(exc)[:200])
             return JSONResponse({"error": "entry_unavailable"}, status_code=503)
-        _log.info("hook %s: %s, record through %s, %d ms", event, answer["reason"], answer["through"],
+        # The error is the capture's code (DEADLINE_EXCEEDED, SECRET_DETECTED, ...), never any of its text.
+        _log.info("hook %s: %s%s, record through %s, %d ms", event, answer["reason"],
+                  f" ({answer['error']})" if answer.get("error") else "", answer["through"],
                   round((time.monotonic() - started) * 1000))
         return JSONResponse(answer)
 

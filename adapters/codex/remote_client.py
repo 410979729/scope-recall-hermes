@@ -7,10 +7,11 @@ what the record shows being said (``transcript.said``); the cursor moves only as
 
 When the server cannot be reached the hook answers with nothing, so the client is held up only briefly: a
 connection that has not opened in ``CONNECT_SECONDS`` is given up, and for ``AWAY_SECONDS`` after that no
-hook tries.  Claude Code loses nothing by it: its record carries every message to the next Stop that gets
-through.  A Codex hook is kept in a spool here and sent, with the moment it happened, by the next hook that
-reaches the server.  Requests go straight to the server, never through a proxy this machine has for the
-internet, which cannot reach a private address.  What did not get through is logged in the state folder.
+hook tries.  A Claude Code session's record carries what was said to that session's next Stop that gets
+through; what a session had not sent when it ended stays unsent.  A Codex hook is kept in a spool here and
+sent, with the moment it happened, by the next hook that reaches the server; a full spool drops its oldest.
+Requests go straight to the server, never through a proxy this machine has for the internet, which cannot
+reach a private address.  What did not get through, and what the spool dropped, is logged in the state folder.
 
     python -m scope_recall.adapters.codex.remote_client token --config <client.json>
     python -m scope_recall.adapters.codex.remote_client install --config <client.json> --plugin-dir <dir>
@@ -31,6 +32,7 @@ import json
 import os
 from pathlib import Path
 import secrets
+import shlex
 import subprocess
 import sys
 import time
@@ -131,7 +133,11 @@ def _post(config: dict[str, Any], body: dict[str, Any], timeout: float) -> dict[
     are for the internet, and one on 127.0.0.1 would take the request away from the private network.
     """
     event = (body.get("payload") or {}).get("hook_event_name")
-    token = config["token_file"].read_text(encoding="utf-8").strip()
+    try:
+        token = config["token_file"].read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        _log(config, f"{event}: no token to send ({type(exc).__name__})")
+        return None
     url = urllib.parse.urlsplit(config["url"])
     kind = http.client.HTTPSConnection if url.scheme == "https" else http.client.HTTPConnection
     timeout = max(0.2, timeout)
@@ -180,8 +186,11 @@ def _spool(config: dict[str, Any], payload: dict[str, Any], observed_at: str) ->
     try:
         folder.mkdir(parents=True, exist_ok=True)
         kept = sorted(folder.glob("*.json"))
-        for stale in kept[:max(0, len(kept) - SPOOL_LIMIT + 1)]:
+        dropped = kept[:max(0, len(kept) - SPOOL_LIMIT + 1)]
+        for stale in dropped:
             stale.unlink(missing_ok=True)
+        if dropped:
+            _log(config, f"spool full: dropped the {len(dropped)} oldest")
         name = f"{time.time_ns():020d}-{os.getpid()}.json"
         pending = folder / f"{name}.tmp"
         pending.write_text(json.dumps({"payload": payload, "observed_at": observed_at}, ensure_ascii=False),
@@ -347,6 +356,12 @@ def plugin_files(config: dict[str, Any], plugin_dir: Path) -> dict[Path, str]:
     skill = SKILLS["scope-recall-memory"].read_text(encoding="utf-8")
     dump = lambda value: json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n"  # noqa: E731
     if host == "claude-code":
+        from ...maintenance.install_claude_code import _SHELL_WORD
+
+        unsafe = [part for part in argv if not _SHELL_WORD.fullmatch(part)]
+        if unsafe:
+            raise RemoteClientError("Claude Code runs a hook through a shell: keep the interpreter and client.json "
+                                    f"on paths of ASCII letters, digits and ._-/: only (not {unsafe[0]!r})")
         command = " ".join(argv)
         hooks = {"hooks": {event: [{"hooks": [{"type": "command", "command": command, "timeout": timeout}]}]
                            for event, timeout in sorted(HOOK_TIMEOUTS[host].items())}}
@@ -362,7 +377,7 @@ def plugin_files(config: dict[str, Any], plugin_dir: Path) -> dict[Path, str]:
         }
     cmd = plugin_dir / "hooks" / "scope-recall-hook.cmd"
     windows = "@echo off\r\nchcp 65001 >nul\r\n" + " ".join(f'"{part}"' for part in argv) + "\r\nexit /b %ERRORLEVEL%\r\n"
-    hooks = {"hooks": {event: [{"hooks": [{"type": "command", "command": " ".join(f"'{part}'" for part in argv),
+    hooks = {"hooks": {event: [{"hooks": [{"type": "command", "command": shlex.join(argv),
                                             "commandWindows": str(cmd), "timeout": timeout}]}]
                        for event, timeout in sorted(HOOK_TIMEOUTS[host].items())}}
     return {
@@ -421,7 +436,10 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit(str(exc)) from None
     raw = sys.stdin.buffer.read(_MAX_STDIN + 1)
     result = run_hook(config, raw, started=started) if len(raw) <= _MAX_STDIN else {}
-    sys.stdout.write(json.dumps(result, ensure_ascii=False) + "\n")
+    # ASCII only, as the local hook writes it: a pipe on Windows carries the system code page (GBK on a Chinese
+    # Windows, under -I whatever PYTHONUTF8 says), and the host reads UTF-8, so recalled Chinese text arrived
+    # garbled or not at all.
+    sys.stdout.write(json.dumps(result, ensure_ascii=True) + "\n")
     return 0
 
 

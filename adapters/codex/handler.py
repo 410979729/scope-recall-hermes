@@ -332,7 +332,8 @@ class CodexHookHandler:
             return None
         return audience
 
-    def handle_payload(self, payload: dict[str, Any], *, record: RecordLines | None = None) -> dict[str, Any]:
+    def handle_payload(self, payload: dict[str, Any], *, record: RecordLines | None = None,
+                       local_record: bool = True) -> dict[str, Any]:
         self._persisted_this_call = False
         self._queued_this_call = False
         self.diagnostics = HookDiagnostics(capability_gaps=self.diagnostics.capability_gaps)
@@ -372,7 +373,10 @@ class CodexHookHandler:
             return self._post_tool_use(session_id, audience, payload, deadline)
         capture = self._stop if event == "Stop" else self._session_end
         result = capture(session_id, audience, payload, deadline)
-        if self._reads_record(event):
+        # A server for a client on another machine reads only the lines that client sent (``local_record``
+        # False): the payload's transcript_path names a file over there, and a path from a request is never
+        # opened here.
+        if self._reads_record(event) and (record is not None or local_record):
             self._read_record(session_id, audience, payload, deadline, remote=record)
         self._wake_after_capture(session_id, audience, deadline)
         return result
