@@ -151,14 +151,18 @@ no vectors and ask nothing.
 
 A prompt hook gives the server all of its time but the answer's way back, whenever at least 1 s is
 left. If the server has not answered when 1.5 s are left, the hook recalls as well, with the LanceDB
-helper it started when it started, and takes the server's answer if it came meanwhile, its own
-otherwise. With no server running (the client closed, or its MCP server disabled), or one that says it
-is busy, it recalls itself at once, as before; a late answer is dropped, and one that ran out of time
-or failed is replaced by the hook's own. A prompt hook that asked says how its server answered on
-stderr (`CODEX_RECALL_RESIDENT:answered`, `late`, `busy`, `unproven`, `none`, or `failed:<reason>`).
-The server writes no memory; its query embedding's cost is recorded in the spend ledger like any
-other, and so is the hook's when both recalled. A server with a recall past the time its hook gave it
-tells every hook that it is busy until that recall ends. It reads its key again at the next prompt
+helper it started when it started. The hook uses the answer that ran its vector search: the server's
+when it did (or neither did), its own when only its own did; a hook whose own recall went without it
+waits for the server until its own time is up. With no server running (the client closed, or its MCP
+server disabled), or one that says it is busy, it recalls itself at once, as before; an answer that
+comes after the hook is done is dropped, and one that ran out of time or failed is replaced by the
+hook's own. A prompt hook that asked says how it went on stderr (`CODEX_RECALL_RESIDENT:answered`,
+`slow`, `late`, `without_vectors`, `busy`, `unproven`, `none`, or `failed:<reason>`). The server
+writes no memory; its query embedding's cost is recorded in the spend ledger like any other, and so is
+the hook's when both recalled. A server with a recall past the time its hook gave it tells every hook
+that it is busy until that recall ends, and one that does not prove itself in time loses its name
+until it answers again. A recall that fails in the server is answered as failed, with its traceback on
+the server's stderr (the client's MCP log). It reads its key again at the next prompt
 after its env file or the runtime config changed, or when it could not read them before. A server
 started before an upgrade is not asked until its client restarts. Each open client keeps one LanceDB
 helper ready, about 550 MB of committed memory that the system pages out while it is idle, and starts

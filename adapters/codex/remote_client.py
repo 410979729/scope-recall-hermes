@@ -299,7 +299,7 @@ def run_hook(config: dict[str, Any], raw: bytes, *, started: float | None = None
     started = time.monotonic() if started is None else started
     try:
         payload = json.loads(raw.decode("utf-8"))
-    except (UnicodeError, ValueError):
+    except (UnicodeError, ValueError, RecursionError):
         return {}
     if not isinstance(payload, dict):
         return {}

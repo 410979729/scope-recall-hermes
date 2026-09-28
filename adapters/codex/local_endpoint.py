@@ -18,8 +18,9 @@ process under a reused id (the start time is kept with the id), is removed witho
 anything the server proves it holds the token; the hook proves it too, and the server signs its answer.  The token
 never crosses the socket, so a process that took over a stopped server's port learns nothing and cannot answer for
 it.  A hook says how its server answered on stderr (``CODEX_RECALL_RESIDENT:<outcome>``).  A server with a recall
-past the time its hook gave it answers every hook that it is busy until that recall ends, and one that kept a prompt
-waiting loses its name; it names itself again only once none of its recalls is stuck.
+past the time its hook gave it answers every hook that it is busy until that recall ends.  One that does not prove
+itself in time (a program on its port, or a process that no longer runs its threads) loses its name, and names itself
+again only once it answers and none of its recalls is stuck.
 """
 from __future__ import annotations
 
@@ -35,6 +36,7 @@ import socket
 import sys
 import threading
 import time
+import traceback
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable
@@ -42,9 +44,9 @@ from typing import Any, Callable
 #: What a hook may send: its payload (a hook's own stdin is at most 64 KiB, and written as ASCII JSON a character
 #: of it takes up to six bytes) and the refs and gaps of its capture.
 MAX_REQUEST_BYTES = 7 * 65536
-#: Seconds a hook waits to connect, and then for the server's proof.  A live server on this machine answers at once;
-#: one that does not is passed over as busy, with time left to try the next (a hung first name took all of
-#: ``FIND_SECONDS``, review of rc11).
+#: Seconds a hook waits to connect, and then for the server's proof.  A live server on this machine answers in
+#: milliseconds; one that does not loses its name, with time left to try the next (a hung first name took all of
+#: ``FIND_SECONDS``, and kept, it cost every later prompt its wait, reviews of rc11).
 CONNECT_SECONDS = 0.3
 PROOF_SECONDS = 0.3
 #: Servers a hook tries, newest first, and how long it may spend finding one.
@@ -88,7 +90,8 @@ class _Server(ThreadingHTTPServer):
     request_queue_size = 64
 
     def handle_error(self, request, client_address) -> None:  # noqa: ANN001 - the base class's signature
-        # One line on the client's stderr, not a traceback: a hook that is done with its server closes its end.
+        # One line on the client's stderr, not a traceback: a hook that is done with its server closes its end.  A
+        # recall that fails is answered as failed, with its traceback (``_Handler.do_POST``).
         sys.stderr.write(f"SCOPE_RECALL_ENDPOINT:{type(sys.exc_info()[1]).__name__}\n")
 
 
@@ -124,7 +127,7 @@ class _Handler(BaseHTTPRequestHandler):
             return
         try:
             request = _request(body)
-        except (ValueError, KeyError, TypeError, UnicodeError):
+        except (ValueError, KeyError, TypeError, UnicodeError, RecursionError):
             self._refuse(400)
             return
         if not endpoint.slots.acquire(blocking=False):
@@ -135,7 +138,16 @@ class _Handler(BaseHTTPRequestHandler):
         with endpoint.lock:
             endpoint.inflight[id(self)] = received + request["remaining"]
         try:
-            answer_body, close = endpoint.recall(request, received=received)
+            try:
+                answer_body, close = endpoint.recall(request, received=received)
+            except Exception as exc:  # noqa: BLE001 - answered as a failed recall; the hook recalls itself
+                # Dropped, the hook took the server for another program and removed its name, which came back and
+                # failed the same way; and the log held only the error's class (review of rc11).
+                sys.stderr.write(f"SCOPE_RECALL_ENDPOINT:recall_failed\n{traceback.format_exc(limit=8)}")
+                code = getattr(exc, "code", None)
+                detail = f"{type(exc).__name__}:{code}" if isinstance(code, str) else type(exc).__name__
+                answer_body = {"result": {}, "diagnostics": {"last_reason": "recall_exception",
+                                                             "recall_error_detail": detail[:64]}}
             data = json.dumps(answer_body, ensure_ascii=True).encode("ascii")
             self._answer(data, endpoint.token, "answer", nonce, hashlib.sha256(data).hexdigest())
         finally:
@@ -175,16 +187,14 @@ def _request(body: bytes) -> dict[str, Any]:
 
 def _hello(connection: http.client.HTTPConnection, token: str) -> str:
     """Whether the server on this open connection holds ``token``: ``ok`` once it proves it (the token is not sent),
-    ``busy`` when it says so or does not answer in time, ``unproven`` otherwise."""
+    ``busy`` when it says so, ``unproven`` when it does not answer in time or answers otherwise."""
     nonce = secrets.token_hex(16)
     try:
         connection.sock.settimeout(PROOF_SECONDS)
         connection.request("POST", "/hello", body=b"", headers={_NONCE: nonce})
         hello = connection.getresponse()
         hello.read()
-    except (socket.timeout, TimeoutError):
-        return "busy"
-    except (OSError, http.client.HTTPException):
+    except (socket.timeout, TimeoutError, OSError, http.client.HTTPException):
         return "unproven"
     if hello.status == 503:
         return "busy"
@@ -217,10 +227,12 @@ class Recaller:
     """The hook's side: asks the newest server of its entry for one prompt's recall (``handler.resident_recall``).
 
     ``outcome`` says how it went, for the hook's stderr: ``answered``; ``late`` (a server took the prompt and did not
-    answer in time, and loses its name); ``busy`` (its recalls all taken, one of them stuck, or no proof in time);
-    ``unproven`` (a program on the port, or a broken answer); ``none`` (no server of this entry, host and version
-    runs).  The hook says ``failed:<reason>`` instead when the server's recall ran out of time or failed, and ``late``
-    when the server had not answered once the hook's own recall was done (``handler._resident_answer``)."""
+    answer in time); ``busy`` (its recalls all taken, or one of them stuck); ``unproven`` (no proof in time, a
+    program on the port, or a broken answer: the name is removed); ``none`` (no server of this entry, host and version
+    runs).  The hook says what it did with an answer (``handler._resident_answer``): ``failed:<reason>`` when the
+    server's recall ran out of time or failed, ``without_vectors`` when the hook's own recall had its vector search and
+    the server's did not, ``slow`` when the hook's own, with it, was done first, and ``late`` when no answer came before
+    the hook's own time was up."""
 
     def __init__(self, home: Path | str, host: str) -> None:
         self.home = Path(home)
@@ -261,7 +273,7 @@ class Recaller:
             if outcome == "answered":
                 self.outcome = outcome
                 return answer
-            if outcome in ("late", "unproven"):
+            if outcome == "unproven":
                 _forget(path)
             self.outcome = outcome
             if outcome == "late":
@@ -339,7 +351,7 @@ class HookEndpoint:
             stamp = self._env_stamp()
             try:
                 loaded = dict(credentials())
-            except (OSError, ValueError):
+            except Exception:  # noqa: BLE001 - read again at the first prompt
                 pass
             else:
                 os.environ.update(loaded)
@@ -363,8 +375,8 @@ class HookEndpoint:
                 return
             try:
                 loaded = dict(self._credentials())
-            except (OSError, ValueError):
-                return  # read again at the next prompt (a file just saved can be locked); what is loaded stays
+            except Exception:  # noqa: BLE001 - read again at the next prompt; what is loaded stays
+                return  # a file just saved can be locked, and a runtime config being edited may not load
             self._env_seen = stamp
             for name in set(self._env_loaded) - set(loaded):
                 os.environ.pop(name, None)

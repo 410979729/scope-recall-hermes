@@ -286,7 +286,7 @@ def build_app(config: RemoteServerConfig):
             payload = body.get("payload")
             event = str(payload.get("hook_event_name"))[:40] if isinstance(payload, dict) else None
             answer = await run_in_threadpool(handle_request, config, body, started=started)
-        except (UnicodeError, json.JSONDecodeError, RemoteServerError) as exc:
+        except (UnicodeError, json.JSONDecodeError, RecursionError, RemoteServerError) as exc:
             # The request itself, which the client drops on a 400.  An error from the store (a ContractError is a
             # ValueError too) is this machine's and answers 500, so the client keeps the hook to send again.
             _log.warning("hook refused: %s", str(exc)[:200])

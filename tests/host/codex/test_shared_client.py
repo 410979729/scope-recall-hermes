@@ -919,8 +919,8 @@ def test_the_server_answers_a_prompt_s_recall_and_the_hook_stores_the_prompt(res
 
 def test_a_late_answer_leaves_the_prompt_stored_once(resident, small_reserve, monkeypatch, capsys):
     """The first version had the server store the prompt too: one that answered after its hook stopped waiting left
-    the prompt stored twice.  The server now only recalls, and the hook recalls itself; the next prompt does not wait
-    on the server while its late recall runs."""
+    the prompt stored twice.  The server now only recalls, and the hook recalls itself; while its late recall runs, the
+    server tells the next prompt at once that it is busy."""
     import time
 
     root, client, endpoint = resident
@@ -931,6 +931,7 @@ def test_a_late_answer_leaves_the_prompt_stored_once(resident, small_reserve, mo
     time.sleep(0.5)  # past the time the hook gave its server
     raw = json.dumps(_prompt("TEST 下一句不再等它。", prompt_id="TEST-prompt-after-late")).encode()
     assert _hook_entry(monkeypatch, raw, client) == 0
+    assert "CODEX_RECALL_RESIDENT:busy" in capsys.readouterr().err and endpoint.path.exists()
     assert calls == ["TEST 常驻进程答得太晚。"], "later prompts go past it"
     time.sleep(3.0)  # the server's late recall ends
     assert sorted(_user_rows(root)) == [("TEST 下一句不再等它。",), ("TEST 常驻进程答得太晚。",)]
@@ -1267,9 +1268,9 @@ def test_a_server_whose_recall_is_past_its_time_sends_hooks_on(resident, monkeyp
     assert local_endpoint.Recaller(client, "claude-code")(_prompt("TEST 超时的召回。"), (), (), 1.0) is None
     time.sleep(0.8)  # the recall above ends
     assert seen == [True], "stuck from the time its hook gave it"
+    assert endpoint.path.exists(), "a late server keeps its name: it says it is busy while its recall is stuck"
     with endpoint.lock:
         endpoint.inflight[1] = time.monotonic() - 0.01
-    endpoint._advertise()  # the late hook removed its name
     recaller = local_endpoint.Recaller(client, "claude-code")
     assert recaller(_prompt("TEST 它还卡着。"), (), (), 3.0) is None
     assert recaller.outcome == "busy" and endpoint.path.exists(), "a busy server keeps its name"
@@ -1304,7 +1305,8 @@ def test_a_hung_first_name_leaves_time_for_the_next(resident, monkeypatch):
         os.utime(named, (newer, newer))  # the newest name, asked first
         recaller = local_endpoint.Recaller(client, "claude-code")
         assert recaller(_prompt("TEST 第一个不应答。"), (), (), 3.0) is not None
-    assert recaller.outcome == "answered" and named.exists(), "one that did not answer in time may only be busy"
+    # Kept, a name whose process no longer answered cost every later prompt its wait (review of rc11).
+    assert recaller.outcome == "answered" and not named.exists()
 
 
 def test_a_first_read_of_the_env_file_that_failed_is_tried_again(store, monkeypatch, tmp_path):
@@ -1385,3 +1387,124 @@ def test_a_payload_nested_past_the_interpreter_s_limit_is_cleaned():
         node = node["x"][0]
     assert node["text"] == "TEST" + chr(0xFFFD)
     assert cleaned["k" + chr(0xFFFD)] == [chr(0xFFFD), 1, None]
+
+
+def _marker(text):
+    return {"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": text}}
+
+
+def test_a_server_answer_without_its_vector_search_gives_way_to_the_hook_s_own(resident, small_reserve, monkeypatch,
+                                                                              capsys):
+    """A server whose vector search failed (its key lost, say) answered every prompt by words alone, and the hook took
+    that though it had the key, the helper and the time (review of rc11).  The hook's own recall is used when it has
+    its vector search, and the server's words when it has not either."""
+    from scope_recall.adapters.codex import handler as handler_module
+
+    _root, client, endpoint = resident
+    monkeypatch.setattr(endpoint, "recall", lambda request, **kwargs: (
+        {"result": _marker("TEST-server-marker"),
+         "diagnostics": {"recall_vectors": False, "recall_vector_gap": "vector_error:TEST"}}, lambda: None))
+    monkeypatch.setattr(handler_module.CodexHookHandler, "_vector_route", lambda self: True)
+    for own_vectors, expected, said in ((True, "TEST-own-marker", "without_vectors"),
+                                        (False, "TEST-server-marker", "answered")):
+        def recall(self, *args, own_vectors=own_vectors, **kwargs):
+            self.diagnostics.recall_vectors = own_vectors
+            return _marker("TEST-own-marker")
+
+        monkeypatch.setattr(handler_module.CodexHookHandler, "_auto_recall", recall)
+        raw = json.dumps(_prompt(f"TEST 服务器没有向量 {own_vectors}。", prompt_id=f"TEST-prompt-v-{own_vectors}")).encode()
+        assert _hook_entry(monkeypatch, raw, client) == 0
+        captured = capsys.readouterr()
+        assert expected in captured.out and f"CODEX_RECALL_RESIDENT:{said}\n" in captured.err
+
+
+def test_a_hook_whose_own_recall_went_without_vectors_waits_for_its_server(resident, monkeypatch, capsys):
+    """Recalling alongside, the hook stopped waiting the moment its own recall was done, dropped an answer that came in
+    the time it had given the server, and called the server late (review of rc11).  A hook whose own recall had no
+    vector search waits until its own time is up; one whose own had it does not."""
+    import time
+
+    from scope_recall.adapters.codex import handler as handler_module
+
+    _root, client, endpoint = resident
+    monkeypatch.setattr(handler_module, "_LOCAL_RECALL_RESERVE_S", 5.0)  # alongside from the start
+    monkeypatch.setattr(handler_module, "_RESIDENT_MIN_S", 0.5)
+
+    def slow(request, **kwargs):
+        time.sleep(0.8)
+        return {"result": _marker("TEST-server-marker"), "diagnostics": {"recall_vectors": True}}, (lambda: None)
+
+    monkeypatch.setattr(endpoint, "recall", slow)
+    for own_vectors, expected, said in ((False, "TEST-server-marker", "answered"), (True, "TEST-own-marker", "slow")):
+        def recall(self, *args, own_vectors=own_vectors, **kwargs):
+            self.diagnostics.recall_vectors = own_vectors
+            return _marker("TEST-own-marker")
+
+        monkeypatch.setattr(handler_module.CodexHookHandler, "_auto_recall", recall)
+        raw = json.dumps(_prompt(f"TEST 等一等服务器 {own_vectors}。", prompt_id=f"TEST-prompt-w-{own_vectors}")).encode()
+        assert _hook_entry(monkeypatch, raw, client) == 0
+        captured = capsys.readouterr()
+        assert expected in captured.out and f"CODEX_RECALL_RESIDENT:{said}\n" in captured.err
+        time.sleep(1.0)  # the server's recall ends
+
+
+def test_a_server_whose_recall_raises_says_so_and_keeps_its_name(resident, monkeypatch, capsys):
+    """A recall that raised dropped the connection: the hook took the server for another program and removed its
+    name, which came back and failed the same way, with only the error's class in the log (review of rc11)."""
+    from scope_recall.adapters.codex import local_endpoint
+
+    _root, client, endpoint = resident
+
+    def broken(request, **kwargs):
+        raise KeyError("TEST broken")
+
+    monkeypatch.setattr(endpoint, "recall", broken)
+    recaller = local_endpoint.Recaller(client, "claude-code")
+    answered = recaller(_prompt("TEST 服务器出错。"), (), (), 3.0)
+    assert answered == ({}, {"last_reason": "recall_exception", "recall_error_detail": "KeyError"})
+    assert recaller.outcome == "answered" and endpoint.path.exists()
+    err = capsys.readouterr().err
+    assert "SCOPE_RECALL_ENDPOINT:recall_failed" in err and "Traceback" in err
+
+
+def test_a_runtime_config_that_will_not_load_keeps_the_keys(store, monkeypatch, tmp_path):
+    """Read again whenever the runtime config changed, a config that did not load (a TypeError) raised out of the
+    server's recall (review of rc11); what is loaded stays, and it is read again at the next prompt."""
+    import os
+
+    from scope_recall.adapters.codex import local_endpoint
+    from scope_recall.vector import process_store
+
+    monkeypatch.setattr(process_store, "prestart", lambda **kwargs: None)
+    monkeypatch.delenv("TEST_SCOPE_RECALL_STAYS", raising=False)
+    _root, _homes, client, _capture = store
+    env_file, runtime_config = tmp_path / "TEST.env", tmp_path / "TEST-runtime-config.json"
+    env_file.write_text("one\n", encoding="utf-8")
+    runtime_config.write_text("{}", encoding="utf-8")
+    reads = {"fail": False}
+
+    def credentials():
+        if reads["fail"]:
+            raise TypeError("TEST scope_ids")
+        return {"TEST_SCOPE_RECALL_STAYS": "kept"}
+
+    endpoint = local_endpoint.serve(client, "claude-code", env_file=env_file, runtime_config=runtime_config,
+                                    credentials=credentials)
+    try:
+        reads["fail"] = True
+        runtime_config.write_text('{"scope_ids": 5}', encoding="utf-8")
+        endpoint._refresh_credentials()
+        assert os.environ.get("TEST_SCOPE_RECALL_STAYS") == "kept"
+        assert endpoint._env_seen != endpoint._env_stamp(), "read again at the next prompt"
+    finally:
+        endpoint.stop()
+        os.environ.pop("TEST_SCOPE_RECALL_STAYS", None)
+
+
+def test_a_payload_nested_past_the_parser_s_limit_is_answered_empty(store, monkeypatch, capsys):
+    """Nested past what the JSON parser takes, a tool's output ended the hook with a RecursionError and no answer
+    (review of rc11)."""
+    _root, _homes, client, _capture = store
+    raw = b'{"hook_event_name": "PostToolUse", "tool_response": ' + b"[" * 1200 + b"]" * 1200 + b"}"
+    assert _hook_entry(monkeypatch, raw, client) == 0
+    assert json.loads(capsys.readouterr().out) == {}

@@ -119,7 +119,7 @@ def _prestart_vector_helper(raw: bytes) -> None:
         return
     try:
         payload = json.loads(raw)
-    except ValueError:
+    except (ValueError, RecursionError):
         return
     if not isinstance(payload, dict) or payload.get("hook_event_name") != "UserPromptSubmit":
         return

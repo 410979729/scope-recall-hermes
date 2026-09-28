@@ -137,6 +137,8 @@ class HookDiagnostics:
     #: that to the model and nowhere else: Claude Code and Codex recalled without their vector search for as long as
     #: anyone could tell, and no log showed it.
     recall_vector_gap: str | None = None
+    #: Whether the recall ran its vector search: what a hook asks of its server's answer (``_resident_answer``).
+    recall_vectors: bool | None = None
 
     @property
     def capture_settled(self) -> bool:
@@ -451,7 +453,8 @@ class CodexHookHandler:
             return {}
         try:
             payload = json.loads(raw.decode("utf-8"))
-        except (UnicodeError, ValueError):
+        except (UnicodeError, ValueError, RecursionError):
+            # Nested past what the parser takes, a tool's output ended the hook with no answer (review of rc11).
             self._diag("invalid_json")
             return {}
         if type(payload) is not dict:
@@ -710,10 +713,13 @@ class CodexHookHandler:
 
         The server is asked from a thread and given all of the hook's time but its answer's way back.  One that has
         not answered when ``_LOCAL_RECALL_RESERVE_S`` are left is recalled alongside, with the helper this hook
-        started at its own start, and its answer is still taken if it comes in the meantime: given only what the hook
-        did not keep back, a recall that needed most of the time had none (review of rc11).  An answer that ran out
-        of time or failed (``_RESIDENT_REASONS``), or none, leaves the hook's own.  The server writes nothing: the
-        prompt was stored here, so a late answer costs the turn nothing but its warm vectors."""
+        started at its own start: given only what the hook did not keep back, a recall that needed most of the time
+        had none (review of rc11).  An answer that ran out of time or failed (``_RESIDENT_REASONS``), or none, leaves
+        the hook's own; so does one without its vector search while this hook has one, if the hook's own has it
+        (a server that lost its key recalled every prompt by words alone).  A hook whose own recall went without its
+        vector search waits for the server until its own time is up; one whose own had it does not.  The server
+        writes nothing: the prompt was stored here, so an answer that comes after the hook is done costs the turn
+        nothing but its warm vectors."""
         remaining = self._remaining(deadline)
         if remaining < _RESIDENT_MIN_S:
             return self._auto_recall(context, prompt, request_id, current_refs, deadline, gaps)
@@ -729,24 +735,32 @@ class CodexHookHandler:
                 answered.set()
 
         threading.Thread(target=ask, name="scope-recall-resident", daemon=True).start()
-        if answered.wait(max(0.0, self._remaining(deadline) - _LOCAL_RECALL_RESERVE_S)):
-            taken = self._resident_taken(answers[0])
-            if taken is not None:
-                return taken
-            return self._auto_recall(context, prompt, request_id, current_refs, deadline, gaps)
+        answered.wait(max(0.0, self._remaining(deadline) - _LOCAL_RECALL_RESERVE_S))
+        read = answered.is_set()
+        server = self._resident_taken(answers[0]) if read else None
+        if server is not None and (server[1].get("recall_vectors") is True or not self._vector_route()):
+            return self._resident_used(server)
         reason = self.diagnostics.last_reason
         own = self._auto_recall(context, prompt, request_id, current_refs, deadline, gaps)
-        if not answered.is_set():
-            self.resident_outcome = "late"
-            return own
-        taken = self._resident_taken(answers[0])
-        if taken is None:
-            return own
-        self.diagnostics.last_reason = reason  # what the hook's own recall said is not what answered
-        return taken
+        own_vectors = self.diagnostics.recall_vectors is True
+        if not read and not own_vectors:
+            # The hook's own went without its vector search: the server's, warm, is worth what time is left.
+            answered.wait(self._remaining(deadline))
+        if not read and answered.is_set():
+            server, read = self._resident_taken(answers[0]), True
+        if server is not None and (server[1].get("recall_vectors") is True or not own_vectors):
+            self.diagnostics.last_reason = reason  # what the hook's own recall said is not what answered
+            return self._resident_used(server)
+        if server is not None:
+            self.resident_outcome = "without_vectors"
+        elif not read:
+            self.resident_outcome = "slow" if own_vectors else "late"
+        return own
 
-    def _resident_taken(self, answered: tuple[dict[str, Any], dict[str, Any]] | None) -> dict[str, Any] | None:
-        """The server's answer, its diagnostics taken with it; None when there is none to take."""
+    def _resident_taken(self, answered: tuple[dict[str, Any], dict[str, Any]] | None
+                        ) -> tuple[dict[str, Any], dict[str, Any]] | None:
+        """The server's answer and its diagnostics, or None when there is none to take (it ran out of time or
+        failed, which the hook's stderr then says)."""
         if answered is None:
             return None
         result, fields = answered
@@ -756,11 +770,22 @@ class CodexHookHandler:
             detail = _error_detail(fields.get("recall_error_detail"))
             self.resident_outcome = f"failed:{reason}" + (f":{detail}" if detail else "")
             return None
+        return answered
+
+    def _resident_used(self, answered: tuple[dict[str, Any], dict[str, Any]]) -> dict[str, Any]:
+        """The server's answer as this hook's, its diagnostics taken with it."""
+        result, fields = answered
         for name in ("recall_vector_gap", "recall_error_detail"):
             value = fields.get(name)
             if value is None or type(value) is str:
                 setattr(self.diagnostics, name, _error_detail(value) if value else None)
+        self.diagnostics.recall_vectors = fields.get("recall_vectors") is True
         return result if isinstance(result, dict) else {}
+
+    def _vector_route(self) -> bool:
+        """Whether this hook's own runtime has a vector search to recall with."""
+        runtime = self._host_runtime.runtime if self._host_runtime is not None else None
+        return runtime is not None and getattr(runtime.config, "vector", None) is not None
 
     def resident_recall_for(self, payload: dict[str, Any], current_refs: tuple[str, ...], gaps: tuple[str, ...],
                             remaining: float) -> dict[str, Any]:
@@ -792,6 +817,7 @@ class CodexHookHandler:
     def _auto_recall(self, context, prompt: str, request_id: str, current_refs: tuple[str, ...], deadline: float, gaps: tuple[str, ...]) -> dict[str, Any]:
         """Render this turn's automatic recall context, or nothing once the budget is gone."""
         remaining = self._remaining(deadline)
+        self.diagnostics.recall_vectors = None
         if remaining <= 0:
             self._diag("deadline_exceeded")
             return {}
@@ -813,6 +839,7 @@ class CodexHookHandler:
             self._diag("recall_exception", gaps=gaps)
             return {}
         without = recall_without_vectors(packet.get("gaps") or ())
+        self.diagnostics.recall_vectors = without is None
         if without is not None:
             self.diagnostics.recall_vector_gap = _error_detail(without)
         if self._remaining(deadline) <= 0:

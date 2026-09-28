@@ -683,3 +683,10 @@ def test_half_of_a_broken_emoji_reaches_the_entry(served, tmp_path):
         "last_assistant_message": "TEST 回复也坏了" + chr(0xDC00)}})
     said = [content for _role, _origin, content, _at in _rows(root, "workpc-claude-code")]
     assert "TEST 表情坏了" + chr(0xFFFD) in said and "TEST 回复也坏了" + chr(0xFFFD) in said
+
+
+def test_a_hook_nested_past_the_parser_s_limit_is_answered_empty(tmp_path):
+    """A payload nested past what the JSON parser takes ended the remote hook with a RecursionError (review of rc11)."""
+    config = _client(tmp_path, "claude-code", _free_port())
+    raw = b'{"hook_event_name": "UserPromptSubmit", "prompt": ' + b"[" * 1200 + b"]" * 1200 + b"}"
+    assert remote_client.run_hook(config, raw) == {}
