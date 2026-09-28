@@ -24,10 +24,22 @@ from .capture import CaptureReceipt, record_event
 from .events import PreparedCapture, prepare_capture
 
 _TRANSIENT = (sqlite3.Error, TruthDatabaseConnectionError, TruthWriterBusyError)
-#: Inbox rows a replay still stores, besides those never tried: a passing failure (``replay_inbox``), or a
-#: key another message already took (``resolve_conflicted_ingress`` stores it under a new key).  Any other
-#: code is terminal; the row stays for inspection only.
-STILL_REPLAYED = frozenset({"STORAGE_UNAVAILABLE", "DEADLINE_EXCEEDED", "VERSION_CONFLICT"})
+#: What a release before 3.4.0rc10 wrote for every missing source, which names none.  One of its causes is gone: a
+#: task whose episode was deleted refused every later capture of the task (``EpisodeStore.attach``).  Such a row is
+#: replayed once more; a missing source is now written with its field (``_terminal_code``), so a failure after that
+#: replay stays final.
+_LEGACY_SOURCE_MISSING = "SOURCE_MISSING"
+#: Inbox rows a replay still stores, besides those never tried: a passing failure (``replay_inbox``), a row from
+#: before the missing source was named, or a key another message already took (``resolve_conflicted_ingress``
+#: stores it under a new key).  Any other code is terminal; the row stays for inspection only.
+STILL_REPLAYED = frozenset({"STORAGE_UNAVAILABLE", "DEADLINE_EXCEEDED", _LEGACY_SOURCE_MISSING, "VERSION_CONFLICT"})
+
+
+def _terminal_code(exc: ContractError) -> str:
+    """The code a terminal failure leaves on its row: a missing source says which, never the bare legacy code."""
+    if exc.code == _LEGACY_SOURCE_MISSING:
+        return f"{exc.code}:{exc.field or 'unnamed'}"
+    return exc.code
 
 
 def _json(value):
@@ -124,7 +136,8 @@ def _commit(storage, clock, context, token, prepared, scope_id, policy, deadline
         # Terminal failures remain inspectable, but are not replayed forever.
         try:
             with storage.write(context, remaining_seconds=max(.001, deadline-time.monotonic())) as tx:
-                tx._check(write=True).execute("UPDATE capture_inbox SET last_error_code=? WHERE token=?", (code, token))
+                tx._check(write=True).execute("UPDATE capture_inbox SET last_error_code=? WHERE token=?",
+                                              (_terminal_code(exc), token))
         except (*_TRANSIENT, ContractError):
             pass
     except _TRANSIENT:
@@ -226,8 +239,9 @@ def replay_inbox(storage, clock, context, *, authorize, admission_policy=None, l
     with storage.read(context, remaining_seconds=remaining_seconds) as tx:
         rows = tx._check().execute(f"""SELECT * FROM capture_inbox WHERE scope_id IN ({','.join('?' for _ in scopes)})
             AND project_id IS ? AND branch_id IS ?
-            AND (last_error_code IS NULL OR last_error_code IN ('STORAGE_UNAVAILABLE','DEADLINE_EXCEEDED'))
-            ORDER BY created_at,token LIMIT ?""", (*scopes, context.project_id, context.branch_id, limit)).fetchall()
+            AND (last_error_code IS NULL OR last_error_code IN ('STORAGE_UNAVAILABLE','DEADLINE_EXCEEDED',?))
+            ORDER BY created_at,token LIMIT ?""",
+            (*scopes, context.project_id, context.branch_id, _LEGACY_SOURCE_MISSING, limit)).fetchall()
     receipts = []
     for row in rows:
         if time.monotonic() >= deadline:

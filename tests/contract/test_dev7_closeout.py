@@ -88,6 +88,34 @@ def test_ingress_rejects_secrets_conflicts_and_other_partitions(worker_app):
     assert token is None and prepared.rejection == "plaintext_secret_rejected"
 
 
+def test_a_row_an_older_release_left_as_source_missing_is_replayed_once(worker_app, monkeypatch):
+    """Before 3.4.0rc10 a capture into a task whose episode was deleted failed as a bare ``SOURCE_MISSING`` and stayed
+    in the inbox for good (three rows on the pilot, a doctor gap every day).  Such a row is replayed once more; a
+    missing source is now written with its field, so a failure after that replay stays final."""
+    core, ctx, clock = worker_app
+    stored = source_event(source_event_key="TEST-legacy-missing", content="TEST 删完以后接着聊。")
+    failing = source_event(source_event_key="TEST-legacy-failing", content="TEST 还是存不进去。")
+    for event in (stored, failing):
+        capture_inbox.enqueue(core.storage, clock, ctx, event, scope_id="TEST-scope", host_scope=None)
+    with sqlite3.connect(core.storage.path) as conn:
+        conn.execute("UPDATE capture_inbox SET last_error_code='SOURCE_MISSING'")
+        conn.commit()
+    original = capture_inbox.record_event
+
+    def record(storage, clock, context, value, **options):
+        if options["_prepared"].events[0]["content"] == failing["content"]:
+            raise ContractError("SOURCE_MISSING", "TEST-still-missing")
+        return original(storage, clock, context, value, **options)
+
+    monkeypatch.setattr(capture_inbox, "record_event", record)
+    receipts = capture_inbox.replay_inbox(core.storage, clock, ctx, authorize=lambda _: ctx.allowed_scope_ids)
+    assert sorted(receipt.disposition for receipt in receipts) == ["inserted", "queued"]
+    with sqlite3.connect(core.storage.path) as conn:
+        left = conn.execute("SELECT last_error_code FROM capture_inbox").fetchall()
+    assert left == [("SOURCE_MISSING:TEST-still-missing",)]
+    assert capture_inbox.replay_inbox(core.storage, clock, ctx, authorize=lambda _: ctx.allowed_scope_ids) == ()
+
+
 def test_long_resume_appears_only_after_all_pages_and_includes_last_progress(worker_app):
     core, ctx, clock = worker_app
     goal = "请帮我完成 TEST 报告整理。"

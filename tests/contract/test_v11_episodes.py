@@ -230,6 +230,28 @@ def test_M50_deleted_artifact_blocks_descriptions_references_resume_and_cached_r
     with pytest.raises(ContractError):read_retained(ctx.binding,item.blob)
 
 
+def test_a_task_goes_on_in_a_new_episode_after_its_episode_is_deleted(app):
+    """Deleting a source deletes the episode whose resume rests on it.  A task names its series outright, so the
+    task's next source landed on the deleted episode and was refused (``SOURCE_MISSING``, ``episode_unavailable``):
+    on the pilot every capture after a delete in that Codex thread failed for good."""
+    core,ctx=app
+    ctx=replace(ctx,task_anchor='TEST-deleted-task')
+    work=capture(core,ctx,'TEST 下一步调整这张图的配色。')
+    apply(core,ctx,resumes=[resume(work)])
+    deleted,=core.episodes(ctx)
+    authorize(core,ctx,work)
+    core.forget(ctx,request(work),remaining_seconds=10)
+    assert not core.episodes(ctx)
+    later=capture(core,ctx,'TEST 删完以后接着聊配色。')
+    episode,=core.episodes(ctx)
+    assert episode.ref!=deleted.ref and episode.resume is None
+    rows,_=core.episode_sources(ctx,episode.ref)
+    assert [source.ref for _,source in rows]==[later.ref]
+    again=capture(core,ctx,'TEST 再说一句，还在同一个任务里。')
+    assert [e.ref for e in core.episodes(ctx)]==[episode.ref]
+    assert [source.ref for _,source in core.episode_sources(ctx,episode.ref)[0]]==[later.ref,again.ref]
+
+
 def test_resume_keeps_unprocessed_tail_and_source_paging_is_not_a_false_complete_count(app):
     core,ctx=app
     one=capture(core,ctx,'TEST 先做版式。')

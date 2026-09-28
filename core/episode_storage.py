@@ -21,6 +21,10 @@ from .episodes import (
 )
 from .visibility import allowed
 
+#: How many deleted segments in a row a task's next source steps past; each delete blocks at most the segment its
+#: task was writing to, so more than a few in a row is not a task going on.
+_BLOCKED_SEGMENTS = 8
+
 
 @dataclass(frozen=True)
 class Episode:
@@ -255,9 +259,17 @@ class Episodes:
             return
         series, kind = self._series_for(source)
         segment_index = self._segment_index(series)
-        anchor = hashlib.sha256(canonical([series, segment_index]).encode()).hexdigest()
-        ref = "episode-" + hashlib.sha256(anchor.encode()).hexdigest()
-        if not allowed(self.tx, "episode", ref):
+        # A task names its series outright, so a later source of a task whose episode was deleted landed on the
+        # deleted episode and was refused with it: on the pilot every capture after a delete in that Codex thread
+        # failed for good (2026-09-28).  The task goes on in the next segment, a new episode that carries nothing
+        # of the deleted one.  A session's series already skips a blocked episode (``_series_for``).
+        for _ in range(_BLOCKED_SEGMENTS):
+            anchor = hashlib.sha256(canonical([series, segment_index]).encode()).hexdigest()
+            ref = "episode-" + hashlib.sha256(anchor.encode()).hexdigest()
+            if allowed(self.tx, "episode", ref):
+                break
+            segment_index += 1
+        else:
             raise ContractError("SOURCE_MISSING", "episode_unavailable")
         row = conn.execute("SELECT current_revision FROM episodes WHERE anchor_key=?", (anchor,)).fetchone()
         previous = self.get(ref) if row else None
