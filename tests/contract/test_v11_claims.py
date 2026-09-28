@@ -303,6 +303,25 @@ def test_ambiguous_update_closes_once_the_user_settles_it_on_one_candidate(app):
     assert core.current_claim(ctx,two.ref).revision == 1
 
 
+def test_a_correction_with_no_claim_to_place_it_against_keeps_no_open_row(app):
+    """A row naming no candidate could never be closed (``resolve_updates`` needs one revised): 36 such rows on the
+    pilot were handed to every read for good.  The message itself is stored like any other."""
+    core,ctx = app
+    said = capture(core,ctx,"那个不对，改一下。",when="2026-09-03T12:00:00Z")
+    assert core.unresolved_updates(ctx) == ()
+    assert core.source(ctx,said.ref,1) is not None
+    # What an older release left: such a row, closed by the worker's pass.
+    with sqlite3.connect(core.storage.path) as conn:
+        conn.execute("""INSERT INTO unresolved_updates(update_id,source_ref,source_revision,scope_id,project_id,branch_id,
+            candidate_refs_json,created_at) VALUES ('update-TEST-legacy',?,1,'TEST-scope',?,?,'[]','2026-09-03T12:00:00Z')""",
+            (said.ref,ctx.project_id,ctx.branch_id))
+        conn.commit()
+    assert len(core.unresolved_updates(ctx)) == 1
+    with core.storage.write(ctx) as tx:
+        assert tx.claims.close_unplaceable_updates() == 1
+    assert core.unresolved_updates(ctx) == ()
+
+
 def test_ambiguity_the_user_never_settled_is_still_reported(app):
     core,ctx = app
     initial(core,ctx)

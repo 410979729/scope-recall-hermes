@@ -429,6 +429,23 @@ class Claims:
             (*scopes,ctx.project_id,ctx.branch_id)).fetchall()
         return tuple(dict(ref=r[0],source_ref=r[1],source_revision=r[2],candidate_refs=tuple(json.loads(r[3]))) for r in rows)
 
+    def close_unplaceable_updates(self, *, limit: int = 64) -> int:
+        """Close open rows that name no candidate claim: nothing can ever settle them.
+
+        Releases before 3.4.0rc10 recorded a correction with no claim in scope as such a row
+        (``capture_correction``); 36 were open on the pilot, handed to every read.  They are marked ``obsolete``,
+        the state a deletion leaves too, since nothing was settled.
+        """
+        if type(limit) is not int or not 1 <= limit <= 256:
+            raise ContractError("INPUT_INVALID", "unresolved_limit")
+        ctx = self._tx.context
+        scopes = sorted(ctx.allowed_scope_ids)
+        return self._tx._check(write=True).execute(f"""UPDATE unresolved_updates SET state='obsolete'
+            WHERE update_id IN (SELECT update_id FROM unresolved_updates WHERE state='unresolved'
+              AND scope_id IN ({','.join('?' for _ in scopes)}) AND project_id IS ? AND branch_id IS ?
+              AND json_array_length(candidate_refs_json)=0 ORDER BY created_at,update_id LIMIT ?)""",
+            (*scopes,ctx.project_id,ctx.branch_id,limit)).rowcount
+
     def resolve_updates(self, claim_ref: str, *, resolved_at: str) -> int:
         """Close ambiguity rows once one of their candidates is actually revised.
 

@@ -421,7 +421,12 @@ def capture_correction(tx, source, clock) -> Mutation | None:
         except ContractError:
             # Rejected semantics do not discard the user's captured occurrence.
             pass
-    tx.claims.unresolved(source.ref,source.revision,tuple(v.ref for v in (matches or heads)),recorded_at=clock.utc_now())
+    candidates = tuple(v.ref for v in (matches or heads))
+    # With no claim to place it against there is no ambiguity to keep: a row naming none could never be closed
+    # (``resolve_updates`` needs one of its candidates revised), and 36 such rows on the pilot were handed to every
+    # read for good.  The message itself is stored and consolidated as any other.
+    if candidates:
+        tx.claims.unresolved(source.ref,source.revision,candidates,recorded_at=clock.utc_now())
     return None
 
 
