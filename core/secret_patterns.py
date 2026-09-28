@@ -17,20 +17,17 @@ import unicodedata
 from typing import Any
 
 
+#: The label's words are bounded: ``(?:[A-Z0-9-]+[ ]+)*`` backtracked through every way to split a run of
+#: ``-----BEGIN `` repeats, 14 s for 100 kB.  Real labels have a few short words ("OPENSSH", "ENCRYPTED").
 PEM_PRIVATE_KEY_BEGIN_RE = re.compile(
-    r"-----BEGIN (?P<label>(?:[A-Z0-9-]+[ ]+)*PRIVATE KEY(?:[ ]+BLOCK)?)-----",
+    r"-----BEGIN (?P<label>(?:[A-Z0-9-]{1,32}[ ]{1,4}){0,8}PRIVATE KEY(?:[ ]{1,4}BLOCK)?)-----",
     re.IGNORECASE,
 )
 
 COMMON_SECRET_PATTERNS: dict[str, re.Pattern[str]] = {
-    "pem_private_key_block": re.compile(
-        r"-----BEGIN [A-Z0-9 -]*PRIVATE KEY(?: BLOCK)?-----"
-        r"[\s\S]*?"
-        r"-----END [A-Z0-9 -]*PRIVATE KEY(?: BLOCK)?-----",
-        re.IGNORECASE,
-    ),
-    # A dangling BEGIN marker is sensitive too: truncated key blocks must fail
-    # closed even when the corresponding END marker is missing.
+    # The BEGIN marker alone decides, dangling or not: truncated key blocks must fail closed even when the END
+    # marker is missing.  A whole-block pattern added nothing to that and scanned from every BEGIN to the end of
+    # the text looking for its END (quadratic in repeated markers); ``capture_filters`` redacts the block itself.
     "pem_private_key_begin": PEM_PRIVATE_KEY_BEGIN_RE,
     "database_uri_with_password": re.compile(
         r"(?:postgres(?:ql)?|mysql|mariadb|mongodb(?:\+srv)?|redis(?:s)?|"
@@ -64,8 +61,10 @@ COMMON_SECRET_PATTERNS: dict[str, re.Pattern[str]] = {
         r"\baws_secret_access_key\s*(?:=|:)\s*[\"']?[A-Za-z0-9/+=]{32,}",
         re.IGNORECASE,
     ),
+    # Spacing within the line only: ``\s*`` ran on across every following blank line from each line start,
+    # 4.3 s for 20 kB of blank lines.
     "cookie_header": re.compile(
-        r"^\s*(?:cookie|set-cookie)\s*:\s*[^=\n;,\s]+=[^\n]+$",
+        r"^[ \t]*(?:cookie|set-cookie)[ \t]*:[ \t]*[^=\n;,\s]+=[^\n]+$",
         re.IGNORECASE | re.MULTILINE,
     ),
     # A bot's id stands alone, or follows ``bot`` in an API URL (``/bot<id>:<secret>/getMe``).  A digit
@@ -99,56 +98,76 @@ COMMON_SECRET_PATTERN_VALUES: tuple[re.Pattern[str], ...] = tuple(
 )
 
 #: What follows a credential word without being a credential, kept narrow on purpose: a password can be any
-#: word in any script, so only what cannot be one is let through.  Every message that said
-#: ``def login(user: str, password: str)``, ``api_key: <your-api-key>`` or "the password is required" was refused
-#: as a secret and never stored, and a model request carrying one was refused as ``sensitive_request``.  Not a
-#: value: a placeholder (``<...>``, ``${...}``, ``$UPPER_NAME``, ``%NAME%``, ``{name}``, ``[REDACTED...]``), a mask
-#: (``***``, ``xxxx``) or an empty quoted string, a type or a null in code (``str``, ``Optional[str]``,
-#: ``None``), a word that says what the value is rather than being it (``required``, ``missing``, ``reset``,
-#: ``see``), a call or subscript on a lower-case name (``getpass()``, ``os.environ["KEY"]``), or a dotted name
-#: without digits (``settings.DB_PASSWORD``).  ``$unshine2024``, ``[hunter2]``, "correct horse battery staple"
-#: and a value in another script still count.
-_END = r"""(?=[\s,;:.!?)\]}>"'`|]|$)"""
-_QUOTE = r"""["'`]?"""
-_NOT_A_VALUE = (
-    r"(?!" + _QUOTE + r"(?:"
-    r"<[^<>\s]{1,80}>"
+#: word in any script, so only what cannot be one is let through, and only when it is the whole value.  Every
+#: message that said ``def login(user: str, password: str)``, ``api_key: <your-api-key>`` or "the password is
+#: required" was refused as a secret and never stored, and a model request carrying one was refused as
+#: ``sensitive_request``.  Not a value, in matching quotes or none:
+#: - a placeholder: ``<your-key>``, ``${...}``, ``$UPPER_NAME``, ``%NAME%``, ``{name}``, ``[REDACTED...]``, the
+#:   bracketed names without digits (``<hunter2>`` and ``{hunter2}`` count);
+#: - a mask (``***``, ``xxxx``), or a value of punctuation alone (``""``, ``")``, ``=`` in ``token == nil``);
+#: - an opening brace or bracket alone (``"credentials": {``);
+#: - a type or a null in code (``str``, ``Optional[str]``, ``None``), or a word that says what the value is
+#:   (``required``, ``missing``, ``reset``, ``see``);
+#: - code: a call or subscript on a dotted name (``os.environ["KEY"]``, ``Yup.string()``), a call on a lower-case
+#:   name with no argument or a quoted one (``getpass()``, ``input("Password: ")``), a dotted name from a code root
+#:   such as ``os``, ``settings``, ``self`` or ``process`` (``settings.DB_PASSWORD``);
+#: - a Chinese question or description (``token是什么意思``).
+#: A value ends at a space or the end of the text, after closing punctuation only: an exemption that stopped
+#: earlier let through what followed it (``<b>Xk9#mP2q</b>``, ``Changed!2024``, ``My.Secret.Pass#99``).
+#: ``$unshine2024``, ``[hunter2]``, ``letmein(2024)``, "correct horse battery staple" and a value in any script
+#: still count.
+_END = r"""(?=[,;:.)\]}>"'`|]*(?:\s|$))"""
+_EXEMPT_IN_QUOTES = (
+    r"<[A-Za-z][A-Za-z _.-]{0,79}>"
     r"|\$\{[^{}\s]{1,80}\}"
-    r"|(?-i:\$[A-Z][A-Z0-9_]*)" + _END +
+    r"|(?-i:\$[A-Z][A-Z0-9_]*)"
     r"|%[A-Za-z_][A-Za-z0-9_]*%"
-    r"|\{\{?[A-Za-z_][A-Za-z0-9_.]*\}\}?"
+    r"|\{\{?[A-Za-z_][A-Za-z_.]*\}\}?"
     r"|\[(?:redacted|hidden|masked|omitted|removed)[^\]\s]*\]"
-    r"|[*\u2022\u00b7xX._-]{3,}" + _QUOTE + _END +
-    r"|(?:\"\"|''|``)" + _END +
+    r"|[*\u2022\u00b7xX._-]{3,}"
+    r"|[{\[(]"
     r"|(?:str|string|bytes|int|bool|float|none|null|nil|undefined|optional|any|secretstr|dict|list|object|true|"
-    r"false)" + _QUOTE + r"(?=[\[\s,;:.!?)\]}>\"'`|]|$)"
+    r"false)(?:\[[^\]\s]{0,80}\])?"
     r"|(?:required|missing|empty|unset|invalid|incorrect|wrong|expired|reset|changed|hidden|masked|redacted|"
-    r"omitted|removed|see|tbd|todo|n/a)" + _QUOTE + _END +
-    r"|(?-i:[a-z_][a-z_]*)(?:\.[A-Za-z_][A-Za-z0-9_]*)*[(\[]"
-    r"|[A-Za-z_]+(?:\.[A-Za-z_]+)+" + _QUOTE + _END +
-    r"))"
+    r"omitted|removed|see|tbd|todo|n/a)"
+    r"|(?:os|sys|env|settings|config|conf|cfg|process|request|req|self|this|app|ctx|context|options|opts|args|"
+    r"params|props|secrets|vault|keyring|form|body|data|values|state)(?:\.[A-Za-z_]+)+"
 )
-#: Prose: after "is", one of the words that describe a value rather than give it ("the password is required",
-#: "the secret is out", "the token is expired").  "my password is iloveyou" still reads as one.
+_NOT_A_VALUE = (
+    r"(?!"
+    r"(?P<vq>[\"'`]?)(?:" + _EXEMPT_IN_QUOTES + r")(?P=vq)" + _END +
+    r"|(?:[A-Za-z_][A-Za-z0-9_]*\.)+[A-Za-z_][A-Za-z0-9_]*[(\[]"
+    r"|(?-i:[a-z_][a-z0-9_]*)\((?:\)|[\"'])"
+    r"|[^\s\w]+(?:\s|$)"
+    r"|(?:什么|多少|哪个|哪些|啥|怎么|怎样|如何|不是|是否|必须|必需|必填|可选|过期|无效|有效)"
+    r")"
+)
+#: Prose: after "is", one of the lower-case words that describe a value rather than give it ("the password is
+#: required", "the secret is out", "the token is sent in the header").  "my password is iloveyou", "the password
+#: is now Sunflower2024" and "the password is Strong!2024" still read as one.
 _IS_NOT_A_WORD = (
-    r"(?!(?:required|optional|missing|empty|set|unset|invalid|incorrect|wrong|right|correct|valid|expired|"
-    r"revoked|changed|reset|stored|saved|hashed|encrypted|hidden|masked|redacted|needed|not|the|a|an|too|very|"
-    r"still|now|in|on|at|for|out|ok|fine|weak|strong|long|short|same|different|being|also|only|just|what|where|"
-    r"that|this|it|here|there|none|null|true|false)" + _END + r")"
+    r"(?!(?-i:(?:required|optional|missing|empty|set|unset|invalid|incorrect|wrong|right|correct|valid|expired|"
+    r"revoked|changed|reset|stored|saved|hashed|encrypted|encoded|hidden|masked|redacted|needed|sent|used|"
+    r"generated|created|issued|refreshed|rotated|returned|passed|included|attached|shown|printed|logged|signed|"
+    r"verified|checked|validated|accepted|rejected|denied|blocked|disabled|enabled|not|none|null|true|false|the|"
+    r"a|an|in|on|at|for|out|ok|fine|weak|strong|long|short|same|different|what|where|that|this|it|here|there))"
+    + _END + r")"
 )
 _SEPARATOR = r"(?:[ \t]*(?::|=|是)[ \t]*|[ \t]+is[ \t]+" + _IS_NOT_A_WORD + r")"
 
+#: ``credential``'s suffix is bounded: unbounded, a run of "credential" repeats was tried at every length from
+#: every repeat, 1 s for 20 kB.
 SECRET_ASSIGNMENT_RE = re.compile(
     r"(?:api[_ \t-]?key|secret|password|passwd|"
-    r"credential(?:[_ \t-]?[a-z0-9_]+)?|private[_ \t-]?key)[\"']?"
+    r"credential(?:[_ \t-]?[a-z0-9_]{1,64})?|private[_ \t-]?key)[\"']?"
     + _SEPARATOR + _NOT_A_VALUE + r"[^\s]+",
     re.IGNORECASE,
 )
 
-#: The name before ``token`` is at most 64 characters: unbounded, a long hyphenated line (a generated id, a
+#: The name before ``token`` is at most 128 characters: unbounded, a long hyphenated line (a generated id, a
 #: kebab-case slug) was tried from every hyphen to its end, 18 s for 60,000 characters.
 TOKEN_ASSIGNMENT_RE = re.compile(
-    r"(?P<key>(?<![A-Za-z0-9_])(?:[A-Za-z_][A-Za-z0-9_-]{0,62}[_-])?token)[\"']?"
+    r"(?P<key>(?<![A-Za-z0-9_])(?:[A-Za-z_][A-Za-z0-9_-]{0,126}[_-])?token)[\"']?"
     + _SEPARATOR + _NOT_A_VALUE + r"[^\s]+",
     re.IGNORECASE,
 )
@@ -180,7 +199,9 @@ class SecretTextMatch:
     text: str
 
 
-_ESCAPED_BREAK_RE = re.compile(r"\\+([nrt])")
+#: From the first backslash of a run only: from every one, a long run with no break after it was tried to its end
+#: again and again, 1.4 s for 20 kB of backslashes.
+_ESCAPED_BREAK_RE = re.compile(r"(?<!\\)\\+([nrt])")
 _ESCAPED_BREAKS = {"n": "\n", "r": "\r", "t": "\t"}
 
 

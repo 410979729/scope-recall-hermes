@@ -64,6 +64,16 @@ ORDINARY = [
     "require_password: true",
     "password: see the vault",
     "password: [REDACTED_SECRET]",
+    # Code and prose the final review of 2026-09-28 found still refused.
+    'password = input("Password: ")',
+    'token := os.Getenv("TOKEN")',
+    "if token == nil {",
+    ".then(token => save(token))",
+    "password: Yup.string().required()",
+    "password: { type: String, required: true }",
+    '"credentials": {',
+    "the token is sent in the header",
+    "token" + chr(0x662F) + chr(0x4EC0) + chr(0x4E48) + chr(0x610F) + chr(0x601D),   # token + "is what meaning"
 ]
 
 #: Values that are credentials, in the same shapes.
@@ -93,6 +103,23 @@ REAL = [
     "password: correct horse battery staple",
     "password" + chr(0x662F) + chr(0x5929) + chr(0x738B) + chr(0x76D6) + chr(0x5730) + chr(0x864E),
     "password: " + "".join(chr(code) for code in (0x43F, 0x430, 0x440, 0x43E, 0x43B, 0x44C)),
+    # An exemption that stopped before the value's end let the rest through (the final review): a tag, a word
+    # with more after it, a dotted prefix, a quoted passphrase, an adverb after "is", a capital.
+    "Your temporary password: <b>Xk9#mP2q</b>",
+    "password: Changed!2024",
+    "password: none!2024",
+    "password: My.Secret.Pass#99",
+    "password: letmein(2024)",
+    'password = "wrong horse battery staple"',
+    "the wifi password is now Sunflower2024",
+    "the password is Strong!2024",
+    "a" * 100 + "_token = abcdef1234567890",
+    # Found by running a generated corpus through the 3.3.0 screen and this one: a placeholder's shape with digits
+    # in it, a dotted name that is no code's, a null with more after it.
+    "password: <hunter2>",
+    "password: {hunter2}",
+    "password: my.pass.word",
+    "api_key: null!",
 ]
 
 
@@ -138,3 +165,24 @@ def test_a_long_hyphenated_line_scans_in_linear_time():
     started = time.monotonic()
     assert not contains_secret_like_text(line)
     assert time.monotonic() - started < 2.0
+
+
+def test_adversarial_text_scans_in_linear_time():
+    """Four patterns backtracked quadratically: ``^\\s*`` over blank lines (4.3 s for 20 kB), a backslash run with
+    no break after it (1.4 s), repeated "credential" (1.0 s), and repeated PEM BEGIN markers (14 s for 100 kB),
+    inside a capture or a model request."""
+    import time
+
+    for text in ("\n" * 20000, chr(92) * 20000, "credential" * 2000, "-----BEGIN " * 9000):
+        started = time.monotonic()
+        contains_secret_like_text(text)
+        redact_secret_like_text(text)
+        assert time.monotonic() - started < 1.5, (text[:20], time.monotonic() - started)
+
+
+def test_two_secrets_side_by_side_are_both_redacted():
+    """One pattern at a time, the password's match swallowed the token's key and left its value."""
+    for text in ('{"password":"x","api_token": "abc123def"}', "secret:x;auth_token = abc123def"):
+        redacted = redact_secret_like_text(text)
+        assert "abc123def" not in redacted, redacted
+        assert not contains_secret_like_text(redacted), redacted
