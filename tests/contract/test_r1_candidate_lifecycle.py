@@ -1003,3 +1003,59 @@ def test_a_repeat_queued_before_the_limit_is_answered_without_the_model(app):
     assert evaluator.calls == 2
     third = next(row for row in evaluations if row["evaluation_id"] == evaluation_id)
     assert third["reason"] == "repeat_without_restatement" and third["model_attempted_at"] is None
+
+
+def _first_verdict_then_two_sources(core, ctx):
+    """A first verdict of "not enough", then one more first-hand source: the second question carries two."""
+    core.drain_worker(ctx, max_items=8, remaining_seconds=10, consolidation=Evaluator())
+    assert _new_first_hand_evidence(core, ctx, "entity-blue property-blue 今天又讨论了一次。", "TEST-rc10/second") == 1
+    _lifecycle, evaluations, _work = _candidate_rows(core)
+    assert len(json.loads(evaluations[-1]["evidence_refs_json"])) == 2
+
+
+def test_a_verdict_that_leaves_out_or_miscopies_a_supplied_source_still_counts(app):
+    """Which sources a question carried is the evaluation's record, not something the model must repeat.  Asked to
+    echo every supplied ref, it left one out or miscopied a 70-character id in 5.2% of the pilot's evaluations with
+    nine or more sources, and each such verdict failed for good as ``candidate_source_refs``."""
+    core, ctx = app
+    saved, _source, proposal, _registration = _candidate(core, ctx)
+    _finish_source_work(core)
+    _first_verdict_then_two_sources(core, ctx)
+
+    class Sloppy(Evaluator):
+        def evaluate_candidate(self, candidate, sources, *, remaining_seconds, **_repair):
+            value = json.loads(super().evaluate_candidate(candidate, sources, remaining_seconds=remaining_seconds))
+            first = value["source_refs"][0]
+            # One supplied source left out, and the other miscopied by one character.
+            value["source_refs"] = [first[:12] + ("0" if first[12] != "0" else "1") + first[13:]]
+            return json.dumps(value, ensure_ascii=False)
+
+    evaluator = Sloppy(proposal)
+    core.drain_worker(ctx, max_items=8, remaining_seconds=10, consolidation=evaluator)
+    assert evaluator.calls == 1
+    assert core.current_claim(ctx, saved.ref).state == "active"
+    _lifecycle, evaluations, _work = _candidate_rows(core)
+    assert evaluations[-1]["state"] == "resolved"
+
+
+def test_a_verdict_citing_a_source_it_was_not_given_is_still_refused(app):
+    """What a verdict cites must be among the sources its question carried, whatever list it returns."""
+    core, ctx = app
+    saved, _source, _proposal, _registration = _candidate(core, ctx)
+    elsewhere = capture(core, ctx, "entity-blue property-blue 蓝色，另一处的记录。", key="TEST-rc10/not-supplied")
+    _finish_source_work(core)
+    outside = draft(elsewhere, "蓝色", subject="entity-blue", predicate="property-blue")
+
+    class Outside(Evaluator):
+        def evaluate_candidate(self, candidate, sources, *, remaining_seconds, **_repair):
+            value = json.loads(super().evaluate_candidate(candidate, sources, remaining_seconds=remaining_seconds))
+            value["source_refs"].append(f"{elsewhere.ref}@{elsewhere.revision}")
+            return json.dumps(value, ensure_ascii=False)
+
+    core.drain_worker(ctx, max_items=8, remaining_seconds=10, consolidation=Outside(outside))
+    current = core.current_claim(ctx, saved.ref)
+    assert current is None or current.state != "active"
+    with sqlite3.connect(core.storage.path) as conn:
+        fields = {row[0] for row in conn.execute(
+            "SELECT error_field FROM work_error_details WHERE stage='candidate_evaluation'")}
+    assert fields == {"evidence_undeclared_source"}, fields

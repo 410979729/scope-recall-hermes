@@ -62,9 +62,12 @@ def _candidate_obsolete(storage, clock, context, item, *, evaluation_id: int,
 
 def _apply_verdict(tx, item, current, value, live_sources, now):
     """Validate one decoded verdict and apply its proposal; None when it has none."""
-    expected_refs = tuple(f"{ref}@{revision}" for ref, revision in current.evidence_refs)
-    if tuple(sorted(value["source_refs"])) != tuple(sorted(expected_refs)):
-        raise ContractError("DERIVATION_INVALID", "candidate_source_refs")
+    # Which sources the question carried is this evaluation's own record, not something the model has to repeat.
+    # Asked to echo every supplied ref, it left one out or miscopied a 70-character id in 5.2% of the evaluations
+    # with nine or more sources on the pilot (none with one), and each such verdict was lost for good.  What the
+    # verdict cites -- a span, a counterexample, a state reference -- must still be one of them
+    # (``validate_proposal_references``).
+    value = dict(value, source_refs=[f"{ref}@{revision}" for ref, revision in current.evidence_refs])
     if len(value["claim_proposals"]) > 1:
         raise ContractError("DERIVATION_INVALID", "candidate_proposal_count")
     from .mutate import apply_claim, evidence_refs, validate_claims
