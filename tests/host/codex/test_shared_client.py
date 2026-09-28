@@ -357,6 +357,23 @@ def test_a_stop_records_what_the_session_record_shows_was_said_and_nothing_else(
     ])
 
 
+def test_a_long_prompt_is_stored_once_when_the_record_shows_it_again(store, tmp_path):
+    """A prompt over 65,536 characters is stored in segments under keys of their own, so the Stop's read of the
+    session record did not find it by its prompt id and stored it a second time (review of 3.4.0rc10)."""
+    root, _homes, client, _capture = store
+    text = "TEST 很长的提问。" + "长" * 70000
+    record = _record(tmp_path / "TEST-projects" / "TEST-cc-session.jsonl", _person("u1", _moments()(0), text))
+    hook = _hook(client)
+    try:
+        hook.handle_payload(_prompt(text))
+        hook.handle_payload(_stop(record))
+    finally:
+        hook.close()
+    groups = _rows(root, "SELECT source_group_key,count(*) FROM source_events WHERE role='user' "
+                         "AND entry_id='claude-code' GROUP BY 1")
+    assert len(groups) == 1 and groups[0][1] == 2, groups
+
+
 def test_later_identical_human_message_with_a_different_prompt_id_is_preserved(store, tmp_path):
     root, _homes, client, _capture = store
     at = _moments()

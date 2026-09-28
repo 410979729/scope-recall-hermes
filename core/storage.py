@@ -559,10 +559,13 @@ class Transaction:
         answers = [False] * len(items)
         # Named messages first, so the same words said again cannot take the copy a named message owns.
         named = {host_key for *_said, host_key in items if host_key is not None}
+        # A message over 65,536 characters is stored in segments under keys of their own, grouped under the host's
+        # key: looked up by the host's key alone, it was never found, and the Stop's read of the session record
+        # stored a long prompt a second time.  A message stored whole is its own group.
         for index, (_role, _content, _occurred_at, host_key) in enumerate(items):
             if host_key is not None:
                 answers[index] = host_key in waiting_keys or conn.execute(
-                    "SELECT 1 FROM source_events WHERE source_event_key=? AND scope_id=? AND session_id=? LIMIT 1",
+                    "SELECT 1 FROM source_events WHERE source_group_key=? AND scope_id=? AND session_id=? LIMIT 1",
                     (host_key, scope_id, self.context.session_id)).fetchone() is not None
         copies: dict[tuple[str, str], list[tuple[object, str]]] = {}
         for index, (role, content, occurred_at, host_key) in enumerate(items):
@@ -571,7 +574,7 @@ class Transaction:
             digest = stored_content_digest(content)
             if (role, digest) not in copies:
                 copies[role, digest] = [(stamp, key) for stamp, key in (*conn.execute(
-                    "SELECT occurred_at,source_event_key FROM source_events "
+                    "SELECT occurred_at,source_group_key FROM source_events "
                     "WHERE scope_id=? AND role=? AND content_sha256=? AND session_id=?",
                     (scope_id, role, digest, self.context.session_id)).fetchall(),
                     *waiting.get((role, digest), ())) if key not in named]
@@ -602,8 +605,11 @@ class Transaction:
                 continue
             for event in body.get("events") or ():
                 if isinstance(event, dict) and type(event.get("content")) is str and type(event.get("role")) is str:
+                    # A segment answers to its message's key, as its stored rows do (``said_in_session``).
+                    segment = event.get("segment")
+                    key = segment.get("group_key") if isinstance(segment, dict) else event.get("source_event_key")
                     waiting.setdefault((event["role"], stored_content_digest(event["content"])), []).append(
-                        (event.get("occurred_at"), str(event.get("source_event_key"))))
+                        (event.get("occurred_at"), str(key)))
         return waiting
 
     def enqueue_source(self, ref: str, revision: int, *, work_type: str, available_at: str) -> None:

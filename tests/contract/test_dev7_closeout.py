@@ -332,6 +332,63 @@ def test_a_long_message_whose_key_was_taken_is_stored_under_a_new_group(worker_a
     assert groups[1][0].startswith("TEST-turn-77#rekey:")
 
 
+def test_a_row_that_no_longer_passes_is_final_and_the_rows_after_it_are_stored(worker_app, monkeypatch):
+    """A row whose stored capture raised on revalidation stopped its whole page, on every pass, and every collision
+    after it was never stored (review of 3.4.0rc10)."""
+    core, ctx, clock = worker_app
+    other = replace(ctx, session_id="TEST-session-2")
+    for key in ("TEST-turn-50", "TEST-turn-51"):
+        first = source_event(source_event_key=key, content=f"TEST first {key}")
+        capture_inbox.durable_record_event(core.storage, clock, ctx, first, scope_id="TEST-scope", host_scope=None)
+        capture_inbox.durable_record_event(core.storage, clock, other, dict(first, content=f"TEST second {key}"),
+                                           scope_id="TEST-scope", host_scope=None)
+    original = capture_inbox.prepare_capture
+
+    def prepare(event, context):
+        if "TEST-turn-50" in event["source_event_key"]:
+            raise ContractError("INPUT_INVALID", "TEST-envelope")
+        return original(event, context)
+
+    monkeypatch.setattr(capture_inbox, "prepare_capture", prepare)
+    receipts = capture_inbox.resolve_conflicted_ingress(
+        core.storage, clock, other, authorize=lambda _: other.allowed_scope_ids, remaining_seconds=5)
+    assert sorted(receipt.disposition for receipt in receipts) == ["inserted", "rejected"]
+    with sqlite3.connect(core.storage.path) as conn:
+        assert conn.execute("SELECT last_error_code FROM capture_inbox").fetchall() == [("INPUT_INVALID",)]
+        assert conn.execute("SELECT count(*) FROM source_events WHERE content='TEST second TEST-turn-51'").fetchone()[0] == 1
+
+
+def test_a_long_key_that_was_taken_is_cut_to_fit_its_new_key(worker_app):
+    """A host key of 490 characters or more went past the 512-character limit once the marker and the fingerprint
+    were added, and was refused on every pass."""
+    core, ctx, clock = worker_app
+    key = "TEST-" + "k" * 500
+    first = source_event(source_event_key=key, content="TEST first long-keyed message")
+    capture_inbox.durable_record_event(core.storage, clock, ctx, first, scope_id="TEST-scope", host_scope=None)
+    other = replace(ctx, session_id="TEST-session-2")
+    capture_inbox.durable_record_event(core.storage, clock, other, dict(first, content="TEST second long-keyed message"),
+                                       scope_id="TEST-scope", host_scope=None)
+    receipts = capture_inbox.resolve_conflicted_ingress(
+        core.storage, clock, other, authorize=lambda _: other.allowed_scope_ids, remaining_seconds=5)
+    assert [receipt.durability for receipt in receipts] == ["persisted"]
+    with sqlite3.connect(core.storage.path) as conn:
+        rekeyed = conn.execute("SELECT source_event_key FROM source_events WHERE content='TEST second long-keyed message'"
+                               ).fetchone()[0]
+    assert len(rekeyed) == 512 and "#rekey:" in rekeyed and rekeyed.startswith("TEST-kkk")
+
+
+def test_a_long_message_waiting_in_the_inbox_counts_as_said(worker_app):
+    """A message over 65,536 characters waits in the inbox as segments under keys of their own: looked up by the
+    host's key it was not found, and a session-record read stored it a second time."""
+    core, ctx, clock = worker_app
+    event = source_event(source_event_key="TEST-long-waiting", content="TEST 很长的等待中的消息。" * 6000)
+    token, _prepared = capture_inbox.enqueue(core.storage, clock, ctx, event, scope_id="TEST-scope", host_scope=None)
+    assert token is not None
+    said = core.said_in_session(ctx, "TEST-scope",
+                                [(event["role"], event["content"], event["occurred_at"], "TEST-long-waiting")])
+    assert tuple(said) == (True,)
+
+
 def test_a_capture_that_conflicts_again_under_its_new_key_stays_final(worker_app, monkeypatch):
     """Written back as a bare conflict, such a row was given the same new key and refused on every pass, and it
     woke the worker every 30 s (review of 3.4.0rc10)."""

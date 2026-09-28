@@ -201,7 +201,7 @@ def _rekeyed_event(event: dict, capture: str = "") -> dict:
         group = str(segment["group_key"])
         if REKEY_MARKER in group:
             return dict(event)
-        group = f"{group}{REKEY_MARKER}{capture}"
+        group = _rekey(group, capture)
         prefix = "segmented-" + hashlib.sha256(group.encode("utf-8")).hexdigest()
         return {**event, "source_event_key": f"{prefix}/{segment['index']}", "segment": {**segment, "group_key": group}}
     original = str(event["source_event_key"])
@@ -211,7 +211,19 @@ def _rekeyed_event(event: dict, capture: str = "") -> dict:
         _json([original, event.get("content"), event.get("origin"), event.get("role"),
                event.get("occurred_at")]).encode("utf-8")
     ).hexdigest()[:16]
-    return {**event, "source_event_key": f"{original}{REKEY_MARKER}{fingerprint}"}
+    return {**event, "source_event_key": _rekey(original, fingerprint)}
+
+
+#: A source key, and a segment's group key, is at most this long (``contracts/source_event.schema.json``).
+_KEY_LIMIT = 512
+
+
+def _rekey(key: str, fingerprint: str) -> str:
+    """``key`` with the marker and the fingerprint, its original part cut to fit the key limit: a key of 490 characters
+    or more went past it and was refused on every pass.  The fingerprint covers the whole original key, so the cut
+    one stays unique."""
+    suffix = f"{REKEY_MARKER}{fingerprint}"
+    return key[:_KEY_LIMIT - len(suffix)] + suffix
 
 
 def resolve_conflicted_ingress(storage, clock, context, *, authorize, admission_policy=None,
@@ -238,34 +250,66 @@ def resolve_conflicted_ingress(storage, clock, context, *, authorize, admission_
         rows = tx._check().execute(f"""SELECT * FROM capture_inbox WHERE scope_id IN ({','.join('?' for _ in scopes)})
             AND project_id IS ? AND branch_id IS ? AND last_error_code='VERSION_CONFLICT'
             ORDER BY created_at,token LIMIT ?""", (*scopes, context.project_id, context.branch_id, limit)).fetchall()
+    return _replay_rows(storage, clock, context, rows, authorize, admission_policy, deadline, rekey=True)
+
+
+def _replay_rows(storage, clock, context, rows, authorize, admission_policy, deadline, *, rekey):
     receipts = []
     for row in rows:
         if time.monotonic() >= deadline:
             break
-        body = json.loads(row["payload_json"])
-        raw = dict(body["context"])
-        allowed = frozenset(raw.pop("allowed_scope_ids")) & context.allowed_scope_ids & frozenset(authorize(body["host_scope"]))
-        if row["scope_id"] not in allowed:
-            with storage.write(context, remaining_seconds=max(.001, deadline-time.monotonic())) as tx:
-                tx._check(write=True).execute("DELETE FROM capture_inbox WHERE token=?", (row["token"],))
+        try:
+            revalidated = _revalidated(storage, context, row, authorize, deadline, rekey=rekey)
+        except (ContractError, KeyError, TypeError, ValueError) as exc:
+            receipts.append(_settled(storage, context, row["token"], exc, deadline))
+            continue
+        if revalidated is None:
             receipts.append(CaptureReceipt("cancelled", (), "not_persisted", "unchanged", "unchanged", error_code="ACCESS_DENIED"))
             continue
-        snapshot = raw.pop("display_snapshot")
-        principal = raw.pop("source_principal", None)
-        original = TrustedContext(context.binding, allowed_scope_ids=allowed,
-            display_snapshot=DisplaySnapshot(snapshot["order"], tuple(ArtifactVersion(**i) for i in snapshot["items"])) if snapshot else None,
-            source_principal=TrustedSourcePrincipal(**principal) if principal is not None else None,
-            **raw)
-        events = []
-        capture = _capture_fingerprint(body["events"])
-        for event in body["events"]:
-            checked = prepare_capture(_rekeyed_event(event, capture), original)
-            if checked.rejection:
-                raise ContractError("ACCESS_DENIED", "ingress_payload")
-            events.extend(checked.events)
-        receipts.append(_commit(storage, clock, original, row["token"], PreparedCapture(tuple(events), tuple(body["gaps"])),
-                                row["scope_id"], admission_policy, deadline, rekeyed=True))
+        original, prepared = revalidated
+        receipts.append(_commit(storage, clock, original, row["token"], prepared, row["scope_id"], admission_policy,
+                                deadline, rekeyed=rekey))
     return tuple(receipts)
+
+
+def _revalidated(storage, context, row, authorize, deadline, *, rekey):
+    """One row's stored capture, checked again: ``(its context, the capture)``, or None when the host no longer grants
+    its scope (the row is then removed).  Raises when the stored envelope no longer passes."""
+    body = json.loads(row["payload_json"])
+    raw = dict(body["context"])
+    allowed = frozenset(raw.pop("allowed_scope_ids")) & context.allowed_scope_ids & frozenset(authorize(body["host_scope"]))
+    if row["scope_id"] not in allowed:
+        with storage.write(context, remaining_seconds=max(.001, deadline-time.monotonic())) as tx:
+            tx._check(write=True).execute("DELETE FROM capture_inbox WHERE token=?", (row["token"],))
+        return None
+    snapshot = raw.pop("display_snapshot")
+    principal = raw.pop("source_principal", None)
+    original = TrustedContext(context.binding, allowed_scope_ids=allowed,
+        display_snapshot=DisplaySnapshot(snapshot["order"], tuple(ArtifactVersion(**i) for i in snapshot["items"])) if snapshot else None,
+        source_principal=TrustedSourcePrincipal(**principal) if principal is not None else None,
+        **raw)
+    # Revalidate the stored envelope; trust is from the captured context,
+    # never inferred from a payload role or text claiming to be a user.
+    capture = _capture_fingerprint(body["events"]) if rekey else ""
+    events = []
+    for event in body["events"]:
+        checked = prepare_capture(_rekeyed_event(event, capture) if rekey else event, original)
+        if checked.rejection:
+            raise ContractError("ACCESS_DENIED", "ingress_payload")
+        events.extend(checked.events)
+    return original, PreparedCapture(tuple(events), tuple(body["gaps"]))
+
+
+def _settled(storage, context, token, exc, deadline) -> CaptureReceipt:
+    """A row whose stored capture no longer passes keeps a final code.  Raised out of its page, it stopped every row
+    after it, on every pass (review of 3.4.0rc10)."""
+    code = _terminal_code(exc) if isinstance(exc, ContractError) else "INPUT_INVALID:ingress_payload"
+    try:
+        with storage.write(context, remaining_seconds=max(.001, deadline-time.monotonic())) as tx:
+            tx._check(write=True).execute("UPDATE capture_inbox SET last_error_code=? WHERE token=?", (code, token))
+    except (*_TRANSIENT, ContractError):
+        pass
+    return CaptureReceipt("rejected", (), "not_persisted", "unchanged", "unchanged", error_code=code.split(":")[0])
 
 
 def replay_inbox(storage, clock, context, *, authorize, admission_policy=None, limit=8, remaining_seconds=1.0):
@@ -282,32 +326,4 @@ def replay_inbox(storage, clock, context, *, authorize, admission_policy=None, l
             AND (last_error_code IS NULL OR last_error_code IN ({','.join('?' for _ in _RETRIED)}))
             ORDER BY created_at,token LIMIT ?""",
             (*scopes, context.project_id, context.branch_id, *_RETRIED, limit)).fetchall()
-    receipts = []
-    for row in rows:
-        if time.monotonic() >= deadline:
-            break
-        body = json.loads(row["payload_json"])
-        raw = dict(body["context"])
-        allowed = frozenset(raw.pop("allowed_scope_ids")) & context.allowed_scope_ids & frozenset(authorize(body["host_scope"]))
-        if row["scope_id"] not in allowed:
-            with storage.write(context, remaining_seconds=max(.001, deadline-time.monotonic())) as tx:
-                tx._check(write=True).execute("DELETE FROM capture_inbox WHERE token=?", (row["token"],))
-            receipts.append(CaptureReceipt("cancelled", (), "not_persisted", "unchanged", "unchanged", error_code="ACCESS_DENIED"))
-            continue
-        snapshot = raw.pop("display_snapshot")
-        principal = raw.pop("source_principal", None)
-        original = TrustedContext(context.binding, allowed_scope_ids=allowed,
-            display_snapshot=DisplaySnapshot(snapshot["order"], tuple(ArtifactVersion(**i) for i in snapshot["items"])) if snapshot else None,
-            source_principal=TrustedSourcePrincipal(**principal) if principal is not None else None,
-            **raw)
-        # Revalidate the stored envelope; trust is from the captured context,
-        # never inferred from a payload role or text claiming to be a user.
-        events = []
-        for event in body["events"]:
-            checked = prepare_capture(event, original)
-            if checked.rejection:
-                raise ContractError("ACCESS_DENIED", "ingress_payload")
-            events.extend(checked.events)
-        receipts.append(_commit(storage, clock, original, row["token"], PreparedCapture(tuple(events), tuple(body["gaps"])),
-                                row["scope_id"], admission_policy, deadline))
-    return tuple(receipts)
+    return _replay_rows(storage, clock, context, rows, authorize, admission_policy, deadline, rekey=False)
