@@ -94,7 +94,8 @@ def test_an_inbox_row_a_replay_will_store_wakes_the_worker(tmp_path):
     # Put off by this release until later, and by another release: the first wakes the worker when its hour is up,
     # the second at once.
     codes = ('SOURCE_MISSING', 'VERSION_CONFLICT', 'VERSION_CONFLICT:rekeyed', 'SOURCE_MISSING:TEST-final',
-             f'DEFERRED|{__version__}|{later}|IDENTITY_UNBOUND', f'DEFERRED|0.0.1|{later}|TypeError')
+             f'DEFERRED|{__version__}|{later}|1|IDENTITY_UNBOUND', f'DEFERRED|0.0.1|{later}|1|TypeError',
+             f'GAVE_UP|{__version__}|TypeError', 'GAVE_UP|0.0.1|TypeError')
     for index, code in enumerate(codes):
         event = source_event(source_event_key=f'TEST-inbox-{index}', content=f'TEST 第{index}条。')
         token, _prepared = capture_inbox.enqueue(core.storage, core.clock, cfg.context(), event,
@@ -102,7 +103,7 @@ def test_an_inbox_row_a_replay_will_store_wakes_the_worker(tmp_path):
         with core.storage.write(cfg.context()) as tx:
             tx._check(write=True).execute('UPDATE capture_inbox SET last_error_code=? WHERE token=?', (code, token))
     plan = next_wake(cfg, now=NOW)
-    assert (plan.reason, plan.pending) == ('durable_capture_ingress', 2)
+    assert (plan.reason, plan.pending) == ('durable_capture_ingress', 3), "another release's rows are taken at once"
     with core.storage.write(cfg.context()) as tx:
         tx._check(write=True).execute("DELETE FROM capture_inbox WHERE last_error_code NOT LIKE 'DEFERRED|' || ? || '|%'",
                                       (__version__,))

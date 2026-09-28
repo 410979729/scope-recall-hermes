@@ -41,40 +41,67 @@ _RETRIED = tuple(sorted(STILL_REPLAYED - {"VERSION_CONFLICT"}))
 _REKEYED_CONFLICT = "VERSION_CONFLICT:rekeyed"
 
 
-#: A row whose stored capture this release could not check again is put off, never given up:
-#: ``DEFERRED|<release>|<until>|<code>``.  A newer release's field in its context, an installation being reinstalled
-#: (the host's authorizer refuses), a secret screen that differs between releases: each clears, so another release
-#: tries such a row at once and this one after an hour.  Given a final code, it was never stored, and a Claude Code
-#: Stop that had counted it as waiting did not store the words either (review of 3.4.0rc10); left in place, it stopped
-#: every row after it on every pass.
+#: A row whose stored capture this release could not check again is put off:
+#: ``DEFERRED|<release>|<until>|<attempt>|<code>``.  A newer release's field in its context, a host whose check fails
+#: for now, a secret screen that differs between releases: each can clear.  Given a final code at once, such a row was
+#: never stored, and a Claude Code Stop that had counted it as waiting did not store the words either; left in place,
+#: it stopped every row after it on every pass (reviews of 3.4.0rc10).  This release tries it again after a minute,
+#: doubling to an hour, and after ``DEFER_ATTEMPTS`` gives it up where doctor and the patrol show it
+#: (``GAVE_UP|<release>|<code>``); another release takes a row either way at once.
 _DEFERRED = "DEFERRED|"
-DEFER_SECONDS = 3600.0
-#: What a query takes for the rows a replay may store: never tried, a code in ``_RETRIED``, or put off.
+_GAVE_UP = "GAVE_UP|"
+DEFER_FIRST_SECONDS = 60.0
+DEFER_MAX_SECONDS = 3600.0
+#: About nineteen hours of tries.
+DEFER_ATTEMPTS = 24
+#: What a query takes for the rows a replay may store: never tried, a code in ``_RETRIED``, put off or given up.
 REPLAY_CANDIDATES = (f"(last_error_code IS NULL OR last_error_code IN ({','.join('?' for _ in _RETRIED)})"
-                     " OR last_error_code LIKE 'DEFERRED|%')")
+                     " OR last_error_code LIKE 'DEFERRED|%' OR last_error_code LIKE 'GAVE_UP|%')")
 
 
-def _deferral(exc: BaseException, now: datetime) -> str:
-    kind = exc.code if isinstance(exc, ContractError) else type(exc).__name__
-    until = (now + timedelta(seconds=DEFER_SECONDS)).strftime("%Y-%m-%dT%H:%M:%SZ")
-    return f"{_DEFERRED}{__version__}|{until}|{kind}"
-
-
-def deferred_until(code: object) -> datetime | None:
-    """When this release tries a row it put off again; None for any other code, or another release's deferral."""
+def _parsed_deferral(code: object) -> tuple[str, datetime | None, int] | None:
+    """``(release, until, attempt)`` of a ``DEFERRED`` code; ``until`` None when it cannot be read as a UTC time."""
     if type(code) is not str or not code.startswith(_DEFERRED):
         return None
+    parts = code.split("|", 4)
+    if len(parts) != 5:
+        return "", None, 0
+    _marker, release, until, attempt, _kind = parts
     try:
-        _marker, release, until, _kind = code.split("|", 3)
         moment = datetime.fromisoformat(until.replace("Z", "+00:00"))
     except ValueError:
+        moment = None
+    if moment is not None and moment.tzinfo is None:
+        moment = None
+    return release, moment, int(attempt) if attempt.isdigit() else 0
+
+
+def _deferral(previous: object, exc: BaseException, now: datetime) -> str:
+    kind = exc.code if isinstance(exc, ContractError) else type(exc).__name__
+    parsed = _parsed_deferral(previous)
+    attempt = (parsed[2] if parsed is not None and parsed[0] == __version__ else 0) + 1
+    if attempt > DEFER_ATTEMPTS:
+        return f"{_GAVE_UP}{__version__}|{kind}"
+    delay = min(DEFER_MAX_SECONDS, DEFER_FIRST_SECONDS * 2 ** (attempt - 1))
+    until = (now + timedelta(seconds=delay)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return f"{_DEFERRED}{__version__}|{until}|{attempt}|{kind}"
+
+
+def deferred_until(code: object, now: datetime) -> datetime | None:
+    """When this release tries a row it put off again, if that is still to come; None otherwise."""
+    parsed = _parsed_deferral(code)
+    if parsed is None or parsed[0] != __version__ or parsed[1] is None:
         return None
-    return moment if release == __version__ else None
+    until = parsed[1]
+    # A time further off than any backoff was written while the clock ran ahead: due now.
+    if until <= now or until - now > timedelta(seconds=2 * DEFER_MAX_SECONDS):
+        return None
+    return until
 
 
 def replayable(code: object, now: datetime) -> bool:
     """Whether a pass now stores a row with this code: never tried, a passing failure, a bare ``SOURCE_MISSING`` an
-    older release left, or a deferral another release made or whose hour is up.
+    older release left, a deferral whose time has come, or a row another release put off or gave up.
 
     What wakes the worker, and all the doctor does not call blocked, is read from here: the wake had counted two of
     the three retried codes, so a row an older release left as ``SOURCE_MISSING`` waited for a pass something else
@@ -83,15 +110,41 @@ def replayable(code: object, now: datetime) -> bool:
     every 30 s for good."""
     if code is None or code in _RETRIED:
         return True
-    if type(code) is not str or not code.startswith(_DEFERRED):
+    if type(code) is not str:
         return False
-    until = deferred_until(code)
-    return until is None or until <= now
+    if code.startswith(_DEFERRED):
+        return deferred_until(code, now) is None
+    if code.startswith(_GAVE_UP):
+        return code.split("|", 2)[1] != __version__
+    return False
+
+
+def put_off(code: object) -> bool:
+    """Whether a row waits on a deferral or was given up by one: rows a delete keeps unless they hold deleted words."""
+    return type(code) is str and (code.startswith(_DEFERRED) or code.startswith(_GAVE_UP))
 
 
 def waiting(code: object) -> bool:
-    """Whether some pass will still store a row with this code: what a hook's record read counts as already said."""
+    """Whether some pass will still store a row with this code: what a hook's record read counts as already said.  A
+    row given up is not: nothing will store it."""
     return code is None or code in STILL_REPLAYED or (type(code) is str and code.startswith(_DEFERRED))
+
+
+def holds(payload_json: object, digests: frozenset[str], groups: frozenset[str]) -> bool:
+    """Whether an inbox row's capture holds one of these stored contents (``content_sha256``) or source groups; a row
+    that cannot be read is taken to (a delete then cancels it, as it cancels every row it cannot look into)."""
+    from .events import stored_content_digest
+
+    try:
+        body = json.loads(payload_json)
+        for event in body["events"]:
+            segment = event.get("segment")
+            group = segment.get("group_key") if isinstance(segment, dict) else event.get("source_event_key")
+            if group in groups or stored_content_digest(event["content"]) in digests:
+                return True
+    except (ValueError, KeyError, TypeError, AttributeError):
+        return True
+    return False
 
 
 def _terminal_code(exc: ContractError) -> str:
@@ -304,8 +357,11 @@ def _replay_rows(storage, clock, context, rows, authorize, admission_policy, dea
             break
         try:
             revalidated = _revalidated(storage, context, row, authorize, deadline, rekey=rekey)
-        except (ContractError, KeyError, TypeError, ValueError) as exc:
-            receipts.append(_defer(storage, context, row["token"], exc, deadline))
+        except _TRANSIENT:
+            raise  # the store itself: the whole replay waits for the next pass, as before
+        except (ContractError, KeyError, TypeError, ValueError, RuntimeError, OSError) as exc:
+            # A host's check that raises (Hermes' identity errors are RuntimeErrors) put off this row only.
+            receipts.append(_defer(storage, clock, context, row, exc, deadline))
             continue
         if revalidated is None:
             receipts.append(CaptureReceipt("cancelled", (), "not_persisted", "unchanged", "unchanged", error_code="ACCESS_DENIED"))
@@ -344,15 +400,24 @@ def _revalidated(storage, context, row, authorize, deadline, *, rekey):
     return original, PreparedCapture(tuple(events), tuple(body["gaps"]))
 
 
-def _defer(storage, context, token, exc, deadline) -> CaptureReceipt:
+def _utc(clock) -> datetime:
+    try:
+        moment = datetime.fromisoformat(str(clock.utc_now()).replace("Z", "+00:00"))
+    except ValueError:
+        return datetime.now(timezone.utc)
+    return moment if moment.tzinfo is not None else moment.replace(tzinfo=timezone.utc)
+
+
+def _defer(storage, clock, context, row, exc, deadline) -> CaptureReceipt:
     """Put off a row whose stored capture this release could not check again (``_DEFERRED``)."""
-    code = _deferral(exc, datetime.now(timezone.utc))
+    code = _deferral(row["last_error_code"], exc, _utc(clock))
     try:
         with storage.write(context, remaining_seconds=max(.001, deadline-time.monotonic())) as tx:
-            tx._check(write=True).execute("UPDATE capture_inbox SET last_error_code=? WHERE token=?", (code, token))
+            tx._check(write=True).execute("UPDATE capture_inbox SET last_error_code=? WHERE token=?", (code, row["token"]))
     except (*_TRANSIENT, ContractError):
         pass  # the row keeps its code, and the next pass takes it again
-    return CaptureReceipt("queued", (), "queued", "pending", "pending", error_code="DEFERRED")
+    return CaptureReceipt("queued", (), "queued", "pending", "pending",
+                          error_code="GAVE_UP" if code.startswith(_GAVE_UP) else "DEFERRED")
 
 
 def replay_inbox(storage, clock, context, *, authorize, admission_policy=None, limit=8, remaining_seconds=1.0):
@@ -363,12 +428,16 @@ def replay_inbox(storage, clock, context, *, authorize, admission_policy=None, l
     scopes = tuple(sorted(context.allowed_scope_ids))
     if not scopes:
         return ()
+    # A row put off is passed over, not the head of the page.  Its code is read first and its payload only when it
+    # is taken: the inbox holds up to 256 rows and 64 MB.
+    now = _utc(clock)
     with storage.read(context, remaining_seconds=remaining_seconds) as tx:
-        rows = tx._check().execute(f"""SELECT * FROM capture_inbox WHERE scope_id IN ({','.join('?' for _ in scopes)})
+        conn = tx._check()
+        tokens = [token for token, code in conn.execute(
+            f"""SELECT token,last_error_code FROM capture_inbox WHERE scope_id IN ({','.join('?' for _ in scopes)})
             AND project_id IS ? AND branch_id IS ? AND {REPLAY_CANDIDATES}
             ORDER BY created_at,token""",
-            (*scopes, context.project_id, context.branch_id, *_RETRIED)).fetchall()
-    # The inbox holds at most 256 rows; a row put off for another hour is passed over, not the head of the page.
-    now = datetime.now(timezone.utc)
-    rows = [row for row in rows if replayable(row["last_error_code"], now)][:limit]
+            (*scopes, context.project_id, context.branch_id, *_RETRIED)) if replayable(code, now)][:limit]
+        rows = [row for token in tokens
+                if (row := conn.execute("SELECT * FROM capture_inbox WHERE token=?", (token,)).fetchone()) is not None]
     return _replay_rows(storage, clock, context, rows, authorize, admission_policy, deadline, rekey=False)

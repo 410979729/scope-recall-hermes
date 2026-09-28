@@ -255,8 +255,24 @@ class Deletions:
             now = row["created_at"]
         # Pending captures have no public source ref yet. Cancel the affected
         # partition conservatively so a delayed event cannot undo forgetting.
+        # A row put off (``capture_inbox.put_off``) can wait for hours, and
+        # cancelling it lost words nothing had forgotten (review of rc10): it is
+        # kept unless it holds a deleted source's content or group.
+        from .capture_inbox import holds, put_off
+
+        digests, groups = set(), set()
+        for target in targets:
+            for digest, group in conn.execute("SELECT content_sha256,source_group_key FROM source_events WHERE event_id=?",
+                                              (target.ref,)):
+                digests.add(digest)
+                groups.add(group)
+        forgotten = (frozenset(digests), frozenset(groups))
         for scope, project, branch in {(t.scope_id, t.project_id, t.branch_id) for t in targets}:
-            conn.execute("DELETE FROM capture_inbox WHERE scope_id=? AND project_id IS ? AND branch_id IS ?", (scope, project, branch))
+            for token, code, payload in conn.execute(
+                    "SELECT token,last_error_code,payload_json FROM capture_inbox WHERE scope_id=? AND project_id IS ? AND branch_id IS ?",
+                    (scope, project, branch)).fetchall():
+                if not put_off(code) or holds(payload, *forgotten):
+                    conn.execute("DELETE FROM capture_inbox WHERE token=?", (token,))
         for target in targets:
             conn.execute("DELETE FROM consolidation_fragments WHERE work_id IN (SELECT work_id FROM work_items WHERE subject_ref=?)", (target.ref,))
             conn.execute("""INSERT INTO object_blocks(object_kind,object_ref,scope_id,project_id,branch_id,read_blocked,suppressed,operation_id)

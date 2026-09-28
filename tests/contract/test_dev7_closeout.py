@@ -357,8 +357,8 @@ def test_a_row_that_cannot_be_checked_again_is_put_off_and_the_rows_after_it_are
     with sqlite3.connect(core.storage.path) as conn:
         [(code,)] = conn.execute("SELECT last_error_code FROM capture_inbox").fetchall()
         assert conn.execute("SELECT count(*) FROM source_events WHERE content='TEST second TEST-turn-51'").fetchone()[0] == 1
-    assert code.startswith(f"DEFERRED|{capture_inbox.__version__}|") and code.endswith("|INPUT_INVALID")
-    # Not taken again within the hour; still waiting as far as a record read is concerned.
+    assert code.startswith(f"DEFERRED|{capture_inbox.__version__}|") and code.endswith("|1|INPUT_INVALID")
+    # Not taken again before its minute is up; still waiting as far as a record read is concerned.
     assert capture_inbox.replay_inbox(core.storage, clock, other, authorize=lambda _: other.allowed_scope_ids) == ()
     assert capture_inbox.waiting(code)
     # Another release (one that reads it) takes it at once, and the collision is then stored under a new key.
@@ -371,6 +371,68 @@ def test_a_row_that_cannot_be_checked_again_is_put_off_and_the_rows_after_it_are
     with sqlite3.connect(core.storage.path) as conn:
         assert conn.execute("SELECT count(*) FROM source_events WHERE content='TEST second TEST-turn-50'").fetchone()[0] == 1
         assert conn.execute("SELECT count(*) FROM capture_inbox").fetchone()[0] == 0
+
+
+def test_a_row_put_off_again_waits_longer_and_is_given_up_where_it_shows():
+    """A row put off was tried again every hour for ever (review of 3.4.0rc10), and after a reinstall an hour was
+    long to wait.  It is tried after a minute, doubling to an hour, and given up after a day's worth of tries."""
+    from datetime import datetime, timezone
+
+    now = datetime(2026, 9, 28, 12, tzinfo=timezone.utc)
+    code, waits = None, []
+    for _attempt in range(capture_inbox.DEFER_ATTEMPTS):
+        code = capture_inbox._deferral(code, ContractError("IDENTITY_UNBOUND", "TEST"), now)
+        waits.append((capture_inbox.deferred_until(code, now) - now).total_seconds())
+    assert waits[:4] == [60, 120, 240, 480] and waits[-1] == 3600
+    given_up = capture_inbox._deferral(code, RuntimeError("TEST"), now)
+    assert given_up == f"GAVE_UP|{capture_inbox.__version__}|RuntimeError"
+    assert not capture_inbox.replayable(given_up, now) and not capture_inbox.waiting(given_up)
+    assert capture_inbox.replayable("GAVE_UP|0.0.1|RuntimeError", now), "another release takes it"
+    # A time without its zone, or further off than any wait, is due now rather than a crash or a wait for ever.
+    version = capture_inbox.__version__
+    assert capture_inbox.replayable(f"DEFERRED|{version}|2026-09-28T12:30:00|1|TEST", now)
+    assert capture_inbox.replayable(f"DEFERRED|{version}|2026-12-01T00:00:00Z|1|TEST", now)
+    assert not capture_inbox.replayable(f"DEFERRED|{version}|2026-09-28T12:30:00Z|1|TEST", now)
+
+
+def test_a_delete_keeps_a_put_off_row_unless_it_holds_the_deleted_words(worker_app):
+    """A delete cancels its partition's pending captures, so that a delayed one cannot undo it.  A row put off waits
+    for hours, and cancelling it lost words nothing had forgotten (review of 3.4.0rc10)."""
+    core, ctx, clock = worker_app
+    later = f"DEFERRED|{capture_inbox.__version__}|2026-09-28T13:00:00Z|1|RuntimeError"
+    for key, text in (("TEST-put-off-keep", "TEST 暂缓的另一句话。"), ("TEST-put-off-same", "TEST 要删掉的话。"),
+                      ("TEST-plain-waiting", "TEST 普通等待的一句。")):
+        token, _prepared = capture_inbox.enqueue(core.storage, clock, ctx, source_event(source_event_key=key, content=text),
+                                                 scope_id="TEST-scope", host_scope=None)
+        if key.startswith("TEST-put-off"):
+            with sqlite3.connect(core.storage.path) as conn:
+                conn.execute("UPDATE capture_inbox SET last_error_code=? WHERE token=?", (later, token))
+                conn.commit()
+    source = capture(core, ctx, "TEST 要删掉的话。", key="TEST-stored-same")
+    authorize(core, ctx, source)
+    core.forget(ctx, request(source), remaining_seconds=5)
+    with sqlite3.connect(core.storage.path) as conn:
+        left = [row[0] for row in conn.execute("SELECT payload_json FROM capture_inbox")]
+    assert len(left) == 1 and "TEST-put-off-keep" in left[0]
+
+
+def test_a_host_check_that_raises_puts_off_that_row_only(worker_app):
+    """Hermes' identity errors are RuntimeErrors: one raised for a single row stopped the whole page on every pass."""
+    core, ctx, clock = worker_app
+    for key in ("TEST-host-a", "TEST-host-b"):
+        capture_inbox.enqueue(core.storage, clock, ctx, source_event(source_event_key=key, content=f"TEST {key}"),
+                              scope_id="TEST-scope", host_scope={"TEST": key})
+
+    def authorize(host_scope):
+        if host_scope["TEST"] == "TEST-host-a":
+            raise RuntimeError("TEST no such entry")
+        return ctx.allowed_scope_ids
+
+    receipts = capture_inbox.replay_inbox(core.storage, clock, ctx, authorize=authorize)
+    assert sorted(receipt.disposition for receipt in receipts) == ["inserted", "queued"]
+    with sqlite3.connect(core.storage.path) as conn:
+        [(code,)] = conn.execute("SELECT last_error_code FROM capture_inbox").fetchall()
+    assert code.endswith("|1|RuntimeError")
 
 
 def test_a_named_message_that_was_deleted_still_counts_as_said(worker_app):

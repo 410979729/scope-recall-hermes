@@ -153,7 +153,7 @@ def next_wake(config, *, now: datetime | None = None, unavailable_until=None) ->
                                     (*params, *_RETRIED)):
             if replayable(code, now):
                 inbox += 1
-            elif (until := deferred_until(code)) is not None:
+            elif (until := deferred_until(code, now)) is not None:
                 # A row put off wakes the worker when its hour is up.
                 candidates.append((until, 'durable_capture_deferred'))
         if inbox:
