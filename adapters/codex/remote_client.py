@@ -321,15 +321,6 @@ def run_hook(config: dict[str, Any], raw: bytes, *, started: float | None = None
     # a connection that does not open that is all of it, so a hook that waited for the server was killed before
     # it could keep anything.  An answer that stored it removes it again.
     spooled = _spool(config, payload, observed_at) if host == "codex" and event in _SPOOLED else None
-    # A hook that answers nothing waits behind what the spool still holds, so the server hears a turn in the order
-    # it happened.  A Stop sent past a prompt kept while the server was away was stored before the prompt, and in
-    # a thread that prompt marks as Codex's own (``handler._suggestions_thread``) the reply was stored as if the
-    # owner had asked for it.  A prompt is still sent at once, for its answer.
-    if spooled is not None and event != "UserPromptSubmit" \
-            and any(item.name < spooled.name for item in spooled.parent.glob("*.json")):
-        if not _server_away(config):
-            _start_flush(config)
-        return {}
     if _server_away(config):
         _log(config, f"{event}: not sent, the server was away less than {AWAY_SECONDS:.0f} s ago")
         answer = None
