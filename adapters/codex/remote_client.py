@@ -28,6 +28,7 @@ import argparse
 from datetime import datetime, timezone
 import hashlib
 import http.client
+import itertools
 import json
 import os
 from pathlib import Path
@@ -187,6 +188,9 @@ def _spool_dir(config: dict[str, Any]) -> Path:
     return config["state_dir"] / "spool"
 
 
+_SPOOL_SEQUENCE = itertools.count()
+
+
 def _spool(config: dict[str, Any], payload: dict[str, Any], observed_at: str) -> Path | None:
     folder = _spool_dir(config)
     try:
@@ -197,7 +201,8 @@ def _spool(config: dict[str, Any], payload: dict[str, Any], observed_at: str) ->
             stale.unlink(missing_ok=True)
         if dropped:
             _log(config, f"spool full: dropped the {len(dropped)} oldest")
-        name = f"{time.time_ns():020d}-{os.getpid()}.json"
+        # The clock can read the same twice in a row, and a name taken twice replaced the hook kept under it.
+        name = f"{time.time_ns():020d}-{os.getpid()}-{next(_SPOOL_SEQUENCE):06d}.json"
         pending = folder / f"{name}.tmp"
         pending.write_text(json.dumps({"payload": payload, "observed_at": observed_at}, ensure_ascii=False),
                            encoding="utf-8")

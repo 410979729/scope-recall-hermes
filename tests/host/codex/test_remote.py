@@ -402,6 +402,36 @@ def test_a_failed_recall_s_cause_reaches_the_server_log(served, tmp_path, monkey
     assert "hook UserPromptSubmit: recall_exception (ContractError:INPUT_INVALID), record through None" in log
 
 
+def test_a_server_that_cannot_start_a_vector_helper_ahead_still_serves(store, monkeypatch):
+    """Keeping a helper ready is a speed-up: failing to start one must not keep the entry from being served."""
+    import sys as system
+    import types
+
+    from scope_recall.vector import process_store
+
+    root, homes = store
+    remote_server.write_server_config(homes["codex"], "codex", listen="127.0.0.1", port=_free_port(),
+                                      token_sha256="0" * 64)
+    config = remote_server.load_server_config(homes["codex"], "codex")
+    served = []
+    monkeypatch.setattr(system, "platform", "win32")
+    monkeypatch.setitem(system.modules, "uvicorn", types.SimpleNamespace(run=lambda app, **kwargs: served.append(app)))
+    monkeypatch.setattr(process_store, "prestart", lambda **kwargs: (_ for _ in ()).throw(OSError("TEST no helper")))
+    root_logger = logging.getLogger()
+    level = root_logger.level
+    try:
+        remote_server.serve(config)
+    finally:
+        for handler in list(root_logger.handlers):
+            if isinstance(handler, logging.handlers.RotatingFileHandler):
+                root_logger.removeHandler(handler)
+                handler.close()
+        root_logger.setLevel(level)
+    assert len(served) == 1
+    log = (homes["codex"] / "scope-recall" / remote_server.LOG_NAME).read_text(encoding="utf-8")
+    assert "could not start a vector helper ahead: OSError" in log
+
+
 def test_a_recall_without_its_vector_search_is_named_in_the_server_log(served, tmp_path, monkeypatch):
     """The work computer's recalls ran without their vector search for as long as anyone could tell: the packet
     carried the gap to the model, and the server's log said nothing."""
