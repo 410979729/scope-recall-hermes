@@ -4,6 +4,27 @@ All notable changes to `scope-recall` will be documented in this file.
 
 ## [Unreleased]
 
+### Scope Recall 3.4.0rc9 - 2026-09-28
+
+- The version moves past 3.4.0rc8, which was not tagged.
+- Claude Code and Codex recall by meaning again. On the pilot, the owner asked the work computer's Claude Code and Codex what was outside their window. The answer was in the store: another agent had been told about a pigeon five days earlier. Neither found it. Only its meaning matched the question, and their vector search never finished:
+  - Each hook is a new process, and the helper it started for the vector search spent 2.1 s importing LanceDB.
+  - The search then read all 78,403 vectors of 3,072 dimensions (750 ms), more than the 2.9 s the search is given.
+  - Hermes, which keeps its helper, was not affected.
+  - A hook now starts the helper when the prompt arrives, so the import runs while the prompt is stored and the words are searched.
+  - A remote entry's server keeps one helper started and ready.
+  - The worker builds a nearest-neighbour index once a store holds 10,000 vectors, at the start of a pass with the time for it. On the pilot's store that took 32.9 s. A search then takes 21 ms against 748 ms, with the exact scan's top ten in 998 of 1,000 places. Compaction adds later vectors to the index.
+  - A search no longer returns each hit's vector through the helper's pipe; nothing read it.
+  - Replayed on the store as it stood before the question, the recall now finds the pigeon. Without the vector channel it found two unrelated claims.
+- Codex's own request for suggestions of what to do next is no longer stored as the owner's words. Codex sends it through the prompt hook.
+  - On the pilot four were stored, 11,000 to 15,000 characters each, and claims were drawn from them as if the owner had said them. One of those claims filled a background slot in every recall on the work computer.
+  - The model's JSON answer to such a request is not stored as a reply either; nine were.
+  - Neither is recalled for.
+- A prompt the store was too busy to take is recalled by meaning as well. The vector search came only with a stored or queued capture, so a capture that failed left the turn to a recall by words alone: six prompts on the work computer's two entries in one night. A prompt refused as holding a credential still goes without it, so nothing of it reaches an embedding provider.
+- A prompt longer than a recall query's 8,192 characters is recalled for by its first 8,192, as Hermes does. Sent whole, the request was refused and the turn had no recall at all: three of the work computer's Codex prompts in one morning.
+- A failed automatic recall says what stopped it: the class of the error and, for a contract error, its code. It goes on the hook's stderr (`CODEX_RECALL:`) and on the remote server's log line. The work computer's server said only `recall_exception`.
+- `doctor` reports each vector store's index (`index_outcome`: `built`, `present`, `below_threshold`, `deferred` or `failed`). It no longer advises an index from 100,000 embedded objects: the scan cost 750 ms at 78,000.
+
 ### Scope Recall 3.4.0rc8 - 2026-09-28
 
 - The version moves past the `v3.4.0rc7` tag.
