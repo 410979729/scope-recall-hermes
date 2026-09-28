@@ -282,9 +282,11 @@ def resume_deferred(storage, clock, context, policy=None, *, limit=16, remaining
     policy = policy or AdmissionPolicy()
     scopes = sorted(context.allowed_scope_ids)
     marks = ",".join("?" for _ in scopes)
-    # Nothing deferred is the usual case, and finding that out is a scan of every source the context reaches.
-    # It is read without the writer lease: under it, every worker pass on the shared store held the lease for
-    # 9.8 s on 2026-09-27 with not one source deferred, and every capture waiting for it failed.
+    # Which deferred sources to try is a scan of every source the context reaches, and the queue counts next to
+    # it: all read without the writer lease, and the write touches only the page found, each source checked
+    # again there by ``_schedule`` (its revision, visibility and the queue's room).  Under the lease the scan held
+    # it 9.8 s on 2026-09-27 with nothing deferred; with one deferred source that had no room, or an older
+    # revision's marker the page never selects, it ran on every pass and selected nothing.
     with storage.read(context, remaining_seconds=remaining_seconds) as tx:
         waiting = tx._check().execute(
             f"""SELECT 1 FROM source_events e
@@ -293,60 +295,10 @@ def resume_deferred(storage, clock, context, policy=None, *, limit=16, remaining
                 AND json_extract(e.extra_json,'$._scope_recall_admission.disposition')='deferred'
                 AND json_extract(e.extra_json,'$._scope_recall_admission.reason')='queue_capacity' LIMIT 1""",
             (*scopes, context.project_id, context.branch_id)).fetchone()
-    if waiting is None:
+        rows = () if waiting is None else _deferred_page(tx, clock, context, policy, scopes, marks, limit)
+    if not rows:
         return ()
     with storage.write(context, remaining_seconds=remaining_seconds) as tx:
-        origins = sorted(FRESH_CONVERSATION_ORIGINS)
-        fresh = f"(e.persisted_at>=? AND e.origin IN ({','.join('?' for _ in origins)}))"
-        fresh_params = (fresh_since(clock.utc_now()), *origins)
-        # Filter before LIMIT: a long embedding-only backlog must not hide a
-        # later source whose healthy consolidation slot can be filled now.
-        eligible = []
-        eligibility_params = []
-        # The queue is counted once for every scope, not once per scope and
-        # type: a shared store binds hundreds of scopes, and with 32,000 items
-        # queued after an import the 442 separate counts took 90 s of a 120 s
-        # pass, so the watchdog ended every pass before it embedded anything.
-        kinds = sorted(WORK_TYPES)
-        queued = {(scope, kind): count for scope, kind, count in tx._check().execute(
-            f"""SELECT scope_id,work_type,count(*) FROM work_items
-                WHERE state IN ('pending','leased') AND scope_id IN ({marks}) AND project_id IS ? AND branch_id IS ?
-                AND work_type IN ({','.join('?' for _ in kinds)}) GROUP BY scope_id,work_type""",
-            (*scopes, context.project_id, context.branch_id, *kinds))}
-        for scope in scopes:
-            tx._scope(scope)
-            for kind in kinds:
-                count = queued.get((scope, kind), 0)
-                ordinary = not policy.enabled or count < _capacity(policy, False)
-                priority = not policy.enabled or count < _capacity(policy, True)
-                if not priority:
-                    continue
-                # A tool output is owed an embedding only (``wanted_work_types``), so it never holds
-                # a consolidation.  It is picked for one only once its embedding is queued, to settle
-                # a marker written before that rule; picked while its embedding waited for room, it
-                # came first on every pass and held the page.
-                owed = "" if kind in TOOL_OUTPUT_WORK_TYPES else """AND (e.role<>'tool' OR EXISTS(
-                    SELECT 1 FROM work_items o WHERE o.subject_ref=e.event_id
-                    AND o.subject_revision=e.source_revision AND o.work_type='embed'))"""
-                priority_filter, priority_params = "", ()
-                if not ordinary:
-                    priority_filter = f"AND (json_extract(e.extra_json,'$._scope_recall_admission.important')=1 OR {fresh})"
-                    priority_params = fresh_params
-                eligible.append(f"""(e.scope_id=? {owed} {priority_filter} AND NOT EXISTS(
-                    SELECT 1 FROM work_items w WHERE w.subject_ref=e.event_id
-                    AND w.subject_revision=e.source_revision AND w.work_type=?))""")
-                eligibility_params.extend((scope, *priority_params, kind))
-        if not eligible:
-            return ()
-        rows = tx._check().execute(f"""SELECT e.event_id,e.source_revision,{fresh} AS fresh FROM source_events e
-            WHERE e.scope_id IN ({marks}) AND e.project_id IS ? AND e.branch_id IS ?
-            AND e.read_blocked=0 AND e.suppressed=0
-            AND json_extract(e.extra_json,'$._scope_recall_admission.disposition')='deferred'
-            AND json_extract(e.extra_json,'$._scope_recall_admission.reason')='queue_capacity'
-            AND ({' OR '.join(eligible)})
-            AND NOT EXISTS(SELECT 1 FROM source_events n WHERE n.source_group_key=e.source_group_key AND n.source_revision>e.source_revision)
-            ORDER BY fresh DESC,e.persisted_at,e.event_id LIMIT ?""",
-            (*fresh_params, *scopes, context.project_id, context.branch_id, *eligibility_params, limit)).fetchall()
         results = []
         for row in rows:
             try:
@@ -355,3 +307,58 @@ def resume_deferred(storage, clock, context, policy=None, *, limit=16, remaining
                 if exc.code != "SOURCE_MISSING":
                     raise
         return tuple(results)
+
+
+def _deferred_page(tx, clock, context, policy, scopes, marks, limit) -> list[tuple]:
+    """The deferred sources a refill may schedule now, fresh conversation first, by the queue as read."""
+    origins = sorted(FRESH_CONVERSATION_ORIGINS)
+    fresh = f"(e.persisted_at>=? AND e.origin IN ({','.join('?' for _ in origins)}))"
+    fresh_params = (fresh_since(clock.utc_now()), *origins)
+    # Filter before LIMIT: a long embedding-only backlog must not hide a
+    # later source whose healthy consolidation slot can be filled now.
+    eligible = []
+    eligibility_params = []
+    # The queue is counted once for every scope, not once per scope and
+    # type: a shared store binds hundreds of scopes, and with 32,000 items
+    # queued after an import the 442 separate counts took 90 s of a 120 s
+    # pass, so the watchdog ended every pass before it embedded anything.
+    kinds = sorted(WORK_TYPES)
+    queued = {(scope, kind): count for scope, kind, count in tx._check().execute(
+        f"""SELECT scope_id,work_type,count(*) FROM work_items
+            WHERE state IN ('pending','leased') AND scope_id IN ({marks}) AND project_id IS ? AND branch_id IS ?
+            AND work_type IN ({','.join('?' for _ in kinds)}) GROUP BY scope_id,work_type""",
+        (*scopes, context.project_id, context.branch_id, *kinds))}
+    for scope in scopes:
+        tx._scope(scope)
+        for kind in kinds:
+            count = queued.get((scope, kind), 0)
+            ordinary = not policy.enabled or count < _capacity(policy, False)
+            priority = not policy.enabled or count < _capacity(policy, True)
+            if not priority:
+                continue
+            # A tool output is owed an embedding only (``wanted_work_types``), so it never holds
+            # a consolidation.  It is picked for one only once its embedding is queued, to settle
+            # a marker written before that rule; picked while its embedding waited for room, it
+            # came first on every pass and held the page.
+            owed = "" if kind in TOOL_OUTPUT_WORK_TYPES else """AND (e.role<>'tool' OR EXISTS(
+                SELECT 1 FROM work_items o WHERE o.subject_ref=e.event_id
+                AND o.subject_revision=e.source_revision AND o.work_type='embed'))"""
+            priority_filter, priority_params = "", ()
+            if not ordinary:
+                priority_filter = f"AND (json_extract(e.extra_json,'$._scope_recall_admission.important')=1 OR {fresh})"
+                priority_params = fresh_params
+            eligible.append(f"""(e.scope_id=? {owed} {priority_filter} AND NOT EXISTS(
+                SELECT 1 FROM work_items w WHERE w.subject_ref=e.event_id
+                AND w.subject_revision=e.source_revision AND w.work_type=?))""")
+            eligibility_params.extend((scope, *priority_params, kind))
+    if not eligible:
+        return []
+    return tx._check().execute(f"""SELECT e.event_id,e.source_revision,{fresh} AS fresh FROM source_events e
+        WHERE e.scope_id IN ({marks}) AND e.project_id IS ? AND e.branch_id IS ?
+        AND e.read_blocked=0 AND e.suppressed=0
+        AND json_extract(e.extra_json,'$._scope_recall_admission.disposition')='deferred'
+        AND json_extract(e.extra_json,'$._scope_recall_admission.reason')='queue_capacity'
+        AND ({' OR '.join(eligible)})
+        AND NOT EXISTS(SELECT 1 FROM source_events n WHERE n.source_group_key=e.source_group_key AND n.source_revision>e.source_revision)
+        ORDER BY fresh DESC,e.persisted_at,e.event_id LIMIT ?""",
+        (*fresh_params, *scopes, context.project_id, context.branch_id, *eligibility_params, limit)).fetchall()
