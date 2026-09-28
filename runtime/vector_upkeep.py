@@ -20,8 +20,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from ..vector.compaction import (EMBED_BACKFILL_STATE_FILENAME, EMBED_BACKFILL_STATE_SCHEMA, INDEX_STATE_FILENAME,
-                                 INDEX_STATE_SCHEMA, compaction_due, measure_footprint, read_state, write_state)
+from ..vector.compaction import (EMBED_BACKFILL_STATE_SCHEMA, INDEX_STATE_FILENAME, INDEX_STATE_SCHEMA, compaction_due,
+                                 embed_backfill_filename, measure_footprint, read_state, write_state)
 from ..vector.store import VECTOR_INDEX_MIN_ROWS
 from .validation import utc_now
 
@@ -153,8 +153,9 @@ def index_if_due(store: Any, vector_config: Any, *, available_seconds: float,
     return receipt
 
 
-#: The backfill of an import's embeddings (``core.index_rebuild.queue_import_embeddings``) keeps where it stopped in
-#: ``EMBED_BACKFILL_STATE_FILENAME`` beside the store's other upkeep, where the doctor reads its outcome.  The cursor
+#: The backfill of an import's embeddings (``core.index_rebuild.queue_import_embeddings``) keeps where it stopped beside
+#: the store's other upkeep, a file for each worker partition (``embed_backfill_filename``), where the doctor reads its
+#: outcome.  The cursor
 #: is its progress: a pass the watchdog ends loses at most one page, and a page looked at twice queues nothing twice
 #: (an embedding already queued is not selected).
 #: How long a finished backfill stands before a pass looks through the imports again, for a later import's history.
@@ -166,14 +167,15 @@ EMBED_BACKFILL_PAGE = 64
 def backfill_if_due(storage: Any, context: Any, vector_config: Any, *, now: datetime | None = None) -> dict | None:
     """Queue the next page of an import's embeddings, unless the last look found none left within a day.
 
-    Returns the receipt, also written to ``embed-backfill-state.json``.  Never raises: an embedding queued later is
+    Returns the receipt, also written to the partition's state file.  Never raises: an embedding queued later is
     found later, never wrongly.
     """
     if storage is None or context is None or vector_config is None:
         return None
     storage_dir = Path(vector_config.storage_dir)
     moment = now or datetime.now(timezone.utc)
-    state = read_state(storage_dir, filename=EMBED_BACKFILL_STATE_FILENAME, schema=EMBED_BACKFILL_STATE_SCHEMA)
+    filename = embed_backfill_filename(context.allowed_scope_ids, context.project_id, context.branch_id)
+    state = read_state(storage_dir, filename=filename, schema=EMBED_BACKFILL_STATE_SCHEMA)
     finished = state.get("outcome") == "finished"
     if finished:
         try:
@@ -193,7 +195,7 @@ def backfill_if_due(storage: Any, context: Any, vector_config: Any, *, now: date
                        outcome="held" if page["held"] else "finished" if page["finished"] else "progress")
     except Exception as exc:  # noqa: BLE001 - see docstring; upkeep never fails a drain.
         receipt.update(after_key=after_key, queued_total=earlier, outcome="failed", error=type(exc).__name__)
-    write_state(storage_dir, receipt, filename=EMBED_BACKFILL_STATE_FILENAME, schema=EMBED_BACKFILL_STATE_SCHEMA)
+    write_state(storage_dir, receipt, filename=filename, schema=EMBED_BACKFILL_STATE_SCHEMA)
     return receipt
 
 

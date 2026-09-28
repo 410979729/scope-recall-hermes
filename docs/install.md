@@ -409,6 +409,22 @@ Without the index a search reads every vector. A Claude Code or Codex hook start
 its search helper fresh for each prompt, so on a large store its automatic recall
 answers from words alone.
 
+Each store also says how far the worker got in giving an import's history the
+embeddings its old store never had (`embed_backfill_outcome`, with
+`last_embed_backfill_at` and `embed_backfill_queued_total`, the embeddings queued
+so far). Every pass queues the next 64 of the owner's messages, replies,
+documents and notes that an import brought in without one, while fewer than 64
+embeddings wait, and once none is left looks again a day later. Each worker keeps
+its place in `vectors/<space>/embed-backfill-<partition>.json`.
+
+| `embed_backfill_outcome` | Meaning |
+|--------------------------|---------|
+| `progress` | A page was queued; the next pass goes on from there. |
+| `held` | Captured messages were waiting for their embeddings; nothing was queued. |
+| `finished` | No import is left without one; looked at again after a day. |
+| `failed` | The page could not be read (`embed_backfill_error` names the error); every pass tries again. Those memories are found by their words until it passes. |
+| none | No pass has looked yet, or the store has no embedding route. |
+
 ### A healthy report
 
 Abridged — the real output has about fifty fields and more `checks` rows. These

@@ -357,6 +357,32 @@ def test_the_backfill_queues_only_what_this_worker_embeds(app):
         assert tx.work.pending_depth("embed") == len(queued), "every queued embedding is one this worker claims"
 
 
+def test_each_worker_partition_keeps_its_own_backfill_place(app, tmp_path):
+    """One state file for the store let a worker with no imports of its own write ``finished`` for another worker's,
+    which then waited a day before queueing its imports (review of 3.4.0rc10)."""
+    import sqlite3
+    from datetime import datetime, timedelta, timezone
+    from types import SimpleNamespace
+
+    from scope_recall.core.storage import SQLiteStorage
+    from scope_recall.runtime.vector_upkeep import backfill_if_due
+
+    core, ctx = app
+    theirs = _imported(core, ctx, "TEST 另一个项目里的话。", role="user", key="TEST-import/project")
+    conn = sqlite3.connect(core.storage.path)
+    try:
+        conn.execute("UPDATE source_events SET project_id='TEST-project-p' WHERE event_id=?", (theirs,))
+        conn.commit()
+    finally:
+        conn.close()
+    vectors = SimpleNamespace(storage_dir=tmp_path)
+    storage = SQLiteStorage(ctx.binding)
+    now = datetime(2026, 9, 28, 12, tzinfo=timezone.utc)
+    assert backfill_if_due(storage, ctx, vectors, now=now)["outcome"] == "finished"
+    receipt = backfill_if_due(storage, replace(ctx, project_id="TEST-project-p"), vectors, now=now + timedelta(hours=1))
+    assert receipt is not None and receipt["queued"] == 1 and theirs in _embeds(core)
+
+
 def test_the_backfill_waits_while_captured_messages_wait_for_their_embeddings(app):
     """A message captured now is never queued behind an import's history for its vector."""
     import sqlite3
