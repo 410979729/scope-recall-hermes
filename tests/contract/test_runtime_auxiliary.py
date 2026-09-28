@@ -200,6 +200,19 @@ def test_secret_rejection_before_transport(tmp_path):
     assert exc2.value.error_type == "sensitive_request"
 
 
+def test_a_key_across_the_query_s_input_bound_is_not_sent_in_part(tmp_path):
+    """The guard saw only what the input bound keeps: a key starting just before the cut was sent in part, its
+    first characters too few for the pattern that would have caught it whole."""
+    config, _ledger, _budget = _runtime_config(tmp_path)
+    transport = FakeTransport(lambda **kwargs: (200, b"{}"))
+    runtime = build_auxiliary_runtime(config, transport=transport)
+    query = "TEST " * 395 + "sk-proj-" + "Ab1" * 20
+    with pytest.raises(AuxiliaryModelError) as refused:
+        runtime.query_embedding.embed_query(query, remaining_seconds=2.0)
+    assert refused.value.error_type == "sensitive_request"
+    assert transport.calls == 0
+
+
 def test_malformed_and_invalid_vectors(tmp_path, monkeypatch):
     config, _, _ = _runtime_config(tmp_path)
     monkeypatch.setenv("SCOPE_RECALL_TEST_EMBED_KEY", "test-key")

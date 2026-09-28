@@ -973,6 +973,9 @@ class GeminiEmbeddingAdapter:
         self._dialect = route.wire_dialect()
 
     def embed_query(self, text: str, *, remaining_seconds: float) -> Sequence[float]:
+        # The whole query first: the request guard sees only what the input bound keeps, so a key that straddled
+        # the cut went out in part.  A query is the owner's message as typed, screened by nothing before this.
+        _reject_secrets(text)
         encoded = encode_embedding_text(text, kind="query")
         return self._embed(encoded, remaining_seconds=remaining_seconds, transport=self._query_transport)
 
