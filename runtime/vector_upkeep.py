@@ -153,4 +153,50 @@ def index_if_due(store: Any, vector_config: Any, *, available_seconds: float,
     return receipt
 
 
-__all__ = ["INDEX_RECHECK", "RESERVE_SECONDS", "compact_if_due", "index_if_due"]
+#: Where the backfill of an import's embeddings (``core.index_rebuild.queue_import_embeddings``) stopped, beside the
+#: store's other upkeep.  The cursor is its progress: a pass the watchdog ends loses at most one page, and a page looked
+#: at twice queues nothing twice (an embedding already queued is not selected).
+EMBED_BACKFILL_STATE_FILENAME = "embed-backfill-state.json"
+EMBED_BACKFILL_STATE_SCHEMA = "scope-recall.embed-backfill.v1"
+#: How long a finished backfill stands before a pass looks through the imports again, for a later import's history.
+EMBED_BACKFILL_RECHECK = timedelta(days=1)
+#: Sources looked at per pass.  At most this many embeddings join the queue, and only while it is shallow.
+EMBED_BACKFILL_PAGE = 64
+
+
+def backfill_if_due(storage: Any, context: Any, vector_config: Any, *, now: datetime | None = None) -> dict | None:
+    """Queue the next page of an import's embeddings, unless the last look found none left within a day.
+
+    Returns the receipt, also written to ``embed-backfill-state.json``.  Never raises: an embedding queued later is
+    found later, never wrongly.
+    """
+    if storage is None or context is None or vector_config is None:
+        return None
+    storage_dir = Path(vector_config.storage_dir)
+    moment = now or datetime.now(timezone.utc)
+    state = read_state(storage_dir, filename=EMBED_BACKFILL_STATE_FILENAME, schema=EMBED_BACKFILL_STATE_SCHEMA)
+    finished = state.get("outcome") == "finished"
+    if finished:
+        try:
+            checked = datetime.fromisoformat(str(state.get("checked_at")).replace("Z", "+00:00"))
+        except ValueError:
+            checked = None
+        if checked is not None and timedelta(0) <= moment - checked < EMBED_BACKFILL_RECHECK:
+            return None
+    after_key = None if finished else state.get("after_key")
+    earlier = 0 if finished else int(state.get("queued_total") or 0)
+    receipt: dict[str, Any] = {"checked_at": moment.isoformat().replace("+00:00", "Z")}
+    try:
+        from ..core.index_rebuild import queue_import_embeddings
+
+        page = queue_import_embeddings(storage, context, after_key=after_key, limit=EMBED_BACKFILL_PAGE)
+        receipt.update(after_key=list(page["after_key"]), queued=page["queued"], queued_total=earlier + page["queued"],
+                       outcome="held" if page["held"] else "finished" if page["finished"] else "progress")
+    except Exception as exc:  # noqa: BLE001 - see docstring; upkeep never fails a drain.
+        receipt.update(after_key=after_key, queued_total=earlier, outcome="failed", error=type(exc).__name__)
+    write_state(storage_dir, receipt, filename=EMBED_BACKFILL_STATE_FILENAME, schema=EMBED_BACKFILL_STATE_SCHEMA)
+    return receipt
+
+
+__all__ = ["EMBED_BACKFILL_RECHECK", "INDEX_RECHECK", "RESERVE_SECONDS", "backfill_if_due", "compact_if_due",
+           "index_if_due"]

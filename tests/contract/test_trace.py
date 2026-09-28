@@ -257,3 +257,94 @@ def test_index_page_excludes_deleted_sources_and_is_idempotent(app):
             .fetchall()
         )
     assert [r[0] for r in after] == [r[0] for r in before]
+
+
+def _imported(core, ctx, text, *, role, key):
+    """A source an import brought in, and no embedding for it, as a store that never had one would leave it."""
+    import sqlite3
+
+    from scope_recall.contracts import ImportProvenance, import_source_fingerprint
+
+    original = ("human_direct" if role == "user" else "assistant_visible" if role == "assistant"
+                else "tool_observation" if role == "tool" else "origin_unknown")
+    event = source_event(source_event_key=key, source_revision=1, origin="imported", role=role, content=text,
+                         occurred_at="2026-07-01T12:00:00Z", time_precision="instant",
+                         source_original_origin=original)
+    importer = ImportProvenance(original, "a" * 64, frozenset({import_source_fingerprint(event)}))
+    saved = core.record_event(replace(ctx, actor_origin="imported", import_provenance=importer), event,
+                              scope_id="TEST-scope", remaining_seconds=10)
+    ref = saved.event_refs[0].ref
+    with sqlite3.connect(core.storage.path) as conn:
+        conn.execute("DELETE FROM work_items WHERE subject_ref=? AND work_type='embed'", (ref,))
+        conn.commit()
+    return ref
+
+
+def _embeds(core):
+    import sqlite3
+
+    with sqlite3.connect(core.storage.path) as conn:
+        return {row[0] for row in conn.execute("SELECT subject_ref FROM work_items WHERE work_type='embed'")}
+
+
+def test_an_import_s_history_gets_the_embedding_its_store_never_had(app):
+    """An import queued an embedding only where its source store had one: on the pilot tianshu's history, 1,928 of
+    the owner's messages, 6,552 replies and 3,009 notes, could be found by their words alone.  Tool output is left
+    out (200,000 imported outputs), and so is what the admission rules keep without one."""
+    from scope_recall.core.index_rebuild import queue_import_embeddings
+    from scope_recall.core.storage import SQLiteStorage
+
+    core, ctx = app
+    said = _imported(core, ctx, "TEST 家里的猫叫小橘。", role="user", key="TEST-import/said")
+    told = _imported(core, ctx, "TEST 好的，记住了，猫叫小橘。", role="assistant", key="TEST-import/told")
+    note = _imported(core, ctx, "TEST 旧笔记：小橘怕打雷。", role="unknown", key="TEST-import/note")
+    tool = _imported(core, ctx, "TEST ls 输出：a.txt b.txt", role="tool", key="TEST-import/tool")
+    ack = _imported(core, ctx, "好的", role="user", key="TEST-import/ack")
+    storage = SQLiteStorage(ctx.binding)
+    first = queue_import_embeddings(storage, ctx, limit=2)
+    assert first["scanned"] == 2 and not first["finished"] and not first["held"] and first["queued"] in (1, 2)
+    rest = queue_import_embeddings(storage, ctx, after_key=first["after_key"], limit=200)
+    assert rest["finished"]
+    assert {said, told, note} <= _embeds(core) and not {tool, ack} & _embeds(core)
+    # Looked at again from the start, nothing is queued twice and the acknowledgement is passed over again.
+    again = queue_import_embeddings(storage, ctx, limit=200)
+    assert again["queued"] == 0 and again["finished"]
+
+
+def test_the_backfill_waits_while_captured_messages_wait_for_their_embeddings(app):
+    """A message captured now is never queued behind an import's history for its vector."""
+    import sqlite3
+
+    from scope_recall.core.index_rebuild import IMPORT_EMBED_QUEUE_CEILING, queue_import_embeddings
+    from scope_recall.core.storage import SQLiteStorage
+
+    core, ctx = app
+    said = _imported(core, ctx, "TEST 家里的猫叫小橘。", role="user", key="TEST-import/held")
+    with sqlite3.connect(core.storage.path) as conn:
+        for index in range(IMPORT_EMBED_QUEUE_CEILING):
+            conn.execute("""INSERT INTO work_items(work_type,subject_ref,subject_revision,scope_id,available_at)
+                VALUES ('embed',?,1,'TEST-scope','2026-09-28T00:00:00Z')""", (f"event-TEST-waiting-{index}",))
+        conn.commit()
+    page = queue_import_embeddings(SQLiteStorage(ctx.binding), ctx)
+    assert page["held"] and page["queued"] == 0 and page["after_key"] == ("", 0)
+    assert said not in _embeds(core)
+
+
+def test_the_drain_s_backfill_keeps_its_place_and_looks_again_after_a_day(app, tmp_path):
+    from datetime import datetime, timedelta, timezone
+    from types import SimpleNamespace
+
+    from scope_recall.core.storage import SQLiteStorage
+    from scope_recall.runtime.vector_upkeep import EMBED_BACKFILL_RECHECK, backfill_if_due
+
+    core, ctx = app
+    said = _imported(core, ctx, "TEST 家里的猫叫小橘。", role="user", key="TEST-import/drain")
+    vectors = SimpleNamespace(storage_dir=tmp_path)
+    storage = SQLiteStorage(ctx.binding)
+    now = datetime(2026, 9, 28, 12, tzinfo=timezone.utc)
+    receipt = backfill_if_due(storage, ctx, vectors, now=now)
+    assert receipt["outcome"] == "finished" and receipt["queued"] == 1 and said in _embeds(core)
+    assert backfill_if_due(storage, ctx, vectors, now=now + timedelta(hours=1)) is None
+    later = _imported(core, ctx, "TEST 后来又导入的一句话。", role="user", key="TEST-import/later")
+    looked = backfill_if_due(storage, ctx, vectors, now=now + EMBED_BACKFILL_RECHECK)
+    assert looked["outcome"] == "finished" and later in _embeds(core)

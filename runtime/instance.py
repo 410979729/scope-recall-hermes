@@ -38,7 +38,7 @@ from .validation import (
     utc_now,
 )
 from .vector_retention import expire_if_due
-from .vector_upkeep import compact_if_due, index_if_due
+from .vector_upkeep import backfill_if_due, compact_if_due, index_if_due
 
 
 _RUNTIME_ORIGINS: frozenset[Origin] = frozenset(
@@ -484,6 +484,10 @@ class RuntimeInstance:
             self._vector_store, self.config.vector,
             available_seconds=max(0.0, deadline - time.monotonic()),
         )
+        # An import's history in a person's roles gets the embedding its source store never queued, a page a pass
+        # and only while the queue is shallow (``core.index_rebuild.queue_import_embeddings``).
+        self.embed_backfill = None if vector_gaps or (embed if embed is not None else self._default_embed) is None \
+            else backfill_if_due(self.core.storage, self.config.context(), self.config.vector)
         from ..core.worker import WorkerConfig, drain_worker
 
         model, candidate = self._consolidation_ports(consolidation)
