@@ -55,6 +55,10 @@ _RECALL_QUERY_CHARS = 8192
 _TOTAL_BUDGET_S = 2.0
 #: Attaching the trusted runtime after a capture needs this much budget left.
 _RUNTIME_ATTACH_MIN_S = 0.3
+#: What a prompt hook keeps for a recall of its own when it asks the entry's server for one (``resident_recall``).
+_LOCAL_RECALL_RESERVE_S = 1.5
+#: What a server's recall may report of how it ended, besides its vector gap and its error.
+_RESIDENT_REASONS = frozenset({"deadline_exceeded", "recall_exception"})
 #: Capture refusals a second attempt meets again.
 _SETTLED_CAPTURE_CODES = frozenset({"SECRET_DETECTED", "INPUT_INVALID", "VERSION_CONFLICT"})
 #: How a capture says it refused a message as holding a credential: as a code, or as the rejection it returns.
@@ -191,6 +195,9 @@ class CodexHookHandler:
         self._queued_this_call = False
         self._pending_runtime_config_path: str | None = None
         self._runtime_attach_attempted = host_runtime is not None
+        #: The entry's running MCP server, asked for a prompt's recall (``local_endpoint.Recaller``): given the
+        #: payload, the stored refs, the gaps and the seconds it may take, the result and its diagnostics, or None.
+        self.resident_recall: Callable[..., tuple[dict[str, Any], dict[str, Any]] | None] | None = None
 
     @classmethod
     def from_config_path(
@@ -667,9 +674,10 @@ class CodexHookHandler:
         # meaning as well: six on the work computer's two entries in one night were recalled by words alone.  One
         # the capture refused, or that holds a credential however the capture ended, goes without it, so that
         # nothing of it reaches an embedding provider.
-        if ((self._captured_this_call()
-             or (event is not None and not self._refused_this_call() and not contains_secret_like_text(prompt)))
-                and self._remaining(deadline) >= _RUNTIME_ATTACH_MIN_S):
+        vectors = ((self._captured_this_call()
+                    or (event is not None and not self._refused_this_call() and not contains_secret_like_text(prompt)))
+                   and self._remaining(deadline) >= _RUNTIME_ATTACH_MIN_S)
+        if vectors:
             self._ensure_host_runtime(audience)
             if self._queued_this_call:
                 self._maybe_launch_owned_worker(session_id, audience)
@@ -682,7 +690,58 @@ class CodexHookHandler:
         # waits in the inbox is not among the sources a recall reads, so there is nothing of this turn to fence
         # out.  One refused (a credential) attached no runtime above, so its recall has no vector channel and
         # nothing of it goes to an embedding provider.
+        if vectors and self.resident_recall is not None:
+            answered = self._resident_answer(payload, current_refs, capture_gaps, deadline)
+            if answered is not None:
+                return answered
         return self._auto_recall(context, prompt, f"{self.host}-auto:{session_id}:{turn_id}", current_refs, deadline, capture_gaps)
+
+    def _resident_answer(self, payload: dict[str, Any], current_refs: tuple[str, ...], gaps: tuple[str, ...],
+                         deadline: float) -> dict[str, Any] | None:
+        """The recall the entry's MCP server gives this prompt, with its vector search warm; None when it gives none
+        in time, and the hook then recalls itself in what it kept back.  The server writes nothing: the prompt was
+        stored here, so a late answer costs the turn nothing but its warm vectors."""
+        budget = self._remaining(deadline) - _LOCAL_RECALL_RESERVE_S
+        if budget < 0.5 or self.resident_recall is None:
+            return None
+        answered = self.resident_recall(payload, current_refs, gaps, budget)
+        if answered is None:
+            return None
+        result, fields = answered
+        for name in ("recall_vector_gap", "recall_error_detail"):
+            value = fields.get(name)
+            if value is None or type(value) is str:
+                setattr(self.diagnostics, name, _error_detail(value) if value else None)
+        if fields.get("last_reason") in _RESIDENT_REASONS:
+            self._diag(fields["last_reason"], gaps=gaps)
+        return result if isinstance(result, dict) else {}
+
+    def resident_recall_for(self, payload: dict[str, Any], current_refs: tuple[str, ...], gaps: tuple[str, ...],
+                            remaining: float) -> dict[str, Any]:
+        """A prompt's automatic recall and nothing else, for the hook that stored the prompt itself
+        (``local_endpoint``): the identity, audience and recall ``_user_prompt_submit`` gives it, in ``remaining``
+        seconds.  It writes nothing."""
+        self.diagnostics = HookDiagnostics(capability_gaps=self.diagnostics.capability_gaps)
+        self.diagnostics.last_event = "UserPromptSubmit"
+        if payload.get("hook_event_name") != "UserPromptSubmit":
+            return {}
+        session_id = self._session_id(payload)
+        audience = self._audience(payload) if session_id is not None else None
+        if audience is None:
+            return {}
+        turn_id, _gaps = turn_id_from_payload(payload, required=True, field=_TURN_FIELD[self.host])
+        prompt = payload.get("prompt")
+        # What the hook would have recalled nothing for, or recalled without the vector channel, is not asked here;
+        # the server checks again rather than take the hook's word for it.
+        if (turn_id is None or type(prompt) is not str or not prompt.strip() or contains_secret_like_text(prompt)
+                or (self.host == "claude-code" and is_task_notification(prompt))
+                or (self.host == "codex" and is_codex_suggestions_prompt(prompt))):
+            return {}
+        deadline = self.clock.monotonic() + max(0.0, remaining)
+        self._ensure_host_runtime(audience)
+        context = self._context(audience, session_id, "human_direct")
+        return self._auto_recall(context, prompt, f"{self.host}-auto:{session_id}:{turn_id}", current_refs, deadline,
+                                 gaps)
 
     def _auto_recall(self, context, prompt: str, request_id: str, current_refs: tuple[str, ...], deadline: float, gaps: tuple[str, ...]) -> dict[str, Any]:
         """Render this turn's automatic recall context, or nothing once the budget is gone."""

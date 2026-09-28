@@ -6,7 +6,6 @@ a client attached to a shared store, Codex or Claude Code.
 from __future__ import annotations
 
 import argparse
-import dataclasses
 import json
 import os
 import sys
@@ -15,7 +14,7 @@ from pathlib import Path
 
 from ...runtime.resume_entry import host_process_credential_environment
 from .config import load_codex_config, load_shared_client
-from .handler import CodexHookHandler, HookDiagnostics, emit_result
+from .handler import CodexHookHandler, emit_result
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -43,15 +42,6 @@ def main(argv: list[str] | None = None) -> int:
     # model or hook payload fields never participate in this timestamp.
     hook_started_at = time.monotonic()
     raw = sys.stdin.buffer.read(65537)
-    if args.home is not None and args.runtime_config is None and len(raw) <= 65536:
-        outcome = _ask_resident(args.home.expanduser(), args.host, raw, hook_started_at)
-        if outcome == "answered":
-            return 0
-        if outcome == "timeout":
-            # The entry's server took the prompt and did not answer in time.  The hook stores and recalls it itself,
-            # in a budget of its own: the wait left a whole prompt's time before the client's hook timeout.
-            sys.stderr.write("CODEX_HOOK:resident_timeout\n")
-            hook_started_at = time.monotonic()
     _prestart_vector_helper(raw)
     location = (args.config if args.config is not None else args.home).expanduser()
     if not location.is_absolute():
@@ -100,32 +90,19 @@ def main(argv: list[str] | None = None) -> int:
         sys.stderr.write("CODEX_HOOK:input_too_large\n")
         emit_result({})
         return 0
+    # A client attached to a shared store runs the entry's MCP server for as long as it is open, and that server
+    # answers the prompt's recall with its vector search warm (``local_endpoint``).  The prompt is stored here.
+    recaller = None
+    if args.config is None and runtime_config is None:
+        from .local_endpoint import Recaller
+
+        recaller = Recaller(location, args.host)
+        handler.resident_recall = recaller
     result = handler.handle_bytes(raw)
     emit_result(result, diagnostics=handler.diagnostics)
+    if recaller is not None and recaller.outcome is not None:
+        sys.stderr.write(f"CODEX_RECALL_RESIDENT:{recaller.outcome}\n")
     return 0
-
-
-def _ask_resident(home: Path, host: str, raw: bytes, started: float) -> str:
-    """Hand a prompt to the entry's MCP server when one runs (``local_endpoint``): ``"answered"`` once its answer is
-    out; ``"timeout"`` or ``"none"`` when the hook does the work itself.  Only the prompt is sent: it is the hook that
-    recalls, and the one a cold vector search kept from its memories."""
-    from .local_endpoint import ask
-
-    try:
-        event = json.loads(raw).get("hook_event_name")
-    except (ValueError, AttributeError):
-        return "none"
-    if event != "UserPromptSubmit" or not home.is_absolute():
-        return "none"
-    outcome, answer = ask(home, host, raw, started=started)
-    if outcome != "answered":
-        return outcome
-    result, fields = answer
-    known = {field.name for field in dataclasses.fields(HookDiagnostics)}
-    values = {key: (tuple(value) if key == "capability_gaps" else value)
-              for key, value in fields.items() if key in known}
-    emit_result(result, diagnostics=HookDiagnostics(**values) if values else None)
-    return "answered"
 
 
 def _prestart_vector_helper(raw: bytes) -> None:

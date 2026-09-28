@@ -1,22 +1,23 @@
-"""Prompts answered by the client's own MCP server, warm for as long as the client is open.
+"""A prompt's recall answered by the client's own MCP server, warm for as long as the client is open.
 
 Claude Code and Codex start a new process for every hook, and a prompt hook that started LanceDB for its recall was
 often not ready before the recall's budget ran out: on the pilot 6 of 8 cold Claude Code prompts recalled by words
-alone (``helper_request_deadline``).  The client's MCP server lives exactly as long as the client, so it also answers
-the entry's prompt hooks on this machine (``serve``), with a LanceDB helper kept ready (``vector.process_store``).
-Only the prompt is sent: it is the hook that recalls.  The others store what was said and read no vectors, and do it
-in their own process as before.
+alone (``helper_request_deadline``).  The client's MCP server lives exactly as long as the client, so it keeps a
+LanceDB helper ready and answers the entry's prompt hooks on this machine with the prompt's recall (``serve``).
 
-A prompt hook asks the newest server of its entry, host and version (``ask``).  Servers name themselves in a folder of
+Only the recall is asked for, and the server writes nothing.  The hook stores the prompt itself, as before, and asks
+for the recall after (``handler._resident_answer``); if the server does not answer in time the hook recalls itself
+in the time it kept back, and a late answer is dropped.  A first version had the server store the prompt as well:
+one that answered after the hook stopped waiting left the prompt stored twice.
+
+A hook asks the newest server of its entry, host and version (``Recaller``).  Servers name themselves in a folder of
 the user's own profile (``endpoints``), not in the entry's home, which may sit on a drive every account can read:
-whoever holds a server's token can recall the owner's memory and store words as the owner's.  A name whose process is
-gone, or is another process under a reused id, is removed without a connection.  Before a hook sends anything, the
-server proves it holds the token, and it signs its answer; the token itself never crosses the socket, so a process
-that took over a stopped server's port learns nothing and cannot answer for it.
-
-A server that does not answer in time is named on stderr (``CODEX_HOOK:resident_timeout``) and its name is removed,
-so later prompts go past it; the hook then does the work itself in a budget of its own, and the turn keeps its
-capture.  A server that answers its own check names itself again (``ADVERTISE_SECONDS``).
+whoever holds a server's token can read the owner's memory through it.  A name whose process is gone, or is another
+process under a reused id (the start time is kept with the id), is removed without a connection.  Before a hook sends
+anything the server proves it holds the token; the hook proves it too, and the server signs its answer.  The token
+never crosses the socket, so a process that took over a stopped server's port learns nothing and cannot answer for
+it.  A hook says how its server answered on stderr (``CODEX_RECALL_RESIDENT:<outcome>``).  A server that kept a
+prompt waiting loses its name; it names itself again only once none of its recalls is stuck.
 """
 from __future__ import annotations
 
@@ -36,37 +37,41 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable
 
-#: What a hook may send: the same bound as a hook's own stdin.
-MAX_REQUEST_BYTES = 65536
+#: What a hook may send: its payload (the same bound as a hook's own stdin) and the refs and gaps of its capture.
+MAX_REQUEST_BYTES = 131072
 #: Seconds a hook waits to connect, and then for the server's proof.  A live server on this machine answers at once.
 CONNECT_SECONDS = 0.3
 PROOF_SECONDS = 1.0
 #: Servers a hook tries, newest first, and how long it may spend finding one.
 MAX_TRIED = 2
-FIND_SECONDS = 1.5
-#: Seconds from the hook's start that it waits for its server's answer.  The server's budget for a prompt is the
-#: hook's own (6 s from the hook's start, ``hook_processing_seconds``), so a healthy one has answered by then; a hook
-#: that stops waiting still has a whole prompt's budget of its own before the client's 15 s hook timeout.
-PROMPT_WAIT_SECONDS = 7.0
-#: How often a server looks for its own name, and puts it back when a hook removed it and it answers its own check.
+FIND_SECONDS = 1.0
+#: Of the time a hook gives its server, what the server keeps back for its answer to reach the hook.
+ANSWER_MARGIN_SECONDS = 0.3
+#: Recalls one server runs at once; a hook past that recalls itself.
+MAX_CONCURRENT = 8
+#: A recall running this long is stuck: its server does not name itself again until it ends.
+STUCK_SECONDS = 10.0
+#: How often a server looks for its own name, and puts it back when a hook removed it.
 ADVERTISE_SECONDS = 30.0
 _NONCE = "X-Scope-Recall-Nonce"
 _PROOF = "X-Scope-Recall-Proof"
-_ELAPSED = "X-Scope-Recall-Elapsed"
 
 
 def endpoints(home: Path | str) -> Path:
-    """Where the servers of one entry name themselves: a folder of this user's profile, one for each home."""
+    """Where the servers of one entry name themselves: a folder of this user's profile, one for each home.
+
+    ``~/.cache`` rather than ``XDG_CACHE_HOME`` on POSIX: Codex does not pass that to its MCP servers, and a server
+    and its hooks that looked in different folders would never meet."""
     digest = hashlib.sha256(str(Path(home).expanduser().resolve()).encode("utf-8")).hexdigest()[:16]
     if os.name == "nt":
         base = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData" / "Local")
     else:
-        base = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache")
+        base = Path.home() / ".cache"
     return base / "scope-recall" / "hook-endpoints" / digest
 
 
 def _proof(token: str, *parts: str) -> str:
-    """What proves the token without sending it; the first part keeps a hello, a hook and an answer apart."""
+    """What proves the token without sending it; the first part keeps a hello, a recall and an answer apart."""
     return hmac.new(token.encode("utf-8"), "\x00".join(parts).encode("utf-8"), hashlib.sha256).hexdigest()
 
 
@@ -81,7 +86,7 @@ class _Server(ThreadingHTTPServer):
 
 
 class _Handler(BaseHTTPRequestHandler):
-    server_version = "scope-recall-hooks"
+    server_version = "scope-recall-recall"
     protocol_version = "HTTP/1.1"
     #: A connection that sends nothing is let go rather than holding a thread.
     timeout = 30
@@ -100,20 +105,33 @@ class _Handler(BaseHTTPRequestHandler):
         if self.path == "/hello":
             self._answer(b"{}", endpoint.token, "hello", nonce)
             return
-        elapsed = self.headers.get(_ELAPSED, "")
-        if self.path != "/hook" or not _proven(self.headers.get(_PROOF), endpoint.token, "hook", nonce,
-                                               hashlib.sha256(body).hexdigest(), elapsed):
+        if self.path != "/recall" or not _proven(self.headers.get(_PROOF), endpoint.token, "recall", nonce,
+                                                 hashlib.sha256(body).hexdigest()):
             self._refuse(401)
             return
         try:
-            since = float(elapsed)
-            if not 0.0 <= since <= 60.0:
-                raise ValueError("elapsed")
-        except ValueError:
+            request = _request(body)
+        except (ValueError, KeyError, TypeError, UnicodeError):
             self._refuse(400)
             return
-        answer = json.dumps(endpoint.handle(body, started=time.monotonic() - since), ensure_ascii=True).encode("ascii")
-        self._answer(answer, endpoint.token, "answer", nonce, hashlib.sha256(answer).hexdigest())
+        if not endpoint.slots.acquire(blocking=False):
+            self._refuse(503)
+            return
+        started = time.monotonic()
+        close = None
+        with endpoint.lock:
+            endpoint.inflight[id(self)] = started
+        try:
+            answer_body, close = endpoint.recall(request)
+            data = json.dumps(answer_body, ensure_ascii=True).encode("ascii")
+            self._answer(data, endpoint.token, "answer", nonce, hashlib.sha256(data).hexdigest())
+        finally:
+            with endpoint.lock:
+                endpoint.inflight.pop(id(self), None)
+            endpoint.slots.release()
+            # Closed after the answer is out: closing the runtime ends its vector helper, which can take seconds.
+            if close is not None:
+                close()
 
     def _answer(self, data: bytes, token: str, *parts: str) -> None:
         self.send_response(200)
@@ -131,6 +149,17 @@ class _Handler(BaseHTTPRequestHandler):
         self.end_headers()
 
 
+def _request(body: bytes) -> dict[str, Any]:
+    request = json.loads(body.decode("utf-8"))
+    payload, refs, gaps, remaining = request["payload"], request["current_refs"], request["gaps"], request["remaining"]
+    if (type(payload) is not dict or type(refs) is not list or len(refs) > 64
+            or not all(type(ref) is str and len(ref) <= 200 for ref in refs)
+            or type(gaps) is not list or len(gaps) > 64 or not all(type(gap) is str and len(gap) <= 200 for gap in gaps)
+            or type(remaining) not in (int, float) or not 0.0 <= remaining <= 10.0):
+        raise ValueError("request")
+    return {"payload": payload, "current_refs": tuple(refs), "gaps": tuple(gaps), "remaining": float(remaining)}
+
+
 def _hello(connection: http.client.HTTPConnection, token: str) -> bool:
     """Whether the server on this open connection holds ``token``: it proves it, and the token is not sent."""
     nonce = secrets.token_hex(16)
@@ -144,44 +173,6 @@ def _hello(connection: http.client.HTTPConnection, token: str) -> bool:
     return hello.status == 200 and _proven(hello.getheader(_PROOF), token, "hello", nonce)
 
 
-def _exchange(port: int, token: str, raw: bytes, *, started: float) -> tuple[str, Any]:
-    """One prompt to the server on ``port``: ``("answered", (result, diagnostics))``, or why not."""
-    connection = http.client.HTTPConnection("127.0.0.1", port, timeout=CONNECT_SECONDS)
-    try:
-        try:
-            connection.connect()
-        except ConnectionRefusedError:
-            return "refused", None
-        except OSError:
-            return "unreachable", None
-        if not _hello(connection, token):
-            return "unproven", None
-        wait = PROMPT_WAIT_SECONDS - (time.monotonic() - started)
-        if wait <= 0:
-            return "timeout", None
-        nonce, elapsed = secrets.token_hex(16), f"{max(0.0, time.monotonic() - started):.3f}"
-        headers = {_NONCE: nonce, _ELAPSED: elapsed, "Content-Type": "application/json",
-                   _PROOF: _proof(token, "hook", nonce, hashlib.sha256(raw).hexdigest(), elapsed)}
-        try:
-            connection.sock.settimeout(wait)
-            connection.request("POST", "/hook", body=raw, headers=headers)
-            response = connection.getresponse()
-            data = response.read()
-        except (socket.timeout, TimeoutError):
-            return "timeout", None
-        except (OSError, http.client.HTTPException):
-            # It may have stored the prompt before the connection broke; the hook's own capture of the same prompt
-            # is then a duplicate (its key), not a second copy.
-            return "timeout", None
-        if response.status != 200 or not _proven(response.getheader(_PROOF), token, "answer", nonce,
-                                                 hashlib.sha256(data).hexdigest()):
-            return "unproven", None
-        answer = json.loads(data.decode("ascii"))
-        return "answered", (answer["result"], answer["diagnostics"])
-    finally:
-        connection.close()
-
-
 def _forget(path: Path) -> None:
     try:
         path.unlink(missing_ok=True)
@@ -189,64 +180,140 @@ def _forget(path: Path) -> None:
         pass
 
 
-def ask(home: Path | str, host: str, raw: bytes, *, started: float) -> tuple[str, Any]:
-    """Hand one prompt to a server of this entry: ``("answered", (result, diagnostics))``; ``("timeout", None)`` when
-    one took it and did not answer in time; ``("none", None)`` when none took it.  In the last two the hook does the
-    work itself."""
-    from ..._version import __version__
-    from ...runtime.process_probe import probe_process
-
+def _named(folder: Path) -> list[Path]:
+    """The names in a folder, newest first; one removed while this looks is passed over."""
+    found = []
     try:
-        named = sorted(endpoints(home).glob("*.json"), key=lambda path: path.stat().st_mtime, reverse=True)
+        paths = list(folder.glob("*.json"))
     except OSError:
-        return "none", None
-    tried = 0
-    for path in named:
-        if tried >= MAX_TRIED or time.monotonic() - started > FIND_SECONDS:
-            break
+        return []
+    for path in paths:
         try:
-            info = json.loads(path.read_text(encoding="utf-8"))
-            port, token, pid = int(info["port"]), str(info["token"]), int(info["pid"])
-        except (OSError, ValueError, KeyError, TypeError):
+            found.append((path.stat().st_mtime, path))
+        except OSError:
             continue
-        # A server started before an upgrade runs the code it was started with, until its client restarts.
-        if info.get("host") != host or info.get("version") != __version__:
-            continue
+    return [path for _mtime, path in sorted(found, key=lambda item: item[0], reverse=True)]
+
+
+class Recaller:
+    """The hook's side: asks the newest server of its entry for one prompt's recall (``handler.resident_recall``).
+
+    ``outcome`` says how it went, for the hook's stderr: ``answered``; ``late`` (a server took the prompt and did not
+    answer in time, and loses its name); ``busy``; ``unproven`` (a program on the port, or a broken answer); ``none``
+    (no server of this entry, host and version runs)."""
+
+    def __init__(self, home: Path | str, host: str) -> None:
+        self.home = Path(home)
+        self.host = host
+        self.outcome: str | None = None
+
+    def __call__(self, payload: dict[str, Any], current_refs: tuple[str, ...], gaps: tuple[str, ...],
+                 budget: float) -> tuple[dict[str, Any], dict[str, Any]] | None:
+        from ..._version import __version__
+        from ...runtime.process_probe import probe_process
+
+        started = time.monotonic()
+        self.outcome = "none"
+        body = json.dumps({"payload": payload, "current_refs": list(current_refs), "gaps": list(gaps),
+                           "remaining": max(0.0, min(10.0, budget - ANSWER_MARGIN_SECONDS))},
+                          ensure_ascii=False).encode("utf-8")
+        if len(body) > MAX_REQUEST_BYTES:
+            return None
+        tried = 0
+        for path in _named(endpoints(self.home)):
+            if tried >= MAX_TRIED or time.monotonic() - started > FIND_SECONDS:
+                break
+            try:
+                info = json.loads(path.read_text(encoding="utf-8"))
+                port, token, pid = int(info["port"]), str(info["token"]), int(info["pid"])
+            except (OSError, ValueError, KeyError, TypeError):
+                continue
+            try:
+                state = probe_process(pid)
+            except (OSError, ValueError):
+                continue
+            # Its process is gone, or another holds its id: our own server runs as this user, so its start time can
+            # be read, and one that cannot (another account's process) is not it.
+            if not state.running or state.start_token != info.get("start"):
+                _forget(path)
+                continue
+            # A server started before an upgrade runs the code it was started with, until its client restarts.
+            if info.get("host") != self.host or info.get("version") != __version__:
+                continue
+            tried += 1
+            outcome, answer = self._exchange(port, token, body, until=started + budget)
+            if outcome == "answered":
+                self.outcome = outcome
+                return answer
+            if outcome in ("late", "unproven"):
+                _forget(path)
+            self.outcome = outcome
+            if outcome == "late":
+                return None
+        return None
+
+    def _exchange(self, port: int, token: str, body: bytes, *, until: float) -> tuple[str, Any]:
+        connection = http.client.HTTPConnection("127.0.0.1", port, timeout=CONNECT_SECONDS)
         try:
-            state = probe_process(pid)
-        except (OSError, ValueError):
-            continue
-        if not state.running or (info.get("start") and state.start_token and state.start_token != info["start"]):
-            _forget(path)  # a server that ended without removing its name, or another process under its id
-            continue
-        tried += 1
-        outcome, answer = _exchange(port, token, raw, started=started)
-        if outcome == "answered":
-            return outcome, answer
-        if outcome == "timeout":
-            _forget(path)
-            return outcome, None
-        if outcome in ("refused", "unproven"):
-            _forget(path)
-    return "none", None
+            try:
+                connection.connect()
+            except OSError:
+                return "none", None  # busy or gone; the name stays for its process's own check above
+            if not _hello(connection, token):
+                return "unproven", None
+            wait = until - time.monotonic()
+            if wait <= 0:
+                return "late", None
+            nonce = secrets.token_hex(16)
+            headers = {_NONCE: nonce, "Content-Type": "application/json",
+                       _PROOF: _proof(token, "recall", nonce, hashlib.sha256(body).hexdigest())}
+            try:
+                connection.sock.settimeout(wait)
+                connection.request("POST", "/recall", body=body, headers=headers)
+                response = connection.getresponse()
+                data = response.read()
+            except (socket.timeout, TimeoutError):
+                return "late", None
+            except (OSError, http.client.HTTPException):
+                return "unproven", None
+            if response.status == 503:
+                return "busy", None
+            if response.status != 200 or not _proven(response.getheader(_PROOF), token, "answer", nonce,
+                                                     hashlib.sha256(data).hexdigest()):
+                return "unproven", None
+            answer = json.loads(data.decode("ascii"))
+            return "answered", (answer["result"], answer["diagnostics"])
+        except (ValueError, KeyError, TypeError):
+            return "unproven", None
+        finally:
+            connection.close()
 
 
 class HookEndpoint:
     """The MCP server's side: a 127.0.0.1 HTTP server in a daemon thread, and the file that names it."""
 
     def __init__(self, home: Path | str, host: str, *, env_file: Path | None = None,
-                 refresh: Callable[[], object] | None = None) -> None:
+                 credentials: Callable[[], dict[str, str]] | None = None) -> None:
         self.home = Path(home)
         self.host = host
         self.token = secrets.token_urlsafe(32)
         self.path = endpoints(home) / f"{os.getpid()}.json"
         self.port = 0
+        self.slots = threading.BoundedSemaphore(MAX_CONCURRENT)
+        self.lock = threading.Lock()
+        self.inflight: dict[int, float] = {}
         self._server: _Server | None = None
         self._stopped = threading.Event()
-        # A key rotated in the env file is taken up at the next prompt, as a hook of its own would read it.
-        self._env_file, self._refresh = env_file, refresh
+        # A key rotated in the env file is taken up at the next prompt, as a hook of its own would read it, and one
+        # taken out of it is taken out here too.
+        self._env_file, self._credentials = env_file, credentials
         self._env_seen = self._env_stamp()
-        self._env_lock = threading.Lock()
+        self._env_loaded: dict[str, str] = {}
+        if credentials is not None:
+            try:
+                self._env_loaded = dict(credentials())  # what the server loaded at its start
+            except (OSError, ValueError):
+                pass
 
     def _env_stamp(self) -> tuple[int, int] | None:
         try:
@@ -255,23 +322,41 @@ class HookEndpoint:
             return None
         return (status.st_mtime_ns, status.st_size) if status is not None else None
 
-    def handle(self, raw: bytes, *, started: float) -> dict[str, Any]:
-        """One prompt, as ``hook_entry`` would have handled it in its own process."""
+    def _refresh_credentials(self) -> None:
+        with self.lock:
+            stamp = self._env_stamp()
+            if self._credentials is None or stamp == self._env_seen:
+                return
+            self._env_seen = stamp
+            try:
+                loaded = dict(self._credentials())
+            except (OSError, ValueError):
+                loaded = {}
+            for name in set(self._env_loaded) - set(loaded):
+                os.environ.pop(name, None)
+            os.environ.update(loaded)
+            self._env_loaded = loaded
+
+    def recall(self, request: dict[str, Any]) -> tuple[dict[str, Any], Callable[[], None]]:
+        """One prompt's recall, as its hook would have recalled it; the handler is closed by the caller once the
+        answer is out."""
         from .handler import CodexHookHandler
 
-        with self._env_lock:
-            stamp = self._env_stamp()
-            if self._refresh is not None and stamp != self._env_seen:
-                self._env_seen = stamp
-                self._refresh()
-        handler = CodexHookHandler.from_home(str(self.home), self.host, hook_started_at=started)
+        self._refresh_credentials()
+        handler = CodexHookHandler.from_home(str(self.home), self.host)
         try:
-            result = handler.handle_bytes(raw)
-        finally:
+            result = handler.resident_recall_for(request["payload"], request["current_refs"], request["gaps"],
+                                                 request["remaining"])
+        except BaseException:
             handler.close()
+            raise
         diagnostics = dataclasses.asdict(handler.diagnostics)
         diagnostics["capability_gaps"] = list(diagnostics.get("capability_gaps") or ())
-        return {"result": result, "diagnostics": diagnostics}
+        return {"result": result, "diagnostics": diagnostics}, handler.close
+
+    def _stuck(self) -> bool:
+        with self.lock:
+            return any(time.monotonic() - started > STUCK_SECONDS for started in self.inflight.values())
 
     def _advertise(self) -> None:
         from ..._version import __version__
@@ -292,10 +377,10 @@ class HookEndpoint:
 
     def _keep_named(self) -> None:
         while not self._stopped.wait(ADVERTISE_SECONDS):
-            if self.path.exists():
+            # A hook removed the name of a server that kept a prompt waiting.  It names itself again once none of
+            # its recalls is stuck and it proves itself as a hook would check it; a hung one cannot.
+            if self.path.exists() or self._stuck():
                 continue
-            # A hook removed the name of a server that kept it waiting.  One that proves itself again, as a hook
-            # would check it, names itself again; a hung one cannot.
             connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=CONNECT_SECONDS)
             try:
                 connection.connect()
@@ -315,16 +400,16 @@ class HookEndpoint:
         server.endpoint = self  # type: ignore[attr-defined]
         self._server = server
         self.port = server.server_address[1]
-        threading.Thread(target=server.serve_forever, name="scope-recall-hooks", daemon=True).start()
+        threading.Thread(target=server.serve_forever, name="scope-recall-recall", daemon=True).start()
         self._advertise()
-        threading.Thread(target=self._keep_named, name="scope-recall-hooks-name", daemon=True).start()
+        threading.Thread(target=self._keep_named, name="scope-recall-recall-name", daemon=True).start()
         atexit.register(self.stop)
         if sys.platform == "win32":
             try:
                 from ...vector.process_store import prestart
                 prestart(keep=True)
             except OSError:
-                pass  # each prompt's recall then starts its own helper, as a hook of its own did
+                pass  # each prompt's recall then starts its own helper, as a hook of its own does
 
     def stop(self) -> None:
         self._stopped.set()
@@ -336,9 +421,9 @@ class HookEndpoint:
 
 
 def serve(home: Path | str, host: str, *, env_file: Path | None = None,
-          refresh: Callable[[], object] | None = None) -> HookEndpoint | None:
-    """Answer this entry's prompts from this process until it exits; None when that cannot start."""
-    endpoint = HookEndpoint(home, host, env_file=env_file, refresh=refresh)
+          credentials: Callable[[], dict[str, str]] | None = None) -> HookEndpoint | None:
+    """Answer this entry's prompt recalls from this process until it exits; None when that cannot start."""
+    endpoint = HookEndpoint(home, host, env_file=env_file, credentials=credentials)
     try:
         endpoint.start()
     except OSError:

@@ -84,14 +84,15 @@ def main(argv: list[str] | None = None) -> int:
             workspace=workspace,
             trusted_runtime_config_path=str(runtime_config) if runtime_config is not None else None,
         )
-        # The client runs this server for as long as it is open: its prompt hooks, each a process of their own, are
-        # answered here, warm (``local_endpoint``).  An override of the runtime config is this server's alone.
+        # The client runs this server for as long as it is open: its prompt hooks, each a process of their own, have
+        # their recall answered here, warm (``local_endpoint``).  An override of the runtime config is this server's.
         endpoint = None
         if isinstance(config, SharedClientConfig) and runtime_config is None:
             from .local_endpoint import serve
             env_file = _absolute(args.env_file, "env-file") if args.env_file else None
             endpoint = serve(config.home, config.host, env_file=env_file,
-                             refresh=(lambda: apply_credential_environment(config, env_file, None))
+                             credentials=(lambda: host_process_credential_environment(config.runtime_config_path,
+                                                                                      env_file))
                              if env_file is not None else None)
         try:
             server.server.run(transport="stdio")

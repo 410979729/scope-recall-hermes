@@ -848,7 +848,7 @@ def test_a_prompt_hook_starts_the_vector_helper_before_it_stores_the_prompt(monk
 
 @pytest.fixture
 def resident(store, monkeypatch):
-    """The Claude Code entry's MCP server answering its prompts, without a LanceDB helper process."""
+    """The Claude Code entry's MCP server answering its prompts' recall, without a LanceDB helper process."""
     from scope_recall.adapters.codex import local_endpoint
     from scope_recall.vector import process_store
 
@@ -869,55 +869,83 @@ def _hook_entry(monkeypatch, raw, client):
     return hook_entry.main(["--home", str(client), "--host", "claude-code"])
 
 
-def test_a_prompt_is_answered_by_the_entry_s_running_mcp_server(resident):
-    """A cold prompt's recall was often done before its LanceDB helper was ready: on the pilot 6 of 8 cold Claude
-    Code prompts recalled by words alone.  The client's MCP server lives as long as the client and answers warm."""
+def _counted(endpoint, monkeypatch, *, delay=0.0):
+    """Count the recalls the server runs; ``delay`` keeps each one waiting that long first."""
     import time
 
-    from scope_recall.adapters.codex import local_endpoint
+    calls = []
+    real = endpoint.recall
 
+    def recall(request):
+        calls.append(request["payload"].get("prompt"))
+        time.sleep(delay)
+        return real(request)
+
+    monkeypatch.setattr(endpoint, "recall", recall)
+    return calls
+
+
+def _user_rows(root):
+    return _rows(root, "SELECT content FROM source_events WHERE role='user' AND entry_id='claude-code'")
+
+
+@pytest.fixture
+def small_reserve(monkeypatch):
+    """A test store's hooks run on the 2 s default budget (the pilot's entries have 6 s): keep back less of it for
+    the hook's own recall, so the server is asked."""
+    from scope_recall.adapters.codex import handler as handler_module
+
+    monkeypatch.setattr(handler_module, "_LOCAL_RECALL_RESERVE_S", 0.3)
+
+
+def test_the_server_answers_a_prompt_s_recall_and_the_hook_stores_the_prompt(resident, small_reserve, monkeypatch,
+                                                                             capsys):
+    """A cold prompt's recall was often done before its LanceDB helper was ready: on the pilot 6 of 8 cold Claude
+    Code prompts recalled by words alone.  The client's MCP server lives as long as the client and recalls warm; the
+    prompt is stored by its own hook, as before."""
     root, client, endpoint = resident
-    assert [path.name for path in local_endpoint.endpoints(client).glob("*.json")] == [endpoint.path.name]
-    raw = json.dumps(_prompt("TEST 常驻进程收到的一句话。", prompt_id="TEST-prompt-resident")).encode()
-    outcome, answer = local_endpoint.ask(client, "claude-code", raw, started=time.monotonic())
-    assert outcome == "answered"
-    _result, diagnostics = answer
-    assert diagnostics["capture_durability"] in ("persisted", "queued")
-    assert ("user", "human_direct", "TEST 常驻进程收到的一句话。") in _said_in_store(root)
+    calls = _counted(endpoint, monkeypatch)
+    raw = json.dumps(_prompt("TEST 常驻进程给这句召回。", prompt_id="TEST-prompt-resident")).encode()
+    assert _hook_entry(monkeypatch, raw, client) == 0
+    captured = capsys.readouterr()
+    assert json.loads(captured.out) is not None and "CODEX_RECALL_RESIDENT:answered" in captured.err
+    assert calls == ["TEST 常驻进程给这句召回。"]
+    assert _user_rows(root) == [("TEST 常驻进程给这句召回。",)]
     endpoint.stop()
     assert not endpoint.path.exists()
 
 
-def test_a_server_names_itself_in_the_user_s_own_profile(resident):
-    """The entry's home may sit on a drive every account can read (on the pilot, F:\\ gives Authenticated Users
-    write), and whoever holds a server's token can recall the owner's memory: the name is kept in the profile."""
-    import os
-    import stat
-    from pathlib import Path
+def test_a_late_answer_leaves_the_prompt_stored_once(resident, small_reserve, monkeypatch, capsys):
+    """The first version had the server store the prompt too: one that answered after its hook stopped waiting left
+    the prompt stored twice.  The server now only recalls, and the hook that stops waiting recalls itself."""
+    import time
 
-    _root, client, endpoint = resident
-    profile = Path(os.environ["LOCALAPPDATA"] if os.name == "nt" else os.environ["XDG_CACHE_HOME"])
-    assert profile in endpoint.path.parents and client not in endpoint.path.parents
-    if os.name != "nt":
-        assert stat.S_IMODE(endpoint.path.stat().st_mode) == 0o600
-        assert stat.S_IMODE(endpoint.path.parent.stat().st_mode) == 0o700
-
-
-def test_only_the_prompt_is_sent_to_the_server(resident, monkeypatch, capsys):
-    """The other hooks store what was said and read no vectors: they do it in their own process, as before."""
     root, client, endpoint = resident
-    monkeypatch.setattr(endpoint, "handle", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("sent")))
+    _counted(endpoint, monkeypatch, delay=3.0)
+    raw = json.dumps(_prompt("TEST 常驻进程答得太晚。", prompt_id="TEST-prompt-late")).encode()
+    assert _hook_entry(monkeypatch, raw, client) == 0
+    assert "CODEX_RECALL_RESIDENT:late" in capsys.readouterr().err
+    assert not endpoint.path.exists(), "later prompts go past it"
+    time.sleep(3.5)  # the server's late recall ends
+    assert _user_rows(root) == [("TEST 常驻进程答得太晚。",)]
+
+
+def test_only_a_prompt_that_may_use_vectors_asks_the_server(resident, monkeypatch, capsys):
+    """The other hooks store what was said and read no vectors; a prompt holding a credential is recalled without
+    the vector channel, so nothing of it reaches an embedding provider or the server."""
+    root, client, endpoint = resident
+    calls = _counted(endpoint, monkeypatch)
     stop = {"hook_event_name": "Stop", "session_id": "TEST-cc-session", "cwd": "C:/anywhere/at/all",
             "transcript_path": "C:/TEST/transcript.jsonl", "last_assistant_message": "TEST 自己保存的回复。"}
     assert _hook_entry(monkeypatch, json.dumps(stop).encode(), client) == 0
-    assert json.loads(capsys.readouterr().out) is not None
+    secret = _prompt("TEST my password is Xk9#mP2qLm7", prompt_id="TEST-prompt-secret")
+    assert _hook_entry(monkeypatch, json.dumps(secret).encode(), client) == 0
+    assert calls == [] and "CODEX_RECALL_RESIDENT" not in capsys.readouterr().err
 
 
-def test_a_name_whose_process_is_gone_or_reused_is_removed_without_a_connection(store, monkeypatch):
-    """A killed server leaves its name behind, and its port is free for any program to take."""
-    import os
-    import time
-
+def test_a_name_whose_process_is_gone_reused_or_another_account_s_is_removed_unasked(store, monkeypatch):
+    """A killed server leaves its name behind, and its port is free for any program to take.  On Windows a
+    connection to a closed loopback port is refused only after 2 s, so a name was never removed that way."""
     from scope_recall._version import __version__
     from scope_recall.adapters.codex import local_endpoint
     from scope_recall.runtime import process_probe
@@ -925,24 +953,25 @@ def test_a_name_whose_process_is_gone_or_reused_is_removed_without_a_connection(
     _root, _homes, client, _capture = store
     folder = local_endpoint.endpoints(client)
     folder.mkdir(parents=True)
-    gone, reused = folder / "111.json", folder / "222.json"
-    for path, pid in ((gone, 111), (reused, 222)):
-        path.write_text(json.dumps({"host": "claude-code", "port": 9, "token": "TEST", "pid": pid, "start": "1",
-                                    "version": __version__}), encoding="utf-8")
-    states = {111: process_probe.ProcessState(111, False), 222: process_probe.ProcessState(222, True, "2")}
+    names = {}
+    for pid, version in ((111, __version__), (222, __version__), (333, __version__), (444, "0.0.1"), (555, "0.0.1")):
+        names[pid] = folder / f"{pid}.json"
+        names[pid].write_text(json.dumps({"host": "claude-code", "port": 9, "token": "TEST", "pid": pid, "start": "1",
+                                          "version": version}), encoding="utf-8")
+    states = {111: process_probe.ProcessState(111, False), 222: process_probe.ProcessState(222, True, "2"),
+              333: process_probe.ProcessState(333, True, None), 444: process_probe.ProcessState(444, False),
+              555: process_probe.ProcessState(555, True, "1")}
     monkeypatch.setattr(process_probe, "probe_process", lambda pid: states[pid])
-    monkeypatch.setattr(local_endpoint, "_exchange", lambda *args, **kwargs: (_ for _ in ()).throw(
-        AssertionError("connected")))
-    raw = json.dumps(_prompt("TEST 没人接。")).encode()
-    assert local_endpoint.ask(client, "claude-code", raw, started=time.monotonic()) == ("none", None)
-    assert not gone.exists() and not reused.exists()
-    assert os.getpid() not in states
+    recaller = local_endpoint.Recaller(client, "claude-code")
+    monkeypatch.setattr(recaller, "_exchange", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("asked")))
+    assert recaller(_prompt("TEST 没人接。"), (), (), 3.0) is None and recaller.outcome == "none"
+    assert [pid for pid, path in names.items() if path.exists()] == [555], "a live server of another version stays"
 
 
 def test_a_program_on_a_server_s_port_learns_no_token_and_is_not_believed(store):
     """The hook sent the token and the prompt to whatever listened on the named port, and printed its answer."""
+    import os
     import threading
-    import time
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
     from scope_recall._version import __version__
@@ -972,11 +1001,13 @@ def test_a_program_on_a_server_s_port_learns_no_token_and_is_not_believed(store)
         folder = local_endpoint.endpoints(client)
         folder.mkdir(parents=True)
         named = folder / "333.json"
-        named.write_text(json.dumps({"host": "claude-code", "port": impostor.server_address[1], "token": "TEST-secret-token",
-                                     "pid": __import__("os").getpid(), "start": probe_process(__import__("os").getpid()).start_token,
-                                     "version": __version__}), encoding="utf-8")
-        raw = json.dumps(_prompt("TEST 不该被别的程序听到。")).encode()
-        assert local_endpoint.ask(client, "claude-code", raw, started=time.monotonic()) == ("none", None)
+        named.write_text(json.dumps({"host": "claude-code", "port": impostor.server_address[1],
+                                     "token": "TEST-secret-token", "pid": os.getpid(),
+                                     "start": probe_process(os.getpid()).start_token, "version": __version__}),
+                         encoding="utf-8")
+        recaller = local_endpoint.Recaller(client, "claude-code")
+        assert recaller(_prompt("TEST 不该被别的程序听到。"), (), (), 3.0) is None
+        assert recaller.outcome == "unproven"
     finally:
         impostor.shutdown()
         impostor.server_close()
@@ -986,25 +1017,9 @@ def test_a_program_on_a_server_s_port_learns_no_token_and_is_not_believed(store)
     assert not named.exists()
 
 
-def test_a_server_that_keeps_a_prompt_waiting_is_passed_over_and_the_hook_does_the_work(resident, monkeypatch, capsys):
-    """A server that took the prompt and did not answer left the turn with nothing: no capture, no recall, no line,
-    every turn.  The hook now says so, removes the server's name and does the work itself in a budget of its own."""
-    import time
-
-    from scope_recall.adapters.codex import local_endpoint
-
-    root, client, endpoint = resident
-    monkeypatch.setattr(local_endpoint, "PROMPT_WAIT_SECONDS", 1.5)
-    monkeypatch.setattr(endpoint, "handle", lambda *args, **kwargs: time.sleep(5) or {})
-    raw = json.dumps(_prompt("TEST 常驻进程卡住时也要保存。", prompt_id="TEST-prompt-hung")).encode()
-    assert _hook_entry(monkeypatch, raw, client) == 0
-    captured = capsys.readouterr()
-    assert "CODEX_HOOK:resident_timeout" in captured.err
-    assert not endpoint.path.exists(), "later prompts go past it"
-    assert ("user", "human_direct", "TEST 常驻进程卡住时也要保存。") in _said_in_store(root)
-
-
-def test_a_server_names_itself_again_once_it_answers_its_own_check(store, monkeypatch):
+def test_a_server_names_itself_again_only_once_no_recall_is_stuck(store, monkeypatch):
+    """A server whose recall hung answered its own check anyway and named itself again, and every prompt then
+    waited on it."""
     import time
 
     from scope_recall.adapters.codex import local_endpoint
@@ -1015,7 +1030,13 @@ def test_a_server_names_itself_again_once_it_answers_its_own_check(store, monkey
     _root, _homes, client, _capture = store
     endpoint = local_endpoint.serve(client, "claude-code")
     try:
+        with endpoint.lock:
+            endpoint.inflight[1] = time.monotonic() - local_endpoint.STUCK_SECONDS - 1
         endpoint.path.unlink()
+        time.sleep(1.0)
+        assert not endpoint.path.exists(), "not while a recall is stuck"
+        with endpoint.lock:
+            endpoint.inflight.clear()
         deadline = time.monotonic() + 5
         while not endpoint.path.exists() and time.monotonic() < deadline:
             time.sleep(0.05)
@@ -1024,56 +1045,83 @@ def test_a_server_names_itself_again_once_it_answers_its_own_check(store, monkey
         endpoint.stop()
 
 
+def test_a_busy_server_leaves_the_prompt_s_recall_to_its_hook(resident):
+    from scope_recall.adapters.codex import local_endpoint
+
+    _root, client, endpoint = resident
+    for _slot in range(local_endpoint.MAX_CONCURRENT):
+        assert endpoint.slots.acquire(blocking=False)
+    recaller = local_endpoint.Recaller(client, "claude-code")
+    assert recaller(_prompt("TEST 常驻进程正忙。"), (), (), 3.0) is None
+    assert recaller.outcome == "busy" and endpoint.path.exists()
+
+
 def test_a_server_answers_only_a_hook_that_proves_the_token(resident):
     import http.client
 
     _root, _client, endpoint = resident
     connection = http.client.HTTPConnection("127.0.0.1", endpoint.port, timeout=5)
     try:
-        connection.request("POST", "/hook", body=b"{}", headers={"X-Scope-Recall-Nonce": "a" * 32,
-                                                                 "X-Scope-Recall-Elapsed": "0.0",
-                                                                 "X-Scope-Recall-Proof": "0" * 64})
+        connection.request("POST", "/recall", body=b"{}", headers={"X-Scope-Recall-Nonce": "a" * 32,
+                                                                   "X-Scope-Recall-Proof": "0" * 64})
         assert connection.getresponse().status == 401
     finally:
         connection.close()
 
 
-def test_a_long_prompt_reaches_the_server_whole(resident):
-    """The hook re-escaped the payload into a JSON body: 22,000 Chinese characters made it too large (413), and the
-    prompt was handled cold."""
-    import time
-
-    from scope_recall.adapters.codex import local_endpoint
-
-    root, client, _endpoint = resident
-    text = "TEST " + "长" * 20000
-    raw = json.dumps(_prompt(text, prompt_id="TEST-prompt-long"), ensure_ascii=False).encode("utf-8")
+def test_a_long_prompt_s_recall_is_answered(resident, small_reserve, monkeypatch, capsys):
+    """The first version re-escaped the payload into a JSON body: 22,000 Chinese characters made it too large (413)."""
+    root, client, endpoint = resident
+    calls = _counted(endpoint, monkeypatch)
+    raw = json.dumps(_prompt("TEST " + "长" * 20000, prompt_id="TEST-prompt-long"), ensure_ascii=False).encode("utf-8")
     assert len(raw) <= 65536
-    outcome, _answer = local_endpoint.ask(client, "claude-code", raw, started=time.monotonic())
-    assert outcome == "answered"
+    assert _hook_entry(monkeypatch, raw, client) == 0
+    assert "CODEX_RECALL_RESIDENT:answered" in capsys.readouterr().err and len(calls) == 1
 
 
-def test_a_key_rotated_in_the_env_file_is_taken_up_at_the_next_prompt(store, monkeypatch, tmp_path):
-    """The server read its env file once: a rotated key stayed stale, and a key missing at its start stayed missing,
-    until the client restarted."""
+def test_credentials_rotated_or_removed_in_the_env_file_are_taken_up(store, monkeypatch, tmp_path):
+    """The server read its env file once: a rotated key stayed stale, and one taken out stayed in, until the client
+    restarted."""
+    import os
     import time
 
     from scope_recall.adapters.codex import local_endpoint
     from scope_recall.vector import process_store
 
     monkeypatch.setattr(process_store, "prestart", lambda **kwargs: None)
+    monkeypatch.delenv("TEST_SCOPE_RECALL_KEY", raising=False)
+    monkeypatch.delenv("TEST_SCOPE_RECALL_OLD", raising=False)
     _root, _homes, client, _capture = store
     env_file = tmp_path / "TEST.env"
-    env_file.write_text("TEST_KEY=one\n", encoding="utf-8")
-    reads = []
-    endpoint = local_endpoint.serve(client, "claude-code", env_file=env_file, refresh=lambda: reads.append(1))
+    env_file.write_text("one\n", encoding="utf-8")
+    loaded = {"TEST_SCOPE_RECALL_OLD": "old"}
+    os.environ.update(loaded)  # what the server's start loaded
+    endpoint = local_endpoint.serve(client, "claude-code", env_file=env_file, credentials=lambda: dict(loaded))
     try:
-        endpoint.handle(json.dumps(_prompt("TEST 第一句。", prompt_id="TEST-prompt-env-1")).encode(),
-                        started=time.monotonic())
-        assert reads == []
-        env_file.write_text("TEST_KEY=two, rotated\n", encoding="utf-8")
-        endpoint.handle(json.dumps(_prompt("TEST 第二句。", prompt_id="TEST-prompt-env-2")).encode(),
-                        started=time.monotonic())
-        assert reads == [1]
+        loaded.clear()
+        loaded["TEST_SCOPE_RECALL_KEY"] = "two"
+        env_file.write_text("two, rotated\n", encoding="utf-8")
+        request = {"payload": _prompt("TEST 换了密钥。", prompt_id="TEST-prompt-env"), "current_refs": (), "gaps": (),
+                   "remaining": 3.0}
+        _answer, close = endpoint.recall(request)
+        close()
+        assert os.environ.get("TEST_SCOPE_RECALL_KEY") == "two" and "TEST_SCOPE_RECALL_OLD" not in os.environ
     finally:
         endpoint.stop()
+        os.environ.pop("TEST_SCOPE_RECALL_KEY", None)
+        time.sleep(0)
+
+
+def test_a_server_names_itself_in_the_user_s_own_profile(resident):
+    """The entry's home may sit on a drive every account can read (on the pilot, F:\\ gives Authenticated Users
+    write), and whoever holds a server's token can read the owner's memory through it."""
+    import os
+    import stat
+    from pathlib import Path
+
+    _root, client, endpoint = resident
+    profile = Path(os.environ["LOCALAPPDATA"]) if os.name == "nt" else Path.home() / ".cache"
+    assert profile in endpoint.path.parents and client not in endpoint.path.parents
+    if os.name != "nt":
+        assert stat.S_IMODE(endpoint.path.stat().st_mode) == 0o600
+        assert stat.S_IMODE(endpoint.path.parent.stat().st_mode) == 0o700
