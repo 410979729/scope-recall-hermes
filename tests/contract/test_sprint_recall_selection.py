@@ -1,5 +1,6 @@
 """Focused regressions for bounded selection; no model or host calls."""
 import json
+import sqlite3
 from dataclasses import replace
 
 from scope_recall.core.background_context import background_candidates
@@ -26,6 +27,28 @@ def test_old_relevant_preference_survives_busy_recent_window(app):
         selected = background_candidates(tx, search, core.recall_pipeline.storage_reader, core.clock)
     assert older.ref in {candidate.ref for candidate, _ in selected}
     assert len(selected) <= 2
+
+
+def test_the_profile_term_query_starts_from_the_claims(app):
+    """Left to itself SQLite started from every claim's evidence link and read each linked source's whole
+    posting list: 1.3 s of a 2.5 s automatic recall on a shared store of 19,000 claim links and 11 million
+    postings, for 2,300 preference and constraint links.  Past the hook's budget, the turn got no memory."""
+    core, ctx = app
+    source = capture(core, ctx, "TEST-project 输出格式 Markdown。")
+    accept(core, ctx, draft(source, "Markdown", kind="preference", predicate="输出格式"))
+    statements = []
+    with core.storage.read(ctx) as tx:
+        connection = tx._check()
+        connection.set_trace_callback(statements.append)
+        selected = background_candidates(tx, _search(core, ctx, "输出格式如何选择"),
+                                         core.recall_pipeline.storage_reader, core.clock)
+        connection.set_trace_callback(None)
+    assert selected
+    term_queries = [sql for sql in statements if "COUNT(DISTINCT t.term) AS hits" in sql and "claims c" in sql]
+    assert len(term_queries) == 1, statements
+    with sqlite3.connect(core.storage.path) as db:
+        plan = [row[3] for row in db.execute("EXPLAIN QUERY PLAN " + term_queries[0])]
+    assert plan[0].startswith(("SCAN c", "SEARCH c")), plan
 
 
 def test_matching_condition_selects_exception_instead_of_general_value(app):

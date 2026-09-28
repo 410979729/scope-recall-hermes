@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 import unicodedata
 
 
@@ -16,22 +17,26 @@ def canonical_render_json(value: object) -> str:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
 
 
-def _cjk(code: int) -> bool:
-    return (0x2E80 <= code <= 0xA4CF or 0xAC00 <= code <= 0xD7AF
-            or 0xF900 <= code <= 0xFAFF or 0x20000 <= code <= 0x323AF)
+#: ASCII letters, digits and whitespace: a quarter unit each.  Everything else costs a whole unit, except a
+#: symbol or control outside ASCII and the CJK blocks, which costs one per UTF-8 byte.
+_ASCII_QUARTER = {code: None for code in range(128) if chr(code).isalnum() or chr(code).isspace()}
+_CJK = re.compile("[⺀-꓏가-힯豈-﫿\U00020000-\U000323af]+")
 
 
 def estimate_tokens(text: str) -> int:
-    """Estimate ASCII runs at four chars/token, CJK at one, symbols by bytes."""
-    quarters = 0
-    for char in text:
-        code = ord(char)
-        if code < 128 and (char.isalnum() or char.isspace()):
-            quarters += 1
-        elif _cjk(code) or unicodedata.category(char)[0] in "LNMPZ":
-            quarters += 4
-        else:
-            quarters += 4 * len(char.encode("utf-8"))
+    """Estimate ASCII runs at four chars/token, CJK at one, symbols by bytes.
+
+    Counted with string operations rather than one Python step per character: the packet weighs every
+    candidate it considers, 1.9 million characters in one automatic recall on the shared store, and that
+    loop cost 180 ms of it.
+    """
+    whole = len(text.translate(_ASCII_QUARTER))
+    quarters = len(text) - whole + 4 * whole
+    rest = _CJK.sub("", text)
+    if not rest.isascii():
+        for char in {char for char in set(rest) if char > "\x7f"}:
+            if unicodedata.category(char)[0] not in "LNMPZ":
+                quarters += 4 * (len(char.encode("utf-8")) - 1) * rest.count(char)
     return max(1, (quarters + 3) // 4)
 
 
