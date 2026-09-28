@@ -106,10 +106,17 @@ def lexical_terms(text: str) -> tuple[str, ...]:
     return tuple(sorted(t for t in terms if 0 < len(t) <= 240))
 
 
+#: Terms a query searches for.  A longer query keeps the ones it reaches first: refused whole, a prompt of about 150
+#: Chinese characters (129 distinct bigrams and up) got no recall at all, by words or by meaning, and nothing said so.
+MAX_QUERY_TERMS = 128
+
+
 def query_terms(query: str) -> tuple[str, ...]:
     if type(query) is not str or len(query) > 8192:
         raise ContractError("INPUT_INVALID", "query")
     terms = lexical_terms(query)
-    if len(terms) > 128:
-        raise ContractError("INPUT_INVALID", "query_terms")
+    if len(terms) > MAX_QUERY_TERMS:
+        normalized = unicodedata.normalize("NFKC", query).casefold()
+        first = sorted(terms, key=lambda term: (normalized.find(term), term))[:MAX_QUERY_TERMS]
+        terms = tuple(sorted(first))
     return terms

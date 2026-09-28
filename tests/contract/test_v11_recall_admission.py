@@ -18,7 +18,7 @@ import pytest
 
 from scope_recall.contracts import ContractError, InstanceBinding, TrustedContext
 from scope_recall.core import CoreConfig, MemoryCore
-from scope_recall.core.events import lexical_terms, query_terms
+from scope_recall.core.events import MAX_QUERY_TERMS, lexical_terms, query_terms
 from scope_recall.core.recall_policy import RecallPolicy, SPACE_ID, hard_identifiers, identifiers_compatible, synonym_expansions
 from scope_recall.core.retrieval import MAX_CURRENT_SOURCE_REFS, CandidateRef, CollectionQuery, SearchContext
 from scope_recall.core.recall_packet import canonical_render_json
@@ -781,3 +781,13 @@ def test_automatic_packet_budget_keeps_later_constraint_and_stays_closed(tmp_pat
 
     with pytest.raises(ContractError, match="ACCESS_DENIED"):
         replace(ctx, allowed_scope_ids=frozenset({"TEST-other"}))
+
+
+def test_a_query_with_more_than_128_distinct_terms_keeps_the_first_ones():
+    """Refused whole, a prompt of about 150 Chinese characters got no recall at all, by words or by meaning."""
+    opening = "白鹭项目的负责人是谁"
+    query = opening + "。" + "天地玄黄宇宙洪荒日月盈昃辰宿列张寒来暑往秋收冬藏闰余成岁律吕调阳云腾致雨露结为霜金生丽水玉出昆冈剑号巨阙珠称夜光果珍李柰菜重芥姜海咸河淡鳞潜羽翔龙师火帝鸟官人皇始制文字乃服衣裳推位让国有虞陶唐吊民伐罪周发殷汤坐朝问道垂拱平章爱育黎首臣伏戎羌遐迩一体率宾归王鸣凤在竹白驹食场化被草木赖及万方"
+    assert len(lexical_terms(query)) > MAX_QUERY_TERMS
+    terms = query_terms(query)
+    assert len(terms) == MAX_QUERY_TERMS and list(terms) == sorted(terms)
+    assert {"白鹭", "项目", "负责"} <= set(terms), "the terms it reaches first are kept"

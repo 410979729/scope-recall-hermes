@@ -598,7 +598,21 @@ def test_a_task_notification_is_not_the_owner_s_prompt(store):
 
 SUGGESTIONS_PROMPT = ("# Overview\n\nGenerate 0 to 3 hyperpersonalized suggestions for what this user can do with "
                       "Codex in this local project: C:\\TEST\n\nGet an understanding of the user's intent and goals "
-                      "by deeply viewing their connected apps.")
+                      "by deeply viewing their connected apps.\n\n# Rules\n\n"
+                      + "- TEST rule about what a suggestion must be.\n" * 60 + "# Response format\n\nJSON.")
+
+
+def test_codex_s_request_for_suggestions_is_told_from_the_owner_s_words():
+    """It opens with a Markdown heading, names its hyperpersonalized suggestions early and runs to thousands of
+    characters; a wording change around that still counts, the owner's own words about it do not."""
+    from scope_recall.adapters.codex.boundary import is_codex_suggestions_prompt
+
+    assert len(SUGGESTIONS_PROMPT) >= 2000 and is_codex_suggestions_prompt(SUGGESTIONS_PROMPT)
+    reworded = SUGGESTIONS_PROMPT.replace("# Overview\n\nGenerate 0 to 3", "## Task\n\nPropose up to three")
+    assert is_codex_suggestions_prompt(reworded.replace("hyperpersonalized", "Hyperpersonalised"))
+    assert not is_codex_suggestions_prompt("帮我看看 Codex 的 hyperpersonalized suggestions 是怎么生成的")
+    assert not is_codex_suggestions_prompt("# 我的笔记\n\n" + "今天记下 hyperpersonalized suggestions 这个词。" * 5)
+    assert not is_codex_suggestions_prompt("Codex 生成的建议如下。\n" + "hyperpersonalized suggestions\n" * 200)
 
 
 def test_codex_s_request_for_suggestions_is_neither_stored_nor_recalled(store, tmp_path):
@@ -638,7 +652,9 @@ def test_a_prompt_longer_than_a_recall_query_is_still_recalled_for(store):
         told.sync_turn("TEST 白鹭项目的负责人是 KZ-42。", "好的。", session_id="TEST-session-1")
     finally:
         told.shutdown()
-    prompt = "白鹭项目的负责人 KZ-42 是谁？下面是附件：\n" + "TEST 附件里的一行字。\n" * 800
+    # Distinct characters, so the prompt has far more than 128 distinct terms as a real one would.
+    prompt = ("白鹭项目的负责人 KZ-42 是谁？下面是附件：\n" + "天地玄黄宇宙洪荒日月盈昃辰宿列张寒来暑往秋收冬藏闰余成岁律吕调阳云腾致雨露结为霜金生丽水玉出昆冈剑号巨阙珠称夜光果珍李柰菜重芥姜海咸河淡鳞潜羽翔龙师火帝鸟官人皇始制文字乃服衣裳推位让国有虞陶唐吊民伐罪周发殷汤坐朝问道垂拱平章爱育黎首臣伏戎羌遐迩一体率宾归王鸣凤在竹白驹食场化被草木赖及万方" * 3 + "\n"
+              + "TEST 附件里的一行字。\n" * 800)
     assert len(prompt) > 8192
     hook = _hook(client)
     try:
@@ -702,6 +718,58 @@ def test_a_prompt_the_store_could_not_take_is_still_recalled_by_meaning(store, m
         assert not refused._runtime_attach_attempted, "a credential never reaches the embedding provider"
     finally:
         refused.close()
+
+
+def test_a_prompt_whose_capture_failed_before_the_secret_screen_still_keeps_a_credential_from_the_vectors(
+        store, monkeypatch):
+    """A capture that fails before it screens the message (an invalid envelope, say) is no refusal, and the vector
+    search came with the runtime: the prompt itself is screened before the runtime is attached."""
+    from scope_recall.core import MemoryCore
+
+    _root, _homes, client, _capture = store
+
+    def invalid(self, *args, **kwargs):
+        raise ContractError("INPUT_INVALID", "capture")
+
+    hook = _hook(client)
+    try:
+        with monkeypatch.context() as patched:
+            patched.setattr(MemoryCore, "record_host_event", invalid)
+            hook.handle_payload(_prompt("TEST password: Xk9#mP2q-7Lw", prompt_id="TEST-prompt-invalid"))
+        assert not hook._runtime_attach_attempted
+    finally:
+        hook.close()
+
+
+def test_a_prompt_blank_for_its_first_8192_characters_is_recalled_by_what_follows(store):
+    _root, homes, client, _capture = store
+    told = _hermes(homes["tianquan"])
+    try:
+        told.on_turn_start(1, "TEST 白鹭项目的负责人是 KZ-42。", turn_id="TEST-turn-1", session_id="TEST-session-1")
+        told.observe_pre_llm(session_id="TEST-session-1", turn_id="TEST-turn-1", user_message="TEST 白鹭项目的负责人是 KZ-42。")
+        told.sync_turn("TEST 白鹭项目的负责人是 KZ-42。", "好的。", session_id="TEST-session-1")
+    finally:
+        told.shutdown()
+    hook = _hook(client)
+    try:
+        result = hook.handle_payload(_prompt(" " * 9000 + "白鹭项目的负责人 KZ-42 是谁", prompt_id="TEST-prompt-blank"))
+    finally:
+        hook.close()
+    assert hook.diagnostics.last_reason != "recall_exception", hook.diagnostics.recall_error_detail
+    body = result["hookSpecificOutput"]["additionalContext"].partition("\n")[2]
+    assert any("KZ-42" in item["content"] for item in json.loads(body)["items"])
+
+
+def test_what_counts_as_a_recall_without_its_vector_search():
+    """Only a search that did not run or did not finish; one that ran and had candidates refused did run."""
+    from scope_recall.adapters.codex.handler import recall_without_vectors
+
+    assert recall_without_vectors(["vector_old_or_mismatched_space", "vector_rejected:space"]) is None
+    assert recall_without_vectors(["sqlite_candidate_error:OperationalError"]) is None
+    assert recall_without_vectors(["vector_unavailable", "vector_error:TimeoutError:helper_open_deadline"]) \
+        == "vector_error:TimeoutError:helper_open_deadline"
+    assert recall_without_vectors(["deadline_exceeded_collect"]) == "deadline_exceeded_collect"
+    assert recall_without_vectors(["sqlite_unavailable:INPUT_INVALID"]) == "sqlite_unavailable:INPUT_INVALID"
 
 
 def test_a_prompt_hook_starts_the_vector_helper_before_it_stores_the_prompt(monkeypatch):

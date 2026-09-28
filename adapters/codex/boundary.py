@@ -61,12 +61,18 @@ def is_task_notification(prompt: str) -> bool:
 #: How Codex opens the prompt it sends through the same hook as a message to ask the model what the owner might do
 #: next.  The owner never wrote it: stored as theirs it put 11,000 to 15,000 characters of Codex's instructions
 #: among their messages, claims were drawn from it as if they had said them, and its recall failed on its length.
-_CODEX_SUGGESTIONS_PROMPT = re.compile(r"#[ \t]*Overview\s+Generate\s+\d+\s+to\s+\d+\s+hyperpersonalized\s+suggestions\b")
+_CODEX_SUGGESTIONS_PROMPT = re.compile(r"\bhyperpersonali[sz]ed\s+suggestions?\b", re.IGNORECASE)
 
 
 def is_codex_suggestions_prompt(prompt: str) -> bool:
-    """Whether a prompt is Codex asking the model for suggestions, not the owner's words."""
-    return _CODEX_SUGGESTIONS_PROMPT.match(prompt.lstrip()[:200]) is not None
+    """Whether a prompt is Codex asking the model for suggestions, not the owner's words.
+
+    It opens with a Markdown heading and names its "hyperpersonalized suggestions" within its first lines, in any
+    case and wording around them, and runs to thousands of characters of instructions.
+    """
+    text = prompt.lstrip()
+    return (text.startswith("#") and len(text) >= 2000
+            and _CODEX_SUGGESTIONS_PROMPT.search(text[:600]) is not None)
 
 
 def is_codex_suggestions_reply(message: str) -> bool:

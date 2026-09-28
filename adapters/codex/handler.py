@@ -13,6 +13,7 @@ from typing import Any, Callable, Protocol, cast
 from scope_recall.contracts import ContractError, Origin, RecallRequest, TrustedContext
 from scope_recall.core import CoreConfig, MemoryCore
 from scope_recall.core.retrieval import AUTOMATIC_PACKET_BUDGET_UNITS
+from scope_recall.core.secret_patterns import contains_secret_like_text
 from scope_recall.runtime.instance import RuntimeInstanceConfig
 from ..runtime_wiring import _strict_hook_budget, render_host_recall_context
 
@@ -122,9 +123,9 @@ class HookDiagnostics:
     #: What stopped an automatic recall (``recall_exception``): the exception's class and, for a contract error,
     #: its code.  Without it the server's log said only that a recall had failed.
     recall_error_detail: str | None = None
-    #: The recall's first vector gap (``vector_error:...`` before ``vector_unavailable``), when it had one.  The
-    #: packet carried it to the model and nowhere else: Claude Code and Codex recalled without their vector search
-    #: for as long as anyone could tell, and no log showed it.
+    #: Why the recall ran without its vector search (``recall_without_vectors``), when it did.  The packet carried
+    #: that to the model and nowhere else: Claude Code and Codex recalled without their vector search for as long as
+    #: anyone could tell, and no log showed it.
     recall_vector_gap: str | None = None
 
     @property
@@ -651,8 +652,11 @@ class CodexHookHandler:
         current_refs, capture_gaps = self._capture(context, audience, event, deadline=deadline, gaps=gaps,
                                                    wait=wait)
         # The vector search comes with the runtime.  A prompt the store was too busy to take is recalled by
-        # meaning as well: six on the work computer's two entries in one night were recalled by words alone.
-        if ((self._captured_this_call() or (event is not None and not self._refused_this_call()))
+        # meaning as well: six on the work computer's two entries in one night were recalled by words alone.  One
+        # the capture refused, or that holds a credential however the capture ended, goes without it, so that
+        # nothing of it reaches an embedding provider.
+        if ((self._captured_this_call()
+             or (event is not None and not self._refused_this_call() and not contains_secret_like_text(prompt)))
                 and self._remaining(deadline) >= _RUNTIME_ATTACH_MIN_S):
             self._ensure_host_runtime(audience)
             if self._queued_this_call:
@@ -677,7 +681,7 @@ class CodexHookHandler:
         request: RecallRequest = {
             "protocol_version": "1.1",
             "request_id": request_id[:100],
-            "query": prompt[:_RECALL_QUERY_CHARS],
+            "query": prompt.strip()[:_RECALL_QUERY_CHARS],
             "mode": "auto",
             "max_items": 6,
             "budget_tokens": AUTOMATIC_PACKET_BUDGET_UNITS,
@@ -691,10 +695,9 @@ class CodexHookHandler:
                 f"{type(exc).__name__}:{code}" if isinstance(code, str) else type(exc).__name__)
             self._diag("recall_exception", gaps=gaps)
             return {}
-        vector_gaps = [gap for gap in packet.get("gaps") or () if isinstance(gap, str) and gap.startswith("vector_")]
-        if vector_gaps:
-            self.diagnostics.recall_vector_gap = _error_detail(
-                next((gap for gap in vector_gaps if gap.startswith("vector_error:")), vector_gaps[0]))
+        without = recall_without_vectors(packet.get("gaps") or ())
+        if without is not None:
+            self.diagnostics.recall_vector_gap = _error_detail(without)
         if self._remaining(deadline) <= 0:
             self._diag("deadline_exceeded", gaps=gaps)
             return {}
@@ -795,6 +798,27 @@ def _error_detail(code: object) -> str | None:
     if not text or len(text) > 64:
         return None
     return text if all(char.isalnum() or char in "_.:-" for char in text) else None
+
+
+#: Gaps by which a recall packet says its vector search did not run or did not finish, in the order one is named:
+#: the search failed, was unavailable, or had no time, or the whole search failed before it.  A search that ran and
+#: had candidates refused (``vector_rejected:*``, ``vector_old_or_mismatched_space``) is not among them.
+_WITHOUT_VECTORS = (
+    lambda gap: gap.startswith("vector_error:"),
+    lambda gap: gap == "vector_unavailable",
+    lambda gap: gap in ("deadline_exceeded", "deadline_exceeded_collect", "deadline_exceeded_vector"),
+    lambda gap: gap.startswith("sqlite_unavailable"),
+)
+
+
+def recall_without_vectors(gaps) -> str | None:
+    """The gap that says a recall ran without its vector search, or None when the search ran."""
+    listed = [gap for gap in gaps if isinstance(gap, str)]
+    for matches in _WITHOUT_VECTORS:
+        found = next((gap for gap in listed if matches(gap)), None)
+        if found is not None:
+            return found
+    return None
 
 
 def emit_result(result: dict[str, Any], *, diagnostics: HookDiagnostics | None = None) -> None:
