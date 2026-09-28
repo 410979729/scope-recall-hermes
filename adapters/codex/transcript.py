@@ -27,6 +27,8 @@ import json
 import os
 from pathlib import Path
 
+from .boundary import without_lone_surrogates
+
 #: How much of the record one read goes through.  A long session's first read spans several turns.
 READ_BYTES = 16 * 1024 * 1024
 #: The record's opening bytes identify it; a record rewritten under the same name starts over.
@@ -99,12 +101,12 @@ def said(row: object) -> Said | None:
         return None
     if not text.strip():
         return None
+    # Half of a broken emoji is kept as U+FFFD, with the rest of the message (``boundary.without_lone_surrogates``);
+    # the line was skipped and the message lost.  An entry id that cannot be encoded still skips its line.
+    text = without_lone_surrogates(text)
     try:
         entry_id.encode("utf-8")
-        text.encode("utf-8")
     except UnicodeEncodeError:
-        # A malformed JSON escape is not a durable source; skip its line so the
-        # cursor can advance to the next real message instead of stalling at Stop.
         return None
     prompt_id = row.get("promptId") if role == "user" else None
     if type(prompt_id) is not str or not prompt_id.strip() or len(prompt_id) > 240:
@@ -141,9 +143,9 @@ def said_from_wire(value: object) -> Said | None:
     if prompt_id is not None and (role != "user" or type(prompt_id) is not str or not prompt_id.strip()
                                   or len(prompt_id) > 240):
         return None
+    text = without_lone_surrogates(text)
     try:
         entry_id.encode("utf-8")
-        text.encode("utf-8")
         if prompt_id is not None:
             prompt_id.encode("utf-8")
     except UnicodeEncodeError:

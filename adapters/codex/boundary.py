@@ -283,3 +283,20 @@ def authorized_attachment_refs(payload: dict[str, Any]) -> tuple[list[str], tupl
     if not attachments:
         return [], ()
     return [], ("attachment_gap:host_authorization_unverified",)
+
+
+#: A lone surrogate: what a client writes for half of a broken emoji (JavaScript's ``JSON.stringify`` escapes it as
+#: ``\\ud83d``).  Python keeps it in a string and cannot encode it, so a prompt or a reply holding one was refused
+#: whole (``INPUT_INVALID``) and a record line holding one was skipped: the message was lost for one character.
+_LONE_SURROGATE = re.compile("[\ud800-\udfff]")
+
+
+def without_lone_surrogates(value):
+    """``value`` with every lone surrogate in its strings replaced by U+FFFD, the character that stands for one."""
+    if isinstance(value, str):
+        return _LONE_SURROGATE.sub("\ufffd", value)
+    if isinstance(value, dict):
+        return {without_lone_surrogates(key): without_lone_surrogates(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [without_lone_surrogates(item) for item in value]
+    return value

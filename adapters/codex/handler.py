@@ -20,6 +20,7 @@ from ..runtime_wiring import _strict_hook_budget, render_host_recall_context
 
 from . import transcript
 from .boundary import (
+    without_lone_surrogates,
     assistant_stop_source_event,
     authorized_attachment_refs,
     host_source_key,
@@ -57,6 +58,9 @@ _TOTAL_BUDGET_S = 2.0
 _RUNTIME_ATTACH_MIN_S = 0.3
 #: What a prompt hook keeps for a recall of its own when it asks the entry's server for one (``resident_recall``).
 _LOCAL_RECALL_RESERVE_S = 1.5
+#: The least the server is asked with: a prompt whose capture took most of the budget (the store was busy) recalls
+#: here, where the helper this hook started has had that time to get ready.
+_RESIDENT_MIN_S = 2.0
 #: What a server's recall may report of how it ended, besides its vector gap and its error.
 _RESIDENT_REASONS = frozenset({"deadline_exceeded", "recall_exception"})
 #: Capture refusals a second attempt meets again.
@@ -383,6 +387,7 @@ class CodexHookHandler:
 
     def handle_payload(self, payload: dict[str, Any], *, record: RecordLines | None = None,
                        local_record: bool = True) -> dict[str, Any]:
+        payload = without_lone_surrogates(payload)
         self._persisted_this_call = False
         self._queued_this_call = False
         self.diagnostics = HookDiagnostics(capability_gaps=self.diagnostics.capability_gaps)
@@ -702,12 +707,18 @@ class CodexHookHandler:
         in time, and the hook then recalls itself in what it kept back.  The server writes nothing: the prompt was
         stored here, so a late answer costs the turn nothing but its warm vectors."""
         budget = self._remaining(deadline) - _LOCAL_RECALL_RESERVE_S
-        if budget < 0.5 or self.resident_recall is None:
+        if budget < _RESIDENT_MIN_S or self.resident_recall is None:
             return None
-        answered = self.resident_recall(payload, current_refs, gaps, budget)
+        try:
+            answered = self.resident_recall(payload, current_refs, gaps, budget)
+        except Exception:  # noqa: BLE001 - the hook's own recall is always there to fall back on
+            return None
         if answered is None:
             return None
         result, fields = answered
+        # One that ran out of time or failed is not the last word while this hook has time for a recall of its own.
+        if fields.get("last_reason") in _RESIDENT_REASONS:
+            return None
         for name in ("recall_vector_gap", "recall_error_detail"):
             value = fields.get(name)
             if value is None or type(value) is str:

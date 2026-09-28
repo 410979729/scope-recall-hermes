@@ -149,13 +149,17 @@ the entry's home, and removes its name when it exits. A hook asks the newest ser
 version, once that server has proved it holds the token, which is never sent. The other hooks read
 no vectors and ask nothing.
 
-A prompt hook keeps back 1.5 s of its own budget. With no server running (the client closed, or its
-MCP server disabled), or none answering in time, it recalls itself in what it kept back, as before;
-a late answer is dropped. Each prompt hook says how its server answered on stderr
-(`CODEX_RECALL_RESIDENT:answered`, `late`, `busy`, `unproven` or `none`). A server that kept a
-prompt waiting loses its name, and names itself again once none of its recalls is stuck. A server
-started before an upgrade is not asked until its client restarts. Each open client keeps one LanceDB
-helper ready: about 550 MB of committed memory, which the system pages out while it is idle.
+A prompt hook keeps back 1.5 s of its own budget, and asks only when at least 2 s would be left for
+the server (a prompt whose capture waited on a busy store recalls itself). With no server running
+(the client closed, or its MCP server disabled), or none answering in time, it recalls itself in
+what it kept back, as before; a late answer is dropped, and so is one that ran out of time or failed.
+A prompt hook that asked says how its server answered on stderr (`CODEX_RECALL_RESIDENT:answered`,
+`late`, `busy`, `unproven` or `none`). The server writes no memory; its query embedding's cost is
+recorded in the spend ledger like any other. A server whose recall ran past the time its hook gave it
+loses its name, and names itself again once none of its recalls has. A server started before an
+upgrade is not asked until its client restarts. Each open client keeps one LanceDB helper ready, about
+550 MB of committed memory that the system pages out while it is idle, and starts the next one in the
+background after each recall; a prompt hook whose server runs starts none of its own.
 
 Claude Code or Codex on another machine attaches the same way, under a name of its own, and reaches
 its entry here over HTTP on a private network: [remote-entries.md](remote-entries.md).

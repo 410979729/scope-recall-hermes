@@ -407,7 +407,8 @@ def test_malformed_record_character_does_not_hold_back_later_messages(store, tmp
         hook.handle_payload(_stop(record))
     finally:
         hook.close()
-    assert [content for _role, _origin, content in _said_in_store(root)] == ["TEST normal"]
+    # Half of a broken emoji is kept as U+FFFD with the rest of its message, which had been skipped and lost.
+    assert sorted(content for _role, _origin, content in _said_in_store(root)) == ["TEST normal", "TEST " + chr(0xFFFD)]
 
 
 def test_record_check_carries_stop_budget_and_defers_large_schema_upgrade(store, tmp_path, monkeypatch):
@@ -876,10 +877,10 @@ def _counted(endpoint, monkeypatch, *, delay=0.0):
     calls = []
     real = endpoint.recall
 
-    def recall(request):
+    def recall(request, **kwargs):
         calls.append(request["payload"].get("prompt"))
         time.sleep(delay)
-        return real(request)
+        return real(request, **kwargs)
 
     monkeypatch.setattr(endpoint, "recall", recall)
     return calls
@@ -896,6 +897,7 @@ def small_reserve(monkeypatch):
     from scope_recall.adapters.codex import handler as handler_module
 
     monkeypatch.setattr(handler_module, "_LOCAL_RECALL_RESERVE_S", 0.3)
+    monkeypatch.setattr(handler_module, "_RESIDENT_MIN_S", 0.5)
 
 
 def test_the_server_answers_a_prompt_s_recall_and_the_hook_stores_the_prompt(resident, small_reserve, monkeypatch,
@@ -1031,7 +1033,7 @@ def test_a_server_names_itself_again_only_once_no_recall_is_stuck(store, monkeyp
     endpoint = local_endpoint.serve(client, "claude-code")
     try:
         with endpoint.lock:
-            endpoint.inflight[1] = time.monotonic() - local_endpoint.STUCK_SECONDS - 1
+            endpoint.inflight[1] = time.monotonic() - 1  # past the time its hook gave it
         endpoint.path.unlink()
         time.sleep(1.0)
         assert not endpoint.path.exists(), "not while a recall is stuck"
@@ -1125,3 +1127,80 @@ def test_a_server_names_itself_in_the_user_s_own_profile(resident):
     if os.name != "nt":
         assert stat.S_IMODE(endpoint.path.stat().st_mode) == 0o600
         assert stat.S_IMODE(endpoint.path.parent.stat().st_mode) == 0o700
+
+
+def test_a_prompt_with_half_of_a_broken_emoji_is_stored(store, capsys):
+    """JavaScript writes half of a broken emoji as a lone surrogate (``\\ud83d``); a prompt holding one was refused
+    whole as INPUT_INVALID and never stored."""
+    root, _homes, client, _capture = store
+    hook = _hook(client)
+    try:
+        hook.handle_payload(_prompt("TEST 表情坏了" + chr(0xD83D), prompt_id="TEST-prompt-surrogate"))
+    finally:
+        hook.close()
+    assert ("user", "human_direct", "TEST 表情坏了" + chr(0xFFFD)) in _said_in_store(root)
+
+
+def test_a_server_answer_that_ran_out_of_time_is_not_the_last_word(resident, small_reserve, monkeypatch, capsys):
+    """A server's recall that ended in deadline_exceeded or recall_exception was taken as final, though the hook had
+    time for its own."""
+    _root, client, endpoint = resident
+    marker = {"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": "TEST-server-marker"}}
+    monkeypatch.setattr(endpoint, "recall", lambda request, **kwargs: (
+        {"result": marker, "diagnostics": {"last_reason": "deadline_exceeded"}}, lambda: None))
+    raw = json.dumps(_prompt("TEST 服务器没来得及。", prompt_id="TEST-prompt-deadline")).encode()
+    assert _hook_entry(monkeypatch, raw, client) == 0
+    assert "TEST-server-marker" not in capsys.readouterr().out
+
+
+def test_a_prompt_a_running_server_recalls_starts_no_helper_of_its_own(resident, small_reserve, monkeypatch):
+    """Each warm prompt also started a LanceDB helper in its hook and threw it away."""
+    from scope_recall.adapters.codex import hook_entry
+
+    _root, client, _endpoint = resident
+    monkeypatch.setattr(hook_entry, "_prestart_vector_helper",
+                        lambda raw: (_ for _ in ()).throw(AssertionError("helper started")))
+    raw = json.dumps(_prompt("TEST 不必自己预热。", prompt_id="TEST-prompt-noprestart")).encode()
+    assert _hook_entry(monkeypatch, raw, client) == 0
+
+
+def test_a_failed_read_of_the_env_file_keeps_the_keys(store, monkeypatch, tmp_path):
+    """One failed read (a file locked just after a save) dropped the key for the rest of the session."""
+    import os
+
+    from scope_recall.adapters.codex import local_endpoint
+    from scope_recall.vector import process_store
+
+    monkeypatch.setattr(process_store, "prestart", lambda **kwargs: None)
+    monkeypatch.delenv("TEST_SCOPE_RECALL_KEEP", raising=False)
+    _root, _homes, client, _capture = store
+    env_file = tmp_path / "TEST.env"
+    env_file.write_text("one\n", encoding="utf-8")
+    reads = {"fail": False}
+
+    def credentials():
+        if reads["fail"]:
+            raise OSError("TEST locked")
+        return {"TEST_SCOPE_RECALL_KEEP": "kept"}
+
+    os.environ["TEST_SCOPE_RECALL_KEEP"] = "kept"
+    endpoint = local_endpoint.serve(client, "claude-code", env_file=env_file, credentials=credentials)
+    try:
+        reads["fail"] = True
+        env_file.write_text("one, saved\n", encoding="utf-8")
+        endpoint._refresh_credentials()
+        assert os.environ.get("TEST_SCOPE_RECALL_KEEP") == "kept"
+        reads["fail"] = False
+        endpoint._refresh_credentials()  # read again once it can be
+        assert endpoint._env_seen == endpoint._env_stamp()
+    finally:
+        endpoint.stop()
+        os.environ.pop("TEST_SCOPE_RECALL_KEEP", None)
+
+
+def test_the_mcp_server_starts_whatever_its_endpoint_does(store, monkeypatch):
+    from scope_recall.adapters.codex import local_endpoint
+
+    _root, _homes, client, _capture = store
+    monkeypatch.setattr(local_endpoint, "endpoints", lambda home: (_ for _ in ()).throw(RuntimeError("TEST no home")))
+    assert local_endpoint.serve(client, "claude-code") is None
