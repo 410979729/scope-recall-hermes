@@ -599,7 +599,9 @@ def test_a_task_notification_is_not_the_owner_s_prompt(store):
 SUGGESTIONS_PROMPT = ("# Overview\n\nGenerate 0 to 3 hyperpersonalized suggestions for what this user can do with "
                       "Codex in this local project: C:\\TEST\n\nGet an understanding of the user's intent and goals "
                       "by deeply viewing their connected apps.\n\n# Rules\n\n"
-                      + "- TEST rule about what a suggestion must be.\n" * 60 + "# Response format\n\nJSON.")
+                      + "- TEST rule about what a suggestion must be and must not be.\n" * 120
+                      + "\n# Examples\n\n## Bad examples\n\n" + "- TEST bad example.\n" * 60
+                      + "\n# Response format\n\nJSON.")
 
 
 def test_codex_s_request_for_suggestions_is_told_from_the_owner_s_words():
@@ -607,12 +609,16 @@ def test_codex_s_request_for_suggestions_is_told_from_the_owner_s_words():
     characters; a wording change around that still counts, the owner's own words about it do not."""
     from scope_recall.adapters.codex.boundary import is_codex_suggestions_prompt
 
-    assert len(SUGGESTIONS_PROMPT) >= 2000 and is_codex_suggestions_prompt(SUGGESTIONS_PROMPT)
-    reworded = SUGGESTIONS_PROMPT.replace("# Overview\n\nGenerate 0 to 3", "## Task\n\nPropose up to three")
+    assert len(SUGGESTIONS_PROMPT) >= 8000 and is_codex_suggestions_prompt(SUGGESTIONS_PROMPT)
+    reworded = SUGGESTIONS_PROMPT.replace("# Overview\n\nGenerate 0 to 3", "## Overview\n\nPropose up to three")
     assert is_codex_suggestions_prompt(reworded.replace("hyperpersonalized", "Hyperpersonalised"))
     assert not is_codex_suggestions_prompt("帮我看看 Codex 的 hyperpersonalized suggestions 是怎么生成的")
     assert not is_codex_suggestions_prompt("# 我的笔记\n\n" + "今天记下 hyperpersonalized suggestions 这个词。" * 5)
     assert not is_codex_suggestions_prompt("Codex 生成的建议如下。\n" + "hyperpersonalized suggestions\n" * 200)
+    # The owner's own long notes about the feature, with a heading and even one of its section names, stay theirs.
+    note = ("# 关于 Codex 的 hyperpersonalized suggestions\n\n## Overview\n\n"
+            + "我在研究它每次发来的那段提示词，想弄清它为什么被当成我说的话存下来。\n" * 300)
+    assert len(note) >= 8000 and not is_codex_suggestions_prompt(note)
 
 
 def test_codex_s_request_for_suggestions_is_neither_stored_nor_recalled(store, tmp_path):

@@ -791,3 +791,15 @@ def test_a_query_with_more_than_128_distinct_terms_keeps_the_first_ones():
     terms = query_terms(query)
     assert len(terms) == MAX_QUERY_TERMS and list(terms) == sorted(terms)
     assert {"白鹭", "项目", "负责"} <= set(terms), "the terms it reaches first are kept"
+
+
+def test_a_query_s_terms_are_worked_out_once_however_often_a_recall_asks():
+    """A recall asks for its query's terms 150 to 190 times; for a long varied prompt each time cost 22 ms, 4.3 s of
+    a 4.6 s recall."""
+    import time
+
+    varied = "".join(chr(0x4E00 + (index * 7919) % 20000) for index in range(8000))
+    started = time.perf_counter()
+    for _ in range(200):
+        query_terms(varied)
+    assert time.perf_counter() - started < 0.5

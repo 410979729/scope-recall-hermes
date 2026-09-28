@@ -62,17 +62,21 @@ def is_task_notification(prompt: str) -> bool:
 #: next.  The owner never wrote it: stored as theirs it put 11,000 to 15,000 characters of Codex's instructions
 #: among their messages, claims were drawn from it as if they had said them, and its recall failed on its length.
 _CODEX_SUGGESTIONS_PROMPT = re.compile(r"\bhyperpersonali[sz]ed\s+suggestions?\b", re.IGNORECASE)
+_CODEX_SUGGESTIONS_HEADINGS = re.compile(r"^#{1,2}[ \t]*(?:overview|rules|examples|bad examples|response format)[ \t]*$",
+                                         re.IGNORECASE | re.MULTILINE)
 
 
 def is_codex_suggestions_prompt(prompt: str) -> bool:
     """Whether a prompt is Codex asking the model for suggestions, not the owner's words.
 
-    It opens with a Markdown heading and names its "hyperpersonalized suggestions" within its first lines, in any
-    case and wording around them, and runs to thousands of characters of instructions.
+    Told by its whole frame, not by one phrase: it opens with a heading, names its "hyperpersonalized suggestions"
+    in its first lines, runs to 11,000-15,000 characters and carries at least three of its own headings (Overview,
+    Rules, Examples, Bad examples, Response format).  A note of the owner's about it, even a long one, is their words.
     """
     text = prompt.lstrip()
-    return (text.startswith("#") and len(text) >= 2000
-            and _CODEX_SUGGESTIONS_PROMPT.search(text[:600]) is not None)
+    if not text.startswith("#") or len(text) < 8000 or _CODEX_SUGGESTIONS_PROMPT.search(text[:600]) is None:
+        return False
+    return len({heading.strip("# \t").lower() for heading in _CODEX_SUGGESTIONS_HEADINGS.findall(text)}) >= 3
 
 
 def is_codex_suggestions_reply(message: str) -> bool:

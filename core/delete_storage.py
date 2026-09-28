@@ -216,15 +216,19 @@ class Deletions:
 
         Up to 3.4.0rc8 the worker read a purge's operation id at the last colon of its subject (see
         ``purge_work_parts``), so every delete's purge on a store whose scope ids hold colons was marked obsolete
-        and the operation's physical layers stayed pending.  Such a row, obsolete after one attempt, whose delete
-        operation still has a layer to remove, goes back to pending under a new lease token; one that ends
-        obsolete a second time stays so.
+        and the operation's physical layers stayed pending.  Such a row, obsolete within three attempts, whose
+        delete operation still has a layer to remove, goes back to pending under a new lease token; each try counts
+        an attempt, so one that keeps ending obsolete stops being queued.
         """
         conn = self._tx._check(write=True)
+        # The obsolete purges looked at, not the ones queued, are bounded: a row that never qualifies must not hide
+        # the ones after it.  Up to three attempts allows one transient retry before the obsolete one.
         rows = conn.execute("""SELECT work_id,subject_ref FROM work_items WHERE work_type='purge' AND state='obsolete'
-            AND last_error_code='authority_revoked' AND attempt<=1 ORDER BY work_id LIMIT ?""",(int(limit),)).fetchall()
+            AND last_error_code='authority_revoked' AND attempt<=3 ORDER BY work_id LIMIT 256""").fetchall()
         requeued = 0
         for row in rows:
+            if requeued >= limit:
+                break
             operation_id,scope_id = purge_work_parts(row["subject_ref"])
             if scope_id not in self._tx.context.allowed_scope_ids:
                 continue

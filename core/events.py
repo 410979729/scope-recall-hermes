@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import functools
 import hashlib
 import re
 import unicodedata
@@ -114,6 +115,12 @@ MAX_QUERY_TERMS = 128
 def query_terms(query: str) -> tuple[str, ...]:
     if type(query) is not str or len(query) > 8192:
         raise ContractError("INPUT_INVALID", "query")
+    return _query_terms(query)
+
+
+@functools.lru_cache(maxsize=64)
+def _query_terms(query: str) -> tuple[str, ...]:
+    """A recall asks for its query's terms 150 to 190 times: for a long varied prompt that was 4.3 s of 4.6."""
     terms = lexical_terms(query)
     if len(terms) > MAX_QUERY_TERMS:
         normalized = unicodedata.normalize("NFKC", query).casefold()
