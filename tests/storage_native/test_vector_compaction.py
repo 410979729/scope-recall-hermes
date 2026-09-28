@@ -254,20 +254,21 @@ def test_a_reader_survives_a_compaction_performed_by_another_writer(tmp_path):
 # --------------------------------------------------------------------------
 
 class _FakeIndexStore:
-    def __init__(self, rows: int, failure: Exception | None = None, outcome: str = "built"):
+    """``looks`` is what the store reports without building: needs_build, present, below_threshold."""
+
+    def __init__(self, rows: int, failure: Exception | None = None, looks: str = "needs_build"):
         self.rows = rows
         self.failure = failure
-        self.outcome = outcome
+        self.looks = looks
         self.builds: list[tuple[int, float]] = []
 
-    def count_rows(self) -> int:
-        return self.rows
-
-    def ensure_vector_index(self, *, min_rows: int, timeout_seconds: float) -> dict:
+    def ensure_vector_index(self, *, min_rows: int, timeout_seconds: float, build: bool = True) -> dict:
+        if not build:
+            return {"outcome": self.looks, "rows": self.rows}
         self.builds.append((min_rows, timeout_seconds))
         if self.failure is not None:
             raise self.failure
-        return {"outcome": self.outcome, "rows": self.rows}
+        return {"outcome": "built", "rows": self.rows}
 
 
 def _vectors(tmp_path, dimensions: int = 3072):
@@ -276,17 +277,17 @@ def _vectors(tmp_path, dimensions: int = 3072):
 
 def test_an_index_is_built_once_the_table_needs_one_and_the_pass_has_the_time(tmp_path):
     """The pilot's store: 78,403 rows of 3,072 dimensions, built in 7.7 s on a copy when quiet and 25.6 s when not;
-    the estimate is three times the slow rate.  A pass that could not finish it is not started on it: the watchdog
-    would end the pass and the build would start over."""
+    the estimate is twice the slow rate.  A pass that could not finish it is not started on it: the watchdog would
+    end the pass and the build would start over."""
     from scope_recall.vector.store import VECTOR_INDEX_MIN_ROWS
 
     now = datetime.now(timezone.utc)
-    small = _FakeIndexStore(VECTOR_INDEX_MIN_ROWS - 1, outcome="below_threshold")
+    small = _FakeIndexStore(VECTOR_INDEX_MIN_ROWS - 1, looks="below_threshold")
     assert index_if_due(small, _vectors(tmp_path), available_seconds=110, now=now)["outcome"] == "below_threshold"
-    assert len(small.builds) == 1, "the store decides, so an index of another kind on a small table is replaced"
+    assert small.builds == []
     big = _FakeIndexStore(78_403)
     now += INDEX_RECHECK["below_threshold"]
-    tight = index_if_due(big, _vectors(tmp_path), available_seconds=80, now=now)
+    tight = index_if_due(big, _vectors(tmp_path), available_seconds=60, now=now)
     assert tight["outcome"] == "deferred" and big.builds == []
     now += INDEX_RECHECK["deferred"]
     assert index_if_due(big, _vectors(tmp_path), available_seconds=110, now=now)["outcome"] == "built"
@@ -311,7 +312,9 @@ def test_a_build_the_watchdog_ended_is_not_started_again_on_the_next_pass(tmp_pa
     """Off Windows the build runs in the worker's own process, and a pass the watchdog ended mid-build wrote no
     receipt: the next pass started the same build, and the next."""
     class Killed(_FakeIndexStore):
-        def ensure_vector_index(self, *, min_rows, timeout_seconds):
+        def ensure_vector_index(self, *, min_rows, timeout_seconds, build=True):
+            if not build:
+                return {"outcome": "needs_build", "rows": self.rows}
             self.builds.append((min_rows, timeout_seconds))
             raise KeyboardInterrupt("TEST watchdog")
 
@@ -323,6 +326,14 @@ def test_a_build_the_watchdog_ended_is_not_started_again_on_the_next_pass(tmp_pa
     assert state["outcome"] == "started"
     assert index_if_due(store, _vectors(tmp_path), available_seconds=110, now=now + timedelta(hours=1)) is None
     assert len(store.builds) == 1
+
+
+def test_an_index_in_place_is_looked_at_whatever_the_store_s_size(tmp_path):
+    """The estimate came before any look: past about 90,000 vectors no pass would have asked the store, merged a
+    segment or replaced an index of another kind, and the doctor would have shown a healthy index as deferred."""
+    huge = _FakeIndexStore(5_000_000, looks="present")
+    receipt = index_if_due(huge, _vectors(tmp_path), available_seconds=5)
+    assert receipt["outcome"] == "present" and huge.builds == []
 
 
 def test_index_upkeep_without_a_store_that_can_index_is_a_no_op(tmp_path):

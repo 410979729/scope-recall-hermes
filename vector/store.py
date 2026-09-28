@@ -407,14 +407,15 @@ class LanceVectorStore(VectorStore):
         return {f"{key}_before": value for key, value in before.items()} | after
 
     def ensure_vector_index(self, *, min_rows: int = VECTOR_INDEX_MIN_ROWS,
-                            timeout_seconds: float | None = None) -> dict[str, Any]:
+                            timeout_seconds: float | None = None, build: bool = True) -> dict[str, Any]:
         """Build the nearest-neighbour index once the table is large enough to need one.  Idempotent.
 
         Without it every search reads every vector: 750 ms over 78,000 of them.  A Claude Code or Codex hook starts
         its helper for each prompt, and with that on top the vector search never finished inside the recall's
         budget, so those hosts' automatic recall answered from words alone.  ``compact`` keeps the index current.
         ``timeout_seconds`` bounds the helper's wait in ``ProcessLanceVectorStore``; in process the caller has
-        already sized the build to its time (``runtime/vector_upkeep.index_if_due``).
+        already sized the build to its time (``runtime/vector_upkeep.index_if_due``).  ``build=False`` only reports
+        what the index needs (``needs_build``, ``needs_rebuild``), so that a caller sizes only a build that is due.
         """
         if type(min_rows) is not int or min_rows < 1:
             raise ValueError("min_rows must be a positive integer")
@@ -422,13 +423,15 @@ class LanceVectorStore(VectorStore):
             table = self._fresh_table()
             existing = [index for index in table.list_indices() or () if _indexes_vector(index)]
             current = next((index for index in existing if _is_ivf_sq(index)), None)
-            if current is not None:
-                segments = _segments(table, current)
-                if segments <= MAX_INDEX_SEGMENTS:
-                    return {"outcome": "present", "segments": segments}
+            segments = _segments(table, current) if current is not None else None
+            if segments is not None and segments <= MAX_INDEX_SEGMENTS:
+                return {"outcome": "present", "segments": segments}
             rows = int(table.count_rows())
             if rows < min_rows and not existing:
                 return {"outcome": "below_threshold", "rows": rows}
+            if not build:
+                return {"outcome": "needs_rebuild" if existing else "needs_build", "rows": rows,
+                        **({"segments": segments} if segments is not None else {})}
             # A vector index of another kind (an HNSW one built by hand on the pilot) is replaced.
             started = time.monotonic()
             _create_vector_index(table, self.metric, replace=bool(existing))

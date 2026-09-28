@@ -752,7 +752,7 @@ class ProcessLanceVectorStore(VectorStore):
         """Forward a bounded compaction to the helper that owns the table."""
         return dict(self._call("compact"))
 
-    def ensure_vector_index(self, *, min_rows: int, timeout_seconds: float) -> dict[str, Any]:
+    def ensure_vector_index(self, *, min_rows: int, timeout_seconds: float, build: bool = True) -> dict[str, Any]:
         """Forward the index build, waiting for it up to ``timeout_seconds``: it can take longer than a request."""
         if type(timeout_seconds) not in (int, float) or not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
             raise ValueError("timeout_seconds must be positive and finite")
@@ -760,7 +760,7 @@ class ProcessLanceVectorStore(VectorStore):
             usual = self._request_timeout
             self._request_timeout = max(usual, float(timeout_seconds))
             try:
-                return dict(self._invoke_locked("ensure_vector_index", min_rows=min_rows))
+                return dict(self._invoke_locked("ensure_vector_index", min_rows=min_rows, build=bool(build)))
             finally:
                 self._request_timeout = usual
 

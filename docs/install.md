@@ -402,6 +402,7 @@ another kind is replaced (`rebuilt`). The same outcome is in
 | `below_threshold` | Fewer than 10,000 vectors; an exact scan is quick enough. |
 | `deferred` | The build did not fit the pass; a later pass with more time builds it. |
 | `failed` | The build failed; it is tried again six hours later. |
+| `started` | A build began and no outcome was recorded (the pass was ended); tried again six hours later. |
 | none | No pass has looked yet. |
 
 Without the index a search reads every vector. A Claude Code or Codex hook starts
