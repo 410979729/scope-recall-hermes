@@ -182,10 +182,18 @@ def test_codex_keeps_what_it_could_not_send_and_sends_it_with_its_moment(served,
     kept_at = json.loads(spooled[0].read_text(encoding="utf-8"))["observed_at"]
     (offline["state_dir"] / "server-away").unlink()  # a minute later, the server back
     online = dict(offline, url=f"http://127.0.0.1:{ports['codex']}")
+    delivered = []
+    post = remote_client._post
+    monkeypatch.setattr(remote_client, "_post", lambda config, body, timeout:
+                        delivered.append(body["payload"]["hook_event_name"]) or post(config, body, timeout))
     _hook(online, {"hook_event_name": "Stop", "session_id": "TEST-codex-session", "turn_id": "TEST-t1",
                    "last_assistant_message": "TEST 记下了。", "cwd": "C:/work"})
-    assert len(flushes) == 1, "a hook that got through starts the flush in a process of its own"
-    assert remote_client.flush_spool(online, 20) == 1
+    # A reply sent past the prompt was stored before it, and in a thread the prompt marks as Codex's own it was
+    # stored as the owner's conversation.
+    assert delivered == [], "the reply waits behind the prompt the spool still holds"
+    assert len(flushes) == 1, "and starts the flush in a process of its own"
+    assert remote_client.flush_spool(online, 20) == 2
+    assert delivered == ["UserPromptSubmit", "Stop"]
     rows = _rows(root, "workpc-codex")
     assert sorted(content for _role, _origin, content, _at in rows) == ["TEST 记下了。", "TEST 记住 KZ-42 的截止日期是周五。"]
     assert next(at for _role, _origin, content, at in rows if content.startswith("TEST 记住")) == kept_at
