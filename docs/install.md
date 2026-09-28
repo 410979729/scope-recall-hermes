@@ -8,7 +8,7 @@ uses too. This guide installs Hermes and Codex with a store of their own; Claude
 Code installs only as an entry of a shared store, and Codex can join one too
 (section 11).
 
-> **Status.** This guide covers 3.1 to 3.3. Releases are on PyPI and on the
+> **Status.** This guide covers 3.1 to 3.4. Releases are on PyPI and on the
 > GitHub releases page; a checkout between releases carries a candidate version
 > and is installed by building its wheel. The distribution name is
 > `hermes-scope-recall`, the Python import is `scope_recall`, and the host plugin

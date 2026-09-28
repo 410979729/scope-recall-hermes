@@ -2,7 +2,38 @@
 
 All notable changes to `scope-recall` will be documented in this file.
 
-## [Unreleased]
+## [3.4.0] - 2026-09-28
+
+3.4.0 lets Claude Code and Codex on another computer use the shared store, and makes capture and automatic recall hold up on a large, busy store. A client on another computer is an entry of the store under a name of its own: its hooks forward each event to a server on the store's machine over a private network, and its MCP tools are served from there. How to set one up: [docs/remote-entries.md](https://github.com/410979729/scope-recall-hermes/blob/v3.4.0/docs/remote-entries.md).
+
+### Requirements
+
+- Python 3.11 to 3.14, as for 3.3.0.
+- Claude Code 2.1.196 or later.
+- A remote entry needs a private network between the two computers (a tailnet, for example). Its server listens on one private address and refuses any request without the entry's token.
+
+### Also in this release
+
+- Capture on a busy store. The worker no longer holds the writer lease while it matches sources against candidates. On one store it had held the lease most of the time, and every hook that waited its second for it lost its capture. A prompt now waits up to 2 s for the lease, and a Claude Code or Codex turn is recalled even when its message could not be stored.
+- Automatic recall takes about half as long on a large store. A hook's first recall no longer runs past its deadline and returns nothing.
+- Hermes records more of each turn: what you send while a turn runs, and what the assistant shows between tool calls. A capture that timed out on a busy store is written again at the next turn. A compression in the middle of a turn keeps the turn. The reply no longer waits for the memory provider's lock.
+- Codex's hooks wait as Claude Code's do (15 s for a prompt), so a recall on a large store is not cut short.
+- The embedding bound counts every character as one token (#151). Digit-dense text such as logs, IDs and hashes was refused by some providers and never embedded.
+- The secret screen no longer refuses code, placeholders or ordinary words after a credential word ("password: str", `api_key: <your-api-key>`, "the password is required"). A value that could be a password still counts, in any script.
+- `plan-install`, `apply-install` and `doctor` pass `--python` on as given (#141). The vector helper finds a venv's packages when the host starts the base interpreter (#139).
+- The release tier no longer asks for the P18 formal evaluation receipt, which no release could provide.
+
+### Upgrading from 3.3.x
+
+1. Stop the hosts and the Scope Recall worker, and take a `backup`.
+2. Install the 3.4.0 package, then run `plan-install` and `apply-install` for each host.
+3. In Codex, approve the plugin's changed hooks (Settings, Hooks). Until you do, Codex skips a changed hook without saying so.
+4. Start the hosts again and run `doctor`.
+5. If embeddings failed with `http_400` on digit-dense text, `scope-recall retry-failures --config <runtime-config.json> --apply` re-opens them.
+
+The store's schema is unchanged (1110), so a 3.3.x process can still open it. Every change, with its details, is in [CHANGELOG.md](https://github.com/410979729/scope-recall-hermes/blob/v3.4.0/CHANGELOG.md).
+
+## [3.4.0 candidates] - 2026-09-26 to 2026-09-28
 
 ### Scope Recall 3.4.0rc7 - 2026-09-28
 
