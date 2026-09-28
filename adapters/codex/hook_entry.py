@@ -6,6 +6,7 @@ a client attached to a shared store, Codex or Claude Code.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 import time
@@ -40,6 +41,8 @@ def main(argv: list[str] | None = None) -> int:
     # Start the trusted wall-clock budget before configuration/runtime loading;
     # model or hook payload fields never participate in this timestamp.
     hook_started_at = time.monotonic()
+    raw = sys.stdin.buffer.read(65537)
+    _prestart_vector_helper(raw)
     location = (args.config if args.config is not None else args.home).expanduser()
     if not location.is_absolute():
         sys.stderr.write("CODEX_HOOK:config_path_not_absolute\n")
@@ -83,7 +86,6 @@ def main(argv: list[str] | None = None) -> int:
         sys.stderr.write("CODEX_HOOK:config_unavailable\n")
         emit_result({})
         return 0
-    raw = sys.stdin.buffer.read(65537)
     if len(raw) > 65536:
         sys.stderr.write("CODEX_HOOK:input_too_large\n")
         emit_result({})
@@ -91,6 +93,27 @@ def main(argv: list[str] | None = None) -> int:
     result = handler.handle_bytes(raw)
     emit_result(result, diagnostics=handler.diagnostics)
     return 0
+
+
+def _prestart_vector_helper(raw: bytes) -> None:
+    """Start the vector search's helper while the prompt is being stored (``vector.process_store.prestart``).
+
+    Each hook is a new process, and a helper started when the recall reached its vector search spent the rest of
+    the recall's budget importing LanceDB: Claude Code and Codex recalled from words alone.
+    """
+    if sys.platform != "win32" or len(raw) > 65536:
+        return
+    try:
+        payload = json.loads(raw)
+    except ValueError:
+        return
+    if not isinstance(payload, dict) or payload.get("hook_event_name") != "UserPromptSubmit":
+        return
+    try:
+        from ...vector.process_store import prestart
+        prestart()
+    except OSError:
+        sys.stderr.write("CODEX_HOOK:vector_prestart_failed\n")
 
 
 if __name__ == "__main__":

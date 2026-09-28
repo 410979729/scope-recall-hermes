@@ -30,6 +30,7 @@ import logging.handlers
 import os
 from pathlib import Path
 import re
+import sys
 import time
 from typing import Any
 
@@ -235,6 +236,7 @@ def handle_request(config: RemoteServerConfig, body: dict[str, Any], *, started:
     # this one again.  The answer (a recall) is good either way.
     return {"result": result, "through": record.through if record is not None else None,
             "reason": handler.diagnostics.last_reason, "error": handler.diagnostics.capture_error_detail,
+            "recall_error": handler.diagnostics.recall_error_detail,
             "retry": not handler.diagnostics.capture_settled}
 
 
@@ -288,8 +290,9 @@ def build_app(config: RemoteServerConfig):
             _log.error("hook: the entry is unavailable: %s", str(exc)[:200])
             return JSONResponse({"error": "entry_unavailable"}, status_code=503)
         # The error is the capture's code (DEADLINE_EXCEEDED, SECRET_DETECTED, ...), never any of its text.
-        _log.info("hook %s: %s%s%s, record through %s, %d ms", event, answer["reason"],
+        _log.info("hook %s: %s%s%s%s, record through %s, %d ms", event, answer["reason"],
                   f" ({answer['error']})" if answer.get("error") else "",
+                  f" ({answer['recall_error']})" if answer.get("recall_error") else "",
                   (", not stored, to be sent again" if config.host == "codex" else ", not stored")
                   if answer.get("retry") else "", answer["through"],
                   round((time.monotonic() - started) * 1000))
@@ -360,6 +363,11 @@ def serve(config: RemoteServerConfig, *, env_file: Path | None = None) -> None:
         client = load_shared_client(config.home, config.host)
         os.environ.update(host_process_credential_environment(client.runtime_config_path, env_file))
     log_to_file(config.home)
+    if sys.platform == "win32":
+        # Every request builds its handler afresh, and a vector helper started for it spent the recall's budget
+        # importing LanceDB: keep one started and ready (``vector.process_store.prestart``).
+        from ...vector.process_store import prestart
+        prestart(keep=True)
     from ..._version import __version__
     _log.info("serving the %s entry at %s on %s:%d (%s)", config.host, config.home, config.listen, config.port,
               __version__)

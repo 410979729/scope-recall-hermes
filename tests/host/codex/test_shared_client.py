@@ -594,3 +594,125 @@ def test_a_task_notification_is_not_the_owner_s_prompt(store):
     finally:
         hook.close()
     assert [content for _role, _origin, content in _said_in_store(root)] == ["TEST 一句真话。"]
+
+
+SUGGESTIONS_PROMPT = ("# Overview\n\nGenerate 0 to 3 hyperpersonalized suggestions for what this user can do with "
+                      "Codex in this local project: C:\\TEST\n\nGet an understanding of the user's intent and goals "
+                      "by deeply viewing their connected apps.")
+
+
+def test_codex_s_request_for_suggestions_is_neither_stored_nor_recalled(store, tmp_path):
+    """Codex sends its request for suggestions of what to do next through the prompt hook.  On the pilot four were
+    stored as the owner's words, 11,000 to 15,000 characters each, claims were drawn from them as if the owner had
+    said them, and nine of the model's JSON answers were stored as replies."""
+    root, _homes, _client, _capture = store
+    codex = _codex_client(root, tmp_path)
+    hook = CodexHookHandler.from_home(str(codex), "codex")
+    try:
+        assert hook.handle_payload({"hook_event_name": "UserPromptSubmit", "session_id": "TEST-codex-session",
+                                    "turn_id": "TEST-turn-1", "prompt": SUGGESTIONS_PROMPT, "cwd": "C:/TEST"}) == {}
+        assert hook.diagnostics.last_reason == "host_generated_prompt"
+        assert hook.handle_payload({"hook_event_name": "Stop", "session_id": "TEST-codex-session",
+                                    "turn_id": "TEST-turn-1", "cwd": "C:/TEST",
+                                    "last_assistant_message": '{"suggestions":[{"title":"TEST 建议"}]}'}) == {}
+        assert hook.diagnostics.last_reason == "host_generated_reply"
+        hook.handle_payload({"hook_event_name": "UserPromptSubmit", "session_id": "TEST-codex-session",
+                             "turn_id": "TEST-turn-2", "prompt": "TEST 一句真话。", "cwd": "C:/TEST"})
+        hook.handle_payload({"hook_event_name": "Stop", "session_id": "TEST-codex-session", "turn_id": "TEST-turn-2",
+                             "cwd": "C:/TEST", "last_assistant_message": "TEST 好的。"})
+    finally:
+        hook.close()
+    stored = _rows(root, "SELECT content FROM source_events WHERE entry_id='codex' AND role IN ('user', 'assistant') "
+                         "ORDER BY rowid")
+    assert stored == [("TEST 一句真话。",), ("TEST 好的。",)]
+
+
+def test_a_prompt_longer_than_a_recall_query_is_still_recalled_for(store):
+    """A recall request carries at most 8,192 characters of query.  A longer prompt went whole, the request was
+    refused, and the turn had no recall at all: three of the work computer's Codex prompts in one morning."""
+    _root, homes, client, _capture = store
+    told = _hermes(homes["tianquan"])
+    try:
+        told.on_turn_start(1, "TEST 白鹭项目的负责人是 KZ-42。", turn_id="TEST-turn-1", session_id="TEST-session-1")
+        told.observe_pre_llm(session_id="TEST-session-1", turn_id="TEST-turn-1", user_message="TEST 白鹭项目的负责人是 KZ-42。")
+        told.sync_turn("TEST 白鹭项目的负责人是 KZ-42。", "好的。", session_id="TEST-session-1")
+    finally:
+        told.shutdown()
+    prompt = "白鹭项目的负责人 KZ-42 是谁？下面是附件：\n" + "TEST 附件里的一行字。\n" * 800
+    assert len(prompt) > 8192
+    hook = _hook(client)
+    try:
+        result = hook.handle_payload(_prompt(prompt, prompt_id="TEST-prompt-long"))
+    finally:
+        hook.close()
+    assert hook.diagnostics.last_reason != "recall_exception"
+    body = result["hookSpecificOutput"]["additionalContext"].partition("\n")[2]
+    assert any("KZ-42" in item["content"] for item in json.loads(body)["items"])
+
+
+def test_a_failed_recall_says_what_stopped_it(store, monkeypatch, capsys):
+    """The work computer's server logged recall_exception three times with nothing else: the cause had to be found
+    by reading the store."""
+    from scope_recall.adapters.codex.handler import emit_result
+    from scope_recall.core import MemoryCore
+
+    _root, _homes, client, _capture = store
+
+    def refuse(self, *args, **kwargs):
+        raise ContractError("STORAGE_UNAVAILABLE", "recall")
+
+    monkeypatch.setattr(MemoryCore, "recall_packet", refuse)
+    hook = _hook(client)
+    try:
+        assert hook.handle_payload(_prompt("TEST 这一问召回失败。", prompt_id="TEST-prompt-3")) == {}
+    finally:
+        hook.close()
+    assert hook.diagnostics.last_reason == "recall_exception"
+    assert hook.diagnostics.recall_error_detail == "ContractError:STORAGE_UNAVAILABLE"
+    emit_result({}, diagnostics=hook.diagnostics)
+    assert "CODEX_RECALL:ContractError:STORAGE_UNAVAILABLE" in capsys.readouterr().err
+
+
+def test_a_prompt_the_store_could_not_take_is_still_recalled_by_meaning(store, monkeypatch):
+    """The runtime, and with it the vector search, came only after a stored or queued capture.  A capture that
+    failed left the turn to a recall by words alone: six prompts on the work computer's two entries in one night.
+    A message refused as a credential still goes without it, so nothing of it reaches an embedding provider."""
+    from scope_recall.core import MemoryCore
+
+    _root, _homes, client, _capture = store
+
+    def busy(self, *args, **kwargs):
+        raise ContractError("STORAGE_UNAVAILABLE", "capture")
+
+    hook = _hook(client)
+    try:
+        with monkeypatch.context() as patched:
+            patched.setattr(MemoryCore, "record_host_event", busy)
+            hook.handle_payload(_prompt("TEST 存不进去的一句。", prompt_id="TEST-prompt-busy"))
+        assert hook.diagnostics.capture_error_code == "STORAGE_UNAVAILABLE"
+        assert hook._runtime_attach_attempted, "recalled with the vector search"
+    finally:
+        hook.close()
+    refused = _hook(client)
+    try:
+        refused.handle_payload(_prompt("TEST password: Xk9#mP2q-7Lw", prompt_id="TEST-prompt-secret"))
+        assert refused.diagnostics.capture_disposition == "rejected"
+        assert not refused._runtime_attach_attempted, "a credential never reaches the embedding provider"
+    finally:
+        refused.close()
+
+
+def test_a_prompt_hook_starts_the_vector_helper_before_it_stores_the_prompt(monkeypatch):
+    """Each hook is a new process, and a vector helper started when the recall reached its vector search spent the
+    rest of the recall's budget importing LanceDB: Claude Code and Codex recalled from words alone."""
+    from scope_recall.adapters.codex import hook_entry
+    from scope_recall.vector import process_store
+
+    started = []
+    monkeypatch.setattr(process_store, "prestart", lambda **kwargs: started.append(kwargs))
+    monkeypatch.setattr(hook_entry.sys, "platform", "win32")
+    hook_entry._prestart_vector_helper(json.dumps({"hook_event_name": "UserPromptSubmit", "prompt": "TEST"}).encode())
+    hook_entry._prestart_vector_helper(json.dumps({"hook_event_name": "Stop",
+                                                   "last_assistant_message": "UserPromptSubmit"}).encode())
+    hook_entry._prestart_vector_helper(b"not json")
+    assert started == [{}]

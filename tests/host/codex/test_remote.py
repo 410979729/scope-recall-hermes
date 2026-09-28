@@ -382,6 +382,26 @@ def test_a_failed_capture_s_code_reaches_the_server_log(served, tmp_path, monkey
     assert "hook UserPromptSubmit: capture_failed (DEADLINE_EXCEEDED), record through None" in log
 
 
+def test_a_failed_recall_s_cause_reaches_the_server_log(served, tmp_path, monkeypatch):
+    """The work computer's Codex server logged recall_exception three times and nothing else."""
+    _root, homes, ports = served
+    monkeypatch.setattr(remote_server, "handle_request", lambda config, body, started=None: {
+        "result": {}, "through": None, "reason": "recall_exception", "error": None,
+        "recall_error": "ContractError:INPUT_INVALID"})
+    root_logger = logging.getLogger()
+    level = root_logger.level
+    handler = remote_server.log_to_file(homes["codex"])
+    try:
+        _hook(_client(tmp_path, "codex", ports["codex"]), {"hook_event_name": "UserPromptSubmit",
+              "session_id": "TEST-codex-session", "turn_id": "TEST-t2", "prompt": "TEST 问一句。", "cwd": "C:/work"})
+    finally:
+        root_logger.removeHandler(handler)
+        root_logger.setLevel(level)
+        handler.close()
+    log = (homes["codex"] / "scope-recall" / remote_server.LOG_NAME).read_text(encoding="utf-8")
+    assert "hook UserPromptSubmit: recall_exception (ContractError:INPUT_INVALID), record through None" in log
+
+
 def test_a_plugin_command_survives_the_shell_that_runs_it(tmp_path):
     """Claude Code runs a hook through a shell: a path it would split is refused, as the local installer refuses
     it.  Codex's POSIX command is quoted as shell words, a quote in a path included."""

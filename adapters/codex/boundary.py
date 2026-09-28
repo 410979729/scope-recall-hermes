@@ -58,6 +58,29 @@ def is_task_notification(prompt: str) -> bool:
     return prompt.lstrip().startswith(TASK_NOTIFICATION_PREFIX)
 
 
+#: How Codex opens the prompt it sends through the same hook as a message to ask the model what the owner might do
+#: next.  The owner never wrote it: stored as theirs it put 11,000 to 15,000 characters of Codex's instructions
+#: among their messages, claims were drawn from it as if they had said them, and its recall failed on its length.
+_CODEX_SUGGESTIONS_PROMPT = re.compile(r"#[ \t]*Overview\s+Generate\s+\d+\s+to\s+\d+\s+hyperpersonalized\s+suggestions\b")
+
+
+def is_codex_suggestions_prompt(prompt: str) -> bool:
+    """Whether a prompt is Codex asking the model for suggestions, not the owner's words."""
+    return _CODEX_SUGGESTIONS_PROMPT.match(prompt.lstrip()[:200]) is not None
+
+
+def is_codex_suggestions_reply(message: str) -> bool:
+    """Whether a reply is the model's answer to that request: a JSON object holding only a list of suggestions."""
+    text = message.strip()
+    if not text.startswith("{") or len(text) > _MAX_TOOL_CHARS:
+        return False
+    try:
+        value = json.loads(text)
+    except ValueError:
+        return False
+    return isinstance(value, dict) and set(value) == {"suggestions"} and isinstance(value["suggestions"], list)
+
+
 def user_prompt_source_event(
     *,
     installation_id: str,

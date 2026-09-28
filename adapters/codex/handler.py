@@ -21,6 +21,8 @@ from .boundary import (
     assistant_stop_source_event,
     authorized_attachment_refs,
     host_source_key,
+    is_codex_suggestions_prompt,
+    is_codex_suggestions_reply,
     is_task_notification,
     lifecycle_source_event,
     recorded_source_event,
@@ -45,11 +47,16 @@ _CAPTURE_TIMEOUT_S = 1.0
 #: waited their one second and were not stored.  It takes at most half of what the hook has left, and never
 #: less than the one second every other capture waits, so a 6 s budget waits 2 s and a 2 s one still 1 s.
 _PROMPT_CAPTURE_TIMEOUT_S = 2.0
+#: The longest query a recall request carries (``contracts/recall_request.schema.json``).  A longer prompt is
+#: searched by its first part, as Hermes does: whole, it failed the request and the turn had no recall at all.
+_RECALL_QUERY_CHARS = 8192
 _TOTAL_BUDGET_S = 2.0
 #: Attaching the trusted runtime after a capture needs this much budget left.
 _RUNTIME_ATTACH_MIN_S = 0.3
 #: Capture refusals a second attempt meets again.
 _SETTLED_CAPTURE_CODES = frozenset({"SECRET_DETECTED", "INPUT_INVALID", "VERSION_CONFLICT"})
+#: How a capture says it refused a message as holding a credential: as a code, or as the rejection it returns.
+_SECRET_REFUSALS = frozenset({"SECRET_DETECTED", "plaintext_secret_rejected"})
 _CAPTURE_ERROR_CODES = frozenset({
     "ACCESS_DENIED", "IDENTITY_UNBOUND", "INPUT_INVALID", "VERSION_CONFLICT",
     "DEADLINE_EXCEEDED", "STORAGE_UNAVAILABLE", "SOURCE_MISSING", "SECRET_DETECTED",
@@ -112,6 +119,9 @@ class HookDiagnostics:
     #: never reaches the host.
     capture_error_detail: str | None = None
     capture_elapsed_ms: int | None = None
+    #: What stopped an automatic recall (``recall_exception``): the exception's class and, for a contract error,
+    #: its code.  Without it the server's log said only that a recall had failed.
+    recall_error_detail: str | None = None
 
     @property
     def capture_settled(self) -> bool:
@@ -266,6 +276,11 @@ class CodexHookHandler:
 
     def _captured_this_call(self) -> bool:
         return self._persisted_this_call or self._queued_this_call
+
+    def _refused_this_call(self) -> bool:
+        """The capture refused its message (a credential, or nothing left to store), rather than failing to write it."""
+        diagnostics = self.diagnostics
+        return diagnostics.capture_disposition == "rejected" or diagnostics.capture_error_detail in _SECRET_REFUSALS
 
     # -- trusted runtime -------------------------------------------------
 
@@ -607,6 +622,11 @@ class CodexHookHandler:
             # became a message they never wrote, and a recall on it answers nothing they asked.
             self._diag("task_notification")
             return {}
+        if self.host == "codex" and is_codex_suggestions_prompt(prompt):
+            # Codex asking the model what the owner might do next, through the hook a message comes by: not their
+            # words, and nothing for a recall to answer.
+            self._diag("host_generated_prompt")
+            return {}
         attachment_refs, attachment_gaps = authorized_attachment_refs(payload)
         gaps = (*gaps, *attachment_gaps)
         if attachment_gaps:
@@ -626,7 +646,10 @@ class CodexHookHandler:
         wait = min(_PROMPT_CAPTURE_TIMEOUT_S, max(_CAPTURE_TIMEOUT_S, self._remaining(deadline) / 2))
         current_refs, capture_gaps = self._capture(context, audience, event, deadline=deadline, gaps=gaps,
                                                    wait=wait)
-        if self._captured_this_call() and self._remaining(deadline) >= _RUNTIME_ATTACH_MIN_S:
+        # The vector search comes with the runtime.  A prompt the store was too busy to take is recalled by
+        # meaning as well: six on the work computer's two entries in one night were recalled by words alone.
+        if ((self._captured_this_call() or (event is not None and not self._refused_this_call()))
+                and self._remaining(deadline) >= _RUNTIME_ATTACH_MIN_S):
             self._ensure_host_runtime(audience)
             if self._queued_this_call:
                 self._maybe_launch_owned_worker(session_id, audience)
@@ -650,7 +673,7 @@ class CodexHookHandler:
         request: RecallRequest = {
             "protocol_version": "1.1",
             "request_id": request_id[:100],
-            "query": prompt,
+            "query": prompt[:_RECALL_QUERY_CHARS],
             "mode": "auto",
             "max_items": 6,
             "budget_tokens": AUTOMATIC_PACKET_BUDGET_UNITS,
@@ -658,7 +681,10 @@ class CodexHookHandler:
         try:
             packet = self.core.recall_packet(context, request, current_source_refs=current_refs, deadline_seconds=remaining)
             preparation = self.core.prepare_recall_render(context, packet)
-        except (ContractError, OSError, RuntimeError):
+        except (ContractError, OSError, RuntimeError) as exc:
+            code = getattr(exc, "code", None)
+            self.diagnostics.recall_error_detail = _error_detail(
+                f"{type(exc).__name__}:{code}" if isinstance(code, str) else type(exc).__name__)
             self._diag("recall_exception", gaps=gaps)
             return {}
         if self._remaining(deadline) <= 0:
@@ -681,6 +707,10 @@ class CodexHookHandler:
         if type(message) is not str:
             gaps = (*gaps, "outcome_gap:missing_assistant_body")
             message = ""
+        if self.host == "codex" and is_codex_suggestions_reply(message):
+            # The model's answer to Codex's request for suggestions (``is_codex_suggestions_prompt``).
+            self._diag("host_generated_reply")
+            return {}
         event, outcome_gaps = assistant_stop_source_event(
             installation_id=self.config.installation_id,
             host=self.host,
@@ -778,3 +808,5 @@ def emit_result(result: dict[str, Any], *, diagnostics: HookDiagnostics | None =
         if diagnostics.capture_error_detail and diagnostics.capture_error_detail != diagnostics.capture_error_code:
             detail["error_detail"] = diagnostics.capture_error_detail
         sys.stderr.write("CODEX_CAPTURE:" + json.dumps(detail, ensure_ascii=True, separators=(",", ":")) + "\n")
+    if diagnostics is not None and diagnostics.recall_error_detail:
+        sys.stderr.write(f"CODEX_RECALL:{diagnostics.recall_error_detail}\n")
