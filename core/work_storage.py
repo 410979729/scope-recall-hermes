@@ -769,6 +769,13 @@ class WorkItems:
             kind = str(code or "").rsplit("|", 1)[-1]
             report["by_kind"][kind] = report["by_kind"].get(kind, 0) + 1
             report["retried"] += 1
+        # Captures a replay gave up after its tries (``capture_inbox._GAVE_UP``) go back to it, their tries counted
+        # anew: whatever kept them out has been fixed, or they are given up again, visibly.
+        abandoned = [token for (token,) in conn.execute(
+            f"SELECT token FROM capture_inbox WHERE last_error_code LIKE 'GAVE_UP|%' AND {visible}", params)]
+        report["inbox_given_up"] = len(abandoned)
+        if not dry_run:
+            conn.executemany("UPDATE capture_inbox SET last_error_code=NULL WHERE token=?", [(t,) for t in abandoned])
         return report
 
     def _reopen_failed(self, work_id: int, work_type: str, code: object, *, now: str, automatic: bool = False) -> bool:

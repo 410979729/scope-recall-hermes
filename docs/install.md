@@ -450,6 +450,7 @@ are the ones to read first, from a healthy Hermes install:
   "needs_review_work": 0,
   "capture_inbox": 0,
   "capture_inbox_blocked": 0,
+  "capture_inbox_given_up": 0,
   "checks": [
     {"name": "host_registration", "result": "registered"},
     {"name": "adapter_binding", "result": "ok"},
@@ -500,7 +501,7 @@ Things that look wrong in a healthy report and are not:
 | `work_failed_terminal_only` / `work_needs_review` | All failures are by design, or were already retried once. `attention`. | Inspect them; `--include-terminal` re-runs them only if you mean to. |
 | `work_backlog_stalled` | Work is pending and the worker has not succeeded for more than twice `supervisor_seconds`. | The worker is not running. See the next section. |
 | `worker_capability_unavailable` | Work is pending and the last pass reported work types it could not do. `attention`. | Usually a missing model route, credential or budget. |
-| `capture_ingress_blocked` | Inbox rows carry a real error code. Always `degraded`. | Read `capture_inbox_blocked` and the recent work errors. |
+| `capture_ingress_blocked` | Inbox rows carry a real error code, or wait for their next try. Always `degraded`. | Read `capture_inbox_blocked` and the recent work errors. A row whose stored capture a replay could not check again is tried after a minute, doubling to an hour; after 24 tries it is given up and counted in `capture_inbox_given_up`. Fix the cause (its code ends with it), then `retry-failures --apply` returns such rows to the replay. |
 | `autostart_registration_missing` | The control file says enabled, but the scheduled task is gone. | Re-run `autostart enable`. |
 | `autostart_configuration_invalid` | `runtime-autostart.json` is unusable, or points at a config that will not load or does not match the binding. | Re-run `autostart enable` with the correct `--config`. |
 | `ledger_missing:<file>` | An external route is approved but its budget ledger file does not exist. | Create the ledger — see [configuration.md](configuration.md). |
@@ -581,7 +582,9 @@ scope-recall retry-failures --config /path/to/instance-root/scope-recall/runtime
 ```
 
 Without `--apply` nothing is written. `--include-terminal` also re-runs failures
-that are terminal by design.
+that are terminal by design. The same command returns the captures the inbox gave
+up after 24 tries to its replay (`inbox_given_up` in its output; without `--apply`
+it only counts them), each with its tries counted anew.
 
 Since 3.2.0 a tool output is kept and embedded, found by its words and by
 meaning, but no longer consolidated into claims: what an agent read or ran is

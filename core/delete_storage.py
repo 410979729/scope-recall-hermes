@@ -268,10 +268,12 @@ class Deletions:
                 groups.add(group)
         forgotten = (frozenset(digests), frozenset(groups))
         for scope, project, branch in {(t.scope_id, t.project_id, t.branch_id) for t in targets}:
-            for token, code, payload in conn.execute(
-                    "SELECT token,last_error_code,payload_json FROM capture_inbox WHERE scope_id=? AND project_id IS ? AND branch_id IS ?",
+            for token, code in conn.execute(
+                    "SELECT token,last_error_code FROM capture_inbox WHERE scope_id=? AND project_id IS ? AND branch_id IS ?",
                     (scope, project, branch)).fetchall():
-                if not put_off(code) or holds(payload, *forgotten):
+                # A payload is read only for a row put off: the inbox holds up to 64 MB.
+                if not put_off(code) or holds(conn.execute("SELECT payload_json FROM capture_inbox WHERE token=?",
+                                                           (token,)).fetchone()[0], *forgotten):
                     conn.execute("DELETE FROM capture_inbox WHERE token=?", (token,))
         for target in targets:
             conn.execute("DELETE FROM consolidation_fragments WHERE work_id IN (SELECT work_id FROM work_items WHERE subject_ref=?)", (target.ref,))

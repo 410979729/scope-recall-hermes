@@ -91,11 +91,11 @@ def test_an_inbox_row_a_replay_will_store_wakes_the_worker(tmp_path):
 
     core, cfg, _path = fixture(tmp_path)
     later = (NOW + timedelta(minutes=40)).strftime('%Y-%m-%dT%H:%M:%SZ')
-    # Put off by this release until later, and by another release: the first wakes the worker when its hour is up,
-    # the second at once.
+    # Put off until later, by any release and on either path: each wakes the worker when its time is up.  Given up:
+    # nothing, until an operator returns it.
     codes = ('SOURCE_MISSING', 'VERSION_CONFLICT', 'VERSION_CONFLICT:rekeyed', 'SOURCE_MISSING:TEST-final',
-             f'DEFERRED|{__version__}|{later}|1|IDENTITY_UNBOUND', f'DEFERRED|0.0.1|{later}|1|TypeError',
-             f'GAVE_UP|{__version__}|TypeError', 'GAVE_UP|0.0.1|TypeError')
+             f'DEFERRED|{__version__}|{later}|1|replay|IDENTITY_UNBOUND', f'DEFERRED|0.0.1|{later}|3|rekey|TypeError',
+             f'GAVE_UP|{__version__}|24|replay|TypeError', 'GAVE_UP|0.0.1|24|rekey|TypeError')
     for index, code in enumerate(codes):
         event = source_event(source_event_key=f'TEST-inbox-{index}', content=f'TEST 第{index}条。')
         token, _prepared = capture_inbox.enqueue(core.storage, core.clock, cfg.context(), event,
@@ -103,12 +103,13 @@ def test_an_inbox_row_a_replay_will_store_wakes_the_worker(tmp_path):
         with core.storage.write(cfg.context()) as tx:
             tx._check(write=True).execute('UPDATE capture_inbox SET last_error_code=? WHERE token=?', (code, token))
     plan = next_wake(cfg, now=NOW)
-    assert (plan.reason, plan.pending) == ('durable_capture_ingress', 3), "another release's rows are taken at once"
+    assert (plan.reason, plan.pending) == ('durable_capture_ingress', 1)
     with core.storage.write(cfg.context()) as tx:
-        tx._check(write=True).execute("DELETE FROM capture_inbox WHERE last_error_code NOT LIKE 'DEFERRED|' || ? || '|%'",
-                                      (__version__,))
+        tx._check(write=True).execute("DELETE FROM capture_inbox WHERE last_error_code NOT LIKE 'DEFERRED|%'")
     plan = next_wake(cfg, now=NOW)
     assert (plan.reason, plan.due_at, plan.pending) == ('durable_capture_deferred', later, 0)
+    plan = next_wake(cfg, now=NOW + timedelta(minutes=41))
+    assert (plan.reason, plan.pending) == ('durable_capture_ingress', 2)
 
 
 def test_busy_day_counter_still_plans_and_both_readers_share_one_bound(tmp_path, monkeypatch):

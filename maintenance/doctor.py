@@ -20,7 +20,7 @@ from typing import Any, Literal
 import scope_recall
 from scope_recall.contracts import TrustedContext
 from scope_recall.core import CoreConfig, MemoryCore
-from scope_recall.core.capture_inbox import replayable
+from scope_recall.core.capture_inbox import given_up, replayable
 from scope_recall.core.schema import SCHEMA_VERSION, UPGRADE_CHAIN, stale_header_schema
 from scope_recall.core.storage import SQLiteStorage
 from scope_recall.core.failure_retry import NEEDS_REVIEW_COUNT
@@ -71,6 +71,8 @@ class DoctorReport:
     recent_output_truncations: int = 0
     capture_inbox: int = 0
     capture_inbox_blocked: int = 0
+    #: Of those, rows a replay gave up after its tries (``retry-failures --apply`` returns them to it).
+    capture_inbox_given_up: int = 0
     extraction_outcomes: dict[str, int] = field(default_factory=dict)
     autostart_status: str = "not_registered"
     worker_status: dict[str, Any] = field(default_factory=dict)
@@ -623,8 +625,9 @@ def _check_storage(report: DoctorReport, binding, data_directory: Path) -> bool:
             conn = transaction._check()
             report.capture_inbox = conn.execute("SELECT count(*) FROM capture_inbox").fetchone()[0]
             moment = datetime.now(timezone.utc)
-            report.capture_inbox_blocked = sum(
-                not replayable(code, moment) for (code,) in conn.execute("SELECT last_error_code FROM capture_inbox"))
+            codes = [code for (code,) in conn.execute("SELECT last_error_code FROM capture_inbox")]
+            report.capture_inbox_blocked = sum(not replayable(code, moment) for code in codes)
+            report.capture_inbox_given_up = sum(given_up(code) for code in codes)
             report.recent_work_errors = [dict(r) for r in conn.execute("SELECT work_id,lease_token,stage,error_code,error_field,recorded_at FROM work_error_details ORDER BY detail_id DESC LIMIT 16")]
             moment = datetime.now(timezone.utc)
             hour_ago = (moment - timedelta(hours=1)).isoformat()

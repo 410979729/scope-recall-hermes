@@ -335,7 +335,7 @@ def test_a_long_message_whose_key_was_taken_is_stored_under_a_new_group(worker_a
 def test_a_row_that_cannot_be_checked_again_is_put_off_and_the_rows_after_it_are_stored(worker_app, monkeypatch):
     """A row whose stored capture raised on revalidation stopped its whole page, on every pass.  Made final instead,
     a row this release merely could not read yet (a newer release's field, an installation being reinstalled) was
-    never stored (reviews of 3.4.0rc10).  It is put off: another release takes it at once, this one after an hour."""
+    never stored (reviews of 3.4.0rc10).  It is put off, and the replay that put it off takes it again in a minute."""
     core, ctx, clock = worker_app
     other = replace(ctx, session_id="TEST-session-2")
     for key in ("TEST-turn-50", "TEST-turn-51"):
@@ -357,15 +357,15 @@ def test_a_row_that_cannot_be_checked_again_is_put_off_and_the_rows_after_it_are
     with sqlite3.connect(core.storage.path) as conn:
         [(code,)] = conn.execute("SELECT last_error_code FROM capture_inbox").fetchall()
         assert conn.execute("SELECT count(*) FROM source_events WHERE content='TEST second TEST-turn-51'").fetchone()[0] == 1
-    assert code.startswith(f"DEFERRED|{capture_inbox.__version__}|") and code.endswith("|1|INPUT_INVALID")
+    assert code.startswith(f"DEFERRED|{capture_inbox.__version__}|")
+    assert code.endswith("|1|rekey|INPUT_INVALID:TEST-envelope"), "the field that failed is named"
     # Not taken again before its minute is up; still waiting as far as a record read is concerned.
-    assert capture_inbox.replay_inbox(core.storage, clock, other, authorize=lambda _: other.allowed_scope_ids) == ()
+    assert capture_inbox.resolve_conflicted_ingress(
+        core.storage, clock, other, authorize=lambda _: other.allowed_scope_ids, remaining_seconds=5) == ()
     assert capture_inbox.waiting(code)
-    # Another release (one that reads it) takes it at once, and the collision is then stored under a new key.
+    # Once it reads, the collision is stored under a new key when its minute is up.
     monkeypatch.setattr(capture_inbox, "prepare_capture", original)
-    monkeypatch.setattr(capture_inbox, "__version__", "9.9.9-TEST")
-    assert [r.disposition for r in capture_inbox.replay_inbox(
-        core.storage, clock, other, authorize=lambda _: other.allowed_scope_ids)] == ["conflict"]
+    clock.advance(seconds=61, iso="2026-09-06T12:01:01Z")
     assert [r.durability for r in capture_inbox.resolve_conflicted_ingress(
         core.storage, clock, other, authorize=lambda _: other.allowed_scope_ids, remaining_seconds=5)] == ["persisted"]
     with sqlite3.connect(core.storage.path) as conn:
@@ -381,39 +381,55 @@ def test_a_row_put_off_again_waits_longer_and_is_given_up_where_it_shows():
     now = datetime(2026, 9, 28, 12, tzinfo=timezone.utc)
     code, waits = None, []
     for _attempt in range(capture_inbox.DEFER_ATTEMPTS):
-        code = capture_inbox._deferral(code, ContractError("IDENTITY_UNBOUND", "TEST"), now)
+        code = capture_inbox._deferral(code, ContractError("IDENTITY_UNBOUND", "TEST|host"), now, path="replay")
         waits.append((capture_inbox.deferred_until(code, now) - now).total_seconds())
     assert waits[:4] == [60, 120, 240, 480] and waits[-1] == 3600
-    given_up = capture_inbox._deferral(code, RuntimeError("TEST"), now)
-    assert given_up == f"GAVE_UP|{capture_inbox.__version__}|RuntimeError"
+    assert code.endswith("|24|replay|IDENTITY_UNBOUND:TEST/host"), "the field is named, its bar replaced"
+    given_up = capture_inbox._deferral(code, RuntimeError("TEST"), now, path="replay")
+    assert given_up == f"GAVE_UP|{capture_inbox.__version__}|24|replay|RuntimeError"
+    assert capture_inbox.given_up(given_up) and capture_inbox.put_off(given_up)
     assert not capture_inbox.replayable(given_up, now) and not capture_inbox.waiting(given_up)
-    assert capture_inbox.replayable("GAVE_UP|0.0.1|RuntimeError", now), "another release takes it"
-    # A time without its zone, or further off than any wait, is due now rather than a crash or a wait for ever.
+    # Given up for every release, and the tries another release made count: a new release reset them, so a row
+    # that failed under each was tried for ever (review of 3.4.0rc10).
+    assert not capture_inbox.replayable("GAVE_UP|0.0.1|24|replay|RuntimeError", now)
+    other = f"DEFERRED|0.0.1|2026-09-28T11:00:00Z|{capture_inbox.DEFER_ATTEMPTS}|replay|TypeError"
+    assert capture_inbox._deferral(other, RuntimeError("TEST"), now, path="replay").startswith("GAVE_UP|")
+    assert not capture_inbox.replayable(other.replace("11:00:00Z", "12:30:00Z"), now), "another release's wait holds"
+    # A time without its zone, further off than any wait, or a code of another shape is due now rather than a crash
+    # or a wait for ever.
     version = capture_inbox.__version__
-    assert capture_inbox.replayable(f"DEFERRED|{version}|2026-09-28T12:30:00|1|TEST", now)
-    assert capture_inbox.replayable(f"DEFERRED|{version}|2026-12-01T00:00:00Z|1|TEST", now)
-    assert not capture_inbox.replayable(f"DEFERRED|{version}|2026-09-28T12:30:00Z|1|TEST", now)
+    assert capture_inbox.replayable(f"DEFERRED|{version}|2026-09-28T12:30:00|1|replay|TEST", now)
+    assert capture_inbox.replayable(f"DEFERRED|{version}|2026-12-01T00:00:00Z|1|replay|TEST", now)
+    assert capture_inbox.replayable(f"DEFERRED|{version}|2026-09-28T12:30:00Z|1|TEST", now)
+    assert not capture_inbox.replayable(f"DEFERRED|{version}|2026-09-28T12:30:00Z|1|replay|TEST", now)
+    assert capture_inbox.deferred_path(f"DEFERRED|{version}|2026-09-28T12:30:00Z|1|rekey|TEST") == "rekey"
 
 
 def test_a_delete_keeps_a_put_off_row_unless_it_holds_the_deleted_words(worker_app):
     """A delete cancels its partition's pending captures, so that a delayed one cannot undo it.  A row put off waits
     for hours, and cancelling it lost words nothing had forgotten (review of 3.4.0rc10)."""
     core, ctx, clock = worker_app
-    later = f"DEFERRED|{capture_inbox.__version__}|2026-09-28T13:00:00Z|1|RuntimeError"
-    for key, text in (("TEST-put-off-keep", "TEST 暂缓的另一句话。"), ("TEST-put-off-same", "TEST 要删掉的话。"),
-                      ("TEST-plain-waiting", "TEST 普通等待的一句。")):
+    later = f"DEFERRED|{capture_inbox.__version__}|2026-09-06T13:00:00Z|1|replay|RuntimeError"
+    given_up = f"GAVE_UP|{capture_inbox.__version__}|24|rekey|RuntimeError"
+    long_kept, long_same = "TEST 暂缓的长消息。" * 8000, "TEST 同组的另一版长消息。" * 6000
+    rows = (("TEST-put-off-keep", "TEST 暂缓的另一句话。", later), ("TEST-put-off-same", "TEST 要删掉的话。", later),
+            ("TEST-plain-waiting", "TEST 普通等待的一句。", None),
+            # A long message waits as segments: one of another group is kept, one of the deleted group is not.
+            ("TEST-long-kept", long_kept, given_up), ("TEST-stored-long", long_same, later))
+    for key, text, code in rows:
         token, _prepared = capture_inbox.enqueue(core.storage, clock, ctx, source_event(source_event_key=key, content=text),
                                                  scope_id="TEST-scope", host_scope=None)
-        if key.startswith("TEST-put-off"):
-            with sqlite3.connect(core.storage.path) as conn:
-                conn.execute("UPDATE capture_inbox SET last_error_code=? WHERE token=?", (later, token))
-                conn.commit()
+        with sqlite3.connect(core.storage.path) as conn:
+            conn.execute("UPDATE capture_inbox SET last_error_code=? WHERE token=?", (code, token))
+            conn.commit()
     source = capture(core, ctx, "TEST 要删掉的话。", key="TEST-stored-same")
-    authorize(core, ctx, source)
-    core.forget(ctx, request(source), remaining_seconds=5)
+    long_source_ = capture(core, ctx, "TEST 已存的长消息。" * 8000, key="TEST-stored-long")
+    authorize(core, ctx, source, long_source_)
+    core.forget(ctx, request(source, long_source_), remaining_seconds=5)
     with sqlite3.connect(core.storage.path) as conn:
-        left = [row[0] for row in conn.execute("SELECT payload_json FROM capture_inbox")]
-    assert len(left) == 1 and "TEST-put-off-keep" in left[0]
+        events = [json.loads(row[0])["events"][0] for row in conn.execute("SELECT payload_json FROM capture_inbox")]
+    left = sorted(event["segment"]["group_key"] if "segment" in event else event["source_event_key"] for event in events)
+    assert left == ["TEST-long-kept", "TEST-put-off-keep"]
 
 
 def test_a_host_check_that_raises_puts_off_that_row_only(worker_app):
@@ -432,7 +448,92 @@ def test_a_host_check_that_raises_puts_off_that_row_only(worker_app):
     assert sorted(receipt.disposition for receipt in receipts) == ["inserted", "queued"]
     with sqlite3.connect(core.storage.path) as conn:
         [(code,)] = conn.execute("SELECT last_error_code FROM capture_inbox").fetchall()
-    assert code.endswith("|1|RuntimeError")
+    assert code.endswith("|1|replay|RuntimeError")
+
+
+def test_a_row_the_rekey_path_put_off_is_taken_again_by_that_path_alone_and_its_tries_count(worker_app, monkeypatch):
+    """A row put off while it was given a new key was due for the plain replay, which met the old collision and wrote
+    it back as a bare conflict: its tries began again each round, and it was never given up (review of 3.4.0rc10).
+    Only the rekey path takes it again, once its time is up, and it counts on."""
+    core, ctx, clock = worker_app
+    first = source_event(source_event_key="TEST-turn-60", content="TEST first TEST-turn-60")
+    capture_inbox.durable_record_event(core.storage, clock, ctx, first, scope_id="TEST-scope", host_scope=None)
+    other = replace(ctx, session_id="TEST-session-2")
+    capture_inbox.durable_record_event(core.storage, clock, other, dict(first, content="TEST second TEST-turn-60"),
+                                       scope_id="TEST-scope", host_scope=None)
+    original = capture_inbox.prepare_capture
+
+    def prepare(event, context):
+        if capture_inbox.REKEY_MARKER in event["source_event_key"]:
+            raise ContractError("IDENTITY_UNBOUND", "TEST-host")
+        return original(event, context)
+
+    def code():
+        with sqlite3.connect(core.storage.path) as conn:
+            return conn.execute("SELECT last_error_code FROM capture_inbox").fetchone()[0]
+
+    def replay():
+        return capture_inbox.replay_inbox(core.storage, clock, other, authorize=lambda _: other.allowed_scope_ids)
+
+    def resolve():
+        return capture_inbox.resolve_conflicted_ingress(
+            core.storage, clock, other, authorize=lambda _: other.allowed_scope_ids, remaining_seconds=5)
+
+    monkeypatch.setattr(capture_inbox, "prepare_capture", prepare)
+    for attempt, moment in enumerate(("2026-09-06T12:00:00Z", "2026-09-06T12:02:00Z", "2026-09-06T12:05:00Z"), 1):
+        clock.advance(seconds=1, iso=moment)
+        assert replay() == ()
+        assert [receipt.error_code for receipt in resolve()] == ["DEFERRED"]
+        assert code().split("|")[3:] == [str(attempt), "rekey", "IDENTITY_UNBOUND:TEST-host"]
+    clock.advance(seconds=1, iso="2026-09-06T13:00:00Z")
+    assert replay() == (), "due, it is still the rekey path's"
+    monkeypatch.setattr(capture_inbox, "prepare_capture", original)
+    assert [receipt.durability for receipt in resolve()] == ["persisted"]
+    with sqlite3.connect(core.storage.path) as conn:
+        assert conn.execute("SELECT count(*) FROM source_events WHERE content='TEST second TEST-turn-60'").fetchone()[0] == 1
+        assert conn.execute("SELECT count(*) FROM capture_inbox").fetchone()[0] == 0
+
+
+def test_retry_failures_returns_a_given_up_capture_to_the_replay(worker_app):
+    """A row given up stayed in the inbox with nothing to take it once its cause was fixed (review of 3.4.0rc10).
+    ``retry-failures`` counts such rows, and with ``--apply`` returns them to the replay, their tries anew."""
+    core, ctx, clock = worker_app
+    token, _prepared = capture_inbox.enqueue(
+        core.storage, clock, ctx, source_event(source_event_key="TEST-given-up", content="TEST 放弃过的一句。"),
+        scope_id="TEST-scope", host_scope=None)
+    given_up = f"GAVE_UP|{capture_inbox.__version__}|24|replay|IDENTITY_UNBOUND:TEST-host"
+    with sqlite3.connect(core.storage.path) as conn:
+        conn.execute("UPDATE capture_inbox SET last_error_code=? WHERE token=?", (given_up, token))
+        conn.commit()
+
+    def replay():
+        return capture_inbox.replay_inbox(core.storage, clock, ctx, authorize=lambda _: ctx.allowed_scope_ids)
+
+    assert replay() == ()
+    preview = core.retry_failed_work(ctx, limit=64, dry_run=True)
+    assert (preview["inbox_given_up"], preview["applied"]) == (1, False)
+    with sqlite3.connect(core.storage.path) as conn:
+        assert conn.execute("SELECT last_error_code FROM capture_inbox").fetchall() == [(given_up,)]
+    assert core.retry_failed_work(ctx, limit=64, dry_run=False)["inbox_given_up"] == 1
+    assert [receipt.durability for receipt in replay()] == ["persisted"]
+    assert core.retry_failed_work(ctx, limit=64, dry_run=True)["inbox_given_up"] == 0
+
+
+def test_a_pass_counts_the_inbox_rows_it_put_off_and_gave_up():
+    """A pass said how many rows it put off but not how many it gave up, and kept neither in its status file."""
+    from scope_recall.core.capture import CaptureReceipt
+    from scope_recall.runtime.worker_entry import _ingress_report
+
+    def receipt(disposition, durability, code=None):
+        return CaptureReceipt(disposition, (), durability, "pending", "pending", error_code=code)
+
+    counts, gaps = _ingress_report((receipt("queued", "queued", "DEFERRED"), receipt("queued", "queued", "GAVE_UP"),
+                                    receipt("queued", "queued", "GAVE_UP"), receipt("inserted", "persisted"),
+                                    receipt("cancelled", "not_persisted", "ACCESS_DENIED")))
+    assert counts == {"ingress_deferred": 1, "ingress_given_up": 2, "ingress_replayed": 1, "ingress_cancelled": 1}
+    assert gaps == ["capture_gap:durable_ingress_deferred", "capture_gap:durable_ingress_given_up"]
+    assert _ingress_report(()) == ({"ingress_deferred": 0, "ingress_given_up": 0, "ingress_replayed": 0,
+                                    "ingress_cancelled": 0}, [])
 
 
 def test_a_named_message_that_was_deleted_still_counts_as_said(worker_app):
