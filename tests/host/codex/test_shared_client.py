@@ -2035,3 +2035,142 @@ def test_a_kept_handler_is_made_anew_when_the_entry_s_pointer_or_grants_change(r
         os.utime(path, ns=(status.st_atime_ns, status.st_mtime_ns + 1_000_000_000))
         assert endpoint._kept_stamp() != before
         before = endpoint._kept_stamp()
+
+
+def _embedding_entry(base, monkeypatch):
+    """A shared store whose Claude Code entry has a runtime: an embedding route to a loopback server that closes a
+    connection idle for 1 s, as a provider closes an idle keep-alive one, and a SQLite vector store."""
+    import http.server
+    from pathlib import Path
+    import threading
+
+    from scope_recall.adapters import models
+    from scope_recall.adapters.hermes.installation import (
+        attach_shared_entry, build_installation_manifest, new_shared_payload, read_shared_payload,
+        write_shared_payload)
+    from scope_recall.maintenance.shared import attach
+    from scope_recall.runtime.instance import RuntimeInstanceConfig
+    from scope_recall.runtime.worker_entry import load_config
+    from scope_recall.vector.store import build_vector_store
+
+    vector = [0.125] * 64
+    connections = []
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+        timeout = 1.0
+
+        def do_POST(self):
+            connections.append(self.client_address)
+            self.rfile.read(int(self.headers.get("Content-Length", 0)))
+            body = json.dumps({"object": "list", "model": "TEST-embed",
+                               "data": [{"object": "embedding", "index": 0, "embedding": vector}],
+                               "usage": {"prompt_tokens": 7, "total_tokens": 7}}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            self.wfile.flush()
+
+        def log_message(self, *args):
+            return
+
+        def log_error(self, *args):
+            return
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    helper = Path(models.__file__).resolve().parents[1] / "runtime" / "_http_worker.py"
+    worker = base / "TEST-embedding-worker.py"
+    worker.write_text(
+        "import importlib.util, http.client, time\n"
+        f"s = importlib.util.spec_from_file_location('worker', {str(helper)!r})\n"
+        "w = importlib.util.module_from_spec(s); s.loader.exec_module(w)\n"
+        "def opener(host, port, *, deadline):\n"
+        f"    c = http.client.HTTPConnection('127.0.0.1', {server.server_address[1]})\n"
+        "    c.timeout = max(0.001, deadline - time.monotonic())\n"
+        "    return c\n"
+        "w._open_https_connection = opener\n"
+        "raise SystemExit(w.main())\n", encoding="utf-8")
+    monkeypatch.setattr(models, "_HTTP_WORKER_PATH", worker)
+    monkeypatch.setenv("TEST_EMBED_KEY", "TEST-not-a-real-key-0000")
+
+    root = base / "TEST-shared"
+    write_shared_payload(root, new_shared_payload(root, agent_id="TEST-agent"))
+    home = base / "TEST-tianshu-home"
+    home.mkdir()
+    attach_shared_entry(root, build_installation_manifest(home, agent_id="TEST-agent", user_id="TEST-owner",
+                                                          agent_workspace="TEST-workspace"),
+                        entry_id="tianshu", display_name="TEST", now="2026-09-24T20:00:00Z")
+    payload = read_shared_payload(root)
+    routes = {
+        "binding": {"agent_id": payload["agent_id"], "installation_id": payload["installation_id"],
+                    "data_directory": str(root.resolve()), "scope_ids": payload["scope_ids"],
+                    "test_mode": payload["test_mode"], "installation_kind": "shared"},
+        "session_id": "TEST-background", "allowed_scope_ids": payload["scope_ids"], "owner_id": "TEST-worker",
+        "auxiliary": {"external_embedding": True, "external_consolidation": False,
+                      "installation_dir": str(root.resolve()),
+                      "budget": {"batch": "TEST-rc12", "cap_micro_usd": 100_000_000,
+                                 "total_input_cap": 100_000_000, "total_output_cap": 100_000_000,
+                                 "total_call_cap": 100_000, "max_request_bytes": 32_000,
+                                 "approved_models": ["TEST-embed"],
+                                 "pricing": {"TEST-embed": {"input_usd_per_million": "0.01",
+                                                            "output_usd_per_million": "0"}}},
+                      "embedding": {"credential_env": "TEST_EMBED_KEY", "model": "TEST-embed",
+                                    "endpoint": "https://TEST.invalid/v1/embeddings", "dimensions": 64,
+                                    "dialect": "openai"}},
+    }
+    space = RuntimeInstanceConfig.from_mapping(routes).embedding_space_id()
+    routes["vector"] = {"backend": "sqlite-bruteforce", "storage_dir": str(root.resolve() / "vectors" / space),
+                        "table_name": "scope_recall", "dimensions": 64}
+    routes_path = base / "TEST-routes.json"
+    routes_path.write_text(json.dumps(routes), encoding="utf-8")
+    client = base / "TEST-embedding-claude-code-home"
+    client.mkdir()
+    attach(host="claude-code", instance_root=client, root=root, entry_id="claude-code", display_name="Claude Code",
+           runtime_config_from=routes_path, grants_like=("tianshu",), capture_like="tianshu",
+           now="2026-09-24T20:00:00Z")
+    entry_config = client / "scope-recall" / "runtime-config.json"
+    vectors = load_config(entry_config).vector
+    store = build_vector_store(vectors.backend, storage_dir=vectors.storage_dir, table_name=vectors.table_name,
+                               dimensions=vectors.dimensions)
+    store.open()
+    store.close()
+    return client, entry_config, server, connections
+
+
+def test_a_kept_handler_recalls_with_its_vectors_across_a_pause(tmp_path, monkeypatch):
+    """A kept handler's embedding worker sent the next prompt's request on the connection its server had closed while
+    it sat idle, and the recall went without its vector search (review of rc12).  Asked after pauses longer than the
+    server's idle time, each prompt on a thread of its own as a server's are, one handler recalls with its vectors
+    every time, on a new connection after each pause."""
+    import threading
+    import time
+
+    from scope_recall.adapters.codex.handler import CodexHookHandler
+    from scope_recall.adapters.codex.local_endpoint import KeptRecaller, entry_files, file_stamp
+
+    client, entry_config, server, connections = _embedding_entry(tmp_path, monkeypatch)
+    kept = KeptRecaller(lambda: CodexHookHandler.from_home(str(client), "claude-code"),
+                        stamp=lambda: file_stamp(entry_config, *entry_files(client)))
+    outcomes, handlers = [], set()
+    try:
+        for index, pause in enumerate((0.0, 0.3, 1.8, 1.8)):
+            time.sleep(pause)
+            box = {}
+            prompt = {"hook_event_name": "UserPromptSubmit", "session_id": "TEST-kept-session",
+                      "prompt_id": f"TEST-pause-{index}", "prompt": "TEST 家里的猫叫什么名字", "cwd": "C:/TEST"}
+            worker = threading.Thread(target=lambda: box.update(answer=kept(prompt, (), (), 10.0)))
+            worker.start()
+            worker.join(30)
+            diagnostics = box["answer"][1]
+            outcomes.append((diagnostics["recall_vectors"], diagnostics["recall_vector_gap"]))
+            handlers.add(id(kept._handler))
+    finally:
+        kept.close()
+        server.shutdown()
+        server.server_close()
+    assert outcomes == [(True, None)] * 4, outcomes
+    assert len(handlers) == 1, "one handler throughout"
+    assert len(set(connections)) >= 3, "a new connection after each pause"
