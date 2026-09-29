@@ -2,6 +2,22 @@
 
 All notable changes to `scope-recall` will be documented in this file.
 
+## [3.4.2] - 2026-09-29
+
+3.4.2 keeps a long prompt's recall within its time. The word search of a prompt looked up every word it held: a 2,000-character prompt's 80 words held 273,000 index entries on the shared store and took 9 s, longer than the prompt's whole recall, which then went without its search by meaning as well (`deadline_exceeded_collect`). On 2026-09-29 Codex on another computer, whose prompts are often that long, lost its recall that way on 7 of about 16 prompts. Nothing else changes.
+
+### Recall
+
+- The word search takes the prompt's rarest words: all of them for a question of up to 16 words, and for a longer prompt as many more as 20,000 index entries allow. The rarest words are the ones that tell memories apart, and a word the question needs as an identifier is always searched. On a copy of the shared store a long prompt's word search took 0.7-1.5 s instead of 4-9 s. On two agents' question sets nothing changed: the questions the owner asked (27 of 30 and 18 of 25), facts, rephrased questions and questions with no answer were answered exactly as before.
+
+### Upgrading from 3.4.1
+
+1. Stop the hosts and the Scope Recall worker, and take a `backup`.
+2. Install the 3.4.2 package, then run `plan-install` and `apply-install` for each host.
+3. Start the hosts again and run `doctor`.
+
+The store's schema is unchanged (1110). Every change, with its details, is in [CHANGELOG.md](https://github.com/410979729/scope-recall-hermes/blob/v3.4.2/CHANGELOG.md).
+
 ## [3.4.1] - 2026-09-29
 
 3.4.1 makes automatic recall search by meaning on the prompts where it fell back to words alone. On 2026-09-29, 4 of 9 prompts from Claude Code on another computer were recalled by words alone, and so was the first prompt of a Claude Code session at home and a prompt after a pause; each recall said so in its gaps. Nothing else changes.
