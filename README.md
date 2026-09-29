@@ -2,13 +2,13 @@
 
 Scope Recall v3 is a bounded local memory core with SQLite as the authority and rebuildable vector companions. It provides host adapters for Hermes, Codex and Claude Code (the last two share one adapter of hooks and an MCP server), with the MCP tools when the optional `codex` extra is installed. The public package is `hermes-scope-recall`; the Python import is `scope_recall`; the host wrapper identity remains `scope-recall`.
 
-This checkout is `3.4.1rc1`, a candidate after the `3.4.0` release, in which Claude Code and Codex on another machine can join the shared store too ([docs/remote-entries.md](docs/remote-entries.md)). Hermes, Codex and Claude Code can keep one memory: each attaches to a shared
+This checkout is `3.4.1`, in which Claude Code and Codex on another machine can join the shared store too ([docs/remote-entries.md](docs/remote-entries.md)). Hermes, Codex and Claude Code can keep one memory: each attaches to a shared
 store as an entry, what the owner tells one of them another can recall, and each memory says
 which agent it came in through ([docs/shared-store.md](docs/shared-store.md)). Hermes agents
 could share a store from 3.2.0; Codex and Claude Code join in 3.3.0. An agent that is not
 attached keeps its own store. A tool's output is still kept and found, but no longer turned
-into facts. The notes are the `[3.4.0]` section of [CHANGELOG.md](CHANGELOG.md); upgrading
-from `3.3.x` or `3.2.x` is `pip install -U`, `apply-install` and a host restart, and the store's
+into facts. The notes are the `[3.4.1]` section of [CHANGELOG.md](CHANGELOG.md); upgrading
+from `3.4.0`, `3.3.x` or `3.2.x` is `pip install -U`, `apply-install` and a host restart, and the store's
 schema does not change. From `3.1.x` the store moves to schema 1110 the first time it is opened,
 after which a 3.1 process cannot open it.
 3.1 is a rebuild rather than a patch on 2.0: production
@@ -54,12 +54,12 @@ The package is `hermes-scope-recall` on PyPI. Install it into the same isolated 
 environment the host uses:
 
 ```text
-python -m pip install hermes-scope-recall==3.4.0
-python -m pip install "hermes-scope-recall[codex]==3.4.0"
+python -m pip install hermes-scope-recall==3.4.1
+python -m pip install "hermes-scope-recall[codex]==3.4.1"
 ```
 
 The same wheel and sdist are attached to the
-[GitHub Release](https://github.com/410979729/scope-recall-hermes/releases/tag/v3.4.0)
+[GitHub Release](https://github.com/410979729/scope-recall-hermes/releases/tag/v3.4.1)
 alongside `SHA256SUMS` and `RELEASE-PROVENANCE.json`, for an offline install
 (`python -m pip install "<path-to-wheel>"`). To build it yourself from this checkout instead:
 
