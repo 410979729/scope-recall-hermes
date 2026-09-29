@@ -11,6 +11,7 @@ import hashlib
 import json
 import sqlite3
 import time
+import unicodedata
 
 from ..contracts import (
     ArtifactVersion,
@@ -170,24 +171,24 @@ def taking_a_new_key(code: object) -> bool:
     return code == "VERSION_CONFLICT" or deferred_path(code) == "rekey"
 
 
-def without_whitespace(text: object) -> str:
-    """``text`` with no whitespace at all: what a delete compares (``holds``).  Runs folded to one space, a line break
-    inside a sentence, or a space left out, still kept the deleted words (review of rc10)."""
-    return "".join(str(text).split())
+def comparable_text(text: object) -> str:
+    """``text`` as a delete compares it (``holds``): its letters and digits alone, in one form and case.  Runs of
+    whitespace folded, a line break inside a sentence, a space left out, or a full stop more still kept the deleted
+    words (reviews of rc10)."""
+    return "".join(ch for ch in unicodedata.normalize("NFKC", str(text)).casefold() if ch.isalnum())
 
 
-#: Characters, whitespace aside, from which a deleted message's text is its own: a row that holds all of it is a copy
-#: of it, whatever else it says.  A shorter one ("好", "ok") is found inside unrelated messages, and deleting it
-#: cancelled every waiting row that held it (review of rc10); a row then holds it only by being it, give or take a
-#: tenth.
+#: Letters and digits from which a deleted message's text is its own: a row that holds all of it is a copy of it,
+#: whatever else it says.  A shorter one ("好", "ok") is found inside unrelated messages, and deleting it cancelled
+#: every waiting row that held it (review of rc10); a row then holds it only by being it, give or take a tenth.
 DISTINCT_TEXT = 24
 
 
 def holds(payload_json: object, digests: frozenset[str], groups: frozenset[str], texts: frozenset[str] = frozenset(),
           *, rekeyed: bool = False) -> bool:
     """Whether an inbox row's capture holds a deleted message: one of its stored segments (``content_sha256``), its
-    whole text (``texts``, compared ``without_whitespace``) where it is ``DISTINCT_TEXT`` long or the row is no more than
-    a tenth longer, or its source group.  A row that cannot be read is taken to (a delete then cancels it, as it
+    whole text (``texts``, compared as ``comparable_text``) where it is ``DISTINCT_TEXT`` long or the row is no more
+    than a tenth longer, or its source group.  A row that cannot be read is taken to (a delete then cancels it, as it
     cancels every row it cannot look into).  A message that quotes only part of a deleted one, or holds a short one
     among other words, is kept.
 
@@ -208,8 +209,9 @@ def holds(payload_json: object, digests: frozenset[str], groups: frozenset[str],
         texts = [text for text in texts if text]
         if texts:
             ordered = sorted(events, key=lambda event: (event.get("segment") or {}).get("index", 0))
-            whole = without_whitespace("".join(event["content"] for event in ordered))
-            return any(text in whole and (len(text) >= DISTINCT_TEXT or len(whole) - len(text) <= len(whole) // 10)
+            whole = comparable_text("".join(event["content"] for event in ordered))
+            # The lengths first: a search of every waiting row for every short deleted text took seconds.
+            return any((len(text) >= DISTINCT_TEXT or len(whole) - len(text) <= len(whole) // 10) and text in whole
                        for text in texts)
     except (ValueError, KeyError, TypeError, AttributeError):
         return True

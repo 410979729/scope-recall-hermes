@@ -587,17 +587,29 @@ def test_a_delete_cancels_a_collision_that_holds_the_deleted_message(worker_app)
 
 def test_a_delete_of_a_short_message_keeps_waiting_rows_that_merely_contain_it(worker_app):
     """Deleting "好" or "ok" cancelled every waiting row that held those characters among other words (review of
-    rc10).  A short deleted text cancels only a row that is it, give or take a tenth; a distinct one any row holding
-    it whole."""
+    rc10).  A short deleted text cancels only a row that is it, give or take a tenth and its punctuation; a distinct
+    one any row holding it whole."""
     core, ctx, clock = worker_app
     good = capture(core, ctx, "好", key="TEST-short-good")
     fine = capture(core, ctx, "ok", key="TEST-short-ok")
+    quit_ = capture(core, ctx, "我要辞职了", key="TEST-short-quit")
+    ten = capture(core, ctx, "甲乙丙丁戊己庚辛壬癸", key="TEST-short-ten")
+    distinct = capture(core, ctx, "一二三四五六七八九十一二三四五六七八九十一二三四", key="TEST-distinct")
     rows = (("TEST-short-good", "TEST 这个方案挺好的，就这么办。", "VERSION_CONFLICT"),
             ("TEST-short-ok", "TEST I will look at the book tomorrow.", "VERSION_CONFLICT"),
             ("TEST-short-else", "TEST 你好，请帮我看一下日志。",
              f"DEFERRED|{capture_inbox.__version__}|2026-09-06T13:00:00Z|1|replay|TEST"),
             ("TEST-short-good", "好", "VERSION_CONFLICT"),
-            ("TEST-short-ok", "ok\n", "VERSION_CONFLICT"))
+            ("TEST-short-ok", "OK\n", "VERSION_CONFLICT"),
+            ("TEST-short-quit", "我要辞职了。", "VERSION_CONFLICT"),
+            ("TEST-short-quit", "我要辞职了！", "VERSION_CONFLICT"),
+            ("TEST-short-quit", "[图片] 我要辞职了", "VERSION_CONFLICT"),
+            # A tenth: one more character in eleven is the same text, two in twelve are not.
+            ("TEST-short-ten", "甲乙丙丁戊己庚辛壬癸子", "VERSION_CONFLICT"),
+            ("TEST-short-ten", "甲乙丙丁戊己庚辛壬癸子丑", "VERSION_CONFLICT"),
+            # Twenty-four letters are distinct: held whole among other words, it goes.
+            ("TEST-distinct", "前面的话很多很多很多。一二三四五六七八九十一二三四五六七八九十一二三四后面的话也很多很多。",
+             "VERSION_CONFLICT"))
     for index, (key, content, code) in enumerate(rows):
         token, _prepared = capture_inbox.enqueue(core.storage, clock, replace(ctx, session_id=f"TEST-session-s{index}"),
                                                  source_event(source_event_key=key, content=content),
@@ -605,15 +617,40 @@ def test_a_delete_of_a_short_message_keeps_waiting_rows_that_merely_contain_it(w
         with sqlite3.connect(core.storage.path) as conn:
             conn.execute("UPDATE capture_inbox SET last_error_code=? WHERE token=?", (code, token))
             conn.commit()
-    authorize(core, ctx, good, fine)
-    core.forget(ctx, request(good, fine), remaining_seconds=5)
+    authorize(core, ctx, good, fine, quit_, ten, distinct)
+    core.forget(ctx, request(good, fine, quit_, ten, distinct), remaining_seconds=5)
     with sqlite3.connect(core.storage.path) as conn:
         kept = sorted(json.loads(payload)["events"][0]["content"] for (payload,) in
                       conn.execute("SELECT payload_json FROM capture_inbox"))
     assert kept == sorted(["TEST 这个方案挺好的，就这么办。", "TEST I will look at the book tomorrow.",
-                           "TEST 你好，请帮我看一下日志。"])
-    assert not capture_inbox.holds(json.dumps({"events": [{"content": "TEST"}]}), frozenset(), frozenset(),
+                           "TEST 你好，请帮我看一下日志。", "[图片] 我要辞职了", "甲乙丙丁戊己庚辛壬癸子丑"])
+    assert not capture_inbox.holds(json.dumps({"events": [{"content": ""}]}), frozenset(), frozenset(),
                                    frozenset({""}), rekeyed=True), "an empty text holds nothing"
+
+
+def test_a_delete_puts_each_deleted_text_together_once_and_only_when_it_needs_it(worker_app, monkeypatch):
+    """Each version of a deleted message was put together for every one of its segments, and for an empty inbox too:
+    a delete of four long messages took seconds under the writer lease (review of rc10)."""
+    core, ctx, clock = worker_app
+    calls = []
+    real = capture_inbox.comparable_text
+    monkeypatch.setattr(capture_inbox, "comparable_text", lambda text: calls.append(1) or real(text))
+    first = capture(core, ctx, "TEST 很长的消息。" * 9000, key="TEST-once-1")
+    authorize(core, ctx, first)
+    core.forget(ctx, request(first), remaining_seconds=5)
+    assert calls == [], "nothing waits: nothing is put together"
+    second = capture(core, ctx, "TEST 另一条很长的消息。" * 9000, key="TEST-once-2")
+    for index in range(2):
+        token, _prepared = capture_inbox.enqueue(core.storage, clock, replace(ctx, session_id=f"TEST-session-o{index}"),
+                                                 source_event(source_event_key="TEST-once-2", content=f"TEST 第{index}条。"),
+                                                 scope_id="TEST-scope", host_scope=None)
+        with sqlite3.connect(core.storage.path) as conn:
+            conn.execute("UPDATE capture_inbox SET last_error_code='VERSION_CONFLICT' WHERE token=?", (token,))
+            conn.commit()
+    authorize(core, ctx, second)
+    core.forget(ctx, request(second), remaining_seconds=5)
+    # The deleted message and the request that named it (deleted with it), once each, and each waiting row's own text.
+    assert len(calls) == 4
 
 
 def test_a_passing_failure_keeps_a_row_on_its_path(worker_app, monkeypatch):
@@ -663,15 +700,16 @@ def test_a_commit_left_for_the_next_pass_says_so_and_a_refused_one_does_not(work
             "INPUT_INVALID"
 
 
-def test_a_suppress_cancels_only_a_waiting_copy_under_another_key(worker_app):
-    """The partition's inbox was cancelled for a suppress as well as a delete, though a suppressed group already hides
-    what comes of it later (reviews of rc10).  A copy waiting under another key is not of that group: stored under a
-    new key it was not suppressed, so it goes."""
+def test_a_suppress_leaves_the_inbox_alone(worker_app):
+    """A suppress cancelled the partition's inbox as a delete does, and then every waiting row that held its words:
+    a quote with news in it, the message's next version, a row it could not read (reviews of rc10).  The contract
+    keeps them: what comes of the same message, or restates a suppressed claim, is suppressed as it is stored."""
     core, ctx, clock = worker_app
     source = capture(core, ctx, "TEST 别再主动提这件私事，说过很多次了。", key="TEST-suppressed")
     for index, (key, content, code) in enumerate((
             ("TEST-unrelated-waiting", "TEST 无关的等待中的一句。", None),
             ("TEST-suppressed", "TEST 别再主动提这件私事，说过很多次了。", "VERSION_CONFLICT"),
+            ("TEST-quoting", "TEST 别再主动提这件私事，说过很多次了。另外，明天的会改到下午三点。", None),
             ("TEST-suppressed", "TEST 同一条消息的下一版。", None))):
         token, _prepared = capture_inbox.enqueue(core.storage, clock, replace(ctx, session_id=f"TEST-session-p{index}"),
                                                  source_event(source_event_key=key, content=content),
@@ -682,9 +720,7 @@ def test_a_suppress_cancels_only_a_waiting_copy_under_another_key(worker_app):
     authorize(core, ctx, source, mode="suppress")
     core.forget(ctx, request(source, mode="suppress"), remaining_seconds=5)
     with sqlite3.connect(core.storage.path) as conn:
-        kept = sorted(json.loads(payload)["events"][0]["content"] for (payload,) in
-                      conn.execute("SELECT payload_json FROM capture_inbox"))
-    assert kept == sorted(["TEST 无关的等待中的一句。", "TEST 同一条消息的下一版。"])
+        assert conn.execute("SELECT count(*) FROM capture_inbox").fetchone()[0] == 4
 
 
 def test_retry_failures_returns_only_the_rows_its_replay_takes(tmp_path):
