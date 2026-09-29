@@ -1026,10 +1026,11 @@ def _server_own_vector_fault(gap: object) -> bool:
     """Whether a server's recall went without its vector search for a reason of its own, which the hook's own recall
     may not share: no vector search at all, its key (``credential_*``), or its LanceDB helper or another fault of its
     own process that is not an embedding call's (``core.vector_failure``).  An embedding call's failure is an
-    ``AuxiliaryModelError`` (what the provider answered, the network, the time it took, the budget, its HTTP worker,
-    which the server makes anew for each recall as the hook does), and the hook meets it as well: a second recall only
-    cost the prompt its time and a second metered call (reviews of rc11).  Nor is the search running out of time
-    here."""
+    ``AuxiliaryModelError`` (what the provider answered, the network, the time it took, a spent budget, its HTTP
+    worker, which the server makes anew for each recall as the hook does), and the hook meets it as well: a second
+    recall only cost the prompt its time and a second metered call (reviews of rc11).  The spend ledger's lock held by
+    another writer is not one (an ``OperationalError``), and costs one recall more.  Nor is the search running out of
+    time here."""
     if gap == "vector_unavailable":
         return True
     if type(gap) is not str or not gap.startswith("vector_error:"):

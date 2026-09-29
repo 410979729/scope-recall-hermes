@@ -1708,7 +1708,8 @@ def test_a_server_busy_for_less_than_a_hook_s_wait_is_answered(resident, monkeyp
 def test_a_server_names_itself_again_only_when_its_check_comes_back_in_time(store, monkeypatch):
     """Checked from inside the server, a hello slowed by its own busy threads passed, and a server hooks could not
     reach in time named itself again; held to a hook's 0.5 s, the check kept out a server hooks reached (reviews of
-    rc11).  A check that takes longer than a hook's wait but within its own allowance names it again."""
+    rc11).  A check that takes longer than a hook's wait but within its own allowance (0.75 s) names it again; one of
+    0.9 s does not."""
     import time
 
     from scope_recall.adapters.codex import local_endpoint
@@ -1719,13 +1720,13 @@ def test_a_server_names_itself_again_only_when_its_check_comes_back_in_time(stor
     real = local_endpoint._hello
 
     def slow(connection, token):
-        time.sleep(local_endpoint.SELF_CHECK_SECONDS + 0.2)
+        time.sleep(0.9)  # over the check's 0.75 s, under the 1 s it was once allowed
         return real(connection, token)
 
     connect = local_endpoint.http.client.HTTPConnection.connect
 
     def slow_connect(self):
-        time.sleep(local_endpoint.SELF_CHECK_SECONDS + 0.2)
+        time.sleep(0.9)  # over the check's 0.75 s, under the 1 s it was once allowed
         return connect(self)
 
     _root, _homes, client, _capture = store
