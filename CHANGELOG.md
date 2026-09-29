@@ -4,6 +4,15 @@ All notable changes to `scope-recall` will be documented in this file.
 
 ## [Unreleased]
 
+### Scope Recall 3.4.0rc13 - 2026-09-29
+
+- The version moves past the `v3.4.0rc12` tag.
+- A delete cancels only the captures waiting in the capture inbox that hold a deleted message, by the comparison that already kept a row put off or a key collision (3.4.0rc10); every other capture waiting in the same scope is stored. A capture waiting for the next pass was cancelled with the whole scope, whichever client had sent it, so a message that arrived while someone deleted another in the same conversation was lost.
+- A capture under the key of a deleted message leaves the inbox. It is refused for good, as before, but it stayed in the inbox with its code, and doctor reported `capture_ingress_blocked`, and the patrol its line, until someone removed it by hand. The hook, or the pass that replayed it, is told it was cancelled (`capture_gap:source_deleted`); a pass counts it among the rows it cancelled (`ingress_cancelled`), and a client on another machine does not send it again.
+- A copy of a suppressed or deleted message that took another message's key is stored suppressed. Stored under a new key, a group of its own, it had come back to automatic recall (3.4.0rc10). A message whose words match no suppressed one is stored as before.
+- A hook whose capture or recall meets SQLite's own "database is locked" fails that step alone. The error escaped the hook: the work computer's server answered 500 and the prompt got no recall at all, as fifteen of its hooks did within one second on 2026-09-28. The capture is now kept to send again, and the recall is answered as failed (`recall_exception`, `OperationalError`).
+- The work computer's server logs where a hook's time went: making its handler, the capture, attaching the handler's own runtime and closing it (`4063 ms (build 120 ms, capture 850 ms, attach 700 ms, close 40 ms)`); the rest is the recall. On 3.4.0rc12 its prompts took about 4.1-4.4 s end to end, against 1.7-2.8 s for the kept recall alone.
+
 ### Scope Recall 3.4.0rc12 - 2026-09-29
 
 - The version moves past the `v3.4.0rc11` tag.
