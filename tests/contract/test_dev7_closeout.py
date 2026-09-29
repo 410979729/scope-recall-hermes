@@ -643,25 +643,62 @@ def test_a_message_under_a_deleted_key_is_compared_whole_and_its_versions_refuse
     assert [receipt.durability for receipt in receipts] == ["persisted", "persisted"] and _inbox_rows(core) == 0
 
 
-def test_a_long_message_purged_before_rc13_is_still_found_by_its_parts_keys(worker_app):
-    """A purge before rc13 hashed a long message's group key once for each of its parts, so its rows are not found by
-    the key a purge now gives.  They are found by the keys its parts were split into, and a message of another length
-    under the deleted key is still stored under a key of its own rather than refused for want of rows (rc13)."""
+def test_a_message_purged_before_rc13_still_refuses_what_comes_under_its_key(worker_app):
+    """A purge before rc13 kept no digests of the deleted words, and hashed a long message's group key once for each of
+    its parts.  Nothing kept tells a near copy under such a key from another message, so whatever comes under it is
+    refused, as every release before rc13 refused it: a copy spaced otherwise is not stored as another message (review
+    of rc13)."""
     from scope_recall.core.delete_storage import purged_group_key
 
     core, ctx, clock = worker_app
     long_text = "".join(f"TEST 第{i}句旧时删掉的长话。" for i in range(6000))
-    stored = capture(core, ctx, long_text, key="TEST-old-long")
-    authorize(core, ctx, stored)
-    operation = core.forget(ctx, request(stored), remaining_seconds=5)
+    stored = [capture(core, ctx, "TEST 旧时删掉的一句话。", key="TEST-old-short"),
+              capture(core, ctx, long_text, key="TEST-old-long")]
+    authorize(core, ctx, *stored)
+    operation = core.forget(ctx, request(*stored), remaining_seconds=5)
     core.purge_sqlite(ctx, operation["operation_id"], remaining_seconds=10)
     with sqlite3.connect(core.storage.path) as conn:
+        conn.execute("""UPDATE source_events SET extra_json='{"evidence_refs":[]}'
+                        WHERE source_event_key='removed-'||event_id""")
         conn.execute("UPDATE source_events SET source_group_key=? WHERE source_group_key=?",
                      (purged_group_key(purged_group_key("TEST-old-long")), purged_group_key("TEST-old-long")))
         conn.commit()
-    receipt = capture_inbox.durable_record_event(core.storage, clock, ctx, source_event(
-        source_event_key="TEST-old-long", content="TEST 旧键上的一句短话。"), scope_id="TEST-scope", host_scope=None)
-    assert receipt.disposition == "conflict"
+    for key, content in (("TEST-old-short", "TEST 旧时删掉的 一句话。"), ("TEST-old-short", "TEST 旧键上的另一句。"),
+                         ("TEST-old-long", "TEST 旧键上的一句短话。")):
+        assert capture_inbox.durable_record_event(core.storage, clock, ctx, source_event(
+            source_event_key=key, content=content), scope_id="TEST-scope", host_scope=None).disposition == "cancelled"
+
+
+def test_a_purge_run_again_keeps_the_forms_the_first_one_kept_and_reads_a_version_once(worker_app, monkeypatch):
+    """A restore purges its file again: written over from the empty text, the digests a first purge kept were lost,
+    and a copy spaced otherwise came back.  And a long message's words were joined and read again for each part, so
+    that its purge grew with the square of its parts under the writer lease (review of rc13)."""
+    from scope_recall.core import capture_inbox as inbox_module
+
+    core, ctx, clock = worker_app
+    short, long_text = "TEST 要删的 一句话。", "".join(f"TEST 第{i}句要删的长话。" for i in range(6000))
+    stored = [capture(core, ctx, short, key="TEST-short"), capture(core, ctx, long_text, key="TEST-long")]
+    authorize(core, ctx, *stored)
+    operation = core.forget(ctx, request(*stored), remaining_seconds=5)
+    counted = []
+    original = inbox_module.deleted_forms
+    monkeypatch.setattr(inbox_module, "deleted_forms", lambda text: counted.append(len(text)) or original(text))
+    core.purge_sqlite(ctx, operation["operation_id"], remaining_seconds=10)
+    assert len(counted) == 3, "the short message, the long one and the command: once each"
+    with sqlite3.connect(core.storage.path) as conn:
+        kept = sorted(conn.execute("SELECT extra_json FROM source_events WHERE source_event_key='removed-'||event_id"))
+        layers = json.loads(conn.execute("SELECT layers_json FROM deletion_operations WHERE operation_id=?",
+                                         (operation["operation_id"],)).fetchone()[0])
+        conn.execute("UPDATE deletion_operations SET layers_json=? WHERE operation_id=?",
+                     (json.dumps({**layers, "sqlite_active": "pending"}), operation["operation_id"]))
+        conn.commit()
+    core.purge_sqlite(ctx, operation["operation_id"], remaining_seconds=10)
+    with sqlite3.connect(core.storage.path) as conn:
+        assert sorted(conn.execute("SELECT extra_json FROM source_events WHERE source_event_key='removed-'||event_id")
+                      ) == kept
+    assert capture_inbox.durable_record_event(core.storage, clock, ctx, source_event(
+        source_event_key="TEST-short", content="TEST 要删的一句话 。"), scope_id="TEST-scope",
+        host_scope=None).disposition == "cancelled"
 
 
 def test_retry_failures_returns_a_capture_an_earlier_release_refused_to_the_replay(worker_app):

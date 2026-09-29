@@ -36,7 +36,8 @@ message are refused and leave the inbox; another message under that key is store
 under a key of its own. A copy is decided on the whole message; after the purge,
 only digests of the deleted words (as stored, without whitespace, and their letters
 and digits) are left to decide it by, so a copy with other words added is then stored
-as another message. A copy of a suppressed or deleted message stored under a new key,
+as another message. A delete purged before 3.4.0rc13 kept no such digests, and
+whatever comes under its key is refused. A copy of a suppressed or deleted message stored under a new key,
 after its key collided with another message's, is stored suppressed, its whole
 source group with it.
 Future Episode, reference and artifact repositories must extend the dependency

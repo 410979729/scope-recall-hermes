@@ -81,11 +81,6 @@ class SourceWrite:
     revision: int
 
 
-#: How many parts of a deleted long message a later capture under its key looks for by their keys: the capture
-#: inbox takes at most 2 MB a message, 32 parts of 65,536 characters.  Parts past these are found by the group key.
-_FOUND_PARTS = 64
-
-
 class Transaction:
     """Scoped repository operations; no public connection or SQL execution surface."""
 
@@ -473,11 +468,10 @@ class Transaction:
                              (group_digest(self.context.binding, *partition, group_key),)).fetchone()
         if not hidden and not (block is not None and block["read_blocked"]):
             return
-        # The deleted message's rows: under the refs this message's parts would take, under the refs of the parts its
-        # key would have been split into (a purge before rc13 hashed a long message's group key once for each part),
-        # and under its group key, before the purge or as the purge left it.
-        refs = sorted({*hidden, self._source_ref(group_key),
-                       *(self._source_ref(segment_key(group_key, index)) for index in range(_FOUND_PARTS))})
+        # The deleted message's rows: under the refs this message's parts would take, under its key's own, and under its
+        # group key, before the purge or as the purge left it.  A long message purged before rc13 had its group key
+        # hashed once for each part and is found by none of these: with nothing to compare, it refuses, as it did.
+        refs = sorted({*hidden, self._source_ref(group_key)})
         rows = conn.execute(
             f"""SELECT source_revision,segment_index,content,content_sha256,extra_json FROM source_events
                 WHERE read_blocked=1 AND (event_id IN ({','.join('?' for _ in refs)})
@@ -491,12 +485,21 @@ class Transaction:
             raise refuse
         versions: dict[int, list] = {}
         for row in rows:
-            versions.setdefault(row["source_revision"], []).append(row)
-        texts = frozenset(deleted_text("".join(row["content"] for row in sorted(parts, key=lambda row: row["segment_index"])))
-                          for parts in versions.values() if all(row["content"] for row in parts))
-        kept = frozenset(form for row in rows for form in (json.loads(row["extra_json"] or "{}").get("deleted_forms") or ()))
+            versions.setdefault(row["source_revision"], []).append((row, json.loads(row["extra_json"] or "{}")))
+        texts, kept = set(), set()
+        for parts in versions.values():
+            if all(row["content"] for row, _extra in parts):
+                texts.add(deleted_text("".join(row["content"] for row, _extra in
+                                               sorted(parts, key=lambda part: part[0]["segment_index"]))))
+            elif not any("deleted_forms" in extra for _row, extra in parts):
+                # Purged before rc13, which kept no forms of the words: nothing tells a near copy there from another
+                # message, so a message under that key is refused, as every release before rc13 refused it (review of
+                # rc13).
+                raise refuse
+            kept.update(form for _row, extra in parts for form in extra.get("deleted_forms") or ())
         ordered = sorted(events, key=lambda event: (event.get("segment") or {}).get("index", 0))
-        if (holds_events(events, frozenset(row["content_sha256"] for row in rows), frozenset(), texts, rekeyed=True)
+        if (holds_events(events, frozenset(row["content_sha256"] for row in rows), frozenset(), frozenset(texts),
+                         rekeyed=True)
                 or kept & deleted_forms("".join(event["content"] for event in ordered))):
             raise refuse
         raise ContractError("VERSION_CONFLICT", "source_deleted_key")

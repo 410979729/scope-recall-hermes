@@ -341,14 +341,18 @@ class Deletions:
         # deleted_forms``, compared by ``Transaction.refuse_under_a_deleted_key``).  Read before any group key below
         # is replaced (review of rc13).
         from .capture_inbox import deleted_forms
-        forms,groups = {},set()
+        forms,versions,groups = {},{},set()
         for kind,ref in members:
             if kind != "event":
                 continue
             for group,revision in conn.execute("SELECT source_group_key,source_revision FROM source_events WHERE event_id=?",(ref,)).fetchall():
-                text = "".join(content for (content,) in conn.execute(
-                    "SELECT content FROM source_events WHERE source_group_key=? AND source_revision=? ORDER BY segment_index",(group,revision)))
-                forms[ref,revision] = sorted(deleted_forms(text)) if text else []
+                # Once per version, not once per part: joined and read again for each part of a long message, a purge
+                # took seconds under the writer lease (review of rc13).
+                if (group,revision) not in versions:
+                    text = "".join(content for (content,) in conn.execute(
+                        "SELECT content FROM source_events WHERE source_group_key=? AND source_revision=? ORDER BY segment_index",(group,revision)))
+                    versions[group,revision] = sorted(deleted_forms(text)) if text else []
+                forms[ref,revision] = versions[group,revision]
                 groups.add(group)
         # Each group key is replaced once, by the key ``purged_group_key`` gives: replaced for each of its parts, a
         # long message's key had been hashed once a part, and a later capture under it could not find its rows
@@ -359,9 +363,13 @@ class Deletions:
         for kind,ref in members:
             if kind == "event":
                 lexical_index.forget(conn, ref)
+                # A row already purged keeps what it has: a restore purges its file again, and written over from its
+                # empty text, the digests a first purge kept were lost; a row purged before rc13 keeps having none
+                # (review of rc13).
                 for (revision,) in conn.execute("SELECT DISTINCT source_revision FROM source_events WHERE event_id=?",(ref,)).fetchall():
                     conn.execute("""UPDATE source_events SET content='',source_event_key='removed-'||event_id,
-                        extra_json=?,source_original_origin=NULL,dataset_id=NULL,
+                        extra_json=CASE WHEN source_event_key='removed-'||event_id THEN extra_json ELSE ? END,
+                        source_original_origin=NULL,dataset_id=NULL,
                         capture_state='gap',capture_gaps_json='["deleted"]' WHERE event_id=? AND source_revision=?""",
                         (canonical({"evidence_refs":[],"deleted_forms":forms.get((ref,revision),[])}),ref,revision))
             elif kind == "claim":
