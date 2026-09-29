@@ -4,11 +4,11 @@ All notable changes to `scope-recall` will be documented in this file.
 
 ## [3.4.2] - 2026-09-29
 
-3.4.2 keeps a long prompt's recall within its time. The word search of a prompt looked up every word it held: a 2,000-character prompt's 80 words held 273,000 index entries on the shared store and took 9 s, longer than the prompt's whole recall, which then went without its search by meaning as well (`deadline_exceeded_collect`). On 2026-09-29 Codex on another computer, whose prompts are often that long, lost its recall that way on 7 of about 16 prompts. Nothing else changes.
+3.4.2 keeps a long prompt's recall within its time. The word search of a prompt looked up every word it held: a 2,000-character prompt's 80 words held 273,000 index entries on the shared store and took 9 s, longer than the prompt's whole recall, which then went without its search by meaning as well (`deadline_exceeded_collect`). On 2026-09-29 Codex on another computer, whose prompts are often that long, was recalled for by words alone that way on 7 of about 16 prompts. Nothing else changes for a question of up to 16 search terms.
 
 ### Recall
 
-- The word search takes the prompt's rarest words: all of them for a question of up to 16 words, and for a longer prompt as many more as 20,000 index entries allow. The rarest words are the ones that tell memories apart, and a word the question needs as an identifier is always searched. On a copy of the shared store a long prompt's word search took 0.7-1.5 s instead of 4-9 s. On two agents' question sets nothing changed: the questions the owner asked (27 of 30 and 18 of 25), facts, rephrased questions and questions with no answer were answered exactly as before.
+- The word search looks for the prompt's rarest search terms: all of them for a question of up to 16, and for a longer prompt as many more as 20,000 index entries allow. The rarest terms are the ones that tell memories apart, and a term the question needs as an identifier is always searched. A memory it finds is still weighed against every term of the prompt, the ones left out of the search included. On a copy of the shared store a long prompt's word search took 0.7-1.5 s instead of 4-9 s. On two agents' question sets nothing changed: the questions the owner asked (27 of 30 and 18 of 25), facts, rephrased questions and questions with no answer were answered exactly as before.
 
 ### Upgrading from 3.4.1
 

@@ -161,6 +161,34 @@ def test_P08_a_long_prompt_searches_its_rarest_terms_within_a_posting_budget(mon
     # The rarest few are searched even when they alone pass the budget.
     monkeypatch.setattr(retrieval_storage, "_LEXICAL_POSTING_BUDGET", 20)
     assert retrieval_storage._within_posting_budget(terms, frequencies, ()) == ("a", "b", "f", "unindexed")
+    # A term one source holds (the prompt's own, stored before its recall) stays but takes no rarest place.
+    assert retrieval_storage._within_posting_budget(("only", *terms), {**frequencies, "only": 1}, ()) == (
+        "only", "a", "b", "f", "unindexed")
+
+
+def test_P08_a_long_prompt_s_related_memory_is_admitted_with_the_terms_the_budget_left_out(app, monkeypatch):
+    """Searched with its rarest terms alone, a long prompt counted a found memory's matches among those alone, and
+    admission, which weighs matches against the whole prompt, turned away a memory sharing its topic words (review
+    of 3.4.2: 3 of the 12 matches required).  What a found row holds of the terms left out still counts."""
+    from scope_recall.core import retrieval_storage
+
+    core, ctx = app
+    letters = "abcdefghijklmnopqrstuvwxyz"
+    rare = [f"rare{letter}q" for letter in letters]
+    topical = [f"topic{letter}z" for letter in letters[:14]]
+    query = " ".join(rare + topical)
+    prompt = capture(core, ctx, query, key="TEST-p08/budget-admission/prompt")
+    target = capture(core, ctx, " ".join(topical) + " answerbody explanation", key="TEST-p08/budget-admission/target")
+    for index in range(12):
+        capture(core, ctx, " ".join(topical[(index + step) % 14] for step in range(7)) + f" filler{letters[index]}text",
+                key=f"TEST-p08/budget-admission/filler/{index}")
+    for index in range(4):
+        capture(core, ctx, " ".join(rare[index * 3:(index + 1) * 3]) + f" noise{letters[index]}body",
+                key=f"TEST-p08/budget-admission/noise/{index}")
+    monkeypatch.setattr(retrieval_storage, "_LEXICAL_POSTING_BUDGET", 60)
+    result = core.recall(ctx, recall_request(query=query, mode="current"),
+                         current_source_refs=(f"{prompt.ref}@{prompt.revision}",), deadline_seconds=10)
+    assert target.ref in [item.ref for item in result.items], result.gaps
 
 
 def test_P08_the_lexical_channel_keeps_its_terms_within_the_posting_budget(app, monkeypatch):
@@ -168,6 +196,7 @@ def test_P08_the_lexical_channel_keeps_its_terms_within_the_posting_budget(app, 
 
     core, ctx = app
     capture(core, ctx, "TEST quarkonium 出现一次。", key="TEST-p08/budget/rare")
+    capture(core, ctx, "TEST quarkonium 又出现一次。", key="TEST-p08/budget/rare-again")
     for index in range(5):
         capture(core, ctx, f"TEST gluonfield 第{index}条。", key=f"TEST-p08/budget/common/{index}")
     monkeypatch.setattr(retrieval_storage, "_LEXICAL_MIN_TERMS", 1)
