@@ -589,8 +589,8 @@ def test_a_delete_of_a_short_message_keeps_waiting_rows_that_merely_contain_it(w
     """Deleting "好" or "ok" cancelled every waiting row that held those characters among other words, and comparing
     letters and digits alone made "C++" cancel "C#" and a 22-character sentence with its punctuation too short to be
     its own (reviews of rc10).  A distinct text (24 characters, whitespace aside) cancels any row holding it whole; a
-    shorter one a row that is it give or take a tenth, whitespace aside, or with four or more letters and digits the
-    same ones give or take a tenth, punctuation and case aside."""
+    shorter one a row that is it with at most a tenth more, whitespace aside, or with four or more letters and digits
+    the same ones with at most a tenth more, punctuation and case aside."""
     core, ctx, clock = worker_app
     deleted = {text: capture(core, ctx, text, key=f"TEST-deleted-{index}") for index, text in enumerate((
         "好", "ok", "我要辞职了", "甲乙丙丁戊己庚辛壬癸", "一二三四五六七八九十一二三四五六七八九十一二三四",

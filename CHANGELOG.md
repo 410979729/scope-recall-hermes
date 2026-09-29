@@ -16,6 +16,7 @@ All notable changes to `scope-recall` will be documented in this file.
 - A prompt over 65,536 characters is stored once. It is stored in segments under keys of their own, so the Stop hook's read of the session record did not find it by its prompt id and stored it a second time; one still waiting in the capture inbox was missed the same way. A named message that was deleted also counts as said: once the delete was purged its rows no longer carried the key, and a read of the session record stored the words again under a key of the record's.
 - A provider that answers that it is overloaded (HTTP 529, as MiniMax and Anthropic do) is refused for capacity, as 503 is: the item waits and is tried again, and the attempt is refunded. One such answer failed a candidate evaluation for good on 2026-09-28.
 - A Hermes gateway starts its vector helper when it first binds, on Windows. The first search opened the helper, and its LanceDB import (about 2 s) could outrun that recall's budget: a probe run as a gateway's first turn after a start came back without its vector search (`helper_open_deadline`).
+- A worker pass asks its drain for no more than its own budget. Windows' clock ticks every 15.6 ms before Python 3.13, and a pass that reached its drain within one tick asked for the time left computed as `deadline - now`, a hair over the budget for some clock values, which the drain refused: the pass failed as `worker_error:ValueError`. On a machine booted minutes before, about one such pass in ten; one CI run met it.
 
 ### Scope Recall 3.4.0rc9 - 2026-09-28
 

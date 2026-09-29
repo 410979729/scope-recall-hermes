@@ -341,9 +341,12 @@ def _drain_once(config: RuntimeInstanceConfig, instance: Any, deadline: float) -
     # the pass, and this one-hour lookback would throttle healthy models for an
     # hour after a provider switch.
     refusals = provider_refusals(getattr(instance.auxiliary, "ledger_path", None))
+    # No more than the pass's own budget: with no tick of the clock since the
+    # deadline was set (every 15.6 ms on Windows before Python 3.13), ``now +
+    # budget - now`` can round to a hair over it, which the drain refuses.
     receipt = instance.drain(max_items=reserved or config.max_items,
                              purge_only=reserved == 0,
-                             remaining_seconds=max(.001, deadline - time.monotonic()))
+                             remaining_seconds=min(config.drain_seconds, max(.001, deadline - time.monotonic())))
     # Purge never spends the optional enrichment budget.
     used = sum(item.work_type != "purge" for item in receipt.items)
     budget_state["used"] -= max(0, reserved - used)

@@ -661,6 +661,36 @@ def test_a_deadline_hit_inside_an_owned_drain_is_the_owner_timeout(tmp_path, mon
     assert json.loads(unowned.getvalue())["capability_gaps"] == ["worker_error:ContractError"]
 
 
+def test_a_pass_its_clock_has_not_ticked_through_asks_for_no_more_than_its_budget(tmp_path, monkeypatch):
+    """Windows' monotonic clock ticks every 15.6 ms before Python 3.13.  A warm
+    pass that reached its drain within one tick asked for ``now + budget - now``
+    seconds, a hair over its budget for a clock at 100.002 s, and the drain
+    refused it: ``worker_error:ValueError``, on a CI machine booted minutes
+    before about one such pass in ten."""
+    from io import StringIO
+    from types import SimpleNamespace
+    import scope_recall.core.worker as core_worker
+    from scope_recall.runtime import worker_entry
+
+    binding = _binding(tmp_path / "data")
+    MemoryCore(CoreConfig(binding)).initialize()
+    config = _write_config(tmp_path / "worker.json", _config_payload(binding))
+    assert (100.002 + 120.0) - 100.002 > 120.0, "the clock value this test stands on"
+    asked = []
+
+    def drain(*args, remaining_seconds, **kwargs):
+        asked.append(remaining_seconds)
+        raise ContractError("DEADLINE_EXCEEDED")
+
+    monkeypatch.setattr(core_worker, "drain_worker", drain)
+    monkeypatch.setattr(worker_entry, "time", SimpleNamespace(monotonic=lambda: 100.002, time=time.time,
+                                                              sleep=time.sleep))
+    output = StringIO()
+    assert worker_entry.run_worker(config, output=output) == 1
+    assert json.loads(output.getvalue())["capability_gaps"] == ["worker_error:ContractError"], "the drain ran"
+    assert len(asked) == 1
+
+
 def test_worker_session_b_can_apply_evidence_backed_correction(tmp_path):
     binding = _binding(tmp_path / "data")
     core_a = MemoryCore(CoreConfig(binding))
