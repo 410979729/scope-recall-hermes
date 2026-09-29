@@ -154,9 +154,9 @@ left. If the server has not answered when 1.5 s are left, the hook recalls as we
 helper it started when it started, and uses the answer that ran its vector search (the server's when
 both or neither did); a hook whose own recall went without it waits for the server until its own time
 is up. A server answer without its vector search is used as it is, unless what failed was the
-server's own (its key, its LanceDB helper or anything else in its process, its connection to the
-embedding provider, or no vector search at all while the hook has one) rather than the provider's
-answer or its time out: the hook then recalls as well and uses its own if that ran its vector search.
+server's own (its key, its LanceDB helper or anything else in its own process, or no vector search at
+all while the hook has one): the hook then recalls as well and uses its own if that ran its vector
+search. What the provider answered, the network or the time it took, the hook would meet as well.
 With no server running (the client closed, or its MCP server disabled), or one that says it is busy,
 the hook recalls itself at once, as before; an answer that comes after the hook is done is dropped,
 and one that failed, or came back empty because its read did not finish (the store unreadable, or its
@@ -166,7 +166,7 @@ hook that asked says how it went on stderr (`CODEX_RECALL_RESIDENT:answered`, `s
 writes no memory; its query embedding's cost is recorded in the spend ledger like any other, and so is
 the hook's when both recalled. A server with a recall past the time its hook gave it tells every hook
 that it is busy until that recall ends, and one that does not prove itself within 0.5 s loses its name
-until its next check, every 2 s, finds it answering. A recall that fails in the server is answered as
+until its own check, every 2 s, finds it answering in time. A recall that fails in the server is answered as
 failed, with the last frames of its traceback on the server's stderr (the client's MCP log). It reads its key again at the next prompt
 after its env file or the runtime config changed, or when it could not read them before. A server
 started before an upgrade is not asked until its client restarts. Each open client keeps one LanceDB

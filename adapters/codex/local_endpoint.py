@@ -19,8 +19,8 @@ anything the server proves it holds the token; the hook proves it too, and the s
 never crosses the socket, so a process that took over a stopped server's port learns nothing and cannot answer for
 it.  A hook says how its server answered on stderr (``CODEX_RECALL_RESIDENT:<outcome>``).  A server with a recall
 past the time its hook gave it answers every hook that it is busy until that recall ends.  One that does not prove
-itself in time (a program on its port, or a process that no longer runs its threads) loses its name, and names itself
-again only once it answers and none of its recalls is stuck.
+itself in time (a program on its port, a process that no longer runs its threads, or one too busy) loses its name,
+and names itself again once it answers its own check in time and none of its recalls is stuck.
 """
 from __future__ import annotations
 
@@ -51,6 +51,10 @@ CONNECT_SECONDS = 0.3
 #: A server serving several recalls at once proves itself in 0.15-0.3 s (each hand-over of Python's lock waits for a
 #: timer tick on Windows): at 0.3 s such a server lost its name (review of rc11).
 PROOF_SECONDS = 0.5
+#: What a server's check of itself may take to name itself again, by the clock.  Made from inside the busy process, the
+#: check waits for its own share of Python's lock besides the answer, and reads about twice what a hook sees: held to
+#: ``PROOF_SECONDS`` it kept out, every other check, a server hooks reached in time (review of rc11).
+SELF_CHECK_SECONDS = 2 * PROOF_SECONDS
 #: Servers a hook tries, newest first, and how long it may spend finding one.
 MAX_TRIED = 2
 FIND_SECONDS = 1.0
@@ -234,9 +238,9 @@ class Recaller:
     request); ``unproven`` (no proof in time, a
     program on the port, or a broken answer: the name is removed); ``none`` (no server of this entry, host and version
     runs).  The hook says what it did with an answer (``handler._resident_answer``): ``failed:<reason>`` when the
-    server's recall ran out of time, failed or found the store unreadable, ``without_vectors:<gap>`` when the hook's
-    own recall had its vector search and the server's did not, ``slow`` when the hook's own, with it, was done first,
-    and ``late`` when no answer came before the hook's own time was up."""
+    server's recall failed, or came back empty because its read did not finish (``recall_incomplete``),
+    ``without_vectors:<gap>`` when the hook's own recall had its vector search and the server's did not, ``slow`` when
+    the hook's own, with it, was done first, and ``late`` when no answer came before the hook's own time was up."""
 
     def __init__(self, home: Path | str, host: str) -> None:
         self.home = Path(home)
@@ -447,7 +451,7 @@ class HookEndpoint:
                 answers = False
             finally:
                 connection.close()
-            if answers and time.monotonic() - started <= PROOF_SECONDS and not self._stopped.is_set():
+            if answers and time.monotonic() - started <= SELF_CHECK_SECONDS and not self._stopped.is_set():
                 try:
                     self._advertise()
                 except OSError:

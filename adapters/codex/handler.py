@@ -64,14 +64,6 @@ _LOCAL_RECALL_RESERVE_S = 1.5
 _RESIDENT_MIN_S = 1.0
 #: What a server's recall may report of how it ended, besides its vector gap and its error.
 _RESIDENT_REASONS = frozenset({"deadline_exceeded", "recall_exception", "recall_incomplete"})
-#: What a provider answered, or how long it took, when a server's vector search failed: the hook's own would meet the
-#: same, and a second recall only cost the prompt its time (review of rc11).  Any other fault is the server's own
-#: (``_server_own_vector_fault``).
-_PROVIDER_VECTOR_FAULTS = frozenset({
-    "http_status", "timeout", "provider_hold", "model_refused", "request_rejected", "request_limit", "request_invalid",
-    "response_limit", "response_status_failed", "budget_exhausted", "budget_unavailable", "meter_breach",
-    "invalid_json", "empty_output", "missing_usage", "input_invalid", "sensitive_request", "endpoint_invalid",
-})
 #: Capture refusals a second attempt meets again.
 _SETTLED_CAPTURE_CODES = frozenset({"SECRET_DETECTED", "INPUT_INVALID", "VERSION_CONFLICT"})
 #: How a capture says it refused a message as holding a credential: as a code, or as the rejection it returns.
@@ -855,6 +847,9 @@ class CodexHookHandler:
             self.diagnostics.recall_vector_gap = _error_detail(without)
         incomplete = recall_incomplete(packet)
         if incomplete is not None:
+            # Its vector search may have run, but nothing of it reached the answer: ranked as without it, a hook's own
+            # empty answer beat the entry's server's finished one (review of rc11).
+            self.diagnostics.recall_vectors = False
             self.diagnostics.recall_error_detail = _error_detail(incomplete)
             self._diag("recall_incomplete", gaps=gaps)
         if self._remaining(deadline) <= 0:
@@ -1026,9 +1021,11 @@ def recall_incomplete(packet) -> str | None:
 
 def _server_own_vector_fault(gap: object) -> bool:
     """Whether a server's recall went without its vector search for a reason of its own, which the hook's own recall
-    may not share: no vector search at all, its LanceDB helper or anything else in its process, its key, or its
-    connection to the provider (``core.vector_failure`` and ``AuxiliaryModelError`` name them).  What the provider
-    answered, or its time out, is not (``_PROVIDER_VECTOR_FAULTS``); nor is the search running out of time here."""
+    may not share: no vector search at all, its key (``credential_*``), or its LanceDB helper or anything else raised
+    in its own process (``core.vector_failure``).  Any other ``AuxiliaryModelError`` (what the provider answered, the
+    network, the time it took, the budget) the hook meets as well: the server makes a new HTTP worker for each recall,
+    as the hook does, and a second recall only cost the prompt its time and a second metered call (reviews of rc11).
+    Nor is the search running out of time here."""
     if gap == "vector_unavailable":
         return True
     if type(gap) is not str or not gap.startswith("vector_error:"):
@@ -1038,7 +1035,7 @@ def _server_own_vector_fault(gap: object) -> bool:
         return False
     if parts[1] != "AuxiliaryModelError":
         return True
-    return len(parts) >= 3 and parts[2] not in _PROVIDER_VECTOR_FAULTS
+    return len(parts) >= 3 and parts[2].startswith("credential_")
 
 
 def recall_without_vectors(gaps) -> str | None:

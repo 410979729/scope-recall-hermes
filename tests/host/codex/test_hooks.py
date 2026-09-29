@@ -323,6 +323,27 @@ def test_a_recall_that_found_the_store_unreadable_says_so(handler, installed):
         "recall_incomplete", "sqlite_unavailable:DatabaseError")
 
 
+def test_a_recall_whose_read_did_not_finish_ranks_as_without_its_vector_search(handler, installed):
+    """A recall whose time ran out at its release, with its vector search run, came back empty and still ranked as one
+    with vectors: a hook's own such answer beat the entry's server's finished one, and a server's was final (reviews of
+    rc11)."""
+    _hook, project_root, config = handler
+    _, core, clock, _ = installed
+
+    class Released:
+        def __getattr__(self, name):
+            return getattr(core, name)
+
+        def recall_packet(self, context, request, *, current_source_refs=(), deadline_seconds=2.0):
+            packet = core.recall_packet(context, request, current_source_refs=current_source_refs,
+                                        deadline_seconds=deadline_seconds)
+            return {**packet, "status": "unavailable", "items": [], "gaps": ["deadline_exceeded_release_fence"]}
+
+    guarded = CodexHookHandler(config, core=Released(), clock=clock)
+    guarded.handle_payload(_payload(project_root, "UserPromptSubmit", prompt="TEST 读到一半的库。"))
+    assert (guarded.diagnostics.last_reason, guarded.diagnostics.recall_vectors) == ("recall_incomplete", False)
+
+
 def test_missing_public_fields_do_not_capture(handler, installed):
     hook, project_root, config = handler
     payload = _payload(project_root, "UserPromptSubmit")

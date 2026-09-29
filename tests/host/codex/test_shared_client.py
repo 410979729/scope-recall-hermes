@@ -1649,17 +1649,22 @@ def test_a_session_record_line_or_reply_nested_past_the_parser_s_limit_is_passed
 
 
 def test_which_vector_faults_are_the_server_s_own():
-    """The list of the server's own faults missed its connection to the provider (``network_error``, what a dead
-    embedding worker raises) and anything its process raised unnamed (review of rc11)."""
+    """A server's own fault makes the hook recall a second time; one the hook meets as well only cost the prompt its
+    time and a second metered call.  The lists missed faults both ways (reviews of rc11)."""
     from scope_recall.adapters.codex.handler import _server_own_vector_fault
 
     for gap in ("vector_unavailable", "vector_error:AuxiliaryModelError:credential_missing",
-                "vector_error:AuxiliaryModelError:network_error", "vector_error:AuxiliaryModelError:transport_worker",
+                "vector_error:AuxiliaryModelError:credential_shape_invalid",
                 "vector_error:RuntimeError:helper_lock_timeout", "vector_error:RuntimeError:worker_not_running",
                 "vector_error:RuntimeError:table_not_open", "vector_error:RuntimeError", "vector_error:MemoryError"):
         assert _server_own_vector_fault(gap), gap
-    for gap in ("vector_error:AuxiliaryModelError:http_status:429", "vector_error:AuxiliaryModelError:timeout",
-                "vector_error:AuxiliaryModelError:provider_hold", "vector_error:AuxiliaryModelError:budget_exhausted",
+    shared = ("http_status:429", "timeout", "provider_hold", "model_refused", "request_rejected", "request_limit",
+              "request_invalid", "response_limit", "response_status_failed", "budget_exhausted", "budget_unavailable",
+              "meter_breach", "invalid_json", "empty_output", "missing_usage", "input_invalid", "sensitive_request",
+              "endpoint_invalid", "network_error", "transport_unavailable", "transport_worker",
+              "transport_worker_protocol", "unsupported_response_shape", "unicode_error", "vector_dimension_mismatch",
+              "vector_nonfinite", "vector_zero", "http_redirect", "http_protocol")
+    for gap in (*(f"vector_error:AuxiliaryModelError:{kind}" for kind in shared), "vector_error:AuxiliaryModelError",
                 "deadline_exceeded_vector", "vector_error:", None, ""):
         assert not _server_own_vector_fault(gap), gap
 
@@ -1713,16 +1718,25 @@ def test_a_server_names_itself_again_only_when_it_answers_within_a_hook_s_wait(s
     real = local_endpoint._hello
 
     def slow(connection, token):
-        time.sleep(local_endpoint.PROOF_SECONDS + 0.2)
+        time.sleep(local_endpoint.SELF_CHECK_SECONDS + 0.2)
         return real(connection, token)
+
+    connect = local_endpoint.http.client.HTTPConnection.connect
+
+    def slow_connect(self):
+        time.sleep(local_endpoint.SELF_CHECK_SECONDS + 0.2)
+        return connect(self)
 
     _root, _homes, client, _capture = store
     endpoint = local_endpoint.serve(client, "claude-code")
     try:
-        monkeypatch.setattr(local_endpoint, "_hello", slow)
-        endpoint.path.unlink()
-        time.sleep(2.0)
-        assert not endpoint.path.exists(), "not while it answers slower than a hook waits"
+        for name, owner, stand_in in (("connect", local_endpoint.http.client.HTTPConnection, slow_connect),
+                                      ("_hello", local_endpoint, slow)):
+            with monkeypatch.context() as patched:
+                patched.setattr(owner, name, stand_in)
+                endpoint.path.unlink(missing_ok=True)
+                time.sleep(2.0)
+                assert not endpoint.path.exists(), f"not while its {name} is slower than its check allows"
         monkeypatch.setattr(local_endpoint, "_hello", real)
         deadline = time.monotonic() + 5
         while not endpoint.path.exists() and time.monotonic() < deadline:
@@ -1749,3 +1763,49 @@ def test_a_server_s_traceback_keeps_the_frame_that_raised(resident, monkeypatch,
     monkeypatch.setattr(endpoint, "recall", broken)
     assert local_endpoint.Recaller(client, "claude-code")(_prompt("TEST 很深的错误。"), (), (), 3.0) is not None
     assert 'raise KeyError("TEST deep")' in capsys.readouterr().err
+
+
+def test_a_refused_request_is_not_sent_to_the_next_server(resident, monkeypatch):
+    """A request one server could not read was sent to the next, which reads it no differently (review of rc11)."""
+    import os
+    import threading
+    import time
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    from scope_recall._version import __version__
+    from scope_recall.adapters.codex import local_endpoint
+    from scope_recall.runtime.process_probe import probe_process
+
+    _root, client, endpoint = resident
+    heard = []
+
+    class Other(BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            return
+
+        def do_POST(self):
+            heard.append(self.path)
+            self.send_response(503)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+    other = ThreadingHTTPServer(("127.0.0.1", 0), Other)
+    threading.Thread(target=other.serve_forever, daemon=True).start()
+    try:
+        named = endpoint.path.parent / "1.json"
+        named.write_text(json.dumps({"host": "claude-code", "port": other.server_address[1], "token": "TEST",
+                                     "pid": os.getpid(), "start": probe_process(os.getpid()).start_token,
+                                     "version": __version__}), encoding="utf-8")
+        older = time.time() - 60
+        os.utime(named, (older, older))  # asked second
+
+        def unreadable(body):
+            raise ValueError("TEST unreadable")
+
+        monkeypatch.setattr(local_endpoint, "_request", unreadable)
+        recaller = local_endpoint.Recaller(client, "claude-code")
+        assert recaller(_prompt("TEST 读不懂的请求。"), (), (), 3.0) is None and recaller.outcome == "refused"
+        assert heard == [], "the next server is not asked"
+    finally:
+        other.shutdown()
+        other.server_close()
