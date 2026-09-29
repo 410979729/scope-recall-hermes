@@ -30,10 +30,12 @@ In a shared store ([shared-store.md](shared-store.md)) there is one copy of ever
 memory, so a `forget` through any entry applies to every entry.
 A capture still waiting in the capture inbox when a delete is recorded is cancelled
 when it holds a deleted message (its text, one of its segments as stored, or the
-same source); the scope's other waiting captures are stored. A later capture under
-a deleted message's key is refused and leaves the inbox, and a copy of a suppressed
-or deleted message stored under a new key, after its key collided with another
-message's, is stored suppressed.
+same source); the scope's other waiting captures are stored. A later copy of a
+deleted message under that message's key is refused and leaves the inbox (after a
+purge only its digest is compared); another message under that key is stored under
+a key of its own. A copy of a suppressed or deleted message stored under a new key,
+after its key collided with another message's, is stored suppressed, its whole
+source group with it.
 Future Episode, reference and artifact repositories must extend the dependency
 closure before accepting their object types; currently unknown types fail closed.
 

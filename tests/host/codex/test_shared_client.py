@@ -467,6 +467,58 @@ def test_a_locked_database_during_the_record_check_ends_the_read_not_the_hook(st
     assert ("user", "human_direct", "TEST locked record") in _said_in_store(root)
 
 
+def test_a_deleted_message_in_the_session_record_does_not_stop_its_read(store, tmp_path, monkeypatch):
+    """A record line whose message was deleted is refused for good (``ACCESS_DENIED:source_unavailable``), but the read
+    took the refusal as a store it might write later, and every later Stop stopped at that line (review of rc13).  It
+    counts as settled, and the read goes on."""
+    root, _homes, client, _capture = store
+    at = _moments()
+    record = _record(tmp_path / "TEST-projects" / "TEST-cc-session.jsonl",
+                     _person("gone", at(0), "TEST 被删的记录行", prompt_id="TEST-prompt-gone"),
+                     _person("next", at(1), "TEST 后面的一行", prompt_id="TEST-prompt-next"))
+    hook = _hook(client)
+    original = hook.core.record_event
+
+    def deleted(context, event, **kwargs):
+        if event["content"] == "TEST 被删的记录行":
+            raise ContractError("ACCESS_DENIED", "source_unavailable")
+        return original(context, event, **kwargs)
+
+    monkeypatch.setattr(hook.core, "record_event", deleted)
+    try:
+        hook.handle_payload(_stop(record))
+    finally:
+        hook.close()
+    said = [content for _role, _origin, content in _said_in_store(root)]
+    assert "TEST 后面的一行" in said and "TEST 被删的记录行" not in said
+
+
+def test_a_stop_s_capture_time_is_all_of_its_captures(store, tmp_path, monkeypatch):
+    """The remote server logs a hook's capture time; for a Stop it was only the last record line's, each capture
+    writing over the one before (review of rc13).  All of a hook's captures count."""
+    import time
+
+    _root, _homes, client, _capture = store
+    at = _moments()
+    record = _record(tmp_path / "TEST-projects" / "TEST-cc-session.jsonl",
+                     _person("one", at(0), "TEST 第一行", prompt_id="TEST-prompt-one"),
+                     _person("two", at(1), "TEST 第二行", prompt_id="TEST-prompt-two"))
+    hook = _hook(client)
+    original = hook.core.record_event
+
+    def slow(context, event, **kwargs):
+        time.sleep(0.06)
+        return original(context, event, **kwargs)
+
+    monkeypatch.setattr(hook.core, "record_event", slow)
+    try:
+        hook.handle_payload(_stop(record))
+    finally:
+        hook.close()
+    total, last = hook.diagnostics.capture_total_ms, hook.diagnostics.capture_elapsed_ms
+    assert total >= 120 and total > last, (total, last)
+
+
 def test_two_record_messages_repeating_hook_text_are_not_both_suppressed(store, tmp_path):
     root, _homes, client, _capture = store
     at = _moments()

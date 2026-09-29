@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 import sqlite3
 import time
+from typing import NoReturn
 
 from ..contracts import (ENTRY_ID, MAX_SHARED_SCOPES, ContractError, InstanceBinding, SourceEvent, TrustedContext,
                          validate_capture)
@@ -404,18 +405,52 @@ class Transaction:
 
     def _copies_a_suppressed_source(self, conn, scope_id: str, group_key: str, event) -> bool:
         """A capture given a new key because another message held its key (``capture_inbox.REKEY_MARKER``) that is a
-        copy of a suppressed or deleted message -- the same role and words in the same scope, project and branch -- is
-        suppressed with it.  Its new key is a group of its own, which the first message's suppression does not reach:
-        a suppressed message sent again under a colliding key came back to automatic recall (rc13).  A digest outlasts
-        a purge."""
-        from .capture_inbox import REKEY_MARKER
+        copy of a suppressed or deleted message is suppressed with it.  Its new key is a group of its own, which the
+        first message's suppression does not reach: a suppressed message sent again under a colliding key came back to
+        automatic recall (rc13).  A copy has the same role and words as a suppressed part in the same scope, project
+        and branch (a digest outlasts a purge), or holds the words of the message whose key it took, compared as a
+        delete compares them (``capture_inbox.holds``: whitespace aside, and so on).  A source group is suppressed
+        whole: a part that is a copy suppresses the parts of its group stored before it and after it (review of
+        rc13)."""
+        from .capture_inbox import REKEY_MARKER, deleted_text, holds_events
         if REKEY_MARKER not in group_key:
             return False
-        return conn.execute(
+        partition = (scope_id, self.context.project_id, self.context.branch_id)
+        if conn.execute("""SELECT 1 FROM source_events WHERE source_group_key=? AND scope_id=? AND project_id IS ?
+                           AND branch_id IS ? AND suppressed=1 LIMIT 1""", (group_key, *partition)).fetchone():
+            return True
+        copy = conn.execute(
             """SELECT 1 FROM source_events WHERE scope_id=? AND role=? AND content_sha256=? AND project_id IS ?
                AND branch_id IS ? AND suppressed=1 LIMIT 1""",
             (scope_id, event["role"], hashlib.sha256(event["content"].encode("utf-8")).hexdigest(),
              self.context.project_id, self.context.branch_id)).fetchone() is not None
+        if not copy:
+            taken = conn.execute(
+                """SELECT content FROM source_events WHERE source_group_key=? AND scope_id=? AND project_id IS ?
+                   AND branch_id IS ? AND role=? AND suppressed=1 AND content<>''""",
+                (group_key.split(REKEY_MARKER, 1)[0], *partition, event["role"])).fetchall()
+            copy = bool(taken) and holds_events([event], frozenset(), frozenset(),
+                                                frozenset(deleted_text(row["content"]) for row in taken), rekeyed=True)
+        if copy:
+            conn.execute("""UPDATE source_events SET suppressed=1 WHERE source_group_key=? AND scope_id=?
+                            AND project_id IS ? AND branch_id IS ?""", (group_key, *partition))
+        return copy
+
+    def _refuse_or_collide(self, conn, ref: str, event) -> NoReturn:
+        """A key whose message is deleted, or hidden from this caller, takes no copy of that message: a copy is refused
+        for good (``source_unavailable``).  Another message under the key is a key collision (``VERSION_CONFLICT``),
+        which the capture inbox stores under a key of its own.  A restarted Hermes gateway numbers its turns from 1
+        again, and a delete removes its own command's key: the next message at that turn was refused, and from rc13 on
+        dropped (review of rc13).  A copy is the message's words as ``capture_inbox.holds`` compares them: its digest
+        outlasts a purge, its text only until then.  A key with nothing stored left to compare with (a restored
+        absence) refuses whatever comes."""
+        from .capture_inbox import deleted_text, holds_events
+        rows = conn.execute("SELECT content_sha256,content FROM source_events WHERE event_id=?", (ref,)).fetchall()
+        if rows and not holds_events([event], frozenset(row["content_sha256"] for row in rows), frozenset(),
+                                     frozenset(deleted_text(row["content"]) for row in rows if row["content"]),
+                                     rekeyed=True):
+            raise ContractError("VERSION_CONFLICT", "source_deleted_key")
+        raise ContractError("ACCESS_DENIED", "source_unavailable")
 
     def put_source(self, event: SourceEvent, *, scope_id: str, persisted_at: str, capture_gaps: tuple[str, ...] = ()) -> SourceWrite:
         conn = self._check(write=True)
@@ -441,7 +476,7 @@ class Transaction:
         ref = "event-" + hashlib.sha256(identity.encode("utf-8")).hexdigest()
         from .visibility import allowed
         if not allowed(self, "event", ref):
-            raise ContractError("ACCESS_DENIED", "source_unavailable")
+            self._refuse_or_collide(conn, ref, event)
         revision = event["source_revision"]
         fingerprint_input = {k: v for k, v in event.items() if k != "recorded_at"}
         provenance_hash = provenance.manifest_sha256 if provenance else None

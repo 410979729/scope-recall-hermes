@@ -196,13 +196,12 @@ def test_a_group_asks_its_requests_at_the_same_time():
     adapter = Concurrent()
     adapter.embed_texts = GeminiEmbeddingAdapter.embed_texts.__get__(adapter, Concurrent)
     count = 6 * MAX_EMBED_BATCH
-    began = time.perf_counter()
     vectors = adapter.embed_texts([f"TEST {index}" for index in range(count)], remaining_seconds=60)
-    elapsed = time.perf_counter() - began
     assert len(vectors) == count
+    # Requests in flight at once are what the concurrency is.  The wall clock is not: on a loaded Windows runner six
+    # requests that overlapped took 0.78 s, more than the six asked one at a time would (3.4.0rc13's CI).
     assert adapter.most > 1, "the requests were still made one at a time"
     assert adapter.most <= EMBED_REQUEST_CONCURRENCY, f"{adapter.most} requests were in flight at once"
-    assert elapsed < 6 * 0.05, f"six requests took {elapsed:.2f}s, which is serial"
     # Order is what lets a vector be matched to the source that asked for it.
     assert [int(first) for first, _second in vectors[:MAX_EMBED_BATCH]] == list(range(MAX_EMBED_BATCH))
 

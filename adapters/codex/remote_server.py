@@ -276,12 +276,15 @@ def handle_request(config: RemoteServerConfig, body: dict[str, Any], *, started:
     # ``build_ms``, ``capture_ms``, ``attach_ms`` and ``close_ms``: how much of the hook's time making the handler, the
     # capture, attaching the handler's own runtime and closing it took, so a slow prompt's log says where its time went;
     # the rest is its recall (rc13).
+    # ``error``: the capture's code, or the class of what failed it when it was no contract error (a store that is
+    # locked or broken), which the log would otherwise not name (review of rc13).
     return {"result": result, "through": record.through if record is not None else None,
-            "reason": handler.diagnostics.last_reason, "error": handler.diagnostics.capture_error_detail,
+            "reason": handler.diagnostics.last_reason,
+            "error": handler.diagnostics.capture_error_detail or handler.diagnostics.capture_error_type,
             "recall_error": handler.diagnostics.recall_error_detail,
             "recall_vector": handler.diagnostics.recall_vector_gap,
             "retry": not handler.diagnostics.capture_settled, "warm": warm,
-            "build_ms": built, "capture_ms": handler.diagnostics.capture_elapsed_ms,
+            "build_ms": built, "capture_ms": handler.diagnostics.capture_total_ms,
             "attach_ms": handler.diagnostics.runtime_attach_ms, "close_ms": closed}
 
 

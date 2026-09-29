@@ -677,10 +677,19 @@ def test_a_locked_database_fails_the_capture_or_the_recall_not_the_request(store
     assert (answer["result"], answer["reason"], answer["retry"]) == ({}, "recall_exception", False)
     assert answer["recall_error"] == "OperationalError"
 
+    def broken(self, *args, **kwargs):
+        raise sqlite3.DatabaseError("database disk image is malformed")
+
+    # A store broken otherwise than busy is named, where the answer said nothing of it (review of rc13).
+    with monkeypatch.context() as patched:
+        patched.setattr(MemoryCore, "record_host_event", broken)
+        answer = remote_server.handle_request(server, dict(body, payload=dict(body["payload"], turn_id="TEST-l3")))
+    assert (answer["retry"], answer["error"]) == (True, "DatabaseError")
+
 
 def test_a_hook_whose_message_s_key_was_deleted_is_not_sent_again(store, monkeypatch):
-    """A capture under the key of a deleted message is refused for good and leaves the inbox cancelled (rc13): sent
-    again, it met the same refusal on every try."""
+    """A copy of a deleted message under that message's key is refused for good and leaves the inbox cancelled (rc13):
+    sent again, it met the same refusal on every try."""
     from scope_recall.core import MemoryCore
     from scope_recall.core.capture import CaptureReceipt
     from scope_recall.core.capture_inbox import SOURCE_DELETED_GAP

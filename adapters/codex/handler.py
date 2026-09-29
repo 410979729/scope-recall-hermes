@@ -15,6 +15,7 @@ from typing import Any, Callable, Protocol, cast
 
 from scope_recall.contracts import ContractError, Origin, RecallRequest, TrustedContext
 from scope_recall.core import CoreConfig, MemoryCore
+from scope_recall.core.capture_inbox import DELETED_KEY
 from scope_recall.core.retrieval import AUTOMATIC_PACKET_BUDGET_UNITS
 from scope_recall.core.secret_patterns import contains_secret_like_text
 from scope_recall.runtime.instance import RuntimeInstanceConfig
@@ -144,6 +145,9 @@ class HookDiagnostics:
     recall_vectors: bool | None = None
     #: How long attaching the runtime (vector store, embedding worker) took, when this hook attached it.
     runtime_attach_ms: int | None = None
+    #: How long all of this hook's captures took: a Stop writes each session-record line (``capture_elapsed_ms`` is
+    #: the last one's).
+    capture_total_ms: int | None = None
 
     @property
     def capture_settled(self) -> bool:
@@ -516,11 +520,18 @@ class CodexHookHandler:
             self.diagnostics.capture_error_type = type(exc).__name__
             if isinstance(exc, ContractError):
                 self._note_capture_error(exc.code)
+                if (exc.code, exc.field) == DELETED_KEY:
+                    # A copy of a deleted message under its key, written straight from the session record: refused for
+                    # good, as the inbox cancels one.  Taken as unsettled, every later Stop stopped at that line
+                    # (review of rc13).
+                    self.diagnostics.capture_disposition = "cancelled"
             gaps = (*gaps, "capture_gap:write_exception")
             self._diag("capture_exception", gaps=gaps)
             return (), gaps
         finally:
-            self.diagnostics.capture_elapsed_ms = round((time.monotonic() - started) * 1000)
+            elapsed = round((time.monotonic() - started) * 1000)
+            self.diagnostics.capture_elapsed_ms = elapsed
+            self.diagnostics.capture_total_ms = (self.diagnostics.capture_total_ms or 0) + elapsed
         self.diagnostics.capture_disposition = receipt.disposition
         self.diagnostics.capture_durability = receipt.durability
         if receipt.error_code:
@@ -580,7 +591,9 @@ class CodexHookHandler:
                       if entry.role == "user" and entry.prompt_id else None) for entry in said],
                     window_seconds=_RECORD_SAME_MESSAGE_S,
                     remaining_seconds=max(0.0, self._remaining(deadline)))
-            except (ContractError, OSError, RuntimeError, sqlite3.Error):
+            except (ContractError, OSError, RuntimeError, sqlite3.Error) as exc:
+                # Named, so that a store that fails otherwise than busy says what failed (review of rc13).
+                self.diagnostics.capture_error_type = type(exc).__name__
                 self._diag("session_record_check_failed")
                 return
         known = {entry.entry_id for entry, stored in zip(said, held) if stored}

@@ -785,12 +785,22 @@ class WorkItems:
         for _token, code in abandoned:
             kind = str(code).rsplit("|", 1)[-1]
             report["inbox_by_kind"][kind] = report["inbox_by_kind"].get(kind, 0) + 1
+        # A capture an earlier release refused as ACCESS_DENIED, most often one under a deleted message's key, stayed
+        # in the inbox for good with doctor's capture_ingress_blocked up, and nothing but a hand could remove it.  The
+        # replay now cancels a copy of the deleted message and stores another message under a key of its own
+        # (``storage._refuse_or_collide``), so such rows go back to it once asked (review of rc13).
+        refused = conn.execute(
+            f"""SELECT token FROM capture_inbox WHERE last_error_code='ACCESS_DENIED'
+                AND scope_id IN ({_marks(scopes)}) AND project_id IS ? AND branch_id IS ?""",
+            (*scopes, context.project_id, context.branch_id)).fetchall()
+        report["inbox_refused"] = len(refused)
         if not dry_run:
             # One the rekey path gave up goes back to it: returned as never tried, the plain replay met the old
             # collision, and a row it put off was matched by a delete through the key it had taken (review of rc10).
             conn.executemany("UPDATE capture_inbox SET last_error_code=? WHERE token=?",
                              [("VERSION_CONFLICT" if deferred_path(code) == "rekey" else None, token)
                               for token, code in abandoned])
+            conn.executemany("UPDATE capture_inbox SET last_error_code=NULL WHERE token=?", [(row[0],) for row in refused])
         return report
 
     def _reopen_failed(self, work_id: int, work_type: str, code: object, *, now: str, automatic: bool = False) -> bool:

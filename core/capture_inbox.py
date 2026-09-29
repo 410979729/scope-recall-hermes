@@ -201,31 +201,36 @@ def holds(payload_json: object, digests: frozenset[str], groups: frozenset[str],
     Compared by digest alone, the same words with a line break or a full stop more were kept and stored after the
     delete; compared more loosely, deleting a short message cancelled unrelated rows, and a character-by-character
     normalisation of every waiting row held the writer lease for seconds (reviews of rc10)."""
-    from .events import stored_content_digest
-
     try:
-        body = json.loads(payload_json)
-        events = body["events"]
-        for event in events:
-            segment = event.get("segment")
-            group = segment.get("group_key") if isinstance(segment, dict) else event.get("source_event_key")
-            if (not rekeyed and group in groups) or stored_content_digest(event["content"]) in digests:
-                return True
-        texts = [text for text in texts if text[0]]
-        if not texts:
-            return False
-        ordered = sorted(events, key=lambda event: (event.get("segment") or {}).get("index", 0))
-        bare = without_whitespace("".join(event["content"] for event in ordered))
-        letters = None
-        for text, text_letters in texts:
-            if ((len(text) >= DISTINCT_TEXT or len(bare) - len(text) <= len(bare) // 10) and text in bare):
-                return True
-            if len(text_letters) >= NEAR_COPY:
-                letters = letters_and_digits(bare) if letters is None else letters
-                if len(letters) - len(text_letters) <= len(letters) // 10 and text_letters in letters:
-                    return True
+        return holds_events(json.loads(payload_json)["events"], digests, groups, texts, rekeyed=rekeyed)
     except (ValueError, KeyError, TypeError, AttributeError):
         return True
+
+
+def holds_events(events, digests: frozenset[str], groups: frozenset[str],
+                 texts: frozenset[tuple[str, str]] = frozenset(), *, rekeyed: bool = False) -> bool:
+    """``holds`` for a capture's events already read: the parts of one message, or one of them.  Storage asks it of a
+    message under a deleted message's key (``storage.put_source``)."""
+    from .events import stored_content_digest
+
+    for event in events:
+        segment = event.get("segment")
+        group = segment.get("group_key") if isinstance(segment, dict) else event.get("source_event_key")
+        if (not rekeyed and group in groups) or stored_content_digest(event["content"]) in digests:
+            return True
+    texts = [text for text in texts if text[0]]
+    if not texts:
+        return False
+    ordered = sorted(events, key=lambda event: (event.get("segment") or {}).get("index", 0))
+    bare = without_whitespace("".join(event["content"] for event in ordered))
+    letters = None
+    for text, text_letters in texts:
+        if ((len(text) >= DISTINCT_TEXT or len(bare) - len(text) <= len(bare) // 10) and text in bare):
+            return True
+        if len(text_letters) >= NEAR_COPY:
+            letters = letters_and_digits(bare) if letters is None else letters
+            if len(letters) - len(text_letters) <= len(letters) // 10 and text_letters in letters:
+                return True
     return False
 
 
@@ -330,7 +335,7 @@ def _commit(storage, clock, context, token, prepared, scope_id, policy, deadline
         code = receipt.error_code or "STORAGE_UNAVAILABLE"
     except ContractError as exc:
         code = exc.code
-        if (exc.code, exc.field) == _DELETED_KEY:
+        if (exc.code, exc.field) == DELETED_KEY:
             return _refused_for_a_delete(storage, context, token, prepared, deadline)
         # Terminal failures remain inspectable, but are not replayed forever.  A passing one (the store busy, the time
         # up) leaves the row's code as it was: written over, a collision left its path, and a row put off its tries
@@ -349,17 +354,18 @@ def _commit(storage, clock, context, token, prepared, scope_id, policy, deadline
     return CaptureReceipt("queued", (), "queued", "pending", "pending", (*prepared.gaps, *pending), code)
 
 
-#: How storage refuses a capture whose key's message was deleted (``put_source``).
-_DELETED_KEY = ("ACCESS_DENIED", "source_unavailable")
-#: What a receipt carries when that capture left the inbox.
+#: How storage refuses a copy of a deleted message under that message's key (``storage._refuse_or_collide``): the
+#: code and field of its ContractError, refused for good.
+DELETED_KEY = ("ACCESS_DENIED", "source_unavailable")
+#: What the receipt of such a capture carries when it left the inbox.
 SOURCE_DELETED_GAP = "capture_gap:source_deleted"
 
 
 def _refused_for_a_delete(storage, context, token, prepared, deadline) -> CaptureReceipt:
-    """A capture under the key of a deleted message is refused for good: once the delete is purged only its digests are
-    left, and stored under a new key it could bring back a near copy.  Left in the inbox with its code, it kept the
-    doctor's ``capture_ingress_blocked`` and the patrol's line up until someone removed it by hand (rc13); it leaves
-    the inbox, and the pass counts it among the rows it cancelled."""
+    """A copy of a deleted message under that message's key is refused for good; another message under the key is a
+    key collision, stored under a key of its own (``storage._refuse_or_collide``).  Left in the inbox with its code,
+    the copy kept the doctor's ``capture_ingress_blocked`` and the patrol's line up until someone removed it by hand
+    (rc13); it leaves the inbox, and the pass counts it among the rows it cancelled."""
     try:
         with storage.write(context, remaining_seconds=max(.001, deadline-time.monotonic())) as tx:
             tx._check(write=True).execute("DELETE FROM capture_inbox WHERE token=?", (token,))
