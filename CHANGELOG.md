@@ -2,6 +2,12 @@
 
 All notable changes to `scope-recall` will be documented in this file.
 
+## [Unreleased]
+
+### Scope Recall 3.4.3rc1 - 2026-09-29
+
+- The version moves past the `v3.4.2` tag.
+
 ## [3.4.2] - 2026-09-29
 
 3.4.2 keeps a long prompt's recall within its time. The word search of a prompt looked up every word it held: a 2,000-character prompt's 80 words held 273,000 index entries on the shared store and took 9 s, longer than the prompt's whole recall, which then went without its search by meaning as well (`deadline_exceeded_collect`). On 2026-09-29 Codex on another computer, whose prompts are often that long, was recalled for by words alone that way on 7 of about 16 prompts. Nothing else changes for a question of up to 16 search terms.
