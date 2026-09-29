@@ -669,6 +669,22 @@ def test_a_message_purged_before_rc13_still_refuses_what_comes_under_its_key(wor
             source_event_key=key, content=content), scope_id="TEST-scope", host_scope=None).disposition == "cancelled"
 
 
+def test_a_deleted_message_with_no_text_is_not_taken_for_an_old_purge(worker_app):
+    """A message with attachments alone has no text.  Deleted and not purged yet, it had no text and no kept forms, as
+    a row purged before rc13, and every other message under its key was refused until the purge ran (review of rc13).
+    Only a purged row counts as an old purge."""
+    core, ctx, clock = worker_app
+    source = capture(core, ctx, "TEST 带附件的一条。", key="TEST-attachments")
+    authorize(core, ctx, source)
+    core.forget(ctx, request(source), remaining_seconds=5)
+    with sqlite3.connect(core.storage.path) as conn:
+        conn.execute("UPDATE source_events SET content='' WHERE source_event_key='TEST-attachments'")
+        conn.commit()
+    assert capture_inbox.durable_record_event(core.storage, clock, ctx, source_event(
+        source_event_key="TEST-attachments", content="TEST 同一个键上的另一件事。"), scope_id="TEST-scope",
+        host_scope=None).disposition == "conflict"
+
+
 def test_a_purge_run_again_keeps_the_forms_the_first_one_kept_and_reads_a_version_once(worker_app, monkeypatch):
     """A restore purges its file again: written over from the empty text, the digests a first purge kept were lost,
     and a copy spaced otherwise came back.  And a long message's words were joined and read again for each part, so

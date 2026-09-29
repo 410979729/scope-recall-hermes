@@ -473,7 +473,8 @@ class Transaction:
         # hashed once for each part and is found by none of these: with nothing to compare, it refuses, as it did.
         refs = sorted({*hidden, self._source_ref(group_key)})
         rows = conn.execute(
-            f"""SELECT source_revision,segment_index,content,content_sha256,extra_json FROM source_events
+            f"""SELECT source_revision,segment_index,content,content_sha256,extra_json,
+                       source_event_key='removed-'||event_id AS purged FROM source_events
                 WHERE read_blocked=1 AND (event_id IN ({','.join('?' for _ in refs)})
                    OR (source_group_key IN (?,?) AND scope_id=? AND project_id IS ? AND branch_id IS ?))""",
             (*refs, group_key, purged_group_key(group_key), *partition)).fetchall()
@@ -491,10 +492,12 @@ class Transaction:
             if all(row["content"] for row, _extra in parts):
                 texts.add(deleted_text("".join(row["content"] for row, _extra in
                                                sorted(parts, key=lambda part: part[0]["segment_index"]))))
-            elif not any("deleted_forms" in extra for _row, extra in parts):
+            elif (all(row["purged"] for row, _extra in parts)
+                  and not any("deleted_forms" in extra for _row, extra in parts)):
                 # Purged before rc13, which kept no forms of the words: nothing tells a near copy there from another
-                # message, so a message under that key is refused, as every release before rc13 refused it (review of
-                # rc13).
+                # message, so a message under that key is refused, as every release before rc13 refused it.  A deleted
+                # message with no text (attachments alone) is not purged yet, and is compared by its digest (reviews
+                # of rc13).
                 raise refuse
             kept.update(form for _row, extra in parts for form in extra.get("deleted_forms") or ())
         ordered = sorted(events, key=lambda event: (event.get("segment") or {}).get("index", 0))
