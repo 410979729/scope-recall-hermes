@@ -71,10 +71,17 @@ def test_revocation_and_deletion_cancel_pending_ingress(worker_app):
     receipt = capture_inbox.replay_inbox(core.storage,clock,ctx,authorize=lambda _: frozenset())[0]
     assert receipt.disposition == "cancelled" and core.status(ctx).sources == 0
     source = capture(core,ctx,"TEST 已有资料。")
+    # A capture of the deleted words waiting in the inbox is cancelled with them; another is stored (rc13).
+    copy = source_event(source_event_key="TEST-copy",content="TEST 已有资料。")
+    capture_inbox.enqueue(core.storage,clock,ctx,copy,scope_id="TEST-scope",host_scope=None)
     capture_inbox.enqueue(core.storage,clock,ctx,event,scope_id="TEST-scope",host_scope=None)
     authorize(core,ctx,source)
     core.forget(ctx,request(source),remaining_seconds=5)
-    assert capture_inbox.replay_inbox(core.storage,clock,ctx,authorize=lambda _: ctx.allowed_scope_ids) == ()
+    receipts = capture_inbox.replay_inbox(core.storage,clock,ctx,authorize=lambda _: ctx.allowed_scope_ids)
+    assert [receipt.durability for receipt in receipts] == ["persisted"]
+    with sqlite3.connect(core.storage.path) as conn:
+        assert conn.execute("SELECT source_event_key FROM source_events WHERE source_event_key IN ('TEST-revoked','TEST-copy')"
+                            ).fetchall() == [("TEST-revoked",)]
 
 
 def test_ingress_rejects_secrets_conflicts_and_other_partitions(worker_app):
@@ -387,7 +394,7 @@ def test_a_row_put_off_again_waits_longer_and_is_given_up_where_it_shows():
     assert code.endswith("|24|replay|IDENTITY_UNBOUND:TEST/host"), "the field is named, its bar replaced"
     given_up = capture_inbox._deferral(code, RuntimeError("TEST"), now, path="replay")
     assert given_up == f"GAVE_UP|{capture_inbox.__version__}|25|replay|RuntimeError", "its failures, the first too"
-    assert capture_inbox.given_up(given_up) and capture_inbox.put_off(given_up)
+    assert capture_inbox.given_up(given_up)
     assert not capture_inbox.replayable(given_up, now) and not capture_inbox.waiting(given_up)
     # Given up for every release, and the tries another release made count: a new release reset them, so a row
     # that failed under each was tried for ever (review of 3.4.0rc10).
@@ -405,15 +412,19 @@ def test_a_row_put_off_again_waits_longer_and_is_given_up_where_it_shows():
     assert capture_inbox.deferred_path(f"DEFERRED|{version}|2026-09-28T12:30:00Z|1|rekey|TEST") == "rekey"
 
 
-def test_a_delete_keeps_a_put_off_row_unless_it_holds_the_deleted_words(worker_app):
-    """A delete cancels its partition's pending captures, so that a delayed one cannot undo it.  A row put off waits
-    for hours, and cancelling it lost words nothing had forgotten (review of 3.4.0rc10)."""
+def test_a_delete_keeps_a_waiting_row_unless_it_holds_the_deleted_words(worker_app):
+    """A delete cancels its partition's pending captures that hold a deleted message, so that a delayed one cannot
+    undo it.  Every other row is kept: a row put off waits for hours (review of 3.4.0rc10), and a capture of another
+    client waiting for the next pass was cancelled with the whole partition, words nothing had forgotten (rc13)."""
     core, ctx, clock = worker_app
     later = f"DEFERRED|{capture_inbox.__version__}|2026-09-06T13:00:00Z|1|replay|RuntimeError"
     given_up = f"GAVE_UP|{capture_inbox.__version__}|24|rekey|RuntimeError"
     long_kept, long_same = "TEST 暂缓的长消息。" * 8000, "TEST 同组的另一版长消息。" * 6000
     rows = (("TEST-put-off-keep", "TEST 暂缓的另一句话。", later), ("TEST-put-off-same", "TEST 要删掉的话。", later),
             ("TEST-plain-waiting", "TEST 普通等待的一句。", None),
+            ("TEST-plain-busy", "TEST 存储忙时等着的一句。", "STORAGE_UNAVAILABLE"),
+            # Waiting for the next pass and holding the deleted words, under a key of its own or the deleted one's.
+            ("TEST-plain-copy", "TEST 要删掉的话。", None), ("TEST-stored-same", "TEST 同一条的下一版。", None),
             # A long message waits as segments: one of another group is kept, one of the deleted group is not.
             ("TEST-long-kept", long_kept, given_up), ("TEST-stored-long", long_same, later))
     for key, text, code in rows:
@@ -429,7 +440,38 @@ def test_a_delete_keeps_a_put_off_row_unless_it_holds_the_deleted_words(worker_a
     with sqlite3.connect(core.storage.path) as conn:
         events = [json.loads(row[0])["events"][0] for row in conn.execute("SELECT payload_json FROM capture_inbox")]
     left = sorted(event["segment"]["group_key"] if "segment" in event else event["source_event_key"] for event in events)
-    assert left == ["TEST-long-kept", "TEST-put-off-keep"]
+    assert left == ["TEST-long-kept", "TEST-plain-busy", "TEST-plain-waiting", "TEST-put-off-keep"]
+
+
+def test_a_capture_under_a_deleted_message_s_key_leaves_the_inbox(worker_app):
+    """A capture under the key of a deleted message is refused for good.  It stayed in the inbox with its code, and
+    kept the doctor's ``capture_ingress_blocked`` and the patrol's line up until someone removed it by hand (rc13).
+    It leaves the inbox, and the hook and the pass are told it was cancelled."""
+    from scope_recall.runtime.worker_entry import _ingress_report
+
+    core, ctx, clock = worker_app
+    source = capture(core, ctx, "TEST 要删掉的一句。", key="TEST-deleted-key")
+    authorize(core, ctx, source)
+    core.forget(ctx, request(source), remaining_seconds=5)
+    later = source_event(source_event_key="TEST-deleted-key", content="TEST 同一个键的新消息。")
+
+    def inbox():
+        with sqlite3.connect(core.storage.path) as conn:
+            return conn.execute("SELECT count(*) FROM capture_inbox").fetchone()[0]
+
+    # A hook's capture.
+    receipt = capture_inbox.durable_record_event(core.storage, clock, ctx, later, scope_id="TEST-scope",
+                                                 host_scope=None)
+    assert (receipt.disposition, receipt.durability, receipt.error_code) == ("cancelled", "not_persisted",
+                                                                             "ACCESS_DENIED")
+    assert capture_inbox.SOURCE_DELETED_GAP in receipt.gaps and inbox() == 0
+    # One a pass replays: the hook's own commit did not run.
+    capture_inbox.enqueue(core.storage, clock, ctx, later, scope_id="TEST-scope", host_scope=None)
+    receipts = capture_inbox.replay_inbox(core.storage, clock, ctx, authorize=lambda _: ctx.allowed_scope_ids)
+    assert [receipt.disposition for receipt in receipts] == ["cancelled"] and inbox() == 0
+    assert _ingress_report(receipts)[0]["ingress_cancelled"] == 1
+    with sqlite3.connect(core.storage.path) as conn:
+        assert conn.execute("SELECT count(*) FROM source_events WHERE content LIKE 'TEST 同一个键%'").fetchone()[0] == 0
 
 
 def test_a_host_check_that_raises_puts_off_that_row_only(worker_app):
@@ -748,6 +790,36 @@ def test_a_suppress_leaves_the_inbox_alone(worker_app):
     core.forget(ctx, request(source, mode="suppress"), remaining_seconds=5)
     with sqlite3.connect(core.storage.path) as conn:
         assert conn.execute("SELECT count(*) FROM capture_inbox").fetchone()[0] == 4
+
+
+def test_a_collided_copy_of_a_suppressed_message_is_stored_suppressed(worker_app):
+    """A message sent again under a key another message held is stored under a new key, a group of its own that the
+    first message's suppression did not reach: a suppressed message came back to automatic recall that way (rc13).
+    A copy of a suppressed message is stored suppressed; other words under the same key are not."""
+    core, ctx, clock = worker_app
+    text, plain = "TEST 别再主动提这件私事，说过很多次了。", "TEST 一句没有被压下的话。"
+    capture(core, ctx, plain, key="TEST-plain")
+    source = capture(core, ctx, text, key="TEST-suppressed")
+    authorize(core, ctx, source, mode="suppress")
+    core.forget(ctx, request(source, mode="suppress"), remaining_seconds=5)
+    for index, content in enumerate((text, "TEST 同一个键上的另一句话。", plain)):
+        receipt = capture_inbox.durable_record_event(
+            core.storage, clock, replace(ctx, session_id=f"TEST-session-c{index}"),
+            source_event(source_event_key="TEST-suppressed", content=content), scope_id="TEST-scope", host_scope=None)
+        assert receipt.disposition == "conflict"
+    receipts = capture_inbox.resolve_conflicted_ingress(core.storage, clock, ctx,
+                                                        authorize=lambda _: ctx.allowed_scope_ids, remaining_seconds=5)
+    assert [receipt.durability for receipt in receipts] == ["persisted"] * 3
+    with sqlite3.connect(core.storage.path) as conn:
+        stored = dict(conn.execute("SELECT content,suppressed FROM source_events WHERE source_event_key LIKE ?",
+                                   (f"TEST-suppressed{capture_inbox.REKEY_MARKER}%",)).fetchall())
+    # A copy of words that were never suppressed is not suppressed either.
+    assert stored == {text: 1, "TEST 同一个键上的另一句话。": 0, plain: 0}
+    # The same words said again under a key of their own are a new message, stored as before (3.4.0rc10).
+    capture(core, replace(ctx, session_id="TEST-session-later"), text, key="TEST-said-again")
+    with sqlite3.connect(core.storage.path) as conn:
+        assert conn.execute("SELECT suppressed FROM source_events WHERE source_event_key='TEST-said-again'"
+                            ).fetchall() == [(0,)]
 
 
 def test_retry_failures_returns_only_the_rows_its_replay_takes(tmp_path):

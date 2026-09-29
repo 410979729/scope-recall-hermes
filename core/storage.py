@@ -402,6 +402,21 @@ class Transaction:
             AND NOT EXISTS(SELECT 1 FROM json_each(v.payload_json,'$.conditions') WHERE instr(?,value)=0) LIMIT 1""",
             (scope_id, self.context.project_id, self.context.branch_id, content, content, content, content)).fetchone() is not None
 
+    def _copies_a_suppressed_source(self, conn, scope_id: str, group_key: str, event) -> bool:
+        """A capture given a new key because another message held its key (``capture_inbox.REKEY_MARKER``) that is a
+        copy of a suppressed or deleted message -- the same role and words in the same scope, project and branch -- is
+        suppressed with it.  Its new key is a group of its own, which the first message's suppression does not reach:
+        a suppressed message sent again under a colliding key came back to automatic recall (rc13).  A digest outlasts
+        a purge."""
+        from .capture_inbox import REKEY_MARKER
+        if REKEY_MARKER not in group_key:
+            return False
+        return conn.execute(
+            """SELECT 1 FROM source_events WHERE scope_id=? AND role=? AND content_sha256=? AND project_id IS ?
+               AND branch_id IS ? AND suppressed=1 LIMIT 1""",
+            (scope_id, event["role"], hashlib.sha256(event["content"].encode("utf-8")).hexdigest(),
+             self.context.project_id, self.context.branch_id)).fetchone() is not None
+
     def put_source(self, event: SourceEvent, *, scope_id: str, persisted_at: str, capture_gaps: tuple[str, ...] = ()) -> SourceWrite:
         conn = self._check(write=True)
         self._scope(scope_id)
@@ -447,7 +462,9 @@ class Transaction:
             *(event[k] for k in columns), hashlib.sha256(event["content"].encode("utf-8")).hexdigest(), fingerprint, persisted_at,
             event.get("source_original_origin"), event.get("dataset_id"), _json(extras), group_key, segment_index, segment_total, _json(capture_gaps), provenance_hash,
             self.context.entry_id or "local"))
-        if (group_policy is not None and group_policy["suppressed"]) or self._inherits_suppression(conn, scope_id, event["content"]):
+        if ((group_policy is not None and group_policy["suppressed"])
+                or self._inherits_suppression(conn, scope_id, event["content"])
+                or self._copies_a_suppressed_source(conn, scope_id, group_key, event)):
             conn.execute("UPDATE source_events SET suppressed=1 WHERE event_id=? AND source_revision=?", (ref, revision))
         conn.execute("UPDATE instance_meta SET memory_epoch=memory_epoch+1 WHERE singleton=1")
         return SourceWrite("inserted", ref, revision)

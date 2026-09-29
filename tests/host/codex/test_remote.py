@@ -648,6 +648,55 @@ def test_a_hook_the_busy_store_did_not_store_is_kept_to_send_again(store, tmp_pa
     assert len(list((config["state_dir"] / "spool").glob("*.json"))) == 1, "and the hook is kept to send again"
 
 
+def test_a_locked_database_fails_the_capture_or_the_recall_not_the_request(store, monkeypatch):
+    """SQLite's own "database is locked" (``BEGIN IMMEDIATE`` past its wait) escaped the hook: the server answered 500
+    and the prompt got no recall at all, as fifteen of the work computer's hooks did in one second on 2026-09-28
+    (rc13).  The capture fails and the hook is kept to send again; a recall that meets it fails alone."""
+    import sqlite3
+
+    from scope_recall.core import MemoryCore
+
+    root, homes = store
+    remote_server.write_server_config(homes["codex"], "codex", listen="127.0.0.1", port=_free_port(),
+                                      token_sha256="0" * 64)
+    server = remote_server.load_server_config(homes["codex"], "codex")
+    body = {"payload": {"hook_event_name": "UserPromptSubmit", "session_id": "TEST-codex-session",
+                        "turn_id": "TEST-locked", "prompt": "TEST 库被锁住时说的一句。", "cwd": "C:/work"}}
+
+    def locked(self, *args, **kwargs):
+        raise sqlite3.OperationalError("database is locked")
+
+    with monkeypatch.context() as patched:
+        patched.setattr(MemoryCore, "record_host_event", locked)
+        answer = remote_server.handle_request(server, body)
+    assert answer["retry"] is True, "kept to send again"
+    assert all(type(answer[key]) is int for key in ("build_ms", "capture_ms", "attach_ms", "close_ms")), answer
+    with monkeypatch.context() as patched:
+        patched.setattr(MemoryCore, "recall_packet", locked)
+        answer = remote_server.handle_request(server, dict(body, payload=dict(body["payload"], turn_id="TEST-l2")))
+    assert (answer["result"], answer["reason"], answer["retry"]) == ({}, "recall_exception", False)
+    assert answer["recall_error"] == "OperationalError"
+
+
+def test_a_hook_whose_message_s_key_was_deleted_is_not_sent_again(store, monkeypatch):
+    """A capture under the key of a deleted message is refused for good and leaves the inbox cancelled (rc13): sent
+    again, it met the same refusal on every try."""
+    from scope_recall.core import MemoryCore
+    from scope_recall.core.capture import CaptureReceipt
+    from scope_recall.core.capture_inbox import SOURCE_DELETED_GAP
+
+    root, homes = store
+    remote_server.write_server_config(homes["codex"], "codex", listen="127.0.0.1", port=_free_port(),
+                                      token_sha256="0" * 64)
+    server = remote_server.load_server_config(homes["codex"], "codex")
+    body = {"payload": {"hook_event_name": "UserPromptSubmit", "session_id": "TEST-codex-session",
+                        "turn_id": "TEST-deleted", "prompt": "TEST 键已删除的一句。", "cwd": "C:/work"}}
+    refused = CaptureReceipt("cancelled", (), "not_persisted", "unchanged", "unchanged", (SOURCE_DELETED_GAP,),
+                             "ACCESS_DENIED")
+    monkeypatch.setattr(MemoryCore, "record_host_event", lambda self, *args, **kwargs: refused)
+    assert remote_server.handle_request(server, body)["retry"] is False
+
+
 def test_a_refused_request_is_read_before_it_is_answered():
     """Answered before its body was read, the connection closed with the request unread, and Windows resets such a
     socket: the client got WinError 10053 instead of the 401 (CI, 2026-09-28)."""
@@ -746,7 +795,8 @@ def test_the_server_log_says_how_the_kept_recall_went(served, tmp_path, monkeypa
     _root, homes, ports = served
     monkeypatch.setattr(remote_server, "handle_request", lambda config, body, started=None, recaller=None: {
         "result": {}, "through": None, "reason": None, "error": None, "recall_error": None, "recall_vector": None,
-        "warm": "answered" if recaller is not None else "no recaller"})
+        "warm": "answered" if recaller is not None else "no recaller", "build_ms": 120, "capture_ms": 850,
+        "attach_ms": None, "close_ms": 40})
     root_logger = logging.getLogger()
     level = root_logger.level
     handler = remote_server.log_to_file(homes["codex"])
@@ -759,6 +809,8 @@ def test_the_server_log_says_how_the_kept_recall_went(served, tmp_path, monkeypa
         handler.close()
     log = (homes["codex"] / "scope-recall" / remote_server.LOG_NAME).read_text(encoding="utf-8")
     assert "hook UserPromptSubmit: None, record through None, " in log and ", warm recall answered" in log
+    # Where the time went (rc13); a runtime the handler did not attach is left out.
+    assert " ms (build 120 ms, capture 850 ms, close 40 ms), warm recall" in log
 
 
 def test_a_kept_recall_that_raised_is_named_and_the_request_recalls_itself(store, monkeypatch, caplog):

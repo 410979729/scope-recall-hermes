@@ -28,6 +28,12 @@ dependency count. No redacted source is fabricated as a new human occurrence.
 The authorizing command is included because it can repeat the target's content.
 In a shared store ([shared-store.md](shared-store.md)) there is one copy of every
 memory, so a `forget` through any entry applies to every entry.
+A capture still waiting in the capture inbox when a delete is recorded is cancelled
+when it holds a deleted message (its text, one of its segments as stored, or the
+same source); the scope's other waiting captures are stored. A later capture under
+a deleted message's key is refused and leaves the inbox, and a copy of a suppressed
+or deleted message stored under a new key, after its key collided with another
+message's, is stored suppressed.
 Future Episode, reference and artifact repositories must extend the dependency
 closure before accepting their object types; currently unknown types fail closed.
 

@@ -13,7 +13,7 @@ stays on the client's machine, where ``remote_client token`` made it.  ``serve``
 hook, each refused request and the server's own errors go to ``remote-server.log`` beside the config.
 
     python -m scope_recall.adapters.codex.remote_server configure --home <home> --host claude-code \
-        --listen 100.64.0.5 --port 18765 --token-sha256 <hex>
+        --listen 100.64.0.10 --port 18765 --token-sha256 <hex>
     python -m scope_recall.adapters.codex.remote_server serve --home <home> --host claude-code [--env-file <file>]
 """
 from __future__ import annotations
@@ -252,28 +252,37 @@ def handle_request(config: RemoteServerConfig, body: dict[str, Any], *, started:
     # hook sent again from the spool is the same source.  When it was stored, when its work falls due and a recall's
     # now are this machine's: a client clock a day fast held back a message's embedding by a day.
     observed_at, record = client_times(body)
+    building = time.monotonic()
     handler = CodexHookHandler.from_home(
         str(config.home), config.host,
         event_clock=_ObservedClock(observed_at) if observed_at is not None else None,
         hook_started_at=started if started is not None else time.monotonic(),
     )
+    built = round((time.monotonic() - building) * 1000)
     asked = None
     if recaller is not None and payload.get("hook_event_name") == "UserPromptSubmit":
         asked = handler.resident_recall = _Asked(recaller)
     try:
         result = handler.handle_payload(payload, record=record, local_record=False)
     finally:
+        closing = time.monotonic()
         handler.close()
+    closed = round((time.monotonic() - closing) * 1000)
     # What the request's handler decided of the answer (slow, late, without_vectors, failed) comes first; an answer
     # still on its way when the handler was done is its slow or late.
     warm = None if asked is None else handler.resident_outcome or asked.outcome
     # ``retry``: the store was busy or away and the event was not stored; a client that keeps its hooks sends
     # this one again.  The answer (a recall) is good either way.
+    # ``build_ms``, ``capture_ms``, ``attach_ms`` and ``close_ms``: how much of the hook's time making the handler, the
+    # capture, attaching the handler's own runtime and closing it took, so a slow prompt's log says where its time went;
+    # the rest is its recall (rc13).
     return {"result": result, "through": record.through if record is not None else None,
             "reason": handler.diagnostics.last_reason, "error": handler.diagnostics.capture_error_detail,
             "recall_error": handler.diagnostics.recall_error_detail,
             "recall_vector": handler.diagnostics.recall_vector_gap,
-            "retry": not handler.diagnostics.capture_settled, "warm": warm}
+            "retry": not handler.diagnostics.capture_settled, "warm": warm,
+            "build_ms": built, "capture_ms": handler.diagnostics.capture_elapsed_ms,
+            "attach_ms": handler.diagnostics.runtime_attach_ms, "close_ms": closed}
 
 
 def build_app(config: RemoteServerConfig):
@@ -329,13 +338,16 @@ def build_app(config: RemoteServerConfig):
             _log.error("hook: the entry is unavailable: %s", str(exc)[:200])
             return JSONResponse({"error": "entry_unavailable"}, status_code=503)
         # The error is the capture's code (DEADLINE_EXCEEDED, SECRET_DETECTED, ...), never any of its text.
-        _log.info("hook %s: %s%s%s%s%s, record through %s, %d ms%s", event, answer["reason"],
+        shares = ", ".join(f"{name} {answer[key]} ms" for name, key in (
+            ("build", "build_ms"), ("capture", "capture_ms"), ("attach", "attach_ms"), ("close", "close_ms"))
+            if answer.get(key) is not None)
+        _log.info("hook %s: %s%s%s%s%s, record through %s, %d ms%s%s", event, answer["reason"],
                   f" ({answer['error']})" if answer.get("error") else "",
                   f" ({answer['recall_error']})" if answer.get("recall_error") else "",
                   f" (recall without vectors: {answer['recall_vector']})" if answer.get("recall_vector") else "",
                   (", not stored, to be sent again" if config.host == "codex" else ", not stored")
                   if answer.get("retry") else "", answer["through"],
-                  round((time.monotonic() - started) * 1000),
+                  round((time.monotonic() - started) * 1000), f" ({shares})" if shares else "",
                   f", warm recall {answer['warm']}" if answer.get("warm") else "")
         return JSONResponse(answer)
 

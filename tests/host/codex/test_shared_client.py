@@ -445,6 +445,28 @@ def test_record_check_carries_stop_budget_and_defers_large_schema_upgrade(store,
         hook.close()
 
 
+def test_a_locked_database_during_the_record_check_ends_the_read_not_the_hook(store, tmp_path, monkeypatch):
+    """SQLite's own "database is locked" escaped the Stop hook's check of the session record, which ended the hook
+    (rc13).  The read ends there instead, and the next Stop starts again from the same line."""
+    root, _homes, client, _capture = store
+    record = _record(tmp_path / "TEST-projects" / "TEST-cc-session.jsonl",
+                     _person("u1", _moments()(0), "TEST locked record"))
+    hook = _hook(client)
+
+    def locked(*args, **kwargs):
+        raise sqlite3.OperationalError("database is locked")
+
+    try:
+        with monkeypatch.context() as patched:
+            patched.setattr(hook.core, "said_in_session", locked)
+            assert hook.handle_payload(_stop(record)) == {}
+        assert ("user", "human_direct", "TEST locked record") not in _said_in_store(root)
+        hook.handle_payload(_stop(record))
+    finally:
+        hook.close()
+    assert ("user", "human_direct", "TEST locked record") in _said_in_store(root)
+
+
 def test_two_record_messages_repeating_hook_text_are_not_both_suppressed(store, tmp_path):
     root, _homes, client, _capture = store
     at = _moments()

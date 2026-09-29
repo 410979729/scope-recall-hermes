@@ -41,10 +41,11 @@ machine and stays there; this machine keeps its SHA-256.
    machine does for the hooks here: [shared-store.md](shared-store.md)).
 
    The server has no console. Each hook it handles (its event, the handler's reason, the capture's error code
-   when it failed, how far a record was stored, the time taken, and for a prompt how its kept recall went:
-   `warm recall answered`, `busy`, `slow`, `late`, `without_vectors:<gap>` or `failed:<reason>`), each request
-   refused for want of the token and its own errors go to
-   `<home>\scope-recall\remote-server.log`, kept to about 1 MB with two older copies.
+   when it failed, how far a record was stored, the time taken with the shares of making its handler, the
+   capture, attaching the handler's runtime and closing it (the rest is the recall), and for a prompt how its
+   kept recall went: `warm recall answered`, `busy`, `slow`, `late`,
+   `without_vectors:<gap>` or `failed:<reason>`), each request refused for want of the token and its own
+   errors go to `<home>\scope-recall\remote-server.log`, kept to about 1 MB with two older copies.
 
    On Windows start it with a `pythonw.exe` that opens no console, such as the one in a virtual environment
    made by `python -m venv`. uv 0.12.1 writes `Scripts\pythonw.exe` as a copy of its console launcher: the

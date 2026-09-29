@@ -148,22 +148,10 @@ def given_up(code: object) -> bool:
     return type(code) is str and code.startswith(_GAVE_UP)
 
 
-def put_off(code: object) -> bool:
-    """Whether a row waits on a deferral or was given up: rows a delete keeps unless they hold deleted words."""
-    return type(code) is str and (code.startswith(_DEFERRED) or code.startswith(_GAVE_UP))
-
-
 def waiting(code: object) -> bool:
     """Whether some pass will still store a row with this code: what a hook's record read counts as already said.  A
     row given up is not."""
     return code is None or code in STILL_REPLAYED or (type(code) is str and code.startswith(_DEFERRED))
-
-
-def outlasts_a_delete(code: object) -> bool:
-    """Whether a delete keeps a row unless it holds a deleted message (``holds``): one put off or given up, which waits
-    for hours, or a key collision waiting for its new key, which waits for the next pass (reviews of rc10).  Any other
-    row of the partition is cancelled, so that a delayed capture cannot undo the delete."""
-    return put_off(code) or code == "VERSION_CONFLICT"
 
 
 def taking_a_new_key(code: object) -> bool:
@@ -342,6 +330,8 @@ def _commit(storage, clock, context, token, prepared, scope_id, policy, deadline
         code = receipt.error_code or "STORAGE_UNAVAILABLE"
     except ContractError as exc:
         code = exc.code
+        if (exc.code, exc.field) == _DELETED_KEY:
+            return _refused_for_a_delete(storage, context, token, prepared, deadline)
         # Terminal failures remain inspectable, but are not replayed forever.  A passing one (the store busy, the time
         # up) leaves the row's code as it was: written over, a collision left its path, and a row put off its tries
         # and its place across a delete (review of rc10).
@@ -357,6 +347,27 @@ def _commit(storage, clock, context, token, prepared, scope_id, policy, deadline
     # A row the next pass takes again says so: a pass that met a busy writer here said nothing (review of rc10).
     pending = (INGRESS_PENDING_GAP,) if code in _PASSING else ()
     return CaptureReceipt("queued", (), "queued", "pending", "pending", (*prepared.gaps, *pending), code)
+
+
+#: How storage refuses a capture whose key's message was deleted (``put_source``).
+_DELETED_KEY = ("ACCESS_DENIED", "source_unavailable")
+#: What a receipt carries when that capture left the inbox.
+SOURCE_DELETED_GAP = "capture_gap:source_deleted"
+
+
+def _refused_for_a_delete(storage, context, token, prepared, deadline) -> CaptureReceipt:
+    """A capture under the key of a deleted message is refused for good: once the delete is purged only its digests are
+    left, and stored under a new key it could bring back a near copy.  Left in the inbox with its code, it kept the
+    doctor's ``capture_ingress_blocked`` and the patrol's line up until someone removed it by hand (rc13); it leaves
+    the inbox, and the pass counts it among the rows it cancelled."""
+    try:
+        with storage.write(context, remaining_seconds=max(.001, deadline-time.monotonic())) as tx:
+            tx._check(write=True).execute("DELETE FROM capture_inbox WHERE token=?", (token,))
+    except (*_TRANSIENT, ContractError):
+        # Not removed: the next pass meets the same refusal and removes it then.
+        pass
+    return CaptureReceipt("cancelled", (), "not_persisted", "unchanged", "unchanged",
+                          (*prepared.gaps, SOURCE_DELETED_GAP), "ACCESS_DENIED")
 
 
 #: Marker spliced into a re-keyed capture's source_event_key. Self-documenting on

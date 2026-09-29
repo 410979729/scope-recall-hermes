@@ -253,17 +253,19 @@ class Deletions:
             if row is None:
                 raise ContractError("SOURCE_MISSING", "deletion_operation")
             now = row["created_at"]
-        # Pending captures have no public source ref yet. Cancel the affected
-        # partition conservatively so a delayed event cannot undo forgetting.
-        # A row put off can wait for hours, and so can a key collision waiting
-        # for its new key; cancelling one lost words nothing had forgotten
-        # (reviews of rc10).  It is kept unless it holds a deleted message
-        # (``capture_inbox.outlasts_a_delete``, ``holds``).  A suppress leaves
-        # the inbox alone: what arrives of the same message, or restates a
-        # suppressed claim, is suppressed as it is stored, and cancelling what
+        # Pending captures have no public source ref yet: a row of the affected
+        # partition that holds a deleted message (``capture_inbox.holds``; the
+        # targets are the whole closure, a deleted claim's sources included) is
+        # cancelled, so that a delayed capture cannot undo the delete.  Every
+        # other row is kept, whichever client sent it: cancelling the whole
+        # partition lost words nothing had forgotten, from a row put off for
+        # hours, a key collision waiting for its new key (reviews of rc10), or
+        # another client's capture waiting for the next pass (rc13).  A suppress
+        # leaves the inbox alone: what arrives of the same message, or restates
+        # a suppressed claim, is suppressed as it is stored, and cancelling what
         # merely held its words lost captures the contract keeps
         # (``docs/deletion-contract.md``, reviews of rc10).
-        from .capture_inbox import deleted_text, holds, outlasts_a_delete, taking_a_new_key
+        from .capture_inbox import deleted_text, holds, taking_a_new_key
 
         digests, groups, versions = set(), set(), set()
         for target in targets:
@@ -288,10 +290,9 @@ class Deletions:
             for token, code in conn.execute(
                     "SELECT token,last_error_code FROM capture_inbox WHERE scope_id=? AND project_id IS ? AND branch_id IS ?",
                     (scope, project, branch)).fetchall():
-                # Only a row that outlasts a delete has its payload read: the inbox holds up to 64 MB.
-                if not outlasts_a_delete(code) or holds(
-                        conn.execute("SELECT payload_json FROM capture_inbox WHERE token=?", (token,)).fetchone()[0],
-                        frozenset(digests), frozenset(groups), forgotten_texts(), rekeyed=taking_a_new_key(code)):
+                # One payload at a time: the inbox holds up to 64 MB.
+                if holds(conn.execute("SELECT payload_json FROM capture_inbox WHERE token=?", (token,)).fetchone()[0],
+                         frozenset(digests), frozenset(groups), forgotten_texts(), rekeyed=taking_a_new_key(code)):
                     conn.execute("DELETE FROM capture_inbox WHERE token=?", (token,))
         for target in targets:
             conn.execute("DELETE FROM consolidation_fragments WHERE work_id IN (SELECT work_id FROM work_items WHERE subject_ref=?)", (target.ref,))

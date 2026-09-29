@@ -7,6 +7,7 @@ import hashlib
 import json
 import math
 from pathlib import Path
+import sqlite3
 import sys
 import threading
 import time
@@ -141,13 +142,16 @@ class HookDiagnostics:
     recall_vector_gap: str | None = None
     #: Whether the recall ran its vector search: what a hook asks of its server's answer (``_resident_answer``).
     recall_vectors: bool | None = None
+    #: How long attaching the runtime (vector store, embedding worker) took, when this hook attached it.
+    runtime_attach_ms: int | None = None
 
     @property
     def capture_settled(self) -> bool:
         """No capture, or one stored, queued, or refused in a way no retry changes (a secret, an invalid message,
-        its id already taken).  Otherwise the store was busy or away, and the same hook sent again may store it."""
+        its id already taken, its id's message deleted, or taken from the inbox by a pass that stored it).
+        Otherwise the store was busy or away, and the same hook sent again may store it."""
         return (self.capture_stage is None or self.capture_durability in ("persisted", "queued")
-                or self.capture_disposition in ("rejected", "conflict")
+                or self.capture_disposition in ("rejected", "conflict", "cancelled")
                 or self.capture_error_code in _SETTLED_CAPTURE_CODES)
 
 
@@ -319,6 +323,7 @@ class CodexHookHandler:
             return
         self._runtime_attach_attempted = True
         session_id = f"{self.host}-runtime:{self.config.installation_id}"
+        started = time.monotonic()
         try:
             partition = self._context(audience, session_id, "host_generated") if audience is not None else None
             host_runtime = attach_trusted_host_runtime(
@@ -335,6 +340,8 @@ class CodexHookHandler:
         except Exception:
             self._diag("runtime_attach_failed", gaps=("capability_gap:trusted_runtime_invalid",))
             return
+        finally:
+            self.diagnostics.runtime_attach_ms = round((time.monotonic() - started) * 1000)
         self._host_runtime = host_runtime
         self.core = host_runtime.core
         self._merge_runtime_gaps()
@@ -504,7 +511,7 @@ class CodexHookHandler:
             else:
                 receipt = self.core.record_event(context, event, scope_id=audience.capture_scope_id,
                                                  remaining_seconds=min(wait, self._remaining(deadline)))
-        except (ContractError, OSError, RuntimeError) as exc:
+        except (ContractError, OSError, RuntimeError, sqlite3.Error) as exc:
             self.diagnostics.capture_durability = "unknown"
             self.diagnostics.capture_error_type = type(exc).__name__
             if isinstance(exc, ContractError):
@@ -573,7 +580,7 @@ class CodexHookHandler:
                       if entry.role == "user" and entry.prompt_id else None) for entry in said],
                     window_seconds=_RECORD_SAME_MESSAGE_S,
                     remaining_seconds=max(0.0, self._remaining(deadline)))
-            except (ContractError, OSError, RuntimeError):
+            except (ContractError, OSError, RuntimeError, sqlite3.Error):
                 self._diag("session_record_check_failed")
                 return
         known = {entry.entry_id for entry, stored in zip(said, held) if stored}
@@ -845,7 +852,7 @@ class CodexHookHandler:
         try:
             packet = self.core.recall_packet(context, request, current_source_refs=current_refs, deadline_seconds=remaining)
             preparation = self.core.prepare_recall_render(context, packet)
-        except (ContractError, OSError, RuntimeError) as exc:
+        except (ContractError, OSError, RuntimeError, sqlite3.Error) as exc:
             code = getattr(exc, "code", None)
             self.diagnostics.recall_error_detail = _error_detail(
                 f"{type(exc).__name__}:{code}" if isinstance(code, str) else type(exc).__name__)

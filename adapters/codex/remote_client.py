@@ -18,7 +18,7 @@ reach a private address.  What did not get through, and what the spool dropped, 
     python -m scope_recall.adapters.codex.remote_client --config <client.json>        (the hook itself)
     python -m scope_recall.adapters.codex.remote_client flush --config <client.json>  (started by a hook)
 
-``client.json`` holds ``url`` (the server, e.g. ``http://100.64.0.5:18765``), ``host`` (``claude-code`` or
+``client.json`` holds ``url`` (the server, e.g. ``http://100.64.0.10:18765``), ``host`` (``claude-code`` or
 ``codex``), ``token_file`` and ``state_dir``, all absolute.  The token never leaves this machine except in
 the requests' ``Authorization`` header.
 """

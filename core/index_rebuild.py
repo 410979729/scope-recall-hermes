@@ -14,7 +14,7 @@ from .visibility import allowed
 #: The roles of an import whose words a person reads back: what the owner said, what they were told, their
 #: documents, and the notes an older store kept without a role.  An import queued an embedding only where its source
 #: store had one (``maintenance/shared_import.py``), so a store that never had one left its history findable by its
-#: words alone: on the pilot tianshu's, 1,928 of the owner's messages, 6,552 replies and 3,009 notes.  Tool output is
+#: words alone: on the pilot one agent's, 1,928 of the owner's messages, 6,552 replies and 3,009 notes.  Tool output is
 #: left out: 200,000 imported outputs would cost more to embed than everything else in the store, and a captured
 #: one keeps its vector 180 days (``tool_output_retention_days``).
 IMPORT_EMBED_ROLES = ("user", "assistant", "document", "unknown")
