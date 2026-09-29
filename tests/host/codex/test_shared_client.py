@@ -1705,9 +1705,10 @@ def test_a_server_busy_for_less_than_a_hook_s_wait_is_answered(resident, monkeyp
     assert recaller.outcome == "answered" and endpoint.path.exists()
 
 
-def test_a_server_names_itself_again_only_when_it_answers_within_a_hook_s_wait(store, monkeypatch):
+def test_a_server_names_itself_again_only_when_its_check_comes_back_in_time(store, monkeypatch):
     """Checked from inside the server, a hello slowed by its own busy threads passed, and a server hooks could not
-    reach in time named itself again (review of rc11)."""
+    reach in time named itself again; held to a hook's 0.5 s, the check kept out a server hooks reached (reviews of
+    rc11).  A check that takes longer than a hook's wait but within its own allowance names it again."""
     import time
 
     from scope_recall.adapters.codex import local_endpoint
@@ -1737,7 +1738,11 @@ def test_a_server_names_itself_again_only_when_it_answers_within_a_hook_s_wait(s
                 endpoint.path.unlink(missing_ok=True)
                 time.sleep(2.0)
                 assert not endpoint.path.exists(), f"not while its {name} is slower than its check allows"
-        monkeypatch.setattr(local_endpoint, "_hello", real)
+        def busy(connection, token):
+            time.sleep(local_endpoint.PROOF_SECONDS + 0.1)  # over a hook's wait, within the check's allowance
+            return real(connection, token)
+
+        monkeypatch.setattr(local_endpoint, "_hello", busy)
         deadline = time.monotonic() + 5
         while not endpoint.path.exists() and time.monotonic() < deadline:
             time.sleep(0.05)

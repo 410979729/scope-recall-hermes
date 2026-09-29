@@ -52,9 +52,10 @@ CONNECT_SECONDS = 0.3
 #: timer tick on Windows): at 0.3 s such a server lost its name (review of rc11).
 PROOF_SECONDS = 0.5
 #: What a server's check of itself may take to name itself again, by the clock.  Made from inside the busy process, the
-#: check waits for its own share of Python's lock besides the answer, and reads about twice what a hook sees: held to
-#: ``PROOF_SECONDS`` it kept out, every other check, a server hooks reached in time (review of rc11).
-SELF_CHECK_SECONDS = 2 * PROOF_SECONDS
+#: check waits for its own share of Python's lock besides the answer, and reads 1.0-1.9 times what a hook sees, about
+#: 1.4 as a rule: held to ``PROOF_SECONDS`` it kept out, every other check, a server hooks reached in time, and at
+#: twice it let back one they could not (reviews of rc11).
+SELF_CHECK_SECONDS = 1.5 * PROOF_SECONDS
 #: Servers a hook tries, newest first, and how long it may spend finding one.
 MAX_TRIED = 2
 FIND_SECONDS = 1.0
@@ -437,9 +438,9 @@ class HookEndpoint:
     def _keep_named(self) -> None:
         while not self._stopped.wait(ADVERTISE_SECONDS):
             # A hook removed the name of a server that did not prove itself in time.  It names itself again once
-            # none of its recalls is stuck and it proves itself within a hook's wait, counted by the clock: from
-            # inside the server, the time its own busy threads held Python's lock did not count against the socket's,
-            # and a server hooks could not reach in time named itself again (review of rc11).
+            # none of its recalls is stuck and its own check comes back within ``SELF_CHECK_SECONDS``, counted by the
+            # clock: from inside the server, the time its own busy threads held Python's lock did not count against
+            # the socket's, and a server hooks could not reach in time named itself again (reviews of rc11).
             if self.path.exists() or self._stuck():
                 continue
             connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=CONNECT_SECONDS)

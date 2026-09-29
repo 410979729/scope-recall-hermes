@@ -853,6 +853,9 @@ class CodexHookHandler:
             self.diagnostics.recall_error_detail = _error_detail(incomplete)
             self._diag("recall_incomplete", gaps=gaps)
         if self._remaining(deadline) <= 0:
+            # Nothing of its vector search reached an answer: ranked as with it, this empty answer beat a server's
+            # (review of rc11).
+            self.diagnostics.recall_vectors = False
             self._diag("deadline_exceeded", gaps=gaps)
             return {}
         # In a shared store the model is told which agent it is, so another entry's items read as theirs.
@@ -1021,11 +1024,12 @@ def recall_incomplete(packet) -> str | None:
 
 def _server_own_vector_fault(gap: object) -> bool:
     """Whether a server's recall went without its vector search for a reason of its own, which the hook's own recall
-    may not share: no vector search at all, its key (``credential_*``), or its LanceDB helper or anything else raised
-    in its own process (``core.vector_failure``).  Any other ``AuxiliaryModelError`` (what the provider answered, the
-    network, the time it took, the budget) the hook meets as well: the server makes a new HTTP worker for each recall,
-    as the hook does, and a second recall only cost the prompt its time and a second metered call (reviews of rc11).
-    Nor is the search running out of time here."""
+    may not share: no vector search at all, its key (``credential_*``), or its LanceDB helper or another fault of its
+    own process that is not an embedding call's (``core.vector_failure``).  An embedding call's failure is an
+    ``AuxiliaryModelError`` (what the provider answered, the network, the time it took, the budget, its HTTP worker,
+    which the server makes anew for each recall as the hook does), and the hook meets it as well: a second recall only
+    cost the prompt its time and a second metered call (reviews of rc11).  Nor is the search running out of time
+    here."""
     if gap == "vector_unavailable":
         return True
     if type(gap) is not str or not gap.startswith("vector_error:"):

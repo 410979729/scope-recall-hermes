@@ -344,6 +344,30 @@ def test_a_recall_whose_read_did_not_finish_ranks_as_without_its_vector_search(h
     assert (guarded.diagnostics.last_reason, guarded.diagnostics.recall_vectors) == ("recall_incomplete", False)
 
 
+def test_a_recall_whose_time_ran_out_after_its_packet_ranks_as_without_its_vector_search(handler, installed):
+    """A recall whose packet was whole, vector search included, but whose time ran out before it was rendered came
+    back empty and still ranked as one with its vector search (review of rc11)."""
+    _hook, project_root, config = handler
+    _, core, clock, _ = installed
+
+    class Late:
+        def __getattr__(self, name):
+            return getattr(core, name)
+
+        def recall_packet(self, context, request, *, current_source_refs=(), deadline_seconds=2.0):
+            packet = core.recall_packet(context, request, current_source_refs=current_source_refs,
+                                        deadline_seconds=deadline_seconds)
+            clock._mono += 100.0  # the hook's time is up once the packet is back
+            return {**packet, "gaps": []}  # whole, its vector search run
+
+    guarded = CodexHookHandler(config, core=Late(), clock=clock)
+    try:
+        guarded.handle_payload(_payload(project_root, "UserPromptSubmit", prompt="TEST 时间用完了。"))
+    finally:
+        clock._mono -= 100.0
+    assert (guarded.diagnostics.last_reason, guarded.diagnostics.recall_vectors) == ("deadline_exceeded", False)
+
+
 def test_missing_public_fields_do_not_capture(handler, installed):
     hook, project_root, config = handler
     payload = _payload(project_root, "UserPromptSubmit")

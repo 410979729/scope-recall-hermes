@@ -154,9 +154,9 @@ left. If the server has not answered when 1.5 s are left, the hook recalls as we
 helper it started when it started, and uses the answer that ran its vector search (the server's when
 both or neither did); a hook whose own recall went without it waits for the server until its own time
 is up. A server answer without its vector search is used as it is, unless what failed was the
-server's own (its key, its LanceDB helper or anything else in its own process, or no vector search at
-all while the hook has one): the hook then recalls as well and uses its own if that ran its vector
-search. What the provider answered, the network or the time it took, the hook would meet as well.
+server's own (its key, its LanceDB helper, or no vector search at all while the hook has one): the
+hook then recalls as well and uses its own if that ran its vector search. An embedding call's failure
+(what the provider answered, the network, the time it took) the hook would meet as well.
 With no server running (the client closed, or its MCP server disabled), or one that says it is busy,
 the hook recalls itself at once, as before; an answer that comes after the hook is done is dropped,
 and one that failed, or came back empty because its read did not finish (the store unreadable, or its
