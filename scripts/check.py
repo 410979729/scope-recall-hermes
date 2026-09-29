@@ -33,8 +33,12 @@ INTEGRATION_WATCHDOG_SECONDS = 2700
 #: that reports a timeout instead of a result is not a gate. A watchdog is
 #: there to bound a *hang*, which is unbounded; sizing it to the work actually
 #: selected keeps that meaning instead of turning every eighty new tests into
-#: a flake that has to be rediscovered.
-WATCHDOG_SECONDS_PER_FILE = 5
+#: a flake that has to be rediscovered.  GitHub's Windows runners also run the
+#: same healthy suite several times slower at times: the retrieval tier took
+#: 39-170s across runs and then met its 215s watchdog, the host tier took
+#: 142-237s and then met 290s, with nothing hung either time.  Twenty seconds a
+#: file leaves such a runner room and still bounds a hang at the release budget.
+WATCHDOG_SECONDS_PER_FILE = 20
 
 
 def pytest_watchdog_seconds(tier: str, selected_files: int = 0) -> int:
