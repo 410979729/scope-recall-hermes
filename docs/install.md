@@ -327,7 +327,10 @@ to purely lexical. Usually the same file is passed to `autostart enable`.
 The installer owns these files exclusively. Do not hand-edit them or add your own
 scripts to that directory: the next `plan-install` will report them as
 `edited prior file` or `unrelated plugin file` and refuse. Change the installer if
-you need different behaviour.
+you need different behaviour. A skill (`SKILL.md`) an agent edited is the one
+exception: while the package's copy of it is the one installed before, the install
+keeps the edit (`kept` in the plan) and installs the rest; once a release changes
+that skill, the edit is a conflict again.
 
 Six native hook events are registered, each invoking
 `scope_recall.adapters.codex.hook_entry` through the isolated interpreter with a

@@ -62,6 +62,8 @@ _RUNTIME_ATTACH_MIN_S = 0.3
 _LOCAL_RECALL_RESERVE_S = 1.5
 #: The least a server is asked with: in less it could not be found, prove itself and answer.
 _RESIDENT_MIN_S = 1.0
+#: An embedding call's failures that its connection or its worker made, not the provider (``_server_own_vector_fault``).
+_CONNECTION_FAULTS = frozenset({"network_error", "http_protocol"})
 #: What a server's recall may report of how it ended, besides its vector gap and its error.
 _RESIDENT_REASONS = frozenset({"deadline_exceeded", "recall_exception", "recall_incomplete"})
 #: Capture refusals a second attempt meets again.
@@ -368,10 +370,12 @@ class CodexHookHandler:
         self._maybe_launch_owned_worker(session_id, audience)
 
     @property
-    def runtime_attach_failed(self) -> bool:
-        """Whether this handler tried to attach its trusted runtime and could not.  One kept for later prompts
-        (``local_endpoint.KeptRecaller``) never tries again, so it is made anew."""
-        return self._runtime_attach_attempted and self._host_runtime is None
+    def runtime_ready(self) -> bool:
+        """Whether this handler has its trusted runtime attached from a config it could read.  One kept for later
+        prompts (``local_endpoint.KeptRecaller``) never attaches again, so without it the handler is made anew: a
+        config read at a bad moment (a sharing violation) left every later recall without its vector search, where a
+        handler of its own read it again (review of rc12)."""
+        return self._host_runtime is not None and bool(getattr(self._host_runtime, "configured", False))
 
     def close(self) -> None:
         if self._host_runtime is not None:
@@ -1030,13 +1034,13 @@ def recall_incomplete(packet) -> str | None:
 
 def _server_own_vector_fault(gap: object) -> bool:
     """Whether a server's recall went without its vector search for a reason of its own, which the hook's own recall
-    may not share: no vector search at all, its key (``credential_*``), or its LanceDB helper or another fault of its
-    own process that is not an embedding call's (``core.vector_failure``).  An embedding call's failure is an
-    ``AuxiliaryModelError`` (what the provider answered, the network, the time it took, a spent budget, its HTTP
-    worker, which the server makes anew for each recall as the hook does), and the hook meets it as well: a second
-    recall only cost the prompt its time and a second metered call (reviews of rc11).  The spend ledger's lock held by
-    another writer is not one (an ``OperationalError``), and costs one recall more.  Nor is the search running out of
-    time here."""
+    may not share: no vector search at all, its key (``credential_*``), its LanceDB helper or another fault of its own
+    process that is not an embedding call's (``core.vector_failure``), or its embedding connection and worker
+    (``network_error``, ``http_protocol``, ``transport_*``), which the server keeps between prompts (rc12) while the
+    hook's are new.  Otherwise an embedding call's failure (what the provider answered, the time it took, a spent
+    budget) the hook meets as well: a second recall only cost the prompt its time and a second metered call (reviews
+    of rc11).  The spend ledger's lock held by another writer is not one (an ``OperationalError``), and costs one
+    recall more.  Nor is the search running out of time here."""
     if gap == "vector_unavailable":
         return True
     if type(gap) is not str or not gap.startswith("vector_error:"):
@@ -1046,7 +1050,7 @@ def _server_own_vector_fault(gap: object) -> bool:
         return False
     if parts[1] != "AuxiliaryModelError":
         return True
-    return len(parts) >= 3 and parts[2].startswith("credential_")
+    return len(parts) >= 3 and (parts[2].startswith(("credential_", "transport_")) or parts[2] in _CONNECTION_FAULTS)
 
 
 def recall_without_vectors(gaps) -> str | None:

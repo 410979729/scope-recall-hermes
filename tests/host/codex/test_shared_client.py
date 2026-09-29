@@ -1650,20 +1650,24 @@ def test_a_session_record_line_or_reply_nested_past_the_parser_s_limit_is_passed
 
 def test_which_vector_faults_are_the_server_s_own():
     """A server's own fault makes the hook recall a second time; one the hook meets as well only cost the prompt its
-    time and a second metered call.  The lists missed faults both ways (reviews of rc11)."""
+    time and a second metered call.  The lists missed faults both ways (reviews of rc11).  Since the server keeps its
+    embedding connection and worker between prompts, their failures are its own (review of rc12)."""
     from scope_recall.adapters.codex.handler import _server_own_vector_fault
 
     for gap in ("vector_unavailable", "vector_error:AuxiliaryModelError:credential_missing",
                 "vector_error:AuxiliaryModelError:credential_shape_invalid",
+                "vector_error:AuxiliaryModelError:network_error", "vector_error:AuxiliaryModelError:http_protocol",
+                "vector_error:AuxiliaryModelError:transport_unavailable",
+                "vector_error:AuxiliaryModelError:transport_worker",
+                "vector_error:AuxiliaryModelError:transport_worker_protocol",
                 "vector_error:RuntimeError:helper_lock_timeout", "vector_error:RuntimeError:worker_not_running",
                 "vector_error:RuntimeError:table_not_open", "vector_error:RuntimeError", "vector_error:MemoryError"):
         assert _server_own_vector_fault(gap), gap
     shared = ("http_status:429", "timeout", "provider_hold", "model_refused", "request_rejected", "request_limit",
               "request_invalid", "response_limit", "response_status_failed", "budget_exhausted", "budget_unavailable",
               "meter_breach", "invalid_json", "empty_output", "missing_usage", "input_invalid", "sensitive_request",
-              "endpoint_invalid", "network_error", "transport_unavailable", "transport_worker",
-              "transport_worker_protocol", "unsupported_response_shape", "unicode_error", "vector_dimension_mismatch",
-              "vector_nonfinite", "vector_zero", "http_redirect", "http_protocol")
+              "endpoint_invalid", "unsupported_response_shape", "unicode_error", "vector_dimension_mismatch",
+              "vector_nonfinite", "vector_zero", "http_redirect")
     for gap in (*(f"vector_error:AuxiliaryModelError:{kind}" for kind in shared), "vector_error:AuxiliaryModelError",
                 "deadline_exceeded_vector", "vector_error:", None, ""):
         assert not _server_own_vector_fault(gap), gap
@@ -1826,7 +1830,7 @@ class _KeptFake:
         from scope_recall.adapters.codex.handler import HookDiagnostics
 
         self.diagnostics = HookDiagnostics(capability_gaps=("TEST-gap",))
-        self.fail, self.runtime_attach_failed, self.closed, self.calls = fail, attach_failed, False, []
+        self.fail, self.runtime_ready, self.closed, self.calls = fail, not attach_failed, False, []
         _KeptFake.made.append(self)
 
     def resident_recall_for(self, payload, current_refs, gaps, remaining):
@@ -1854,7 +1858,7 @@ def test_a_kept_recaller_uses_one_handler_until_its_files_change():
     assert answers[0][1]["recall_vectors"] is True and answers[0][1]["capability_gaps"] == ["TEST-gap"]
     stamp[0] = "two"
     kept(_prompt("TEST after"), (), (), 5.0)
-    assert len(_KeptFake.made) == 2 and _KeptFake.made[0].closed and not _KeptFake.made[1].closed
+    assert len(_KeptFake.made) == 2 and _eventually(lambda: _KeptFake.made[0].closed) and not _KeptFake.made[1].closed
     kept.close()
     assert _KeptFake.made[1].closed and kept(_prompt("TEST closed"), (), (), 5.0) is None
 
@@ -1899,8 +1903,9 @@ def test_a_recall_while_the_kept_handler_is_busy_is_answered_by_its_own():
 
 
 def test_a_kept_handler_that_raised_or_could_not_attach_its_runtime_is_made_anew():
-    """A handler that tried to attach its runtime and could not never tries again: kept, it recalled every later
-    prompt without its vector search.  One whose recall raised is not trusted with the next."""
+    """A handler whose runtime is not attached from a config it could read never attaches again: kept, it recalled
+    every later prompt without its vector search (review of rc12).  One whose recall raised is not trusted with the
+    next."""
     import pytest
 
     from scope_recall.adapters.codex.local_endpoint import KeptRecaller
@@ -1912,7 +1917,8 @@ def test_a_kept_handler_that_raised_or_could_not_attach_its_runtime_is_made_anew
         kept(_prompt("TEST raised"), (), (), 5.0)
     assert kept(_prompt("TEST no runtime"), (), (), 5.0)[0] == {"TEST": "TEST no runtime"}
     assert kept(_prompt("TEST kept"), (), (), 5.0)[0] == {"TEST": "TEST kept"}
-    assert [fake.closed for fake in _KeptFake.made] == [True, True, False] and len(_KeptFake.made) == 3
+    assert _eventually(lambda: [fake.closed for fake in _KeptFake.made] == [True, True, False])
+    assert len(_KeptFake.made) == 3
 
 
 def test_the_mcp_server_keeps_its_recall_handler_across_prompts_and_threads(resident, monkeypatch):
@@ -1923,6 +1929,9 @@ def test_the_mcp_server_keeps_its_recall_handler_across_prompts_and_threads(resi
     from scope_recall.adapters.codex import handler as handler_module
 
     _root, client, endpoint = resident
+    # This store has no runtime config, so no handler's runtime is ready and each would be made anew (the test
+    # after this one); the wiring is what is tested here.
+    monkeypatch.setattr(handler_module.CodexHookHandler, "runtime_ready", property(lambda self: True))
     made = []
     real = handler_module.CodexHookHandler.from_home.__func__
 
@@ -1956,3 +1965,73 @@ def test_the_mcp_server_keeps_its_recall_handler_across_prompts_and_threads(resi
     assert len(made) == 2 and answer["result"] == answers[0]["result"], "a busy kept handler: one of its own"
     endpoint.stop()
     assert endpoint.kept(_prompt("TEST stopped"), (), (), 5.0) is None
+
+
+def _eventually(check, seconds=5.0):
+    import time
+
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        if check():
+            return True
+        time.sleep(0.02)
+    return check()
+
+
+def test_a_server_without_a_runtime_config_makes_a_handler_for_each_recall(resident, monkeypatch):
+    """A handler whose runtime is not ready is not kept, so an entry without a runtime config costs each recall what
+    it did before rc12, and one whose config could not be read at one moment reads it again at the next."""
+    from scope_recall.adapters.codex import handler as handler_module
+
+    _root, _client, endpoint = resident
+    made = []
+    real = handler_module.CodexHookHandler.from_home.__func__
+    monkeypatch.setattr(handler_module.CodexHookHandler, "from_home",
+                        classmethod(lambda cls, *args, **kwargs: made.append(1) or real(cls, *args, **kwargs)))
+    for index in range(2):
+        _answer, close = endpoint.recall({"payload": _prompt("TEST 没有配置。", prompt_id=f"TEST-prompt-bare-{index}"),
+                                          "current_refs": (), "gaps": (), "remaining": 5.0})
+        close()
+    assert len(made) == 2
+
+
+def test_a_replaced_kept_handler_is_closed_off_the_request_s_time():
+    """Closing a handler stops its vector helper, which can take seconds; done inside the recall that replaced it,
+    it spent that recall's time and could make the server look stuck (review of rc12)."""
+    import time
+
+    from scope_recall.adapters.codex.local_endpoint import KeptRecaller
+
+    _KeptFake.made = []
+
+    class SlowClose(_KeptFake):
+        def close(self):
+            time.sleep(1.0)
+            super().close()
+
+    stamp = ["one"]
+    kept = KeptRecaller(SlowClose, stamp=lambda: stamp[0])
+    kept(_prompt("TEST first"), (), (), 5.0)
+    stamp[0] = "two"
+    started = time.monotonic()
+    assert kept(_prompt("TEST second"), (), (), 5.0)[0] == {"TEST": "TEST second"}
+    assert time.monotonic() - started < 0.5
+    assert _eventually(lambda: _KeptFake.made[0].closed)
+
+
+def test_a_kept_handler_is_made_anew_when_the_entry_s_pointer_or_grants_change(resident):
+    """Before rc12 each prompt read the entry's pointer and the store's record of its grants again; a kept handler
+    watches them, so a re-attach that narrows the grants is taken up at the next prompt (review of rc12)."""
+    import os
+
+    from scope_recall.adapters.codex.local_endpoint import entry_files
+
+    _root, client, endpoint = resident
+    files = entry_files(client)
+    assert len(files) == 2 and all(path.is_file() for path in files)
+    before = endpoint._kept_stamp()
+    for path in files:
+        status = path.stat()
+        os.utime(path, ns=(status.st_atime_ns, status.st_mtime_ns + 1_000_000_000))
+        assert endpoint._kept_stamp() != before
+        before = endpoint._kept_stamp()

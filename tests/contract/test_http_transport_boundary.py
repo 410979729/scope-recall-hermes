@@ -255,3 +255,83 @@ def test_query_helper_close_cancels_active_request(persistent_transport):
         with pytest.raises(models.AuxiliaryModelError):
             pending.result(timeout=2)
     assert process.poll() is not None
+
+
+def _closing_transport(tmp_path, monkeypatch, *, idle_reuse=None, close=True):
+    """A loopback server that closes each connection after its answer without saying so (``close``), as a server does
+    to one left idle past its own keep-alive time, or keeps it open; the helper's reuse limit can be set."""
+    import http.server
+    import threading
+
+    connections = []
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def log_message(self, *args):
+            pass
+
+        def do_POST(self):
+            connections.append(self.client_address)
+            self.rfile.read(int(self.headers["Content-Length"]))
+            self.send_response(200)
+            self.send_header("Content-Length", "2")
+            self.end_headers()
+            self.wfile.write(b"ok")
+            self.wfile.flush()
+            self.close_connection = close
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    worker = tmp_path / "closing_worker.py"
+    # The helper itself, not whatever an earlier call patched ``_HTTP_WORKER_PATH`` to.
+    helper = Path(models.__file__).resolve().parents[1] / "runtime" / "_http_worker.py"
+    worker.write_text(
+        "import importlib.util, http.client\n"
+        f"s=importlib.util.spec_from_file_location('worker', {str(helper)!r})\n"
+        "w=importlib.util.module_from_spec(s); s.loader.exec_module(w)\n"
+        f"w._open_https_connection=lambda *a, **k: http.client.HTTPConnection('127.0.0.1', {server.server_port})\n"
+        + (f"w.IDLE_REUSE_SECONDS={idle_reuse!r}\n" if idle_reuse is not None else "")
+        + "raise SystemExit(w.main())\n", encoding="utf-8",
+    )
+    monkeypatch.setattr(models, "_HTTP_WORKER_PATH", worker)
+    return models.HttpsTransport(persistent=True), connections, server, thread
+
+
+def test_the_helper_sends_nothing_on_a_connection_its_server_closed(tmp_path, monkeypatch):
+    """A worker kept between a server's prompts sent the next request on the connection the provider had closed
+    while it sat idle, and failed at once; the recall went without its vector search (review of rc12)."""
+    transport, connections, server, thread = _closing_transport(tmp_path, monkeypatch)
+    try:
+        assert _persistent_post(transport) == (200, b"ok")
+        time.sleep(0.3)
+        assert _persistent_post(transport) == (200, b"ok")
+        assert len(set(connections)) == 2
+    finally:
+        transport.close()
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+def test_the_helper_does_not_reuse_a_connection_idle_past_its_limit(tmp_path, monkeypatch):
+    """A connection idle past ``IDLE_REUSE_SECONDS`` is not used again even when nothing says it was closed: a proxy
+    or a NAT drops it silently.  The same server keeps one connection within the limit."""
+    from scope_recall.runtime import _http_worker as worker
+
+    assert worker.IDLE_REUSE_SECONDS == 30.0
+    for limit, expected in ((None, 1), (0.0, 2)):
+        transport, connections, server, thread = _closing_transport(tmp_path / f"TEST-{expected}", monkeypatch,
+                                                                    idle_reuse=limit, close=False)
+        try:
+            assert _persistent_post(transport) == (200, b"ok")
+            time.sleep(0.1)  # past a tick of Windows' 15.6 ms clock: an idle time of 0 is not past a limit of 0
+            assert _persistent_post(transport) == (200, b"ok")
+            assert len(set(connections)) == expected, (limit, connections)
+        finally:
+            transport.close()
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=2)

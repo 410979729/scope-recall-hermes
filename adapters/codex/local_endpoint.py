@@ -349,8 +349,34 @@ def file_stamp(*paths: Path | None) -> tuple:
     return tuple(stamps)
 
 
+def entry_files(home: Path | str) -> tuple[Path, ...]:
+    """What a shared entry's handler is made from besides its credentials and runtime config: its pointer to the
+    store, and the store's record of the entry's grants and binding."""
+    from ..hermes.installation import MANIFEST_FILENAME, attachment_path, read_attachment
+
+    files = [attachment_path(Path(home))]
+    try:
+        attachment = read_attachment(Path(home))
+    except Exception:  # noqa: BLE001 - an unreadable pointer is one more reason the stamp changed
+        attachment = None
+    if attachment is not None:
+        files.append(Path(attachment.root) / MANIFEST_FILENAME)
+    return tuple(files)
+
+
 def _nothing() -> None:
     return None
+
+
+def _close_later(handler: Any) -> None:
+    """Close a handler off the request's time: its vector helper can take seconds to stop."""
+    def close() -> None:
+        try:
+            handler.close()
+        except Exception:  # noqa: BLE001 - a handler that cannot close is dropped all the same
+            pass
+
+    threading.Thread(target=close, name="scope-recall-kept-close", daemon=True).start()
 
 
 class KeptRecaller:
@@ -361,9 +387,9 @@ class KeptRecaller:
     worker and its connection (about 1 s) for every prompt: on the pilot a warm server's recall took 3.9-4.1 s and
     two of five lost their vector search to the time; with the handler kept, 1.6-2.1 s with it (rc12).  The handler
     only recalls (``resident_recall_for``), which writes nothing.  One recall uses it at a time: another at the same
-    moment gets None, and its caller recalls as it did before.  It is made anew when ``stamp`` changes (the env file
-    or runtime config it was made with), after a recall that raised, after its runtime could not be attached, and
-    never once closed."""
+    moment gets None, and its caller recalls as it did before.  It is made anew when ``stamp`` changes (the files it
+    was made from), after a recall that raised, and while its runtime is not attached from a readable config; the
+    handler it replaces is closed after, not within, the recall that replaced it.  Once closed it answers nothing."""
 
     def __init__(self, build: Callable[[], Any], stamp: Callable[[], object] = tuple) -> None:
         self._build = build
@@ -385,7 +411,7 @@ class KeptRecaller:
                 return None
             stamp = self._stamp()
             if self._handler is not None and stamp != self._made_with:
-                self._discard()
+                self._discard(later=True)
             if self._handler is None:
                 self._handler, self._made_with = self._build(), stamp
             handler = self._handler
@@ -393,23 +419,27 @@ class KeptRecaller:
                 result = handler.resident_recall_for(payload, current_refs, gaps,
                                                      max(0.0, budget - (time.monotonic() - received)))
             except BaseException:
-                self._discard()
+                self._discard(later=True)
                 raise
             diagnostics = dataclasses.asdict(handler.diagnostics)
             diagnostics["capability_gaps"] = list(diagnostics.get("capability_gaps") or ())
-            if getattr(handler, "runtime_attach_failed", False):
-                self._discard()
+            if not getattr(handler, "runtime_ready", False):
+                self._discard(later=True)
             return result, diagnostics
         finally:
             self._lock.release()
 
-    def _discard(self) -> None:
+    def _discard(self, *, later: bool = False) -> None:
         handler, self._handler = self._handler, None
-        if handler is not None:
-            try:
-                handler.close()
-            except Exception:  # noqa: BLE001 - a handler that cannot close is dropped all the same
-                pass
+        if handler is None:
+            return
+        if later:
+            _close_later(handler)
+            return
+        try:
+            handler.close()
+        except Exception:  # noqa: BLE001 - a handler that cannot close is dropped all the same
+            pass
 
     def close(self) -> None:
         """Close the kept handler, once a recall that holds it is done; later recalls get None."""
@@ -442,7 +472,7 @@ class HookEndpoint:
         self._credentials = credentials
         self._env_seen: tuple | None = None
         self._env_loaded: dict[str, str] = {}
-        self.kept = KeptRecaller(self._handler, stamp=self._env_stamp)
+        self.kept = KeptRecaller(self._handler, stamp=self._kept_stamp)
         if credentials is not None:
             stamp = self._env_stamp()
             try:
@@ -455,6 +485,9 @@ class HookEndpoint:
 
     def _env_stamp(self) -> tuple:
         return file_stamp(*self._watched)
+
+    def _kept_stamp(self) -> tuple:
+        return file_stamp(*self._watched, *entry_files(self.home))
 
     def _handler(self) -> Any:
         from .handler import CodexHookHandler

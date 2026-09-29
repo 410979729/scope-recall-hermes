@@ -5,6 +5,7 @@ import base64
 import http.client
 import json
 import math
+import select
 import socket
 import ssl
 import sys
@@ -114,8 +115,29 @@ def _parse_request(raw: bytes) -> tuple[urllib.parse.ParseResult, bytes, dict[st
     return parsed, body, headers, float(timeout_seconds), max_response_bytes
 
 
+#: A connection idle longer than this is not used again.  A server or a proxy closes an idle keep-alive connection
+#: after a time of its own, and a request sent on it failed at once (``network_error``, ``http_protocol``) where a new
+#: connection would have been answered: a worker kept between a server's prompts sits idle between every two (review
+#: of rc12).  A request is still never sent twice.
+IDLE_REUSE_SECONDS = 30.0
+
+
+def _still_open(connection: http.client.HTTPConnection) -> bool:
+    """Whether a cached connection may carry the next request: idle for less than ``IDLE_REUSE_SECONDS``, and with
+    nothing to read on it, which on an idle connection is its server's end of stream."""
+    sock = connection.sock
+    idle_since = getattr(connection, "scope_recall_idle_since", None)
+    if sock is None or idle_since is None or time.monotonic() - idle_since > IDLE_REUSE_SECONDS:
+        return False
+    try:
+        readable, _writable, _failed = select.select([sock], [], [], 0)
+    except (OSError, ValueError):
+        return False
+    return not readable
+
+
 def _take_connection(parsed, headers: dict[str, str], deadline: float, connections: dict | None):
-    """The cached connection for this origin and header set, else a fresh one.
+    """The cached connection for this origin and header set while it is still open, else a fresh one.
 
     A persistent worker keeps at most one connection; anything cached for a
     different key is closed rather than left half-open.
@@ -128,6 +150,9 @@ def _take_connection(parsed, headers: dict[str, str], deadline: float, connectio
             for old in connections.values():
                 old.close()
             connections.clear()
+            if connection is not None and not _still_open(connection):
+                connection.close()
+                connection = None
         if connection is None:
             connection = _open_https_connection(parsed.hostname, parsed.port or 443, deadline=deadline)
     except ValueError:
@@ -196,6 +221,7 @@ def _request(raw: bytes, connections: dict | None = None) -> bytes:
     finally:
         if connection is not None:
             if reusable and connections is not None:
+                connection.scope_recall_idle_since = time.monotonic()
                 connections[cache_key] = connection
             else:
                 connection.close()

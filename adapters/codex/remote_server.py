@@ -40,7 +40,7 @@ from . import transcript
 from .boundary import without_lone_surrogates
 from .config import CodexConfigError, load_shared_client
 from .handler import CodexHookHandler, RecordLines, SystemHookClock
-from .local_endpoint import KeptRecaller, file_stamp
+from .local_endpoint import KeptRecaller, entry_files, file_stamp
 
 CONFIG_NAME = "remote-server.json"
 LOG_NAME = "remote-server.log"
@@ -221,7 +221,13 @@ class _Asked:
         self.outcome: str | None = None
 
     def __call__(self, *args: Any, **kwargs: Any) -> Any:
-        answer = self.kept(*args, **kwargs)
+        try:
+            answer = self.kept(*args, **kwargs)
+        except Exception as exc:
+            # The request's handler recalls itself; the log says why the kept one did not answer.
+            self.outcome = f"failed:{type(exc).__name__}"
+            _log.warning("kept recall failed", exc_info=True)
+            raise
         self.outcome = "busy" if answer is None else "answered"
         return answer
 
@@ -284,7 +290,7 @@ def build_app(config: RemoteServerConfig):
     host_name = f"[{config.listen}]" if ":" in config.listen else config.listen
     tools = build_server(client, workspace=None)
     kept = KeptRecaller(lambda: CodexHookHandler.from_home(str(config.home), config.host),
-                        stamp=lambda: file_stamp(client.runtime_config_path))
+                        stamp=lambda: file_stamp(client.runtime_config_path, *entry_files(config.home)))
     atexit.register(kept.close)
     app = tools.server.streamable_http_app(
         streamable_http_path="/mcp",

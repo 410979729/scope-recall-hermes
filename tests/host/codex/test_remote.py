@@ -759,3 +759,26 @@ def test_the_server_log_says_how_the_kept_recall_went(served, tmp_path, monkeypa
         handler.close()
     log = (homes["codex"] / "scope-recall" / remote_server.LOG_NAME).read_text(encoding="utf-8")
     assert "hook UserPromptSubmit: None, record through None, " in log and ", warm recall answered" in log
+
+
+def test_a_kept_recall_that_raised_is_named_and_the_request_recalls_itself(store, monkeypatch, caplog):
+    """A kept recall that raised was swallowed by the request's handler, and the server's log said nothing (review of
+    rc12)."""
+    import logging
+
+    from scope_recall.adapters.codex import handler as handler_module
+
+    monkeypatch.setattr(handler_module, "_TOTAL_BUDGET_S", 10.0)
+    _root, homes = store
+    config = remote_server.RemoteServerConfig(home=homes["claude-code"], host="claude-code", listen="127.0.0.1",
+                                              port=1, token_sha256="0" * 64)
+
+    def kept(*args, **kwargs):
+        raise RuntimeError("TEST kept recall raised")
+
+    body = {"payload": {"hook_event_name": "UserPromptSubmit", "session_id": "TEST-warm-session",
+                        "prompt_id": "TEST-warm-raised", "prompt": "TEST raised prompt", "cwd": "C:/work"}}
+    with caplog.at_level(logging.WARNING, logger=remote_server._log.name):
+        answer = remote_server.handle_request(config, body, recaller=kept)
+    assert answer["warm"] == "failed:RuntimeError"
+    assert any("kept recall failed" in record.getMessage() and record.exc_info for record in caplog.records)
