@@ -484,11 +484,13 @@ def test_an_embedding_back_with_no_time_left_to_search_is_a_gap(tmp_path):
         def embed_query(self, text, *, remaining_seconds):
             return (0.1, 0.2)
 
-    class Late:  # an embedding asked for at the start that comes back at the deadline
+    class Late:  # an embedding asked for at the start whose answer is taken just after the deadline
         query = "TEST query"
 
         def result(self, deadline):
-            time.sleep(max(0.0, deadline - time.monotonic()))
+            # Past it, not at it: a sleep to the deadline itself can wake a tick early on Windows, and a search with
+            # a millisecond left is a search, not a gap (CI, 2026-09-29).
+            time.sleep(max(0.0, deadline - time.monotonic()) + 0.05)
             return (0.1, 0.2)
 
     store = _ScopedStore()
