@@ -7,7 +7,7 @@ store as an entry, what the owner tells one of them another can recall, and each
 which agent it came in through ([docs/shared-store.md](docs/shared-store.md)). Hermes agents
 could share a store from 3.2.0; Codex and Claude Code join in 3.3.0. An agent that is not
 attached keeps its own store. A tool's output is still kept and found, but no longer turned
-into facts. The notes are the `[3.4.1]` section of [CHANGELOG.md](CHANGELOG.md); upgrading
+into facts. The notes are the `[3.4.1]` and `[3.4.0]` sections of [CHANGELOG.md](CHANGELOG.md); upgrading
 from `3.4.0`, `3.3.x` or `3.2.x` is `pip install -U`, `apply-install` and a host restart, and the store's
 schema does not change. From `3.1.x` the store moves to schema 1110 the first time it is opened,
 after which a 3.1 process cannot open it.

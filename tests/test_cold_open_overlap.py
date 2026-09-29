@@ -125,6 +125,23 @@ def test_an_open_that_failed_after_its_caller_stopped_waiting_is_reopened(tmp_pa
     finally:s.close()
 
 
+def test_work_that_failed_takes_the_open_only_if_it_has_come(tmp_path,monkeypatch):
+    """A query embedding that failed at once waited for a slow table open (1.56 s against 0.02 s, review of 3.4.1).
+    With nothing to search with, the open is taken if it has come and parked for the next request if not."""
+    s=store(tmp_path,monkeypatch,delay=3.0)
+    try:
+        started=time.monotonic()
+        with using_request_deadline(RequestDeadline.from_budget(8)):
+            s.open_existing_with_work(lambda:False)
+        assert time.monotonic()-started<2.0, 'returned without waiting for the open'
+        worker=s._process
+        assert s._pending_response_id is not None and worker.poll() is None and not s.requires_reopen
+        with using_request_deadline(RequestDeadline.from_budget(10)):
+            assert s._call('search',[],scope_id='PUBLIC',limit=1)=='search'
+        assert s._process is worker
+    finally:s.close()
+
+
 def test_a_parked_answer_that_came_in_long_ago_is_taken_not_called_a_wedge(tmp_path,monkeypatch):
     """A kept recall handler parked its first, cold search and was asked again minutes later: the helper had answered
     long before, but the age alone called it wedged, closed it, and the next recall opened cold (worker_unresponsive)."""

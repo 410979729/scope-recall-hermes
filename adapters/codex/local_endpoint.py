@@ -65,6 +65,8 @@ ANSWER_MARGIN_SECONDS = 0.3
 #: a few seconds on a large store), and the share of its time a recall that comes meanwhile waits for that.
 WARM_SECONDS = 60.0
 WARM_WAIT_SHARE = 0.5
+#: What closing waits for a recall that holds the kept handler (a prompt's recall ends within its hook's time).
+CLOSE_WAIT_SECONDS = 10.0
 #: Recalls one server runs at once; a hook past that recalls itself.
 MAX_CONCURRENT = 8
 #: How often a server looks for its own name, and puts it back when a hook removed it: a busy server that did not
@@ -419,17 +421,23 @@ class KeptRecaller:
                 with self._lock:
                     if self._closed or self._handler is not None:
                         return
-                    self._handler, self._made_with = self._build(), self._stamp()
+                    # The stamp before the build, as a recall takes it: a change during the build is then a change.
+                    stamp = self._stamp()
+                    self._handler, self._made_with = self._build(), stamp
                     try:
                         self._handler.warm_vectors(seconds)
                     except Exception:  # noqa: BLE001 - the first recall opens what is not open, as before
                         pass
-                    if not getattr(self._handler, "runtime_ready", False):
+                    if self._closed or not getattr(self._handler, "runtime_ready", False):
                         self._discard(later=True)
             except Exception:  # noqa: BLE001 - a handler that cannot be made now is made by the first recall
                 pass
             finally:
                 done.set()
+                if self._closed:
+                    # A close during the warming did not wait for it (``close``): the handler it made is closed here.
+                    with self._lock:
+                        self._discard(later=True)
 
         threading.Thread(target=run, name="scope-recall-kept-warm", daemon=True).start()
 
@@ -480,10 +488,18 @@ class KeptRecaller:
             pass
 
     def close(self) -> None:
-        """Close the kept handler, once a recall that holds it is done; later recalls get None."""
-        with self._lock:
-            self._closed = True
+        """Close the kept handler, once a recall that holds it is done; later recalls get None.  A warming that holds
+        it (up to ``WARM_SECONDS``) is not waited for: it sees the recaller closed and closes its handler itself."""
+        self._closed = True
+        warming = self._warming
+        if warming is not None and not warming.is_set():
+            return
+        if not self._lock.acquire(timeout=CLOSE_WAIT_SECONDS):
+            return
+        try:
             self._discard()
+        finally:
+            self._lock.release()
 
 
 class HookEndpoint:

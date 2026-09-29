@@ -427,9 +427,13 @@ def test_a_query_embedding_that_fails_while_the_table_opens_leaves_the_table_ope
     from scope_recall.adapters.models import AuxiliaryModelError
 
     class OverlapStore(_ScopedStore):
+        def __init__(self):
+            super().__init__()
+            self.work_results = []
+
         def open_existing_with_work(self, during_open):
             self.opens += 1
-            during_open()
+            self.work_results.append(during_open())
 
     class FirstFails:
         calls = 0
@@ -446,6 +450,7 @@ def test_a_query_embedding_that_fails_while_the_table_opens_leaves_the_table_ope
     try:
         with pytest.raises(AuxiliaryModelError):
             port.search(_search_context(binding, 5.0), limit=1, remaining_seconds=4.0)
+        assert store.work_results == [False], "the open is told the work failed, and does not wait for itself"
         assert instance._vector_store is store and not store.closed
         assert port.search(_search_context(binding, 5.0), limit=1, remaining_seconds=4.0) == ()
         assert store.opens == 1, "the next search found the table open"

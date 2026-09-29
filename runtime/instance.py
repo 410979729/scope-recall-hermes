@@ -371,16 +371,17 @@ class _LazyVectorPort:
         prepared: list[tuple[str, Any]] = []
         failed: list[Exception] = []
 
-        def embed_while_opening() -> None:
-            # The embedding's failure is this recall's to report once the table is open.  Raised inside the open, it
-            # closed the helper as well, and the next prompt opened the table cold again.
+        def embed_while_opening() -> bool | None:
+            # The embedding's failure is this recall's to report.  Raised inside the open, it closed the helper as
+            # well, and the next prompt opened the table cold again; reported as False, the open is taken if it has
+            # come and parked for the next request if not, so a fast failure does not wait for the table either.
             try:
                 if prefetched is not None:
                     prepared.append((context.query, prefetched.result(effective_deadline)))
-                    return
+                    return True
                 embed = self._query_embedder()
                 if embed is None:
-                    return
+                    return None
                 embedding_remaining = deadline.remaining()
                 if embedding_remaining <= 0:
                     raise TimeoutError("query embedding stage deadline exhausted")
@@ -389,8 +390,10 @@ class _LazyVectorPort:
                     budget_seconds=embedding_remaining,
                     remaining=deadline.remaining,
                 )))
+                return True
             except Exception as exc:
                 failed.append(exc)
+                return False
 
         with using_request_deadline(deadline):
             port = self._instance._ensure_vector_port(allow_create=False, deadline=effective_deadline,

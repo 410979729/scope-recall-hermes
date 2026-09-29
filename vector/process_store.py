@@ -442,7 +442,8 @@ class ProcessLanceVectorStore(VectorStore):
         self._open("open_existing")
 
     def open_existing_with_work(self, work: Callable[[], Any]) -> None:
-        """Overlap the read-only native open with caller-owned bounded work."""
+        """Overlap the read-only native open with caller-owned bounded work; work that returns False failed, and the
+        open is then taken only if it has come (parked for the next request if not)."""
         if not callable(work):
             raise TypeError("open work must be callable")
         if not (self.db_path / f"{self.table_name}.lance").is_dir():
@@ -522,15 +523,18 @@ class ProcessLanceVectorStore(VectorStore):
                 response = self._fenced_exchange(request_id, encoded, nonce, guard)
             else:
                 self._send_request_frame(encoded)
+                work_failed = False
                 if during_wait is not None:
                     try:
-                        during_wait()
+                        # Work that failed in its own way says so with False: its caller has nothing to search with,
+                        # so the open is taken only if it has come, and parked for the next request otherwise.
+                        work_failed = during_wait() is False
                     except BaseException:
                         overlap_failed = True
                         self._detach_helper(failed=True)
                         raise
                 response = self._receive_response_locked(
-                    request_id, only_if_ready=during_wait is not None and _budget_exhausted(),
+                    request_id, only_if_ready=during_wait is not None and (work_failed or _budget_exhausted()),
                 )
         except _RequestBudgetExpired:
             self._park_pending_response(request_id, method)

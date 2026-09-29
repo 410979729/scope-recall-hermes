@@ -10,7 +10,7 @@ All notable changes to `scope-recall` will be documented in this file.
 
 - The prompt's embedding is asked for as soon as its recall starts, beside the word searches, instead of after them. Behind them it had about 2 s of a prompt's 4 s: too little when a pause of more than 30 s had closed the connection to the provider and a new one had to be made (`vector_error:AuxiliaryModelError:timeout`).
 - The recall handler that the MCP server of Claude Code and Codex, and a remote entry's server, keep between prompts is made, and its vector table opened and searched once, when the server starts. Made at the first prompt, it spent that prompt's time opening the table, and the first prompt of every Claude Code session was recalled by words alone (`helper_request_deadline`).
-- The vector helper's answer to a search that ran out of time is taken by the next search, however much later that comes. After a minute it was taken for a hung helper, which was closed, and the next prompt started cold again (`worker_unresponsive`). An embedding that fails while the table opens no longer closes the helper either.
+- The vector helper's answer to a search that ran out of time is taken by the next search, however much later that comes. After a minute it was taken for a hung helper, which was closed, and the next prompt started cold again (`worker_unresponsive`). An embedding that fails while the table opens no longer closes the helper, nor waits for the table to open.
 - A vector search left no time by its embedding says so (`helper_request_deadline`); it answered nothing, as if it had searched and found nothing.
 
 ### Upgrading from 3.4.0

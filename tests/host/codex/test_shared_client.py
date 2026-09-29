@@ -2341,6 +2341,60 @@ def test_a_kept_handler_warmed_when_its_server_starts_recalls_its_first_prompt_w
         server.server_close()
 
 
+class _WarmedHandler:
+    runtime_ready = True
+
+    def __init__(self, closed=None, seconds=0.0):
+        self._closed, self._seconds = closed, seconds
+
+    def warm_vectors(self, seconds):
+        import time
+
+        time.sleep(self._seconds)
+
+    def close(self):
+        if self._closed is not None:
+            self._closed.append(self)
+
+
+def test_closing_a_recaller_does_not_wait_for_its_warming():
+    """A warming holds the kept handler for up to a minute; closing waited for it, and a server stopped just after
+    its start hung that long (review of 3.4.1).  The warming sees the recaller closed and closes its handler."""
+    import time
+
+    from scope_recall.adapters.codex.local_endpoint import KeptRecaller
+
+    closed = []
+    kept = KeptRecaller(lambda: _WarmedHandler(closed, seconds=1.5))
+    kept.warm()
+    time.sleep(0.2)
+    started = time.monotonic()
+    kept.close()
+    assert time.monotonic() - started < 1.0, "closing did not wait for the warming"
+    assert kept._warming.wait(10) and kept._handler is None
+    assert _eventually(lambda: len(closed) == 1), "the warming closed the handler it made"
+
+
+def test_a_warming_takes_its_stamp_before_its_build():
+    """Taken after the build, a change to the entry's files during the build counted as seen, and the handler made
+    from the old files was kept (review of 3.4.1)."""
+    from scope_recall.adapters.codex.local_endpoint import KeptRecaller
+
+    files = {"stamp": "v1"}
+
+    def build():
+        files["stamp"] = "v2"  # the files change while the handler is made
+        return _WarmedHandler()
+
+    kept = KeptRecaller(build, stamp=lambda: files["stamp"])
+    try:
+        kept.warm()
+        assert kept._warming.wait(10)
+        assert kept._made_with == "v1", "the next recall sees the change and makes the handler anew"
+    finally:
+        kept.close()
+
+
 def test_the_mcp_server_warms_its_kept_handler_when_it_starts(store, monkeypatch):
     from scope_recall.adapters.codex import local_endpoint
     from scope_recall.vector import process_store
