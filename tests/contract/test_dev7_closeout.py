@@ -586,46 +586,72 @@ def test_a_delete_cancels_a_collision_that_holds_the_deleted_message(worker_app)
 
 
 def test_a_delete_of_a_short_message_keeps_waiting_rows_that_merely_contain_it(worker_app):
-    """Deleting "好" or "ok" cancelled every waiting row that held those characters among other words (review of
-    rc10).  A short deleted text cancels only a row that is it, give or take a tenth and its punctuation; a distinct
-    one any row holding it whole."""
+    """Deleting "好" or "ok" cancelled every waiting row that held those characters among other words, and comparing
+    letters and digits alone made "C++" cancel "C#" and a 22-character sentence with its punctuation too short to be
+    its own (reviews of rc10).  A distinct text (24 characters, whitespace aside) cancels any row holding it whole; a
+    shorter one a row that is it give or take a tenth, whitespace aside, or with four or more letters and digits the
+    same ones give or take a tenth, punctuation and case aside."""
     core, ctx, clock = worker_app
-    good = capture(core, ctx, "好", key="TEST-short-good")
-    fine = capture(core, ctx, "ok", key="TEST-short-ok")
-    quit_ = capture(core, ctx, "我要辞职了", key="TEST-short-quit")
-    ten = capture(core, ctx, "甲乙丙丁戊己庚辛壬癸", key="TEST-short-ten")
-    distinct = capture(core, ctx, "一二三四五六七八九十一二三四五六七八九十一二三四", key="TEST-distinct")
-    rows = (("TEST-short-good", "TEST 这个方案挺好的，就这么办。", "VERSION_CONFLICT"),
-            ("TEST-short-ok", "TEST I will look at the book tomorrow.", "VERSION_CONFLICT"),
-            ("TEST-short-else", "TEST 你好，请帮我看一下日志。",
-             f"DEFERRED|{capture_inbox.__version__}|2026-09-06T13:00:00Z|1|replay|TEST"),
-            ("TEST-short-good", "好", "VERSION_CONFLICT"),
-            ("TEST-short-ok", "OK\n", "VERSION_CONFLICT"),
-            ("TEST-short-quit", "我要辞职了。", "VERSION_CONFLICT"),
-            ("TEST-short-quit", "我要辞职了！", "VERSION_CONFLICT"),
-            ("TEST-short-quit", "[图片] 我要辞职了", "VERSION_CONFLICT"),
+    deleted = {text: capture(core, ctx, text, key=f"TEST-deleted-{index}") for index, text in enumerate((
+        "好", "ok", "我要辞职了", "甲乙丙丁戊己庚辛壬癸", "一二三四五六七八九十一二三四五六七八九十一二三四",
+        "子丑寅卯辰巳午未申酉戌亥子丑寅卯辰巳午未申酉戌", "他上个月在北京朝阳医院查出了肺结节，还在复查中。", "C++", "+1",
+        "？？？", "\U0001F44D", "房间号是3721", "Let me know if you have any questions."))}
+    rows = (("TEST 这个方案挺好的，就这么办。", True), ("TEST I will look at the book tomorrow.", True),
+            ("TEST 你好，请帮我看一下日志。", True), ("好", False), ("ok\n", False),
+            ("我要辞职了。", False), ("我要辞职了！", False), ("[图片] 我要辞职了", True),
             # A tenth: one more character in eleven is the same text, two in twelve are not.
-            ("TEST-short-ten", "甲乙丙丁戊己庚辛壬癸子", "VERSION_CONFLICT"),
-            ("TEST-short-ten", "甲乙丙丁戊己庚辛壬癸子丑", "VERSION_CONFLICT"),
-            # Twenty-four letters are distinct: held whole among other words, it goes.
-            ("TEST-distinct", "前面的话很多很多很多。一二三四五六七八九十一二三四五六七八九十一二三四后面的话也很多很多。",
-             "VERSION_CONFLICT"))
-    for index, (key, content, code) in enumerate(rows):
+            ("甲乙丙丁戊己庚辛壬癸子", False), ("甲乙丙丁戊己庚辛壬癸子丑", True),
+            # Twenty-four characters are distinct: held whole among other words, the text goes; twenty-three are not.
+            ("前面的话很多很多很多。一二三四五六七八九十一二三四五六七八九十一二三四后面的话也很多很多。", False),
+            ("前面的话很多很多很多。子丑寅卯辰巳午未申酉戌亥子丑寅卯辰巳午未申酉戌后面的话也很多很多。", True),
+            ("好的，他上个月在北京朝阳医院查出了肺结节，还在复查中。我知道了，会保密的。", False),
+            ("C#", True), ("-1", True), ("？？？\n", False), ("\U0001F44D\n", False),
+            ("房间号是3712。", True), ("房间号是3721。", False),
+            ("OK. Let me know if you have any questions! Also: the deploy key rotates on Friday.", True))
+    for index, (content, _kept) in enumerate(rows):
         token, _prepared = capture_inbox.enqueue(core.storage, clock, replace(ctx, session_id=f"TEST-session-s{index}"),
-                                                 source_event(source_event_key=key, content=content),
+                                                 source_event(source_event_key=f"TEST-waiting-{index}", content=content),
                                                  scope_id="TEST-scope", host_scope=None)
         with sqlite3.connect(core.storage.path) as conn:
-            conn.execute("UPDATE capture_inbox SET last_error_code=? WHERE token=?", (code, token))
+            conn.execute("UPDATE capture_inbox SET last_error_code='VERSION_CONFLICT' WHERE token=?", (token,))
             conn.commit()
-    authorize(core, ctx, good, fine, quit_, ten, distinct)
-    core.forget(ctx, request(good, fine, quit_, ten, distinct), remaining_seconds=5)
+    authorize(core, ctx, *deleted.values())
+    core.forget(ctx, request(*deleted.values()), remaining_seconds=5)
     with sqlite3.connect(core.storage.path) as conn:
         kept = sorted(json.loads(payload)["events"][0]["content"] for (payload,) in
                       conn.execute("SELECT payload_json FROM capture_inbox"))
-    assert kept == sorted(["TEST 这个方案挺好的，就这么办。", "TEST I will look at the book tomorrow.",
-                           "TEST 你好，请帮我看一下日志。", "[图片] 我要辞职了", "甲乙丙丁戊己庚辛壬癸子丑"])
+    assert kept == sorted(content for content, keep in rows if keep)
     assert not capture_inbox.holds(json.dumps({"events": [{"content": ""}]}), frozenset(), frozenset(),
-                                   frozenset({""}), rekeyed=True), "an empty text holds nothing"
+                                   frozenset({("", "")}), rekeyed=True), "an empty text holds nothing"
+
+
+def test_a_delete_cancels_what_holds_a_deleted_segment_or_cites_the_deleted_message(worker_app):
+    """A row whose first segment is a deleted one, the rest another's, holds no deleted text whole: only its segment
+    says so.  An echo citing a deleted message among other words was kept, refused for good on replay, and left
+    waiting with the words (review of rc10)."""
+    core, ctx, clock = worker_app
+    long_text = "TEST 很长的要删掉的消息。" * 6000
+    long_ = capture(core, ctx, long_text, key="TEST-segment-deleted")
+    short = capture(core, ctx, "TEST 我的新地址是和平路八号。", key="TEST-cited")
+    rows = ((ctx, source_event(source_event_key="TEST-segment-row",
+                               content=long_text[:65536] + "TEST 完全不同的后续内容。" * 3000)),
+            (replace(ctx, actor_origin="assistant_visible"),
+             source_event(source_event_key="TEST-echo", origin="assistant_visible",
+                          content="TEST 我记下了：TEST 我的新地址是和平路八号。以后寄东西就用这个地址。",
+                          evidence_refs=[f"{short.ref}@1"])),
+            (ctx, source_event(source_event_key="TEST-unrelated", content="TEST 另外一件事。")))
+    for index, (context, event) in enumerate(rows):
+        token, _prepared = capture_inbox.enqueue(core.storage, clock, replace(context, session_id=f"TEST-session-g{index}"),
+                                                 event, scope_id="TEST-scope", host_scope=None)
+        with sqlite3.connect(core.storage.path) as conn:
+            conn.execute("UPDATE capture_inbox SET last_error_code='VERSION_CONFLICT' WHERE token=?", (token,))
+            conn.commit()
+    authorize(core, ctx, long_, short)
+    core.forget(ctx, request(long_, short), remaining_seconds=5)
+    with sqlite3.connect(core.storage.path) as conn:
+        kept = [json.loads(payload)["events"][0]["content"] for (payload,) in
+                conn.execute("SELECT payload_json FROM capture_inbox")]
+    assert kept == ["TEST 另外一件事。"]
 
 
 def test_a_delete_puts_each_deleted_text_together_once_and_only_when_it_needs_it(worker_app, monkeypatch):
@@ -633,8 +659,8 @@ def test_a_delete_puts_each_deleted_text_together_once_and_only_when_it_needs_it
     a delete of four long messages took seconds under the writer lease (review of rc10)."""
     core, ctx, clock = worker_app
     calls = []
-    real = capture_inbox.comparable_text
-    monkeypatch.setattr(capture_inbox, "comparable_text", lambda text: calls.append(1) or real(text))
+    real = capture_inbox.without_whitespace
+    monkeypatch.setattr(capture_inbox, "without_whitespace", lambda text: calls.append(1) or real(text))
     first = capture(core, ctx, "TEST 很长的消息。" * 9000, key="TEST-once-1")
     authorize(core, ctx, first)
     core.forget(ctx, request(first), remaining_seconds=5)

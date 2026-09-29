@@ -263,7 +263,7 @@ class Deletions:
         # suppressed claim, is suppressed as it is stored, and cancelling what
         # merely held its words lost captures the contract keeps
         # (``docs/deletion-contract.md``, reviews of rc10).
-        from .capture_inbox import comparable_text, holds, outlasts_a_delete, taking_a_new_key
+        from .capture_inbox import deleted_text, holds, outlasts_a_delete, taking_a_new_key
 
         digests, groups, versions = set(), set(), set()
         for target in targets:
@@ -273,13 +273,14 @@ class Deletions:
                 digests.add(digest)
                 groups.add(group)
                 versions.add((group, revision))
-        texts: list[frozenset[str]] = []
+        refs = frozenset(target.ref for target in targets if target.kind == "event")
+        texts: list[frozenset[tuple[str, str]]] = []
 
-        def forgotten_texts() -> frozenset[str]:
+        def forgotten_texts() -> frozenset[tuple[str, str]]:
             # Each version of a deleted message is put together once, and only when a waiting row is looked into:
             # put together for each of its segments, under the writer lease, a delete of long messages took seconds.
             if not texts:
-                texts.append(frozenset(comparable_text("".join(content for (content,) in conn.execute(
+                texts.append(frozenset(deleted_text("".join(content for (content,) in conn.execute(
                     "SELECT content FROM source_events WHERE source_group_key=? AND source_revision=? ORDER BY segment_index",
                     version))) for version in versions))
             return texts[0]
@@ -291,7 +292,8 @@ class Deletions:
                 # Only a row that outlasts a delete has its payload read: the inbox holds up to 64 MB.
                 if not outlasts_a_delete(code) or holds(
                         conn.execute("SELECT payload_json FROM capture_inbox WHERE token=?", (token,)).fetchone()[0],
-                        frozenset(digests), frozenset(groups), forgotten_texts(), rekeyed=taking_a_new_key(code)):
+                        frozenset(digests), frozenset(groups), forgotten_texts(), refs,
+                        rekeyed=taking_a_new_key(code)):
                     conn.execute("DELETE FROM capture_inbox WHERE token=?", (token,))
         for target in targets:
             conn.execute("DELETE FROM consolidation_fragments WHERE work_id IN (SELECT work_id FROM work_items WHERE subject_ref=?)", (target.ref,))

@@ -10,8 +10,8 @@ from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 import sqlite3
+import re
 import time
-import unicodedata
 
 from ..contracts import (
     ArtifactVersion,
@@ -171,31 +171,50 @@ def taking_a_new_key(code: object) -> bool:
     return code == "VERSION_CONFLICT" or deferred_path(code) == "rekey"
 
 
-def comparable_text(text: object) -> str:
-    """``text`` as a delete compares it (``holds``): its letters and digits alone, in one form and case.  Runs of
-    whitespace folded, a line break inside a sentence, a space left out, or a full stop more still kept the deleted
-    words (reviews of rc10)."""
-    return "".join(ch for ch in unicodedata.normalize("NFKC", str(text)).casefold() if ch.isalnum())
+def without_whitespace(text: object) -> str:
+    """``text`` with no whitespace at all: how a delete compares a message's text (``holds``)."""
+    return "".join(str(text).split())
 
 
-#: Letters and digits from which a deleted message's text is its own: a row that holds all of it is a copy of it,
+def letters_and_digits(text: object) -> str:
+    """``text`` with its letters and digits alone, in one case: how a delete compares a near copy (``holds``)."""
+    return _NOT_A_LETTER.sub("", str(text)).casefold()
+
+
+_NOT_A_LETTER = re.compile(r"[\W_]+")
+#: Characters, whitespace aside, from which a deleted message's text is its own: a row holding all of it is a copy,
 #: whatever else it says.  A shorter one ("好", "ok") is found inside unrelated messages, and deleting it cancelled
-#: every waiting row that held it (review of rc10); a row then holds it only by being it, give or take a tenth.
+#: every waiting row that held it (review of rc10).
 DISTINCT_TEXT = 24
+#: Letters and digits from which a row with the same ones, give or take a tenth, is a copy though its punctuation or
+#: case differ ("我要辞职了。").  Below that, different messages compare the same ("C++" and "C#", "+1" and "-1").
+NEAR_COPY = 4
 
 
-def holds(payload_json: object, digests: frozenset[str], groups: frozenset[str], texts: frozenset[str] = frozenset(),
-          *, rekeyed: bool = False) -> bool:
-    """Whether an inbox row's capture holds a deleted message: one of its stored segments (``content_sha256``), its
-    whole text (``texts``, compared as ``comparable_text``) where it is ``DISTINCT_TEXT`` long or the row is no more
-    than a tenth longer, or its source group.  A row that cannot be read is taken to (a delete then cancels it, as it
-    cancels every row it cannot look into).  A message that quotes only part of a deleted one, or holds a short one
-    among other words, is kept.
+def deleted_text(text: object) -> tuple[str, str]:
+    """A deleted message's text as ``holds`` compares it: without whitespace, and its letters and digits."""
+    bare = without_whitespace(text)
+    return bare, letters_and_digits(bare)
 
-    A row being given a new key (``rekeyed``) is another message that took a stored one's key, so the group it names
-    is not its own and only its content counts: deleting the first message cancelled the second.  Compared by digest
-    alone, the same words with a line break more, or a long message with a character before it, were kept and stored
-    after the delete (reviews of rc10)."""
+
+def holds(payload_json: object, digests: frozenset[str], groups: frozenset[str],
+          texts: frozenset[tuple[str, str]] = frozenset(), refs: frozenset[str] = frozenset(), *,
+          rekeyed: bool = False) -> bool:
+    """Whether an inbox row's capture holds a deleted message.  A row that cannot be read is taken to (a delete then
+    cancels it, as it cancels every row it cannot look into).  It holds one when:
+
+    - one of its segments is a deleted one as stored (``content_sha256``), or it is of the deleted source's group
+      (not for a row being given a new key, ``rekeyed``: another message that took a stored one's key, whose group
+      is not its own; deleting the first message cancelled the second);
+    - it cites a deleted source (``evidence_refs``): an echo of it, which its replay then refused for good and left
+      waiting with the words;
+    - whitespace aside, it holds all of a deleted text of ``DISTINCT_TEXT`` characters or more, or is one, give or take
+      a tenth; or, letters and digits compared, it is a deleted text of ``NEAR_COPY`` or more of them, give or take a
+      tenth.  A message that quotes a short deleted one among other words, or only part of a long one, is kept.
+
+    Compared by digest alone, the same words with a line break or a full stop more were kept and stored after the
+    delete; compared more loosely, deleting a short message cancelled unrelated rows, and a character-by-character
+    normalisation of every waiting row held the writer lease for seconds (reviews of rc10)."""
     from .events import stored_content_digest
 
     try:
@@ -206,13 +225,22 @@ def holds(payload_json: object, digests: frozenset[str], groups: frozenset[str],
             group = segment.get("group_key") if isinstance(segment, dict) else event.get("source_event_key")
             if (not rekeyed and group in groups) or stored_content_digest(event["content"]) in digests:
                 return True
-        texts = [text for text in texts if text]
-        if texts:
-            ordered = sorted(events, key=lambda event: (event.get("segment") or {}).get("index", 0))
-            whole = comparable_text("".join(event["content"] for event in ordered))
-            # The lengths first: a search of every waiting row for every short deleted text took seconds.
-            return any((len(text) >= DISTINCT_TEXT or len(whole) - len(text) <= len(whole) // 10) and text in whole
-                       for text in texts)
+            if refs and any(type(item) is str and item.split("@", 1)[0] in refs
+                            for item in event.get("evidence_refs") or ()):
+                return True
+        texts = [text for text in texts if text[0]]
+        if not texts:
+            return False
+        ordered = sorted(events, key=lambda event: (event.get("segment") or {}).get("index", 0))
+        bare = without_whitespace("".join(event["content"] for event in ordered))
+        letters = None
+        for text, text_letters in texts:
+            if ((len(text) >= DISTINCT_TEXT or len(bare) - len(text) <= len(bare) // 10) and text in bare):
+                return True
+            if len(text_letters) >= NEAR_COPY:
+                letters = letters_and_digits(bare) if letters is None else letters
+                if len(letters) - len(text_letters) <= len(letters) // 10 and text_letters in letters:
+                    return True
     except (ValueError, KeyError, TypeError, AttributeError):
         return True
     return False
