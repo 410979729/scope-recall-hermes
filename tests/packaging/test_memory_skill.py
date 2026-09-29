@@ -107,3 +107,49 @@ def test_an_existing_installation_gains_the_skill_on_its_next_apply(tmp_path, mo
     assert not plan.conflicts, plan.conflicts
     apply_install(plan)
     assert (instance / "skills" / "scope-recall-memory" / "SKILL.md").is_file()
+
+
+def test_an_agent_s_edit_of_a_skill_stays_when_the_package_did_not_change_it(tmp_path, monkeypatch):
+    """Yuheng edited its memory skill between two releases that left the skill as it was; the upgrade reported an
+    edited prior file and stopped before its apply, which left the new package under the old wrapper and receipt
+    (2026-09-29).  The edit stays and the rest is installed; the receipt keeps the package's digest, so the next
+    install compares the skill with the package again.  A skill the package changed, and any other edited file,
+    is still a conflict."""
+    import json
+
+    from scope_recall.maintenance import install_common, install_hermes
+
+    instance, plugin, project = _paths(tmp_path)
+    arguments = dict(host="hermes", target_plugin_dir=plugin, instance_root=instance, project_root=project,
+                     agent_id="main", python_executable=Path(sys.executable), test_mode=True)
+    apply_install(plan_install(**arguments))
+    skill = instance / "skills" / "scope-recall-memory" / "SKILL.md"
+    packaged = skill.read_bytes()
+    edited = skill.read_text(encoding="utf-8") + "\n## TEST what the agent learned\n\n- TEST keep this.\n"
+    skill.write_text(edited, encoding="utf-8")
+
+    plan = plan_install(**arguments)
+    assert not plan.conflicts, plan.conflicts
+    assert [change.action for change in plan.changes if change.path == str(skill)] == ["keep"]
+    result = apply_install(plan)
+    assert skill.read_text(encoding="utf-8") == edited
+    assert all(Path(item).name.lower() != "skill.md" or "scope-recall-memory" not in item for item in result.files_written)
+    receipt = json.loads((instance / ".scope-recall-install-receipt.json").read_text(encoding="utf-8"))
+    recorded = {entry["path"]: entry["sha256"] for entry in receipt["files"]}
+    import hashlib
+    assert recorded[install_common._norm(skill)] == hashlib.sha256(packaged).hexdigest(), "the package's digest"
+    again = plan_install(**arguments)
+    assert not again.conflicts and [c.action for c in again.changes if c.path == str(skill)] == ["keep"]
+
+    changed = tmp_path / "TEST-changed-SKILL.md"
+    changed.write_text(install_common.SKILLS["scope-recall-memory"].read_text(encoding="utf-8") + "\nTEST new\n",
+                       encoding="utf-8")
+    skills = {**install_common.SKILLS, "scope-recall-memory": changed}
+    monkeypatch.setattr(install_common, "SKILLS", skills)
+    monkeypatch.setattr(install_hermes, "SKILLS", skills)
+    assert any("edited prior file" in item and "scope-recall-memory" in item.lower()
+               for item in plan_install(**arguments).conflicts), "a skill the package changed is a conflict"
+    monkeypatch.undo()
+    wrapper = plugin / "plugin.yaml"
+    wrapper.write_text(wrapper.read_text(encoding="utf-8") + "# TEST edited wrapper\n", encoding="utf-8")
+    assert any("edited prior file" in item and "plugin.yaml" in item for item in plan_install(**arguments).conflicts)

@@ -79,6 +79,9 @@ class InstallPlan:
     changes: list[PlannedChange] = field(default_factory=list)
     conflicts: list[str] = field(default_factory=list)
     reuse_instance: bool = False
+    #: Skill files an agent edited whose packaged copy has not changed, left as they are: each with the digest the
+    #: receipt keeps for it, the package's (``install.plan_install``).
+    kept: dict[str, str] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -94,6 +97,7 @@ class InstallPlan:
             "local_platforms": list(self.local_platforms),
             "reuse_instance": self.reuse_instance,
             "conflicts": list(self.conflicts),
+            "kept": sorted(self.kept),
             "changes": [item.to_dict() for item in self.changes],
         }
 

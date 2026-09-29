@@ -5,7 +5,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 
 from .backup import _atomic_write, _sha256
 from .install_common import (
@@ -123,8 +123,11 @@ def _write_receipt(
     installation_id: str,
     written: Iterable[str],
     tracked: Iterable[Path],
+    kept: Mapping[str, str] | None = None,
 ) -> Path:
-    """Record every written wrapper plus the adapter-owned files an uninstall must recognize."""
+    """Record every written wrapper plus the adapter-owned files an uninstall must recognize.  A skill file the
+    install kept as an agent edited it (``kept``) is recorded with the package's digest, so that the next install
+    still finds it edited and compares it with the package again, instead of writing over the edit."""
     instance_norm = _norm(plan.instance_root)
     files: list[dict[str, str]] = []
     seen: set[str] = set()
@@ -133,6 +136,11 @@ def _write_receipt(
         role = "instance" if norm.startswith(instance_norm + os.sep) else "plugin"
         files.append({"path": norm, "sha256": _sha256(path), "role": role})
         seen.add(norm)
+    for norm, digest in sorted((kept or {}).items()):
+        if norm not in seen:
+            files.append({"path": norm, "sha256": digest,
+                          "role": "instance" if norm.startswith(instance_norm + os.sep) else "plugin"})
+            seen.add(norm)
     for path in tracked:
         norm = _norm(path)
         if path.is_file() and norm not in seen:

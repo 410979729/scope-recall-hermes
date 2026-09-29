@@ -60,6 +60,14 @@ def _foreign_plugin_entries(target: Path, keep: set[str]) -> list[str]:
     return [str(path) for path in sorted(target.rglob("*")) if not path.is_dir() and _norm(path) not in keep]
 
 
+def _written_digest(content: str | bytes) -> str:
+    """The digest of what ``_atomic_write`` puts on disk for ``content``: text in this platform's line endings."""
+    import hashlib
+
+    data = content if isinstance(content, bytes) else content.replace("\n", os.linesep).encode("utf-8")
+    return hashlib.sha256(data).hexdigest()
+
+
 def _backup_copy(path: Path, backup_root: Path, plan: InstallPlan) -> Path:
     """Copy a file the install is about to overwrite under plugin/, instance/ or other/."""
     norm = _norm(path)
@@ -162,6 +170,15 @@ def plan_install(
             if norm not in owned:
                 plan.conflicts.append(f"no-receipt collision: {path}")
             elif _sha256(path) != owned[norm]:
+                # A Hermes agent keeps what it learns in its skills, and edited its memory skill between two
+                # releases that left that skill as it was: the upgrade stopped before its apply, which left the new
+                # package under the old wrapper and receipt (yuheng, 2026-09-29).  A skill file whose packaged copy
+                # is the one installed before keeps the agent's edit; one the package changed is a conflict.
+                if path.name.lower() == "skill.md" and _written_digest(planned[path]) == owned[norm]:
+                    plan.kept[norm] = owned[norm]
+                    plan.changes.append(PlannedChange("keep", str(path), "keep the agent's edit: the package's copy "
+                                                                         "has not changed"))
+                    continue
                 plan.conflicts.append(f"edited prior file: {path}")
         plan.changes.append(PlannedChange("write", str(path), "install host wrapper artifact"))
     plan.changes.append(PlannedChange("write", str(_receipt_path(instance)), "install receipt with digest"))
@@ -215,6 +232,8 @@ def apply_install(plan: InstallPlan) -> InstallResult:
         if prior_receipt.is_file():
             backups.append(str(_backup_copy(prior_receipt, backup_root, plan)))
         for path, content in planned.items():
+            if _norm(path) in plan.kept:
+                continue
             backup_path = _backup_copy(path, backup_root, plan) if path.is_file() else None
             if backup_path is not None:
                 backups.append(str(backup_path))
@@ -222,7 +241,8 @@ def apply_install(plan: InstallPlan) -> InstallResult:
             written.append(str(path))
             touched.append((path, backup_path))
 
-        receipt_path = _write_receipt(plan, installation_id=installation_id, written=written, tracked=tracked)
+        receipt_path = _write_receipt(plan, installation_id=installation_id, written=written, tracked=tracked,
+                                      kept=plan.kept)
         written.append(str(receipt_path))
     except Exception:
         for path, backup_path in reversed(touched):
