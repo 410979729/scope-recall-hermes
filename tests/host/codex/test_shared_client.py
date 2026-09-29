@@ -1517,11 +1517,11 @@ def test_a_runtime_config_that_will_not_load_keeps_the_keys(store, monkeypatch, 
         os.environ.pop("TEST_SCOPE_RECALL_STAYS", None)
 
 
-def test_a_payload_nested_past_the_parser_s_limit_is_answered_empty(store, monkeypatch, capsys):
+def test_a_payload_nested_past_the_parser_s_limit_is_answered_empty(store, monkeypatch, capsys, past_the_parser):
     """Nested past what the JSON parser takes, a tool's output ended the hook with a RecursionError and no answer
     (review of rc11)."""
     _root, _homes, client, _capture = store
-    raw = b'{"hook_event_name": "PostToolUse", "tool_response": ' + b"[" * 1200 + b"]" * 1200 + b"}"
+    raw = past_the_parser(b'{"hook_event_name": "PostToolUse", "tool_response": ', b"}")
     assert _hook_entry(monkeypatch, raw, client) == 0
     assert json.loads(capsys.readouterr().out) == {}
 
@@ -1563,7 +1563,7 @@ def test_a_hook_knows_whether_its_own_runtime_has_a_vector_search(store):
         hook.close()
 
 
-def test_a_request_the_server_cannot_read_is_refused_and_its_name_kept(resident, monkeypatch):
+def test_a_request_the_server_cannot_read_is_refused_and_its_name_kept(resident, monkeypatch, past_the_parser):
     """A payload nested past what the server's parser takes was answered 400, which the hook took for another program
     on the port, and it removed the server's name (review of rc11)."""
     import hashlib
@@ -1572,7 +1572,7 @@ def test_a_request_the_server_cannot_read_is_refused_and_its_name_kept(resident,
     from scope_recall.adapters.codex import local_endpoint
 
     _root, client, endpoint = resident
-    body = b'{"payload": ' + b"[" * 1200 + b"]" * 1200 + b', "current_refs": [], "gaps": [], "remaining": 1.0}'
+    body = past_the_parser(b'{"payload": ', b', "current_refs": [], "gaps": [], "remaining": 1.0}')
     nonce = "a" * 32
     connection = http.client.HTTPConnection("127.0.0.1", endpoint.port, timeout=5)
     try:
@@ -1635,17 +1635,17 @@ def test_a_first_read_of_the_key_that_raised_does_not_stop_the_server(store, mon
         os.environ.pop("TEST_SCOPE_RECALL_FIRST", None)
 
 
-def test_a_session_record_line_or_reply_nested_past_the_parser_s_limit_is_passed_over(tmp_path):
+def test_a_session_record_line_or_reply_nested_past_the_parser_s_limit_is_passed_over(tmp_path, past_the_parser):
     """A record line nested past what the parser takes ended every later Stop of the session, and so did a Codex
     reply of that shape (review of rc11)."""
     from scope_recall.adapters.codex import transcript
     from scope_recall.adapters.codex.boundary import is_codex_suggestions_reply
 
     record = tmp_path / "TEST-record.jsonl"
-    record.write_bytes(b"[" * 1200 + b"]" * 1200 + b"\n")
-    lines = transcript.read(record, 0, limit=65536)
-    assert [(end, said) for end, said in lines] == [(2401, None)]
-    assert is_codex_suggestions_reply("{" + '"suggestions": ' + "[" * 1200 + "]" * 1200 + "}") is False
+    line = past_the_parser(b"", b"\n")
+    record.write_bytes(line)
+    assert [(end, said) for end, said in transcript.read(record, 0, limit=65536)] == [(len(line), None)]
+    assert is_codex_suggestions_reply(past_the_parser(b'{"suggestions": ', b"}").decode("ascii")) is False
 
 
 def test_which_vector_faults_are_the_server_s_own():

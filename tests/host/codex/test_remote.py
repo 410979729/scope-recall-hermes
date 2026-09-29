@@ -685,18 +685,18 @@ def test_half_of_a_broken_emoji_reaches_the_entry(served, tmp_path):
     assert "TEST 表情坏了" + chr(0xFFFD) in said and "TEST 回复也坏了" + chr(0xFFFD) in said
 
 
-def test_a_hook_nested_past_the_parser_s_limit_is_answered_empty(tmp_path):
+def test_a_hook_nested_past_the_parser_s_limit_is_answered_empty(tmp_path, past_the_parser):
     """A payload nested past what the JSON parser takes ended the remote hook with a RecursionError (review of rc11)."""
     config = _client(tmp_path, "claude-code", _free_port())
-    raw = b'{"hook_event_name": "UserPromptSubmit", "prompt": ' + b"[" * 1200 + b"]" * 1200 + b"}"
+    raw = past_the_parser(b'{"hook_event_name": "UserPromptSubmit", "prompt": ', b"}")
     assert remote_client.run_hook(config, raw) == {}
 
 
-def test_the_server_refuses_a_body_nested_past_the_parser_s_limit(served):
+def test_the_server_refuses_a_body_nested_past_the_parser_s_limit(served, past_the_parser):
     """A request nested past what the parser takes raised out of the server as a 500, which a Codex client keeps to
     send again for good (review of rc11)."""
     _root, _homes, ports = served
-    body = b'{"payload": ' + b"[" * 1200 + b"]" * 1200 + b"}"
+    body = past_the_parser(b'{"payload": ', b"}")
     request = urllib.request.Request(f"http://127.0.0.1:{ports['claude-code']}/hook", data=body, method="POST",
                                      headers={"Content-Type": "application/json",
                                               "Authorization": f"Bearer {TOKEN}-claude-code"})

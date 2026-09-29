@@ -2,11 +2,34 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 from pathlib import Path
 
 import pytest
 
 from scope_recall.adapters.codex import CodexHookHandler, install_codex_scope_recall
+
+
+@pytest.fixture(scope="session")
+def past_the_parser():
+    """``past_the_parser(prefix, suffix)``: a payload with a list nested past what this interpreter's JSON parser
+    takes between them.  Where the parser gives up depends on the interpreter: 1,000 levels on Python 3.11, 3,000 on
+    3.12 for Windows, 10,000 elsewhere, the stack itself on 3.14.  Nested 1,200 levels, a payload was refused only on
+    3.11 and parsed elsewhere, so CI (3.12) never reached the refusal it tested (rc11)."""
+    depth = 1000
+    while True:
+        try:
+            json.loads("[" * depth + "]" * depth)
+        except RecursionError:
+            break
+        depth *= 2
+        if depth > 1 << 15:
+            pytest.skip("this interpreter's JSON parser takes any nesting a hook's 64 kB can hold")
+
+    def nested(prefix: bytes = b"", suffix: bytes = b"") -> bytes:
+        return prefix + b"[" * depth + b"]" * depth + suffix
+
+    return nested
 
 
 @dataclass
