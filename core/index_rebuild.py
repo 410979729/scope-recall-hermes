@@ -21,6 +21,9 @@ IMPORT_EMBED_ROLES = ("user", "assistant", "document", "unknown")
 #: A page is added only while fewer embeddings than this wait, so a message captured now is never queued behind an
 #: import's history for its vector.
 IMPORT_EMBED_QUEUE_CEILING = 64
+#: The queue an import's embeddings are kept to while other work the worker takes after embeddings is ready: half a
+#: pass of the default 32 items (``queue_import_embeddings``).
+IMPORT_EMBED_YIELD_CEILING = 16
 
 
 def queue_embedding_page(
@@ -97,15 +100,18 @@ def queue_embedding_page(
 
 
 def queue_import_embeddings(storage, context, *, after_key=None, limit: int = 64,
-                            yield_to: frozenset[str] = frozenset()) -> dict:
+                            yield_to: frozenset[str] = frozenset(), yield_ceiling: int = IMPORT_EMBED_YIELD_CEILING,
+                            now: datetime | None = None) -> dict:
     """Queue an embedding for imported sources in ``IMPORT_EMBED_ROLES`` that never had one, a page at a time.
 
     ``after_key`` is where the last page stopped: a source the admission rules keep without one (an
-    acknowledgement) is passed over, not looked at again on every page.  Nothing is queued while the embedding
-    queue is at ``IMPORT_EMBED_QUEUE_CEILING``, or while work of a type in ``yield_to`` is ready; the page is then
-    ``held`` and the cursor stays where it was.  The worker claims embeddings before candidate evaluations
-    (``work_storage._CLAIM_ORDER``): kept full by the backfill, every pass took embeddings alone, and on the pilot
-    251 evaluations waited behind an import's history for the hours it ran (rc10).
+    acknowledgement) is passed over, not looked at again on every page.  A page tops the embedding queue up to
+    ``IMPORT_EMBED_QUEUE_CEILING``, and to ``yield_ceiling`` while work of a type in ``yield_to`` is ready; with the
+    queue there, nothing is queued, the page is ``held`` and the cursor stays where it was.  The worker claims
+    embeddings before candidate evaluations (``work_storage._CLAIM_ORDER``): the backfill kept a page past the
+    ceiling waiting (up to 127), every pass took embeddings alone, and on the pilot 251 evaluations waited behind an
+    import's history for the hours it ran (rc10).  Stopping for them instead stopped it for as long as they could
+    not be done, a model refusing before any request (review of rc11); kept to part of a pass, it still moves.
     Only sources the context's worker would embed are looked at, those of its project and branch: an import kept
     by another's (a store converted from 2.x keeps them) was queued where this worker neither counts nor claims
     it, and every pass queued another page of them past the ceiling.
@@ -115,14 +121,22 @@ def queue_import_embeddings(storage, context, *, after_key=None, limit: int = 64
     if after_key is not None and (type(after_key) not in (list, tuple) or len(after_key) != 2
                                   or type(after_key[0]) is not str or type(after_key[1]) is not int):
         raise ContractError("INPUT_INVALID", "import_embed_cursor")
+    if type(yield_ceiling) is not int or not 1 <= yield_ceiling <= IMPORT_EMBED_QUEUE_CEILING:
+        raise ContractError("INPUT_INVALID", "import_embed_yield_ceiling")
     after_key = tuple(after_key or ("", 0))
+    moment = (now or datetime.now(timezone.utc)).isoformat()
     scopes = sorted(context.allowed_scope_ids)
     marks = ",".join("?" for _ in scopes)
     roles = ",".join("?" for _ in IMPORT_EMBED_ROLES)
     with storage.read(context) as tx:
-        if (tx.work.pending_depth("embed") >= IMPORT_EMBED_QUEUE_CEILING
-                or tx.work.other_work_ready(now=datetime.now(timezone.utc).isoformat(), kinds=frozenset(yield_to))):
+        ceiling = IMPORT_EMBED_QUEUE_CEILING
+        if yield_to and tx.work.other_work_ready(now=moment, kinds=frozenset(yield_to)):
+            ceiling = yield_ceiling
+        room = ceiling - tx.work.pending_depth("embed")
+        if room <= 0:
             return dict(after_key=after_key, queued=0, scanned=0, held=True, finished=False)
+        # No more sources are looked at than can join the queue: the cursor passes every one looked at.
+        scan = min(limit, room)
         rows = tx._check().execute(
             f"""SELECT s.event_id,s.source_revision,s.scope_id,s.project_id,s.branch_id FROM source_events s
                 WHERE s.scope_id IN ({marks}) AND (s.event_id,s.source_revision)>(?,?)
@@ -135,9 +149,8 @@ def queue_import_embeddings(storage, context, *, after_key=None, limit: int = 64
                   AND NOT EXISTS(SELECT 1 FROM work_items w WHERE w.work_type='embed'
                       AND w.subject_ref=s.event_id AND w.subject_revision=s.source_revision)
                 ORDER BY s.event_id,s.source_revision LIMIT ?""",
-            (*scopes, *after_key, context.project_id, context.branch_id, *IMPORT_EMBED_ROLES, limit),
+            (*scopes, *after_key, context.project_id, context.branch_id, *IMPORT_EMBED_ROLES, scan),
         ).fetchall()
-    now = datetime.now(timezone.utc).isoformat()
     groups: dict[tuple, list] = {}
     for row in rows:
         groups.setdefault((row["scope_id"], row["project_id"], row["branch_id"]), []).append(row)
@@ -155,7 +168,7 @@ def queue_import_embeddings(storage, context, *, after_key=None, limit: int = 64
                     continue
                 if classify(source.event).disposition != "schedule":
                     continue
-                tx.enqueue_source(source.ref, source.revision, work_type="embed", available_at=now)
+                tx.enqueue_source(source.ref, source.revision, work_type="embed", available_at=moment)
                 queued += 1
     cursor = (rows[-1]["event_id"], rows[-1]["source_revision"]) if rows else after_key
-    return dict(after_key=cursor, queued=queued, scanned=len(rows), held=False, finished=len(rows) < limit)
+    return dict(after_key=cursor, queued=queued, scanned=len(rows), held=False, finished=len(rows) < scan)

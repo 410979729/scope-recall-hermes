@@ -25,6 +25,7 @@ from ..core.composition import CoreConfig, MemoryCore
 from ..core.storage import SQLiteStorage
 from ..core.retrieval import SearchContext
 from ..core.deadline import RequestDeadline, using_request_deadline
+from ..core.index_rebuild import IMPORT_EMBED_QUEUE_CEILING
 from .auxiliary import AuxiliaryRuntimeConfig, build_auxiliary_runtime
 from .embedding_retry import embed_with_one_retry
 from .running_code import record_running_code
@@ -494,13 +495,16 @@ class RuntimeInstance:
         self.provider_holds = {} if purge_only else provider_holds(self.config.auxiliary)
         # An import's history in a person's roles gets the embedding its source store never queued, a page a pass
         # and only while the queue is shallow (``core.index_rebuild.queue_import_embeddings``).  Embeddings are
-        # claimed before candidate evaluations, so it also waits while one is ready that this pass would claim: not
-        # one without an evaluator, under a provider hold, or in a pass that only purges, which would stop it for
-        # nothing.
+        # claimed before candidate evaluations, so while one is ready that this pass would claim, no more than half
+        # a pass of them is kept waiting: evaluations share every pass, and the backfill still moves when they
+        # cannot be done.  One without an evaluator, under a provider hold, or in a pass that only purges does not
+        # count.
         evaluations = frozenset() if purge_only or candidate is None \
             else frozenset({"evaluate_candidate"}) - frozenset(self.provider_holds)
+        page = self.config.max_items if max_items is None else max_items
         self.embed_backfill = None if vector_gaps or (embed if embed is not None else self._default_embed) is None \
-            else backfill_if_due(self.core.storage, self.config.context(), self.config.vector, yield_to=evaluations)
+            else backfill_if_due(self.core.storage, self.config.context(), self.config.vector, yield_to=evaluations,
+                                 yield_ceiling=min(IMPORT_EMBED_QUEUE_CEILING, max(1, page // 2)))
         limit = self.config.request_seconds
         effective_embed = embed if embed is not None else self._default_embed
         effective_purge = purge if purge is not None else self._default_purge

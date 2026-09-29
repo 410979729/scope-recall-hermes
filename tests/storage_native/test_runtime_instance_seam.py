@@ -101,10 +101,10 @@ def test_a_drain_queues_and_embeds_an_import_s_history(tmp_path: Path):
         instance.close()
 
 
-def test_a_drain_s_backfill_waits_only_for_evaluations_the_pass_would_take(tmp_path: Path, monkeypatch):
-    """The backfill waits while a candidate evaluation is ready, which the worker takes after embeddings (rc10: 251
-    waited behind it).  Only one this pass would take counts: none without an evaluator, under a provider hold, or
-    in a pass that only purges, where waiting would stop the backfill for nothing."""
+def test_a_drain_s_backfill_makes_room_only_for_evaluations_the_pass_would_take(tmp_path: Path, monkeypatch):
+    """The backfill keeps half a pass of embeddings while a candidate evaluation is ready, which the worker takes
+    after embeddings (rc10: 251 waited behind it).  Only one this pass would take counts: none without an
+    evaluator, under a provider hold, or in a pass that only purges, where making room would slow it for nothing."""
     from scope_recall.runtime import instance as instance_module
     from scope_recall.runtime import model_budget
 
@@ -119,7 +119,8 @@ def test_a_drain_s_backfill_waits_only_for_evaluations_the_pass_would_take(tmp_p
     )
     asked = []
     monkeypatch.setattr(instance_module, "backfill_if_due",
-                        lambda storage, context, vectors, **kwargs: asked.append(kwargs.get("yield_to")))
+                        lambda storage, context, vectors, **kwargs: asked.append(
+                            (kwargs.get("yield_to"), kwargs.get("yield_ceiling"))))
 
     class Evaluator:
         def consolidate(self, *args, **kwargs):
@@ -135,13 +136,13 @@ def test_a_drain_s_backfill_waits_only_for_evaluations_the_pass_would_take(tmp_p
                                      source_embedding=DeterministicEmbedding())
         instance.drain()
         instance.drain(consolidation=Evaluator())
-        instance.drain(consolidation=Evaluator(), purge_only=True)
+        instance.drain(consolidation=Evaluator(), purge_only=True, max_items=8)
         monkeypatch.setattr(model_budget, "provider_holds",
                             lambda auxiliary: {"evaluate_candidate": ("TEST-model", "2999-01-01T00:00:00Z")})
         instance.drain(consolidation=Evaluator())
     finally:
         instance.close()
-    assert asked == [frozenset(), frozenset({"evaluate_candidate"}), frozenset(), frozenset()]
+    assert asked == [(frozenset(), 16), (frozenset({"evaluate_candidate"}), 16), (frozenset(), 4), (frozenset(), 16)]
 
 
 def test_runtime_instance_native_source_query_delete_purge(tmp_path: Path):

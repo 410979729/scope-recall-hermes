@@ -160,14 +160,14 @@ def index_if_due(store: Any, vector_config: Any, *, available_seconds: float,
 #: (an embedding already queued is not selected).
 #: How long a finished backfill stands before a pass looks through the imports again, for a later import's history.
 EMBED_BACKFILL_RECHECK = timedelta(days=1)
-#: Sources looked at per pass.  At most this many embeddings join the queue, and only while it is shallow.
+#: Sources looked at per pass, at most.  No more join the queue than take it to its ceiling.
 EMBED_BACKFILL_PAGE = 64
 
 
 def backfill_if_due(storage: Any, context: Any, vector_config: Any, *, now: datetime | None = None,
-                    yield_to: frozenset[str] = frozenset()) -> dict | None:
-    """Queue the next page of an import's embeddings, unless the last look found none left within a day.  None is
-    queued while work of a type in ``yield_to`` is ready (``queue_import_embeddings``).
+                    yield_to: frozenset[str] = frozenset(), yield_ceiling: int | None = None) -> dict | None:
+    """Queue the next page of an import's embeddings, unless the last look found none left within a day.  While
+    work of a type in ``yield_to`` is ready, the queue is kept to ``yield_ceiling`` (``queue_import_embeddings``).
 
     Returns the receipt, also written to the partition's state file.  Never raises: an embedding queued later is
     found later, never wrongly.
@@ -194,7 +194,8 @@ def backfill_if_due(storage: Any, context: Any, vector_config: Any, *, now: date
         from ..core.index_rebuild import queue_import_embeddings
 
         page = queue_import_embeddings(storage, context, after_key=after_key, limit=EMBED_BACKFILL_PAGE,
-                                       yield_to=yield_to)
+                                       yield_to=yield_to, now=moment,
+                                       **({} if yield_ceiling is None else {"yield_ceiling": yield_ceiling}))
         receipt.update(after_key=list(page["after_key"]), queued=page["queued"], queued_total=earlier + page["queued"],
                        outcome="held" if page["held"] else "finished" if page["finished"] else "progress")
     except Exception as exc:  # noqa: BLE001 - see docstring; upkeep never fails a drain.
