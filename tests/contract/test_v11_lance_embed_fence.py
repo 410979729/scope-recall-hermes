@@ -139,6 +139,11 @@ def test_actual_purge_port_unknown_metadata_cannot_ack_empty(worker_app, tmp_pat
         store.close()
 
 
+#: The budget of a publication held at its guard while the test does its own work (a delete, two purges and a pause):
+#: 10 s ran out on a CI runner three times slower than usual, and the guard's answer then found no time left to send.
+WRITER_SECONDS = 30
+
+
 def test_actual_purge_port_native_lock_wait_consumes_request_deadline(worker_app, tmp_path):
     """A caller that stops waiting leaves the healthy helper up and drains its frame later."""
     core, ctx, clock = worker_app
@@ -151,14 +156,14 @@ def test_actual_purge_port_native_lock_wait_consumes_request_deadline(worker_app
 
     def guard():
         entered.set()
-        assert release.wait(10)
+        assert release.wait(30)
         return False
 
     try:
         with ThreadPoolExecutor(max_workers=1) as pool:
             publication = pool.submit(lambda: writer.fenced_upsert_records(
-                [_native_row(source, ctx)], guard=guard, remaining_seconds=10))
-            assert entered.wait(10)
+                [_native_row(source, ctx)], guard=guard, remaining_seconds=WRITER_SECONDS))
+            assert entered.wait(30)
             receipt = _physical_delete_receipt(core, ctx, source)
             started = time.monotonic()
             assert _purge_port(cleaner, ctx).purge_active(
@@ -170,7 +175,7 @@ def test_actual_purge_port_native_lock_wait_consumes_request_deadline(worker_app
             assert cleaner._process is helper and helper is not None and helper.poll() is None
             assert cleaner._pending_response_id is not None
             release.set()
-            assert publication.result(timeout=10) is False
+            assert publication.result(timeout=30) is False
         # Without any reopen, the next request drains the owed frame first.
         assert _purge_port(cleaner, ctx).purge_active(
             receipt["operation_id"], receipt=receipt, remaining_seconds=10)
@@ -192,14 +197,14 @@ def test_actual_purge_port_wedged_helper_is_reaped_after_pending_frame_timeout(w
 
     def guard():
         entered.set()
-        assert release.wait(10)
+        assert release.wait(30)
         return False
 
     try:
         with ThreadPoolExecutor(max_workers=1) as pool:
             publication = pool.submit(lambda: writer.fenced_upsert_records(
-                [_native_row(source, ctx)], guard=guard, remaining_seconds=10))
-            assert entered.wait(10)
+                [_native_row(source, ctx)], guard=guard, remaining_seconds=WRITER_SECONDS))
+            assert entered.wait(30)
             receipt = _physical_delete_receipt(core, ctx, source)
             port = _purge_port(cleaner, ctx)
             assert port.purge_active(receipt["operation_id"], receipt=receipt, remaining_seconds=0.15) is False
@@ -213,7 +218,7 @@ def test_actual_purge_port_wedged_helper_is_reaped_after_pending_frame_timeout(w
             assert time.monotonic() - started < 2
             assert cleaner.requires_reopen is True
             release.set()
-            assert publication.result(timeout=10) is False
+            assert publication.result(timeout=30) is False
         cleaner.close(); cleaner.open_existing()
         assert cleaner.requires_reopen is False
         assert _purge_port(cleaner, ctx).purge_active(
