@@ -530,7 +530,7 @@ def test_a_delete_keeps_a_row_that_took_the_deleted_message_s_key_for_other_word
     for session, content, code in (("TEST-session-2", "TEST 第二条，另一句话。", rekey),
                                    ("TEST-session-3", "TEST 第一条，要删掉。", rekey),
                                    ("TEST-session-4", "TEST 第三条，放弃过的。", gave_up),
-                                   # A collision waiting for its new key wakes nothing, and can wait as long.
+                                   # A collision waiting for its new key can wait a while too.
                                    ("TEST-session-5", "TEST 第四条，等新键的。", "VERSION_CONFLICT")):
         token, _prepared = capture_inbox.enqueue(core.storage, clock, replace(ctx, session_id=session),
                                                  source_event(source_event_key="TEST-taken", content=content),
@@ -552,22 +552,30 @@ def test_a_delete_cancels_a_collision_that_holds_the_deleted_message(worker_app)
     same words with a line break more, or a long message with a character before it, were kept and stored after the
     delete, and no test guarded the collisions that had to go (review of rc10)."""
     core, ctx, clock = worker_app
-    short = capture(core, ctx, "TEST 要删掉的这一句。", key="TEST-collided-short")
+    capture(core, ctx, "TEST 要删掉的这一句，里面有私事，早先的说法。", key="TEST-collided-short")
+    short = capture(core, ctx, "TEST 要删掉的这一句，里面有私事。", key="TEST-collided-short", revision=2)
     long_text = "TEST 很长的要删掉的消息。" * 6000
     long_ = capture(core, ctx, long_text, key="TEST-collided-long")
-    rows = (("TEST-collided-short", "TEST 要删掉的这一句。", "exact"),
-            ("TEST-collided-short", "TEST 要删掉的这一句。\n", "a line break more"),
-            ("TEST-collided-short", "TEST 另外一句话。", "other words"),
-            ("TEST-collided-short", "TEST 引用了：要删掉的这一句", "a part quoted"),
-            ("TEST-collided-long", long_text, "long exact"),
-            ("TEST-collided-long", "X" + long_text, "long, a character before"),
-            ("TEST-collided-long", "TEST 另一条很长的消息。" * 6000, "long, other words"))
-    for index, (key, content, _label) in enumerate(rows):
+    put_off = f"DEFERRED|{capture_inbox.__version__}|2026-09-06T13:00:00Z|1|replay|TEST"
+    rows = (("TEST-collided-short", "TEST 要删掉的这一句，里面有私事。", "VERSION_CONFLICT"),
+            ("TEST-collided-short", "TEST 要删掉的这一句，里面有私事。\n", "VERSION_CONFLICT"),
+            ("TEST-collided-short", "TEST 要删掉的这一句，\n里面有私事。", "VERSION_CONFLICT"),
+            ("TEST-collided-short", "TEST要删掉的这一句，里面有私事。", "VERSION_CONFLICT"),
+            # The version before, a line break inside: only its text says so, not its digest.
+            ("TEST-collided-short", "TEST 要删掉的这一句，\n里面有私事，早先的说法。", "VERSION_CONFLICT"),
+            # Put off under a key of its own: matched by its words, not by any key.
+            ("TEST-elsewhere", "Y" + long_text, put_off),
+            ("TEST-collided-short", "TEST 另外一句话。", "VERSION_CONFLICT"),
+            ("TEST-collided-short", "TEST 引用了：要删掉的这一句", "VERSION_CONFLICT"),
+            ("TEST-collided-long", long_text, "VERSION_CONFLICT"),
+            ("TEST-collided-long", "X" + long_text, "VERSION_CONFLICT"),
+            ("TEST-collided-long", "TEST 另一条很长的消息。" * 6000, "VERSION_CONFLICT"))
+    for index, (key, content, code) in enumerate(rows):
         token, _prepared = capture_inbox.enqueue(core.storage, clock, replace(ctx, session_id=f"TEST-session-c{index}"),
                                                  source_event(source_event_key=key, content=content),
                                                  scope_id="TEST-scope", host_scope=None)
         with sqlite3.connect(core.storage.path) as conn:
-            conn.execute("UPDATE capture_inbox SET last_error_code='VERSION_CONFLICT' WHERE token=?", (token,))
+            conn.execute("UPDATE capture_inbox SET last_error_code=? WHERE token=?", (code, token))
             conn.commit()
     authorize(core, ctx, short, long_)
     core.forget(ctx, request(short, long_), remaining_seconds=5)
@@ -575,6 +583,37 @@ def test_a_delete_cancels_a_collision_that_holds_the_deleted_message(worker_app)
         kept = {json.loads(payload)["events"][0]["content"][:20] for (payload,) in
                 conn.execute("SELECT payload_json FROM capture_inbox")}
     assert kept == {"TEST 另外一句话。", "TEST 引用了：要删掉的这一句", ("TEST 另一条很长的消息。" * 2)[:20]}
+
+
+def test_a_delete_of_a_short_message_keeps_waiting_rows_that_merely_contain_it(worker_app):
+    """Deleting "好" or "ok" cancelled every waiting row that held those characters among other words (review of
+    rc10).  A short deleted text cancels only a row that is it, give or take a tenth; a distinct one any row holding
+    it whole."""
+    core, ctx, clock = worker_app
+    good = capture(core, ctx, "好", key="TEST-short-good")
+    fine = capture(core, ctx, "ok", key="TEST-short-ok")
+    rows = (("TEST-short-good", "TEST 这个方案挺好的，就这么办。", "VERSION_CONFLICT"),
+            ("TEST-short-ok", "TEST I will look at the book tomorrow.", "VERSION_CONFLICT"),
+            ("TEST-short-else", "TEST 你好，请帮我看一下日志。",
+             f"DEFERRED|{capture_inbox.__version__}|2026-09-06T13:00:00Z|1|replay|TEST"),
+            ("TEST-short-good", "好", "VERSION_CONFLICT"),
+            ("TEST-short-ok", "ok\n", "VERSION_CONFLICT"))
+    for index, (key, content, code) in enumerate(rows):
+        token, _prepared = capture_inbox.enqueue(core.storage, clock, replace(ctx, session_id=f"TEST-session-s{index}"),
+                                                 source_event(source_event_key=key, content=content),
+                                                 scope_id="TEST-scope", host_scope=None)
+        with sqlite3.connect(core.storage.path) as conn:
+            conn.execute("UPDATE capture_inbox SET last_error_code=? WHERE token=?", (code, token))
+            conn.commit()
+    authorize(core, ctx, good, fine)
+    core.forget(ctx, request(good, fine), remaining_seconds=5)
+    with sqlite3.connect(core.storage.path) as conn:
+        kept = sorted(json.loads(payload)["events"][0]["content"] for (payload,) in
+                      conn.execute("SELECT payload_json FROM capture_inbox"))
+    assert kept == sorted(["TEST 这个方案挺好的，就这么办。", "TEST I will look at the book tomorrow.",
+                           "TEST 你好，请帮我看一下日志。"])
+    assert not capture_inbox.holds(json.dumps({"events": [{"content": "TEST"}]}), frozenset(), frozenset(),
+                                   frozenset({""}), rekeyed=True), "an empty text holds nothing"
 
 
 def test_a_passing_failure_keeps_a_row_on_its_path(worker_app, monkeypatch):
@@ -587,16 +626,17 @@ def test_a_passing_failure_keeps_a_row_on_its_path(worker_app, monkeypatch):
     capture_inbox.durable_record_event(core.storage, clock, other, dict(first, content="TEST second TEST-turn-70"),
                                        scope_id="TEST-scope", host_scope=None)
 
-    def busy(*args, **kwargs):
-        raise ContractError("STORAGE_UNAVAILABLE", "connection_cleanup")
+    for passing in ("STORAGE_UNAVAILABLE", "DEADLINE_EXCEEDED"):
+        def busy(*args, passing=passing, **kwargs):
+            raise ContractError(passing, "connection_cleanup")
 
-    monkeypatch.setattr(capture_inbox, "record_event", busy)
-    receipts = capture_inbox.resolve_conflicted_ingress(
-        core.storage, clock, other, authorize=lambda _: other.allowed_scope_ids, remaining_seconds=5)
-    assert [receipt.error_code for receipt in receipts] == ["STORAGE_UNAVAILABLE"]
-    assert capture_inbox.INGRESS_PENDING_GAP in receipts[0].gaps
-    with sqlite3.connect(core.storage.path) as conn:
-        assert conn.execute("SELECT last_error_code FROM capture_inbox").fetchall() == [("VERSION_CONFLICT",)]
+        monkeypatch.setattr(capture_inbox, "record_event", busy)
+        receipts = capture_inbox.resolve_conflicted_ingress(
+            core.storage, clock, other, authorize=lambda _: other.allowed_scope_ids, remaining_seconds=5)
+        assert [receipt.error_code for receipt in receipts] == [passing]
+        assert capture_inbox.INGRESS_PENDING_GAP in receipts[0].gaps
+        with sqlite3.connect(core.storage.path) as conn:
+            assert conn.execute("SELECT last_error_code FROM capture_inbox").fetchall() == [("VERSION_CONFLICT",)]
 
 
 def test_a_commit_left_for_the_next_pass_says_so_and_a_refused_one_does_not(worker_app, monkeypatch):
@@ -623,18 +663,28 @@ def test_a_commit_left_for_the_next_pass_says_so_and_a_refused_one_does_not(work
             "INPUT_INVALID"
 
 
-def test_a_suppress_leaves_the_inbox_alone(worker_app):
-    """The partition's inbox was cancelled for a suppress as well as a delete, though a suppressed group already
-    hides what comes of it later (review of rc10)."""
+def test_a_suppress_cancels_only_a_waiting_copy_under_another_key(worker_app):
+    """The partition's inbox was cancelled for a suppress as well as a delete, though a suppressed group already hides
+    what comes of it later (reviews of rc10).  A copy waiting under another key is not of that group: stored under a
+    new key it was not suppressed, so it goes."""
     core, ctx, clock = worker_app
-    source = capture(core, ctx, "TEST 别再主动提这件事。", key="TEST-suppressed")
-    capture_inbox.enqueue(core.storage, clock, ctx, source_event(source_event_key="TEST-unrelated-waiting",
-                                                                 content="TEST 无关的等待中的一句。"),
-                          scope_id="TEST-scope", host_scope=None)
+    source = capture(core, ctx, "TEST 别再主动提这件私事，说过很多次了。", key="TEST-suppressed")
+    for index, (key, content, code) in enumerate((
+            ("TEST-unrelated-waiting", "TEST 无关的等待中的一句。", None),
+            ("TEST-suppressed", "TEST 别再主动提这件私事，说过很多次了。", "VERSION_CONFLICT"),
+            ("TEST-suppressed", "TEST 同一条消息的下一版。", None))):
+        token, _prepared = capture_inbox.enqueue(core.storage, clock, replace(ctx, session_id=f"TEST-session-p{index}"),
+                                                 source_event(source_event_key=key, content=content),
+                                                 scope_id="TEST-scope", host_scope=None)
+        with sqlite3.connect(core.storage.path) as conn:
+            conn.execute("UPDATE capture_inbox SET last_error_code=? WHERE token=?", (code, token))
+            conn.commit()
     authorize(core, ctx, source, mode="suppress")
     core.forget(ctx, request(source, mode="suppress"), remaining_seconds=5)
     with sqlite3.connect(core.storage.path) as conn:
-        assert conn.execute("SELECT count(*) FROM capture_inbox").fetchone()[0] == 1
+        kept = sorted(json.loads(payload)["events"][0]["content"] for (payload,) in
+                      conn.execute("SELECT payload_json FROM capture_inbox"))
+    assert kept == sorted(["TEST 无关的等待中的一句。", "TEST 同一条消息的下一版。"])
 
 
 def test_retry_failures_returns_only_the_rows_its_replay_takes(tmp_path):

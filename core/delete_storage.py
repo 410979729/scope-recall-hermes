@@ -258,30 +258,42 @@ class Deletions:
         # A row put off can wait for hours, and so can a key collision waiting
         # for its new key; cancelling one lost words nothing had forgotten
         # (reviews of rc10).  It is kept unless it holds a deleted message
-        # (``capture_inbox.outlasts_a_delete``, ``holds``).  A suppress hides
-        # what comes later of the same group on its own, and cancelled nothing
-        # it had to.
-        from .capture_inbox import holds, outlasts_a_delete, taking_a_new_key, whitespace_folded
+        # (``capture_inbox.outlasts_a_delete``, ``holds``).  A suppress cancels
+        # only a copy under another key: what comes of the same message is
+        # suppressed as it arrives, and a copy the rekey step moves to a new key
+        # was not.
+        from .capture_inbox import holds, outlasts_a_delete, taking_a_new_key, without_whitespace
 
-        digests, groups, texts = set(), set(), set()
+        digests, groups, versions = set(), set(), set()
         for target in targets:
             for digest, group, revision in conn.execute(
                     "SELECT content_sha256,source_group_key,source_revision FROM source_events WHERE event_id=?",
                     (target.ref,)).fetchall():
                 digests.add(digest)
                 groups.add(group)
-                texts.add(whitespace_folded("".join(content for (content,) in conn.execute(
+                versions.add((group, revision))
+        texts: list[frozenset[str]] = []
+
+        def forgotten_texts() -> frozenset[str]:
+            # Each version of a deleted message is put together once, and only when a waiting row is looked into:
+            # put together for each of its segments, under the writer lease, a delete of long messages took seconds.
+            if not texts:
+                texts.append(frozenset(without_whitespace("".join(content for (content,) in conn.execute(
                     "SELECT content FROM source_events WHERE source_group_key=? AND source_revision=? ORDER BY segment_index",
-                    (group, revision)))))
-        forgotten = (frozenset(digests), frozenset(groups), frozenset(text for text in texts if text))
-        for scope, project, branch in ({(t.scope_id, t.project_id, t.branch_id) for t in targets} if delete else ()):
+                    version))) for version in versions))
+            return texts[0]
+
+        for scope, project, branch in {(t.scope_id, t.project_id, t.branch_id) for t in targets}:
             for token, code in conn.execute(
                     "SELECT token,last_error_code FROM capture_inbox WHERE scope_id=? AND project_id IS ? AND branch_id IS ?",
                     (scope, project, branch)).fetchall():
-                # A payload is read only for a row that outlasts a delete: the inbox holds up to 64 MB.
-                if not outlasts_a_delete(code) or holds(
-                        conn.execute("SELECT payload_json FROM capture_inbox WHERE token=?", (token,)).fetchone()[0],
-                        *forgotten, rekeyed=taking_a_new_key(code)):
+                if delete and not outlasts_a_delete(code):
+                    conn.execute("DELETE FROM capture_inbox WHERE token=?", (token,))
+                    continue
+                # Only such a row's payload is read: the inbox holds up to 64 MB.
+                if holds(conn.execute("SELECT payload_json FROM capture_inbox WHERE token=?", (token,)).fetchone()[0],
+                         frozenset(digests), frozenset(groups), forgotten_texts(),
+                         rekeyed=not delete or taking_a_new_key(code)):
                     conn.execute("DELETE FROM capture_inbox WHERE token=?", (token,))
         for target in targets:
             conn.execute("DELETE FROM consolidation_fragments WHERE work_id IN (SELECT work_id FROM work_items WHERE subject_ref=?)", (target.ref,))

@@ -160,8 +160,8 @@ def waiting(code: object) -> bool:
 
 def outlasts_a_delete(code: object) -> bool:
     """Whether a delete keeps a row unless it holds a deleted message (``holds``): one put off or given up, which waits
-    for hours, or a key collision waiting for its new key, which wakes nothing and can wait as long (reviews of rc10).
-    Any other row of the partition is cancelled, so that a delayed capture cannot undo the delete."""
+    for hours, or a key collision waiting for its new key, which waits for the next pass (reviews of rc10).  Any other
+    row of the partition is cancelled, so that a delayed capture cannot undo the delete."""
     return put_off(code) or code == "VERSION_CONFLICT"
 
 
@@ -170,17 +170,26 @@ def taking_a_new_key(code: object) -> bool:
     return code == "VERSION_CONFLICT" or deferred_path(code) == "rekey"
 
 
-def whitespace_folded(text: object) -> str:
-    """``text`` with every run of whitespace one space, and none at its ends: what a delete compares (``holds``)."""
-    return " ".join(str(text).split())
+def without_whitespace(text: object) -> str:
+    """``text`` with no whitespace at all: what a delete compares (``holds``).  Runs folded to one space, a line break
+    inside a sentence, or a space left out, still kept the deleted words (review of rc10)."""
+    return "".join(str(text).split())
+
+
+#: Characters, whitespace aside, from which a deleted message's text is its own: a row that holds all of it is a copy
+#: of it, whatever else it says.  A shorter one ("好", "ok") is found inside unrelated messages, and deleting it
+#: cancelled every waiting row that held it (review of rc10); a row then holds it only by being it, give or take a
+#: tenth.
+DISTINCT_TEXT = 24
 
 
 def holds(payload_json: object, digests: frozenset[str], groups: frozenset[str], texts: frozenset[str] = frozenset(),
           *, rekeyed: bool = False) -> bool:
-    """Whether an inbox row's capture holds a deleted message: one of its stored segments (``content_sha256``), the
-    whole of its text anywhere in the row's (``texts``, compared by ``whitespace_folded``), or its source group.  A row
-    that cannot be read is taken to (a delete then cancels it, as it cancels every row it cannot look into).  A message
-    that quotes only part of a deleted one is kept.
+    """Whether an inbox row's capture holds a deleted message: one of its stored segments (``content_sha256``), its
+    whole text (``texts``, compared ``without_whitespace``) where it is ``DISTINCT_TEXT`` long or the row is no more than
+    a tenth longer, or its source group.  A row that cannot be read is taken to (a delete then cancels it, as it
+    cancels every row it cannot look into).  A message that quotes only part of a deleted one, or holds a short one
+    among other words, is kept.
 
     A row being given a new key (``rekeyed``) is another message that took a stored one's key, so the group it names
     is not its own and only its content counts: deleting the first message cancelled the second.  Compared by digest
@@ -196,10 +205,12 @@ def holds(payload_json: object, digests: frozenset[str], groups: frozenset[str],
             group = segment.get("group_key") if isinstance(segment, dict) else event.get("source_event_key")
             if (not rekeyed and group in groups) or stored_content_digest(event["content"]) in digests:
                 return True
+        texts = [text for text in texts if text]
         if texts:
             ordered = sorted(events, key=lambda event: (event.get("segment") or {}).get("index", 0))
-            whole = whitespace_folded("".join(event["content"] for event in ordered))
-            return any(text in whole for text in texts)
+            whole = without_whitespace("".join(event["content"] for event in ordered))
+            return any(text in whole and (len(text) >= DISTINCT_TEXT or len(whole) - len(text) <= len(whole) // 10)
+                       for text in texts)
     except (ValueError, KeyError, TypeError, AttributeError):
         return True
     return False
