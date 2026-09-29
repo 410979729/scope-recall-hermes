@@ -186,7 +186,7 @@ _NOT_A_LETTER = re.compile(r"[\W_]+")
 #: whatever else it says.  A shorter one ("好", "ok") is found inside unrelated messages, and deleting it cancelled
 #: every waiting row that held it (review of rc10).
 DISTINCT_TEXT = 24
-#: Letters and digits from which a row with the same ones, give or take a tenth, is a copy though its punctuation or
+#: Letters and digits from which a row with the same ones and at most a tenth more is a copy though its punctuation or
 #: case differ ("我要辞职了。").  Below that, different messages compare the same ("C++" and "C#", "+1" and "-1").
 NEAR_COPY = 4
 
@@ -198,19 +198,17 @@ def deleted_text(text: object) -> tuple[str, str]:
 
 
 def holds(payload_json: object, digests: frozenset[str], groups: frozenset[str],
-          texts: frozenset[tuple[str, str]] = frozenset(), refs: frozenset[str] = frozenset(), *,
-          rekeyed: bool = False) -> bool:
+          texts: frozenset[tuple[str, str]] = frozenset(), *, rekeyed: bool = False) -> bool:
     """Whether an inbox row's capture holds a deleted message.  A row that cannot be read is taken to (a delete then
     cancels it, as it cancels every row it cannot look into).  It holds one when:
 
     - one of its segments is a deleted one as stored (``content_sha256``), or it is of the deleted source's group
       (not for a row being given a new key, ``rekeyed``: another message that took a stored one's key, whose group
       is not its own; deleting the first message cancelled the second);
-    - it cites a deleted source (``evidence_refs``): an echo of it, which its replay then refused for good and left
-      waiting with the words;
-    - whitespace aside, it holds all of a deleted text of ``DISTINCT_TEXT`` characters or more, or is one, give or take
-      a tenth; or, letters and digits compared, it is a deleted text of ``NEAR_COPY`` or more of them, give or take a
-      tenth.  A message that quotes a short deleted one among other words, or only part of a long one, is kept.
+    - whitespace aside, it holds all of a deleted text of ``DISTINCT_TEXT`` characters or more, or is one with at most
+      a tenth more; or, letters and digits compared, it is a deleted text of ``NEAR_COPY`` or more of them with at most
+      a tenth more.  A message that quotes a short deleted one among other words, only part of a long one, or a long
+      one written otherwise than whitespace (a quote reformatted, its punctuation changed), is kept.
 
     Compared by digest alone, the same words with a line break or a full stop more were kept and stored after the
     delete; compared more loosely, deleting a short message cancelled unrelated rows, and a character-by-character
@@ -224,9 +222,6 @@ def holds(payload_json: object, digests: frozenset[str], groups: frozenset[str],
             segment = event.get("segment")
             group = segment.get("group_key") if isinstance(segment, dict) else event.get("source_event_key")
             if (not rekeyed and group in groups) or stored_content_digest(event["content"]) in digests:
-                return True
-            if refs and any(type(item) is str and item.split("@", 1)[0] in refs
-                            for item in event.get("evidence_refs") or ()):
                 return True
         texts = [text for text in texts if text[0]]
         if not texts:

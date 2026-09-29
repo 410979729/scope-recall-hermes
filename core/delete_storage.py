@@ -273,7 +273,6 @@ class Deletions:
                 digests.add(digest)
                 groups.add(group)
                 versions.add((group, revision))
-        refs = frozenset(target.ref for target in targets if target.kind == "event")
         texts: list[frozenset[tuple[str, str]]] = []
 
         def forgotten_texts() -> frozenset[tuple[str, str]]:
@@ -292,8 +291,7 @@ class Deletions:
                 # Only a row that outlasts a delete has its payload read: the inbox holds up to 64 MB.
                 if not outlasts_a_delete(code) or holds(
                         conn.execute("SELECT payload_json FROM capture_inbox WHERE token=?", (token,)).fetchone()[0],
-                        frozenset(digests), frozenset(groups), forgotten_texts(), refs,
-                        rekeyed=taking_a_new_key(code)):
+                        frozenset(digests), frozenset(groups), forgotten_texts(), rekeyed=taking_a_new_key(code)):
                     conn.execute("DELETE FROM capture_inbox WHERE token=?", (token,))
         for target in targets:
             conn.execute("DELETE FROM consolidation_fragments WHERE work_id IN (SELECT work_id FROM work_items WHERE subject_ref=?)", (target.ref,))

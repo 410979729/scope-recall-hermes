@@ -625,29 +625,30 @@ def test_a_delete_of_a_short_message_keeps_waiting_rows_that_merely_contain_it(w
                                    frozenset({("", "")}), rekeyed=True), "an empty text holds nothing"
 
 
-def test_a_delete_cancels_what_holds_a_deleted_segment_or_cites_the_deleted_message(worker_app):
-    """A row whose first segment is a deleted one, the rest another's, holds no deleted text whole: only its segment
-    says so.  An echo citing a deleted message among other words was kept, refused for good on replay, and left
-    waiting with the words (review of rc10)."""
+def test_a_delete_cancels_what_holds_a_deleted_segment_or_cannot_be_read(worker_app):
+    """A row whose first or second segment is a deleted one, the rest another's, holds no deleted text whole: only its
+    segment says so.  A row that cannot be read is cancelled, as every row a delete cannot look into (review of rc10)."""
     core, ctx, clock = worker_app
     long_text = "TEST 很长的要删掉的消息。" * 6000
     long_ = capture(core, ctx, long_text, key="TEST-segment-deleted")
-    short = capture(core, ctx, "TEST 我的新地址是和平路八号。", key="TEST-cited")
     rows = ((ctx, source_event(source_event_key="TEST-segment-row",
                                content=long_text[:65536] + "TEST 完全不同的后续内容。" * 3000)),
-            (replace(ctx, actor_origin="assistant_visible"),
-             source_event(source_event_key="TEST-echo", origin="assistant_visible",
-                          content="TEST 我记下了：TEST 我的新地址是和平路八号。以后寄东西就用这个地址。",
-                          evidence_refs=[f"{short.ref}@1"])),
+            (ctx, source_event(source_event_key="TEST-second-segment-row",
+                               content="Z" * 65536 + long_text[65536:])),
+            (ctx, source_event(source_event_key="TEST-unreadable", content="TEST 读不懂的一行。")),
             (ctx, source_event(source_event_key="TEST-unrelated", content="TEST 另外一件事。")))
     for index, (context, event) in enumerate(rows):
         token, _prepared = capture_inbox.enqueue(core.storage, clock, replace(context, session_id=f"TEST-session-g{index}"),
                                                  event, scope_id="TEST-scope", host_scope=None)
         with sqlite3.connect(core.storage.path) as conn:
             conn.execute("UPDATE capture_inbox SET last_error_code='VERSION_CONFLICT' WHERE token=?", (token,))
+            if event["source_event_key"] == "TEST-unreadable":
+                # The table holds valid JSON only: a row of another shape is what cannot be read.
+                conn.execute("""UPDATE capture_inbox SET payload_json='{"events": [{"segment": 5}]}' WHERE token=?""",
+                             (token,))
             conn.commit()
-    authorize(core, ctx, long_, short)
-    core.forget(ctx, request(long_, short), remaining_seconds=5)
+    authorize(core, ctx, long_)
+    core.forget(ctx, request(long_), remaining_seconds=5)
     with sqlite3.connect(core.storage.path) as conn:
         kept = [json.loads(payload)["events"][0]["content"] for (payload,) in
                 conn.execute("SELECT payload_json FROM capture_inbox")]
@@ -1057,3 +1058,32 @@ def test_a_capture_that_conflicts_again_under_its_new_key_stays_final(worker_app
         assert conn.execute("SELECT last_error_code FROM capture_inbox").fetchall() == [("VERSION_CONFLICT:rekeyed",)]
     assert capture_inbox.resolve_conflicted_ingress(
         core.storage, clock, other, authorize=lambda _: other.allowed_scope_ids, remaining_seconds=5) == ()
+
+
+def test_the_parts_of_a_delete_s_comparison_each_hold(worker_app):
+    """Each part of the comparison was left to the others in the tests, so a floor, a tenth or the case could change
+    unnoticed (review of rc10): here each decides a row alone."""
+    core, ctx, clock = worker_app
+    deleted = {text: capture(core, ctx, text, key=f"TEST-part-{index}") for index, text in enumerate((
+        "1.2", "1.2.3", "a1b2", "Deploy Tonight Please", "| --- | --- |", "|---|---|---|---|---|"))}
+    rows = (("12", True),  # two letters and digits: a near copy only whitespace aside
+            ("123", True),  # three: likewise
+            ("a1b2.", False),  # four: the same letters and digits, punctuation aside
+            ("deploy tonight please!", False),  # case aside
+            ("deploy tonight pleasex", False),  # the letters' tenth: one more in twenty
+            ("|---|---|", False),  # symbols only: whitespace aside, removed and not folded
+            ("|---|---|---|---|---|-", False),  # the whitespace tenth: one more in twenty-two
+            ("|---|---|---|---|---|------", True))  # six more is over a tenth
+    for index, (content, _kept) in enumerate(rows):
+        token, _prepared = capture_inbox.enqueue(core.storage, clock, replace(ctx, session_id=f"TEST-session-p{index}"),
+                                                 source_event(source_event_key=f"TEST-part-row-{index}", content=content),
+                                                 scope_id="TEST-scope", host_scope=None)
+        with sqlite3.connect(core.storage.path) as conn:
+            conn.execute("UPDATE capture_inbox SET last_error_code='VERSION_CONFLICT' WHERE token=?", (token,))
+            conn.commit()
+    authorize(core, ctx, *deleted.values())
+    core.forget(ctx, request(*deleted.values()), remaining_seconds=5)
+    with sqlite3.connect(core.storage.path) as conn:
+        kept = sorted(json.loads(payload)["events"][0]["content"] for (payload,) in
+                      conn.execute("SELECT payload_json FROM capture_inbox"))
+    assert kept == sorted(content for content, keep in rows if keep)
