@@ -432,6 +432,37 @@ def test_a_server_that_cannot_start_a_vector_helper_ahead_still_serves(store, mo
     assert "could not start a vector helper ahead: OSError" in log
 
 
+def test_the_server_warms_its_kept_handler_when_it_starts(store, monkeypatch):
+    """Made at the first prompt, the kept handler opened the table inside that prompt's recall: the first two prompts
+    after the 3.4.0 restart recalled by words alone (2026-09-29 13:54:57 and 13:55:34)."""
+    import sys as system
+    import types
+
+    from scope_recall.adapters.codex import local_endpoint
+    from scope_recall.vector import process_store
+
+    root, homes = store
+    remote_server.write_server_config(homes["codex"], "codex", listen="127.0.0.1", port=_free_port(),
+                                      token_sha256="0" * 64)
+    config = remote_server.load_server_config(homes["codex"], "codex")
+    warmed = []
+    monkeypatch.setitem(system.modules, "uvicorn", types.SimpleNamespace(run=lambda app, **kwargs: None))
+    monkeypatch.setattr(process_store, "prestart", lambda **kwargs: None)
+    monkeypatch.setattr(local_endpoint.KeptRecaller, "warm", lambda self, *args: warmed.append(self))
+    root_logger = logging.getLogger()
+    level = root_logger.level
+    try:
+        remote_server.serve(config)
+        remote_server.build_app(config)
+    finally:
+        for handler in list(root_logger.handlers):
+            if isinstance(handler, logging.handlers.RotatingFileHandler):
+                root_logger.removeHandler(handler)
+                handler.close()
+        root_logger.setLevel(level)
+    assert len(warmed) == 1, "serve warms; a test's app does not"
+
+
 def test_a_recall_without_its_vector_search_is_named_in_the_server_log(served, tmp_path, monkeypatch):
     """The work computer's recalls ran without their vector search for as long as anyone could tell: the packet
     carried the gap to the model, and the server's log said nothing."""

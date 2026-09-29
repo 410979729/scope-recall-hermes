@@ -658,17 +658,21 @@ class ProcessLanceVectorStore(VectorStore):
         request_id = self._pending_response_id
         if request_id is None:
             return
-        if time.monotonic() - self._pending_response_since > self._pending_response_timeout:
+        # A frame nobody asked for since it was parked may have come in long ago.  A kept recall handler asked again
+        # minutes after its first, cold search took that answer for a wedged helper, closed the helper, and recalled
+        # the next prompt cold as well (worker_unresponsive).  Only a frame that has still not come is a wedge.
+        stale = time.monotonic() - self._pending_response_since > self._pending_response_timeout
+        try:
+            response = self._receive_response_locked(request_id, only_if_ready=stale)
+        except _RequestBudgetExpired:
+            if not stale:
+                raise
             # Every caller since the frame was parked has spent its budget on
             # it: that is a wedged helper, not a slow one.
             self._detach_helper(failed=True)
             raise RuntimeError(
                 "native vector worker unresponsive; SQLite truth is intact and unacknowledged outbox work remains pending"
-            )
-        try:
-            response = self._receive_response_locked(request_id)
-        except _RequestBudgetExpired:
-            raise
+            ) from None
         except (OSError, ValueError, queue.Empty, RuntimeError) as exc:
             self._detach_helper(failed=True)
             raise _worker_failed() from exc

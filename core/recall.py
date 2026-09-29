@@ -131,7 +131,24 @@ class RetrievalPipeline:
 
     # -- candidate channels ---------------------------------------------------
 
-    def _vector_candidates(self, context: SearchContext, gaps: list[str], *, budget: ChannelBudget | None = None) -> tuple[CandidateRef, ...]:
+    def _prefetch_query(self, context: SearchContext):
+        """Ask the vector port for the query's embedding before the SQLite channels run, if it can take one early.
+
+        Asked for after them, the embedding had three quarters of what they left (runtime/instance.py
+        ``_QueryEmbedding``).  A port that cannot start one early, or fails to, embeds in its search as before.
+        """
+        if self.vector_port is None or context.limits.vector_limit == 0:
+            return None
+        prefetch = getattr(self.vector_port, "prefetch_query", None)
+        if not callable(prefetch):
+            return None
+        try:
+            return prefetch(context)
+        except Exception:
+            return None
+
+    def _vector_candidates(self, context: SearchContext, gaps: list[str], *, budget: ChannelBudget | None = None,
+                           prefetched=None) -> tuple[CandidateRef, ...]:
         if self.vector_port is None or context.limits.vector_limit == 0:
             gaps.append("vector_unavailable")
             return ()
@@ -145,8 +162,11 @@ class RetrievalPipeline:
         # Keep part of the caller's deadline for SQLite hydration and the
         # packet's final authority checks if the optional vector call times out.
         vector_context = replace(context, deadline=context.deadline - remaining * 0.25)
+        # The embedding asked for when the recall started is this round's only if the round kept its query.
+        early = {"prefetched": prefetched} if prefetched is not None and prefetched.query == context.query else {}
         try:
-            raw = tuple(islice(iter(self.vector_port.search(vector_context, limit=limit, remaining_seconds=remaining * 0.75) or ()), limit))
+            raw = tuple(islice(iter(self.vector_port.search(vector_context, limit=limit, remaining_seconds=remaining * 0.75,
+                                                            **early) or ()), limit))
         except Exception as exc:
             # The class alone does not say what went wrong; see core/vector_failure.py.
             gaps.append("vector_unavailable")
@@ -192,7 +212,8 @@ class RetrievalPipeline:
             seeds.append(replace(representative, fusion_score=fusion))
         return tuple(seeds)
 
-    def _collect(self, tx, context: SearchContext, gaps: list[str], *, seen: set[tuple[str, str, int]], budget: ChannelBudget) -> tuple[CandidateRef, ...]:
+    def _collect(self, tx, context: SearchContext, gaps: list[str], *, seen: set[tuple[str, str, int]], budget: ChannelBudget,
+                 prefetched=None) -> tuple[CandidateRef, ...]:
         """One round of exact, lexical, recent and vector candidates, fused by identity."""
         if self._remaining(context) <= 0:
             gaps.append("deadline_exceeded_collect")
@@ -231,7 +252,7 @@ class RetrievalPipeline:
         if self._remaining(context) <= 0:
             gaps.append("deadline_exceeded_collect")
             return admitted()
-        raw.extend(self._vector_candidates(context, gaps, budget=budget))
+        raw.extend(self._vector_candidates(context, gaps, budget=budget, prefetched=prefetched))
         return admitted()
 
     # -- hydration and admission ----------------------------------------------
@@ -473,10 +494,11 @@ class RetrievalPipeline:
         if self._remaining(working) <= 0:
             return _empty_result(working, "deadline_exceeded")
         gaps: list[str] = []
+        prefetched = self._prefetch_query(working)
         try:
             with self.storage.read(working.trusted_context, remaining_seconds=max(self._remaining(working), 0.001)) as tx:
                 epoch = self.storage_reader.epoch(tx)
-                hydrated, seed_count = self._collect_rounds(tx, working, gaps)
+                hydrated, seed_count = self._collect_rounds(tx, working, gaps, prefetched=prefetched)
                 self._hydrate_related(tx, working, hydrated, gaps)
                 ranked, query_items = self._select(tx, working, hydrated, gaps)
                 return self._result(working, epoch, ranked, query_items, gaps, seed_count, len(hydrated))
@@ -487,7 +509,8 @@ class RetrievalPipeline:
         except Exception as exc:
             return _empty_result(working, f"sqlite_unavailable:{type(exc).__name__}")
 
-    def _collect_rounds(self, tx, working: SearchContext, gaps: list[str]) -> tuple[list[tuple[CandidateRef, RetrievedObject]], int]:
+    def _collect_rounds(self, tx, working: SearchContext, gaps: list[str], *,
+                        prefetched=None) -> tuple[list[tuple[CandidateRef, RetrievedObject]], int]:
         """The first round plus at most one directed follow-up for an open need."""
         hydrated: list[tuple[CandidateRef, RetrievedObject]] = []
         seen: set[tuple[str, str, int]] = set()
@@ -503,7 +526,7 @@ class RetrievalPipeline:
                 break
             round_context = replace(working, query=follow_query) if follow_query else working
             budget.hold(max_rounds - round_index - 1)
-            seeds = self._collect(tx, round_context, gaps, seen=seen, budget=budget)
+            seeds = self._collect(tx, round_context, gaps, seen=seen, budget=budget, prefetched=prefetched)
             seed_count += len(seeds)
             seen.update(candidate.key for candidate in seeds)
             self._hydrate_all(tx, hydrated, seeds, round_context, gaps, floor=floor, original_query=working.query)

@@ -288,7 +288,7 @@ def handle_request(config: RemoteServerConfig, body: dict[str, Any], *, started:
             "attach_ms": handler.diagnostics.runtime_attach_ms, "close_ms": closed}
 
 
-def build_app(config: RemoteServerConfig):
+def build_app(config: RemoteServerConfig, *, warm: bool = False):
     """The entry's MCP tools at ``/mcp``, its hook at ``/hook``, both behind the token."""
     from mcp.server.transport_security import TransportSecuritySettings
     from starlette.concurrency import run_in_threadpool
@@ -304,6 +304,8 @@ def build_app(config: RemoteServerConfig):
     kept = KeptRecaller(lambda: CodexHookHandler.from_home(str(config.home), config.host),
                         stamp=lambda: file_stamp(client.runtime_config_path, *entry_files(config.home)))
     atexit.register(kept.close)
+    if warm:
+        kept.warm()
     app = tools.server.streamable_http_app(
         streamable_http_path="/mcp",
         stateless_http=True,
@@ -432,7 +434,7 @@ def serve(config: RemoteServerConfig, *, env_file: Path | None = None) -> None:
     _log.info("serving the %s entry at %s on %s:%d (%s)", config.host, config.home, config.listen, config.port,
               __version__)
     # log_config=None keeps uvicorn's own errors in the file above instead of a console there is none of.
-    uvicorn.run(build_app(config), host=config.listen, port=config.port, log_level="warning", log_config=None,
+    uvicorn.run(build_app(config, warm=True), host=config.listen, port=config.port, log_level="warning", log_config=None,
                 timeout_graceful_shutdown=5)
 
 

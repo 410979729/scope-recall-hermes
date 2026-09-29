@@ -388,6 +388,14 @@ class CodexHookHandler:
         handler of its own read it again (review of rc12)."""
         return self._host_runtime is not None and bool(getattr(self._host_runtime, "configured", False))
 
+    def warm_vectors(self, seconds: float) -> None:
+        """Attach the runtime and warm its vector store now, for a handler kept across prompts
+        (``local_endpoint.KeptRecaller.warm``).  It writes nothing."""
+        self._ensure_host_runtime()
+        warm = getattr(getattr(self._host_runtime, "_runtime", None), "warm_vector_store", None)
+        if callable(warm):
+            warm(seconds)
+
     def close(self) -> None:
         if self._host_runtime is not None:
             # A short hook must return without synchronously killing the

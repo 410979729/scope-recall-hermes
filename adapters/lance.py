@@ -563,10 +563,11 @@ class LanceVectorPort:
     def _query_vector(
         self, context: SearchContext, deadline: float, prepared: tuple[str, Sequence[float]] | None,
     ) -> list[float]:
-        remaining = deadline - self._clock()
-        if remaining <= 0:
-            return []
         if prepared is None:
+            remaining = deadline - self._clock()
+            if remaining <= 0:
+                # Returned as no vector, the recall said nothing and looked as if it had searched by meaning.
+                raise TimeoutError("query embedding stage deadline exhausted")
             vector = self._embed_query(context.query, remaining)
         else:
             query, vector = prepared
@@ -610,7 +611,9 @@ class LanceVectorPort:
         search_scopes = getattr(self._store, "search_scopes", None)
         if callable(search_scopes):
             if deadline - self._clock() <= 0:
-                return hits
+                # The embedding took the time the search needed.  An empty answer here reported no gap: the recall
+                # looked as if it had searched by meaning and found nothing.
+                raise TimeoutError("native vector helper request deadline exhausted before the search")
             for row in search_scopes(query_vector, scope_ids=list(logical), limit=limit) or ():
                 partition = row.get("scope_id") if isinstance(row, Mapping) else None
                 if partition in logical:
@@ -622,9 +625,13 @@ class LanceVectorPort:
         # request-local, so concurrent requests are not coupled and no fixed
         # timeout is invented.
         reserve = 0.0
+        searched = False
         for partition, logical_scope_id in logical.items():
             if deadline - self._clock() <= reserve:
+                if not searched:
+                    raise TimeoutError("native vector helper request deadline exhausted before the search")
                 return hits
+            searched = True
             started = self._clock()
             rows = self._store.search(query_vector, scope_id=partition, limit=limit)
             reserve = max(reserve, self._clock() - started)

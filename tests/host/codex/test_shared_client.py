@@ -930,7 +930,7 @@ def resident(store, monkeypatch):
 
     monkeypatch.setattr(process_store, "prestart", lambda **kwargs: None)
     root, _homes, client, _capture = store
-    endpoint = local_endpoint.serve(client, "claude-code")
+    endpoint = local_endpoint.serve(client, "claude-code", warm=False)
     assert endpoint is not None
     try:
         yield root, client, endpoint
@@ -2117,12 +2117,14 @@ def test_a_kept_handler_is_made_anew_when_the_entry_s_pointer_or_grants_change(r
         before = endpoint._kept_stamp()
 
 
-def _embedding_entry(base, monkeypatch):
+def _embedding_entry(base, monkeypatch, *, delay=0.0):
     """A shared store whose Claude Code entry has a runtime: an embedding route to a loopback server that closes a
-    connection idle for 1 s, as a provider closes an idle keep-alive one, and a SQLite vector store."""
+    connection idle for 1 s, as a provider closes an idle keep-alive one, and answers each request after ``delay``
+    seconds, and a SQLite vector store."""
     import http.server
     from pathlib import Path
     import threading
+    import time
 
     from scope_recall.adapters import models
     from scope_recall.adapters.hermes.installation import (
@@ -2143,6 +2145,7 @@ def _embedding_entry(base, monkeypatch):
         def do_POST(self):
             connections.append(self.client_address)
             self.rfile.read(int(self.headers.get("Content-Length", 0)))
+            time.sleep(delay)
             body = json.dumps({"object": "list", "model": "TEST-embed",
                                "data": [{"object": "embedding", "index": 0, "embedding": vector}],
                                "usage": {"prompt_tokens": 7, "total_tokens": 7}}).encode()
@@ -2254,3 +2257,99 @@ def test_a_kept_handler_recalls_with_its_vectors_across_a_pause(tmp_path, monkey
     assert outcomes == [(True, None)] * 4, outcomes
     assert len(handlers) == 1, "one handler throughout"
     assert len(set(connections)) >= 3, "a new connection after each pause"
+
+
+def _kept_prompt(kept, index, budget=10.0):
+    import threading
+
+    box = {}
+    prompt = {"hook_event_name": "UserPromptSubmit", "session_id": "TEST-kept-session",
+              "prompt_id": f"TEST-slow-{index}", "prompt": "TEST 家里的猫叫什么名字", "cwd": "C:/TEST"}
+    worker = threading.Thread(target=lambda: box.update(answer=kept(prompt, (), (), budget)))
+    worker.start()
+    worker.join(30)
+    diagnostics = box["answer"][1]
+    return diagnostics["recall_vectors"], diagnostics["recall_vector_gap"]
+
+
+def test_a_kept_handler_recalls_with_its_vectors_when_its_provider_and_store_are_slow(tmp_path, monkeypatch):
+    """The query embedding was asked for after the SQLite channels, with three quarters of what they left: on
+    2026-09-29 the work computer's server recalled 4 of 9 prompts by words alone (AuxiliaryModelError:timeout), each
+    on a new connection after a pause.  Here the channels take 2.8 s of a prompt's 4 s and the provider answers in
+    0.8 s; asked for as the recall starts, the embedding is there when the vector channel needs it, after a pause
+    too."""
+    import time
+
+    from scope_recall.adapters.codex.handler import CodexHookHandler
+    from scope_recall.adapters.codex.local_endpoint import KeptRecaller, entry_files, file_stamp
+    from scope_recall.core.retrieval_storage import RetrievalStorage
+
+    client, entry_config, server, connections = _embedding_entry(tmp_path, monkeypatch, delay=0.8)
+    lexical = RetrievalStorage.lexical
+
+    def slow_lexical(self, tx, context, *, limit):
+        time.sleep(2.8)
+        return lexical(self, tx, context, limit=limit)
+
+    monkeypatch.setattr(RetrievalStorage, "lexical", slow_lexical)
+    kept = KeptRecaller(lambda: CodexHookHandler.from_home(str(client), "claude-code"),
+                        stamp=lambda: file_stamp(entry_config, *entry_files(client)))
+    outcomes = []
+    try:
+        for index, pause in enumerate((0.0, 1.5)):
+            time.sleep(pause)
+            outcomes.append(_kept_prompt(kept, index))
+    finally:
+        kept.close()
+        server.shutdown()
+        server.server_close()
+    assert outcomes == [(True, None)] * 2, outcomes
+
+
+def test_a_kept_handler_warmed_when_its_server_starts_recalls_its_first_prompt_with_vectors(tmp_path, monkeypatch):
+    """Made at the first prompt, a kept handler attached its runtime, opened the table and read the index inside that
+    prompt's recall, and the first prompt after every start of its server (every Claude Code session) recalled by
+    words alone.  Warmed at the start, the table is open before any prompt; a prompt that comes meanwhile waits for
+    the warming instead of making a second handler."""
+    import time
+
+    from scope_recall.adapters.codex.handler import CodexHookHandler
+    from scope_recall.adapters.codex.local_endpoint import KeptRecaller, entry_files, file_stamp
+
+    client, entry_config, server, connections = _embedding_entry(tmp_path, monkeypatch)
+    built = []
+
+    def build():
+        built.append(CodexHookHandler.from_home(str(client), "claude-code"))
+        return built[-1]
+
+    kept = KeptRecaller(build, stamp=lambda: file_stamp(entry_config, *entry_files(client)))
+    waiting = KeptRecaller(build, stamp=lambda: file_stamp(entry_config, *entry_files(client)))
+    try:
+        kept.warm()
+        assert kept._warming.wait(30)
+        runtime = kept._handler._host_runtime._runtime
+        assert runtime._vector_store is not None, "the table is open before any prompt"
+        assert _kept_prompt(kept, 0) == (True, None)
+        waiting.warm()
+        assert _kept_prompt(waiting, 1) == (True, None), "a prompt during the warming waits for it"
+        assert len(built) == 2, "one handler for each recaller"
+    finally:
+        kept.close()
+        waiting.close()
+        server.shutdown()
+        server.server_close()
+
+
+def test_the_mcp_server_warms_its_kept_handler_when_it_starts(store, monkeypatch):
+    from scope_recall.adapters.codex import local_endpoint
+    from scope_recall.vector import process_store
+
+    monkeypatch.setattr(process_store, "prestart", lambda **kwargs: None)
+    _root, _homes, client, _capture = store
+    endpoint = local_endpoint.serve(client, "claude-code")
+    assert endpoint is not None
+    try:
+        assert endpoint.kept._warming is not None and endpoint.kept._warming.wait(30)
+    finally:
+        endpoint.stop()

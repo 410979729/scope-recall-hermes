@@ -350,6 +350,183 @@ def test_a_store_open_that_uses_up_the_recall_s_time_is_a_gap_not_an_empty_searc
     instance.close()
 
 
+def _vector_instance(tmp_path, store, embedding):
+    binding = _binding(tmp_path / "data")
+    config = RuntimeInstanceConfig(
+        binding=binding,
+        session_id="construction-session",
+        allowed_scope_ids=binding.scope_ids,
+        auxiliary=AuxiliaryRuntimeConfig.from_mapping({"external_embedding": False, "external_consolidation": False}),
+        vector=VectorRuntimeConfig(backend="lancedb", storage_dir=tmp_path / "vectors", table_name="TEST-vectors",
+                                   dimensions=2, test_injection_override=True),
+    )
+    instance = build_runtime_instance(config, vector_factory=lambda _: store)
+    instance.auxiliary = replace(instance.auxiliary, query_embedding=embedding)
+    instance.core.initialize()
+    return instance, binding
+
+
+def _search_context(binding, seconds):
+    return SearchContext(query="TEST query", mode="auto", as_of=None, focus_refs=(), limits=SearchLimits(),
+                         deadline=time.monotonic() + seconds, now="2026-09-29T12:00:00Z",
+                         trusted_context=_context(binding, "TEST-vector-session"))
+
+
+class _ScopedStore:
+    def __init__(self):
+        self.opens = 0
+        self.closed = False
+        self.searches = []
+
+    def open_existing(self):
+        self.opens += 1
+
+    def search_scopes(self, vector, *, scope_ids, limit):
+        self.searches.append((len(vector), tuple(scope_ids), limit))
+        return []
+
+    def close(self):
+        self.closed = True
+
+
+def test_a_recall_asks_for_its_query_embedding_before_the_sqlite_channels(tmp_path, monkeypatch):
+    """Asked for after the SQLite channels, the query embedding had three quarters of what they left: on 2026-09-29
+    the work computer's server recalled 4 of 9 prompts by words alone that way (AuxiliaryModelError:timeout).  Asked
+    for as the recall starts, it runs beside them: here they take 0.8 s of a 1.2 s window, and it takes 0.4 s."""
+    from scope_recall.adapters.models import AuxiliaryModelError
+    from scope_recall.core.retrieval_storage import RetrievalStorage
+
+    class SlowEmbedding:
+        def embed_query(self, text, *, remaining_seconds):
+            if remaining_seconds < 0.4:  # a provider's call that its time does not cover
+                time.sleep(max(0.0, remaining_seconds))
+                raise AuxiliaryModelError("timeout")
+            time.sleep(0.4)
+            return (0.1, 0.2)
+
+    lexical = RetrievalStorage.lexical
+
+    def slow_lexical(self, tx, context, *, limit):
+        time.sleep(0.8)
+        return lexical(self, tx, context, limit=limit)
+
+    monkeypatch.setattr(RetrievalStorage, "lexical", slow_lexical)
+    store = _ScopedStore()
+    instance, binding = _vector_instance(tmp_path, store, SlowEmbedding())
+    try:
+        result = instance.core.recall_pipeline.search(_search_context(binding, 1.2))
+        assert not [gap for gap in result.gaps if gap.startswith("vector")], result.gaps
+        assert len(store.searches) == 1, "the search ran with the embedding asked for at the start"
+    finally:
+        instance.close()
+
+
+def test_a_query_embedding_that_fails_while_the_table_opens_leaves_the_table_open(tmp_path):
+    """Raised inside the table's open, the embedding's failure closed the helper too, and the next prompt opened the
+    table cold again: the work computer's second prompt after its server restarted (2026-09-29 13:55:34)."""
+    from scope_recall.adapters.models import AuxiliaryModelError
+
+    class OverlapStore(_ScopedStore):
+        def open_existing_with_work(self, during_open):
+            self.opens += 1
+            during_open()
+
+    class FirstFails:
+        calls = 0
+
+        def embed_query(self, text, *, remaining_seconds):
+            FirstFails.calls += 1
+            if FirstFails.calls == 1:
+                raise AuxiliaryModelError("timeout")
+            return (0.1, 0.2)
+
+    store = OverlapStore()
+    instance, binding = _vector_instance(tmp_path, store, FirstFails())
+    port = instance.core.recall_pipeline.vector_port
+    try:
+        with pytest.raises(AuxiliaryModelError):
+            port.search(_search_context(binding, 5.0), limit=1, remaining_seconds=4.0)
+        assert instance._vector_store is store and not store.closed
+        assert port.search(_search_context(binding, 5.0), limit=1, remaining_seconds=4.0) == ()
+        assert store.opens == 1, "the next search found the table open"
+    finally:
+        instance.close()
+
+
+@pytest.mark.parametrize("prepared", [True, False], ids=["embedding-ready", "embedding-to-make"])
+def test_a_vector_search_left_no_time_is_a_gap_not_an_empty_answer(tmp_path, prepared):
+    """With the embedding back and no time left for the search, the port answered nothing and said nothing: the
+    recall looked as if it had searched by meaning and found nothing."""
+    from scope_recall.adapters.lance import LanceVectorPort
+
+    class Embedding:
+        def embed_query(self, text, *, remaining_seconds):
+            raise AssertionError("no time was left to ask")
+
+    store = _ScopedStore()
+    clock = iter([0.0] + [10.0] * 5)  # the search starts at 0 and finds its 5 s gone
+    port = LanceVectorPort(store, Embedding(), clock=lambda: next(clock))
+    binding = _binding(tmp_path / "data")
+    context = SearchContext(query="TEST query", mode="auto", as_of=None, focus_refs=(), limits=SearchLimits(),
+                            deadline=5.0, now="2026-09-29T12:00:00Z",
+                            trusted_context=_context(binding, "TEST-vector-session"))
+    with pytest.raises(TimeoutError, match="deadline exhausted"):
+        port.search(context, limit=1, remaining_seconds=5.0,
+                    _prepared_query=("TEST query", (0.1, 0.2)) if prepared else None)
+    assert store.searches == []
+
+
+def test_an_embedding_back_with_no_time_left_to_search_is_a_gap(tmp_path):
+    """The embedding asked for at the recall's start came back as the vector channel's time ran out: the search
+    answered nothing and said nothing."""
+
+    class Embedding:
+        def embed_query(self, text, *, remaining_seconds):
+            return (0.1, 0.2)
+
+    class Late:  # an embedding asked for at the start that comes back at the deadline
+        query = "TEST query"
+
+        def result(self, deadline):
+            time.sleep(max(0.0, deadline - time.monotonic()))
+            return (0.1, 0.2)
+
+    store = _ScopedStore()
+    instance, binding = _vector_instance(tmp_path, store, Embedding())
+    port = instance.core.recall_pipeline.vector_port
+    try:
+        instance._ensure_vector_port(allow_create=False, deadline=time.monotonic() + 5.0)
+        with pytest.raises(TimeoutError, match="request deadline exhausted"):
+            port.search(_search_context(binding, 5.0), limit=1, remaining_seconds=0.2, prefetched=Late())
+        assert store.searches == []
+    finally:
+        instance.close()
+
+
+def test_warming_opens_the_store_and_searches_one_of_its_partitions(tmp_path):
+    """A kept handler's first prompt opened the table and read the index inside its recall; warmed when the server
+    starts, that prompt finds them ready."""
+    from scope_recall.adapters.lance import physical_partition_scope_id
+
+    class Embedding:
+        def embed_query(self, text, *, remaining_seconds):
+            return (0.1, 0.2)
+
+    store = _ScopedStore()
+    instance, binding = _vector_instance(tmp_path, store, Embedding())
+    try:
+        assert instance.warm_vector_store(5.0) is True
+        partition = physical_partition_scope_id(
+            agent_id=binding.agent_id, installation_id=binding.installation_id,
+            embedding_space=instance.config.embedding_space_id(), logical_scope_id="TEST-scope",
+            project_id=None, branch_id=None)
+        assert store.opens == 1 and store.searches == [(2, (partition,), 1)]
+        instance.core.recall_pipeline.vector_port.search(_search_context(binding, 5.0), limit=1, remaining_seconds=4.0)
+        assert store.opens == 1, "the recall found the table open"
+    finally:
+        instance.close()
+
+
 def test_lazy_vector_facade_reopens_poisoned_cached_store_on_next_search(tmp_path):
     binding = _binding(tmp_path / "data")
     config = RuntimeInstanceConfig(

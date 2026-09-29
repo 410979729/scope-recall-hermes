@@ -125,6 +125,42 @@ def test_an_open_that_failed_after_its_caller_stopped_waiting_is_reopened(tmp_pa
     finally:s.close()
 
 
+def test_a_parked_answer_that_came_in_long_ago_is_taken_not_called_a_wedge(tmp_path,monkeypatch):
+    """A kept recall handler parked its first, cold search and was asked again minutes later: the helper had answered
+    long before, but the age alone called it wedged, closed it, and the next recall opened cold (worker_unresponsive)."""
+    s=store(tmp_path,monkeypatch,delay=.2)
+    try:
+        with using_request_deadline(RequestDeadline.from_budget(2)):
+            s.open_existing_with_work(lambda:None)
+        worker=s._process
+        with pytest.raises(Exception):
+            with using_request_deadline(RequestDeadline.from_budget(.05)):
+                s._call('search',[],scope_id='PUBLIC',limit=1)
+        assert s._pending_response_id is not None
+        time.sleep(.3)  # the helper answers the parked search
+        s._pending_response_since-=s._pending_response_timeout+1  # and it was parked longer ago than a wedge
+        with using_request_deadline(RequestDeadline.from_budget(2)):
+            assert s._call('search',[],scope_id='PUBLIC',limit=1)=='search'
+        assert s._process is worker and worker.poll() is None and not s.requires_reopen
+    finally:s.close()
+
+
+def test_a_parked_answer_that_never_came_is_still_a_wedge(tmp_path,monkeypatch):
+    s=store(tmp_path,monkeypatch,delay=.2)
+    try:
+        with using_request_deadline(RequestDeadline.from_budget(2)):
+            s.open_existing_with_work(lambda:None)
+        with pytest.raises(Exception):
+            with using_request_deadline(RequestDeadline.from_budget(.05)):
+                s._call('search',[],scope_id='PUBLIC',limit=1)
+        s._pending_response_since-=s._pending_response_timeout+1  # parked longer ago than a wedge, not yet answered
+        with pytest.raises(RuntimeError,match='unresponsive'):
+            with using_request_deadline(RequestDeadline.from_budget(2)):
+                s._call('search',[],scope_id='PUBLIC',limit=1)
+        assert s.requires_reopen
+    finally:s.close()
+
+
 def test_a_spare_helper_is_kept_even_when_its_replacement_cannot_start(monkeypatch):
     spawned=[]
     class Alive:

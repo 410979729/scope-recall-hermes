@@ -61,6 +61,10 @@ MAX_TRIED = 2
 FIND_SECONDS = 1.0
 #: Of the time a hook gives its server, what the server keeps back for its answer to reach the hook.
 ANSWER_MARGIN_SECONDS = 0.3
+#: What a server's start may spend warming its kept handler's vector store (the table open and the first search, each
+#: a few seconds on a large store), and the share of its time a recall that comes meanwhile waits for that.
+WARM_SECONDS = 60.0
+WARM_WAIT_SHARE = 0.5
 #: Recalls one server runs at once; a hook past that recalls itself.
 MAX_CONCURRENT = 8
 #: How often a server looks for its own name, and puts it back when a hook removed it: a busy server that did not
@@ -398,12 +402,46 @@ class KeptRecaller:
         self._handler: Any = None
         self._made_with: object = None
         self._closed = False
+        self._warming: threading.Event | None = None
+
+    def warm(self, seconds: float = WARM_SECONDS) -> None:
+        """Make the handler and warm its vector store in the background, when the server starts.
+
+        Made at the first prompt, the handler attached its runtime, started the vector helper, opened the table and
+        read the index inside that prompt's recall, and the first prompt after every start recalled by words alone:
+        for Claude Code that is every session.  A recall that comes meanwhile waits for this (``__call__``) instead
+        of making a second handler.  It writes nothing."""
+        done = threading.Event()
+        self._warming = done
+
+        def run() -> None:
+            try:
+                with self._lock:
+                    if self._closed or self._handler is not None:
+                        return
+                    self._handler, self._made_with = self._build(), self._stamp()
+                    try:
+                        self._handler.warm_vectors(seconds)
+                    except Exception:  # noqa: BLE001 - the first recall opens what is not open, as before
+                        pass
+                    if not getattr(self._handler, "runtime_ready", False):
+                        self._discard(later=True)
+            except Exception:  # noqa: BLE001 - a handler that cannot be made now is made by the first recall
+                pass
+            finally:
+                done.set()
+
+        threading.Thread(target=run, name="scope-recall-kept-warm", daemon=True).start()
 
     def __call__(self, payload: dict[str, Any], current_refs: tuple[str, ...], gaps: tuple[str, ...], budget: float,
                  *, received: float | None = None) -> tuple[dict[str, Any], dict[str, Any]] | None:
         """This prompt's (result, diagnostics), in ``budget`` seconds from ``received``; None when another recall
         holds the handler or the recaller is closed."""
         received = time.monotonic() if received is None else received
+        warming = self._warming
+        if warming is not None and not warming.is_set():
+            # The server's start is making the handler this recall needs: wait for it, up to half of the recall's time.
+            warming.wait(max(0.0, budget - (time.monotonic() - received)) * WARM_WAIT_SHARE)
         if not self._lock.acquire(blocking=False):
             return None
         try:
@@ -604,8 +642,9 @@ class HookEndpoint:
 
 
 def serve(home: Path | str, host: str, *, env_file: Path | None = None, runtime_config: Path | None = None,
-          credentials: Callable[[], dict[str, str]] | None = None) -> HookEndpoint | None:
-    """Answer this entry's prompt recalls from this process until it exits; None when that cannot start."""
+          credentials: Callable[[], dict[str, str]] | None = None, warm: bool = True) -> HookEndpoint | None:
+    """Answer this entry's prompt recalls from this process until it exits; None when that cannot start.  ``warm``
+    readies the kept handler's vector store now (``KeptRecaller.warm``)."""
     try:
         endpoint = HookEndpoint(home, host, env_file=env_file, runtime_config=runtime_config, credentials=credentials)
     except Exception:  # noqa: BLE001 - the MCP server starts whatever this does; its hooks recall themselves
@@ -615,5 +654,7 @@ def serve(home: Path | str, host: str, *, env_file: Path | None = None, runtime_
     except Exception:  # noqa: BLE001 - as above
         endpoint.stop()
         return None
+    if warm:
+        endpoint.kept.warm()
     return endpoint
 
