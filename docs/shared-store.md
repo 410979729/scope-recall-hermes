@@ -38,7 +38,7 @@ Run the operator CLI from outside any source tree (`python -I -X utf8 -m scope_r
 Put the store outside every agent's home, on a short path.
 
 ```text
-scope-recall init-shared --root F:\ScopeRecall\shared
+scope-recall init-shared --root D:\ScopeRecall\shared
 ```
 
 To attach a Hermes instance that has its own store today, stop its gateway first (and its
@@ -47,7 +47,7 @@ worker: `autostart pause`), then move its `scope-recall` directory aside and att
 ```text
 scope-recall backup --database <home>\scope-recall\memory.sqlite3 --output <backup-dir>\memory.sqlite3
 ren <home>\scope-recall scope-recall.local-20260922
-scope-recall attach --host hermes --instance-root <home> --root F:\ScopeRecall\shared ^
+scope-recall attach --host hermes --instance-root <home> --root D:\ScopeRecall\shared ^
     --entry desk --display-name Desk ^
     --grants-from <home>\scope-recall.local-20260922\installation.json ^
     --runtime-config-from <home>\scope-recall.local-20260922\runtime-config.json
@@ -69,8 +69,8 @@ Then give the shared worker its credentials in `<root>\.env` and register it onc
 interpreter that has the same package version as every entry:
 
 ```text
-scope-recall autostart enable --config F:\ScopeRecall\shared\runtime-config.json ^
-    --python F:\ScopeRecall\shared-venv\Scripts\python.exe --env-file F:\ScopeRecall\shared\.env
+scope-recall autostart enable --config D:\ScopeRecall\shared\runtime-config.json ^
+    --python D:\ScopeRecall\shared-venv\Scripts\python.exe --env-file D:\ScopeRecall\shared\.env
 ```
 
 An entry never starts a worker of its own. Leave the instance's own autostart paused or
@@ -85,7 +85,7 @@ without a restart.
 stop every attached host and pause the shared worker, then run for each agent:
 
 ```text
-scope-recall import-entry --root F:\ScopeRecall\shared --entry tianshu --from <home>\scope-recall.local-<date>
+scope-recall import-entry --root D:\ScopeRecall\shared --entry desk --from <home>\scope-recall.local-<date>
 ```
 
 The old store is opened read-only and copied in one transaction: sources, facts and their history,
@@ -109,13 +109,13 @@ every attached Hermes entry reads, so that every agent hears it; otherwise `atta
 names the rows that would not. No other entry's grants change and the worker keeps running.
 
 ```text
-scope-recall attach --host claude-code --instance-root F:\ScopeRecall\claude-code ^
-    --root F:\ScopeRecall\shared --entry claude-code --display-name "Claude Code" ^
-    --grants-like all --capture-like tianshu ^
+scope-recall attach --host claude-code --instance-root D:\ScopeRecall\claude-code ^
+    --root D:\ScopeRecall\shared --entry claude-code --display-name "Claude Code" ^
+    --grants-like all --capture-like desk ^
     --runtime-config-from <an attached home>\scope-recall\runtime-config.json
 scope-recall apply-install --host claude-code --target-plugin-dir %USERPROFILE%\.claude\skills\scope-recall ^
-    --instance-root F:\ScopeRecall\claude-code --agent-id <the store's agent id> ^
-    --python F:\ScopeRecall\claude-code-venv\Scripts\python.exe --env-file <the file with the embedding key>
+    --instance-root D:\ScopeRecall\claude-code --agent-id <the store's agent id> ^
+    --python D:\ScopeRecall\claude-code-venv\Scripts\python.exe --env-file <the file with the embedding key>
 ```
 
 The plugin under `~/.claude/skills/` loads in every new Claude Code session of that user, the
@@ -194,7 +194,7 @@ for a Hermes home.
 ## Check
 
 ```text
-scope-recall entries --root F:\ScopeRecall\shared
+scope-recall entries --root D:\ScopeRecall\shared
 scope-recall doctor --host hermes --instance-root <home>
 ```
 
