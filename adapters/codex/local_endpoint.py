@@ -334,6 +334,90 @@ class Recaller:
             connection.close()
 
 
+def file_stamp(*paths: Path | None) -> tuple:
+    """When each file last changed, and its size; None for one that cannot be read (``KeptRecaller``)."""
+    stamps = []
+    for path in paths:
+        if path is None:
+            continue
+        try:
+            status = path.stat()
+        except OSError:
+            stamps.append(None)
+        else:
+            stamps.append((status.st_mtime_ns, status.st_size))
+    return tuple(stamps)
+
+
+def _nothing() -> None:
+    return None
+
+
+class KeptRecaller:
+    """One handler kept across a long-lived server's prompt recalls, with the vector store and embedding worker its
+    runtime keeps open.
+
+    A server that made a handler for each recall opened the LanceDB table (about 2.3 s) and started the embedding
+    worker and its connection (about 1 s) for every prompt: on the pilot a warm server's recall took 3.9-4.1 s and
+    two of five lost their vector search to the time; with the handler kept, 1.6-2.1 s with it (rc12).  The handler
+    only recalls (``resident_recall_for``), which writes nothing.  One recall uses it at a time: another at the same
+    moment gets None, and its caller recalls as it did before.  It is made anew when ``stamp`` changes (the env file
+    or runtime config it was made with), after a recall that raised, after its runtime could not be attached, and
+    never once closed."""
+
+    def __init__(self, build: Callable[[], Any], stamp: Callable[[], object] = tuple) -> None:
+        self._build = build
+        self._stamp = stamp
+        self._lock = threading.Lock()
+        self._handler: Any = None
+        self._made_with: object = None
+        self._closed = False
+
+    def __call__(self, payload: dict[str, Any], current_refs: tuple[str, ...], gaps: tuple[str, ...], budget: float,
+                 *, received: float | None = None) -> tuple[dict[str, Any], dict[str, Any]] | None:
+        """This prompt's (result, diagnostics), in ``budget`` seconds from ``received``; None when another recall
+        holds the handler or the recaller is closed."""
+        received = time.monotonic() if received is None else received
+        if not self._lock.acquire(blocking=False):
+            return None
+        try:
+            if self._closed:
+                return None
+            stamp = self._stamp()
+            if self._handler is not None and stamp != self._made_with:
+                self._discard()
+            if self._handler is None:
+                self._handler, self._made_with = self._build(), stamp
+            handler = self._handler
+            try:
+                result = handler.resident_recall_for(payload, current_refs, gaps,
+                                                     max(0.0, budget - (time.monotonic() - received)))
+            except BaseException:
+                self._discard()
+                raise
+            diagnostics = dataclasses.asdict(handler.diagnostics)
+            diagnostics["capability_gaps"] = list(diagnostics.get("capability_gaps") or ())
+            if getattr(handler, "runtime_attach_failed", False):
+                self._discard()
+            return result, diagnostics
+        finally:
+            self._lock.release()
+
+    def _discard(self) -> None:
+        handler, self._handler = self._handler, None
+        if handler is not None:
+            try:
+                handler.close()
+            except Exception:  # noqa: BLE001 - a handler that cannot close is dropped all the same
+                pass
+
+    def close(self) -> None:
+        """Close the kept handler, once a recall that holds it is done; later recalls get None."""
+        with self._lock:
+            self._closed = True
+            self._discard()
+
+
 class HookEndpoint:
     """The MCP server's side: a 127.0.0.1 HTTP server in a daemon thread, and the file that names it."""
 
@@ -358,6 +442,7 @@ class HookEndpoint:
         self._credentials = credentials
         self._env_seen: tuple | None = None
         self._env_loaded: dict[str, str] = {}
+        self.kept = KeptRecaller(self._handler, stamp=self._env_stamp)
         if credentials is not None:
             stamp = self._env_stamp()
             try:
@@ -369,15 +454,12 @@ class HookEndpoint:
                 self._env_loaded, self._env_seen = loaded, stamp
 
     def _env_stamp(self) -> tuple:
-        stamps = []
-        for path in self._watched:
-            try:
-                status = path.stat()
-            except OSError:
-                stamps.append(None)
-            else:
-                stamps.append((status.st_mtime_ns, status.st_size))
-        return tuple(stamps)
+        return file_stamp(*self._watched)
+
+    def _handler(self) -> Any:
+        from .handler import CodexHookHandler
+
+        return CodexHookHandler.from_home(str(self.home), self.host)
 
     def _refresh_credentials(self) -> None:
         with self.lock:
@@ -396,13 +478,17 @@ class HookEndpoint:
 
     def recall(self, request: dict[str, Any], *, received: float | None = None
                ) -> tuple[dict[str, Any], Callable[[], None]]:
-        """One prompt's recall, as its hook would have recalled it; the handler is closed by the caller once the
-        answer is out.  Its time counts from the request's arrival, loading the handler included."""
-        from .handler import CodexHookHandler
-
+        """One prompt's recall, as its hook would have recalled it, by the kept handler (``KeptRecaller``) or, while
+        another recall holds that, by one of its own that the caller closes once the answer is out.  Its time counts
+        from the request's arrival, loading the handler included."""
         received = time.monotonic() if received is None else received
         self._refresh_credentials()
-        handler = CodexHookHandler.from_home(str(self.home), self.host)
+        kept = self.kept(request["payload"], request["current_refs"], request["gaps"], request["remaining"],
+                         received=received)
+        if kept is not None:
+            result, diagnostics = kept
+            return {"result": result, "diagnostics": diagnostics}, _nothing
+        handler = self._handler()
         try:
             remaining = max(0.0, request["remaining"] - (time.monotonic() - received))
             result = handler.resident_recall_for(request["payload"], request["current_refs"], request["gaps"],
@@ -481,6 +567,7 @@ class HookEndpoint:
         if server is not None:
             server.shutdown()
             server.server_close()
+        self.kept.close()
 
 
 def serve(home: Path | str, host: str, *, env_file: Path | None = None, runtime_config: Path | None = None,

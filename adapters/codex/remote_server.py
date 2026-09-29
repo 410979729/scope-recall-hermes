@@ -19,6 +19,7 @@ hook, each refused request and the server's own errors go to ``remote-server.log
 from __future__ import annotations
 
 import argparse
+import atexit
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 import hashlib
@@ -32,13 +33,14 @@ from pathlib import Path
 import re
 import sys
 import time
-from typing import Any
+from typing import Any, Callable
 
 from ...runtime.resume_entry import host_process_credential_environment
 from . import transcript
 from .boundary import without_lone_surrogates
 from .config import CodexConfigError, load_shared_client
 from .handler import CodexHookHandler, RecordLines, SystemHookClock
+from .local_endpoint import KeptRecaller, file_stamp
 
 CONFIG_NAME = "remote-server.json"
 LOG_NAME = "remote-server.log"
@@ -211,8 +213,25 @@ def record_from_wire(value: object) -> RecordLines | None:
     return RecordLines(start=start, lines=checked)
 
 
-def handle_request(config: RemoteServerConfig, body: dict[str, Any], *, started: float | None = None) -> dict[str, Any]:
-    """One forwarded hook: the handler's answer, and how far the client's record was stored."""
+class _Asked:
+    """A request's use of the server's kept recaller, and how that went (``warm`` in the hook's log line)."""
+
+    def __init__(self, kept: Callable[..., Any]) -> None:
+        self.kept = kept
+        self.outcome: str | None = None
+
+    def __call__(self, *args: Any, **kwargs: Any) -> Any:
+        answer = self.kept(*args, **kwargs)
+        self.outcome = "busy" if answer is None else "answered"
+        return answer
+
+
+def handle_request(config: RemoteServerConfig, body: dict[str, Any], *, started: float | None = None,
+                   recaller: Callable[..., Any] | None = None) -> dict[str, Any]:
+    """One forwarded hook: the handler's answer, and how far the client's record was stored.  A prompt's recall is
+    asked of ``recaller`` (the server's ``local_endpoint.KeptRecaller``), whose vector store and embedding worker
+    stay open between prompts, while this request's handler stores the prompt and recalls itself only if that has
+    not answered in time (``handler._resident_answer``)."""
     payload = body.get("payload")
     if not isinstance(payload, dict):
         raise RemoteServerError("payload must be the hook's object")
@@ -232,17 +251,23 @@ def handle_request(config: RemoteServerConfig, body: dict[str, Any], *, started:
         event_clock=_ObservedClock(observed_at) if observed_at is not None else None,
         hook_started_at=started if started is not None else time.monotonic(),
     )
+    asked = None
+    if recaller is not None and payload.get("hook_event_name") == "UserPromptSubmit":
+        asked = handler.resident_recall = _Asked(recaller)
     try:
         result = handler.handle_payload(payload, record=record, local_record=False)
     finally:
         handler.close()
+    # What the request's handler decided of the answer (slow, late, without_vectors, failed) comes first; an answer
+    # still on its way when the handler was done is its slow or late.
+    warm = None if asked is None else handler.resident_outcome or asked.outcome
     # ``retry``: the store was busy or away and the event was not stored; a client that keeps its hooks sends
     # this one again.  The answer (a recall) is good either way.
     return {"result": result, "through": record.through if record is not None else None,
             "reason": handler.diagnostics.last_reason, "error": handler.diagnostics.capture_error_detail,
             "recall_error": handler.diagnostics.recall_error_detail,
             "recall_vector": handler.diagnostics.recall_vector_gap,
-            "retry": not handler.diagnostics.capture_settled}
+            "retry": not handler.diagnostics.capture_settled, "warm": warm}
 
 
 def build_app(config: RemoteServerConfig):
@@ -258,6 +283,9 @@ def build_app(config: RemoteServerConfig):
     client = load_shared_client(config.home, config.host)
     host_name = f"[{config.listen}]" if ":" in config.listen else config.listen
     tools = build_server(client, workspace=None)
+    kept = KeptRecaller(lambda: CodexHookHandler.from_home(str(config.home), config.host),
+                        stamp=lambda: file_stamp(client.runtime_config_path))
+    atexit.register(kept.close)
     app = tools.server.streamable_http_app(
         streamable_http_path="/mcp",
         stateless_http=True,
@@ -285,7 +313,7 @@ def build_app(config: RemoteServerConfig):
                 raise RemoteServerError("body must be an object")
             payload = body.get("payload")
             event = str(payload.get("hook_event_name"))[:40] if isinstance(payload, dict) else None
-            answer = await run_in_threadpool(handle_request, config, body, started=started)
+            answer = await run_in_threadpool(handle_request, config, body, started=started, recaller=kept)
         except (UnicodeError, json.JSONDecodeError, RecursionError, RemoteServerError) as exc:
             # The request itself, which the client drops on a 400.  An error from the store (a ContractError is a
             # ValueError too) is this machine's and answers 500, so the client keeps the hook to send again.
@@ -295,13 +323,14 @@ def build_app(config: RemoteServerConfig):
             _log.error("hook: the entry is unavailable: %s", str(exc)[:200])
             return JSONResponse({"error": "entry_unavailable"}, status_code=503)
         # The error is the capture's code (DEADLINE_EXCEEDED, SECRET_DETECTED, ...), never any of its text.
-        _log.info("hook %s: %s%s%s%s%s, record through %s, %d ms", event, answer["reason"],
+        _log.info("hook %s: %s%s%s%s%s, record through %s, %d ms%s", event, answer["reason"],
                   f" ({answer['error']})" if answer.get("error") else "",
                   f" ({answer['recall_error']})" if answer.get("recall_error") else "",
                   f" (recall without vectors: {answer['recall_vector']})" if answer.get("recall_vector") else "",
                   (", not stored, to be sent again" if config.host == "codex" else ", not stored")
                   if answer.get("retry") else "", answer["through"],
-                  round((time.monotonic() - started) * 1000))
+                  round((time.monotonic() - started) * 1000),
+                  f", warm recall {answer['warm']}" if answer.get("warm") else "")
         return JSONResponse(answer)
 
     async def health(request: Request) -> JSONResponse:

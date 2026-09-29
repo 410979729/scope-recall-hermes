@@ -36,9 +36,14 @@ machine and stays there; this machine keeps its SHA-256.
    python -m scope_recall.adapters.codex.remote_server serve --home F:\ScopeRecall\workpc-claude-code --host claude-code --env-file <file>
    ```
 
+   The server keeps one handler for its prompts' recall, with its LanceDB table open and its embedding
+   worker connected, while each request's own handler stores the hook (as the entry's MCP server on this
+   machine does for the hooks here: [shared-store.md](shared-store.md)).
+
    The server has no console. Each hook it handles (its event, the handler's reason, the capture's error code
-   when it failed, how far a record was stored, the time taken), each request refused for want of the token
-   and its own errors go to
+   when it failed, how far a record was stored, the time taken, and for a prompt how its kept recall went:
+   `warm recall answered`, `busy`, `slow`, `late`, `without_vectors:<gap>` or `failed:<reason>`), each request
+   refused for want of the token and its own errors go to
    `<home>\scope-recall\remote-server.log`, kept to about 1 MB with two older copies.
 
    On Windows start it with a `pythonw.exe` that opens no console, such as the one in a virtual environment

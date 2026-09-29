@@ -367,6 +367,12 @@ class CodexHookHandler:
             self._ensure_host_runtime(audience)
         self._maybe_launch_owned_worker(session_id, audience)
 
+    @property
+    def runtime_attach_failed(self) -> bool:
+        """Whether this handler tried to attach its trusted runtime and could not.  One kept for later prompts
+        (``local_endpoint.KeptRecaller``) never tries again, so it is made anew."""
+        return self._runtime_attach_attempted and self._host_runtime is None
+
     def close(self) -> None:
         if self._host_runtime is not None:
             # A short hook must return without synchronously killing the

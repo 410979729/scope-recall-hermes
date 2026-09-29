@@ -1815,3 +1815,144 @@ def test_a_refused_request_is_not_sent_to_the_next_server(resident, monkeypatch)
     finally:
         other.shutdown()
         other.server_close()
+
+
+class _KeptFake:
+    """A handler as the kept recaller uses it: counted when made, closed, and told what to answer."""
+
+    made: list = []
+
+    def __init__(self, *, fail=False, attach_failed=False):
+        from scope_recall.adapters.codex.handler import HookDiagnostics
+
+        self.diagnostics = HookDiagnostics(capability_gaps=("TEST-gap",))
+        self.fail, self.runtime_attach_failed, self.closed, self.calls = fail, attach_failed, False, []
+        _KeptFake.made.append(self)
+
+    def resident_recall_for(self, payload, current_refs, gaps, remaining):
+        self.calls.append(remaining)
+        if self.fail:
+            raise RuntimeError("TEST recall raised")
+        self.diagnostics.recall_vectors = True
+        return {"TEST": payload["prompt"]}
+
+    def close(self):
+        self.closed = True
+
+
+def test_a_kept_recaller_uses_one_handler_until_its_files_change():
+    """A server made a handler for each prompt's recall and opened its vector table and embedding worker each time:
+    3.9-4.1 s a recall, two of five without their vector search; kept, 1.6-2.1 s with it (rc12).  It is made anew
+    once the files it was made with change, and the one before is closed."""
+    from scope_recall.adapters.codex.local_endpoint import KeptRecaller
+
+    _KeptFake.made = []
+    stamp = ["one"]
+    kept = KeptRecaller(_KeptFake, stamp=lambda: stamp[0])
+    answers = [kept(_prompt(f"TEST {index}"), (), (), 5.0) for index in range(3)]
+    assert len(_KeptFake.made) == 1 and [answer[0] for answer in answers] == [{"TEST": f"TEST {i}"} for i in range(3)]
+    assert answers[0][1]["recall_vectors"] is True and answers[0][1]["capability_gaps"] == ["TEST-gap"]
+    stamp[0] = "two"
+    kept(_prompt("TEST after"), (), (), 5.0)
+    assert len(_KeptFake.made) == 2 and _KeptFake.made[0].closed and not _KeptFake.made[1].closed
+    kept.close()
+    assert _KeptFake.made[1].closed and kept(_prompt("TEST closed"), (), (), 5.0) is None
+
+
+def test_a_kept_recaller_counts_its_time_from_the_request_s_arrival():
+    import time
+
+    from scope_recall.adapters.codex.local_endpoint import KeptRecaller
+
+    _KeptFake.made = []
+    kept = KeptRecaller(_KeptFake)
+    kept(_prompt("TEST late"), (), (), 5.0, received=time.monotonic() - 2.0)
+    assert 2.9 < _KeptFake.made[0].calls[0] <= 3.0
+
+
+def test_a_recall_while_the_kept_handler_is_busy_is_answered_by_its_own():
+    """One recall holds the kept handler at a time; another at the same moment gets nothing from it at once and
+    recalls as every recall did before, instead of waiting behind the first."""
+    import threading
+
+    from scope_recall.adapters.codex.local_endpoint import KeptRecaller
+
+    _KeptFake.made = []
+    entered, release = threading.Event(), threading.Event()
+
+    class Slow(_KeptFake):
+        def resident_recall_for(self, payload, current_refs, gaps, remaining):
+            entered.set()
+            assert release.wait(10)
+            return super().resident_recall_for(payload, current_refs, gaps, remaining)
+
+    kept = KeptRecaller(Slow)
+    first = threading.Thread(target=kept, args=(_prompt("TEST first"), (), (), 5.0))
+    first.start()
+    assert entered.wait(10)
+    try:
+        assert kept(_prompt("TEST second"), (), (), 5.0) is None
+    finally:
+        release.set()
+        first.join(10)
+    assert kept(_prompt("TEST third"), (), (), 5.0)[0] == {"TEST": "TEST third"} and len(_KeptFake.made) == 1
+
+
+def test_a_kept_handler_that_raised_or_could_not_attach_its_runtime_is_made_anew():
+    """A handler that tried to attach its runtime and could not never tries again: kept, it recalled every later
+    prompt without its vector search.  One whose recall raised is not trusted with the next."""
+    import pytest
+
+    from scope_recall.adapters.codex.local_endpoint import KeptRecaller
+
+    _KeptFake.made = []
+    kinds = iter(({"fail": True}, {"attach_failed": True}, {}))
+    kept = KeptRecaller(lambda: _KeptFake(**next(kinds)))
+    with pytest.raises(RuntimeError):
+        kept(_prompt("TEST raised"), (), (), 5.0)
+    assert kept(_prompt("TEST no runtime"), (), (), 5.0)[0] == {"TEST": "TEST no runtime"}
+    assert kept(_prompt("TEST kept"), (), (), 5.0)[0] == {"TEST": "TEST kept"}
+    assert [fake.closed for fake in _KeptFake.made] == [True, True, False] and len(_KeptFake.made) == 3
+
+
+def test_the_mcp_server_keeps_its_recall_handler_across_prompts_and_threads(resident, monkeypatch):
+    """Each prompt's recall reaches the server on a thread of its own; one handler answers them all, and the answer
+    is the same as a handler of its own gives."""
+    import threading
+
+    from scope_recall.adapters.codex import handler as handler_module
+
+    _root, client, endpoint = resident
+    made = []
+    real = handler_module.CodexHookHandler.from_home.__func__
+
+    def counted(cls, *args, **kwargs):
+        made.append(1)
+        return real(cls, *args, **kwargs)
+
+    monkeypatch.setattr(handler_module.CodexHookHandler, "from_home", classmethod(counted))
+    answers = []
+
+    def ask(index):
+        request = {"payload": _prompt("TEST 家里的猫叫什么？", prompt_id=f"TEST-prompt-kept-{index}"),
+                   "current_refs": (), "gaps": (), "remaining": 5.0}
+        answer, close = endpoint.recall(request)
+        close()
+        answers.append(answer)
+
+    for index in range(3):
+        worker = threading.Thread(target=ask, args=(index,))
+        worker.start()
+        worker.join(30)
+    assert len(answers) == 3 and len(made) == 1
+    assert all(answer["result"] == answers[0]["result"] for answer in answers)
+    endpoint.kept._lock.acquire()
+    try:
+        answer, close = endpoint.recall({"payload": _prompt("TEST 家里的猫叫什么？", prompt_id="TEST-prompt-own"),
+                                         "current_refs": (), "gaps": (), "remaining": 5.0})
+        close()
+    finally:
+        endpoint.kept._lock.release()
+    assert len(made) == 2 and answer["result"] == answers[0]["result"], "a busy kept handler: one of its own"
+    endpoint.stop()
+    assert endpoint.kept(_prompt("TEST stopped"), (), (), 5.0) is None

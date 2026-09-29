@@ -366,7 +366,7 @@ def test_the_server_opens_no_path_a_request_names(served, tmp_path):
 
 def test_a_failed_capture_s_code_reaches_the_server_log(served, tmp_path, monkeypatch):
     _root, homes, ports = served
-    monkeypatch.setattr(remote_server, "handle_request", lambda config, body, started=None: {
+    monkeypatch.setattr(remote_server, "handle_request", lambda config, body, started=None, recaller=None: {
         "result": {}, "through": None, "reason": "capture_failed", "error": "DEADLINE_EXCEEDED"})
     root_logger = logging.getLogger()
     level = root_logger.level
@@ -385,7 +385,7 @@ def test_a_failed_capture_s_code_reaches_the_server_log(served, tmp_path, monkey
 def test_a_failed_recall_s_cause_reaches_the_server_log(served, tmp_path, monkeypatch):
     """The work computer's Codex server logged recall_exception three times and nothing else."""
     _root, homes, ports = served
-    monkeypatch.setattr(remote_server, "handle_request", lambda config, body, started=None: {
+    monkeypatch.setattr(remote_server, "handle_request", lambda config, body, started=None, recaller=None: {
         "result": {}, "through": None, "reason": "recall_exception", "error": None,
         "recall_error": "ContractError:INPUT_INVALID"})
     root_logger = logging.getLogger()
@@ -436,7 +436,7 @@ def test_a_recall_without_its_vector_search_is_named_in_the_server_log(served, t
     """The work computer's recalls ran without their vector search for as long as anyone could tell: the packet
     carried the gap to the model, and the server's log said nothing."""
     _root, homes, ports = served
-    monkeypatch.setattr(remote_server, "handle_request", lambda config, body, started=None: {
+    monkeypatch.setattr(remote_server, "handle_request", lambda config, body, started=None, recaller=None: {
         "result": {}, "through": None, "reason": None, "error": None, "recall_error": None,
         "recall_vector": "vector_error:TimeoutError:helper_open_deadline"})
     root_logger = logging.getLogger()
@@ -703,3 +703,54 @@ def test_the_server_refuses_a_body_nested_past_the_parser_s_limit(served, past_t
     with pytest.raises(urllib.error.HTTPError) as refused:
         urllib.request.urlopen(request, timeout=20)
     assert refused.value.code == 400
+
+
+def test_a_remote_prompt_s_recall_is_the_server_s_kept_recaller_s(store, tmp_path):
+    """The work computer's prompts were recalled by a handler made for each request, which opened its vector table
+    and embedding worker every time: 3-5 s of a 5 s budget, a third of them without their vector search on
+    2026-09-29 (rc12).  A prompt's recall is asked of the server's kept recaller; the request's handler stores the
+    prompt, and recalls itself only while the kept one is busy."""
+    _root, homes = store
+    config = remote_server.RemoteServerConfig(home=homes["claude-code"], host="claude-code", listen="127.0.0.1",
+                                              port=1, token_sha256="0" * 64)
+    asked = []
+
+    def kept(payload, current_refs, gaps, budget, **kwargs):
+        asked.append(payload["hook_event_name"])
+        return {"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": "TEST warm"}}, {
+            "recall_vectors": True, "recall_vector_gap": None, "recall_error_detail": None, "last_reason": None}
+
+    body = {"payload": {"hook_event_name": "UserPromptSubmit", "session_id": "TEST-warm-session",
+                        "prompt_id": "TEST-warm-1", "prompt": "TEST warm recall prompt", "cwd": "C:/work"}}
+    answer = remote_server.handle_request(config, body, recaller=kept)
+    assert asked == ["UserPromptSubmit"] and answer["warm"] == "answered"
+    assert answer["result"]["hookSpecificOutput"]["additionalContext"] == "TEST warm"
+    with closing(sqlite3.connect(_root / "memory.sqlite3")) as connection:
+        stored = [row[0] for row in connection.execute(
+            "SELECT content FROM source_events UNION ALL SELECT payload_json FROM capture_inbox")]
+    assert any("TEST warm recall prompt" in (text or "") for text in stored), "the request's own handler stored it"
+    busy = remote_server.handle_request(config, {"payload": {**body["payload"], "prompt_id": "TEST-warm-2"}},
+                                        recaller=lambda *args, **kwargs: None)
+    assert busy["warm"] == "busy" and busy["result"] != answer["result"]
+    stop = remote_server.handle_request(config, {"payload": {"hook_event_name": "Stop", "session_id": "TEST-warm-session",
+                                                             "cwd": "C:/work"}}, recaller=kept)
+    assert asked == ["UserPromptSubmit"] and stop["warm"] is None, "only a prompt's recall is asked"
+
+
+def test_the_server_log_says_how_the_kept_recall_went(served, tmp_path, monkeypatch):
+    _root, homes, ports = served
+    monkeypatch.setattr(remote_server, "handle_request", lambda config, body, started=None, recaller=None: {
+        "result": {}, "through": None, "reason": None, "error": None, "recall_error": None, "recall_vector": None,
+        "warm": "answered" if recaller is not None else "no recaller"})
+    root_logger = logging.getLogger()
+    level = root_logger.level
+    handler = remote_server.log_to_file(homes["codex"])
+    try:
+        _hook(_client(tmp_path, "codex", ports["codex"]), {"hook_event_name": "UserPromptSubmit",
+              "session_id": "TEST-codex-session", "turn_id": "TEST-t9", "prompt": "TEST 热的。", "cwd": "C:/work"})
+    finally:
+        root_logger.removeHandler(handler)
+        root_logger.setLevel(level)
+        handler.close()
+    log = (homes["codex"] / "scope-recall" / remote_server.LOG_NAME).read_text(encoding="utf-8")
+    assert "hook UserPromptSubmit: None, record through None, " in log and ", warm recall answered" in log

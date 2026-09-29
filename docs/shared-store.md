@@ -166,12 +166,17 @@ hook that asked says how it went on stderr (`CODEX_RECALL_RESIDENT:answered`, `s
 writes no memory; its query embedding's cost is recorded in the spend ledger like any other, and so is
 the hook's when both recalled. A server with a recall past the time its hook gave it tells every hook
 that it is busy until that recall ends, and one that does not prove itself within 0.5 s loses its name
-until its own check, every 2 s, finds it answering in time. A recall that fails in the server is answered as
+until its own check, every 2 s, finds it answering in time. The server keeps the handler it recalls with from
+one prompt to the next, and with it its LanceDB table open and its embedding worker connected: made anew for
+each prompt, they took 3.9-4.1 s of every recall on the pilot, and two of five lost their vector search to the
+time, where a kept one answers in 1.6-2.1 s. One recall uses it at a time; another that comes meanwhile is
+recalled by a handler of its own, as before. It is made anew when the env file or the runtime config changed,
+after a recall that raised, or when its runtime could not be attached. A recall that fails in the server is answered as
 failed, with the last frames of its traceback on the server's stderr (the client's MCP log). It reads its key again at the next prompt
 after its env file or the runtime config changed, or when it could not read them before. A server
-started before an upgrade is not asked until its client restarts. Each open client keeps one LanceDB
-helper ready, about 550 MB of committed memory that the system pages out while it is idle, and starts
-the next one in the background after each recall. Each prompt hook still starts one of its own, which
+started before an upgrade is not asked until its client restarts. Each open client keeps the LanceDB
+helper of its kept handler open, and one more ready for a recall that comes while that one is busy: about
+550 MB of committed memory each, which the system pages out while they are idle. Each prompt hook still starts one of its own, which
 ends with the hook, once its import is done, when the hook did not need it.
 
 Claude Code or Codex on another machine attaches the same way, under a name of its own, and reaches

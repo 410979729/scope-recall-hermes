@@ -4,6 +4,11 @@ All notable changes to `scope-recall` will be documented in this file.
 
 ## [Unreleased]
 
+### Scope Recall 3.4.0rc12 - 2026-09-29
+
+- The version moves past the `v3.4.0rc11` tag.
+- The entry's MCP server on this machine, and the server a work computer's hooks reach, keep the handler they recall with from one prompt to the next, and with it the LanceDB table open and the embedding worker connected. Each made a handler for every prompt, which opened the table (about 2.3 s) and started the embedding worker and its connection (about 1 s): on the pilot a warm server's recall took 3.9-4.1 s, two of five lost their vector search to the time, and on 2026-09-29 a third of the work computer's prompts were recalled by words alone. Kept, a recall takes 1.6-2.1 s with its vector search. One recall uses the kept handler at a time; another that comes meanwhile is recalled by a handler of its own, as before. It is made anew when the env file or the runtime config changed, after a recall that raised, or when its runtime could not be attached, and it is closed when the server stops. On the work computer's server the prompt is still stored by its request's own handler, which recalls as well only while the kept one has not answered in time, as a hook here does with the MCP server; the server's log line says how the kept recall went (`warm recall answered`).
+
 ### Scope Recall 3.4.0rc11 - 2026-09-28
 
 - The version moves past the `v3.4.0rc10` tag.
