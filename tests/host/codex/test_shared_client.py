@@ -1100,6 +1100,11 @@ def test_a_server_answers_only_a_hook_that_proves_the_token(resident):
 
 def test_a_long_prompt_s_recall_is_answered(resident, small_reserve, monkeypatch, capsys):
     """The first version re-escaped the payload into a JSON body: 22,000 Chinese characters made it too large (413)."""
+    from scope_recall.adapters.codex import handler as handler_module
+
+    # The budget an entry's config gives (the test store's default is 2 s): on a slow CI runner storing this prompt
+    # took 2.25 s of the 2, and the hook never asked its server (rc13's CI).  The size is what is tested here.
+    monkeypatch.setattr(handler_module, "_TOTAL_BUDGET_S", 10.0)
     root, client, endpoint = resident
     calls = _counted(endpoint, monkeypatch)
     raw = json.dumps(_prompt("TEST " + "长" * 20000, prompt_id="TEST-prompt-long"), ensure_ascii=False).encode("utf-8")
