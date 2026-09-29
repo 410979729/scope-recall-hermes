@@ -788,7 +788,7 @@ class WorkItems:
         # A capture an earlier release refused as ACCESS_DENIED, most often one under a deleted message's key, stayed
         # in the inbox for good with doctor's capture_ingress_blocked up, and nothing but a hand could remove it.  The
         # replay now cancels a copy of the deleted message and stores another message under a key of its own
-        # (``storage._refuse_or_collide``), so such rows go back to it once asked (review of rc13).
+        # (``storage.Transaction.refuse_under_a_deleted_key``), so such rows go back to it once asked (review of rc13).
         refused = conn.execute(
             f"""SELECT token FROM capture_inbox WHERE last_error_code='ACCESS_DENIED'
                 AND scope_id IN ({_marks(scopes)}) AND project_id IS ? AND branch_id IS ?""",

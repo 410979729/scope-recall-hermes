@@ -61,6 +61,9 @@ def record_event(storage: SQLiteStorage, clock: CaptureClock, context: TrustedCo
                     return CaptureReceipt("cancelled", (), "not_persisted", "unchanged", "unchanged", error_code="ACCESS_DENIED")
                 if tuple(pending) != (scope_id, context.project_id, context.branch_id):
                     raise ContractError("ACCESS_DENIED")
+            # Decided on the whole message, before any part is written: the first part alone had let a copy of a
+            # deleted message through (review of rc13).
+            tx.refuse_under_a_deleted_key(prepared.events, scope_id=scope_id)
             for event in prepared.events:
                 decision = decide(tx, event, scope_id, admission_policy)
                 source = tx.put_source(event, scope_id=scope_id, persisted_at=clock.utc_now(), capture_gaps=prepared.gaps)

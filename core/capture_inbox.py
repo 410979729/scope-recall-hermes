@@ -24,7 +24,7 @@ from .._version import __version__
 from .truth_connection import TruthDatabaseConnectionError
 from .writer_lease import TruthWriterBusyError
 from .capture import CaptureReceipt, record_event
-from .events import PreparedCapture, prepare_capture
+from .events import PreparedCapture, prepare_capture, segment_key
 
 _TRANSIENT = (sqlite3.Error, TruthDatabaseConnectionError, TruthWriterBusyError)
 #: What a release before 3.4.0rc10 wrote for every missing source, which names none.  One of its causes is gone: a
@@ -183,6 +183,17 @@ def deleted_text(text: object) -> tuple[str, str]:
     """A deleted message's text as ``holds`` compares it: without whitespace, and its letters and digits."""
     bare = without_whitespace(text)
     return bare, letters_and_digits(bare)
+
+
+def deleted_forms(text: object) -> frozenset[str]:
+    """What a purge keeps of a deleted message's words to know a copy by once they are gone: digests of them without
+    whitespace, and of their letters and digits when there are ``NEAR_COPY`` or more of them.  The same words spaced,
+    cased or punctuated otherwise have the same forms; words added or taken away do not (review of rc13)."""
+    bare, letters = deleted_text(text)
+    forms = {"bare:" + hashlib.sha256(bare.encode("utf-8")).hexdigest()} if bare else set()
+    if len(letters) >= NEAR_COPY:
+        forms.add("letters:" + hashlib.sha256(letters.encode("utf-8")).hexdigest())
+    return frozenset(forms)
 
 
 def holds(payload_json: object, digests: frozenset[str], groups: frozenset[str],
@@ -354,8 +365,8 @@ def _commit(storage, clock, context, token, prepared, scope_id, policy, deadline
     return CaptureReceipt("queued", (), "queued", "pending", "pending", (*prepared.gaps, *pending), code)
 
 
-#: How storage refuses a copy of a deleted message under that message's key (``storage._refuse_or_collide``): the
-#: code and field of its ContractError, refused for good.
+#: How storage refuses a copy of a deleted message under that message's key, or a later version or part of the deleted
+#: one (``storage.Transaction.refuse_under_a_deleted_key``): the code and field of its ContractError, refused for good.
 DELETED_KEY = ("ACCESS_DENIED", "source_unavailable")
 #: What the receipt of such a capture carries when it left the inbox.
 SOURCE_DELETED_GAP = "capture_gap:source_deleted"
@@ -363,9 +374,9 @@ SOURCE_DELETED_GAP = "capture_gap:source_deleted"
 
 def _refused_for_a_delete(storage, context, token, prepared, deadline) -> CaptureReceipt:
     """A copy of a deleted message under that message's key is refused for good; another message under the key is a
-    key collision, stored under a key of its own (``storage._refuse_or_collide``).  Left in the inbox with its code,
-    the copy kept the doctor's ``capture_ingress_blocked`` and the patrol's line up until someone removed it by hand
-    (rc13); it leaves the inbox, and the pass counts it among the rows it cancelled."""
+    key collision, stored under a key of its own (``storage.Transaction.refuse_under_a_deleted_key``).  Left in the
+    inbox with its code, the copy kept the doctor's ``capture_ingress_blocked`` and the patrol's line up until someone
+    removed it by hand (rc13); it leaves the inbox, and the pass counts it among the rows it cancelled."""
     try:
         with storage.write(context, remaining_seconds=max(.001, deadline-time.monotonic())) as tx:
             tx._check(write=True).execute("DELETE FROM capture_inbox WHERE token=?", (token,))
@@ -415,8 +426,8 @@ def _rekeyed_event(event: dict, capture: str = "") -> dict:
         if REKEY_MARKER in group:
             return dict(event)
         group = _rekey(group, capture)
-        prefix = "segmented-" + hashlib.sha256(group.encode("utf-8")).hexdigest()
-        return {**event, "source_event_key": f"{prefix}/{segment['index']}", "segment": {**segment, "group_key": group}}
+        return {**event, "source_event_key": segment_key(group, segment["index"]),
+                "segment": {**segment, "group_key": group}}
     original = str(event["source_event_key"])
     if REKEY_MARKER in original:
         return dict(event)

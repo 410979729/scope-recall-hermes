@@ -460,6 +460,7 @@ def test_a_locked_database_during_the_record_check_ends_the_read_not_the_hook(st
         with monkeypatch.context() as patched:
             patched.setattr(hook.core, "said_in_session", locked)
             assert hook.handle_payload(_stop(record)) == {}
+        assert hook.diagnostics.capture_error_type == "OperationalError", "named for the server's log (rc13)"
         assert ("user", "human_direct", "TEST locked record") not in _said_in_store(root)
         hook.handle_payload(_stop(record))
     finally:

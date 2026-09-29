@@ -56,17 +56,22 @@ def prepare_capture(value: SourceEvent | dict | str | bytes, context: TrustedCon
         raise ContractError("INPUT_INVALID", "nested_oversize_segment")
     # Stable ordinal chunks preserve every character. Hashing the occurrence
     # key keeps generated keys bounded; content never supplies identity.
-    prefix = "segmented-" + hashlib.sha256(raw["source_event_key"].encode("utf-8")).hexdigest()
     total = (len(filtered) + MAX_SEGMENT_CHARS - 1) // MAX_SEGMENT_CHARS
     events = []
     for index in range(total):
-        event = {**raw, "source_event_key": f"{prefix}/{index}",
+        event = {**raw, "source_event_key": segment_key(raw["source_event_key"], index),
                  "content": filtered[index*MAX_SEGMENT_CHARS:(index+1)*MAX_SEGMENT_CHARS],
                  "capture_state": state,
                  "segment": {"group_key": raw["source_event_key"], "index": index,
                              "total": total, "truncated": bool(gaps)}}
         events.append(validate_capture(event, context))
     return PreparedCapture(tuple(events), gaps)
+
+
+def segment_key(group_key: str, index: int) -> str:
+    """The key of part ``index`` of a long message whose key is ``group_key`` (``prepare_capture``): bounded, and
+    derived from the message's key alone, so a part is found by its message's key."""
+    return f"segmented-{hashlib.sha256(group_key.encode('utf-8')).hexdigest()}/{index}"
 
 
 def stored_content_digest(content: str) -> str:

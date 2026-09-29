@@ -12,7 +12,6 @@ import os
 from pathlib import Path
 import sqlite3
 import time
-from typing import NoReturn
 
 from ..contracts import (ENTRY_ID, MAX_SHARED_SCOPES, ContractError, InstanceBinding, SourceEvent, TrustedContext,
                          validate_capture)
@@ -21,7 +20,7 @@ from .writer_lease import TruthWriterBusyError
 from . import lexical_index
 from .schema import (APPLICATION_ID, SCHEMA_VERSION, STATEMENTS, UPGRADE_CHAIN, stale_header_schema, upgrade_1105,
                      upgrade_1106, upgrade_1107, upgrade_1108, upgrade_1109)
-from .events import lexical_terms, prepare_capture, query_terms, stored_content_digest
+from .events import lexical_terms, prepare_capture, query_terms, segment_key, stored_content_digest
 
 #: How often a writer looks again for another process's lease while it waits.
 _LEASE_POLL_SECONDS = 0.01
@@ -80,6 +79,11 @@ class SourceWrite:
     disposition: str
     ref: str
     revision: int
+
+
+#: How many parts of a deleted long message a later capture under its key looks for by their keys: the capture
+#: inbox takes at most 2 MB a message, 32 parts of 65,536 characters.  Parts past these are found by the group key.
+_FOUND_PARTS = 64
 
 
 class Transaction:
@@ -263,7 +267,7 @@ class Transaction:
         source = self.source('event-' + hashlib.sha256(identity.encode('utf-8')).hexdigest(), revision)
         if source is not None:
             return source
-        first_key = 'segmented-' + hashlib.sha256(source_event_key.encode('utf-8')).hexdigest() + '/0'
+        first_key = segment_key(source_event_key, 0)
         identity = _json([self.context.binding.installation_id, first_key])
         source = self.source('event-' + hashlib.sha256(identity.encode('utf-8')).hexdigest(), revision)
         if source is not None and source.event.get('segment', {}).get('group_key') == source_event_key:
@@ -436,21 +440,66 @@ class Transaction:
                             AND project_id IS ? AND branch_id IS ?""", (group_key, *partition))
         return copy
 
-    def _refuse_or_collide(self, conn, ref: str, event) -> NoReturn:
-        """A key whose message is deleted, or hidden from this caller, takes no copy of that message: a copy is refused
-        for good (``source_unavailable``).  Another message under the key is a key collision (``VERSION_CONFLICT``),
-        which the capture inbox stores under a key of its own.  A restarted Hermes gateway numbers its turns from 1
-        again, and a delete removes its own command's key: the next message at that turn was refused, and from rc13 on
-        dropped (review of rc13).  A copy is the message's words as ``capture_inbox.holds`` compares them: its digest
-        outlasts a purge, its text only until then.  A key with nothing stored left to compare with (a restored
-        absence) refuses whatever comes."""
-        from .capture_inbox import deleted_text, holds_events
-        rows = conn.execute("SELECT content_sha256,content FROM source_events WHERE event_id=?", (ref,)).fetchall()
-        if rows and not holds_events([event], frozenset(row["content_sha256"] for row in rows), frozenset(),
-                                     frozenset(deleted_text(row["content"]) for row in rows if row["content"]),
-                                     rekeyed=True):
-            raise ContractError("VERSION_CONFLICT", "source_deleted_key")
-        raise ContractError("ACCESS_DENIED", "source_unavailable")
+    def _source_ref(self, key: str) -> str:
+        return "event-" + hashlib.sha256(_json([self.context.binding.installation_id, key]).encode("utf-8")).hexdigest()
+
+    def refuse_under_a_deleted_key(self, events, *, scope_id: str) -> None:
+        """Refuse a message under a deleted message's key or source group, or tell another message from it.
+
+        The deletion contract's least unit is a source group, with its later versions and missing parts: a revision
+        the deleted group never stored, and a part sent without the message's first, are refused.  A whole message is
+        compared with the deleted one, all its parts together (a first part changed by one character had let the
+        second through, word for word): a part with a deleted part's digest; while the deleted words are kept, all of
+        them held or a near copy, as a delete compares waiting captures (``capture_inbox.holds_events``); after the
+        purge, the same words spaced, cased or punctuated otherwise (``capture_inbox.deleted_forms``).  A copy is
+        refused (``source_unavailable``).  Anything else is a key collision (``VERSION_CONFLICT``), which the capture
+        inbox stores under a key of its own: a restarted Hermes gateway numbers its turns from 1 again, and a delete
+        removes its own command's key, so the next message at that turn had been refused (reviews of rc13).  After the
+        purge, a copy with words added is not known by anything kept, and is stored as another message.  A key with
+        nothing stored left to compare with (a restored absence) refuses whatever comes."""
+        from .capture_inbox import deleted_forms, deleted_text, holds_events
+        from .delete_storage import group_digest, purged_group_key
+        from .visibility import allowed
+        if not events:
+            return
+        conn = self._check()
+        first = events[0]
+        segment = first.get("segment")
+        group_key = segment["group_key"] if segment else first["source_event_key"]
+        partition = (scope_id, self.context.project_id, self.context.branch_id)
+        hidden = [ref for ref in (self._source_ref(event["source_event_key"]) for event in events)
+                  if not allowed(self, "event", ref)]
+        block = conn.execute("SELECT read_blocked FROM source_group_blocks WHERE group_sha256=?",
+                             (group_digest(self.context.binding, *partition, group_key),)).fetchone()
+        if not hidden and not (block is not None and block["read_blocked"]):
+            return
+        # The deleted message's rows: under the refs this message's parts would take, under the refs of the parts its
+        # key would have been split into (a purge before rc13 hashed a long message's group key once for each part),
+        # and under its group key, before the purge or as the purge left it.
+        refs = sorted({*hidden, self._source_ref(group_key),
+                       *(self._source_ref(segment_key(group_key, index)) for index in range(_FOUND_PARTS))})
+        rows = conn.execute(
+            f"""SELECT source_revision,segment_index,content,content_sha256,extra_json FROM source_events
+                WHERE read_blocked=1 AND (event_id IN ({','.join('?' for _ in refs)})
+                   OR (source_group_key IN (?,?) AND scope_id=? AND project_id IS ? AND branch_id IS ?))""",
+            (*refs, group_key, purged_group_key(group_key), *partition)).fetchall()
+        refuse = ContractError("ACCESS_DENIED", "source_unavailable")
+        if not rows:
+            raise refuse
+        indexes = {event["segment"]["index"] for event in events if event.get("segment")}
+        if first["source_revision"] not in {row["source_revision"] for row in rows} or (indexes and 0 not in indexes):
+            raise refuse
+        versions: dict[int, list] = {}
+        for row in rows:
+            versions.setdefault(row["source_revision"], []).append(row)
+        texts = frozenset(deleted_text("".join(row["content"] for row in sorted(parts, key=lambda row: row["segment_index"])))
+                          for parts in versions.values() if all(row["content"] for row in parts))
+        kept = frozenset(form for row in rows for form in (json.loads(row["extra_json"] or "{}").get("deleted_forms") or ()))
+        ordered = sorted(events, key=lambda event: (event.get("segment") or {}).get("index", 0))
+        if (holds_events(events, frozenset(row["content_sha256"] for row in rows), frozenset(), texts, rekeyed=True)
+                or kept & deleted_forms("".join(event["content"] for event in ordered))):
+            raise refuse
+        raise ContractError("VERSION_CONFLICT", "source_deleted_key")
 
     def put_source(self, event: SourceEvent, *, scope_id: str, persisted_at: str, capture_gaps: tuple[str, ...] = ()) -> SourceWrite:
         conn = self._check(write=True)
@@ -472,11 +521,12 @@ class Transaction:
         provenance = self.context.import_provenance
         # First delivery's recorded_at is retained.  Transport retries may arrive
         # later; occurrence time and all provenance/content fields must agree.
-        identity = _json([self.context.binding.installation_id, event["source_event_key"]])
-        ref = "event-" + hashlib.sha256(identity.encode("utf-8")).hexdigest()
+        ref = self._source_ref(event["source_event_key"])
         from .visibility import allowed
+        # A message under a deleted key has been compared with the deleted one before its parts are stored
+        # (``refuse_under_a_deleted_key``); a hidden key refuses whatever reaches it here.
         if not allowed(self, "event", ref):
-            self._refuse_or_collide(conn, ref, event)
+            raise ContractError("ACCESS_DENIED", "source_unavailable")
         revision = event["source_revision"]
         fingerprint_input = {k: v for k, v in event.items() if k != "recorded_at"}
         provenance_hash = provenance.manifest_sha256 if provenance else None

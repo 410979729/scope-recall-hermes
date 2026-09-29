@@ -603,6 +603,67 @@ def test_retry_failures_returns_a_given_up_capture_to_the_replay(worker_app):
     assert core.retry_failed_work(ctx, limit=64, dry_run=True)["inbox_given_up"] == 0
 
 
+def test_a_message_under_a_deleted_key_is_compared_whole_and_its_versions_refused(worker_app):
+    """Compared part by part, a long deleted message sent again with its first character changed was stored under a
+    new key, and its second part, word for word, was found again; a later version of a deleted message was stored; a
+    copy spaced otherwise came back once the delete was purged; and a message of another length under a deleted
+    message's key was dropped (review of rc13).  The whole message is compared, a version the deleted group never had
+    is refused, the purge keeps the forms of the deleted words, and another message is a key collision."""
+    core, ctx, clock = worker_app
+    long_text = "".join(f"TEST 第{i}句要删的长话。" for i in range(6000))
+    short = "TEST 要删的 一句 短话。"
+    stored = [capture(core, ctx, long_text, key="TEST-long"), capture(core, ctx, short, key="TEST-short")]
+    authorize(core, ctx, *stored)
+    operation = core.forget(ctx, request(*stored), remaining_seconds=5)
+
+    def store(key, content, **changes):
+        return capture_inbox.durable_record_event(core.storage, clock, ctx, source_event(
+            source_event_key=key, content=content, **changes), scope_id="TEST-scope", host_scope=None).disposition
+
+    # Before the purge: its first character changed, or eight characters put before it, the long message is a copy.
+    assert store("TEST-long", "!" + long_text[1:]) == "cancelled"
+    assert store("TEST-long", "[10:02] " + long_text) == "cancelled"
+    # A later version is refused, as the deletion contract says.
+    assert store("TEST-short", "TEST 改过的一句。", source_revision=2) == "cancelled"
+    core.purge_sqlite(ctx, operation["operation_id"], remaining_seconds=10)
+    from scope_recall.core.delete_storage import purged_group_key
+
+    # A long message's group key is replaced once, where it had been hashed once for each of its parts.
+    with sqlite3.connect(core.storage.path) as conn:
+        assert conn.execute("SELECT count(*) FROM source_events WHERE source_group_key=?",
+                            (purged_group_key("TEST-long"),)).fetchone()[0] == 2
+    # After it: the same words spaced and cased otherwise, and a message with one of the deleted parts.
+    assert store("TEST-short", "test 要删的一句短话。") == "cancelled"
+    assert store("TEST-long", "!" + long_text[1:]) == "cancelled"
+    # Another message of another length under either key is a key collision, stored under a key of its own.
+    assert store("TEST-long", "TEST 同一个键上的一句短话。") == "conflict"
+    assert store("TEST-short", "".join(f"TEST 第{i}句另一段长话。" for i in range(6000))) == "conflict"
+    receipts = capture_inbox.resolve_conflicted_ingress(core.storage, clock, ctx,
+                                                        authorize=lambda _: ctx.allowed_scope_ids, remaining_seconds=10)
+    assert [receipt.durability for receipt in receipts] == ["persisted", "persisted"] and _inbox_rows(core) == 0
+
+
+def test_a_long_message_purged_before_rc13_is_still_found_by_its_parts_keys(worker_app):
+    """A purge before rc13 hashed a long message's group key once for each of its parts, so its rows are not found by
+    the key a purge now gives.  They are found by the keys its parts were split into, and a message of another length
+    under the deleted key is still stored under a key of its own rather than refused for want of rows (rc13)."""
+    from scope_recall.core.delete_storage import purged_group_key
+
+    core, ctx, clock = worker_app
+    long_text = "".join(f"TEST 第{i}句旧时删掉的长话。" for i in range(6000))
+    stored = capture(core, ctx, long_text, key="TEST-old-long")
+    authorize(core, ctx, stored)
+    operation = core.forget(ctx, request(stored), remaining_seconds=5)
+    core.purge_sqlite(ctx, operation["operation_id"], remaining_seconds=10)
+    with sqlite3.connect(core.storage.path) as conn:
+        conn.execute("UPDATE source_events SET source_group_key=? WHERE source_group_key=?",
+                     (purged_group_key(purged_group_key("TEST-old-long")), purged_group_key("TEST-old-long")))
+        conn.commit()
+    receipt = capture_inbox.durable_record_event(core.storage, clock, ctx, source_event(
+        source_event_key="TEST-old-long", content="TEST 旧键上的一句短话。"), scope_id="TEST-scope", host_scope=None)
+    assert receipt.disposition == "conflict"
+
+
 def test_retry_failures_returns_a_capture_an_earlier_release_refused_to_the_replay(worker_app):
     """A capture an earlier release refused as ACCESS_DENIED, most often one under a deleted message's key, stayed in
     the inbox for good with doctor's ``capture_ingress_blocked`` up, and nothing but a hand removed it (review of
@@ -943,7 +1004,10 @@ def test_retry_failures_returns_only_the_rows_its_replay_takes(tmp_path):
     put_off = f"DEFERRED|{capture_inbox.__version__}|2026-09-06T13:00:00Z|3|replay|TypeError"
     partitions = {"own": (own, given_up), "put off": (own, put_off),
                   "unset": (TrustedContext(cfg.binding, "TEST-session", frozenset({"TEST-a"}), "human_direct"), given_up),
-                  "other project": (replace(own, project_id="TEST-other"), given_up)}
+                  "other project": (replace(own, project_id="TEST-other"), given_up),
+                  # One an earlier release refused, returned as well, from this partition alone (rc13).
+                  "refused": (own, "ACCESS_DENIED"),
+                  "refused elsewhere": (replace(own, project_id="TEST-other"), "ACCESS_DENIED")}
     tokens = {}
     for label, (context, code) in partitions.items():
         token, _prepared = capture_inbox.enqueue(core.storage, core.clock, context, source_event(
@@ -954,11 +1018,13 @@ def test_retry_failures_returns_only_the_rows_its_replay_takes(tmp_path):
         tokens[label] = token
     preview = core.retry_failed_work(own, limit=64, dry_run=True)
     assert (preview["inbox_given_up"], preview["inbox_by_kind"]) == (1, {"IDENTITY_UNBOUND:TEST-host": 1})
+    assert preview["inbox_refused"] == 1
     core.retry_failed_work(own, limit=64, dry_run=False)
     with sqlite3.connect(core.storage.path) as conn:
         codes = dict(conn.execute("SELECT token,last_error_code FROM capture_inbox").fetchall())
     assert {label: codes[token] for label, token in tokens.items()} == {
-        "own": None, "put off": put_off, "unset": given_up, "other project": given_up}
+        "own": None, "put off": put_off, "unset": given_up, "other project": given_up,
+        "refused": None, "refused elsewhere": "ACCESS_DENIED"}
 
 
 def test_a_stored_context_this_release_cannot_read_is_named(worker_app):

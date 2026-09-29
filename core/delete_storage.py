@@ -57,6 +57,11 @@ def group_digest(binding,scope_id,project_id,branch_id,group_key):
     return hashlib.sha256(canonical([binding.installation_id,scope_id,project_id,branch_id,group_key]).encode()).hexdigest()
 
 
+def purged_group_key(group_key: str) -> str:
+    """The key a purge gives a deleted source group's rows (``purge_sqlite``), by which they are still found."""
+    return "removed-"+hashlib.sha256(group_key.encode()).hexdigest()
+
+
 @dataclass(frozen=True)
 class DeleteTarget:
     kind: str
@@ -331,16 +336,34 @@ class Deletions:
         # internals. VACUUM/checkpoint inventory remains explicit maintenance.
         conn.execute("PRAGMA secure_delete=ON")
         members = conn.execute("SELECT object_kind,object_ref FROM deletion_members WHERE operation_id=?",(operation_id,)).fetchall()
+        # What a purge keeps of each version of a deleted message to know a later copy under its key by, once its
+        # words are gone: digests of them spaced otherwise and of their letters and digits (``capture_inbox.
+        # deleted_forms``, compared by ``Transaction.refuse_under_a_deleted_key``).  Read before any group key below
+        # is replaced (review of rc13).
+        from .capture_inbox import deleted_forms
+        forms,groups = {},set()
+        for kind,ref in members:
+            if kind != "event":
+                continue
+            for group,revision in conn.execute("SELECT source_group_key,source_revision FROM source_events WHERE event_id=?",(ref,)).fetchall():
+                text = "".join(content for (content,) in conn.execute(
+                    "SELECT content FROM source_events WHERE source_group_key=? AND source_revision=? ORDER BY segment_index",(group,revision)))
+                forms[ref,revision] = sorted(deleted_forms(text)) if text else []
+                groups.add(group)
+        # Each group key is replaced once, by the key ``purged_group_key`` gives: replaced for each of its parts, a
+        # long message's key had been hashed once a part, and a later capture under it could not find its rows
+        # (review of rc13).  A key an earlier purge left stays as it is.
+        for group in sorted(groups):
+            if not group.startswith("removed-"):
+                conn.execute("UPDATE source_events SET source_group_key=? WHERE source_group_key=?",(purged_group_key(group),group))
         for kind,ref in members:
             if kind == "event":
-                groups = conn.execute("SELECT DISTINCT source_group_key FROM source_events WHERE event_id=?",(ref,)).fetchall()
-                for group in groups:
-                    replacement = "removed-"+hashlib.sha256(group[0].encode()).hexdigest()
-                    conn.execute("UPDATE source_events SET source_group_key=? WHERE source_group_key=?",(replacement,group[0]))
                 lexical_index.forget(conn, ref)
-                conn.execute("""UPDATE source_events SET content='',source_event_key='removed-'||event_id,
-                    extra_json='{"evidence_refs":[]}',source_original_origin=NULL,dataset_id=NULL,
-                    capture_state='gap',capture_gaps_json='["deleted"]' WHERE event_id=?""",(ref,))
+                for (revision,) in conn.execute("SELECT DISTINCT source_revision FROM source_events WHERE event_id=?",(ref,)).fetchall():
+                    conn.execute("""UPDATE source_events SET content='',source_event_key='removed-'||event_id,
+                        extra_json=?,source_original_origin=NULL,dataset_id=NULL,
+                        capture_state='gap',capture_gaps_json='["deleted"]' WHERE event_id=? AND source_revision=?""",
+                        (canonical({"evidence_refs":[],"deleted_forms":forms.get((ref,revision),[])}),ref,revision))
             elif kind == "claim":
                 conn.execute("UPDATE claims SET subject='',predicate='' WHERE claim_id=?",(ref,))
                 conn.execute("UPDATE claim_versions SET payload_json='{}' WHERE claim_id=?",(ref,))
