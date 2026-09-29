@@ -705,11 +705,16 @@ def test_the_server_refuses_a_body_nested_past_the_parser_s_limit(served, past_t
     assert refused.value.code == 400
 
 
-def test_a_remote_prompt_s_recall_is_the_server_s_kept_recaller_s(store, tmp_path):
+def test_a_remote_prompt_s_recall_is_the_server_s_kept_recaller_s(store, tmp_path, monkeypatch):
     """The work computer's prompts were recalled by a handler made for each request, which opened its vector table
     and embedding worker every time: 3-5 s of a 5 s budget, a third of them without their vector search on
     2026-09-29 (rc12).  A prompt's recall is asked of the server's kept recaller; the request's handler stores the
-    prompt, and recalls itself only while the kept one is busy."""
+    prompt, and recalls itself only while the kept one is busy.  This store has no runtime config, so a hook gets
+    the 2 s default, and a slow CI runner's capture left less than the second a kept recall is asked with: the
+    entries' own configs give 6 s."""
+    from scope_recall.adapters.codex import handler as handler_module
+
+    monkeypatch.setattr(handler_module, "_TOTAL_BUDGET_S", 10.0)
     _root, homes = store
     config = remote_server.RemoteServerConfig(home=homes["claude-code"], host="claude-code", listen="127.0.0.1",
                                               port=1, token_sha256="0" * 64)
