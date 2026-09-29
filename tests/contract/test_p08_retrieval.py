@@ -142,6 +142,40 @@ def test_P08_lexical_skips_terms_too_common_to_separate_anything(app):
         assert _discriminating_terms(tx, ("quarkonium", "boilerplate"), keep=("boilerplate",)) == ("quarkonium", "boilerplate")
 
 
+def test_P08_a_long_prompt_searches_its_rarest_terms_within_a_posting_budget(monkeypatch):
+    """The lexical statement groups every posting of every kept term: on the shared store a 2,000-character prompt's
+    80 terms held 273,000 postings and took 9 s, longer than the prompt's whole recall (2026-09-29).  The rarest terms
+    are searched, as many as the posting budget allows beyond the first few; a short question is left as it was."""
+    from scope_recall.core import retrieval_storage
+
+    monkeypatch.setattr(retrieval_storage, "_LEXICAL_MIN_TERMS", 3)
+    monkeypatch.setattr(retrieval_storage, "_LEXICAL_POSTING_BUDGET", 100)
+    frequencies = {"a": 10, "b": 20, "c": 30, "d": 40, "e": 50, "f": 5}
+    terms = ("a", "b", "c", "d", "e", "f", "unindexed")
+    # f, a and b are the three always searched; c still fits (65 postings); d would pass the budget (105).
+    assert retrieval_storage._within_posting_budget(terms, frequencies, ()) == ("a", "b", "c", "f", "unindexed")
+    # A kept identifier stays whatever it costs, and what it costs counts.
+    assert retrieval_storage._within_posting_budget(terms, frequencies, ("e",)) == ("a", "b", "e", "f", "unindexed")
+    # A question with no more indexed terms than are always searched is left as it was.
+    assert retrieval_storage._within_posting_budget(("d", "e", "unindexed"), frequencies, ()) == ("d", "e", "unindexed")
+    # The rarest few are searched even when they alone pass the budget.
+    monkeypatch.setattr(retrieval_storage, "_LEXICAL_POSTING_BUDGET", 20)
+    assert retrieval_storage._within_posting_budget(terms, frequencies, ()) == ("a", "b", "f", "unindexed")
+
+
+def test_P08_the_lexical_channel_keeps_its_terms_within_the_posting_budget(app, monkeypatch):
+    from scope_recall.core import retrieval_storage
+
+    core, ctx = app
+    capture(core, ctx, "TEST quarkonium 出现一次。", key="TEST-p08/budget/rare")
+    for index in range(5):
+        capture(core, ctx, f"TEST gluonfield 第{index}条。", key=f"TEST-p08/budget/common/{index}")
+    monkeypatch.setattr(retrieval_storage, "_LEXICAL_MIN_TERMS", 1)
+    monkeypatch.setattr(retrieval_storage, "_LEXICAL_POSTING_BUDGET", 3)
+    with core.storage.read(ctx) as tx:
+        assert retrieval_storage._discriminating_terms(tx, ("quarkonium", "gluonfield")) == ("quarkonium",)
+
+
 def test_P08_lexical_never_prunes_a_common_hard_identifier(app):
     """Hydration still requires the identifier, so SQL must still search for it.
 

@@ -57,6 +57,14 @@ _LEXICAL_DF_FRACTION = 0.10
 #: Floor so a young or small instance is never pruned: on a corpus of thirty
 #: sources, "10% of everything" is three, and ordinary words would vanish.
 _LEXICAL_DF_FLOOR = 64
+#: Postings the lexical statement may group, the kept terms' document
+#: frequencies added rarest first.  It groups every posting of every term, so its
+#: time follows this sum: on the shared store (2026-09-29) a 2,000-character
+#: prompt's 80 terms held 273,000 postings and took 9 s, longer than the prompt's
+#: whole recall, which then ran without its vector search as well.  The rarest
+#: terms separate the most, and a question's own few are never cut.
+_LEXICAL_POSTING_BUDGET = 20_000
+_LEXICAL_MIN_TERMS = 16
 
 
 def scope_digest(context) -> str:
@@ -138,9 +146,28 @@ def _discriminating_terms(tx, terms: tuple[str, ...], keep: tuple[str, ...] = ()
     ceiling = _common_term_ceiling(conn)
     kept = tuple(term for term in terms if term in keep or frequencies.get(term, 0) < ceiling)
     if kept:
-        return kept
+        return _within_posting_budget(kept, frequencies, keep)
     rarest = min(frequencies.values())
     return tuple(term for term in terms if frequencies.get(term, 0) == rarest) or terms
+
+
+def _within_posting_budget(terms: tuple[str, ...], frequencies: dict[str, int],
+                           keep: tuple[str, ...]) -> tuple[str, ...]:
+    """The rarest ``_LEXICAL_MIN_TERMS`` of the terms the index holds, and more of them while their postings stay
+    within ``_LEXICAL_POSTING_BUDGET``.  ``keep`` stays whatever it costs, and a term the index does not hold costs
+    nothing and matches nothing, so it stays too.  The query's own order is kept."""
+    held = sorted((term for term in terms if term not in keep and frequencies.get(term, 0) > 0),
+                  key=lambda term: (frequencies[term], term))
+    if len(held) <= _LEXICAL_MIN_TERMS:
+        return terms
+    spent = sum(frequencies.get(term, 0) for term in set(keep).intersection(terms))
+    chosen: set[str] = set()
+    for term in held:
+        if len(chosen) >= _LEXICAL_MIN_TERMS and spent + frequencies[term] > _LEXICAL_POSTING_BUDGET:
+            break
+        chosen.add(term)
+        spent += frequencies[term]
+    return tuple(term for term in terms if term in chosen or term in keep or frequencies.get(term, 0) == 0)
 
 
 def _common_term_ceiling(conn) -> int:
