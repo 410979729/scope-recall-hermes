@@ -164,8 +164,10 @@ EMBED_BACKFILL_RECHECK = timedelta(days=1)
 EMBED_BACKFILL_PAGE = 64
 
 
-def backfill_if_due(storage: Any, context: Any, vector_config: Any, *, now: datetime | None = None) -> dict | None:
-    """Queue the next page of an import's embeddings, unless the last look found none left within a day.
+def backfill_if_due(storage: Any, context: Any, vector_config: Any, *, now: datetime | None = None,
+                    yield_to: frozenset[str] = frozenset()) -> dict | None:
+    """Queue the next page of an import's embeddings, unless the last look found none left within a day.  None is
+    queued while work of a type in ``yield_to`` is ready (``queue_import_embeddings``).
 
     Returns the receipt, also written to the partition's state file.  Never raises: an embedding queued later is
     found later, never wrongly.
@@ -191,7 +193,8 @@ def backfill_if_due(storage: Any, context: Any, vector_config: Any, *, now: date
     try:
         from ..core.index_rebuild import queue_import_embeddings
 
-        page = queue_import_embeddings(storage, context, after_key=after_key, limit=EMBED_BACKFILL_PAGE)
+        page = queue_import_embeddings(storage, context, after_key=after_key, limit=EMBED_BACKFILL_PAGE,
+                                       yield_to=yield_to)
         receipt.update(after_key=list(page["after_key"]), queued=page["queued"], queued_total=earlier + page["queued"],
                        outcome="held" if page["held"] else "finished" if page["finished"] else "progress")
     except Exception as exc:  # noqa: BLE001 - see docstring; upkeep never fails a drain.

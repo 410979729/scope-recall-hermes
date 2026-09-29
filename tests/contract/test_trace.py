@@ -421,3 +421,34 @@ def test_the_drain_s_backfill_keeps_its_place_and_looks_again_after_a_day(app, t
     looked = backfill_if_due(storage, ctx, vectors, now=now + EMBED_BACKFILL_RECHECK)
     assert looked["outcome"] == "finished" and later in _embeds(core)
     assert looked["queued_total"] == 2, "the total runs on across the daily looks"
+
+
+def test_the_backfill_waits_while_a_candidate_evaluation_is_ready(app, tmp_path):
+    """Embeddings are claimed before candidate evaluations, and the backfill kept its page of them waiting, so every
+    pass took embeddings alone: 251 evaluations waited on the pilot for the hours it ran (rc10).  It waits while one
+    it is told of is ready, and goes on once none is; one not due yet does not hold it."""
+    import sqlite3
+    from types import SimpleNamespace
+
+    from scope_recall.core.index_rebuild import queue_import_embeddings
+    from scope_recall.core.storage import SQLiteStorage
+    from scope_recall.runtime.vector_upkeep import backfill_if_due
+
+    core, ctx = app
+    said = _imported(core, ctx, "TEST 家里的猫叫小橘。", role="user", key="TEST-import/evaluations")
+    with sqlite3.connect(core.storage.path) as conn:
+        for ref, due in (("candidate-TEST-ready", "2026-09-28T00:00:00Z"), ("candidate-TEST-later", "2999-01-01T00:00:00Z")):
+            conn.execute("""INSERT INTO work_items(work_type,subject_ref,subject_revision,scope_id,available_at)
+                VALUES ('evaluate_candidate',?,1,'TEST-scope',?)""", (ref, due))
+        conn.commit()
+    storage = SQLiteStorage(ctx.binding)
+    page = queue_import_embeddings(storage, ctx, yield_to=frozenset({"evaluate_candidate"}))
+    assert page["held"] and page["queued"] == 0 and page["after_key"] == ("", 0)
+    receipt = backfill_if_due(storage, ctx, SimpleNamespace(storage_dir=tmp_path), yield_to=frozenset({"evaluate_candidate"}))
+    assert receipt["outcome"] == "held" and receipt["queued"] == 0, "the drain's upkeep passes it on"
+    assert said not in _embeds(core)
+    with sqlite3.connect(core.storage.path) as conn:
+        conn.execute("UPDATE work_items SET state='done' WHERE subject_ref='candidate-TEST-ready'")
+        conn.commit()
+    page = queue_import_embeddings(storage, ctx, yield_to=frozenset({"evaluate_candidate"}))
+    assert not page["held"] and page["queued"] == 1 and said in _embeds(core)

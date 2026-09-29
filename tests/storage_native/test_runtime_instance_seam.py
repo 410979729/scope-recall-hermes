@@ -101,6 +101,49 @@ def test_a_drain_queues_and_embeds_an_import_s_history(tmp_path: Path):
         instance.close()
 
 
+def test_a_drain_s_backfill_waits_only_for_evaluations_the_pass_would_take(tmp_path: Path, monkeypatch):
+    """The backfill waits while a candidate evaluation is ready, which the worker takes after embeddings (rc10: 251
+    waited behind it).  Only one this pass would take counts: none without an evaluator, under a provider hold, or
+    in a pass that only purges, where waiting would stop the backfill for nothing."""
+    from scope_recall.runtime import instance as instance_module
+    from scope_recall.runtime import model_budget
+
+    binding = InstanceBinding("TEST-yield-agent", "TEST-yield-installation", tmp_path / "truth",
+                              frozenset({"TEST-scope"}), True)
+    config = RuntimeInstanceConfig(
+        binding=binding, session_id="worker-session-B", allowed_scope_ids=binding.scope_ids,
+        request_seconds=45.0, drain_seconds=120.0, max_items=32, lease_seconds=60.0,
+        auxiliary=AuxiliaryRuntimeConfig.from_mapping({"external_embedding": False, "external_consolidation": False}),
+        vector=VectorRuntimeConfig(backend="lancedb", storage_dir=tmp_path / "vectors",
+                                   table_name="TEST-yield-vectors", dimensions=2, test_injection_override=True),
+    )
+    asked = []
+    monkeypatch.setattr(instance_module, "backfill_if_due",
+                        lambda storage, context, vectors, **kwargs: asked.append(kwargs.get("yield_to")))
+
+    class Evaluator:
+        def consolidate(self, *args, **kwargs):
+            raise AssertionError("TEST no work to consolidate")
+
+        def evaluate_candidate(self, *args, **kwargs):
+            raise AssertionError("TEST no candidate to evaluate")
+
+    instance = build_runtime_instance(config, vector_factory=default_vector_factory)
+    try:
+        instance.core.initialize()
+        instance.auxiliary = replace(instance.auxiliary, query_embedding=DeterministicEmbedding(),
+                                     source_embedding=DeterministicEmbedding())
+        instance.drain()
+        instance.drain(consolidation=Evaluator())
+        instance.drain(consolidation=Evaluator(), purge_only=True)
+        monkeypatch.setattr(model_budget, "provider_holds",
+                            lambda auxiliary: {"evaluate_candidate": ("TEST-model", "2999-01-01T00:00:00Z")})
+        instance.drain(consolidation=Evaluator())
+    finally:
+        instance.close()
+    assert asked == [frozenset(), frozenset({"evaluate_candidate"}), frozenset(), frozenset()]
+
+
 def test_runtime_instance_native_source_query_delete_purge(tmp_path: Path):
     binding = InstanceBinding(
         "TEST-runtime-native-agent",

@@ -487,18 +487,23 @@ class RuntimeInstance:
             self._vector_store, self.config.vector,
             available_seconds=max(0.0, deadline - time.monotonic()),
         )
-        # An import's history in a person's roles gets the embedding its source store never queued, a page a pass
-        # and only while the queue is shallow (``core.index_rebuild.queue_import_embeddings``).
-        self.embed_backfill = None if vector_gaps or (embed if embed is not None else self._default_embed) is None \
-            else backfill_if_due(self.core.storage, self.config.context(), self.config.vector)
         from ..core.worker import WorkerConfig, drain_worker
+        from .model_budget import provider_holds
 
         model, candidate = self._consolidation_ports(consolidation)
+        self.provider_holds = {} if purge_only else provider_holds(self.config.auxiliary)
+        # An import's history in a person's roles gets the embedding its source store never queued, a page a pass
+        # and only while the queue is shallow (``core.index_rebuild.queue_import_embeddings``).  Embeddings are
+        # claimed before candidate evaluations, so it also waits while one is ready that this pass would claim: not
+        # one without an evaluator, under a provider hold, or in a pass that only purges, which would stop it for
+        # nothing.
+        evaluations = frozenset() if purge_only or candidate is None \
+            else frozenset({"evaluate_candidate"}) - frozenset(self.provider_holds)
+        self.embed_backfill = None if vector_gaps or (embed if embed is not None else self._default_embed) is None \
+            else backfill_if_due(self.core.storage, self.config.context(), self.config.vector, yield_to=evaluations)
         limit = self.config.request_seconds
         effective_embed = embed if embed is not None else self._default_embed
         effective_purge = purge if purge is not None else self._default_purge
-        from .model_budget import provider_holds
-        self.provider_holds = {} if purge_only else provider_holds(self.config.auxiliary)
         return drain_worker(
             self.core.storage, self.core.clock, self.config.context(),
             config=WorkerConfig(owner_id=self.config.owner_id,

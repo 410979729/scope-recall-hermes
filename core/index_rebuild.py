@@ -96,12 +96,16 @@ def queue_embedding_page(
     )
 
 
-def queue_import_embeddings(storage, context, *, after_key=None, limit: int = 64) -> dict:
+def queue_import_embeddings(storage, context, *, after_key=None, limit: int = 64,
+                            yield_to: frozenset[str] = frozenset()) -> dict:
     """Queue an embedding for imported sources in ``IMPORT_EMBED_ROLES`` that never had one, a page at a time.
 
     ``after_key`` is where the last page stopped: a source the admission rules keep without one (an
     acknowledgement) is passed over, not looked at again on every page.  Nothing is queued while the embedding
-    queue is at ``IMPORT_EMBED_QUEUE_CEILING``; the page is then ``held`` and the cursor stays where it was.
+    queue is at ``IMPORT_EMBED_QUEUE_CEILING``, or while work of a type in ``yield_to`` is ready; the page is then
+    ``held`` and the cursor stays where it was.  The worker claims embeddings before candidate evaluations
+    (``work_storage._CLAIM_ORDER``): kept full by the backfill, every pass took embeddings alone, and on the pilot
+    251 evaluations waited behind an import's history for the hours it ran (rc10).
     Only sources the context's worker would embed are looked at, those of its project and branch: an import kept
     by another's (a store converted from 2.x keeps them) was queued where this worker neither counts nor claims
     it, and every pass queued another page of them past the ceiling.
@@ -116,7 +120,8 @@ def queue_import_embeddings(storage, context, *, after_key=None, limit: int = 64
     marks = ",".join("?" for _ in scopes)
     roles = ",".join("?" for _ in IMPORT_EMBED_ROLES)
     with storage.read(context) as tx:
-        if tx.work.pending_depth("embed") >= IMPORT_EMBED_QUEUE_CEILING:
+        if (tx.work.pending_depth("embed") >= IMPORT_EMBED_QUEUE_CEILING
+                or tx.work.other_work_ready(now=datetime.now(timezone.utc).isoformat(), kinds=frozenset(yield_to))):
             return dict(after_key=after_key, queued=0, scanned=0, held=True, finished=False)
         rows = tx._check().execute(
             f"""SELECT s.event_id,s.source_revision,s.scope_id,s.project_id,s.branch_id FROM source_events s
