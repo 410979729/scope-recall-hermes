@@ -2,6 +2,12 @@
 
 All notable changes to `scope-recall` will be documented in this file.
 
+## [Unreleased]
+
+### Scope Recall 3.4.1rc1 - 2026-09-29
+
+- The version moves past the `v3.4.0` tag.
+
 ## [3.4.0] - 2026-09-29
 
 3.4.0 lets Claude Code and Codex on another computer use the shared store, and makes capture, automatic recall and deletion hold up on a large, busy store. A client on another computer is an entry of the store under a name of its own: its hooks forward each event to a server on the store's machine over a private network, and its MCP tools are served from there. How to set one up: [docs/remote-entries.md](https://github.com/410979729/scope-recall-hermes/blob/v3.4.0/docs/remote-entries.md).
