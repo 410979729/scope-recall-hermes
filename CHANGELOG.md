@@ -2,6 +2,28 @@
 
 All notable changes to `scope-recall` will be documented in this file.
 
+## [3.4.4] - 2026-09-30
+
+3.4.4 gives a question asked again what it was told before, and stops Hermes storing a turn's message twice. Nothing else changes.
+
+### Recall
+
+- A question asked again word for word is given what it was told before. The automatic recall leaves out an older copy of the current message, since the message already says it, and that copy was the only way to the answer it had received whenever the answer shares no word with the question. It now still leads to its turn's replies and is never delivered itself; a message of fewer than three meaningful words, such as "继续" or "好的", does not. On a copy of the shared store, over the owner's real questions of the last two weeks asked again on every agent, the answer is in the top five for 127 of 173 instead of 59 by words alone, and none that was answered before is lost; facts, rephrased questions, questions with no answer and two agents' older question sets are answered exactly as before.
+- A turn's replies no longer stop at the same message stored again (see below): the 125 Hermes turns of 2026-09-16 to 09-29 that were stored that way lead to their answers again.
+- The channel that offers the session's messages still waiting to be consolidated reads the pending queue, not every consolidation ever made, which the queue keeps: about 16 ms of each recall on the shared store, growing with every consolidation, and with one scope every event of it.
+
+### Hermes capture
+
+- A session's hooks go to the memory provider that bound it last. When Hermes rebuilds an agent it had evicted, the new provider binds the same session while the old one stays registered, and the hooks could go to the old one: the turn's message was stored through it, and again, with the reply, through the new one. It happened on the first turn after each rebuild, 6 of 48 turns on two agents since 2026-09-28. Messages stored twice before 3.4.4 keep their second copy.
+
+### Upgrading from 3.4.3
+
+1. Stop the hosts and the Scope Recall worker, and take a `backup`.
+2. Install the 3.4.4 package, then run `plan-install` and `apply-install` for each host.
+3. Start the hosts again and run `doctor`.
+
+The store's schema is unchanged (1110). Every change, with its details, is in [CHANGELOG.md](https://github.com/410979729/scope-recall-hermes/blob/v3.4.4/CHANGELOG.md).
+
 ## [3.4.3] - 2026-09-30
 
 3.4.3 keeps a long message's recall from stalling. For a long enough message the word search read every event of the conversation's audience one by one: on a copy of the shared store the word search for a Telegram message of 72 characters took 18-21 s, and its recall came back empty at every stage's deadline. In a sample of the owner's messages since 2026-09-16, 39 of the 92 over 80 characters on the five Hermes instances were planned that way. Nothing else changes.
