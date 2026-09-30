@@ -283,6 +283,33 @@ def test_P08_the_recent_channel_reads_the_pending_queue_not_every_consolidation(
     assert plans and plans[0].startswith("SEARCH w USING INDEX work_ready"), plans
 
 
+def test_P08_a_candidate_statement_past_the_deadline_is_interrupted(app, monkeypatch):
+    """A statement cannot see the recall's deadline: the lexical one ran 17-22 s for a long Telegram message on the
+    shared store (3.4.2), and the recall came back empty long after its deadline.  Past the deadline a candidate
+    statement is interrupted and the recall returns, saying so."""
+    import time as _time
+
+    from scope_recall.core import retrieval_storage
+
+    core, ctx = app
+    capture(core, ctx, "TEST 值班表明天换人。", key="TEST-p08/interrupt")
+
+    def slow(self, tx, context, *, limit):
+        tx._check().execute("WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n LIMIT 60000000) "
+                            "SELECT count(*) FROM n").fetchone()
+        return ()
+
+    monkeypatch.setattr(retrieval_storage.RetrievalStorage, "lexical", slow)
+    started = _time.monotonic()
+    result = core.recall(ctx, recall_request(query="TEST 值班表", mode="current"), deadline_seconds=0.5)
+    assert _time.monotonic() - started < 2.5
+    assert "deadline_exceeded_collect" in result.gaps
+    assert not [gap for gap in result.gaps if gap.startswith("sqlite_candidate_error")], result.gaps
+    # The interrupt ends with the statement: the next recall's statements run as before.
+    monkeypatch.undo()
+    assert core.recall(ctx, recall_request(query="TEST 值班表", mode="current"), deadline_seconds=5).items
+
+
 def test_P08_lexical_never_prunes_a_common_hard_identifier(app):
     """Hydration still requires the identifier, so SQL must still search for it.
 

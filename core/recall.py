@@ -3,6 +3,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from itertools import islice
+import sqlite3
 import time
 import unicodedata
 from typing import Protocol
@@ -56,6 +57,9 @@ CONTEXT_ONLY_WEIGHT = 0.6
 #: every old turn they had opened (review of 3.4.4); five is about six characters.  Of the owner's prompts over
 #: two weeks, 33 of the 115 with fewer had an exact older copy; of the owner's real questions, 167 of 173 have five.
 ECHO_TURN_MIN_TERMS = 5
+#: SQLite virtual-machine steps between two looks at the recall's deadline while a candidate statement runs:
+#: a fraction of a millisecond each, and nothing measurable on a statement that finishes in time.
+_INTERRUPT_STEPS = 10_000
 _CHANNELS = ("exact", "lexical", "claim", "recent", "vector")
 #: Vector admission reasons that are reported, and how; the rest are silent.
 _VECTOR_REJECTION_GAPS = {
@@ -238,6 +242,16 @@ class RetrievalPipeline:
             ("claim", getattr(self.storage_reader, "claims", None), CLAIM_CANDIDATES),
             ("recent", self.storage_reader.recent, context.limits.recent_items),
         )
+        # A statement cannot see the recall's deadline: with no planner statistics the lexical one ran 17-22 s for a
+        # long Telegram message (fixed in 3.4.3), and the recall came back empty long after its deadline.  Past the
+        # deadline a channel's statement is interrupted: that channel gives nothing, the gap says so, and what the
+        # channels before it found still answers.  Only here: interrupted while hydrating, a recall would lose what
+        # it had already found.
+        check = getattr(tx, "_check", None)
+        conn = check() if callable(check) else None
+        interruptible = callable(getattr(conn, "set_progress_handler", None))
+        if interruptible:
+            conn.set_progress_handler(lambda: 1 if self._remaining(context) <= 0 else 0, _INTERRUPT_STEPS)
         try:
             for channel, loader, limit in channels:
                 if loader is None:
@@ -253,8 +267,16 @@ class RetrievalPipeline:
                 raw.extend(values)
         except ContractError:
             raise
+        except sqlite3.OperationalError as exc:
+            if interruptible and self._remaining(context) <= 0:
+                gaps.append("deadline_exceeded_collect")
+                return admitted()
+            gaps.append(f"sqlite_candidate_error:{type(exc).__name__}")
         except Exception as exc:
             gaps.append(f"sqlite_candidate_error:{type(exc).__name__}")
+        finally:
+            if interruptible:
+                conn.set_progress_handler(None, 0)
         if self._remaining(context) <= 0:
             gaps.append("deadline_exceeded_collect")
             return admitted()
