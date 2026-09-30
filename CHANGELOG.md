@@ -2,6 +2,24 @@
 
 All notable changes to `scope-recall` will be documented in this file.
 
+## [3.4.8] - 2026-09-30
+
+3.4.8 answers a question about what was said or done on a day, or by one entry of the shared store on a day, from that day's conversation. Any other message is recalled as on 3.4.7.
+
+### Recall
+
+- A message that names a day ("9月29日", "2026-09-29", "昨天", "昨晚"; one to three days) and otherwise only asks or requests what was said or done then ("聊了什么", "帮我看看做了哪些工作", "总结一下", "有什么进展", "what did we do yesterday") is answered from that day: the messages sent to the agents and the replies they showed, in the asker's audience, spread across the whole day, several named days taking turns. A short message that only acknowledges ("继续", "好的，继续吧", "按你说的做") is left out. When the message also names an entry of the shared store ("9月29日工作机 Claude Code 聊了什么"), only that entry's messages. Searched by its words alone, the date and the entry's name matched nothing useful: on a copy of the shared store, of 106 such questions (every entry and day of 09-16 to 09-29 with at least three messages of the owner, asked two ways), 4 found a message of the named entry from the named day. Now 106 do when asked from Claude Code and 104 when asked from yuheng (the rest are outside yuheng's audience), and 99% and 97% of what is delivered is from that entry and day. In seven more wordings of the same 53 entry-days, 371 of 371 and 364 of 371 do, against 16 on 3.4.7. The day questions were measured by words alone.
+- Any other message that names a day is recalled exactly as if it named none: a question about a subject ("9月2日发布的 3.4.2 修了什么", "继续昨天的任务"), which lost the answer said on another day, the current task or the claim that answered it; a question about what to do ("今天做什么") or where the work stopped ("昨天聊到哪了"), which the current task answers; a message that only mentions a day ("今天在吗"); a range of days ("9月28日到30日"), more than three, a day still to come, a placeholder date such as 9999-12-31; a message of more than 512 characters. Every recall of the owner's real questions and of two agents' older question sets answers exactly as on 3.4.7 by words alone; none of the 428 is read as a day question, so with vectors on they are answered as on 3.4.7 too. A time of day is not used: "昨天下午3点聊了什么" is answered from the whole day.
+- A day is the calendar day in the zone the host tells its model, the zone the recalled times are shown in: Hermes's `timezone` setting (else the machine's); for Codex and Claude Code, the machine's, with that day's daylight-saving offset; for a remote entry, the serving machine's.
+
+### Upgrading from 3.4.7
+
+1. Stop the hosts and the Scope Recall worker, and take a `backup`.
+2. Install the 3.4.8 package, then run `plan-install` and `apply-install` for each host.
+3. Start the hosts again and run `doctor`.
+
+The store's schema is unchanged (1110). Every change, with its details, is in [CHANGELOG.md](https://github.com/410979729/scope-recall-hermes/blob/v3.4.8/CHANGELOG.md).
+
 ## [3.4.7] - 2026-09-30
 
 3.4.7 puts what a question was told the last time it was asked above the best candidate of that time in its automatic recall, and gives the vector threshold a shared store needs in the shipped embedding space. Nothing else changes.
