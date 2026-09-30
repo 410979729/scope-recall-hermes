@@ -199,12 +199,12 @@ evidence or admits nothing at all.
 
 On a shared store (`docs/shared-store.md`) in the shipped space, the accepted
 value admits too much: the store holds every entry's memories. Measured on a copy
-of a store of nine entries (2026-09-30, 3.4.5), at `0.653` two agents' sets of 20
-questions that have no answer were each given an unrelated memory for 12 of
-them, against 2 by words alone. The best memory the vector search offered such a
-question scored from 0.653 to 0.691, and the replies it found for the owner's
-questions asked again scored 0.722 or more. From `0.68` the questions with no
-answer were answered as by words alone. Over all 428 questions measured, `0.70`
+of a store of nine entries (2026-09-30, on 3.4.5), two agents' sets of 20
+questions that have no answer were each given an unrelated memory for 12 of them
+at `0.653`, and for 2 of them from `0.68` up, as by words alone. At `0.653` the
+best memory the vector search offered such a question scored from 0.653 to
+0.691 (an offer is not always delivered), and the replies it found for the
+owner's questions asked again scored 0.722 or more. Over all 428 questions measured, `0.70`
 answered 23 more than `0.653` and one fewer, and two more than `0.68` and one
 fewer; `0.72` answered four more than `0.70` and two fewer, one of them a fact
 an agent had been told. So on a shared store in the shipped space whose runtime

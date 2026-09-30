@@ -9,8 +9,8 @@ could share a store from 3.2.0; Codex and Claude Code join in 3.3.0. An agent th
 attached keeps its own store. A tool's output is still kept and found, but no longer turned
 into facts. The notes are the `[3.4.x]` sections of [CHANGELOG.md](CHANGELOG.md), newest first; upgrading
 from `3.4.x`, `3.3.x` or `3.2.x` is `pip install -U`, `apply-install` and a host restart, and the store's
-schema does not change; a shared store in the shipped embedding space also raises `vector_threshold`
-from 0.653 to 0.70 ([docs/configuration.md](docs/configuration.md#vector_threshold)). From `3.1.x` the store moves to schema 1110 the first time it is opened,
+schema does not change; on a shared store in the shipped embedding space, set `vector_threshold`
+from 0.653 to 0.70 by hand ([docs/configuration.md](docs/configuration.md#vector_threshold)). From `3.1.x` the store moves to schema 1110 the first time it is opened,
 after which a 3.1 process cannot open it.
 3.1 is a rebuild rather than a patch on 2.0: production
 code went from 141,044 lines to 48,289, memory now accumulates evidence before a
