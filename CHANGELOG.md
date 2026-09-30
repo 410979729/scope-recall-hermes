@@ -2,6 +2,28 @@
 
 All notable changes to `scope-recall` will be documented in this file.
 
+## [3.4.7] - 2026-09-30
+
+3.4.7 puts what a question was told the last time it was asked at the top of its automatic recall, and gives the vector threshold a shared store needs in the shipped embedding space. Nothing else changes.
+
+### Recall
+
+- A question asked again word for word leads to the replies its earlier copies received (3.4.4), and they came at a first rank's fixed score, below every candidate two channels agree on, as most are once vectors are on. The automatic recall now raises the last copy's turn above the best candidate said up to that turn: the replies of that turn a search channel found, then the turn's last reply. Only the last copy's turn is raised, so an answer that changed since is not put beside the one that replaced it; only those replies, since an agent's turn opens with what it is about to do; and what was said after that turn keeps its place above them, as it may say the answer changed. Tool recall is unchanged.
+- On a copy of the shared store, the owner's 173 real questions asked again get their answer in the top five for 146 instead of 124 by words alone, and for 142 instead of 99 with vectors on at 0.70. By words alone 24 are gained and 2 lost: in both, the reply the benchmark counts as the answer, the first long reply of the turn, stands below the two raised replies of the same turn, once sixth instead of fifth and once left out of the packet. With vectors on, over all 428 questions measured, 43 are gained and none is lost. Facts, rephrased questions, questions with no answer and two agents' older question sets are answered as before either way.
+
+### Configuration
+
+- `vector_threshold` on a shared store in the shipped embedding space: 0.70, where the configs hold the accepted 0.653. On a copy of the shared store of nine entries, at 0.653, two agents' sets of 20 questions that have no answer were each given an unrelated memory for 12 of them (2 by words alone). From 0.68 they are answered as by words alone. Over the 428 questions, 0.70 answers 23 more than 0.653 and one fewer, and 0.72 loses a fact an agent had been told. A store in another space, or with a threshold calibrated on it, keeps its own. See `docs/configuration.md`.
+
+### Upgrading from 3.4.6
+
+1. Stop the hosts and the Scope Recall worker, and take a `backup`.
+2. Install the 3.4.7 package, then run `plan-install` and `apply-install` for each host.
+3. On a shared store in the shipped embedding space whose runtime configs hold `vector_threshold` 0.653, set 0.70 in each entry's runtime config.
+4. Start the hosts again and run `doctor`.
+
+The store's schema is unchanged (1110). Every change, with its details, is in [CHANGELOG.md](https://github.com/410979729/scope-recall-hermes/blob/v3.4.7/CHANGELOG.md).
+
 ## [3.4.6] - 2026-09-30
 
 3.4.6 stops a message being lost when another message under the same key still waits in the capture inbox, as Codex's messages sent into a running turn were, and keeps such a message when the other one is deleted. Nothing else changes.

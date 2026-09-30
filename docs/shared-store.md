@@ -63,7 +63,9 @@ with one also gives the shared worker its routes, and its spend ledger moves to 
 directory. Every later entry must use the same embedding model as the worker: a
 query vector from another model searches a directory the worker never fills, so `attach`
 refuses with `embedding_space_differs`. An entry attached without a runtime config recalls
-lexically only (`vector_recall_unavailable`).
+lexically only (`vector_recall_unavailable`). The entry keeps the `vector_threshold` of the
+config it was attached from; in the shipped embedding space a shared store needs `0.70`
+([configuration.md](configuration.md#vector_threshold)).
 
 Then give the shared worker its credentials in `<root>\.env` and register it once, with an
 interpreter that has the same package version as every entry:
