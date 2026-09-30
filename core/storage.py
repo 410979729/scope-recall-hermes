@@ -641,8 +641,10 @@ class Transaction:
         scope_marks = ",".join("?" for _ in scopes)
         current = "" if history else "AND NOT EXISTS (SELECT 1 FROM source_events newer WHERE newer.source_group_key=e.source_group_key AND newer.source_revision>e.source_revision)"
         suppression = "AND e.suppressed=0 AND NOT EXISTS(SELECT 1 FROM object_blocks b WHERE b.object_kind='event' AND b.object_ref=e.event_id AND b.suppressed=1)" if automatic else ""
+        # ``+`` keeps the scope filter from choosing an index: the statement starts from the terms however many
+        # there are (as the lexical channel's does, retrieval_storage.lexical).
         rows = conn.execute(f"""SELECT e.event_id,e.source_revision,count(*) AS hits FROM {lexical_index.JOIN}
-            WHERE t.term IN ({term_marks}) AND e.scope_id IN ({scope_marks}) AND e.read_blocked=0
+            WHERE t.term IN ({term_marks}) AND +e.scope_id IN ({scope_marks}) AND e.read_blocked=0
             AND (e.project_id IS NULL OR e.project_id=?) AND (e.branch_id IS NULL OR e.branch_id=?)
             AND NOT EXISTS(SELECT 1 FROM object_blocks b WHERE b.object_kind='event' AND b.object_ref=e.event_id AND b.read_blocked=1)
             {current} {suppression}

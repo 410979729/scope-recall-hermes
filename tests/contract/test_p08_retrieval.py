@@ -246,6 +246,43 @@ def test_P08_the_lexical_statement_starts_from_the_query_s_terms_however_many_th
     assert found[4] and found[12], found
 
 
+def test_P08_the_recent_channel_reads_the_pending_queue_not_every_consolidation(app, monkeypatch):
+    """The recent channel offers this session's messages still waiting to be consolidated.  With no planner
+    statistics SQLite read every consolidate item by its work type, done ones included, which the queue keeps (3,070
+    on the shared store and growing), or with one scope every event of it.  It starts from the pending rows."""
+    import time as _time
+
+    from scope_recall.core import retrieval_storage
+    from scope_recall.core.retrieval import SearchContext
+
+    core, ctx = app
+    waiting = capture(core, ctx, "TEST 值班表明天换人。", key="TEST-p08/recent/waiting")
+    done = capture(core, ctx, "TEST 值班表上周换过。", key="TEST-p08/recent/done")
+    with core.storage.write(ctx, remaining_seconds=10) as tx:
+        for source in (waiting, done):
+            tx.enqueue_source(source.ref, source.revision, work_type="consolidate", available_at=core.clock.utc_now())
+        tx._check().execute("UPDATE work_items SET state='done' WHERE subject_ref=?", (done.ref,))
+    plans = []
+
+    class Planned:
+        def __init__(self, conn):
+            self._conn = conn
+
+        def execute(self, sql, params=()):
+            if "JOIN work_items w" in sql:
+                plans.append(self._conn.execute("EXPLAIN QUERY PLAN " + sql, params).fetchall()[0][3])
+            return self._conn.execute(sql, params)
+
+    context = SearchContext.from_request(recall_request(query="TEST 值班表", mode="current"), ctx,
+                                         now=core.clock.utc_now(), deadline=_time.monotonic() + 30)
+    with core.storage.read(ctx) as tx:
+        check = tx._check
+        monkeypatch.setattr(tx, "_check", lambda: Planned(check()))
+        found = [candidate.ref for candidate in retrieval_storage.RetrievalStorage().recent(tx, context, limit=8)]
+    assert found == [waiting.ref]
+    assert plans and plans[0].startswith("SEARCH w USING INDEX work_ready"), plans
+
+
 def test_P08_lexical_never_prunes_a_common_hard_identifier(app):
     """Hydration still requires the identifier, so SQL must still search for it.
 

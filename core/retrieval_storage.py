@@ -597,12 +597,16 @@ class RetrievalStorage:
         trusted = context.trusted_context
         scopes = tuple(sorted(trusted.allowed_scope_ids))
         excluded = set(context.current_source_refs)
+        # From the queue's pending rows (``work_ready``), never from every consolidation ever made: done items are
+        # kept, and with no planner statistics SQLite read all of them by their work type (3,070 on the shared store,
+        # growing with every consolidation) or, with one scope, every event of it.  ``+`` keeps those filters from
+        # choosing an index; the rows are the same.
         rows = tx._check().execute(
             f"""SELECT e.event_id,e.source_revision,e.content,e.recorded_at
                 FROM source_events e JOIN work_items w
                 ON w.subject_ref=e.event_id AND w.subject_revision=e.source_revision
-                WHERE w.work_type='consolidate' AND w.state IN ('pending','leased')
-                  AND e.session_id=? AND e.scope_id IN ({_marks(scopes)})
+                WHERE +w.work_type='consolidate' AND w.state IN ('pending','leased')
+                  AND e.session_id=? AND +e.scope_id IN ({_marks(scopes)})
                   AND (e.project_id IS NULL OR e.project_id=?)
                   AND (e.branch_id IS NULL OR e.branch_id=?)
                   AND e.read_blocked=0 AND e.suppressed=0
