@@ -17,7 +17,7 @@ from .events import lexical_terms
 from .recall_budget import estimate_tokens, event_admission_order
 from .recall_needs import CHOICE_MARKERS, directed_followup_query, evidence_roots, mentions, unmet_needs
 from .recall_policy import RecallPolicy, asks_without_answering, identifiers_compatible, meaningful_query_terms, rrf_score
-from .recall_scope import names_a_subject, query_scope
+from .recall_scope import asks_what_was_said, query_scope
 from .retrieval import (
     CandidateRef,
     CollectionQuery,
@@ -101,7 +101,9 @@ class ChannelBudget:
         self.reserve = dict.fromkeys(_CHANNELS, 0)
 
     def hold(self, future_rounds: int) -> None:
-        self.reserve = {channel: min(future_rounds, self.left[channel]) for channel in _CHANNELS}
+        # A follow-up round never reads the day a question names (``RetrievalPipeline._collect_rounds``).
+        self.reserve = {channel: 0 if channel == "scoped" else min(future_rounds, self.left[channel])
+                        for channel in _CHANNELS}
 
     def allowance(self, channel: str, limit: int) -> int:
         free_total = self.total - sum(self.reserve.values())
@@ -329,9 +331,10 @@ class RetrievalPipeline:
                 if echoes is not None:
                     echoes.append(candidate)
                 return None
-        # A scoped message was chosen by its day and entry, which the question named: an entry's name ("pc2") is
-        # not an identifier its messages must repeat.
-        if candidate.source not in {"exact_ref", "scoped"} and not identifiers_compatible(context.query, obj.content):
+        # A question read in its day names no subject: an identifier in it is the entry's name ("pc2"), which no
+        # message of that entry, found by any channel, has to repeat.
+        asked = context.scope.rest if context.scope is not None else context.query
+        if candidate.source != "exact_ref" and not identifiers_compatible(asked, obj.content):
             return None
         # An episode whose resume was never consolidated carries nothing but its
         # own state: `{"state": "unknown"}` fills a packet slot and answers
@@ -575,7 +578,7 @@ class RetrievalPipeline:
         try:
             with self.storage.read(working.trusted_context, remaining_seconds=max(self._remaining(working), 0.001)) as tx:
                 epoch = self.storage_reader.epoch(tx)
-                working = self._scoped(tx, working)
+                working = self._scoped(tx, working, gaps)
                 echoes: list[CandidateRef] = []
                 hydrated, seed_count = self._collect_rounds(tx, working, gaps, prefetched=prefetched, echoes=echoes)
                 if len(meaningful_query_terms(working.query)) < ECHO_TURN_MIN_TERMS:
@@ -591,18 +594,26 @@ class RetrievalPipeline:
             return _empty_result(working, f"sqlite_unavailable:{type(exc).__name__}")
 
     @staticmethod
-    def _scoped(tx, working: SearchContext) -> SearchContext:
+    def _scoped(tx, working: SearchContext, gaps: list[str]) -> SearchContext:
         """The context with the days and entries its question names (``recall_scope``) when it names a day and asks
-        only what was said or done then; any other question has no scope."""
+        only what was said or done then; any other question has no scope.
+
+        Reading the scope never fails a recall: a question it cannot read is recalled as if it named no day, and the
+        gap says so.  A prompt grown past the search's length by normalisation emptied the whole recall (review of
+        3.4.6).
+        """
         scope = None
-        if query_scope(working.query, now=working.now, zone=working.zone, entries={}) is not None:
-            entries = getattr(tx, "entries", None)
-            names = ({entry_id: str(value.get("name") or entry_id) for entry_id, value in entries().items()}
-                     if callable(entries) else {})
-            scope = query_scope(working.query, now=working.now, zone=working.zone, entries=names)
-            # A subject beside the day is answered as if no day were named (``recall_scope``).
-            if scope is not None and any(map(names_a_subject, meaningful_query_terms(scope.rest))):
-                scope = None
+        try:
+            if query_scope(working.query, now=working.now, zone=working.zone, entries={}) is not None:
+                entries = getattr(tx, "entries", None)
+                names = ({entry_id: str(value.get("name") or entry_id) for entry_id, value in entries().items()}
+                         if callable(entries) else {})
+                scope = query_scope(working.query, now=working.now, zone=working.zone, entries=names)
+                if scope is not None and not asks_what_was_said(scope.rest, meaningful_query_terms(scope.rest)):
+                    scope = None
+        except Exception as exc:
+            gaps.append(f"scope_unreadable:{type(exc).__name__}")
+            scope = None
         return working if working.scope == scope else replace(working, scope=scope)
 
     def _collect_rounds(self, tx, working: SearchContext, gaps: list[str], *, prefetched=None,

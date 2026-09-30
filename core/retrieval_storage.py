@@ -23,6 +23,7 @@ from .delete_storage import canonical, retraction_after
 from .episodes import source_origin
 from . import lexical_index, lineage
 from .events import lexical_terms
+from .recall_scope import says_something
 from .recall_policy import (
     applicability,
     claim_embedding_text,
@@ -430,8 +431,27 @@ TURN_REPLY_LIMIT = 3
 _SCOPED_SCAN_ROWS = 2000
 #: Characters of a scoped message an automatic packet (4,096 units, six items) can still deliver beside others.
 _SCOPED_ITEM_CHARS = 600
-#: Characters below which a message says nothing of its day: "继续", "好的", "收到", "继续执行".
-_SCOPED_MIN_CHARS = 5
+#: Characters up to which a message is read for whether it says anything of its day (``recall_scope.says_something``):
+#: "继续", "好的，继续吧", "OK 继续执行" and "按你说的做" do not, and on a day of long prompts they filled the packet.
+_SCOPED_SHORT_CHARS = 20
+
+
+def _shares(counts: list[int], limit: int) -> list[int]:
+    """``limit`` slots split evenly between days holding ``counts`` messages, a day with fewer handing the rest on."""
+    shares = [0] * len(counts)
+    left = limit
+    open_days = [index for index, count in enumerate(counts) if count]
+    while left > 0 and open_days:
+        each = max(1, left // len(open_days))
+        for index in list(open_days):
+            given = min(each, counts[index] - shares[index], left)
+            shares[index] += given
+            left -= given
+            if shares[index] >= counts[index]:
+                open_days.remove(index)
+            if left <= 0:
+                break
+    return shares
 
 
 class RetrievalStorage:
@@ -608,7 +628,9 @@ class RetrievalStorage:
         The person's own messages and the replies they were shown, in the question's audience, from the named days
         (and entries), spread evenly across each day so it is seen whole rather than its last hour: the person's
         messages of a length a packet can deliver beside others first, then their longer ones, then the replies.
-        A message too short to say anything ("继续", "好的") is not offered.  Only lengths are read here.
+        A short message that says nothing ("继续", "好的，继续吧") is not offered.  The days share the slots evenly,
+        a day with fewer messages handing the rest on, and take turns in the order offered, so the first-named day
+        does not fill the packet.  Only lengths are read, and the text of short messages.
         """
         scope = context.scope
         if scope is None or limit <= 0:
@@ -623,7 +645,8 @@ class RetrievalStorage:
         # One statement a day, so each reads the (scope, time) index for its own window.
         for start, end in scope.windows:
             rows = tx._check().execute(
-                f"""SELECT e.event_id,e.source_revision,e.role,length(e.content) AS size FROM source_events e
+                f"""SELECT e.event_id,e.source_revision,e.role,length(e.content) AS size,
+                           CASE WHEN length(e.content)<=? THEN e.content END AS short FROM source_events e
                     WHERE e.scope_id IN ({_marks(scopes)}) AND e.occurred_at>=? AND e.occurred_at<? {entries}
                       AND e.role IN ('user','assistant')
                       AND (e.origin IN ('human_direct','assistant_visible') OR (e.origin='imported'
@@ -635,23 +658,28 @@ class RetrievalStorage:
                           AND b.object_ref=e.event_id AND (b.read_blocked=1 OR b.suppressed=1))
                       {current} {as_of}
                     ORDER BY e.occurred_at,e.rowid LIMIT ?""",
-                (*scopes, start, end, *scope.entry_ids, trusted.project_id, trusted.branch_id,
+                (_SCOPED_SHORT_CHARS, *scopes, start, end, *scope.entry_ids, trusted.project_id, trusted.branch_id,
                  *((context.as_of,) if as_of else ()), _SCOPED_SCAN_ROWS),
             ).fetchall()
-            days.append([row for row in rows if _source_key(row["event_id"], row["source_revision"]) not in excluded])
-        chosen: list = []
-        # A message longer than an automatic packet can hold beside others is left out of it whole (the compiler never
-        # slices content), and on the coding clients' days most messages are: offered first, they were dropped and
-        # other days' short items delivered instead.
-        for role, fits in (("user", True), ("user", False), ("assistant", True)):
-            for rows in days:
-                tier = [row for row in rows if row["role"] == role and row["size"] >= _SCOPED_MIN_CHARS
-                        and (row["size"] <= _SCOPED_ITEM_CHARS) is fits]
-                room = min(limit - len(chosen), -(-limit // len(days)))
-                if room <= 0 or not tier:
-                    continue
+            rows = [row for row in rows if _source_key(row["event_id"], row["source_revision"]) not in excluded
+                    and (row["short"] is None or says_something(lexical_terms(row["short"])))]
+            # A message longer than an automatic packet can hold beside others is left out of it whole (the compiler
+            # never slices content), and on the coding clients' days most messages are: offered first, they were
+            # dropped and other days' short items delivered instead.
+            days.append([[row for row in rows if row["role"] == "user" and row["size"] <= _SCOPED_ITEM_CHARS],
+                         [row for row in rows if row["role"] == "user" and row["size"] > _SCOPED_ITEM_CHARS],
+                         [row for row in rows if row["role"] == "assistant" and row["size"] <= _SCOPED_ITEM_CHARS]])
+        picks = []
+        for tiers, share in zip(days, _shares([sum(map(len, tiers)) for tiers in days], limit)):
+            day: list = []
+            for tier in tiers:
+                room = share - len(day)
+                if room <= 0:
+                    break
                 step = max(1.0, len(tier) / room)
-                chosen.extend(tier[int(position * step)] for position in range(min(room, len(tier))))
+                day.extend(tier[int(position * step)] for position in range(min(room, len(tier))))
+            picks.append(day)
+        chosen = [day[turn] for turn in range(max(map(len, picks), default=0)) for day in picks if turn < len(day)]
         return tuple(CandidateRef("event", row["event_id"], row["source_revision"], "scoped", rank=index)
                      for index, row in enumerate(chosen[:limit], 1))
 
