@@ -649,7 +649,7 @@ class RetrievalPipeline:
         if self._remaining(working) <= 0:
             gaps.append("deadline_exceeded_relation")
             return
-        read = latest_turn(tx, echoes)
+        read = latest_turn(tx, echoes, now=working.now)
         if read is None:
             return
         opened, replies, ended = read

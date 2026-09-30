@@ -632,15 +632,15 @@ class RetrievalStorage:
         opening = self._opening(conn, candidate)
         return self._turn(conn, *opening, limit=TURN_REPLY_LIMIT)[0] if opening is not None else ()
 
-    def latest_turn(self, tx, candidates) -> tuple[str, tuple[CandidateRef, ...], bool] | None:
+    def latest_turn(self, tx, candidates, *, now: str) -> tuple[str, tuple[CandidateRef, ...], bool] | None:
         """Of the turns the person's messages ``candidates`` opened, the latest that received a reply: when it opened
-        (UTC, ``canonical_time``), its replies, and whether they were read to the turn's end.  The openings are read
-        first and the turns newest first, so older copies of a question cost one look-up each; equal times fall back
-        to capture order."""
+        (UTC, ``canonical_time``), its replies, and whether they were read to the turn's end by ``now``.  The openings
+        are read first and the turns newest first, so older copies of a question cost one look-up each; equal times
+        fall back to capture order."""
         conn = tx._check()
         openings = [opening for candidate in candidates if (opening := self._opening(conn, candidate)) is not None]
         for row, opened in sorted(openings, key=lambda opening: (opening[1], opening[0]["rowid"]), reverse=True):
-            replies, ended = self._turn(conn, row, opened)
+            replies, ended = self._turn(conn, row, opened, now=now)
             if replies:
                 return opened, replies, ended
         return None
@@ -661,9 +661,10 @@ class RetrievalStorage:
         return (row, opened) if opened is not None else None
 
     @staticmethod
-    def _turn(conn, row, opened: str, *, limit: int | None = None) -> tuple[tuple[CandidateRef, ...], bool]:
-        """A turn's replies, at most ``limit`` of them, and whether they were read to its end (never, when cut at
-        ``limit``).
+    def _turn(conn, row, opened: str, *, limit: int | None = None,
+              now: str | None = None) -> tuple[tuple[CandidateRef, ...], bool]:
+        """A turn's replies, at most ``limit`` of them, and whether they were read to its end by ``now`` (never, when
+        cut at ``limit``, or with no reply or no ``now`` to judge by).
 
         Episode membership reaches a reply only through every event of its
         episode, in id order, so a recalled question used up the relation bound
@@ -673,9 +674,13 @@ class RetrievalStorage:
         and ``TURN_REPLY_SECONDS``.  A gateway can capture a whole turn under
         one timestamp, so equal times fall back to rowid.  The turn was read to
         its end when the person spoke again within them, or when the rows ran
-        out and what the session says next, if anything, is the person's: an
-        agent's turn of forty tool calls went past the 64 rows, and its last
-        reply read was not its answer (review of 3.4.7).
+        out, its window has closed, and what the session says in the window
+        after it, if anything, is the person's: an agent's turn of forty tool
+        calls went past the 64 rows, and its last reply read was not its answer
+        (review of 3.4.7), nor is the last of a turn still going on.  That look
+        is bounded to the next window, which the scope's time index reads in
+        order: unbounded, it read every later row of the scope (second review
+        of 3.4.7).
 
         The same message stored again is not the person speaking again.  Until
         3.4.4 a Hermes provider rebuilt with its agent stored a turn's message
@@ -703,12 +708,15 @@ class RetrievalStorage:
                                             rank=len(replies) + 1, lexical_score=1.0))
                 if limit is not None and len(replies) >= limit:
                     return tuple(replies), False
-        if limit is not None or len(rows) >= 64:
+        if limit is not None or len(rows) >= 64 or not replies or now is None or canonical_time(now) < canonical_time(
+                window_end):
             return tuple(replies), False
+        following = (datetime.fromisoformat(opened) + timedelta(seconds=2 * TURN_REPLY_SECONDS)).isoformat(
+            timespec="microseconds").replace("+00:00", "Z")
         after = conn.execute(
-            """SELECT role FROM source_events WHERE scope_id=? AND session_id=? AND occurred_at>?
-                 AND read_blocked=0 AND suppressed=0 ORDER BY occurred_at,rowid LIMIT 1""",
-            (row["scope_id"], row["session_id"], window_end),
+            """SELECT role FROM source_events WHERE scope_id=? AND occurred_at>? AND occurred_at<=? AND session_id=?
+                 AND read_blocked=0 AND suppressed=0 ORDER BY occurred_at LIMIT 1""",
+            (row["scope_id"], window_end, following, row["session_id"]),
         ).fetchone()
         return tuple(replies), after is None or after["role"] == "user"
 

@@ -199,6 +199,62 @@ def test_the_answer_goes_above_the_turn_s_own_narration_when_nothing_else_is_fou
     assert scores[answer.ref] > scores[narration[2].ref]
 
 
+def test_the_last_reply_of_a_turn_that_goes_on_is_not_raised(app):
+    """A turn whose rows ran out is whole only once its window has closed and what the session says next is the
+    person's, or nothing: the agent still working past the window, or a turn asked minutes ago, had its last narration
+    raised above the answer of an older copy (second review of 3.4.7)."""
+    core, ctx = app
+    copy, (step, last) = _turn(core, ctx, 2, ["正在处理第一部分。", "正在处理第二部分。"], tag="goes-on")
+    _say(core, ctx, "第三部分也处理完了，结果如下。", origin="assistant_visible", role="assistant",
+         when="2026-09-02T09:40:00Z", key="TEST-turn/goes-on-after")
+    recent, (narration,) = _say(core, ctx, ASK, origin="human_direct", role="user", when="2026-09-06T11:50:00Z",
+                                key="TEST-turn/goes-on-recent"), [
+        _say(core, ctx, "我先看一下 TEST 的记录。", origin="assistant_visible", role="assistant",
+             when="2026-09-06T11:50:10Z", key="TEST-turn/goes-on-recent-reply")]
+    fresh = _say(core, ctx, "TEST-project 的发布窗口本周不变。", origin="human_direct", role="user",
+                 when="2026-09-01T09:00:00Z", key="TEST-turn/goes-on-fresh")
+    for copies, tail in (((copy,), last), ((recent,), narration)):
+        _ranked, scores = _asked_again(core, ctx, [(fresh, (1, 1))], list(copies))
+        assert scores.get(tail.ref, 0.0) < scores[fresh.ref], tail
+
+
+def test_the_latest_copy_that_was_answered_is_raised_and_equal_times_go_by_capture(app):
+    """A newer copy that received no reply leads nowhere and the latest one answered is raised; of two copies asked
+    at the same moment, the one captured last (second review of 3.4.7)."""
+    core, ctx = app
+    answered, (told,) = _turn(core, ctx, 1, [TOLD], tag="answered")
+    unanswered = _say(core, ctx, ASK, origin="human_direct", role="user", when="2026-09-03T09:00:00Z",
+                      key="TEST-turn/unanswered-ask")
+    _say(core, ctx, "我们换个话题。", origin="human_direct", role="user", when="2026-09-03T09:01:00Z",
+         key="TEST-turn/unanswered-next")
+    fresh = _say(core, ctx, "TEST-project 的发布窗口本周不变。", origin="human_direct", role="user",
+                 when="2026-08-30T09:00:00Z", key="TEST-turn/unanswered-fresh")
+    ranked, _scores = _asked_again(core, ctx, [(fresh, (1, 1))], [answered, unanswered])
+    assert ranked[0] == told.ref
+    twin, (twin_told,) = _turn(core, ctx, 4, ["周六早上八点。"], tag="twin-a")
+    elsewhere = replace(ctx, session_id="TEST-turn-twin-b")
+    later = _say(core, elsewhere, ASK, origin="human_direct", role="user", when="2026-09-04T09:00:00Z",
+                 key="TEST-turn/twin-b-ask")
+    later_told = _say(core, elsewhere, "周日晚上九点。", origin="assistant_visible", role="assistant",
+                      when="2026-09-04T09:00:20Z", key="TEST-turn/twin-b-told")
+    ranked, _scores = _asked_again(core, ctx, [(fresh, (1, 1))], [twin, later])
+    assert ranked[0] == later_told.ref and twin_told.ref != ranked[0]
+
+
+def test_a_raise_out_of_time_says_so(app):
+    """The raise is skipped when the recall's time is up, and the gap says the relation step was cut."""
+    pipeline = app[0].recall_pipeline
+    core, ctx = app
+    copy, _replies = _turn(core, ctx, 2, [TOLD], tag="late")
+    context = SearchContext.from_request(recall_request(query=ASK, mode="auto", max_items=6), ctx,
+                                         now=core.clock.utc_now(), deadline=time.monotonic() - 1)
+    gaps: list[str] = []
+    with core.storage.read(ctx) as tx:
+        pipeline._raise_echo_turn(tx, context, [], (CandidateRef("event", copy.ref, copy.revision, "lexical", rank=1),),
+                                  gaps)
+    assert gaps == ["deadline_exceeded_relation"]
+
+
 def test_the_last_reply_of_a_turn_cut_by_the_window_is_not_raised(app):
     """A turn read only to its first 64 rows may go on: its last reply read was narration, raised above an answer a
     channel had found (review of its second version)."""
