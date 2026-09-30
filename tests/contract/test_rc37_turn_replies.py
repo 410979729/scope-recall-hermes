@@ -154,18 +154,81 @@ def test_a_reply_a_channel_found_in_that_turn_goes_first(app):
     assert scores[opening.ref] < scores[fresh.ref]
 
 
-def test_what_was_said_after_the_last_copy_keeps_its_place(app):
-    """An answer that changed after the question was last asked is not raised above what changed it: the best
-    candidate is taken among what was said up to that turn (review of its first version)."""
+def test_what_was_said_after_the_last_copy_is_not_outranked_by_the_raise(app):
+    """The raise goes above the best candidate said up to that turn, not above what was said after it: a newer
+    statement two channels found stays above the old answer, which still goes above an older one that outranked it
+    before (review of its first version)."""
     core, ctx = app
     copy, (told,) = _turn(core, ctx, 1, [TOLD], tag="stale")
     newer = _say(core, ctx, "TEST-project 的发布窗口改到周六早上八点了。", origin="human_direct", role="user",
                  when="2026-09-04T09:00:00Z", key="TEST-turn/stale-newer")
     older = _say(core, ctx, "值班表八月底排好了。", origin="human_direct", role="user",
                  when="2026-08-30T09:00:00Z", key="TEST-turn/stale-older")
-    ranked, scores = _asked_again(core, ctx, [(newer, (1, 1)), (older, (9,))], [copy])
+    ranked, scores = _asked_again(core, ctx, [(newer, (1, 1)), (older, (1,))], [copy])
     assert ranked[:3] == [newer.ref, told.ref, older.ref]
-    assert scores[told.ref] > scores[older.ref]
+    assert scores[older.ref] < scores[told.ref] < scores[newer.ref]
+
+
+def test_of_that_turn_at_most_half_the_packet_is_raised(app):
+    """An agent that narrates its work names the subject in every message, and a channel finds each: raising them all
+    filled the packet with the turn's narration, the answer and everything else left out (review of its second
+    version).  Of a six-item packet three are raised: the two replies a channel ranked highest, then the turn's last
+    reply; the rest keep their own places."""
+    core, ctx = app
+    copy, (*narration, answer) = _turn(core, ctx, 3, [
+        "好的，我来查一下 TEST-project 的发布窗口。", "TEST-project 的发布窗口写在配置里。", "正在核对 TEST-project 的发布窗口。",
+        "TEST-project 的发布窗口还有一处要看。", TOLD], tag="narrated")
+    fresh = _say(core, ctx, "TEST-project 的发布窗口本周不变。", origin="human_direct", role="user",
+                 when="2026-09-02T09:00:00Z", key="TEST-turn/narrated-fresh")
+    ranks = (3, 2, 4, 5)
+    ranked, scores = _asked_again(core, ctx, [(fresh, (1, 1)), *((reply, (rank,)) for reply, rank in zip(narration, ranks))],
+                                  [copy])
+    best_two = [narration[1].ref, narration[0].ref]
+    assert ranked[:4] == [*best_two, answer.ref, fresh.ref]
+    assert scores[narration[2].ref] < scores[fresh.ref] and scores[narration[3].ref] < scores[fresh.ref]
+
+
+def test_the_answer_goes_above_the_turn_s_own_narration_when_nothing_else_is_found(app):
+    """The turn's other replies are of its time: with nothing else found, the answer stayed below the turn's own
+    narration that a channel found and that was not raised (review of its second version)."""
+    core, ctx = app
+    copy, (*narration, answer) = _turn(core, ctx, 4, [
+        "好的，我来查一下 TEST-project 的发布窗口。", "TEST-project 的发布窗口写在配置里。", "正在核对 TEST-project 的发布窗口。", TOLD],
+        tag="alone")
+    _ranked, scores = _asked_again(core, ctx, [(reply, (rank,)) for reply, rank in zip(narration, (1, 2, 3))], [copy])
+    assert scores[answer.ref] > scores[narration[2].ref]
+
+
+def test_the_last_reply_of_a_turn_cut_by_the_window_is_not_raised(app):
+    """A turn read only to its first 64 rows may go on: its last reply read was narration, raised above an answer a
+    channel had found (review of its second version)."""
+    core, ctx = app
+    copy = _say(core, ctx, ASK, origin="human_direct", role="user", when="2026-09-02T09:00:00Z", key="TEST-turn/cut-ask")
+    steps = [_say(core, ctx, f"第{step}步处理中。", origin="assistant_visible", role="assistant",
+                  when=f"2026-09-02T09:{step // 6:02d}:{step % 6 * 10:02d}Z", key=f"TEST-turn/cut-{step}")
+             for step in range(1, 71)]
+    fresh = _say(core, ctx, "TEST-project 的发布窗口本周不变。", origin="human_direct", role="user",
+                 when="2026-09-01T09:00:00Z", key="TEST-turn/cut-fresh")
+    _ranked, scores = _asked_again(core, ctx, [(fresh, (1, 1))], [copy])
+    assert all(scores.get(step.ref, 0.0) < scores[fresh.ref] for step in steps)
+
+
+def test_the_packet_leads_with_what_the_question_was_told(app):
+    """Through the channels: an older copy of the question is found and set aside, and the last reply of its turn,
+    which shares no word with the question, comes among the first three of the automatic packet, whose other items
+    are not all of that turn."""
+    core, ctx = app
+    _copy, replies = _turn(core, ctx, 2, [
+        "好的，我来查一下 TEST-project 的发布窗口。", "TEST-project 的发布窗口写在配置里。", "正在核对 TEST-project 的发布窗口。",
+        "TEST-project 的发布窗口还有一处要看。", TOLD], tag="packet")
+    others = [_say(core, ctx, text, origin="human_direct", role="user", when=f"2026-09-01T0{index}:00:00Z",
+                   key=f"TEST-turn/packet-other-{index}")
+              for index, text in enumerate(("TEST-project 的发布窗口本周不变。", "TEST-project 发布窗口的值班表已排好。",
+                                            "TEST-project 的发布窗口要提前通知客户。"))]
+    reader = replace(ctx, session_id="TEST-turn-packet-reader")
+    refs = [item["ref"] for item in _packet(core, reader, ASK, mode="auto")["items"]]
+    assert TOLD in [core.source(ctx, ref, 1).event["content"] for ref in refs[:3]]
+    assert any(other.ref in refs for other in others)
 
 
 def test_a_short_command_sent_again_does_not_bring_back_an_old_turn(app):

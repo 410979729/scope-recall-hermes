@@ -627,31 +627,29 @@ class RetrievalStorage:
 
     def turn_replies(self, tx, candidate: CandidateRef) -> tuple[CandidateRef, ...]:
         """What the assistant said back in the turn a person's message opened: the first ``TURN_REPLY_LIMIT`` of the
-        turn's replies (``turn``)."""
-        turn = self.turn(tx, candidate)
-        return turn[1][:TURN_REPLY_LIMIT] if turn is not None else ()
+        turn's replies (``_turn``)."""
+        conn = tx._check()
+        opening = self._opening(conn, candidate)
+        return self._turn(conn, *opening, limit=TURN_REPLY_LIMIT)[0] if opening is not None else ()
 
-    def turn(self, tx, candidate: CandidateRef) -> tuple[str, tuple[CandidateRef, ...]] | None:
-        """When a person's message opened its turn (UTC, ``canonical_time``), and every reply of that turn; None for
-        anything that opens no turn.
+    def latest_turn(self, tx, candidates) -> tuple[str, tuple[CandidateRef, ...], bool] | None:
+        """Of the turns the person's messages ``candidates`` opened, the latest that received a reply: when it opened
+        (UTC, ``canonical_time``), its replies, and whether they were read to the turn's end.  The openings are read
+        first and the turns newest first, so older copies of a question cost one look-up each; equal times fall back
+        to capture order."""
+        conn = tx._check()
+        openings = [opening for candidate in candidates if (opening := self._opening(conn, candidate)) is not None]
+        for row, opened in sorted(openings, key=lambda opening: (opening[1], opening[0]["rowid"]), reverse=True):
+            replies, ended = self._turn(conn, row, opened)
+            if replies:
+                return opened, replies, ended
+        return None
 
-        Episode membership reaches a reply only through every event of its
-        episode, in id order, so a recalled question used up the relation bound
-        long before its own answer.  A turn's replies are the assistant's
-        visible messages in the same scope and session after the message, in
-        capture order, until the person speaks again, within the first 64 rows.
-        A gateway can capture a whole turn under one timestamp, so equal times
-        fall back to rowid.
-
-        The same message stored again is not the person speaking again.  Until
-        3.4.4 a Hermes provider rebuilt with its agent stored a turn's message
-        a second time, with the reply, under the host's ordinal: 125 of the 209
-        Hermes turns of 2026-09-16..29 that seemed to have no reply were that,
-        and the first copy stopped at the second before reaching the answer.
-        """
+    @staticmethod
+    def _opening(conn, candidate: CandidateRef):
+        """The row of a person's message that opens a turn, and when (``canonical_time``); None for anything else."""
         if candidate.kind != "event":
             return None
-        conn = tx._check()
         row = conn.execute(
             """SELECT rowid,scope_id,session_id,role,origin,occurred_at,content_sha256 FROM source_events
                WHERE event_id=? AND source_revision=?""",
@@ -660,8 +658,31 @@ class RetrievalStorage:
         if row is None or row["role"] != "user" or row["origin"] != "human_direct" or not row["occurred_at"]:
             return None
         opened = canonical_time(row["occurred_at"])
-        if opened is None:
-            return None
+        return (row, opened) if opened is not None else None
+
+    @staticmethod
+    def _turn(conn, row, opened: str, *, limit: int | None = None) -> tuple[tuple[CandidateRef, ...], bool]:
+        """A turn's replies, at most ``limit`` of them, and whether they were read to its end (never, when cut at
+        ``limit``).
+
+        Episode membership reaches a reply only through every event of its
+        episode, in id order, so a recalled question used up the relation bound
+        long before its own answer.  A turn's replies are the assistant's
+        visible messages in the same scope and session after the message, in
+        capture order, until the person speaks again, within the first 64 rows
+        and ``TURN_REPLY_SECONDS``.  A gateway can capture a whole turn under
+        one timestamp, so equal times fall back to rowid.  The turn was read to
+        its end when the person spoke again within them, or when the rows ran
+        out and what the session says next, if anything, is the person's: an
+        agent's turn of forty tool calls went past the 64 rows, and its last
+        reply read was not its answer (review of 3.4.7).
+
+        The same message stored again is not the person speaking again.  Until
+        3.4.4 a Hermes provider rebuilt with its agent stored a turn's message
+        a second time, with the reply, under the host's ordinal: 125 of the 209
+        Hermes turns of 2026-09-16..29 that seemed to have no reply were that,
+        and the first copy stopped at the second before reaching the answer.
+        """
         window_end = (datetime.fromisoformat(opened) + timedelta(seconds=TURN_REPLY_SECONDS)).isoformat(
             timespec="microseconds").replace("+00:00", "Z")
         rows = conn.execute(
@@ -676,11 +697,20 @@ class RetrievalStorage:
             if reply["role"] == "user":
                 if reply["origin"] == "human_direct" and reply["content_sha256"] == row["content_sha256"]:
                     continue
-                break
+                return tuple(replies), True
             if reply["role"] == "assistant" and reply["origin"] == "assistant_visible":
                 replies.append(CandidateRef("event", reply["event_id"], int(reply["source_revision"]), "relation",
                                             rank=len(replies) + 1, lexical_score=1.0))
-        return opened, tuple(replies)
+                if limit is not None and len(replies) >= limit:
+                    return tuple(replies), False
+        if limit is not None or len(rows) >= 64:
+            return tuple(replies), False
+        after = conn.execute(
+            """SELECT role FROM source_events WHERE scope_id=? AND session_id=? AND occurred_at>?
+                 AND read_blocked=0 AND suppressed=0 ORDER BY occurred_at,rowid LIMIT 1""",
+            (row["scope_id"], row["session_id"], window_end),
+        ).fetchone()
+        return tuple(replies), after is None or after["role"] == "user"
 
     def related(self, tx, candidate: CandidateRef, *, limit: int) -> tuple[CandidateRef, ...]:
         rows = lineage.related(tx._check(), candidate.kind, candidate.ref, limit=limit)

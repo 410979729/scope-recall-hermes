@@ -622,38 +622,50 @@ class RetrievalPipeline:
                     if candidate.key not in known]
         floor = min(working.limits.max_items, MINIMUM_HYDRATION_CAP)
         self._hydrate_all(tx, hydrated, expanded, working, gaps, floor=floor)
-        self._raise_echo_turn(tx, working, hydrated, echoes)
+        self._raise_echo_turn(tx, working, hydrated, echoes, gaps)
 
     def _raise_echo_turn(self, tx, working: SearchContext, hydrated: list[tuple[CandidateRef, RetrievedObject]],
-                         echoes: tuple[CandidateRef, ...]) -> None:
+                         echoes: tuple[CandidateRef, ...], gaps: list[str]) -> None:
         """What the same question was told the last time it was asked goes before the best candidate of its time.
 
         Reached as any seed's turn is, at a first rank's fixed score, it fell below every candidate two channels agreed
         on: with vectors on, the owner's questions asked again lost about 25 of 124 answers (the threshold sweep of
         2026-09-30).  Only the latest copy's turn is raised, so an answer that changed since is not raised beside the
-        one that replaced it, and of that turn only the replies a channel found, which say what was asked, and its last
-        reply, which answers it: an agent's turn opens with what it is about to do, and raising every reply let an old
-        turn's first messages fill the packet (review of its first version).  The best candidate is taken among what
-        was said up to that turn; anything said after it may say the answer changed, and keeps its place.
+        one that replaced it.  Of that turn at most half the packet is: the replies a channel ranked highest, which say
+        what was asked, then the turn's last reply, which answers it, when the turn was read to its end.  An agent's
+        turn opens with what it is about to do, and raising every reply let an old turn's first messages fill the
+        packet, as raising every reply a channel found let its narration of the subject do (reviews of its first and
+        second versions); the last reply read of a turn cut by the window was narration too.  Raising only the best
+        found reply lost 6 of the owner's 173 questions asked again with vectors on, where more replies are found and
+        the answer is not always the best of them.  They go above the best
+        candidate said up to that turn, the turn's other replies included, and not above what was said after it and
+        ranks higher still, which may say the answer changed.  Kept below every such candidate outranking the best of
+        the turn's time, the answer fell out of the packet for 5 of the owner's 173 questions asked again: a store keeps
+        growing, and something said since matches most questions (review of its second version).
         """
-        turn = getattr(self.storage_reader, "turn", None)
-        if not echoes or not callable(turn):
+        latest_turn = getattr(self.storage_reader, "latest_turn", None)
+        if not echoes or not callable(latest_turn):
             return
-        turns = []
-        for echo in echoes:
-            if self._remaining(working) <= 0:
-                return
-            if (read := turn(tx, echo)) is not None and read[1]:
-                turns.append((read, echo.key))
-        if not turns:
+        if self._remaining(working) <= 0:
+            gaps.append("deadline_exceeded_relation")
             return
-        (opened, replies), _key = max(turns, key=lambda item: (item[0][0], item[1]))
+        read = latest_turn(tx, echoes)
+        if read is None:
+            return
+        opened, replies, ended = read
         at = {candidate.key: index for index, (candidate, _obj) in enumerate(hydrated)}
         found = [reply for reply in replies if reply.key in at and hydrated[at[reply.key]][0].source != "relation"]
-        raised = [*found, *(reply for reply in replies[-1:] if reply.key not in {item.key for item in found})]
-        of_turn = {reply.key for reply in replies}
-        best = max((candidate.fusion_score for candidate, obj in hydrated
-                    if candidate.key not in of_turn and not _said_after(obj, opened)), default=0.0)
+        # At most half the packet: the replies a channel ranked highest, then the last reply of a whole turn.
+        room = max(1, working.limits.max_items // 2)
+        final = replies[-1] if ended else None
+        by_score = [reply for reply in sorted(found, key=lambda reply: -hydrated[at[reply.key]][0].fusion_score)
+                    if final is None or reply.key != final.key]
+        raised = [*by_score[:room - (final is not None)], *([final] if final is not None else [])]
+        # The turn's other replies are of its time, and stay below what is raised of it.
+        of_turn, lifted = {reply.key for reply in replies}, {reply.key for reply in raised}
+        others = [(candidate.fusion_score, candidate.key not in of_turn and _said_after(obj, opened))
+                  for candidate, obj in hydrated if candidate.key not in lifted]
+        best = max((score for score, after in others if not after), default=0.0)
         for index, reply in enumerate(raised):
             score = best + rrf_score((index + 2,), k=self.policy.rrf_k)
             if reply.key in at:
