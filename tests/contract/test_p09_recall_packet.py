@@ -769,6 +769,24 @@ def test_p09_diagnostics_channel_is_sanitized_and_bounded(app):
     assert public["items_delivered"] == len(packet["items"])
 
 
+def test_p09_a_packet_s_diagnostic_ref_can_be_inspected_by_the_session_that_recalled(app):
+    """The ref a packet hands out named a record this process keeps, never a stored object, and inspect answered it
+    SOURCE_MISSING every time (yuheng's audit of 3.4.2).  The recalling session reads its counts and gap codes;
+    another session, or a ref this process no longer holds, reads nothing."""
+    core, ctx = app
+    capture(core, ctx, "P09 diagnostics inspected by their own session.", key="TEST-p09/diag-inspect")
+    packet = _packet(core, ctx, query="diagnostics inspected", request_id="TEST-p09-diag-inspect")
+    inspected = core.inspect_object(ctx, packet["diagnostic_ref"])
+    assert (inspected.kind, inspected.ref, inspected.revision) == ("recall_diagnostic", packet["diagnostic_ref"], 1)
+    assert inspected.value["items_delivered"] == len(packet["items"])
+    assert "diagnostics inspected by their own session" not in str(inspected.value)
+    for other, ref in ((replace(ctx, session_id="TEST-p09-someone-else"), packet["diagnostic_ref"]),
+                       (ctx, "recall-diag:" + "f" * 16)):
+        with pytest.raises(ContractError) as refused:
+            core.inspect_object(other, ref)
+        assert (refused.value.code, refused.value.field) == ("SOURCE_MISSING", "recall_diagnostic")
+
+
 def test_p09_compiler_does_not_search_or_write_authority(app):
     core, ctx = app
     capture(core, ctx, "P09 read-only compile.", key="TEST-p09/readonly")

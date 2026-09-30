@@ -13,6 +13,7 @@ from .file_lock import advisory_file_lock
 from .storage import SQLiteStorage, StoreStatus, StoredSource
 from .capture import CaptureReceipt, record_event
 from .admission import AdmissionPolicy
+from .recall_diagnostics import RECALL_DIAGNOSTIC_PREFIX
 from .retrieval import CandidateRef, SearchContext
 
 
@@ -134,7 +135,20 @@ class MemoryCore:
             return tx.source(ref, revision)
 
     def inspect_object(self, context: TrustedContext, ref: str, revision: int | None = None, *, limit: int = 24):
-        from .inspect_service import inspect_object
+        from .inspect_service import InspectedObject, inspect_object
+        if type(ref) is str and ref.startswith(RECALL_DIAGNOSTIC_PREFIX):
+            # A recall packet's ``diagnostic_ref`` names a record this process keeps for its last recalls
+            # (``recall_diagnostics``), never a stored object: looked up in the store it was always SOURCE_MISSING
+            # (yuheng's audit of 3.4.2).  Only the session that recalled reads it, and only counts and gap codes.
+            if revision not in (None, 1):
+                raise ContractError("INPUT_INVALID", "revision")
+            record = self.recall_diagnostics.get(ref)
+            if (record is None or record.installation_id != context.binding.installation_id
+                    or record.session_id != context.session_id):
+                # Gone from this process's last recalls, recalled by another process (a prompt hook), or not the
+                # caller's: all read the same.
+                raise ContractError("SOURCE_MISSING", "recall_diagnostic")
+            return InspectedObject("recall_diagnostic", record.ref, 1, record.to_public(), record.memory_epoch or 0)
         return inspect_object(self.storage, self.clock, context, ref, revision, limit=limit)
 
     def profile(self, context: TrustedContext, request):

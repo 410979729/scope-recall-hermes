@@ -57,7 +57,7 @@ _TOOL_SCHEMAS: tuple[dict[str, Any], ...] = (
     },
     {
         "name": "inspect",
-        "description": "Inspect one visible, versioned object or source.",
+        "description": "Inspect one visible, versioned object or source, or a recall packet's diagnostic_ref from this session.",
         "parameters": {
             "type": "object",
             "additionalProperties": False,

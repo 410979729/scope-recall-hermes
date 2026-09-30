@@ -13,6 +13,8 @@ import threading
 from typing import Deque
 
 _MAX_RECORDS = 64
+#: What every record's ref starts with; ``MemoryCore.inspect_object`` reads such a ref here, not in the store.
+RECALL_DIAGNOSTIC_PREFIX = "recall-diag:"
 _MAX_FIELD_LEN = 240
 
 
@@ -100,7 +102,7 @@ class RecallDiagnostics:
                     separators=(",", ":"),
                 ).encode("utf-8")
             ).hexdigest()[:16]
-            ref = f"recall-diag:{digest}"
+            ref = f"{RECALL_DIAGNOSTIC_PREFIX}{digest}"
             entry = RecallDiagnosticRecord(
                 ref[:_MAX_FIELD_LEN],
                 installation_id[:_MAX_FIELD_LEN],

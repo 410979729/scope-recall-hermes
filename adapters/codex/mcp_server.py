@@ -65,7 +65,7 @@ _READ_ONLY = ToolAnnotations(read_only_hint=True, destructive_hint=False, idempo
 #: part of the frozen contract.
 _TOOLS: tuple[tuple[str, str, ToolAnnotations], ...] = (
     ("recall", "Run the shared bounded read-only recall pipeline. Protocol version 1.1. " + _RECALL_BUDGET_GUIDANCE + " " + RECALL_CONTEXT_GUIDANCE, _READ_ONLY),
-    ("inspect", "Inspect one visible, versioned object or source. Protocol version 1.1.", _READ_ONLY),
+    ("inspect", "Inspect one visible, versioned object or source, or a recall packet's diagnostic_ref from this session. Protocol version 1.1.", _READ_ONLY),
     ("profile", "Read-only categorized current-fact profile for one explicitly named subject. Uses only admitted consolidated claims; does not dump raw chat or USER.md/MEMORY.md. Protocol version 1.1. " + READ_VIEW_BUDGET_GUIDANCE + " " + RECALL_CONTEXT_GUIDANCE, _READ_ONLY),
     ("trace", TRACE_GUIDANCE, _READ_ONLY),
     ("entity", "Read-only exact one-hop entity view. action=probe returns current facts about the subject; action=related returns direct recorded statements. Incoming matches full scalar value_text only. No multi-hop traversal or inferred identity merge. Protocol version 1.1. " + READ_VIEW_BUDGET_GUIDANCE + " " + RECALL_CONTEXT_GUIDANCE, _READ_ONLY),
