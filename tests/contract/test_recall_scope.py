@@ -110,12 +110,12 @@ def test_an_entry_s_latin_name_is_a_word_of_its_own():
 @pytest.mark.parametrize(("rest", "asks"), (
     ("聊了什么", True), ("都说了些什么", True), ("做了哪些事", True), ("有什么进展", True), ("干了啥", True),
     ("帮我看看 聊了什么", True), ("请问 聊了什么", True), ("总结一下", True), ("做了哪些工作", True),
-    ("我们 讨论了哪些问题", True), ("聊到哪了", True), ("下午的对话聊了什么", True), ("下午3点聊了什么？", True),
+    ("我们 讨论了哪些问题", True), ("聊到哪了", False), ("下午的对话聊了什么", True), ("下午3点聊了什么？", True),
     ("说说 的进展", True), ("我们主要聊了什么", True), ("干嘛了", True), ("我说了什么", True), ("改了什么", True),
     ("聊的什么", True), ("聊什么了", True), ("我和你聊了什么", True), ("的工作总结一下", True),
     ("能不能帮我看看做了什么", True), ("可以总结一下吗", True), ("能不能都聊了什么", False), ("ｗｈａｔ ｄｉｄ ｗｅ ｄｏ", True), ("summarize", True),
     ("what were we working on", True), ("what have we done", True), ("What did we decide?", True),
-    ("what did do", True), ("what have we been working on", True), ("where did we leave off", True),
+    ("what did do", True), ("what have we been working on", True), ("where did we leave off", False),
     ("summary of", True), ("any updates from", True),
     ("做什么", False), ("聊点什么", False), ("说点什么", False), ("可以做什么", False), ("讨论什么", False),
     ("干嘛呢", False), ("忙啥呢", False), ("What are we working on", False), ("What do I do", False),
@@ -147,7 +147,22 @@ def test_a_long_rest_is_no_day_question_and_is_read_at_once():
     times = " ".join(f"{hour:02d}:{minute:02d}:00" for hour in range(5, 10) for minute in (0, 15, 30, 45)) + " 哪班车"
     began = _time.perf_counter()
     assert _DAY_QUESTION.fullmatch("".join(times.split())) is None
+    # A part of the day before its time was read as one time and as two (review 5 of 3.4.8): 1.2 s at 81 characters.
+    assert _DAY_QUESTION.fullmatch("上午1点" * 24 + "X") is None
     assert _time.perf_counter() - began < 1.0
+
+
+def test_a_long_message_or_one_naming_many_entries_names_no_scope_and_is_read_at_once():
+    """Every entry's name was looked for in the whole message before its rest was found too long: a log naming
+    instances hundreds of times took a tenth of a second, and a name before a long run of digits a fifth (review 5 of
+    3.4.8)."""
+    import time as _time
+
+    began = _time.perf_counter()
+    assert query_scope("昨天" + "天姬" * 4095, now=NOW, zone=NEW_YORK, entries=ENTRIES) is None
+    assert query_scope("今天 " + "codex " * 20, now=NOW, zone=NEW_YORK, entries=ENTRIES) is None
+    assert query_scope("今天codex" + "1" * 8000 + "-", now=NOW, zone=NEW_YORK, entries=ENTRIES) is None
+    assert _time.perf_counter() - began < 0.5
 
 
 @pytest.mark.parametrize(("text", "says"), (
@@ -239,18 +254,35 @@ def test_the_spread_leaves_out_acknowledgements_and_puts_what_fits_first(app):
                                   "确认", "lgtm", "下一步", "好的好的，可以，继续推进吧")):
         _say(core, ctx, text, origin="human_direct", role="user", when=f"2026-09-02T16:{index:02d}:00Z",
              key=f"TEST-scope/ack-{index}")
-    assert _scoped_candidates(core, ctx, "9月2日聊了什么") == [walk.ref, *(message.ref for message in long), reply.ref]
+    # Each group coarse to fine: the first, the middle, the quarters.
+    assert _scoped_candidates(core, ctx, "9月2日聊了什么") == [walk.ref, *(long[index].ref for index in (0, 2, 1, 3)),
+                                                              reply.ref]
 
 
 def test_a_day_is_spread_across_its_hours(app):
-    """Thirty messages and twelve slots: the first of the day and one near its end are among them."""
+    """Thirty messages and twelve slots: the first of the day and one near its end are among them, and so are they
+    among the first six, which is what an automatic packet keeps: offered in time order, the six were the day's
+    morning (review 5 of 3.4.8)."""
     core, ctx = app
     said = [_say(core, ctx, f"第{index}件事做完了", origin="human_direct", role="user",
                  when=f"2026-09-02T{index // 2:02d}:{index % 2 * 30:02d}:00Z", key=f"TEST-scope/hour-{index}")
             for index in range(30)]
     offered = _scoped_candidates(core, ctx, "9月2日聊了什么")
-    assert len(offered) == 12 and offered[0] == said[0].ref and said.index(next(
-        message for message in said if message.ref == offered[-1])) >= 26
+    places = sorted(next(index for index, message in enumerate(said) if message.ref == ref) for ref in offered[:6])
+    assert len(offered) == 12 and places[0] == 0 and places[-1] >= 20 and len(places) == 6
+
+
+def test_the_packet_holds_the_whole_day(app):
+    """Through the pipeline: the automatic packet's items of a day asked about come from its morning and its evening."""
+    core, ctx = app
+    said = [_say(core, ctx, f"第{index}件事做完了", origin="human_direct", role="user",
+                 when=f"2026-09-02T{index * 45 // 60:02d}:{index * 45 % 60:02d}:00Z", key=f"TEST-scope/packet-{index}")
+            for index in range(30)]
+    packet = core.recall_packet(ctx, recall_request(query="9月2日聊了什么", mode="auto", max_items=6), deadline_seconds=30,
+                                zone=timezone.utc)
+    places = sorted(next(index for index, message in enumerate(said) if message.ref == item["ref"])
+                    for item in packet["items"] if any(message.ref == item["ref"] for message in said))
+    assert len(places) >= 5 and places[0] <= 3 and places[-1] >= 22
 
 
 def test_several_days_take_turns_and_hand_on_an_empty_share(app):
@@ -263,7 +295,7 @@ def test_several_days_take_turns_and_hand_on_an_empty_share(app):
                    when=f"2026-09-03T1{index}:00:00Z", key=f"TEST-scope/three-{index}") for index in range(5)]
     assert _scoped_candidates(core, ctx, "9月2日和9月3日聊了什么", limit=4) == [
         first[0].ref, second[0].ref, first[2].ref, second[2].ref]
-    assert _scoped_candidates(core, ctx, "9月1日和9月2日聊了什么", limit=4) == [message.ref for message in first[:4]]
+    assert _scoped_candidates(core, ctx, "9月1日和9月2日聊了什么", limit=4) == [first[index].ref for index in (0, 2, 1, 3)]
 
 
 def test_as_of_bounds_the_day(app):
@@ -273,6 +305,64 @@ def test_as_of_bounds_the_day(app):
     _say(core, ctx, "下午跑了回归测试", origin="human_direct", role="user", when="2026-09-02T15:00:00Z",
          key="TEST-scope/late")
     assert _scoped_candidates(core, ctx, "9月2日聊了什么", mode="as_of", as_of="2026-09-02T12:00:00Z") == [early.ref]
+
+
+def test_a_day_read_for_one_entry_holds_that_entry_s_messages_alone(app):
+    """The day's read keeps to the entries the question names: a message of another entry is not offered (review 5
+    of 3.4.8: nothing failed with the filter taken out)."""
+    import time as _time
+
+    from scope_recall.core.retrieval import SearchContext
+    from scope_recall.core.retrieval_storage import RetrievalStorage
+
+    core, ctx = app
+    said = _say(core, ctx, "上午改了配置文件", origin="human_direct", role="user", when="2026-09-02T09:00:00Z",
+                key="TEST-scope/entry-local")
+    context = SearchContext.from_request(recall_request(query="9月2日聊了什么"), ctx, now=core.clock.utc_now(),
+                                         deadline=_time.monotonic() + 30)
+    scope = query_scope("9月2日聊了什么", now=core.clock.utc_now(), zone=timezone.utc, entries={})
+    with core.storage.read(ctx) as tx:
+        offered = {entries: [candidate.ref for candidate in RetrievalStorage().scoped(
+            tx, replace(context, scope=replace(scope, entry_ids=entries)), limit=12)]
+            for entries in (("local",), ("TEST-other-entry",))}
+    assert offered == {("local",): [said.ref], ("TEST-other-entry",): []}
+
+
+def test_a_day_question_naming_an_entry_of_a_shared_store_reads_that_entry(tmp_path):
+    """Through the pipeline on a shared store: the entry's name comes from the store's entries and is taken out of
+    the question, and only that entry's messages of the day are offered (review 5 of 3.4.8: with the entries not
+    read, or the name left in the question, it fell back to plain recall and nothing failed)."""
+    import time as _time
+
+    from scope_recall.core.recall import recall
+    from scope_recall.core.retrieval import SearchContext
+    from scope_recall.core.storage import SQLiteStorage
+    from tests.contract.test_shared_store import shared_binding, shared_context
+    from tests.v11_support import source_event
+
+    binding = shared_binding(tmp_path / "TEST-shared")
+    storage = SQLiteStorage(binding)
+    storage.initialize()
+    with storage.write(shared_context(binding)) as tx:
+        tx.register_entry("tianshu", "天枢", "hermes", now="2026-09-01T00:00:00Z")
+        tx.register_entry("tianxuan", "天璇", "hermes", now="2026-09-01T00:00:00Z")
+    said: dict[str, list[str]] = {}
+    for entry in ("tianshu", "tianxuan"):
+        with storage.write(shared_context(binding, entry_id=entry)) as tx:
+            for index in range(3):
+                event = source_event(source_event_key=f"TEST-scope/{entry}-{index}", content=f"{entry} 第{index}件事做完了",
+                                     occurred_at=f"2026-09-02T1{index}:00:00Z", recorded_at=f"2026-09-02T1{index}:00:00Z")
+                said.setdefault(entry, []).append(
+                    tx.put_source(event, scope_id="TEST-scope", persisted_at="2026-09-02T20:00:00Z").ref)
+
+    def asked(query):
+        context = SearchContext.from_request(recall_request(query=query, mode="auto", max_items=6),
+                                             shared_context(binding, entry_id="tianshu"), now="2026-09-03T12:00:00Z",
+                                             deadline=_time.monotonic() + 30, zone=timezone.utc)
+        return {item.ref for item in recall(context, storage=storage).items}
+
+    assert asked("9月2日天璇聊了什么") == set(said["tianxuan"])
+    assert asked("9月2日聊了什么") == {*said["tianshu"], *said["tianxuan"]}
 
 
 @pytest.mark.parametrize(("query", "mode", "background"), (

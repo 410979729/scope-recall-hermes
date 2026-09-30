@@ -454,6 +454,14 @@ def _shares(counts: list[int], limit: int) -> list[int]:
     return shares
 
 
+def _coarse_to_fine(items: list) -> list:
+    """``items``, in time order, reordered so that any first part of them spreads across all of them: the first, the
+    middle, the quarters, the eighths (the positions' bits read backwards).  Offered in time order, a packet of six
+    took a day's morning and left its afternoon out (review 5 of 3.4.8)."""
+    bits = max(1, (len(items) - 1).bit_length())
+    return [items[index] for index in sorted(range(len(items)), key=lambda index: int(f"{index:0{bits}b}"[::-1], 2))]
+
+
 class RetrievalStorage:
     """Typed read boundary used by one ``RetrievalPipeline`` instance."""
 
@@ -677,7 +685,7 @@ class RetrievalStorage:
                 if room <= 0:
                     break
                 step = max(1.0, len(tier) / room)
-                day.extend(tier[int(position * step)] for position in range(min(room, len(tier))))
+                day.extend(_coarse_to_fine([tier[int(position * step)] for position in range(min(room, len(tier)))]))
             picks.append(day)
         chosen = [day[turn] for turn in range(max(map(len, picks), default=0)) for day in picks if turn < len(day)]
         return tuple(CandidateRef("event", row["event_id"], row["source_revision"], "scoped", rank=index)

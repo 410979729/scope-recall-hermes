@@ -36,15 +36,20 @@ _MONTH_DAY_REACH = timedelta(days=183)
 #: The earliest day read: an older date is a placeholder or an example ("0001-01-01"), and a day before this one
 #: cannot be turned into a time the store holds on every machine.
 _EARLIEST = date(1970, 1, 2)
-#: Longest rest read for its words: a search refuses a longer text, and a prompt cut to the hosts' 8,192 characters
-#: can grow past it when its "…" is normalised to "...".
-_REST_CHARS = 8192
+#: Longest message read for its days and entries: a day's question is its days, its entries and a rest of at most
+#: ``_QUESTION_CHARS``.  Every entry's name was looked for in the whole message, and a log naming instances hundreds
+#: of times took a tenth of a second before the rest was found too long (review 5 of 3.4.8).
+_MESSAGE_CHARS = 512
+#: Places a message may name entries in before it is a list or a log.
+_MAX_ENTRY_MENTIONS = 16
 
 #: The forms a day's question may take once its days and entries are out, whole: who asks or requests ("帮我看看",
 #: "我们"), a time of day, an adverb ("都", "主要"), then what was said or done, completed ("聊了什么", "做了哪些工作",
-#: "改了什么", "聊什么了", "聊到哪了", "有什么进展", "进展如何", "总结一下", "的聊天记录").  Curated and strict: a
-#: message with anything more in it ("做什么饭", "继续做的", "忙吗", "在忙呢", "怎么办"), or one asking what to do
-#: rather than what was done ("今天做什么", "今天聊点什么", "今天可以做什么"), is no question about its day.
+#: "改了什么", "聊什么了", "有什么进展", "进展如何", "总结一下", "的聊天记录").  Curated and strict: a message with
+#: anything more in it ("做什么饭", "继续做的", "忙吗", "在忙呢", "怎么办"), one asking what to do rather than what was
+#: done ("今天做什么", "今天聊点什么", "今天可以做什么"), or where the work stopped ("昨天聊到哪了", "where did we leave
+#: off"), which the current task answers and the whole day's spread did not (review 5 of 3.4.8), is no question about
+#: its day.
 _REQUEST = (r"(?:帮我|帮忙|告诉我|给我|跟我|和我|说说|讲讲|列一下|列出|问一下|查查|查一下|看看|看一下|总结|回顾|汇总|复盘|"
             r"梳理|盘点)")
 _ASKER = (rf"(?:{_REQUEST}|(?:能不能|可不可以|可以)(?={_REQUEST})|请问|请|麻烦|想知道|你们|你|我们|咱们|大家|我|和你|跟你|在|"
@@ -52,7 +57,9 @@ _ASKER = (rf"(?:{_REQUEST}|(?:能不能|可不可以|可以)(?={_REQUEST})|请�
 #: A clock time has one reading: "5:00", "3点", "3点15分".  Read two ways ("5:00:00" as "5:00" and "0:00"), a list
 #: of twenty times took seconds to reject and doubled with each more (review of 3.4.6).
 _CLOCK = r"\d{1,2}(?::\d{2}|点(?:\d{1,2}分?)?)(?!\d)"
-_TIME_OF_DAY = (rf"(?:(?:上午|下午|中午|晚上|早上|凌晨|夜里|傍晚|半夜)(?:{_CLOCK})?|{_CLOCK})"
+#: A part of the day with its time, or alone and followed by no digit: "上午1点" read as one time and as "上午" then
+#: "1点" doubled the work of each more (review 5 of 3.4.8).
+_TIME_OF_DAY = (rf"(?:(?:上午|下午|中午|晚上|早上|凌晨|夜里|傍晚|半夜)(?:{_CLOCK}|(?!\d))|{_CLOCK})"
                 r"(?:左右|前后|之前|之后|以后|以前)?")
 _ADVERB = r"(?:都|主要|一共|具体|大概|总共|分别|又|还|一起|到底|究竟)"
 _WHAT = r"(?:什么|啥|哪些|哪儿|哪里|哪)"
@@ -63,7 +70,6 @@ _DAY_QUESTION = re.compile(
     rf"{_DONE}(?:了|过|的)(?:些|点)?{_WHAT}{_THINGS}?"
     rf"|{_DONE}{_WHAT}{_THINGS}?了"
     rf"|干嘛了"
-    rf"|(?:聊|说|做|进行)到{_WHAT}(?:一步|地方)?了?"
     rf"|有{_WHAT}新?(?:进展|进度|动静|变化|收获|结果)"
     rf"|的?(?:进展|进度)(?:如何|怎么样|怎样)?"
     rf"|(?:总结|回顾|汇总|复盘|梳理|盘点)(?:一下|下)?(?:的?(?:对话|聊天|工作|进展|内容|事情))?"
@@ -75,7 +81,6 @@ _DAY_QUESTION_EN = re.compile(
     r"(?:talk(?:ed)?\s+about|discuss(?:ed)?|do|done|doing|work(?:ed|ing)?\s+on|decided?|say|said|chat(?:ted)?\s+about|"
     r"get\s+done|changed?|fix(?:ed)?)"
     r"|what\s+happened|what\s+was\s+(?:said|done|discussed)"
-    r"|where\s+did\s+(?:we|you|i)\s+leave\s+off"
     r"|(?:summarize|summarise|recap|summary)(?:\s+(?:of\s+)?(?:the\s+)?(?:day|conversation|chat|discussion|work))?"
     r"|(?:any\s+)?(?:updates|progress)"
     r")(?:\s+(?:on|from|of|in|at|so\s+far))?")
@@ -207,7 +212,9 @@ def _name_pattern(letters: str) -> re.Pattern[str]:
     """A Latin name is a word of its own: "desk" is no entry in "Claude Desktop", nor "codex" in "codexbar" or
     "codex2".  Digits that begin a date may follow it: "Claude Code9月17日做了哪些工作" names the entry."""
     head = r"(?<![A-Za-z0-9])" if letters[0].isascii() and letters[0].isalnum() else ""
-    tail = (r"(?![A-Za-z])(?!\d+(?![\d\s]*[年月日号/.\-]))" if letters[-1].isascii() and letters[-1].isalnum()
+    # One digit and a look at what follows the run, not every length of it: a name before 8,000 digits took a
+    # fifth of a second (review 5 of 3.4.8).
+    tail = (r"(?![A-Za-z])(?!\d(?![\d\s]*[年月日号/.\-]))" if letters[-1].isascii() and letters[-1].isalnum()
             else "")
     return re.compile(head + _NAME_GAP.join(map(re.escape, letters)) + tail, re.IGNORECASE)
 
@@ -222,6 +229,8 @@ def _named_entries(text: str, entries: Mapping[str, str]) -> tuple[list[str], li
             if len(letters) < 2:
                 continue
             found.extend((match.start(), match.end(), entry_id) for match in _name_pattern(letters).finditer(text))
+            if len(found) > _MAX_ENTRY_MENTIONS:
+                raise _NoScope
     chosen: list[tuple[int, int, str]] = []
     for start, end, entry_id in sorted(found, key=lambda item: (item[0] - item[1], item[0])):
         if all(end <= other_start or start >= other_end for other_start, other_end, _ in chosen):
@@ -267,21 +276,21 @@ def query_scope(query: str, *, now: str, zone: tzinfo | None, entries: Mapping[s
 
     ``now`` is the recall's clock (UTC ISO); ``entries`` maps a shared store's entry ids to their display names
     (empty in a store of one host).  An entry named without a day is no scope.  Whether the rest asks what was said
-    is the caller's to judge (``asks_what_was_said``); ``rest`` is at most 8,192 characters.
+    is the caller's to judge (``asks_what_was_said``).  A message longer than ``_MESSAGE_CHARS`` names no scope.
     """
     text = unicodedata.normalize("NFKC", query)
+    if len(text) > _MESSAGE_CHARS:
+        return None
     moment = datetime.fromisoformat(now.replace("Z", "+00:00"))
     today = (moment.astimezone(zone) if zone is not None else moment.astimezone()).date()
     try:
         named = _named_days(text, today)
+        if named is None or not named[0]:
+            return None
+        days, day_spans = named
+        entry_ids, entry_spans = _named_entries(text, entries)
     except _NoScope:
         return None
-    if named is None:
-        return None
-    days, day_spans = named
-    if not days:
-        return None
-    entry_ids, entry_spans = _named_entries(text, entries)
     # What joins the named days goes with them: "9月28日和9月29日聊了什么" asks what was said on both.
     ordered = sorted(day_spans)
     joiners = [(end, start) for (_, end), (start, _) in zip(ordered, ordered[1:])
@@ -289,5 +298,4 @@ def query_scope(query: str, *, now: str, zone: tzinfo | None, entries: Mapping[s
     rest = text
     for start, end in sorted([*day_spans, *entry_spans, *joiners], reverse=True):
         rest = rest[:start] + " " + rest[end:]
-    return QueryScope(tuple(_day_window(day, zone) for day in days), tuple(entry_ids),
-                      " ".join(rest.split())[:_REST_CHARS])
+    return QueryScope(tuple(_day_window(day, zone) for day in days), tuple(entry_ids), " ".join(rest.split()))
