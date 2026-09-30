@@ -2,11 +2,21 @@
 
 All notable changes to `scope-recall` will be documented in this file.
 
-## [Unreleased]
+## [3.4.3] - 2026-09-30
 
-### Scope Recall 3.4.3rc1 - 2026-09-29
+3.4.3 keeps a long message's recall from stalling. For a long enough message the word search read every event of the conversation's audience one by one: on a copy of the shared store a Telegram message of 72 characters took 20 s, and its recall came back empty at every stage's deadline. Of the owner's messages over 80 characters since 2026-09-16, 39 of 92 on the five Hermes instances went that way. Nothing else changes.
 
-- The version moves past the `v3.4.2` tag.
+### Recall
+
+- The word search starts from the message's words, never from its audience's scopes. A store keeps no statistics for SQLite's planner, which weighed the words against the scopes by rule of thumb and, past about thirty words with the five scopes of a Telegram conversation, started from the scopes instead. On the copy all 655 real prompts sampled now start from their words, and the two messages that had stalled take 0.3 s and find the same memories. On the owner's questions of the last two weeks, asked again on each agent, and on two agents' older question sets, no figure drops; the two questions that had stalled are now answered.
+
+### Upgrading from 3.4.2
+
+1. Stop the hosts and the Scope Recall worker, and take a `backup`.
+2. Install the 3.4.3 package, then run `plan-install` and `apply-install` for each host.
+3. Start the hosts again and run `doctor`.
+
+The store's schema is unchanged (1110). Every change, with its details, is in [CHANGELOG.md](https://github.com/410979729/scope-recall-hermes/blob/v3.4.3/CHANGELOG.md).
 
 ## [3.4.2] - 2026-09-29
 
