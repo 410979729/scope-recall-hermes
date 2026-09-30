@@ -289,9 +289,15 @@ def enqueue(storage, clock, context, value, *, scope_id, host_scope, remaining_s
     encoded = _json(body)
     if len(encoded.encode("utf-8")) > 2097152:
         raise ContractError("INPUT_INVALID", "ingress_item_budget")
+    # The words are part of a capture's place here.  Codex gives a message sent into a running turn that turn's id, so
+    # a second such message came under the key of the first while the first still waited for its new key
+    # (``resolve_conflicted_ingress``), found that row and was refused as changed evidence: the work computer lost two
+    # of its owner's messages that way on 2026-09-30 alone.  A retried hook sends the same words and finds its own row.
     token = hashlib.sha256(_json([context.binding.installation_id, scope_id, context.session_id,
                                 context.project_id, context.branch_id,
-                                [(e["source_event_key"], e["source_revision"]) for e in prepared.events]]).encode()).hexdigest()
+                                [(e["source_event_key"], e["source_revision"],
+                                  hashlib.sha256(e["content"].encode("utf-8")).hexdigest())
+                                 for e in prepared.events]]).encode()).hexdigest()
     with storage.write(context, remaining_seconds=remaining_seconds) as tx:
         conn = tx._check(write=True)
         prior = conn.execute("SELECT payload_json FROM capture_inbox WHERE token=?", (token,)).fetchone()

@@ -88,8 +88,9 @@ def test_ingress_rejects_secrets_conflicts_and_other_partitions(worker_app):
     core, ctx, clock = worker_app
     event = source_event(source_event_key="TEST-collision",content="TEST original")
     capture_inbox.enqueue(core.storage,clock,ctx,event,scope_id="TEST-scope",host_scope=None)
+    # The same words sent again with other evidence are refused; other words are another message (the next test).
     with pytest.raises(ContractError,match="VERSION_CONFLICT"):
-        capture_inbox.enqueue(core.storage,clock,ctx,dict(event,content="TEST changed"),scope_id="TEST-scope",host_scope=None)
+        capture_inbox.enqueue(core.storage,clock,ctx,dict(event,capture_state="partial"),scope_id="TEST-scope",host_scope=None)
     assert capture_inbox.replay_inbox(core.storage,clock,replace(ctx,project_id="TEST-foreign"),authorize=lambda _:ctx.allowed_scope_ids) == ()
     token, prepared = capture_inbox.enqueue(core.storage,clock,ctx,dict(event,source_event_key="TEST-secret",content="api_key=sk-"+"abcd"*12),scope_id="TEST-scope",host_scope=None)
     assert token is None and prepared.rejection == "plaintext_secret_rejected"
@@ -315,6 +316,33 @@ def test_key_collided_capture_is_stored_under_its_own_identity(worker_app):
     assert capture_inbox.resolve_conflicted_ingress(
         core.storage, clock, other, authorize=lambda _: other.allowed_scope_ids, remaining_seconds=5
     ) == ()
+
+
+def test_every_message_sent_into_one_running_turn_is_stored(worker_app):
+    """Codex gives a message sent into a running turn that turn's id.  The second such message conflicts with the first
+    and waits in the inbox for a key of its own; a third sent before that pass came under the second's place in the
+    inbox, was refused as changed evidence and lost (the work computer lost two that way on 2026-09-30)."""
+    core, ctx, clock = worker_app
+    first = source_event(source_event_key="TEST-turn-7", content="TEST 先看一下日志")
+    assert capture_inbox.durable_record_event(core.storage, clock, ctx, first, scope_id="TEST-scope",
+                                              host_scope=None).durability == "persisted"
+    later = [dict(first, content=text) for text in ("TEST 顺便查一下锁", "TEST 好")]
+    receipts = [capture_inbox.durable_record_event(core.storage, clock, ctx, event, scope_id="TEST-scope",
+                                                   host_scope=None) for event in later]
+    assert [(receipt.disposition, receipt.error_code) for receipt in receipts] == [("conflict", "VERSION_CONFLICT")] * 2
+    stored = capture_inbox.resolve_conflicted_ingress(core.storage, clock, ctx, authorize=lambda _: ctx.allowed_scope_ids,
+                                                      remaining_seconds=5)
+    assert [receipt.durability for receipt in stored] == ["persisted", "persisted"]
+    # A hook sent again with the same words (the work computer's client resends what the store was too busy for)
+    # finds the message it stored.
+    again = capture_inbox.durable_record_event(core.storage, clock, ctx, later[1], scope_id="TEST-scope", host_scope=None)
+    assert again.disposition == "conflict"
+    assert [receipt.disposition for receipt in capture_inbox.resolve_conflicted_ingress(
+        core.storage, clock, ctx, authorize=lambda _: ctx.allowed_scope_ids, remaining_seconds=5)] == ["duplicate"]
+    with sqlite3.connect(core.storage.path) as conn:
+        assert conn.execute("SELECT count(*) FROM capture_inbox").fetchone()[0] == 0
+        contents = sorted(content for (content,) in conn.execute("SELECT content FROM source_events"))
+    assert contents == sorted(["TEST 先看一下日志", "TEST 顺便查一下锁", "TEST 好"])
 
 
 def test_a_long_message_whose_key_was_taken_is_stored_under_a_new_group(worker_app):
