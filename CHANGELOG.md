@@ -2,6 +2,22 @@
 
 All notable changes to `scope-recall` will be documented in this file.
 
+## [3.4.6] - 2026-09-30
+
+3.4.6 stops Codex losing a message sent into a turn that is still running. Nothing else changes.
+
+### Capture
+
+- Every message sent into a running Codex turn is stored. Codex gives such a message the id of the turn it joins, so it comes under the key of the turn's first message; it waits in the capture inbox, and the worker's next pass stores it under a key made from its words, about 45 s later. The inbox knew a capture by its key alone: a third message sent into the turn before that pass found the second's place, was refused as a changed copy of it (`VERSION_CONFLICT`) and was lost. Comparing the Codex session records of both computers attached to the shared store with the store itself since 2026-09-28, six of the owner's messages were missing, each sent 3-5 s after another into the same turn, and no other message typed there. A capture's place in the inbox now depends on its words as well. A hook sent again with the same words, as a remote client does when the store was too busy to take it, still finds its own place and stores the message once; the same words with other evidence are still refused. Messages lost before 3.4.6 are not recovered; Codex's own session record still holds them.
+
+### Upgrading from 3.4.5
+
+1. Stop the hosts and the Scope Recall worker, and take a `backup`.
+2. Install the 3.4.6 package, then run `plan-install` and `apply-install` for each host.
+3. Start the hosts again and run `doctor`.
+
+The store's schema is unchanged (1110). Every change, with its details, is in [CHANGELOG.md](https://github.com/410979729/scope-recall-hermes/blob/v3.4.6/CHANGELOG.md).
+
 ## [3.4.5] - 2026-09-30
 
 3.4.5 keeps a slow statement from holding up a recall, lets a recall's diagnostic ref be read, and stops `doctor` calling a busy worker failed. Nothing else changes.
