@@ -10,6 +10,7 @@ from typing import Protocol
 
 from ..contracts import ContractError
 from .background_context import background_candidates, current_task_candidate
+from .claims import canonical_time
 from .coverage import note_truncation
 from .duplicate_collapse import DistinctContent, note_duplicates
 from .events import lexical_terms
@@ -120,6 +121,16 @@ def _statement_text(obj: RetrievedObject) -> str:
     if not isinstance(payload, dict):
         return obj.content
     return " ".join(str(payload.get(key, "")) for key in ("subject", "predicate", "value_text", "conditions"))
+
+
+def _said_after(obj: RetrievedObject, moment: str) -> bool:
+    """Whether ``obj`` was said after ``moment`` (``canonical_time``), as far as its time tells: an event's own, a
+    claim's newest evidence's.  Without one it is taken as said before."""
+    stamp = dict(obj.metadata).get("occurred_at")
+    try:
+        return (canonical_time(stamp) or "") > moment
+    except ContractError:
+        return False
 
 
 #: See ``RetrievalPipeline.RELATION_WEIGHT``.
@@ -359,7 +370,7 @@ class RetrievalPipeline:
         """Bounded relation hops out of the seeds; every inspected object counts.
 
         ``echoes`` are older copies of the current message (``_hydrate_admit``): each leads to the replies of its turn
-        like a seed, and to nothing else.
+        like a seed, and to nothing else.  What the latest copy was told is raised once hydrated (``_raise_echo_turn``).
         """
         limits = context.limits
         if limits.relation_hops == 0 or limits.relation_objects == 0:
@@ -611,6 +622,47 @@ class RetrievalPipeline:
                     if candidate.key not in known]
         floor = min(working.limits.max_items, MINIMUM_HYDRATION_CAP)
         self._hydrate_all(tx, hydrated, expanded, working, gaps, floor=floor)
+        self._raise_echo_turn(tx, working, hydrated, echoes)
+
+    def _raise_echo_turn(self, tx, working: SearchContext, hydrated: list[tuple[CandidateRef, RetrievedObject]],
+                         echoes: tuple[CandidateRef, ...]) -> None:
+        """What the same question was told the last time it was asked goes before the best candidate of its time.
+
+        Reached as any seed's turn is, at a first rank's fixed score, it fell below every candidate two channels agreed
+        on: with vectors on, the owner's questions asked again lost about 25 of 124 answers (the threshold sweep of
+        2026-09-30).  Only the latest copy's turn is raised, so an answer that changed since is not raised beside the
+        one that replaced it, and of that turn only the replies a channel found, which say what was asked, and its last
+        reply, which answers it: an agent's turn opens with what it is about to do, and raising every reply let an old
+        turn's first messages fill the packet (review of its first version).  The best candidate is taken among what
+        was said up to that turn; anything said after it may say the answer changed, and keeps its place.
+        """
+        turn = getattr(self.storage_reader, "turn", None)
+        if not echoes or not callable(turn):
+            return
+        turns = []
+        for echo in echoes:
+            if self._remaining(working) <= 0:
+                return
+            if (read := turn(tx, echo)) is not None and read[1]:
+                turns.append((read, echo.key))
+        if not turns:
+            return
+        (opened, replies), _key = max(turns, key=lambda item: (item[0][0], item[1]))
+        at = {candidate.key: index for index, (candidate, _obj) in enumerate(hydrated)}
+        found = [reply for reply in replies if reply.key in at and hydrated[at[reply.key]][0].source != "relation"]
+        raised = [*found, *(reply for reply in replies[-1:] if reply.key not in {item.key for item in found})]
+        of_turn = {reply.key for reply in replies}
+        best = max((candidate.fusion_score for candidate, obj in hydrated
+                    if candidate.key not in of_turn and not _said_after(obj, opened)), default=0.0)
+        for index, reply in enumerate(raised):
+            score = best + rrf_score((index + 2,), k=self.policy.rrf_k)
+            if reply.key in at:
+                candidate, obj = hydrated[at[reply.key]]
+                if candidate.fusion_score < score:
+                    hydrated[at[reply.key]] = (replace(candidate, fusion_score=score), obj)
+            elif (f"{reply.ref}@{reply.revision}" not in working.current_source_refs
+                  and (obj := self._hydrate_admit(tx, reply, working)) is not None):
+                hydrated.append((replace(reply, fusion_score=score), obj))
 
     def _select(self, tx, working: SearchContext, hydrated: list[tuple[CandidateRef, RetrievedObject]], gaps: list[str]):
         """Rank, fold duplicate bodies, fit the item budget, then add background."""

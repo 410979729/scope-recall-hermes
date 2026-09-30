@@ -626,14 +626,22 @@ class RetrievalStorage:
         return tuple(result)
 
     def turn_replies(self, tx, candidate: CandidateRef) -> tuple[CandidateRef, ...]:
-        """What the assistant said back in the turn a person's message opened.
+        """What the assistant said back in the turn a person's message opened: the first ``TURN_REPLY_LIMIT`` of the
+        turn's replies (``turn``)."""
+        turn = self.turn(tx, candidate)
+        return turn[1][:TURN_REPLY_LIMIT] if turn is not None else ()
+
+    def turn(self, tx, candidate: CandidateRef) -> tuple[str, tuple[CandidateRef, ...]] | None:
+        """When a person's message opened its turn (UTC, ``canonical_time``), and every reply of that turn; None for
+        anything that opens no turn.
 
         Episode membership reaches a reply only through every event of its
         episode, in id order, so a recalled question used up the relation bound
         long before its own answer.  A turn's replies are the assistant's
         visible messages in the same scope and session after the message, in
-        capture order, until the person speaks again.  A gateway can capture a
-        whole turn under one timestamp, so equal times fall back to rowid.
+        capture order, until the person speaks again, within the first 64 rows.
+        A gateway can capture a whole turn under one timestamp, so equal times
+        fall back to rowid.
 
         The same message stored again is not the person speaking again.  Until
         3.4.4 a Hermes provider rebuilt with its agent stored a turn's message
@@ -642,7 +650,7 @@ class RetrievalStorage:
         and the first copy stopped at the second before reaching the answer.
         """
         if candidate.kind != "event":
-            return ()
+            return None
         conn = tx._check()
         row = conn.execute(
             """SELECT rowid,scope_id,session_id,role,origin,occurred_at,content_sha256 FROM source_events
@@ -650,10 +658,10 @@ class RetrievalStorage:
             (candidate.ref, candidate.revision),
         ).fetchone()
         if row is None or row["role"] != "user" or row["origin"] != "human_direct" or not row["occurred_at"]:
-            return ()
+            return None
         opened = canonical_time(row["occurred_at"])
         if opened is None:
-            return ()
+            return None
         window_end = (datetime.fromisoformat(opened) + timedelta(seconds=TURN_REPLY_SECONDS)).isoformat(
             timespec="microseconds").replace("+00:00", "Z")
         rows = conn.execute(
@@ -672,9 +680,7 @@ class RetrievalStorage:
             if reply["role"] == "assistant" and reply["origin"] == "assistant_visible":
                 replies.append(CandidateRef("event", reply["event_id"], int(reply["source_revision"]), "relation",
                                             rank=len(replies) + 1, lexical_score=1.0))
-                if len(replies) >= TURN_REPLY_LIMIT:
-                    break
-        return tuple(replies)
+        return opened, tuple(replies)
 
     def related(self, tx, candidate: CandidateRef, *, limit: int) -> tuple[CandidateRef, ...]:
         rows = lineage.related(tx._check(), candidate.kind, candidate.ref, limit=limit)
