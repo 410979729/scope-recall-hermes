@@ -4,11 +4,11 @@ All notable changes to `scope-recall` will be documented in this file.
 
 ## [3.4.3] - 2026-09-30
 
-3.4.3 keeps a long message's recall from stalling. For a long enough message the word search read every event of the conversation's audience one by one: on a copy of the shared store a Telegram message of 72 characters took 20 s, and its recall came back empty at every stage's deadline. Of the owner's messages over 80 characters since 2026-09-16, 39 of 92 on the five Hermes instances went that way. Nothing else changes.
+3.4.3 keeps a long message's recall from stalling. For a long enough message the word search read every event of the conversation's audience one by one: on a copy of the shared store the word search for a Telegram message of 72 characters took 18-21 s, and its recall came back empty at every stage's deadline. In a sample of the owner's messages since 2026-09-16, 39 of the 92 over 80 characters on the five Hermes instances were planned that way. Nothing else changes.
 
 ### Recall
 
-- The word search starts from the message's words, never from its audience's scopes. A store keeps no statistics for SQLite's planner, which weighed the words against the scopes by rule of thumb and, past about thirty words with the five scopes of a Telegram conversation, started from the scopes instead. On the copy all 655 real prompts sampled now start from their words, and the two messages that had stalled take 0.3 s and find the same memories. On the owner's questions of the last two weeks, asked again on each agent, and on two agents' older question sets, no figure drops; the two questions that had stalled are now answered.
+- The word search starts from the message's search terms, never from its audience's scopes. A store keeps no statistics for SQLite's planner, which weighed the terms against the scopes by rule of thumb and, past about thirty terms with the five scopes of a Telegram conversation, started from the scopes instead. On the copy all 655 real prompts sampled now start from their terms, and the word search of the two questions that had stalled takes 0.3 s instead of 18-20 s and finds the same memories. The owner's questions of the last two weeks, asked again on each agent, lose no answer and gain those two. Two agents' older question sets are answered exactly as before by words alone, and with vectors for facts and questions with no answer; the vector runs of the other two sets were cut short by the embedding provider's spending cap.
 
 ### Upgrading from 3.4.2
 
