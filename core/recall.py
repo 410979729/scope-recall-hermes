@@ -246,9 +246,11 @@ class RetrievalPipeline:
             fusion = rrf_score((item.rank for item in signals), k=self.policy.rrf_k)
             scoped = [item for item in signals if item.source == "scoped"]
             if scoped:
-                # A message of the day the question named stays one, whichever channel ranked it higher.
+                # A message of the day the question named stays one, whichever channel ranked it higher; a ref the
+                # caller named keeps its place first.
                 fusion *= SCOPED_WEIGHT
-                representative = scoped[0]
+                if representative.source != "exact_ref":
+                    representative = scoped[0]
             seeds.append(replace(representative, fusion_score=fusion))
         return tuple(seeds)
 

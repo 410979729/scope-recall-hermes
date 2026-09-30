@@ -52,6 +52,7 @@ def _scoped_candidates(core, ctx, query, *, limit=12, **request):
     ("看看today的日志", ("30",), ()),
     ("昨晚聊了什么", ("29",), ()),
     ("今早说了什么", ("30",), ()),
+    ("what did we talk about last night", ("29",), ()),
 ))
 def test_a_question_s_days_and_entries(query, days, entries):
     scope = query_scope(query, now=NOW, zone=NEW_YORK, entries=ENTRIES)
@@ -62,7 +63,8 @@ def test_a_question_s_days_and_entries(query, days, entries):
 
 @pytest.mark.parametrize("query", ("天姬的模型换成什么了", "3.4.2 修了什么", "工作机 Codex 上次说的方案",
                                    "如今天下聊了什么", "往前天数数聊了什么", "之前天天说的那个问题处理了吗",
-                                   "目前天天都在做什么", "至今天下聊了什么", "今天" * 20 + "聊了什么"))
+                                   "目前天天都在做什么", "至今天下聊了什么", "以前天天说的事都做了吗", "提前天数怎么算",
+                                   "今天" * 20 + "聊了什么"))
 def test_a_question_that_names_no_day_has_no_scope(query):
     """An entry named without a day asks about a subject: reading that entry's messages would crowd out the answer.
     A version number is not a date, nor 今天 in 如今天下 or 至今 or 前天 in 往前, 之前, 目前; a message naming days
@@ -109,9 +111,14 @@ def test_an_entry_s_latin_name_is_a_word_of_its_own():
     ("聊了什么", True), ("都说了些什么", True), ("做了哪些事", True), ("有什么进展", True), ("干了啥", True),
     ("帮我看看 聊了什么", True), ("请问 聊了什么", True), ("总结一下", True), ("做了哪些工作", True),
     ("我们 讨论了哪些问题", True), ("聊到哪了", True), ("下午的对话聊了什么", True), ("下午3点聊了什么？", True),
-    ("说说 的进展", True), ("我们主要聊了什么", True), ("干嘛了", True), ("summarize", True),
+    ("说说 的进展", True), ("我们主要聊了什么", True), ("干嘛了", True), ("我说了什么", True), ("改了什么", True),
+    ("聊的什么", True), ("聊什么了", True), ("我和你聊了什么", True), ("的工作总结一下", True),
+    ("能不能帮我看看做了什么", True), ("可以总结一下吗", True), ("能不能都聊了什么", False), ("ｗｈａｔ ｄｉｄ ｗｅ ｄｏ", True), ("summarize", True),
     ("what were we working on", True), ("what have we done", True), ("What did we decide?", True),
-    ("any updates from", True),
+    ("what did do", True), ("what have we been working on", True), ("where did we leave off", True),
+    ("summary of", True), ("any updates from", True),
+    ("做什么", False), ("聊点什么", False), ("说点什么", False), ("可以做什么", False), ("讨论什么", False),
+    ("干嘛呢", False), ("忙啥呢", False), ("What are we working on", False), ("What do I do", False),
     ("在吗", False), ("就这样吧", False), ("我 在忙", False), ("有什么事", False), ("呢", False), ("", False),
     ("说的那个方案是什么", False), ("发布的 3.4.2 修了什么", False), ("继续 的任务", False),
     ("那个 bug 修好了吗", False), ("天气怎么样", False), ("说 TEST-project 表达偏好是什么", False),
@@ -122,17 +129,36 @@ def test_an_entry_s_latin_name_is_a_word_of_its_own():
 def test_what_the_rest_of_a_day_s_question_asks(rest, asks):
     """Only a question or request that is, whole, one of the forms of asking what was said or done then is read in
     its day: a bag of words read "请继续昨天做的", "我今天在忙呢" and "今晚做什么菜" in their day, and lost the current
-    task and the owner's preferences (reviews of 3.4.6)."""
+    task and the owner's preferences; so did asking what to do today ("今天做什么", "今天聊点什么") (reviews of
+    3.4.6)."""
     from scope_recall.core.recall_scope import asks_what_was_said
 
     assert asks_what_was_said(rest) is asks
+
+
+def test_a_long_rest_is_no_day_question_and_is_read_at_once():
+    """Twenty clock times each read two ways took seconds to reject, doubling with each more, and held the process's
+    lock; a long rest also made the trailing strip quadratic (review of 3.4.6)."""
+    import time as _time
+
+    from scope_recall.core.recall_scope import _DAY_QUESTION, asks_what_was_said
+
+    assert asks_what_was_said("帮我看看" * 16 + "聊了什么") is False
+    times = " ".join(f"{hour:02d}:{minute:02d}:00" for hour in range(5, 10) for minute in (0, 15, 30, 45)) + " 哪班车"
+    began = _time.perf_counter()
+    assert _DAY_QUESTION.fullmatch("".join(times.split())) is None
+    assert _time.perf_counter() - began < 1.0
 
 
 @pytest.mark.parametrize(("text", "says"), (
     ("继续", False), ("好的", False), ("好的，继续吧", False), ("OK 继续执行", False), ("按你说的做", False),
     ("可以，就按这个来", False), ("确认", False), ("同意", False), ("下一步", False), ("好嘞", False), ("y", False),
     ("1", False), ("lgtm", False), ("sounds good", False), ("keep going", False), ("好的好的，可以，继续推进吧", False),
+    ("知道了", False), ("感谢", False), ("没错", False), ("搞定", False), ("太好了", False), ("please continue", False),
+    ("do it", False), ("makes sense", False),
     ("错了", True), ("别做了", True), ("中午吃了面", True), ("晚上散步", True), ("我到家了", True), ("deploy failed", True),
+    ("我没说", True), ("你没做", True), ("是你说的", True), ("我来做", True), ("一样", True), ("8080", True),
+    ("3.4.6", True), ("не работает", True),
 ))
 def test_what_a_short_message_says(text, says):
     """An acknowledgement fills a packet on a day of long prompts; a short correction or report does not."""
@@ -268,6 +294,10 @@ def test_as_of_bounds_the_day(app):
     ("今晚做什么菜", "auto", True),
     ("昨天说的事办了吗", "auto", True),
     ("How's work today?", "auto", True),
+    ("今天做什么", "auto", True),
+    ("今天聊点什么", "auto", True),
+    ("今天可以做什么", "auto", True),
+    ("What are we working on today?", "auto", True),
 ))
 def test_a_message_that_is_no_question_about_its_day_is_recalled_as_if_it_named_none(
         app, monkeypatch, query, mode, background):
@@ -395,3 +425,29 @@ def test_a_scope_that_cannot_be_read_is_a_gap_not_an_empty_recall(app, monkeypat
                                 recall_request(query="9月2日金丝雀发布怎么定的"), deadline_seconds=5, zone=timezone.utc)
     assert "scope_unreadable:RuntimeError" in packet["gaps"]
     assert packet["items"], packet["gaps"]
+
+
+def test_two_days_joined_in_the_question_are_both_read(app):
+    """"9月2日和9月3日聊了什么": the joiner left in the rest kept every such question from being read at all
+    (review of 3.4.6)."""
+    core, ctx = app
+    first = _say(core, ctx, "二号改了部署脚本", origin="human_direct", role="user", when="2026-09-02T10:00:00Z",
+                 key="TEST-scope/joined-2")
+    second = _say(core, ctx, "三号跑了回归测试", origin="human_direct", role="user", when="2026-09-03T10:00:00Z",
+                  key="TEST-scope/joined-3")
+    for query in ("9月2日和9月3日聊了什么", "9月2日、9月3日都聊了什么"):
+        packet = core.recall_packet(replace(ctx, session_id="TEST-scope-joined-reader"),
+                                    recall_request(query=query, mode="auto"), deadline_seconds=5, zone=timezone.utc)
+        refs = [item["ref"] for item in packet["items"]]
+        assert first.ref in refs and second.ref in refs, query
+
+
+def test_a_ref_the_caller_named_keeps_its_place_when_the_day_holds_it_too(app):
+    from scope_recall.core.retrieval import CandidateRef
+
+    core, ctx = app
+    said = _say(core, ctx, "部署脚本改完了", origin="human_direct", role="user", when="2026-09-05T10:00:00Z",
+                key="TEST-scope/exact")
+    fused = core.recall_pipeline._fuse_candidates([CandidateRef("event", said.ref, 1, "exact_ref", rank=1),
+                                                   CandidateRef("event", said.ref, 1, "scoped", rank=1)], None)
+    assert [candidate.source for candidate in fused] == ["exact_ref"]

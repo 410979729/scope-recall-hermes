@@ -41,51 +41,71 @@ _EARLIEST = date(1970, 1, 2)
 _REST_CHARS = 8192
 
 #: The forms a day's question may take once its days and entries are out, whole: who asks or requests ("帮我看看",
-#: "我们"), a time of day, an adverb ("都", "主要"), then what was said, done or reached ("聊了什么", "做了哪些工作",
-#: "聊到哪了", "有什么进展", "进展如何", "总结一下", "的聊天记录").  Curated and strict: a message with anything
-#: more in it ("做什么饭", "继续做的", "忙吗", "在忙呢", "怎么办") is no question about its day.
-_ASKER = (r"(?:帮我|帮忙|请问|请|麻烦|能不能|可不可以|可以|告诉我|给我|跟我|和我|看看|看一下|查查|查一下|说说|讲讲|"
-          r"列一下|列出|问一下|想知道|我想知道|你们|你|我们|咱们|大家|在|的|对话|聊天|会话)")
-_TIME_OF_DAY = (r"(?:(?:上午|下午|中午|晚上|早上|凌晨|夜里|傍晚|半夜)(?:\d{1,2}(?:点|:)\d{0,2}分?)?"
-                r"|\d{1,2}(?:点|:)\d{0,2}分?)(?:左右|前后|之前|之后|以后|以前)?")
+#: "我们"), a time of day, an adverb ("都", "主要"), then what was said or done, completed ("聊了什么", "做了哪些工作",
+#: "改了什么", "聊什么了", "聊到哪了", "有什么进展", "进展如何", "总结一下", "的聊天记录").  Curated and strict: a
+#: message with anything more in it ("做什么饭", "继续做的", "忙吗", "在忙呢", "怎么办"), or one asking what to do
+#: rather than what was done ("今天做什么", "今天聊点什么", "今天可以做什么"), is no question about its day.
+_REQUEST = (r"(?:帮我|帮忙|告诉我|给我|跟我|和我|说说|讲讲|列一下|列出|问一下|查查|查一下|看看|看一下|总结|回顾|汇总|复盘|"
+            r"梳理|盘点)")
+_ASKER = (rf"(?:{_REQUEST}|(?:能不能|可不可以|可以)(?={_REQUEST})|请问|请|麻烦|想知道|你们|你|我们|咱们|大家|我|和你|跟你|在|"
+          r"的|对话|聊天|会话|工作)")
+#: A clock time has one reading: "5:00", "3点", "3点15分".  Read two ways ("5:00:00" as "5:00" and "0:00"), a list
+#: of twenty times took seconds to reject and doubled with each more (review of 3.4.6).
+_CLOCK = r"\d{1,2}(?::\d{2}|点(?:\d{1,2}分?)?)(?!\d)"
+_TIME_OF_DAY = (rf"(?:(?:上午|下午|中午|晚上|早上|凌晨|夜里|傍晚|半夜)(?:{_CLOCK})?|{_CLOCK})"
+                r"(?:左右|前后|之前|之后|以后|以前)?")
 _ADVERB = r"(?:都|主要|一共|具体|大概|总共|分别|又|还|一起|到底|究竟)"
 _WHAT = r"(?:什么|啥|哪些|哪儿|哪里|哪)"
 _THINGS = r"(?:事|事情|工作|问题|内容|话题|东西|方面|活儿|活)"
+_DONE = r"(?:聊|说|讲|谈|讨论|做|干|忙|弄|搞|处理|完成|发生|交流|沟通|改|修|修复|提交|写|实现|部署|上线|测试|更新|发布)"
 _DAY_QUESTION = re.compile(
     rf"(?:{_ASKER}|{_TIME_OF_DAY})*{_ADVERB}*(?:"
-    rf"(?:聊|说|讲|谈|讨论|做|干|忙|弄|搞|处理|完成|发生|交流|沟通)(?:了|过)?(?:些|点)?{_WHAT}{_THINGS}?"
-    rf"|干嘛了?"
-    rf"|(?:聊|说|做|进行)到{_WHAT}(?:一步|地方)?"
+    rf"{_DONE}(?:了|过|的)(?:些|点)?{_WHAT}{_THINGS}?"
+    rf"|{_DONE}{_WHAT}{_THINGS}?了"
+    rf"|干嘛了"
+    rf"|(?:聊|说|做|进行)到{_WHAT}(?:一步|地方)?了?"
     rf"|有{_WHAT}新?(?:进展|进度|动静|变化|收获|结果)"
     rf"|的?(?:进展|进度)(?:如何|怎么样|怎样)?"
     rf"|(?:总结|回顾|汇总|复盘|梳理|盘点)(?:一下|下)?(?:的?(?:对话|聊天|工作|进展|内容|事情))?"
     rf"|的?(?:聊天|对话|会话)(?:记录|内容)?"
-    rf")(?:了|呢|吗)?")
+    rf")(?:呢|吗)?")
 _DAY_QUESTION_EN = re.compile(
     r"(?:(?:please|can you|could you|tell me|show me|let me know|give me)\s+)*(?:"
-    r"what\s+(?:did|have|were|was|are|do)\s+(?:we|you|i|they)\s+(?:talk(?:ed)?\s+about|discuss(?:ed)?|do|done|doing|"
-    r"work(?:ed|ing)?\s+on|decided?|say|said|chat(?:ted)?\s+about|get\s+done)"
+    r"what\s+(?:(?:did|have|were|was)\s+)?(?:(?:we|you|i|they)\s+)?(?:been\s+)?"
+    r"(?:talk(?:ed)?\s+about|discuss(?:ed)?|do|done|doing|work(?:ed|ing)?\s+on|decided?|say|said|chat(?:ted)?\s+about|"
+    r"get\s+done|changed?|fix(?:ed)?)"
     r"|what\s+happened|what\s+was\s+(?:said|done|discussed)"
-    r"|(?:summarize|summarise|recap)(?:\s+(?:the\s+)?(?:day|conversation|chat|discussion|work))?"
+    r"|where\s+did\s+(?:we|you|i)\s+leave\s+off"
+    r"|(?:summarize|summarise|recap|summary)(?:\s+(?:of\s+)?(?:the\s+)?(?:day|conversation|chat|discussion|work))?"
     r"|(?:any\s+)?(?:updates|progress)"
     r")(?:\s+(?:on|from|of|in|at|so\s+far))?")
+#: Longest rest a day's question has: a longer one is a message that also says something, and a long run of a
+#: character the trailing strip scans made that strip quadratic (review of 3.4.6).
+_QUESTION_CHARS = 64
 _TRAILING = re.compile(r"[\s?？。.!！~～…,，、]+$")
-#: What an acknowledgement is made of: "好的，继续吧", "OK 继续执行", "按你说的做", "确认", "下一步", "可以，就按这个来";
-#: and in Latin letters "lgtm", "sounds good", a single letter or a number.  Any other character says something:
-#: "错了", "别做了", "中午吃了面".
-_ACK_CHARACTERS = frozenset("好行嗯哦噢喔哈嘞滴哒啦嘛吧呀啊哟呢可以收到明白了解懂谢按照执开始继续接着下一步确认同意批准允许"
-                            "辛苦推进就这样那个来去的你我说做对是没问题稍等")
+#: Acknowledgements, as whole words: "好的，继续吧", "OK 继续执行", "按你说的做", "确认", "下一步", "可以，就按这个来",
+#: "知道了", "搞定"; with only the fillers around them.  What is left after them says something: "错了", "我没说",
+#: "是你说的", "我到了", "中午吃了面".  Latin words: acknowledgements ("lgtm", "sounds good", "do it"), a single letter
+#: or a number of one or two digits (an option chosen); a longer number ("8080", "3.4.6"), any other word, and any
+#: letter of another script say something.
+_ACK_PHRASES = tuple(sorted((
+    "按你说的做", "就按这个来", "就这样", "没问题", "没错", "知道了", "收到", "明白", "了解", "感谢", "多谢", "谢谢", "搞定", "不错",
+    "很好", "太好了", "好的", "好嘞", "好滴", "好哒", "可以", "继续", "接着", "开始", "下一步", "确认", "同意", "批准", "允许",
+    "辛苦了", "辛苦", "推进", "执行", "照做", "行", "好", "嗯", "哦", "噢", "喔", "赞", "对"), key=len, reverse=True))
+_ACK_FILLER = frozenset("吧呀啊嘞滴哒啦嘛哟呢了的你我这那个就们哈")
 _ACK_WORDS = frozenset({"ok", "okay", "yes", "yeah", "yep", "yup", "sure", "go", "ahead", "on", "thanks", "thank", "you",
                         "thx", "ty", "np", "continue", "proceed", "fine", "good", "great", "cool", "nice", "perfect",
                         "right", "got", "it", "lgtm", "sounds", "looks", "keep", "going", "done", "next", "alright",
-                        "all", "noted"})
-_CJK = re.compile(r"[㐀-䶿一-鿿豈-﫿]")
+                        "all", "noted", "please", "do", "understood", "agreed", "makes", "sense", "that", "works"})
+_CJK = re.compile(r"[㐀-䶿一-鿿豈-﫿\U00020000-\U0003134f]")
 
 _FULL_DATE = re.compile(r"(?<!\d)(\d{4})\s*[-/年]\s*(\d{1,2})\s*[-/月]\s*(\d{1,2})\s*[日号]?(?!\d)")
 _MONTH_DAY = re.compile(r"(?<![\d.])(\d{1,2})\s*月\s*(\d{1,2})\s*[日号]?(?![\d.])")
 #: What joins two days into a range ("9月28日到9月30日", "2026-09-28 至 2026-09-30", "昨天到今天"), and a date
 #: followed by the end of its range ("9月28-30日", "9月28日到30日").
 _RANGE = re.compile(r"\s*(?:到|至|~|～|-|—|–)\s*")
+#: What lists two named days: "9月28日和9月29日", "昨天、今天", "9/28 and 9/29".
+_JOINER = re.compile(r"\s*(?:和|跟|与|及|以及|还有|、|,|，|and|&)\s*", re.IGNORECASE)
 _RANGE_TAIL = re.compile(r"\s*(?:到|至|~|～|-|—|–)\s*(?:\d{4}\s*[-/年]\s*)?(?:\d{1,2}\s*[-/月]\s*)?\d{1,2}(?![\d.])")
 #: Days before today each relative word names.
 _RELATIVE = (("大前天", 3), ("前天", 2), ("昨天", 1), ("昨日", 1), ("昨晚", 1), ("昨夜", 1), ("今天", 0),
@@ -95,7 +115,8 @@ _RELATIVE = (("大前天", 3), ("前天", 2), ("昨天", 1), ("昨日", 1), ("�
 _NOT_A_DAY_AFTER = frozenset("如往向提之以目至")
 #: Places a message may name days in before it is a list or a log, not a question about a day.
 _MAX_DAY_MENTIONS = 16
-_RELATIVE_EN = re.compile(r"(?<![A-Za-z])(today|yesterday)(?![A-Za-z])", re.IGNORECASE)
+_RELATIVE_EN = re.compile(r"(?<![A-Za-z])(today|yesterday|last night|tonight|this morning)(?![A-Za-z])",
+                          re.IGNORECASE)
 #: Characters an entry's name may be written with or without between its own: spaces, and "的" ("工作机的 Codex").
 _NAME_GAP = r"[\s的]*"
 
@@ -172,7 +193,8 @@ def _named_days(text: str, today: date) -> tuple[list[date], list[tuple[int, int
                 add(today - timedelta(days=back), (start, start + len(word)))
             start = text.find(word, start + len(word))
     for match in _RELATIVE_EN.finditer(text):
-        add(today - timedelta(days=1 if match.group(1).lower() == "yesterday" else 0), match.span())
+        add(today - timedelta(days=1 if match.group(1).lower() in {"yesterday", "last night"} else 0),
+            match.span())
     ordered = sorted(spans)
     if any(_RANGE.fullmatch(text[end:start]) for (_, end), (start, _) in zip(ordered, ordered[1:])):
         return None
@@ -215,6 +237,8 @@ class _NoScope(Exception):
 def asks_what_was_said(rest: str) -> bool:
     """Whether the rest of a day's question, its days and entries taken out, is whole one of the forms of a question or
     request about what was said or done then (``_DAY_QUESTION``, ``_DAY_QUESTION_EN``)."""
+    if len(rest) > _QUESTION_CHARS:
+        return False
     text = _TRAILING.sub("", unicodedata.normalize("NFKC", rest).casefold())
     if _DAY_QUESTION.fullmatch("".join(text.split())):
         return True
@@ -222,12 +246,20 @@ def asks_what_was_said(rest: str) -> bool:
 
 
 def says_something(text: str) -> bool:
-    """Whether a short message says anything of its day (``_ACK_CHARACTERS``, ``_ACK_WORDS``)."""
+    """Whether a short message says anything of its day (``_ACK_PHRASES``, ``_ACK_WORDS``)."""
     folded = unicodedata.normalize("NFKC", text).casefold()
-    if any(_CJK.match(character) and character not in _ACK_CHARACTERS for character in folded):
+    if any(character.isalpha() and not character.isascii() and not _CJK.match(character) for character in folded):
         return True
-    return any(not word.isdigit() and len(word) > 1 and word not in _ACK_WORDS
-               for word in re.findall(r"[a-z0-9]+", folded))
+    for word in re.findall(r"[a-z0-9.]+", folded):
+        word = word.strip(".")
+        if not word or (word.isdigit() and len(word) <= 2) or (word.isalpha() and len(word) == 1):
+            continue
+        if not word.isalpha() or word not in _ACK_WORDS:
+            return True
+    han = "".join(character for character in folded if _CJK.match(character))
+    for phrase in _ACK_PHRASES:
+        han = han.replace(phrase, "")
+    return any(character not in _ACK_FILLER for character in han)
 
 
 def query_scope(query: str, *, now: str, zone: tzinfo | None, entries: Mapping[str, str]) -> QueryScope | None:
@@ -250,8 +282,12 @@ def query_scope(query: str, *, now: str, zone: tzinfo | None, entries: Mapping[s
     if not days:
         return None
     entry_ids, entry_spans = _named_entries(text, entries)
+    # What joins the named days goes with them: "9月28日和9月29日聊了什么" asks what was said on both.
+    ordered = sorted(day_spans)
+    joiners = [(end, start) for (_, end), (start, _) in zip(ordered, ordered[1:])
+               if end < start and _JOINER.fullmatch(text[end:start])]
     rest = text
-    for start, end in sorted([*day_spans, *entry_spans], reverse=True):
+    for start, end in sorted([*day_spans, *entry_spans, *joiners], reverse=True):
         rest = rest[:start] + " " + rest[end:]
     return QueryScope(tuple(_day_window(day, zone) for day in days), tuple(entry_ids),
                       " ".join(rest.split())[:_REST_CHARS])
