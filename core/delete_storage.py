@@ -297,7 +297,8 @@ class Deletions:
                     (scope, project, branch)).fetchall():
                 # One payload at a time: the inbox holds up to 64 MB.
                 if holds(conn.execute("SELECT payload_json FROM capture_inbox WHERE token=?", (token,)).fetchone()[0],
-                         frozenset(digests), frozenset(groups), forgotten_texts(), rekeyed=taking_a_new_key(code)):
+                         frozenset(digests), frozenset(groups), forgotten_texts(), rekeyed=taking_a_new_key(code),
+                         versions=frozenset(versions)):
                     conn.execute("DELETE FROM capture_inbox WHERE token=?", (token,))
         for target in targets:
             conn.execute("DELETE FROM consolidation_fragments WHERE work_id IN (SELECT work_id FROM work_items WHERE subject_ref=?)", (target.ref,))

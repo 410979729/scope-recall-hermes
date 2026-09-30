@@ -29,8 +29,10 @@ The authorizing command is included because it can repeat the target's content.
 In a shared store ([shared-store.md](shared-store.md)) there is one copy of every
 memory, so a `forget` through any entry applies to every entry.
 A capture still waiting in the capture inbox when a delete is recorded is cancelled
-when it holds a deleted message (its text, one of its segments as stored, or the
-same source); the scope's other waiting captures are stored. Under a deleted
+when it holds a deleted message (its text, one of its segments as stored, a later
+version of the same source, or a part of it sent without its first); the scope's
+other waiting captures are stored, another message waiting under the deleted
+message's key included. Under a deleted
 message's key, a later version, a part sent without its first and a copy of the
 message are refused and leave the inbox; another message under that key is stored
 under a key of its own. A copy is decided on the whole message; after the purge,

@@ -345,6 +345,76 @@ def test_every_message_sent_into_one_running_turn_is_stored(worker_app):
     assert contents == sorted(["TEST 先看一下日志", "TEST 顺便查一下锁", "TEST 好"])
 
 
+def _a_pass(core, clock, ctx):
+    """What a worker pass does with the inbox (``runtime.instance._replay_ingress``)."""
+    authorize_all = dict(authorize=lambda _: ctx.allowed_scope_ids, remaining_seconds=5)
+    return (*capture_inbox.replay_inbox(core.storage, clock, ctx, **authorize_all),
+            *capture_inbox.resolve_conflicted_ingress(core.storage, clock, ctx, **authorize_all))
+
+
+def _first_of_the_turn_waits(core, clock, ctx, monkeypatch, key):
+    """The turn's first message, whose commit met a busy store: it waits in the inbox for the next pass."""
+    first = source_event(source_event_key=key, content="TEST 第一句")
+    real = capture_inbox.record_event
+
+    def busy(*args, **kwargs):
+        raise ContractError("STORAGE_UNAVAILABLE")
+    monkeypatch.setattr(capture_inbox, "record_event", busy)
+    assert capture_inbox.durable_record_event(core.storage, clock, ctx, first, scope_id="TEST-scope",
+                                              host_scope=None).durability == "queued"
+    monkeypatch.setattr(capture_inbox, "record_event", real)
+    second = dict(first, content="TEST 第二句", occurred_at="2026-09-05T12:00:04Z", recorded_at="2026-09-05T12:00:04Z")
+    stored = capture_inbox.durable_record_event(core.storage, clock, ctx, second, scope_id="TEST-scope", host_scope=None)
+    assert stored.durability == "persisted", "the second message takes the key while the first waits"
+    return stored.event_refs[0]
+
+
+def test_a_message_sent_while_the_turn_s_first_still_waits_is_stored(worker_app, monkeypatch):
+    """Before 3.4.6 the second message was refused while the first waited; now both are stored, the first under a key
+    of its own once its turn comes (review of 3.4.6)."""
+    core, ctx, clock = worker_app
+    _first_of_the_turn_waits(core, clock, ctx, monkeypatch, "TEST-turn-9")
+    _a_pass(core, clock, ctx)
+    with sqlite3.connect(core.storage.path) as conn:
+        keys = dict(conn.execute("SELECT content,source_event_key FROM source_events"))
+        assert conn.execute("SELECT count(*) FROM capture_inbox").fetchone()[0] == 0
+    assert keys["TEST 第二句"] == "TEST-turn-9" and keys["TEST 第一句"].startswith("TEST-turn-9#rekey:")
+
+
+def test_deleting_one_message_keeps_another_waiting_under_its_key(worker_app, monkeypatch):
+    """A delete cancels a waiting capture that holds the deleted message, not every capture of its source group: the
+    turn's first message, still waiting when the second, stored under the key, was deleted, was cancelled with it and
+    lost, never deleted itself (review of 3.4.6).  A later version of the deleted message is still cancelled."""
+    core, ctx, clock = worker_app
+    deleted = _first_of_the_turn_waits(core, clock, ctx, monkeypatch, "TEST-turn-10")
+    later = source_event(source_event_key="TEST-turn-10", source_revision=2, content="TEST 第二句（改）")
+    capture_inbox.enqueue(core.storage, clock, ctx, later, scope_id="TEST-scope", host_scope=None)
+    authorize(core, ctx, deleted)
+    core.forget(ctx, request(deleted), remaining_seconds=5)
+    with sqlite3.connect(core.storage.path) as conn:
+        assert conn.execute("SELECT count(*) FROM capture_inbox").fetchone()[0] == 1, "the later version is cancelled"
+    _a_pass(core, clock, ctx)
+    with sqlite3.connect(core.storage.path) as conn:
+        kept = conn.execute("SELECT content,source_event_key FROM source_events WHERE read_blocked=0").fetchall()
+    assert [content for content, _key in kept] == ["TEST 第一句"] and kept[0][1].startswith("TEST-turn-10#rekey:")
+
+
+def test_the_same_words_sent_twice_into_one_turn_before_the_pass_are_kept_once(worker_app):
+    """The same words under the same key while the first still waits are the same capture: a retried hook sends them
+    so, with a later moment, and the first moment is kept."""
+    core, ctx, clock = worker_app
+    first = source_event(source_event_key="TEST-turn-12", content="TEST 开始")
+    assert capture_inbox.durable_record_event(core.storage, clock, ctx, first, scope_id="TEST-scope",
+                                              host_scope=None).durability == "persisted"
+    for moment in ("2026-09-05T12:00:03Z", "2026-09-05T12:00:08Z"):
+        capture_inbox.durable_record_event(core.storage, clock, ctx, dict(first, content="TEST 继续", occurred_at=moment,
+                                           recorded_at=moment), scope_id="TEST-scope", host_scope=None)
+    _a_pass(core, clock, ctx)
+    with sqlite3.connect(core.storage.path) as conn:
+        kept = conn.execute("SELECT occurred_at FROM source_events WHERE content='TEST 继续'").fetchall()
+    assert kept == [("2026-09-05T12:00:03Z",)]
+
+
 def test_a_long_message_whose_key_was_taken_is_stored_under_a_new_group(worker_app):
     """Given a new key, each segment of a long message kept the first message's group, met it again and was never
     stored (review of 3.4.0rc10).  The segments now move into one new group."""
@@ -443,21 +513,29 @@ def test_a_row_put_off_again_waits_longer_and_is_given_up_where_it_shows():
 def test_a_delete_keeps_a_waiting_row_unless_it_holds_the_deleted_words(worker_app):
     """A delete cancels its partition's pending captures that hold a deleted message, so that a delayed one cannot
     undo it.  Every other row is kept: a row put off waits for hours (review of 3.4.0rc10), and a capture of another
-    client waiting for the next pass was cancelled with the whole partition, words nothing had forgotten (rc13)."""
+    client waiting for the next pass was cancelled with the whole partition, words nothing had forgotten (rc13).
+    Under the deleted message's key, a later version is cancelled and another message is kept, as storage takes them
+    when they come after the delete (``storage.refuse_under_a_deleted_key``): the whole source group was cancelled,
+    and Codex sends every message of a running turn under the turn's key (review of 3.4.6)."""
     core, ctx, clock = worker_app
     later = f"DEFERRED|{capture_inbox.__version__}|2026-09-06T13:00:00Z|1|replay|RuntimeError"
     given_up = f"GAVE_UP|{capture_inbox.__version__}|24|rekey|RuntimeError"
     long_kept, long_same = "TEST 暂缓的长消息。" * 8000, "TEST 同组的另一版长消息。" * 6000
-    rows = (("TEST-put-off-keep", "TEST 暂缓的另一句话。", later), ("TEST-put-off-same", "TEST 要删掉的话。", later),
-            ("TEST-plain-waiting", "TEST 普通等待的一句。", None),
-            ("TEST-plain-busy", "TEST 存储忙时等着的一句。", "STORAGE_UNAVAILABLE"),
+    long_other = "TEST 同一个键下的另一条长消息。" * 6000
+    rows = (("TEST-put-off-keep", "TEST 暂缓的另一句话。", later, 1), ("TEST-put-off-same", "TEST 要删掉的话。", later, 1),
+            ("TEST-plain-waiting", "TEST 普通等待的一句。", None, 1),
+            ("TEST-plain-busy", "TEST 存储忙时等着的一句。", "STORAGE_UNAVAILABLE", 1),
             # Waiting for the next pass and holding the deleted words, under a key of its own or the deleted one's.
-            ("TEST-plain-copy", "TEST 要删掉的话。", None), ("TEST-stored-same", "TEST 同一条的下一版。", None),
-            # A long message waits as segments: one of another group is kept, one of the deleted group is not.
-            ("TEST-long-kept", long_kept, given_up), ("TEST-stored-long", long_same, later))
-    for key, text, code in rows:
-        token, _prepared = capture_inbox.enqueue(core.storage, clock, ctx, source_event(source_event_key=key, content=text),
-                                                 scope_id="TEST-scope", host_scope=None)
+            ("TEST-plain-copy", "TEST 要删掉的话。", None, 1), ("TEST-stored-same", "TEST 同一条的下一版。", None, 2),
+            # Another message under the deleted one's key.
+            ("TEST-stored-same", "TEST 同一个键下的另一句。", None, 1),
+            # A long message waits as segments: one of another group is kept, a later version of the deleted one is
+            # not, and another message under its key is.
+            ("TEST-long-kept", long_kept, given_up, 1), ("TEST-stored-long", long_same, later, 2),
+            ("TEST-stored-long", long_other, later, 1))
+    for key, text, code, revision in rows:
+        token, _prepared = capture_inbox.enqueue(core.storage, clock, ctx, source_event(
+            source_event_key=key, source_revision=revision, content=text), scope_id="TEST-scope", host_scope=None)
         with sqlite3.connect(core.storage.path) as conn:
             conn.execute("UPDATE capture_inbox SET last_error_code=? WHERE token=?", (code, token))
             conn.commit()
@@ -467,8 +545,10 @@ def test_a_delete_keeps_a_waiting_row_unless_it_holds_the_deleted_words(worker_a
     core.forget(ctx, request(source, long_source_), remaining_seconds=5)
     with sqlite3.connect(core.storage.path) as conn:
         events = [json.loads(row[0])["events"][0] for row in conn.execute("SELECT payload_json FROM capture_inbox")]
-    left = sorted(event["segment"]["group_key"] if "segment" in event else event["source_event_key"] for event in events)
-    assert left == ["TEST-long-kept", "TEST-plain-busy", "TEST-plain-waiting", "TEST-put-off-keep"]
+    left = sorted((event["segment"]["group_key"] if "segment" in event else event["source_event_key"],
+                   event["source_revision"]) for event in events)
+    assert left == [("TEST-long-kept", 1), ("TEST-plain-busy", 1), ("TEST-plain-waiting", 1), ("TEST-put-off-keep", 1),
+                    ("TEST-stored-long", 1), ("TEST-stored-same", 1)]
 
 
 def _inbox_rows(core):

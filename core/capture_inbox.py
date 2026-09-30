@@ -197,13 +197,18 @@ def deleted_forms(text: object) -> frozenset[str]:
 
 
 def holds(payload_json: object, digests: frozenset[str], groups: frozenset[str],
-          texts: frozenset[tuple[str, str]] = frozenset(), *, rekeyed: bool = False) -> bool:
+          texts: frozenset[tuple[str, str]] = frozenset(), *, rekeyed: bool = False,
+          versions: frozenset[tuple[str, int]] = frozenset()) -> bool:
     """Whether an inbox row's capture holds a deleted message.  A row that cannot be read is taken to (a delete then
     cancels it, as it cancels every row it cannot look into).  It holds one when:
 
     - one of its segments is a deleted one as stored (``content_sha256``), or it is of the deleted source's group
       (not for a row being given a new key, ``rekeyed``: another message that took a stored one's key, whose group
-      is not its own; deleting the first message cancelled the second);
+      is not its own; deleting the first message cancelled the second).  Of a deleted version (``versions``, its
+      group and revision), only a part sent without the message's first is: a whole message there is a copy by its
+      words or another message under the same key, as storage tells them (``storage.refuse_under_a_deleted_key``).
+      Codex sends a message into a running turn under the turn's key, and a message still waiting there when
+      another one under the key was deleted was cancelled with it (review of 3.4.6);
     - whitespace aside, it holds all of a deleted text of ``DISTINCT_TEXT`` characters or more, or is one with at most
       a tenth more; or, letters and digits compared, it is a deleted text of ``NEAR_COPY`` or more of them with at most
       a tenth more.  A message that quotes a short deleted one among other words, only part of a long one, or a long
@@ -213,21 +218,26 @@ def holds(payload_json: object, digests: frozenset[str], groups: frozenset[str],
     delete; compared more loosely, deleting a short message cancelled unrelated rows, and a character-by-character
     normalisation of every waiting row held the writer lease for seconds (reviews of rc10)."""
     try:
-        return holds_events(json.loads(payload_json)["events"], digests, groups, texts, rekeyed=rekeyed)
+        return holds_events(json.loads(payload_json)["events"], digests, groups, texts, rekeyed=rekeyed,
+                            versions=versions)
     except (ValueError, KeyError, TypeError, AttributeError):
         return True
 
 
 def holds_events(events, digests: frozenset[str], groups: frozenset[str],
-                 texts: frozenset[tuple[str, str]] = frozenset(), *, rekeyed: bool = False) -> bool:
+                 texts: frozenset[tuple[str, str]] = frozenset(), *, rekeyed: bool = False,
+                 versions: frozenset[tuple[str, int]] = frozenset()) -> bool:
     """``holds`` for a capture's events already read: the parts of one message, or one of them.  Storage asks it of a
     message under a deleted message's key (``storage.put_source``)."""
     from .events import stored_content_digest
 
+    indexes = {event["segment"].get("index") for event in events if isinstance(event.get("segment"), dict)}
     for event in events:
         segment = event.get("segment")
         group = segment.get("group_key") if isinstance(segment, dict) else event.get("source_event_key")
-        if (not rekeyed and group in groups) or stored_content_digest(event["content"]) in digests:
+        of_group = group in groups and ((group, event.get("source_revision")) not in versions
+                                        or bool(indexes and 0 not in indexes))
+        if (not rekeyed and of_group) or stored_content_digest(event["content"]) in digests:
             return True
     texts = [text for text in texts if text[0]]
     if not texts:
