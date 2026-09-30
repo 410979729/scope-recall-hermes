@@ -23,7 +23,6 @@ from .delete_storage import canonical, retraction_after
 from .episodes import source_origin
 from . import lexical_index, lineage
 from .events import lexical_terms
-from .recall_scope import SCOPED_ANSWER, SCOPED_FILL
 from .recall_policy import (
     applicability,
     claim_embedding_text,
@@ -425,12 +424,14 @@ class CollectionPage:
 #: How long after a person's message its turn's replies may come, and how many are followed.
 TURN_REPLY_SECONDS = 1800
 TURN_REPLY_LIMIT = 3
-#: Rows of the named days (and entries) the scoped channel reads before it chooses (``RetrievalStorage.scoped``),
-#: in time order.  The shared store's busiest day was 861 messages of every entry, 542 of one, and reading it whole
-#: took 90 ms; read only to 400 rows it lost its evening.
+#: Rows of one named day (and entries) the scoped channel reads before it chooses (``RetrievalStorage.scoped``), in
+#: time order.  The shared store's busiest day was 861 messages of every entry, 542 of one; read only to 400 rows,
+#: it lost its evening.
 _SCOPED_SCAN_ROWS = 2000
 #: Characters of a scoped message an automatic packet (4,096 units, six items) can still deliver beside others.
 _SCOPED_ITEM_CHARS = 600
+#: Characters below which a message says nothing of its day: "继续", "好的", "收到", "继续执行".
+_SCOPED_MIN_CHARS = 5
 
 
 class RetrievalStorage:
@@ -601,60 +602,58 @@ class RetrievalStorage:
         return tuple(candidates)
 
     def scoped(self, tx, context: SearchContext, *, limit: int) -> tuple[CandidateRef, ...]:
-        """The conversation of the days, and entries, the question names (``recall_scope``).
+        """The conversation of the days, and entries, that a question asking what was said then names
+        (``recall_scope``).
 
         The person's own messages and the replies they were shown, in the question's audience, from the named days
-        (and entries).  When the rest of the question still asks something ("那天发布的 3.4.2 修了什么"), those that
-        share most of its words come first; when it only asks what was said ("聊了什么"), the person's messages
-        across the day, spread evenly, so the day is seen whole rather than its last hour.
+        (and entries), spread evenly across each day so it is seen whole rather than its last hour: the person's
+        messages of a length a packet can deliver beside others first, then their longer ones, then the replies.
+        A message too short to say anything ("继续", "好的") is not offered.  Only lengths are read here.
         """
         scope = context.scope
         if scope is None or limit <= 0:
             return ()
         trusted = context.trusted_context
         scopes = tuple(sorted(trusted.allowed_scope_ids))
-        windows = " OR ".join("(e.occurred_at>=? AND e.occurred_at<?)" for _ in scope.windows)
         entries = f"AND e.entry_id IN ({_marks(scope.entry_ids)})" if scope.entry_ids else ""
         current = "" if context.mode in {"history", "as_of"} else "AND NOT EXISTS (SELECT 1 FROM source_events newer WHERE newer.source_group_key=e.source_group_key AND newer.source_revision>e.source_revision)"
-        rows = tx._check().execute(
-            f"""SELECT e.event_id,e.source_revision,e.role,e.content FROM source_events e
-                WHERE e.scope_id IN ({_marks(scopes)}) AND ({windows}) {entries}
-                  AND e.role IN ('user','assistant') AND e.origin IN ('human_direct','assistant_visible')
-                  AND e.read_blocked=0 AND e.suppressed=0
-                  AND (e.project_id IS NULL OR e.project_id=?) AND (e.branch_id IS NULL OR e.branch_id=?)
-                  AND NOT EXISTS(SELECT 1 FROM object_blocks b WHERE b.object_kind='event'
-                      AND b.object_ref=e.event_id AND (b.read_blocked=1 OR b.suppressed=1))
-                  {current}
-                ORDER BY e.occurred_at,e.rowid LIMIT ?""",
-            (*scopes, *(bound for window in scope.windows for bound in window), *scope.entry_ids,
-             trusted.project_id, trusted.branch_id, _SCOPED_SCAN_ROWS),
-        ).fetchall()
+        as_of = "AND e.occurred_at<=?" if context.as_of is not None else ""
         excluded = set(context.current_source_refs)
-        rows = [row for row in rows if _source_key(row["event_id"], row["source_revision"]) not in excluded]
-        asked = set(meaningful_query_terms(scope.rest))
-        hits = ({index: len(asked.intersection(lexical_terms(row["content"]))) for index, row in enumerate(rows)}
-                if asked else {})
+        days = []
+        # One statement a day, so each reads the (scope, time) index for its own window.
+        for start, end in scope.windows:
+            rows = tx._check().execute(
+                f"""SELECT e.event_id,e.source_revision,e.role,length(e.content) AS size FROM source_events e
+                    WHERE e.scope_id IN ({_marks(scopes)}) AND e.occurred_at>=? AND e.occurred_at<? {entries}
+                      AND e.role IN ('user','assistant')
+                      AND (e.origin IN ('human_direct','assistant_visible') OR (e.origin='imported'
+                           AND e.import_provenance_sha256 IS NOT NULL
+                           AND e.source_original_origin IN ('human_direct','assistant_visible')))
+                      AND e.read_blocked=0 AND e.suppressed=0
+                      AND (e.project_id IS NULL OR e.project_id=?) AND (e.branch_id IS NULL OR e.branch_id=?)
+                      AND NOT EXISTS(SELECT 1 FROM object_blocks b WHERE b.object_kind='event'
+                          AND b.object_ref=e.event_id AND (b.read_blocked=1 OR b.suppressed=1))
+                      {current} {as_of}
+                    ORDER BY e.occurred_at,e.rowid LIMIT ?""",
+                (*scopes, start, end, *scope.entry_ids, trusted.project_id, trusted.branch_id,
+                 *((context.as_of,) if as_of else ()), _SCOPED_SCAN_ROWS),
+            ).fetchall()
+            days.append([row for row in rows if _source_key(row["event_id"], row["source_revision"]) not in excluded])
+        chosen: list = []
         # A message longer than an automatic packet can hold beside others is left out of it whole (the compiler never
         # slices content), and on the coding clients' days most messages are: offered first, they were dropped and
-        # other days' short items delivered instead.  Of what answers equally, the shorter goes first.
-        long = {index for index, row in enumerate(rows) if len(row["content"]) > _SCOPED_ITEM_CHARS}
-        chosen = [rows[index] for index in sorted((index for index, count in hits.items() if count),
-                                                  key=lambda index: (-hits[index], index in long, index))][:limit]
-        answers = len(chosen)
-        # What is left is the day itself: the person's messages across it, spread evenly.  "聊了" of "聊了什么"
-        # names no subject, and a question asking only that is answered from here alone.
-        said = [index for index, row in enumerate(rows) if row["role"] == "user" and not hits.get(index)]
-        said = said or [index for index in range(len(rows)) if not hits.get(index)]
-        said = [index for index in said if index not in long] or said
-        room = limit - len(chosen)
-        if room > 0 and said:
-            step = max(1.0, len(said) / room)
-            chosen.extend(rows[said[int(position * step)]] for position in range(min(room, len(said))))
-        # The day's spread answers a question that asks only what was said: one whose remaining words ("聊了",
-        # "说了") no message of the day holds.  Beside messages that share its words it only fills the day in.
-        return tuple(CandidateRef("event", row["event_id"], row["source_revision"], "scoped", rank=index,
-                                  lexical_score=SCOPED_ANSWER if index <= answers or not answers else SCOPED_FILL)
-                     for index, row in enumerate(chosen, 1))
+        # other days' short items delivered instead.
+        for role, fits in (("user", True), ("user", False), ("assistant", True)):
+            for rows in days:
+                tier = [row for row in rows if row["role"] == role and row["size"] >= _SCOPED_MIN_CHARS
+                        and (row["size"] <= _SCOPED_ITEM_CHARS) is fits]
+                room = min(limit - len(chosen), -(-limit // len(days)))
+                if room <= 0 or not tier:
+                    continue
+                step = max(1.0, len(tier) / room)
+                chosen.extend(tier[int(position * step)] for position in range(min(room, len(tier))))
+        return tuple(CandidateRef("event", row["event_id"], row["source_revision"], "scoped", rank=index)
+                     for index, row in enumerate(chosen[:limit], 1))
 
     def recent(self, tx, context: SearchContext, *, limit: int) -> tuple[CandidateRef, ...]:
         trusted = context.trusted_context

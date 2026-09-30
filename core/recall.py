@@ -17,7 +17,7 @@ from .events import lexical_terms
 from .recall_budget import estimate_tokens, event_admission_order
 from .recall_needs import CHOICE_MARKERS, directed_followup_query, evidence_roots, mentions, unmet_needs
 from .recall_policy import RecallPolicy, asks_without_answering, identifiers_compatible, meaningful_query_terms, rrf_score
-from .recall_scope import SCOPED_ANSWER, query_scope
+from .recall_scope import names_a_subject, query_scope
 from .retrieval import (
     CandidateRef,
     CollectionQuery,
@@ -65,12 +65,13 @@ ECHO_TURN_MIN_TERMS = 5
 #: (review of 3.4.5).
 _INTERRUPT_STEPS = 1_000_000
 _CHANNELS = ("scoped", "exact", "lexical", "claim", "recent", "vector")
-#: Messages the scoped channel offers per round: a day of one entry, read for the question (``recall_scope``).
+#: Messages the scoped channel offers: a day of one entry, for a question that asks what was said then
+#: (``recall_scope``).
 SCOPED_CANDIDATES = 12
-#: What a scoped answer's fused score is multiplied by.  The question named its day: a message of that day that
-#: answers it goes before a candidate one channel found elsewhere by the day's words or the entry's name, which
-#: on the shared store filled the packet ("Claude Code" is in thousands of other messages).  Three puts a first
-#: rank above any candidate two channels agree on at their first rank.
+#: What a scoped candidate's fused score is multiplied by.  The question asked only what was said on its day: that
+#: day's messages go before a candidate one channel found elsewhere by the question's words or the entry's name,
+#: which on the shared store filled the packet ("Claude Code" is in thousands of other messages).  Three puts a
+#: first rank above any candidate two channels agree on at their first rank.
 SCOPED_WEIGHT = 3.0
 #: Vector admission reasons that are reported, and how; the rest are silent.
 _VECTOR_REJECTION_GAPS = {
@@ -241,7 +242,7 @@ class RetrievalPipeline:
         for _key, signals in sorted(by_key.items()):
             representative = min(signals, key=lambda item: (item.rank, item.source))
             fusion = rrf_score((item.rank for item in signals), k=self.policy.rrf_k)
-            if any(item.source == "scoped" and item.lexical_score == SCOPED_ANSWER for item in signals):
+            if any(item.source == "scoped" for item in signals):
                 fusion *= SCOPED_WEIGHT
             seeds.append(replace(representative, fusion_score=fusion))
         return tuple(seeds)
@@ -328,7 +329,9 @@ class RetrievalPipeline:
                 if echoes is not None:
                     echoes.append(candidate)
                 return None
-        if candidate.source != "exact_ref" and not identifiers_compatible(context.query, obj.content):
+        # A scoped message was chosen by its day and entry, which the question named: an entry's name ("pc2") is
+        # not an identifier its messages must repeat.
+        if candidate.source not in {"exact_ref", "scoped"} and not identifiers_compatible(context.query, obj.content):
             return None
         # An episode whose resume was never consolidated carries nothing but its
         # own state: `{"state": "unknown"}` fills a packet slot and answers
@@ -589,12 +592,18 @@ class RetrievalPipeline:
 
     @staticmethod
     def _scoped(tx, working: SearchContext) -> SearchContext:
-        """The context with the days and entries its question names (``recall_scope``), when it names a day."""
-        entries = getattr(tx, "entries", None)
-        names = ({entry_id: str(value.get("name") or entry_id) for entry_id, value in entries().items()}
-                 if callable(entries) else {})
-        scope = query_scope(working.query, now=working.now, zone=working.zone, entries=names)
-        return working if scope is None else replace(working, scope=scope)
+        """The context with the days and entries its question names (``recall_scope``) when it names a day and asks
+        only what was said or done then; any other question has no scope."""
+        scope = None
+        if query_scope(working.query, now=working.now, zone=working.zone, entries={}) is not None:
+            entries = getattr(tx, "entries", None)
+            names = ({entry_id: str(value.get("name") or entry_id) for entry_id, value in entries().items()}
+                     if callable(entries) else {})
+            scope = query_scope(working.query, now=working.now, zone=working.zone, entries=names)
+            # A subject beside the day is answered as if no day were named (``recall_scope``).
+            if scope is not None and any(map(names_a_subject, meaningful_query_terms(scope.rest))):
+                scope = None
+        return working if working.scope == scope else replace(working, scope=scope)
 
     def _collect_rounds(self, tx, working: SearchContext, gaps: list[str], *, prefetched=None,
                         echoes: list[CandidateRef] | None = None) -> tuple[list[tuple[CandidateRef, RetrievedObject]], int]:
@@ -612,7 +621,8 @@ class RetrievalPipeline:
             if self._remaining(working) <= 0:
                 gaps.append("deadline_exceeded_followup" if round_index else "deadline_exceeded")
                 break
-            round_context = replace(working, query=follow_query) if follow_query else working
+            # The day a question names is read once: a follow-up asks for something else.
+            round_context = replace(working, query=follow_query, scope=None) if follow_query else working
             budget.hold(max_rounds - round_index - 1)
             seeds = self._collect(tx, round_context, gaps, seen=seen, budget=budget, prefetched=prefetched)
             seed_count += len(seeds)
