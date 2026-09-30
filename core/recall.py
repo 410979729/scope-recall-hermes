@@ -244,8 +244,11 @@ class RetrievalPipeline:
         for _key, signals in sorted(by_key.items()):
             representative = min(signals, key=lambda item: (item.rank, item.source))
             fusion = rrf_score((item.rank for item in signals), k=self.policy.rrf_k)
-            if any(item.source == "scoped" for item in signals):
+            scoped = [item for item in signals if item.source == "scoped"]
+            if scoped:
+                # A message of the day the question named stays one, whichever channel ranked it higher.
                 fusion *= SCOPED_WEIGHT
+                representative = scoped[0]
             seeds.append(replace(representative, fusion_score=fusion))
         return tuple(seeds)
 
@@ -331,9 +334,9 @@ class RetrievalPipeline:
                 if echoes is not None:
                     echoes.append(candidate)
                 return None
-        # A question read in its day names no subject: an identifier in it is the entry's name ("pc2"), which no
-        # message of that entry, found by any channel, has to repeat.
-        asked = context.scope.rest if context.scope is not None else context.query
+        # A message of the day a question named was chosen by its day and entry: the entry's name ("pc2") is not an
+        # identifier it has to repeat.  Every other candidate still has to.
+        asked = context.scope.rest if context.scope is not None and candidate.source == "scoped" else context.query
         if candidate.source != "exact_ref" and not identifiers_compatible(asked, obj.content):
             return None
         # An episode whose resume was never consolidated carries nothing but its
@@ -609,7 +612,7 @@ class RetrievalPipeline:
                 names = ({entry_id: str(value.get("name") or entry_id) for entry_id, value in entries().items()}
                          if callable(entries) else {})
                 scope = query_scope(working.query, now=working.now, zone=working.zone, entries=names)
-                if scope is not None and not asks_what_was_said(scope.rest, meaningful_query_terms(scope.rest)):
+                if scope is not None and not asks_what_was_said(scope.rest):
                     scope = None
         except Exception as exc:
             gaps.append(f"scope_unreadable:{type(exc).__name__}")

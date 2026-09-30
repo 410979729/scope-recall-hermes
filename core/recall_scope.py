@@ -7,12 +7,14 @@ the named day (yuheng's audit of 3.4.2 and its baseline).  The scope is read her
 vector and other channels are unchanged.
 
 Only a question about what was said or done on its day is read in it (``asks_what_was_said``): with its days and
-entries taken out, it asks or requests something, it holds a word of saying or doing ("聊", "说", "做", "讨论",
-"进展", "总结"), and none of its words names a subject.  Anything else is recalled as if it named no day: a
-question about a subject ("9月2日发布的 3.4.2 修了什么", "继续昨天的任务"), which read in its day lost the answer
-said on another day, the current task and the claims that answered it, and a message that only mentions a day
-("今天在吗", "我今天在忙"), which lost the owner's preferences and task (reviews of 3.4.6).  A range of days,
-more than three, a day still to come and a placeholder such as 9999-12-31 are no scope either.
+entries taken out, what is left must be, whole, one of a few forms of such a question or request ("聊了什么",
+"帮我看看做了哪些工作", "总结一下", "有什么进展", "what did we talk about").  Anything else is recalled as if it
+named no day: a question about a subject ("9月2日发布的 3.4.2 修了什么", "继续昨天的任务"), which read in its day
+lost the answer said on another day, the current task and the claims that answered it, and a message that only
+mentions a day ("今天在吗", "我今天在忙呢", "今晚做什么菜"), which lost the owner's preferences and task (reviews of
+3.4.6).  A bag of words let such messages through round after round; a whole form does not, and a question it
+misses is only recalled as before.  A range of days, more than three, a day still to come and a placeholder such as
+9999-12-31 are no scope either.
 
 A day is a calendar day in the zone the asking host shows its model (``SearchContext.zone``; when the host names
 none, the serving machine's, with that day's daylight-saving offset), the zone its recalled times are rendered in,
@@ -24,7 +26,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone, tzinfo
 import re
 import unicodedata
-from typing import Iterable, Mapping
+from typing import Mapping
 
 #: Days one question may name.  More is a list, which a scope of whole days does not serve.
 MAX_SCOPE_DAYS = 3
@@ -38,35 +40,46 @@ _EARLIEST = date(1970, 1, 2)
 #: can grow past it when its "…" is normalised to "...".
 _REST_CHARS = 8192
 
-#: Words by which the rest of a day's question asks what was said, done or happened then, or for the day summed up.
-_SAID_OR_DONE = ("聊", "说", "讲", "谈", "讨论", "做", "干", "忙", "弄", "搞", "办", "进展", "进度", "发生", "总结",
-                 "回顾", "汇总", "汇报", "复盘", "对话", "记录")
-_SAID_OR_DONE_EN = re.compile(r"(?<![a-z])(?:talk|say|said|discuss|chat|did|done|doing|work|happen|progress|"
-                              r"summar|recap|conversation)", re.IGNORECASE)
-#: Asking or requesting.  A day named in a statement ("我今天在忙", "今天就这样吧") asks nothing of it.
-_ASKING = re.compile(r"[?？]|什么|啥|哪|谁|吗|呢|几|多少|怎么|如何|帮|请|告诉|给我|看看|看一下|查|列|总结|回顾|"
-                     r"汇总|汇报|复盘|(?<![a-z])(?:what|which|who|how|summar|recap|list|show|tell)", re.IGNORECASE)
-#: Characters of the rest that name no subject: the words above, asking and requesting, pronouns, the time of day,
-#: quantities, results, and the generic nouns a summary asks for ("工作", "问题", "消息").  A search term with any
-#: other character names a subject ("bug", "修好", "金丝雀", "3.4.2", "任务").  Curated, like
-#: ``recall_policy.SYNONYM_GROUPS``.
-_NO_SUBJECT = frozenset("聊说讲谈讨论做干忙弄搞办进展度发生总结回顾汇报复盘对话记录天"
-                        "了的地得着过吗呢吧啊呀么啥哪谁什怎样如何些都也又还就在有是和跟与个件次一几多少全部所分别共没"
-                        "我你他她它们咱大家这那"
-                        "上下午中晚早凌夜傍间时候"
-                        "帮看请问告诉给查列"
-                        "工作问题消息话题主内容事情况到完成处理继续")
-_NO_SUBJECT_EN = frozenset({
-    "we", "you", "i", "me", "my", "our", "us", "they", "them", "it", "the", "a", "an", "of", "on", "in", "at", "to",
-    "for", "with", "about", "and", "or", "have", "has", "had", "get", "got", "was", "were", "is", "are", "be", "been",
-    "all", "any", "anything", "everything", "so", "far", "please", "tell", "show", "list", "what", "which", "who",
-    "how", "summary", "summarize", "summarise", "recap", "talk", "talked", "say", "said", "discuss", "discussed",
-    "chat", "chatted", "do", "did", "done", "doing", "work", "worked", "working", "happen", "happened", "progress",
-    "conversation", "conversations", "discussion", "discussions", "morning", "afternoon", "evening", "night"})
-#: What an acknowledgement is made of besides those: "好的，继续吧", "OK 继续执行", "按你说的做", "可以，开始吧".
-_ACKNOWLEDGING = frozenset("好行嗯哦噢可以收明白了解谢按照执开始对没错")
-_ACKNOWLEDGING_EN = frozenset({"ok", "okay", "yes", "yeah", "sure", "go", "ahead", "thanks", "thank", "continue",
-                               "proceed", "fine", "good", "right", "got"})
+#: The forms a day's question may take once its days and entries are out, whole: who asks or requests ("帮我看看",
+#: "我们"), a time of day, an adverb ("都", "主要"), then what was said, done or reached ("聊了什么", "做了哪些工作",
+#: "聊到哪了", "有什么进展", "进展如何", "总结一下", "的聊天记录").  Curated and strict: a message with anything
+#: more in it ("做什么饭", "继续做的", "忙吗", "在忙呢", "怎么办") is no question about its day.
+_ASKER = (r"(?:帮我|帮忙|请问|请|麻烦|能不能|可不可以|可以|告诉我|给我|跟我|和我|看看|看一下|查查|查一下|说说|讲讲|"
+          r"列一下|列出|问一下|想知道|我想知道|你们|你|我们|咱们|大家|在|的|对话|聊天|会话)")
+_TIME_OF_DAY = (r"(?:(?:上午|下午|中午|晚上|早上|凌晨|夜里|傍晚|半夜)(?:\d{1,2}(?:点|:)\d{0,2}分?)?"
+                r"|\d{1,2}(?:点|:)\d{0,2}分?)(?:左右|前后|之前|之后|以后|以前)?")
+_ADVERB = r"(?:都|主要|一共|具体|大概|总共|分别|又|还|一起|到底|究竟)"
+_WHAT = r"(?:什么|啥|哪些|哪儿|哪里|哪)"
+_THINGS = r"(?:事|事情|工作|问题|内容|话题|东西|方面|活儿|活)"
+_DAY_QUESTION = re.compile(
+    rf"(?:{_ASKER}|{_TIME_OF_DAY})*{_ADVERB}*(?:"
+    rf"(?:聊|说|讲|谈|讨论|做|干|忙|弄|搞|处理|完成|发生|交流|沟通)(?:了|过)?(?:些|点)?{_WHAT}{_THINGS}?"
+    rf"|干嘛了?"
+    rf"|(?:聊|说|做|进行)到{_WHAT}(?:一步|地方)?"
+    rf"|有{_WHAT}新?(?:进展|进度|动静|变化|收获|结果)"
+    rf"|的?(?:进展|进度)(?:如何|怎么样|怎样)?"
+    rf"|(?:总结|回顾|汇总|复盘|梳理|盘点)(?:一下|下)?(?:的?(?:对话|聊天|工作|进展|内容|事情))?"
+    rf"|的?(?:聊天|对话|会话)(?:记录|内容)?"
+    rf")(?:了|呢|吗)?")
+_DAY_QUESTION_EN = re.compile(
+    r"(?:(?:please|can you|could you|tell me|show me|let me know|give me)\s+)*(?:"
+    r"what\s+(?:did|have|were|was|are|do)\s+(?:we|you|i|they)\s+(?:talk(?:ed)?\s+about|discuss(?:ed)?|do|done|doing|"
+    r"work(?:ed|ing)?\s+on|decided?|say|said|chat(?:ted)?\s+about|get\s+done)"
+    r"|what\s+happened|what\s+was\s+(?:said|done|discussed)"
+    r"|(?:summarize|summarise|recap)(?:\s+(?:the\s+)?(?:day|conversation|chat|discussion|work))?"
+    r"|(?:any\s+)?(?:updates|progress)"
+    r")(?:\s+(?:on|from|of|in|at|so\s+far))?")
+_TRAILING = re.compile(r"[\s?？。.!！~～…,，、]+$")
+#: What an acknowledgement is made of: "好的，继续吧", "OK 继续执行", "按你说的做", "确认", "下一步", "可以，就按这个来";
+#: and in Latin letters "lgtm", "sounds good", a single letter or a number.  Any other character says something:
+#: "错了", "别做了", "中午吃了面".
+_ACK_CHARACTERS = frozenset("好行嗯哦噢喔哈嘞滴哒啦嘛吧呀啊哟呢可以收到明白了解懂谢按照执开始继续接着下一步确认同意批准允许"
+                            "辛苦推进就这样那个来去的你我说做对是没问题稍等")
+_ACK_WORDS = frozenset({"ok", "okay", "yes", "yeah", "yep", "yup", "sure", "go", "ahead", "on", "thanks", "thank", "you",
+                        "thx", "ty", "np", "continue", "proceed", "fine", "good", "great", "cool", "nice", "perfect",
+                        "right", "got", "it", "lgtm", "sounds", "looks", "keep", "going", "done", "next", "alright",
+                        "all", "noted"})
+_CJK = re.compile(r"[㐀-䶿一-鿿豈-﫿]")
 
 _FULL_DATE = re.compile(r"(?<!\d)(\d{4})\s*[-/年]\s*(\d{1,2})\s*[-/月]\s*(\d{1,2})\s*[日号]?(?!\d)")
 _MONTH_DAY = re.compile(r"(?<![\d.])(\d{1,2})\s*月\s*(\d{1,2})\s*[日号]?(?![\d.])")
@@ -77,8 +90,11 @@ _RANGE_TAIL = re.compile(r"\s*(?:到|至|~|～|-|—|–)\s*(?:\d{4}\s*[-/年]\s
 #: Days before today each relative word names.
 _RELATIVE = (("大前天", 3), ("前天", 2), ("昨天", 1), ("昨日", 1), ("昨晚", 1), ("昨夜", 1), ("今天", 0),
              ("今日", 0), ("今早", 0), ("今晨", 0), ("今晚", 0), ("今夜", 0))
-#: A character before which a relative word is part of another word: 如今 ("如今天下"), 往前 ("往前天数").
-_NOT_A_DAY_AFTER = frozenset("如往向提")
+#: A character before which a relative word is part of another word: 如今 ("如今天下"), 往前 ("往前天数"), 之前,
+#: 以前, 目前 ("目前天天都在做什么"), 至今.
+_NOT_A_DAY_AFTER = frozenset("如往向提之以目至")
+#: Places a message may name days in before it is a list or a log, not a question about a day.
+_MAX_DAY_MENTIONS = 16
 _RELATIVE_EN = re.compile(r"(?<![A-Za-z])(today|yesterday)(?![A-Za-z])", re.IGNORECASE)
 #: Characters an entry's name may be written with or without between its own: spaces, and "的" ("工作机的 Codex").
 _NAME_GAP = r"[\s的]*"
@@ -119,6 +135,9 @@ def _named_days(text: str, today: date) -> tuple[list[date], list[tuple[int, int
         named.add(day if day is not None else span)
         if day is not None and _EARLIEST <= day <= today and day not in days:
             days.append(day)
+        if len(spans) > _MAX_DAY_MENTIONS:
+            # A log that repeats "今天" thousands of times cost a quadratic scan of its mentions (review of 3.4.6).
+            raise _NoScope
 
     for match in _FULL_DATE.finditer(text):
         if _RANGE_TAIL.match(text, match.end()):
@@ -189,28 +208,26 @@ def _named_entries(text: str, entries: Mapping[str, str]) -> tuple[list[str], li
     return ids, [(start, end) for start, end, _ in chosen]
 
 
-def _names_nothing(term: str, characters: frozenset[str], words: frozenset[str]) -> bool:
-    if term.isascii():
-        return term.lower() in words
-    return set(term) <= characters
+class _NoScope(Exception):
+    """A message that cannot be read as naming a few days."""
 
 
-def asks_what_was_said(rest: str, terms: Iterable[str]) -> bool:
-    """Whether the rest of a day's question, its days and entries taken out, asks only what was said or done then:
-    it asks or requests, it holds a word of saying or doing, and none of its search ``terms`` names a subject."""
-    text = rest.casefold()
-    if not (any(word in text for word in _SAID_OR_DONE) or _SAID_OR_DONE_EN.search(text)):
-        return False
-    if not _ASKING.search(text):
-        return False
-    return all(_names_nothing(term, _NO_SUBJECT, _NO_SUBJECT_EN) for term in terms)
+def asks_what_was_said(rest: str) -> bool:
+    """Whether the rest of a day's question, its days and entries taken out, is whole one of the forms of a question or
+    request about what was said or done then (``_DAY_QUESTION``, ``_DAY_QUESTION_EN``)."""
+    text = _TRAILING.sub("", unicodedata.normalize("NFKC", rest).casefold())
+    if _DAY_QUESTION.fullmatch("".join(text.split())):
+        return True
+    return _DAY_QUESTION_EN.fullmatch(" ".join(text.split())) is not None
 
 
-def says_something(terms: Iterable[str]) -> bool:
-    """Whether a short message, by its search ``terms``, says anything of its day: "好的，继续吧", "OK 继续执行" and
-    "按你说的做" do not."""
-    return not all(_names_nothing(term, _NO_SUBJECT | _ACKNOWLEDGING, _NO_SUBJECT_EN | _ACKNOWLEDGING_EN)
-                   for term in terms)
+def says_something(text: str) -> bool:
+    """Whether a short message says anything of its day (``_ACK_CHARACTERS``, ``_ACK_WORDS``)."""
+    folded = unicodedata.normalize("NFKC", text).casefold()
+    if any(_CJK.match(character) and character not in _ACK_CHARACTERS for character in folded):
+        return True
+    return any(not word.isdigit() and len(word) > 1 and word not in _ACK_WORDS
+               for word in re.findall(r"[a-z0-9]+", folded))
 
 
 def query_scope(query: str, *, now: str, zone: tzinfo | None, entries: Mapping[str, str]) -> QueryScope | None:
@@ -218,12 +235,15 @@ def query_scope(query: str, *, now: str, zone: tzinfo | None, entries: Mapping[s
 
     ``now`` is the recall's clock (UTC ISO); ``entries`` maps a shared store's entry ids to their display names
     (empty in a store of one host).  An entry named without a day is no scope.  Whether the rest asks what was said
-    is the caller's to judge (``asks_what_was_said`` over its search terms); ``rest`` is at most 8,192 characters.
+    is the caller's to judge (``asks_what_was_said``); ``rest`` is at most 8,192 characters.
     """
     text = unicodedata.normalize("NFKC", query)
     moment = datetime.fromisoformat(now.replace("Z", "+00:00"))
     today = (moment.astimezone(zone) if zone is not None else moment.astimezone()).date()
-    named = _named_days(text, today)
+    try:
+        named = _named_days(text, today)
+    except _NoScope:
+        return None
     if named is None:
         return None
     days, day_spans = named

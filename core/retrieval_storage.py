@@ -662,7 +662,7 @@ class RetrievalStorage:
                  *((context.as_of,) if as_of else ()), _SCOPED_SCAN_ROWS),
             ).fetchall()
             rows = [row for row in rows if _source_key(row["event_id"], row["source_revision"]) not in excluded
-                    and (row["short"] is None or says_something(lexical_terms(row["short"])))]
+                    and (row["short"] is None or says_something(row["short"]))]
             # A message longer than an automatic packet can hold beside others is left out of it whole (the compiler
             # never slices content), and on the coding clients' days most messages are: offered first, they were
             # dropped and other days' short items delivered instead.
