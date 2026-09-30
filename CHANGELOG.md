@@ -2,6 +2,27 @@
 
 All notable changes to `scope-recall` will be documented in this file.
 
+## [3.4.5] - 2026-09-30
+
+3.4.5 keeps a slow statement from holding up a recall, lets a recall's diagnostic ref be read, and stops `doctor` calling a busy worker failed. Nothing else changes.
+
+### Recall
+
+- A candidate statement still running at the recall's deadline is interrupted: that channel gives nothing, the gap says `deadline_exceeded_collect`, and what the channels before it found still answers. A statement cannot see the deadline itself: before 3.4.3 the word search ran 17-22 s for a long Telegram message and the recall came back empty long after its deadline, the Hermes turn waiting for it. On a copy of the shared store every recall of the owner's real questions and of two agents' older question sets answers exactly as on 3.4.4, and its median time is unchanged.
+- `inspect` reads a recall packet's `diagnostic_ref` for the session that recalled: that recall's counts and gap codes, kept by the process that ran it for its last 64 recalls. It answered `SOURCE_MISSING` for every one; it still does for another session, or for a ref that process no longer holds, such as one from a prompt hook.
+
+### Maintenance
+
+- `doctor` no longer reports a worker pass that yielded as `worker_last_exit_failed`: exit 75 with status busy means another writer held the store, or another pass the worker lock, and the supervisor tries again after a pause. Any other non-zero exit still is a failure.
+
+### Upgrading from 3.4.4
+
+1. Stop the hosts and the Scope Recall worker, and take a `backup`.
+2. Install the 3.4.5 package, then run `plan-install` and `apply-install` for each host.
+3. Start the hosts again and run `doctor`.
+
+The store's schema is unchanged (1110). Every change, with its details, is in [CHANGELOG.md](https://github.com/410979729/scope-recall-hermes/blob/v3.4.5/CHANGELOG.md).
+
 ## [3.4.4] - 2026-09-30
 
 3.4.4 gives a question asked again what it was told before, stops Hermes storing a turn's message twice, and keeps one recall channel off the whole work queue. Nothing else changes.

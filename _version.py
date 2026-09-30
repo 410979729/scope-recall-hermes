@@ -6,4 +6,4 @@ plugin.json, and the packaging allowlist -- is stamped from here by
 them drifts.  Change it here and nowhere else.
 """
 
-__version__ = "3.4.4"
+__version__ = "3.4.5"
