@@ -93,14 +93,18 @@ def test_a_question_asked_again_word_for_word_is_given_what_it_was_told(app):
     assert question.ref not in refs
 
 
-def test_a_word_or_two_sent_again_does_not_bring_back_an_old_turn(app):
-    """"继续" or "好的" sent again asks nothing an old turn answered, so its older copy leads nowhere."""
+def test_a_short_command_sent_again_does_not_bring_back_an_old_turn(app):
+    """A short command sent again asks nothing an old turn answered, so its older copy leads nowhere.  "继续执行"
+    holds three overlapping character pairs, "按你说的做" four: with three the bar, both brought back every old
+    turn they had opened (review of 3.4.4)."""
     core, ctx = app
-    _say(core, ctx, "继续", origin="human_direct", role="user", when="2026-09-02T09:00:00Z", key="TEST-turn/short-ask")
-    told = _say(core, ctx, TOLD, origin="assistant_visible", role="assistant", when="2026-09-02T09:00:12Z",
-                key="TEST-turn/short-answer")
-    reader = replace(ctx, session_id="TEST-turn-short-reader")
-    assert told.ref not in [item["ref"] for item in _packet(core, reader, "继续", mode="auto")["items"]]
+    for index, command in enumerate(("继续", "继续执行", "按你说的做")):
+        _say(core, ctx, command, origin="human_direct", role="user", when=f"2026-09-02T09:{index:02d}:00Z",
+             key=f"TEST-turn/short-ask-{index}")
+        told = _say(core, ctx, f"{TOLD}（第{index}次）", origin="assistant_visible", role="assistant",
+                    when=f"2026-09-02T09:{index:02d}:12Z", key=f"TEST-turn/short-answer-{index}")
+        reader = replace(ctx, session_id=f"TEST-turn-short-reader-{index}")
+        assert told.ref not in [item["ref"] for item in _packet(core, reader, command, mode="auto")["items"]], command
 
 
 def test_a_reply_belongs_to_the_turn_it_was_written_in(app):

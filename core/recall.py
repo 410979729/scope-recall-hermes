@@ -51,9 +51,11 @@ CLAIM_CANDIDATES = 16
 #: ranked in the mid-teens, and still ranks as context when nothing answers.
 CONTEXT_ONLY_WEIGHT = 0.6
 #: Meaningful terms a query needs before an older copy of it leads to what that copy was told
-#: (``RetrievalPipeline._expand``).  A message of a word or two sent again, "继续" or "好的", asks nothing an old
-#: turn answered: of the owner's prompts over two weeks, 29 of the 63 with fewer terms had an exact older copy.
-ECHO_TURN_MIN_TERMS = 3
+#: (``RetrievalPipeline._expand``).  A short command sent again asks nothing an old turn answered.  Chinese terms
+#: are overlapping character pairs, so "继续执行" holds three and "按你说的做" four, and three let both bring back
+#: every old turn they had opened (review of 3.4.4); five is about six characters.  Of the owner's prompts over
+#: two weeks, 33 of the 115 with fewer had an exact older copy; of the owner's real questions, 167 of 173 have five.
+ECHO_TURN_MIN_TERMS = 5
 _CHANNELS = ("exact", "lexical", "claim", "recent", "vector")
 #: Vector admission reasons that are reported, and how; the rest are silent.
 _VECTOR_REJECTION_GAPS = {
@@ -362,6 +364,9 @@ class RetrievalPipeline:
             for seed in sorted((*frontier, *echoes), key=lambda item: (-item.fusion_score, item.key)):
                 if inspected >= turn_bound:
                     break
+                # Checked per seed as well: a seed whose turn has no reply still costs its two look-ups.
+                if self._remaining(context) <= 0:
+                    return stopped("deadline_exceeded_relation")
                 for candidate in turn_replies(tx, seed):
                     if inspected >= turn_bound:
                         break

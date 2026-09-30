@@ -165,6 +165,7 @@ def test_a_rebuilt_agent_s_provider_gets_its_session_s_hooks(installed_core, ini
     try:
         _global_callback("pre_llm_call")(session_id="TEST-session-1", turn_id="turn-rebuilt", platform="cli",
                                          user_message="TEST 开始长任务")
+        assert "turn-rebuilt" in new._user_captured_turns and "turn-rebuilt" not in old._user_captured_turns
         new.on_turn_start(5, "TEST 开始长任务")
         new.prefetch("TEST 开始长任务", session_id="TEST-session-1")
         new.sync_turn("TEST 开始长任务", "TEST 长任务完成。", session_id="TEST-session-1")

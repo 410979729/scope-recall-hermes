@@ -4,13 +4,13 @@ All notable changes to `scope-recall` will be documented in this file.
 
 ## [3.4.4] - 2026-09-30
 
-3.4.4 gives a question asked again what it was told before, and stops Hermes storing a turn's message twice. Nothing else changes.
+3.4.4 gives a question asked again what it was told before, stops Hermes storing a turn's message twice, and keeps one recall channel off the whole work queue. Nothing else changes.
 
 ### Recall
 
-- A question asked again word for word is given what it was told before. The automatic recall leaves out an older copy of the current message, since the message already says it, and that copy was the only way to the answer it had received whenever the answer shares no word with the question. It now still leads to its turn's replies and is never delivered itself; a message of fewer than three meaningful words, such as "继续" or "好的", does not. On a copy of the shared store, over the owner's real questions of the last two weeks asked again on every agent, the answer is in the top five for 127 of 173 instead of 59 by words alone, and none that was answered before is lost; facts, rephrased questions, questions with no answer and two agents' older question sets are answered exactly as before.
-- A turn's replies no longer stop at the same message stored again (see below): the 125 Hermes turns of 2026-09-16 to 09-29 that were stored that way lead to their answers again.
-- The channel that offers the session's messages still waiting to be consolidated reads the pending queue, not every consolidation ever made, which the queue keeps: about 16 ms of each recall on the shared store, growing with every consolidation, and with one scope every event of it.
+- A question asked again word for word is given what it was told before. The automatic recall leaves out an older copy of the current message, since the message already says it, and that copy was the only way to the answer it had received whenever the answer shares no word with the question. It now still leads to its turn's replies and is never delivered itself. A short message does not: one of fewer than five search terms, about six Chinese characters, such as "继续执行" or "按你说的做", brings back no old turn. On a copy of the shared store, over the owner's real questions of the last two weeks asked again on every agent, the answer is in the top five for 124 of 173 instead of 59, and none that was answered before is lost; facts, rephrased questions, questions with no answer and two agents' older question sets are answered exactly as before. All of it was measured by words alone: the embedding provider's project was over its monthly spending cap.
+- A turn's replies no longer stop at the same message stored again (see below): of the 125 Hermes turns of 2026-09-16 to 09-29 that were stored that way, 100 lead to their answers again; most of the rest were answered more than 30 minutes later, past the window a turn is read in.
+- The channel that offers the session's messages still waiting to be consolidated reads the pending queue, not every consolidation ever made, which the queue keeps: 6-12 ms of each recall on the shared store, growing with every consolidation, is now 0.1 ms, and with one scope it no longer reads every event of that scope.
 
 ### Hermes capture
 
