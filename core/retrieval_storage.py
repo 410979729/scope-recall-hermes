@@ -471,11 +471,15 @@ class RetrievalStorage:
         if context.as_of is not None:
             as_of = " AND (e.occurred_at IS NULL OR e.occurred_at<=?)"
             params.append(context.as_of)
+        # The statement starts from the query's terms.  A store keeps no planner statistics, so SQLite weighs the terms
+        # against the scopes by rule of thumb, and with a long enough query it started from the scope index instead:
+        # every event of the audience read one by one, 21 s for a Telegram message of 72 characters on the shared
+        # store, and the recall empty at its deadline.  ``+`` keeps the scope filter from choosing the index.
         rows = tx._check().execute(
             f"""SELECT e.event_id,e.source_revision,e.source_id,COUNT(DISTINCT {credit}) AS hits,
                        GROUP_CONCAT(DISTINCT hex({credit})) AS matched_term_hexes
                 FROM {lexical_index.JOIN}
-                WHERE t.term IN ({term_marks}) AND e.scope_id IN ({scope_marks})
+                WHERE t.term IN ({term_marks}) AND +e.scope_id IN ({scope_marks})
                   AND e.read_blocked=0 AND (e.project_id IS NULL OR e.project_id=?)
                   AND (e.branch_id IS NULL OR e.branch_id=?)
                   AND NOT EXISTS(SELECT 1 FROM object_blocks b WHERE b.object_kind='event'

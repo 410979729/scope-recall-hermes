@@ -205,6 +205,47 @@ def test_P08_the_lexical_channel_keeps_its_terms_within_the_posting_budget(app, 
         assert retrieval_storage._discriminating_terms(tx, ("quarkonium", "gluonfield")) == ("quarkonium",)
 
 
+def test_P08_the_lexical_statement_starts_from_the_query_s_terms_however_many_there_are(app, monkeypatch):
+    """A store has no planner statistics, so SQLite weighs the query's terms against the audience's scopes by rule of
+    thumb, and past some thirty terms it started from the scope index instead: every event of the audience read, one
+    by one.  On the shared store a Telegram message of 72 characters took 21 s that way and its recall came back
+    empty at every stage's deadline; so did most messages over 80 characters on three instances (baseline of 3.4.2,
+    2026-09-30).  The scope filter never drives the statement, and what it finds is the same."""
+    from scope_recall.core import retrieval_storage
+
+    core, ctx = app
+    letters = "abcdefghijklmnopqrstuvwxyz"
+    words = [f"plan{first}{second}term" for first in letters[:8] for second in letters[:8]]
+    target = capture(core, ctx, " ".join(words[:12]) + " 计划目标。", key="TEST-p08/plan/target")
+    plans = []
+    lexical = retrieval_storage.RetrievalStorage.lexical
+
+    class Planned:
+        def __init__(self, conn):
+            self._conn = conn
+
+        def execute(self, sql, params=()):
+            if "GROUP_CONCAT(DISTINCT hex(" in sql:
+                plans.append(self._conn.execute("EXPLAIN QUERY PLAN " + sql, params).fetchall()[0][3])
+            return self._conn.execute(sql, params)
+
+    def planned(self, tx, context, *, limit):
+        check = tx._check
+        tx._check = lambda: Planned(check())
+        try:
+            return lexical(self, tx, context, limit=limit)
+        finally:
+            tx._check = check
+
+    monkeypatch.setattr(retrieval_storage.RetrievalStorage, "lexical", planned)
+    found = {}
+    for count in (4, 12, 24, 40, 64):
+        result = core.recall(ctx, recall_request(query=" ".join(words[:count]), mode="current"), deadline_seconds=10)
+        found[count] = target.ref in [item.ref for item in result.items]
+    assert len(plans) >= 5 and all(plan.startswith("SEARCH t ") for plan in plans), plans
+    assert found[4] and found[12], found
+
+
 def test_P08_lexical_never_prunes_a_common_hard_identifier(app):
     """Hydration still requires the identifier, so SQL must still search for it.
 
