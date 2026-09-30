@@ -23,13 +23,7 @@ authority; host adapters share the same contracts.
 none failing. They check contracts, storage and the hosts' wiring; none of them
 measures recall quality. Every accuracy figure in the notes was measured by us, on
 our own corpora, by hand, and there is no regression suite you or we can re-run
-automatically -- that is the first item in *What is not finished*. A formal
-model-evaluation gate (P18) was declared for that and never completed: it needed an
-evaluation corpus and a scorer independent of the authors, which this project does
-not have, so every release from 3.1.0 to 3.3.0 reported it missing. 3.4.0 removes it
-rather than keep a gate nobody can pass. Read a green test count as exactly that.
-The integration (about 2,330 tests) and packaging (about 135) tiers both exit 0 with
-none failing.
+automatically -- that is the first item in *What is not finished*.
 
 ## For agents: install or upgrade on the user's behalf
 
