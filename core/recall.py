@@ -3,9 +3,10 @@ from __future__ import annotations
 
 from dataclasses import replace
 from itertools import islice
+import threading
 import time
 import unicodedata
-from typing import Protocol
+from typing import Any, Callable, Protocol
 
 from ..contracts import ContractError
 from .background_context import background_candidates, current_task_candidate
@@ -39,6 +40,12 @@ from .vector_failure import vector_failure_label
 #: gone -- each one is a single bounded storage read, and the overrun is still
 #: reported, so nothing is hidden.
 MINIMUM_HYDRATION_CAP = 16
+#: Grace given to a semantic search that is still working when the recall's window is gone.
+#: A helper that ran out of its own budget names the fault (``helper_open_deadline`` and
+#: friends) and that name is what an operator reads; a channel still running after this
+#: grace is reported as a plain deadline instead.  Bounded, because the recall's answer
+#: must not wait on a channel that has already lost its slice.
+_VECTOR_JOIN_GRACE = 0.25
 #: Claims offered per round.  A packet holds at most 30 items and a default one
 #: six; a claim that answers competes for those slots on rank, so a deep pool
 #: of claims would only spend hydration on statements that cannot be shown.
@@ -67,6 +74,37 @@ _VECTOR_SILENT_REJECTIONS = frozenset({"vector_below_threshold", "vector_id_miss
 
 class RetrievalClock(Protocol):
     def monotonic(self) -> float: ...
+
+
+class _StartedChannel:
+    """One channel's collection started before the others and joined when collected.
+
+    The semantic channel leaves this machine to embed the query and search a remote
+    collection; every other channel reads local storage.  Run after them, its slice was
+    what the deadline had left -- measured on this instance, a host prefetch that spent
+    3.66 s of its five-second window reached the search with almost nothing left, which is
+    what the transport timeout in its gap meant.  Started first and joined when its turn
+    comes, it costs the recall the longer of the two, not their sum, and the local
+    channels keep their own share of the deadline.
+    """
+
+    def __init__(self, work: Callable[[], tuple[Any, ...]]) -> None:
+        self._value: tuple[Any, ...] = ()
+        self._thread = threading.Thread(target=self._run, args=(work,), daemon=True)
+        self._thread.start()
+
+    def _run(self, work: Callable[[], tuple[Any, ...]]) -> None:
+        try:
+            self._value = work()
+        except Exception:  # a channel that fails yields nothing; its gap is recorded by the caller
+            self._value = ()
+
+    def join(self, timeout: float) -> tuple[Any, ...] | None:
+        """The collected values, or None when the deadline passed before they landed."""
+        self._thread.join(max(0.0, timeout))
+        if self._thread.is_alive():
+            return None
+        return self._value
 
 
 class ChannelBudget:
@@ -231,6 +269,17 @@ class RetrievalPipeline:
             # same current-source and channel qualification gate.
             return self._fuse_candidates([candidate for candidate in raw if self._admit(candidate, context)], seen)
 
+        # The semantic channel leaves this machine to embed the query and search a remote
+        # collection; the channels below read local storage.  Started here and joined when
+        # its turn comes, its slice is the whole window instead of what the local channels
+        # left -- which is what made a host prefetch of 3.66 s report a transport timeout.
+        vector_gaps: list[str] = []
+
+        def vector_work() -> tuple[CandidateRef, ...]:
+            return self._vector_candidates(context, vector_gaps, budget=budget, prefetched=prefetched)
+
+        vector_started = _StartedChannel(vector_work)
+
         channels = (
             ("exact", self.storage_reader.exact, context.limits.candidate_pool),
             ("lexical", self.storage_reader.lexical, context.limits.candidate_pool),
@@ -258,7 +307,16 @@ class RetrievalPipeline:
         if self._remaining(context) <= 0:
             gaps.append("deadline_exceeded_collect")
             return admitted()
-        raw.extend(self._vector_candidates(context, gaps, budget=budget, prefetched=prefetched))
+        values = vector_started.join(self._remaining(context))
+        if values is None:
+            # Still working: give it a bounded grace to report its own fault, so the gap
+            # names the helper's budget rather than a generic deadline.
+            values = vector_started.join(_VECTOR_JOIN_GRACE)
+        if values is None:
+            gaps.append("deadline_exceeded_vector")
+        else:
+            raw.extend(values)
+        gaps.extend(vector_gaps)
         return admitted()
 
     # -- hydration and admission ----------------------------------------------
