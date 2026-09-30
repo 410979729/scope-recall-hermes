@@ -630,12 +630,18 @@ class RetrievalStorage:
         visible messages in the same scope and session after the message, in
         capture order, until the person speaks again.  A gateway can capture a
         whole turn under one timestamp, so equal times fall back to rowid.
+
+        The same message stored again is not the person speaking again.  Until
+        3.4.4 a Hermes provider rebuilt with its agent stored a turn's message
+        a second time, with the reply, under the host's ordinal: 125 of the 209
+        Hermes turns of 2026-09-16..29 that seemed to have no reply were that,
+        and the first copy stopped at the second before reaching the answer.
         """
         if candidate.kind != "event":
             return ()
         conn = tx._check()
         row = conn.execute(
-            """SELECT rowid,scope_id,session_id,role,origin,occurred_at FROM source_events
+            """SELECT rowid,scope_id,session_id,role,origin,occurred_at,content_sha256 FROM source_events
                WHERE event_id=? AND source_revision=?""",
             (candidate.ref, candidate.revision),
         ).fetchone()
@@ -647,7 +653,7 @@ class RetrievalStorage:
         window_end = (datetime.fromisoformat(opened) + timedelta(seconds=TURN_REPLY_SECONDS)).isoformat(
             timespec="microseconds").replace("+00:00", "Z")
         rows = conn.execute(
-            """SELECT event_id,source_revision,role,origin FROM source_events
+            """SELECT event_id,source_revision,role,origin,content_sha256 FROM source_events
                WHERE scope_id=? AND occurred_at>=? AND occurred_at<=? AND session_id=?
                  AND (occurred_at>? OR rowid>?) AND read_blocked=0 AND suppressed=0
                ORDER BY occurred_at,rowid LIMIT 64""",
@@ -656,6 +662,8 @@ class RetrievalStorage:
         replies: list[CandidateRef] = []
         for reply in rows:
             if reply["role"] == "user":
+                if reply["origin"] == "human_direct" and reply["content_sha256"] == row["content_sha256"]:
+                    continue
                 break
             if reply["role"] == "assistant" and reply["origin"] == "assistant_visible":
                 replies.append(CandidateRef("event", reply["event_id"], int(reply["source_revision"]), "relation",

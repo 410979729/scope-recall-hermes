@@ -50,6 +50,10 @@ CLAIM_CANDIDATES = 16
 #: of the evidence it quoted.  At 0.6 a first-ranked one falls below a reply that
 #: ranked in the mid-teens, and still ranks as context when nothing answers.
 CONTEXT_ONLY_WEIGHT = 0.6
+#: Meaningful terms a query needs before an older copy of it leads to what that copy was told
+#: (``RetrievalPipeline._expand``).  A message of a word or two sent again, "继续" or "好的", asks nothing an old
+#: turn answered: of the owner's prompts over two weeks, 29 of the 63 with fewer terms had an exact older copy.
+ECHO_TURN_MIN_TERMS = 3
 _CHANNELS = ("exact", "lexical", "claim", "recent", "vector")
 #: Vector admission reasons that are reported, and how; the rest are silent.
 _VECTOR_REJECTION_GAPS = {
@@ -257,15 +261,20 @@ class RetrievalPipeline:
 
     # -- hydration and admission ----------------------------------------------
 
-    def _hydrate_admit(self, tx, candidate: CandidateRef, context: SearchContext, *, original_query: str | None = None) -> RetrievedObject | None:
+    def _hydrate_admit(self, tx, candidate: CandidateRef, context: SearchContext, *, original_query: str | None = None,
+                       echoes: list[CandidateRef] | None = None) -> RetrievedObject | None:
         obj = self.storage_reader.hydrate(tx, candidate, context)
         if obj is None:
             return None
         # The current message already supplies this text. Older copies add no
         # information to automatic context and can crowd out its actual evidence.
+        # What such a copy was told in its turn still answers it: the copy is set
+        # aside in ``echoes`` to lead to its turn's replies, never delivered.
         if context.mode == "auto" and obj.kind == "event":
             query = context.query if original_query is None else original_query
             if unicodedata.normalize("NFKC", obj.content).strip() == unicodedata.normalize("NFKC", query).strip():
+                if echoes is not None:
+                    echoes.append(candidate)
                 return None
         if candidate.source != "exact_ref" and not identifiers_compatible(context.query, obj.content):
             return None
@@ -278,7 +287,8 @@ class RetrievalPipeline:
         return obj
 
     def _hydrate_all(self, tx, hydrated: list[tuple[CandidateRef, RetrievedObject]], candidates, context: SearchContext,
-                     gaps: list[str], *, floor: int, original_query: str | None = None) -> None:
+                     gaps: list[str], *, floor: int, original_query: str | None = None,
+                     echoes: list[CandidateRef] | None = None) -> None:
         """Hydrate in rank order; once the deadline is gone, only up to ``floor`` items."""
         known = {candidate.key for candidate, _obj in hydrated}
         for candidate in candidates:
@@ -287,7 +297,7 @@ class RetrievalPipeline:
                 break
             if candidate.key in known:
                 continue
-            obj = self._hydrate_admit(tx, candidate, context, original_query=original_query)
+            obj = self._hydrate_admit(tx, candidate, context, original_query=original_query, echoes=echoes)
             if obj is not None:
                 hydrated.append((candidate, obj))
                 known.add(candidate.key)
@@ -317,13 +327,18 @@ class RetrievalPipeline:
     #: what the question was told, and are read before the hops.
     RELATION_WEIGHT = RELATION_WEIGHT
 
-    def _expand(self, tx, context: SearchContext, seeds: tuple[CandidateRef, ...], gaps: list[str]) -> tuple[CandidateRef, ...]:
-        """Bounded relation hops out of the seeds; every inspected object counts."""
+    def _expand(self, tx, context: SearchContext, seeds: tuple[CandidateRef, ...], gaps: list[str], *,
+                echoes: tuple[CandidateRef, ...] = ()) -> tuple[CandidateRef, ...]:
+        """Bounded relation hops out of the seeds; every inspected object counts.
+
+        ``echoes`` are older copies of the current message (``_hydrate_admit``): each leads to the replies of its turn
+        like a seed, and to nothing else.
+        """
         limits = context.limits
         if limits.relation_hops == 0 or limits.relation_objects == 0:
             return seeds
         all_candidates = list(seeds)
-        seen = {candidate.key for candidate in seeds}
+        seen = {candidate.key for candidate in (*seeds, *echoes)}
         frontier = list(seeds)
         inspected = 0
 
@@ -337,10 +352,14 @@ class RetrievalPipeline:
         # answer.  Half the bound is the most they may take, because a query
         # that recalls many messages would otherwise leave nothing for the
         # claims and episodes an answer is just as often reached through.
+        # A question asked again word for word is refused as an echo of the
+        # current message, and it was the only way to what it had been told:
+        # over the owner's real questions asked again on the shared store, 42
+        # of the 46 answers never reached were behind such a copy (3.4.2).
         turn_replies = getattr(self.storage_reader, "turn_replies", None)
         if callable(turn_replies):
             turn_bound = max(1, limits.relation_objects // 2)
-            for seed in sorted(frontier, key=lambda item: (-item.fusion_score, item.key)):
+            for seed in sorted((*frontier, *echoes), key=lambda item: (-item.fusion_score, item.key)):
                 if inspected >= turn_bound:
                     break
                 for candidate in turn_replies(tx, seed):
@@ -498,8 +517,11 @@ class RetrievalPipeline:
         try:
             with self.storage.read(working.trusted_context, remaining_seconds=max(self._remaining(working), 0.001)) as tx:
                 epoch = self.storage_reader.epoch(tx)
-                hydrated, seed_count = self._collect_rounds(tx, working, gaps, prefetched=prefetched)
-                self._hydrate_related(tx, working, hydrated, gaps)
+                echoes: list[CandidateRef] = []
+                hydrated, seed_count = self._collect_rounds(tx, working, gaps, prefetched=prefetched, echoes=echoes)
+                if len(meaningful_query_terms(working.query)) < ECHO_TURN_MIN_TERMS:
+                    echoes.clear()
+                self._hydrate_related(tx, working, hydrated, gaps, echoes=tuple(echoes))
                 ranked, query_items = self._select(tx, working, hydrated, gaps)
                 return self._result(working, epoch, ranked, query_items, gaps, seed_count, len(hydrated))
         except ContractError as exc:
@@ -509,9 +531,10 @@ class RetrievalPipeline:
         except Exception as exc:
             return _empty_result(working, f"sqlite_unavailable:{type(exc).__name__}")
 
-    def _collect_rounds(self, tx, working: SearchContext, gaps: list[str], *,
-                        prefetched=None) -> tuple[list[tuple[CandidateRef, RetrievedObject]], int]:
-        """The first round plus at most one directed follow-up for an open need."""
+    def _collect_rounds(self, tx, working: SearchContext, gaps: list[str], *, prefetched=None,
+                        echoes: list[CandidateRef] | None = None) -> tuple[list[tuple[CandidateRef, RetrievedObject]], int]:
+        """The first round plus at most one directed follow-up for an open need; older copies of the current
+        message found on the way go to ``echoes``."""
         hydrated: list[tuple[CandidateRef, RetrievedObject]] = []
         seen: set[tuple[str, str, int]] = set()
         seed_count = 0
@@ -529,7 +552,8 @@ class RetrievalPipeline:
             seeds = self._collect(tx, round_context, gaps, seen=seen, budget=budget, prefetched=prefetched)
             seed_count += len(seeds)
             seen.update(candidate.key for candidate in seeds)
-            self._hydrate_all(tx, hydrated, seeds, round_context, gaps, floor=floor, original_query=working.query)
+            self._hydrate_all(tx, hydrated, seeds, round_context, gaps, floor=floor, original_query=working.query,
+                              echoes=echoes)
             if round_index + 1 >= max_rounds:
                 break
             items = tuple(obj for _candidate, obj in hydrated)
@@ -549,10 +573,12 @@ class RetrievalPipeline:
                     hydrated.append((replace(task[0], source="relation", lexical_score=1.0), task[1]))
         return hydrated, seed_count
 
-    def _hydrate_related(self, tx, working: SearchContext, hydrated: list[tuple[CandidateRef, RetrievedObject]], gaps: list[str]) -> None:
+    def _hydrate_related(self, tx, working: SearchContext, hydrated: list[tuple[CandidateRef, RetrievedObject]], gaps: list[str],
+                         *, echoes: tuple[CandidateRef, ...] = ()) -> None:
         seeds = tuple(candidate for candidate, _obj in hydrated)
-        known = {candidate.key for candidate in seeds}
-        expanded = [candidate for candidate in self._expand(tx, working, seeds, gaps) if candidate.key not in known]
+        known = {candidate.key for candidate in (*seeds, *echoes)}
+        expanded = [candidate for candidate in self._expand(tx, working, seeds, gaps, echoes=echoes)
+                    if candidate.key not in known]
         floor = min(working.limits.max_items, MINIMUM_HYDRATION_CAP)
         self._hydrate_all(tx, hydrated, expanded, working, gaps, floor=floor)
 

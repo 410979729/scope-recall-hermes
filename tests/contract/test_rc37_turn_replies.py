@@ -77,6 +77,32 @@ def test_the_answer_is_delivered_in_the_packet(app):
     assert question.ref in refs and answer.ref in refs
 
 
+def test_a_question_asked_again_word_for_word_is_given_what_it_was_told(app):
+    """The automatic recall refuses an older copy of the current message: the message already says it.  The copy
+    was also the only way to what it had been told, when the answer shares no word with it: over the owner's real
+    questions asked again on the shared store, 42 of the 46 answers never reached were behind such a copy (baseline
+    of 3.4.2, 2026-09-30).  The copy leads to its turn and is still never delivered."""
+    core, ctx = app
+    question = _say(core, ctx, ASK, origin="human_direct", role="user", when="2026-09-02T09:00:00Z",
+                    key="TEST-turn/again-ask")
+    answer = _say(core, ctx, TOLD, origin="assistant_visible", role="assistant", when="2026-09-02T09:00:12Z",
+                  key="TEST-turn/again-answer")
+    reader = replace(ctx, session_id="TEST-turn-again-reader")
+    refs = [item["ref"] for item in _packet(core, reader, ASK, mode="auto")["items"]]
+    assert answer.ref in refs
+    assert question.ref not in refs
+
+
+def test_a_word_or_two_sent_again_does_not_bring_back_an_old_turn(app):
+    """"继续" or "好的" sent again asks nothing an old turn answered, so its older copy leads nowhere."""
+    core, ctx = app
+    _say(core, ctx, "继续", origin="human_direct", role="user", when="2026-09-02T09:00:00Z", key="TEST-turn/short-ask")
+    told = _say(core, ctx, TOLD, origin="assistant_visible", role="assistant", when="2026-09-02T09:00:12Z",
+                key="TEST-turn/short-answer")
+    reader = replace(ctx, session_id="TEST-turn-short-reader")
+    assert told.ref not in [item["ref"] for item in _packet(core, reader, "继续", mode="auto")["items"]]
+
+
 def test_a_reply_belongs_to_the_turn_it_was_written_in(app):
     """Once the person speaks again the turn is over; later replies answer that message."""
     core, ctx = app
@@ -90,6 +116,23 @@ def test_a_reply_belongs_to_the_turn_it_was_written_in(app):
 
     assert _turn_replies(core, ctx, first) == [mine.ref]
     assert _turn_replies(core, ctx, second) == [theirs.ref]
+
+
+def test_the_same_message_stored_again_does_not_end_its_turn(app):
+    """Until 3.4.4 a rebuilt Hermes provider stored a turn's message a second time, with the reply, under the host's
+    ordinal.  The first copy stopped at the second as if the person had spoken again, and never reached the reply."""
+    core, ctx = app
+    first = _say(core, ctx, ASK, origin="human_direct", role="user", when="2026-09-02T09:00:00Z",
+                 key="TEST-turn/twice-uuid")
+    _say(core, ctx, ASK, origin="human_direct", role="user", when="2026-09-02T09:04:00Z", key="TEST-turn/twice-5")
+    told = _say(core, ctx, TOLD, origin="assistant_visible", role="assistant", when="2026-09-02T09:04:00Z",
+                key="TEST-turn/twice-answer")
+    other = _say(core, ctx, "那值班表呢", origin="human_direct", role="user", when="2026-09-02T09:05:00Z",
+                 key="TEST-turn/twice-next")
+    _say(core, ctx, "值班表还是老样子。", origin="assistant_visible", role="assistant", when="2026-09-02T09:05:09Z",
+         key="TEST-turn/twice-next-answer")
+    assert _turn_replies(core, ctx, first) == [told.ref]
+    assert _turn_replies(core, ctx, other) != [], "a different message still opens its own turn"
 
 
 def test_a_whole_turn_captured_under_one_timestamp_keeps_its_order(app):
