@@ -52,8 +52,9 @@ _MAX_ENTRY_MENTIONS = 16
 #: its day.
 _REQUEST = (r"(?:帮我|帮忙|告诉我|给我|跟我|和我|说说|讲讲|列一下|列出|问一下|查查|查一下|看看|看一下|总结|回顾|汇总|复盘|"
             r"梳理|盘点)")
-_ASKER = (rf"(?:{_REQUEST}|(?:能不能|可不可以|可以)(?={_REQUEST})|请问|请|麻烦|想知道|你们|你|我们|咱们|大家|我|和你|跟你|在|"
-          r"的|对话|聊天|会话|工作)")
+#: "我" before a request says what the person will do ("我今天总结一下"), not what they ask for (review 5 of 3.4.8).
+_ASKER = (rf"(?:{_REQUEST}|(?:能不能|可不可以|可以)(?={_REQUEST})|请问|请|麻烦|想知道|你们|你|我们|咱们|大家|我(?!{_REQUEST})|"
+          r"和你|跟你|在|的|对话|聊天|会话|工作)")
 #: A clock time has one reading: "5:00", "3点", "3点15分".  Read two ways ("5:00:00" as "5:00" and "0:00"), a list
 #: of twenty times took seconds to reject and doubled with each more (review of 3.4.6).
 _CLOCK = r"\d{1,2}(?::\d{2}|点(?:\d{1,2}分?)?)(?!\d)"
@@ -75,11 +76,15 @@ _DAY_QUESTION = re.compile(
     rf"|(?:总结|回顾|汇总|复盘|梳理|盘点)(?:一下|下)?(?:的?(?:对话|聊天|工作|进展|内容|事情))?"
     rf"|的?(?:聊天|对话|会话)(?:记录|内容)?"
     rf")(?:呢|吗)?")
+#: English asks what was done with an auxiliary ("what did we do", "what have you been working on") or in the past
+#: ("what we did"): "what we do today" and "What I do today" ask what to do (review 5 of 3.4.8).
 _DAY_QUESTION_EN = re.compile(
     r"(?:(?:please|can you|could you|tell me|show me|let me know|give me)\s+)*(?:"
-    r"what\s+(?:(?:did|have|were|was)\s+)?(?:(?:we|you|i|they)\s+)?(?:been\s+)?"
+    r"what\s+(?:did|have|has|were|was)\s+(?:(?:we|you|i|they)\s+)?(?:been\s+)?"
     r"(?:talk(?:ed)?\s+about|discuss(?:ed)?|do|done|doing|work(?:ed|ing)?\s+on|decided?|say|said|chat(?:ted)?\s+about|"
     r"get\s+done|changed?|fix(?:ed)?)"
+    r"|what\s+(?:(?:we|you|i|they)\s+)?(?:talked\s+about|discussed|did|worked\s+on|decided|said|chatted\s+about|"
+    r"got\s+done|changed|fixed)"
     r"|what\s+happened|what\s+was\s+(?:said|done|discussed)"
     r"|(?:summarize|summarise|recap|summary)(?:\s+(?:of\s+)?(?:the\s+)?(?:day|conversation|chat|discussion|work))?"
     r"|(?:any\s+)?(?:updates|progress)"
@@ -109,7 +114,7 @@ _MONTH_DAY = re.compile(r"(?<![\d.])(\d{1,2})\s*月\s*(\d{1,2})\s*[日号]?(?![\
 #: What joins two days into a range ("9月28日到9月30日", "2026-09-28 至 2026-09-30", "昨天到今天"), and a date
 #: followed by the end of its range ("9月28-30日", "9月28日到30日").
 _RANGE = re.compile(r"\s*(?:到|至|~|～|-|—|–)\s*")
-#: What lists two named days: "9月28日和9月29日", "昨天、今天", "9/28 and 9/29".
+#: What lists two named days or entries: "9月28日和9月29日", "昨天、今天", "天璇和天权", "today and yesterday".
 _JOINER = re.compile(r"\s*(?:和|跟|与|及|以及|还有|、|,|，|and|&)\s*", re.IGNORECASE)
 _RANGE_TAIL = re.compile(r"\s*(?:到|至|~|～|-|—|–)\s*(?:\d{4}\s*[-/年]\s*)?(?:\d{1,2}\s*[-/月]\s*)?\d{1,2}(?![\d.])")
 #: Days before today each relative word names.
@@ -291,8 +296,9 @@ def query_scope(query: str, *, now: str, zone: tzinfo | None, entries: Mapping[s
         entry_ids, entry_spans = _named_entries(text, entries)
     except _NoScope:
         return None
-    # What joins the named days goes with them: "9月28日和9月29日聊了什么" asks what was said on both.
-    ordered = sorted(day_spans)
+    # What joins the named days and entries goes with them: "9月28日和9月29日聊了什么" asks what was said on both, and
+    # "昨天天璇和天权聊了什么" what those two entries said; between entries it had been left in the rest (review 5).
+    ordered = sorted([*day_spans, *entry_spans])
     joiners = [(end, start) for (_, end), (start, _) in zip(ordered, ordered[1:])
                if end < start and _JOINER.fullmatch(text[end:start])]
     rest = text

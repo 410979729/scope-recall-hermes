@@ -107,6 +107,28 @@ def test_an_entry_s_latin_name_is_a_word_of_its_own():
         assert query_scope(query, now=NOW, zone=NEW_YORK, entries=entries).entry_ids == named, query
 
 
+def test_entries_joined_as_days_are_joined_are_all_read():
+    """Two entries joined by "和" or "、" are both read and the joiner leaves the question: it had been left in the rest,
+    and the question was recalled as if it named no day (review 5 of 3.4.8)."""
+    from scope_recall.core.recall_scope import asks_what_was_said
+
+    entries = {"tianxuan": "天璇", "tianquan": "天权", "workpc-claude-code": "工作机 Claude Code",
+               "workpc-codex": "工作机 Codex"}
+    for query, named in (("昨天天璇和天权聊了什么", ("tianxuan", "tianquan")),
+                         ("9月28日、9月29日和9月30日工作机 Claude Code 和工作机 Codex 都聊了什么",
+                          ("workpc-claude-code", "workpc-codex")),
+                         ("昨天和天璇聊了什么", ("tianxuan",))):
+        scope = query_scope(query, now=NOW, zone=NEW_YORK, entries=entries)
+        assert scope.entry_ids == named and asks_what_was_said(scope.rest), (query, scope.rest)
+
+
+def test_yesterday_is_the_host_s_yesterday():
+    """At 22:00 on 29 September in New York it is already 30 September in UTC: "昨天" is the 28th there (review 5 of
+    3.4.8: taken in UTC, nothing failed)."""
+    scope = query_scope("昨天聊了什么", now="2026-09-30T02:00:00.000000Z", zone=NEW_YORK, entries={})
+    assert scope.windows == (_day("28"),)
+
+
 @pytest.mark.parametrize(("rest", "asks"), (
     ("聊了什么", True), ("都说了些什么", True), ("做了哪些事", True), ("有什么进展", True), ("干了啥", True),
     ("帮我看看 聊了什么", True), ("请问 聊了什么", True), ("总结一下", True), ("做了哪些工作", True),
@@ -116,7 +138,8 @@ def test_an_entry_s_latin_name_is_a_word_of_its_own():
     ("能不能帮我看看做了什么", True), ("可以总结一下吗", True), ("能不能都聊了什么", False), ("ｗｈａｔ ｄｉｄ ｗｅ ｄｏ", True), ("summarize", True),
     ("what were we working on", True), ("what have we done", True), ("What did we decide?", True),
     ("what did do", True), ("what have we been working on", True), ("where did we leave off", False),
-    ("summary of", True), ("any updates from", True),
+    ("summary of", True), ("any updates from", True), ("what we did", True), ("我们 总结一下", True),
+    ("what we do", False), ("What I do", False), ("what do", False), ("我 总结一下", False), ("我总结一下", False),
     ("做什么", False), ("聊点什么", False), ("说点什么", False), ("可以做什么", False), ("讨论什么", False),
     ("干嘛呢", False), ("忙啥呢", False), ("What are we working on", False), ("What do I do", False),
     ("在吗", False), ("就这样吧", False), ("我 在忙", False), ("有什么事", False), ("呢", False), ("", False),
