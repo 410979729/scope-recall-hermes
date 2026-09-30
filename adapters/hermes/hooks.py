@@ -2,12 +2,17 @@
 from __future__ import annotations
 
 from typing import Any, Callable
+import itertools
 import threading
 import weakref
 
 _SUPPORTED_HOOKS = ("pre_llm_call", "api_request_error", "post_tool_call", "post_llm_call")
 _REGISTRY_LOCK = threading.RLock()
 _ADAPTERS: weakref.WeakSet[Any] = weakref.WeakSet()
+#: When each adapter last bound its session (``initialize``, a session switch), in order: a session's hooks go to
+#: the adapter that bound it last.
+_BOUND: weakref.WeakKeyDictionary[Any, int] = weakref.WeakKeyDictionary()
+_BINDINGS = itertools.count(1)
 _REGISTERED_CONTEXTS: weakref.WeakSet[Any] = weakref.WeakSet()
 _FALLBACK_CONTEXT_IDS: set[int] = set()
 
@@ -15,6 +20,7 @@ _FALLBACK_CONTEXT_IDS: set[int] = set()
 def _register_adapter_instance(adapter: Any) -> None:
     with _REGISTRY_LOCK:
         _ADAPTERS.add(adapter)
+        _BOUND[adapter] = next(_BINDINGS)
 
 
 def _unregister_adapter_instance(adapter: Any) -> None:
@@ -52,7 +58,12 @@ def _active_adapter(kwargs: dict[str, Any]) -> Any | None:
             # A global hook must never choose one installation for an
             # ambiguous session identifier.
             return None
-        return sorted(matches, key=lambda item: id(item))[0]
+        # Hermes rebuilds an agent its cache evicted: a new provider binds the same session, and the old one, retired
+        # but not shut down, stays registered.  Chosen by the lower id(), the hooks often went to the old one:
+        # pre_llm_call stored the message there under the turn's id, while on_turn_start and sync_turn reached the
+        # new one, which stored the message again under an ordinal and the reply with it (tianji and yuheng: the
+        # first turn after each rebuild, 6 of 48 turns from 2026-09-28).  The adapter that bound it last is the host's.
+        return max(matches, key=lambda item: _BOUND.get(item, 0))
 
 
 def _dispatch(method: str, **kwargs: Any) -> None:
