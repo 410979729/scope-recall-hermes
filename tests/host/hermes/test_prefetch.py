@@ -138,6 +138,26 @@ def test_memory_times_come_in_the_zone_hermes_names_to_its_model(adapter, monkey
         assert told and all(item["occurred_at"] == "2026-09-06T20:00:00+08:00" for item in told), items
 
 
+def test_a_day_the_message_names_is_that_day_in_the_zone_hermes_names(adapter, initialize_kwargs, monkeypatch):
+    """"9月6日" asked of a profile in Shanghai is Shanghai's 6th: a message told at 02:00 there, still the 5th in
+    UTC and in New York, is that day's, on the automatic path and through the tool (``recall_scope``)."""
+    provider, _clock = adapter
+    core = provider._core
+    ctx = _bind_context(core, initialize_kwargs, session_id="TEST-session-1")
+    event = source_event(content="TEST 白鹭计划的代号是 BL-3。", source_event_key="TEST-zone-day/1",
+                         occurred_at="2026-09-05T18:00:00Z", recorded_at="2026-09-05T18:00:00Z")
+    told = core.record_event(ctx, event, scope_id=next(iter(ctx.allowed_scope_ids)),
+                             remaining_seconds=5).event_refs[0].ref
+    for session, zone, expected in (("TEST-session-2", timezone(timedelta(hours=8)), True),
+                                    ("TEST-session-3", timezone(timedelta(hours=-4)), False)):
+        monkeypatch.setitem(sys.modules, "hermes_time", types.SimpleNamespace(get_timezone=lambda zone=zone: zone))
+        provider.on_session_switch(session)
+        injected = provider.prefetch("9月6日聊了什么")
+        injected_refs = [item["ref"] for item in json.loads(injected.split("\n", 1)[1])["items"]] if injected else []
+        replied_refs = [item["ref"] for item in _explicit_recall(provider, "9月6日聊了什么")["items"]]
+        assert (told in injected_refs, told in replied_refs) == (expected, expected), zone
+
+
 def _explicit_recall(provider, query: str) -> dict:
     reply = json.loads(provider.handle_tool_call("recall", {
         "protocol_version": "1.1", "request_id": "TEST-explicit-recall", "query": query,

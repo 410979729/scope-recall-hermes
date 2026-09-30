@@ -7,17 +7,19 @@ once at the trusted boundary; downstream stages receive that frozen snapshot.
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
-from datetime import datetime, timezone
+from datetime import datetime, timezone, tzinfo
 import base64
 import json
 import math
 from typing import Literal
 
 from ..contracts import ContractError, RecallRequest, TrustedContext, validate_model_request
+from .recall_scope import QueryScope
 
 
 ObjectKind = Literal["event", "claim", "episode", "artifact", "reference"]
-CandidateChannel = Literal["lexical", "claim_lexical", "exact_ref", "vector", "recent_raw", "relation", "background"]
+CandidateChannel = Literal["lexical", "claim_lexical", "exact_ref", "vector", "recent_raw", "relation", "background",
+                           "scoped"]
 RecallMode = Literal["auto", "current", "history", "as_of", "method"]
 Coverage = Literal["complete_for_query", "partial", "unknown"]
 Answerability = Literal["supported", "partial", "ambiguous", "unknown"]
@@ -105,6 +107,11 @@ class SearchContext:
     #: evidence.  Ambient recall keeps it; an explicit lookup turns it off, so
     #: finding nothing stays a refusal (core/background_context.py).
     background_without_evidence: bool = True
+    #: The zone the asking host shows its model, in which a day the question names is read (``recall_scope``);
+    #: None is this machine's.
+    zone: tzinfo | None = None
+    #: The days and entries the question names, read once the store's entries are known (``RetrievalPipeline``).
+    scope: QueryScope | None = None
 
     def __post_init__(self) -> None:
         if type(self.query) is not str or not self.query.strip() or len(self.query) > 8192:
@@ -113,6 +120,10 @@ class SearchContext:
             raise ContractError("INPUT_INVALID", "request_id")
         if type(self.background_without_evidence) is not bool:
             raise ContractError("INPUT_INVALID", "background_without_evidence")
+        if self.zone is not None and not isinstance(self.zone, tzinfo):
+            raise ContractError("INPUT_INVALID", "zone")
+        if self.scope is not None and not isinstance(self.scope, QueryScope):
+            raise ContractError("INPUT_INVALID", "scope")
         if self.mode not in {"auto", "current", "history", "as_of", "method"}:
             raise ContractError("INPUT_INVALID", "mode")
         if self.mode == "as_of" and self.as_of is None:
@@ -149,6 +160,7 @@ class SearchContext:
         deadline: float,
         current_source_refs: tuple[str, ...] = (),
         background_without_evidence: bool = True,
+        zone: tzinfo | None = None,
     ) -> "SearchContext":
         payload = validate_model_request(
             "recall_request", dict(request) if isinstance(request, dict) else request, trusted_context
@@ -166,6 +178,7 @@ class SearchContext:
             current_source_refs=tuple(current_source_refs),
             request_id=payload["request_id"],
             background_without_evidence=background_without_evidence,
+            zone=zone,
         )
 
 
@@ -206,7 +219,8 @@ class CandidateRef:
             raise ContractError("INPUT_INVALID", "candidate_ref")
         if type(self.revision) is not int or self.revision < 1:
             raise ContractError("INPUT_INVALID", "candidate_revision")
-        if self.source not in {"lexical", "claim_lexical", "exact_ref", "vector", "recent_raw", "relation", "background"}:
+        if self.source not in {"lexical", "claim_lexical", "exact_ref", "vector", "recent_raw", "relation", "background",
+                               "scoped"}:
             raise ContractError("INPUT_INVALID", "candidate_source")
         if type(self.rank) is not int or self.rank < 1:
             raise ContractError("INPUT_INVALID", "candidate_rank")

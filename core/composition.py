@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
-from datetime import datetime, timezone
+from datetime import datetime, timezone, tzinfo
 import math
 import time
 from typing import Protocol
@@ -202,7 +202,7 @@ class MemoryCore:
             return tx.said_in_session(scope_id, tuple(items), window_seconds=window_seconds)
 
     def recall(self, context: TrustedContext, request, *, current_source_refs: tuple[str, ...] = (), deadline_seconds: float | None = None,
-               background_without_evidence: bool = True):
+               background_without_evidence: bool = True, zone: tzinfo | None = None):
         """Run the sole read-only P08 pipeline for auto and tool callers.
 
         ``background_without_evidence`` is a trusted caller choice, never a
@@ -226,11 +226,12 @@ class MemoryCore:
             deadline=self.clock.monotonic() + effective_deadline,
             current_source_refs=tuple(current_source_refs),
             background_without_evidence=background_without_evidence,
+            zone=zone,
         )
         return self.recall_pipeline.search(search_context)
 
     def recall_packet(self, context: TrustedContext, request, *, current_source_refs: tuple[str, ...] = (), deadline_seconds: float | None = None,
-                      background_without_evidence: bool = True):
+                      background_without_evidence: bool = True, zone: tzinfo | None = None):
         """Retrieve once, compile once, and return the public RecallPacket contract.
 
         Explicit tool lookups pass ``background_without_evidence=False``: a
@@ -256,6 +257,7 @@ class MemoryCore:
             deadline=self.clock.monotonic() + effective_deadline,
             current_source_refs=tuple(current_source_refs),
             background_without_evidence=background_without_evidence,
+            zone=zone,
         )
         # Candidate collection is optional work. Reserve part of the original
         # deadline for the mandatory fresh SQLite release checks and rendering.

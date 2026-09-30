@@ -591,6 +591,8 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
             context,
             self._recall_request(query, effective_session),
             current_source_refs=current_refs,
+            # A day the message names is read in the zone this profile tells its model, as its memories' times are.
+            zone=display_zone(),
         )
         preparation = self._require_core().prepare_recall_render(context, packet)
         self._diagnostics.last_prefetch_request_id = packet["request_id"]

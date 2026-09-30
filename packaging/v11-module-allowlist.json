@@ -107,6 +107,7 @@
     "core/recall_needs.py",
     "core/recall_packet.py",
     "core/recall_policy.py",
+    "core/recall_scope.py",
     "core/reference_storage.py",
     "core/requalify.py",
     "core/restore.py",

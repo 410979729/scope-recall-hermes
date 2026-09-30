@@ -17,6 +17,7 @@ from .events import lexical_terms
 from .recall_budget import estimate_tokens, event_admission_order
 from .recall_needs import CHOICE_MARKERS, directed_followup_query, evidence_roots, mentions, unmet_needs
 from .recall_policy import RecallPolicy, asks_without_answering, identifiers_compatible, meaningful_query_terms, rrf_score
+from .recall_scope import SCOPED_ANSWER, query_scope
 from .retrieval import (
     CandidateRef,
     CollectionQuery,
@@ -63,7 +64,14 @@ ECHO_TURN_MIN_TERMS = 5
 #: MCP server's hook threads, a gateway's) waits for it: one every 10,000 steps made a 25 ms statement take 1.4 s
 #: (review of 3.4.5).
 _INTERRUPT_STEPS = 1_000_000
-_CHANNELS = ("exact", "lexical", "claim", "recent", "vector")
+_CHANNELS = ("scoped", "exact", "lexical", "claim", "recent", "vector")
+#: Messages the scoped channel offers per round: a day of one entry, read for the question (``recall_scope``).
+SCOPED_CANDIDATES = 12
+#: What a scoped answer's fused score is multiplied by.  The question named its day: a message of that day that
+#: answers it goes before a candidate one channel found elsewhere by the day's words or the entry's name, which
+#: on the shared store filled the packet ("Claude Code" is in thousands of other messages).  Three puts a first
+#: rank above any candidate two channels agree on at their first rank.
+SCOPED_WEIGHT = 3.0
 #: Vector admission reasons that are reported, and how; the rest are silent.
 _VECTOR_REJECTION_GAPS = {
     "embedding_space_mismatch": "vector_old_or_mismatched_space",
@@ -85,7 +93,7 @@ class ChannelBudget:
     """
 
     def __init__(self, limits: SearchLimits) -> None:
-        self.left = {"exact": limits.candidate_pool, "lexical": limits.candidate_pool,
+        self.left = {"scoped": SCOPED_CANDIDATES, "exact": limits.candidate_pool, "lexical": limits.candidate_pool,
                      "claim": min(CLAIM_CANDIDATES, limits.candidate_pool),
                      "recent": limits.recent_items, "vector": limits.vector_limit}
         self.total = sum(self.left.values())
@@ -217,8 +225,9 @@ class RetrievalPipeline:
             return False
         if candidate.source == "vector":
             return self.policy.vector_admission(candidate)[0]
-        if candidate.source in {"exact_ref", "relation", "claim_lexical"}:
-            # A claim candidate already passed its own statement rule in storage.
+        if candidate.source in {"exact_ref", "relation", "claim_lexical", "scoped"}:
+            # A claim candidate already passed its own statement rule in storage; a scoped one is a message of
+            # the day and entry the question names.
             return True
         return self.policy.lexical_admission(candidate, context.query, exact=False)[0]
 
@@ -232,6 +241,8 @@ class RetrievalPipeline:
         for _key, signals in sorted(by_key.items()):
             representative = min(signals, key=lambda item: (item.rank, item.source))
             fusion = rrf_score((item.rank for item in signals), k=self.policy.rrf_k)
+            if any(item.source == "scoped" and item.lexical_score == SCOPED_ANSWER for item in signals):
+                fusion *= SCOPED_WEIGHT
             seeds.append(replace(representative, fusion_score=fusion))
         return tuple(seeds)
 
@@ -249,6 +260,9 @@ class RetrievalPipeline:
             return self._fuse_candidates([candidate for candidate in raw if self._admit(candidate, context)], seen)
 
         channels = (
+            # First, so a slow statement after it cannot cost the one channel that reads what the question names.
+            ("scoped", getattr(self.storage_reader, "scoped", None) if context.scope is not None else None,
+             SCOPED_CANDIDATES),
             ("exact", self.storage_reader.exact, context.limits.candidate_pool),
             ("lexical", self.storage_reader.lexical, context.limits.candidate_pool),
             # A reader predating the claim channel simply offers no claims.
@@ -558,6 +572,7 @@ class RetrievalPipeline:
         try:
             with self.storage.read(working.trusted_context, remaining_seconds=max(self._remaining(working), 0.001)) as tx:
                 epoch = self.storage_reader.epoch(tx)
+                working = self._scoped(tx, working)
                 echoes: list[CandidateRef] = []
                 hydrated, seed_count = self._collect_rounds(tx, working, gaps, prefetched=prefetched, echoes=echoes)
                 if len(meaningful_query_terms(working.query)) < ECHO_TURN_MIN_TERMS:
@@ -571,6 +586,15 @@ class RetrievalPipeline:
             return _empty_result(working, f"sqlite_unavailable:{exc.code}")
         except Exception as exc:
             return _empty_result(working, f"sqlite_unavailable:{type(exc).__name__}")
+
+    @staticmethod
+    def _scoped(tx, working: SearchContext) -> SearchContext:
+        """The context with the days and entries its question names (``recall_scope``), when it names a day."""
+        entries = getattr(tx, "entries", None)
+        names = ({entry_id: str(value.get("name") or entry_id) for entry_id, value in entries().items()}
+                 if callable(entries) else {})
+        scope = query_scope(working.query, now=working.now, zone=working.zone, entries=names)
+        return working if scope is None else replace(working, scope=scope)
 
     def _collect_rounds(self, tx, working: SearchContext, gaps: list[str], *, prefetched=None,
                         echoes: list[CandidateRef] | None = None) -> tuple[list[tuple[CandidateRef, RetrievedObject]], int]:
