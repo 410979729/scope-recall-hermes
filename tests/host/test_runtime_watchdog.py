@@ -432,6 +432,26 @@ def test_a_child_that_dies_before_its_receipt_names_the_reason(tmp_path: Path, m
     assert "worker_last_exit_failed" in report.capability_gaps
 
 
+def test_a_pass_that_yielded_to_another_writer_is_not_a_failed_exit(tmp_path: Path):
+    """A pass that met another writer, or a held worker lock, exits 75 with status busy and the supervisor tries
+    again after a pause: nothing failed.  The doctor called it ``worker_last_exit_failed`` (yuheng's audit of 3.4.2);
+    any other non-zero exit still is one."""
+    from scope_recall.maintenance.doctor import run_doctor
+    from scope_recall.runtime.worker_entry import load_config, persist_worker_status
+
+    config_path, _ = _runtime_payload(tmp_path, drain_seconds=5.0)
+    config = load_config(config_path)
+    for payload, exit_code, failed in (
+            ({"status": "busy", "capability_gaps": ["worker_writer_busy"]}, 75, False),
+            ({"status": "busy", "capability_gaps": ["worker_wait_timeout"]}, 75, False),
+            ({"status": "degraded", "capability_gaps": ["worker_process_failed"]}, 1, True)):
+        persist_worker_status(config, {**payload, "installation_id": config.binding.installation_id},
+                              started_at="2026-09-30T08:00:00Z", exit_code=exit_code)
+        report = run_doctor(host="codex", instance_root=tmp_path / "install")
+        assert report.worker_status["exit_code"] == exit_code
+        assert ("worker_last_exit_failed" in report.capability_gaps) is failed, payload
+
+
 def test_only_a_traceback_tail_is_kept_as_the_reason():
     assert worker_watchdog._failure_reason("Traceback (most recent call last):\n  File x\nKeyError: 'k'\n") == "KeyError: 'k'"
     assert worker_watchdog._failure_reason("just some chatter\n/some/path: not a reason\n") is None
