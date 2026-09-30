@@ -23,7 +23,7 @@ from typing import Callable, Literal, Protocol, cast
 from ..contracts import Basis, ContractError, RecallItem, RecallPacket, bounded_entry_labels, bounded_source_contexts
 from .background_context import is_background, mark_background
 from .recall_budget import canonical_render_json, estimate_tokens, event_admission_order
-from .recall_diagnostics import RecallDiagnostics
+from .recall_diagnostics import RECALL_DIAGNOSTIC_PREFIX, RecallDiagnostics
 from .recall_needs import RESUME_MARKERS, mentions, unmet_needs
 from .resume_compaction import compact_episode_variants, next_step_provenance_supported, resume_evidence_refs, resume_fields
 from .retrieval import CandidateRef, RetrievalResult, RetrievedObject, SearchContext, SearchLimits, effective_limits, optional_json
@@ -46,9 +46,9 @@ _MAX_OCCURRED_AT_CHARS = 64
 _MAX_EVIDENCE_REFS = 32
 _MAX_RENDER_PREPARED = 64
 _RENDER_CONTEXT_SCHEMA = "scope-recall.recall_context/1.1"
-# Same width as ``RecallDiagnostics.record`` refs (``recall-diag:`` + 16 hex),
+# Same width as ``RecallDiagnostics.record`` refs (the prefix + 16 hex),
 # so a packet measured before recording has the bytes of the packet returned.
-_DIAGNOSTIC_REF_PLACEHOLDER = "recall-diag:" + ("0" * 16)
+_DIAGNOSTIC_REF_PLACEHOLDER = RECALL_DIAGNOSTIC_PREFIX + ("0" * 16)
 
 PacketKind = Literal["event", "episode", "claim", "procedure", "artifact"]
 Pair = tuple[CandidateRef, RetrievedObject]
