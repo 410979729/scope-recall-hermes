@@ -940,12 +940,28 @@ def resident(store, monkeypatch):
 
 
 @pytest.mark.skipif(os.name != "nt", reason="the LanceDB helper process is Windows'")
-def test_the_mcp_server_shares_one_vector_store_among_its_recalls(resident):
+def test_the_mcp_server_shares_one_vector_store_among_its_recalls_before_it_serves(store, monkeypatch):
     """The kept handler, a handler made for a prompt that comes meanwhile and the tools search one store, through one
-    LanceDB helper (``process_store.share``)."""
+    LanceDB helper (``process_store.share``), from the first prompt it serves."""
+    from scope_recall.adapters.codex import local_endpoint
     from scope_recall.vector import process_store
 
-    assert process_store._sharing
+    monkeypatch.setattr(process_store, "prestart", lambda **kwargs: None)
+    sharing_when_served = []
+
+    class Server(local_endpoint._Server):
+        def __init__(self, *args, **kwargs):
+            sharing_when_served.append(process_store._sharing)
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr(local_endpoint, "_Server", Server)
+    _root, _homes, client, _capture = store
+    endpoint = local_endpoint.serve(client, "claude-code", warm=False)
+    assert endpoint is not None
+    try:
+        assert sharing_when_served == [True]
+    finally:
+        endpoint.stop()
 
 
 def _hook_entry(monkeypatch, raw, client):

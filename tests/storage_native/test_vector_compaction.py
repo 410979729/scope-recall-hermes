@@ -479,7 +479,8 @@ pytest_windows_helper = pytest.mark.skipif(importlib.util.find_spec("lancedb") i
 @pytest_windows_helper
 def test_a_helper_started_ahead_is_the_one_the_store_uses(tmp_path):
     """A Claude Code or Codex hook starts the helper when the hook starts; the store takes that helper instead of
-    starting its own when its recall reaches the vector search, and a server keeps one ready for its next request."""
+    starting its own when its recall reaches the vector search.  None is kept ready after it: a server's runtimes
+    share the store that took it (3.4.9)."""
     from scope_recall.vector import process_store
     from scope_recall.vector.store import LanceVectorStore
 

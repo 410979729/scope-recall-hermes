@@ -180,8 +180,8 @@ def test_a_parked_answer_that_never_came_is_still_a_wedge(tmp_path,monkeypatch):
 
 
 def test_a_spare_helper_is_taken_once_and_not_replaced(monkeypatch):
-    """A server kept a spare as well, replaced each time one was taken: about 0.55 GB idle once the store all its
-    runtimes share holds its helper (3.4.9)."""
+    """A server kept a spare as well, replaced each time one was taken: about 0.55 GB of committed memory idle once
+    the store all its runtimes share holds its helper (3.4.9)."""
     spawned=[]
     class Alive:
         stdin=stdout=None
@@ -286,6 +286,71 @@ def test_a_shared_store_whose_open_failed_is_opened_again(tmp_path,monkeypatch):
             view.open_existing()
             assert view.search_scopes([0.0,1.0],scope_ids=['PUBLIC'],limit=1)==[]
         assert log.read_text().split()==['open_existing','open_existing','search_scopes'] and len(spawned)==2
+    finally:
+        native._close_shared()
+
+
+def test_a_reopen_that_ran_out_of_time_before_its_helper_started_is_opened_by_the_next_request(tmp_path,monkeypatch):
+    """The store looked open with no helper: the next search started one, which held no table, and every runtime of
+    the process searched it until the process ended (review of 3.4.9)."""
+    log, spawned = _sharing(tmp_path, monkeypatch)
+    view=native.store_for(tmp_path/'lancedb',table_name='PUBLIC',dimensions=2)
+    try:
+        with using_request_deadline(RequestDeadline.from_budget(5)):
+            view.open_existing()
+            view._store._detach_helper(failed=True)
+            view._store._finish_teardown(timeout=5,retry_stop=True)
+        with using_request_deadline(RequestDeadline.from_absolute(time.monotonic()-1)):
+            view.open_existing()  # out of time before a helper started
+        assert view.requires_reopen and not view._store._serving() and spawned==[1]
+        with using_request_deadline(RequestDeadline.from_budget(5)):
+            view.open_existing()
+            assert view.search_scopes([0.0,1.0],scope_ids=['PUBLIC'],limit=1)==[]
+        assert log.read_text().split()==['open_existing','open_existing','search_scopes'] and spawned==[1,1]
+    finally:
+        native._close_shared()
+
+
+def test_only_an_open_starts_a_helper(tmp_path,monkeypatch):
+    """A helper a search started held no table and answered every search so, and the store looked open (review of
+    3.4.9)."""
+    log, spawned = _sharing(tmp_path, monkeypatch)
+    view=native.store_for(tmp_path/'lancedb',table_name='PUBLIC',dimensions=2)
+    try:
+        with using_request_deadline(RequestDeadline.from_budget(5)):
+            with pytest.raises(RuntimeError,match='closed'):
+                view.search_scopes([0.0,1.0],scope_ids=['PUBLIC'],limit=1)
+            assert spawned==[] and view.requires_reopen and not view._store._serving()
+            view.open_existing()
+            assert view.search_scopes([0.0,1.0],scope_ids=['PUBLIC'],limit=1)==[]
+        assert log.read_text().split()==['open_existing','search_scopes'] and spawned==[1]
+    finally:
+        native._close_shared()
+
+
+def test_a_table_not_made_yet_starts_no_helper_for_a_shared_store(tmp_path,monkeypatch):
+    """Each prompt started a helper to learn the table was missing, about 2 s each with no spare (review of 3.4.9)."""
+    log, spawned = _sharing(tmp_path, monkeypatch)
+    (tmp_path/'lancedb'/'PUBLIC.lance').rmdir()
+    view=native.store_for(tmp_path/'lancedb',table_name='PUBLIC',dimensions=2)
+    try:
+        with using_request_deadline(RequestDeadline.from_budget(5)):
+            for _ in range(3):
+                with pytest.raises(FileNotFoundError):
+                    view.open_existing_with_work(lambda:pytest.fail('model called'))
+        assert spawned==[] and not log.exists()
+    finally:
+        native._close_shared()
+
+
+def test_a_shared_store_is_made_once_by_the_runtimes_that_may_make_it(tmp_path,monkeypatch):
+    log, spawned = _sharing(tmp_path, monkeypatch)
+    views=[native.store_for(tmp_path/'lancedb',table_name='PUBLIC',dimensions=2) for _ in range(2)]
+    try:
+        with using_request_deadline(RequestDeadline.from_budget(5)):
+            for view in views:
+                view.open()
+        assert log.read_text().split()==['open'] and spawned==[1]
     finally:
         native._close_shared()
 
