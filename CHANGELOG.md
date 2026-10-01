@@ -2,6 +2,24 @@
 
 All notable changes to `scope-recall` will be documented in this file.
 
+## [3.4.9] - 2026-09-30
+
+3.4.9 gives a question asked of the recall tool again, word for word, what it was told, as the automatic recall has done since 3.4.4. Nothing else changes.
+
+### Recall
+
+- The recall tool treats an older copy of its query as the automatic recall treats an older copy of the current message: the copy is not delivered, and it leads to the replies of its turn (3.4.4, 3.4.7). Asked of the tool word for word, the copy came first and its turn's replies fell out of the packet once vectors were on: the word and the vector channels both find a question's copy, while the answer is found by one of them or reached through the turn. On a copy of the shared store, two agents' older question sets (the owner's questions and the replies that answered them, asked of the tool) had the answer for 35 of 55 with vectors on at 0.70 and 42 by words alone; now 50 and 50, and none answered before is lost.
+- A query too short to lead to its turn (fewer than five search terms, about six Chinese characters) keeps its copy, and what the copy reaches, as before. A `history` or `as_of` lookup still finds the copy, and so does a request that names it by its ref.
+- Facts, rephrased questions and questions with no answer are answered exactly as on 3.4.8, with vectors and without. The automatic recall is unchanged: the owner's real questions asked again are answered exactly as on 3.4.8.
+
+### Upgrading from 3.4.8
+
+1. Stop the hosts and the Scope Recall worker, and take a `backup`.
+2. Install the 3.4.9 package, then run `plan-install` and `apply-install` for each host.
+3. Start the hosts again and run `doctor`.
+
+The store's schema is unchanged (1110). Every change, with its details, is in [CHANGELOG.md](https://github.com/410979729/scope-recall-hermes/blob/v3.4.9/CHANGELOG.md).
+
 ## [3.4.8] - 2026-09-30
 
 3.4.8 answers a question about what was said or done on a day, or by one entry of the shared store on a day, from that day's conversation. Any other message is recalled as on 3.4.7.
