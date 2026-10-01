@@ -473,6 +473,33 @@ def test_prefetch_does_not_hold_its_session_while_it_recalls(adapter, hermes_hom
     assert _tool_rows(hermes_home) == 1
 
 
+def test_a_prefetch_given_up_on_leaves_the_next_turn_its_own(adapter, monkeypatch):
+    """Hermes stops waiting for a prefetch after 8 s and the next turn begins: its pre_llm_call marks its UUID
+    pending, so that its turn start keeps that UUID and its current-source fence.  The late prefetch, recalling
+    without the lock, must not clear that mark: the turn start then put the turn number in the UUID's place."""
+    provider, _clock = adapter
+    provider.observe_pre_llm(session_id="TEST-session-1", turn_id="turn-1", user_message="TEST where does orca42 run")
+    real = provider._core.recall_packet
+    entered, release = threading.Event(), threading.Event()
+
+    def recall_packet(*args, **kwargs):
+        entered.set()
+        release.wait(10)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(provider._core, "recall_packet", recall_packet)
+    prefetched, _, prefetch_thread = _in_thread(lambda: provider.prefetch("TEST where does orca42 run"))
+    try:
+        assert entered.wait(_PROMPTLY)
+        provider.observe_pre_llm(session_id="TEST-session-1", turn_id="turn-2", user_message="TEST and orca43")
+    finally:
+        release.set()
+        prefetch_thread.join(_PROMPTLY)
+    assert prefetched.is_set()
+    provider.on_turn_start(2, "TEST and orca43", session_id="TEST-session-1")
+    assert provider._active_turn_id == "turn-2"
+
+
 def test_the_next_turn_starts_while_the_last_one_is_written(adapter, monkeypatch):
     """sync_turn runs on Hermes' memory worker after the reply.  Holding the session for the whole turn, it kept the
     next turn's start waiting on it (3.56 s behind 14 writes of 0.25 s, measured on 3.4.9)."""

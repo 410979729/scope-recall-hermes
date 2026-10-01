@@ -232,6 +232,8 @@ def test_a_session_that_binds_nothing_says_so_once_in_the_host_log_and_never_wha
     provider = ScopeRecallHermesAdapter(core=core)
     provider.initialize("TEST-visitor-session", **_session(initialize_kwargs, "desktop", user_id="basic:TEST-visitor"))
     try:
+        assert any(record.getMessage().startswith("scope-recall: session bound to no memory scope")
+                   for record in caplog.records), "said when the session binds, before anything is said in it"
         provider.observe_pre_llm(session_id="TEST-visitor-session", turn_id="TEST-turn-1", user_message=said)
         assert provider.prefetch(said) == ""
         provider.sync_turn(said, answer, session_id="TEST-visitor-session")
