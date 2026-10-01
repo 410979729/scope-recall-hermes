@@ -125,6 +125,18 @@ def test_a_login_on_an_approved_surface_is_a_user_like_any_other(hermes_home, in
     assert identity.read_only
 
 
+def test_a_host_that_names_its_user_local_on_a_surface_nobody_approved_keeps_no_route(hermes_home, initialize_kwargs):
+    """Only a login is routed as a one-to-one chat with itself (#175).  ``local`` sent by the host on a surface the
+    owner never approved keeps the empty route it was sent with, so no row written for an approved surface's
+    route, nor one written by hand, can match it."""
+    _install(hermes_home, initialize_kwargs)
+
+    identity = bind_hermes_identity("TEST-session-1", **_session(initialize_kwargs, "desktop", user_id="local"))
+
+    assert (identity.scope.chat_type, identity.scope.chat_id) == ("", "")
+    assert identity.runtime_audience.allowed_scope_ids == frozenset()
+
+
 def test_a_session_switch_on_an_approved_surface_stays_the_owners(hermes_home, initialize_kwargs):
     _install(hermes_home, initialize_kwargs, local_platforms=("tui",))
     first = bind_hermes_identity("TEST-session-1", **_session(initialize_kwargs, "tui"))
