@@ -45,6 +45,7 @@ from .identity import (
     trusted_source_context,
     unbound_session_hint,
 )
+from .audiences import LOCAL_PLATFORMS
 from .installation import assert_binding_matches_manifest, assert_core_binding_matches, load_binding_for_home
 from .outcomes import TurnOutcomeTracker
 from .protocol import PublicMemoryProvider
@@ -362,23 +363,28 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
             update_adapter_binding(self)
 
     def _say_if_unbound(self, identity: HermesIdentity) -> None:
-        """Say once per session, in the host's log, that a session a person speaks in binds no scope (#175).
+        """Say once per session, in the host's log, that a desktop or tui session binds no scope (#175).
 
         Such a session fails closed: nothing in it is captured or recalled.  Hermes reads none of this
         adapter's diagnostics, so without this line a Desktop login's sessions wrote nothing for days and
-        nothing said so.  The route and the gap codes only, never what was said.
+        nothing said so.  A gateway chat left unmapped is the owner's choice and says nothing, as before: a line
+        for each would name its users, some by phone number (review of 3.4.10).  The platform, the login and the
+        gap codes only, never what was said, and nothing a login could make into a line of its own.
         """
         scope = identity.scope
-        if scope.agent_context != "primary" or identity.runtime_audience.allowed_scope_ids:
+        if (scope.platform not in LOCAL_PLATFORMS or scope.agent_context != "primary"
+                or identity.runtime_audience.allowed_scope_ids):
             self._unbound_route = None
             return
         route = (scope.platform, scope.user_id, scope.chat_type, scope.chat_id, scope.thread_id, scope.agent_workspace)
         if route == self._unbound_route:
             return
         self._unbound_route = route
-        _log.warning("scope-recall: session bound to no memory scope: a %s session for %s (%s); nothing in it is "
-                     "captured or recalled; %s", scope.platform, scope.user_id[:120],
-                     ", ".join(identity.runtime_audience.capability_gaps), unbound_session_hint(scope))
+        said = ("scope-recall: session bound to no memory scope: a %s session for %s (%s); nothing in it is "
+                "captured or recalled; %s") % (scope.platform, scope.user_id[:120],
+                                               ", ".join(identity.runtime_audience.capability_gaps),
+                                               unbound_session_hint(scope))
+        _log.warning("%s", "".join(character for character in said if character.isprintable()))
 
     def _require_identity(self) -> HermesIdentity:
         if self._identity is None or not self._initialized:

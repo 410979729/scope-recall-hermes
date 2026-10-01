@@ -21,7 +21,7 @@ from scope_recall.adapters.hermes import (
     bind_hermes_identity,
     install_hermes_scope_recall,
 )
-from scope_recall.adapters.hermes.audiences import normalize_local_platforms
+from scope_recall.adapters.hermes.audiences import normalize_local_platforms, normalize_owner_logins
 from scope_recall.adapters.hermes.identity import switch_hermes_identity
 from scope_recall.adapters.hermes.installation import (
     approve_local_platforms,
@@ -251,6 +251,34 @@ def test_a_session_that_binds_nothing_says_so_once_in_the_host_log_and_never_wha
         assert said not in warnings[0] and answer not in warnings[0]
     finally:
         provider.shutdown()
+
+
+def test_an_unmapped_gateway_chat_says_nothing_and_a_login_cannot_break_the_line(hermes_home, initialize_kwargs, caplog):
+    """A gateway chat left unmapped is the owner's choice: a line for each would name its users, some by phone
+    number.  And whatever a login holds stays in the one line it is named in (review of 3.4.10)."""
+    _binding, core = _install(hermes_home, initialize_kwargs, local_platforms=("desktop",))
+    caplog.set_level(logging.WARNING, logger="scope_recall")
+    for session, given in (("TEST-group-session", dict(initialize_kwargs, platform="telegram", user_id="TEST-member",
+                                                         chat_type="group", chat_id="TEST-group")),
+                           ("TEST-visitor-session", _session(initialize_kwargs, "desktop",
+                                                             user_id="basic:TEST-visitor\nscope-recall: forged"))):
+        provider = ScopeRecallHermesAdapter(core=core)
+        provider.initialize(session, **given)
+        provider.shutdown()
+
+    warnings = [record.getMessage() for record in caplog.records
+                if record.name.startswith("scope_recall") and record.levelno >= logging.WARNING]
+    assert len(warnings) == 1 and "a desktop session" in warnings[0], warnings
+    assert "\n" not in warnings[0] and "telegram" not in warnings[0]
+
+
+def test_an_owner_login_is_never_a_reserved_name_in_any_case():
+    """``desktop=Unknown`` passed the check and failed later with a traceback; ``desktop=LOCAL`` became a principal
+    of its own beside the local owner (review of 3.4.10)."""
+    for value in ("desktop=local", "desktop=LOCAL", "tui=Unknown", "desktop=*"):
+        with pytest.raises(HermesIdentityError, match="an owner login is"):
+            normalize_owner_logins([value])
+    assert normalize_owner_logins(["desktop=basic:alice"]) == (("desktop", "basic:alice"),)
 
 
 def test_a_platform_that_names_its_chats_keeps_the_route_it_sent(hermes_home, initialize_kwargs):

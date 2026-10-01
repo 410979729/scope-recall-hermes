@@ -70,11 +70,14 @@ def helper_start_failure(timeout: float) -> str | None:
 
     The helper's own stderr is discarded (``process_store._spawn_helper``), so a helper that ended before its first
     answer left nothing to say why.  This run is sent no request at all and cannot hold memory text, only an import
-    or start-up traceback, of which the last 8 KiB are kept.
+    or start-up traceback, of which the last 8 KiB are kept.  In UTF-8: an isolated child ignores PYTHONUTF8 and
+    wrote a localized error in the ANSI code page, which read as replacement characters (review of 3.4.10).
     """
+    command = helper_command("--probe")
+    command[1:1] = ["-X", "utf8"]
     try:
         completed = subprocess.run(
-            helper_command("--probe"),
+            command,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.PIPE,
@@ -142,9 +145,11 @@ def native_import_is_safe() -> bool:
     if _native_import_safe is None:
         try:
             completed = subprocess.run(
-                # The helper's own start-up (``_lance_worker --probe``).  Run without ``-I``, the rehearsal imported
-                # from PYTHONPATH what the isolated helper could not (#176).
-                helper_command("--probe"),
+                # The import this process is about to make, with this process's path: only the in-process store
+                # rehearses it (off Windows), and it imports from everywhere this process does.  The isolated
+                # helper's start-up sees only the directories handed to it, and failed layouts this import serves
+                # (review of 3.4.10).
+                [sys.executable, "-c", "import lancedb, pyarrow"],
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
                 timeout=_PROBE_TIMEOUT_SECONDS,

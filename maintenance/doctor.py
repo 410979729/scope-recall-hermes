@@ -599,8 +599,8 @@ def _check_audiences(report: DoctorReport, instance: Path) -> None:
         report.capability_gaps.append("audience_owner_unverified")
         _record(report, "audiences", "owner_unverified",
                 ",".join(f"{platform}={count}" for platform, count in sorted(unverified.items()))
-                + ": owner_private rows whose user is no owner principal grant nothing; approve the owner's "
-                "login (apply-install --owner-login) or remove the rows")
+                + ": owner_private rows whose user is no owner principal grant nothing; approve the owner's own "
+                "desktop or tui login (apply-install --owner-login) or remove the rows")
 
 
 def _serves(worker, binding) -> bool:

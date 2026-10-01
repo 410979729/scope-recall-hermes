@@ -79,8 +79,7 @@ def main() -> None:
         from scope_recall.vector.store import LanceVectorStore
 
     if sys.argv[1:2] == ["--probe"]:
-        # The start-up and nothing after it: the rehearsal of the native import
-        # (``lance_native.native_import_is_safe``) and the drain's account of a helper that never answered
+        # The start-up and nothing after it: the drain's account of a helper that never answered
         # (``lance_native.helper_start_failure``).  The imports above are where the helper died in #176.  A failed
         # native import fails this run; the helper below leaves it to its first request, which reports it.
         import lancedb, pyarrow  # noqa: E401,F401

@@ -9,25 +9,24 @@ All notable changes to `scope-recall` will be documented in this file.
 ### Hermes hooks (#169)
 
 - Each Hermes session has its own lock, and a hook waited for it without a bound. The lock was held through a prefetch's recall, which Hermes stops waiting for after 8 s and lets run on, and through the writing of the whole previous turn. A hook waited out past Hermes' 30 s hook timeout was abandoned. Scope Recall registers one callback per hook for the whole gateway, so Hermes 0.21.5 then skipped that hook for every session for a minute. Our five gateways logged 18 hook timeouts and 19 skips from 2026-09-20 to 2026-10-01; the reporter, with 7 to 15 sessions at once, 247 skips in ten days.
-- A hook now waits for its own session at most a third of the host's timeout, 10 s at most. One it cannot wait for returns at once, and is counted and logged with what holds the session.
+- A hook now waits for its own session at most a third of the host's timeout, 10 s at most. One it cannot wait for in that time returns, and is counted and logged with what holds the session.
 - The prefetch reads the turn's state under a wait of at most 2 s and recalls without the lock. The end of a turn is written one capture at a time with the lock released, so the next turn can start meanwhile.
 - The callbacks are named `scope_recall_<hook>`, so Hermes' own timeout and skip lines name them. A hook that still outlives the host's timeout logs a warning. Both counts show in the `status` tool. The bounds and the log lines are in [docs/configuration.md](docs/configuration.md).
 - Not done: a hook that cannot wait is not kept to be written later. A skipped tool hook loses that tool's result; the turn's message and reply are still stored when it ends.
 
 ### Dashboard logins (#175)
 
-- Hermes passes a desktop or tui session's dashboard login (`basic:<name>`) as its user and names no chat. No audience row could match that route, and no installer option approved a login. Every session of someone working through the desktop client with basic auth stored and recalled nothing. Nothing said so: Hermes reads none of the adapter's gaps, and `doctor` stayed healthy.
-- On desktop or tui, a login whose host names no chat is now a one-to-one chat with that login (`private`, the login, thread `main`), the way an owner grant is written. An unapproved login still binds nothing. The session that names no user, the CLI and the platforms that name their chats are unchanged.
+- Hermes passes a desktop or tui session's dashboard login (`basic:<name>`) as its user and names no chat. No owner grant could match that route, and no installer option approved a login. Every session of someone working through the desktop client with basic auth stored and recalled nothing. Nothing said so: Hermes reads none of the adapter's gaps, and `doctor` stayed healthy.
+- On desktop or tui, a login whose host names no chat is now a one-to-one chat with that login (`private`, the login, thread `main`), the way an owner grant is written. An unapproved login gets no owner grant: only what an audience row on its route gives it, like any gateway user. The session that names no user, the CLI and the platforms that name their chats are unchanged.
 - `apply-install --owner-login <platform>=<login>` approves a login as the owner's own, on desktop or tui. It is Hermes only, and refused on a shared store entry, like `--local-platform`. See [docs/install.md](docs/install.md), which also warns that a dashboard served to other machines runs its Chat tab as a session that names no user.
-- A session someone speaks in that binds no memory scope logs one warning, with its route, its gaps and what to do, never what was said.
+- A desktop or tui session that binds no memory scope logs one warning, with its platform, its login, its gaps and what to do, never what was said. A gateway chat left unmapped stays silent, as before.
 - `doctor` reports an owner grant whose user is no owner principal: `audience_owner_unverified`, `attention`, counted by platform.
-- Upgrade note: a hand-written audience row for a desktop or tui login with an empty chat no longer matches. Such a session now logs the warning; approve the login with `--owner-login`.
+- Upgrade note: a hand-written audience row for a desktop or tui login with an empty chat no longer matches, and such a session now logs the warning. Rewrite the row's chat to `private`, the login and thread `main`. Approve the login with `--owner-login` only if it is the owner's own.
 
 ### LanceDB helper (#176)
 
 - The helper runs isolated (`-I`), which keeps `PYTHONPATH` off its path. Hermes Desktop's package manager starts a bundled Python and hands its packages over on `PYTHONPATH`. There the helper died at its first import, before it answered. Every embed and every vector search failed as `worker_failed`, recall fell back to words, and only `doctor`'s `vector_unavailable` said anything.
 - The host now hands the helper the directories it imports `jsonschema`, LanceDB, PyArrow and numpy from, and nothing else of its path. The helper stays isolated.
-- The rehearsal of the native import runs the helper's own start-up, so the two agree.
 - When the worker cannot open the vector store because its helper ended before answering, it runs the start-up once more. That run is sent no request, so it holds no memory text. Its last error line, paths removed, goes into the `worker_error` that `doctor` shows. The worker's gap now names the fault: `vector_unavailable:RuntimeError:worker_failed`.
 
 ### Upgrading from 3.4.9

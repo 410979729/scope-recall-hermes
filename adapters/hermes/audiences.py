@@ -75,7 +75,7 @@ def normalize_owner_logins(values: object) -> tuple[tuple[str, str], ...]:
     for value in values:
         platform, _sep, login = value.partition("=") if type(value) is str else ("", "", "")
         if (platform not in LOCAL_PLATFORMS or not login or login != login.strip() or len(login) > 240
-                or login in {LOCAL_USER_ID, "*", "unknown"}):
+                or login.casefold() in {LOCAL_USER_ID, "*", "unknown"}):
             raise HermesIdentityError(
                 f"an owner login is <platform>=<login>, the platform one of {sorted(LOCAL_PLATFORMS)} and the "
                 "login exactly as the host sends it, such as desktop=basic:alice")
