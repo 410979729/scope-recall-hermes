@@ -311,9 +311,9 @@ def test_a_reopen_that_ran_out_of_time_before_its_helper_started_is_opened_by_th
         native._close_shared()
 
 
-def test_only_an_open_starts_a_helper(tmp_path,monkeypatch):
+def test_a_search_starts_no_helper(tmp_path,monkeypatch):
     """A helper a search started held no table and answered every search so, and the store looked open (review of
-    3.4.9)."""
+    3.4.9).  A helper is started to open the table, or to say whether LanceDB is installed."""
     log, spawned = _sharing(tmp_path, monkeypatch)
     view=native.store_for(tmp_path/'lancedb',table_name='PUBLIC',dimensions=2)
     try:
@@ -351,6 +351,35 @@ def test_a_shared_store_is_made_once_by_the_runtimes_that_may_make_it(tmp_path,m
             for view in views:
                 view.open()
         assert log.read_text().split()==['open'] and spawned==[1]
+    finally:
+        native._close_shared()
+
+
+def test_the_drain_s_open_of_a_shared_store_says_it_ran_out_of_time(tmp_path,monkeypatch):
+    """A store of its own raises it, and the drain reports the gap; the shared store returned as if it had opened
+    (review of 3.4.9)."""
+    _log, spawned = _sharing(tmp_path, monkeypatch)
+    view=native.store_for(tmp_path/'lancedb',table_name='PUBLIC',dimensions=2)
+    try:
+        with using_request_deadline(RequestDeadline.from_absolute(time.monotonic()-1)):
+            with pytest.raises(native._RequestBudgetExpired):
+                view.open()
+        assert spawned==[] and view.requires_reopen
+    finally:
+        native._close_shared()
+
+
+def test_a_helper_asked_only_whether_lancedb_is_installed_holds_no_table(tmp_path,monkeypatch):
+    """It counted as serving: the open was skipped, and every search said the table was not open (review of
+    3.4.9)."""
+    log, spawned = _sharing(tmp_path, monkeypatch)
+    view=native.store_for(tmp_path/'lancedb',table_name='PUBLIC',dimensions=2)
+    try:
+        with using_request_deadline(RequestDeadline.from_budget(5)):
+            assert view.is_available()
+            view.open_existing()
+            assert view.search_scopes([0.0,1.0],scope_ids=['PUBLIC'],limit=1)==[]
+        assert log.read_text().split()==['is_available','open_existing','search_scopes'] and spawned==[1]
     finally:
         native._close_shared()
 

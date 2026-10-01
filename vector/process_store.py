@@ -321,6 +321,8 @@ class ProcessLanceVectorStore(VectorStore):
         self._sender: threading.Thread | None = None
         self._responses: queue.Queue = queue.Queue(maxsize=2)
         self._finalizer: weakref.finalize | None = None
+        # Whether this helper was asked to open the table, answered or not yet: a failed open detaches the helper.
+        self._table_asked = False
         self._clear_pending_response()
 
     @property
@@ -499,8 +501,8 @@ class ProcessLanceVectorStore(VectorStore):
         if self._failed or self._closed:
             raise RuntimeError("native vector worker is closed; reopen the vector runtime explicitly")
         if self._process is None and method not in ("open", "open_existing", "is_available"):
-            # Only an open starts a helper: one started for a search holds no table, answers every search so, and
-            # looks open to every runtime of a process that shares the store (review of 3.4.9).
+            # A helper is started to open the table (or to say whether LanceDB is installed): one started for a
+            # search held no table and answered every search so, and nothing opened the table (review of 3.4.9).
             self._failed = self._closed = True
             raise RuntimeError("native vector worker is closed; reopen the vector runtime explicitly")
         # The frame a previous caller gave up on is discarded here rather than
@@ -530,6 +532,8 @@ class ProcessLanceVectorStore(VectorStore):
                 response = self._fenced_exchange(request_id, encoded, nonce, guard)
             else:
                 self._send_request_frame(encoded)
+                if method in ("open", "open_existing"):
+                    self._table_asked = True
                 work_failed = False
                 if during_wait is not None:
                     try:
@@ -786,8 +790,9 @@ class ProcessLanceVectorStore(VectorStore):
                 self._request_timeout = usual
 
     def _serving(self) -> bool:
-        """Whether a helper is up for this store and nothing has closed it (a failure detaches the helper)."""
-        return self._process is not None and not self._closed and self._teardown is None
+        """Whether a helper asked to open the table is up for this store and nothing has closed it (a failure detaches
+        the helper).  One started only to say whether LanceDB is installed holds no table (review of 3.4.9)."""
+        return self._process is not None and self._table_asked and not self._closed and self._teardown is None
 
 
 class _Shared:
@@ -865,8 +870,11 @@ class SharedStore:
             if not shared.store._serving():
                 getattr(shared.store, method)()
         except _RequestBudgetExpired:
-            # Parked, its answer waiting for the next request; or never sent, the store then closed for the next
-            # request to open (``ProcessLanceVectorStore._open``).  Either way the caller says it ran out of time.
+            if method == "open":
+                raise  # the drain's, which reports it as for a store of its own
+            # A recall's (or a server's warm-up): parked, its answer waiting for the next request; or never sent, the
+            # store then closed for the next request to open (``ProcessLanceVectorStore._open``).  Either way its time
+            # is up, and a recall says so (runtime/instance.py ``_LazyVectorPort.search``).
             return
         finally:
             shared.opening.release()
