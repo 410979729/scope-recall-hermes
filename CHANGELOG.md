@@ -4,12 +4,12 @@ All notable changes to `scope-recall` will be documented in this file.
 
 ## [3.4.9] - 2026-09-30
 
-3.4.9 gives a question asked of the recall tool again, word for word, what it was told, as the automatic recall has done since 3.4.4. Nothing else changes.
+3.4.9 puts what a question was told before an older copy of it when the recall tool is asked the question again word for word, as the automatic recall has done since 3.4.7. Nothing else changes.
 
 ### Recall
 
-- The recall tool treats an older copy of its query as the automatic recall treats an older copy of the current message: the copy is not delivered, and it leads to the replies of its turn (3.4.4, 3.4.7). Asked of the tool word for word, the copy came first and its turn's replies fell out of the packet once vectors were on: the word and the vector channels both find a question's copy, while the answer is found by one of them or reached through the turn. On a copy of the shared store, two agents' older question sets (the owner's questions and the replies that answered them, asked of the tool) had the answer for 35 of 55 with vectors on at 0.70 and 42 by words alone; now 50 and 50, and none answered before is lost.
-- A query too short to lead to its turn (fewer than five search terms, about six Chinese characters) keeps its copy, and what the copy reaches, as before. A `history` or `as_of` lookup still finds the copy, and so does a request that names it by its ref.
+- Asked of the recall tool word for word, a question's older copy came first and the replies of its turn fell out of the packet once vectors were on: the word and the vector channels both find a question's copy, while the answer is found by one of them or reached through the turn. The tool now raises what the copy was told above it, as the automatic recall does: the latest copy's turn, at most three of its replies (half the automatic packet of six; a tool's packet may hold thirty). On a copy of the shared store, two agents' older question sets (the owner's questions and the replies that answered them, asked of the tool) had the answer for 35 of 55 with vectors on at 0.70 and 42 by words alone; now 51 and 51, and none answered before is lost.
+- The copy itself is still delivered, after what it was told: a caller that quotes a message may be looking for it, to say when it was said or to delete it. A copy asked in the caller's own session leads nowhere, and the latest one asked in another session leads instead: that turn is in the caller's context, and its last reply may be the answer the person has just rejected. A query too short to lead to its turn (fewer than five search terms, about six Chinese characters) raises nothing either. `history` and `as_of` lookups are unchanged.
 - Facts, rephrased questions and questions with no answer are answered exactly as on 3.4.8, with vectors and without. The automatic recall is unchanged: the owner's real questions asked again are answered exactly as on 3.4.8.
 
 ### Upgrading from 3.4.8

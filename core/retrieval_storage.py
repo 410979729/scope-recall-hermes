@@ -730,13 +730,15 @@ class RetrievalStorage:
         opening = self._opening(conn, candidate)
         return self._turn(conn, *opening, limit=TURN_REPLY_LIMIT)[0] if opening is not None else ()
 
-    def latest_turn(self, tx, candidates, *, now: str) -> tuple[str, tuple[CandidateRef, ...], bool] | None:
-        """Of the turns the person's messages ``candidates`` opened, the latest that received a reply: when it opened
-        (UTC, ``canonical_time``), its replies, and whether they were read to the turn's end by ``now``.  The openings
-        are read first and the turns newest first, so older copies of a question cost one look-up each; equal times
-        fall back to capture order."""
+    def latest_turn(self, tx, candidates, *, now: str,
+                    other_than_session: str | None = None) -> tuple[str, tuple[CandidateRef, ...], bool] | None:
+        """Of the turns the person's messages ``candidates`` opened, outside ``other_than_session`` if given, the latest
+        that received a reply: when it opened (UTC, ``canonical_time``), its replies, and whether they were read to the
+        turn's end by ``now``.  The openings are read first and the turns newest first, so older copies of a question
+        cost one look-up each; equal times fall back to capture order."""
         conn = tx._check()
-        openings = [opening for candidate in candidates if (opening := self._opening(conn, candidate)) is not None]
+        openings = [opening for candidate in candidates if (opening := self._opening(conn, candidate)) is not None
+                    and (other_than_session is None or opening[0]["session_id"] != other_than_session)]
         for row, opened in sorted(openings, key=lambda opening: (opening[1], opening[0]["rowid"]), reverse=True):
             replies, ended = self._turn(conn, row, opened, now=now)
             if replies:
