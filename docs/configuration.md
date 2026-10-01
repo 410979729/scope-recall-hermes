@@ -537,6 +537,30 @@ shorter deadline is honoured, clamped by the configured automatic budget. None o
 this raises a money, token, call, packet or source cap, disables TLS validation,
 or changes `vector_threshold`.
 
+### Hermes hooks and the host's timeout
+
+Hermes abandons a plugin's hook call after its own `plugins.hook_callback_timeout`
+(30 s by default) and, on Hermes 0.21.5, skips that callback for the next 60 s.
+Scope Recall registers one callback per hook for the whole gateway, so that skip
+reaches every session. A hook therefore waits for its own session, a capture or
+a finished turn still being written, at most a third of that timeout and never
+more than 10 s; a prefetch waits at most 2 s for its session and recalls without
+holding it. What could not wait is not taken, and the gateway log says so:
+
+```text
+scope-recall: post_tool_call not taken: this session has been busy in observe_post_tool_call for 10.0 s
+```
+
+A hook that still ran past the host's timeout is reported as:
+
+```text
+scope-recall: post_tool_call took 31.2 s, past the host's 30 s hook timeout; the host skips it for every session for the next minute
+```
+
+Both are counted per session in the `status` tool's `host_backpressure` and in the
+adapter's shutdown state. Hermes' own timeout and skip lines name these callbacks
+`scope_recall_<hook>`. None of this is a `runtime-config.json` key.
+
 ## Checking a change
 
 `doctor` reads the file back and reports what it found:

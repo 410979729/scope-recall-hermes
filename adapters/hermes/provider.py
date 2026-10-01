@@ -1,6 +1,7 @@
 """Hermes MemoryProvider adapter that delegates recall/capture to the core boundary."""
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 import copy
 import inspect
@@ -61,11 +62,14 @@ _USER_CAPTURED_TURNS = 64
 #: bound a turn of three hundred tool steps held the adapter lock for minutes while each waited for the store.
 _INTERIM_PER_TURN = 64
 GAP_CURRENT_SOURCE_REFS_LIMIT = "degraded:current_source_refs_limit"
+#: How long a prefetch waits for its session's state.  Hermes gives the whole prefetch 8 s and goes on without it,
+#: and an automatic recall takes up to 5.
+_PREFETCH_STATE_WAIT_S = 2.0
 
 def _serialized_host_event(method):
     @wraps(method)
     def guarded(self, *args, **kwargs):
-        with self._lock:
+        with self._lock, self._holding(method.__name__):
             return method(self, *args, **kwargs)
     return guarded
 
@@ -153,6 +157,10 @@ class AdapterDiagnostics:
     durable_pending_captures: int | None = None
     current_source_refs: tuple[str, ...] = ()
     shutdown_state: dict[str, int | str] | None = None
+    #: Host calls this session did not take or took too long for, by kind: a hook or a prefetch that would have
+    #: waited past its bound (``post_tool_call``, ``prefetch``), a hook that ran past the host's timeout
+    #: (``post_tool_call_overran``).
+    host_backpressure: dict[str, int] | None = None
 
 
 @dataclass(frozen=True)
@@ -209,6 +217,39 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
         #: What the last worker launch attempt added to capability_gaps.
         self._worker_launch_gaps: tuple[str, ...] = ()
         self._initialized = False
+        #: Which call holds ``_lock``, since when, on which thread: read without the lock, to say what a call that
+        #: could not wait was waiting for.
+        self._holder: tuple[str, float, int] | None = None
+        #: ``host_backpressure``, counted under ``_said_lock``: never across I/O.
+        self._backpressure: dict[str, int] = {}
+
+    @contextmanager
+    def _holding(self, name: str):
+        previous, self._holder = self._holder, (name, time.monotonic(), threading.get_ident())
+        try:
+            yield
+        finally:
+            # An outer call of the same thread still holds the lock; anything else is over.
+            self._holder = previous if previous is not None and previous[2] == threading.get_ident() else None
+
+    def _count_backpressure(self, kind: str) -> None:
+        with self._said_lock:
+            self._backpressure[kind] = self._backpressure.get(kind, 0) + 1
+
+    def _session_busy(self, kind: str) -> None:
+        """A host call this session was too busy to take within its bound: counted and said, never waited out.
+
+        Waited out past Hermes' hook timeout, the call was abandoned and Hermes skipped that hook for every session
+        of the gateway for a minute (Hermes 0.21.5): Scope Recall registers one callback per hook.
+        """
+        holder = self._holder
+        self._count_backpressure(kind)
+        _log.warning("scope-recall: %s not taken: this session has been busy in %s for %.1f s", kind,
+                     holder[0] if holder else "another call", time.monotonic() - holder[1] if holder else 0.0)
+
+    def _backpressure_counts(self) -> dict[str, int]:
+        with self._said_lock:
+            return dict(self._backpressure)
 
     @property
     def name(self) -> str:
@@ -228,6 +269,7 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
         )
         self._diagnostics.current_source_refs = tuple(self._current_source_refs)
         self._diagnostics.durable_pending_captures = self._durable_pending_count()
+        self._diagnostics.host_backpressure = self._backpressure_counts() or None
         return self._diagnostics
 
     def _durable_pending_count(self):
@@ -404,14 +446,19 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
         scope_id: str | None,
         remaining_seconds: float = _CAPTURE_TIMEOUT_S,
         replay: bool = False,
+        bound: HermesIdentity | None = None,
+        release: bool = False,
     ):
         if event is None:
             if gaps:
                 self._merge_gaps(gaps)
             return None
         event = dict(event)
+        # The binding the capture was said under: a turn written after its reply keeps it whatever session switch
+        # came in meanwhile (``sync_turn`` passes it).
+        bound = self._require_identity() if bound is None else bound
         if not replay:
-            source_context = trusted_source_context(self._require_identity().scope)
+            source_context = trusted_source_context(bound.scope)
             if source_context is not None:
                 event["source_context"] = source_context
             else:
@@ -424,10 +471,18 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
         if identity is not None and identity not in self._retry_captures:
             if len(self._retry_captures) < 16 and len(json.dumps(event, ensure_ascii=False).encode("utf-8")) <= 262144:
                 self._retry_captures[identity] = _RetryCapture(
-                    context, copy.deepcopy(event), gaps, scope_id, self._require_identity().scope,
+                    context, copy.deepcopy(event), gaps, scope_id, bound.scope,
                 )
             else:
                 self._merge_gaps(("capture_gap:retry_buffer_full",))
+        host_scope = self._retry_captures[identity].host_scope if replay and identity in self._retry_captures else bound.scope
+        failure, holder = None, self._holder
+        if release:
+            # The store I/O without the lock, which the caller (``sync_turn``) holds exactly once.  Held across the
+            # write, it was taken straight back by this thread as it released it: the next turn's start got in after
+            # 2 of 14 such captures (measured on 3.4.9).  Only the store is touched until it is taken again.
+            self._holder = None
+            self._lock.release()
         try:
             # The bounded host cache is only an optimization. SQLite retains
             # first-witnessed time after an old identity leaves that cache.
@@ -447,13 +502,19 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
             core = self._require_core()
             if isinstance(core, MemoryCore):
                 receipt = core.record_host_event(context, event, scope_id=scope_id,
-                    host_scope=host_scope_payload(self._retry_captures[identity].host_scope if replay and identity in self._retry_captures else self._require_identity().scope),
+                    host_scope=host_scope_payload(host_scope),
                     remaining_seconds=max(.001, remaining_seconds - (time.monotonic() - started)))
             else:
                 receipt = core.record_event(context, event, scope_id=scope_id,
                     remaining_seconds=max(.001, remaining_seconds - (time.monotonic() - started)))
         except (ContractError, OSError, RuntimeError, sqlite3.Error) as exc:
-            if isinstance(exc, ContractError) and exc.code not in {"DEADLINE_EXCEEDED", "STORAGE_UNAVAILABLE"}:
+            failure = exc
+        finally:
+            if release:
+                self._lock.acquire()
+                self._holder = holder and (holder[0], time.monotonic(), holder[2])
+        if failure is not None:
+            if isinstance(failure, ContractError) and failure.code not in {"DEADLINE_EXCEEDED", "STORAGE_UNAVAILABLE"}:
                 self._retry_captures.pop(identity, None)
             self._record_capture_failure(identity, "exception")
             self._merge_gaps(gaps, ("capture_gap:write_exception",))
@@ -533,71 +594,100 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
                     self._merge_gaps((INGRESS_PENDING_GAP,))
         self._retry_buffered_captures()
 
-    def _retry_buffered_captures(self) -> None:
+    def _retry_buffered_captures(self, *, release: bool = False) -> None:
         """Write again what a busy store kept in memory; nothing to do, and nothing opened, when it holds none.
 
         Run at every ``sync_turn`` as well as at the session's end and before a compression: waiting for those
         left a capture that timed out on the writer lease in memory for hours, and a gateway restart lost it.
+        One retry per hold of the lock; with ``release`` (``sync_turn``, which does not hold it) each writes without.
         """
-        if not self._retry_captures:
-            return
-        identity = self._require_identity()
+        with self._lock:
+            if not self._retry_captures:
+                return
+            identity = self._require_identity()
+            pending_items = tuple(self._retry_captures.items())[:8]
         deadline = time.monotonic() + _CAPTURE_TIMEOUT_S
         try:
             manifest = load_binding_for_home(identity.hermes_home)
             assert_binding_matches_manifest(identity.binding, manifest)
             current_audience = resolve_runtime_audience(manifest, identity.scope)
         except (HermesIdentityError, ContractError, OSError, ValueError, TypeError):
-            self._merge_gaps(("capture_gap:retry_authorization_unverified",))
+            with self._lock:
+                self._merge_gaps(("capture_gap:retry_authorization_unverified",))
             return
-        for key, pending in tuple(self._retry_captures.items())[:8]:
+        for key, pending in pending_items:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 break
-            original_audience = resolve_runtime_audience(manifest, pending.host_scope)
-            allowed_scopes = (pending.context.allowed_scope_ids
-                              & original_audience.writable_scope_ids
-                              & current_audience.writable_scope_ids)
-            if pending.context.binding != identity.binding or pending.scope_id not in allowed_scopes:
-                self._retry_captures.pop(key, None)
-                self._ledger.rollback(key)
-                self._merge_gaps(("capture_gap:retry_authorization_revoked",))
-                continue
-            if identity.read_only:
-                continue
-            # Narrow current authorization only. Original actor, session,
-            # project, branch, occurrence time and DTO identity stay intact.
-            context = replace(pending.context, allowed_scope_ids=frozenset(allowed_scopes))
-            self._capture_event(context, pending.event, identity=key, gaps=pending.gaps,
-                                scope_id=pending.scope_id, remaining_seconds=remaining, replay=True)
+            with self._lock, self._holding("retry_buffered_captures"):
+                if self._identity is not identity:
+                    # A session switch came in between: what is left stays buffered for the next pass.
+                    break
+                if self._retry_captures.get(key) is not pending:
+                    continue
+                original_audience = resolve_runtime_audience(manifest, pending.host_scope)
+                allowed_scopes = (pending.context.allowed_scope_ids
+                                  & original_audience.writable_scope_ids
+                                  & current_audience.writable_scope_ids)
+                if pending.context.binding != identity.binding or pending.scope_id not in allowed_scopes:
+                    self._retry_captures.pop(key, None)
+                    self._ledger.rollback(key)
+                    self._merge_gaps(("capture_gap:retry_authorization_revoked",))
+                    continue
+                if identity.read_only:
+                    continue
+                # Narrow current authorization only. Original actor, session,
+                # project, branch, occurrence time and DTO identity stay intact.
+                context = replace(pending.context, allowed_scope_ids=frozenset(allowed_scopes))
+                self._capture_event(context, pending.event, identity=key, gaps=pending.gaps,
+                                    scope_id=pending.scope_id, remaining_seconds=remaining, replay=True,
+                                    bound=identity, release=release)
 
-    @_serialized_host_event
     def prefetch(self, query: str, *, session_id: str = "") -> str:
-        identity = self._require_identity()
-        effective_session = self._effective_session_id(session_id)
-        if is_trivial_prompt(query):
+        """Read the turn's state under the lock, recall without it.
+
+        Hermes gives a prefetch 8 s and goes on with the turn while the call keeps running.  Held through the recall,
+        the lock kept the turn's tool hooks waiting behind it past Hermes' 30 s hook timeout (tianji 2026-09-26,
+        tianxuan 2026-09-30: the same session's prefetch timed out 48 s and 33 s before).  Nothing of the turn is
+        written meanwhile: its message was stored before, its tools run after.
+        """
+        if not self._lock.acquire(timeout=_PREFETCH_STATE_WAIT_S):
+            self._session_busy("prefetch")
             return ""
-        if not identity.runtime_audience.allowed_scope_ids:
-            self._diagnostics.capability_gaps = identity.runtime_audience.capability_gaps
-            return ""
-        if self._current_source_refs_overflow:
-            # The overflow already reported its gap; an unfenced recall could
-            # inject this turn's own sources back as memory.
-            return ""
-        recent = (self._current_task_message,) if self._current_task_message else ()
-        context = identity.trusted_context(session_id=effective_session, recent_messages=recent)
-        current_refs = tuple(self._current_source_refs)
-        packet = self._require_core().recall_packet(
+        try:
+            identity = self._require_identity()
+            effective_session = self._effective_session_id(session_id)
+            if is_trivial_prompt(query):
+                return ""
+            if not identity.runtime_audience.allowed_scope_ids:
+                self._diagnostics.capability_gaps = identity.runtime_audience.capability_gaps
+                return ""
+            if self._current_source_refs_overflow:
+                # The overflow already reported its gap; an unfenced recall could
+                # inject this turn's own sources back as memory.
+                return ""
+            recent = (self._current_task_message,) if self._current_task_message else ()
+            context = identity.trusted_context(session_id=effective_session, recent_messages=recent)
+            current_refs = tuple(self._current_source_refs)
+            request = self._recall_request(query, effective_session)
+            core = self._require_core()
+            turn = self._active_turn_id
+        finally:
+            self._lock.release()
+        packet = core.recall_packet(
             context,
-            self._recall_request(query, effective_session),
+            request,
             current_source_refs=current_refs,
             # A day the message names is read in the zone this profile tells its model, as its memories' times are.
             zone=display_zone(),
         )
-        preparation = self._require_core().prepare_recall_render(context, packet)
-        self._diagnostics.last_prefetch_request_id = packet["request_id"]
-        self._diagnostics.last_render_ref = preparation.render_ref
-        self._pre_llm_pending = False
+        preparation = core.prepare_recall_render(context, packet)
+        with self._lock:
+            if self._active_turn_id == turn:
+                # A turn begun meanwhile, after Hermes gave up on this call, keeps its own state.
+                self._diagnostics.last_prefetch_request_id = packet["request_id"]
+                self._diagnostics.last_render_ref = preparation.render_ref
+                self._pre_llm_pending = False
         return render_host_recall_context(
             preparation.canonical_text, context=preparation.context,
             entry=(identity.entry_id, identity.manifest.entry_name) if identity.entry_id is not None else None,
@@ -730,7 +820,7 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
         Hermes calls this once, when a turn that has an answer ends, with a copy of the conversation, and
         before it sends the reply.  It reads that copy and writes nothing, so it takes only ``_said_lock``: under
         the adapter lock the reply waited behind whatever held it, a capture on a busy store or a recall, and
-        a callback Hermes gave up on was skipped for the rest of the session.
+        a callback Hermes gave up on was then skipped for a minute, for every session (Hermes 0.21.5).
         """
         identity = self._require_identity()
         if identity.read_only or not identity.runtime_audience.allowed_scope_ids:
@@ -750,7 +840,6 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
             if steered:
                 self._steer_said[turn_id] = steered
 
-    @_serialized_host_event
     def sync_turn(
         self,
         user_content: str,
@@ -759,17 +848,26 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
         session_id: str = "",
         messages: Optional[List[Dict[str, Any]]] = None,
     ) -> None:
-        identity = self._require_identity()
-        if identity.read_only:
-            return
-        effective_session = self._effective_session_id(session_id)
-        turn_id = self._active_turn_id or str(self._turn_counter or "turn")
-        if not identity.runtime_audience.allowed_scope_ids:
-            self._diagnostics.capability_gaps = identity.runtime_audience.capability_gaps
-            return
+        """Write the finished turn one capture per hold of the lock, each one's store I/O without it.
+
+        Hermes runs this on its memory worker after the reply, with no time limit, while the next turn may already
+        start.  Held for the whole turn (up to 64 interim messages, the steers, the reply and the retries, each
+        waiting up to 1 s for a busy store) it kept the next turn's hooks, its start and its prefetch waiting.
+        The captures keep the binding the turn was said under (``bound``).
+        """
+        with self._lock:
+            identity = self._require_identity()
+            if identity.read_only:
+                return
+            effective_session = self._effective_session_id(session_id)
+            active_turn = self._active_turn_id
+            turn_id = active_turn or str(self._turn_counter or "turn")
+            if not identity.runtime_audience.allowed_scope_ids:
+                self._diagnostics.capability_gaps = identity.runtime_audience.capability_gaps
+                return
         # Hermes runs this on its memory worker, after the reply: the place to write again what a busy store
         # kept in memory, before the turn's own sources.
-        self._retry_buffered_captures()
+        self._retry_buffered_captures(release=True)
         context = identity.trusted_context(session_id=effective_session, mutation=True)
         shown = identity.trusted_context(session_id=effective_session, actor_origin="assistant_visible", mutation=True)
         with self._said_lock:
@@ -782,56 +880,52 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
                              said_turn, len(said), _INTERIM_PER_TURN)
                 limited, said = True, said[:_INTERIM_PER_TURN]
             for ordinal, (text, occurred_at) in enumerate(said, 1):
-                event, gaps, ledger_identity = interim_source_event(
-                    self._ledger, shown, session_id=effective_session, turn_id=said_turn, ordinal=ordinal,
-                    content=text, recorded_at=self._utc_now(), occurred_at=occurred_at)
-                if event is not None or gaps:
-                    self._capture_event(shown, event, identity=ledger_identity, gaps=gaps,
-                                        scope_id=identity.local_scope_id)
+                with self._lock, self._holding("sync_turn"):
+                    event, gaps, ledger_identity = interim_source_event(
+                        self._ledger, shown, session_id=effective_session, turn_id=said_turn, ordinal=ordinal,
+                        content=text, recorded_at=self._utc_now(), occurred_at=occurred_at)
+                    if event is not None or gaps:
+                        self._capture_event(shown, event, identity=ledger_identity, gaps=gaps,
+                                            scope_id=identity.local_scope_id, bound=identity, release=True)
         for said_turn, said in steers.items():
             for ordinal, (text, occurred_at) in enumerate(said, 1):
-                event, gaps, ledger_identity = steer_source_event(
-                    self._ledger, context, session_id=effective_session, turn_id=said_turn, ordinal=ordinal,
-                    content=text, recorded_at=self._utc_now(), occurred_at=occurred_at)
-                if event is not None or gaps:
-                    self._capture_event(context, event, identity=ledger_identity, gaps=gaps,
-                                        scope_id=identity.local_scope_id)
+                with self._lock, self._holding("sync_turn"):
+                    event, gaps, ledger_identity = steer_source_event(
+                        self._ledger, context, session_id=effective_session, turn_id=said_turn, ordinal=ordinal,
+                        content=text, recorded_at=self._utc_now(), occurred_at=occurred_at)
+                    if event is not None or gaps:
+                        self._capture_event(context, event, identity=ledger_identity, gaps=gaps,
+                                            scope_id=identity.local_scope_id, bound=identity, release=True)
         outcome = "success"
-        if not assistant_content.strip():
-            outcome = "truncated"
-            self._outcomes.mark_truncated(effective_session, turn_id)
-        else:
-            self._outcomes.mark_success(effective_session, turn_id)
-        event_pairs, gaps = sync_turn_source_events(
-            self._ledger,
-            context,
-            session_id=effective_session,
-            turn_id=turn_id,
-            user_content=user_content,
-            assistant_content=assistant_content,
-            recorded_at=self._utc_now(),
-            outcome=outcome,
-            include_user=turn_id not in self._user_captured_turns,
-        )
-        for event, ledger_identity in event_pairs:
-            event_context = context
-            if event["role"] == "assistant":
-                event_context = identity.trusted_context(
-                    session_id=effective_session,
-                    actor_origin="assistant_visible",
-                    mutation=True,
-                )
-            self._capture_event(
-                event_context,
-                event,
-                identity=ledger_identity,
-                gaps=gaps,
-                scope_id=identity.local_scope_id,
+        with self._lock:
+            if not assistant_content.strip():
+                outcome = "truncated"
+                self._outcomes.mark_truncated(effective_session, turn_id)
+            else:
+                self._outcomes.mark_success(effective_session, turn_id)
+            event_pairs, gaps = sync_turn_source_events(
+                self._ledger,
+                context,
+                session_id=effective_session,
+                turn_id=turn_id,
+                user_content=user_content,
+                assistant_content=assistant_content,
+                recorded_at=self._utc_now(),
+                outcome=outcome,
+                include_user=turn_id not in self._user_captured_turns,
             )
-        self._pre_llm_pending = False
-        self._diagnostics.pending_outcome_gaps = self._outcomes.pending_gaps()
-        if limited:
-            self._merge_gaps(("capture_gap:interim_limit",))
+        for event, ledger_identity in event_pairs:
+            event_context = shown if event["role"] == "assistant" else context
+            with self._lock, self._holding("sync_turn"):
+                self._capture_event(event_context, event, identity=ledger_identity, gaps=gaps,
+                                    scope_id=identity.local_scope_id, bound=identity, release=True)
+        with self._lock:
+            if self._active_turn_id == active_turn:
+                # The next turn may have begun between these writes; its pre_llm marker is its own.
+                self._pre_llm_pending = False
+            self._diagnostics.pending_outcome_gaps = self._outcomes.pending_gaps()
+            if limited:
+                self._merge_gaps(("capture_gap:interim_limit",))
 
     def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
         # Serialize the short process launch with shutdown, never the drain.
@@ -958,6 +1052,8 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
                 state.update(durable_pending_captures=durable_pending, durable_capture_status="queued_in_sqlite")
             elif durable_pending is None:
                 state["durable_capture_status"] = "unknown"
+            for kind, count in self._backpressure_counts().items():
+                state[f"host_backpressure:{kind}"] = count
             self._diagnostics.shutdown_state = state
             self._initialized = False
 

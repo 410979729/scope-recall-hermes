@@ -3,15 +3,21 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 import sqlite3
+from types import SimpleNamespace
 
 import pytest
 
 from scope_recall.adapters.hermes import ScopeRecallHermesAdapter, install_hermes_scope_recall
-from scope_recall.adapters.hermes.hooks import _global_callback, _register_adapter_instance, _unregister_adapter_instance
+from scope_recall.adapters.hermes import hooks, provider as provider_module
+from scope_recall.adapters.hermes.hooks import (
+    _SUPPORTED_HOOKS, _global_callback, _register_adapter_instance, _unregister_adapter_instance,
+)
 from scope_recall.adapters.hermes.provider import GAP_CURRENT_SOURCE_REFS_LIMIT
 from scope_recall.adapters.hermes.worker import AdapterWorker
 from scope_recall.contracts import validate_payload
+from scope_recall.core import CoreConfig, MemoryCore
 from scope_recall.core.events import MAX_SEGMENT_CHARS
 from scope_recall.core.retrieval import MAX_CURRENT_SOURCE_REFS
 
@@ -275,7 +281,7 @@ def test_global_hook_dispatch_is_session_scoped_and_conflict_closed(tmp_path, in
 def test_post_llm_call_does_not_wait_for_the_adapter_lock(adapter, hermes_home):
     """Hermes calls post_llm_call before it sends the reply, on a thread it waits for.  Under the adapter lock the
     reply waited behind whatever held it, a capture on a busy store or a recall still running, and a callback
-    Hermes gave up on (30 s) was skipped for the rest of the session, with no gap anywhere."""
+    Hermes gave up on (30 s) was then skipped for a minute for every session, with no gap anywhere."""
     import time
 
     provider, _clock = adapter
@@ -340,3 +346,252 @@ def test_a_turn_writes_at_most_64_interim_messages(adapter, monkeypatch):
     assert sum(":interim:" in key for key in keys) == 64
     assert any(":sync_assistant:" in key for key in keys), keys[-3:]
     assert "capture_gap:interim_limit" in provider._diagnostics.pending_outcome_gaps
+
+
+#: How long a call that must not wait gets to return; only a call that waits reaches it.
+_PROMPTLY = 5.0
+
+
+def _in_thread(call):
+    done, box = threading.Event(), {}
+
+    def run():
+        try:
+            box["value"] = call()
+        finally:
+            done.set()
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    return done, box, thread
+
+
+def _tool_hook(session_id: str, call_id: str):
+    return lambda: _global_callback("post_tool_call")(
+        session_id=session_id, turn_id="turn-1", tool_call_id=call_id, tool_name="terminal",
+        result=f"TEST tool output {call_id}", status="success")
+
+
+def _held_capture(provider, monkeypatch, call_id: str):
+    """The store write of the capture whose key names ``call_id`` waits until ``release`` is set."""
+    real = provider._core.record_host_event
+    entered, release = threading.Event(), threading.Event()
+
+    def record_host_event(context, event, **kwargs):
+        if call_id in event["source_event_key"]:
+            entered.set()
+            release.wait(10)
+        return real(context, event, **kwargs)
+
+    monkeypatch.setattr(provider._core, "record_host_event", record_host_event)
+    return entered, release
+
+
+def _another_session(installed_core, initialize_kwargs):
+    core, clock = installed_core
+    other = ScopeRecallHermesAdapter(core=MemoryCore(CoreConfig(core.config.binding), clock=clock), clock=clock)
+    other.initialize("TEST-session-2", **initialize_kwargs)
+    return other
+
+
+def _tool_rows(hermes_home) -> int:
+    with sqlite3.connect(hermes_home / "scope-recall" / "memory.sqlite3") as conn:
+        return conn.execute("SELECT count(*) FROM source_events WHERE role='tool'").fetchone()[0]
+
+
+def test_a_hook_does_not_wait_out_its_busy_session(adapter, monkeypatch, caplog):
+    """A hook waited for its own session without a limit.  Past Hermes' hook timeout (30 s) the call was abandoned
+    and Hermes 0.21.5 then skipped that hook for a minute for every session, Scope Recall registering one callback
+    per hook (tianji 2026-09-26: three tool hooks behind their session's prefetch)."""
+    provider, _clock = adapter
+    monkeypatch.setattr(hooks, "_SESSION_WAIT_CAP_S", 0.05, raising=False)
+    entered, release = _held_capture(provider, monkeypatch, "slow-call")
+    _register_adapter_instance(provider)
+    try:
+        first, _, first_thread = _in_thread(_tool_hook("TEST-session-1", "slow-call"))
+        assert entered.wait(_PROMPTLY)
+        second, _, second_thread = _in_thread(_tool_hook("TEST-session-1", "next-call"))
+        assert second.wait(_PROMPTLY), "the hook waited for its busy session"
+        assert not first.is_set()
+    finally:
+        release.set()
+        first_thread.join(_PROMPTLY)
+        second_thread.join(_PROMPTLY)
+        _unregister_adapter_instance(provider)
+    assert provider.diagnostics.host_backpressure == {"post_tool_call": 1}
+    said = [record.getMessage() for record in caplog.records if " not taken: " in record.getMessage()]
+    assert said and said[0].startswith(
+        "scope-recall: post_tool_call not taken: this session has been busy in observe_post_tool_call for "), said
+
+
+def test_prefetch_does_not_wait_out_its_busy_session(adapter, monkeypatch):
+    provider, _clock = adapter
+    monkeypatch.setattr(provider_module, "_PREFETCH_STATE_WAIT_S", 0.05, raising=False)
+    entered, release = _held_capture(provider, monkeypatch, "slow-call")
+    _register_adapter_instance(provider)
+    try:
+        first, _, first_thread = _in_thread(_tool_hook("TEST-session-1", "slow-call"))
+        assert entered.wait(_PROMPTLY)
+        prefetched, box, prefetch_thread = _in_thread(lambda: provider.prefetch("TEST where does orca42 run"))
+        assert prefetched.wait(_PROMPTLY), "prefetch waited for its busy session"
+        assert box["value"] == "" and not first.is_set()
+    finally:
+        release.set()
+        first_thread.join(_PROMPTLY)
+        prefetch_thread.join(_PROMPTLY)
+        _unregister_adapter_instance(provider)
+    assert provider.diagnostics.host_backpressure == {"prefetch": 1}
+
+
+def test_prefetch_does_not_hold_its_session_while_it_recalls(adapter, hermes_home, monkeypatch):
+    """Hermes gives a prefetch 8 s and goes on with the turn; held through the recall, the session kept the turn's
+    tool hooks waiting behind it (tianxuan 2026-09-30: the prefetch timed out, the tool hook 33 s later)."""
+    provider, _clock = adapter
+    provider.observe_pre_llm(session_id="TEST-session-1", turn_id="turn-1", user_message="TEST where does orca42 run")
+    real = provider._core.recall_packet
+    entered, release = threading.Event(), threading.Event()
+
+    def recall_packet(*args, **kwargs):
+        entered.set()
+        release.wait(10)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(provider._core, "recall_packet", recall_packet)
+    _register_adapter_instance(provider)
+    try:
+        prefetched, _, prefetch_thread = _in_thread(lambda: provider.prefetch("TEST where does orca42 run"))
+        assert entered.wait(_PROMPTLY)
+        hooked, _, hook_thread = _in_thread(_tool_hook("TEST-session-1", "during-recall"))
+        assert hooked.wait(_PROMPTLY), "the tool hook waited for its session's recall"
+        assert not prefetched.is_set()
+    finally:
+        release.set()
+        prefetch_thread.join(_PROMPTLY)
+        hook_thread.join(_PROMPTLY)
+        _unregister_adapter_instance(provider)
+    assert prefetched.is_set()
+    assert _tool_rows(hermes_home) == 1
+
+
+def test_the_next_turn_starts_while_the_last_one_is_written(adapter, monkeypatch):
+    """sync_turn runs on Hermes' memory worker after the reply.  Holding the session for the whole turn, it kept the
+    next turn's start waiting on it (3.56 s behind 14 writes of 0.25 s, measured on 3.4.9)."""
+    provider, _clock = adapter
+    provider.on_turn_start(10, "TEST 跑三步", turn_id="turn-10")
+    history = [{"role": "user", "content": "TEST 跑三步"}]
+    for step in range(3):
+        history.append({"role": "assistant", "content": f"TEST 第 {step} 步。", "tool_calls": [{"id": f"T{step}"}]})
+        history.append({"role": "tool", "tool_call_id": f"T{step}", "content": "TEST 工具输出"})
+    history.append({"role": "assistant", "content": "TEST 三步都跑完了。"})
+    provider.observe_post_llm_call(session_id="TEST-session-1", turn_id="turn-10",
+                                   assistant_response="TEST 三步都跑完了。", conversation_history=history)
+    keys = []
+    entered, release = threading.Event(), threading.Event()
+    queued = SimpleNamespace(durability="queued", disposition="queued", error_code=None, event_refs=(), gaps=())
+
+    def record_host_event(_context, event, **kwargs):
+        keys.append(event["source_event_key"])
+        if len(keys) == 1:
+            entered.set()
+            release.wait(10)
+        return queued
+
+    monkeypatch.setattr(provider._core, "record_host_event", record_host_event)
+    monkeypatch.setattr(provider._core, "source_by_event_key", lambda *args, **kwargs: None, raising=False)
+    synced, _, sync_thread = _in_thread(lambda: provider.sync_turn("TEST 跑三步", "TEST 三步都跑完了。",
+                                                                   session_id="TEST-session-1"))
+    start_thread = None
+    try:
+        assert entered.wait(_PROMPTLY)
+        started, _, start_thread = _in_thread(lambda: provider.on_turn_start(11, "TEST next", turn_id="turn-11"))
+        assert started.wait(_PROMPTLY), "the next turn's start waited for the last turn's writes"
+        assert not synced.is_set()
+    finally:
+        release.set()
+        sync_thread.join(_PROMPTLY)
+        if start_thread is not None:
+            start_thread.join(_PROMPTLY)
+    assert synced.is_set()
+    assert sum(":interim:" in key for key in keys) == 3
+    assert any(":sync_assistant:" in key for key in keys), keys
+    assert provider._active_turn_id == "turn-11"
+
+
+def test_a_hook_past_the_host_timeout_is_said_and_counted(adapter, monkeypatch, caplog):
+    provider, _clock = adapter
+    monkeypatch.setattr(hooks, "host_hook_timeout", lambda: 0.02, raising=False)
+    observe = provider.observe_post_tool_call
+
+    def slow_observe(**kwargs):
+        time.sleep(0.1)  # past the shortened host timeout by several 15.6 ms clock ticks
+        return observe(**kwargs)
+
+    monkeypatch.setattr(provider, "observe_post_tool_call", slow_observe)
+    _register_adapter_instance(provider)
+    try:
+        _tool_hook("TEST-session-1", "overrun-call")()
+    finally:
+        _unregister_adapter_instance(provider)
+    said = [record.getMessage() for record in caplog.records if "past the host's" in record.getMessage()]
+    assert len(said) == 1 and said[0].startswith("scope-recall: post_tool_call took "), said
+    assert provider.diagnostics.host_backpressure == {"post_tool_call_overran": 1}
+
+
+def test_the_dispatcher_callbacks_carry_scope_recall_names():
+    """Hermes names a callback in its timeout and skip lines; every plugin's closure called ``callback`` read alike."""
+    assert {event: _global_callback(event).__name__ for event in _SUPPORTED_HOOKS} == {
+        event: f"scope_recall_{event}" for event in _SUPPORTED_HOOKS}
+
+
+def test_another_session_never_waits_for_this_one(adapter, installed_core, initialize_kwargs, hermes_home, monkeypatch):
+    """Each Hermes session has an adapter and a lock of its own, and a hook goes to the one bound to its session."""
+    provider, _clock = adapter
+    other = _another_session(installed_core, initialize_kwargs)
+    entered, release = _held_capture(provider, monkeypatch, "slow-call")
+    _register_adapter_instance(provider)
+    _register_adapter_instance(other)
+    try:
+        first, _, first_thread = _in_thread(_tool_hook("TEST-session-1", "slow-call"))
+        assert entered.wait(_PROMPTLY)
+        second, _, second_thread = _in_thread(_tool_hook("TEST-session-2", "other-call"))
+        assert second.wait(_PROMPTLY), "another session's hook waited for this one"
+        assert not first.is_set()
+    finally:
+        release.set()
+        first_thread.join(_PROMPTLY)
+        second_thread.join(_PROMPTLY)
+        _unregister_adapter_instance(provider)
+        _unregister_adapter_instance(other)
+        other.shutdown()
+    assert _tool_rows(hermes_home) == 2
+
+
+def test_another_sessions_hook_waits_only_its_write_budget_on_a_held_store(adapter, installed_core, initialize_kwargs,
+                                                                            hermes_home):
+    """The store is shared: a session's write waits at most its capture's 1 s budget for another's, and what it
+    could not write is kept to retry."""
+    provider, _clock = adapter
+    other = _another_session(installed_core, initialize_kwargs)
+    held, release = threading.Event(), threading.Event()
+
+    def long_write():
+        with provider._core.storage.write(provider._identity.trusted_context(mutation=True), remaining_seconds=1.0):
+            held.set()
+            release.wait(10)
+
+    writer = threading.Thread(target=long_write, daemon=True)
+    writer.start()
+    _register_adapter_instance(other)
+    try:
+        assert held.wait(_PROMPTLY)
+        hooked, _, hook_thread = _in_thread(_tool_hook("TEST-session-2", "other-call"))
+        assert hooked.wait(_PROMPTLY), "the hook waited for another session's write"
+        assert writer.is_alive()
+        assert other.diagnostics.pending_capture_identities
+    finally:
+        release.set()
+        writer.join(_PROMPTLY)
+        _unregister_adapter_instance(other)
+    other._retry_buffered_captures()
+    other.shutdown()
+    assert _tool_rows(hermes_home) == 1
