@@ -2,6 +2,27 @@
 
 All notable changes to `scope-recall` will be documented in this file.
 
+## [3.4.9] - 2026-10-01
+
+3.4.9 lets prompts that come together on an entry's server search by meaning: every handler of the server shares one LanceDB helper. Nothing else changes.
+
+### Recall
+
+- An entry's server answers a prompt with the handler it keeps. A prompt that comes while that handler is busy gets a handler made for it, and that handler's vector store started a LanceDB helper of its own. The new helper spent about 2 s importing LanceDB and then opened the table while the prompt's words were searched. This applies to the work computer's remote server and to the MCP server of Claude Code and Codex on this machine.
+- On the work computer, parallel sub-agents opened Codex sessions two and three a second. Their prompts lost the vector search that way, and some lost their whole recall.
+- Every handler of a server now searches one store through one helper, warm from the server's start. The prompts take turns on it, one search each. A kept handler made anew, after its configuration changed, finds the helper warm as well.
+- A table the helper could not open no longer leaves a helper with no table: the store is closed and the next prompt opens it again, as a store of its own was made anew.
+- A server no longer keeps a spare helper beside the one its prompts share: about 0.55 GB less for each server.
+- Measured on a copy of the shared store, with bursts of three prompts with long briefs, each stored and then recalled within the hook's 6 s as the server does it: 45 of 48 recalls kept their vector search, against 29 of 48 on 3.4.8. None lost it to a helper's start, against 16; the other three lost it to the time the embedding provider or the search took. Over five such rounds on 3.4.8, 2 recalls of 120 were lost whole; none of the 48 on 3.4.9 was. A prompt that comes alone was recalled with its vector search 16 times of 16 either way.
+
+### Upgrading from 3.4.8
+
+1. Stop the hosts and the Scope Recall worker, and take a `backup`.
+2. Install the 3.4.9 package, then run `plan-install` and `apply-install` for each host.
+3. Start the hosts again and run `doctor`. Restart a remote entry's server so that it serves with the shared helper.
+
+The store's schema is unchanged (1110). Every change, with its details, is in [CHANGELOG.md](https://github.com/410979729/scope-recall-hermes/blob/v3.4.9/CHANGELOG.md).
+
 ## [3.4.8] - 2026-09-30
 
 3.4.8 answers a question about what was said or done on a day, or by one entry of the shared store on a day, from that day's conversation. Any other message is recalled as on 3.4.7.
