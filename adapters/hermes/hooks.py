@@ -78,14 +78,15 @@ def _active_adapter(kwargs: dict[str, Any]) -> Any | None:
         return max(matches, key=lambda item: _BOUND.get(item, 0))
 
 
-def host_hook_timeout() -> float:
-    """Hermes' ``plugins.hook_callback_timeout`` as Hermes reads it, or its default outside Hermes."""
+def host_hook_timeout() -> float | None:
+    """Hermes' ``plugins.hook_callback_timeout`` as Hermes reads it, or its default outside Hermes; ``None`` when
+    the operator set it to 0 or less, with which Hermes waits for a hook however long it takes."""
     try:
         from hermes_cli.plugins import _resolve_hook_callback_timeout  # pyright: ignore[reportMissingImports]
         timeout = float(_resolve_hook_callback_timeout())
     except Exception:
         return _HOST_HOOK_TIMEOUT_S
-    return timeout if timeout > 0 else _HOST_HOOK_TIMEOUT_S
+    return timeout if timeout > 0 else None
 
 
 def _dispatch(event: str, kwargs: dict[str, Any], *, wait: float) -> Any | None:
@@ -101,7 +102,7 @@ def _dispatch(event: str, kwargs: dict[str, Any], *, wait: float) -> Any | None:
     # host skipped this hook for every session (tianji 2026-09-26: three tool hooks behind their session's
     # prefetch).  One it cannot wait for is counted and said.
     if not adapter._lock.acquire(timeout=wait):
-        adapter._session_busy(event)
+        adapter._session_busy(event, kwargs)
         return adapter
     try:
         # Session switch can occur after selection; never send that old
@@ -116,9 +117,10 @@ def _dispatch(event: str, kwargs: dict[str, Any], *, wait: float) -> Any | None:
 def _global_callback(event: str) -> Callable[..., None]:
     def callback(**kwargs: Any) -> None:
         started, timeout = time.monotonic(), host_hook_timeout()
-        adapter = _dispatch(event, kwargs, wait=min(_SESSION_WAIT_CAP_S, timeout / 3))
+        adapter = _dispatch(event, kwargs, wait=_SESSION_WAIT_CAP_S if timeout is None else
+                            min(_SESSION_WAIT_CAP_S, timeout / 3))
         elapsed = time.monotonic() - started
-        if elapsed >= timeout:
+        if timeout is not None and elapsed >= timeout:
             _log.warning("scope-recall: %s took %.1f s, past the host's %g s hook timeout; the host skips it for "
                          "every session for the next minute", event, elapsed, timeout)
             if adapter is not None:

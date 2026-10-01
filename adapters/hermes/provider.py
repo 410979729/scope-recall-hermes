@@ -226,6 +226,12 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
         self._holder: tuple[str, float, int] | None = None
         #: ``host_backpressure``, counted under ``_said_lock``: never across I/O.
         self._backpressure: dict[str, int] = {}
+        #: Held by ``sync_turn`` for the whole turn, which takes ``_lock`` only around each capture: a shutdown waits
+        #: for it (``shutdown``).
+        self._sync_lock = threading.RLock()
+        #: The turn id of a ``pre_llm_call`` this session was too busy to take, for the turn's start
+        #: (``on_turn_start``); written without ``_lock`` by the skipped hook.
+        self._skipped_turn_id: str | None = None
 
     @contextmanager
     def _holding(self, name: str):
@@ -240,13 +246,17 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
         with self._said_lock:
             self._backpressure[kind] = self._backpressure.get(kind, 0) + 1
 
-    def _session_busy(self, kind: str) -> None:
+    def _session_busy(self, kind: str, kwargs: dict[str, Any] | None = None) -> None:
         """A host call this session was too busy to take within its bound: counted and said, never waited out.
 
         Waited out past Hermes' hook timeout, the call was abandoned and Hermes skipped that hook for every session
-        of the gateway for a minute (Hermes 0.21.5): Scope Recall registers one callback per hook.
+        of the gateway for a minute (Hermes 0.21.5): Scope Recall registers one callback per hook.  A skipped
+        ``pre_llm_call`` leaves its turn id for the turn's start: post_llm_call names the turn's interim messages
+        and steers by it, and without it they were dropped (review of 3.4.10).
         """
         holder = self._holder
+        if kind == "pre_llm_call":
+            self._skipped_turn_id = str((kwargs or {}).get("turn_id") or "").strip() or None
         self._count_backpressure(kind)
         _log.warning("scope-recall: %s not taken: this session has been busy in %s for %.1f s", kind,
                      holder[0] if holder else "another call", time.monotonic() - holder[1] if holder else 0.0)
@@ -731,6 +741,10 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
     def on_turn_start(self, turn_number: int, message: str, **kwargs) -> None:
         self._turn_counter = int(turn_number)
         ordinal_turn_id = str(kwargs.get("turn_id") or turn_number)
+        skipped, self._skipped_turn_id = self._skipped_turn_id, None
+        if skipped and not kwargs.get("turn_id") and not self._pre_llm_pending:
+            # This turn's pre_llm_call was skipped (``_session_busy``): its turn id is the one the turn is known by.
+            ordinal_turn_id = skipped
         # Hermes calls this after pre_llm_call. Preserve that UUID and its
         # current-source fence until prefetch/sync consume this turn. If no
         # UUID arrived, the ordinal is the bounded fallback.
@@ -883,12 +897,21 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
         Hermes runs this on its memory worker after the reply, with no time limit, while the next turn may already
         start.  Held for the whole turn (up to 64 interim messages, the steers, the reply and the retries, each
         waiting up to 1 s for a busy store) it kept the next turn's hooks, its start and its prefetch waiting.
-        The captures keep the binding the turn was said under (``bound``).
+        The captures keep the binding the turn was said under (``bound``).  One turn is written at a time, and a
+        shutdown waits for it (``_sync_lock``): one that came between two captures closed the runtime under the
+        rest of the turn, the reply included (review of 3.4.10).
         """
+        with self._sync_lock:
+            self._sync_turn(user_content, assistant_content, session_id=session_id)
+
+    def _sync_turn(self, user_content: str, assistant_content: str, *, session_id: str) -> None:
         with self._lock:
             identity = self._require_identity()
             if identity.read_only:
                 return
+            # The turn's message and reply are dated when its writing begins: dated as each was reached, the reply
+            # came after the next turn's message, written between this turn's captures (review of 3.4.10).
+            said_at = self._utc_now()
             effective_session = self._effective_session_id(session_id)
             active_turn = self._active_turn_id
             turn_id = active_turn or str(self._turn_counter or "turn")
@@ -940,7 +963,7 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
                 turn_id=turn_id,
                 user_content=user_content,
                 assistant_content=assistant_content,
-                recorded_at=self._utc_now(),
+                recorded_at=said_at,
                 outcome=outcome,
                 include_user=turn_id not in self._user_captured_turns,
             )
@@ -1056,7 +1079,8 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
         return ""
 
     def shutdown(self) -> None:
-        with self._lock:
+        # A turn being written is finished first (``sync_turn``), as when it held the adapter lock throughout.
+        with self._sync_lock, self._lock:
             from .hooks import unregister_adapter
 
             unregister_adapter(self)

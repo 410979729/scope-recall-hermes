@@ -564,6 +564,118 @@ def test_a_hook_past_the_host_timeout_is_said_and_counted(adapter, monkeypatch, 
     assert provider.diagnostics.host_backpressure == {"post_tool_call_overran": 1}
 
 
+def test_a_host_that_never_times_out_a_hook_hears_of_no_skip(adapter, monkeypatch, caplog):
+    """Hermes reads a hook timeout of 0 or less as none: it waits for the hook and skips nothing, so nothing may say
+    that it does (review of 3.4.10)."""
+    provider, _clock = adapter
+    monkeypatch.setattr(hooks, "host_hook_timeout", lambda: None)
+    _register_adapter_instance(provider)
+    try:
+        _tool_hook("TEST-session-1", "no-timeout-call")()
+    finally:
+        _unregister_adapter_instance(provider)
+    assert not [record for record in caplog.records if "past the host's" in record.getMessage()]
+    assert provider.diagnostics.host_backpressure is None
+
+
+def test_a_hook_timeout_of_zero_is_read_as_none(monkeypatch):
+    """As Hermes reads it: ``plugins.hook_callback_timeout`` of 0 or less waits for a hook however long it takes."""
+    import sys
+    import types
+
+    plugins = types.ModuleType("hermes_cli.plugins")
+    monkeypatch.setitem(sys.modules, "hermes_cli", types.ModuleType("hermes_cli"))
+    monkeypatch.setitem(sys.modules, "hermes_cli.plugins", plugins)
+    for configured, read in ((0, None), (-5, None), (45, 45.0)):
+        plugins._resolve_hook_callback_timeout = lambda value=configured: value
+        assert hooks.host_hook_timeout() == read, configured
+
+
+def _turn_with_interim(provider, turn: str, steps: int) -> None:
+    provider.on_turn_start(10, "TEST 跑几步", turn_id=turn)
+    history = [{"role": "user", "content": "TEST 跑几步"}]
+    for step in range(steps):
+        history.append({"role": "assistant", "content": f"TEST 第 {step} 步。", "tool_calls": [{"id": f"T{step}"}]})
+        history.append({"role": "tool", "tool_call_id": f"T{step}", "content": "TEST 工具输出"})
+    history.append({"role": "assistant", "content": "TEST 跑完了。"})
+    provider.observe_post_llm_call(session_id="TEST-session-1", turn_id=turn, assistant_response="TEST 跑完了。",
+                                   conversation_history=history)
+
+
+def test_a_shutdown_waits_for_the_turn_being_written(adapter, monkeypatch):
+    """sync_turn gives the session back between its captures; a shutdown that came in between closed the runtime
+    under the rest of the turn, and the reply was never written (review of 3.4.10).  It waits, as on 3.4.9."""
+    provider, _clock = adapter
+    _turn_with_interim(provider, "turn-10", 3)
+    keys = []
+    entered, release = threading.Event(), threading.Event()
+    queued = SimpleNamespace(durability="queued", disposition="queued", error_code=None, event_refs=(), gaps=())
+
+    def record_host_event(_context, event, **kwargs):
+        keys.append(event["source_event_key"])
+        if len(keys) == 1:
+            entered.set()
+            release.wait(10)
+        return queued
+
+    monkeypatch.setattr(provider._core, "record_host_event", record_host_event)
+    monkeypatch.setattr(provider._core, "source_by_event_key", lambda *args, **kwargs: None, raising=False)
+    synced, _, sync_thread = _in_thread(lambda: provider.sync_turn("TEST 跑几步", "TEST 跑完了。",
+                                                                   session_id="TEST-session-1"))
+    shut_thread = None
+    try:
+        assert entered.wait(_PROMPTLY)
+        shut, _, shut_thread = _in_thread(provider.shutdown)
+        assert not shut.wait(0.3), "the shutdown closed the session under the turn being written"
+    finally:
+        release.set()
+        sync_thread.join(_PROMPTLY)
+        if shut_thread is not None:
+            shut_thread.join(_PROMPTLY)
+    assert synced.is_set() and shut.is_set()
+    assert sum(":interim:" in key for key in keys) == 3
+    assert any(":sync_assistant:" in key for key in keys), keys
+
+
+def test_a_turn_is_dated_when_its_writing_begins(adapter, monkeypatch):
+    """The next turn's hooks may write between this turn's captures; dated as each was reached, the reply was said
+    after the next turn's message (review of 3.4.10)."""
+    provider, _clock = adapter
+    _turn_with_interim(provider, "turn-10", 2)
+    times = iter(f"2026-10-01T12:00:{second:02d}Z" for second in range(60))
+    monkeypatch.setattr(provider, "_utc_now", lambda: next(times))
+    dated = {}
+    queued = SimpleNamespace(durability="queued", disposition="queued", error_code=None, event_refs=(), gaps=())
+
+    def record_host_event(_context, event, **kwargs):
+        dated[event["source_event_key"]] = event.get("occurred_at")
+        return queued
+
+    monkeypatch.setattr(provider._core, "record_host_event", record_host_event)
+    monkeypatch.setattr(provider._core, "source_by_event_key", lambda *args, **kwargs: None, raising=False)
+    provider.sync_turn("TEST 跑几步", "TEST 跑完了。", session_id="TEST-session-1")
+    assert [when for key, when in dated.items() if ":sync_assistant:" in key] == ["2026-10-01T12:00:00Z"], dated
+
+
+def test_a_skipped_pre_llm_call_leaves_its_turn_id_for_the_turn(adapter, monkeypatch):
+    """Hermes 0.21.5 starts a turn without its id: a pre_llm_call that could not wait for its session was the only
+    call to bring it, and the interim messages post_llm_call names by it were dropped (review of 3.4.10)."""
+    provider, _clock = adapter
+    monkeypatch.setattr(hooks, "_SESSION_WAIT_CAP_S", 0.05)
+    _register_adapter_instance(provider)
+    provider._lock.acquire()
+    try:
+        done, _, thread = _in_thread(lambda: _global_callback("pre_llm_call")(
+            session_id="TEST-session-1", turn_id="turn-uuid-7", user_message="TEST 第七轮"))
+        assert done.wait(_PROMPTLY)
+        thread.join(_PROMPTLY)
+    finally:
+        provider._lock.release()
+        _unregister_adapter_instance(provider)
+    provider.on_turn_start(7, "TEST 第七轮", session_id="TEST-session-1")
+    assert provider._active_turn_id == "turn-uuid-7"
+
+
 def test_the_dispatcher_callbacks_carry_scope_recall_names():
     """Hermes names a callback in its timeout and skip lines; every plugin's closure called ``callback`` read alike."""
     assert {event: _global_callback(event).__name__ for event in _SUPPORTED_HOOKS} == {

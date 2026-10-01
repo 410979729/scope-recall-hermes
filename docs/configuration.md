@@ -544,8 +544,12 @@ Hermes abandons a plugin's hook call after its own `plugins.hook_callback_timeou
 Scope Recall registers one callback per hook for the whole gateway, so that skip
 reaches every session. A hook therefore waits for its own session, a capture or
 a finished turn still being written, at most a third of that timeout and never
-more than 10 s; a prefetch waits at most 2 s for its session and recalls without
-holding it. What could not wait is not taken, and the gateway log says so:
+more than 10 s; a prefetch waits at most 2 s for its session to read the turn's
+state, and recalls without holding it. With a timeout of 0 or less, which Hermes
+reads as none, a hook waits at most 10 s. A finished turn is written one capture
+at a time, so the next turn's hooks get in between; its message and reply are
+dated when its writing began, and a shutdown waits for it. What could not wait is
+not taken, and the gateway log says so:
 
 ```text
 scope-recall: post_tool_call not taken: this session has been busy in observe_post_tool_call for 10.0 s
@@ -559,7 +563,10 @@ scope-recall: post_tool_call took 31.2 s, past the host's 30 s hook timeout; the
 
 Both are counted per session in the `status` tool's `host_backpressure` and in the
 adapter's shutdown state. Hermes' own timeout and skip lines name these callbacks
-`scope_recall_<hook>`. None of this is a `runtime-config.json` key.
+`scope_recall_<hook>`. A `post_tool_call` not taken loses that tool's output, an
+`api_request_error` its failure mark; a `pre_llm_call` not taken leaves its turn id
+for the turn's start, and the turn's message is stored when the turn ends. None of
+this is a `runtime-config.json` key.
 
 ## Checking a change
 

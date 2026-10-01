@@ -10,9 +10,10 @@ All notable changes to `scope-recall` will be documented in this file.
 
 - Each Hermes session has its own lock, and a hook waited for it without a bound. The lock was held through a prefetch's recall, which Hermes stops waiting for after 8 s and lets run on, and through the writing of the whole previous turn. A hook waited out past Hermes' 30 s hook timeout was abandoned. Scope Recall registers one callback per hook for the whole gateway, so Hermes 0.21.5 then skipped that hook for every session for a minute. Our five gateways logged 18 hook timeouts and 19 skips from 2026-09-20 to 2026-10-01; the reporter, with 7 to 15 sessions at once, 247 skips in ten days.
 - A hook now waits for its own session at most a third of the host's timeout, 10 s at most. One it cannot wait for in that time returns, and is counted and logged with what holds the session.
-- The prefetch reads the turn's state under a wait of at most 2 s and recalls without the lock. The end of a turn is written one capture at a time with the lock released, so the next turn can start meanwhile.
+- The prefetch reads the turn's state under a wait of at most 2 s and recalls without the lock. The end of a turn is written one capture at a time with the lock released, so the next turn can start meanwhile. Its message and reply are dated when its writing began, and a shutdown waits until it is written.
 - The callbacks are named `scope_recall_<hook>`, so Hermes' own timeout and skip lines name them. A hook that still outlives the host's timeout logs a warning. Both counts show in the `status` tool. The bounds and the log lines are in [docs/configuration.md](docs/configuration.md).
-- Not done: a hook that cannot wait is not kept to be written later. A skipped tool hook loses that tool's result; the turn's message and reply are still stored when it ends.
+- A skipped `pre_llm_call` leaves its turn id for the turn's start, so the turn's interim messages are still matched to it. With Hermes' hook timeout set to 0 or less, which Hermes reads as none, a hook waits at most 10 s and nothing reports a skip.
+- Not done: a hook that cannot wait is not kept to be written later. A skipped tool hook loses that tool's result and a skipped `api_request_error` its failure mark; the turn's message and reply are still stored when it ends.
 
 ### Dashboard logins (#175)
 
