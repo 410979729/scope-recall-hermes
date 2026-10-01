@@ -443,6 +443,26 @@ def _close_quietly(resource: Any) -> None:
             pass
 
 
+def _helper_start_failure(deadline: float) -> str | None:
+    """One line saying why the vector helper could not start, from its start-up run once more; or ``None``.
+
+    The helper's stderr is discarded.  On Hermes Desktop it died at ``import jsonschema`` and every pass reported
+    ``vector_unavailable:RuntimeError`` and nothing else (#176).  The run is sent no request, so it holds no memory
+    text; the line is the last of its traceback, chosen as the watchdog chooses a worker's, paths redacted.  It
+    takes at most a quarter of what is left of the pass.
+    """
+    timeout = (deadline - time.monotonic()) / 4
+    if timeout < 1.0:
+        return None
+    from ..core.capture_filters import redact_private_paths
+    from ..vector.lance_native import helper_start_failure
+    from .worker_watchdog import _failure_reason
+
+    stderr = helper_start_failure(timeout)
+    line = _failure_reason(stderr) if stderr else None
+    return redact_private_paths(line)[:200] if line else None
+
+
 @dataclass
 class RuntimeInstance:
     config: RuntimeInstanceConfig
@@ -457,6 +477,8 @@ class RuntimeInstance:
     _owned_resources: list[Any] = field(default_factory=list)
     _closed: bool = False
     background_gaps: tuple[str, ...] = ()
+    #: Why this drain's vector helper could not start, one line, or ``None`` (``_open_vector_for_drain``).
+    vector_helper_error: str | None = None
     ingress_receipts: tuple[Any, ...] = ()
     #: Receipt of the vector compaction this drain ran, or ``None``.
     vector_compaction: dict | None = None
@@ -696,15 +718,22 @@ class RuntimeInstance:
         Optional indexing failure cannot suppress a healthy independent
         consolidation route.  Purge stays pending unless acknowledged.
         """
+        self.vector_helper_error = None
         vector_deadline = min(deadline, time.monotonic() + min(self.config.request_seconds, budget / 4))
         try:
             self._ensure_vector_port(allow_create=True, deadline=vector_deadline)
         except Exception as exc:
+            from ..core.vector_failure import vector_failure_label
             from ..vector.process_store import NativeVectorPathError
 
             if isinstance(exc, NativeVectorPathError):
                 return (NativeVectorPathError.code,)
-            return (f"vector_unavailable:{type(exc).__name__}",)
+            label = vector_failure_label(exc)
+            # The open here is a fresh helper's first request (a failed store is closed, and reopening starts
+            # another), so ``worker_failed`` means the helper ended before its first answer.
+            if label == "RuntimeError:worker_failed":
+                self.vector_helper_error = _helper_start_failure(deadline)
+            return (f"vector_unavailable:{label}",)
         return ()
 
     def _consolidation_ports(self, consolidation: Any) -> tuple[Any, Any]:

@@ -125,6 +125,7 @@ SUITES = {
         "tests/storage_native/test_vector_compaction.py",
         "tests/storage_native/test_in_process_lance_store.py",
         "tests/storage_native/test_helper_runs_in_the_environment_that_owns_the_package.py",
+        "tests/storage_native/test_helper_imports_what_its_host_imports.py",
         "tests/test_cold_open_overlap.py",
         "tests/test_lance_fanout_deadline.py",
     ],

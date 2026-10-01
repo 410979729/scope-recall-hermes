@@ -14,7 +14,6 @@ import os
 import queue
 import secrets
 import subprocess
-import sys
 import threading
 import time
 import weakref
@@ -24,7 +23,7 @@ from typing import Any, Callable, Iterable, Iterator
 
 from ..core.deadline import RequestDeadline, current_request_deadline, remaining_seconds, using_request_deadline
 from . import VectorStore, VectorStoreCompatibilityError
-from .lance_native import python_subprocess_options
+from .lance_native import helper_command, python_subprocess_options
 
 MAX_LANCE_FRAME_BYTES = 64 * 1024 * 1024
 LANCE_WORKER_METHODS = frozenset({
@@ -99,10 +98,11 @@ def _remote_failure(error_type: Any, message: str) -> RuntimeError:
 
 
 def _worker_command() -> list[str]:
-    # The worker installs its own ``scope_recall`` alias, so it needs no
-    # PYTHONPATH; isolated mode keeps a source-tree directory such as
-    # ``packaging`` from shadowing the wheel installed in the interpreter.
-    return [sys.executable, "-I", "-B", str(Path(__file__).resolve().parents[1] / "_lance_worker.py")]
+    # The worker installs its own ``scope_recall`` alias; isolated mode keeps a
+    # source-tree directory such as ``packaging`` from shadowing the wheel
+    # installed in the interpreter, and the directories this process imports the
+    # worker's dependencies from follow as arguments (#176).
+    return helper_command()
 
 
 def _spawn_helper() -> subprocess.Popen:

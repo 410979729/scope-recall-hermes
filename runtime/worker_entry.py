@@ -362,6 +362,11 @@ def _drain_once(config: RuntimeInstanceConfig, instance: Any, deadline: float) -
     gaps.extend(ingress_gaps)
     payload = _receipt_payload(config, receipt, gaps)
     payload.update(counts)
+    # The gap names the fault (``vector_unavailable:RuntimeError:worker_failed``); this line, which the doctor
+    # shows, says why the helper could not start (runtime/instance.py ``_helper_start_failure``, #176).
+    helper_error = getattr(instance, "vector_helper_error", None)
+    if isinstance(helper_error, str) and helper_error:
+        payload["worker_error"] = f"vector helper: {helper_error}"
     payload["source_only"] = sum(item.disposition == "source_only" for item in receipt.items)
     payload["daily_queue_used"] = budget_state["used"]
     # The admission counts scan every source's JSON and the queue age walks every
