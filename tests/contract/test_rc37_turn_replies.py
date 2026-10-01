@@ -69,11 +69,13 @@ def test_the_turn_takes_at_most_half_the_relation_bound(app):
 
 
 def test_the_answer_is_delivered_in_the_packet(app):
+    """Found by its words, the question is delivered, and so is what it was told.  (Asked word for word, its copy
+    leads to its turn instead: ``test_a_question_asked_of_the_recall_tool_again_is_given_what_it_was_told``.)"""
     core, ctx = app
     question = _say(core, ctx, ASK, origin="human_direct", role="user", when="2026-09-02T09:00:00Z", key="TEST-turn/ask")
     answer = _say(core, ctx, TOLD, origin="assistant_visible", role="assistant",
                   when="2026-09-02T09:00:12Z", key="TEST-turn/answer")
-    refs = [item["ref"] for item in _packet(core, ctx, ASK)["items"]]
+    refs = [item["ref"] for item in _packet(core, ctx, "TEST-project 的发布窗口改到几点")["items"]]
     assert question.ref in refs and answer.ref in refs
 
 
@@ -91,6 +93,68 @@ def test_a_question_asked_again_word_for_word_is_given_what_it_was_told(app):
     refs = [item["ref"] for item in _packet(core, reader, ASK, mode="auto")["items"]]
     assert answer.ref in refs
     assert question.ref not in refs
+
+
+class _CopyFoundByMeaning:
+    """A vector port that finds the question's older copy, as a question's embedding finds questions first."""
+
+    def __init__(self, copy, space):
+        self.copy, self.space = copy, space
+
+    def search(self, context, *, limit, remaining_seconds):
+        return (CandidateRef("event", self.copy.ref, self.copy.revision, "vector", rank=1, vector_id="TEST-copy-vector",
+                             embedding_space=self.space, vector_score=0.95),)[:limit]
+
+
+def _with_vectors(core, copy):
+    from scope_recall.core.recall import RetrievalPipeline
+    from scope_recall.core.recall_policy import RecallPolicy
+
+    policy = RecallPolicy(vector_threshold=0.5)
+    core.recall_pipeline = RetrievalPipeline(core.storage, vector_port=_CopyFoundByMeaning(copy, policy.embedding_space_id),
+                                             policy=policy, clock=core.clock)
+
+
+def test_a_question_asked_of_the_recall_tool_again_is_given_what_it_was_told(app):
+    """A recall tool's query is its caller's own text, as the automatic recall's is the current message.  Asked of the
+    tool word for word, the question's older copy came first: the word and the vector channels both find a question's
+    copy, and its turn's replies, found by one of them or reached through the turn, fell out of the packet.  On two
+    agents' older question sets with vectors on, 11 of 55 answers were lost that way (2026-09-30).  The copy now leads
+    to its turn and is not delivered; a history lookup still finds it."""
+    core, ctx = app
+    question = _say(core, ctx, ASK, origin="human_direct", role="user", when="2026-09-02T09:00:00Z",
+                    key="TEST-turn/tool-ask")
+    answer = _say(core, ctx, TOLD, origin="assistant_visible", role="assistant", when="2026-09-02T09:00:12Z",
+                  key="TEST-turn/tool-answer")
+    _with_vectors(core, question)
+    reader = replace(ctx, session_id="TEST-turn-tool-reader")
+    assert [item["ref"] for item in _packet(core, reader, ASK, max_items=1)["items"]] == [answer.ref]
+    assert question.ref not in [item["ref"] for item in _packet(core, reader, ASK)["items"]]
+    assert question.ref in [item["ref"] for item in _packet(core, reader, ASK, mode="history")["items"]]
+
+
+def test_a_copy_the_recall_tool_names_is_delivered(app):
+    """Named by its ref, the copy is what the caller asked for, as any object named directly is."""
+    core, ctx = app
+    question = _say(core, ctx, ASK, origin="human_direct", role="user", when="2026-09-02T09:00:00Z",
+                    key="TEST-turn/named-ask")
+    reader = replace(ctx, session_id="TEST-turn-named-reader")
+    packet = core.recall_packet(reader, recall_request(query=ASK, mode="current", focus_refs=[f"{question.ref}@1"]),
+                                deadline_seconds=30, background_without_evidence=False)
+    assert question.ref in [item["ref"] for item in packet["items"]]
+
+
+def test_a_short_query_to_the_recall_tool_keeps_its_older_copy(app):
+    """A query too short to lead to its turn (``ECHO_TURN_MIN_TERMS``) keeps its older copy, and what the copy reaches,
+    as before: set aside, a nine-character question asked of the tool came back empty (benchmark, 2026-09-30)."""
+    core, ctx = app
+    short = "发布窗口"
+    copy = _say(core, ctx, short, origin="human_direct", role="user", when="2026-09-02T09:00:00Z", key="TEST-turn/short-tool")
+    told = _say(core, ctx, TOLD, origin="assistant_visible", role="assistant", when="2026-09-02T09:00:12Z",
+                key="TEST-turn/short-tool-told")
+    reader = replace(ctx, session_id="TEST-turn-short-tool-reader")
+    refs = [item["ref"] for item in _packet(core, reader, short)["items"]]
+    assert copy.ref in refs and told.ref in refs
 
 
 def _asked_again(core, ctx, seeds, copies):

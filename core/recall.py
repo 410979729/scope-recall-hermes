@@ -330,9 +330,16 @@ class RetrievalPipeline:
         # information to automatic context and can crowd out its actual evidence.
         # What such a copy was told in its turn still answers it: the copy is set
         # aside in ``echoes`` to lead to its turn's replies, never delivered.
-        if context.mode == "auto" and obj.kind == "event":
+        # A recall tool's query is its caller's own text too.  Asked of the tool,
+        # an older copy of the question came first and its turn's replies fell out
+        # of the packet once vectors were on: two channels agree on a question's
+        # copy, one finds the answer.  There the copy is set aside only when it
+        # leads to its turn (``ECHO_TURN_MIN_TERMS``); a shorter query keeps it,
+        # and what it reaches, as before.  A copy the caller named is delivered.
+        if context.mode in {"auto", "current"} and obj.kind == "event" and candidate.source != "exact_ref":
             query = context.query if original_query is None else original_query
-            if unicodedata.normalize("NFKC", obj.content).strip() == unicodedata.normalize("NFKC", query).strip():
+            if (unicodedata.normalize("NFKC", obj.content).strip() == unicodedata.normalize("NFKC", query).strip()
+                    and (context.mode == "auto" or len(meaningful_query_terms(query)) >= ECHO_TURN_MIN_TERMS)):
                 if echoes is not None:
                     echoes.append(candidate)
                 return None
