@@ -69,11 +69,13 @@ def test_the_turn_takes_at_most_half_the_relation_bound(app):
 
 
 def test_the_answer_is_delivered_in_the_packet(app):
+    """Found by its words, the question is delivered, and so is what it was told.  (Asked word for word, its copy
+    leads to its turn instead: ``test_a_question_asked_of_the_recall_tool_again_is_given_what_it_was_told``.)"""
     core, ctx = app
     question = _say(core, ctx, ASK, origin="human_direct", role="user", when="2026-09-02T09:00:00Z", key="TEST-turn/ask")
     answer = _say(core, ctx, TOLD, origin="assistant_visible", role="assistant",
                   when="2026-09-02T09:00:12Z", key="TEST-turn/answer")
-    refs = [item["ref"] for item in _packet(core, ctx, ASK)["items"]]
+    refs = [item["ref"] for item in _packet(core, ctx, "TEST-project 的发布窗口改到几点")["items"]]
     assert question.ref in refs and answer.ref in refs
 
 
@@ -91,6 +93,136 @@ def test_a_question_asked_again_word_for_word_is_given_what_it_was_told(app):
     refs = [item["ref"] for item in _packet(core, reader, ASK, mode="auto")["items"]]
     assert answer.ref in refs
     assert question.ref not in refs
+
+
+class _CopyFoundByMeaning:
+    """A vector port that finds the question's older copy, as a question's embedding finds questions first."""
+
+    def __init__(self, copy, space):
+        self.copy, self.space = copy, space
+
+    def search(self, context, *, limit, remaining_seconds):
+        return (CandidateRef("event", self.copy.ref, self.copy.revision, "vector", rank=1, vector_id="TEST-copy-vector",
+                             embedding_space=self.space, vector_score=0.95),)[:limit]
+
+
+def _with_vectors(core, copy):
+    from scope_recall.core.recall import RetrievalPipeline
+    from scope_recall.core.recall_policy import RecallPolicy
+
+    policy = RecallPolicy(vector_threshold=0.5)
+    core.recall_pipeline = RetrievalPipeline(core.storage, vector_port=_CopyFoundByMeaning(copy, policy.embedding_space_id),
+                                             policy=policy, clock=core.clock)
+
+
+def test_a_question_asked_of_the_recall_tool_again_is_given_what_it_was_told_first(app):
+    """Asked of the recall tool word for word, the question's older copy came first: the word and the vector channels
+    both find a question's copy, and its turn's replies, found by one of them or reached through the turn, fell out of
+    the packet.  On two agents' older question sets with vectors on, 11 of 55 answers were lost that way (2026-09-30).
+    What the copy was told now goes before it, and the copy is still delivered: a caller may be looking for it."""
+    core, ctx = app
+    question = _say(core, ctx, ASK, origin="human_direct", role="user", when="2026-09-02T09:00:00Z",
+                    key="TEST-turn/tool-ask")
+    answer = _say(core, ctx, TOLD, origin="assistant_visible", role="assistant", when="2026-09-02T09:00:12Z",
+                  key="TEST-turn/tool-answer")
+    _with_vectors(core, question)
+    reader = replace(ctx, session_id="TEST-turn-tool-reader")
+    assert [item["ref"] for item in _packet(core, reader, ASK, max_items=1)["items"]] == [answer.ref]
+    refs = [item["ref"] for item in _packet(core, reader, ASK)["items"]]
+    assert refs.index(answer.ref) < refs.index(question.ref)
+
+
+def test_a_message_quoted_to_the_recall_tool_is_found(app):
+    """A caller that quotes a message is looking for it: to say when it was said, or to delete it.  Set aside as the
+    automatic recall sets aside a copy of the current message, it answered nothing, and a lone acknowledgement of it
+    took its place (review of 3.4.9)."""
+    core, ctx = app
+    said = "TEST-project 的发布窗口改到周五晚上十一点了。"
+    alone = _say(core, ctx, said, origin="human_direct", role="user", when="2026-09-02T09:00:00Z", key="TEST-turn/quoted")
+    reader = replace(ctx, session_id="TEST-turn-quoted-reader")
+    packet = _packet(core, reader, said)
+    assert packet["status"] != "no_match" and alone.ref in [item["ref"] for item in packet["items"]]
+    _say(core, ctx, "好的，记下了。", origin="assistant_visible", role="assistant", when="2026-09-02T09:00:08Z",
+         key="TEST-turn/quoted-ack")
+    assert alone.ref in [item["ref"] for item in _packet(core, reader, said)["items"]]
+
+
+def test_a_copy_the_recall_tool_names_is_delivered(app):
+    """Named by its ref, in whichever place of ``focus_refs``, the copy is what the caller asked for."""
+    core, ctx = app
+    question = _say(core, ctx, ASK, origin="human_direct", role="user", when="2026-09-02T09:00:00Z",
+                    key="TEST-turn/named-ask")
+    other = _say(core, ctx, TOLD, origin="assistant_visible", role="assistant", when="2026-09-02T09:00:12Z",
+                 key="TEST-turn/named-other")
+    reader = replace(ctx, session_id="TEST-turn-named-reader")
+    for refs in ([f"{question.ref}@1"], [f"{other.ref}@1", f"{question.ref}@1"]):
+        packet = core.recall_packet(reader, recall_request(query=ASK, mode="current", focus_refs=refs),
+                                    deadline_seconds=30, background_without_evidence=False)
+        assert question.ref in [item["ref"] for item in packet["items"]], refs
+
+
+def test_what_the_caller_s_own_session_was_told_is_not_raised(app):
+    """The person asked again in this session, rejected the answer, and the agent asked the tool: the rejected answer
+    is in the agent's own context, and raised as the latest copy's turn it came first (review of 3.4.9).  The latest
+    copy asked in another session leads instead."""
+    core, ctx = app
+    _copy, (right,) = _turn(core, ctx, 1, [TOLD], tag="own")
+    own = replace(ctx, session_id="TEST-turn-own-session")
+    _say(core, own, ASK, origin="human_direct", role="user", when="2026-09-05T09:00:00Z", key="TEST-turn/own-ask")
+    wrong = _say(core, own, "我没有找到相关的记录。", origin="assistant_visible", role="assistant",
+                 when="2026-09-05T09:00:10Z", key="TEST-turn/own-wrong")
+    _say(core, own, "不对，你再查一下记忆。", origin="human_direct", role="user", when="2026-09-05T09:01:00Z",
+         key="TEST-turn/own-rejected")
+    refs = [item["ref"] for item in _packet(core, own, ASK)["items"]]
+    assert refs[0] == right.ref and wrong.ref != refs[0]
+
+
+def test_a_short_query_to_the_recall_tool_raises_no_old_turn(app):
+    """A query too short to lead to its turn (``ECHO_TURN_MIN_TERMS``) raises nothing: its copy and what the copy
+    reaches keep their places, as in the automatic recall a short command sent again brings back no old turn."""
+    core, ctx = app
+    short = "发布窗口"
+    copy = _say(core, ctx, short, origin="human_direct", role="user", when="2026-09-02T09:00:00Z", key="TEST-turn/short-tool")
+    told = _say(core, ctx, TOLD, origin="assistant_visible", role="assistant", when="2026-09-02T09:00:12Z",
+                key="TEST-turn/short-tool-told")
+    reader = replace(ctx, session_id="TEST-turn-short-tool-reader")
+    assert [item["ref"] for item in _packet(core, reader, short, max_items=1)["items"]] == [copy.ref]
+    refs = [item["ref"] for item in _packet(core, reader, short)["items"]]
+    assert copy.ref in refs and told.ref in refs
+
+
+def _asked_of_the_tool(core, ctx, seeds, *, max_items):
+    """What the recall tool ranks for ``ASK`` from another session, given the candidates the channels found
+    (``(source, ranks)``), older copies of the question among them."""
+    from scope_recall.core.recall_policy import rrf_score
+
+    pipeline = core.recall_pipeline
+    reader = replace(ctx, session_id="TEST-turn-tool-ranker")
+    context = SearchContext.from_request(recall_request(query=ASK, mode="current", max_items=max_items), reader,
+                                         now=core.clock.utc_now(), deadline=time.monotonic() + 30)
+    found = [CandidateRef("event", source.ref, source.revision, "lexical", rank=ranks[0], lexical_score=2.0,
+                          fusion_score=rrf_score(ranks, k=pipeline.policy.rrf_k)) for source, ranks in seeds]
+    with core.storage.read(reader) as tx:
+        hydrated = [(candidate, pipeline.storage_reader.hydrate(tx, candidate, context)) for candidate in found]
+        pipeline._hydrate_related(tx, context, hydrated, [])
+        ranked = pipeline._rank_hydrated(hydrated, context)
+    return [candidate.ref for candidate, _obj in ranked]
+
+
+def test_a_tool_s_packet_raises_no_more_of_that_turn_than_the_automatic_one(app):
+    """A tool's packet may hold thirty: half of it led with fourteen replies of one old turn, its narration of the
+    subject, before the facts that matched the question (review of 3.4.9).  Three are raised, as of six."""
+    core, ctx = app
+    copy, (*narration, answer) = _turn(core, ctx, 3, [
+        "好的，我来查一下 TEST-project 的发布窗口。", "TEST-project 的发布窗口写在配置里。", "正在核对 TEST-project 的发布窗口。",
+        "TEST-project 的发布窗口还有一处要看。", TOLD], tag="tool-narrated")
+    fresh = _say(core, ctx, "TEST-project 的发布窗口本周不变。", origin="human_direct", role="user",
+                 when="2026-09-02T09:00:00Z", key="TEST-turn/tool-narrated-fresh")
+    ranked = _asked_of_the_tool(core, ctx, [(copy, (1, 1)), (fresh, (2, 2)),
+                                            *((reply, (rank,)) for reply, rank in zip(narration, (3, 4, 5, 6)))],
+                                max_items=30)
+    assert ranked[:3] == [narration[0].ref, narration[1].ref, answer.ref]
+    assert ranked[3] in {copy.ref, fresh.ref}
 
 
 def _asked_again(core, ctx, seeds, copies):

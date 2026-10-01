@@ -59,6 +59,10 @@ CONTEXT_ONLY_WEIGHT = 0.6
 #: every old turn they had opened (review of 3.4.4); five is about six characters.  Of the owner's prompts over
 #: two weeks, 33 of the 115 with fewer had an exact older copy; of the owner's real questions, 167 of 173 have five.
 ECHO_TURN_MIN_TERMS = 5
+#: Replies of that turn raised at most (``RetrievalPipeline._raise_echo_turn``): half the automatic packet of six.  A
+#: recall tool's packet may hold thirty, and half of one led with fourteen replies of an old turn, its narration of the
+#: subject, before the facts that matched the question (review of 3.4.9).
+ECHO_TURN_ROOM = 3
 #: SQLite virtual-machine steps between two looks at the recall's deadline while a candidate statement runs: one
 #: every 10-60 ms of statement time.  Each look takes the GIL back from the statement, and beside a busy thread (the
 #: MCP server's hook threads, a gateway's) waits for it: one every 10,000 steps made a 25 ms statement take 1.4 s
@@ -330,6 +334,8 @@ class RetrievalPipeline:
         # information to automatic context and can crowd out its actual evidence.
         # What such a copy was told in its turn still answers it: the copy is set
         # aside in ``echoes`` to lead to its turn's replies, never delivered.
+        # (A recall tool's caller may be looking for the message it quotes: there
+        # the copy is delivered, ``_hydrate_related``.)
         if context.mode == "auto" and obj.kind == "event":
             query = context.query if original_query is None else original_query
             if unicodedata.normalize("NFKC", obj.content).strip() == unicodedata.normalize("NFKC", query).strip():
@@ -672,10 +678,25 @@ class RetrievalPipeline:
                     if candidate.key not in known]
         floor = min(working.limits.max_items, MINIMUM_HYDRATION_CAP)
         self._hydrate_all(tx, hydrated, expanded, working, gaps, floor=floor)
-        self._raise_echo_turn(tx, working, hydrated, echoes, gaps)
+        if echoes or working.mode != "current":
+            self._raise_echo_turn(tx, working, hydrated, echoes, gaps)
+            return
+        # Asked of the recall tool, an older copy of the query is delivered: a caller that quotes a message may be
+        # looking for it, to say when it was said or to delete it, and set aside it answered nothing (review of
+        # 3.4.9).  Two channels agree on a question's copy and one finds its answer, so with vectors on the copy
+        # came first and its turn's replies fell out of the packet: on two agents' older question sets, 11 of 55.
+        # What it was told goes before it, as in the automatic recall, from a session other than the caller's: that
+        # turn is in the caller's own context, and its last reply may be the answer the person has just rejected.
+        if len(meaningful_query_terms(working.query)) >= ECHO_TURN_MIN_TERMS:
+            query = unicodedata.normalize("NFKC", working.query).strip()
+            copies = tuple(candidate for candidate, obj in hydrated
+                           if obj.kind == "event" and unicodedata.normalize("NFKC", obj.content).strip() == query)
+            self._raise_echo_turn(tx, working, hydrated, copies, gaps,
+                                  other_than_session=working.trusted_context.session_id)
 
     def _raise_echo_turn(self, tx, working: SearchContext, hydrated: list[tuple[CandidateRef, RetrievedObject]],
-                         echoes: tuple[CandidateRef, ...], gaps: list[str]) -> None:
+                         echoes: tuple[CandidateRef, ...], gaps: list[str], *,
+                         other_than_session: str | None = None) -> None:
         """What the same question was told the last time it was asked goes before the best candidate of its time.
 
         Reached as any seed's turn is, at a first rank's fixed score, it fell below every candidate two channels agreed
@@ -699,14 +720,14 @@ class RetrievalPipeline:
         if self._remaining(working) <= 0:
             gaps.append("deadline_exceeded_relation")
             return
-        read = latest_turn(tx, echoes, now=working.now)
+        read = latest_turn(tx, echoes, now=working.now, other_than_session=other_than_session)
         if read is None:
             return
         opened, replies, ended = read
         at = {candidate.key: index for index, (candidate, _obj) in enumerate(hydrated)}
         found = [reply for reply in replies if reply.key in at and hydrated[at[reply.key]][0].source != "relation"]
         # At most half the packet: the replies a channel ranked highest, then the last reply of a whole turn.
-        room = max(1, working.limits.max_items // 2)
+        room = max(1, min(working.limits.max_items // 2, ECHO_TURN_ROOM))
         final = replies[-1] if ended else None
         by_score = [reply for reply in sorted(found, key=lambda reply: -hydrated[at[reply.key]][0].fusion_score)
                     if final is None or reply.key != final.key]
