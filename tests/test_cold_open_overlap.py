@@ -1,5 +1,6 @@
 """Real owned-pipe regressions; synthetic model work never makes HTTP calls."""
 import sys
+import threading
 import time
 
 import pytest
@@ -178,18 +179,170 @@ def test_a_parked_answer_that_never_came_is_still_a_wedge(tmp_path,monkeypatch):
     finally:s.close()
 
 
-def test_a_spare_helper_is_kept_even_when_its_replacement_cannot_start(monkeypatch):
+def test_a_spare_helper_is_taken_once_and_not_replaced(monkeypatch):
+    """A server kept a spare as well, replaced each time one was taken: about 0.55 GB idle once the store all its
+    runtimes share holds its helper (3.4.9)."""
     spawned=[]
     class Alive:
         stdin=stdout=None
         def poll(self):return None
-    def spawn():
-        if spawned:raise OSError('PUBLIC no more processes')
-        spawned.append(Alive());return spawned[-1]
-    monkeypatch.setattr(native,'_spawn_helper',spawn)
+    monkeypatch.setattr(native,'_spawn_helper',lambda:spawned.append(Alive()) or spawned[-1])
     monkeypatch.setattr(native,'_spare',None)
-    monkeypatch.setattr(native,'_keep_spare',False)
-    native.prestart(keep=True)
-    assert native._take_spare() is spawned[0], "the spare taken is kept although no replacement could start"
-    assert native._spare is None
-    monkeypatch.setattr(native,'_keep_spare',False)
+    native.prestart()
+    assert native._take_spare() is spawned[0]
+    assert native._spare is None and len(spawned)==1
+
+
+def _sharing(tmp_path, monkeypatch, *, fail_first_open=False, open_delay=0.0):
+    """A process that shares its stores (``share``), with a helper that logs each request and counts its starts."""
+    log, spawned, failed = tmp_path/'requests.log', [], tmp_path/'open-failed-once'
+    program = ('import json,os,sys,time\n'
+               'for line in sys.stdin:\n'
+               ' r=json.loads(line)\n'
+               f' open({str(log)!r},"a").write(r["method"]+chr(10))\n'
+               ' ok=True\n'
+               ' if r["method"]=="open_existing":\n'
+               f'  time.sleep({open_delay!r})\n'
+               f'  if {fail_first_open!r} and not os.path.exists({str(failed)!r}):\n'
+               f'   open({str(failed)!r},"w").close(); ok=False\n'
+               ' print(json.dumps(dict(id=r["id"],ok=ok,error="PUBLIC table cannot be opened",error_type="OSError",'
+               'result=[] if r["method"].startswith("search") else r["method"])),flush=True)\n')
+    monkeypatch.setattr(native,'_worker_command',lambda:[sys.executable,'-I','-B','-c',program])
+    spawn=native._spawn_helper
+    monkeypatch.setattr(native,'_spawn_helper',lambda:spawned.append(1) or spawn())
+    monkeypatch.setattr(native,'_spare',None)
+    monkeypatch.setattr(native,'_shared',{})
+    monkeypatch.setattr(native,'_sharing',False)
+    native.share()
+    (tmp_path/'lancedb'/'PUBLIC.lance').mkdir(parents=True)
+    return log, spawned
+
+
+def test_a_server_s_runtimes_search_one_store_with_one_helper(tmp_path,monkeypatch):
+    """A handler made for a prompt the kept handler was busy with started a helper of its own, and lost its vector
+    search to that helper's start: bursts of parallel sub-agents on the work computer (2026-09-30)."""
+    log, spawned = _sharing(tmp_path, monkeypatch)
+    kept=native.store_for(tmp_path/'lancedb',table_name='PUBLIC',dimensions=2)
+    made=native.store_for(tmp_path/'lancedb',table_name='PUBLIC',dimensions=2)
+    try:
+        assert isinstance(kept,native.SharedStore) and kept._store is made._store
+        with using_request_deadline(RequestDeadline.from_budget(5)):
+            kept.open_existing()
+            work=[]
+            made.open_existing_with_work(lambda:work.append('embedding'))
+            assert work==['embedding'], "the request's own work still runs"
+            made.close()  # a handler closed at the end of its request
+            assert kept.search_scopes([0.0,1.0],scope_ids=['PUBLIC'],limit=1)==[]
+        assert log.read_text().split()==['open_existing','search_scopes'], "opened once, searched after a close"
+        assert spawned==[1]
+    finally:
+        native._close_shared()
+
+
+def test_a_shared_store_whose_helper_failed_is_opened_again(tmp_path,monkeypatch):
+    log, spawned = _sharing(tmp_path, monkeypatch)
+    view=native.store_for(tmp_path/'lancedb',table_name='PUBLIC',dimensions=2)
+    try:
+        with using_request_deadline(RequestDeadline.from_budget(5)):
+            view.open_existing()
+            view._store._detach_helper(failed=True)  # what a helper that died mid-request leaves
+            assert view.requires_reopen
+            view._store._finish_teardown(timeout=5,retry_stop=True)
+            view.open_existing()
+            assert not view.requires_reopen
+        assert log.read_text().split()==['open_existing','open_existing'] and spawned==[1,1]
+    finally:
+        native._close_shared()
+
+
+def test_a_process_that_does_not_share_builds_a_store_for_each(tmp_path,monkeypatch):
+    monkeypatch.setattr(native,'_sharing',False)
+    one=native.store_for(tmp_path/'lancedb',table_name='PUBLIC',dimensions=2)
+    two=native.store_for(tmp_path/'lancedb',table_name='PUBLIC',dimensions=2)
+    assert type(one) is native.ProcessLanceVectorStore and one is not two
+
+
+def test_the_shared_stores_are_stopped_when_the_process_ends(tmp_path,monkeypatch):
+    _log, _spawned = _sharing(tmp_path, monkeypatch)
+    view=native.store_for(tmp_path/'lancedb',table_name='PUBLIC',dimensions=2)
+    with using_request_deadline(RequestDeadline.from_budget(5)):
+        view.open_existing()
+    store=view._store
+    native._close_shared()
+    assert store._closed and native._shared=={}
+
+
+def test_a_shared_store_whose_open_failed_is_opened_again(tmp_path,monkeypatch):
+    """A helper that could not open the table held none, and every search it answered said so until the server
+    restarted: a store a runtime owned alone was closed and made anew, one its process shares was not (review of
+    3.4.9)."""
+    log, spawned = _sharing(tmp_path, monkeypatch, fail_first_open=True)
+    view=native.store_for(tmp_path/'lancedb',table_name='PUBLIC',dimensions=2)
+    try:
+        with using_request_deadline(RequestDeadline.from_budget(5)):
+            with pytest.raises(RuntimeError,match='cannot be opened'):
+                view.open_existing()
+            assert view.requires_reopen
+            view.open_existing()
+            assert view.search_scopes([0.0,1.0],scope_ids=['PUBLIC'],limit=1)==[]
+        assert log.read_text().split()==['open_existing','open_existing','search_scopes'] and len(spawned)==2
+    finally:
+        native._close_shared()
+
+
+def test_two_runtimes_that_open_the_shared_store_together_open_it_once(tmp_path,monkeypatch):
+    """Both saw it closed and both opened it, the second while every search waited (review of 3.4.9)."""
+    log, spawned = _sharing(tmp_path, monkeypatch, open_delay=0.3)
+    views=[native.store_for(tmp_path/'lancedb',table_name='PUBLIC',dimensions=2) for _ in range(2)]
+    work=[]
+
+    def opening(view):
+        with using_request_deadline(RequestDeadline.from_budget(5)):
+            view.open_existing_with_work(lambda:work.append(1))
+
+    threads=[threading.Thread(target=opening,args=(view,)) for view in views]
+    try:
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(10)
+        assert work==[1,1] and log.read_text().split()==['open_existing'] and spawned==[1]
+    finally:
+        native._close_shared()
+
+
+def test_the_opening_runtime_s_embedding_does_not_hold_the_others_searches(tmp_path,monkeypatch):
+    """Overlapped with the open, the opener's embedding held the store's lock, and another prompt's search with a
+    second left timed out on it (review of 3.4.9).  The embedding is asked for when its recall starts anyway."""
+    _log, _spawned = _sharing(tmp_path, monkeypatch)
+    opener=native.store_for(tmp_path/'lancedb',table_name='PUBLIC',dimensions=2)
+    other=native.store_for(tmp_path/'lancedb',table_name='PUBLIC',dimensions=2)
+    embedding, release = threading.Event(), threading.Event()
+
+    def opening():
+        with using_request_deadline(RequestDeadline.from_budget(10)):
+            opener.open_existing_with_work(lambda:(embedding.set(), release.wait(5)))
+
+    thread=threading.Thread(target=opening)
+    thread.start()
+    try:
+        assert embedding.wait(5)
+        with using_request_deadline(RequestDeadline.from_budget(1)):
+            assert other.search_scopes([0.0,1.0],scope_ids=['PUBLIC'],limit=1)==[]
+    finally:
+        release.set()
+        thread.join(10)
+        native._close_shared()
+
+
+@pytest.mark.skipif(sys.platform!='win32',reason="the helper-process store is Windows'")
+def test_a_server_s_factory_builds_views_of_one_store(tmp_path,monkeypatch):
+    from scope_recall.vector.store import build_vector_store
+
+    _sharing(tmp_path, monkeypatch)
+    try:
+        one=build_vector_store('lancedb',storage_dir=tmp_path,table_name='PUBLIC',dimensions=2)
+        two=build_vector_store('lancedb',storage_dir=tmp_path,table_name='PUBLIC',dimensions=2)
+        assert isinstance(one,native.SharedStore) and one._store is two._store
+    finally:
+        native._close_shared()

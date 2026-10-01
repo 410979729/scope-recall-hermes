@@ -423,10 +423,12 @@ def serve(config: RemoteServerConfig, *, env_file: Path | None = None) -> None:
     log_to_file(config.home)
     if sys.platform == "win32":
         # Every request builds its handler afresh, and a vector helper started for it spent the recall's budget
-        # importing LanceDB: keep one started and ready (``vector.process_store.prestart``).
-        from ...vector.process_store import prestart
+        # importing LanceDB and opening the table: every handler of this process searches one store
+        # (``vector.process_store.share``), whose helper is started now (``prestart``).
+        from ...vector.process_store import prestart, share
+        share()
         try:
-            prestart(keep=True)
+            prestart()
         except OSError as exc:
             # Without it each recall starts its own helper, as before: slower, never a reason not to serve.
             _log.warning("could not start a vector helper ahead: %s", type(exc).__name__)

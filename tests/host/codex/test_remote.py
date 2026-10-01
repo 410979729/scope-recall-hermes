@@ -463,6 +463,38 @@ def test_the_server_warms_its_kept_handler_when_it_starts(store, monkeypatch):
     assert len(warmed) == 1, "serve warms; a test's app does not"
 
 
+def test_the_server_shares_one_vector_store_among_its_handlers(store, monkeypatch):
+    """A prompt that came while the kept handler was busy got a handler whose store started a LanceDB helper of its
+    own: parallel sub-agents on the work computer lost their vector search to that helper's start (2026-09-30).  The
+    server shares its stores before anything builds one."""
+    import sys as system
+    import types
+
+    from scope_recall.adapters.codex import local_endpoint
+    from scope_recall.vector import process_store
+
+    root, homes = store
+    remote_server.write_server_config(homes["codex"], "codex", listen="127.0.0.1", port=_free_port(),
+                                      token_sha256="0" * 64)
+    config = remote_server.load_server_config(homes["codex"], "codex")
+    seen = []
+    monkeypatch.setattr(system, "platform", "win32")
+    monkeypatch.setitem(system.modules, "uvicorn", types.SimpleNamespace(run=lambda app, **kwargs: None))
+    monkeypatch.setattr(process_store, "prestart", lambda **kwargs: seen.append(process_store._sharing))
+    monkeypatch.setattr(local_endpoint.KeptRecaller, "warm", lambda self, *args: seen.append(process_store._sharing))
+    root_logger = logging.getLogger()
+    level = root_logger.level
+    try:
+        remote_server.serve(config)
+    finally:
+        for handler in list(root_logger.handlers):
+            if isinstance(handler, logging.handlers.RotatingFileHandler):
+                root_logger.removeHandler(handler)
+                handler.close()
+        root_logger.setLevel(level)
+    assert seen == [True, True], "sharing before the spare helper and before the kept handler is warmed"
+
+
 def test_a_recall_without_its_vector_search_is_named_in_the_server_log(served, tmp_path, monkeypatch):
     """The work computer's recalls ran without their vector search for as long as anyone could tell: the packet
     carried the gap to the model, and the server's log said nothing."""

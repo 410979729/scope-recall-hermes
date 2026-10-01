@@ -499,14 +499,6 @@ def test_a_helper_started_ahead_is_the_one_the_store_uses(tmp_path):
             assert store.search(_spread_rows(1200)[5]["vector"], scope_id="TEST-scope", limit=1)[0]["id"] == "TEST-vector-5"
         finally:
             store.close()
-        process_store.prestart(keep=True)
-        kept = process_store._spare
-        again = process_store.ProcessLanceVectorStore(tmp_path / "lancedb", table_name="scope_recall", dimensions=8)
-        again.open_existing()
-        try:
-            assert again._process is kept
-            assert process_store._spare is not None and process_store._spare is not kept, "replaced at once"
-        finally:
-            again.close()
+        assert process_store._spare is None, "taken once: a server's runtimes share the store that took it"
     finally:
         process_store.discard_spare()

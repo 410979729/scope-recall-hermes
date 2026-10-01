@@ -10,6 +10,7 @@ from __future__ import annotations
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
 import json
+import os
 import sqlite3
 
 import pytest
@@ -936,6 +937,15 @@ def resident(store, monkeypatch):
         yield root, client, endpoint
     finally:
         endpoint.stop()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="the LanceDB helper process is Windows'")
+def test_the_mcp_server_shares_one_vector_store_among_its_recalls(resident):
+    """The kept handler, a handler made for a prompt that comes meanwhile and the tools search one store, through one
+    LanceDB helper (``process_store.share``)."""
+    from scope_recall.vector import process_store
+
+    assert process_store._sharing
 
 
 def _hook_entry(monkeypatch, raw, client):

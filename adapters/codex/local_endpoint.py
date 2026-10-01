@@ -632,6 +632,11 @@ class HookEndpoint:
                     pass
 
     def start(self) -> None:
+        if sys.platform == "win32":
+            from ...vector.process_store import share
+            # Before anything is served: the kept handler, a handler made for a prompt that comes meanwhile and the
+            # tools search one store through one helper.
+            share()
         server = _Server(("127.0.0.1", 0), _Handler)
         server.endpoint = self  # type: ignore[attr-defined]
         self._server = server
@@ -641,11 +646,11 @@ class HookEndpoint:
         threading.Thread(target=self._keep_named, name="scope-recall-recall-name", daemon=True).start()
         atexit.register(self.stop)
         if sys.platform == "win32":
+            from ...vector.process_store import prestart
             try:
-                from ...vector.process_store import prestart
-                prestart(keep=True)
+                prestart()  # for the shared store's helper, its import under way while the server starts
             except OSError:
-                pass  # each prompt's recall then starts its own helper, as a hook of its own does
+                pass  # the shared store then starts its own helper when it opens
 
     def stop(self) -> None:
         self._stopped.set()

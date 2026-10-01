@@ -107,3 +107,14 @@ def _isolate_posix_truth_hardening_cache():
     yield
     if callable(reset):
         reset()
+
+
+@pytest.fixture(autouse=True)
+def _isolate_shared_vector_stores():
+    """A server started in a test shares its vector stores for the rest of the process (``process_store.share``)."""
+
+    import scope_recall.vector.process_store as process_store
+
+    process_store._reset_sharing_for_tests()
+    yield
+    process_store._reset_sharing_for_tests()

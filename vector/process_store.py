@@ -116,30 +116,29 @@ def _spawn_helper() -> subprocess.Popen:
 #: A helper started before any store asked for one (``prestart``), for the next store that starts a helper.
 _spare: subprocess.Popen | None = None
 _spare_lock = threading.Lock()
-_keep_spare = False
 
 
-def prestart(*, keep: bool = False) -> None:
+def prestart() -> None:
     """Start a helper now, for the next store that starts one to take.
 
     A helper spends about 2 s importing LanceDB before it answers.  A Claude Code or Codex hook is a new process
     for every prompt, and a helper started when its recall reached the vector search was not ready before that
     search's budget ran out: those hosts' automatic recall answered from words alone.  Started when the hook
-    starts, the import runs while the message is stored and the words are searched.  ``keep`` is for a server
-    that runs on: each helper taken is replaced at once, so the next request finds one ready.
+    starts, the import runs while the message is stored and the words are searched.  A server that runs on starts
+    one for the store all its runtimes share (``share``); it kept a spare as well, replaced each time one was taken,
+    about 0.55 GB idle once the shared store holds its helper (3.4.9).
     """
-    global _spare, _keep_spare
+    global _spare
     with _spare_lock:
-        _keep_spare = _keep_spare or keep
         if _spare is None or _spare.poll() is not None:
             _spare = _spawn_helper()
 
 
 def discard_spare() -> None:
     """Let a spare that was never taken go: without its input it exits once its import is done."""
-    global _spare, _keep_spare
+    global _spare
     with _spare_lock:
-        spare, _spare, _keep_spare = _spare, None, False
+        spare, _spare = _spare, None
     if spare is not None:
         for stream in (spare.stdin, spare.stdout):
             if stream is not None:
@@ -153,11 +152,6 @@ def _take_spare() -> subprocess.Popen | None:
     global _spare
     with _spare_lock:
         spare, _spare = _spare, None
-        if _keep_spare:
-            try:
-                _spare = _spawn_helper()
-            except OSError:
-                _spare = None  # the next take starts one; the spare taken here is still good
     if spare is not None and spare.poll() is not None:
         # It is gone already (its import failed): the store starts its own and meets the same failure there.
         for stream in (spare.stdin, spare.stdout):
@@ -550,6 +544,12 @@ class ProcessLanceVectorStore(VectorStore):
             else:
                 self._detach_helper(failed=True)
             raise (_fence_failed() if guard is not None else _worker_failed()) from exc
+        if not response.get("ok") and method in ("open", "open_existing"):
+            # A helper that could not open the table holds none, and every search it answered said so until the
+            # process ended: the store is closed for the next request to reopen, as for an open answered late
+            # (``_drain_pending_response_locked``).  A store a runtime owned alone was closed by it and made anew;
+            # one its process shares is not (review of 3.4.9).
+            self._detach_helper(failed=True)
         return self._response_result(response)
 
     def _send_request_frame(self, encoded: bytes) -> None:
@@ -772,6 +772,123 @@ class ProcessLanceVectorStore(VectorStore):
             finally:
                 self._request_timeout = usual
 
+    def _serving(self) -> bool:
+        """Whether a helper is up for this store and nothing has closed it (a failure detaches the helper)."""
+        return self._process is not None and not self._closed and self._teardown is None
 
-__all__ = ["LANCE_WORKER_METHODS", "MAX_LANCE_FRAME_BYTES", "NativeVectorPathError", "ProcessLanceVectorStore",
-           "discard_spare", "prestart"]
+
+class _Shared:
+    """A process's one store of a table, and the lock its first open (or its reopen) is taken under."""
+
+    def __init__(self, store: ProcessLanceVectorStore) -> None:
+        self.store = store
+        self.opening = threading.Lock()
+
+
+#: The one store of each table in a process that shares them (``share``), by path, table, dimensions and metric.
+_shared: dict[tuple[str, str, int, str], _Shared] = {}
+_shared_lock = threading.Lock()
+_sharing = False
+
+
+def share() -> None:
+    """Give every store of one table this process builds one helper (``store_for``): for a server that runs on.
+
+    The server answers a prompt with the handler it keeps, and each prompt that comes meanwhile with a handler made
+    for it, whose store started a helper of its own: about 2 s importing LanceDB, then the table's open, while that
+    prompt's words were searched.  Parallel sub-agents opening sessions two and three a second on the work computer
+    lost their vector search that way, and some their whole recall.  On a copy of the shared store, bursts of three
+    prompts with long briefs, each stored and then recalled within the hook's 6 s, kept their vector search in 29 of
+    48 recalls (16 lost it to a helper's start); with one store for the process, 45 of 48 (none) (2026-10-01).  The
+    prompts take turns on the helper, one search each, 10-40 ms when warm.
+    """
+    global _sharing
+    _sharing = True
+
+
+def store_for(db_path: Path, *, table_name: str, dimensions: int,
+              metric: str = "cosine") -> ProcessLanceVectorStore | SharedStore:
+    """The process's one store of this table, while it shares them (``share``); a store of its own otherwise."""
+    if not _sharing:
+        return ProcessLanceVectorStore(db_path, table_name=table_name, dimensions=dimensions, metric=metric)
+    key = (os.path.normcase(os.path.abspath(os.fspath(db_path))), table_name, int(dimensions), metric)
+    with _shared_lock:
+        shared = _shared.get(key)
+        if shared is None:
+            shared = _shared[key] = _Shared(ProcessLanceVectorStore(db_path, table_name=table_name,
+                                                                    dimensions=dimensions, metric=metric))
+    return SharedStore(shared)
+
+
+class SharedStore:
+    """A runtime's view of its process's one store of a table (``share``).
+
+    It opens the store only when no helper serves it, one runtime at a time, and never closes it: the process's other
+    runtimes search it too, and a kept handler that is made anew finds its helper warm.  Everything else is the
+    store's own.
+    """
+
+    def __init__(self, shared: _Shared) -> None:
+        self._shared = shared
+        self._store = shared.store
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._store, name)
+
+    def _open(self) -> None:
+        shared = self._shared
+        if shared.store._serving():
+            return
+        remaining = remaining_seconds()
+        if remaining is None:
+            acquired = shared.opening.acquire()
+        else:
+            acquired = shared.opening.acquire(timeout=max(0.0, remaining))
+        if not acquired:
+            raise _helper_lock_timeout()
+        try:
+            # Another runtime may have opened it meanwhile: two that started together opened it twice (review).
+            if not shared.store._serving():
+                shared.store.open_existing()
+        except _RequestBudgetExpired:
+            return  # parked: its answer waits for the next request, and the caller says it ran out of time
+        finally:
+            shared.opening.release()
+
+    def open_existing(self) -> None:
+        self._open()
+
+    def open_existing_with_work(self, work: Callable[[], Any]) -> None:
+        # The work (the query's embedding, already asked for when the recall started: runtime/instance.py
+        # ``_QueryEmbedding``) runs outside the store's lock: overlapped with the open, it held every other runtime's
+        # search for the length of one prompt's embedding (review of 3.4.9).
+        self._open()
+        work()
+
+    def close(self) -> None:
+        """Left to the process: its other runtimes search the store (``_close_shared`` stops it at exit)."""
+
+
+def _close_shared() -> None:
+    with _shared_lock:
+        entries = list(_shared.values())
+        _shared.clear()
+    for shared in entries:
+        try:
+            shared.store.close()
+        except Exception:  # noqa: BLE001 - the process is ending; a helper that will not stop is reaped with it
+            pass
+
+
+atexit.register(_close_shared)
+
+
+def _reset_sharing_for_tests() -> None:
+    """Stop the shared stores and share no more: a server a test started would leave the whole test process sharing."""
+    global _sharing
+    _close_shared()
+    _sharing = False
+
+
+__all__ =["LANCE_WORKER_METHODS", "MAX_LANCE_FRAME_BYTES", "NativeVectorPathError", "ProcessLanceVectorStore",
+           "SharedStore", "discard_spare", "prestart", "share", "store_for"]

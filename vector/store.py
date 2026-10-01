@@ -524,9 +524,10 @@ def build_vector_store(
     if normalized == "lancedb":
         vector_dir = Path(storage_dir) / "lancedb"
         if sys.platform == "win32":
-            from .process_store import ProcessLanceVectorStore
+            from .process_store import store_for
 
-            return ProcessLanceVectorStore(vector_dir, table_name=table_name, dimensions=dimensions, metric=metric)
+            # One helper per table in a server that runs on (``process_store.share``), one per store elsewhere.
+            return store_for(vector_dir, table_name=table_name, dimensions=dimensions, metric=metric)
         return LanceVectorStore(vector_dir, table_name=table_name, dimensions=dimensions, metric=metric)
     if normalized == "pgvector":
         raise ValueError(
