@@ -42,7 +42,8 @@ LOCAL_USER_ID = "local"
 #: one of the two and passes the login, or nothing).  Each is refused like any
 #: other platform until the installer approves it for one installation, because
 #: only the owner knows whether everyone who can reach that surface without
-#: logging in is the owner.  ``cron`` is deliberately not here: nobody is
+#: logging in is the owner.  A login there is a principal of its own, approved
+#: apart (``normalize_owner_logins``).  ``cron`` is deliberately not here: nobody is
 #: speaking in a scheduled run, a job can be created from any chat, and its
 #: prompt would be captured as the owner's own words.
 LOCAL_PLATFORMS = frozenset({"desktop", "tui"})
@@ -58,6 +59,28 @@ def normalize_local_platforms(values: object) -> tuple[str, ...]:
             raise HermesIdentityError(f"local platform must be one of {sorted(LOCAL_PLATFORMS)}")
         if value not in result:
             result.append(value)
+    return tuple(result)
+
+
+def normalize_owner_logins(values: object) -> tuple[tuple[str, str], ...]:
+    """Dashboard logins an installer approves as the owner's own, each on one local surface: ``desktop=basic:alice``.
+
+    The host passes a login there as the session's ``user_id`` (``<provider>:<user>``) and names no chat
+    (#175).  Approving one is the owner principal ``(platform, login)``, as approving the surface for a
+    session that names nobody is ``(platform, "local")``.
+    """
+    if not isinstance(values, (list, tuple)):
+        raise HermesIdentityError("owner logins must be an explicit sequence")
+    result: list[tuple[str, str]] = []
+    for value in values:
+        platform, _sep, login = value.partition("=") if type(value) is str else ("", "", "")
+        if (platform not in LOCAL_PLATFORMS or not login or login != login.strip() or len(login) > 240
+                or login in {LOCAL_USER_ID, "*", "unknown"}):
+            raise HermesIdentityError(
+                f"an owner login is <platform>=<login>, the platform one of {sorted(LOCAL_PLATFORMS)} and the "
+                "login exactly as the host sends it, such as desktop=basic:alice")
+        if (platform, login) not in result:
+            result.append((platform, login))
     return tuple(result)
 
 

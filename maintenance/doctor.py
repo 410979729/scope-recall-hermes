@@ -360,7 +360,11 @@ TERMINAL_FAILURE_COUNT = """
 #: ``vector_threshold_unconfigured`` is vector recall wired without a threshold:
 #: recall still answers lexically, and no value can be supplied for the operator
 #: because a threshold is calibrated for one embedding model.
+#: ``audience_owner_unverified`` is an owner grant whose user is no owner
+#: principal: it grants nothing until the owner approves that user, and only
+#: the owner knows whether to.
 _NON_ACTIONABLE_GAPS = frozenset({
+    "audience_owner_unverified",
     "vector_threshold_unconfigured",
     "work_failed_terminal_only",
     "work_needs_review",
@@ -570,6 +574,33 @@ def _check_binding(report: DoctorReport, instance: Path):
             report.shared_store = {"root": str(attachment.root), "entry_id": attachment.entry_id,
                                    "entry_name": attachment.display_name}
     return binding, data_directory
+
+
+def _check_audiences(report: DoctorReport, instance: Path) -> None:
+    """Owner grants no session can use: owner_private rows whose user is no owner principal.
+
+    Such a row binds nothing, so every session on its route captures and recalls nothing while the CLI's
+    route stays healthy (#175).  Counted by platform, never named by user.
+    """
+    if report.host != "hermes":
+        return
+    from scope_recall.adapters.hermes.installation import load_binding_for_home
+
+    try:
+        manifest = load_binding_for_home(instance)
+    except Exception:  # noqa: BLE001 - _check_binding already reported an unusable binding.
+        return
+    owners = {(item["platform"], item["user_id"]) for item in manifest.owner_principals}
+    unverified: dict[str, int] = {}
+    for row in manifest.audiences:
+        if row.get("kind") == "owner_private" and (row["platform"], row["user_id"]) not in owners:
+            unverified[row["platform"]] = unverified.get(row["platform"], 0) + 1
+    if unverified:
+        report.capability_gaps.append("audience_owner_unverified")
+        _record(report, "audiences", "owner_unverified",
+                ",".join(f"{platform}={count}" for platform, count in sorted(unverified.items()))
+                + ": owner_private rows whose user is no owner principal grant nothing; approve the owner's "
+                "login (apply-install --owner-login) or remove the rows")
 
 
 def _serves(worker, binding) -> bool:
@@ -1012,6 +1043,7 @@ def run_doctor(
     if bound is None:
         return report
     binding, data_directory = bound
+    _check_audiences(report, instance)
     _check_running_code(report, data_directory)
     package_health.apply_package_health(report, instance, probe)
     _check_runtime_config_present(report, data_directory)

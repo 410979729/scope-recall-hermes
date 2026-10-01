@@ -9,6 +9,8 @@ platform`` and the provider never initialised (issue #94).  The approval is the 
 """
 from __future__ import annotations
 
+from dataclasses import replace
+import logging
 import sqlite3
 
 import pytest
@@ -24,8 +26,10 @@ from scope_recall.adapters.hermes.identity import switch_hermes_identity
 from scope_recall.adapters.hermes.installation import (
     approve_local_platforms,
     build_installation_manifest,
+    load_installation_manifest,
     manifest_payload,
     unapproved_local_platforms,
+    write_installation_manifest,
 )
 
 
@@ -109,12 +113,13 @@ def test_a_gateway_platform_is_not_local_even_when_its_owner_is_called_local(her
 
 def test_a_login_on_an_approved_surface_is_a_user_like_any_other(hermes_home, initialize_kwargs):
     """The host passes a dashboard login as ``<provider>:<user>``.  That is a named user: no fallback,
-    no local route, and no scope unless an audience names it."""
+    not the local owner's route, and no scope unless an owner principal or an audience names it."""
     _install(hermes_home, initialize_kwargs, local_platforms=("desktop",))
 
     identity = bind_hermes_identity("TEST-session-1", **_session(initialize_kwargs, "desktop", user_id="basic:TEST-visitor"))
 
-    assert (identity.scope.user_id, identity.scope.chat_type, identity.scope.chat_id) == ("basic:TEST-visitor", "", "")
+    assert (identity.scope.user_id, identity.scope.chat_type, identity.scope.chat_id) \
+        == ("basic:TEST-visitor", "private", "basic:TEST-visitor")
     assert identity.runtime_audience.allowed_scope_ids == frozenset()
     assert "capability_gap:audience_unmapped" in identity.runtime_audience.capability_gaps
     assert identity.read_only
@@ -146,3 +151,101 @@ def test_approving_an_existing_installation_adds_two_entries_and_changes_nothing
     assert unapproved_local_platforms(after, ["desktop", "tui"], agent_workspace=workspace) == ("tui",)
     again = approve_local_platforms(after, ["desktop"], agent_workspace=workspace)
     assert manifest_payload(again) == manifest_payload(after), "approving twice is approving once"
+
+
+LOGIN = "basic:TEST-owner"
+
+
+def _approve_login_by_hand(hermes_home, initialize_kwargs, *, platform="desktop", login=LOGIN):
+    """What approving a login writes, spelled out: the owner principal ``(platform, login)`` and one grant of
+    the owner's private scope on the route the adapter gives that login, a one-to-one chat with it."""
+    manifest = load_installation_manifest(hermes_home)
+    owner = manifest.audience_scopes["owner_private"]
+    row = dict(platform=platform, user_id=login, chat_type="private", chat_id=login, thread_id="main",
+               gateway_session_key="", agent_workspace=initialize_kwargs["agent_workspace"],
+               allowed_scope_ids=[owner], writable_scope_ids=[owner], capture_scope_id=owner, kind="owner_private")
+    write_installation_manifest(replace(
+        manifest, owner_principals=(*manifest.owner_principals, {"platform": platform, "user_id": login}),
+        audiences=(*manifest.audiences, row)))
+
+
+def test_a_login_the_owner_approved_is_the_owner_on_that_surface_and_nowhere_else(hermes_home, initialize_kwargs):
+    """#175: Hermes passes a dashboard login as ``user_id`` and no chat at all.  The session kept that empty
+    route, which no owner row can name (an owner_private row is an explicit private chat), so even a login
+    the owner approved bound nothing.  There a session is a one-to-one chat with the login it names."""
+    _install(hermes_home, initialize_kwargs)
+    _approve_login_by_hand(hermes_home, initialize_kwargs)
+
+    login = bind_hermes_identity("TEST-session-1", **_session(initialize_kwargs, "desktop", user_id=LOGIN))
+    cli = bind_hermes_identity("TEST-session-2", **_session(initialize_kwargs, "cli"))
+
+    assert (login.scope.user_id, login.scope.chat_type, login.scope.chat_id, login.scope.thread_id) \
+        == (LOGIN, "private", LOGIN, "main")
+    audience = login.runtime_audience
+    assert audience.includes_owner_private and audience.capability_gaps == ()
+    assert audience.capture_scope_id == login.owner_private_scope_id == cli.owner_private_scope_id
+    assert not login.read_only
+    assert switch_hermes_identity(login, "TEST-session-3").runtime_audience == audience
+    # The approval names one login on one surface.
+    for platform, user in (("desktop", "basic:TEST-other"), ("tui", LOGIN)):
+        other = bind_hermes_identity("TEST-session-4", **_session(initialize_kwargs, platform, user_id=user))
+        assert other.runtime_audience.allowed_scope_ids == frozenset() and other.read_only, (platform, user)
+    with pytest.raises(HermesIdentityError, match="--local-platform desktop"):
+        bind_hermes_identity("TEST-session-5", **_session(initialize_kwargs, "desktop"))
+
+
+def test_what_an_approved_login_says_is_captured_as_the_owners(hermes_home, initialize_kwargs):
+    _binding, core = _install(hermes_home, initialize_kwargs)
+    _approve_login_by_hand(hermes_home, initialize_kwargs)
+    provider = ScopeRecallHermesAdapter(core=core)
+    provider.initialize("TEST-login-session", **_session(initialize_kwargs, "desktop", user_id=LOGIN))
+    try:
+        provider.observe_pre_llm(session_id="TEST-login-session", turn_id="TEST-turn-1", user_message="TEST 第二台电脑上用绿色。")
+        provider.sync_turn("TEST 第二台电脑上用绿色。", "好的。", session_id="TEST-login-session")
+        with sqlite3.connect(hermes_home / "scope-recall" / "memory.sqlite3") as connection:
+            rows = connection.execute("SELECT origin, scope_id FROM source_events WHERE role='user'").fetchall()
+        assert rows and set(rows) == {("human_direct", provider._identity.owner_private_scope_id)}
+    finally:
+        provider.shutdown()
+
+
+def test_a_session_that_binds_nothing_says_so_once_in_the_host_log_and_never_what_was_said(
+        hermes_home, initialize_kwargs, caplog):
+    """#175: the sessions of a login nobody approved wrote nothing for days, and nothing said so: no warning,
+    no gap the host reads, doctor green.  Such a session still binds nothing; the host log now names its
+    route, its gaps and the approval, once."""
+    _binding, core = _install(hermes_home, initialize_kwargs, local_platforms=("desktop",))
+    caplog.set_level(logging.WARNING, logger="scope_recall")
+    said, answer = "TEST 这句话只在会话里。", "TEST 这句回答也是。"
+    provider = ScopeRecallHermesAdapter(core=core)
+    provider.initialize("TEST-visitor-session", **_session(initialize_kwargs, "desktop", user_id="basic:TEST-visitor"))
+    try:
+        provider.observe_pre_llm(session_id="TEST-visitor-session", turn_id="TEST-turn-1", user_message=said)
+        assert provider.prefetch(said) == ""
+        provider.sync_turn(said, answer, session_id="TEST-visitor-session")
+        provider.on_session_switch("TEST-visitor-session-2", reason="compression")
+        assert provider._identity.runtime_audience.allowed_scope_ids == frozenset() and provider._identity.read_only
+        with sqlite3.connect(hermes_home / "scope-recall" / "memory.sqlite3") as connection:
+            assert connection.execute("SELECT count(*) FROM source_events").fetchone()[0] == 0
+        warnings = [record.getMessage() for record in caplog.records
+                    if record.name.startswith("scope_recall") and record.levelno >= logging.WARNING]
+        assert len(warnings) == 1, warnings
+        assert warnings[0].startswith("scope-recall: session bound to no memory scope: a desktop session")
+        assert "not stored" not in warnings[0], "a capture that failed is another line"
+        assert "capability_gap:audience_unmapped" in warnings[0]
+        assert "--owner-login desktop=basic:TEST-visitor" in warnings[0]
+        assert said not in warnings[0] and answer not in warnings[0]
+    finally:
+        provider.shutdown()
+
+
+def test_a_platform_that_names_its_chats_keeps_the_route_it_sent(hermes_home, initialize_kwargs):
+    """Only a local surface that names no chat is read as a one-to-one chat.  Gateways send their own chat
+    fields, a weixin DM even an empty chat id (#124), and those routes stay exactly as sent."""
+    _install(hermes_home, initialize_kwargs)
+    for platform in ("weixin", "telegram", "a2a"):
+        sent = bind_hermes_identity("TEST-session-1", **_session(initialize_kwargs, platform, user_id="TEST-user"))
+        assert (sent.scope.chat_type, sent.scope.chat_id, sent.scope.thread_id) == ("", "", ""), platform
+    named = bind_hermes_identity("TEST-session-2", **_session(initialize_kwargs, "desktop", user_id=LOGIN,
+                                                              chat_type="group", chat_id="TEST-room"))
+    assert (named.scope.chat_type, named.scope.chat_id, named.scope.thread_id) == ("group", "TEST-room", "")

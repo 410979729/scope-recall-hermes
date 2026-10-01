@@ -43,6 +43,7 @@ from .identity import (
     resolve_runtime_audience,
     switch_hermes_identity,
     trusted_source_context,
+    unbound_session_hint,
 )
 from .installation import assert_binding_matches_manifest, assert_core_binding_matches, load_binding_for_home
 from .outcomes import TurnOutcomeTracker
@@ -216,6 +217,8 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
         self._diagnostics = AdapterDiagnostics()
         #: What the last worker launch attempt added to capability_gaps.
         self._worker_launch_gaps: tuple[str, ...] = ()
+        #: The route this session last reported as bound to no scope; a session switch on it is not reported again.
+        self._unbound_route: tuple[str, ...] | None = None
         self._initialized = False
         #: Which call holds ``_lock``, since when, on which thread: read without the lock, to say what a call that
         #: could not wait was waiting for.
@@ -352,9 +355,30 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
             )
             self._worker_launch_gaps = ()
             self._initialized = True
+            self._unbound_route = None
+            self._say_if_unbound(fresh)
             from .hooks import update_adapter_binding
 
             update_adapter_binding(self)
+
+    def _say_if_unbound(self, identity: HermesIdentity) -> None:
+        """Say once per session, in the host's log, that a session a person speaks in binds no scope (#175).
+
+        Such a session fails closed: nothing in it is captured or recalled.  Hermes reads none of this
+        adapter's diagnostics, so without this line a Desktop login's sessions wrote nothing for days and
+        nothing said so.  The route and the gap codes only, never what was said.
+        """
+        scope = identity.scope
+        if scope.agent_context != "primary" or identity.runtime_audience.allowed_scope_ids:
+            self._unbound_route = None
+            return
+        route = (scope.platform, scope.user_id, scope.chat_type, scope.chat_id, scope.thread_id, scope.agent_workspace)
+        if route == self._unbound_route:
+            return
+        self._unbound_route = route
+        _log.warning("scope-recall: session bound to no memory scope: a %s session for %s (%s); nothing in it is "
+                     "captured or recalled; %s", scope.platform, scope.user_id[:120],
+                     ", ".join(identity.runtime_audience.capability_gaps), unbound_session_hint(scope))
 
     def _require_identity(self) -> HermesIdentity:
         if self._identity is None or not self._initialized:
@@ -1003,6 +1027,7 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
             dict.fromkeys((*runtime_audience.capability_gaps, *(self._host_runtime.capability_gaps if self._host_runtime else ())))
         )
         self._worker_launch_gaps = ()
+        self._say_if_unbound(fresh)
         if self._host_runtime is not None:
             self._host_runtime.rebind_session(new_session_id, fresh.writable_scope_ids)
         from .hooks import update_adapter_binding

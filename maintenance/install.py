@@ -95,6 +95,7 @@ def plan_install(
     agent_workspace: str | None = None,
     env_file: Path | str | None = None,
     local_platforms: tuple[str, ...] | list[str] = (),
+    owner_logins: tuple[str, ...] | list[str] = (),
 ) -> InstallPlan:
     host_choice = _validate_host(host)
     adapter = _HOSTS[host_choice]
@@ -105,6 +106,7 @@ def plan_install(
     agent = _validate_agent_id(agent_id)
     workspace, credentials = adapter.validate_options(agent_workspace, env_file)
     approvals = adapter.validate_local_platforms(local_platforms)
+    logins = adapter.validate_owner_logins(owner_logins)
     if type(test_mode) is not bool:
         raise InstallError("test_mode must be a boolean")
     _validate_plugin_name(target.name)
@@ -128,6 +130,7 @@ def plan_install(
         agent_workspace=workspace,
         env_file=credentials,
         local_platforms=approvals,
+        owner_logins=logins,
     )
     receipt = _load_receipt(instance)
     owned: dict[str, str] = {}
@@ -159,6 +162,11 @@ def plan_install(
                 plan.changes.append(PlannedChange(
                     "write", str(adapter.config_path(instance)),
                     f"approve local platform {platform}: a session there that names no user binds as the local owner"))
+            for platform, login in adapter.unapproved_owner_logins(plan):
+                plan.changes.append(PlannedChange(
+                    "write", str(adapter.config_path(instance)),
+                    f"approve login {login} on {platform} as the owner: its sessions there bind with the owner's "
+                    "private memory, from any machine that login reaches the host from"))
     else:
         for path in adapter.foreign_instance_entries(instance):
             plan.conflicts.append(f"foreign instance content: {path}")
@@ -200,6 +208,7 @@ def apply_install(plan: InstallPlan) -> InstallResult:
         agent_workspace=plan.agent_workspace or None,
         env_file=plan.env_file,
         local_platforms=plan.local_platforms,
+        owner_logins=plan.owner_logins,
     )
     if plan.conflicts:
         raise InstallError("; ".join(plan.conflicts))
@@ -215,7 +224,7 @@ def apply_install(plan: InstallPlan) -> InstallResult:
     try:
         if plan.reuse_instance:
             installation_id = adapter.installation_id(plan.instance_root)
-            if adapter.unapproved_local_platforms(plan):
+            if adapter.unapproved_local_platforms(plan) or adapter.unapproved_owner_logins(plan):
                 # The manifest is the adapter's, not a wrapper: it is rewritten in
                 # place, with the copy the rollback below restores, and the receipt
                 # tracks its new digest like any other state of it.

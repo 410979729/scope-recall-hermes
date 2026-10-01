@@ -84,6 +84,16 @@ def validate_local_platforms(values: object) -> tuple[str, ...]:
     return ()
 
 
+def validate_owner_logins(values: object) -> tuple[str, ...]:
+    if values:
+        raise InstallError("owner_login is only used for Hermes installation")
+    return ()
+
+
+def unapproved_owner_logins(plan: InstallPlan) -> tuple[tuple[str, str], ...]:
+    return ()
+
+
 def unapproved_local_platforms(plan: InstallPlan) -> tuple[str, ...]:
     return ()
 

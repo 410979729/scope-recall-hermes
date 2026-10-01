@@ -7,7 +7,9 @@ from pathlib import Path
 from packaging.version import Version
 
 from scope_recall._version import __version__
-from scope_recall.adapters.hermes.audiences import LOCAL_PLATFORMS, HermesIdentityError, normalize_local_platforms
+from scope_recall.adapters.hermes.audiences import (
+    LOCAL_PLATFORMS, HermesIdentityError, normalize_local_platforms, normalize_owner_logins,
+)
 from scope_recall.adapters.hermes.installation import (
     approve_local_platforms as _approve_local_platforms,
     attachment_path,
@@ -15,6 +17,7 @@ from scope_recall.adapters.hermes.installation import (
     load_binding_for_home,
     load_installation_manifest,
     unapproved_local_platforms as _unapproved_local_platforms,
+    unapproved_owner_logins as _unapproved_owner_logins,
     write_installation_manifest,
 )
 
@@ -81,6 +84,15 @@ def validate_local_platforms(values: object) -> tuple[str, ...]:
         raise InstallError(str(exc)) from exc
 
 
+def validate_owner_logins(values: object) -> tuple[str, ...]:
+    """Dashboard logins approved as the owner's own, each ``<platform>=<login>`` on one local surface.
+    The host passes a login there as the session's user, so it is never the local owner (#175)."""
+    try:
+        return tuple(f"{platform}={login}" for platform, login in normalize_owner_logins(list(values or ())))
+    except (HermesIdentityError, TypeError) as exc:
+        raise InstallError(str(exc)) from exc
+
+
 def wrapper_manifest(template: str, version: str = __version__) -> str:
     """The wrapper's ``plugin.yaml``: the template, plus the core it runs on when that is a release on PyPI.
 
@@ -125,6 +137,7 @@ def initialize_instance(plan: InstallPlan) -> str:
         user_id="local",
         agent_workspace=plan.agent_workspace,
         local_platforms=plan.local_platforms,
+        owner_logins=plan.owner_logins,
         test_mode=plan.test_mode,
     )
     return binding.installation_id
@@ -138,11 +151,19 @@ def unapproved_local_platforms(plan: InstallPlan) -> tuple[str, ...]:
     return _unapproved_local_platforms(manifest, plan.local_platforms, agent_workspace=_bound_workspace(manifest))
 
 
+def unapproved_owner_logins(plan: InstallPlan) -> tuple[tuple[str, str], ...]:
+    """The requested owner logins, as ``(platform, login)``, an existing installation has not approved yet."""
+    if not plan.owner_logins:
+        return ()
+    manifest = load_binding_for_home(plan.instance_root)
+    return _unapproved_owner_logins(manifest, plan.owner_logins, agent_workspace=_bound_workspace(manifest))
+
+
 def approve_local_platforms(plan: InstallPlan) -> None:
-    """Write the approvals into an existing installation's manifest; the store is not touched."""
+    """Write the approvals, surfaces and logins, into an existing installation's manifest; the store is not touched."""
     manifest = load_installation_manifest(plan.instance_root)
-    write_installation_manifest(
-        _approve_local_platforms(manifest, plan.local_platforms, agent_workspace=_bound_workspace(manifest)))
+    write_installation_manifest(_approve_local_platforms(
+        manifest, plan.local_platforms, agent_workspace=_bound_workspace(manifest), logins=plan.owner_logins))
 
 
 def installation_id(instance_root: Path) -> str:
@@ -176,11 +197,12 @@ def validate_reuse(plan: InstallPlan) -> None:
         )
     if not (manifest.data_directory / "memory.sqlite3").is_file():
         raise InstallError("existing Hermes installation database is missing")
-    if manifest.entry_id is not None and _unapproved_local_platforms(
-            manifest, plan.local_platforms, agent_workspace=_bound_workspace(manifest)):
+    if manifest.entry_id is not None and (
+            _unapproved_local_platforms(manifest, plan.local_platforms, agent_workspace=_bound_workspace(manifest))
+            or _unapproved_owner_logins(manifest, plan.owner_logins, agent_workspace=_bound_workspace(manifest))):
         # Its grants live in the shared store's manifest, which this installer does not write.
         raise InstallError("a shared store entry keeps the grants it was attached with; approve a local "
-                           "surface in the home's own installation before attaching it")
+                           "surface or an owner login in the home's own installation before attaching it")
 
 
 def purge_identity(instance_root: Path) -> tuple[Path, str, str, Path]:

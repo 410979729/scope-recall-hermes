@@ -76,6 +76,8 @@ class InstallPlan:
     agent_workspace: str = ""
     env_file: Path | None = None
     local_platforms: tuple[str, ...] = ()
+    #: Dashboard logins approved as the owner's own, each ``<platform>=<login>`` on one local surface.
+    owner_logins: tuple[str, ...] = ()
     changes: list[PlannedChange] = field(default_factory=list)
     conflicts: list[str] = field(default_factory=list)
     reuse_instance: bool = False
@@ -95,6 +97,7 @@ class InstallPlan:
             "agent_workspace": self.agent_workspace,
             "env_file": str(self.env_file) if self.env_file is not None else None,
             "local_platforms": list(self.local_platforms),
+            "owner_logins": list(self.owner_logins),
             "reuse_instance": self.reuse_instance,
             "conflicts": list(self.conflicts),
             "kept": sorted(self.kept),

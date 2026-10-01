@@ -1273,6 +1273,93 @@ def test_local_platform_names_only_a_local_surface_and_only_on_hermes(tmp_path):
     assert not (instance_root / "scope-recall").exists()
 
 
+def test_an_owner_login_is_approved_in_place_once_and_binds_that_login_only(tmp_path, capsys):
+    """#175: Hermes passes a dashboard login (``basic:<name>``) as the session's user and names no chat.  The
+    installer approves one login on one local surface as the owner's own: the owner principal and one grant
+    of the owner's private scope on the route the adapter gives that login.  Nothing else is approved."""
+    from scope_recall.adapters.hermes import HermesIdentityError, bind_hermes_identity
+    from scope_recall.maintenance import cli as maintenance_cli
+
+    instance_root = (tmp_path / "instance").resolve()
+    manifest_path = instance_root / "scope-recall" / "installation.json"
+    assert maintenance_cli.main(_hermes_cli(tmp_path, "apply-install")) == 0
+    capsys.readouterr()
+    before = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+    login = ("--owner-login", "desktop=basic:TEST-owner")
+    assert maintenance_cli.main(_hermes_cli(tmp_path, "plan-install", *login)) == 0
+    planned = json.loads(capsys.readouterr().out)
+    assert planned["owner_logins"] == ["desktop=basic:TEST-owner"]
+    approvals = [change["detail"] for change in planned["changes"] if change["path"] == str(manifest_path)]
+    assert len(approvals) == 1 and approvals[0].startswith("approve login basic:TEST-owner on desktop as the owner")
+    assert json.loads(manifest_path.read_text(encoding="utf-8")) == before, "a plan writes nothing"
+
+    assert maintenance_cli.main(_hermes_cli(tmp_path, "apply-install", *login)) == 0
+    capsys.readouterr()
+    after = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert after["owner_principals"] == [*before["owner_principals"], {"platform": "desktop", "user_id": "basic:TEST-owner"}]
+    added = after["audiences"][len(before["audiences"]):]
+    assert [(row["platform"], row["user_id"], row["chat_type"], row["chat_id"], row["thread_id"], row["kind"])
+            for row in added] == [("desktop", "basic:TEST-owner", "private", "basic:TEST-owner", "main", "owner_private")]
+    assert {key: after[key] for key in ("installation_id", "scope_ids", "audience_scopes")} \
+        == {key: before[key] for key in ("installation_id", "scope_ids", "audience_scopes")}
+
+    session = dict(hermes_home=str(instance_root), agent_identity="default", agent_workspace="hermes", agent_context="primary")
+    owner = bind_hermes_identity("TEST-login-session", platform="desktop", user_id="basic:TEST-owner", **session)
+    assert owner.runtime_audience.includes_owner_private and not owner.read_only
+    visitor = bind_hermes_identity("TEST-visitor-session", platform="desktop", user_id="basic:TEST-visitor", **session)
+    assert visitor.runtime_audience.allowed_scope_ids == frozenset()
+    with pytest.raises(HermesIdentityError, match="--local-platform desktop"):
+        bind_hermes_identity("TEST-nobody-session", platform="desktop", **session)
+
+    assert maintenance_cli.main(_hermes_cli(tmp_path, "plan-install", *login)) == 0
+    again = json.loads(capsys.readouterr().out)
+    assert not [change for change in again["changes"] if change["path"] == str(manifest_path)], "approved once"
+
+
+def test_an_owner_login_names_one_login_on_one_local_surface_and_only_on_hermes(tmp_path):
+    instance_root, plugin_dir, project_root = _install_paths(tmp_path, host="hermes")
+    common = dict(target_plugin_dir=plugin_dir, instance_root=instance_root, project_root=project_root,
+                  agent_id="default", python_executable=Path(sys.executable), test_mode=True)
+    for refused in ("basic:TEST-owner", "cron=basic:TEST-owner", "telegram=12345", "desktop=local", "desktop=", "desktop=*"):
+        with pytest.raises(InstallError, match="owner login"):
+            plan_install(host="hermes", owner_logins=(refused,), **common)
+    with pytest.raises(InstallError, match="only used for Hermes"):
+        plan_install(host="codex", owner_logins=("desktop=basic:TEST-owner",), **common)
+    assert not (instance_root / "scope-recall").exists()
+
+
+def test_doctor_names_an_owner_grant_that_no_owner_principal_can_use(tmp_path, capsys):
+    """#175's manifest: owner rows written for a Desktop login and no owner principal for it, so every session
+    on that route bound nothing while doctor stayed green.  Doctor counts such rows by platform, never by user."""
+    from scope_recall.maintenance import cli as maintenance_cli
+
+    instance_root = (tmp_path / "instance").resolve()
+    manifest_path = instance_root / "scope-recall" / "installation.json"
+    assert maintenance_cli.main(_hermes_cli(tmp_path, "apply-install")) == 0
+    capsys.readouterr()
+    healthy = run_doctor(host="hermes", instance_root=instance_root, python_executable=Path(sys.executable))
+    assert "audience_owner_unverified" not in healthy.capability_gaps
+
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    owner_row = next(row for row in manifest["audiences"] if row["kind"] == "owner_private")
+    manifest["audiences"].append(dict(owner_row, platform="desktop", user_id="basic:TEST-owner",
+                                      chat_type="private", chat_id="basic:TEST-owner"))
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    report = run_doctor(host="hermes", instance_root=instance_root, python_executable=Path(sys.executable))
+    assert "audience_owner_unverified" in report.capability_gaps
+    found = [check for check in report.checks if check["name"] == "audiences"]
+    assert [check["result"] for check in found] == ["owner_unverified"] and found[0]["detail"].startswith("desktop=1:")
+    assert "basic:TEST-owner" not in json.dumps(report.to_dict(), ensure_ascii=False)
+
+    from scope_recall.maintenance.doctor import DoctorReport, _classify_status
+
+    alone = DoctorReport(host="hermes", status="degraded", capability_gaps=["audience_owner_unverified"])
+    _classify_status(alone)
+    assert alone.status == "attention", "a grant only the owner can approve is worth a look, not a breakage"
+
+
 def test_codex_env_file_is_written_into_every_wrapper_and_hermes_rejects_it(tmp_path, capsys):
     """Codex starts the MCP server and hooks with its own environment, so the
     credential file the worker already uses must reach both wrappers verbatim

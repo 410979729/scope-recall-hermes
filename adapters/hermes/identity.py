@@ -263,6 +263,20 @@ def host_scope_payload(scope: HermesRuntimeScope) -> dict[str, str]:
     return payload
 
 
+def unbound_session_hint(scope: HermesRuntimeScope) -> str:
+    """What the operator can do about a session that binds no scope; it names the route, never what was said."""
+    if scope.platform in LOCAL_PLATFORMS and scope.user_id == LOCAL_USER_ID:
+        hint = f"approve the surface with apply-install --local-platform {scope.platform}"
+    elif scope.platform in LOCAL_PLATFORMS:
+        hint = ("if this login is the owner's own, approve it with apply-install "
+                f"--owner-login {scope.platform}={scope.user_id[:240]}")
+    else:
+        hint = "a route is granted by an exact audience row in installation.json (docs/install.md)"
+    if scope.entry_id:
+        hint += "; a shared store entry keeps the grants it was attached with"
+    return hint
+
+
 def trusted_source_context(scope: HermesRuntimeScope) -> SourceContext | None:
     """Return the initialized host platform/chat_type only; never message text."""
 
@@ -405,10 +419,17 @@ def bind_hermes_identity(session_id: str, **kwargs: object) -> HermesIdentity:
             thread_id = "main"
     elif platform in local_platforms and user_id == LOCAL_USER_ID:
         # The host names no chat on a local surface either; the route is the
-        # one the installer's grant declares.  A login there is a user like any
-        # other and keeps the route the host sent.
+        # one the installer's grant declares.
         chat_type = chat_type or "private"
         chat_id = chat_id or LOCAL_USER_ID
+        if "thread_id" not in kwargs:
+            thread_id = "main"
+    elif platform in LOCAL_PLATFORMS and user_id != LOCAL_USER_ID and not chat_type and not chat_id:
+        # A dashboard login there names no chat either (#175): one person at
+        # one window, so a one-to-one chat with that login, routed the way an
+        # owner grant is written.  The login is still a user like any other and
+        # binds only what an owner principal and an audience row give it.
+        chat_type, chat_id = "private", user_id
         if "thread_id" not in kwargs:
             thread_id = "main"
     scope = HermesRuntimeScope(

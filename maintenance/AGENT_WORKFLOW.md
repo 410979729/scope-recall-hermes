@@ -44,6 +44,13 @@ approves the surface: add `--local-platform desktop` and/or `--local-platform tu
 to plan-install and apply-install, on a fresh install or later on the same
 instance. Approve one only where everyone who can reach that surface without
 logging in is the owner; if you cannot tell, ask the user that one question.
+On a host that serves its dashboard to other machines this is every dashboard
+login: the dashboard's Chat tab runs there as a session that names no user.
+A session that carries a dashboard login (`hermes serve` with
+`dashboard.basic_auth`, or the Desktop app connected to such a host) is that
+login, `basic:<name>`, never the local owner, and binds nothing until approved:
+add `--owner-login desktop=basic:<name>` (or `tui=`) only for a login that is
+the owner's own, and ask which one is if you cannot tell.
 A legacy 2.x Desktop installation wrote under a minted `srdesk_*` principal. When
 the old runtime's own settings show that principal is the owner, map its private
 scope to `owner_private` in the migration scope map (section 2) and approve

@@ -234,7 +234,18 @@ def _add_install_arguments(parser: argparse.ArgumentParser) -> None:
         choices=LOCAL_PLATFORM_CHOICES,
         help="Hermes only, repeatable: approve a host surface that names no user (the Desktop chat panel, "
         "hermes --tui) as the owner's own, the way the CLI is. Without it such a session is refused. Approve one "
-        "only where everyone who can reach that surface without logging in is the owner.",
+        "only where everyone who can reach that surface without logging in is the owner; a dashboard served to "
+        "other machines runs its Chat tab there for every login.",
+    )
+    parser.add_argument(
+        "--owner-login",
+        action="append",
+        default=[],
+        metavar="PLATFORM=LOGIN",
+        help="Hermes only, repeatable: approve a dashboard login on a local surface (desktop=basic:alice) as the "
+        "owner's own. The host passes the login as the session's user; without this such a session binds no "
+        "memory. Whoever holds that login gets the owner's private memory there, from any machine that reaches "
+        "the host.",
     )
     parser.add_argument(
         "--test-mode",
@@ -255,6 +266,7 @@ def _install_plan(args: argparse.Namespace):
         agent_workspace=args.agent_workspace,
         env_file=_optional_path(args.env_file, "env_file"),
         local_platforms=tuple(args.local_platform),
+        owner_logins=tuple(args.owner_login),
     )
 
 

@@ -228,14 +228,57 @@ does. `plan-install` lists the approval as a change; an approved surface is not
 listed again. Restart the host surface afterwards so it binds again.
 
 What it does not do: it does not cover a session that carries a login. That one
-is a named user like any gateway user and gets only what an audience row gives
+is approved apart (`--owner-login`, below) or gets only what an audience row gives
 it. It accepts no other platform: `cron` in particular stays refused, because
 nobody is speaking in a scheduled run, a job can be created from any chat, and its
 prompt would be captured as the owner's own words. Codex rejects the flag.
 
 Approve a surface only where everyone who can reach it without logging in is the
 owner. That is the same trust the CLI already has: whoever can run it against
-this home can read the store.
+this home can read the store. A host that serves its dashboard to other machines
+(`hermes serve --host 0.0.0.0` with `dashboard.basic_auth`) runs the dashboard's
+Chat tab as `hermes --tui` on the host for whoever logged in, and passes that
+login to no memory provider, so such a session names no user. Approving `tui` (or
+`desktop`) on that host gives every dashboard login the owner's memory through
+the Chat tab.
+
+#### A dashboard login: `--owner-login`
+
+With a dashboard login (`hermes serve` with `dashboard.basic_auth`, or the Desktop
+app connected to such a host from another machine) the host passes the login to
+the adapter as the session's user, `basic:<name>`, and names no chat. The adapter
+routes that session as a one-to-one chat with the login: `chat_type` `private`,
+`chat_id` the login, `thread_id` `main`. A login is not the local owner. Until it
+is approved it binds no scope, nothing said there is captured or recalled, and the
+host log says so once per session:
+
+```
+scope-recall: session bound to no memory scope: a desktop session for basic:alice (capability_gap:audience_unmapped, capability_gap:owner_private_denied, capability_gap:no_allowed_scope); nothing in it is captured or recalled; if this login is the owner's own, approve it with apply-install --owner-login desktop=basic:alice
+```
+
+Approve your own login with `--owner-login <platform>=<login>`, repeatable,
+`desktop` or `tui` only, with the login exactly as the host sends it:
+
+```powershell
+scope-recall apply-install --host hermes `
+  --target-plugin-dir $Plugin --instance-root $Instance `
+  --project-root $Project --agent-id default --python $Python `
+  --owner-login desktop=basic:alice
+```
+
+It adds the owner principal `(desktop, basic:alice)` and one grant of the owner's
+private scope on that route, the way `--local-platform` does for a session that
+names no user, with the same backup, and approves nothing else: not that login on
+`tui`, not another login, not a session that names no user. Whoever holds that
+login then reads and writes the owner's private memory there, from any machine
+that reaches the host, so approve only a login that is the owner's own; `revise`
+and `forget` stay with the CLI. A shared store entry keeps the grants it was
+attached with: approve a login in the home's own installation before attaching
+it. `doctor` reports an owner row whose user is no owner principal as
+`audience_owner_unverified`.
+
+A login that is not the owner's is a user like any gateway user and gets only
+what an audience row on its route gives it.
 
 A gateway route (Telegram, WeChat, Feishu, a Desktop login) is granted by an
 audience row in `installation.json`, matched field by field against what the host
@@ -502,6 +545,7 @@ Things that look wrong in a healthy report and are not:
 | `schema_version_mismatch` | The database schema is one this code cannot bring forward. | Do not run against it. Back it up and use the migration path. |
 | `schema_header_stale` | The store's tables and its own record say one schema, the SQLite header another: another process stamped the header, typically a 2.0 plugin that opened the store after its migration. Every open is refused. | Stop that process, then run `upgrade-store` with `--backup-dir`: it snapshots the store and puts the recorded schema back into the header. |
 | `vector_threshold_unconfigured` | A vector store and an approved embedding route are configured, but no threshold is set, so every vector hit is refused and recall stays lexical. `attention`. | Set a `vector_threshold` calibrated for that embedding model — see [configuration.md](configuration.md). |
+| `audience_owner_unverified` | An `owner_private` audience row names a user who is no owner principal, so it grants nothing and every session on its route captures and recalls nothing. The `audiences` check counts such rows by platform. `attention`. | If the user is the owner's own dashboard login, approve it with `apply-install --owner-login <platform>=<login>` (section 4); otherwise remove the rows. |
 | `work_failed` | At least one recoverable failure is queued. | Fix the cause, then `scope-recall retry-failures --config <file> --apply`. |
 | `work_failed_terminal_only` / `work_needs_review` | All failures are by design, or were already retried once. `attention`. | Inspect them; `--include-terminal` re-runs them only if you mean to. |
 | `work_backlog_stalled` | Work is pending and the worker has not succeeded for more than twice `supervisor_seconds`. | The worker is not running. See the next section. |

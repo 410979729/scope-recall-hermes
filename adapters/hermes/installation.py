@@ -18,7 +18,8 @@ from scope_recall.core.storage import SQLiteStorage
 
 from .audiences import (
     EXACT_FIELDS, LOCAL_USER_ID, HermesIdentityError, _audience_entry, _normalize_audience_entry,
-    is_archive_scope, normalize_local_platforms, normalize_retained_scope_ids, normalize_owner_principals,
+    is_archive_scope, normalize_local_platforms, normalize_owner_logins, normalize_retained_scope_ids,
+    normalize_owner_principals,
 )
 
 MANIFEST_FILENAME = "installation.json"
@@ -233,39 +234,61 @@ def _grant(scope_id: str, *, kind: str, chat_type: str, chat_id: str, route: dic
     )
 
 
-def _local_grant(owner_private_scope: str, *, platform: str, agent_workspace: str) -> dict[str, Any]:
-    """The owner's private scope on a local surface, routed the way the adapter routes a session there."""
-    route = dict(platform=platform, user_id=LOCAL_USER_ID, gateway_session_key="", agent_workspace=agent_workspace)
-    return _grant(owner_private_scope, kind="owner_private", chat_type="private", chat_id=LOCAL_USER_ID, route=route)
+def _local_grant(owner_private_scope: str, *, platform: str, agent_workspace: str,
+                 user_id: str = LOCAL_USER_ID) -> dict[str, Any]:
+    """The owner's private scope on a local surface, routed the way the adapter routes a session there: a
+    one-to-one chat with whoever the session names, nobody (``local``) or a dashboard login."""
+    route = dict(platform=platform, user_id=user_id, gateway_session_key="", agent_workspace=agent_workspace)
+    return _grant(owner_private_scope, kind="owner_private", chat_type="private", chat_id=user_id, route=route)
+
+
+def _unapproved(manifest: InstallationManifest, principals: Sequence[tuple[str, str]], *,
+                agent_workspace: str) -> tuple[tuple[str, str], ...]:
+    """Which of these ``(platform, user)`` pairs the manifest lacks the owner principal or the grant for."""
+    missing = []
+    for platform, user_id in principals:
+        grant = _local_grant(manifest.audience_scopes["owner_private"], platform=platform,
+                             agent_workspace=agent_workspace, user_id=user_id)
+        routed = any(all(row.get(name) == grant[name] for name in EXACT_FIELDS) for row in manifest.audiences)
+        if dict(platform=platform, user_id=user_id) not in manifest.owner_principals or not routed:
+            missing.append((platform, user_id))
+    return tuple(missing)
 
 
 def unapproved_local_platforms(manifest: InstallationManifest, platforms: Sequence[str], *, agent_workspace: str) -> tuple[str, ...]:
     """Which of these local surfaces the manifest lacks the owner principal or the grant for."""
-    missing = []
-    for platform in normalize_local_platforms(list(platforms)):
-        grant = _local_grant(manifest.audience_scopes["owner_private"], platform=platform, agent_workspace=agent_workspace)
-        routed = any(all(row.get(name) == grant[name] for name in EXACT_FIELDS) for row in manifest.audiences)
-        if dict(platform=platform, user_id=LOCAL_USER_ID) not in manifest.owner_principals or not routed:
-            missing.append(platform)
-    return tuple(missing)
+    principals = [(platform, LOCAL_USER_ID) for platform in normalize_local_platforms(list(platforms))]
+    return tuple(platform for platform, _user in _unapproved(manifest, principals, agent_workspace=agent_workspace))
 
 
-def approve_local_platforms(manifest: InstallationManifest, platforms: Sequence[str], *, agent_workspace: str) -> InstallationManifest:
-    """The same manifest with each local surface approved as the owner's own.
+def unapproved_owner_logins(manifest: InstallationManifest, logins: Sequence[str], *,
+                            agent_workspace: str) -> tuple[tuple[str, str], ...]:
+    """Which of these ``<platform>=<login>`` approvals the manifest lacks, as ``(platform, login)``."""
+    return _unapproved(manifest, normalize_owner_logins(list(logins)), agent_workspace=agent_workspace)
+
+
+def approve_local_platforms(manifest: InstallationManifest, platforms: Sequence[str], *, agent_workspace: str,
+                            logins: Sequence[str] = ()) -> InstallationManifest:
+    """The same manifest with each local surface, and each dashboard login on one, approved as the owner's own.
 
     Approval is two exact entries and nothing else: the owner principal
-    ``(platform, "local")`` and one grant of the owner's private scope on that
-    route.  The scope is one the manifest already registers, so the instance
-    binding, and with it the store, is unchanged.  A surface already approved,
-    or a route somebody declared by hand, is left as it is.
+    ``(platform, "local")``, or ``(platform, login)``, and one grant of the
+    owner's private scope on that route.  The scope is one the manifest already
+    registers, so the instance binding, and with it the store, is unchanged.  A
+    surface or login already approved, or a route somebody declared by hand, is
+    left as it is.
     """
     principals = list(manifest.owner_principals)
     rows = list(manifest.audiences)
-    for platform in unapproved_local_platforms(manifest, platforms, agent_workspace=agent_workspace):
-        principal = dict(platform=platform, user_id=LOCAL_USER_ID)
+    wanted = [(platform, LOCAL_USER_ID)
+              for platform in unapproved_local_platforms(manifest, platforms, agent_workspace=agent_workspace)]
+    wanted += unapproved_owner_logins(manifest, logins, agent_workspace=agent_workspace)
+    for platform, user_id in wanted:
+        principal = dict(platform=platform, user_id=user_id)
         if principal not in principals:
             principals.append(principal)
-        grant = _local_grant(manifest.audience_scopes["owner_private"], platform=platform, agent_workspace=agent_workspace)
+        grant = _local_grant(manifest.audience_scopes["owner_private"], platform=platform,
+                             agent_workspace=agent_workspace, user_id=user_id)
         if not any(all(row.get(name) == grant[name] for name in EXACT_FIELDS) for row in rows):
             rows.append(grant)
     return replace(manifest, owner_principals=normalize_owner_principals(principals), audiences=tuple(rows))
@@ -314,6 +337,7 @@ def build_installation_manifest(
     owner_principals: Sequence[Mapping[str, str]] | None = None,
     audiences: Sequence[Mapping[str, Any]] | None = None,
     local_platforms: Sequence[str] = (),
+    owner_logins: Sequence[str] = (),
     test_mode: bool = False,
     archive_source_scopes: Sequence[str] | Mapping[str, str] | None = None,
     archive_retention_scopes: Mapping[str, str] | None = None,
@@ -325,7 +349,8 @@ def build_installation_manifest(
     v2 files require an explicit rebuild with attested principal/session/write
     grants. Retained IDs register originals for import, never runtime access.
     ``local_platforms`` approves host surfaces that name no user as the owner's
-    own (see ``approve_local_platforms``).
+    own, and ``owner_logins`` a dashboard login on one of them (see
+    ``approve_local_platforms``).
     """
     home = hermes_home.expanduser().resolve()
     if not home.is_absolute():
@@ -406,7 +431,7 @@ def build_installation_manifest(
         ),
         test_mode=test_mode,
     )
-    return approve_local_platforms(manifest, local_platforms, agent_workspace=workspace)
+    return approve_local_platforms(manifest, local_platforms, agent_workspace=workspace, logins=owner_logins)
 
 
 def manifest_payload(manifest: InstallationManifest) -> dict[str, Any]:
@@ -1034,6 +1059,7 @@ def install_hermes_scope_recall(
     owner_principals: Sequence[Mapping[str, str]] | None = None,
     audiences: Sequence[Mapping[str, Any]] | None = None,
     local_platforms: Sequence[str] = (),
+    owner_logins: Sequence[str] = (),
     legacy_audit_retention: bool = False,
     test_mode: bool = False,
     clock: Any | None = None,
@@ -1055,6 +1081,7 @@ def install_hermes_scope_recall(
         owner_principals=owner_principals,
         audiences=audiences,
         local_platforms=local_platforms,
+        owner_logins=owner_logins,
         archive_retention_scopes=AUDIT_RETENTION_SCOPES if legacy_audit_retention else None,
         test_mode=test_mode,
     )
