@@ -4,6 +4,14 @@ All notable changes to `scope-recall` will be documented in this file.
 
 ## [3.5.0 candidates] - 2026-10-02
 
+### Scope Recall 3.5.0rc3 - 2026-10-02
+
+- The version moves past the `v3.5.0rc2` tag.
+- Every connection to the store reads it through a memory map. Each operation opens its own connection, and on a shared store another process writes between any two recalls, so SQLite's own page cache never carries over. A hook recall read every page it touched with a read call of its own: 150,000 of them, 586 MB, for a 3,800-character prompt. Through the map the pages come straight from the system's file cache.
+  - On a copy of the shared store that recall took 0.76 s instead of 1.27-1.76 s with the file cache warm, and 1.68 s instead of 3.11 s with it cold. A short prompt took 0.73 s instead of 1.16-1.24 s, and 1.58 s instead of 2.52 s.
+  - The cold case is a server's first recall after an idle stretch. On this machine's Claude Code, 9 of 40 prompts after 40 to 90 idle minutes recalled past their time (`deadline_exceeded_collect`, `_hydrate`, `_relation`), with or without the vector search.
+  - SQLite maps no more than the file holds and at most its build's limit, 2 GB in Python's builds; the rest is read as before. Writes are unchanged.
+
 ### Scope Recall 3.5.0rc2 - 2026-10-02
 
 - The version moves past the `v3.5.0rc1` tag.
