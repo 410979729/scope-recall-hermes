@@ -6,7 +6,8 @@ does the consolidating and embedding. It ships host adapters for Hermes and for
 Codex, the latter as a set of native hooks plus an MCP server, which Claude Code
 uses too. This guide installs Hermes and Codex with a store of their own; Claude
 Code installs only as an entry of a shared store, and Codex can join one too
-(section 11).
+(section 11). WorkBuddy runs the same hooks and installs only as an entry as well
+(section 12).
 
 > **Status.** This guide covers 3.1 to 3.4. Releases are on PyPI and on the
 > GitHub releases page; a checkout between releases carries a candidate version
@@ -116,6 +117,10 @@ own configuration, register the plugin for you, or approve hooks. The receipt at
 install time**: `host_registration_pending: true`, plus `hook_trust_pending: true`
 for Codex. Later enabling or trusting does not rewrite that historical receipt.
 For the current state, read `doctor` and the host's actual behaviour.
+
+WorkBuddy is the one exception: it has no plugin directory an installer could own,
+so `apply-install --host workbuddy` adds its entries to WorkBuddy's own settings
+files, and keeps everything else in them (section 12).
 
 Installation mode is an explicit boundary. Both `plan-install` and `apply-install`
 create a production binding (`test_mode=false`) by default. Only an isolated TEST
@@ -786,6 +791,86 @@ it as an entry, with every memory marked with the agent it came in through:
 only a pointer, `scope-recall\attachment.json`; `plan-install`, `apply-install` and
 `doctor` recognize it.
 
+## 12. WorkBuddy
+
+WorkBuddy runs the hooks and the MCP server of the `codex` adapter as an entry of a shared
+store, the owner at this machine. Attach its home first ([shared-store.md](shared-store.md)),
+from an environment with the `codex` extra, then install. WorkBuddy reads its hooks from
+`settings.json` and its MCP servers from `.mcp.json` in its own home only when it starts, and
+may write `settings.json` itself while it runs: quit WorkBuddy before `apply-install` and start
+it again after.
+
+```powershell
+$Entry  = "D:\ScopeRecall\workbuddy"
+$Python = "D:\ScopeRecall\workbuddy-venv\Scripts\python.exe"
+
+scope-recall plan-install --host workbuddy --instance-root $Entry `
+  --agent-id <the store's agent id> --python $Python --env-file <the file with the embedding key>
+# quit WorkBuddy
+scope-recall apply-install --host workbuddy --instance-root $Entry `
+  --agent-id <the store's agent id> --python $Python --env-file <the file with the embedding key>
+# start WorkBuddy
+```
+
+`--target-plugin-dir` names WorkBuddy's home; without it the installer uses
+`WORKBUDDY_CONFIG_DIR`, else `%USERPROFILE%\.workbuddy`, and refuses a home that does not
+exist. `apply-install`:
+
+- adds one command hook each for `UserPromptSubmit`, `Stop` and `SessionEnd` under `hooks` in
+  `settings.json`, and the MCP server `scope-recall` under `mcpServers` in `.mcp.json`;
+- keeps every other key, hook and server as it is, and copies each file it changes to
+  `<instance-root>\.scope-recall-backups\<id>\plugin\` first (`backups` and `files_merged` in
+  its output); neither file enters the receipt;
+- changes nothing when run again; this entry's hook from an older interpreter or env file is
+  updated where it stands;
+- refuses, and writes nothing, when the settings already run another Scope Recall hook (another
+  entry's, or a remote client's: WorkBuddy would run both), when `.mcp.json` has a `scope-recall`
+  server that is not this entry's, or when a file is not plain JSON (WorkBuddy accepts comments;
+  rewritten as JSON they would be lost, so add the entries by hand there).
+
+On Windows WorkBuddy runs a hook through Git Bash, so Git for Windows must be installed; without
+it WorkBuddy uses PowerShell, which cannot run this command. The command is
+`"<python>" -I -B -m scope_recall.adapters.codex.hook_entry --home "<instance-root>" --host workbuddy`
+with forward slashes, plus `--env-file "<file>"`: keep those paths to printable ASCII without
+`"`, `$`, `` ` `` or `\`; `apply-install` refuses others. WorkBuddy's `timeout` is in seconds,
+and a prompt hook that runs past it blocks the prompt: the hooks wait 15 s (`UserPromptSubmit`)
+and 10 s (`Stop`, `SessionEnd`), the interpreter's start plus the entry's
+`hook_processing_seconds` (at most 6 s). A hook answers as soon as its work is done.
+
+What the hooks do, as for the other clients: a prompt is stored as the owner's and what is
+remembered is put in front of it; a `Stop` stores the reply and reads WorkBuddy's session record
+(the hook's `transcript_path`, else the session's file under `<WorkBuddy home>\projects\`) from
+where the last read stopped, for the text shown between tool calls and the owner's messages the
+prompt hook could not store; `SessionEnd` reads the rest and forgets the session's turns. A turn
+is named by the prompt's `generation_id` when it is new to the session, else by one derived from
+the session, the words and the moment, kept in `<instance-root>\scope-recall\turns\` until the
+session ends (a day at most). The MCP server keeps the vector search warm for the prompt hook
+while WorkBuddy runs, and serves the tools.
+
+To check it: `doctor --host workbuddy --instance-root <instance-root>` checks the binding and the
+store (it does not read WorkBuddy's settings; `host_registration_status: pending` is healthy, as
+for Codex). Then open a workspace in WorkBuddy (its hooks fire only there), send a message and
+look for the entry in `scope-recall entries --root <store>` (last heard from) and for
+`scope-recall` among WorkBuddy's connected MCP servers.
+
+To take it out: quit WorkBuddy, run `plan-uninstall` and `apply-uninstall --instance-root
+<instance-root>`. They take this entry's hooks and server out of WorkBuddy's two files
+(`unmerged_files`; a copy of each goes to the backups first) and leave everything else; `detach`
+then ends the entry. `detach` alone leaves WorkBuddy's settings as they are.
+
+Known limits:
+
+- WorkBuddy hands the prompt hook a prompt with its line breaks removed, so a multi-line message
+  is stored as one line.
+- WorkBuddy fires `Stop` for a cancelled or failed turn too, with the previous turn's reply; a
+  reply that repeats the session's last one is not stored again. The same short reply given twice
+  in a row is therefore stored once by the hook, and the second time by the record read only if
+  the first was stored more than 120 s earlier.
+- A subagent's work is not recorded: WorkBuddy fires no prompt or `Stop` hook for it, and its
+  record is not read.
+- Not done: `doctor` does not check WorkBuddy's settings, and the `scope-recall-memory` skill is
+  not installed into WorkBuddy.
+
 ## Names and paths
 
 | Concept | Value |
@@ -801,3 +886,5 @@ only a pointer, `scope-recall\attachment.json`; `plan-install`, `apply-install` 
 | Codex installation record | `<instance-root>\codex-installation.json` |
 | Codex Core data directory | `<instance-root>\data\` |
 | Runtime config | `<core-data-directory>\runtime-config.json` |
+| WorkBuddy home | `WORKBUDDY_CONFIG_DIR`, else `%USERPROFILE%\.workbuddy` |
+| WorkBuddy hooks and MCP server | `hooks` in `<WorkBuddy home>\settings.json`, `mcpServers.scope-recall` in `<WorkBuddy home>\.mcp.json` |

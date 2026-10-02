@@ -32,7 +32,7 @@ from scope_recall._version import __version__
 from . import package_health
 from .install_common import RUNTIME_CONFIG_LIMIT
 
-HostChoice = Literal["hermes", "codex", "claude-code"]
+HostChoice = Literal["hermes", "codex", "claude-code", "workbuddy"]
 #: Run as a file by the target interpreter, so an installed package that
 #: predates these diagnostics is still measured. It imports no optional library.
 _PACKAGE_PROBE = Path(__file__).with_name("package_health.py")
@@ -1028,8 +1028,8 @@ def run_doctor(
     instance_root: Path | str,
     python_executable: Path | str | None = None,
 ) -> DoctorReport:
-    if host not in ("hermes", "codex", "claude-code"):
-        raise ValueError("host must be 'hermes', 'codex' or 'claude-code'")
+    if host not in ("hermes", "codex", "claude-code", "workbuddy"):
+        raise ValueError("host must be 'hermes', 'codex', 'claude-code' or 'workbuddy'")
     instance = _require_absolute(Path(instance_root), "instance_root")
     python = Path(python_executable) if python_executable is not None else None
     report = DoctorReport(host=host, status="degraded")

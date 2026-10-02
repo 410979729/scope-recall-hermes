@@ -3,6 +3,8 @@
 Claude Code or Codex on a second machine (a work computer) can be an entry of the shared store on this
 one. Its memories are the store's, recalled by every entry with the owner's grants, and each recalled item
 names the entry it came in through, so "Work Claude Code" stays apart from this machine's Claude Code.
+WorkBuddy can be such a client as well (`--host workbuddy` below, `"host": "workbuddy"` in `client.json`); it is
+forwarded and its session record read like the `claude-code` host's, and where its setup differs is said below.
 
 Nothing of the store moves. The client machine runs a small forwarder and holds only the entry's token:
 each hook goes to the entry's server here over HTTP, and this machine's handler records it, as it does for a
@@ -56,6 +58,7 @@ machine and stays there; this machine keeps its SHA-256.
 
 Each entry has its own port and its own server process. A server runs the installed package, so it is
 stopped with the other processes on the store for an upgrade (`package-upgrade`) and started after it.
+For a WorkBuddy client, name `--host workbuddy` in `attach`, `configure` and `serve`.
 
 ## On the client machine
 
@@ -88,6 +91,18 @@ stopped with the other processes on the store for an upgrade (`package-upgrade`)
    The plugin's `.mcp.json` carries the token too, as the header the host sends to `/mcp`; like the token file
    it stays in your profile.
 
+   WorkBuddy has no plugin: `<dir>` is its own home (`%USERPROFILE%\.workbuddy`), and `install` adds the hooks for
+   `UserPromptSubmit`, `Stop` and `SessionEnd` (15, 10 and 10 s) to `settings.json` there and the server
+   `scope-recall`, with the token header, to `.mcp.json`. Everything else in those files stays, each file it
+   changes is copied to `state_dir\backups\<time>\` first, and running it again changes nothing; a new token is
+   written into the same server. It refuses beside another Scope Recall hook (a local entry's or another client's),
+   a `scope-recall` server that names another address, or a file that is not plain JSON. WorkBuddy runs the hooks
+   through Git Bash: keep the interpreter and `client.json` on paths of printable ASCII without `"`, `$`, `` ` ``
+   or `\`. Quit WorkBuddy before `install` and start it again after; it reads hooks and servers when it starts.
+   To take the client out, quit WorkBuddy and delete the server `scope-recall` and the three hooks that run
+   `remote_client` from those files, or put back the copies from `state_dir\backups\` if nothing else changed
+   there since.
+
 ## When the server cannot be reached
 
 A hook whose connection has not opened in 3 s gives up and answers with nothing; for a minute after that no
@@ -114,7 +129,8 @@ this machine's clock, so a client clock that runs fast or slow does not hold bac
 The client connects to the server itself and never through a proxy: `HTTP_PROXY` or a system proxy on the
 client machine is for the internet and cannot reach the tailnet address. Claude Code's and Codex's own MCP
 connection to `/mcp` follows their proxy settings, so the server's address must be in the client machine's
-`NO_PROXY` (an address, not only a range: not every client reads `100.64.0.0/10`).
+`NO_PROXY` (an address, not only a range: not every client reads `100.64.0.0/10`). WorkBuddy follows these
+variables and the system's proxy, and matches `NO_PROXY` by name or address only.
 
 ## A new client machine
 

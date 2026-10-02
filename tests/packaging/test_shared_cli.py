@@ -10,18 +10,22 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import shlex
 import shutil
 import sys
 
 import pytest
 
+from scope_recall.adapters.codex import remote_client
 from scope_recall.adapters.codex.config import load_shared_client
 from scope_recall.adapters.hermes import HermesIdentityError, bind_hermes_identity
 from scope_recall.adapters.hermes.installation import read_attachment, read_shared_payload
+from scope_recall.maintenance import cli, install_workbuddy
 from scope_recall.maintenance.doctor import run_doctor
-from scope_recall.maintenance.install import apply_install, plan_install
-from scope_recall.maintenance.install_common import InstallError
+from scope_recall.maintenance.install import apply_install, apply_uninstall, plan_install, plan_uninstall
+from scope_recall.maintenance.install_common import InstallError, InstallPlan
 from scope_recall.maintenance.shared import main
+from scope_recall.runtime import instance as runtime_instance
 from scope_recall.runtime.instance import RuntimeInstanceConfig
 from scope_recall.runtime.model_budget import read_auxiliary_budget_status
 from scope_recall.runtime.worker_entry import load_config
@@ -314,6 +318,203 @@ def test_a_client_attaches_as_the_owner_installs_and_is_checked_like_an_entry(tm
     code, result = _run(capsys, "detach", "--instance-root", str(client))
     assert (code, result["status"]) == (0, "detached")
     assert not (client / "scope-recall").exists()
+
+
+def _workbuddy_home(tmp_path):
+    """A WorkBuddy home shaped like the pilot's: keys of WorkBuddy's own and another tool's prompt hook in its
+    settings, and one MCP server of WorkBuddy's.  Every value is made up."""
+    home = (tmp_path / "TEST-profile" / ".workbuddy").resolve()
+    home.mkdir(parents=True)
+    settings = {
+        "sandbox": {"enabled": True, "profile": "TEST"},
+        "hooks": {"UserPromptSubmit": [{"matcher": "", "hooks": [{"type": "command", "command": "TEST-other-tool",
+                                                                   "timeout": 5}]}]},
+        "claw": {"TEST": [1, 2]},
+        "enabledPlugins": {"TEST-plugin@TEST-market": True},
+    }
+    mcp = {"mcpServers": {"connector-proxy": {"type": "http", "url": "http://127.0.0.1:9/TEST",
+                                              "headers": {"X-TEST": "1"}}}}
+    (home / "settings.json").write_text(json.dumps(settings, indent=2), encoding="utf-8")
+    (home / ".mcp.json").write_text(json.dumps(mcp, indent=2), encoding="utf-8")
+    return home, settings, mcp
+
+
+def _read(path):
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def test_a_workbuddy_entry_installs_into_workbuddy_s_own_files_and_uninstalls_only_its_own(tmp_path, capsys, root):
+    """WorkBuddy joins a shared store as the other clients do, the owner at this machine.  Its hooks and MCP server go
+    into WorkBuddy's own settings.json and .mcp.json, beside whatever else is there; a copy of each file is kept
+    first, a second install changes nothing, an older hook of this entry is updated where it stands, and uninstall
+    takes out this entry's entries and nothing else."""
+    first, _second = _hermes_pair(tmp_path, capsys, root)
+    entry = (tmp_path / "TEST-workbuddy-entry").resolve()
+    entry.mkdir()
+    code, result = _run(capsys, "attach", "--host", "workbuddy", "--instance-root", str(entry), "--root", str(root),
+                        "--entry", "workbuddy", "--display-name", "WorkBuddy", "--grants-like", "all",
+                        "--capture-like", "tianshu",
+                        "--runtime-config-from", str(first / "scope-recall" / "runtime-config.json"))
+    assert (code, result["status"]) == (0, "attached"), result
+    assert read_attachment(entry).host == "workbuddy"
+    config = load_shared_client(entry, "workbuddy")
+    runtime = load_config(entry / "scope-recall" / "runtime-config.json")
+    assert runtime.binding == config.to_binding() and runtime.host_adapter == "workbuddy"
+    assert (runtime.session_id, runtime.owner_id) == ("workbuddy-background", "workbuddy-scope-recall")
+
+    workbuddy, settings, mcp = _workbuddy_home(tmp_path)
+    before = {name: (workbuddy / name).read_bytes() for name in ("settings.json", ".mcp.json")}
+    options = dict(host="workbuddy", target_plugin_dir=workbuddy, instance_root=entry, project_root=None,
+                   agent_id=AGENT, python_executable=Path(sys.executable))
+    plan = plan_install(**options)
+    assert plan.conflicts == [], plan.conflicts
+    changes = [(change.action, Path(change.path).name) for change in plan.changes]
+    assert ("merge", "settings.json") in changes and ("merge", ".mcp.json") in changes
+    assert changes[-1] == ("restart", ".workbuddy") and "start it again" in plan.changes[-1].detail
+    assert {path.name for path in workbuddy.iterdir()} == set(before), "a plan writes nothing"
+
+    installed = apply_install(plan)
+    assert installed.installation_id == config.installation_id
+    assert sorted(Path(path).name for path in installed.files_merged) == [".mcp.json", "settings.json"]
+    assert not any(name in Path(path).name for path in installed.files_written for name in before), \
+        "WorkBuddy's files are never the receipt's"
+    copies = {Path(path).name: Path(path).read_bytes() for path in installed.backups if Path(path).name in before}
+    assert copies == before, "each file is copied before it is changed"
+    assert {path.name for path in workbuddy.iterdir()} == set(before), "nothing else is left in WorkBuddy's home"
+
+    written = _read(workbuddy / "settings.json")
+    assert list(written) == list(settings)
+    assert {key: value for key, value in written.items() if key != "hooks"} == \
+        {key: value for key, value in settings.items() if key != "hooks"}
+    assert written["hooks"]["UserPromptSubmit"][0] == settings["hooks"]["UserPromptSubmit"][0], "another hook stays"
+    ours = {event: groups[-1]["hooks"] for event, groups in written["hooks"].items()}
+    assert {event: [(hook["type"], hook["timeout"]) for hook in hooks] for event, hooks in ours.items()} == {
+        "UserPromptSubmit": [("command", 15)], "Stop": [("command", 10)], "SessionEnd": [("command", 10)]}
+    command = ours["UserPromptSubmit"][0]["command"]
+    assert all(hooks[0]["command"] == command for hooks in ours.values())
+    assert command.startswith(f'"{Path(sys.executable).as_posix()}" -I -B -m scope_recall.adapters.codex.hook_entry ')
+    assert command.endswith(f' --home "{entry.as_posix()}" --host workbuddy')
+    assert "\\" not in command and "~" not in command, "Git Bash reads a backslash as an escape and ~ as its own home"
+    assert shlex.split(command)[0] == Path(sys.executable).as_posix()
+    servers = _read(workbuddy / ".mcp.json")["mcpServers"]
+    assert list(servers) == ["connector-proxy", "scope-recall"]
+    assert servers["connector-proxy"] == mcp["mcpServers"]["connector-proxy"]
+    assert servers["scope-recall"]["type"] == "stdio"
+    assert servers["scope-recall"]["args"][-4:] == ["--home", entry.as_posix(), "--host", "workbuddy"]
+
+    # Run again, as after an upgrade: WorkBuddy's files are not touched.
+    stamps = {name: ((workbuddy / name).read_bytes(), (workbuddy / name).stat().st_mtime_ns) for name in before}
+    plan = plan_install(**options)
+    assert {("unchanged", "settings.json"), ("unchanged", ".mcp.json")} <= {
+        (change.action, Path(change.path).name) for change in plan.changes}
+    again = apply_install(plan)
+    assert again.files_merged == [] and not any(Path(path).name in before for path in again.backups)
+    assert {name: ((workbuddy / name).read_bytes(), (workbuddy / name).stat().st_mtime_ns) for name in before} == stamps
+
+    # The entry's hook from an older interpreter, with a hook another tool added after it in the same group: updated
+    # where it stands, the other hook kept after it.
+    edited = _read(workbuddy / "settings.json")
+    old = edited["hooks"]["Stop"][0]["hooks"][0]
+    old.update(command=old["command"].replace(Path(sys.executable).as_posix(), "C:/TEST-old-venv/python.exe"),
+               timeout=3)
+    edited["hooks"]["Stop"][0]["hooks"].append({"type": "command", "command": "TEST-after"})
+    (workbuddy / "settings.json").write_text(json.dumps(edited, indent=2), encoding="utf-8")
+    assert [Path(path).name for path in apply_install(plan_install(**options)).files_merged] == ["settings.json"]
+    assert _read(workbuddy / "settings.json")["hooks"]["Stop"] == [
+        {"hooks": [{"type": "command", "command": command, "timeout": 10}, {"type": "command", "command": "TEST-after"}]}]
+
+    report = run_doctor(host="workbuddy", instance_root=entry, python_executable=Path(sys.executable))
+    assert report.binding_ok and report.database_present
+    assert report.shared_store == {"root": str(root), "entry_id": "workbuddy", "entry_name": "WorkBuddy"}
+
+    removal = plan_uninstall(instance_root=entry)
+    assert removal.conflicts == [] and removal.files_to_remove == []
+    assert sorted(Path(path).name for path in removal.unmerged_files) == [".mcp.json", "settings.json"]
+    held = {name: (workbuddy / name).read_bytes() for name in before}
+    removed = apply_uninstall(removal)
+    assert sorted(Path(path).name for path in removed.unmerged_files) == [".mcp.json", "settings.json"]
+    assert {Path(path).name: Path(path).read_bytes() for path in removed.backups} == held
+    assert _read(workbuddy / "settings.json") == {**settings, "hooks": {
+        "UserPromptSubmit": settings["hooks"]["UserPromptSubmit"],
+        "Stop": [{"hooks": [{"type": "command", "command": "TEST-after"}]}]}}
+    assert _read(workbuddy / ".mcp.json") == mcp
+    assert plan_uninstall(instance_root=entry).unmerged_files == [], "nothing of this entry's is left"
+
+    code, result = _run(capsys, "detach", "--instance-root", str(entry))
+    assert (code, result["status"]) == (0, "detached")
+
+
+def test_a_workbuddy_install_refuses_what_it_cannot_merge_and_writes_nothing(tmp_path, capsys, monkeypatch):
+    entry = (tmp_path / "TEST-workbuddy-entry").resolve()
+    entry.mkdir()
+    workbuddy, settings, mcp = _workbuddy_home(tmp_path)
+    options = dict(host="workbuddy", target_plugin_dir=workbuddy, instance_root=entry, project_root=None,
+                   agent_id=AGENT, python_executable=Path(sys.executable))
+    plan = plan_install(**options)
+    assert any("not attached to a shared store" in conflict for conflict in plan.conflicts), plan.conflicts
+    with pytest.raises(InstallError):
+        apply_install(plan)
+
+    def conflicts(settings_value=None, mcp_value=None, *, settings_text=None):
+        (workbuddy / "settings.json").write_text(settings_text if settings_text is not None else
+                                                 json.dumps(settings_value or settings), encoding="utf-8")
+        (workbuddy / ".mcp.json").write_text(json.dumps(mcp_value or mcp), encoding="utf-8")
+        before = {path.name: path.read_bytes() for path in workbuddy.iterdir()}
+        found = plan_install(**options).conflicts
+        assert {path.name: path.read_bytes() for path in workbuddy.iterdir()} == before
+        return found
+
+    # WorkBuddy would run both, and each would record the turn.
+    another = '"C:/TEST/python.exe" -I -B -m scope_recall.adapters.codex.hook_entry --home "C:/TEST-other" --host workbuddy'
+    remote = '"C:/TEST/python.exe" -I -B -m scope_recall.adapters.codex.remote_client --config "C:/TEST/client.json"'
+    for command in (another, remote):
+        value = json.loads(json.dumps(settings))
+        value["hooks"]["Stop"] = [{"hooks": [{"type": "command", "command": command, "timeout": 10}]}]
+        assert any("already runs another Scope Recall hook for Stop" in found for found in conflicts(value)), command
+    taken = {"mcpServers": {**mcp["mcpServers"], "scope-recall": {"type": "http", "url": "http://127.0.0.1:9/mcp"}}}
+    assert any("already has an MCP server named scope-recall" in found for found in conflicts(mcp_value=taken))
+    commented = "// WorkBuddy reads comments\n" + json.dumps(settings)
+    assert any("is not plain JSON" in found for found in conflicts(settings_text=commented))
+    missing = dict(options, target_plugin_dir=tmp_path / "TEST-nowhere" / ".workbuddy")
+    assert any("does not exist" in found for found in plan_install(**missing).conflicts)
+    assert not (tmp_path / "TEST-nowhere").exists()
+
+    # The command line finds WorkBuddy's home as WorkBuddy does; the other hosts still name their plugin directory.
+    monkeypatch.setenv("WORKBUDDY_CONFIG_DIR", str(workbuddy))
+    argv = ["--instance-root", str(entry), "--agent-id", AGENT, "--python", sys.executable]
+    assert cli.main(["plan-install", "--host", "workbuddy", *argv]) == 1
+    printed = json.loads(capsys.readouterr().out)
+    assert (printed["host"], printed["target_plugin_dir"]) == ("workbuddy", str(workbuddy))
+    with pytest.raises(SystemExit):
+        cli.main(["plan-install", "--host", "claude-code", *argv])
+
+
+def test_a_workbuddy_hook_command_is_quoted_with_forward_slashes_and_its_wait_covers_start_and_work(tmp_path):
+    """WorkBuddy runs a hook through Git Bash on Windows, and blocks a prompt whose hook runs past its wait."""
+    python = Path("C:/TEST venv/Scripts/python.exe")
+    plan = InstallPlan(host="workbuddy", target_plugin_dir=tmp_path, instance_root=Path("D:/TEST homes/workbuddy"),
+                       project_root=None, agent_id=AGENT, python_executable=python,
+                       env_file=Path("D:/TEST homes/embedding.env"))
+    command = install_workbuddy.hook_command(plan)
+    assert command.startswith('"C:/TEST venv/Scripts/python.exe" ')
+    assert "\\" not in command and "~" not in command
+    assert shlex.split(command) == ["C:/TEST venv/Scripts/python.exe", "-I", "-B", "-m",
+                                    "scope_recall.adapters.codex.hook_entry", "--home", "D:/TEST homes/workbuddy",
+                                    "--host", "workbuddy", "--env-file", "D:/TEST homes/embedding.env"]
+    for unsafe in ("C:/TEST$HOME/python.exe", "C:/TEST`id`/python.exe", 'C:/TEST"/python.exe', "C:/TEST/" + chr(0x5929)):
+        with pytest.raises(InstallError, match="Git Bash"):
+            install_workbuddy.quoted(Path(unsafe), "interpreter")
+    tilde = plan_install(host="workbuddy", target_plugin_dir=tmp_path, instance_root="~/TEST-workbuddy-entry",
+                         project_root=None, agent_id=AGENT, python_executable=Path(sys.executable))
+    assert "~" not in install_workbuddy.hook_command(tilde), "a home given with ~ is written out"
+
+    # WorkBuddy's timeout is in seconds; each wait covers the interpreter's start and the most the hook may work.
+    most = runtime_instance._SECONDS_BOUNDS["hook_processing_seconds"][1]
+    assert install_workbuddy.HOOK_WORK_SECONDS >= most
+    assert sorted(install_workbuddy.HOOK_TIMEOUTS) == ["SessionEnd", "Stop", "UserPromptSubmit"]
+    for event, seconds in install_workbuddy.HOOK_TIMEOUTS.items():
+        assert seconds >= install_workbuddy.HOOK_WORK_SECONDS + install_workbuddy.START_SECONDS, event
+    assert remote_client.HOOK_TIMEOUTS["workbuddy"] == install_workbuddy.HOOK_TIMEOUTS
 
 
 def test_a_client_writes_only_where_every_owner_row_reads(tmp_path, capsys, root):

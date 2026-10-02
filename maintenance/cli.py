@@ -208,8 +208,11 @@ def _rollback(args: argparse.Namespace) -> int:
 
 
 def _add_install_arguments(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--host", required=True, choices=("hermes", "codex", "claude-code"))
-    parser.add_argument("--target-plugin-dir", required=True)
+    parser.add_argument("--host", required=True, choices=("hermes", "codex", "claude-code", "workbuddy"))
+    parser.add_argument("--target-plugin-dir", default=None,
+                        help="the plugin directory the installer writes; for workbuddy, WorkBuddy's own home, whose "
+                        "settings.json and .mcp.json it merges its entries into (default: WORKBUDDY_CONFIG_DIR, else "
+                        "~/.workbuddy)")
     parser.add_argument("--instance-root", required=True)
     parser.add_argument("--project-root", default=None,
                         help="the workspace a Codex installation of its own maps; a client attached to a shared "
@@ -224,8 +227,8 @@ def _add_install_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--env-file",
         default=None,
-        help="Codex and Claude Code: absolute file with the credential names the runtime config declares; "
-        "written into .mcp.json and hooks.json because the client starts those processes without them.",
+        help="Every host but Hermes: absolute file with the credential names the runtime config declares; written "
+        "into the MCP server's and the hooks' commands because the client starts those processes without them.",
     )
     parser.add_argument(
         "--local-platform",
@@ -254,9 +257,19 @@ def _add_install_arguments(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _install_target(args: argparse.Namespace) -> Path:
+    if args.target_plugin_dir:
+        return _path(args.target_plugin_dir, "target_plugin_dir")
+    if args.host == "workbuddy":
+        from .install_workbuddy import default_home
+
+        return default_home()
+    raise SystemExit(f"--target-plugin-dir is required for --host {args.host}")
+
+
 def _install_plan(args: argparse.Namespace):
     return plan_install(
-        target_plugin_dir=_path(args.target_plugin_dir, "target_plugin_dir"),
+        target_plugin_dir=_install_target(args),
         instance_root=_path(args.instance_root, "instance_root"),
         project_root=_optional_path(args.project_root, "project_root"),
         agent_id=args.agent_id,
@@ -282,7 +295,7 @@ def _apply_install(args: argparse.Namespace) -> int:
 
 
 def _add_doctor_arguments(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--host", required=True, choices=("hermes", "codex", "claude-code"))
+    parser.add_argument("--host", required=True, choices=("hermes", "codex", "claude-code", "workbuddy"))
     parser.add_argument("--instance-root", required=True)
     parser.add_argument("--python")
 

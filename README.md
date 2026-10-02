@@ -1,6 +1,7 @@
 # Scope Recall 3.4 autonomous memory
 
 Scope Recall v3 is a bounded local memory core with SQLite as the authority and rebuildable vector companions. It provides host adapters for Hermes, Codex and Claude Code (the last two share one adapter of hooks and an MCP server), with the MCP tools when the optional `codex` extra is installed. The public package is `hermes-scope-recall`; the Python import is `scope_recall`; the host wrapper identity remains `scope-recall`.
+WorkBuddy runs that same hook adapter and MCP server, as an entry of a shared store.
 
 This checkout is `3.4.10`, in which Claude Code and Codex on another machine can join the shared store too ([docs/remote-entries.md](docs/remote-entries.md)). Hermes, Codex and Claude Code can keep one memory: each attaches to a shared
 store as an entry, what the owner tells one of them another can recall, and each memory says
@@ -43,7 +44,9 @@ checks yourself; do not ask the user to execute commands or govern old memories.
 
 Step-by-step Hermes and Codex instructions: [docs/install.md](docs/install.md). Claude Code
 installs only as an entry of a shared store, and Codex can join one too:
-[docs/shared-store.md](docs/shared-store.md).
+[docs/shared-store.md](docs/shared-store.md). WorkBuddy runs the same hooks and MCP server, also
+only as an entry; its installer adds them to WorkBuddy's own `settings.json` and `.mcp.json`
+([docs/install.md](docs/install.md), section 12).
 
 The package is `hermes-scope-recall` on PyPI. Install it into the same isolated Python
 environment the host uses:
@@ -122,6 +125,7 @@ entry, every memory is marked with the agent it came in through, and a deletion 
 any of them applies to all. Moving the memory to another machine is copying one directory.
 Hermes homes attach as entries, and from 3.3.0 so do Codex and Claude Code
 (`attach --host codex|claude-code`). See [docs/shared-store.md](docs/shared-store.md).
+WorkBuddy attaches the same way (`attach --host workbuddy`).
 
 ## Agent-operated migration
 

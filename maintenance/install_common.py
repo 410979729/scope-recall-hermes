@@ -1,8 +1,9 @@
 """Types and primitives shared by the install module family.
 
 ``install.py`` is the plan/apply entry.  ``install_codex.py``,
-``install_claude_code.py`` and ``install_hermes.py`` each render one host's
-wrapper files and bind its instance behind the same function names, so the
+``install_claude_code.py``, ``install_hermes.py`` and ``install_workbuddy.py``
+each render one host's wrapper files (WorkBuddy's: entries merged into its own
+settings) and bind its instance behind the same function names, so the
 entry picks a host module instead of branching on the host.  ``install_receipt.py`` signs and verifies
 the receipt; ``install_purge.py`` inventories what an explicit purge may
 delete.
@@ -32,7 +33,7 @@ SKILLS: dict[str, Path] = {
     "scope-recall-memory": Path(__file__).with_name("skills") / "scope-recall-memory" / "SKILL.md",
 }
 PACKAGE_VERSION = __version__
-HostChoice = Literal["hermes", "codex", "claude-code"]
+HostChoice = Literal["hermes", "codex", "claude-code", "workbuddy"]
 RECEIPT_FILENAME = ".scope-recall-install-receipt.json"
 BACKUP_DIRNAME = ".scope-recall-backups"
 #: What a store's runtime-config.json may weigh, for the shared commands that write it and the doctor that
@@ -114,6 +115,8 @@ class InstallResult:
     receipt_path: str
     installation_id: str
     backups: list[str] = field(default_factory=list)
+    #: The host's own files this install merged its entries into (WorkBuddy's settings); never in the receipt.
+    files_merged: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -124,6 +127,7 @@ class InstallResult:
             "receipt_path": self.receipt_path,
             "installation_id": self.installation_id,
             "backups": list(self.backups),
+            "files_merged": list(self.files_merged),
         }
 
 
@@ -139,6 +143,8 @@ class UninstallPlan:
     purge_paths: list[str] = field(default_factory=list)
     retained_backups: list[str] = field(default_factory=list)
     conflicts: list[str] = field(default_factory=list)
+    #: The host's own files this entry's entries are taken out of, everything else in them kept (WorkBuddy's).
+    unmerged_files: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -152,6 +158,7 @@ class UninstallPlan:
             "purge_paths": list(self.purge_paths),
             "retained_backups": list(self.retained_backups),
             "conflicts": list(self.conflicts),
+            "unmerged_files": list(self.unmerged_files),
         }
 
 
@@ -163,6 +170,9 @@ class UninstallResult:
     edited_files: list[str] = field(default_factory=list)
     purged_paths: list[str] = field(default_factory=list)
     retained_backups: list[str] = field(default_factory=list)
+    unmerged_files: list[str] = field(default_factory=list)
+    #: Copies of the host's own files, taken before this entry's entries came out of them.
+    backups: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -172,6 +182,8 @@ class UninstallResult:
             "edited_files": list(self.edited_files),
             "purged_paths": list(self.purged_paths),
             "retained_backups": list(self.retained_backups),
+            "unmerged_files": list(self.unmerged_files),
+            "backups": list(self.backups),
         }
 
 
@@ -291,7 +303,9 @@ def _validate_host(host: str) -> HostChoice:
         return "codex"
     if host == "claude-code":
         return "claude-code"
-    raise InstallError("host must be 'hermes', 'codex' or 'claude-code'")
+    if host == "workbuddy":
+        return "workbuddy"
+    raise InstallError("host must be 'hermes', 'codex', 'claude-code' or 'workbuddy'")
 
 
 def _manifest_version(version: str = PACKAGE_VERSION) -> str:

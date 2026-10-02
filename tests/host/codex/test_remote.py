@@ -316,11 +316,17 @@ def test_a_remote_client_waits_as_long_as_a_local_one():
     assert codex == {event: install_codex.HOOK_TIMEOUTS[event] for event in codex}
     assert codex["UserPromptSubmit"] == install_claude_code.HOOK_TIMEOUTS["UserPromptSubmit"]
     assert max(install_codex.HOOK_TIMEOUTS["SessionEnd"], install_codex.HOOK_TIMEOUTS["Interrupt"]) <= 3
+    assert remote_client.HOOK_TIMEOUTS["workbuddy"] == remote_client.HOOK_TIMEOUTS["claude-code"]
 
 
 @pytest.mark.parametrize("host", remote_client.HOSTS)
 def test_the_plugin_sends_hooks_and_tools_to_the_server(tmp_path, host):
     config = _client(tmp_path, host, 18765)
+    if host == "workbuddy":
+        # WorkBuddy has no plugin: install merges into its own settings (the next test), and never writes a Codex one.
+        with pytest.raises(remote_client.RemoteClientError, match="no plugin"):
+            remote_client.plugin_files(config, tmp_path / "TEST-plugin" / "scope-recall")
+        return
     files = remote_client.plugin_files(config, tmp_path / "TEST-plugin" / "scope-recall")
     by_name = {path.relative_to(tmp_path / "TEST-plugin" / "scope-recall").as_posix(): text for path, text in files.items()}
     mcp = json.loads(by_name[".mcp.json"])["mcpServers"]["scope-recall"]
@@ -332,6 +338,59 @@ def test_the_plugin_sends_hooks_and_tools_to_the_server(tmp_path, host):
     command = hooks["Stop"][0]["hooks"][0]["command"]
     assert "scope_recall.adapters.codex.remote_client" in command and "--config" in command
     assert "skills/scope-recall-memory/SKILL.md" in by_name
+
+
+def test_a_workbuddy_client_merges_its_hooks_and_server_into_workbuddy_s_own_files(tmp_path, capsys):
+    """WorkBuddy reads hooks and MCP servers from its own home, beside its own keys and another tool's hook: install
+    adds this client's there, keeps a copy of each file it changes, changes nothing when run again, takes a new token
+    where the server stands, and refuses to run beside another Scope Recall hook."""
+    import shlex
+
+    config = _client(tmp_path, "workbuddy", 18767)
+    home = tmp_path / "TEST-profile" / ".workbuddy"
+    home.mkdir(parents=True)
+    settings = {"sandbox": {"enabled": True}, "enabledPlugins": {"TEST@TEST": True},
+                "hooks": {"Stop": [{"matcher": "", "hooks": [{"type": "command", "command": "TEST-other-tool"}]}]}}
+    mcp = {"mcpServers": {"connector-proxy": {"type": "http", "url": "http://127.0.0.1:9/TEST"}}}
+    (home / "settings.json").write_text(json.dumps(settings), encoding="utf-8")
+    (home / ".mcp.json").write_text(json.dumps(mcp), encoding="utf-8")
+    before = {name: (home / name).read_bytes() for name in ("settings.json", ".mcp.json")}
+
+    assert remote_client.main(["install", "--config", str(config["config"]), "--plugin-dir", str(home)]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert sorted(Path(path).name for path in result["written"]) == [".mcp.json", "settings.json"]
+    assert {Path(path).name: Path(path).read_bytes() for path in result["backups"]} == before
+    assert all(Path(path).is_relative_to(config["state_dir"] / "backups") for path in result["backups"])
+    written = json.loads((home / "settings.json").read_text(encoding="utf-8"))
+    assert {key: value for key, value in written.items() if key != "hooks"} == \
+        {key: value for key, value in settings.items() if key != "hooks"}
+    assert written["hooks"]["Stop"][0] == settings["hooks"]["Stop"][0], "another tool's hook stays first"
+    command = written["hooks"]["Stop"][-1]["hooks"][0]["command"]
+    assert shlex.split(command) == remote_client._hook_argv(config)
+    assert command.startswith('"') and "\\" not in command, "Git Bash runs it: quoted, forward slashes"
+    assert {event: groups[-1]["hooks"][0]["timeout"] for event, groups in written["hooks"].items()} == \
+        remote_client.HOOK_TIMEOUTS["workbuddy"]
+    servers = json.loads((home / ".mcp.json").read_text(encoding="utf-8"))["mcpServers"]
+    assert list(servers) == ["connector-proxy", "scope-recall"]
+    assert servers["scope-recall"] == {"type": "http", "url": "http://127.0.0.1:18767/mcp",
+                                       "headers": {"Authorization": f"Bearer {TOKEN}-workbuddy"}}
+
+    assert remote_client.install(config, home) == {"written": [], "backups": []}, "run again, nothing changes"
+    config["token_file"].write_text("TEST-token-of-a-new-machine", encoding="utf-8")
+    assert [Path(path).name for path in remote_client.install(config, home)["written"]] == [".mcp.json"]
+    servers = json.loads((home / ".mcp.json").read_text(encoding="utf-8"))["mcpServers"]
+    assert list(servers) == ["connector-proxy", "scope-recall"]
+    assert servers["scope-recall"]["headers"] == {"Authorization": "Bearer TEST-token-of-a-new-machine"}
+
+    local = '"C:/TEST/python.exe" -I -B -m scope_recall.adapters.codex.hook_entry --home "C:/TEST-entry" --host workbuddy'
+    written["hooks"]["UserPromptSubmit"] = [{"hooks": [{"type": "command", "command": local}]}]
+    (home / "settings.json").write_text(json.dumps(written), encoding="utf-8")
+    held = (home / "settings.json").read_bytes()
+    with pytest.raises(remote_client.RemoteClientError, match="another Scope Recall hook"):
+        remote_client.install(config, home)
+    assert (home / "settings.json").read_bytes() == held
+    with pytest.raises(remote_client.RemoteClientError, match="does not exist"):
+        remote_client.install(config, tmp_path / "TEST-nowhere")
 
 
 def test_the_hook_answers_in_ascii_whatever_the_code_page(tmp_path, monkeypatch, capsys):
@@ -346,6 +405,18 @@ def test_the_hook_answers_in_ascii_whatever_the_code_page(tmp_path, monkeypatch,
     assert remote_client.main(["--config", str(config["config"])]) == 0
     out = capsys.readouterr().out
     assert out.isascii() and json.loads(out) == recalled
+
+
+def test_a_workbuddy_client_with_nothing_to_add_writes_nothing(tmp_path, monkeypatch, capsys):
+    """WorkBuddy puts a prompt hook's whole stdout in front of the prompt unless it carries additionalContext."""
+    import io
+
+    monkeypatch.setattr(remote_client, "run_hook", lambda *args, **kwargs: {})
+    for host, expected in (("workbuddy", ""), ("claude-code", "{}\n")):
+        config = _client(tmp_path, host, _free_port())
+        monkeypatch.setattr(remote_client.sys, "stdin", type("Stdin", (), {"buffer": io.BytesIO(b"{}")})())
+        assert remote_client.main(["--config", str(config["config"])]) == 0
+        assert capsys.readouterr().out == expected, host
 
 
 def test_the_server_opens_no_path_a_request_names(served, tmp_path):
@@ -906,3 +977,53 @@ def test_a_kept_recall_that_raised_is_named_and_the_request_recalls_itself(store
         answer = remote_server.handle_request(config, body, recaller=kept)
     assert answer["warm"] == "failed:RuntimeError"
     assert any("kept recall failed" in record.getMessage() and record.exc_info for record in caplog.records)
+
+
+def test_a_workbuddy_client_s_turn_and_record_reach_its_entry_once(store, tmp_path, monkeypatch):
+    """A WorkBuddy on another machine is forwarded as the claude-code host is: its Stop sends what its own session
+    record shows (read with WorkBuddy's reader, the record found by its session when the hook names it wrongly), and
+    the server stores each message once.  A Stop that only repeats the last reply sends nothing new."""
+    root, _homes = store
+    owner = next(row for row in read_shared_payload(root)["entries"][0]["audiences"] if row["kind"] == "owner_private")
+    home = tmp_path / "TEST-workpc-workbuddy-home"
+    attach_shared_record(root, client_entry_record(
+        host="workbuddy", home=home, entry_id="workpc-workbuddy", display_name="TEST WorkBuddy", attached_at=NOW,
+        allowed_scope_ids=owner["allowed_scope_ids"], writable_scope_ids=owner["writable_scope_ids"],
+        capture_scope_id=owner["capture_scope_id"]), now=NOW)
+    server = remote_server.RemoteServerConfig(home=home, host="workbuddy", listen="127.0.0.1", port=1,
+                                              token_sha256="0" * 64)
+    client = _client(tmp_path, "workbuddy", _free_port())
+    sent = []
+
+    def post(config, body, timeout):
+        sent.append(body)
+        return remote_server.handle_request(server, json.loads(json.dumps(body)))
+
+    monkeypatch.setattr(remote_client, "_post", post)
+    projects = tmp_path / "TEST-workpc-projects"
+    monkeypatch.setattr(transcript, "workbuddy_projects", lambda: projects)
+    start = int((datetime.now(timezone.utc) - timedelta(seconds=30)).timestamp() * 1000)
+    record = projects / "c--work" / "TEST-wb-session.jsonl"
+    record.parent.mkdir(parents=True)
+    lines = [
+        {"type": "message", "role": "user", "id": "u1", "timestamp": start,
+         "content": [{"type": "input_text", "text": "<user_query>TEST 看一下\nQX-17。</user_query>"}]},
+        {"type": "message", "role": "assistant", "id": "a1", "timestamp": start + 1000,
+         "content": [{"type": "output_text", "text": "TEST 我先查记录。"}]},
+        {"type": "function_call", "id": "f1", "timestamp": start + 2000, "name": "TEST-ls", "arguments": "{}"},
+        {"type": "message", "role": "assistant", "id": "a2", "timestamp": start + 3000,
+         "content": [{"type": "output_text", "text": "TEST QX-17 已完成。"}]},
+    ]
+    record.write_text("".join(json.dumps(line, ensure_ascii=False) + "\n" for line in lines), encoding="utf-8")
+    base = {"session_id": "TEST-wb-session", "cwd": "C:/work"}
+    _hook(client, {**base, "hook_event_name": "UserPromptSubmit", "prompt": "TEST 看一下QX-17。"})
+    stop = {**base, "hook_event_name": "Stop", "transcript_path": str(record)[:-1],
+            "last_assistant_message": "TEST QX-17 已完成。"}
+    _hook(client, stop)
+    _hook(client, stop)
+    assert "record" not in sent[0] and sent[1]["record"]["start"] == 0 and "record" not in sent[2]
+    said = sorted((role, content) for role, _origin, content, _at in _rows(root, "workpc-workbuddy"))
+    assert said == sorted([("user", "TEST 看一下QX-17。"), ("assistant", "TEST 我先查记录。"),
+                           ("assistant", "TEST QX-17 已完成。")])
+    cursor = transcript.Cursor(client["state_dir"], "TEST-wb-session", record)
+    assert cursor.load() == record.stat().st_size, "the cursor moves as far as the server stored"

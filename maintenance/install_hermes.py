@@ -61,6 +61,11 @@ def home_plugin_dir(instance_root: Path) -> Path:
     return instance_root / "plugins" / "scope-recall"
 
 
+def host_config_files(target_plugin_dir: Path) -> tuple[Path, ...]:
+    """The wrapper is the installer's own; Hermes's config.yaml is the operator's to change."""
+    return ()
+
+
 def validate_options(agent_workspace: str | None, env_file: Path | str | None) -> tuple[str, Path | None]:
     """Hermes processes inherit the gateway environment and must not carry a
     second credential path; the audience workspace defaults to the host value."""

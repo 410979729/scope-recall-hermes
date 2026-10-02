@@ -56,7 +56,7 @@ def main(argv: list[str] | None = None) -> int:
     where = parser.add_mutually_exclusive_group(required=True)
     where.add_argument("--config", help="absolute trusted installation config")
     where.add_argument("--home", help="absolute home of a client attached to a shared store")
-    parser.add_argument("--host", choices=("codex", "claude-code"), default="codex",
+    parser.add_argument("--host", choices=("codex", "claude-code", "workbuddy"), default="codex",
                         help="the client that starts this server, for --home")
     parser.add_argument("--workspace", default=None, help="absolute mapped Codex project workspace, for --config")
     parser.add_argument("--runtime-config", default=None, help="absolute trusted local runtime worker config")

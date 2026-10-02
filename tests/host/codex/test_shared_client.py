@@ -2433,3 +2433,284 @@ def test_the_mcp_server_warms_its_kept_handler_when_it_starts(store, monkeypatch
         assert endpoint.kept._warming is not None and endpoint.kept._warming.wait(30)
     finally:
         endpoint.stop()
+
+
+# -- WorkBuddy -----------------------------------------------------------------
+# WorkBuddy's hooks speak this protocol with three differences: they name no turn their prompt and Stop share, the
+# person's words can come wrapped in WorkBuddy's own blocks, and its session record has a layout of its own.
+
+WB_SESSION = "TEST-wb-session"
+
+
+@pytest.fixture
+def workbuddy(store, tmp_path, monkeypatch):
+    """A WorkBuddy entry beside the store's others, its session records in a projects folder of the test's own."""
+    from scope_recall.adapters.codex import transcript
+
+    root, _homes, _client, _capture = store
+    owner = next(row for row in read_shared_payload(root)["entries"][0]["audiences"] if row["kind"] == "owner_private")
+    home = tmp_path / "TEST-workbuddy-home"
+    attach_shared_record(root, client_entry_record(
+        host="workbuddy", home=home, entry_id="workbuddy", display_name="WorkBuddy", attached_at=NOW,
+        allowed_scope_ids=owner["allowed_scope_ids"], writable_scope_ids=owner["writable_scope_ids"],
+        capture_scope_id=owner["capture_scope_id"]), now=NOW)
+    projects = tmp_path / "TEST-workbuddy-projects"
+    monkeypatch.setattr(transcript, "workbuddy_projects", lambda: projects)
+    return root, home, projects
+
+
+def _wb(home, payload):
+    """One WorkBuddy hook, in a handler of its own as each hook is a process of its own; its answer and diagnostics."""
+    hook = CodexHookHandler.from_home(str(home), "workbuddy")
+    try:
+        result = hook.handle_payload({"session_id": WB_SESSION, "cwd": "C:/TEST/work", **payload})
+    finally:
+        hook.close()
+    return result, hook.diagnostics
+
+
+def _wb_prompt(text, **fields):
+    return {"hook_event_name": "UserPromptSubmit", "prompt": text,
+            "transcript_path": "C:/TEST/projects/c--TEST-work/TEST-wb-session.jsonl", **fields}
+
+
+def _wb_stop(record=None, last=None, **fields):
+    payload = {"hook_event_name": "Stop", "stop_hook_active": False, **fields}
+    if record is not None:
+        payload["transcript_path"] = str(record)
+    if last is not None:
+        payload["last_assistant_message"] = last
+    return payload
+
+
+def _wb_ms():
+    start = int((datetime.now(timezone.utc) - timedelta(seconds=30)).timestamp() * 1000)
+    return lambda seconds: start + seconds * 1000
+
+
+def _wb_line(role, entry_id, stamp, text, **fields):
+    kind = "input_text" if role == "user" else "output_text"
+    return {"type": "message", "role": role, "content": [{"type": kind, "text": text}], "id": entry_id,
+            "parentId": None, "sessionId": WB_SESSION, "timestamp": stamp, "status": "completed", **fields}
+
+
+def _wb_record(projects, *rows):
+    return _record(projects / "c--TEST-work" / f"{WB_SESSION}.jsonl", *rows)
+
+
+def _wb_said(root, role=None):
+    where = f" AND role='{role}'" if role else ""
+    return sorted(_rows(root, f"SELECT role, origin, content FROM source_events WHERE entry_id='workbuddy'{where}"))
+
+
+def _wb_turns(root, kind):
+    """The turns of the WorkBuddy session's ``kind`` (user, assistant) sources, in the order they were stored."""
+    prefix = f"workbuddy:{read_shared_payload(root)['installation_id']}:{WB_SESSION}:{kind}:"
+    keys = _rows(root, "SELECT source_event_key FROM source_events WHERE entry_id='workbuddy' ORDER BY rowid")
+    return [key[len(prefix):-len("@1")] for (key,) in keys if key.startswith(prefix)]
+
+
+def test_workbuddy_stores_the_person_s_last_query_and_recalls_for_it(workbuddy, store):
+    """WorkBuddy hands its prompt hook every user message of the input, joined.  The person's words are the last
+    ``<user_query>`` block; the reminders around it are WorkBuddy's, never stored and never searched for."""
+    root, home, _projects = workbuddy
+    _root, homes, _client, _capture = store
+    told = _hermes(homes["tianquan"])
+    try:
+        told.on_turn_start(1, "TEST 白鹭项目的负责人是 KZ-42。", turn_id="TEST-turn-1", session_id="TEST-session-1")
+        told.observe_pre_llm(session_id="TEST-session-1", turn_id="TEST-turn-1", user_message="TEST 白鹭项目的负责人是 KZ-42。")
+        told.sync_turn("TEST 白鹭项目的负责人是 KZ-42。", "好的。", session_id="TEST-session-1")
+    finally:
+        told.shutdown()
+    prompt = ("<system-reminder>TEST 当前目录是 C:/TEST/work。</system-reminder>\n"
+              "<user_query>TEST 上一条已经答过的问题。</user_query>\n"
+              "<system-reminder data-role=\"tool-hint\">TEST 工具提示。</system-reminder>\n"
+              "<user_query>白鹭项目的负责人 KZ-42 是谁</user_query>")
+    result, diagnostics = _wb(home, _wb_prompt(prompt))
+    assert diagnostics.last_reason != "recall_exception", diagnostics.recall_error_detail
+    assert _wb_said(root) == [("user", "human_direct", "白鹭项目的负责人 KZ-42 是谁")]
+    guidance, _newline, body = result["hookSpecificOutput"]["additionalContext"].partition("\n")
+    assert "You are WorkBuddy (workbuddy)" in guidance
+    assert any("KZ-42" in item["content"] for item in json.loads(body)["items"])
+
+
+def test_a_workbuddy_turn_without_an_id_is_opened_by_its_prompt_and_closed_by_its_stop(workbuddy):
+    """A prompt with no ``generation_id`` (a session's first) opens a turn of its own, kept for the Stop that closes it;
+    each hook is a process of its own.  The session's end removes what was kept."""
+    root, home, _projects = workbuddy
+    _wb(home, _wb_prompt("TEST 第一个问题。"))
+    _wb(home, _wb_stop(last="TEST 第一个回答。"))
+    _wb(home, _wb_prompt("TEST 第二个问题。"))
+    _wb(home, _wb_stop(last="TEST 第二个回答。"))
+    users = _wb_turns(root, "user")
+    assert len(set(users)) == 2 and all(turn.startswith("turn-") for turn in users), users
+    assert _wb_turns(root, "assistant") == users, "each Stop closes the turn its prompt opened"
+    assert list((home / "scope-recall" / "turns").iterdir())
+    _wb(home, {"hook_event_name": "SessionEnd", "reason": "clear"})
+    assert not list((home / "scope-recall" / "turns").iterdir())
+
+
+def test_a_workbuddy_generation_id_names_the_turn_its_prompt_opens(workbuddy):
+    """``generation_id`` is the session's latest model request: a prompt carries the previous turn's last one and its
+    Stop this turn's, so the Stop closes the turn its prompt opened.  A prompt whose id already names a kept turn (one
+    stopped before its first request) opens a turn of its own, and both prompts are stored."""
+    root, home, _projects = workbuddy
+    _wb(home, _wb_prompt("TEST 第一问。"))
+    _wb(home, _wb_stop(last="TEST 第一答。", generation_id="TEST-request-1"))
+    _wb(home, _wb_prompt("TEST 第二问。", generation_id="TEST-request-1"))
+    _wb(home, _wb_stop(last="TEST 第二答。", generation_id="TEST-request-3"))
+    _wb(home, _wb_prompt("TEST 第三问，没等回答就停了。", generation_id="TEST-request-3"))
+    _wb(home, _wb_prompt("TEST 第四问。", generation_id="TEST-request-3"))
+    users = _wb_turns(root, "user")
+    assert users[1:3] == ["TEST-request-1", "TEST-request-3"], users
+    assert users[0].startswith("turn-") and users[3].startswith("turn-") and users[3] != users[0]
+    assert _wb_turns(root, "assistant") == [users[0], "TEST-request-1"]
+    assert len(_wb_said(root, "user")) == 4
+
+
+def test_a_workbuddy_record_its_hook_names_wrongly_is_found_by_the_session(workbuddy):
+    """WorkBuddy's ``transcript_path`` has been reported wrong: ``.json`` for ``.jsonl``, or cut two characters short.
+    The record is then found by the session's id in WorkBuddy's projects folders."""
+    root, home, projects = workbuddy
+    at = _wb_ms()
+    record = _wb_record(projects, _wb_line("user", "u1", at(0), "<user_query>TEST 只在记录里的问题。</user_query>"),
+                        _wb_line("assistant", "a1", at(1), "TEST 只在记录里的回答。"))
+    _result, diagnostics = _wb(home, _wb_stop(str(record)[:-1]))
+    assert "capture_gap:session_record_unavailable" not in diagnostics.capability_gaps
+    _record(record, _wb_line("assistant", "a2", at(2), "TEST 后来的一段。"))
+    _wb(home, _wb_stop(str(record)[:-2]))
+    assert _wb_said(root) == sorted([("user", "human_direct", "TEST 只在记录里的问题。"),
+                                     ("assistant", "assistant_visible", "TEST 只在记录里的回答。"),
+                                     ("assistant", "assistant_visible", "TEST 后来的一段。")])
+    _result, diagnostics = _wb(home, _wb_stop(str(record)[:-1], session_id="TEST-other-session"))
+    assert "capture_gap:session_record_unavailable" in diagnostics.capability_gaps, "another session's is not read"
+
+
+def test_a_workbuddy_stop_records_what_was_said_between_tool_calls(workbuddy):
+    """The Stop hook carries the last reply only; the record has every message.  The person's message there keeps the
+    line breaks WorkBuddy takes out of the prompt it hands the hook, and is known by its turn, not stored twice.
+    Reasoning, tool calls and results, titles, snapshots and WorkBuddy's own notices are not anyone's words."""
+    root, home, projects = workbuddy
+    at = _wb_ms()
+    record = _wb_record(
+        projects,
+        _wb_line("user", "u1", at(0), "<system-reminder>TEST 提醒。</system-reminder>\n"
+                                      "<user_query>TEST 第一行\nTEST 第二行</user_query>"),
+        {"type": "reasoning", "id": "r1", "timestamp": at(1), "summary": [{"type": "summary_text", "text": "TEST 想法"}]},
+        _wb_line("assistant", "a1", at(2), "TEST 我先看一下目录。"),
+        {"type": "function_call", "id": "f1", "callId": "c1", "name": "TEST-ls", "arguments": "{}", "timestamp": at(3)},
+        {"type": "function_call_result", "id": "f2", "callId": "c1", "timestamp": at(4),
+         "output": {"type": "text", "text": "TEST 工具输出"}},
+        _wb_line("assistant", "a2", at(5), "TEST 目录里有三个文件。"),
+        _wb_line("user", "n1", at(6), "<task-notification>\n<task-id>TEST</task-id>\n</task-notification>",
+                 providerData={"isMeta": True}),
+        {"type": "ai-title", "id": "t1", "title": "TEST 标题", "timestamp": at(7)},
+        {"type": "file-history-snapshot", "id": "s1", "timestamp": at(8)},
+    )
+    # As WorkBuddy 5.3.14 hands the prompt to its hook: reminders and tags removed, and the newlines with them.
+    _wb(home, _wb_prompt("TEST 第一行TEST 第二行"))
+    _wb(home, _wb_stop(record, last="TEST 目录里有三个文件。"))
+    _wb(home, _wb_stop(record, last="TEST 目录里有三个文件。"))
+    assert _wb_said(root) == sorted([("user", "human_direct", "TEST 第一行TEST 第二行"),
+                                     ("assistant", "assistant_visible", "TEST 我先看一下目录。"),
+                                     ("assistant", "assistant_visible", "TEST 目录里有三个文件。")])
+
+
+def test_a_workbuddy_agent_run_and_task_notice_are_not_the_person_s(workbuddy):
+    """A subagent's hooks (its record id ``agent-*``) are an agent speaking, and a background task's notice is
+    WorkBuddy's: neither is stored as the person's or recalled for.  ``agent_type`` alone names the agent that runs the
+    person's own session, which WorkBuddy sets on every turn after the first: those turns stay the person's."""
+    root, home, _projects = workbuddy
+    run = {"agent_id": "agent-TEST1", "agent_type": "TEST-explorer"}
+    result, diagnostics = _wb(home, _wb_prompt("TEST 子代理收到的任务。", **run))
+    assert result == {} and diagnostics.last_reason == "agent_run"
+    _result, diagnostics = _wb(home, _wb_stop(last="TEST 子代理的结论。", **run))
+    assert diagnostics.last_reason == "agent_run"
+    notice = "<task-notification><task-id>TEST</task-id><status>completed</status></task-notification>"
+    result, diagnostics = _wb(home, _wb_prompt(notice))
+    assert result == {} and diagnostics.last_reason == "task_notification"
+    _wb(home, _wb_prompt("TEST 一句真话。", agent_type="craft"))
+    _wb(home, _wb_stop(last="TEST 好的。", agent_type="craft"))
+    assert _wb_said(root) == sorted([("user", "human_direct", "TEST 一句真话。"),
+                                     ("assistant", "assistant_visible", "TEST 好的。")])
+
+
+def test_a_workbuddy_stop_that_repeats_the_last_reply_stores_nothing(workbuddy):
+    """A turn that failed or was stopped before it said anything hands the Stop the reply of the turn before."""
+    root, home, _projects = workbuddy
+    _wb(home, _wb_prompt("TEST 第一问。"))
+    _wb(home, _wb_stop(last="TEST 第一答。"))
+    _wb(home, _wb_prompt("TEST 第二问，马上停了。"))
+    _wb(home, _wb_stop(last="TEST 第一答。"))
+    assert _wb_said(root, "assistant") == [("assistant", "assistant_visible", "TEST 第一答。")]
+    _wb(home, _wb_prompt("TEST 第三问。"))
+    _wb(home, _wb_stop(last="TEST 第三答。"))
+    assert len(_wb_said(root, "assistant")) == 2, "a new reply is stored"
+
+
+def test_a_workbuddy_prompt_runs_the_entry_s_budget(workbuddy):
+    _root, home, _projects = workbuddy
+    (home / "scope-recall" / "runtime-config.json").write_text(json.dumps({"hook_processing_seconds": 5.5}),
+                                                               encoding="utf-8")
+    hook = CodexHookHandler.from_home(str(home), "workbuddy")
+    try:
+        assert hook._hook_budget() == 5.5
+    finally:
+        hook.close()
+
+
+def test_a_workbuddy_prompt_hook_answers_within_its_budget(workbuddy, small_reserve, monkeypatch, capsys):
+    """A WorkBuddy prompt hook that runs past its wait blocks the prompt.  With the entry's server slower than the
+    hook's whole budget, the hook still answers inside the budget, with the prompt stored."""
+    import io
+    import time
+
+    from scope_recall.adapters.codex import hook_entry, local_endpoint
+    from scope_recall.vector import process_store
+
+    monkeypatch.setattr(process_store, "prestart", lambda **kwargs: None)
+    root, home, _projects = workbuddy
+    endpoint = local_endpoint.serve(home, "workbuddy", warm=False)
+    assert endpoint is not None
+    try:
+        calls = _counted(endpoint, monkeypatch, delay=3.0)
+        raw = json.dumps({"session_id": WB_SESSION, "cwd": "C:/TEST/work",
+                          **_wb_prompt("<user_query>TEST 服务答得太慢。</user_query>")}).encode()
+        monkeypatch.setattr(hook_entry.sys, "stdin", type("Stdin", (), {"buffer": io.BytesIO(raw)})())
+        started = time.monotonic()
+        assert hook_entry.main(["--home", str(home), "--host", "workbuddy"]) == 0
+        elapsed = time.monotonic() - started
+        captured = capsys.readouterr()
+        # No runtime config names a budget here: the hook's own 2 s (``_TOTAL_BUDGET_S``).
+        assert elapsed < 2.0 + 1.0, f"the hook took {elapsed:.1f} s of its 2 s"
+        assert not captured.out or "additionalContext" in json.loads(captured.out)["hookSpecificOutput"]
+        assert "CODEX_RECALL_RESIDENT:late" in captured.err
+        assert len(calls) == 1
+        assert _wb_said(root, "user") == [("user", "human_direct", "TEST 服务答得太慢。")]
+        time.sleep(3.0)  # the server's late recall ends; it writes nothing
+    finally:
+        endpoint.stop()
+    assert _wb_said(root, "user") == [("user", "human_direct", "TEST 服务答得太慢。")]
+
+
+def test_a_workbuddy_hook_with_nothing_to_add_writes_nothing(workbuddy, tmp_path, monkeypatch, capsys):
+    """WorkBuddy puts a prompt hook's whole stdout in front of the prompt unless it carries additionalContext, so the
+    "{}" the other clients read as nothing would have stood before every prompt that recalled nothing."""
+    import io
+
+    from scope_recall.adapters.codex import hook_entry
+    from scope_recall.vector import process_store
+
+    monkeypatch.setattr(process_store, "prestart", lambda **kwargs: None)
+    _root, home, _projects = workbuddy
+
+    def answer(payload, where, host):
+        raw = json.dumps({"session_id": WB_SESSION, "cwd": "C:/TEST/work", **payload}).encode()
+        monkeypatch.setattr(hook_entry.sys, "stdin", type("Stdin", (), {"buffer": io.BytesIO(raw)})())
+        assert hook_entry.main(["--home", str(where), "--host", host]) == 0
+        return capsys.readouterr().out
+
+    assert answer(_wb_stop(last="TEST 答。"), home, "workbuddy") == "", "a Stop never has anything to add"
+    unattached = tmp_path / "TEST-not-attached"
+    assert answer(_wb_prompt("TEST 问。"), unattached, "workbuddy") == ""
+    assert answer(_wb_prompt("TEST 问。"), unattached, "claude-code") == "{}"

@@ -190,8 +190,29 @@ and run `apply-install --host codex` without `--project-root`. Its hooks and MCP
 the home and serve every workspace. Refresh Codex's plugin cache and approve the changed hooks in
 Codex. The moved store's memories are not imported.
 
-`doctor --host codex|claude-code --instance-root <home>` and `detach` work for these entries as
-for a Hermes home.
+`doctor --host codex|claude-code|workbuddy --instance-root <home>` and `detach` work for these
+entries as for a Hermes home.
+
+## Attach WorkBuddy
+
+WorkBuddy attaches the same way, as the owner at this machine, and runs the same hooks and MCP
+server; its installer adds them to WorkBuddy's own `settings.json` and `.mcp.json` rather than
+writing a plugin ([install.md](install.md), section 12, which also says what is not recorded):
+
+```text
+scope-recall attach --host workbuddy --instance-root D:\ScopeRecall\workbuddy ^
+    --root D:\ScopeRecall\shared --entry workbuddy --display-name WorkBuddy ^
+    --grants-like all --capture-like desk ^
+    --runtime-config-from <an attached home>\scope-recall\runtime-config.json
+scope-recall apply-install --host workbuddy --instance-root D:\ScopeRecall\workbuddy ^
+    --agent-id <the store's agent id> --python D:\ScopeRecall\workbuddy-venv\Scripts\python.exe ^
+    --env-file <the file with the embedding key>
+```
+
+Quit WorkBuddy before `apply-install` and start it again after: it reads hooks and MCP servers
+when it starts. Its prompt hook asks the entry's MCP server for the recall as described above, and
+its `Stop` reads WorkBuddy's session record. Take the hooks out with `apply-uninstall` before
+`detach`; `detach` alone leaves WorkBuddy's settings as they are.
 
 ## Check
 

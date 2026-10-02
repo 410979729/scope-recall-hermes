@@ -14,6 +14,7 @@ from pathlib import Path
 
 from ...runtime.resume_entry import host_process_credential_environment
 from .config import load_codex_config, load_shared_client
+from .boundary import EMPTY_ANSWER
 from .handler import CodexHookHandler, emit_result
 
 
@@ -22,7 +23,7 @@ def main(argv: list[str] | None = None) -> int:
     where = parser.add_mutually_exclusive_group(required=True)
     where.add_argument("--config", type=Path, help="Absolute path to codex-installation.json")
     where.add_argument("--home", type=Path, help="Absolute home of a client attached to a shared store")
-    parser.add_argument("--host", choices=("codex", "claude-code"), default="codex",
+    parser.add_argument("--host", choices=("codex", "claude-code", "workbuddy"), default="codex",
                         help="the client whose hooks call this, for --home")
     parser.add_argument(
         "--runtime-config",
@@ -41,6 +42,7 @@ def main(argv: list[str] | None = None) -> int:
     # Start the trusted wall-clock budget before configuration/runtime loading;
     # model or hook payload fields never participate in this timestamp.
     hook_started_at = time.monotonic()
+    empty = EMPTY_ANSWER[args.host]
     raw = sys.stdin.buffer.read(65537)
     # Started whether or not the entry's server is asked: the hook recalls itself when the server has not answered in
     # time, and without a helper started here that recall ran by words alone (review of rc11).
@@ -48,12 +50,12 @@ def main(argv: list[str] | None = None) -> int:
     location = (args.config if args.config is not None else args.home).expanduser()
     if not location.is_absolute():
         sys.stderr.write("CODEX_HOOK:config_path_not_absolute\n")
-        emit_result({})
+        emit_result({}, empty=empty)
         return 0
     runtime_config = args.runtime_config.expanduser() if args.runtime_config is not None else None
     if runtime_config is not None and not runtime_config.is_absolute():
         sys.stderr.write("CODEX_HOOK:runtime_config_not_absolute\n")
-        emit_result({})
+        emit_result({}, empty=empty)
         return 0
     if args.env_file is not None:
         # A hook must answer inside its budget whatever happens; a missing key
@@ -86,11 +88,11 @@ def main(argv: list[str] | None = None) -> int:
             )
     except Exception:
         sys.stderr.write("CODEX_HOOK:config_unavailable\n")
-        emit_result({})
+        emit_result({}, empty=empty)
         return 0
     if len(raw) > 65536:
         sys.stderr.write("CODEX_HOOK:input_too_large\n")
-        emit_result({})
+        emit_result({}, empty=empty)
         return 0
     # A client attached to a shared store runs the entry's MCP server for as long as it is open, and that server
     # answers the prompt's recall with its vector search warm (``local_endpoint``).  The prompt is stored here.
@@ -101,7 +103,7 @@ def main(argv: list[str] | None = None) -> int:
         recaller = Recaller(location, args.host)
         handler.resident_recall = recaller
     result = handler.handle_bytes(raw)
-    emit_result(result, diagnostics=handler.diagnostics)
+    emit_result(result, diagnostics=handler.diagnostics, empty=empty)
     if recaller is not None:
         outcome = getattr(handler, "resident_outcome", None) or recaller.outcome
         if outcome is not None:

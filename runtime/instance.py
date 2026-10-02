@@ -48,7 +48,7 @@ _RUNTIME_ORIGINS: frozenset[Origin] = frozenset(
     {"human_direct", "tool_observation", "external_document", "imported"}
 )
 #: Claude Code runs the Codex adapter as an entry of a shared store (``adapters/codex/config.py``).
-_HOST_ADAPTERS = frozenset({"hermes", "codex", "claude-code"})
+_HOST_ADAPTERS = frozenset({"hermes", "codex", "claude-code", "workbuddy"})
 _VECTOR_BACKENDS = frozenset({"lancedb", "sqlite-bruteforce"})
 
 

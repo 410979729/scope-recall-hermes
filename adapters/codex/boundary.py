@@ -9,6 +9,10 @@ from scope_recall.contracts import SourceEvent
 
 _SCOPE_RECALL_TOOL = re.compile(r"(?:^|__)(?:scope[-_]?recall)", re.IGNORECASE)
 _MAX_TOOL_CHARS = 65536
+#: What a hook with nothing to add writes to stdout, by client.  WorkBuddy puts a prompt hook's whole stdout in front
+#: of the prompt unless it carries ``additionalContext`` (its ``executeUserPromptSubmitHooks``), so "{}" would stand
+#: before every prompt with nothing recalled; for it an empty answer is nothing at all.
+EMPTY_ANSWER = {"codex": "{}", "claude-code": "{}", "workbuddy": ""}
 
 
 def host_source_key(
@@ -56,6 +60,33 @@ TASK_NOTIFICATION_PREFIX = "<task-notification>"
 def is_task_notification(prompt: str) -> bool:
     """Whether a prompt is Claude Code's notice that a background task finished, not the owner's words."""
     return prompt.lstrip().startswith(TASK_NOTIFICATION_PREFIX)
+
+
+#: What WorkBuddy wraps around the person's words in a message: its reminders, and the block that holds what was typed.
+#: Its prompt hook strips both itself (as of 5.3.14); its session record keeps them.
+_WORKBUDDY_REMINDER = re.compile(r"<system-reminder\b[^>]*>.*?</system-reminder>\s*", re.DOTALL)
+_WORKBUDDY_QUERY = re.compile(r"<user_query>(.*?)</user_query>", re.DOTALL)
+#: A subagent's record is ``<session>/subagents/agent-*.jsonl``; its hooks name that record's id as ``agent_id``.
+_WORKBUDDY_SUBAGENT_RECORD = re.compile(r"[\\/]subagents[\\/]")
+
+
+def workbuddy_person_text(text: str) -> str:
+    """The person's own words in a WorkBuddy prompt or record message: the last ``<user_query>`` block once its
+    ``<system-reminder>`` blocks are removed, or, without such a block, the whole text without them."""
+    cleaned = _WORKBUDDY_REMINDER.sub("", text)
+    queries = _WORKBUDDY_QUERY.findall(cleaned)
+    return (queries[-1] if queries else cleaned).strip()
+
+
+def is_workbuddy_agent_run(payload: dict[str, Any]) -> bool:
+    """Whether a WorkBuddy hook comes from one of its subagents rather than the session the person types into.
+
+    A subagent's record id starts with ``agent-`` and its record lies in a ``subagents`` folder.  ``agent_type`` alone
+    says nothing of the kind: WorkBuddy sets it to whichever agent runs the person's own session, on every turn after
+    the first, and ``agent_id`` also names the record of a session loaded from a record named otherwise."""
+    agent_id, record = payload.get("agent_id"), payload.get("transcript_path")
+    return ((type(agent_id) is str and agent_id.strip().startswith("agent-"))
+            or (type(record) is str and _WORKBUDDY_SUBAGENT_RECORD.search(record) is not None))
 
 
 #: How Codex opens the prompt it sends through the same hook as a message to ask the model what the owner might do

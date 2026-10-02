@@ -12,15 +12,19 @@ through; what a session had not sent when it ended stays unsent.  A Codex hook i
 sent, with the moment it happened, by the next hook that reaches the server; a full spool drops its oldest.
 Requests go straight to the server, never through a proxy this machine has for the internet, which cannot
 reach a private address.  What did not get through, and what the spool dropped, is logged in the state folder.
+A WorkBuddy client (``host: workbuddy``) is forwarded as the claude-code host's is, its record read with
+``transcript.workbuddy_said``.  WorkBuddy has no plugin here: ``install`` merges the hooks and the MCP server into
+WorkBuddy's own settings.json and .mcp.json (``--plugin-dir`` names WorkBuddy's home), as the local installer does,
+keeping everything else in them and a copy of each file it changes under the state folder's ``backups``.
 
     python -m scope_recall.adapters.codex.remote_client token --config <client.json>
     python -m scope_recall.adapters.codex.remote_client install --config <client.json> --plugin-dir <dir>
     python -m scope_recall.adapters.codex.remote_client --config <client.json>        (the hook itself)
     python -m scope_recall.adapters.codex.remote_client flush --config <client.json>  (started by a hook)
 
-``client.json`` holds ``url`` (the server, e.g. ``http://100.64.0.10:18765``), ``host`` (``claude-code`` or
-``codex``), ``token_file`` and ``state_dir``, all absolute.  The token never leaves this machine except in
-the requests' ``Authorization`` header.
+``client.json`` holds ``url`` (the server, e.g. ``http://100.64.0.10:18765``), ``host`` (``claude-code``,
+``codex`` or ``workbuddy``), ``token_file`` and ``state_dir``, all absolute.  The token never leaves this
+machine except in the requests' ``Authorization`` header.
 """
 from __future__ import annotations
 
@@ -34,6 +38,7 @@ import os
 from pathlib import Path
 import secrets
 import shlex
+import shutil
 import subprocess
 import sys
 import time
@@ -41,15 +46,19 @@ from typing import Any
 import urllib.parse
 
 from . import transcript
-from .boundary import without_lone_surrogates
+from .boundary import EMPTY_ANSWER, is_workbuddy_agent_run, without_lone_surrogates
 
-HOSTS = ("claude-code", "codex")
+HOSTS = ("claude-code", "codex", "workbuddy")
+#: Hosts whose Stop and SessionEnd send the lines of their own session record (``transcript``).
+_RECORD_HOSTS = frozenset({"claude-code", "workbuddy"})
 #: How long the client's host waits for each hook (the plugin's hooks.json): the local installers' ceilings
 #: (``maintenance/install_claude_code.py``, ``maintenance/install_codex.py``), for the events forwarded.  A hook
-#: answers as soon as the server does; the server's work is bounded by the entry's budget.
+#: answers as soon as the server does; the server's work is bounded by the entry's budget.  WorkBuddy's hooks are
+#: given the same waits as the claude-code host's: its prompt is blocked by a hook that runs past its wait.
 HOOK_TIMEOUTS = {
     "claude-code": {"UserPromptSubmit": 15, "Stop": 10, "SessionEnd": 10},
     "codex": {"SessionStart": 5, "UserPromptSubmit": 15, "Stop": 10, "Interrupt": 3, "SessionEnd": 3},
+    "workbuddy": {"UserPromptSubmit": 15, "Stop": 10, "SessionEnd": 10},
 }
 #: The part of each wait the request may use; the interpreter's start and the answer take the rest.
 _REQUEST_SHARE = 0.8
@@ -93,7 +102,7 @@ def load_client_config(path: Path) -> dict[str, Any]:
     except (OSError, ValueError) as exc:
         raise RemoteClientError(f"unreadable client config {path}") from exc
     if not isinstance(raw, dict) or raw.get("host") not in HOSTS:
-        raise RemoteClientError("client config needs host: claude-code or codex")
+        raise RemoteClientError(f"client config needs host: {', '.join(HOSTS)}")
     url = raw.get("url")
     if type(url) is not str or urllib.parse.urlsplit(url).scheme not in ("http", "https") \
             or not urllib.parse.urlsplit(url).hostname:
@@ -278,13 +287,17 @@ def _record_part(config: dict[str, Any], payload: dict[str, Any]) -> tuple[dict[
     session_id = payload.get("session_id")
     if type(session_id) is not str or not session_id.strip():
         return None
-    record = transcript.record_path(payload.get("transcript_path"), session_id.strip())
+    workbuddy = config["host"] == "workbuddy"
+    record = (transcript.workbuddy_record_path(payload.get("transcript_path"), session_id.strip(),
+                                               record_id=payload.get("agent_id"))
+              if workbuddy else transcript.record_path(payload.get("transcript_path"), session_id.strip()))
     if record is None:
         return None
     cursor = transcript.Cursor(config["state_dir"], session_id.strip(), record)
     start = cursor.load()
     try:
-        lines = transcript.read(record, start, limit=RECORD_READ_BYTES)
+        lines = transcript.read(record, start, limit=RECORD_READ_BYTES,
+                                rows=transcript.workbuddy_said if workbuddy else transcript.said)
     except OSError:
         return None
     if not lines:
@@ -317,7 +330,8 @@ def run_hook(config: dict[str, Any], raw: bytes, *, started: float | None = None
     observed_at = _now()
     body: dict[str, Any] = {"payload": payload, "observed_at": observed_at}
     cursor = None
-    if host == "claude-code" and event in ("Stop", "SessionEnd"):
+    if (host in _RECORD_HOSTS and event in ("Stop", "SessionEnd")
+            and not (host == "workbuddy" and is_workbuddy_agent_run(payload))):
         part = _record_part(config, payload)
         if part is not None:
             body["record"], cursor = part
@@ -374,6 +388,9 @@ def plugin_files(config: dict[str, Any], plugin_dir: Path) -> dict[Path, str]:
     from ...maintenance.install_common import SKILLS, _manifest_version
 
     host = config["host"]
+    if host == "workbuddy":
+        raise RemoteClientError("a WorkBuddy client has no plugin: install merges its hooks and server into "
+                                "WorkBuddy's own settings (workbuddy_files)")
     token = config["token_file"].read_text(encoding="utf-8").strip()
     argv = _hook_argv(config)
     mcp_url = f"{config['url']}/mcp"
@@ -419,18 +436,73 @@ def plugin_files(config: dict[str, Any], plugin_dir: Path) -> dict[Path, str]:
     }
 
 
-def install(config: dict[str, Any], plugin_dir: Path) -> list[str]:
+def workbuddy_files(config: dict[str, Any], home: Path) -> dict[Path, bytes]:
+    """WorkBuddy's own settings.json and .mcp.json in ``home``, with this client's hooks and MCP server merged in by the
+    local installer's rules (``maintenance/install_workbuddy.py``): the files that change, as they are to be written.
+
+    The hooks are this client's when they run it with this ``client.json``; another Scope Recall hook (a local entry's,
+    or another client's) is refused, since WorkBuddy would run both.  The server ``scope-recall`` is this client's when
+    it names this client's server.
+    """
+    from ...maintenance import install_workbuddy as workbuddy
+    from ...maintenance.install_common import InstallError
+
+    argv = _hook_argv(config)
+    token = config["token_file"].read_text(encoding="utf-8").strip()
+    server = {"type": "http", "url": f"{config['url']}/mcp", "headers": {"Authorization": f"Bearer {token}"}}
+
+    def this_client(parts: list[str]) -> bool:
+        return ("scope_recall.adapters.codex.remote_client" in parts
+                and workbuddy.same_path(workbuddy.option(parts, "--config"), config["config"]))
+
+    def this_server(value: object) -> bool:
+        return isinstance(value, dict) and value.get("url") == server["url"]
+
+    changed = {}
+    try:
+        command = " ".join([workbuddy.quoted(Path(argv[0]), "interpreter"), *argv[1:-1],
+                            workbuddy.quoted(config["config"], "client.json")])
+        for name in (workbuddy.SETTINGS_FILENAME, workbuddy.MCP_FILENAME):
+            value, raw = workbuddy.read_config(home / name)
+            merged = (workbuddy.with_hooks(value, command, HOOK_TIMEOUTS["workbuddy"], this_client)
+                      if name == workbuddy.SETTINGS_FILENAME else workbuddy.with_server(value, server, this_server))
+            if raw is None or merged != value:
+                changed[home / name] = workbuddy.encode_config(merged, raw)
+    except InstallError as exc:
+        raise RemoteClientError(str(exc)) from None
+    return changed
+
+
+def install(config: dict[str, Any], plugin_dir: Path) -> dict[str, list[str]]:
+    """Write the plugin, or for WorkBuddy merge into its own files after a copy of each goes to ``backups``."""
     if not config["token_file"].exists():
         raise RemoteClientError("no token yet: run remote_client token first")
+    files: dict[Path, str] | dict[Path, bytes]
+    backups = []
+    if config["host"] == "workbuddy":
+        if not plugin_dir.is_dir():
+            raise RemoteClientError(f"{plugin_dir} does not exist: name WorkBuddy's home (~/.workbuddy), or start "
+                                    "WorkBuddy once")
+        files = workbuddy_files(config, plugin_dir)
+        kept = config["state_dir"] / "backups" / datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+        for path in files:
+            if path.is_file():
+                kept.mkdir(parents=True, exist_ok=True)
+                backups.append(shutil.copy2(path, kept / path.name))
+    else:
+        files = plugin_files(config, plugin_dir)
     written = []
-    for path, text in plugin_files(config, plugin_dir).items():
+    for path, content in files.items():
         path.parent.mkdir(parents=True, exist_ok=True)
         pending = path.with_name(path.name + ".tmp")
-        pending.write_text(text, encoding="utf-8", newline="")
+        if isinstance(content, bytes):
+            pending.write_bytes(content)
+        else:
+            pending.write_text(content, encoding="utf-8", newline="")
         os.replace(pending, path)
         written.append(str(path))
     config["state_dir"].mkdir(parents=True, exist_ok=True)
-    return written
+    return {"written": written, "backups": [str(path) for path in backups]}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -448,7 +520,7 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps({"token_sha256": make_token(config)}))
             return 0
         if command == "install":
-            print(json.dumps({"written": install(config, _absolute(parsed.plugin_dir, "plugin_dir"))}, ensure_ascii=False))
+            print(json.dumps(install(config, _absolute(parsed.plugin_dir, "plugin_dir")), ensure_ascii=False))
             return 0
         if command == "flush":
             print(json.dumps({"sent": flush_spool(config)}))
@@ -463,8 +535,9 @@ def main(argv: list[str] | None = None) -> int:
     result = run_hook(config, raw, started=started) if len(raw) <= _MAX_STDIN else {}
     # ASCII only, as the local hook writes it: a pipe on Windows carries the system code page (GBK on a Chinese
     # Windows, under -I whatever PYTHONUTF8 says), and the host reads UTF-8, so recalled Chinese text arrived
-    # garbled or not at all.
-    sys.stdout.write(json.dumps(result, ensure_ascii=True) + "\n")
+    # garbled or not at all.  Nothing to add is written as the local hook writes it for this client (EMPTY_ANSWER).
+    if result or EMPTY_ANSWER[config["host"]]:
+        sys.stdout.write(json.dumps(result, ensure_ascii=True) + "\n")
     return 0
 
 

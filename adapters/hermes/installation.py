@@ -671,7 +671,7 @@ _MAX_DISPLAY_NAME = 32
 #: The local coding assistants a shared store takes as entries beside Hermes homes.  Such an
 #: entry has no installation of its own to carry grants over from: it is the owner at this
 #: machine, with one owner row on the platform named after the client (``client_entry_record``).
-CLIENT_HOSTS = ("codex", "claude-code")
+CLIENT_HOSTS = ("codex", "claude-code", "workbuddy")
 ENTRY_HOSTS = ("hermes", *CLIENT_HOSTS)
 
 

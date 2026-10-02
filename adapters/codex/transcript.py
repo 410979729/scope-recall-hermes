@@ -17,6 +17,12 @@ contract, so whatever is not recognised is skipped, never guessed at.
 Where a read stopped is kept beside the entry, in ``<home>/scope-recall/transcripts``.  It is
 disposable: without it the next read starts from the top, and what the store already holds is
 recognised and skipped, so losing it costs time and never a duplicate.
+
+WorkBuddy keeps a record of the same kind (``workbuddy_said``, ``workbuddy_record_path``), one
+``message`` line per message: the person's (``input_text`` blocks) and the model's visible text
+(``output_text`` blocks).  Its other lines (reasoning, tool calls and results, titles, snapshots)
+are skipped, and so is a message WorkBuddy itself added (``providerData.isMeta``) or a notice that
+a background task finished.
 """
 from __future__ import annotations
 
@@ -24,10 +30,12 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
+from typing import Callable
 
-from .boundary import without_lone_surrogates
+from .boundary import is_task_notification, without_lone_surrogates, workbuddy_person_text
 
 #: How much of the record one read goes through.  A long session's first read spans several turns.
 READ_BYTES = 16 * 1024 * 1024
@@ -121,6 +129,92 @@ def said(row: object) -> Said | None:
     return Said(entry_id.strip(), role, text, occurred_at, prompt_id.strip() if prompt_id else None)
 
 
+def _milliseconds(value: object) -> str | None:
+    """A WorkBuddy record's moment, milliseconds since the epoch (an ISO time is taken as well)."""
+    if type(value) is str:
+        return _stamp(value)
+    if type(value) not in (int, float) or not math.isfinite(value) or value <= 0:
+        return None
+    try:
+        moment = datetime.fromtimestamp(value / 1000, timezone.utc)
+    except (OverflowError, OSError, ValueError):
+        return None
+    return moment.isoformat().replace("+00:00", "Z")
+
+
+#: The content blocks that carry each side's words in a WorkBuddy record.
+_WORKBUDDY_BLOCKS = {"user": "input_text", "assistant": "output_text"}
+
+
+def workbuddy_said(row: object) -> Said | None:
+    """What one line of a WorkBuddy session record shows being said, or None for everything else.
+
+    The person's words are taken from a message as the prompt hook takes them from its prompt
+    (``boundary.workbuddy_person_text``); the model's blocks are joined as WorkBuddy joins them for the Stop hook's
+    ``last_assistant_message``."""
+    if not isinstance(row, dict) or row.get("type") != "message":
+        return None
+    role = row.get("role")
+    kind = _WORKBUDDY_BLOCKS.get(role) if type(role) is str else None
+    entry_id, occurred_at = row.get("id"), _milliseconds(row.get("timestamp"))
+    if kind is None or type(entry_id) is not str or not entry_id.strip() or len(entry_id) > 100 or occurred_at is None:
+        return None
+    provider = row.get("providerData") if isinstance(row.get("providerData"), dict) else {}
+    if role == "user" and (provider.get("isMeta") is True or provider.get("isCompactInternal") is True):
+        return None
+    content = row.get("content")
+    if isinstance(content, str):
+        blocks = [content]
+    elif isinstance(content, list):
+        blocks = [block["text"] for block in content
+                  if isinstance(block, dict) and block.get("type") == kind and isinstance(block.get("text"), str)]
+    else:
+        return None
+    text = "".join(blocks) if role == "assistant" else workbuddy_person_text("\n".join(blocks))
+    if not text.strip() or (role == "user" and is_task_notification(text)):
+        return None
+    text = without_lone_surrogates(text)
+    try:
+        entry_id.encode("utf-8")
+    except UnicodeEncodeError:
+        return None
+    return Said(entry_id.strip(), role, text, occurred_at)
+
+
+def workbuddy_projects() -> Path:
+    """Where WorkBuddy keeps its session records, one folder per workspace: ``projects`` in the configuration folder
+    its CLI takes from ``CODEBUDDY_CONFIG_DIR``, which a hook inherits; ``~/.workbuddy`` when that names none."""
+    configured = os.environ.get("CODEBUDDY_CONFIG_DIR", "").strip()
+    base = Path(configured) if configured and Path(configured).is_absolute() else Path.home() / ".workbuddy"
+    return base / "projects"
+
+
+def workbuddy_record_path(value: object, session_id: str, *, record_id: str | None = None,
+                          projects: Path | None = None) -> Path | None:
+    """A WorkBuddy session's record: the hook's ``transcript_path`` when it is an existing ``<id>.jsonl`` of this
+    session, else that file in one of the workspace folders of ``projects`` (``workbuddy_projects``), else None.
+
+    The record is named by the session's store id when it has one (``record_id``, the hook's ``agent_id``), else by
+    the session id.  The hook's path has been reported wrong (``.json`` for ``.jsonl``, cut two characters short), so
+    any other path is not read and the record is looked for by its name instead."""
+    names = [f"{name.strip()}.jsonl" for name in (record_id, session_id) if type(name) is str and name.strip()
+             and not any(mark in name for mark in "/\\:") and name.strip() not in (".", "..")]
+    if type(value) is str and value.strip():
+        path = Path(value)
+        if path.is_absolute() and path.name in names and path.is_file():
+            return path
+    root = projects if projects is not None else workbuddy_projects()
+    try:
+        folders = sorted(folder for folder in root.iterdir() if folder.is_dir())
+    except OSError:
+        return None
+    for name in names:
+        for folder in folders:
+            if (folder / name).is_file():
+                return folder / name
+    return None
+
+
 #: The longest message a client on another machine may send in one read (characters).
 WIRE_TEXT_LIMIT = 1_000_000
 
@@ -163,8 +257,10 @@ def record_path(value: object, session_id: str) -> Path | None:
     return path
 
 
-def read(path: Path, offset: int, *, limit: int = READ_BYTES) -> list[tuple[int, Said | None]]:
-    """The complete lines after ``offset``, each with the offset just past it and what it shows being said.
+def read(path: Path, offset: int, *, limit: int = READ_BYTES,
+         rows: Callable[[object], Said | None] = said) -> list[tuple[int, Said | None]]:
+    """The complete lines after ``offset``, each with the offset just past it and what it shows being said
+    (``rows``: ``said`` for the claude-code host's record, ``workbuddy_said`` for WorkBuddy's).
 
     A last line without its newline is still being written and waits for the next read.
     """
@@ -182,7 +278,7 @@ def read(path: Path, offset: int, *, limit: int = READ_BYTES) -> list[tuple[int,
             except (ValueError, RecursionError):
                 # A line nested past what the parser takes failed every later Stop of the session (review of rc11).
                 row = None
-            lines.append((position, said(row)))
+            lines.append((position, rows(row)))
     return lines
 
 
