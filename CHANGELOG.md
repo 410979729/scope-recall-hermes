@@ -7,10 +7,11 @@ All notable changes to `scope-recall` will be documented in this file.
 ### Scope Recall 3.5.0rc2 - 2026-10-02
 
 - The version moves past the `v3.5.0rc1` tag.
-- A server that answers its client's prompt recalls searches its vector store once more after each 10 minutes without a recall. That is the MCP server of Codex, Claude Code and WorkBuddy, and an entry's server for another machine. Every search reads the whole index, and left alone the OS gave those pages to other work. The first recall after an idle hour then searched past its time and recalled by words alone.
+- A server that answers its client's prompt recalls searches its vector store once more after each 10 minutes without a recall that searched it. That is the MCP server of Codex, Claude Code and WorkBuddy, and an entry's server for another machine. The vector helper keeps the index in its memory, and a search touches the part its filter keeps. Left alone, the OS gave those pages to other work. The first recall after an idle hour then searched past its time and recalled by words alone.
   - This machine's Claude Code lost the vector search on 2 of the 4 prompts it had after an idle hour.
   - It lost it on none of the 5 it had while another process searched the same index every 10 minutes.
-  - What the search finds is not looked at, and it writes nothing. A moment when a recall holds the server's handler is skipped.
+  - The search filters on every partition the entry's recalls search. Filtered on one, it held no rows for any entry of the shared store and touched 26 MB of the 306 MB a recall needs (copy of the store).
+  - What the search finds is not looked at, and it writes nothing. A moment when a recall holds the server's handler is skipped. A search that failed is tried once more at once, and closing the server does not wait for one.
 
 ### Scope Recall 3.5.0rc1 - 2026-10-02
 

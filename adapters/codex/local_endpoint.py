@@ -66,7 +66,8 @@ ANSWER_MARGIN_SECONDS = 0.3
 WARM_SECONDS = 60.0
 WARM_WAIT_SHARE = 0.5
 #: A kept handler left this long without a recall searches its vector store once more, off any prompt's time, and again
-#: after each such stretch.  Every search reads the whole index (every partition, ``vector/store.py``): left alone, the
+#: after each such stretch.  The helper keeps the index in its memory, and a search touches the codes of every row its
+#: filter keeps (the warm search filters as a recall does: ``runtime/instance.py warm_vector_store``): left alone, the
 #: OS gave those pages to other work, and the first recall after an idle hour searched past its time.  This machine's
 #: Claude Code lost the vector search on 2 of the 4 prompts it had after an idle hour (2026-10-02), and on none of the 5
 #: it had while another process searched the same index every 10 minutes.
@@ -413,10 +414,12 @@ class KeptRecaller:
         self._made_with: object = None
         self._closed = False
         self._warming: threading.Event | None = None
-        #: When a recall or a warming last used the handler (``_keep_warm``).
+        #: When a recall or a warming last searched the handler's vector store (``_keep_warm``).
         self._used = time.monotonic()
         self._stopped = threading.Event()
         self._keeping = False
+        #: A keep-warm search holds the handler: ``close`` does not wait for it, and it closes the handler itself.
+        self._searching = False
 
     def warm(self, seconds: float = WARM_SECONDS) -> None:
         """Make the handler and warm its vector store in the background, when the server starts, then keep it warm
@@ -463,20 +466,31 @@ class KeptRecaller:
         threading.Thread(target=run, name="scope-recall-kept-warm", daemon=True).start()
 
     def _keep_warm(self, seconds: float) -> None:
-        """Search the kept handler's vector store again after each ``KEEP_WARM_IDLE_SECONDS`` no recall used it, until
-        the recaller is closed.  A moment a recall holds the handler is skipped; no handler is made for it; it writes
-        nothing."""
+        """Search the kept handler's vector store again after each ``KEEP_WARM_IDLE_SECONDS`` no recall searched it,
+        until the recaller is closed.  A moment a recall holds the handler is skipped; no handler is made for it; it
+        writes nothing.  A search that failed is tried once more at once: one that found the vector helper gone closed
+        the store, and the second opens it again here, not inside the next prompt's recall.  Like the start's warming,
+        a search is not waited for by ``close``, and closes the handler itself when the recaller was closed."""
         while not self._stopped.wait(KEEP_WARM_CHECK_SECONDS):
             if time.monotonic() - self._used < KEEP_WARM_IDLE_SECONDS or not self._lock.acquire(blocking=False):
                 continue
+            self._searching = True
             try:
-                if not self._closed and self._handler is not None:
+                for _attempt in range(2):
+                    if self._closed or self._handler is None:
+                        break
                     try:
                         self._handler.warm_vectors(seconds)
-                    except Exception:  # noqa: BLE001 - the next recall opens what is not open, as before
-                        pass
+                        break
+                    except Exception:  # noqa: BLE001 - tried once more, then left to the next recall as before
+                        continue
                 self._used = time.monotonic()
             finally:
+                # Cleared before the recaller is looked at, both under the lock: a close that saw the search still
+                # running left the handler to it, and one that did not finds the lock free or the handler closed.
+                self._searching = False
+                if self._closed:
+                    self._discard(later=True)
                 self._lock.release()
 
     def __call__(self, payload: dict[str, Any], current_refs: tuple[str, ...], gaps: tuple[str, ...], budget: float,
@@ -507,11 +521,14 @@ class KeptRecaller:
                 raise
             diagnostics = dataclasses.asdict(handler.diagnostics)
             diagnostics["capability_gaps"] = list(diagnostics.get("capability_gaps") or ())
+            if diagnostics.get("recall_vectors") is True:
+                # Only a recall that searched the index puts off the next keep-warm search: one whose query embedding
+                # failed (a provider or proxy outage) never reached it, and an hour of such prompts left it cold.
+                self._used = time.monotonic()
             if not getattr(handler, "runtime_ready", False):
                 self._discard(later=True)
             return result, diagnostics
         finally:
-            self._used = time.monotonic()
             self._lock.release()
 
     def _discard(self, *, later: bool = False) -> None:
@@ -527,12 +544,13 @@ class KeptRecaller:
             pass
 
     def close(self) -> None:
-        """Close the kept handler, once a recall that holds it is done; later recalls get None.  A warming that holds
-        it (up to ``WARM_SECONDS``) is not waited for: it sees the recaller closed and closes its handler itself."""
+        """Close the kept handler, once a recall that holds it is done; later recalls get None.  A warming or a
+        keep-warm search that holds it (up to ``WARM_SECONDS``) is not waited for: it sees the recaller closed and
+        closes its handler itself."""
         self._closed = True
         self._stopped.set()
         warming = self._warming
-        if warming is not None and not warming.is_set():
+        if (warming is not None and not warming.is_set()) or self._searching:
             return
         if not self._lock.acquire(timeout=CLOSE_WAIT_SECONDS):
             return

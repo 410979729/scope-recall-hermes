@@ -2042,6 +2042,103 @@ def test_a_kept_recaller_that_could_not_make_its_handler_makes_none_to_keep_warm
     kept.close()
 
 
+def test_closing_a_recaller_does_not_wait_for_its_keep_warm_search_and_its_handler_is_closed(monkeypatch):
+    """Review of 3.5.0rc2: a keep-warm search holds the kept handler as the start's warming does, up to WARM_SECONDS
+    (a cold index, a helper to start again).  Closing waited CLOSE_WAIT_SECONDS for it, and when the search outlasted
+    that the handler was never closed: the search saw the recaller closed and left it open."""
+    import threading
+    import time
+
+    from scope_recall.adapters.codex import local_endpoint
+
+    monkeypatch.setattr(local_endpoint, "KEEP_WARM_IDLE_SECONDS", 0.1)
+    monkeypatch.setattr(local_endpoint, "KEEP_WARM_CHECK_SECONDS", 0.02)
+    monkeypatch.setattr(local_endpoint, "CLOSE_WAIT_SECONDS", 0.5)
+    searching, closed = threading.Event(), []
+
+    class Slow(_WarmedHandler):
+        searches = 0
+
+        def warm_vectors(self, seconds):
+            Slow.searches += 1
+            if Slow.searches == 2:  # the first search after the start's
+                searching.set()
+                time.sleep(1.5)
+
+    kept = local_endpoint.KeptRecaller(lambda: Slow(closed))
+    kept.warm()
+    assert searching.wait(10)
+    started = time.monotonic()
+    kept.close()
+    waited = time.monotonic() - started
+    assert _eventually(lambda: len(closed) == 1), f"the handler was never closed (closing waited {waited:.2f} s)"
+    assert waited < 0.3, f"closing waited {waited:.2f} s for the keep-warm search"
+
+
+def test_a_keep_warm_search_that_failed_is_tried_again_at_once(monkeypatch):
+    """Review of 3.5.0rc2: a keep-warm search that found the vector helper gone detaches it and closes the store for
+    the next request to open again (vector/process_store.py).  Counted as a use, it left that next request -- a new
+    helper, the table and the whole index -- to the next prompt's recall, the cold recall it is there to prevent."""
+    import time
+
+    from scope_recall.adapters.codex import local_endpoint
+
+    monkeypatch.setattr(local_endpoint, "KEEP_WARM_IDLE_SECONDS", 1.0)
+    monkeypatch.setattr(local_endpoint, "KEEP_WARM_CHECK_SECONDS", 0.05)
+
+    class Gone(_WarmedFake):
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            self.at = []
+
+        def warm_vectors(self, seconds):
+            super().warm_vectors(seconds)
+            self.at.append(time.monotonic())
+            if self.warmed == 2:  # the first keep-warm search after the start's
+                raise RuntimeError("TEST native vector worker failed")
+
+    _KeptFake.made = []
+    kept = local_endpoint.KeptRecaller(Gone)
+    kept.warm()
+    try:
+        assert _eventually(lambda: _KeptFake.made and len(_KeptFake.made[0].at) >= 3), "the start's, a failed one, another"
+        at = _KeptFake.made[0].at
+        assert at[2] - at[1] < 0.5, f"searched again {at[2] - at[1]:.2f} s after the failure, not at once"
+    finally:
+        kept.close()
+
+
+def test_a_recall_that_did_not_search_by_meaning_does_not_put_off_the_keep_warm_search(monkeypatch):
+    """Review of 3.5.0rc2: every recall that took the kept handler counted as a search of its index, also one whose
+    query embedding failed (a provider outage, a proxy down) and never reached it.  Prompts all through an outage kept
+    the index from being searched, and the first recall after it found the index cold."""
+    import time
+
+    from scope_recall.adapters.codex import local_endpoint
+
+    monkeypatch.setattr(local_endpoint, "KEEP_WARM_IDLE_SECONDS", 1.0)
+    monkeypatch.setattr(local_endpoint, "KEEP_WARM_CHECK_SECONDS", 0.05)
+
+    class Outage(_WarmedFake):
+        def resident_recall_for(self, payload, current_refs, gaps, remaining):
+            answer = super().resident_recall_for(payload, current_refs, gaps, remaining)
+            self.diagnostics.recall_vectors = False  # the query embedding timed out: no vector search ran
+            return answer
+
+    _KeptFake.made = []
+    kept = local_endpoint.KeptRecaller(Outage)
+    kept.warm()
+    try:
+        assert _eventually(lambda: _KeptFake.made and _KeptFake.made[0].warmed == 1)
+        ends = time.monotonic() + 2.5
+        while time.monotonic() < ends:  # a prompt every 0.4 s for 2.5 s, none of whose recalls searched the index
+            kept(_prompt("TEST outage"), (), (), 5.0)
+            time.sleep(0.4)
+        assert _KeptFake.made[0].warmed >= 2, "no search of the index for 2.5 s, with a stretch of 1 s"
+    finally:
+        kept.close()
+
+
 def test_a_recall_while_the_kept_handler_is_busy_is_answered_by_its_own():
     """One recall holds the kept handler at a time; another at the same moment gets nothing from it at once and
     recalls as every recall did before, instead of waiting behind the first."""

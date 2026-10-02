@@ -61,6 +61,24 @@ def _project_branch_combinations(trusted: TrustedContext) -> tuple[tuple[str | N
     return tuple((project, branch) for project in projects for branch in branches)
 
 
+def search_partitions(trusted: TrustedContext, embedding_space: str) -> dict[str, str]:
+    """Every physical partition a search under ``trusted`` filters on, each to its logical scope: every allowed scope,
+    at the bound project/branch and widened to the global partition."""
+    binding = trusted.binding
+    return {
+        physical_partition_scope_id(
+            agent_id=binding.agent_id,
+            installation_id=binding.installation_id,
+            embedding_space=embedding_space,
+            logical_scope_id=logical_scope_id,
+            project_id=project_id,
+            branch_id=branch_id,
+        ): logical_scope_id
+        for logical_scope_id in sorted(trusted.allowed_scope_ids)
+        for project_id, branch_id in _project_branch_combinations(trusted)
+    }
+
+
 class QueryEmbeddingPort(Protocol):
     def embed_query(self, text: str, *, remaining_seconds: float) -> Sequence[float]: ...
 
@@ -594,19 +612,7 @@ class LanceVectorPort:
         asked one partition at a time as before.
         """
         trusted = context.trusted_context
-        binding = trusted.binding
-        logical = {
-            physical_partition_scope_id(
-                agent_id=binding.agent_id,
-                installation_id=binding.installation_id,
-                embedding_space=self._expected_embedding_space,
-                logical_scope_id=logical_scope_id,
-                project_id=project_id,
-                branch_id=branch_id,
-            ): logical_scope_id
-            for logical_scope_id in sorted(trusted.allowed_scope_ids)
-            for project_id, branch_id in _project_branch_combinations(trusted)
-        }
+        logical = search_partitions(trusted, self._expected_embedding_space)
         hits: list[CandidateRef] = []
         search_scopes = getattr(self._store, "search_scopes", None)
         if callable(search_scopes):
@@ -745,4 +751,5 @@ __all__ = [
     "QueryEmbeddingPort",
     "SourceEmbeddingPort",
     "physical_partition_scope_id",
+    "search_partitions",
 ]

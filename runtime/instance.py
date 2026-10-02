@@ -544,15 +544,15 @@ class RuntimeInstance:
             trusted = self.config.context()
             if not callable(search_scopes) or not trusted.allowed_scope_ids:
                 return True
-            from ..adapters.lance import physical_partition_scope_id
+            from ..adapters.lance import search_partitions
 
-            partition = physical_partition_scope_id(
-                agent_id=trusted.binding.agent_id, installation_id=trusted.binding.installation_id,
-                embedding_space=self.config.embedding_space_id(), logical_scope_id=min(trusted.allowed_scope_ids),
-                project_id=None, branch_id=None,
-            )
-            # Any vector reads the index the same way; what it finds is not looked at.
-            search_scopes([1.0] + [0.0] * (self.config.vector.dimensions - 1), scope_ids=[partition], limit=1)
+            # Every partition a recall of this runtime filters on (adapters/lance.py ``_partition_hits``).  The first
+            # search of an index reads all of it into the helper's cache whatever the filter; after that a search
+            # touches only the codes of the rows its filter keeps.  Filtered on the first scope's partition, which
+            # held no rows for any entry of the shared store, the search touched 26 MB of the 306 MB the next recall
+            # paged back in once the helper's memory was trimmed (review of 3.5.0rc2).  What it finds is not looked at.
+            search_scopes([1.0] + [0.0] * (self.config.vector.dimensions - 1),
+                          scope_ids=list(search_partitions(trusted, self.config.embedding_space_id())), limit=1)
         return True
 
     def _compose_ports(self, resource: Any) -> None:
