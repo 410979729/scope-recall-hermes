@@ -2,6 +2,7 @@
 
 Sources are synthetic. These tests do not claim semantic model/host acceptance.
 """
+from contextlib import closing
 from dataclasses import replace
 import hashlib
 import importlib
@@ -401,6 +402,41 @@ def test_remaining_budget_bounds_busy_wait_and_zero_refuses_before_open(store, m
         with pytest.raises(ContractError, match="DEADLINE_EXCEEDED"), storage.write(ctx, remaining_seconds=remaining):
             pass
     assert len(opened) == count
+
+
+def test_every_store_connection_reads_through_a_memory_map(store, monkeypatch):
+    """Each operation opens its own connection and, on a shared store, another process writes between any two recalls,
+    so SQLite's own page cache never carries over.  Through a memory map a recall's pages come from the system's file
+    cache without a read call each (``STORE_MMAP_BYTES``)."""
+    storage, ctx = store
+    with closing(sqlite3.connect(storage.path)) as probe:
+        limit = probe.execute(f"PRAGMA mmap_size={1 << 40}").fetchone()[0]
+    if not limit:
+        pytest.skip("this SQLite build maps nothing")
+    # As much as the build allows, and at least the 2 GB a recall of the shared store was measured with.
+    mapped = min(storage_module.STORE_MMAP_BYTES, limit)
+    assert mapped >= min(limit, 2 << 30)
+    actual, opened = inject(monkeypatch)
+    with storage.read(ctx):
+        assert opened[-1].conn.execute("PRAGMA mmap_size").fetchone()[0] == mapped
+    with storage.write(ctx) as tx:
+        put(tx)
+        assert opened[-1].conn.execute("PRAGMA mmap_size").fetchone()[0] == mapped
+    assert snapshot(storage, ctx).sources == 1
+
+
+def test_a_connection_whose_memory_map_cannot_be_set_is_closed_before_the_failure_returns(store, monkeypatch):
+    storage, ctx = store
+    actual, opened = inject(monkeypatch, operation="PRAGMA mmap_size")
+    with pytest.raises(InjectedFailure, match="PRAGMA mmap_size"):
+        with storage.write(ctx):
+            pass
+    assert len(opened) == 1 and opened[0].closed
+    # The writer lease went with the closed connection: the next writer is not kept waiting.
+    monkeypatch.setattr(storage_module, "connect_truth_database", actual)
+    with storage.write(ctx, remaining_seconds=1.0) as tx:
+        put(tx)
+    assert snapshot(storage, ctx).sources == 1
 
 
 def test_source_query_uses_authorized_identity_index(store, monkeypatch):

@@ -766,6 +766,16 @@ def _store_bytes(conn: sqlite3.Connection) -> int:
     return conn.execute("PRAGMA page_count").fetchone()[0] * conn.execute("PRAGMA page_size").fetchone()[0]
 
 
+#: How much of the store a connection reads through a memory map.  Each operation opens its own connection, and on a
+#: shared store another process writes between any two recalls, so SQLite's own page cache never carries over: a hook
+#: recall read every page it touched with a read call of its own, 150,000 of them (586 MB) for a 3,800-character
+#: prompt.  Through the map those pages come straight from the system's file cache.  On a copy of the shared store that
+#: recall took 0.76 s instead of 1.27-1.76 s with the cache warm, and 1.68 s instead of 3.11 s with it cold, the state
+#: in which a server idle for 40 minutes recalled past its time.  SQLite maps no more than the file holds and at most
+#: its build's limit (2 GB in Python's builds); the rest is read as before, and writes are unchanged.
+STORE_MMAP_BYTES = 8 << 30
+
+
 def _ensure_wal(conn: sqlite3.Connection) -> None:
     """Keep the store in WAL mode, where readers and the writer coexist.
 
@@ -850,12 +860,19 @@ class SQLiteStorage:
         deadline = time.monotonic() + timeout
         while True:
             try:
-                return connect_truth_database(self.path, mode=mode, timeout=max(0.0, deadline - time.monotonic()),
+                conn = connect_truth_database(self.path, mode=mode, timeout=max(0.0, deadline - time.monotonic()),
                                               isolation_level=None)
             except TruthWriterBusyError:
                 if time.monotonic() + _LEASE_POLL_SECONDS >= deadline:
                     raise
                 time.sleep(_LEASE_POLL_SECONDS)
+                continue
+            try:
+                conn.execute(f"PRAGMA mmap_size={STORE_MMAP_BYTES}")
+            except BaseException as exc:
+                self._close(conn, exc)
+                raise
+            return conn
 
     def _verify(self, conn: sqlite3.Connection, *, expected_schema: int = SCHEMA_VERSION) -> None:
         if conn.execute("PRAGMA application_id").fetchone()[0] != APPLICATION_ID or conn.execute("PRAGMA user_version").fetchone()[0] != expected_schema:
