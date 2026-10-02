@@ -2,6 +2,26 @@
 
 All notable changes to `scope-recall` will be documented in this file.
 
+## [3.5.0 candidates] - 2026-10-02
+
+### Scope Recall 3.5.0rc1 - 2026-10-02
+
+- WorkBuddy (the CodeBuddy team's desktop agent workbench) joins a shared store as an entry, the owner at this machine: `attach --host workbuddy`. It runs the hook client and MCP server that Claude Code and Codex run. Each prompt is stored and what is remembered is put in front of it. Each reply is stored at `Stop`, and so is the text shown between tool calls, read from WorkBuddy's session record. The hook payloads and the record's layout were checked against a live WorkBuddy 5.3.14.
+- `apply-install --host workbuddy` adds three command hooks to `settings.json` in WorkBuddy's home: `UserPromptSubmit` (15 s), `Stop` and `SessionEnd` (10 s each). It adds the MCP server `scope-recall` to `mcp.json` there, the file of the user's own servers. WorkBuddy starts its agent with its connector proxy alone and never reads another server from `.mcp.json`. It starts a server from `mcp.json` once that server is approved in its MCP settings.
+  - Every other key, hook and server stays, and each file is copied to the entry's backups before it changes.
+  - Neither file enters the receipt. `apply-uninstall` takes out only this entry's hooks and server.
+  - The install refuses beside another Scope Recall hook, beside a `scope-recall` server that is not this entry's, and on a file with comments.
+  - See [docs/install.md](docs/install.md), section 12.
+- WorkBuddy's hooks name no turn they share. A prompt opens one: under its `generation_id` when that id is new to the session, else under an id made from the session, the words and the moment. Its `Stop` closes that turn. The session record's messages are matched to the kept turns, so each message is stored once, although WorkBuddy hands the hook its words without their line breaks.
+- In the record, a user message counts as the owner's only inside its `<user_query>` blocks. WorkBuddy's own user messages are not stored as the owner's words: command and shell output, a teammate's report, a slash command's expansion. Messages sent while a turn runs are merged into one, and the prompt hook gets only the last. The others are stored from the record when that turn ends, together with the last, which is so stored twice.
+- A reply that repeats the session's last one is what WorkBuddy hands the `Stop` of a turn stopped before it said anything, and the hook does not store it. When the record shows the turn did say those words again, they are stored from the record.
+- Prompts WorkBuddy sends on its own are not the owner's: a background task's notice, and a Stop hook's or a goal's request to go on (`Stop hook feedback:`). A session cron's or a goal's first prompt cannot be told from the owner's, and is stored as theirs.
+- WorkBuddy pastes a prompt hook's raw output into the prompt when that output carries no `additionalContext`. For this host, a hook with nothing to recall prints nothing, even when its remote client cannot load its configuration. The other hosts still get `{}`.
+- WorkBuddy blocks a prompt whose hook exits 2, which is what argparse exits with when an older package does not know `--host workbuddy`. Every WorkBuddy hook command ends in `|| exit 1`, so a failing hook is reported and the prompt goes through. Take the hooks out with `apply-uninstall` before rolling back below this release.
+- A WorkBuddy on another machine joins through the remote client (`"host": "workbuddy"` in `client.json`). Its `install` merges into WorkBuddy's own two files the same way ([docs/remote-entries.md](docs/remote-entries.md)).
+- Upgrade order: every process on the store must run 3.5.0rc1 before a WorkBuddy entry attaches, the shared worker first. An older process does not know the host and cannot replay that entry's queued captures.
+- Known limits: a multi-line message is stored as one line, a subagent's work is not recorded, and `doctor` does not read WorkBuddy's settings.
+
 ## [3.4.10] - 2026-10-01
 
 3.4.10 fixes three faults reported on GitHub, all on Hermes. A session's hooks could wait out Hermes' hook timeout and then be skipped for every session (#169). The sessions of a dashboard login were never stored or recalled, and nothing said so (#175). On a host that hands its packages over on `PYTHONPATH`, the LanceDB helper could not start, so the vector search was dead (#176). Our own five gateways were not exposed to #175 or #176, and met #169 rarely.
