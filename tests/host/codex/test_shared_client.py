@@ -1980,6 +1980,68 @@ def test_a_kept_recaller_counts_its_time_from_the_request_s_arrival():
     assert 2.9 < _KeptFake.made[0].calls[0] <= 3.0
 
 
+class _WarmedFake(_KeptFake):
+    """A kept handler that counts the searches of its vector store a server makes off any prompt's time."""
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.warmed = 0
+
+    def warm_vectors(self, seconds):
+        self.warmed += 1
+
+
+def test_a_kept_recaller_searches_its_vector_store_again_after_an_idle_stretch(monkeypatch):
+    """Every search reads the whole index, and left alone the OS gave its pages to other work: the first recall after
+    an idle hour searched past its time (2 of 4 on this machine's Claude Code, 2026-10-02).  The server searches once
+    more after each idle stretch; a recall starts the stretch again, and a closed recaller searches no more."""
+    import time
+
+    from scope_recall.adapters.codex import local_endpoint
+
+    monkeypatch.setattr(local_endpoint, "KEEP_WARM_IDLE_SECONDS", 1.0)
+    monkeypatch.setattr(local_endpoint, "KEEP_WARM_CHECK_SECONDS", 0.05)
+    _KeptFake.made = []
+    kept = local_endpoint.KeptRecaller(_WarmedFake)
+    kept.warm()
+    assert _eventually(lambda: _KeptFake.made and _KeptFake.made[0].warmed == 1), "warmed when the server starts"
+    assert _eventually(lambda: _KeptFake.made[0].warmed >= 2), "and again after an idle stretch"
+    # A recall late in a stretch: the next search comes a whole stretch after it, not where the old stretch ended.
+    time.sleep(0.7)
+    assert kept(_prompt("TEST"), (), (), 5.0)[0] == {"TEST": "TEST"}
+    after_recall = _KeptFake.made[0].warmed
+    time.sleep(0.6)
+    assert _KeptFake.made[0].warmed == after_recall, "a recall starts the idle stretch again"
+    assert _eventually(lambda: _KeptFake.made[0].warmed > after_recall), "the stretch after the recall ends in a search"
+    kept.close()
+    closed = _KeptFake.made[0].warmed
+    time.sleep(1.5)
+    assert _KeptFake.made[0].warmed == closed and len(_KeptFake.made) == 1, "a closed recaller searches no more"
+
+
+def test_a_kept_recaller_that_could_not_make_its_handler_makes_none_to_keep_warm(monkeypatch):
+    """Keeping warm searches only a handler a recall or the start made: one that could not be made is made by the next
+    recall, as before, never in the background."""
+    from scope_recall.adapters.codex import local_endpoint
+
+    monkeypatch.setattr(local_endpoint, "KEEP_WARM_IDLE_SECONDS", 0.1)
+    monkeypatch.setattr(local_endpoint, "KEEP_WARM_CHECK_SECONDS", 0.02)
+    tried = []
+
+    def build():
+        tried.append(1)
+        raise RuntimeError("TEST no handler")
+
+    kept = local_endpoint.KeptRecaller(build)
+    kept.warm()
+    assert _eventually(lambda: len(tried) == 1)
+    import time
+
+    time.sleep(0.5)
+    assert len(tried) == 1, "no handler is made to be kept warm"
+    kept.close()
+
+
 def test_a_recall_while_the_kept_handler_is_busy_is_answered_by_its_own():
     """One recall holds the kept handler at a time; another at the same moment gets nothing from it at once and
     recalls as every recall did before, instead of waiting behind the first."""
