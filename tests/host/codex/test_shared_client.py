@@ -2685,6 +2685,71 @@ def test_a_workbuddy_stop_that_repeats_the_last_reply_stores_nothing(workbuddy):
     assert len(_wb_said(root, "assistant")) == 2, "a new reply is stored"
 
 
+def test_a_workbuddy_reply_said_again_in_a_new_turn_is_stored_from_the_record(workbuddy):
+    """The Stop skips a reply that repeats the session's last one, which is what a turn stopped before it said anything
+    hands it; when the record shows the turn did say those words again, after the person's message, they are stored
+    from there."""
+    root, home, projects = workbuddy
+    at = _wb_ms()
+    record = _wb_record(projects, _wb_line("user", "u1", at(0), "<user_query>TEST 把第一个文件改名。</user_query>"))
+    _wb(home, _wb_prompt("TEST 把第一个文件改名。"))
+    _record(record, _wb_line("assistant", "a1", at(2), "TEST 好的。"))
+    _wb(home, _wb_stop(record, last="TEST 好的。", generation_id="TEST-request-1"))
+    _record(record, _wb_line("user", "u2", at(4), "<user_query>TEST 停一下。</user_query>"))
+    _wb(home, _wb_prompt("TEST 停一下。", generation_id="TEST-request-1"))
+    _wb(home, _wb_stop(record, last="TEST 好的。", generation_id="TEST-request-1"))
+    assert _wb_said(root, "assistant") == [("assistant", "assistant_visible", "TEST 好的。")], "a stopped turn"
+    _record(record, _wb_line("user", "u3", at(6), "<user_query>TEST 再把第二个文件改名。</user_query>"))
+    _wb(home, _wb_prompt("TEST 再把第二个文件改名。", generation_id="TEST-request-1"))
+    _record(record, _wb_line("assistant", "a3", at(8), "TEST 好的。"))
+    _wb(home, _wb_stop(record, last="TEST 好的。", generation_id="TEST-request-2"))
+    assert _wb_said(root, "assistant") == [("assistant", "assistant_visible", "TEST 好的。")] * 2
+
+
+def test_a_workbuddy_record_s_own_user_messages_are_not_the_person_s(workbuddy):
+    """WorkBuddy saves what the person sent inside ``<user_query>``.  The user messages it adds itself carry none: a
+    local command and its output, a shell command run in bash mode and its output, a teammate's report, and a slash
+    command's expansion, which WorkBuddy writes over the typed command before it saves the message (the prompt hook is
+    handed the typed command)."""
+    root, home, projects = workbuddy
+    at = _wb_ms()
+    skill = ("<command-message>review</command-message> <command-name>/review</command-name> "
+             "<command-args>a.py</command-args>\nBase directory for this skill: C:/TEST/skills/review\n"
+             "TEST the skill's own instructions: list every defect and propose a fix.")
+    record = _wb_record(
+        projects,
+        _wb_line("user", "b1", at(0), "<bash-input>dir</bash-input>", providerData={"skipRun": True}),
+        _wb_line("user", "b2", at(1), "<bash-stdout>TEST a.py\nTEST b.py</bash-stdout><bash-stderr></bash-stderr>",
+                 providerData={"skipRun": True}),
+        _wb_line("user", "c1", at(2), "<command-name>/model</command-name><command-args>TEST</command-args>",
+                 providerData={"skipRun": True}),
+        _wb_line("user", "c2", at(3), "<local-command-stdout>TEST switched</local-command-stdout>",
+                 providerData={"skipRun": True}),
+        _wb_line("user", "t1", at(4), '<teammate-message teammate_id="TEST" summary="TEST">\nTEST done\n'
+                                      "</teammate-message>", providerData={"teammateMessage": {"from": "TEST"}}),
+        _wb_line("user", "u1", at(5), skill),
+        _wb_line("assistant", "a1", at(6), "TEST a.py 没有问题。"),
+    )
+    _wb(home, _wb_prompt("/review a.py"))
+    _wb(home, _wb_stop(record, last="TEST a.py 没有问题。"))
+    assert _wb_said(root, "user") == [("user", "human_direct", "/review a.py")]
+
+
+def test_a_workbuddy_message_queued_while_a_turn_ran_is_kept_from_the_record(workbuddy):
+    """Messages sent while a turn ran are merged into one, a ``<user_query>`` block each, and the prompt hook is handed
+    only the last: the others are read from the record."""
+    root, home, projects = workbuddy
+    at = _wb_ms()
+    first, second = "TEST 第一件事：把表格导出。", "TEST 第二件事：查一下 QX-17。"
+    merged = _wb_line("user", "u1", at(0), f"<system-reminder>TEST 提醒</system-reminder>\n<user_query>{first}</user_query>")
+    merged["content"].append({"type": "input_text", "text": f"<user_query>{second}</user_query>"})
+    record = _wb_record(projects, merged, _wb_line("assistant", "a1", at(1), "TEST 都办好了。"))
+    _wb(home, _wb_prompt(second))
+    _wb(home, _wb_stop(record, last="TEST 都办好了。"))
+    said = [content for _role, _origin, content in _wb_said(root, "user")]
+    assert any(first in content for content in said) and any(second in content for content in said), said
+
+
 def test_a_workbuddy_prompt_runs_the_entry_s_budget(workbuddy):
     _root, home, _projects = workbuddy
     (home / "scope-recall" / "runtime-config.json").write_text(json.dumps({"hook_processing_seconds": 5.5}),

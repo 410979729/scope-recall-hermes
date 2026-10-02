@@ -19,10 +19,11 @@ disposable: without it the next read starts from the top, and what the store alr
 recognised and skipped, so losing it costs time and never a duplicate.
 
 WorkBuddy keeps a record of the same kind (``workbuddy_said``, ``workbuddy_record_path``), one
-``message`` line per message: the person's (``input_text`` blocks) and the model's visible text
-(``output_text`` blocks).  Its other lines (reasoning, tool calls and results, titles, snapshots)
-are skipped, and so is a message WorkBuddy itself added (``providerData.isMeta``) or a notice that
-a background task finished.
+``message`` line per message: the person's (the ``<user_query>`` blocks of ``input_text``) and the
+model's visible text (``output_text`` blocks).  Its other lines (reasoning, tool calls and results,
+titles, snapshots) are skipped, and so is a user message WorkBuddy itself added: one marked
+``providerData.isMeta``, a notice that a background task finished, or one with no ``<user_query>``
+block (a command and its output, a teammate's report, a slash command's expansion).
 """
 from __future__ import annotations
 
@@ -35,7 +36,7 @@ import os
 from pathlib import Path
 from typing import Callable
 
-from .boundary import is_task_notification, without_lone_surrogates, workbuddy_person_text
+from .boundary import is_task_notification, without_lone_surrogates, workbuddy_record_words
 
 #: How much of the record one read goes through.  A long session's first read spans several turns.
 READ_BYTES = 16 * 1024 * 1024
@@ -149,9 +150,9 @@ _WORKBUDDY_BLOCKS = {"user": "input_text", "assistant": "output_text"}
 def workbuddy_said(row: object) -> Said | None:
     """What one line of a WorkBuddy session record shows being said, or None for everything else.
 
-    The person's words are taken from a message as the prompt hook takes them from its prompt
-    (``boundary.workbuddy_person_text``); the model's blocks are joined as WorkBuddy joins them for the Stop hook's
-    ``last_assistant_message``."""
+    The person's words are the ``<user_query>`` blocks of a user message (``boundary.workbuddy_record_words``); a user
+    message without one is not the person's.  The model's blocks are joined as WorkBuddy joins them for the Stop
+    hook's ``last_assistant_message``."""
     if not isinstance(row, dict) or row.get("type") != "message":
         return None
     role = row.get("role")
@@ -170,7 +171,7 @@ def workbuddy_said(row: object) -> Said | None:
                   if isinstance(block, dict) and block.get("type") == kind and isinstance(block.get("text"), str)]
     else:
         return None
-    text = "".join(blocks) if role == "assistant" else workbuddy_person_text("\n".join(blocks))
+    text = "".join(blocks) if role == "assistant" else workbuddy_record_words("\n".join(blocks))
     if not text.strip() or (role == "user" and is_task_notification(text)):
         return None
     text = without_lone_surrogates(text)

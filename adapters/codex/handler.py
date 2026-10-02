@@ -224,6 +224,8 @@ class CodexHookHandler:
         #: ``late``, ``without_vectors:<gap>`` or ``failed:<reason>``.  The hook's stderr says this, or else what
         #: ``resident_recall`` says of itself.
         self.resident_outcome: str | None = None
+        #: The turn a WorkBuddy Stop closed and the words of its reply, for the read of the record after it.
+        self._closed_reply: tuple[str, str] | None = None
 
     @classmethod
     def from_config_path(
@@ -431,6 +433,7 @@ class CodexHookHandler:
         payload = without_lone_surrogates(payload)
         self._persisted_this_call = False
         self._queued_this_call = False
+        self._closed_reply = None
         self.diagnostics = HookDiagnostics(capability_gaps=self.diagnostics.capability_gaps)
         event = payload.get("hook_event_name")
         self.diagnostics.last_event = str(event) if event is not None else None
@@ -604,18 +607,17 @@ class CodexHookHandler:
                 self._diag("session_record_unavailable", gaps=("capture_gap:session_record_unavailable",))
                 return
         said = [entry for _end, entry in lines if entry is not None]
-        # WorkBuddy's record names no turn: a person's message there is the turn its prompt hook kept for the same words.
+        # WorkBuddy's record names no turn: a person's message there is the turn its prompt hook kept for the same words,
+        # and the model's message after it with the words of the Stop's reply is that Stop's turn: held when the Stop
+        # stored it, stored from here when the Stop took it for the previous reply repeated (``_close_turn``).
         turns = _record_turns(self.config, session_id, said) if workbuddy else {}
+        replied = _replied_entry(said, self._closed_reply) if workbuddy else None
         held: tuple[bool, ...] = ()
         if said:
             try:
                 held = self.core.said_in_session(
                     self._context(audience, session_id, "host_generated"), audience.capture_scope_id,
-                    [(entry.role, entry.text, entry.occurred_at,
-                      host_source_key(host=self.host, installation_id=self.config.installation_id,
-                                      session_id=session_id, event_kind="user",
-                                      event_id=turns.get(entry.entry_id) or entry.prompt_id)
-                      if entry.role == "user" and (turns.get(entry.entry_id) or entry.prompt_id) else None)
+                    [(entry.role, entry.text, entry.occurred_at, self._record_key(session_id, entry, turns, replied))
                      for entry in said],
                     window_seconds=_RECORD_SAME_MESSAGE_S,
                     remaining_seconds=max(0.0, self._remaining(deadline)))
@@ -649,6 +651,18 @@ class CodexHookHandler:
             remote.through = position
         elif position != start:
             cursor.save(position)
+
+    def _record_key(self, session_id: str, entry: "transcript.Said", turns: dict[str, str],
+                    replied: tuple[str, str] | None) -> str | None:
+        """The key a hook stored a record message under, when the record or a kept turn names it."""
+        if entry.role == "user" and (turns.get(entry.entry_id) or entry.prompt_id):
+            kind, event_id = "user", turns.get(entry.entry_id) or entry.prompt_id
+        elif replied is not None and entry.entry_id == replied[0]:
+            kind, event_id = "assistant", replied[1]
+        else:
+            return None
+        return host_source_key(host=self.host, installation_id=self.config.installation_id, session_id=session_id,
+                               event_kind=kind, event_id=event_id)
 
     def _captured_for_good(self, context, audience, event, deadline: float) -> bool:
         """Capture one record message; False when it may succeed later and the read must stop here."""
@@ -949,6 +963,7 @@ class CodexHookHandler:
             reply = payload.get("last_assistant_message")
             turn_id, repeated = _close_turn(self.config, session_id, payload, reply if type(reply) is str else "",
                                             self.clock.utc_now())
+            self._closed_reply = (turn_id, _words(reply)) if type(reply) is str and reply.strip() else None
             gaps = ()
             if repeated:
                 # A turn that failed or was stopped before it said anything hands the Stop the reply before it.
@@ -1157,6 +1172,19 @@ def _kept_turn(config, session_id: str, text: str) -> str | None:
     """The latest kept turn of the session opened for these words."""
     words = _words(text)
     return next((turn for turn, kept in reversed(_turns(config, session_id)["turns"]) if kept == words), None)
+
+
+def _replied_entry(said: list["transcript.Said"], closed: tuple[str, str] | None) -> tuple[str, str] | None:
+    """The record id of the model's message with the words of the reply a Stop closed its turn with, among those after
+    the person's last message of the read, and that turn."""
+    if closed is not None:
+        turn, words = closed
+        for entry in reversed(said):
+            if entry.role == "user":
+                break
+            if _words(entry.text) == words:
+                return entry.entry_id, turn
+    return None
 
 
 def _record_turns(config, session_id: str, said: list["transcript.Said"]) -> dict[str, str]:

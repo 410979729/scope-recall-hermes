@@ -506,6 +506,17 @@ def install(config: dict[str, Any], plugin_dir: Path) -> dict[str, list[str]]:
     return {"written": written, "backups": [str(path) for path in backups]}
 
 
+def _empty_answer(path: object) -> str:
+    """What a hook whose config did not load writes: nothing to add, as the host its config still names takes it
+    (``EMPTY_ANSWER``), else "{}"."""
+    try:
+        host = json.loads(Path(str(path)).read_text(encoding="utf-8")).get("host")
+    except (OSError, ValueError, AttributeError):
+        host = None
+    answer = EMPTY_ANSWER.get(host, "{}") if type(host) is str else "{}"
+    return answer + "\n" if answer else ""
+
+
 def main(argv: list[str] | None = None) -> int:
     started = time.monotonic()
     args = list(sys.argv[1:] if argv is None else argv)
@@ -528,7 +539,7 @@ def main(argv: list[str] | None = None) -> int:
             return 0
     except RemoteClientError as exc:
         if command == "hook":
-            sys.stdout.write("{}\n")
+            sys.stdout.write(_empty_answer(parsed.config))
             sys.stderr.write(f"SCOPE_RECALL_REMOTE:{exc}\n")
             return 0
         raise SystemExit(str(exc)) from None

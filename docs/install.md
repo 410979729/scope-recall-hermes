@@ -868,9 +868,11 @@ Known limits:
 - WorkBuddy hands the prompt hook a prompt with its line breaks removed, so a multi-line message
   is stored as one line.
 - WorkBuddy fires `Stop` for a cancelled or failed turn too, with the previous turn's reply; a
-  reply that repeats the session's last one is not stored again. The same short reply given twice
-  in a row is therefore stored once by the hook, and the second time by the record read only if
-  the first was stored more than 120 s earlier.
+  reply that repeats the session's last one is not stored by the hook. When the turn did say the
+  same words again, the record read stores them from the session record.
+- A user message in WorkBuddy's session record counts as the owner's only inside its
+  `<user_query>` blocks; command and shell output, a teammate's report or a slash command's
+  expansion there is not stored as the owner's words.
 - A subagent's work is not recorded: WorkBuddy fires no prompt or `Stop` hook for it, and its
   record is not read.
 - Not done: `doctor` does not check WorkBuddy's settings, and the `scope-recall-memory` skill is

@@ -427,6 +427,20 @@ def test_a_workbuddy_client_with_nothing_to_add_writes_nothing(tmp_path, monkeyp
         assert capsys.readouterr().out == expected, host
 
 
+def test_a_workbuddy_client_whose_config_does_not_load_writes_nothing(tmp_path, monkeypatch, capsys):
+    """A hook whose client.json no longer loads still answers with nothing to add as the host it names takes it."""
+    import io
+
+    for host, expected in (("workbuddy", ""), ("claude-code", "{}\n")):
+        path = _client(tmp_path, host, _free_port())["config"]
+        path.write_text(json.dumps({**json.loads(path.read_text(encoding="utf-8")), "state_dir": "TEST-relative"}),
+                        encoding="utf-8")
+        monkeypatch.setattr(remote_client.sys, "stdin", type("Stdin", (), {"buffer": io.BytesIO(b"{}")})())
+        assert remote_client.main(["--config", str(path)]) == 0
+        captured = capsys.readouterr()
+        assert (captured.out, "SCOPE_RECALL_REMOTE:" in captured.err) == (expected, True), host
+
+
 def test_the_server_opens_no_path_a_request_names(served, tmp_path):
     """A Stop that sent no record lines had nothing new to send.  The payload's transcript_path names a file on the
     client's machine; sent on purpose it could name one here, which the server read as this entry's messages."""

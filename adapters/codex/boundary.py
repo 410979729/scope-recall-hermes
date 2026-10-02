@@ -78,6 +78,17 @@ def workbuddy_person_text(text: str) -> str:
     return (queries[-1] if queries else cleaned).strip()
 
 
+def workbuddy_record_words(text: str) -> str:
+    """The person's own words in a user message of WorkBuddy's session record: every ``<user_query>`` block once its
+    ``<system-reminder>`` blocks are removed, or nothing when it has none.
+
+    WorkBuddy keeps what the person sent inside such a block, and merges messages sent while a turn ran into one
+    message with a block each (its prompt hook is handed the last only).  A user message without one is WorkBuddy's
+    own: a local command or a shell command and their output, a teammate's report, a slash command's expansion."""
+    queries = (query.strip() for query in _WORKBUDDY_QUERY.findall(_WORKBUDDY_REMINDER.sub("", text)))
+    return "\n".join(query for query in queries if query)
+
+
 def is_workbuddy_agent_run(payload: dict[str, Any]) -> bool:
     """Whether a WorkBuddy hook comes from one of its subagents rather than the session the person types into.
 

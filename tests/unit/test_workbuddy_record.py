@@ -50,32 +50,67 @@ def test_the_person_s_message_and_the_model_s_text_are_said():
     said = transcript.workbuddy_said(model)
     assert said is not None and (said.role, said.text) == ("assistant", "TEST 我先看一下，再回答。"), \
         "joined as the Stop hook's last_assistant_message joins them"
-    plain = transcript.workbuddy_said({**_message("user", ""), "content": "TEST 字符串内容"})
+    plain = transcript.workbuddy_said({**_message("user", ""), "content": "<user_query>TEST 字符串内容</user_query>"})
     assert plain is not None and plain.text == "TEST 字符串内容"
-    stamped = transcript.workbuddy_said({**_message("user", "TEST"), "timestamp": "2025-10-01T12:00:00.123Z"})
+    stamped = transcript.workbuddy_said({**_message("user", "<user_query>TEST</user_query>"),
+                                         "timestamp": "2025-10-01T12:00:00.123Z"})
     assert stamped is not None and stamped.occurred_at == AT
 
 
 def test_nothing_else_of_the_record_is_said():
+    query = "<user_query>TEST</user_query>"
+    assert transcript.workbuddy_said(_message("user", query)) is not None
     for kind in ("reasoning", "function_call", "function_call_result", "ai-title", "file-history-snapshot"):
         assert transcript.workbuddy_said({**_message("assistant", "TEST"), "type": kind}) is None, kind
-    assert transcript.workbuddy_said(_message("user", "TEST meta", providerData={"isMeta": True})) is None
-    assert transcript.workbuddy_said(_message("user", "TEST", providerData={"isCompactInternal": True})) is None
+    assert transcript.workbuddy_said(_message("user", query, providerData={"isMeta": True})) is None
+    assert transcript.workbuddy_said(_message("user", query, providerData={"isCompactInternal": True})) is None
     notice = "<task-notification>\n<task-id>TEST</task-id>\n<status>completed</status>\n</task-notification>"
     assert transcript.workbuddy_said(_message("user", notice)) is None
     assert transcript.workbuddy_said(_message("assistant", "TEST")["content"][0]) is None
-    wrong_block = _message("user", "TEST")
+    wrong_block = _message("user", query)
     wrong_block["content"][0]["type"] = "output_text"
     assert transcript.workbuddy_said(wrong_block) is None
-    assert transcript.workbuddy_said(_message("system", "TEST")) is None
+    assert transcript.workbuddy_said(_message("system", query)) is None
     assert transcript.workbuddy_said(_message("user", "<system-reminder>TEST</system-reminder>")) is None
 
 
+def test_a_user_message_without_a_user_query_block_is_not_the_person_s():
+    """WorkBuddy saves what the person sent inside ``<user_query>``.  The user messages it adds itself carry none: a
+    local command and its output, a shell command run in bash mode and its output (``CommandMessageUtils``, saved
+    with ``skipRun``), a teammate's report, and a slash command's expansion, which the command interceptor writes over
+    the typed command before the message is saved (the prompt hook is handed the typed command)."""
+    rows = [
+        _message("user", "<bash-input>dir</bash-input>", providerData={"skipRun": True}),
+        _message("user", "<bash-stdout>TEST a.py\nTEST b.py</bash-stdout><bash-stderr></bash-stderr>",
+                 providerData={"skipRun": True}),
+        _message("user", "<command-name>/model</command-name><command-args>TEST</command-args>",
+                 providerData={"skipRun": True}),
+        _message("user", "<local-command-stdout>TEST switched</local-command-stdout>", providerData={"skipRun": True}),
+        _message("user", '<teammate-message teammate_id="TEST" summary="TEST">\nTEST done\n</teammate-message>',
+                 providerData={"teammateMessage": {"from": "TEST"}}),
+        _message("user", "<command-message>review</command-message> <command-name>/review</command-name>\n"
+                         "Base directory for this skill: C:/TEST\nTEST the skill's own instructions"),
+        _message("user", "TEST plain text that WorkBuddy did not wrap"),
+    ]
+    for row in rows:
+        assert transcript.workbuddy_said(row) is None, row["content"][0]["text"]
+
+
+def test_every_query_of_a_merged_message_is_the_person_s():
+    """Messages sent while a turn ran are merged into one, a block each (``mergeConsecutiveUserMessages``); the prompt
+    hook is handed only the last, so the record is where the others are."""
+    merged = _message("user", "<system-reminder>TEST 提醒</system-reminder>\n<user_query>TEST 第一件事</user_query>")
+    merged["content"].append({"type": "input_text", "text": "<user_query>TEST 第二件事</user_query>"})
+    said = transcript.workbuddy_said(merged)
+    assert said is not None and said.text == "TEST 第一件事\nTEST 第二件事"
+
+
 def test_a_message_without_an_id_or_a_time_is_skipped():
-    assert transcript.workbuddy_said({**_message("user", "TEST"), "id": None}) is None
-    assert transcript.workbuddy_said({**_message("user", "TEST"), "id": "x" * 101}) is None
+    query = "<user_query>TEST</user_query>"
+    assert transcript.workbuddy_said({**_message("user", query), "id": None}) is None
+    assert transcript.workbuddy_said({**_message("user", query), "id": "x" * 101}) is None
     for stamp in (None, 0, -5, float("nan"), "not a time", "2025-10-01T12:00:00", True, 10 ** 20):
-        assert transcript.workbuddy_said({**_message("user", "TEST"), "timestamp": stamp}) is None, stamp
+        assert transcript.workbuddy_said({**_message("user", query), "timestamp": stamp}) is None, stamp
 
 
 def test_a_read_takes_workbuddy_lines_with_its_reader(tmp_path):
