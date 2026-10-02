@@ -21,6 +21,7 @@ from scope_recall.core import CoreConfig, MemoryCore
 from scope_recall.core.schema import SCHEMA_VERSION
 from scope_recall.core.storage import SQLiteStorage
 import scope_recall.core.storage as storage_module
+from scope_recall.core.writer_lease import truth_writer_process_snapshot
 from v11_support import context, source_event
 
 
@@ -404,24 +405,26 @@ def test_remaining_budget_bounds_busy_wait_and_zero_refuses_before_open(store, m
     assert len(opened) == count
 
 
-def test_every_store_connection_reads_through_a_memory_map(store, monkeypatch):
+def test_every_store_connection_reads_through_the_memory_map_the_store_sets(store, monkeypatch):
     """Each operation opens its own connection and, on a shared store, another process writes between any two recalls,
     so SQLite's own page cache never carries over.  Through a memory map a recall's pages come from the system's file
-    cache without a read call each (``STORE_MMAP_BYTES``)."""
+    cache without a read call each (``STORE_MMAP_BYTES``).  A size no build has as its default shows that the store set
+    it: a build whose default map is its limit reports that limit with no pragma at all (review of 3.5.0rc3)."""
     storage, ctx = store
     with closing(sqlite3.connect(storage.path)) as probe:
         limit = probe.execute(f"PRAGMA mmap_size={1 << 40}").fetchone()[0]
     if not limit:
         pytest.skip("this SQLite build maps nothing")
-    # As much as the build allows, and at least the 2 GB a recall of the shared store was measured with.
-    mapped = min(storage_module.STORE_MMAP_BYTES, limit)
-    assert mapped >= min(limit, 2 << 30)
+    # The store asks for as much as the build allows, at least the 2 GB a recall of the shared store was measured with.
+    assert min(storage_module.STORE_MMAP_BYTES, limit) >= min(limit, 2 << 30)
+    distinctive = 3 << 20
+    monkeypatch.setattr(storage_module, "STORE_MMAP_BYTES", distinctive)
     actual, opened = inject(monkeypatch)
     with storage.read(ctx):
-        assert opened[-1].conn.execute("PRAGMA mmap_size").fetchone()[0] == mapped
+        assert opened[-1].conn.execute("PRAGMA mmap_size").fetchone()[0] == distinctive
     with storage.write(ctx) as tx:
         put(tx)
-        assert opened[-1].conn.execute("PRAGMA mmap_size").fetchone()[0] == mapped
+        assert opened[-1].conn.execute("PRAGMA mmap_size").fetchone()[0] == distinctive
     assert snapshot(storage, ctx).sources == 1
 
 
@@ -432,9 +435,46 @@ def test_a_connection_whose_memory_map_cannot_be_set_is_closed_before_the_failur
         with storage.write(ctx):
             pass
     assert len(opened) == 1 and opened[0].closed
-    # The writer lease went with the closed connection: the next writer is not kept waiting.
+    # Its pin of the writer lease went with it.  Within one process the lease is shared, so a later write here would
+    # succeed either way; another process's writer would wait for this one to exit.
+    assert truth_writer_process_snapshot(storage.path.parent)["connection_pin_count"] == 0
+
+
+def test_a_failed_pragma_whose_close_fails_keeps_the_connection_for_the_next_open(store, monkeypatch):
+    storage, ctx = store
+    directory = storage.path.parent
+    actual, opened = inject(monkeypatch, operation="PRAGMA mmap_size", close_fail=True)
+    with pytest.raises(InjectedFailure, match="PRAGMA mmap_size") as raised:
+        with storage.write(ctx):
+            pass
+    assert any("close cleanup failed" in note for note in getattr(raised.value, "__notes__", ()))
+    assert len(opened) == 1 and not opened[0].closed
+    assert truth_writer_process_snapshot(directory)["connection_pin_count"] == 1
+    opened[0].close_fail = False
     monkeypatch.setattr(storage_module, "connect_truth_database", actual)
-    with storage.write(ctx, remaining_seconds=1.0) as tx:
+    with storage.write(ctx, remaining_seconds=1.0) as tx:  # the next open closes the kept connection first
+        put(tx)
+    assert opened[0].closed
+    assert truth_writer_process_snapshot(directory)["connection_pin_count"] == 0
+    assert snapshot(storage, ctx).sources == 1
+
+
+@pytest.mark.parametrize("statement,writable", [("PRAGMA user_version", True), ("PRAGMA user_version", False),
+                                                 ("PRAGMA journal_mode", True)])
+def test_a_failure_right_after_open_closes_the_connection_and_its_writer_lease(store, monkeypatch, statement, writable):
+    """A transaction read the store's version, and switched a writer to WAL, before the block that closes its
+    connection.  A failure there left the connection open, and a writer's lease held until the process ended: every
+    other process's writes failed (review of 3.5.0rc3).  A busy store can answer the first statement with "database is
+    locked"."""
+    storage, ctx = store
+    actual, opened = inject(monkeypatch, operation=statement)
+    with pytest.raises(InjectedFailure, match=statement):
+        with storage.write(ctx) if writable else storage.read(ctx):
+            pass
+    assert len(opened) == 1 and opened[0].closed
+    assert truth_writer_process_snapshot(storage.path.parent)["connection_pin_count"] == 0
+    monkeypatch.setattr(storage_module, "connect_truth_database", actual)
+    with storage.write(ctx) as tx:
         put(tx)
     assert snapshot(storage, ctx).sources == 1
 
