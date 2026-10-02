@@ -45,7 +45,7 @@ checks yourself; do not ask the user to execute commands or govern old memories.
 Step-by-step Hermes and Codex instructions: [docs/install.md](docs/install.md). Claude Code
 installs only as an entry of a shared store, and Codex can join one too:
 [docs/shared-store.md](docs/shared-store.md). WorkBuddy runs the same hooks and MCP server, also
-only as an entry; its installer adds them to WorkBuddy's own `settings.json` and `.mcp.json`
+only as an entry; its installer adds them to WorkBuddy's own `settings.json` and `mcp.json`
 ([docs/install.md](docs/install.md), section 12).
 
 The package is `hermes-scope-recall` on PyPI. Install it into the same isolated Python

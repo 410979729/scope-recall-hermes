@@ -346,19 +346,25 @@ def test_a_workbuddy_client_merges_its_hooks_and_server_into_workbuddy_s_own_fil
     where the server stands, and refuses to run beside another Scope Recall hook."""
     import shlex
 
+    from scope_recall.maintenance import install_workbuddy
+
     config = _client(tmp_path, "workbuddy", 18767)
     home = tmp_path / "TEST-profile" / ".workbuddy"
     home.mkdir(parents=True)
     settings = {"sandbox": {"enabled": True}, "enabledPlugins": {"TEST@TEST": True},
                 "hooks": {"Stop": [{"matcher": "", "hooks": [{"type": "command", "command": "TEST-other-tool"}]}]}}
-    mcp = {"mcpServers": {"connector-proxy": {"type": "http", "url": "http://127.0.0.1:9/TEST"}}}
+    mcp = {"mcpServers": {"TEST-other-server": {"type": "http", "url": "http://127.0.0.1:9/TEST"}}}
     (home / "settings.json").write_text(json.dumps(settings), encoding="utf-8")
-    (home / ".mcp.json").write_text(json.dumps(mcp), encoding="utf-8")
-    before = {name: (home / name).read_bytes() for name in ("settings.json", ".mcp.json")}
+    (home / "mcp.json").write_text(json.dumps(mcp), encoding="utf-8")
+    # WorkBuddy's own record of its connector proxy, which its agent is started with alone.
+    (home / ".mcp.json").write_text(json.dumps({"mcpServers": {"connector-proxy": {"url": "http://127.0.0.1:9/mcp"}}}),
+                                    encoding="utf-8")
+    before = {name: (home / name).read_bytes() for name in ("settings.json", "mcp.json")}
+    proxy = (home / ".mcp.json").read_bytes()
 
     assert remote_client.main(["install", "--config", str(config["config"]), "--plugin-dir", str(home)]) == 0
     result = json.loads(capsys.readouterr().out)
-    assert sorted(Path(path).name for path in result["written"]) == [".mcp.json", "settings.json"]
+    assert sorted(Path(path).name for path in result["written"]) == ["mcp.json", "settings.json"]
     assert {Path(path).name: Path(path).read_bytes() for path in result["backups"]} == before
     assert all(Path(path).is_relative_to(config["state_dir"] / "backups") for path in result["backups"])
     written = json.loads((home / "settings.json").read_text(encoding="utf-8"))
@@ -370,16 +376,17 @@ def test_a_workbuddy_client_merges_its_hooks_and_server_into_workbuddy_s_own_fil
     assert command.startswith('"') and "\\" not in command, "Git Bash runs it: quoted, forward slashes"
     assert {event: groups[-1]["hooks"][0]["timeout"] for event, groups in written["hooks"].items()} == \
         remote_client.HOOK_TIMEOUTS["workbuddy"]
-    servers = json.loads((home / ".mcp.json").read_text(encoding="utf-8"))["mcpServers"]
-    assert list(servers) == ["connector-proxy", "scope-recall"]
+    servers = json.loads((home / "mcp.json").read_text(encoding="utf-8"))["mcpServers"]
+    assert list(servers) == ["TEST-other-server", "scope-recall"]
     assert servers["scope-recall"] == {"type": "http", "url": "http://127.0.0.1:18767/mcp",
-                                       "headers": {"Authorization": f"Bearer {TOKEN}-workbuddy"}}
+                                       "headers": {"Authorization": f"Bearer {TOKEN}-workbuddy"},
+                                       "description": install_workbuddy.SERVER_DESCRIPTION}
 
     assert remote_client.install(config, home) == {"written": [], "backups": []}, "run again, nothing changes"
     config["token_file"].write_text("TEST-token-of-a-new-machine", encoding="utf-8")
-    assert [Path(path).name for path in remote_client.install(config, home)["written"]] == [".mcp.json"]
-    servers = json.loads((home / ".mcp.json").read_text(encoding="utf-8"))["mcpServers"]
-    assert list(servers) == ["connector-proxy", "scope-recall"]
+    assert [Path(path).name for path in remote_client.install(config, home)["written"]] == ["mcp.json"]
+    servers = json.loads((home / "mcp.json").read_text(encoding="utf-8"))["mcpServers"]
+    assert list(servers) == ["TEST-other-server", "scope-recall"]
     assert servers["scope-recall"]["headers"] == {"Authorization": "Bearer TEST-token-of-a-new-machine"}
 
     local = '"C:/TEST/python.exe" -I -B -m scope_recall.adapters.codex.hook_entry --home "C:/TEST-entry" --host workbuddy'
@@ -391,6 +398,7 @@ def test_a_workbuddy_client_merges_its_hooks_and_server_into_workbuddy_s_own_fil
     assert (home / "settings.json").read_bytes() == held
     with pytest.raises(remote_client.RemoteClientError, match="does not exist"):
         remote_client.install(config, tmp_path / "TEST-nowhere")
+    assert (home / ".mcp.json").read_bytes() == proxy, "WorkBuddy's own proxy record is not touched"
 
 
 def test_the_hook_answers_in_ascii_whatever_the_code_page(tmp_path, monkeypatch, capsys):
@@ -1027,3 +1035,21 @@ def test_a_workbuddy_client_s_turn_and_record_reach_its_entry_once(store, tmp_pa
                            ("assistant", "TEST QX-17 已完成。")])
     cursor = transcript.Cursor(client["state_dir"], "TEST-wb-session", record)
     assert cursor.load() == record.stat().st_size, "the cursor moves as far as the server stored"
+
+
+def test_a_workbuddy_subagent_s_stop_sends_no_record(tmp_path, monkeypatch):
+    """A subagent's Stop (its record id ``agent-*``, its record in a ``subagents`` folder) ends no turn of the person's
+    session: its record is neither read nor sent, and no cursor moves for it."""
+    client = _client(tmp_path, "workbuddy", _free_port())
+    sent = []
+    monkeypatch.setattr(remote_client, "_post", lambda config, body, timeout: sent.append(body) or {})
+    record = tmp_path / "TEST-projects" / "c--work" / "TEST-wb-session" / "subagents" / "agent-TEST1.jsonl"
+    record.parent.mkdir(parents=True)
+    record.write_text(json.dumps({"type": "message", "role": "assistant", "id": "a1", "timestamp": 1759320000123,
+                                  "content": [{"type": "output_text", "text": "TEST 子代理的话。"}]}) + "\n",
+                      encoding="utf-8")
+    _hook(client, {"session_id": "TEST-wb-session", "cwd": "C:/work", "hook_event_name": "Stop",
+                   "agent_id": "agent-TEST1", "transcript_path": str(record),
+                   "last_assistant_message": "TEST 子代理的话。"})
+    assert len(sent) == 1 and "record" not in sent[0]
+    assert transcript.Cursor(client["state_dir"], "TEST-wb-session", record).load() == 0

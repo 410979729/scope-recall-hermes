@@ -14,7 +14,7 @@ Requests go straight to the server, never through a proxy this machine has for t
 reach a private address.  What did not get through, and what the spool dropped, is logged in the state folder.
 A WorkBuddy client (``host: workbuddy``) is forwarded as the claude-code host's is, its record read with
 ``transcript.workbuddy_said``.  WorkBuddy has no plugin here: ``install`` merges the hooks and the MCP server into
-WorkBuddy's own settings.json and .mcp.json (``--plugin-dir`` names WorkBuddy's home), as the local installer does,
+WorkBuddy's own settings.json and mcp.json (``--plugin-dir`` names WorkBuddy's home), as the local installer does,
 keeping everything else in them and a copy of each file it changes under the state folder's ``backups``.
 
     python -m scope_recall.adapters.codex.remote_client token --config <client.json>
@@ -437,7 +437,7 @@ def plugin_files(config: dict[str, Any], plugin_dir: Path) -> dict[Path, str]:
 
 
 def workbuddy_files(config: dict[str, Any], home: Path) -> dict[Path, bytes]:
-    """WorkBuddy's own settings.json and .mcp.json in ``home``, with this client's hooks and MCP server merged in by the
+    """WorkBuddy's own settings.json and mcp.json in ``home``, with this client's hooks and MCP server merged in by the
     local installer's rules (``maintenance/install_workbuddy.py``): the files that change, as they are to be written.
 
     The hooks are this client's when they run it with this ``client.json``; another Scope Recall hook (a local entry's,
@@ -449,7 +449,8 @@ def workbuddy_files(config: dict[str, Any], home: Path) -> dict[Path, bytes]:
 
     argv = _hook_argv(config)
     token = config["token_file"].read_text(encoding="utf-8").strip()
-    server = {"type": "http", "url": f"{config['url']}/mcp", "headers": {"Authorization": f"Bearer {token}"}}
+    server = {"type": "http", "url": f"{config['url']}/mcp", "headers": {"Authorization": f"Bearer {token}"},
+              "description": workbuddy.SERVER_DESCRIPTION}
 
     def this_client(parts: list[str]) -> bool:
         return ("scope_recall.adapters.codex.remote_client" in parts

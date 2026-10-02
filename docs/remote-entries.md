@@ -93,12 +93,13 @@ For a WorkBuddy client, name `--host workbuddy` in `attach`, `configure` and `se
 
    WorkBuddy has no plugin: `<dir>` is its own home (`%USERPROFILE%\.workbuddy`), and `install` adds the hooks for
    `UserPromptSubmit`, `Stop` and `SessionEnd` (15, 10 and 10 s) to `settings.json` there and the server
-   `scope-recall`, with the token header, to `.mcp.json`. Everything else in those files stays, each file it
+   `scope-recall`, with the token header, to `mcp.json`. Everything else in those files stays, each file it
    changes is copied to `state_dir\backups\<time>\` first, and running it again changes nothing; a new token is
    written into the same server. It refuses beside another Scope Recall hook (a local entry's or another client's),
    a `scope-recall` server that names another address, or a file that is not plain JSON. WorkBuddy runs the hooks
    through Git Bash: keep the interpreter and `client.json` on paths of printable ASCII without `"`, `$`, `` ` ``
-   or `\`. Quit WorkBuddy before `install` and start it again after; it reads hooks and servers when it starts.
+   or `\`. Quit WorkBuddy before `install` and start it again after, then approve the MCP server `scope-recall`
+   in its MCP settings, where it waits for approval.
    To take the client out, quit WorkBuddy and delete the server `scope-recall` and the three hooks that run
    `remote_client` from those files, or put back the copies from `state_dir\backups\` if nothing else changed
    there since.

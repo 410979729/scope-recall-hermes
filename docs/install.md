@@ -795,10 +795,13 @@ only a pointer, `scope-recall\attachment.json`; `plan-install`, `apply-install` 
 
 WorkBuddy runs the hooks and the MCP server of the `codex` adapter as an entry of a shared
 store, the owner at this machine. Attach its home first ([shared-store.md](shared-store.md)),
-from an environment with the `codex` extra, then install. WorkBuddy reads its hooks from
-`settings.json` and its MCP servers from `.mcp.json` in its own home only when it starts, and
-may write `settings.json` itself while it runs: quit WorkBuddy before `apply-install` and start
-it again after.
+from an environment with the `codex` extra, then install. WorkBuddy's agent reads its hooks from
+`settings.json` in WorkBuddy's own home. Its MCP servers are those listed in `mcp.json` there:
+WorkBuddy starts each one, once you have approved it in its MCP settings, and serves its tools to
+the agent. (`.mcp.json` beside it is WorkBuddy's record of its own connector proxy; its agent
+reads no other server from it.) WorkBuddy may write `settings.json` itself while it runs: quit
+WorkBuddy before `apply-install` and start it again after, then approve the server `scope-recall`,
+which WorkBuddy lists as waiting for approval.
 
 ```powershell
 $Entry  = "D:\ScopeRecall\workbuddy"
@@ -817,14 +820,14 @@ scope-recall apply-install --host workbuddy --instance-root $Entry `
 exist. `apply-install`:
 
 - adds one command hook each for `UserPromptSubmit`, `Stop` and `SessionEnd` under `hooks` in
-  `settings.json`, and the MCP server `scope-recall` under `mcpServers` in `.mcp.json`;
+  `settings.json`, and the MCP server `scope-recall` under `mcpServers` in `mcp.json`;
 - keeps every other key, hook and server as it is, and copies each file it changes to
   `<instance-root>\.scope-recall-backups\<id>\plugin\` first (`backups` and `files_merged` in
   its output); neither file enters the receipt;
 - changes nothing when run again; this entry's hook from an older interpreter or env file is
   updated where it stands;
 - refuses, and writes nothing, when the settings already run another Scope Recall hook (another
-  entry's, or a remote client's: WorkBuddy would run both), when `.mcp.json` has a `scope-recall`
+  entry's, or a remote client's: WorkBuddy would run both), when `mcp.json` has a `scope-recall`
   server that is not this entry's, or when a file is not plain JSON (WorkBuddy accepts comments;
   rewritten as JSON they would be lost, so add the entries by hand there).
 
@@ -845,13 +848,15 @@ prompt hook could not store; `SessionEnd` reads the rest and forgets the session
 is named by the prompt's `generation_id` when it is new to the session, else by one derived from
 the session, the words and the moment, kept in `<instance-root>\scope-recall\turns\` until the
 session ends (a day at most). The MCP server keeps the vector search warm for the prompt hook
-while WorkBuddy runs, and serves the tools.
+while WorkBuddy runs, and serves the tools. Until it is approved the hooks still store and recall,
+each prompt's recall then starting its own vector search.
 
 To check it: `doctor --host workbuddy --instance-root <instance-root>` checks the binding and the
 store (it does not read WorkBuddy's settings; `host_registration_status: pending` is healthy, as
 for Codex). Then open a workspace in WorkBuddy (its hooks fire only there), send a message and
 look for the entry in `scope-recall entries --root <store>` (last heard from) and for
-`scope-recall` among WorkBuddy's connected MCP servers.
+`scope-recall` among WorkBuddy's connected MCP servers. WorkBuddy asks for the approval again
+when the server's command, arguments or environment names change.
 
 To take it out: quit WorkBuddy, run `plan-uninstall` and `apply-uninstall --instance-root
 <instance-root>`. They take this entry's hooks and server out of WorkBuddy's two files
@@ -887,4 +892,4 @@ Known limits:
 | Codex Core data directory | `<instance-root>\data\` |
 | Runtime config | `<core-data-directory>\runtime-config.json` |
 | WorkBuddy home | `WORKBUDDY_CONFIG_DIR`, else `%USERPROFILE%\.workbuddy` |
-| WorkBuddy hooks and MCP server | `hooks` in `<WorkBuddy home>\settings.json`, `mcpServers.scope-recall` in `<WorkBuddy home>\.mcp.json` |
+| WorkBuddy hooks and MCP server | `hooks` in `<WorkBuddy home>\settings.json`, `mcpServers.scope-recall` in `<WorkBuddy home>\mcp.json` |

@@ -1,12 +1,15 @@
-"""WorkBuddy host: hooks merged into WorkBuddy's own settings.json and the MCP stdio server into its .mcp.json, for a
+"""WorkBuddy host: hooks merged into WorkBuddy's own settings.json and the MCP stdio server into its mcp.json, for a
 WorkBuddy attached to a shared store.
 
 WorkBuddy has no store of its own here: ``scope-recall attach --host workbuddy`` makes its home an entry first, and
-this installer only tells WorkBuddy to run the hook client of ``adapters/codex`` for it.  WorkBuddy reads command
-hooks from ``hooks`` in ``settings.json`` and its user MCP servers from ``.mcp.json``, both in its own home
-(``~/.workbuddy``), when it starts.  So the target of this install is that home, which WorkBuddy shares: no file there
-is the installer's own.  The install adds or updates its own entries in those two files, keeps every other key, hook
-and server, and copies a file into the install's backups before changing it; uninstall takes out its own entries only.
+this installer only tells WorkBuddy to run the hook client of ``adapters/codex`` for it.  WorkBuddy's agent reads
+command hooks from ``hooks`` in ``settings.json`` in its own home (``~/.workbuddy``).  It reads no MCP server of its
+own: the desktop app starts it with ``--strict-mcp-config`` and only its connector proxy, which serves the user's
+servers listed in ``mcp.json`` there, each once the user has approved it in WorkBuddy.  (``.mcp.json`` beside it is
+the app's own record of that proxy, and nothing reads another server from it.)  So the target of this install is that
+home, which WorkBuddy shares: no file there is the installer's own.  The install adds or updates its own entries in
+those two files, keeps every other key, hook and server, and copies a file into the install's backups before changing
+it; uninstall takes out its own entries only.
 
 On Windows WorkBuddy runs a hook command through Git Bash (``bash -c``; elsewhere through ``$SHELL -c``), so every
 path in the command is a double-quoted forward-slash path.  A hook's ``timeout`` is in seconds, and a prompt hook that
@@ -30,8 +33,11 @@ from .install_common import RUNTIME_CONFIG_LIMIT, InstallError, InstallPlan, _re
 
 HOST = "workbuddy"
 SETTINGS_FILENAME = "settings.json"
-MCP_FILENAME = ".mcp.json"
+#: The user's own MCP servers (WorkBuddy's ``customMcpConfigPath``), not ``.mcp.json``.
+MCP_FILENAME = "mcp.json"
 SERVER_NAME = "scope-recall"
+#: What WorkBuddy shows beside the server in its MCP settings, where it waits to be approved.
+SERVER_DESCRIPTION = "Scope Recall: the memory this machine's agents share"
 #: The most a hook's own work takes once its interpreter has started: the entry's ``hook_processing_seconds``, at most
 #: 6 s (``runtime/instance.py``).  A Stop's record read is bounded inside it.
 HOOK_WORK_SECONDS = 6
@@ -41,10 +47,10 @@ START_SECONDS = 4
 #: The events recorded, and how many seconds WorkBuddy waits for each (60 unless a hook says otherwise).  WorkBuddy
 #: blocks a prompt whose hook runs past its wait, so each wait covers the start and the work: the claude-code host's.
 HOOK_TIMEOUTS = {"UserPromptSubmit": 15, "Stop": 10, "SessionEnd": 10}
-#: What the plan says once, whatever changed: hooks and MCP servers are read, and the server started, when WorkBuddy
-#: starts, and a running WorkBuddy may write settings.json itself.
-RESTART_NOTE = ("WorkBuddy reads its hooks and MCP servers when it starts: quit WorkBuddy before apply-install and "
-                "start it again after")
+#: What the plan says once, whatever changed: a running WorkBuddy may write settings.json itself, and it starts a new
+#: MCP server only once the user approves it.
+RESTART_NOTE = ("quit WorkBuddy before apply-install and start it again after; then approve the MCP server "
+                "scope-recall in WorkBuddy's MCP settings, where it waits for approval")
 _HOOK_MODULE = "scope_recall.adapters.codex.hook_entry"
 _REMOTE_MODULE = "scope_recall.adapters.codex.remote_client"
 _SERVER_MODULE = "scope_recall.adapters.codex.mcp_entry"
@@ -145,7 +151,8 @@ def _server(plan: InstallPlan) -> dict[str, Any]:
     args = ["-I", "-B", "-m", _SERVER_MODULE, "--home", plan.instance_root.as_posix(), "--host", HOST]
     if plan.env_file is not None:
         args += ["--env-file", plan.env_file.as_posix()]
-    return {"type": "stdio", "command": plan.python_executable.as_posix(), "args": args}
+    return {"type": "stdio", "command": plan.python_executable.as_posix(), "args": args,
+            "description": SERVER_DESCRIPTION}
 
 
 def words(command: object) -> list[str]:

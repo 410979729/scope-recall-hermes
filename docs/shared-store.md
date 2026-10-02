@@ -195,8 +195,11 @@ entries as for a Hermes home.
 
 ## Attach WorkBuddy
 
+Every process on the store, its worker included, must run 3.5.0 or later before WorkBuddy
+attaches: an older one does not know the host, and cannot replay a capture this entry queued.
+
 WorkBuddy attaches the same way, as the owner at this machine, and runs the same hooks and MCP
-server; its installer adds them to WorkBuddy's own `settings.json` and `.mcp.json` rather than
+server; its installer adds them to WorkBuddy's own `settings.json` and `mcp.json` rather than
 writing a plugin ([install.md](install.md), section 12, which also says what is not recorded):
 
 ```text
@@ -209,8 +212,9 @@ scope-recall apply-install --host workbuddy --instance-root D:\ScopeRecall\workb
     --env-file <the file with the embedding key>
 ```
 
-Quit WorkBuddy before `apply-install` and start it again after: it reads hooks and MCP servers
-when it starts. Its prompt hook asks the entry's MCP server for the recall as described above, and
+Quit WorkBuddy before `apply-install` and start it again after, then approve the MCP server
+`scope-recall` in WorkBuddy's MCP settings: WorkBuddy starts a server of `mcp.json` only once it
+is approved. Its prompt hook asks the entry's MCP server for the recall as described above, and
 its `Stop` reads WorkBuddy's session record. Take the hooks out with `apply-uninstall` before
 `detach`; `detach` alone leaves WorkBuddy's settings as they are.
 

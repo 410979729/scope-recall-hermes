@@ -2616,6 +2616,43 @@ def test_a_workbuddy_stop_records_what_was_said_between_tool_calls(workbuddy):
                                      ("assistant", "assistant_visible", "TEST 目录里有三个文件。")])
 
 
+def test_a_workbuddy_turn_whose_stop_never_came_keeps_its_message_from_being_stored_twice(workbuddy):
+    """A turn whose Stop never fired (WorkBuddy closed in the middle of it) stays kept.  The next Stop's read of the
+    record finds both of the person's messages under the turns their prompts opened, although the record keeps the
+    line breaks the hook had without, and stores neither again."""
+    root, home, projects = workbuddy
+    at = _wb_ms()
+    record = _wb_record(projects,
+                        _wb_line("user", "u1", at(0), "<user_query>TEST 第一行\nTEST 第二行</user_query>"),
+                        _wb_line("user", "u2", at(5), "<user_query>TEST 第三行\nTEST 第四行</user_query>"),
+                        _wb_line("assistant", "a2", at(6), "TEST 第二个回答。"))
+    _wb(home, _wb_prompt("TEST 第一行TEST 第二行"))
+    _wb(home, _wb_prompt("TEST 第三行TEST 第四行"))
+    _wb(home, _wb_stop(record, last="TEST 第二个回答。"))
+    assert _wb_said(root, "user") == [("user", "human_direct", "TEST 第一行TEST 第二行"),
+                                      ("user", "human_direct", "TEST 第三行TEST 第四行")]
+
+
+def test_the_entry_s_server_recalls_a_workbuddy_prompt_for_the_person_s_words_under_the_hook_s_turn(workbuddy,
+                                                                                                   monkeypatch):
+    """The entry's server answers the prompt hook's recall in a process of its own (``resident_recall_for``).  It takes
+    the person's words out of the prompt as the hook does, and the turn the hook kept for them, so the two recall the
+    same text under the same request."""
+    _root, home, _projects = workbuddy
+    prompt = _wb_prompt("<system-reminder>TEST 提醒。</system-reminder>\n<user_query>TEST 服务这边的问题。</user_query>",
+                        generation_id="TEST-request-9")
+    _wb(home, prompt)
+    asked = []
+    monkeypatch.setattr(CodexHookHandler, "_auto_recall",
+                        lambda self, context, text, request_id, *rest: asked.append((text, request_id)) or {})
+    server = CodexHookHandler.from_home(str(home), "workbuddy")
+    try:
+        server.resident_recall_for({"session_id": WB_SESSION, "cwd": "C:/TEST/work", **prompt}, (), (), 5.0)
+    finally:
+        server.close()
+    assert asked == [("TEST 服务这边的问题。", f"workbuddy-auto:{WB_SESSION}:TEST-request-9")]
+
+
 def test_a_workbuddy_agent_run_and_task_notice_are_not_the_person_s(workbuddy):
     """A subagent's hooks (its record id ``agent-*``) are an agent speaking, and a background task's notice is
     WorkBuddy's: neither is stored as the person's or recalled for.  ``agent_type`` alone names the agent that runs the

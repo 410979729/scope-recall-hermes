@@ -332,10 +332,14 @@ def _workbuddy_home(tmp_path):
         "claw": {"TEST": [1, 2]},
         "enabledPlugins": {"TEST-plugin@TEST-market": True},
     }
-    mcp = {"mcpServers": {"connector-proxy": {"type": "http", "url": "http://127.0.0.1:9/TEST",
-                                              "headers": {"X-TEST": "1"}}}}
+    # The person's own MCP servers.  WorkBuddy's .mcp.json beside them is the app's record of its connector proxy,
+    # which its agent is started with alone: no install touches it.
+    mcp = {"mcpServers": {"TEST-other-server": {"command": "C:/TEST/other.exe", "args": ["--TEST"],
+                                                "description": "TEST"}}}
     (home / "settings.json").write_text(json.dumps(settings, indent=2), encoding="utf-8")
-    (home / ".mcp.json").write_text(json.dumps(mcp, indent=2), encoding="utf-8")
+    (home / "mcp.json").write_text(json.dumps(mcp, indent=2), encoding="utf-8")
+    (home / ".mcp.json").write_text(json.dumps({"mcpServers": {"connector-proxy": {
+        "type": "http", "url": "http://127.0.0.1:9/mcp", "description": "TEST proxy"}}}, indent=2), encoding="utf-8")
     return home, settings, mcp
 
 
@@ -345,7 +349,7 @@ def _read(path):
 
 def test_a_workbuddy_entry_installs_into_workbuddy_s_own_files_and_uninstalls_only_its_own(tmp_path, capsys, root):
     """WorkBuddy joins a shared store as the other clients do, the owner at this machine.  Its hooks and MCP server go
-    into WorkBuddy's own settings.json and .mcp.json, beside whatever else is there; a copy of each file is kept
+    into WorkBuddy's own settings.json and mcp.json, beside whatever else is there; a copy of each file is kept
     first, a second install changes nothing, an older hook of this entry is updated where it stands, and uninstall
     takes out this entry's entries and nothing else."""
     first, _second = _hermes_pair(tmp_path, capsys, root)
@@ -363,24 +367,28 @@ def test_a_workbuddy_entry_installs_into_workbuddy_s_own_files_and_uninstalls_on
     assert (runtime.session_id, runtime.owner_id) == ("workbuddy-background", "workbuddy-scope-recall")
 
     workbuddy, settings, mcp = _workbuddy_home(tmp_path)
-    before = {name: (workbuddy / name).read_bytes() for name in ("settings.json", ".mcp.json")}
+    before = {name: (workbuddy / name).read_bytes() for name in ("settings.json", "mcp.json")}
+    proxy, present = (workbuddy / ".mcp.json").read_bytes(), {path.name for path in workbuddy.iterdir()}
     options = dict(host="workbuddy", target_plugin_dir=workbuddy, instance_root=entry, project_root=None,
                    agent_id=AGENT, python_executable=Path(sys.executable))
     plan = plan_install(**options)
     assert plan.conflicts == [], plan.conflicts
     changes = [(change.action, Path(change.path).name) for change in plan.changes]
-    assert ("merge", "settings.json") in changes and ("merge", ".mcp.json") in changes
+    assert ("merge", "settings.json") in changes and ("merge", "mcp.json") in changes
+    assert ".mcp.json" not in {name for _action, name in changes}
     assert changes[-1] == ("restart", ".workbuddy") and "start it again" in plan.changes[-1].detail
-    assert {path.name for path in workbuddy.iterdir()} == set(before), "a plan writes nothing"
+    assert "approve the MCP server scope-recall" in plan.changes[-1].detail
+    assert {path.name for path in workbuddy.iterdir()} == present, "a plan writes nothing"
 
     installed = apply_install(plan)
     assert installed.installation_id == config.installation_id
-    assert sorted(Path(path).name for path in installed.files_merged) == [".mcp.json", "settings.json"]
+    assert sorted(Path(path).name for path in installed.files_merged) == ["mcp.json", "settings.json"]
     assert not any(name in Path(path).name for path in installed.files_written for name in before), \
         "WorkBuddy's files are never the receipt's"
     copies = {Path(path).name: Path(path).read_bytes() for path in installed.backups if Path(path).name in before}
     assert copies == before, "each file is copied before it is changed"
-    assert {path.name for path in workbuddy.iterdir()} == set(before), "nothing else is left in WorkBuddy's home"
+    assert {path.name for path in workbuddy.iterdir()} == present, "nothing else is left in WorkBuddy's home"
+    assert (workbuddy / ".mcp.json").read_bytes() == proxy, "WorkBuddy's own proxy record is not touched"
 
     written = _read(workbuddy / "settings.json")
     assert list(written) == list(settings)
@@ -396,16 +404,17 @@ def test_a_workbuddy_entry_installs_into_workbuddy_s_own_files_and_uninstalls_on
     assert command.endswith(f' --home "{entry.as_posix()}" --host workbuddy')
     assert "\\" not in command and "~" not in command, "Git Bash reads a backslash as an escape and ~ as its own home"
     assert shlex.split(command)[0] == Path(sys.executable).as_posix()
-    servers = _read(workbuddy / ".mcp.json")["mcpServers"]
-    assert list(servers) == ["connector-proxy", "scope-recall"]
-    assert servers["connector-proxy"] == mcp["mcpServers"]["connector-proxy"]
-    assert servers["scope-recall"]["type"] == "stdio"
+    servers = _read(workbuddy / "mcp.json")["mcpServers"]
+    assert list(servers) == ["TEST-other-server", "scope-recall"]
+    assert servers["TEST-other-server"] == mcp["mcpServers"]["TEST-other-server"]
+    assert servers["scope-recall"]["type"] == "stdio" and servers["scope-recall"]["command"] == Path(sys.executable).as_posix()
+    assert servers["scope-recall"]["description"] == install_workbuddy.SERVER_DESCRIPTION
     assert servers["scope-recall"]["args"][-4:] == ["--home", entry.as_posix(), "--host", "workbuddy"]
 
     # Run again, as after an upgrade: WorkBuddy's files are not touched.
     stamps = {name: ((workbuddy / name).read_bytes(), (workbuddy / name).stat().st_mtime_ns) for name in before}
     plan = plan_install(**options)
-    assert {("unchanged", "settings.json"), ("unchanged", ".mcp.json")} <= {
+    assert {("unchanged", "settings.json"), ("unchanged", "mcp.json")} <= {
         (change.action, Path(change.path).name) for change in plan.changes}
     again = apply_install(plan)
     assert again.files_merged == [] and not any(Path(path).name in before for path in again.backups)
@@ -429,15 +438,15 @@ def test_a_workbuddy_entry_installs_into_workbuddy_s_own_files_and_uninstalls_on
 
     removal = plan_uninstall(instance_root=entry)
     assert removal.conflicts == [] and removal.files_to_remove == []
-    assert sorted(Path(path).name for path in removal.unmerged_files) == [".mcp.json", "settings.json"]
+    assert sorted(Path(path).name for path in removal.unmerged_files) == ["mcp.json", "settings.json"]
     held = {name: (workbuddy / name).read_bytes() for name in before}
     removed = apply_uninstall(removal)
-    assert sorted(Path(path).name for path in removed.unmerged_files) == [".mcp.json", "settings.json"]
+    assert sorted(Path(path).name for path in removed.unmerged_files) == ["mcp.json", "settings.json"]
     assert {Path(path).name: Path(path).read_bytes() for path in removed.backups} == held
     assert _read(workbuddy / "settings.json") == {**settings, "hooks": {
         "UserPromptSubmit": settings["hooks"]["UserPromptSubmit"],
         "Stop": [{"hooks": [{"type": "command", "command": "TEST-after"}]}]}}
-    assert _read(workbuddy / ".mcp.json") == mcp
+    assert _read(workbuddy / "mcp.json") == mcp and (workbuddy / ".mcp.json").read_bytes() == proxy
     assert plan_uninstall(instance_root=entry).unmerged_files == [], "nothing of this entry's is left"
 
     code, result = _run(capsys, "detach", "--instance-root", str(entry))
@@ -458,7 +467,7 @@ def test_a_workbuddy_install_refuses_what_it_cannot_merge_and_writes_nothing(tmp
     def conflicts(settings_value=None, mcp_value=None, *, settings_text=None):
         (workbuddy / "settings.json").write_text(settings_text if settings_text is not None else
                                                  json.dumps(settings_value or settings), encoding="utf-8")
-        (workbuddy / ".mcp.json").write_text(json.dumps(mcp_value or mcp), encoding="utf-8")
+        (workbuddy / "mcp.json").write_text(json.dumps(mcp_value or mcp), encoding="utf-8")
         before = {path.name: path.read_bytes() for path in workbuddy.iterdir()}
         found = plan_install(**options).conflicts
         assert {path.name: path.read_bytes() for path in workbuddy.iterdir()} == before
@@ -515,6 +524,19 @@ def test_a_workbuddy_hook_command_is_quoted_with_forward_slashes_and_its_wait_co
     for event, seconds in install_workbuddy.HOOK_TIMEOUTS.items():
         assert seconds >= install_workbuddy.HOOK_WORK_SECONDS + install_workbuddy.START_SECONDS, event
     assert remote_client.HOOK_TIMEOUTS["workbuddy"] == install_workbuddy.HOOK_TIMEOUTS
+
+
+def test_a_workbuddy_file_is_written_back_in_its_own_line_endings_and_byte_order_mark():
+    """WorkBuddy's files are written as WorkBuddy writes JSON, in the line endings, final newline and byte order mark
+    each had: a file saved by a Windows editor keeps its CRLF and its BOM."""
+    value = {"keep": "TEST 值", "hooks": {}}
+    windows = install_workbuddy.encode_config(value, b'\xef\xbb\xbf{\r\n  "keep": "TEST"\r\n}')
+    assert windows.startswith(b"\xef\xbb\xbf") and windows.count(b"\n") == windows.count(b"\r\n") > 0
+    assert not windows.endswith(b"\n"), "no final newline, as before"
+    assert json.loads(windows.decode("utf-8-sig")) == value
+    plain = install_workbuddy.encode_config(value, b'{\n  "keep": "TEST"\n}\n')
+    assert not plain.startswith(b"\xef\xbb\xbf") and b"\r" not in plain and plain.endswith(b"}\n")
+    assert install_workbuddy.encode_config(value, None).endswith(b"}\n"), "a new file ends with a newline"
 
 
 def test_a_client_writes_only_where_every_owner_row_reads(tmp_path, capsys, root):

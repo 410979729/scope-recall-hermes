@@ -132,3 +132,19 @@ def test_a_session_with_a_record_of_another_name_is_read_under_that_name(tmp_pat
                                             projects=projects) == record
     assert transcript.workbuddy_record_path(None, "TEST-session", record_id="../TEST-store-id",
                                             projects=projects) is None, "an id that is a path names nothing"
+    # A record under the session's own id beside it is not the one WorkBuddy writes on in.
+    (record.parent / "TEST-session.jsonl").write_text("", encoding="utf-8")
+    assert transcript.workbuddy_record_path(None, "TEST-session", record_id="TEST-store-id",
+                                            projects=projects) == record
+
+
+def test_an_id_that_is_a_path_reaches_no_file_outside_the_workspace_folders(tmp_path):
+    """The record is looked for by name in the workspace folders only.  An id with a separator, a drive or a dot
+    segment names nothing, even where such a path would lead to a file that exists."""
+    projects = tmp_path / "TEST-projects"
+    (projects / "c--TEST-work").mkdir(parents=True)
+    (projects / "TEST-escaped.jsonl").write_text("", encoding="utf-8")
+    (tmp_path / "TEST-outside.jsonl").write_text("", encoding="utf-8")
+    for name in ("../TEST-escaped", "..\\TEST-escaped", str(tmp_path / "TEST-outside")):
+        assert transcript.workbuddy_record_path(None, name, projects=projects) is None, name
+        assert transcript.workbuddy_record_path(None, "TEST-session", record_id=name, projects=projects) is None, name
