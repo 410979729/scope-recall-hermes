@@ -32,6 +32,7 @@ from .boundary import (
     is_codex_suggestions_reply,
     is_task_notification,
     is_workbuddy_agent_run,
+    is_workbuddy_notice,
     lifecycle_source_event,
     recorded_source_event,
     tool_use_source_event,
@@ -720,7 +721,7 @@ class CodexHookHandler:
                 return {}
             # Only the person's words are stored and recalled for, never what WorkBuddy wraps around them.
             prompt = workbuddy_person_text(prompt)
-            notice = is_task_notification(prompt)
+            notice = is_workbuddy_notice(prompt)
             # A turn is kept for a notice too, so that the reply to it is stored under a turn of its own.
             turn_id, gaps = _open_turn(self.config, session_id, payload, None if notice else prompt,
                                        self.clock.utc_now()), ()
@@ -733,10 +734,12 @@ class CodexHookHandler:
             if type(prompt) is not str:
                 self._diag("missing_prompt", gaps=(*gaps, "capability_gap:missing_prompt"))
                 return {}
-        if self.host in ("claude-code", "workbuddy") and is_task_notification(prompt):
+            notice = self.host == "claude-code" and is_task_notification(prompt)
+        if notice:
             # Claude Code's own notice that a background task finished: recorded as the owner's words it
             # became a message they never wrote, and a recall on it answers nothing they asked.  WorkBuddy
-            # hands its model the same notice (its ``BackgroundTaskNotifier``).
+            # hands its model the same notice (its ``BackgroundTaskNotifier``), and a Stop hook's or a goal's
+            # request to go on.
             self._diag("task_notification")
             return {}
         if self.host == "codex" and is_codex_suggestions_prompt(prompt):
@@ -900,7 +903,8 @@ class CodexHookHandler:
         # What the hook would have recalled nothing for, or recalled without the vector channel, is not asked here;
         # the server checks again rather than take the hook's word for it.
         if (turn_id is None or type(prompt) is not str or not prompt.strip() or contains_secret_like_text(prompt)
-                or (self.host in ("claude-code", "workbuddy") and is_task_notification(prompt))
+                or (self.host == "claude-code" and is_task_notification(prompt))
+                or (self.host == "workbuddy" and is_workbuddy_notice(prompt))
                 or (self.host == "codex" and is_codex_suggestions_prompt(prompt))):
             return {}
         deadline = self.clock.monotonic() + max(0.0, remaining)

@@ -372,7 +372,7 @@ def test_a_workbuddy_client_merges_its_hooks_and_server_into_workbuddy_s_own_fil
         {key: value for key, value in settings.items() if key != "hooks"}
     assert written["hooks"]["Stop"][0] == settings["hooks"]["Stop"][0], "another tool's hook stays first"
     command = written["hooks"]["Stop"][-1]["hooks"][0]["command"]
-    assert shlex.split(command) == remote_client._hook_argv(config)
+    assert shlex.split(command) == [*remote_client._hook_argv(config), "||", "exit", "1"], "a failure never blocks"
     assert command.startswith('"') and "\\" not in command, "Git Bash runs it: quoted, forward slashes"
     assert {event: groups[-1]["hooks"][0]["timeout"] for event, groups in written["hooks"].items()} == \
         remote_client.HOOK_TIMEOUTS["workbuddy"]

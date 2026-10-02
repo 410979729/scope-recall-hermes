@@ -62,6 +62,16 @@ def is_task_notification(prompt: str) -> bool:
     return prompt.lstrip().startswith(TASK_NOTIFICATION_PREFIX)
 
 
+#: How WorkBuddy opens the message it hands its model, and so its prompt hook, when a Stop hook or a goal asks the
+#: turn to go on (its record marks the message ``providerData.isMeta``).
+WORKBUDDY_FEEDBACK_PREFIX = "Stop hook feedback:"
+
+
+def is_workbuddy_notice(prompt: str) -> bool:
+    """Whether a WorkBuddy prompt is WorkBuddy's own: a background task's notice, or a request to go on."""
+    return is_task_notification(prompt) or prompt.lstrip().startswith(WORKBUDDY_FEEDBACK_PREFIX)
+
+
 #: What WorkBuddy wraps around the person's words in a message: its reminders, and the block that holds what was typed.
 #: Its prompt hook strips both itself (as of 5.3.14); its session record keeps them.
 _WORKBUDDY_REMINDER = re.compile(r"<system-reminder\b[^>]*>.*?</system-reminder>\s*", re.DOTALL)

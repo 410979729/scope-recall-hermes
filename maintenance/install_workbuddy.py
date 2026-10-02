@@ -51,6 +51,10 @@ HOOK_TIMEOUTS = {"UserPromptSubmit": 15, "Stop": 10, "SessionEnd": 10}
 #: MCP server only once the user approves it.
 RESTART_NOTE = ("quit WorkBuddy before apply-install and start it again after; then approve the MCP server "
                 "scope-recall in WorkBuddy's MCP settings, where it waits for approval")
+#: What ends every hook command.  WorkBuddy blocks the prompt when its hook exits 2 (and a Stop hook's 2 asks the
+#: model to go on), which is argparse's code when the package predates an option the command names, as after a
+#: rollback: any failure is shown as 1 instead, which WorkBuddy reports and lets the prompt through.
+FAIL_OPEN = " || exit 1"
 _HOOK_MODULE = "scope_recall.adapters.codex.hook_entry"
 _REMOTE_MODULE = "scope_recall.adapters.codex.remote_client"
 _SERVER_MODULE = "scope_recall.adapters.codex.mcp_entry"
@@ -144,7 +148,7 @@ def hook_command(plan: InstallPlan) -> str:
                f"--home {quoted(plan.instance_root, 'home')} --host {HOST}")
     if plan.env_file is not None:
         command += f" --env-file {quoted(plan.env_file, 'env file')}"
-    return command
+    return command + FAIL_OPEN
 
 
 def _server(plan: InstallPlan) -> dict[str, Any]:

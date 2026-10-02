@@ -833,8 +833,8 @@ exist. `apply-install`:
 
 On Windows WorkBuddy runs a hook through Git Bash, so Git for Windows must be installed; without
 it WorkBuddy uses PowerShell, which cannot run this command. The command is
-`"<python>" -I -B -m scope_recall.adapters.codex.hook_entry --home "<instance-root>" --host workbuddy`
-with forward slashes, plus `--env-file "<file>"`: keep those paths to printable ASCII without
+`"<python>" -I -B -m scope_recall.adapters.codex.hook_entry --home "<instance-root>" --host workbuddy || exit 1`
+with forward slashes, plus `--env-file "<file>"` before the `||`: keep those paths to printable ASCII without
 `"`, `$`, `` ` `` or `\`; `apply-install` refuses others. WorkBuddy's `timeout` is in seconds,
 and a prompt hook that runs past it blocks the prompt: the hooks wait 15 s (`UserPromptSubmit`)
 and 10 s (`Stop`, `SessionEnd`), the interpreter's start plus the entry's
@@ -873,6 +873,15 @@ Known limits:
 - A user message in WorkBuddy's session record counts as the owner's only inside its
   `<user_query>` blocks; command and shell output, a teammate's report or a slash command's
   expansion there is not stored as the owner's words.
+- Messages sent while a turn runs reach the next prompt hook as the last of them only. The others
+  are stored from the session record when that turn ends, together with the last, which is so
+  stored twice.
+- A prompt WorkBuddy sends on its own, a session cron's or a goal's start, reaches the prompt hook
+  as the owner's would and is stored as theirs. A background task's notice and a Stop hook's or a
+  goal's request to go on (`Stop hook feedback:`) are skipped.
+- The hook command ends in `|| exit 1`: WorkBuddy blocks a prompt whose hook exits 2, which an
+  older package that does not know `--host workbuddy` would. Before rolling the package back below
+  3.5.0, take the hooks out with `apply-uninstall`; an older package cannot.
 - A subagent's work is not recorded: WorkBuddy fires no prompt or `Stop` hook for it, and its
   record is not read.
 - Not done: `doctor` does not check WorkBuddy's settings, and the `scope-recall-memory` skill is

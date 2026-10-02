@@ -462,7 +462,7 @@ def workbuddy_files(config: dict[str, Any], home: Path) -> dict[Path, bytes]:
     changed = {}
     try:
         command = " ".join([workbuddy.quoted(Path(argv[0]), "interpreter"), *argv[1:-1],
-                            workbuddy.quoted(config["config"], "client.json")])
+                            workbuddy.quoted(config["config"], "client.json")]) + workbuddy.FAIL_OPEN
         for name in (workbuddy.SETTINGS_FILENAME, workbuddy.MCP_FILENAME):
             value, raw = workbuddy.read_config(home / name)
             merged = (workbuddy.with_hooks(value, command, HOOK_TIMEOUTS["workbuddy"], this_client)

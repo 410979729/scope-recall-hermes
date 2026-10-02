@@ -2666,6 +2666,9 @@ def test_a_workbuddy_agent_run_and_task_notice_are_not_the_person_s(workbuddy):
     notice = "<task-notification><task-id>TEST</task-id><status>completed</status></task-notification>"
     result, diagnostics = _wb(home, _wb_prompt(notice))
     assert result == {} and diagnostics.last_reason == "task_notification"
+    # A Stop hook's or a goal's request that the turn go on, as WorkBuddy hands it to the hook (newlines removed).
+    result, diagnostics = _wb(home, _wb_prompt("Stop hook feedback:[TEST 目标]: TEST 还没完成，继续。"))
+    assert result == {} and diagnostics.last_reason == "task_notification"
     _wb(home, _wb_prompt("TEST 一句真话。", agent_type="craft"))
     _wb(home, _wb_stop(last="TEST 好的。", agent_type="craft"))
     assert _wb_said(root) == sorted([("user", "human_direct", "TEST 一句真话。"),

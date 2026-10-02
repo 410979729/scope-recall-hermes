@@ -401,7 +401,7 @@ def test_a_workbuddy_entry_installs_into_workbuddy_s_own_files_and_uninstalls_on
     command = ours["UserPromptSubmit"][0]["command"]
     assert all(hooks[0]["command"] == command for hooks in ours.values())
     assert command.startswith(f'"{Path(sys.executable).as_posix()}" -I -B -m scope_recall.adapters.codex.hook_entry ')
-    assert command.endswith(f' --home "{entry.as_posix()}" --host workbuddy')
+    assert command.endswith(f' --home "{entry.as_posix()}" --host workbuddy || exit 1')
     assert "\\" not in command and "~" not in command, "Git Bash reads a backslash as an escape and ~ as its own home"
     assert shlex.split(command)[0] == Path(sys.executable).as_posix()
     servers = _read(workbuddy / "mcp.json")["mcpServers"]
@@ -509,7 +509,10 @@ def test_a_workbuddy_hook_command_is_quoted_with_forward_slashes_and_its_wait_co
     assert "\\" not in command and "~" not in command
     assert shlex.split(command) == ["C:/TEST venv/Scripts/python.exe", "-I", "-B", "-m",
                                     "scope_recall.adapters.codex.hook_entry", "--home", "D:/TEST homes/workbuddy",
-                                    "--host", "workbuddy", "--env-file", "D:/TEST homes/embedding.env"]
+                                    "--host", "workbuddy", "--env-file", "D:/TEST homes/embedding.env",
+                                    "||", "exit", "1"]
+    # WorkBuddy blocks the prompt on a hook's exit 2, argparse's code when an older package does not know an option.
+    assert command.endswith(" || exit 1")
     for unsafe in ("C:/TEST$HOME/python.exe", "C:/TEST`id`/python.exe", 'C:/TEST"/python.exe', "C:/TEST/" + chr(0x5929)):
         with pytest.raises(InstallError, match="Git Bash"):
             install_workbuddy.quoted(Path(unsafe), "interpreter")
