@@ -853,7 +853,7 @@ the session, the words and the moment, kept in `<instance-root>\scope-recall\tur
 session ends (a day at most). The MCP server serves the tools. WorkBuddy 5.6.2 starts it for each
 turn and stops it after, so it cannot keep the vector search warm for the prompt hook as Claude
 Code's and Codex's servers do (see the known limits below). Until it is approved the hooks still
-store and recall.
+store and recall, each prompt's recall then starting its own vector search.
 
 To check it: `doctor --host workbuddy --instance-root <instance-root>` checks the binding and the
 store (it does not read WorkBuddy's settings; `host_registration_status: pending` is healthy, as
@@ -869,11 +869,13 @@ then ends the entry. `detach` alone leaves WorkBuddy's settings as they are.
 
 Known limits:
 
-- A WorkBuddy prompt is recalled without the vector search: by its words and the stored structure
-  only. WorkBuddy starts this entry's MCP server when a turn starts, a second before the prompt
-  hook, and stops it after the turn; the hook's recall meets a server still opening its vector
-  store (`helper_lock_timeout` among the packet's gaps). Measured on WorkBuddy 5.6.2, three turns
-  in two conversations.
+- Once the server is approved, a prompt of a WorkBuddy entry on this machine is recalled without
+  the vector search: by its words and the stored structure only. WorkBuddy starts this entry's MCP
+  server when a turn starts, a second before the prompt hook, and stops it after the turn; the
+  hook's recall meets a server still opening its vector store (`helper_lock_timeout` among the
+  packet's gaps). Measured on WorkBuddy 5.6.2, three turns in two conversations. A WorkBuddy on
+  another machine is answered by its entry's server here, which runs on
+  ([remote-entries.md](remote-entries.md)).
 - WorkBuddy hands the prompt hook a prompt with its line breaks removed, so a multi-line message
   is stored as one line.
 - WorkBuddy fires `Stop` for a cancelled or failed turn too, with the previous turn's reply; a

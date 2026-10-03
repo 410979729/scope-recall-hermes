@@ -4,36 +4,58 @@ All notable changes to `scope-recall` will be documented in this file.
 
 ## [3.5.0] - 2026-10-03
 
-3.5.0 brings WorkBuddy into the shared store, and keeps the first recall after an idle stretch whole. On this machine's Claude Code, a prompt after 40 or more idle minutes lost its vector search 9 times in 29 before 3.5.0. On the six measured on 3.5.0's candidates it lost it on none, and none ran past its time in the store's own search, where 4 of the last 6 hourly prompts before had.
+3.5.0 brings WorkBuddy into the shared store, and keeps the first recall after an idle stretch whole. Measured on this machine's Claude Code, on the prompts that came after 40 or more idle minutes:
+
+- On 3.4.10 and 3.5.0rc1 (2026-10-01 15:55 to 2026-10-02 13:18, UTC-4), 7 of 18 such prompts lost their vector search or ran past their time in the store's own search: 4 lost the vector search, 5 ran past their time, and 2 did both.
+- On 3.5.0rc3 and rc4 (2026-10-02 18:30 to 2026-10-03 05:30), none of 6 did either.
+- Left out of the second count: a prompt that met a server still starting after a session restart, and one at 17:30, when a copy of the store had just read the whole file into the system's cache.
+
+### Requirements
+
+- WorkBuddy on Windows needs Git for Windows. WorkBuddy runs hook commands through Git Bash, and without it through PowerShell, which cannot run them.
 
 ### WorkBuddy
 
-- WorkBuddy (the CodeBuddy team's desktop agent workbench) joins a shared store as an entry, the owner at this machine: `attach --host workbuddy`, then `apply-install --host workbuddy` with WorkBuddy quit, then approve the MCP server `scope-recall` once in WorkBuddy ([docs/install.md](docs/install.md), section 12).
-- Each prompt is stored and what is remembered is put in front of it. Each reply is stored at `Stop`, together with the text shown between tool calls, read from WorkBuddy's session record. On WorkBuddy 5.6.2 the prompts and replies of three turns were stored as the entry's, and its recalls brought back what other entries had stored.
-- `apply-install` adds three command hooks to `settings.json` in WorkBuddy's home and the server `scope-recall` to `mcp.json` there. It keeps every other key, hook and server, and copies each file to the entry's backups first. `apply-uninstall` takes out only this entry's hooks and server. A WorkBuddy on another machine joins through the remote client (`"host": "workbuddy"` in `client.json`).
-- Upgrade order: every process on the store must run 3.5.0 before a WorkBuddy entry attaches, the shared worker first. Take WorkBuddy's hooks out with `apply-uninstall` before rolling back below 3.5.0: every hook command ends in `|| exit 1`, and an older package cannot remove them.
+- WorkBuddy (the CodeBuddy team's desktop agent workbench) joins a shared store as an entry, the owner at this machine. Run `attach --host workbuddy`, then `apply-install --host workbuddy` with WorkBuddy quit, then approve the MCP server `scope-recall` once in WorkBuddy ([docs/install.md, section 12](https://github.com/410979729/scope-recall-hermes/blob/v3.5.0/docs/install.md#12-workbuddy)).
+- Each prompt is stored, and what is remembered is put in front of it. Each reply is stored at `Stop`, together with the text shown between tool calls, read from WorkBuddy's session record. On WorkBuddy 5.6.2, the prompts and replies of three turns were stored as the entry's, and its recalls brought back what other entries had stored.
+- `apply-install` adds three command hooks to `settings.json` in WorkBuddy's home: `UserPromptSubmit` waits 15 s, `Stop` and `SessionEnd` 10 s each. It adds the server `scope-recall` to `mcp.json` there.
+  - It keeps every other key, hook and server, and copies each file to the entry's backups first.
+  - It refuses beside another Scope Recall hook, beside a `scope-recall` server that is not this entry's, and on a file with comments.
+  - `apply-uninstall` takes out only this entry's hooks and server.
+- A WorkBuddy on another machine joins through the remote client (`"host": "workbuddy"` in `client.json`).
 - Known limits:
-  - A WorkBuddy prompt is recalled without the vector search, by its words and the stored structure only. WorkBuddy starts the MCP server for each turn and stops it after, so the prompt's recall meets a server still opening its vector store (`helper_lock_timeout`).
-  - A multi-line message is stored as one line, and a subagent's work is not recorded.
-  - A session cron's or a goal's first prompt is stored as the owner's.
-  - `doctor` does not read WorkBuddy's settings.
+  - Once its MCP server is approved, a prompt of a WorkBuddy entry on this machine is recalled without the vector search, by its words and the stored structure only. WorkBuddy starts that server for each turn and stops it after, so the prompt's recall meets a server still opening its vector store (`helper_lock_timeout`). A WorkBuddy on another machine is answered by its entry's server here, which runs on.
+  - A multi-line message is stored as one line. Of the messages sent while a turn runs, the last is stored twice.
+  - A subagent's work is not recorded. A session cron's or a goal's first prompt is stored as the owner's.
+  - `doctor` does not read WorkBuddy's settings, and the `scope-recall-memory` skill is not installed into WorkBuddy.
 
 ### Recall after an idle stretch
 
-- A server that answers its client's prompt recalls searches its vector store once more after each 10 minutes without a recall that searched it. These servers are the MCP servers of Codex and Claude Code, and an entry's server for another machine. Left alone, the OS gave the index's pages to other work, and the first recall after an idle hour searched past its time and recalled by words alone.
-- The store's operations read it through a memory map (`SQLiteStorage`). A hook recall read every page it touched with a read call of its own: 151,000 of them for a 3,800-character prompt. Through the map they come from the system's file cache, and a recall takes about 40 % less time, warm or cold. On a copy of the shared store it took 0.73-0.76 s instead of 1.20-1.76 s warm, and 1.64-1.69 s instead of 2.68-3.11 s cold.
-  - SQLite maps at most its build's limit, 2,147,418,112 bytes in Python's builds. Past it a store is read as before, so the gain fades as a store grows beyond it.
-  - An I/O error on a mapped page ends the process instead of failing the read. A file another process maps cannot shrink: `VACUUM` leaves it at its size, and nothing here runs one.
+- A server that answers its client's prompt recalls now searches its vector store once more after each 10 minutes without a recall that searched it. That covers the MCP servers of Codex and Claude Code entries of a shared store, and an entry's server for another machine. Left alone, the OS gave the index's pages to other work, and the first recall after an idle hour searched past its time and recalled by words alone.
+- The store's operations read it through a memory map (`SQLiteStorage`). A hook recall read every page it touched with a read call of its own: 151,000 of them for a 3,800-character prompt. Through the map the pages come from the system's file cache, and a recall takes about 40 % less time, warm or cold. On a copy of the shared store, that prompt's recall took 0.73-0.76 s instead of 1.20-1.76 s warm, and 1.64-1.69 s instead of 2.68-3.11 s cold.
+  - SQLite maps at most its build's limit, 2,147,418,112 bytes in Python's builds. Past it, the rest of the file is read as before, so the gain fades as a store grows beyond it.
+  - An I/O error on a mapped page ends the process instead of failing the read. On Windows, a file another process maps cannot shrink: `VACUUM` leaves it at its size, and nothing here runs one.
 
 ### Fixes
 
-- A transaction whose first statements failed (reading the store's version, switching a writer to WAL) left its connection open. A writable one kept the writer lease until its process ended, and every other process's writes failed. The connection is now closed before the failure returns.
-- A Hermes gateway keeps one vector helper for all the agents it makes.
-  - Before, it attached a runtime, with a helper of about 1.15 GB, for every agent, and Hermes did not always shut down the one it made before: yuheng's gateway held two on 2026-10-02.
+- A transaction whose first statements failed left its connection open: reading the store's version, or switching a writer to WAL. A writable one kept the writer lease until its process ended, and every other process's writes failed. The connection is now closed before the failure returns.
+- On Windows, a Hermes gateway keeps one vector helper for all the agents it makes.
+  - Before, it attached a runtime, with a helper of about 1.15 GB, for every agent. Hermes did not always shut down the one it made before: yuheng's gateway held two on 2026-10-02.
+  - The gateway's sessions take turns on that helper, as a server's prompts do.
   - No spare helper starts while a store the process shares holds a live helper.
   - A provider's shutdown no longer stops the helper; it ends with the gateway.
 
-## [3.5.0 candidates] - 2026-10-03
+### Upgrading from 3.4.10
+
+1. Stop the hosts, the Scope Recall worker and any remote entry's server, and take a `backup`.
+2. Install the 3.5.0 package, then run `plan-install` and `apply-install` for each host.
+3. Start the hosts and any remote entry's server again, and run `doctor`. A Claude Code or Codex server keeps the code it started with until its client restarts.
+4. Attach a WorkBuddy entry only once every process on the store runs 3.5.0, the shared worker first. An older process does not know the host and cannot replay that entry's queued captures.
+5. Before going back to 3.4.x or older, take WorkBuddy's hooks out with `apply-uninstall`, or a remote client's by hand. An older package does not know `--host workbuddy`, so every hook would fail on every turn. Each hook command ends in `|| exit 1`, so WorkBuddy reports the failure and lets the prompt through, but an older package cannot take the hooks out.
+
+The store's schema is unchanged (1110). Every change, with its details, is in [CHANGELOG.md](https://github.com/410979729/scope-recall-hermes/blob/v3.5.0/CHANGELOG.md).
+
+## [3.5.0 candidates] - 2026-10-02 to 2026-10-03
 
 ### Scope Recall 3.5.0rc4 - 2026-10-03
 

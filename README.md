@@ -1,4 +1,4 @@
-# Scope Recall 3.4 autonomous memory
+# Scope Recall 3.5 autonomous memory
 
 Scope Recall v3 is a bounded local memory core with SQLite as the authority and rebuildable vector companions. It provides host adapters for Hermes, Codex and Claude Code (the last two share one adapter of hooks and an MCP server), with the MCP tools when the optional `codex` extra is installed. The public package is `hermes-scope-recall`; the Python import is `scope_recall`; the host wrapper identity remains `scope-recall`.
 WorkBuddy runs that same hook adapter and MCP server, as an entry of a shared store.
@@ -8,7 +8,7 @@ store as an entry, what the owner tells one of them another can recall, and each
 which agent it came in through ([docs/shared-store.md](docs/shared-store.md)). Hermes agents
 could share a store from 3.2.0; Codex and Claude Code join in 3.3.0. An agent that is not
 attached keeps its own store. A tool's output is still kept and found, but no longer turned
-into facts. The notes are the `[3.4.x]` sections of [CHANGELOG.md](CHANGELOG.md), newest first; upgrading
+into facts. The notes are the `[3.5.0]` and `[3.4.x]` sections of [CHANGELOG.md](CHANGELOG.md), newest first; upgrading
 from `3.4.x`, `3.3.x` or `3.2.x` is `pip install -U`, `apply-install` and a host restart, and the store's
 schema does not change; on a shared store in the shipped embedding space, set `vector_threshold`
 from 0.653 to 0.70 by hand ([docs/configuration.md](docs/configuration.md#vector_threshold)). From `3.1.x` the store moves to schema 1110 the first time it is opened,
