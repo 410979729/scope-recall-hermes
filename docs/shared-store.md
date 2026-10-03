@@ -215,9 +215,10 @@ scope-recall apply-install --host workbuddy --instance-root D:\ScopeRecall\workb
 
 Quit WorkBuddy before `apply-install` and start it again after, then approve the MCP server
 `scope-recall` in WorkBuddy's MCP settings: WorkBuddy starts a server of `mcp.json` only once it
-is approved. Its prompt hook asks the entry's MCP server for the recall as described above, but
-WorkBuddy 5.6.2 starts that server for each turn and stops it after, so a prompt is recalled without
-the vector search ([install.md](install.md), section 12, known limits). Its `Stop` reads WorkBuddy's
+is approved. Its prompt hook asks the entry's MCP server for the recall as described above.
+WorkBuddy 5.6.2 runs that server inside a conversation's agent process, so the prompt that starts
+the process is recalled without the vector search ([install.md](install.md), section 12, known
+limits). Its `Stop` reads WorkBuddy's
 session record. Take the hooks out with `apply-uninstall` before
 `detach`; `detach` alone leaves WorkBuddy's settings as they are.
 

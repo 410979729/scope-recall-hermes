@@ -24,14 +24,17 @@ All notable changes to `scope-recall` will be documented in this file.
   - `apply-uninstall` takes out only this entry's hooks and server.
 - A WorkBuddy on another machine joins through the remote client (`"host": "workbuddy"` in `client.json`).
 - Known limits:
-  - Once its MCP server is approved, a prompt of a WorkBuddy entry on this machine is recalled without the vector search, by its words and the stored structure only. WorkBuddy starts that server for each turn and stops it after, so the prompt's recall meets a server still opening its vector store (`helper_lock_timeout`). A WorkBuddy on another machine is answered by its entry's server here, which runs on.
+  - The prompt that makes WorkBuddy start a conversation's agent process is recalled without the vector search, by its words and the stored structure only (`helper_lock_timeout`).
+    - WorkBuddy 5.6.2 starts its MCP servers with that process: when a conversation opens, or when a prompt comes to a conversation that has none. That prompt's recall meets this entry's server still opening its vector store. All three prompts measured were such prompts.
+    - WorkBuddy keeps the process between turns, and a prompt to a running process is answered by its server. One that had run 74 minutes without a turn answered a test recall, asked as the hook asks, with its vector search in 3.1 s.
+    - A WorkBuddy on another machine is answered by its entry's server here, which runs on.
   - A multi-line message is stored as one line. Of the messages sent while a turn runs, the last is stored twice.
   - A subagent's work is not recorded. A session cron's or a goal's first prompt is stored as the owner's.
   - `doctor` does not read WorkBuddy's settings, and the `scope-recall-memory` skill is not installed into WorkBuddy.
 
 ### Recall after an idle stretch
 
-- A server that answers its client's prompt recalls now searches its vector store once more after each 10 minutes without a recall that searched it. That covers the MCP servers of Codex and Claude Code entries of a shared store, and an entry's server for another machine. Left alone, the OS gave the index's pages to other work, and the first recall after an idle hour searched past its time and recalled by words alone.
+- A server that answers its client's prompt recalls now searches its vector store once more after each 10 minutes without a recall that searched it. That covers the MCP servers of Codex, Claude Code and WorkBuddy entries of a shared store (WorkBuddy's while its conversation's process runs), and an entry's server for another machine. Left alone, the OS gave the index's pages to other work, and the first recall after an idle hour searched past its time and recalled by words alone.
 - The store's operations read it through a memory map (`SQLiteStorage`). A hook recall read every page it touched with a read call of its own: 151,000 of them for a 3,800-character prompt. Through the map the pages come from the system's file cache, and a recall takes about 40 % less time, warm or cold. On a copy of the shared store, that prompt's recall took 0.73-0.76 s instead of 1.20-1.76 s warm, and 1.64-1.69 s instead of 2.68-3.11 s cold.
   - SQLite maps at most its build's limit, 2,147,418,112 bytes in Python's builds. Past it, the rest of the file is read as before, so the gain fades as a store grows beyond it.
   - An I/O error on a mapped page ends the process instead of failing the read. On Windows, a file another process maps cannot shrink: `VACUUM` leaves it at its size, and nothing here runs one.
