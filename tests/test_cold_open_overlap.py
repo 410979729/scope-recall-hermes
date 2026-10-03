@@ -239,6 +239,23 @@ def test_a_server_s_runtimes_search_one_store_with_one_helper(tmp_path,monkeypat
         native._close_shared()
 
 
+def test_a_spare_is_not_started_once_the_shared_store_serves(tmp_path,monkeypatch):
+    """A Hermes gateway asks for a helper ahead each time it binds an agent, and shares its stores since 3.5.0rc4: once
+    the shared store holds its helper, a spare started for a later agent would never be taken (about 0.55 GB idle)."""
+    log, spawned = _sharing(tmp_path, monkeypatch)
+    native.prestart()  # the first agent's, which the shared store's open takes
+    assert spawned==[1] and native._spare is not None, "nothing serves yet: the spare is started"
+    view=native.store_for(tmp_path/'lancedb',table_name='PUBLIC',dimensions=2)
+    try:
+        with using_request_deadline(RequestDeadline.from_budget(5)):
+            view.open_existing()
+        assert spawned==[1] and native._spare is None
+        native.prestart()  # a later agent's
+        assert spawned==[1] and native._spare is None
+    finally:
+        native._close_shared()
+
+
 def test_a_shared_store_whose_helper_failed_is_opened_again(tmp_path,monkeypatch):
     log, spawned = _sharing(tmp_path, monkeypatch)
     view=native.store_for(tmp_path/'lancedb',table_name='PUBLIC',dimensions=2)
