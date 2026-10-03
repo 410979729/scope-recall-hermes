@@ -176,9 +176,10 @@ recalled by a handler of its own, as before. It is made anew when the env file o
 after a recall that raised, or when its runtime could not be attached. A recall that fails in the server is answered as
 failed, with the last frames of its traceback on the server's stderr (the client's MCP log). It reads its key again at the next prompt
 after its env file or the runtime config changed, or when it could not read them before. A server
-started before an upgrade is not asked until its client restarts. Each open client keeps the LanceDB
-helper of its kept handler open, and one more ready for a recall that comes while that one is busy: about
-550 MB of committed memory each, which the system pages out while they are idle. Each prompt hook still starts one of its own, which
+started before an upgrade is not asked until its client restarts. Each open client keeps one LanceDB
+helper, which its kept handler, the handlers made for prompts that come meanwhile and its tools share (3.4.9).
+The system pages it out while it is idle, and the server searches it once more after each 10 minutes
+without a recall that searched it (3.5.0). Each prompt hook still starts one of its own, which
 ends with the hook, once its import is done, when the hook did not need it.
 
 Claude Code or Codex on another machine attaches the same way, under a name of its own, and reaches
@@ -214,8 +215,11 @@ scope-recall apply-install --host workbuddy --instance-root D:\ScopeRecall\workb
 
 Quit WorkBuddy before `apply-install` and start it again after, then approve the MCP server
 `scope-recall` in WorkBuddy's MCP settings: WorkBuddy starts a server of `mcp.json` only once it
-is approved. Its prompt hook asks the entry's MCP server for the recall as described above, and
-its `Stop` reads WorkBuddy's session record. Take the hooks out with `apply-uninstall` before
+is approved. Its prompt hook asks the entry's MCP server for the recall as described above.
+WorkBuddy 5.6.2 runs that server inside a conversation's agent process, so the prompt that starts
+the process is recalled without the vector search ([install.md](install.md), section 12, known
+limits). Its `Stop` reads WorkBuddy's
+session record. Take the hooks out with `apply-uninstall` before
 `detach`; `detach` alone leaves WorkBuddy's settings as they are.
 
 ## Check
