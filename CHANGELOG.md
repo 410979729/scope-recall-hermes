@@ -2,7 +2,15 @@
 
 All notable changes to `scope-recall` will be documented in this file.
 
-## [3.5.0 candidates] - 2026-10-02
+## [3.5.0 candidates] - 2026-10-03
+
+### Scope Recall 3.5.0rc4 - 2026-10-03
+
+- The version moves past the `v3.5.0rc3` tag.
+- A Hermes gateway keeps one vector helper, whatever number of agents it makes. Every runtime of the process searches one store of each table through one helper, as a server's runtimes already did (`vector.process_store.share`).
+  - Before, the gateway attached a runtime, with a helper of its own (about 1.15 GB), for every agent it made. Hermes did not always shut down the one it made before.
+  - On 2026-10-02, yuheng's gateway held two helpers after its agent was made again: one per registration of the provider, at 19:20 and 22:42. Tianji's held one for its one registration. The machine stood at 96 % of its commit limit.
+- A process that shares its stores starts no spare helper once a shared store holds its helper. A gateway asks for one each time it binds an agent, and that spare would never have been taken (about 0.55 GB idle).
 
 ### Scope Recall 3.5.0rc3 - 2026-10-02
 
