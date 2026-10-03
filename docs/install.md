@@ -9,7 +9,7 @@ Code installs only as an entry of a shared store, and Codex can join one too
 (section 11). WorkBuddy runs the same hooks and installs only as an entry as well
 (section 12).
 
-> **Status.** This guide covers 3.1 to 3.4. Releases are on PyPI and on the
+> **Status.** This guide covers 3.1 to 3.5. Releases are on PyPI and on the
 > GitHub releases page; a checkout between releases carries a candidate version
 > and is installed by building its wheel. The distribution name is
 > `hermes-scope-recall`, the Python import is `scope_recall`, and the host plugin
@@ -801,7 +801,10 @@ WorkBuddy starts each one, once you have approved it in its MCP settings, and se
 the agent. (`.mcp.json` beside it is WorkBuddy's record of its own connector proxy; its agent
 reads no other server from it.) WorkBuddy may write `settings.json` itself while it runs: quit
 WorkBuddy before `apply-install` and start it again after, then approve the server `scope-recall`,
-which WorkBuddy lists as waiting for approval.
+which WorkBuddy lists as waiting for approval. WorkBuddy reads `mcp.json` when it starts, so the
+server shows only after that restart. In WorkBuddy 5.6.2 the approval is under 专家·技能·连接器
+(Experts · Skills · Connectors) → 连接器 (Connectors) → 自定义连接器 (Custom connector, the ⊕ at
+the top right) → MCP 服务管理 (MCP Server Management) → 我的 MCP (My MCP) → 信任 (Trust).
 
 ```powershell
 $Entry  = "D:\ScopeRecall\workbuddy"
@@ -847,9 +850,10 @@ where the last read stopped, for the text shown between tool calls and the owner
 prompt hook could not store; `SessionEnd` reads the rest and forgets the session's turns. A turn
 is named by the prompt's `generation_id` when it is new to the session, else by one derived from
 the session, the words and the moment, kept in `<instance-root>\scope-recall\turns\` until the
-session ends (a day at most). The MCP server keeps the vector search warm for the prompt hook
-while WorkBuddy runs, and serves the tools. Until it is approved the hooks still store and recall,
-each prompt's recall then starting its own vector search.
+session ends (a day at most). The MCP server serves the tools. WorkBuddy 5.6.2 starts it for each
+turn and stops it after, so it cannot keep the vector search warm for the prompt hook as Claude
+Code's and Codex's servers do (see the known limits below). Until it is approved the hooks still
+store and recall.
 
 To check it: `doctor --host workbuddy --instance-root <instance-root>` checks the binding and the
 store (it does not read WorkBuddy's settings; `host_registration_status: pending` is healthy, as
@@ -865,6 +869,11 @@ then ends the entry. `detach` alone leaves WorkBuddy's settings as they are.
 
 Known limits:
 
+- A WorkBuddy prompt is recalled without the vector search: by its words and the stored structure
+  only. WorkBuddy starts this entry's MCP server when a turn starts, a second before the prompt
+  hook, and stops it after the turn; the hook's recall meets a server still opening its vector
+  store (`helper_lock_timeout` among the packet's gaps). Measured on WorkBuddy 5.6.2, three turns
+  in two conversations.
 - WorkBuddy hands the prompt hook a prompt with its line breaks removed, so a multi-line message
   is stored as one line.
 - WorkBuddy fires `Stop` for a cancelled or failed turn too, with the previous turn's reply; a
