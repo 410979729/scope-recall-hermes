@@ -526,7 +526,8 @@ def build_vector_store(
         if sys.platform == "win32":
             from .process_store import store_for
 
-            # One helper per table in a server that runs on (``process_store.share``), one per store elsewhere.
+            # One helper per table in a process that shares its stores, a server or a Hermes gateway
+            # (``process_store.share``); one per store elsewhere.
             return store_for(vector_dir, table_name=table_name, dimensions=dimensions, metric=metric)
         return LanceVectorStore(vector_dir, table_name=table_name, dimensions=dimensions, metric=metric)
     if normalized == "pgvector":

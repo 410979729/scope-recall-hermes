@@ -207,6 +207,49 @@ def test_every_runtime_a_hermes_process_attaches_searches_one_store_of_a_table(c
     assert isinstance(first, process_store.SharedStore) and first._shared is second._shared
 
 
+@pytest.mark.skipif(sys.platform != "win32", reason="LanceDB runs in a helper process on Windows only")
+def test_two_hermes_agents_build_views_of_one_vector_store_and_a_shutdown_leaves_it(hermes_home, initialize_kwargs,
+                                                                                     monkeypatch):
+    """Both runtimes' stores, built through their real factories (nothing is opened, no helper starts), are views of
+    one store; a provider's shutdown leaves it to the process (review of 3.5.0rc4)."""
+    import scope_recall.vector.process_store as process_store
+    from scope_recall.core.recall_policy import EMBEDDING_SPACE, embedding_space_id
+
+    started = []
+    monkeypatch.setattr(process_store, "prestart", lambda **_options: started.append(True))
+    binding, _core = install_hermes_scope_recall(
+        hermes_home, agent_id=initialize_kwargs["agent_identity"], platform=initialize_kwargs["platform"],
+        user_id=initialize_kwargs["user_id"], agent_workspace=initialize_kwargs["agent_workspace"], test_mode=False,
+    )
+    space = dict(EMBEDDING_SPACE)
+    payload = {
+        **_runtime_payload(binding, session_id="TEST-session-1", allowed_scope_ids=binding.scope_ids),
+        "vector": {"backend": "lancedb", "table_name": "TEST_vectors", "dimensions": space["dimensions"],
+                   "storage_dir": str(binding.data_directory / "vectors" / embedding_space_id(space))},
+    }
+    config_path = _write_runtime_config(hermes_home / "trusted-runtime.json", payload)
+    providers = [ScopeRecallHermesAdapter(), ScopeRecallHermesAdapter()]
+    running = list(providers)
+    try:
+        for index, provider in enumerate(providers):
+            provider.initialize(f"TEST-session-{index}",
+                                **{**initialize_kwargs, "trusted_runtime_config_path": str(config_path)})
+        runtimes = [provider._host_runtime.runtime for provider in providers]
+        views = [runtime._vector_factory(runtime.config.vector) for runtime in runtimes]
+        assert all(isinstance(view, process_store.SharedStore) for view in views)
+        assert views[0]._shared is views[1]._shared, "one store, one helper, for both agents"
+        assert started == [True, True], "each bind still asks for a spare; prestart decides"
+        # As ``RuntimeInstance._ensure_vector_port`` leaves it after a first recall: the view is the runtime's.
+        runtimes[0]._owned_resources.append(views[0])
+        runtimes[0]._vector_store = views[0]
+        running.remove(providers[0])
+        providers[0].shutdown()  # closes the runtime, which closes its view
+        assert len(process_store._shared) == 1 and not views[1]._store._closed
+    finally:
+        for provider in running:
+            provider.shutdown()
+
+
 def test_session_end_detaches_bounded_worker_without_shared_drain(configured_provider, monkeypatch):
     provider = configured_provider
     host_runtime = provider._host_runtime

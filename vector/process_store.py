@@ -131,7 +131,7 @@ def prestart() -> None:
     share holds its helper, that spare would never be taken, and none is started.
     """
     global _spare
-    if _sharing and _a_shared_store_serves():
+    if _sharing and _a_shared_store_holds_a_helper():
         return
     with _spare_lock:
         if _spare is None or _spare.poll() is not None:
@@ -798,6 +798,14 @@ class ProcessLanceVectorStore(VectorStore):
         the helper).  One started only to say whether LanceDB is installed holds no table (review of 3.4.9)."""
         return self._process is not None and self._table_asked and not self._closed and self._teardown is None
 
+    def _holds_live_helper(self) -> bool:
+        """Whether a helper this store took or started is up, its table asked for or not yet (``prestart``).
+
+        Read without the store's lock: at worst one spare too many or too few, never a wrong answer to a request.
+        """
+        process = self._process
+        return process is not None and process.poll() is None and not self._closed and self._teardown is None
+
 
 class _Shared:
     """A process's one store of a table, and the lock its first open (or its reopen) is taken under."""
@@ -814,7 +822,8 @@ _sharing = False
 
 
 def share() -> None:
-    """Give every store of one table this process builds one helper (``store_for``): for a server that runs on.
+    """Give every store of one table this process builds one helper (``store_for``): for a process that runs on, a
+    server or a Hermes gateway (``adapters/hermes/runtime_wiring.py``).
 
     The server answers a prompt with the handler it keeps, and each prompt that comes meanwhile with a handler made
     for it, whose store started a helper of its own: about 2 s importing LanceDB, then the table's open, while that
@@ -829,11 +838,17 @@ def share() -> None:
     _sharing = True
 
 
-def _a_shared_store_serves() -> bool:
-    """Whether a store this process shares has a helper up (``prestart``)."""
+def _a_shared_store_holds_a_helper() -> bool:
+    """Whether a store this process shares holds a live helper (``prestart``).
+
+    Not ``_serving()``: a store that had just taken the spare had not asked for its table yet, and a bind in that
+    instant started a spare nothing would take; a helper that had ended outside any request still counted, and the
+    next agent's bind started none for the reopen (review of 3.5.0rc4).  Any table counts: a process whose embedding
+    space changed opens the new table's helper cold, as before sharing.
+    """
     with _shared_lock:
         stores = [shared.store for shared in _shared.values()]
-    return any(store._serving() for store in stores)
+    return any(store._holds_live_helper() for store in stores)
 
 
 def store_for(db_path: Path, *, table_name: str, dimensions: int,

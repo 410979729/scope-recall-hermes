@@ -256,6 +256,70 @@ def test_a_spare_is_not_started_once_the_shared_store_serves(tmp_path,monkeypatc
         native._close_shared()
 
 
+def test_a_bind_after_the_shared_helper_failed_starts_a_spare_that_the_reopen_takes(tmp_path,monkeypatch):
+    """The guard asks whether a shared store holds a live helper, not whether one is registered (review of 3.5.0rc4)."""
+    log, spawned = _sharing(tmp_path, monkeypatch)
+    view=native.store_for(tmp_path/'lancedb',table_name='PUBLIC',dimensions=2)
+    try:
+        with using_request_deadline(RequestDeadline.from_budget(5)):
+            view.open_existing()
+        assert spawned==[1]
+        view._store._detach_helper(failed=True)  # what a helper that died mid-request leaves
+        view._store._finish_teardown(timeout=5,retry_stop=True)
+        native.prestart()  # a later agent's bind
+        assert spawned==[1,1] and native._spare is not None, "nothing serves: the bind starts a spare"
+        with using_request_deadline(RequestDeadline.from_budget(5)):
+            view.open_existing()  # the next recall's reopen
+        assert spawned==[1,1] and native._spare is None, "the reopen took the spare instead of starting cold"
+    finally:
+        native._close_shared()
+        native.discard_spare()
+
+
+def test_a_bind_while_the_shared_store_starts_its_helper_starts_no_spare(tmp_path,monkeypatch):
+    """The store takes the spare before it asks for its table: a bind in that instant (another agent made at the first
+    recall) started a spare nothing would take, about 0.55 GB until the process ended (review of 3.5.0rc4)."""
+    log, spawned = _sharing(tmp_path, monkeypatch)
+    native.prestart()  # the first agent's bind
+    assert spawned==[1]
+    start=native.ProcessLanceVectorStore._start
+
+    def start_then_another_bind(self):
+        start(self)  # the store holds the spare now
+        native.prestart()  # another agent binds in this instant
+
+    monkeypatch.setattr(native.ProcessLanceVectorStore,'_start',start_then_another_bind)
+    view=native.store_for(tmp_path/'lancedb',table_name='PUBLIC',dimensions=2)
+    try:
+        with using_request_deadline(RequestDeadline.from_budget(5)):
+            view.open_existing()
+        assert view._store._serving()
+        assert spawned==[1] and native._spare is None, "a spare was started that no store will take"
+    finally:
+        native._close_shared()
+        native.discard_spare()
+
+
+def test_a_bind_after_the_shared_helper_ended_unnoticed_starts_a_spare(tmp_path,monkeypatch):
+    """A helper that ended outside any request (a crash, a failed allocation near the commit limit) still looked open
+    until a request met it: a bind in between started no spare, and every session's reopen started cold (review of
+    3.5.0rc4)."""
+    log, spawned = _sharing(tmp_path, monkeypatch)
+    view=native.store_for(tmp_path/'lancedb',table_name='PUBLIC',dimensions=2)
+    try:
+        with using_request_deadline(RequestDeadline.from_budget(5)):
+            view.open_existing()
+        helper=view._store._process
+        helper.kill()
+        helper.wait(5)
+        assert view._store._serving(), "nothing has noticed yet"
+        native.prestart()  # a later agent's bind
+        assert spawned==[1,1] and native._spare is not None, "no live helper is held: the bind starts a spare"
+    finally:
+        native._close_shared()
+        native.discard_spare()
+
+
 def test_a_shared_store_whose_helper_failed_is_opened_again(tmp_path,monkeypatch):
     log, spawned = _sharing(tmp_path, monkeypatch)
     view=native.store_for(tmp_path/'lancedb',table_name='PUBLIC',dimensions=2)

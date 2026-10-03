@@ -19,8 +19,10 @@ from scope_recall.runtime.worker_launch import launch_worker
 class HermesHostRuntime(TrustedHostRuntime):
     """Wake the existing durable queue in an independent bounded watchdog.
 
-    The helper owns its RuntimeInstance. A Hermes shutdown can therefore close
-    the foreground Lance handles without racing a consolidation request.
+    The watchdog's worker owns its RuntimeInstance, so a Hermes shutdown never
+    races a consolidation request.  The foreground vector store is the
+    process's shared one (``attach_trusted_host_runtime``): a shutdown leaves
+    its helper to the gateway's other runtimes, and it ends with the process.
     """
 
     def maybe_launch_bounded_worker(
