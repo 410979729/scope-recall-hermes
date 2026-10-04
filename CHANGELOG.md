@@ -2,6 +2,27 @@
 
 All notable changes to `scope-recall` will be documented in this file.
 
+## [3.6.1] - 2026-10-04
+
+3.6.1 stores the Hermes tool results that met a busy store, where some were lost.
+
+### Fixes
+
+- A Hermes tool result whose write met the shared store's writer busy past its 1 s was kept in memory, to be written again at the end of the turn. Some never were stored: 10 of tianji's on 2026-10-04, and 6 of tianxuan's, 6 of yuheng's and 2 of tianquan's in the days before. Each was logged once as `not stored (exception), kept to retry at the next turn` and is not in the store.
+  - Hermes runs the end-of-turn hook only after a turn with a message and a reply. A turn it injected (a watch notification), one it interrupted and one without a reply wrote nothing again.
+  - The retry at a turn's end had a capture's own 1 s for all of them: it wrote about one of up to 16 each time.
+  - A session switch (a compression, a new conversation) cleared what was kept, and a shutdown (an idle agent's eviction from Hermes' cache, a gateway restart) dropped it.
+- Now:
+  - A retry thread writes the kept tool results every 30 s while there are any, whatever the turns.
+  - A turn's end gives the retry 5 s, off any hook's time.
+  - A session switch keeps them. Each is written in the session it was said in, under its own scope's grant as the installation's manifest gives it now, whatever audience the session that is current has.
+  - A shutdown writes them once more before it ends.
+  - One dropped because its scope was taken away, or still failing at shutdown, is logged with its key.
+
+### Upgrading from 3.6.0
+
+Install the package, run `plan-install` and `apply-install` for each host, and restart the Hermes gateways. A gateway still on 3.6.0 or earlier drops at its restart what it keeps to retry. The store's schema is unchanged (1110).
+
 ## [3.6.0] - 2026-10-04
 
 3.6.0 recalls a WorkBuddy entry's prompts with the vector search, a new conversation's first prompt included.

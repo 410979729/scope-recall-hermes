@@ -59,6 +59,15 @@ _CAPTURE_TIMEOUT_S = 1.0
 #: What a shutdown waits for captures whose store I/O runs without the adapter lock.  A tool result's write took
 #: 1.4-4.4 s on the shared store (2026-10-03), past its own ``_CAPTURE_TIMEOUT_S`` budget; 10 s covers that.
 _CAPTURE_DRAIN_WAIT_S = 10.0
+#: What a retry of the buffered captures may spend off any hook's time: at the end of a turn on Hermes' memory worker,
+#: and on the retry thread.  At a capture's own ``_CAPTURE_TIMEOUT_S`` a pass wrote about one of up to 16 buffered tool
+#: results, each write 1-4 s on the busy shared store, and the rest waited for the next turn (2026-10-04).
+_RETRY_PASS_SECONDS = 5.0
+#: How often the retry thread writes again what the buffer holds, for as long as it holds anything.  Hermes runs
+#: ``sync_turn`` only after a turn with a message and a reply: a turn it injected (a watch notification), one it
+#: interrupted, or one with no reply ran no retry, and an idle agent's eviction from Hermes' cache then dropped the
+#: buffer.  tianji lost 10 tool results so on 2026-10-04 (``capture_failure`` logged once, never in the store).
+_RETRY_EVERY_S = 30.0
 _BOUNDED_MESSAGE_SCAN = 8
 #: Turns whose opening message ``pre_llm_call`` stored, remembered across a compression's session switch.
 _USER_CAPTURED_TURNS = 64
@@ -168,6 +177,11 @@ class AdapterDiagnostics:
     host_backpressure: dict[str, int] | None = None
 
 
+def _label(identity: SourceIdentity) -> str:
+    """A capture's key and revision for a log line: never its content."""
+    return f"{identity[0]}@{identity[1]}"[:200]
+
+
 @dataclass(frozen=True)
 class _RetryCapture:
     context: TrustedContext
@@ -218,6 +232,13 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
         self._current_source_refs_overflow = False
         self._current_task_message = ""
         self._retry_captures: dict[SourceIdentity, _RetryCapture] = {}
+        #: The retry thread (``_keep_retrying``), running while the buffer holds anything; None otherwise.  Started and
+        #: cleared under ``_lock``.
+        self._retry_thread: threading.Thread | None = None
+        #: Set while a retry pass runs, under ``_lock``: one pass at a time writes the buffer (``_retry_buffered_captures``).
+        self._retrying = False
+        #: Set by ``shutdown`` to end the retry thread's wait at once.
+        self._retry_wake = threading.Event()
         self._diagnostics = AdapterDiagnostics()
         #: What the last worker launch attempt added to capability_gaps.
         self._worker_launch_gaps: tuple[str, ...] = ()
@@ -365,7 +386,9 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
             self._session_watermark = 0
             self._reset_current_source_refs()
             self._current_task_message = ""
-            self._retry_captures.clear()
+            # The buffer stays: each capture keeps the session, actor and scope it was said in, and is written under
+            # its own scope's grant (``_retry_pass``).  Cleared here, a compression's or a new conversation's session
+            # switch dropped tool results that had only met a busy store (2026-10-04).
             self._diagnostics.capability_gaps = tuple(
                 dict.fromkeys(
                     (*fresh.runtime_audience.capability_gaps, *self._host_runtime.capability_gaps)
@@ -528,6 +551,7 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
                 return
             if retry is not None and len(self._retry_captures) < 16:
                 self._retry_captures[identity] = retry
+                self._start_retrying()
             else:
                 self._merge_gaps(("capture_gap:retry_buffer_full",))
 
@@ -666,54 +690,98 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
                     self._merge_gaps((INGRESS_PENDING_GAP,))
         self._retry_buffered_captures()
 
-    def _retry_buffered_captures(self, *, release: bool = False) -> None:
+    def _retry_buffered_captures(self, *, release: bool = False, seconds: float = _CAPTURE_TIMEOUT_S,
+                                 force: bool = False) -> None:
         """Write again what a busy store kept in memory; nothing to do, and nothing opened, when it holds none.
 
-        Run at every ``sync_turn`` as well as at the session's end and before a compression: waiting for those
-        left a capture that timed out on the writer lease in memory for hours, and a gateway restart lost it.
-        One retry per hold of the lock; with ``release`` (``sync_turn``, which does not hold it) each writes without.
+        Run at every ``sync_turn``, by the retry thread while the buffer holds anything (``_keep_retrying``), at the
+        session's end, before a compression and at shutdown: waiting for the turns left a capture that timed out on
+        the writer lease in memory for hours, and an eviction or a restart lost it.  One pass at a time; ``force`` is
+        shutdown's, which may run while another pass waits for the lock between two captures.  One retry per hold of
+        the lock; with ``release`` (``sync_turn`` and the retry thread, which do not hold it) each writes without.
         """
         with self._lock:
-            if not self._retry_captures:
+            if not self._retry_captures or (self._retrying and not force):
                 return
             identity = self._require_identity()
-            pending_items = tuple(self._retry_captures.items())[:8]
-        deadline = time.monotonic() + _CAPTURE_TIMEOUT_S
+            pending_items = tuple(self._retry_captures.items())
+            self._retrying = True
+        try:
+            self._retry_pass(identity, pending_items, deadline=time.monotonic() + seconds, release=release,
+                             force=force)
+        finally:
+            with self._lock:
+                self._retrying = False
+
+    def _retry_pass(self, identity: HermesIdentity, pending_items: tuple, *, deadline: float, release: bool,
+                    force: bool) -> None:
         try:
             manifest = load_binding_for_home(identity.hermes_home)
             assert_binding_matches_manifest(identity.binding, manifest)
-            current_audience = resolve_runtime_audience(manifest, identity.scope)
         except (HermesIdentityError, ContractError, OSError, ValueError, TypeError):
             with self._lock:
                 self._merge_gaps(("capture_gap:retry_authorization_unverified",))
+            _log.warning("scope-recall: %d buffered capture(s) not written again now: their authorization could not "
+                         "be read", len(pending_items))
             return
         for key, pending in pending_items:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 break
             with self._lock, self._holding("retry_buffered_captures"):
-                if self._identity is not identity:
-                    # A session switch came in between: what is left stays buffered for the next pass.
+                if self._identity is not identity or not (self._initialized or force):
+                    # A session switch or a shutdown came in between: what is left stays for the next pass.
                     break
                 if self._retry_captures.get(key) is not pending:
                     continue
-                original_audience = resolve_runtime_audience(manifest, pending.host_scope)
-                allowed_scopes = (pending.context.allowed_scope_ids
-                                  & original_audience.writable_scope_ids
-                                  & current_audience.writable_scope_ids)
+                # The capture's own audience as the manifest grants it now: a scope taken away since is not written
+                # to.  Not the current session's: kept across a session switch, a direct message's tool result written
+                # again while the agent served a group would have been dropped as revoked.
+                try:
+                    audience = resolve_runtime_audience(manifest, pending.host_scope)
+                except (HermesIdentityError, ContractError, ValueError, TypeError):
+                    audience = None
+                allowed_scopes = (pending.context.allowed_scope_ids & audience.writable_scope_ids
+                                  if audience is not None else frozenset())
                 if pending.context.binding != identity.binding or pending.scope_id not in allowed_scopes:
                     self._retry_captures.pop(key, None)
                     self._ledger.rollback(key)
                     self._merge_gaps(("capture_gap:retry_authorization_revoked",))
+                    _log.warning("scope-recall: not stored (authorization revoked), dropped: %s", _label(key))
                     continue
-                if identity.read_only:
-                    continue
+                # Not the current session's read-only state either: a capture is buffered only after a write its own
+                # session was allowed, and one kept while a read-only session (an unknown user, a delegated agent)
+                # was current waited and was dropped at shutdown.
                 # Narrow current authorization only. Original actor, session,
                 # project, branch, occurrence time and DTO identity stay intact.
                 context = replace(pending.context, allowed_scope_ids=frozenset(allowed_scopes))
                 self._capture_event(context, pending.event, identity=key, gaps=pending.gaps,
                                     scope_id=pending.scope_id, remaining_seconds=remaining, replay=True,
                                     bound=identity, release=release)
+
+    def _start_retrying(self) -> None:
+        """Start the retry thread when none runs; the caller holds ``_lock``."""
+        if self._retry_thread is not None:
+            return
+        self._retry_wake.clear()
+        thread = threading.Thread(target=self._keep_retrying, name="scope-recall-capture-retry", daemon=True)
+        self._retry_thread = thread
+        thread.start()
+
+    def _keep_retrying(self) -> None:
+        """Write the buffer again every ``_RETRY_EVERY_S``, off any hook's time, until it is empty or the adapter is
+        shut down: Hermes runs no ``sync_turn`` after a turn it injected, interrupted or got no reply for."""
+        while True:
+            if self._retry_wake.wait(_RETRY_EVERY_S):
+                self._retry_wake.clear()
+            with self._lock:
+                if not self._initialized or not self._retry_captures:
+                    self._retry_thread = None
+                    return
+            try:
+                self._retry_buffered_captures(release=True, seconds=_RETRY_PASS_SECONDS)
+            except Exception as exc:  # noqa: BLE001 - the next pass, a turn's end or the shutdown writes it
+                _log.warning("scope-recall: a retry of buffered captures failed (%s)", type(exc).__name__)
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
         """Read the turn's state under the lock, recall without it.
@@ -963,7 +1031,7 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
                 return
         # Hermes runs this on its memory worker, after the reply: the place to write again what a busy store
         # kept in memory, before the turn's own sources.
-        self._retry_buffered_captures(release=True)
+        self._retry_buffered_captures(release=True, seconds=_RETRY_PASS_SECONDS)
         context = identity.trusted_context(session_id=effective_session, mutation=True)
         shown = identity.trusted_context(session_id=effective_session, actor_origin="assistant_visible", mutation=True)
         with self._said_lock:
@@ -1133,7 +1201,19 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
             while self._captures_in_flight and time.monotonic() < deadline:
                 self._captures_done.wait(max(0.0, deadline - time.monotonic()))
             still_writing = self._captures_in_flight
+            # What the buffer still holds is written once more, in the time the drain left and at least a capture's:
+            # dropped here, it was lost whenever Hermes evicted an idle agent or a gateway restarted (2026-10-04).
+            self._retry_wake.set()
+            try:
+                self._retry_buffered_captures(
+                    seconds=min(_RETRY_PASS_SECONDS, max(_CAPTURE_TIMEOUT_S, deadline - time.monotonic())),
+                    force=True)
+            except Exception as exc:  # noqa: BLE001 - the shutdown goes on; what is left is said below
+                _log.warning("scope-recall: a retry of buffered captures failed at shutdown (%s)", type(exc).__name__)
             pending = self._pending_capture_identities()
+            for key in tuple(self._retry_captures)[:16]:
+                _log.warning("scope-recall: not stored (still failing at shutdown), lost: %s", _label(key))
+            self._retry_captures.clear()
             durable_pending = self._durable_pending_count()
             state = self._worker.shutdown()
             if self._host_runtime is not None:
