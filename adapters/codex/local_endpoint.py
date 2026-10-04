@@ -855,8 +855,10 @@ def ensure_resident(home: Path | str, host: str, *, minutes: int, env_file: Path
         stamp.write_text(str(os.getpid()), encoding="ascii")
     except OSError:
         return "failed"
+    # Through a process that starts the server and ends at once (``--detach``): the server then has no living parent
+    # in the client's process tree, which the client may end as a whole (``resident_entry``).
     command = [sys.executable, "-I", "-B", "-m", "scope_recall.adapters.codex.resident_entry",
-               "--home", str(Path(home)), "--host", host]
+               "--home", str(Path(home)), "--host", host, "--detach"]
     if env_file is not None:
         command += ["--env-file", str(env_file)]
     return "started" if _start_apart(command, cwd=folder) else "failed"

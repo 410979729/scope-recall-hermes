@@ -12,6 +12,7 @@ prompt's recall.  One runs for each entry and client: a second gives way to the 
 from __future__ import annotations
 
 import argparse
+import sys
 import threading
 import time
 from pathlib import Path
@@ -33,10 +34,23 @@ def main(argv: list[str] | None = None) -> int:
                         help="Absolute file holding the credential names the runtime config declares")
     # For tests: an idle end in seconds instead of the configured minutes.
     parser.add_argument("--idle-seconds", type=float, default=None, help=argparse.SUPPRESS)
+    # Start the server from this process and end at once (``local_endpoint.ensure_resident``).
+    parser.add_argument("--detach", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     home = args.home.expanduser()
     if not home.is_absolute() or (args.env_file is not None and not args.env_file.is_absolute()):
         return 2
+    if args.detach:
+        # Started by the client's MCP server, which lives as long as the conversation, the server was its child:
+        # WorkBuddy ending the conversation's process tree ended it too (measured 2026-10-03, its tree killed as
+        # ``taskkill /T`` does).  Started from this process, which ends now, it has no living parent in that tree.
+        from .local_endpoint import _start_apart
+
+        command = [sys.executable, "-I", "-B", "-m", "scope_recall.adapters.codex.resident_entry",
+                   "--home", str(home), "--host", args.host]
+        if args.env_file is not None:
+            command += ["--env-file", str(args.env_file)]
+        return 0 if _start_apart(command, cwd=endpoints(home)) else 1
     idle = args.idle_seconds if args.idle_seconds is not None else resident_minutes(home, args.host) * 60.0
     if idle <= 0:
         return 0

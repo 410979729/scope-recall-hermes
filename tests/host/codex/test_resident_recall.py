@@ -122,7 +122,7 @@ def test_a_client_starts_a_resident_server_once_and_not_while_one_runs(entry, mo
     assert local_endpoint.ensure_resident(entry, "workbuddy", minutes=0) == "off"
     assert local_endpoint.ensure_resident(entry, "workbuddy", minutes=120, env_file=env_file) == "started"
     assert started == [[sys.executable, "-I", "-B", "-m", "scope_recall.adapters.codex.resident_entry",
-                        "--home", str(entry), "--host", "workbuddy", "--env-file", str(env_file)]]
+                        "--home", str(entry), "--host", "workbuddy", "--detach", "--env-file", str(env_file)]]
     # The next prompt's hook, while that one still starts: no second start.
     assert local_endpoint.ensure_resident(entry, "workbuddy", minutes=120) == "recent"
     assert len(started) == 1
@@ -160,6 +160,20 @@ def test_a_resident_server_breaks_away_from_the_client_s_job_where_it_may(monkey
     assert len(seen) == 2
     assert seen[0] & subprocess.CREATE_BREAKAWAY_FROM_JOB and not seen[1] & subprocess.CREATE_BREAKAWAY_FROM_JOB
     assert all(flags & subprocess.CREATE_NO_WINDOW and flags & subprocess.CREATE_NEW_PROCESS_GROUP for flags in seen)
+
+
+def test_a_detached_start_starts_the_server_from_a_process_that_ends_at_once(entry, monkeypatch, tmp_path):
+    """Started by the MCP server, which lives as long as the conversation, the server was its child, and ending the
+    conversation's process tree ended it (measured 2026-10-03).  ``--detach`` starts it from a process that ends."""
+    started = []
+    monkeypatch.setattr(local_endpoint, "_start_apart", lambda command, cwd: (started.append((command, cwd)), True)[1])
+    env_file = tmp_path / "TEST.env"
+    assert resident_entry.main(["--home", str(entry), "--host", "workbuddy", "--detach",
+                                "--env-file", str(env_file)]) == 0
+    assert started == [([sys.executable, "-I", "-B", "-m", "scope_recall.adapters.codex.resident_entry",
+                         "--home", str(entry), "--host", "workbuddy", "--env-file", str(env_file)],
+                        local_endpoint.endpoints(entry))]
+    assert not (local_endpoint.endpoints(entry) / f"{os.getpid()}.json").exists(), "the detaching process served"
 
 
 def test_a_resident_server_names_itself_resident_and_ends_when_idle(entry, monkeypatch):
