@@ -109,14 +109,15 @@ def main(argv: list[str] | None = None) -> int:
         if outcome is not None:
             sys.stderr.write(f"CODEX_RECALL_RESIDENT:{outcome}\n")
         if handler.diagnostics.last_event == "UserPromptSubmit":
-            sys.stdout.flush()  # the answer leaves now, not at this process's exit
+            sys.stdout.flush()  # the answer's bytes leave now; a client that reads to the end still waits for the exit
             _keep_a_resident_server(location, args.host, args.env_file)
     return 0
 
 
 def _keep_a_resident_server(home: Path, host: str, env_file: Path | None) -> None:
     """After the prompt's answer is out: start the entry's resident recall server when the client keeps one and none
-    runs, so that the next prompt finds it warm (``local_endpoint.ensure_resident``)."""
+    of this version runs, so that the next prompt finds it warm; one of another version is stopped first, since this
+    hook would not ask it (``local_endpoint.ensure_resident``).  Says on stderr what it did, but for ``running``."""
     try:
         from .local_endpoint import ensure_resident, resident_minutes
 
@@ -125,10 +126,10 @@ def _keep_a_resident_server(home: Path, host: str, env_file: Path | None) -> Non
             return
         env = env_file.expanduser() if env_file is not None else None
         started = ensure_resident(home, host, minutes=minutes,
-                                  env_file=env if env is not None and env.is_absolute() else None)
+                                  env_file=env if env is not None and env.is_absolute() else None, replace=True)
     except Exception:  # noqa: BLE001 - the prompt is answered; a server not started is started by a later one
         started = "failed"
-    if started in ("started", "recent", "failed"):
+    if started not in ("running", "off"):
         sys.stderr.write(f"CODEX_RECALL_RESIDENT_START:{started}\n")
 
 

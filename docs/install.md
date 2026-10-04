@@ -869,20 +869,23 @@ processes:
   [configuration.md](configuration.md)). It reads the value every 30 s; set to 0, it ends within
   30 s and none is started again.
 - It ends within 30 s once its package on disk is replaced or removed; the next prompt, or a
-  running MCP server, starts the new version's.
+  running MCP server, starts the new version's. A prompt hook that finds one of another version
+  running (from another venv, say) stops it and starts its own; `apply-install` stops it as well.
+- It ends once a recall has run 5 minutes past its time: such a server answers every hook that it
+  is busy. The next look starts a new one.
 - While it runs it holds a vector helper, about 1 GB. The MCP server WorkBuddy runs with each
   conversation keeps no helper warm of its own and answers no hook; a tool's vector search starts
   one in that server.
 - The first prompt after it ended, or after a reboot, starts it and is recalled the old way,
   usually by words and the stored structure alone; the next prompts find it warm.
-- It writes nothing to the store. One runs for each entry: a second of the same version gives way
-  to the first, and one that starts stops a running one of another version.
+- It writes nothing to the store. One runs for each entry: a second gives way to the first.
 
 Stop it before a `package-upgrade` of the entry's package, after quitting WorkBuddy (a running MCP
 server starts it again): `scope-recall resident stop --home <instance-root> --host workbuddy`
-(`status` shows it). Where a process's start time cannot be read (macOS), `stop` cannot tell the
-server from another process that took its id and leaves it alone (`verified: false`); it ends
-itself within 30 s of the upgrade. `apply-uninstall` stops it too. Until the MCP server is
+(`status` shows it; `stop` exits 1 and says `still_running` when one still holds the lock). Where
+a process's start time cannot be read (macOS), `stop` cannot tell the server from another process
+that took its id and leaves it alone (`verified: false`); it ends itself within 30 s of the
+upgrade. `apply-install` and `apply-uninstall` stop it too. Until the MCP server is
 approved, the hooks still store and recall, and start the resident server all the same.
 
 To check it: `doctor --host workbuddy --instance-root <instance-root>` checks the binding and the

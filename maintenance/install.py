@@ -226,6 +226,19 @@ def _plan_merges(adapter: ModuleType, plan: InstallPlan, host_files: tuple[Path,
                                                                   "other key; the file is copied to the backups first"))
 
 
+def _stop_residents(host: str, instance_root: Path) -> None:
+    """Stop the entry's resident recall servers, for a client that may keep one (``adapters/codex/resident_entry``).
+    They write nothing; one that cannot be stopped now is replaced by the next prompt's hook."""
+    if host not in ("codex", "claude-code", "workbuddy"):
+        return
+    from ..adapters.codex.local_endpoint import stop_residents
+
+    try:
+        stop_residents(instance_root, host)
+    except Exception:  # noqa: BLE001 - see above
+        pass
+
+
 def apply_install(plan: InstallPlan) -> InstallResult:
     plan = plan_install(
         target_plugin_dir=plan.target_plugin_dir,
@@ -310,6 +323,10 @@ def apply_install(plan: InstallPlan) -> InstallResult:
                 _write_receipt(plan, installation_id=installation_id, written=partial, tracked=tracked)
         raise
 
+    # A resident recall server runs the package it was started from: one of the installation this replaces (another
+    # venv, an older version) held the entry's lock against the new one's (review 2 of 3.6.0rc1).  The next prompt or
+    # conversation starts the new version's.
+    _stop_residents(plan.host, plan.instance_root)
     return InstallResult(
         files_written=written,
         # Registration is what the doctor can actually observe; hook trust is a
@@ -407,12 +424,9 @@ def apply_uninstall(plan: UninstallPlan, *, purge: bool = False) -> UninstallRes
     adapter = _HOSTS[plan.host]
     data_dir = adapter.data_dir(plan.instance_root)
     _disable_autostart(data_dir)
-    if plan.host in ("codex", "claude-code", "workbuddy"):
-        # A resident recall server of this entry runs from the package (``adapters/codex/resident_entry``): with the
-        # hooks taken out nothing would ask it, and it would hold the package until its idle end.
-        from ..adapters.codex.local_endpoint import stop_residents
-
-        stop_residents(plan.instance_root, plan.host)
+    # A resident recall server of this entry runs from the package (``adapters/codex/resident_entry``): with the hooks
+    # taken out nothing would ask it, and it would hold the package until its idle end.
+    _stop_residents(plan.host, plan.instance_root)
     # This entry's entries come out of the host's own files, each copied to the backups first; the rest stays.
     unmerged: list[str] = []
     backups: list[str] = []

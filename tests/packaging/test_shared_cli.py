@@ -381,7 +381,14 @@ def test_a_workbuddy_entry_installs_into_workbuddy_s_own_files_and_uninstalls_on
     assert "approve the MCP server scope-recall" in plan.changes[-1].detail
     assert {path.name for path in workbuddy.iterdir()} == present, "a plan writes nothing"
 
+    # A resident recall server runs the package it was started from: one of the installation an install replaces
+    # (another venv, an older version) held the entry's lock against the new one's (review 2 of 3.6.0rc1).
+    from scope_recall.adapters.codex import local_endpoint
+
+    stopped = []
+    monkeypatch.setattr(local_endpoint, "stop_residents", lambda home, host: stopped.append((home, host)) or [])
     installed = apply_install(plan)
+    assert stopped == [(entry, "workbuddy")]
     assert installed.installation_id == config.installation_id
     assert sorted(Path(path).name for path in installed.files_merged) == ["mcp.json", "settings.json"]
     assert not any(name in Path(path).name for path in installed.files_written for name in before), \
@@ -441,12 +448,8 @@ def test_a_workbuddy_entry_installs_into_workbuddy_s_own_files_and_uninstalls_on
     assert removal.conflicts == [] and removal.files_to_remove == []
     assert sorted(Path(path).name for path in removal.unmerged_files) == ["mcp.json", "settings.json"]
     held = {name: (workbuddy / name).read_bytes() for name in before}
-    from scope_recall.adapters.codex import local_endpoint
-
-    stopped = []
-    monkeypatch.setattr(local_endpoint, "stop_residents", lambda home, host: stopped.append((home, host)) or [])
     removed = apply_uninstall(removal)
-    assert stopped == [(entry, "workbuddy")], "the entry's resident recall server runs from the package"
+    assert stopped == [(entry, "workbuddy")] * 4, "each install and the uninstall stop the entry's resident server"
     assert sorted(Path(path).name for path in removed.unmerged_files) == ["mcp.json", "settings.json"]
     assert {Path(path).name: Path(path).read_bytes() for path in removed.backups} == held
     assert _read(workbuddy / "settings.json") == {**settings, "hooks": {

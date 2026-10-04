@@ -6,8 +6,9 @@ and its embedding connection, and was recalled by words alone: a cold server ans
 after its start (measured 2026-10-03), past the prompt hook's 6 s.  This server is started by the entry's hook or MCP
 server when none runs, names itself resident (hooks ask it first), and ends ``resident_recall_minutes`` after the last
 prompt's recall or the last mark of a live client process (``local_endpoint.keep_resident``), once the minutes are 0,
-or once its package on disk is replaced.  One runs for each entry and client: a second of the same version gives way
-to the first, and one of another version is stopped by the one starting.  It writes nothing to the store.
+once its package on disk is replaced, or once a recall has been stuck for minutes.  One runs for each entry and
+client: a second of the same version gives way to the first, and a prompt hook that finds one of another version stops
+it and starts its own (``local_endpoint.ensure_resident``).  It writes nothing to the store.
 
     python -I -B -m scope_recall.adapters.codex.resident_entry --home <entry home> --host workbuddy [--env-file <file>]
 """
@@ -27,6 +28,7 @@ from ...runtime.running_code import version_on_disk
 from .config import load_shared_client
 from .local_endpoint import (
     _forget,
+    configured_minutes,
     endpoints,
     resident_alive,
     resident_lock,
@@ -36,11 +38,21 @@ from .local_endpoint import (
     stop_residents,
 )
 
-#: How often the server looks whether it should end: idle long enough, its minutes now 0, or its package replaced.
+#: How often the server looks whether it should end: idle long enough, its minutes now 0, its package replaced, or a
+#: recall stuck too long.
 IDLE_CHECK_SECONDS = 30.0
-#: How long a starting server waits for the entry's lock: a hook that looks whether one runs holds it for a moment
-#: (``local_endpoint.resident_running``).  One of another version this server stopped holds it until it is gone.
-LOCK_WAIT_SECONDS = 0.25
+#: Checks in a row whose files could not be read before the server ends: one read caught mid-save, or held for a
+#: moment by a scanner, ended a warm server (review 2 of 3.6.0rc1), and files gone for good end it a check later.
+UNSURE_CHECKS = 2
+#: How long a recall may run past its time before the server ends.  Such a server tells every hook it is busy, and the
+#: marks of live client processes kept it up, cold for every prompt, for as long as the client ran (review 2 of
+#: 3.6.0rc1); ended, it is started anew by the next look.
+STUCK_END_SECONDS = 300.0
+#: How long a starting server waits for the entry's lock.  A hook that looks whether one runs holds it for a moment
+#: (``local_endpoint.resident_running``); held a quarter of a second, a busy machine's look made a start give way, and
+#: the start stamp then kept the entry without a server for a minute (review 2 of 3.6.0rc1).  One of another version
+#: this server or a hook stopped holds it until the system has ended that process.
+LOCK_WAIT_SECONDS = 3.0
 STOPPED_WAIT_SECONDS = 5.0
 #: A mark of a live client process further ahead of the clock than this is a clock set back, not a mark; one just made
 #: can read a little ahead.
@@ -76,8 +88,8 @@ def main(argv: list[str] | None = None) -> int:
     idle = resident_minutes(home, args.host) * 60.0 if configured else args.idle_seconds
     if idle <= 0:
         return 0
-    # One of another version runs the code it was started with, and hooks ask it nothing; it held the lock against
-    # every server of this version until its idle end (review of 3.6.0rc1).
+    # One of another version runs the code it was started with, and hooks ask it nothing (review of 3.6.0rc1).  The
+    # prompt hook stops one that holds the lock before it starts this one; one that took the lock meanwhile ends here.
     stopped = stop_residents(home, args.host, other_versions=True)
     try:
         with advisory_file_lock(resident_lock(home, args.host),
@@ -101,13 +113,19 @@ def _serve_until_idle(home: Path, host: str, env_file: Path | None, idle: float,
     _keep_record(record, host)
     alive = resident_alive(home, host)
     stopped = threading.Event()
+    unsure = 0
     try:
         while not stopped.wait(min(IDLE_CHECK_SECONDS, idle)):
-            if configured:
+            package = _package_state()
+            minutes = configured_minutes(home, host) if configured else None
+            if minutes is not None:
                 # A change of the entry's minutes is taken here: set to 0 to free the server's memory, it kept serving,
                 # and every prompt put its end off (review of 3.6.0rc1).
-                idle = resident_minutes(home, host) * 60.0
-            if idle <= 0 or _package_replaced() or _idle_seconds(endpoint.last_used, alive) >= idle:
+                idle = minutes * 60.0
+            unsure = unsure + 1 if package == "unknown" or (configured and minutes is None) else 0
+            if (idle <= 0 or package == "replaced" or unsure >= UNSURE_CHECKS
+                    or endpoint.stuck_for() >= STUCK_END_SECONDS
+                    or _idle_seconds(endpoint.last_used, alive) >= idle):
                 break
     finally:
         _forget(record)
@@ -130,13 +148,24 @@ def _keep_record(path: Path, host: str) -> None:
         pass  # its name says the same, until a hook removes that
 
 
-def _package_replaced() -> bool:
-    """Whether the package on disk is no longer the one this server runs: an upgrade replaced it, or an uninstall took
-    it away.  A server of the old version kept the entry's lock against every one of the new version until its idle
-    end, while hooks asked it nothing (review of 3.6.0rc1)."""
+def _package_state() -> str:
+    """``same``; ``replaced`` when the package on disk is no longer the one this server runs (an upgrade replaced it, or
+    an uninstall took it away); ``unknown`` when its version could not be read just now.  A server of the old version
+    kept the entry's lock against every one of the new version until its idle end, while hooks asked it nothing
+    (review of 3.6.0rc1)."""
     from ... import _version
 
-    return version_on_disk(Path(_version.__file__).resolve().parent) != _version.__version__
+    folder = Path(_version.__file__).resolve().parent
+    try:
+        (folder / "_version.py").stat()
+    except FileNotFoundError:
+        return "replaced"
+    except OSError:
+        return "unknown"
+    version = version_on_disk(folder)
+    if version is None:
+        return "unknown"  # held, or caught being written
+    return "same" if version == _version.__version__ else "replaced"
 
 
 def _idle_seconds(last_used: float, alive: Path) -> float:

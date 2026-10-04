@@ -685,6 +685,12 @@ class HookEndpoint:
         with self.lock:
             return any(time.monotonic() > due for due in self.inflight.values())
 
+    def stuck_for(self) -> float:
+        """How long the oldest recall still running past its time has been so; 0 when none is."""
+        with self.lock:
+            now = time.monotonic()
+            return max((now - due for due in self.inflight.values() if now > due), default=0.0)
+
     def _advertise(self) -> None:
         from ..._version import __version__
         from ...runtime.process_probe import probe_process
@@ -782,6 +788,14 @@ def resident_minutes(home: Path | str, host: str) -> int:
     runtime config (its hooks recall without a vector search, which a resident server would not change) or one that
     cannot be read or names a bad value, so that a broken entry starts no process.  Read from the file as the hook's
     own budget is (``handler._configured_budget``): an entry's config may name only some fields."""
+    minutes = configured_minutes(home, host)
+    return 0 if minutes is None else minutes
+
+
+def configured_minutes(home: Path | str, host: str) -> int | None:
+    """``resident_minutes``, or None when the entry's files cannot be read just now: a file held for a moment, or a
+    runtime config caught half saved.  A running server looks again at its next check instead of ending on it (review
+    2 of 3.6.0rc1); a missing runtime config is 0."""
     from ...runtime.instance import RESIDENT_RECALL_MINUTES_BOUNDS
     from ...runtime.validation import strict_int
     from .config import load_shared_client
@@ -789,8 +803,10 @@ def resident_minutes(home: Path | str, host: str) -> int:
     try:
         path = load_shared_client(Path(home), host).runtime_config_path
         raw = json.loads(Path(path).read_text(encoding="utf-8"))
-    except Exception:  # noqa: BLE001 - see above
+    except FileNotFoundError:
         return 0
+    except Exception:  # noqa: BLE001 - see above
+        return None
     if not isinstance(raw, dict):
         return 0
     value = raw.get("resident_recall_minutes")
@@ -828,9 +844,10 @@ def _residents(home: Path | str, host: str, *, any_version: bool = False
     """This entry's live resident servers for ``host``, of this package's version unless ``any_version``: the files
     that say each (its record and its name), what they say, and whether its identity is proven.
 
-    A file whose process is gone, or whose process id another process took since (a start time that differs), is
-    removed.  One whose start time cannot be read (macOS) is kept and marked unproven: after a crash its id may belong
-    to any of the user's processes, which a stop must not end (review of 3.6.0rc1)."""
+    A file whose process is gone, or whose process id another process took since, is removed: its start time differs,
+    or cannot be read at all where it could when the file was written (a process of another account or a service, as
+    a hook's ``Recaller`` reads it).  One written where no start time can be read (macOS) is kept and marked unproven:
+    after a crash its id may belong to any of the user's processes, which a stop must not end (reviews of 3.6.0rc1)."""
     from ..._version import __version__
     from ...runtime.process_probe import probe_process
 
@@ -851,13 +868,13 @@ def _residents(home: Path | str, host: str, *, any_version: bool = False
             state = probe_process(pid)
         except (OSError, ValueError):
             continue
-        started, now = info.get("start"), state.start_token
-        if not state.running or (started is not None and now is not None and started != now):
+        started = info.get("start")
+        if not state.running or (started is not None and state.start_token != started):
             for path in paths:
                 _forget(path)
             continue
         if any_version or info.get("version") == __version__:
-            found.append((paths, info, started is not None and now is not None))
+            found.append((paths, info, started is not None))
     return found
 
 
@@ -878,54 +895,101 @@ def resident_running(home: Path | str, host: str) -> bool:
         return False
 
 
-def ensure_resident(home: Path | str, host: str, *, minutes: int, env_file: Path | None = None) -> str:
+def ensure_resident(home: Path | str, host: str, *, minutes: int, env_file: Path | None = None,
+                    replace: bool = False) -> str:
     """Start the entry's resident recall server (``resident_entry``) when none runs; what it did: ``off`` (``minutes``
-    is 0), ``running`` (the client is then marked in use: ``resident_alive``), ``recent`` (one was started less than
-    ``RESIDENT_START_EVERY_SECONDS`` ago and may still be starting), ``started`` or ``failed``.
+    is 0), ``running`` (the client is then marked in use: ``resident_alive``), ``running:<version>`` (one of another
+    version runs, left unmarked to its own end), ``recent`` (one was started less than ``RESIDENT_START_EVERY_SECONDS``
+    ago and may still be starting), ``upgrading`` (the package is being replaced), ``started``, ``replaced:<version>``
+    (one of another version was stopped and this version's started), ``stopped:<version>`` (stopped while another
+    start was under way) or ``failed``.
 
-    One of an older version counts as running: it ends itself once its package on disk is replaced, and the next start
-    makes this version's (``resident_entry``).  The server is started apart from this process, which the client may end
-    at once (WorkBuddy stops a conversation's processes): in a new process group, broken away from the client's job
-    where Windows allows it, with no window and no console of its own.  It writes nothing to the store; two started at
-    once settle on one."""
+    ``replace`` is the prompt hook's.  Hooks ask only a server of their own version, and one of another version that
+    held the entry's lock (an installation in another venv, a canary, a build from before its self-exit) kept every
+    prompt cold for as long as the client ran, while every hook and MCP server marked it in use (review 2 of
+    3.6.0rc1).  The hook stops such a server and starts its own; a client's MCP server never stops one, so the version
+    the client's hooks run wins and two installations cannot fight.  The server is started apart from this process,
+    which the client may end at once (WorkBuddy stops a conversation's processes): in a new process group, broken away
+    from the client's job where Windows allows it, with no window and no console of its own.  It writes nothing to the
+    store; two started at once settle on one."""
+    from ..._version import __version__
+    from ...core.file_lock import advisory_file_lock
+
     if minutes <= 0:
         return "off"
+    if _upgrading():
+        return "upgrading"
     folder = endpoints(home)
+    replaced = None
     if resident_running(home, host):
-        try:
-            resident_alive(home, host).touch()
-        except OSError:
-            pass  # a recall of it puts its end off as well
-        return "running"
+        others = [info for _paths, info, proven in _residents(home, host, any_version=True)
+                  if proven and info.get("version") != __version__]
+        if not others:
+            try:
+                resident_alive(home, host).touch()
+            except OSError:
+                pass  # a recall of it puts its end off as well
+            return "running"
+        replaced = str(others[0].get("version"))
+        if not replace:
+            return f"running:{replaced}"
+        stop_residents(home, host, other_versions=True)
+    held_off = "recent" if replaced is None else f"stopped:{replaced}"
     stamp = folder / f"resident-{host}.start"
     try:
         folder.mkdir(parents=True, exist_ok=True)
-        try:
-            age: float | None = time.time() - stamp.stat().st_mtime
-        except FileNotFoundError:
-            age = None
-        # A stamp more than that far in the future (a clock set back) is stale, not recent: it held off every start
-        # until the clock passed it (review of 3.6.0rc1).  One just made can read a little ahead.
-        if age is not None and -RESIDENT_START_EVERY_SECONDS < age < RESIDENT_START_EVERY_SECONDS:
-            return "recent"
-        if age is not None:
-            stamp.unlink(missing_ok=True)
-        # Made only where none is: of two starters at once (a conversation's MCP server and its first hook), the second
-        # finds it made and starts none (review of 3.6.0rc1).
-        handle = os.open(stamp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    except FileExistsError:
-        return "recent"
+        # The look, the removal of a stale stamp and the new one under one lock: two starters that both found the
+        # stamp stale both started a server (review 2 of 3.6.0rc1).
+        with advisory_file_lock(folder / f"resident-{host}.start.lock", timeout_seconds=1.0):
+            try:
+                age: float | None = time.time() - stamp.stat().st_mtime
+            except FileNotFoundError:
+                age = None
+            # A stamp more than that far in the future (a clock set back) is stale, not recent: it held off every
+            # start until the clock passed it (review of 3.6.0rc1).  One just made can read a little ahead.  A hook
+            # that stopped another version's server starts its own at once: held off, it left the room to the next
+            # start of that other version's MCP servers.
+            recent = age is not None and -RESIDENT_START_EVERY_SECONDS < age < RESIDENT_START_EVERY_SECONDS
+            if recent and replaced is None:
+                return held_off
+            if age is not None:
+                stamp.unlink(missing_ok=True)
+            # Made only where none is, for a starter of a version without the lock.
+            handle = os.open(stamp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(handle, "w", encoding="ascii") as stream:
+                stream.write(str(os.getpid()))
+    except (TimeoutError, FileExistsError):
+        return held_off
     except OSError:
         return "failed"
-    with os.fdopen(handle, "w", encoding="ascii") as stream:
-        stream.write(str(os.getpid()))
     # Through a process that starts the server and ends at once (``--detach``): the server then has no living parent
     # in the client's process tree, which the client may end as a whole (``resident_entry``).
     command = [sys.executable, "-I", "-B", "-m", "scope_recall.adapters.codex.resident_entry",
                "--home", str(Path(home)), "--host", host, "--detach"]
     if env_file is not None:
         command += ["--env-file", str(env_file)]
-    return "started" if _start_apart(command, cwd=folder) else "failed"
+    if not _start_apart(command, cwd=folder):
+        return "failed"
+    return f"replaced:{replaced}" if replaced is not None else "started"
+
+
+def _upgrading() -> bool:
+    """Whether ``package-upgrade`` is replacing this environment's package now (its lock in the venv is held): a server
+    started meanwhile could import part of either version, and once the new ``_version.py`` was in place it would not
+    end (review 2 of 3.6.0rc1).  The client should be quit for an upgrade; its MCP servers' keeping made this
+    reachable without a prompt."""
+    from ...core.file_lock import advisory_file_lock
+
+    lock = Path(sys.prefix) / ".scope-recall-package-upgrade.lock"
+    if not lock.exists():
+        return False
+    try:
+        with advisory_file_lock(lock, timeout_seconds=0):
+            return False
+    except TimeoutError:
+        return True
+    except OSError:
+        return False
 
 
 def keep_resident(home: Path | str, host: str, *, env_file: Path | None = None,
