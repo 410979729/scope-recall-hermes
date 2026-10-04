@@ -2,6 +2,12 @@
 
 All notable changes to `scope-recall` will be documented in this file.
 
+## [Unreleased]
+
+### Scope Recall 3.7.1rc1 - 2026-10-04
+
+- The version moves past the `v3.7.0` tag.
+
 ## [3.7.0] - 2026-10-04
 
 3.7.0 lets DeepSeek Harness (dsh) join a shared store: its prompts are recalled before each turn and each turn's messages are stored, by a dsh plugin that runs the entry's hooks.
