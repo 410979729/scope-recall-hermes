@@ -2,6 +2,12 @@
 
 All notable changes to `scope-recall` will be documented in this file.
 
+## [Unreleased]
+
+### Scope Recall 3.6.2rc1 - 2026-10-04
+
+- The version moves past the `v3.6.1` tag.
+
 ## [3.6.1] - 2026-10-04
 
 3.6.1 stores the Hermes tool results that met a busy store, where some were lost.
