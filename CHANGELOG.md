@@ -2,11 +2,28 @@
 
 All notable changes to `scope-recall` will be documented in this file.
 
-## [Unreleased]
+## [3.6.2] - 2026-10-04
 
-### Scope Recall 3.6.2rc1 - 2026-10-04
+3.6.2 stops a WorkBuddy entry from storing an error notice as WorkBuddy's reply, and says how long its resident recall server really lives.
 
-- The version moves past the `v3.6.1` tag.
+### Fixes
+
+- When WorkBuddy's model cannot answer (not signed in, a model or network failure), WorkBuddy shows an error in place of the reply and hands it to the `Stop` hook as `last_assistant_message`. The hook stored it as the reply. Seen 2026-10-04 with WorkBuddy's own agent (2.147.0) not signed in: `Authentication required. Please use /login command to sign in to your account` was stored as the assistant's visible words.
+  - WorkBuddy's session record marks such a message: `providerData.error` names the error, and the message's words are the error's.
+  - The `Stop` hook now reads the record's last model message. When it carries an error whose words are the reply's, nothing is stored for the reply (`client_error_reply`); the person's prompt is kept. The record read skips that message too.
+  - A reply that broke off with an error (a stream timeout) keeps the words that were shown.
+  - A server for a WorkBuddy on another machine never opens the path a request names, so there the reply is stored as before.
+
+### Known limits, measured
+
+- WorkBuddy's agent (2.147.0) puts itself and every process it starts in a Windows job that ends them all when the agent's process ends. The resident recall server cannot leave that job, so it lives only as long as the conversation's agent process that started it, not apart from WorkBuddy's processes as 3.6.0 said.
+  - While one conversation's process runs, another conversation's first prompt finds it warm: answered in 1.48 s with its vector search, measured 2026-10-04 with WorkBuddy's own agent.
+  - The first conversation's first prompt after WorkBuddy starts, and a prompt right after the conversation holding the server ended, are recalled without it, usually by words and the stored structure alone. A conversation still open starts a new one within 30 s, and no sooner than a minute after the last start.
+  - [docs/install.md](docs/install.md), section 12, now says so.
+
+### Upgrading from 3.6.1
+
+Quit WorkBuddy, install the package, run `plan-install` and `apply-install` for each host, and restart the clients and the Hermes gateways. The store's schema is unchanged (1110).
 
 ## [3.6.1] - 2026-10-04
 

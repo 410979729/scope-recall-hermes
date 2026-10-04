@@ -1051,6 +1051,37 @@ def test_a_workbuddy_client_s_turn_and_record_reach_its_entry_once(store, tmp_pa
     assert cursor.load() == record.stat().st_size, "the cursor moves as far as the server stored"
 
 
+def test_a_server_does_not_open_a_workbuddy_record_to_judge_a_remote_reply(store, tmp_path, monkeypatch):
+    """Whether a Stop's reply is an error WorkBuddy showed is read from the session record, which the server of a client
+    on another machine never opens: the path in a request names a file over there."""
+    root, _homes = store
+    owner = next(row for row in read_shared_payload(root)["entries"][0]["audiences"] if row["kind"] == "owner_private")
+    home = tmp_path / "TEST-workpc-workbuddy-home"
+    attach_shared_record(root, client_entry_record(
+        host="workbuddy", home=home, entry_id="workpc-workbuddy", display_name="TEST WorkBuddy", attached_at=NOW,
+        allowed_scope_ids=owner["allowed_scope_ids"], writable_scope_ids=owner["writable_scope_ids"],
+        capture_scope_id=owner["capture_scope_id"]), now=NOW)
+    server = remote_server.RemoteServerConfig(home=home, host="workbuddy", listen="127.0.0.1", port=1,
+                                              token_sha256="0" * 64)
+    client = _client(tmp_path, "workbuddy", _free_port())
+    monkeypatch.setattr(remote_client, "_post", lambda config, body, timeout: remote_server.handle_request(
+        server, json.loads(json.dumps(body))))
+    projects = tmp_path / "TEST-workpc-projects"
+    monkeypatch.setattr(transcript, "workbuddy_projects", lambda: projects)
+    record = projects / "c--work" / "TEST-wb-session.jsonl"
+    record.parent.mkdir(parents=True)
+    notice = "TEST Authentication required. Please use /login command to sign in to your account"
+    start = int((datetime.now(timezone.utc) - timedelta(seconds=30)).timestamp() * 1000)
+    record.write_text(json.dumps({"type": "message", "role": "assistant", "id": "a1", "timestamp": start,
+                                  "content": [{"type": "output_text", "text": notice}],
+                                  "providerData": {"error": {"message": notice}}}) + "\n", encoding="utf-8")
+    judged = []
+    monkeypatch.setattr(transcript, "workbuddy_error_reply", lambda path, reply: judged.append(path) or True)
+    _hook(client, {"session_id": "TEST-wb-session", "cwd": "C:/work", "hook_event_name": "Stop",
+                   "transcript_path": str(record), "last_assistant_message": notice})
+    assert judged == [], "the server opened the record a request named"
+
+
 def test_a_workbuddy_subagent_s_stop_sends_no_record(tmp_path, monkeypatch):
     """A subagent's Stop (its record id ``agent-*``, its record in a ``subagents`` folder) ends no turn of the person's
     session: its record is neither read nor sent, and no cursor moves for it."""

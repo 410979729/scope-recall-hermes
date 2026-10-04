@@ -227,6 +227,8 @@ class CodexHookHandler:
         self.resident_outcome: str | None = None
         #: The turn a WorkBuddy Stop closed and the words of its reply, for the read of the record after it.
         self._closed_reply: tuple[str, str] | None = None
+        #: Whether this hook may open the session record its payload names (``handle_payload``).
+        self._local_record = True
 
     @classmethod
     def from_config_path(
@@ -443,6 +445,7 @@ class CodexHookHandler:
         self._persisted_this_call = False
         self._queued_this_call = False
         self._closed_reply = None
+        self._local_record = record is None and local_record  # a client on another machine sends its record's lines
         self.diagnostics = HookDiagnostics(capability_gaps=self.diagnostics.capability_gaps)
         event = payload.get("hook_event_name")
         self.diagnostics.last_event = str(event) if event is not None else None
@@ -973,6 +976,11 @@ class CodexHookHandler:
     def _stop(self, session_id: str, audience, payload: dict[str, Any], deadline: float) -> dict[str, Any]:
         if self.host == "workbuddy":
             reply = payload.get("last_assistant_message")
+            if type(reply) is str and self._workbuddy_error_reply(session_id, payload, reply):
+                # WorkBuddy hands the Stop the error it showed in place of a reply (not signed in, a model or network
+                # failure) as the reply; the model said nothing, and the record marks that message with the error.
+                self._diag("client_error_reply")
+                return {}
             turn_id, repeated = _close_turn(self.config, session_id, payload, reply if type(reply) is str else "",
                                             self.clock.utc_now())
             self._closed_reply = (turn_id, _words(reply)) if type(reply) is str and reply.strip() else None
@@ -1005,6 +1013,15 @@ class CodexHookHandler:
         context = self._context(audience, session_id, "assistant_visible")
         self._capture(context, audience, event, deadline=deadline, gaps=(*gaps, *outcome_gaps))
         return {}
+
+    def _workbuddy_error_reply(self, session_id: str, payload: dict[str, Any], reply: str) -> bool:
+        """Whether a WorkBuddy Stop's reply is an error its record marks (``transcript.workbuddy_error_reply``).  A hook
+        that may not open the record (a client on another machine), or finds none, stores the reply as before."""
+        if not self._local_record:
+            return False
+        record = transcript.workbuddy_record_path(payload.get("transcript_path"), session_id,
+                                                  record_id=payload.get("agent_id"))
+        return record is not None and transcript.workbuddy_error_reply(record, reply)
 
     def _post_tool_use(self, session_id: str, audience, payload: dict[str, Any], deadline: float) -> dict[str, Any]:
         turn_id, gaps = turn_id_from_payload(payload, required=True, field=_TURN_FIELD[self.host])

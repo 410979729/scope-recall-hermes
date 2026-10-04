@@ -74,6 +74,33 @@ def test_nothing_else_of_the_record_is_said():
     assert transcript.workbuddy_said(_message("user", "<system-reminder>TEST</system-reminder>")) is None
 
 
+def test_an_error_shown_in_place_of_a_reply_is_not_said(tmp_path):
+    """WorkBuddy's agent records the error it showed when the model could not answer as a model message whose words
+    are the error's (``providerData.error``, status ``incomplete``).  A reply that broke off carries the error too and
+    keeps its words; the Stop's reply is the notice only when the record's last model message is that notice."""
+    notice = "TEST Authentication required. Please use /login command to sign in to your account"
+    failed = _message("assistant", notice, status="incomplete",
+                      providerData={"error": {"message": notice, "isNetworkError": False, "isRetryable": False}})
+    assert transcript.workbuddy_said(failed) is None
+    padded = _message("assistant", f"{notice}\n", providerData={"error": {"message": f" {notice}\n"}})
+    assert transcript.workbuddy_said(padded) is None, "whitespace around either side is not words"
+    cut = _message("assistant", "TEST 写到一半", status="incomplete",
+                   providerData={"error": {"message": "TEST stream timed out", "isStreamTimeout": True}})
+    assert transcript.workbuddy_said(cut).text == "TEST 写到一半"
+    assert transcript.workbuddy_said(_message("assistant", notice, providerData={"error": {"message": 3}})) is not None
+    record = tmp_path / "TEST-session.jsonl"
+    lines = [_message("user", "<user_query>TEST 问</user_query>"), failed, {"type": "ai-title", "title": "TEST"}]
+    record.write_text("".join(json.dumps(line, ensure_ascii=False) + "\n" for line in lines), encoding="utf-8")
+    assert transcript.workbuddy_error_reply(record, notice)
+    assert transcript.workbuddy_error_reply(record, f"  {notice}\n")
+    assert not transcript.workbuddy_error_reply(record, "TEST 别的回答")
+    assert not transcript.workbuddy_error_reply(record, "  ")
+    with record.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(_message("assistant", notice), ensure_ascii=False) + "\n")
+    assert not transcript.workbuddy_error_reply(record, notice), "the last model message carries no error"
+    assert not transcript.workbuddy_error_reply(tmp_path / "TEST-missing.jsonl", notice)
+
+
 def test_a_user_message_without_a_user_query_block_is_not_the_person_s():
     """WorkBuddy saves what the person sent inside ``<user_query>``.  The user messages it adds itself carry none: a
     local command and its output, a shell command run in bash mode and its output (``CommandMessageUtils``, saved

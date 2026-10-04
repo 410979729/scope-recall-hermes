@@ -857,8 +857,14 @@ vector search and embedding connection warm. WorkBuddy 5.6.2 runs its MCP server
 conversation's agent process: it starts one when a conversation opens or a prompt comes to a
 conversation without one, and stops it at its own time. A server started there met the prompt
 that started it still opening its vector store, and a cold server answered with its vector search
-only 12.7 s after its start, past the hook's 6 s. The resident server runs apart from WorkBuddy's
-processes:
+only 12.7 s after its start, past the hook's 6 s. The resident server is a process of its own,
+started apart from the MCP server. It still lives only as long as the conversation's agent process
+that started it: WorkBuddy's agent puts itself and every process it starts in a Windows job that
+ends them all when the agent's process ends, and the server cannot leave that job (agent 2.147.0,
+measured 2026-10-04). While one conversation's process runs, another conversation's first prompt
+finds the server warm (1.48 s, with its vector search, measured the same day); the first
+conversation after WorkBuddy starts, and a prompt right after the conversation holding the server
+ended, are recalled without it (see Known limits):
 
 - The prompt hook starts it after its answer when none runs, at most once a minute. The MCP
   server WorkBuddy runs with a conversation starts it too, and looks again every 30 s while that
@@ -880,8 +886,9 @@ processes:
 - While it runs it holds a vector helper, about 1 GB. The MCP server WorkBuddy runs with each
   conversation keeps no helper warm of its own and answers no hook; a tool's vector search starts
   one in that server.
-- The first prompt after it ended, or after a reboot, starts it and is recalled the old way,
-  usually by words and the stored structure alone; the next prompts find it warm.
+- The first prompt after it ended (with its conversation's process, or at its idle end), after
+  WorkBuddy started or after a reboot, starts it and is recalled the old way, usually by words and
+  the stored structure alone; the next prompts find it warm.
 - It writes nothing to the store. One runs for each entry: a second of the same version gives way
   to the first.
 
@@ -908,10 +915,16 @@ then ends the entry. `detach` alone leaves WorkBuddy's settings as they are.
 
 Known limits:
 
-- The first prompt after the resident recall server ended (`resident_recall_minutes` after the
-  last prompt and the last conversation process) or after a reboot starts it and is recalled
-  without the warm server, usually by words and the stored structure alone. A WorkBuddy on another machine is answered by its entry's server
-  here, which runs on ([remote-entries.md](remote-entries.md)).
+- The resident recall server ends with the conversation's agent process that started it, since
+  WorkBuddy's agent ends every process it started. The first conversation's first prompt after
+  WorkBuddy starts, a prompt right after the conversation holding the server ended, and the first
+  prompt after the server's idle end or a reboot are recalled without it, usually by words and the
+  stored structure alone. A conversation still open starts a new one within 30 s, and no sooner
+  than a minute after the last start. A WorkBuddy on another machine is answered by its entry's
+  server here, which runs on ([remote-entries.md](remote-entries.md)).
+- A reply that is only an error WorkBuddy showed in place of one (not signed in, a model or network
+  failure; its session record marks that message with the error) is not stored, from 3.6.2. A
+  reply that broke off with an error keeps what was shown.
 - WorkBuddy hands the prompt hook a prompt with its line breaks removed, so a multi-line message
   is stored as one line.
 - WorkBuddy fires `Stop` for a cancelled or failed turn too, with the previous turn's reply; a

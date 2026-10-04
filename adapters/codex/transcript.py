@@ -23,7 +23,9 @@ WorkBuddy keeps a record of the same kind (``workbuddy_said``, ``workbuddy_recor
 model's visible text (``output_text`` blocks).  Its other lines (reasoning, tool calls and results,
 titles, snapshots) are skipped, and so is a user message WorkBuddy itself added: one marked
 ``providerData.isMeta``, a notice that a background task finished, or one with no ``<user_query>``
-block (a command and its output, a teammate's report, a slash command's expansion).
+block (a command and its output, a teammate's report, a slash command's expansion).  A model message
+whose words are only an error WorkBuddy showed in place of a reply (``providerData.error``) is
+skipped as well.
 """
 from __future__ import annotations
 
@@ -145,6 +147,15 @@ def _milliseconds(value: object) -> str | None:
 
 #: The content blocks that carry each side's words in a WorkBuddy record.
 _WORKBUDDY_BLOCKS = {"user": "input_text", "assistant": "output_text"}
+#: How much of a WorkBuddy record's end a Stop reads for the model's last message (``workbuddy_error_reply``).
+_TAIL_BYTES = 256 * 1024
+
+
+def _workbuddy_error(provider: dict) -> str | None:
+    """The message of the error a WorkBuddy model message carries (``providerData.error``), if any."""
+    error = provider.get("error")
+    message = error.get("message") if isinstance(error, dict) else None
+    return message.strip() if type(message) is str and message.strip() else None
 
 
 def workbuddy_said(row: object) -> Said | None:
@@ -174,12 +185,41 @@ def workbuddy_said(row: object) -> Said | None:
     text = "".join(blocks) if role == "assistant" else workbuddy_record_words("\n".join(blocks))
     if not text.strip() or (role == "user" and is_task_notification(text)):
         return None
+    if role == "assistant" and text.strip() == _workbuddy_error(provider):
+        # An error WorkBuddy showed in place of the model's reply (not signed in, a model or network failure): the
+        # message carries that error and its words are the error's.  The model said nothing (seen 2026-10-04 with
+        # WorkBuddy's agent 2.147.0 not signed in, its notice stored as the reply).
+        return None
     text = without_lone_surrogates(text)
     try:
         entry_id.encode("utf-8")
     except UnicodeEncodeError:
         return None
     return Said(entry_id.strip(), role, text, occurred_at)
+
+
+def workbuddy_error_reply(path: Path, reply: str) -> bool:
+    """Whether a Stop's ``last_assistant_message`` is an error WorkBuddy showed in place of a reply: the model's last
+    message in the record carries an error whose message is these words (``workbuddy_said`` skips that message).  A
+    record that cannot be read, or whose last model message carries none, says no."""
+    if not reply.strip():
+        return False
+    try:
+        with path.open("rb") as handle:
+            size = handle.seek(0, os.SEEK_END)
+            handle.seek(max(0, size - _TAIL_BYTES))
+            tail = handle.read()
+    except OSError:
+        return False
+    for raw in reversed(tail.splitlines()):
+        try:
+            row = json.loads(raw.decode("utf-8"))
+        except (UnicodeError, ValueError, RecursionError):
+            continue  # the cut first line of the tail, or a line being written
+        if isinstance(row, dict) and row.get("type") == "message" and row.get("role") == "assistant":
+            provider = row.get("providerData") if isinstance(row.get("providerData"), dict) else {}
+            return _workbuddy_error(provider) == reply.strip()
+    return False
 
 
 def workbuddy_projects() -> Path:
