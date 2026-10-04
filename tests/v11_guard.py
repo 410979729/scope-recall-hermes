@@ -20,6 +20,8 @@ _PACKAGING_HELPER_ROOTS = tuple(
 )
 _PACKAGING_HELPER_TIERS = frozenset({"packaging", "release"})
 _PACKAGING_BARE_COMMANDS = frozenset({"cmd.exe", "powershell.exe"})
+# The one node executable the gate found, for the host tier's dsh plugin tests (``scripts/check.py``).
+_NODE = Path(os.environ["SCOPE_RECALL_TEST_NODE"]).resolve() if os.environ.get("SCOPE_RECALL_TEST_NODE") else None
 # Script-gate tests inspect the isolated checkout with Git.  The executable is
 # intentionally bare on Windows, so permit only this one tool while retaining
 # the owned-test cwd check above; all other bare child commands remain denied.
@@ -113,6 +115,12 @@ def _windows_command_tokens(text: str) -> list[str]:
 def _is_allowed_child_path(token: str) -> bool:
     if _is_allowed_path(token):
         return True
+    if _NODE is not None and _PROCESS_TIER == "host":
+        try:
+            if Path(token).resolve(strict=False) == _NODE:
+                return True
+        except (TypeError, ValueError, OSError):
+            return False
     if _PROCESS_TIER not in _PACKAGING_HELPER_TIERS:
         return False
     try:

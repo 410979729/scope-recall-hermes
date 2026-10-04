@@ -11,7 +11,10 @@ from contextlib import closing
 from datetime import datetime, timedelta, timezone
 import json
 import os
+from pathlib import Path
 import sqlite3
+import subprocess
+import sys
 
 import pytest
 
@@ -3096,3 +3099,255 @@ def test_a_workbuddy_hook_with_nothing_to_add_writes_nothing(workbuddy, tmp_path
     unattached = tmp_path / "TEST-not-attached"
     assert answer(_wb_prompt("TEST 问。"), unattached, "workbuddy") == ""
     assert answer(_wb_prompt("TEST 问。"), unattached, "claude-code") == "{}"
+
+
+# -- DeepSeek Harness (dsh): a plugin runs these hooks (``distribution/dsh``) ---------------------------------------
+
+DSH_SESSION = "session-TEST-dsh"
+
+
+@pytest.fixture
+def dsh(store, tmp_path):
+    """A dsh entry beside the store's others, the owner at this machine."""
+    root, _homes, _client, _capture = store
+    owner = next(row for row in read_shared_payload(root)["entries"][0]["audiences"] if row["kind"] == "owner_private")
+    home = tmp_path / "TEST-dsh-home"
+    attach_shared_record(root, client_entry_record(
+        host="dsh", home=home, entry_id="dsh", display_name="DeepSeek Harness", attached_at=NOW,
+        allowed_scope_ids=owner["allowed_scope_ids"], writable_scope_ids=owner["writable_scope_ids"],
+        capture_scope_id=owner["capture_scope_id"]), now=NOW)
+    return root, home
+
+
+def _dsh(home, payload, *, session=DSH_SESSION):
+    """One hook as dsh's plugin runs it, in a handler of its own as each is a process of its own."""
+    hook = CodexHookHandler.from_home(str(home), "dsh")
+    try:
+        result = hook.handle_payload({"session_id": session, "cwd": "C:/TEST/work", **payload})
+    finally:
+        hook.close()
+    return result, hook.diagnostics
+
+
+def _dsh_ms():
+    start = int((datetime.now(timezone.utc) - timedelta(seconds=30)).timestamp() * 1000)
+    return lambda seconds: start + seconds * 1000
+
+
+def _dsh_said(root, role=None):
+    where = f" AND role='{role}'" if role else ""
+    return sorted(_rows(root, f"SELECT role, origin, content FROM source_events WHERE entry_id='dsh'{where}"))
+
+
+def test_a_dsh_prompt_is_stored_under_its_turn_and_another_session_recalls_it(dsh):
+    """The plugin runs the prompt hook before a turn's first step: the prompt is the owner's, named by the session and
+    dsh's turn number, and the answer is what is remembered, which the plugin appends to the step."""
+    root, home = dsh
+    result, diagnostics = _dsh(home, {"hook_event_name": "UserPromptSubmit", "turn_id": "1",
+                                      "prompt": "TEST 我的猫叫 Mochi，最爱吃金枪鱼。"})
+    assert diagnostics.last_event == "UserPromptSubmit"
+    assert _dsh_said(root) == [("user", "human_direct", "TEST 我的猫叫 Mochi，最爱吃金枪鱼。")]
+    keys = [key for (key,) in _rows(root, "SELECT source_event_key FROM source_events WHERE entry_id='dsh'")]
+    assert keys == [f"dsh:{read_shared_payload(root)['installation_id']}:{DSH_SESSION}:user:1@1"]
+    result, _diagnostics = _dsh(home, {"hook_event_name": "UserPromptSubmit", "turn_id": "1",
+                                       "prompt": "TEST 我的猫叫什么？"}, session="session-TEST-dsh-2")
+    context = (result.get("hookSpecificOutput") or {}).get("additionalContext") or ""
+    assert "Mochi" in context, "a new session's first prompt recalls what another one said"
+
+
+def test_a_dsh_stop_stores_the_turn_s_messages_once_and_says_how_many(dsh):
+    """The plugin keeps a turn's messages and sends them with its Stop: the reply under the turn, and from the lines what
+    the model said while it worked and what the person sent meanwhile.  The answer's ``through`` is how many lines are
+    stored; the same lines sent again (an answer lost on the way) store nothing twice."""
+    root, home = dsh
+    at = _dsh_ms()
+    _dsh(home, {"hook_event_name": "UserPromptSubmit", "turn_id": "3", "prompt": "TEST 把两个文件改名。"})
+    record = [{"id": "u1", "role": "user", "text": "TEST 把两个文件改名。", "time": at(0)},
+              {"id": "a1", "role": "assistant", "text": "TEST 我先看一下目录。", "time": at(1)},
+              {"id": "u2", "role": "user", "text": "TEST 顺便把第三个也改了。", "time": at(2)},
+              {"id": "a2", "role": "assistant", "text": "TEST 三个文件都改好了。", "time": at(3)}]
+    stop = {"hook_event_name": "Stop", "turn_id": "3", "last_assistant_message": "TEST 三个文件都改好了。",
+            "record": record}
+    result, _diagnostics = _dsh(home, stop)
+    assert result == {"through": 4}
+    expected = sorted([("user", "human_direct", "TEST 把两个文件改名。"),
+                       ("assistant", "assistant_visible", "TEST 我先看一下目录。"),
+                       ("user", "human_direct", "TEST 顺便把第三个也改了。"),
+                       ("assistant", "assistant_visible", "TEST 三个文件都改好了。")])
+    assert _dsh_said(root) == expected
+    result, _diagnostics = _dsh(home, stop)
+    assert result == {"through": 4} and _dsh_said(root) == expected, "sent again, nothing is stored twice"
+
+
+def test_a_dsh_turn_without_a_reply_stores_what_its_lines_show(dsh):
+    """A turn that failed or was aborted has no reply, and the plugin sends what it kept of earlier turns the same way:
+    no reply is stored, the lines are, and lines that are no message are counted with them."""
+    root, home = dsh
+    at = _dsh_ms()
+    record = [{"id": "u1", "role": "user", "text": "TEST 这一轮没有回答。", "time": at(0)},
+              {"id": "", "role": "user", "text": "TEST 没有 id", "time": at(1)},
+              {"id": "x1", "role": "system", "text": "TEST 不是人说的", "time": at(1)}]
+    result, diagnostics = _dsh(home, {"hook_event_name": "Stop", "record": record})
+    assert diagnostics.last_reason != "missing_turn_id"
+    assert result == {"through": 3}
+    assert _dsh_said(root) == [("user", "human_direct", "TEST 这一轮没有回答。")]
+
+
+def test_dsh_sends_no_session_end(dsh):
+    _root, home = dsh
+    result, diagnostics = _dsh(home, {"hook_event_name": "SessionEnd", "reason": "other"})
+    assert result == {} and diagnostics.last_reason == "unsupported_event"
+
+
+# -- dsh's plugin (``distribution/dsh/scope-recall/index.mjs``) driven as dsh drives it, without dsh -------------------
+# node runs the plugin with a fake ``ctx`` (``dsh_harness/harness.mjs``) through one turn; the plugin runs the real hook
+# client against the test store.  The harness drops the interpreter's ``-I`` (``dsh_harness/hooks.mjs``), so the hook
+# imports this checkout through tests/sitecustomize.py.  Skipped where node (20.6 or later, for module hooks) is not
+# installed; the gate lets the host tier run the node it found (``SCOPE_RECALL_TEST_NODE``).
+
+DSH_PLUGIN = Path(__file__).resolve().parents[3] / "distribution" / "dsh" / "scope-recall" / "index.mjs"
+DSH_HARNESS = Path(__file__).resolve().parent / "dsh_harness"
+NODE = os.environ.get("SCOPE_RECALL_TEST_NODE") or __import__("shutil").which("node")
+
+def _node_ok() -> bool:
+    if NODE is None:
+        return False
+    try:
+        version = subprocess.run([NODE, "--version"], capture_output=True, text=True, timeout=30).stdout.strip()
+        major, minor = (int(part) for part in version.lstrip("v").split(".")[:2])
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return False
+    return (major, minor) >= (20, 6)
+
+
+_NEEDS_NODE = pytest.mark.skipif(not _node_ok(), reason="node 20.6 or later is not installed")
+
+
+def _run_plugin(config: dict, scenario: str = "turn") -> dict:
+    process = subprocess.run(
+        [NODE, "--import", (DSH_HARNESS / "register.mjs").as_uri(), str(DSH_HARNESS / "harness.mjs"), str(DSH_PLUGIN),
+         json.dumps(config), scenario],
+        capture_output=True, text=True, encoding="utf-8", timeout=120, env=os.environ.copy())
+    assert process.returncode == 0, process.stderr[-2000:]
+    return json.loads(process.stdout.strip().splitlines()[-1])
+
+
+def _plugin_rows(root):
+    return sorted(_rows(root, "SELECT role, origin, content FROM source_events WHERE entry_id='dsh' "
+                              "AND source_event_key LIKE '%session-TEST-plugin%'"))
+
+
+@_NEEDS_NODE
+def test_the_plugin_recalls_before_the_first_step_and_stores_the_turn_at_its_end(dsh, tmp_path):
+    root, home = dsh
+    _dsh(home, {"hook_event_name": "UserPromptSubmit", "turn_id": "1", "prompt": "TEST 我的猫叫 Mochi，最爱吃金枪鱼。"},
+         session="session-TEST-seed")
+    spool = tmp_path / "TEST-spool"
+    result = _run_plugin({"python": sys.executable, "home": str(home), "spool": str(spool), "version": "TEST",
+                          "prompt": "TEST 我的猫叫什么名字？", "queued": "TEST 先说一句：我在家。"})
+    assert result["warnings"] == []
+    assert result["decisionKept"], "the step's own messages and flags are passed on"
+    assert result["injected"] is not None and "Mochi" in result["injected"]["text"]
+    assert (result["injected"]["kind"], result["injected"]["form"]) == ("plugin:scope-recall", "recall")
+    assert result["spool"] == [], "the turn was stored and nothing is left on disk"
+    assert result["status"]["lastRecall"]["outcome"] == "recalled"
+    assert result["status"]["lastStore"]["error"] is None and result["status"]["backlog"] == 0
+    assert _plugin_rows(root) == sorted([("user", "human_direct", "TEST 先说一句：我在家。"),
+                                         ("user", "human_direct", "TEST 我的猫叫什么名字？"),
+                                         ("assistant", "assistant_visible", "TEST 我先查一下记忆。"),
+                                         ("assistant", "assistant_visible", "TEST 它叫 Mochi。")]), \
+        "the prompt (the step's last message of the person's) and the reply once each, the message taken with the " \
+        "prompt and what was said in between from the record, and none of dsh's own context"
+
+
+@_NEEDS_NODE
+def test_a_hook_that_cannot_run_keeps_the_turn_on_disk_and_the_step_goes_on(dsh, tmp_path):
+    _root, home = dsh
+    spool = tmp_path / "TEST-spool"
+    result = _run_plugin({"python": str(tmp_path / "TEST-no-python.exe"), "home": str(home), "spool": str(spool),
+                   "expectBacklog": True})
+    assert result["injected"] is None and result["decisionKept"], "no recall, and the turn is not failed"
+    assert sorted(result["spool"]) == ["assistant", "assistant", "turn_end", "user"], "kept to store later"
+    assert result["status"]["lastStore"]["error"] and result["status"]["backlog"] == 3
+    assert any("kept to store later" in warning for warning in result["warnings"])
+
+
+@_NEEDS_NODE
+def test_an_aborted_step_is_passed_on_untouched(dsh, tmp_path):
+    _root, home = dsh
+    spool = tmp_path / "TEST-spool"
+    result = _run_plugin({"python": sys.executable, "home": str(home), "spool": str(spool)}, "aborted")
+    assert result["decisionKept"] and result["warnings"] == [] and result["spool"] == []
+
+
+@_NEEDS_NODE
+def test_the_plugin_stores_what_a_dsh_that_is_gone_left_and_leaves_a_running_one_s_file(dsh, tmp_path):
+    """A dsh that ended before its store did leaves its spool file; another dsh's plugin takes it, once it is idle and its
+    process is gone, and stores it.  That turn ended minutes ago, so its reply is stored from the record alone, once (sent
+    as the reply too, it would be stored again: the store compares moments 120 s apart at most).  A message older than
+    14 days is dropped and said; the file of a process that still runs is left to it."""
+    root, home = dsh
+    spool = tmp_path / "TEST-spool"
+    spool.mkdir()
+    gone = int(subprocess.run([sys.executable, "-c", "import os; print(os.getpid())"], capture_output=True, text=True,
+                              check=True).stdout)
+    now = int(datetime.now(timezone.utc).timestamp() * 1000)
+    minute = 60_000
+    session = "session-TEST-plugin"
+
+    def line(key, role, text, at, *, of=session, turn=4):
+        return json.dumps({"k": key, "sessionId": of, "role": role, "id": f"id-{key}", "text": text, "time": at,
+                           "turn": turn, "cwd": "C:/TEST/work"}, ensure_ascii=False)
+
+    left = spool / f"{session}.{gone}.jsonl"
+    left.write_text("\n".join([
+        line("old", "user", "TEST 半个月前的话。", now - 15 * 24 * 60 * minute, turn=1),
+        line("u4", "user", "TEST 第四轮的问题。", now - 10 * minute),
+        line("a4", "assistant", "TEST 第四轮的回答。", now - 10 * minute + 5_000),
+        json.dumps({"k": "e4", "sessionId": session, "role": "turn_end", "turn": 4, "reason": "completed",
+                    "time": now - 10 * minute + 6_000, "cwd": "C:/TEST/work"}),
+    ]) + "\n", encoding="utf-8")
+    running = spool / f"session-TEST-other.{os.getpid()}.jsonl"
+    running.write_text(line("x", "user", "TEST 还在跑的那个 dsh 的话。", now - 10 * minute, of="session-TEST-other") + "\n",
+                       encoding="utf-8")
+    idle = datetime.now(timezone.utc).timestamp() - 600
+    for path in (left, running):
+        os.utime(path, (idle, idle))
+    result = _run_plugin({"python": sys.executable, "home": str(home), "spool": str(spool), "ignore": [running.name]},
+                         "sweep")
+    assert result["files"] == [running.name] and result["spool"] == ["user"], "a running process's file is its own"
+    assert _plugin_rows(root) == sorted([("user", "human_direct", "TEST 第四轮的问题。"),
+                                         ("assistant", "assistant_visible", "TEST 第四轮的回答。")])
+    assert result["status"]["dropped"] == 1 and result["status"]["backlog"] == 1
+    assert [warning for warning in result["warnings"] if "dropped unstored" in warning], result["warnings"]
+
+
+@_NEEDS_NODE
+def test_a_sweep_that_fails_stops_at_the_first_session_and_waits_longer(dsh, tmp_path):
+    """Two dsh processes that are gone left a file each.  The store cannot be reached (here: no interpreter), so the pass
+    stops at the first session it tried, keeps that one's messages, leaves the other file as it was and says when it
+    tries again: a backlog after an outage is not sent to the store all at once, nor every minute."""
+    _root, home = dsh
+    spool = tmp_path / "TEST-spool"
+    spool.mkdir()
+    gone = int(subprocess.run([sys.executable, "-c", "import os; print(os.getpid())"], capture_output=True, text=True,
+                              check=True).stdout)
+    now = int(datetime.now(timezone.utc).timestamp() * 1000)
+    idle = datetime.now(timezone.utc).timestamp() - 600
+    names = []
+    for index in (1, 2):
+        name = f"session-TEST-gone-{index}.{gone}.jsonl"
+        (spool / name).write_text(json.dumps({"k": f"k{index}", "sessionId": f"session-TEST-gone-{index}", "role": "user",
+                                              "id": f"u{index}", "text": f"TEST 第 {index} 个会话。", "time": now - 600_000,
+                                              "turn": 1, "cwd": "C:/TEST/work"}, ensure_ascii=False) + "\n",
+                                  encoding="utf-8")
+        os.utime(spool / name, (idle, idle))
+        names.append(name)
+    result = _run_plugin({"python": str(tmp_path / "TEST-no-python.exe"), "home": str(home), "spool": str(spool),
+                          "expectBacklog": True, "waitMs": 9_000}, "sweep")
+    untouched = [name for name in names if name in result["files"]]
+    taken = [name for name in result["files"] if name not in names]
+    assert len(untouched) == 1 and len(taken) == 1, result["files"]
+    assert taken[0].endswith(f".{result['pid']}.jsonl"), "the first is taken into this process's file and kept"
+    assert taken[0].split(".")[0] != untouched[0].split(".")[0]
+    assert result["status"]["retryAfter"] and result["status"]["lastStore"]["error"] and result["status"]["backlog"] == 2

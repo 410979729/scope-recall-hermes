@@ -23,7 +23,7 @@ def main(argv: list[str] | None = None) -> int:
     where = parser.add_mutually_exclusive_group(required=True)
     where.add_argument("--config", type=Path, help="Absolute path to codex-installation.json")
     where.add_argument("--home", type=Path, help="Absolute home of a client attached to a shared store")
-    parser.add_argument("--host", choices=("codex", "claude-code", "workbuddy"), default="codex",
+    parser.add_argument("--host", choices=("codex", "claude-code", "workbuddy", "dsh"), default="codex",
                         help="the client whose hooks call this, for --home")
     parser.add_argument(
         "--runtime-config",

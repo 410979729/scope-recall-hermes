@@ -8,7 +8,7 @@ import shutil
 from types import ModuleType
 import uuid
 
-from . import install_claude_code, install_codex, install_hermes, install_workbuddy
+from . import install_claude_code, install_codex, install_dsh, install_hermes, install_workbuddy
 from .backup import _atomic_write, _sha256
 from .doctor import _host_registration_status
 from .install_common import (
@@ -50,7 +50,7 @@ __all__ = [
 # home, which the host shares, and the install merges its entries into those files (``merged_file``) and takes them
 # out again at uninstall (``unmerged_file``) instead of owning files there.
 _HOSTS: dict[str, ModuleType] = {"codex": install_codex, "claude-code": install_claude_code, "hermes": install_hermes,
-                                 "workbuddy": install_workbuddy}
+                                 "workbuddy": install_workbuddy, "dsh": install_dsh}
 
 
 def _instance_files(host: ModuleType, instance_root: Path) -> tuple[Path, Path]:
@@ -230,7 +230,7 @@ def _stop_residents(host: str, instance_root: Path) -> None:
     """Stop the entry's resident recall servers, for a client that may keep one (``adapters/codex/resident_entry``).
     They write nothing.  One that cannot be stopped (its identity not proven, as on macOS, or this account may not end
     it) is said on stderr and left to its own end; nothing here fails the install."""
-    if host not in ("codex", "claude-code", "workbuddy"):
+    if host not in ("codex", "claude-code", "workbuddy", "dsh"):
         return
     import sys
 

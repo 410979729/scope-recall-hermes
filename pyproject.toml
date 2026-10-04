@@ -104,6 +104,7 @@ build_py = "packaging_hooks.v11_build.AllowlistedBuildPy"
   "distribution/codex/scope-recall/.mcp.json",
   "distribution/hermes/__init__.py",
   "distribution/hermes/plugin.yaml",
+  "distribution/dsh/scope-recall/index.mjs",
 ]
 
 [tool.ruff]

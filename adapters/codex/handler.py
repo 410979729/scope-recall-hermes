@@ -87,19 +87,21 @@ _SUPPORTED_EVENTS = frozenset(
 #: same fields, except that a turn is named by ``prompt_id``.  Its tool output is not recorded:
 #: a tool result never becomes a memory, and a coding session's tool traffic would be most of
 #: the store for an embedding each.
-_TURN_FIELD = {"codex": "turn_id", "claude-code": "prompt_id", "workbuddy": "generation_id"}
+_TURN_FIELD = {"codex": "turn_id", "claude-code": "prompt_id", "workbuddy": "generation_id", "dsh": "turn_id"}
 #: Clients whose prompt hook may run the entry's ``hook_processing_seconds`` (at most 6 s) from the
 #: start.  Both wait 15 s for a prompt's hook (``maintenance/install_claude_code.py``,
 #: ``maintenance/install_codex.py``), and recall on the pilot's shared store took 2.7-5.7 s: with 2 s most
 #: automatic recalls came back empty, as Codex's did until 3.4.0rc5.  The budget bounds the work; the hook
 #: answers as soon as it is done.  WorkBuddy waits 60 s unless its hook says otherwise, and a prompt hook
 #: that runs past its wait blocks the prompt: the budget is what keeps it inside.
-_CONFIGURED_PROMPT_BUDGET = frozenset({"claude-code", "codex", "workbuddy"})
+_CONFIGURED_PROMPT_BUDGET = frozenset({"claude-code", "codex", "workbuddy", "dsh"})
 #: Clients whose Stop and SessionEnd also read the session record (``transcript``): what the person said,
 #: whatever the prompt hook could not write, and what the model said while it worked.  Claude Code waits
 #: 10 s for these hooks; a turn's lines take well under a second, and a long backlog is read over several
 #: turns, at most ``_RECORD_READ_S`` each, so the end of a turn is not held up.
-_READS_RECORD = frozenset({"claude-code", "workbuddy"})
+#: dsh has no record a hook can read (its session log is compressed); its plugin sends the turn's messages with the Stop
+#: as the lines a remote client sends (``transcript.dsh_lines``).
+_READS_RECORD = frozenset({"claude-code", "workbuddy", "dsh"})
 _RECORD_READ_S = 3.0
 #: A capture is started only with this much of the reading time left.
 _RECORD_CAPTURE_MIN_S = 0.5
@@ -107,7 +109,10 @@ _RECORD_CAPTURE_MIN_S = 0.5
 _RECORD_SAME_MESSAGE_S = 120.0
 _HOST_EVENTS = {"codex": _SUPPORTED_EVENTS,
                 "claude-code": frozenset({"UserPromptSubmit", "Stop", "SessionEnd"}),
-                "workbuddy": frozenset({"UserPromptSubmit", "Stop", "SessionEnd"})}
+                "workbuddy": frozenset({"UserPromptSubmit", "Stop", "SessionEnd"}),
+                # dsh's plugin (``distribution/dsh``) sends a prompt hook before a turn's first step and a Stop at its
+                # end; dsh has no session end.
+                "dsh": frozenset({"UserPromptSubmit", "Stop"})}
 
 
 class HookClock(Protocol):
@@ -496,6 +501,10 @@ class CodexHookHandler:
             return self._interrupt(session_id, audience, payload, deadline)
         if event == "PostToolUse":
             return self._post_tool_use(session_id, audience, payload, deadline)
+        if self.host == "dsh" and record is None:
+            # The turn's messages as dsh's plugin kept them (it has no record a hook could open), read as a remote
+            # client's lines; the answer says how many are stored, so the plugin drops those and sends the rest again.
+            record = RecordLines(start=0, lines=transcript.dsh_lines(payload.get("record")))
         capture = self._stop if event == "Stop" else self._session_end
         result = capture(session_id, audience, payload, deadline)
         # A server for a client on another machine reads only the lines that client sent (``local_record``
@@ -506,6 +515,8 @@ class CodexHookHandler:
         if self.host == "workbuddy" and event == "SessionEnd":
             _forget_turns(self.config, session_id)
         self._wake_after_capture(session_id, audience, deadline)
+        if self.host == "dsh" and record is not None:
+            result = {**result, "through": record.through or 0}
         return result
 
     def handle_bytes(self, raw: bytes) -> dict[str, Any]:
@@ -977,6 +988,11 @@ class CodexHookHandler:
         return {"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": text}}
 
     def _stop(self, session_id: str, audience, payload: dict[str, Any], deadline: float) -> dict[str, Any]:
+        if self.host == "dsh" and type(payload.get("last_assistant_message")) is not str:
+            # A turn that ended without a reply (aborted, failed), or dsh's plugin sending what it kept of earlier
+            # turns: the record lines carry whatever was said.
+            self._diag("no_reply")
+            return {}
         if self.host == "workbuddy":
             reply = payload.get("last_assistant_message")
             if type(reply) is str and self._workbuddy_error_reply(session_id, payload, reply):

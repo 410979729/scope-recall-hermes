@@ -215,11 +215,12 @@ def _rollback(args: argparse.Namespace) -> int:
 
 
 def _add_install_arguments(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--host", required=True, choices=("hermes", "codex", "claude-code", "workbuddy"))
+    parser.add_argument("--host", required=True, choices=("hermes", "codex", "claude-code", "workbuddy", "dsh"))
     parser.add_argument("--target-plugin-dir", default=None,
                         help="the plugin directory the installer writes; for workbuddy, WorkBuddy's own home, whose "
                         "settings.json and mcp.json it merges its entries into (default: WORKBUDDY_CONFIG_DIR, else "
-                        "~/.workbuddy)")
+                        "~/.workbuddy); for dsh, dsh's home, whose cordis.patch.yml it adds its rows to (default: "
+                        "DSH_HOME, else ~/.dsh)")
     parser.add_argument("--instance-root", required=True)
     parser.add_argument("--project-root", default=None,
                         help="the workspace a Codex installation of its own maps; a client attached to a shared "
@@ -271,6 +272,10 @@ def _install_target(args: argparse.Namespace) -> Path:
         from .install_workbuddy import default_home
 
         return default_home()
+    if args.host == "dsh":
+        from .install_dsh import default_home as dsh_home
+
+        return dsh_home()
     raise SystemExit(f"--target-plugin-dir is required for --host {args.host}")
 
 
@@ -302,7 +307,7 @@ def _apply_install(args: argparse.Namespace) -> int:
 
 
 def _add_doctor_arguments(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--host", required=True, choices=("hermes", "codex", "claude-code", "workbuddy"))
+    parser.add_argument("--host", required=True, choices=("hermes", "codex", "claude-code", "workbuddy", "dsh"))
     parser.add_argument("--instance-root", required=True)
     parser.add_argument("--python")
 

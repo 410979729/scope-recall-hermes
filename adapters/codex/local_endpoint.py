@@ -89,7 +89,7 @@ ADVERTISE_SECONDS = 2.0
 #: agent process, so a prompt that started one met a server still opening its vector store: a cold server answered
 #: with its vector search 12.7 s after its start (measured 2026-10-03), past the prompt hook's 6 s.  Claude Code and
 #: Codex keep their server for as long as the client runs, and keep none.
-RESIDENT_DEFAULT_MINUTES = {"workbuddy": 120}
+RESIDENT_DEFAULT_MINUTES = {"workbuddy": 120, "dsh": 120}
 #: How often a client starts a resident server when it finds none: a start warms for several seconds, and the next
 #: prompt's hook would otherwise start another meanwhile (the second gives way, ``resident_entry``).
 RESIDENT_START_EVERY_SECONDS = 60.0

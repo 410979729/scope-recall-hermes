@@ -26,6 +26,10 @@ titles, snapshots) are skipped, and so is a user message WorkBuddy itself added:
 block (a command and its output, a teammate's report, a slash command's expansion).  A model message
 whose words are only an error WorkBuddy showed in place of a reply (``providerData.error``) is
 skipped as well.
+
+dsh's session log is Zstandard-compressed and its hooks name no record, so its plugin keeps each
+turn's messages and sends them with the Stop (``dsh_lines``), as a client on another machine sends
+the lines of its own record.
 """
 from __future__ import annotations
 
@@ -226,6 +230,36 @@ def workbuddy_error_reply(path: Path, reply: str) -> bool:
             provider = row.get("providerData") if isinstance(row.get("providerData"), dict) else {}
             return _error_words(reply, _workbuddy_error(provider))
     return False
+
+
+#: The most of dsh's messages one Stop takes; its plugin sends the rest with a later one.
+_DSH_LINES = 500
+
+
+def dsh_lines(value: object) -> list[tuple[int, Said | None]]:
+    """The messages dsh's plugin sends with a Stop (``distribution/dsh``), as a remote client's record lines.
+
+    dsh keeps no record a hook can read (its session log is compressed), so the plugin keeps each turn's messages
+    itself and sends them: ``{"id", "role", "text", "time"}``, ``time`` in milliseconds.  Each is a line numbered from 1;
+    one that is not such a message is a line that shows nothing, still counted, so the plugin drops it with the rest."""
+    if not isinstance(value, list):
+        return []
+    return [(index, _dsh_said(row)) for index, row in enumerate(value[:_DSH_LINES], start=1)]
+
+
+def _dsh_said(row: object) -> Said | None:
+    if not isinstance(row, dict):
+        return None
+    entry_id, role, text = row.get("id"), row.get("role"), row.get("text")
+    occurred_at = _milliseconds(row.get("time"))
+    if (type(entry_id) is not str or not entry_id.strip() or len(entry_id) > 100 or role not in ("user", "assistant")
+            or type(text) is not str or not text.strip() or occurred_at is None):
+        return None
+    try:
+        entry_id.encode("utf-8")
+    except UnicodeEncodeError:
+        return None
+    return Said(entry_id.strip(), role, without_lone_surrogates(text), occurred_at)
 
 
 def workbuddy_projects() -> Path:

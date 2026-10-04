@@ -2,11 +2,38 @@
 
 All notable changes to `scope-recall` will be documented in this file.
 
-## [Unreleased]
+## [3.7.0 candidates] - 2026-10-04
 
-### Scope Recall 3.6.3rc1 - 2026-10-04
+### Scope Recall 3.7.0rc1 - 2026-10-04
 
-- The version moves past the `v3.6.2` tag.
+3.7.0rc1 lets DeepSeek Harness (dsh) join a shared store: its prompts are recalled before each turn and each turn's messages are stored, by a dsh plugin that runs the entry's hooks.
+
+#### Features
+
+- **dsh as an entry of a shared store** (`attach --host dsh`, `plan-install` / `apply-install --host dsh`), the owner at this machine, measured with dsh 0.2.0-rc.2. dsh's own hooks name no turn and no reply, and its session log is compressed (multi-frame Zstandard), so no hook could record a turn there.
+  - A native dsh plugin (`distribution/dsh/scope-recall/index.mjs`, an ES module run inside dsh, no dependencies) runs the entry's hook client (`hook_entry --host dsh`), the one the other clients' hooks run. It owns no memory policy.
+  - Recall: before the first step of each turn (`agent/pre-step`) it runs the prompt hook with the person's message, the last of theirs that step takes. The prompt is stored as the owner's, named by the session and dsh's turn number, and what is remembered is added to the step as a message of its own (`source.kind: plugin:scope-recall`). The step waits up to 9 s (`recallTimeoutMs`), then goes on without it; cancelling the turn ends the hook. The plugin takes the answer as soon as it is whole, while the hook goes on to start the resident recall server.
+  - Capture: it keeps each turn's messages as dsh commits them (`session/event`: the person's and the model's text; dsh's own context, ours, a subagent's session, tool calls and results, files and the model's reasoning are left out) in a spool, `<entry>\scope-recall\dsh-spool\`, one file per session and dsh process. When the turn ends it runs the `Stop` hook with them: the reply under the turn, what the model said while it worked and what the person sent meanwhile, read as a remote client's record lines (`transcript.dsh_lines`, at most 500 per hook). The hook answers how many lines it stored (`through`), and those leave the spool. A message sent twice is stored once.
+  - A failed store keeps the messages: they are stored at the session's next turn end, or by a pass every minute over files idle for 2 minutes, one session at a time, the first failure ending the pass and the next waiting longer (up to 30 minutes). Only the process that wrote a file rewrites it; the file of a dsh that is gone (or idle for 6 hours) is taken whole by a rename, which one process alone wins. Bounded: a message's text up to 20,000 characters and 36 KB; a message waiting longer than 14 days, or past 5,000 of a session, is dropped and said.
+  - A turn's reply goes with its `Stop` only within a minute of the turn's end: the store recognises the reply among the turn's messages by its words and a moment at most 120 s away, and the reply's moment is the hook's.
+  - `<entry>\scope-recall\dsh-plugin-status.json`: the last recall and store, what waits, what was dropped, the next pass, and a privacy alarm should dsh report a session log delivered to its API.
+  - The MCP server runs under dsh's own MCP client (`@deepseek-ai/dsh-mcp-client`, stdio); its tools are `mcp__scope-recall__*`.
+  - The prompt's recall comes from the entry's resident recall server (3.6.0), which outlives a dsh process; `resident_recall_minutes` is 120 by default for dsh.
+- **The installer writes into dsh's home** (`--target-plugin-dir`, default `DSH_HOME`, else `~/.dsh`; `maintenance/install_dsh.py`).
+  - The plugin file goes to `<dsh home>\scope-recall\dsh-plugin\index.mjs`, in the receipt.
+  - Two rows go into dsh's home patch, `cordis.patch.yml`, as one `insert` between markers: `scope-recall` (the plugin) and `mcp-scope-recall` (the MCP server). dsh composes every profile with that file after the profile's own layers. Every other line is kept, the file is copied to the backups first, a second install changes nothing, and uninstall takes out only this entry's rows. A file that is not a YAML block list at column 0, rows of these names that something else inserts, another MCP server named `scope-recall`, or another entry's rows are refused, and nothing is written. A re-install writes the block where it stood, so that an operation of the person's after it (switching the plugin off, say) stays after it: dsh applies a patch's operations in order.
+  - dsh uploads each session's log to its model API by default (`session-log-deepseek`), recalled memories with it. Unless the file already switches it off, the install adds `enabled: false` for it between markers of their own, and uninstall leaves that in place.
+- The host `dsh` is known wherever a client host is: `attach`, `hook_entry`, `mcp_entry`, `resident`, `doctor` and the install commands.
+
+#### Known limits
+
+- Local only: the remote client (`remote-entries.md`) does not take dsh yet.
+- dsh 0.2.0-rc.2 is a candidate; the plugin relies on its plugin interface and session format V4.
+- dsh's feedback upload (`session-telemetry-otel`, a session sent when you send feedback on it) is not changed by the install; `DSH_TELEMETRY_DISABLED=1` switches it off.
+
+#### Upgrading
+
+Every process on a store must run 3.7.0rc1 or later before a dsh entry attaches to it: an older one does not know the host and cannot replay a capture the entry queued. The store's schema is unchanged (1110).
 
 ## [3.6.2] - 2026-10-04
 

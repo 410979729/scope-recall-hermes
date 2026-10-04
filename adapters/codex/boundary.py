@@ -12,7 +12,7 @@ _MAX_TOOL_CHARS = 65536
 #: What a hook with nothing to add writes to stdout, by client.  WorkBuddy puts a prompt hook's whole stdout in front
 #: of the prompt unless it carries ``additionalContext`` (its ``executeUserPromptSubmitHooks``), so "{}" would stand
 #: before every prompt with nothing recalled; for it an empty answer is nothing at all.
-EMPTY_ANSWER = {"codex": "{}", "claude-code": "{}", "workbuddy": ""}
+EMPTY_ANSWER = {"codex": "{}", "claude-code": "{}", "workbuddy": "", "dsh": "{}"}
 
 
 def host_source_key(

@@ -33,7 +33,7 @@ SKILLS: dict[str, Path] = {
     "scope-recall-memory": Path(__file__).with_name("skills") / "scope-recall-memory" / "SKILL.md",
 }
 PACKAGE_VERSION = __version__
-HostChoice = Literal["hermes", "codex", "claude-code", "workbuddy"]
+HostChoice = Literal["hermes", "codex", "claude-code", "workbuddy", "dsh"]
 RECEIPT_FILENAME = ".scope-recall-install-receipt.json"
 BACKUP_DIRNAME = ".scope-recall-backups"
 #: What a store's runtime-config.json may weigh, for the shared commands that write it and the doctor that
@@ -305,7 +305,9 @@ def _validate_host(host: str) -> HostChoice:
         return "claude-code"
     if host == "workbuddy":
         return "workbuddy"
-    raise InstallError("host must be 'hermes', 'codex', 'claude-code' or 'workbuddy'")
+    if host == "dsh":
+        return "dsh"
+    raise InstallError("host must be 'hermes', 'codex', 'claude-code', 'workbuddy' or 'dsh'")
 
 
 def _manifest_version(version: str = PACKAGE_VERSION) -> str:

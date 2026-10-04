@@ -248,7 +248,7 @@ def test_the_runtime_config_bounds_resident_minutes():
     from scope_recall.runtime.instance import RESIDENT_RECALL_MINUTES_BOUNDS
 
     assert RESIDENT_RECALL_MINUTES_BOUNDS == (0, 1440)
-    assert local_endpoint.RESIDENT_DEFAULT_MINUTES == {"workbuddy": 120}
+    assert local_endpoint.RESIDENT_DEFAULT_MINUTES == {"workbuddy": 120, "dsh": 120}
 
 
 def test_a_client_starts_a_resident_server_once_and_not_while_one_runs(entry, monkeypatch, tmp_path):

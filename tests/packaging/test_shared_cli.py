@@ -20,7 +20,7 @@ from scope_recall.adapters.codex import remote_client
 from scope_recall.adapters.codex.config import load_shared_client
 from scope_recall.adapters.hermes import HermesIdentityError, bind_hermes_identity
 from scope_recall.adapters.hermes.installation import read_attachment, read_shared_payload
-from scope_recall.maintenance import cli, install_workbuddy
+from scope_recall.maintenance import cli, install_dsh, install_workbuddy
 from scope_recall.maintenance.doctor import run_doctor
 from scope_recall.maintenance.install import apply_install, apply_uninstall, plan_install, plan_uninstall
 from scope_recall.maintenance.install_common import InstallError, InstallPlan
@@ -602,3 +602,181 @@ def test_an_entry_searches_the_worker_s_vector_table_whatever_its_routes_named(t
     entry = load_config(second / "scope-recall" / "runtime-config.json").vector
     assert entry.table_name == worker.table_name == "scope_recall"
     assert entry.storage_dir == worker.storage_dir
+
+
+# -- dsh (DeepSeek Harness) -------------------------------------------------------------------------------------
+
+def _dsh_home(tmp_path, text=None):
+    """A dsh home with a patch file of the person's own (``text``), or none."""
+    home = (tmp_path / "TEST-profile" / ".dsh").resolve()
+    home.mkdir(parents=True)
+    if text is not None:
+        (home / "cordis.patch.yml").write_text(text, encoding="utf-8")
+    return home
+
+
+def _patch_ops(path):
+    import yaml
+
+    return yaml.load(path.read_text(encoding="utf-8-sig"), Loader=install_dsh._Loader)
+
+
+def _dsh_plan(home, entry, env_file=None):
+    return InstallPlan(host="dsh", target_plugin_dir=home, instance_root=entry, project_root=None, agent_id=AGENT,
+                       python_executable=Path(sys.executable), env_file=env_file)
+
+
+_DSH_OWN = ("# TEST the person's own rows\n"
+            "- id: TEST-other\n"
+            "  disabled: true\n"
+            "- id: TEST-gated\n"
+            "  disabled: !!js \"process.env.TEST_OFF === '1'\"\n")
+
+
+def test_a_dsh_entry_installs_its_plugin_and_rows_and_uninstalls_only_its_own(tmp_path, capsys, root, monkeypatch):
+    """dsh joins a shared store as the other clients do.  Its plugin file is the installer's own; its two rows (the
+    plugin and the MCP server) go into dsh's home patch beside the person's own, with the session-log upload switched
+    off; a second install changes nothing, and uninstall takes out the rows and the plugin and leaves the upload off."""
+    first, _second = _hermes_pair(tmp_path, capsys, root)
+    entry = (tmp_path / "TEST-dsh-entry").resolve()
+    entry.mkdir()
+    code, result = _run(capsys, "attach", "--host", "dsh", "--instance-root", str(entry), "--root", str(root),
+                        "--entry", "dsh", "--display-name", "DeepSeek Harness", "--grants-like", "all",
+                        "--capture-like", "tianshu",
+                        "--runtime-config-from", str(first / "scope-recall" / "runtime-config.json"))
+    assert (code, result["status"]) == (0, "attached"), result
+    assert read_attachment(entry).host == "dsh"
+    runtime = load_config(entry / "scope-recall" / "runtime-config.json")
+    assert runtime.host_adapter == "dsh" and (runtime.session_id, runtime.owner_id) == ("dsh-background",
+                                                                                        "dsh-scope-recall")
+    from scope_recall.adapters.codex import local_endpoint
+
+    assert local_endpoint.resident_minutes(entry, "dsh") == 120, "dsh's hooks are processes of their own, as WorkBuddy's"
+
+    home = _dsh_home(tmp_path, _DSH_OWN)
+    before = (home / "cordis.patch.yml").read_bytes()
+    options = dict(host="dsh", target_plugin_dir=home, instance_root=entry, project_root=None, agent_id=AGENT,
+                   python_executable=Path(sys.executable))
+    plan = plan_install(**options)
+    assert plan.conflicts == [], plan.conflicts
+    changes = [(change.action, Path(change.path).name) for change in plan.changes]
+    assert ("write", "index.mjs") in changes and ("merge", "cordis.patch.yml") in changes
+    assert changes[-1][0] == "restart" and "--dump-config" in plan.changes[-1].detail
+
+    stopped = []
+    monkeypatch.setattr(local_endpoint, "stop_residents", lambda home_, host: stopped.append((home_, host)) or [])
+    installed = apply_install(plan)
+    assert stopped == [(entry, "dsh")]
+    plugin = install_dsh.plugin_path(home)
+    assert plugin.read_bytes() == install_dsh.plugin_source() and str(plugin) in installed.files_written
+    assert [Path(path).name for path in installed.files_merged] == ["cordis.patch.yml"]
+    assert [Path(path).read_bytes() for path in installed.backups if Path(path).name == "cordis.patch.yml"] == [before]
+
+    ops = _patch_ops(home / "cordis.patch.yml")
+    assert ops[:2] == [{"id": "TEST-other", "disabled": True},
+                       {"id": "TEST-gated", "disabled": ("!!js", "process.env.TEST_OFF === '1'")}], "the person's rows stay"
+    assert ops[2] == {"id": "session-log-deepseek", "config": {"enabled": False}}
+    rows = ops[3]["insert"]
+    assert [row["id"] for row in rows] == ["scope-recall", "mcp-scope-recall"]
+    assert rows[0]["name"] == plugin.as_uri()
+    assert rows[0]["config"] == {"python": Path(sys.executable).as_posix(), "home": entry.as_posix(),
+                                 "version": install_dsh.PACKAGE_VERSION}
+    assert rows[1]["name"] == "@deepseek-ai/dsh-mcp-client"
+    assert rows[1]["config"] == {"serverName": "scope-recall", "transport": "stdio",
+                                 "command": Path(sys.executable).as_posix(),
+                                 "args": ["-I", "-B", "-m", "scope_recall.adapters.codex.mcp_entry", "--home",
+                                          entry.as_posix(), "--host", "dsh"]}
+
+    stamp = ((home / "cordis.patch.yml").read_bytes(), (home / "cordis.patch.yml").stat().st_mtime_ns)
+    plan = plan_install(**options)
+    assert ("unchanged", "cordis.patch.yml") in {(change.action, Path(change.path).name) for change in plan.changes}
+    assert apply_install(plan).files_merged == []
+    assert ((home / "cordis.patch.yml").read_bytes(), (home / "cordis.patch.yml").stat().st_mtime_ns) == stamp
+
+    report = run_doctor(host="dsh", instance_root=entry, python_executable=Path(sys.executable))
+    assert report.binding_ok and report.shared_store == {"root": str(root), "entry_id": "dsh",
+                                                         "entry_name": "DeepSeek Harness"}
+
+    removal = plan_uninstall(instance_root=entry)
+    assert removal.conflicts == [] and [Path(path).name for path in removal.files_to_remove] == ["index.mjs"]
+    assert [Path(path).name for path in removal.unmerged_files] == ["cordis.patch.yml"]
+    apply_uninstall(removal)
+    assert not plugin.exists()
+    assert _patch_ops(home / "cordis.patch.yml") == ops[:3], "the person's rows and the upload switched off stay"
+    assert plan_uninstall(instance_root=entry).unmerged_files == []
+
+    code, result = _run(capsys, "detach", "--instance-root", str(entry))
+    assert (code, result["status"]) == (0, "detached")
+
+
+@pytest.mark.parametrize("text, refused", [
+    ("[{id: TEST-flow, disabled: true}]\n", "not a block list"),
+    ("  - id: TEST-indented\n    disabled: true\n", "not a block list"),
+    ("TEST: a mapping\n", "does not hold a list"),
+    ("- [\n", "is not YAML dsh can read"),
+    ("- insert:\n    - id: scope-recall\n      name: TEST-another\n", "already has a row scope-recall"),
+    ("- insert:\n    - id: TEST-mcp\n      name: '@deepseek-ai/dsh-mcp-client'\n      config:\n        serverName: scope-recall\n",
+     "already has an MCP server named scope-recall"),
+    ("# SCOPE_RECALL_DSH_START (scope-recall 3.7.0 for C:/TEST/another-entry; apply-uninstall takes this block out)\n"
+     "- insert:\n    - id: scope-recall\n      name: TEST\n# SCOPE_RECALL_DSH_END\n", "another Scope Recall entry"),
+])
+def test_a_dsh_install_refuses_a_patch_it_cannot_edit_safely(tmp_path, text, refused):
+    home = _dsh_home(tmp_path, text)
+    entry = (tmp_path / "TEST-dsh-entry").resolve()
+    with pytest.raises(InstallError, match=refused):
+        install_dsh.merged_file(_dsh_plan(home, entry), home / "cordis.patch.yml")
+
+
+def test_a_dsh_patch_keeps_its_bytes_and_an_upload_switch_of_the_person_s_own(tmp_path):
+    """The file comes back in its own line endings and byte order mark, and a person who already switched the upload off
+    (here by disabling the row) gets no second switch; an empty or missing file becomes a list of the rows."""
+    entry = (tmp_path / "TEST-dsh-entry").resolve()
+    home = _dsh_home(tmp_path)
+    path = home / "cordis.patch.yml"
+    path.write_bytes(b"\xef\xbb\xbf# TEST mine\r\n- id: session-log-deepseek\r\n  disabled: true\r\n")
+    merged = install_dsh.merged_file(_dsh_plan(home, entry), path)
+    assert merged.startswith(b"\xef\xbb\xbf# TEST mine\r\n") and b"\n" not in merged.replace(b"\r\n", b"")
+    assert install_dsh.PRIVACY_START.encode() not in merged, "the person's own switch is enough"
+    assert b"- id: scope-recall" in merged
+
+    for text in (None, "", "# TEST only a comment\n", "[]\n"):
+        if text is None:
+            path.unlink()
+        else:
+            path.write_text(text, encoding="utf-8")
+        written = install_dsh.merged_file(_dsh_plan(home, entry, env_file=Path(sys.executable)), path)
+        path.write_bytes(written)
+        ops = _patch_ops(path)
+        assert [op.get("id") for op in ops[:1]] == ["session-log-deepseek"] and "[]" not in path.read_text("utf-8")
+        assert ops[1]["insert"][0]["config"]["envFile"] == Path(sys.executable).as_posix()
+        assert ops[1]["insert"][1]["config"]["args"][-2:] == ["--env-file", Path(sys.executable).as_posix()]
+        assert install_dsh.merged_file(_dsh_plan(home, entry, env_file=Path(sys.executable)), path) is None
+        stripped = install_dsh.unmerged_file(entry, path)
+        assert _patch_ops_text(stripped) == [{"id": "session-log-deepseek", "config": {"enabled": False}}]
+
+    path.write_text("# TEST\n" + "\n".join(install_dsh._rows(_dsh_plan(home, entry))) + "\n", encoding="utf-8")
+    assert install_dsh.unmerged_file(entry, path).decode("utf-8").strip().splitlines()[-1] == "[]", \
+        "a file left with comments alone fails dsh's boot"
+    assert install_dsh.unmerged_file((tmp_path / "TEST-another").resolve(), path) is None, "another entry's rows stay"
+
+
+def test_a_dsh_reinstall_keeps_the_block_where_it_stands_and_an_operation_after_it(tmp_path):
+    """dsh applies a patch's operations in order, each key replacing the row's own: an operation of the person's after
+    the block (here switching the plugin off) stays after it through later installs, and is not another's row."""
+    entry = (tmp_path / "TEST-dsh-entry").resolve()
+    home = _dsh_home(tmp_path, _DSH_OWN)
+    path = home / "cordis.patch.yml"
+    path.write_bytes(install_dsh.merged_file(_dsh_plan(home, entry), path))
+    path.write_text(path.read_text(encoding="utf-8") + "- id: scope-recall\n  disabled: true\n", encoding="utf-8")
+    assert install_dsh.merged_file(_dsh_plan(home, entry), path) is None, "nothing to change"
+    changed = _patch_ops_text(install_dsh.merged_file(_dsh_plan(home, entry, env_file=Path(sys.executable)), path))
+    at = next(index for index, operation in enumerate(changed) if "insert" in operation)
+    assert changed[at]["insert"][0]["config"]["envFile"] == Path(sys.executable).as_posix(), "the block is rewritten"
+    assert changed[at + 1:] == [{"id": "scope-recall", "disabled": True}], "and the person's operation is still after it"
+    assert changed[:2] == _patch_ops_text(_DSH_OWN.encode("utf-8")), "the person's rows before it stay before it"
+
+
+def _patch_ops_text(data):
+    import yaml
+
+    return yaml.load(data.decode("utf-8-sig"), Loader=install_dsh._Loader)

@@ -1,0 +1,397 @@
+"""dsh (DeepSeek Harness) host: a native plugin and the MCP server, as rows of dsh's home patch, for a dsh attached to a
+shared store.
+
+dsh has no store of its own here: ``scope-recall attach --host dsh`` makes its home an entry first, and this installer
+tells dsh to run, for that entry, the plugin ``distribution/dsh/scope-recall/index.mjs`` (recall before a turn's first
+step and capture of each turn, through the hook client of ``adapters/codex``) and the MCP stdio server (the explicit
+tools).  dsh's hooks cannot capture (no turn, no reply, a compressed session log), so the plugin is the way.
+
+dsh composes every profile from patch layers; the home layer ``$DSH_HOME/cordis.patch.yml`` (``~/.dsh`` by default)
+reaches them all and outranks the settings a profile's UI writes.  The target of this install is that home, which dsh
+shares:
+- the plugin file is the installer's own, at ``<home>/scope-recall/dsh-plugin/index.mjs`` (beside the patch that names
+  it, in the receipt, removed by uninstall);
+- the two rows go into ``cordis.patch.yml`` between markers, as one ``insert`` operation; every other line of the file
+  is kept, and the file is copied into the install's backups before it changes;
+- dsh uploads its session log to its model API by default, recalled memories with it.  The install writes that upload
+  off (``session-log-deepseek``, ``enabled: false``) between markers of their own, which uninstall leaves in place:
+  switching it on again would upload everything recorded while it was off.
+
+The file is read with PyYAML (a dependency already) to refuse what this cannot edit safely: a file that is not a list,
+a list not written as a block at column 0, rows of these ids inserted by something else, or another MCP server named
+``scope-recall``.  An operation that names one of this install's rows without inserting it (``- id: scope-recall`` with
+``disabled: true``, after the block) is the person's and stays: dsh applies operations in order, each key replacing the
+row's own.
+"""
+from __future__ import annotations
+
+import codecs
+import json
+import os
+from pathlib import Path
+import re
+from typing import Any
+
+import yaml
+
+from scope_recall._version import __version__ as PACKAGE_VERSION
+from scope_recall.adapters.codex.config import CodexConfigError, load_shared_client
+from scope_recall.adapters.hermes.installation import attachment_path
+
+from .install_common import RUNTIME_CONFIG_LIMIT, InstallError, InstallPlan, _reject_symlink_chain, _require_file
+
+HOST = "dsh"
+PATCH_FILENAME = "cordis.patch.yml"
+PLUGIN_ROW = "scope-recall"
+MCP_ROW = "mcp-scope-recall"
+MCP_SERVER_NAME = "scope-recall"
+MCP_CLIENT = "@deepseek-ai/dsh-mcp-client"
+PRIVACY_ROW = "session-log-deepseek"
+START = "# SCOPE_RECALL_DSH_START"
+END = "# SCOPE_RECALL_DSH_END"
+PRIVACY_START = "# SCOPE_RECALL_DSH_PRIVACY_START"
+PRIVACY_END = "# SCOPE_RECALL_DSH_PRIVACY_END"
+RESTART_NOTE = ("quit every running dsh (web, headless, tui, Desktop) before apply-install and start it again after; "
+                "check with dsh --profile headless --dump-config that the rows scope-recall and mcp-scope-recall are "
+                "there and session-log-deepseek has enabled: false")
+_SERVER_MODULE = "scope_recall.adapters.codex.mcp_entry"
+_MARKER = re.compile(re.escape(START) + r" \(scope-recall \S+ for (.+); apply-uninstall takes this block out\)$")
+
+
+def default_home() -> Path:
+    """dsh's home as dsh finds it: ``DSH_HOME`` when set (a blank value is ignored), else ``~/.dsh``."""
+    configured = os.environ.get("DSH_HOME", "").strip()
+    return Path(configured).expanduser() if configured else Path.home() / ".dsh"
+
+
+def data_dir(instance_root: Path) -> Path:
+    return attachment_path(instance_root).parent
+
+
+def config_path(instance_root: Path) -> Path:
+    return attachment_path(instance_root)
+
+
+def instance_wrapper_files(instance_root: Path) -> tuple[Path, ...]:
+    return ()
+
+
+def home_plugin_dir(instance_root: Path) -> None:
+    return None
+
+
+def host_config_files(target_plugin_dir: Path) -> tuple[Path, ...]:
+    """dsh's home patch, which this install adds its rows to."""
+    return (target_plugin_dir / PATCH_FILENAME,)
+
+
+def plugin_path(target_plugin_dir: Path) -> Path:
+    return target_plugin_dir / "scope-recall" / "dsh-plugin" / "index.mjs"
+
+
+def plugin_source() -> bytes:
+    """The plugin as packaged (``distribution/dsh/scope-recall/index.mjs``)."""
+    from scope_recall import distribution
+
+    return (Path(distribution.__file__).resolve().parent / "dsh" / "scope-recall" / "index.mjs").read_bytes()
+
+
+def validate_options(agent_workspace: str | None, env_file: Path | str | None) -> tuple[str, Path | None]:
+    """dsh starts the plugin's hooks and the MCP server with an environment of its own (it scrubs the ambient one for an
+    MCP server), so the installer may hand them a credential file, as the other clients' installers do."""
+    if agent_workspace is not None and str(agent_workspace).strip():
+        raise InstallError("agent_workspace is not used for dsh installation")
+    if env_file is None or str(env_file).strip() == "":
+        return "", None
+    return "", _require_file(Path(env_file), "env_file")
+
+
+def validate_local_platforms(values: object) -> tuple[str, ...]:
+    if values:
+        raise InstallError("local_platform is only used for Hermes installation")
+    return ()
+
+
+def validate_owner_logins(values: object) -> tuple[str, ...]:
+    if values:
+        raise InstallError("owner_login is only used for Hermes installation")
+    return ()
+
+
+def unapproved_owner_logins(plan: InstallPlan) -> tuple[tuple[str, str], ...]:
+    return ()
+
+
+def unapproved_local_platforms(plan: InstallPlan) -> tuple[str, ...]:
+    return ()
+
+
+def approve_local_platforms(plan: InstallPlan) -> None:
+    return None
+
+
+def planned_files(plan: InstallPlan) -> dict[Path, str | bytes]:
+    """The plugin file, the installer's own; the patch file is merged (``merged_file``)."""
+    return {plugin_path(plan.target_plugin_dir): plugin_source()}
+
+
+# -- the rows ---------------------------------------------------------------------------------------------------
+
+def _scalar(value: str) -> str:
+    """``value`` as a double-quoted YAML scalar (JSON's quoting is YAML's)."""
+    return json.dumps(value, ensure_ascii=False)
+
+
+def _rows(plan: InstallPlan) -> list[str]:
+    """This entry's block: the plugin row and the MCP server row, as one ``insert``."""
+    python = plan.python_executable.as_posix()
+    home = plan.instance_root.as_posix()
+    args = ["-I", "-B", "-m", _SERVER_MODULE, "--home", home, "--host", HOST]
+    if plan.env_file is not None:
+        args += ["--env-file", plan.env_file.as_posix()]
+    lines = [
+        f"{START} (scope-recall {PACKAGE_VERSION} for {home}; apply-uninstall takes this block out)",
+        "- insert:",
+        f"    - id: {PLUGIN_ROW}",
+        f"      name: {_scalar(plugin_path(plan.target_plugin_dir).as_uri())}",
+        "      config:",
+        f"        python: {_scalar(python)}",
+        f"        home: {_scalar(home)}",
+        f"        version: {_scalar(PACKAGE_VERSION)}",
+    ]
+    if plan.env_file is not None:
+        lines.append(f"        envFile: {_scalar(plan.env_file.as_posix())}")
+    lines += [
+        f"    - id: {MCP_ROW}",
+        f"      name: {_scalar(MCP_CLIENT)}",
+        "      config:",
+        f"        serverName: {MCP_SERVER_NAME}",
+        "        transport: stdio",
+        f"        command: {_scalar(python)}",
+        "        args: [" + ", ".join(_scalar(arg) for arg in args) + "]",
+        END,
+    ]
+    return lines
+
+
+def _privacy_rows() -> list[str]:
+    return [
+        f"{PRIVACY_START} (written by scope-recall: dsh would upload its session log, recalled memories with it, to "
+        "its model API; uninstall leaves this in place)",
+        f"- id: {PRIVACY_ROW}",
+        "  config:",
+        "    enabled: false",
+        PRIVACY_END,
+    ]
+
+
+# -- reading and writing the patch ------------------------------------------------------------------------------
+
+class _Loader(yaml.SafeLoader):
+    """PyYAML's safe loader that reads dsh's ``!!js`` expressions as text instead of refusing the file."""
+
+
+_Loader.add_constructor("tag:yaml.org,2002:js", lambda loader, node: ("!!js", loader.construct_scalar(node)))
+
+
+def read_patch(path: Path) -> tuple[str, bytes | None]:
+    """The patch file's text (without a byte order mark) and its bytes; ("", None) when there is none yet."""
+    _reject_symlink_chain(path)
+    if not path.exists():
+        return "", None
+    if not path.is_file() or path.stat().st_size > RUNTIME_CONFIG_LIMIT:
+        raise InstallError(f"{path} is not a file of at most {RUNTIME_CONFIG_LIMIT} bytes")
+    raw = path.read_bytes()
+    try:
+        return raw.decode("utf-8-sig"), raw
+    except UnicodeError as exc:
+        raise InstallError(f"{path} is not UTF-8 text") from exc
+
+
+def _parse(text: str, path: Path) -> list[Any]:
+    try:
+        value = yaml.load(text, Loader=_Loader) if text.strip() else []
+    except yaml.YAMLError as exc:
+        raise InstallError(f"{path} is not YAML dsh can read; fix it by hand first ({exc.__class__.__name__})") from exc
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise InstallError(f"{path} does not hold a list of patch operations; fix it by hand first")
+    return value
+
+
+#: Where this entry's block stood, in the lines ``merged_file`` works on.
+_PLACE = object()
+
+
+def _without_block(lines: list, start: str, end: str, *, home: Path | None = None,
+                   mark: bool = False) -> tuple[list, bool]:
+    """``lines`` without the marked block (only this entry's when ``home`` is given), with ``_PLACE`` where it stood
+    when ``mark``, and whether one was there."""
+    result: list = []
+    skipping = found = False
+    for line in lines:
+        if line is _PLACE:
+            result.append(line)
+            continue
+        if not skipping and line.startswith(start) and (home is None or _names_home(line, home)):
+            skipping = found = True
+            if mark:
+                result.append(_PLACE)
+            continue
+        if skipping:
+            if line.startswith(end):
+                skipping = False
+            continue
+        result.append(line)
+    if skipping:
+        raise InstallError(f"a {start} block has no {end} line; fix the patch file by hand")
+    return result, found
+
+
+def _names_home(marker: str, home: Path) -> bool:
+    """Whether a block's start line (``_rows``) names ``home``, a path that may hold spaces or semicolons."""
+    found = _MARKER.match(marker)
+    return found is not None and (os.path.normcase(os.path.normpath(found.group(1)))
+                                  == os.path.normcase(os.path.normpath(home.as_posix())))
+
+
+def _inserted(operations: list[Any]) -> list[dict[str, Any]]:
+    """The rows the operations insert."""
+    return [row for operation in operations if isinstance(operation, dict) and isinstance(operation.get("insert"), list)
+            for row in operation["insert"] if isinstance(row, dict)]
+
+
+def _ids(operations: list[Any]) -> list[str]:
+    """Every row id the operations insert."""
+    return [str(row["id"]) for row in _inserted(operations) if "id" in row]
+
+
+def _server_names(operations: list[Any]) -> list[str]:
+    """The MCP server names the operations give: an inserted row's, or an operation's that replaces another row's config
+    (one that replaces this install's MCP row's config keeps that row's server)."""
+    rows = _inserted(operations) + [operation for operation in operations if isinstance(operation, dict)
+                                    and "insert" not in operation and operation.get("id") != MCP_ROW]
+    return [row["config"]["serverName"] for row in rows
+            if isinstance(row.get("config"), dict) and isinstance(row["config"].get("serverName"), str)]
+
+
+def upload_off(operations: list[Any]) -> bool:
+    """Whether the patch switches dsh's session-log upload off: a ``session-log-deepseek`` row (an override or an
+    inserted row) that is ``disabled: true`` or has ``enabled: false`` in its config."""
+    for operation in operations:
+        rows = operation.get("insert") if isinstance(operation, dict) and "insert" in operation else [operation]
+        for row in rows if isinstance(rows, list) else []:
+            if not isinstance(row, dict) or row.get("id") != PRIVACY_ROW:
+                continue
+            config = row.get("config")
+            if row.get("disabled") is True or (isinstance(config, dict) and config.get("enabled") is False):
+                return True
+    return False
+
+
+def _block_style(lines: list[str], path: Path) -> None:
+    """Refuse a list this cannot append to: a flow list (``[a, b]``) or one indented from column 0."""
+    for line in lines:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if stripped == "[]":
+            continue
+        if not line.startswith("- "):
+            raise InstallError(f"{path} is not a block list at column 0; add this entry's rows by hand "
+                               f"(see docs/install.md, section 13)")
+        return
+
+
+def _encode(lines: list[str], original: bytes | None) -> bytes:
+    text = "\n".join(lines).rstrip("\n") + "\n"
+    if original is not None and b"\r\n" in original:
+        text = text.replace("\n", "\r\n")
+    data = text.encode("utf-8")
+    return codecs.BOM_UTF8 + data if original is not None and original.startswith(codecs.BOM_UTF8) else data
+
+
+def _composed(lines: list[str]) -> list[str]:
+    """``lines`` as a list dsh boots from: an empty list's ``[]`` dropped when rows follow, kept (or added) when
+    nothing else is left, since a file of comments alone fails dsh's boot."""
+    content = [line for line in lines if line.strip() and not line.strip().startswith("#")]
+    if any(line.strip() != "[]" for line in content):
+        return [line for line in lines if line.strip() != "[]"]
+    return [line for line in lines if line.strip() != "[]"] + ["[]"]
+
+
+def merged_file(plan: InstallPlan, path: Path) -> bytes | None:
+    """The patch file with this entry's rows (and the upload switched off, when nothing switches it off yet), or None
+    when it already holds them as they would be written."""
+    text, raw = read_patch(path)
+    marked, _found = _without_block(text.splitlines(), START, END, home=plan.instance_root, mark=True)
+    rest = [line for line in marked if line is not _PLACE]
+    others = _parse("\n".join(rest), path)
+    if any(line.startswith(START) for line in rest):
+        raise InstallError(f"{path} already holds the rows of another Scope Recall entry: uninstall it first")
+    for row in (PLUGIN_ROW, MCP_ROW):
+        if row in _ids(others):
+            raise InstallError(f"{path} already has a row {row} that is not this entry's: take it out first")
+    if MCP_SERVER_NAME in _server_names(others):
+        raise InstallError(f"{path} already has an MCP server named {MCP_SERVER_NAME}: take it out first")
+    _block_style(rest, path)
+    added = _rows(plan)
+    if not upload_off(others):
+        marked, _ = _without_block(marked, PRIVACY_START, PRIVACY_END)
+        added = _privacy_rows() + added
+    # Where the block stood, so that an operation of the person's after it stays after it; else at the end.
+    at = marked.index(_PLACE) if _PLACE in marked else len(marked)
+    marked = [line for line in marked if line is not _PLACE]
+    merged = _composed([*marked[:at], *added, *marked[at:]])
+    composed = _parse("\n".join(merged), path)
+    if PLUGIN_ROW not in _ids(composed) or not upload_off(composed):
+        raise InstallError(f"{path}: the rows written would not read back; add them by hand")
+    data = _encode(merged, raw)
+    return None if raw is not None and data == raw else data
+
+
+def unmerged_file(instance_root: Path, path: Path) -> bytes | None:
+    """The patch file without this entry's rows, or None when it holds none.  The upload stays off."""
+    text, raw = read_patch(path)
+    if raw is None:
+        return None
+    rest, found = _without_block(text.splitlines(), START, END, home=instance_root)
+    if not found:
+        return None
+    return _encode(_composed(rest), raw)
+
+
+# -- the entry --------------------------------------------------------------------------------------------------
+
+def foreign_instance_entries(instance_root: Path) -> list[str]:
+    """A home this installer is asked to create: dsh's is only ever an attached one."""
+    return [f"{instance_root} is not attached to a shared store; run scope-recall attach --host dsh first"]
+
+
+def initialize_instance(plan: InstallPlan) -> str:
+    raise InstallError("dsh joins a shared store: attach its home first (scope-recall attach --host dsh)")
+
+
+def _bound(instance_root: Path):
+    try:
+        return load_shared_client(instance_root, HOST)
+    except CodexConfigError as exc:
+        raise InstallError(f"existing dsh binding is unusable: {exc}") from exc
+
+
+def installation_id(instance_root: Path) -> str:
+    return _bound(instance_root).installation_id
+
+
+def validate_reuse(plan: InstallPlan) -> None:
+    config = _bound(plan.instance_root)
+    if config.agent_id != plan.agent_id:
+        raise InstallError("existing dsh entry agent_id mismatch: the store's is " + config.agent_id)
+    if config.test_mode != plan.test_mode:
+        raise InstallError(f"existing dsh entry test_mode mismatch: stored={config.test_mode}, "
+                           f"requested={plan.test_mode}")
+
+
+def purge_identity(instance_root: Path) -> tuple[Path, str, str, Path]:
+    raise InstallError("an entry of a shared store is never purged from its home; detach it instead")

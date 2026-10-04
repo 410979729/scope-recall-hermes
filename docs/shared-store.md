@@ -84,8 +84,8 @@ without a restart.
 ## Bringing an agent's memories along
 
 `attach` starts an agent on the shared store without what its own store held. To bring that in,
-stop every attached host (and a WorkBuddy entry's resident recall server: `scope-recall resident stop`) and pause
-the shared worker, then run for each agent:
+stop every attached host (and a WorkBuddy or dsh entry's resident recall server: `scope-recall resident stop`) and
+pause the shared worker, then run for each agent:
 
 ```text
 scope-recall import-entry --root D:\ScopeRecall\shared --entry desk --from <home>\scope-recall.local-<date>
@@ -193,7 +193,7 @@ and run `apply-install --host codex` without `--project-root`. Its hooks and MCP
 the home and serve every workspace. Refresh Codex's plugin cache and approve the changed hooks in
 Codex. The moved store's memories are not imported.
 
-`doctor --host codex|claude-code|workbuddy --instance-root <home>` and `detach` work for these
+`doctor --host codex|claude-code|workbuddy|dsh --instance-root <home>` and `detach` work for these
 entries as for a Hermes home.
 
 ## Attach WorkBuddy
@@ -225,6 +225,34 @@ it started) or `resident_recall_minutes` after the last prompt, whichever comes 
 reads WorkBuddy's session record. Take the hooks out with `apply-uninstall` before `detach`;
 `detach` alone leaves WorkBuddy's settings as they are.
 
+## Attach dsh
+
+Every process on the store, its worker included, must run 3.7.0 or later before dsh (DeepSeek
+Harness) attaches: an older one does not know the host, and cannot replay a capture this entry
+queued.
+
+dsh attaches the same way, as the owner at this machine. A plugin the installer writes runs the
+same hooks (dsh's own hooks name no turn and no reply), and dsh's MCP client runs the same MCP
+server; the installer adds both as rows of dsh's home patch, `cordis.patch.yml`, and switches off
+dsh's upload of its session logs to its model API ([install.md](install.md), section 13, which
+also says what is not recorded):
+
+```text
+scope-recall attach --host dsh --instance-root D:\ScopeRecall\dsh ^
+    --root D:\ScopeRecall\shared --entry dsh --display-name "DeepSeek Harness" ^
+    --grants-like all --capture-like desk ^
+    --runtime-config-from <an attached home>\scope-recall\runtime-config.json
+scope-recall apply-install --host dsh --instance-root D:\ScopeRecall\dsh ^
+    --agent-id <the store's agent id> --python D:\ScopeRecall\dsh-venv\Scripts\python.exe ^
+    --env-file <the file with the embedding key>
+```
+
+Quit every dsh before `apply-install` and start it again after. Its prompt hook asks the entry's
+resident recall server, as WorkBuddy's does, which outlives a dsh process and ends
+`resident_recall_minutes` after the last prompt (120 by default). Take the rows out with
+`apply-uninstall` before `detach`; `detach` alone leaves dsh's patch file as it is. A dsh on
+another machine cannot be an entry yet.
+
 ## Check
 
 ```text
@@ -250,8 +278,8 @@ autostart and start its gateway.
 
 ## Moving the store
 
-1. Pause the shared worker (`autostart pause`), stop every attached host and a WorkBuddy entry's resident recall
-   server (`scope-recall resident stop`), and take a `backup`. The server reads the store, and on Windows its open
+1. Pause the shared worker (`autostart pause`), stop every attached host and a WorkBuddy or dsh entry's resident
+   recall server (`scope-recall resident stop`), and take a `backup`. The server reads the store, and on Windows its open
    files keep the old root from being removed.
 2. Copy the whole root directory to the new place.
 3. `scope-recall adopt --root <new root>`. It checks the store is the one its manifest names,

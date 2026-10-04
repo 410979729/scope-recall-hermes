@@ -1,6 +1,6 @@
 {
   "schema": "scope-recall.v11-module-allowlist.v1",
-  "package_version": "3.6.3rc1",
+  "package_version": "3.7.0rc1",
   "packages": [
     "scope_recall",
     "scope_recall.adapters",
@@ -143,6 +143,7 @@
     "maintenance/install_claude_code.py",
     "maintenance/install_codex.py",
     "maintenance/install_common.py",
+    "maintenance/install_dsh.py",
     "maintenance/install_hermes.py",
     "maintenance/install_purge.py",
     "maintenance/install_receipt.py",
@@ -216,6 +217,7 @@
     "distribution/codex/scope-recall/.mcp.json",
     "distribution/hermes/__init__.py",
     "distribution/hermes/plugin.yaml",
+    "distribution/dsh/scope-recall/index.mjs",
     "contracts/trace_request.schema.json",
     "contracts/trace_view.schema.json",
     "maintenance/AGENT_WORKFLOW.md",
