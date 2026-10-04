@@ -308,6 +308,19 @@ def _record_part(config: dict[str, Any], payload: dict[str, Any]) -> tuple[dict[
     return {"start": start, "lines": wire}, cursor
 
 
+def _error_reply(payload: dict[str, Any]) -> bool:
+    """Whether a WorkBuddy Stop's reply is an error its record here marks (``transcript.workbuddy_error_reply``)."""
+    reply, session_id = payload.get("last_assistant_message"), payload.get("session_id")
+    if type(reply) is not str or type(session_id) is not str or not session_id.strip():
+        return False
+    try:
+        record = transcript.workbuddy_record_path(payload.get("transcript_path"), session_id.strip(),
+                                                  record_id=payload.get("agent_id"))
+    except OSError:
+        return False
+    return record is not None and transcript.workbuddy_error_reply(record, reply)
+
+
 def run_hook(config: dict[str, Any], raw: bytes, *, started: float | None = None) -> dict[str, Any]:
     started = time.monotonic() if started is None else started
     try:
@@ -335,6 +348,9 @@ def run_hook(config: dict[str, Any], raw: bytes, *, started: float | None = None
         part = _record_part(config, payload)
         if part is not None:
             body["record"], cursor = part
+        if host == "workbuddy" and event == "Stop" and _error_reply(payload):
+            # The record is here, not on the server: this side says whether the reply is an error WorkBuddy showed.
+            body["error_reply"] = True
     # Kept before it is sent: Codex ends Interrupt and SessionEnd at 3 s, and with the interpreter's start and
     # a connection that does not open that is all of it, so a hook that waited for the server was killed before
     # it could keep anything.  An answer that stored it removes it again.

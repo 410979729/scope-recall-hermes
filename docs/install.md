@@ -919,12 +919,15 @@ Known limits:
   WorkBuddy's agent ends every process it started. The first conversation's first prompt after
   WorkBuddy starts, a prompt right after the conversation holding the server ended, and the first
   prompt after the server's idle end or a reboot are recalled without it, usually by words and the
-  stored structure alone. A conversation still open starts a new one within 30 s, and no sooner
-  than a minute after the last start. A WorkBuddy on another machine is answered by its entry's
-  server here, which runs on ([remote-entries.md](remote-entries.md)).
+  stored structure alone. A conversation whose MCP server still runs starts a new one within 30 s,
+  and no sooner than a minute after the last start; one whose MCP server WorkBuddy stopped starts
+  it with its next prompt, which is recalled without it. A WorkBuddy on another machine is answered
+  by its entry's server here, which runs on ([remote-entries.md](remote-entries.md)).
 - A reply that is only an error WorkBuddy showed in place of one (not signed in, a model or network
-  failure; its session record marks that message with the error) is not stored, from 3.6.2. A
-  reply that broke off with an error keeps what was shown.
+  failure; its session record marks that message with the error) is not stored, from 3.6.2, nor is
+  that error when a later stopped turn hands it to its `Stop` again. A WorkBuddy on another machine
+  judges this from its own record and tells its entry's server, which never opens a record for a
+  request. A reply that broke off with an error keeps what was shown.
 - WorkBuddy hands the prompt hook a prompt with its line breaks removed, so a multi-line message
   is stored as one line.
 - WorkBuddy fires `Stop` for a cancelled or failed turn too, with the previous turn's reply; a

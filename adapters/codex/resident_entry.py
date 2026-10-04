@@ -1,4 +1,8 @@
-"""A client's prompt recall server kept apart from the client's own processes (``local_endpoint.ensure_resident``).
+"""A client's prompt recall server, a process of its own beside the client's (``local_endpoint.ensure_resident``).
+
+WorkBuddy's agent (2.147.0) puts itself and every process it starts in a Windows job that ends them all with it, and
+this server cannot leave that job: under WorkBuddy it lives as long as the conversation's agent process that started
+it, or less (measured 2026-10-04; docs/install.md, section 12).
 
 WorkBuddy starts the entry's MCP server, and with it the recall server its prompt hooks ask, with each conversation's
 agent process and stops it with that process.  A prompt that started one met a server still opening its vector store

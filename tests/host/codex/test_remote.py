@@ -1051,9 +1051,11 @@ def test_a_workbuddy_client_s_turn_and_record_reach_its_entry_once(store, tmp_pa
     assert cursor.load() == record.stat().st_size, "the cursor moves as far as the server stored"
 
 
-def test_a_server_does_not_open_a_workbuddy_record_to_judge_a_remote_reply(store, tmp_path, monkeypatch):
-    """Whether a Stop's reply is an error WorkBuddy showed is read from the session record, which the server of a client
-    on another machine never opens: the path in a request names a file over there."""
+WB_NOTICE = "TEST Authentication required. Please use /login command to sign in to your account"
+
+
+def _remote_workbuddy(store, tmp_path, monkeypatch, post):
+    """A WorkBuddy on another machine, its entry beside the store's others, its posts handled by ``post``; its record."""
     root, _homes = store
     owner = next(row for row in read_shared_payload(root)["entries"][0]["audiences"] if row["kind"] == "owner_private")
     home = tmp_path / "TEST-workpc-workbuddy-home"
@@ -1064,22 +1066,54 @@ def test_a_server_does_not_open_a_workbuddy_record_to_judge_a_remote_reply(store
     server = remote_server.RemoteServerConfig(home=home, host="workbuddy", listen="127.0.0.1", port=1,
                                               token_sha256="0" * 64)
     client = _client(tmp_path, "workbuddy", _free_port())
-    monkeypatch.setattr(remote_client, "_post", lambda config, body, timeout: remote_server.handle_request(
-        server, json.loads(json.dumps(body))))
+    monkeypatch.setattr(remote_client, "_post", lambda config, body, timeout: post(server, body))
     projects = tmp_path / "TEST-workpc-projects"
     monkeypatch.setattr(transcript, "workbuddy_projects", lambda: projects)
     record = projects / "c--work" / "TEST-wb-session.jsonl"
     record.parent.mkdir(parents=True)
-    notice = "TEST Authentication required. Please use /login command to sign in to your account"
     start = int((datetime.now(timezone.utc) - timedelta(seconds=30)).timestamp() * 1000)
-    record.write_text(json.dumps({"type": "message", "role": "assistant", "id": "a1", "timestamp": start,
-                                  "content": [{"type": "output_text", "text": notice}],
-                                  "providerData": {"error": {"message": notice}}}) + "\n", encoding="utf-8")
+    lines = [
+        {"type": "message", "role": "user", "id": "u1", "timestamp": start,
+         "content": [{"type": "input_text", "text": "<user_query>TEST 问一下。</user_query>"}]},
+        {"type": "message", "role": "assistant", "id": "a1", "timestamp": start + 1000, "status": "incomplete",
+         "content": [{"type": "output_text", "text": WB_NOTICE}], "providerData": {"error": {"message": WB_NOTICE}}},
+    ]
+    record.write_text("".join(json.dumps(line, ensure_ascii=False) + "\n" for line in lines), encoding="utf-8")
+    return root, client, record
+
+
+def test_a_remote_workbuddy_s_error_shown_in_place_of_a_reply_is_not_stored(store, tmp_path, monkeypatch):
+    """The client on the other machine has the record: it judges the Stop's reply there and tells the server, which
+    stores the person's prompt and not the error; the lines it sends skip the error as well."""
+    root, client, record = _remote_workbuddy(store, tmp_path, monkeypatch, lambda server, body: (
+        remote_server.handle_request(server, json.loads(json.dumps(body)))))
+    base = {"session_id": "TEST-wb-session", "cwd": "C:/work"}
+    _hook(client, {**base, "hook_event_name": "UserPromptSubmit", "prompt": "TEST 问一下。"})
+    _hook(client, {**base, "hook_event_name": "Stop", "transcript_path": str(record),
+                   "last_assistant_message": WB_NOTICE})
+    said = sorted((role, content) for role, _origin, content, _at in _rows(root, "workpc-workbuddy"))
+    assert said == [("user", "TEST 问一下。")]
+
+
+def test_a_server_does_not_open_a_workbuddy_record_to_judge_a_remote_reply(store, tmp_path, monkeypatch):
+    """Whether a Stop's reply is an error WorkBuddy showed is read from the session record.  The server of a client on
+    another machine never looks for one (a request names no path it may open, and a record of that session in its own
+    WorkBuddy folders is not the client's): it takes the client's word."""
     judged = []
-    monkeypatch.setattr(transcript, "workbuddy_error_reply", lambda path, reply: judged.append(path) or True)
+    real = transcript.workbuddy_error_reply
+
+    def server_side(server, body):
+        monkeypatch.setattr(transcript, "workbuddy_error_reply", lambda path, reply: judged.append(path) or True)
+        try:
+            return remote_server.handle_request(server, json.loads(json.dumps(body)))
+        finally:
+            monkeypatch.setattr(transcript, "workbuddy_error_reply", real)
+
+    root, client, record = _remote_workbuddy(store, tmp_path, monkeypatch, server_side)
     _hook(client, {"session_id": "TEST-wb-session", "cwd": "C:/work", "hook_event_name": "Stop",
-                   "transcript_path": str(record), "last_assistant_message": notice})
+                   "transcript_path": str(record), "last_assistant_message": WB_NOTICE})
     assert judged == [], "the server opened the record a request named"
+    assert [row for row in _rows(root, "workpc-workbuddy") if row[0] == "assistant"] == []
 
 
 def test_a_workbuddy_subagent_s_stop_sends_no_record(tmp_path, monkeypatch):

@@ -229,6 +229,8 @@ class CodexHookHandler:
         self._closed_reply: tuple[str, str] | None = None
         #: Whether this hook may open the session record its payload names (``handle_payload``).
         self._local_record = True
+        #: A client on another machine's word that its Stop's reply is an error its record marks (``handle_payload``).
+        self._client_error_reply = False
 
     @classmethod
     def from_config_path(
@@ -440,12 +442,13 @@ class CodexHookHandler:
         return audience
 
     def handle_payload(self, payload: dict[str, Any], *, record: RecordLines | None = None,
-                       local_record: bool = True) -> dict[str, Any]:
+                       local_record: bool = True, error_reply: bool = False) -> dict[str, Any]:
         payload = without_lone_surrogates(payload)
         self._persisted_this_call = False
         self._queued_this_call = False
         self._closed_reply = None
         self._local_record = record is None and local_record  # a client on another machine sends its record's lines
+        self._client_error_reply = error_reply  # what that client judged from its own record
         self.diagnostics = HookDiagnostics(capability_gaps=self.diagnostics.capability_gaps)
         event = payload.get("hook_event_name")
         self.diagnostics.last_event = str(event) if event is not None else None
@@ -979,6 +982,7 @@ class CodexHookHandler:
             if type(reply) is str and self._workbuddy_error_reply(session_id, payload, reply):
                 # WorkBuddy hands the Stop the error it showed in place of a reply (not signed in, a model or network
                 # failure) as the reply; the model said nothing, and the record marks that message with the error.
+                _note_error_reply(self.config, session_id, reply)
                 self._diag("client_error_reply")
                 return {}
             turn_id, repeated = _close_turn(self.config, session_id, payload, reply if type(reply) is str else "",
@@ -1015,12 +1019,16 @@ class CodexHookHandler:
         return {}
 
     def _workbuddy_error_reply(self, session_id: str, payload: dict[str, Any], reply: str) -> bool:
-        """Whether a WorkBuddy Stop's reply is an error its record marks (``transcript.workbuddy_error_reply``).  A hook
-        that may not open the record (a client on another machine), or finds none, stores the reply as before."""
+        """Whether a WorkBuddy Stop's reply is an error its record marks (``transcript.workbuddy_error_reply``).  A client
+        on another machine judges it from its own record and says so (this side never opens a record for a request); a
+        record that cannot be found or read says no, and the reply is stored as before."""
         if not self._local_record:
+            return self._client_error_reply
+        try:
+            record = transcript.workbuddy_record_path(payload.get("transcript_path"), session_id,
+                                                      record_id=payload.get("agent_id"))
+        except OSError:
             return False
-        record = transcript.workbuddy_record_path(payload.get("transcript_path"), session_id,
-                                                  record_id=payload.get("agent_id"))
         return record is not None and transcript.workbuddy_error_reply(record, reply)
 
     def _post_tool_use(self, session_id: str, audience, payload: dict[str, Any], deadline: float) -> dict[str, Any]:
@@ -1132,16 +1140,17 @@ def _turns(config, session_id: str) -> dict[str, Any]:
     path = _session_marks(config, "turns", session_id)
     try:
         if time.time() - path.stat().st_mtime >= _TURNS_SECONDS:
-            return {"turns": [], "reply": None}
+            return {"turns": [], "reply": None, "error": None}
         kept = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, ValueError):
-        return {"turns": [], "reply": None}
+        return {"turns": [], "reply": None, "error": None}
     if not isinstance(kept, dict):
-        return {"turns": [], "reply": None}
+        return {"turns": [], "reply": None, "error": None}
     turns = [list(item) for item in kept.get("turns") or () if isinstance(item, list) and len(item) == 2
              and type(item[0]) is str and (item[1] is None or type(item[1]) is str)]
-    reply = kept.get("reply")
-    return {"turns": turns[-_TURNS_KEPT:], "reply": reply if type(reply) is str else None}
+    reply, error = kept.get("reply"), kept.get("error")
+    return {"turns": turns[-_TURNS_KEPT:], "reply": reply if type(reply) is str else None,
+            "error": error if type(error) is str else None}
 
 
 def _keep_turns(config, session_id: str, kept: dict[str, Any]) -> None:
@@ -1190,11 +1199,19 @@ def _close_turn(config, session_id: str, payload: dict[str, Any], reply: str, mo
         given, _gaps = turn_id_from_payload(payload, required=False, field=_TURN_FIELD["workbuddy"])
         turn = given or _derived_turn(session_id, reply, moment)
     words = _words(reply) if reply.strip() else None
-    repeated = words is not None and words == kept["reply"]
+    # The last reply, or the error WorkBuddy showed in place of one since: a stopped turn hands either.
+    repeated = words is not None and words in (kept["reply"], kept["error"])
     if words is not None and not repeated:
-        kept["reply"] = words
+        kept["reply"], kept["error"] = words, None
         _keep_turns(config, session_id, kept)
     return turn, repeated
+
+
+def _note_error_reply(config, session_id: str, reply: str) -> None:
+    """Keep the words of an error WorkBuddy showed in place of a reply, which a later stopped turn may hand its Stop."""
+    kept = _turns(config, session_id)
+    kept["error"] = _words(reply)
+    _keep_turns(config, session_id, kept)
 
 
 def _kept_turn(config, session_id: str, text: str) -> str | None:

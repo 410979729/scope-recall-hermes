@@ -101,6 +101,67 @@ def test_an_error_shown_in_place_of_a_reply_is_not_said(tmp_path):
     assert not transcript.workbuddy_error_reply(tmp_path / "TEST-missing.jsonl", notice)
 
 
+def _failed_line(notice, entry_id="a-err"):
+    return {**_message("assistant", notice, status="incomplete", providerData={"error": {"message": notice}}),
+            "id": entry_id}
+
+
+def _write(path, rows, *, newline="\n", prefix=b"", suffix=b""):
+    path.write_bytes(prefix + "".join(json.dumps(row, ensure_ascii=False) + newline for row in rows).encode("utf-8")
+                     + suffix)
+    return path
+
+
+def test_the_error_check_reads_the_record_s_last_model_message_whatever_follows_it(tmp_path):
+    """The Stop's check reads the record's end: other lines after the error (reasoning, tool calls, a title) are passed
+    over, a line still being written or bytes that are not UTF-8 are skipped, and CRLF or a BOM change nothing."""
+    notice = "TEST Authentication required. Please use /login command to sign in to your account"
+    tail = [{"type": "reasoning", "role": "assistant", "id": "r1", "providerData": {"error": {"message": "TEST 别的"}},
+             "summary": [{"type": "summary_text", "text": notice}]},
+            {"type": "function_call", "id": "f1", "callId": "c1", "name": "TEST", "arguments": "{}"},
+            {"type": "ai-title", "title": "TEST"}]
+    assert transcript.workbuddy_error_reply(_write(tmp_path / "a.jsonl", [_failed_line(notice), *tail]), notice)
+    partial = b'{"type": "message", "role": "assistant", "content": [{"ty'
+    assert transcript.workbuddy_error_reply(_write(tmp_path / "b.jsonl", [_failed_line(notice)], newline="\r\n",
+                                                   suffix=partial), notice)
+    assert transcript.workbuddy_error_reply(_write(tmp_path / "c.jsonl", [_failed_line(notice)],
+                                                   suffix=b"\xff\xfe TEST \xc3\n"), notice)
+    assert transcript.workbuddy_error_reply(_write(tmp_path / "d.jsonl", [_failed_line(notice)],
+                                                   prefix=b"\xef\xbb\xbf"), notice)
+
+
+def test_the_error_check_takes_only_the_record_s_end_and_fails_open(tmp_path):
+    """A record far past the part read still has its last model message there.  When the end holds no whole model
+    message (one line longer than the part read), the check says no and the reply is stored as before: an older error
+    is never taken for the new reply."""
+    notice = "TEST Request failed."
+    early = [_message("assistant", "TEST " + "x" * 4000) for _ in range(100)]
+    record = _write(tmp_path / "big.jsonl", [*early, _failed_line(notice)])
+    assert record.stat().st_size > transcript._TAIL_BYTES
+    assert transcript.workbuddy_error_reply(record, notice)
+    long_reply = _message("assistant", "TEST " + "z" * (300 * 1024))
+    assert not transcript.workbuddy_error_reply(_write(tmp_path / "cut.jsonl", [_failed_line(notice), long_reply]),
+                                                notice)
+
+
+def test_an_error_check_finds_no_error_where_the_record_names_none(tmp_path):
+    notice = "TEST Authentication required."
+    for provider in ({"error": notice}, {"error": {"message": 3}}, {"error": {"message": "  "}}, {"error": None},
+                     "TEST-not-a-dict"):
+        row = _message("assistant", notice, providerData=provider)
+        assert not transcript.workbuddy_error_reply(_write(tmp_path / "r.jsonl", [row]), notice), provider
+        assert transcript.workbuddy_said(row) is not None, provider
+
+
+def test_an_error_handed_without_its_line_breaks_is_still_the_error(tmp_path):
+    """WorkBuddy takes the line breaks out of what it hands its hooks; the comparison ignores whitespace, as the rest of
+    its matching does."""
+    notice = "TEST Request failed.\nTEST Check your network and try again."
+    record = _write(tmp_path / "r.jsonl", [_failed_line(notice)])
+    assert transcript.workbuddy_error_reply(record, notice.replace("\n", ""))
+    assert transcript.workbuddy_said(_failed_line(notice)) is None
+
+
 def test_a_user_message_without_a_user_query_block_is_not_the_person_s():
     """WorkBuddy saves what the person sent inside ``<user_query>``.  The user messages it adds itself carry none: a
     local command and its output, a shell command run in bash mode and its output (``CommandMessageUtils``, saved

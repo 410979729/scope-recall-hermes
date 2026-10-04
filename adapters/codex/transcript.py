@@ -158,6 +158,12 @@ def _workbuddy_error(provider: dict) -> str | None:
     return message.strip() if type(message) is str and message.strip() else None
 
 
+def _error_words(text: str, error: str | None) -> bool:
+    """Whether ``text`` is the error's message, whitespace aside: WorkBuddy hands its hooks copies with the line breaks
+    taken out, and the rest of its matching ignores whitespace as well (``handler._words``)."""
+    return error is not None and "".join(text.split()) == "".join(error.split())
+
+
 def workbuddy_said(row: object) -> Said | None:
     """What one line of a WorkBuddy session record shows being said, or None for everything else.
 
@@ -185,7 +191,7 @@ def workbuddy_said(row: object) -> Said | None:
     text = "".join(blocks) if role == "assistant" else workbuddy_record_words("\n".join(blocks))
     if not text.strip() or (role == "user" and is_task_notification(text)):
         return None
-    if role == "assistant" and text.strip() == _workbuddy_error(provider):
+    if role == "assistant" and _error_words(text, _workbuddy_error(provider)):
         # An error WorkBuddy showed in place of the model's reply (not signed in, a model or network failure): the
         # message carries that error and its words are the error's.  The model said nothing (seen 2026-10-04 with
         # WorkBuddy's agent 2.147.0 not signed in, its notice stored as the reply).
@@ -213,12 +219,12 @@ def workbuddy_error_reply(path: Path, reply: str) -> bool:
         return False
     for raw in reversed(tail.splitlines()):
         try:
-            row = json.loads(raw.decode("utf-8"))
+            row = json.loads(raw.decode("utf-8-sig"))  # a record's first line may carry a BOM
         except (UnicodeError, ValueError, RecursionError):
             continue  # the cut first line of the tail, or a line being written
         if isinstance(row, dict) and row.get("type") == "message" and row.get("role") == "assistant":
             provider = row.get("providerData") if isinstance(row.get("providerData"), dict) else {}
-            return _workbuddy_error(provider) == reply.strip()
+            return _error_words(reply, _workbuddy_error(provider))
     return False
 
 

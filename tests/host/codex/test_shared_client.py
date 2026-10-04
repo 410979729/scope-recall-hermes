@@ -2847,37 +2847,111 @@ def test_a_workbuddy_stop_that_repeats_the_last_reply_stores_nothing(workbuddy):
     assert len(_wb_said(root, "assistant")) == 2, "a new reply is stored"
 
 
+WB_NOTICE = "Authentication required. Please use /login command to sign in to your account"
+WB_ERROR = {"error": {"message": WB_NOTICE, "isNetworkError": False, "isStreamTimeout": False, "isRetryable": False}}
+
+
+def _wb_answered_then_failed(home, projects, at):
+    """A first turn answered (its reply stored), then a turn whose model could not answer: WorkBuddy shows the notice,
+    records it with its error, and hands it to the Stop."""
+    record = _wb_record(projects, _wb_line("user", "u1", at(0), "<user_query>TEST 第一问。</user_query>"))
+    _wb(home, _wb_prompt("TEST 第一问。"))
+    _record(record, _wb_line("assistant", "a1", at(1), "TEST 第一答。"))
+    _wb(home, _wb_stop(record, last="TEST 第一答。"))
+    _record(record, _wb_line("user", "u2", at(3), "<user_query>TEST 第二问。</user_query>"))
+    _wb(home, _wb_prompt("TEST 第二问。"))
+    _record(record, _wb_line("assistant", "a2", at(4), WB_NOTICE, status="incomplete", providerData=WB_ERROR))
+    _result, diagnostics = _wb(home, _wb_stop(record, last=WB_NOTICE))
+    assert diagnostics.last_reason == "client_error_reply"
+    return record
+
+
 def test_a_workbuddy_error_shown_in_place_of_a_reply_is_not_stored(workbuddy):
     """WorkBuddy hands the Stop the error it showed when the model could not answer (here not signed in) as the reply;
     its record marks that message with the error.  The person's prompt is kept, the notice is not, from the Stop or
-    from the record, and the next turn's reply is stored as usual."""
+    from the record (whose read still moves past it), and the same question sent again after signing in is answered
+    and stored as usual."""
+    from scope_recall.adapters.codex import transcript
+
     root, home, projects = workbuddy
     at = _wb_ms()
-    notice = "Authentication required. Please use /login command to sign in to your account"
-    record = _wb_record(projects, _wb_line("user", "u1", at(0), "<user_query>TEST 天姬今天出了什么事？</user_query>"))
-    _wb(home, _wb_prompt("TEST 天姬今天出了什么事？"))
-    _record(record, _wb_line("assistant", "a1", at(1), notice, status="incomplete", providerData={
-        "error": {"message": notice, "isNetworkError": False, "isStreamTimeout": False, "isRetryable": False}}))
-    _result, diagnostics = _wb(home, _wb_stop(record, last=notice))
+    question = "TEST 天姬今天出了什么事？"
+    record = _wb_record(projects, _wb_line("user", "u1", at(0), f"<user_query>{question}</user_query>"))
+    _wb(home, _wb_prompt(question))
+    _record(record, _wb_line("assistant", "a1", at(1), WB_NOTICE, status="incomplete", providerData=WB_ERROR))
+    _result, diagnostics = _wb(home, _wb_stop(record, last=WB_NOTICE))
     assert diagnostics.last_reason == "client_error_reply"
-    assert _wb_said(root) == [("user", "human_direct", "TEST 天姬今天出了什么事？")]
-    _record(record, _wb_line("user", "u2", at(3), "<user_query>TEST 再问一次。</user_query>"))
-    _wb(home, _wb_prompt("TEST 再问一次。"))
+    assert _wb_said(root) == [("user", "human_direct", question)]
+    assert transcript.Cursor(home, WB_SESSION, record).load() == record.stat().st_size, "the read moved past it"
+    _record(record, _wb_line("user", "u2", at(3), f"<user_query>{question}</user_query>"))
+    _wb(home, _wb_prompt(question))
     _record(record, _wb_line("assistant", "a2", at(4), "TEST 网关停了六分钟。"))
     _wb(home, _wb_stop(record, last="TEST 网关停了六分钟。"))
     assert _wb_said(root, "assistant") == [("assistant", "assistant_visible", "TEST 网关停了六分钟。")]
+    assert _wb_said(root, "user") == [("user", "human_direct", question)] * 2
+
+
+def test_a_workbuddy_turn_stopped_after_an_error_hands_either_the_error_or_the_reply_before_it(workbuddy):
+    """A turn stopped before it said anything hands its Stop the reply before it.  After an error turn that may be the
+    error or the last real reply: neither is stored again, and the error's words are kept until a new reply comes."""
+    root, home, projects = workbuddy
+    at = _wb_ms()
+    record = _wb_answered_then_failed(home, projects, at)
+    _record(record, _wb_line("user", "u3", at(6), "<user_query>TEST 停一下。</user_query>"))
+    _wb(home, _wb_prompt("TEST 停一下。"))
+    _wb(home, _wb_stop(record, last=WB_NOTICE))
+    _record(record, _wb_line("user", "u4", at(8), "<user_query>TEST 又停了。</user_query>"))
+    _wb(home, _wb_prompt("TEST 又停了。"))
+    _result, diagnostics = _wb(home, _wb_stop(record, last="TEST 第一答。"))
+    assert diagnostics.last_reason == "repeated_reply"
+    assert _wb_said(root, "assistant") == [("assistant", "assistant_visible", "TEST 第一答。")]
+
+
+def test_a_workbuddy_turn_that_said_something_and_hands_the_error_stores_only_what_it_said(workbuddy):
+    """A turn that wrote a message and was then stopped, its Stop handed the error of the turn before (the record's last
+    model message, the new one, carries no error): the error is the kept one and is not stored; the record read
+    stores what the turn did say."""
+    root, home, projects = workbuddy
+    at = _wb_ms()
+    record = _wb_answered_then_failed(home, projects, at)
+    _record(record, _wb_line("user", "u3", at(6), "<user_query>TEST 再查一次。</user_query>"))
+    _wb(home, _wb_prompt("TEST 再查一次。"))
+    _record(record, _wb_line("assistant", "a3", at(7), "TEST 我先看一下日志。", status="incomplete"))
+    _wb(home, _wb_stop(record, last=WB_NOTICE))
+    stored = sorted(content for _role, _origin, content in _wb_said(root, "assistant"))
+    assert stored == sorted(["TEST 第一答。", "TEST 我先看一下日志。"])
+
+
+def test_a_workbuddy_record_that_cannot_be_looked_up_still_keeps_the_stop_s_reply(workbuddy, monkeypatch):
+    """The error check runs before the capture.  A record lookup that fails (a folder it may not list) says no there,
+    and the Stop stores its reply as before; the record read meets the same failure after it."""
+    from scope_recall.adapters.codex import transcript
+
+    root, home, _projects = workbuddy
+    _wb(home, _wb_prompt("TEST 问。"))
+
+    def refused(*_args, **_kwargs):
+        raise PermissionError(13, "TEST access denied")
+
+    monkeypatch.setattr(transcript, "workbuddy_record_path", refused)
+    with pytest.raises(PermissionError):
+        _wb(home, _wb_stop(last="TEST 一个真的回答。"))
+    assert _wb_said(root, "assistant") == [("assistant", "assistant_visible", "TEST 一个真的回答。")]
 
 
 def test_a_workbuddy_reply_cut_by_an_error_keeps_what_was_shown(workbuddy):
-    """A reply that broke off (a stream timeout) carries the error too, but its words are the model's: they are kept."""
+    """A reply that broke off (a stream timeout) carries the error too, but its words are the model's: the Stop stores
+    them under its turn, and the record read recognises them."""
     root, home, projects = workbuddy
     at = _wb_ms()
     record = _wb_record(projects, _wb_line("user", "u1", at(0), "<user_query>TEST 写一段长说明。</user_query>"))
     _wb(home, _wb_prompt("TEST 写一段长说明。"))
     _record(record, _wb_line("assistant", "a1", at(1), "TEST 第一部分写到这里", status="incomplete", providerData={
         "error": {"message": "TEST stream timed out", "isNetworkError": False, "isStreamTimeout": True}}))
-    _wb(home, _wb_stop(record, last="TEST 第一部分写到这里"))
+    _result, diagnostics = _wb(home, _wb_stop(record, last="TEST 第一部分写到这里"))
+    assert diagnostics.last_reason != "client_error_reply"
     assert _wb_said(root, "assistant") == [("assistant", "assistant_visible", "TEST 第一部分写到这里")]
+    assert len(_wb_turns(root, "assistant")) == 1, "stored by the Stop, under its turn"
 
 
 def test_a_workbuddy_reply_said_again_in_a_new_turn_is_stored_from_the_record(workbuddy):

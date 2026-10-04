@@ -597,8 +597,9 @@ class HookEndpoint:
                  credentials: Callable[[], dict[str, str]] | None = None, resident: bool = False) -> None:
         self.home = Path(home)
         self.host = host
-        #: Said in the server's name: a resident server (``resident_entry``) outlives the client's processes, and hooks
-        #: ask it before a server the client started for a conversation (``Recaller``).
+        #: Said in the server's name: a resident server (``resident_entry``) runs apart from the MCP server of a
+        #: conversation (though WorkBuddy's agent still ends it with that conversation's process), and hooks ask it
+        #: before a server the client started for a conversation (``Recaller``).
         self.resident = resident
         #: When a prompt's recall last came in, for a resident server's idle end; keep-warm searches do not count.
         self.last_used = time.monotonic()
