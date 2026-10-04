@@ -199,7 +199,7 @@ class _RetryCapture:
     scope_id: str
     host_scope: HermesRuntimeScope
     #: When it was kept (the monotonic clock), for ``_RETRY_GIVE_UP_S``.
-    kept_at: float = 0.0
+    kept_at: float
 
 
 class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyright: ignore[reportGeneralTypeIssues]
@@ -400,8 +400,8 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
             self._reset_current_source_refs()
             self._current_task_message = ""
             # The buffer stays: each capture keeps the session, actor and scope it was said in, and is written under
-            # its own scope's grant (``_retry_pass``).  Cleared here, a compression's or a new conversation's session
-            # switch dropped tool results that had only met a busy store (2026-10-04).
+            # its own scope's grant (``_retry_pass``).  Cleared here, a session started again in this adapter dropped
+            # tool results that had only met a busy store.
             self._diagnostics.capability_gaps = tuple(
                 dict.fromkeys(
                     (*fresh.runtime_audience.capability_gaps, *self._host_runtime.capability_gaps)
@@ -618,6 +618,13 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
             if failure is None and identity is not None and receipt.durability in ("persisted", "queued"):
                 self._ledger.confirm(identity)
                 self._retry_captures.pop(identity, None)
+            if replay and identity is not None:
+                # Said "still being written" at shutdown: its end is said here (review of 3.6.1).
+                if failure is None and receipt.durability in ("persisted", "queued"):
+                    _log.info("scope-recall: %s on retry: %s",
+                              "stored" if receipt.durability == "persisted" else "queued", _label(identity))
+                else:
+                    _log.warning("scope-recall: not stored (still failing at shutdown), lost: %s", _label(identity))
             return None if failure is not None else receipt
         if failure is not None:
             if isinstance(failure, ContractError) and failure.code not in {"DEADLINE_EXCEEDED", "STORAGE_UNAVAILABLE"}:
@@ -791,7 +798,7 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
         """Drop the buffered captures kept longer than ``_RETRY_GIVE_UP_S``, each logged as lost; the caller holds
         ``_lock``.  Returns their keys."""
         expired = [key for key, pending in items
-                   if self._retry_captures.get(key) is pending
+                   if self._retry_captures.get(key) is pending and key not in self._retry_in_flight
                    and time.monotonic() - pending.kept_at > _RETRY_GIVE_UP_S]
         for key in expired:
             self._retry_captures.pop(key, None)
@@ -824,6 +831,10 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
                 self._retry_buffered_captures(release=True, seconds=_RETRY_PASS_SECONDS)
             except Exception as exc:  # noqa: BLE001 - the next pass, a turn's end or the shutdown writes it
                 _log.warning("scope-recall: a retry of buffered captures failed (%s)", type(exc).__name__)
+                # A pass that raised before its captures' own check still gives up the expired ones: it would hold
+                # them, and an evicted agent's adapter, for good (review of 3.6.1).
+                with self._lock:
+                    self._give_up_expired(tuple(self._retry_captures.items()))
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
         """Read the turn's state under the lock, recall without it.
@@ -1244,7 +1255,8 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
                 self._captures_done.wait(max(0.0, deadline - time.monotonic()))
             still_writing = self._captures_in_flight
             # What the buffer still holds is written once more, in the time the drain left and at least a capture's:
-            # dropped here, it was lost whenever Hermes evicted an idle agent or a gateway restarted (2026-10-04).
+            # dropped here, it was lost at every gateway restart (2026-10-04).  An agent Hermes evicts keeps its
+            # adapter without a shutdown; the retry thread writes its buffer.
             self._retry_wake.set()
             try:
                 self._retry_buffered_captures(

@@ -17,7 +17,13 @@ All notable changes to `scope-recall` will be documented in this file.
   - Kept across a session switch, each is written in the session it was said in, under its own scope's grant as the installation's manifest gives it now, whatever audience the session that is current has.
   - A shutdown writes them once more, for up to 2 s.
   - One still failing after 30 minutes is given up.
-  - Each is logged once when it is kept (`not stored (<reason>), kept to retry`) and once when it is stored (`stored on retry`). One given up, one dropped because its scope was taken away, and one still failing at shutdown are logged as lost, with their key.
+  - Each is logged once when it is kept (`not stored (<reason>), kept to retry`) and once at its end, with its key:
+    - `stored on retry`, or `queued on retry` (into the store's inbox);
+    - `not stored (authorization revoked), dropped`, when its scope was taken away;
+    - `not stored (still failing after 30 minutes), lost`, or `not stored (still failing at shutdown), lost`;
+    - `not stored (<reason>)`, when the store refuses it for good.
+
+    A capture still being written at shutdown is said so, and its end is said when it comes.
 
 ### Upgrading from 3.6.0
 
