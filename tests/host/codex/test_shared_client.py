@@ -1001,8 +1001,18 @@ def small_reserve(monkeypatch):
     monkeypatch.setattr(handler_module, "_RESIDENT_MIN_S", 0.5)
 
 
-def test_the_server_answers_a_prompt_s_recall_and_the_hook_stores_the_prompt(resident, small_reserve, monkeypatch,
-                                                                             capsys):
+@pytest.fixture
+def ample_budget(monkeypatch):
+    """For a test that needs the server's answer: a hook on the 2 s default asked no server when storing the prompt
+    took most of it, as on a slow CI runner (the prompt's write took 5.6 s on windows-latest, 2026-10-04, and the hook
+    recalled by itself).  The server answers at once; the time is only there to be enough."""
+    from scope_recall.adapters.codex import handler as handler_module
+
+    monkeypatch.setattr(handler_module, "_TOTAL_BUDGET_S", 30.0)
+
+
+def test_the_server_answers_a_prompt_s_recall_and_the_hook_stores_the_prompt(resident, small_reserve, ample_budget,
+                                                                             monkeypatch, capsys):
     """A cold prompt's recall was often done before its LanceDB helper was ready: on the pilot 6 of 8 cold Claude
     Code prompts recalled by words alone.  The client's MCP server lives as long as the client and recalls warm; the
     prompt is stored by its own hook, as before."""
@@ -1252,7 +1262,8 @@ def test_a_prompt_with_half_of_a_broken_emoji_is_stored(store, capsys):
     assert ("user", "human_direct", "TEST 表情坏了" + chr(0xFFFD)) in _said_in_store(root)
 
 
-def test_a_server_answer_that_ran_out_of_time_is_not_the_last_word(resident, small_reserve, monkeypatch, capsys):
+def test_a_server_answer_that_ran_out_of_time_is_not_the_last_word(resident, small_reserve, ample_budget, monkeypatch,
+                                                                    capsys):
     """A server's recall that ended in deadline_exceeded or recall_exception was taken as final, though the hook had
     time for its own.  Then it was dropped and the hook said ``answered``: a server whose recalls kept failing looked
     healthy (review of rc11)."""
@@ -1499,8 +1510,8 @@ def _marker(text):
     return {"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": text}}
 
 
-def test_a_server_answer_without_its_vector_search_gives_way_to_the_hook_s_own(resident, small_reserve, monkeypatch,
-                                                                              capsys):
+def test_a_server_answer_without_its_vector_search_gives_way_to_the_hook_s_own(resident, small_reserve, ample_budget,
+                                                                              monkeypatch, capsys):
     """A server whose vector search failed on its own (its key lost, say) answered every prompt by words alone, and
     the hook took that though it had the key, the helper and the time (review of rc11).  The hook's own recall is
     used when it has its vector search, and the server's words when it has not either.  A provider's refusal the hook
@@ -1632,8 +1643,8 @@ def test_a_payload_nested_past_the_parser_s_limit_is_answered_empty(store, monke
     assert json.loads(capsys.readouterr().out) == {}
 
 
-def test_a_server_answer_from_an_unreadable_store_gives_way_to_the_hook_s_own(resident, small_reserve, monkeypatch,
-                                                                              capsys):
+def test_a_server_answer_from_an_unreadable_store_gives_way_to_the_hook_s_own(resident, small_reserve, ample_budget,
+                                                                              monkeypatch, capsys):
     """A server whose store could not be read answered with an empty packet, which read as nothing found and was
     taken over the hook's own recall (review of rc11)."""
     from scope_recall.adapters.codex import handler as handler_module
