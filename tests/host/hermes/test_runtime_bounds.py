@@ -1019,6 +1019,7 @@ def test_a_capture_being_written_is_not_given_up_under_its_writer(adapter, monke
     _busy_store(provider, monkeypatch, 1)
     _tool_result(provider, "turn-1", "busy-call", "TEST tool output busy-call")
     (key,) = provider._retry_captures
+    time.sleep(0.05)  # past its 0 s by more than one tick of Windows' monotonic clock (15.6 ms)
     with provider._lock:
         provider._retry_in_flight.add(key)
         try:
