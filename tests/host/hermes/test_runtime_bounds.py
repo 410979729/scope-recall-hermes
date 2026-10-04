@@ -387,6 +387,15 @@ def _held_capture(provider, monkeypatch, call_id: str):
     return entered, release
 
 
+def _held_message(provider, monkeypatch):
+    """A message's capture holds its session while its store write waits until ``release`` is set: pre_llm_call
+    writes with the session held, as a tool hook no longer does."""
+    entered, release = _held_capture(provider, monkeypatch, "turn-held")
+    done, _, thread = _in_thread(lambda: provider.observe_pre_llm(
+        session_id="TEST-session-1", turn_id="turn-held", user_message="TEST a message whose write is held"))
+    return entered, release, done, thread
+
+
 def _another_session(installed_core, initialize_kwargs):
     core, clock = installed_core
     other = ScopeRecallHermesAdapter(core=MemoryCore(CoreConfig(core.config.binding), clock=clock), clock=clock)
@@ -405,10 +414,9 @@ def test_a_hook_does_not_wait_out_its_busy_session(adapter, monkeypatch, caplog)
     per hook (tianji 2026-09-26: three tool hooks behind their session's prefetch)."""
     provider, _clock = adapter
     monkeypatch.setattr(hooks, "_SESSION_WAIT_CAP_S", 0.05, raising=False)
-    entered, release = _held_capture(provider, monkeypatch, "slow-call")
+    entered, release, first, first_thread = _held_message(provider, monkeypatch)
     _register_adapter_instance(provider)
     try:
-        first, _, first_thread = _in_thread(_tool_hook("TEST-session-1", "slow-call"))
         assert entered.wait(_PROMPTLY)
         second, _, second_thread = _in_thread(_tool_hook("TEST-session-1", "next-call"))
         assert second.wait(_PROMPTLY), "the hook waited for its busy session"
@@ -421,16 +429,63 @@ def test_a_hook_does_not_wait_out_its_busy_session(adapter, monkeypatch, caplog)
     assert provider.diagnostics.host_backpressure == {"post_tool_call": 1}
     said = [record.getMessage() for record in caplog.records if " not taken: " in record.getMessage()]
     assert said and said[0].startswith(
-        "scope-recall: post_tool_call not taken: this session has been busy in observe_post_tool_call for "), said
+        "scope-recall: post_tool_call not taken: this session has been busy in observe_pre_llm for "), said
+
+
+def test_a_steps_tool_results_are_written_side_by_side(adapter, hermes_home, monkeypatch):
+    """Hermes calls the hook for each of a step's parallel tool calls at once.  A capture held the session across its
+    store write (1.4-4.4 s on the shared store), and the hooks behind it past their bound were not taken: yuheng 6
+    and tianji 2 tool results on 2026-10-03.  The write now runs without the session."""
+    provider, _clock = adapter
+    monkeypatch.setattr(hooks, "_SESSION_WAIT_CAP_S", 0.05, raising=False)
+    entered, release = _held_capture(provider, monkeypatch, "slow-call")
+    _register_adapter_instance(provider)
+    try:
+        first, _, first_thread = _in_thread(_tool_hook("TEST-session-1", "slow-call"))
+        assert entered.wait(_PROMPTLY)
+        second, _, second_thread = _in_thread(_tool_hook("TEST-session-1", "next-call"))
+        assert second.wait(_PROMPTLY), "the hook waited for the other tool result's write"
+        assert not first.is_set()
+        assert _tool_rows(hermes_home) == 1, "the second tool result was not written while the first one waited"
+    finally:
+        release.set()
+        first_thread.join(_PROMPTLY)
+        second_thread.join(_PROMPTLY)
+        _unregister_adapter_instance(provider)
+    assert first.is_set()
+    assert _tool_rows(hermes_home) == 2
+    assert provider.diagnostics.host_backpressure is None
+    assert len(provider.diagnostics.current_source_refs) == 2
+
+
+def test_a_shutdown_waits_for_a_tool_result_being_written(adapter, hermes_home, monkeypatch):
+    """A tool hook's write runs without the session, which ``sync_turn``'s guard does not cover: a shutdown that came
+    meanwhile would close the runtime under it."""
+    provider, _clock = adapter
+    entered, release = _held_capture(provider, monkeypatch, "slow-call")
+    _register_adapter_instance(provider)
+    shut_thread = None
+    try:
+        first, _, first_thread = _in_thread(_tool_hook("TEST-session-1", "slow-call"))
+        assert entered.wait(_PROMPTLY)
+        shut, _, shut_thread = _in_thread(provider.shutdown)
+        assert not shut.wait(0.3), "the shutdown closed the session under a tool result being written"
+    finally:
+        release.set()
+        first_thread.join(_PROMPTLY)
+        if shut_thread is not None:
+            shut_thread.join(_PROMPTLY)
+        _unregister_adapter_instance(provider)
+    assert first.is_set() and shut.is_set()
+    assert _tool_rows(hermes_home) == 1
 
 
 def test_prefetch_does_not_wait_out_its_busy_session(adapter, monkeypatch):
     provider, _clock = adapter
     monkeypatch.setattr(provider_module, "_PREFETCH_STATE_WAIT_S", 0.05, raising=False)
-    entered, release = _held_capture(provider, monkeypatch, "slow-call")
+    entered, release, first, first_thread = _held_message(provider, monkeypatch)
     _register_adapter_instance(provider)
     try:
-        first, _, first_thread = _in_thread(_tool_hook("TEST-session-1", "slow-call"))
         assert entered.wait(_PROMPTLY)
         prefetched, box, prefetch_thread = _in_thread(lambda: provider.prefetch("TEST where does orca42 run"))
         assert prefetched.wait(_PROMPTLY), "prefetch waited for its busy session"

@@ -108,7 +108,13 @@ def _dispatch(event: str, kwargs: dict[str, Any], *, wait: float) -> Any | None:
         # Session switch can occur after selection; never send that old
         # callback through the replacement audience's identity.
         if _active_adapter(kwargs) is adapter:
-            getattr(adapter, _OBSERVERS.get(event, "observe_api_request_error"))(**kwargs)
+            if event == "post_tool_call":
+                # Held here exactly once, so the capture's store I/O runs without it and the step's other tool hooks
+                # are not kept waiting behind it (``_observe_post_tool_call``).
+                with adapter._holding("observe_post_tool_call"):
+                    adapter._observe_post_tool_call(**kwargs)
+            else:
+                getattr(adapter, _OBSERVERS.get(event, "observe_api_request_error"))(**kwargs)
     finally:
         adapter._lock.release()
     return adapter

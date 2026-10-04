@@ -548,11 +548,13 @@ more than 10 s; a prefetch waits at most 2 s for its session to read the turn's
 state, and recalls without holding it. With a timeout of 0 or less, which Hermes
 reads as none, a hook waits at most 10 s. A finished turn is written one capture
 at a time, so the next turn's hooks get in between; its message and reply are
-dated when its writing began, and a shutdown waits for it. What could not wait is
-not taken, and the gateway log says so:
+dated when its writing began, and a shutdown waits for it. A tool result is written
+without holding its session (from 3.5.1), so a step's parallel tool calls do not
+wait for one another; a shutdown waits up to 10 s for one being written. What
+could not wait is not taken, and the gateway log says so:
 
 ```text
-scope-recall: post_tool_call not taken: this session has been busy in observe_post_tool_call for 10.0 s
+scope-recall: post_tool_call not taken: this session has been busy in observe_pre_llm for 10.0 s
 ```
 
 A hook that still ran past the host's timeout is reported as:

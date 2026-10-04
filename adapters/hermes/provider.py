@@ -56,6 +56,9 @@ from .tool_surface import HermesToolSurface, _TOOL_NAMES, display_zone
 _log = logging.getLogger(__name__)
 
 _CAPTURE_TIMEOUT_S = 1.0
+#: What a shutdown waits for captures whose store I/O runs without the adapter lock: each looks its key up and
+#: writes, within ``_CAPTURE_TIMEOUT_S`` together, so a few seconds cover any that started.
+_CAPTURE_DRAIN_WAIT_S = 10.0
 _BOUNDED_MESSAGE_SCAN = 8
 #: Turns whose opening message ``pre_llm_call`` stored, remembered across a compression's session switch.
 _USER_CAPTURED_TURNS = 64
@@ -229,6 +232,10 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
         #: Held by ``sync_turn`` for the whole turn, which takes ``_lock`` only around each capture: a shutdown waits
         #: for it (``shutdown``).
         self._sync_lock = threading.RLock()
+        #: Captures whose store I/O runs without ``_lock`` (``_capture_event(release=True)``), and the condition a
+        #: shutdown waits on until none is left: a tool hook's capture is not covered by ``_sync_lock``.
+        self._captures_in_flight = 0
+        self._captures_done = threading.Condition(self._lock)
         #: The turn id of a ``pre_llm_call`` this session was too busy to take, for the turn's start
         #: (``on_turn_start``); written without ``_lock`` by the skipped hook.
         self._skipped_turn_id: str | None = None
@@ -518,9 +525,11 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
         host_scope = self._retry_captures[identity].host_scope if replay and identity in self._retry_captures else bound.scope
         failure, holder = None, self._holder
         if release:
-            # The store I/O without the lock, which the caller (``sync_turn``) holds exactly once.  Held across the
-            # write, it was taken straight back by this thread as it released it: the next turn's start got in after
-            # 2 of 14 such captures (measured on 3.4.9).  Only the store is touched until it is taken again.
+            # The store I/O without the lock, which the caller (``sync_turn``, a tool hook) holds exactly once.  Held
+            # across the write, it was taken straight back by this thread as it released it: the next turn's start
+            # got in after 2 of 14 such captures (measured on 3.4.9).  Only the store is touched until it is taken
+            # again.
+            self._captures_in_flight += 1
             self._holder = None
             self._lock.release()
         try:
@@ -553,6 +562,8 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
             if release:
                 self._lock.acquire()
                 self._holder = holder and (holder[0], time.monotonic(), holder[2])
+                self._captures_in_flight -= 1
+                self._captures_done.notify_all()
         if failure is not None:
             if isinstance(failure, ContractError) and failure.code not in {"DEADLINE_EXCEEDED", "STORAGE_UNAVAILABLE"}:
                 self._retry_captures.pop(identity, None)
@@ -803,6 +814,15 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
 
     @_serialized_host_event
     def observe_post_tool_call(self, **kwargs) -> None:
+        self._observe_post_tool_call(**kwargs)
+
+    def _observe_post_tool_call(self, **kwargs) -> None:
+        """Capture one tool result; the caller holds ``_lock`` exactly once, and the store I/O runs without it.
+
+        Hermes calls the hook for each of a step's parallel tool calls at once.  Held across its write (1.4-4.4 s on
+        the shared store), one capture kept the others waiting, and those past the hook's bound were not taken:
+        yuheng 6 and tianji 2 tool results on 2026-10-03.
+        """
         identity = self._require_identity()
         if identity.read_only or not identity.runtime_audience.allowed_scope_ids:
             self._diagnostics.capability_gaps = identity.runtime_audience.capability_gaps
@@ -846,6 +866,8 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
             identity=ledger_identity,
             gaps=gaps,
             scope_id=identity.local_scope_id if outcome == "success" else None,
+            bound=identity,
+            release=True,
         )
         self._diagnostics.pending_outcome_gaps = self._outcomes.pending_gaps()
 
@@ -1079,11 +1101,15 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
         return ""
 
     def shutdown(self) -> None:
-        # A turn being written is finished first (``sync_turn``), as when it held the adapter lock throughout.
+        # A turn being written is finished first (``sync_turn``), as when it held the adapter lock throughout, and so
+        # is a tool hook's capture whose store I/O runs without the lock: closed under it, its write would fail.
         with self._sync_lock, self._lock:
             from .hooks import unregister_adapter
 
             unregister_adapter(self)
+            deadline = time.monotonic() + _CAPTURE_DRAIN_WAIT_S
+            while self._captures_in_flight and time.monotonic() < deadline:
+                self._captures_done.wait(max(0.0, deadline - time.monotonic()))
             pending = self._pending_capture_identities()
             durable_pending = self._durable_pending_count()
             state = self._worker.shutdown()

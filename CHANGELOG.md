@@ -2,12 +2,21 @@
 
 All notable changes to `scope-recall` will be documented in this file.
 
-## [Unreleased]
+## [3.5.1] - 2026-10-03
 
-### Scope Recall 3.5.1rc1 - 2026-10-03
+3.5.1 keeps every tool result of a Hermes step whose tools run in parallel.
 
-- The version moves past the `v3.5.0` tag.
+### Fixes
+
+- Hermes calls the tool hook for each of a step's parallel tool calls at once. Each capture held its session across its store write, which took 1.4-4.4 s on the shared store, and the hooks behind it waited. A hook waits for its session at most 10 s, so those past that were not taken, and their tool results were lost: 6 on yuheng and 2 on tianji on 2026-10-03, each logged as `post_tool_call not taken`.
+  - A tool result is now written without holding its session, as a finished turn's captures already were. The step's other tool hooks no longer wait for it.
+  - A shutdown waits up to 10 s for a tool result being written, as it waits for a turn being written.
+  - A hook still cannot wait out a session held by a message's capture. That case is logged and counted as before.
 - `--target-plugin-dir`'s help names `mcp.json`, the file the WorkBuddy installer writes, instead of `.mcp.json`.
+
+### Upgrading from 3.5.0
+
+Install the package, run `plan-install` and `apply-install` for each host, and restart the Hermes gateways. The store's schema is unchanged (1110).
 
 ## [3.5.0] - 2026-10-03
 
