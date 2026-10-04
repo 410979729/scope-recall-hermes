@@ -118,6 +118,8 @@ _COUNT_BOUNDS = {
 }
 #: Fields assembled from nested mappings rather than copied from the top level.
 _COMPOSED_FIELDS = frozenset({"binding", "allowed_scope_ids", "auxiliary", "vector"})
+#: ``resident_recall_minutes``: none kept, up to a day.
+RESIDENT_RECALL_MINUTES_BOUNDS = (0, 1440)
 
 
 @dataclass(frozen=True)
@@ -156,6 +158,10 @@ class RuntimeInstanceConfig:
     #: Bytes the store and its vectors may occupy before the doctor reports
     #: ``storage_budget_exceeded``; 0 sets no budget.  Nothing is deleted for it.
     storage_budget_bytes: int = 0
+    #: Minutes the resident prompt recall server of a client attached to a shared store stays up without a recall
+    #: (``adapters/codex/resident_entry``); 0 keeps none.  Unset, the client's default applies
+    #: (``adapters/codex/local_endpoint.RESIDENT_DEFAULT_MINUTES``).
+    resident_recall_minutes: int | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.binding, InstanceBinding):
@@ -175,6 +181,9 @@ class RuntimeInstanceConfig:
         for name, (low, high) in _COUNT_BOUNDS.items():
             strict_int(name, getattr(self, name), minimum=low, maximum=high)
         strict_bool("supervisor_enabled", self.supervisor_enabled)
+        if self.resident_recall_minutes is not None:
+            low, high = RESIDENT_RECALL_MINUTES_BOUNDS
+            strict_int("resident_recall_minutes", self.resident_recall_minutes, minimum=low, maximum=high)
         if self.hook_processing_seconds < self.auto_recall_seconds:
             raise ValueError("hook_processing_seconds_must_cover_auto_recall")
         strict_float("lease_seconds", self.lease_seconds, minimum=self.request_seconds, maximum=3600.0)
@@ -553,6 +562,27 @@ class RuntimeInstance:
             # paged back in once the helper's memory was trimmed (review of 3.5.0rc2).  What it finds is not looked at.
             search_scopes([1.0] + [0.0] * (self.config.vector.dimensions - 1),
                           scope_ids=list(search_partitions(trusted, self.config.embedding_space_id())), limit=1)
+        return True
+
+    def warm_query_embedding(self, seconds: float) -> bool:
+        """Ask the query embedding route for one vector, off any prompt's time: a server's start, for its embedding
+        worker and its connection.
+
+        Warming the vector store alone left them to the first recall: a WorkBuddy entry's server, started cold, lost
+        the vector search of its first two recalls to the embedding's time (``AuxiliaryModelError:timeout``, measured
+        2026-10-03) and answered with it from the third, 12.7 s after its start.  The text is fixed and nothing of what
+        comes back is kept; it writes nothing."""
+        self._ensure_open()
+        if self.config.vector is None:
+            return False
+        embed = _LazyVectorPort(self)._query_embedder()
+        if embed is None:
+            return False
+        now = time.monotonic()
+        deadline = RequestDeadline.from_absolute(now + float(seconds), now=now)
+        with using_request_deadline(deadline):
+            embed_with_one_retry(lambda budget: embed("scope recall warm-up", budget),
+                                 budget_seconds=deadline.remaining(), remaining=deadline.remaining)
         return True
 
     def _compose_ports(self, resource: Any) -> None:

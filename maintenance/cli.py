@@ -60,6 +60,12 @@ def _shared(argv: list[str]) -> int:
     return main(argv)
 
 
+def _resident(argv: list[str]) -> int:
+    from .resident import main
+
+    return main(argv[1:])
+
+
 _DELEGATED: dict[str, tuple[str, Callable[[list[str]], int]]] = {
     "setup": ("agent-operated fresh install/update/migration routing", _upgrade_cli),
     "migrate": ("prepare, resume, verify and index a legacy migration job", _upgrade_cli),
@@ -71,6 +77,7 @@ _DELEGATED: dict[str, tuple[str, Callable[[list[str]], int]]] = {
     "adopt": ("record the directory a copied shared store now lives in", _shared),
     "entries": ("list a shared store's entries and when each was last heard from", _shared),
     "import-entry": ("copy an entry's own store, moved aside at attach, into its shared store", _shared),
+    "resident": ("see or stop an entry's resident prompt recall server, as before a package upgrade", _resident),
 }
 
 

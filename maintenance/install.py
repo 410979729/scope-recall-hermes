@@ -407,6 +407,12 @@ def apply_uninstall(plan: UninstallPlan, *, purge: bool = False) -> UninstallRes
     adapter = _HOSTS[plan.host]
     data_dir = adapter.data_dir(plan.instance_root)
     _disable_autostart(data_dir)
+    if plan.host in ("codex", "claude-code", "workbuddy"):
+        # A resident recall server of this entry runs from the package (``adapters/codex/resident_entry``): with the
+        # hooks taken out nothing would ask it, and it would hold the package until its idle end.
+        from ..adapters.codex.local_endpoint import stop_residents
+
+        stop_residents(plan.instance_root, plan.host)
     # This entry's entries come out of the host's own files, each copied to the backups first; the rest stays.
     unmerged: list[str] = []
     backups: list[str] = []

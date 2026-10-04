@@ -404,6 +404,14 @@ class CodexHookHandler:
         if callable(warm):
             warm(seconds)
 
+    def warm_embedding(self, seconds: float) -> None:
+        """Ask the runtime's query embedding route for one vector now, for a server's start
+        (``local_endpoint.KeptRecaller.warm``; its keep-warm searches do not).  It writes nothing."""
+        self._ensure_host_runtime()
+        warm = getattr(getattr(self._host_runtime, "_runtime", None), "warm_query_embedding", None)
+        if callable(warm):
+            warm(seconds)
+
     def close(self) -> None:
         if self._host_runtime is not None:
             # A short hook must return without synchronously killing the

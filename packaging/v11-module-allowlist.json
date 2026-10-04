@@ -1,6 +1,6 @@
 {
   "schema": "scope-recall.v11-module-allowlist.v1",
-  "package_version": "3.5.1",
+  "package_version": "3.6.0rc1",
   "packages": [
     "scope_recall",
     "scope_recall.adapters",
@@ -29,6 +29,7 @@
     "adapters/codex/mcp_server.py",
     "adapters/codex/remote_client.py",
     "adapters/codex/remote_server.py",
+    "adapters/codex/resident_entry.py",
     "adapters/codex/runtime_wiring.py",
     "adapters/codex/transcript.py",
     "adapters/codex_cli.py",
@@ -163,6 +164,7 @@
     "maintenance/onboarding.py",
     "maintenance/package_health.py",
     "maintenance/package_upgrade.py",
+    "maintenance/resident.py",
     "maintenance/rollback.py",
     "maintenance/shared.py",
     "maintenance/shared_import.py",

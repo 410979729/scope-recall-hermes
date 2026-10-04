@@ -41,6 +41,7 @@ ENTRY_POINTS = (
     "adapters/codex/mcp_entry.py",
     "adapters/codex/remote_client.py",
     "adapters/codex/remote_server.py",
+    "adapters/codex/resident_entry.py",
     "adapters/hermes/register.py",
     "distribution/hermes/__init__.py",
     "maintenance/cli.py",

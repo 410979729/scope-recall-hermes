@@ -850,13 +850,31 @@ where the last read stopped, for the text shown between tool calls and the owner
 prompt hook could not store; `SessionEnd` reads the rest and forgets the session's turns. A turn
 is named by the prompt's `generation_id` when it is new to the session, else by one derived from
 the session, the words and the moment, kept in `<instance-root>\scope-recall\turns\` until the
-session ends (a day at most). The MCP server serves the tools, and while it runs it answers the
-prompt hook's recall with its vector search kept warm, as Claude Code's and Codex's servers do.
-WorkBuddy 5.6.2 runs it inside a conversation's agent process, which it starts when a conversation
-opens or a prompt comes to a conversation without one, and keeps between turns; the prompt that
-starts the process goes without the vector search (see the known limits below). Until it is
-approved the hooks still store and recall, each prompt's recall then starting its own vector
-search.
+session ends (a day at most). The MCP server serves the tools.
+
+The prompt's recall comes from a resident recall server (from 3.6.0), which keeps the entry's
+vector search and embedding connection warm. WorkBuddy 5.6.2 runs its MCP servers inside a
+conversation's agent process: it starts one when a conversation opens or a prompt comes to a
+conversation without one, and stops it at its own time. A server started there met the prompt
+that started it still opening its vector store, and a cold server answered with its vector search
+only 12.7 s after its start, past the hook's 6 s. The resident server runs apart from WorkBuddy's
+processes:
+
+- The prompt hook starts it after its answer when none runs, at most once a minute, and so does
+  the MCP server when WorkBuddy starts it. No task or service is registered with the system.
+- It names itself in the entry's endpoint folder; the hook asks it before any other server.
+- It ends after `resident_recall_minutes` without a prompt's recall (120 for WorkBuddy, set in
+  the entry's runtime config, 0 for none; see [configuration.md](configuration.md)).
+- While it runs it holds a vector helper, about 1 GB. The MCP server WorkBuddy runs with each
+  conversation then holds none of its own: it serves the tools and answers no hook.
+- The first prompt after it ended, or after a reboot, starts it and is recalled the old way,
+  usually by words and the stored structure alone; the next prompts find it warm.
+- It writes nothing to the store. One runs for each entry: a second gives way to the first.
+
+Stop it before a `package-upgrade` of the entry's package, as WorkBuddy itself:
+`scope-recall resident stop --home <instance-root> --host workbuddy` (`status` shows it).
+`apply-uninstall` stops it too. Until the MCP server is approved, the hooks still store and
+recall, and start the resident server all the same.
 
 To check it: `doctor --host workbuddy --instance-root <instance-root>` checks the binding and the
 store (it does not read WorkBuddy's settings; `host_registration_status: pending` is healthy, as
@@ -872,16 +890,10 @@ then ends the entry. `detach` alone leaves WorkBuddy's settings as they are.
 
 Known limits:
 
-- The prompt that makes WorkBuddy start a conversation's agent process is recalled without the
-  vector search: by its words and the stored structure only. WorkBuddy 5.6.2 starts its MCP
-  servers with that process, when a conversation opens or a prompt comes to a conversation that
-  has none, a second or two before the prompt hook; the hook's recall meets this entry's server
-  still opening its vector store (`helper_lock_timeout` among the packet's gaps). All three
-  prompts measured, in two conversations, were such prompts. WorkBuddy keeps the process between
-  turns (one still ran 16 minutes after its turn, another 74 minutes after its conversation opened
-  without one), and a running server answered a test recall, asked as the hook asks, with its
-  vector search in 3.1 s. A WorkBuddy on another machine is answered by its entry's server here,
-  which runs on ([remote-entries.md](remote-entries.md)).
+- The first prompt after the resident recall server ended (`resident_recall_minutes` without a
+  prompt) or after a reboot starts it and is recalled without the warm server, usually by words
+  and the stored structure alone. A WorkBuddy on another machine is answered by its entry's server
+  here, which runs on ([remote-entries.md](remote-entries.md)).
 - WorkBuddy hands the prompt hook a prompt with its line breaks removed, so a multi-line message
   is stored as one line.
 - WorkBuddy fires `Stop` for a cancelled or failed turn too, with the previous turn's reply; a

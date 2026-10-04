@@ -86,14 +86,22 @@ def main(argv: list[str] | None = None) -> int:
         )
         # The client runs this server for as long as it is open: its prompt hooks, each a process of their own, have
         # their recall answered here, warm (``local_endpoint``).  An override of the runtime config is this server's.
+        # A client that keeps a resident recall server instead (WorkBuddy, which runs this one only with a
+        # conversation's process) has it started here when none runs, and this server answers no hook: warmed for
+        # every conversation, each held a vector helper of its own (about 1 GB) beside the resident one.
         endpoint = None
         if isinstance(config, SharedClientConfig) and runtime_config is None:
-            from .local_endpoint import serve
+            from .local_endpoint import ensure_resident, resident_minutes, serve
             env_file = _absolute(args.env_file, "env-file") if args.env_file else None
-            endpoint = serve(config.home, config.host, env_file=env_file, runtime_config=config.runtime_config_path,
-                             credentials=(lambda: host_process_credential_environment(config.runtime_config_path,
-                                                                                      env_file))
-                             if env_file is not None else None)
+            minutes = resident_minutes(config.home, config.host)
+            if minutes > 0:
+                ensure_resident(config.home, config.host, minutes=minutes, env_file=env_file)
+            else:
+                endpoint = serve(config.home, config.host, env_file=env_file,
+                                 runtime_config=config.runtime_config_path,
+                                 credentials=(lambda: host_process_credential_environment(config.runtime_config_path,
+                                                                                          env_file))
+                                 if env_file is not None else None)
         try:
             server.server.run(transport="stdio")
         finally:

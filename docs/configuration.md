@@ -132,6 +132,7 @@ defaults a standalone worker pass uses.
 | `max_auto_recoveries` | int | `2` | 0–4 | Automatic retries a recoverable failure gets. `0` disables automatic recovery; the failure then waits for `retry-failures`. |
 | `auto_recall_seconds` | number | `5.0` | 0.001–5.0 | Deadline for *automatic* recall on the read path. On timeout, recall degrades to lexical. |
 | `hook_processing_seconds` | number | `6.0` | 0.001–6.0 | Total budget a trusted-host hook has to answer. Must be at least `auto_recall_seconds`, so the hook can cover a full automatic recall; a smaller value fails the file with `hook_processing_seconds_must_cover_auto_recall`. |
+| `resident_recall_minutes` | int | unset | 0–1440 | For a client attached to a shared store (from 3.6.0): minutes its resident recall server stays up without a prompt's recall. Unset, the client's default applies: 120 for WorkBuddy, which runs the entry's MCP server only with a conversation's process, and none for Claude Code and Codex, whose server runs as long as the client. **`0` keeps none.** While it runs the server holds a vector helper, about 1 GB. Read from the entry's own runtime config; a bad value keeps none. See [install.md](install.md), section 12. |
 
 A running supervisor reads the file again before each pass, so an edited setting takes effect at
 its next pass. Only a file that names another store ends it, as `suspended` with the reason

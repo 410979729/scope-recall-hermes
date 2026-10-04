@@ -108,7 +108,27 @@ def main(argv: list[str] | None = None) -> int:
         outcome = getattr(handler, "resident_outcome", None) or recaller.outcome
         if outcome is not None:
             sys.stderr.write(f"CODEX_RECALL_RESIDENT:{outcome}\n")
+        if handler.diagnostics.last_event == "UserPromptSubmit":
+            _keep_a_resident_server(location, args.host, args.env_file)
     return 0
+
+
+def _keep_a_resident_server(home: Path, host: str, env_file: Path | None) -> None:
+    """After the prompt's answer is out: start the entry's resident recall server when the client keeps one and none
+    runs, so that the next prompt finds it warm (``local_endpoint.ensure_resident``)."""
+    try:
+        from .local_endpoint import ensure_resident, resident_minutes
+
+        minutes = resident_minutes(home, host)
+        if minutes <= 0:
+            return
+        env = env_file.expanduser() if env_file is not None else None
+        started = ensure_resident(home, host, minutes=minutes,
+                                  env_file=env if env is not None and env.is_absolute() else None)
+    except Exception:  # noqa: BLE001 - the prompt is answered; a server not started is started by a later one
+        started = "failed"
+    if started in ("started", "recent", "failed"):
+        sys.stderr.write(f"CODEX_RECALL_RESIDENT_START:{started}\n")
 
 
 def _prestart_vector_helper(raw: bytes) -> None:
