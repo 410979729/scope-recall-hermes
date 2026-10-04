@@ -550,7 +550,10 @@ reads as none, a hook waits at most 10 s. A finished turn is written one capture
 at a time, so the next turn's hooks get in between; its message and reply are
 dated when its writing began, and a shutdown waits for it. A tool result is written
 without holding its session (from 3.5.1), so a step's parallel tool calls do not
-wait for one another; a shutdown waits up to 10 s for one being written. What
+wait for one another's writes; those still take turns at the store's one writer,
+each within its own budget. After its write a tool hook takes its session back once
+more, which can wait behind a message being captured. A shutdown waits up to 10 s
+for a tool result being written and counts one still writing after that. What
 could not wait is not taken, and the gateway log says so:
 
 ```text

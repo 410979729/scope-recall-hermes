@@ -56,8 +56,8 @@ from .tool_surface import HermesToolSurface, _TOOL_NAMES, display_zone
 _log = logging.getLogger(__name__)
 
 _CAPTURE_TIMEOUT_S = 1.0
-#: What a shutdown waits for captures whose store I/O runs without the adapter lock: each looks its key up and
-#: writes, within ``_CAPTURE_TIMEOUT_S`` together, so a few seconds cover any that started.
+#: What a shutdown waits for captures whose store I/O runs without the adapter lock.  A tool result's write took
+#: 1.4-4.4 s on the shared store (2026-10-03), past its own ``_CAPTURE_TIMEOUT_S`` budget; 10 s covers that.
 _CAPTURE_DRAIN_WAIT_S = 10.0
 _BOUNDED_MESSAGE_SCAN = 8
 #: Turns whose opening message ``pre_llm_call`` stored, remembered across a compression's session switch.
@@ -515,13 +515,22 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
             self._merge_gaps(gaps, ("capability_gap:no_capture_scope",))
             return None
         started = time.monotonic()
+        # What a failed write would keep to try again, made now and kept only once a write failed for a reason that
+        # may pass.  Kept before the write, a capture whose store I/O runs without the lock sat in the buffer while it
+        # wrote, and a retry pass of the same session wrote it a second time (review of 3.5.1).
+        retry: _RetryCapture | None = None
         if identity is not None and identity not in self._retry_captures:
-            if len(self._retry_captures) < 16 and len(json.dumps(event, ensure_ascii=False).encode("utf-8")) <= 262144:
-                self._retry_captures[identity] = _RetryCapture(
-                    context, copy.deepcopy(event), gaps, scope_id, bound.scope,
-                )
+            if len(json.dumps(event, ensure_ascii=False).encode("utf-8")) <= 262144:
+                retry = _RetryCapture(context, copy.deepcopy(event), gaps, scope_id, bound.scope)
+
+        def keep_to_retry() -> None:
+            if identity is None or identity in self._retry_captures:
+                return
+            if retry is not None and len(self._retry_captures) < 16:
+                self._retry_captures[identity] = retry
             else:
                 self._merge_gaps(("capture_gap:retry_buffer_full",))
+
         host_scope = self._retry_captures[identity].host_scope if replay and identity in self._retry_captures else bound.scope
         failure, holder = None, self._holder
         if release:
@@ -564,9 +573,19 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
                 self._holder = holder and (holder[0], time.monotonic(), holder[2])
                 self._captures_in_flight -= 1
                 self._captures_done.notify_all()
+        if release and not self._initialized:
+            # A shutdown stopped waiting for this write and closed the session meanwhile.  The write itself may well
+            # have landed (the store is not closed with the session); its bookkeeping belongs to a closed session,
+            # and raised into the host's hook runner (review of 3.5.1).
+            if failure is None and identity is not None and receipt.durability in ("persisted", "queued"):
+                self._ledger.confirm(identity)
+                self._retry_captures.pop(identity, None)
+            return None if failure is not None else receipt
         if failure is not None:
             if isinstance(failure, ContractError) and failure.code not in {"DEADLINE_EXCEEDED", "STORAGE_UNAVAILABLE"}:
                 self._retry_captures.pop(identity, None)
+            else:
+                keep_to_retry()
             self._record_capture_failure(identity, "exception")
             self._merge_gaps(gaps, ("capture_gap:write_exception",))
             return None
@@ -582,6 +601,8 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
                 return receipt
             if receipt.disposition in {"rejected", "conflict", "cancelled"}:
                 self._retry_captures.pop(identity, None)
+            else:
+                keep_to_retry()
             self._record_capture_failure(identity, receipt.error_code or receipt.disposition)
             self._merge_gaps(gaps, (f"capture_gap:{receipt.disposition}",))
             return receipt
@@ -1102,7 +1123,8 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
 
     def shutdown(self) -> None:
         # A turn being written is finished first (``sync_turn``), as when it held the adapter lock throughout, and so
-        # is a tool hook's capture whose store I/O runs without the lock: closed under it, its write would fail.
+        # is a tool hook's capture whose store I/O runs without the lock, for at most ``_CAPTURE_DRAIN_WAIT_S``: its
+        # bookkeeping needs the session it was said in.  One still writing after that is counted, not waited out.
         with self._sync_lock, self._lock:
             from .hooks import unregister_adapter
 
@@ -1110,6 +1132,7 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
             deadline = time.monotonic() + _CAPTURE_DRAIN_WAIT_S
             while self._captures_in_flight and time.monotonic() < deadline:
                 self._captures_done.wait(max(0.0, deadline - time.monotonic()))
+            still_writing = self._captures_in_flight
             pending = self._pending_capture_identities()
             durable_pending = self._durable_pending_count()
             state = self._worker.shutdown()
@@ -1135,6 +1158,8 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
                 state["durable_capture_status"] = "unknown"
             for kind, count in self._backpressure_counts().items():
                 state[f"host_backpressure:{kind}"] = count
+            if still_writing:
+                state["captures_still_writing"] = still_writing
             self._diagnostics.shutdown_state = state
             self._initialized = False
 

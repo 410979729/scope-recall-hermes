@@ -358,6 +358,8 @@ def _in_thread(call):
     def run():
         try:
             box["value"] = call()
+        except BaseException as exc:  # kept for the test to assert on, as a host's hook runner would see it
+            box["error"] = exc
         finally:
             done.set()
 
@@ -478,6 +480,105 @@ def test_a_shutdown_waits_for_a_tool_result_being_written(adapter, hermes_home, 
         _unregister_adapter_instance(provider)
     assert first.is_set() and shut.is_set()
     assert _tool_rows(hermes_home) == 1
+    assert "pending_captures" not in provider.diagnostics.shutdown_state
+    assert "captures_still_writing" not in provider.diagnostics.shutdown_state
+
+
+def test_a_tool_result_outliving_the_shutdowns_wait_is_counted_not_raised(adapter, hermes_home, monkeypatch):
+    """Past the shutdown's bounded wait the write still lands; its bookkeeping, done in a closed session, raised
+    into the host's hook runner (review of 3.5.1)."""
+    provider, _clock = adapter
+    monkeypatch.setattr(provider_module, "_CAPTURE_DRAIN_WAIT_S", 0.3)
+    entered, release = _held_capture(provider, monkeypatch, "slow-call")
+    _register_adapter_instance(provider)
+    try:
+        first, first_box, first_thread = _in_thread(_tool_hook("TEST-session-1", "slow-call"))
+        assert entered.wait(_PROMPTLY)
+        shut, _, shut_thread = _in_thread(provider.shutdown)
+        assert shut.wait(_PROMPTLY), "the shutdown's wait is bounded"
+        release.set()
+        assert first.wait(_PROMPTLY)
+    finally:
+        release.set()
+        first_thread.join(_PROMPTLY)
+        shut_thread.join(_PROMPTLY)
+        _unregister_adapter_instance(provider)
+    assert "error" not in first_box, first_box
+    assert _tool_rows(hermes_home) == 1
+    assert provider.diagnostics.shutdown_state["captures_still_writing"] == 1
+
+
+def test_a_turns_retry_pass_leaves_a_tool_result_being_written_alone(adapter, hermes_home, monkeypatch, caplog):
+    """A capture sat in the retry buffer while it wrote; once its write ran without the session, a turn's retry
+    pass wrote it a second time, and one of the two was logged as not stored (review of 3.5.1)."""
+    provider, _clock = adapter
+    real = provider._core.record_host_event
+    entered, release = threading.Event(), threading.Event()
+    writes = []
+
+    def record_host_event(context, event, **kwargs):
+        if "slow-call" in event["source_event_key"]:
+            writes.append(event["source_event_key"])
+            if len(writes) == 1:
+                entered.set()
+                release.wait(10)
+        return real(context, event, **kwargs)
+
+    monkeypatch.setattr(provider._core, "record_host_event", record_host_event)
+    _register_adapter_instance(provider)
+    try:
+        first, _, first_thread = _in_thread(_tool_hook("TEST-session-1", "slow-call"))
+        assert entered.wait(_PROMPTLY)
+        synced, sync_box, sync_thread = _in_thread(lambda: provider.sync_turn(
+            "TEST user words", "TEST reply words", session_id="TEST-session-1"))
+        assert synced.wait(_PROMPTLY), "the turn waited for the tool result's write"
+        assert len(writes) == 1, "the turn's retry pass wrote the tool result being written a second time"
+    finally:
+        release.set()
+        first_thread.join(_PROMPTLY)
+        sync_thread.join(_PROMPTLY)
+        _unregister_adapter_instance(provider)
+    assert "error" not in sync_box, sync_box
+    assert _tool_rows(hermes_home) == 1
+    assert not [failure for failure in provider.diagnostics.capture_failures if "slow-call" in failure]
+    assert not [record for record in caplog.records if "not stored" in record.getMessage()]
+
+
+@pytest.mark.parametrize("switch", ["session", "audience"])
+def test_a_switch_during_a_tool_results_write_keeps_its_session_and_audience(adapter, hermes_home, monkeypatch,
+                                                                              switch):
+    """The write runs without the session, so a session or audience switch can come in meanwhile: the capture
+    keeps the session and scope it was said in, and stays out of the new session's fence (review of 3.5.1)."""
+    provider, _clock = adapter
+    before = provider._identity
+    real = provider._core.source_by_event_key
+    entered, release = threading.Event(), threading.Event()
+
+    def source_by_event_key(context, key, *args, **kwargs):
+        if "slow-call" in key:
+            entered.set()
+            release.wait(10)
+        return real(context, key, *args, **kwargs)
+
+    monkeypatch.setattr(provider._core, "source_by_event_key", source_by_event_key)
+    _register_adapter_instance(provider)
+    kwargs = {} if switch == "session" else {"chat_type": "group", "chat_id": "TEST-group-9", "thread_id": "main"}
+    try:
+        first, first_box, first_thread = _in_thread(_tool_hook("TEST-session-1", "slow-call"))
+        assert entered.wait(_PROMPTLY)
+        switched, switch_box, switch_thread = _in_thread(lambda: provider.on_session_switch("TEST-session-2",
+                                                                                            **kwargs))
+        assert switched.wait(_PROMPTLY), "the switch waited for the tool result's write"
+    finally:
+        release.set()
+        first_thread.join(_PROMPTLY)
+        switch_thread.join(_PROMPTLY)
+        _unregister_adapter_instance(provider)
+    assert "error" not in first_box and "error" not in switch_box, (first_box, switch_box)
+    with sqlite3.connect(hermes_home / "scope-recall" / "memory.sqlite3") as conn:
+        rows = conn.execute("SELECT session_id, scope_id, origin FROM source_events WHERE role='tool'").fetchall()
+    assert rows == [(before.stored_session_id(), before.local_scope_id, "tool_observation")]
+    assert provider.diagnostics.current_source_refs == ()
 
 
 def test_prefetch_does_not_wait_out_its_busy_session(adapter, monkeypatch):
@@ -602,13 +703,14 @@ def test_the_next_turn_starts_while_the_last_one_is_written(adapter, monkeypatch
 def test_a_hook_past_the_host_timeout_is_said_and_counted(adapter, monkeypatch, caplog):
     provider, _clock = adapter
     monkeypatch.setattr(hooks, "host_hook_timeout", lambda: 0.02, raising=False)
-    observe = provider.observe_post_tool_call
+    observe = provider._observe_post_tool_call
 
     def slow_observe(**kwargs):
         time.sleep(0.1)  # past the shortened host timeout by several 15.6 ms clock ticks
         return observe(**kwargs)
 
-    monkeypatch.setattr(provider, "observe_post_tool_call", slow_observe)
+    # The dispatcher calls the unlocked observer, the seam that must be slowed (review of 3.5.1).
+    monkeypatch.setattr(provider, "_observe_post_tool_call", slow_observe)
     _register_adapter_instance(provider)
     try:
         _tool_hook("TEST-session-1", "overrun-call")()
@@ -741,11 +843,12 @@ def test_another_session_never_waits_for_this_one(adapter, installed_core, initi
     """Each Hermes session has an adapter and a lock of its own, and a hook goes to the one bound to its session."""
     provider, _clock = adapter
     other = _another_session(installed_core, initialize_kwargs)
-    entered, release = _held_capture(provider, monkeypatch, "slow-call")
+    # Held by a message's capture, which keeps its session through its write, as a tool result's no longer does
+    # (review of 3.5.1: held by a tool capture, one lock shared by both sessions passed).
+    entered, release, first, first_thread = _held_message(provider, monkeypatch)
     _register_adapter_instance(provider)
     _register_adapter_instance(other)
     try:
-        first, _, first_thread = _in_thread(_tool_hook("TEST-session-1", "slow-call"))
         assert entered.wait(_PROMPTLY)
         second, _, second_thread = _in_thread(_tool_hook("TEST-session-2", "other-call"))
         assert second.wait(_PROMPTLY), "another session's hook waited for this one"
@@ -757,7 +860,8 @@ def test_another_session_never_waits_for_this_one(adapter, installed_core, initi
         _unregister_adapter_instance(provider)
         _unregister_adapter_instance(other)
         other.shutdown()
-    assert _tool_rows(hermes_home) == 2
+    assert first.is_set()
+    assert _tool_rows(hermes_home) == 1
 
 
 def test_another_sessions_hook_waits_only_its_write_budget_on_a_held_store(adapter, installed_core, initialize_kwargs,

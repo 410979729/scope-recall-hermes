@@ -9,8 +9,9 @@ All notable changes to `scope-recall` will be documented in this file.
 ### Fixes
 
 - Hermes calls the tool hook for each of a step's parallel tool calls at once. Each capture held its session across its store write, which took 1.4-4.4 s on the shared store, and the hooks behind it waited. A hook waits for its session at most 10 s, so those past that were not taken, and their tool results were lost: 6 on yuheng and 2 on tianji on 2026-10-03, each logged as `post_tool_call not taken`.
-  - A tool result is now written without holding its session, as a finished turn's captures already were. The step's other tool hooks no longer wait for it.
-  - A shutdown waits up to 10 s for a tool result being written, as it waits for a turn being written.
+  - A tool result is now written without holding its session, as a finished turn's captures already were. The step's other tool hooks no longer wait for it. Their writes still take turns at the store's single writer, each within its own budget.
+  - A shutdown waits up to 10 s for a tool result being written. One still writing after that is counted in the shutdown state (`captures_still_writing`).
+  - A capture is kept to retry only once its write fails for a reason that may pass, so a retry pass never writes again a tool result that is still being written.
   - A hook still cannot wait out a session held by a message's capture. That case is logged and counted as before.
 - `--target-plugin-dir`'s help names `mcp.json`, the file the WorkBuddy installer writes, instead of `.mcp.json`.
 
