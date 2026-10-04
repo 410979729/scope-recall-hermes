@@ -2,6 +2,12 @@
 
 All notable changes to `scope-recall` will be documented in this file.
 
+## [Unreleased]
+
+### Scope Recall 3.6.3rc1 - 2026-10-04
+
+- The version moves past the `v3.6.2` tag.
+
 ## [3.6.2] - 2026-10-04
 
 3.6.2 stops a WorkBuddy entry from storing an error notice as WorkBuddy's reply, and says how long its resident recall server really lives.
