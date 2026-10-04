@@ -3223,11 +3223,11 @@ def _node_ok() -> bool:
 _NEEDS_NODE = pytest.mark.skipif(not _node_ok(), reason="node 20.6 or later is not installed")
 
 
-def _run_plugin(config: dict, scenario: str = "turn") -> dict:
+def _run_plugin(config: dict, scenario: str = "turn", env: dict | None = None) -> dict:
     process = subprocess.run(
         [NODE, "--import", (DSH_HARNESS / "register.mjs").as_uri(), str(DSH_HARNESS / "harness.mjs"), str(DSH_PLUGIN),
          json.dumps(config), scenario],
-        capture_output=True, text=True, encoding="utf-8", timeout=120, env=os.environ.copy())
+        capture_output=True, text=True, encoding="utf-8", timeout=120, env={**os.environ, **(env or {})})
     assert process.returncode == 0, process.stderr[-2000:]
     return json.loads(process.stdout.strip().splitlines()[-1])
 
@@ -3235,6 +3235,14 @@ def _run_plugin(config: dict, scenario: str = "turn") -> dict:
 def _plugin_rows(root):
     return sorted(_rows(root, "SELECT role, origin, content FROM source_events WHERE entry_id='dsh' "
                               "AND source_event_key LIKE '%session-TEST-plugin%'"))
+
+
+def _plugin_keys(root):
+    """What each of the plugin session's rows was stored as: ``user:1`` (the prompt hook), ``assistant:1`` (a Stop's
+    reply) or ``record:<id>`` (a line of the turn's messages)."""
+    return sorted(key.split(":session-TEST-plugin:", 1)[1].rsplit("@", 1)[0] for (key,) in _rows(
+        root, "SELECT source_event_key FROM source_events WHERE entry_id='dsh' AND source_event_key LIKE "
+              "'%session-TEST-plugin%'"))
 
 
 @_NEEDS_NODE
@@ -3258,6 +3266,75 @@ def test_the_plugin_recalls_before_the_first_step_and_stores_the_turn_at_its_end
                                          ("assistant", "assistant_visible", "TEST 它叫 Mochi。")]), \
         "the prompt (the step's last message of the person's) and the reply once each, the message taken with the " \
         "prompt and what was said in between from the record, and none of dsh's own context"
+    assert _plugin_keys(root) == ["assistant:1", "record:a-1", "record:u-1", "user:1"], "the reply is the turn's"
+
+
+@_NEEDS_NODE
+def test_a_turn_that_did_not_complete_has_no_reply_and_keeps_what_was_said(dsh, tmp_path):
+    """A turn the person stopped (or that failed) after the model said something has no reply: what was said is stored
+    from the turn's messages, once, and nothing is stored as the turn's reply."""
+    root, home = dsh
+    result = _run_plugin({"python": sys.executable, "home": str(home), "spool": str(tmp_path / "TEST-spool"),
+                          "endReason": "aborted"})
+    assert result["spool"] == [] and result["status"]["lastStore"]["error"] is None
+    assert _plugin_keys(root) == ["record:a-1", "record:a-2", "user:1"]
+
+
+@_NEEDS_NODE
+def test_a_message_that_comes_while_a_turn_is_stored_is_kept_and_stored_with_the_next(dsh, tmp_path):
+    """The person's next message, and the next turn, come while the first turn's Stop runs: the store rewrites the spool
+    from what it holds then, not from what it read before, and stores the rest when that turn ends."""
+    root, home = dsh
+    result = _run_plugin({"python": sys.executable, "home": str(home), "spool": str(tmp_path / "TEST-spool"),
+                          "overlap": True})
+    assert result["spool"] == [] and result["warnings"] == []
+    rows = _plugin_rows(root)
+    assert ("user", "human_direct", "TEST 第二轮的问题。") in rows
+    assert ("assistant", "assistant_visible", "TEST 第二轮的回答。") in rows
+    assert len(rows) == len(set(rows)) == 5
+
+
+@_NEEDS_NODE
+def test_a_turn_larger_than_one_stop_is_stored_in_several_within_the_hook_s_input(dsh, tmp_path):
+    """Two model messages of 20,000 CJK characters each (60 KB of UTF-8 apiece): each is clipped to what one Stop can
+    carry, they go in Stops of their own under the hook's 64 KiB of input, and the reply, too large to go beside its
+    line, is stored from it."""
+    root, home = dsh
+    result = _run_plugin({"python": sys.executable, "home": str(home), "spool": str(tmp_path / "TEST-spool"),
+                          "bigText": {"char": "长", "count": 20_000}})
+    assert result["spool"] == [] and result["status"]["lastStore"]["error"] is None, result["warnings"]
+    assert _plugin_keys(root) == ["record:a-1", "record:a-2", "user:1"]
+    stored = [content for role, _origin, content in _plugin_rows(root) if role == "assistant"]
+    assert all(content.endswith("more characters not kept by Scope Recall]") and len(content.encode("utf-8")) < 36_000
+               for content in stored)
+
+
+@_NEEDS_NODE
+def test_a_stop_that_stores_part_of_its_lines_is_followed_by_the_next_without_waiting(dsh, tmp_path):
+    """A Stop stores what fits in its time; the next one takes the rest at once, so a backlog is not left to the sweep's
+    waits (the stand-in hook stores one line each time)."""
+    _root, home = dsh
+    log = tmp_path / "TEST-hook-log.jsonl"
+    result = _run_plugin({"python": sys.executable, "home": str(home), "spool": str(tmp_path / "TEST-spool")},
+                         env={"SR_FAKE_HOOK": str(DSH_HARNESS / "fake_hook.mjs"), "SR_FAKE_HOOK_LOG": str(log)})
+    stops = [len(payload["record"]) for payload in map(json.loads, log.read_text(encoding="utf-8").splitlines())
+             if payload["hook_event_name"] == "Stop"]
+    assert stops == [3, 2, 1], "each Stop sends what is left"
+    assert result["spool"] == [] and result["status"]["lastStore"]["error"] is None
+    assert result["status"]["retryAfter"] is None
+
+
+@_NEEDS_NODE
+def test_a_hook_that_fails_says_why_in_the_status_and_keeps_the_turn(dsh, tmp_path):
+    """An interpreter that cannot import the package (a venv moved, say) exits 1: the recall's outcome and the store's
+    error say so with the end of its stderr, instead of reading as nothing recalled."""
+    _root, home = dsh
+    result = _run_plugin({"python": sys.executable, "home": str(home), "spool": str(tmp_path / "TEST-spool"),
+                          "expectBacklog": True},
+                         env={"SR_FAKE_HOOK": str(DSH_HARNESS / "fake_hook.mjs"), "SR_FAKE_HOOK_MODE": "broken"})
+    assert result["status"]["lastRecall"]["outcome"].startswith("exit 1: ")
+    assert "No module named 'scope_recall'" in result["status"]["lastRecall"]["outcome"]
+    assert "exit 1: " in result["status"]["lastStore"]["error"] and result["status"]["backlog"] == 3
 
 
 @_NEEDS_NODE
@@ -3344,7 +3421,7 @@ def test_a_sweep_that_fails_stops_at_the_first_session_and_waits_longer(dsh, tmp
         os.utime(spool / name, (idle, idle))
         names.append(name)
     result = _run_plugin({"python": str(tmp_path / "TEST-no-python.exe"), "home": str(home), "spool": str(spool),
-                          "expectBacklog": True, "waitMs": 9_000}, "sweep")
+                          "expectBacklog": True, "waitMs": 30_000, "waitStatus": "retryAfter"}, "sweep")
     untouched = [name for name in names if name in result["files"]]
     taken = [name for name in result["files"] if name not in names]
     assert len(untouched) == 1 and len(taken) == 1, result["files"]

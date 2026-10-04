@@ -776,6 +776,59 @@ def test_a_dsh_reinstall_keeps_the_block_where_it_stands_and_an_operation_after_
     assert changed[:2] == _patch_ops_text(_DSH_OWN.encode("utf-8")), "the person's rows before it stay before it"
 
 
+def _upload_ops(data):
+    return [operation for operation in _patch_ops_text(data) if operation.get("id") == "session-log-deepseek"]
+
+
+def test_a_dsh_upload_counts_as_off_only_as_dsh_works_it_out(tmp_path):
+    """dsh applies a patch's operations in order, a later ``config`` replacing the row's whole config (``enabled``
+    defaulting to true): an upload switched off and then given another config is on, and gets the install's switch after
+    it; one the person switches on again after the install's switch gets the switch again, last."""
+    entry = (tmp_path / "TEST-dsh-entry").resolve()
+    home = _dsh_home(tmp_path, "- id: session-log-deepseek\n  config:\n    enabled: false\n"
+                               "- id: session-log-deepseek\n  config:\n    maxBytes: 4194304\n")
+    path = home / "cordis.patch.yml"
+    merged = install_dsh.merged_file(_dsh_plan(home, entry), path)
+    assert _upload_ops(merged) == [{"id": "session-log-deepseek", "config": {"enabled": False}},
+                                   {"id": "session-log-deepseek", "config": {"maxBytes": 4194304}},
+                                   {"id": "session-log-deepseek", "config": {"enabled": False}}]
+    assert install_dsh.upload_off(_patch_ops_text(merged)), "the install's switch comes after the person's"
+
+    path.write_bytes(merged)
+    path.write_text(path.read_text(encoding="utf-8") + "- id: session-log-deepseek\n  config:\n    enabled: true\n",
+                    encoding="utf-8")
+    again = install_dsh.merged_file(_dsh_plan(home, entry), path)
+    assert [operation["config"] for operation in _upload_ops(again)][-2:] == [{"enabled": True}, {"enabled": False}]
+    assert again.decode("utf-8").count(install_dsh.PRIVACY_START) == 1, "the switch moved, not copied"
+
+
+def test_a_dsh_install_after_an_uninstall_goes_before_the_person_s_operation_on_its_row(tmp_path):
+    """Uninstall leaves an operation of the person's on the plugin's row (``disabled: true``); the next install writes
+    the block before it, so that it still switches the plugin off."""
+    entry = (tmp_path / "TEST-dsh-entry").resolve()
+    home = _dsh_home(tmp_path, _DSH_OWN)
+    path = home / "cordis.patch.yml"
+    path.write_bytes(install_dsh.merged_file(_dsh_plan(home, entry), path))
+    path.write_text(path.read_text(encoding="utf-8") + "- id: scope-recall\n  disabled: true\n", encoding="utf-8")
+    path.write_bytes(install_dsh.unmerged_file(entry, path))
+    operations = _patch_ops_text(install_dsh.merged_file(_dsh_plan(home, entry), path))
+    at = next(index for index, operation in enumerate(operations) if "insert" in operation)
+    assert operations[at + 1:] == [{"id": "scope-recall", "disabled": True}]
+
+
+def test_a_dsh_patch_keeps_every_other_line_byte_for_byte(tmp_path):
+    """An indented ``[]`` is a value and stays; a quoted value holding U+2028 stays one line (dsh's YAML reads it
+    there, where splitting at it would change the value)."""
+    entry = (tmp_path / "TEST-dsh-entry").resolve()
+    home = _dsh_home(tmp_path)
+    path = home / "cordis.patch.yml"
+    own = ("- id: TEST-row\n  config:\n    args:\n      []\n    note: \"TEST a" + chr(0x2028) + "b\"\n")
+    path.write_bytes(own.encode("utf-8"))
+    merged = install_dsh.merged_file(_dsh_plan(home, entry), path).decode("utf-8")
+    assert merged.startswith(own)
+    assert _patch_ops_text(merged.encode("utf-8"))[0]["config"]["args"] == []
+
+
 def _patch_ops_text(data):
     import yaml
 

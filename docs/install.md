@@ -989,10 +989,13 @@ scope-recall apply-install --host dsh --instance-root $Entry `
   `headless` and any profile you made;
 - switches off dsh's upload of its session logs. dsh sends each session's log to its model API by
   default (the row `session-log-deepseek`), and what is recalled is in that log. Unless the file
-  already switches it off (that row with `enabled: false` in its `config`, or `disabled: true`), the
-  install adds that row with `enabled: false`, between `# SCOPE_RECALL_DSH_PRIVACY_START` and
-  `# SCOPE_RECALL_DSH_PRIVACY_END`. Uninstall leaves it there: switched on again, the upload would
-  send what was recorded while it was off;
+  already leaves it off, the install adds that row with `enabled: false`, after every other operation
+  on it, between `# SCOPE_RECALL_DSH_PRIVACY_START` and `# SCOPE_RECALL_DSH_PRIVACY_END`. What leaves it
+  off is worked out as dsh does (see below): the last `disabled` and the last `config` given for the
+  row, a `config` without `enabled: false` switching the upload on again. An operation that switches
+  it on again after the install's is followed by the install's own at the next install. Uninstall
+  leaves the switch there: switched on again, the upload would send what was recorded while it was
+  off;
 - keeps every other line of the file, copies the file to
   `<instance-root>\.scope-recall-backups\<id>\plugin\` first, and changes nothing when run again;
 - refuses, and writes nothing, when the file is not a YAML list written as a block at column 0,
@@ -1001,8 +1004,9 @@ scope-recall apply-install --host dsh --instance-root $Entry `
 
 dsh applies the operations in the file in order, each key replacing the row's own: an operation of
 yours after the block that names a row (`- id: scope-recall` with `disabled: true` switches the
-plugin off) is kept by later installs. A `config` there replaces the row's whole `config`. Edits
-inside the block are not kept.
+plugin off) stays after it. A re-install writes the block where it stood, and an install after an
+uninstall writes it before the first such operation. A `config` there replaces the row's whole
+`config`. Edits inside the block are not kept.
 
 To check it: `dsh headless --dump-config` (or the profile you use) prints the composed rows;
 `scope-recall` and `mcp-scope-recall` are among them, and `session-log-deepseek` has
@@ -1026,19 +1030,25 @@ What the plugin does:
   `<instance-root>\scope-recall\dsh-spool\`, one file per session and dsh process. When the turn ends
   it runs the `Stop` hook with them: the reply under the turn, what the model said while it worked,
   and what the person sent meanwhile. The hook answers how many it stored, and those leave the file.
+  A `Stop` stores what it can in its time (it reads at most 3 s of messages); the next takes the rest
+  at once, and only one that stores nothing ends the store.
 - What a failed store left is stored at the session's next turn end, or by a pass that runs every
-  minute over files idle for 2 minutes, one session at a time: the first failure ends a pass, and
-  the next waits longer, up to 30 minutes. A dsh that quits waits up to 3 s for a store that is
+  minute over files idle for 2 minutes, one session at a time: a store that stores nothing ends a
+  pass, and the next waits longer, up to 30 minutes. A dsh that quits waits up to 3 s for a store that is
   running; what it left is taken up by the next dsh that runs, once that process is gone (or the
   file has been idle for 6 hours). A message sent twice is stored once.
-- A turn's reply goes with its `Stop` only within a minute of the turn's end; stored later, it is
-  stored from the turn's messages alone, as the model's words.
+- A completed turn's reply goes with its `Stop` when it was said at most a minute before: the store
+  recognises it among the turn's messages by its words and a moment 120 s away at most, and the
+  reply's moment is the hook's. A reply said earlier (before a long tool call that ended the turn,
+  say), and the last words of a turn that did not complete, are stored from the turn's messages alone,
+  as the model's words.
 - Bounds: a message's text is kept up to 20,000 characters (and 36 KB), with a marker for the rest;
   a message waiting longer than 14 days, or past 5,000 waiting in a session, is dropped and said in
   dsh's log.
 - `dsh-plugin-status.json` shows the last recall and store, how many messages wait, how many were
   dropped, when the next pass may run, and a privacy alarm: should dsh report a session log
-  delivered to its API, the plugin says so there and in dsh's log.
+  delivered to its API, the plugin says so there and in dsh's log. A hook that fails (an interpreter
+  that cannot import the package, say) is shown there with the end of its stderr.
 - A subagent's session is neither recalled for nor recorded. Tool calls and results, files and
   images, and the model's reasoning are not recorded.
 

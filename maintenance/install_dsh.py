@@ -19,9 +19,10 @@ shares:
 
 The file is read with PyYAML (a dependency already) to refuse what this cannot edit safely: a file that is not a list,
 a list not written as a block at column 0, rows of these ids inserted by something else, or another MCP server named
-``scope-recall``.  An operation that names one of this install's rows without inserting it (``- id: scope-recall`` with
-``disabled: true``, after the block) is the person's and stays: dsh applies operations in order, each key replacing the
-row's own.
+``scope-recall``.  dsh applies the operations in order, each key replacing the row's own.  So an operation that names
+one of this install's rows without inserting it (``- id: scope-recall`` with ``disabled: true``) is the person's and
+stays after the block, which a re-install writes where it stood and a fresh install before that operation; and the
+upload counts as off only as the operations leave it, the install's own switch going after every other.
 """
 from __future__ import annotations
 
@@ -208,6 +209,15 @@ def read_patch(path: Path) -> tuple[str, bytes | None]:
         raise InstallError(f"{path} is not UTF-8 text") from exc
 
 
+def _lines(text: str) -> list[str]:
+    """``text`` split at its line feeds alone, each line without its carriage return (``str.splitlines`` also splits at
+    characters a quoted YAML value may hold, such as U+2028); a final line feed ends the last line."""
+    lines = text.split("\n")
+    if lines and lines[-1] == "":
+        lines.pop()
+    return [line[:-1] if line.endswith("\r") else line for line in lines]
+
+
 def _parse(text: str, path: Path) -> list[Any]:
     try:
         value = yaml.load(text, Loader=_Loader) if text.strip() else []
@@ -277,17 +287,40 @@ def _server_names(operations: list[Any]) -> list[str]:
 
 
 def upload_off(operations: list[Any]) -> bool:
-    """Whether the patch switches dsh's session-log upload off: a ``session-log-deepseek`` row (an override or an
-    inserted row) that is ``disabled: true`` or has ``enabled: false`` in its config."""
+    """Whether the patch leaves dsh's session-log upload switched off, as dsh applies it: its operations in order, each
+    key replacing the row's own, so the last ``disabled`` and the last ``config`` decide (a ``config`` without
+    ``enabled: false`` switches the upload on again, ``enabled`` defaulting to true)."""
+    disabled: Any = None
+    enabled: Any = None
     for operation in operations:
-        rows = operation.get("insert") if isinstance(operation, dict) and "insert" in operation else [operation]
-        for row in rows if isinstance(rows, list) else []:
+        rows = operation["insert"] if isinstance(operation, dict) and isinstance(operation.get("insert"), list) \
+            else [operation]
+        for row in rows:
             if not isinstance(row, dict) or row.get("id") != PRIVACY_ROW:
                 continue
-            config = row.get("config")
-            if row.get("disabled") is True or (isinstance(config, dict) and config.get("enabled") is False):
-                return True
-    return False
+            if "disabled" in row:
+                disabled = row["disabled"]
+            if "config" in row:
+                config = row["config"]
+                enabled = config.get("enabled", True) if isinstance(config, dict) else True
+    return disabled is True or enabled is False
+
+
+def _first_naming(lines: list[str]) -> int | None:
+    """The line of the first operation that names one of this install's rows without inserting it (``- id:
+    scope-recall`` with ``disabled: true``): a block written afresh goes before it, so that it still applies."""
+    try:
+        node = yaml.compose("\n".join(lines), Loader=_Loader)
+    except yaml.YAMLError:
+        return None
+    for item in node.value if isinstance(node, yaml.SequenceNode) else ():
+        if not isinstance(item, yaml.MappingNode):
+            continue
+        keys = {key.value: value for key, value in item.value if isinstance(key, yaml.ScalarNode)}
+        target = keys.get("id")
+        if "insert" not in keys and isinstance(target, yaml.ScalarNode) and target.value in (PLUGIN_ROW, MCP_ROW):
+            return item.start_mark.line
+    return None
 
 
 def _block_style(lines: list[str], path: Path) -> None:
@@ -296,7 +329,7 @@ def _block_style(lines: list[str], path: Path) -> None:
         stripped = line.strip()
         if not stripped or stripped.startswith("#"):
             continue
-        if stripped == "[]":
+        if _empty_list(line):
             continue
         if not line.startswith("- "):
             raise InstallError(f"{path} is not a block list at column 0; add this entry's rows by hand "
@@ -312,20 +345,24 @@ def _encode(lines: list[str], original: bytes | None) -> bytes:
     return codecs.BOM_UTF8 + data if original is not None and original.startswith(codecs.BOM_UTF8) else data
 
 
+def _empty_list(line: str) -> bool:
+    """Whether ``line`` is the file's own empty list, ``[]`` at column 0 (an indented one is a value)."""
+    return line.rstrip() == "[]"
+
+
 def _composed(lines: list[str]) -> list[str]:
     """``lines`` as a list dsh boots from: an empty list's ``[]`` dropped when rows follow, kept (or added) when
     nothing else is left, since a file of comments alone fails dsh's boot."""
     content = [line for line in lines if line.strip() and not line.strip().startswith("#")]
-    if any(line.strip() != "[]" for line in content):
-        return [line for line in lines if line.strip() != "[]"]
-    return [line for line in lines if line.strip() != "[]"] + ["[]"]
+    kept = [line for line in lines if not _empty_list(line)]
+    return kept if any(not _empty_list(line) for line in content) else [*kept, "[]"]
 
 
 def merged_file(plan: InstallPlan, path: Path) -> bytes | None:
     """The patch file with this entry's rows (and the upload switched off, when nothing switches it off yet), or None
     when it already holds them as they would be written."""
     text, raw = read_patch(path)
-    marked, _found = _without_block(text.splitlines(), START, END, home=plan.instance_root, mark=True)
+    marked, _found = _without_block(_lines(text), START, END, home=plan.instance_root, mark=True)
     rest = [line for line in marked if line is not _PLACE]
     others = _parse("\n".join(rest), path)
     if any(line.startswith(START) for line in rest):
@@ -336,14 +373,22 @@ def merged_file(plan: InstallPlan, path: Path) -> bytes | None:
     if MCP_SERVER_NAME in _server_names(others):
         raise InstallError(f"{path} already has an MCP server named {MCP_SERVER_NAME}: take it out first")
     _block_style(rest, path)
-    added = _rows(plan)
+    rows = _rows(plan)
+    privacy: list[str] = []
     if not upload_off(others):
+        # Last, after every operation that names the row: dsh applies them in order.
         marked, _ = _without_block(marked, PRIVACY_START, PRIVACY_END)
-        added = _privacy_rows() + added
-    # Where the block stood, so that an operation of the person's after it stays after it; else at the end.
-    at = marked.index(_PLACE) if _PLACE in marked else len(marked)
-    marked = [line for line in marked if line is not _PLACE]
-    merged = _composed([*marked[:at], *added, *marked[at:]])
+        privacy = _privacy_rows()
+    if _PLACE in marked:
+        # Where the block stood, so that an operation of the person's after it stays after it.
+        at = marked.index(_PLACE)
+        marked = [line for line in marked if line is not _PLACE]
+        merged = [*marked[:at], *rows, *marked[at:], *privacy]
+    elif (naming := _first_naming(marked)) is not None:
+        merged = [*marked[:naming], *rows, *marked[naming:], *privacy]
+    else:
+        merged = [*marked, *privacy, *rows]
+    merged = _composed(merged)
     composed = _parse("\n".join(merged), path)
     if PLUGIN_ROW not in _ids(composed) or not upload_off(composed):
         raise InstallError(f"{path}: the rows written would not read back; add them by hand")
@@ -356,7 +401,7 @@ def unmerged_file(instance_root: Path, path: Path) -> bytes | None:
     text, raw = read_patch(path)
     if raw is None:
         return None
-    rest, found = _without_block(text.splitlines(), START, END, home=instance_root)
+    rest, found = _without_block(_lines(text), START, END, home=instance_root)
     if not found:
         return None
     return _encode(_composed(rest), raw)

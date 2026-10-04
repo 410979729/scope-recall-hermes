@@ -34,8 +34,9 @@ const RECORD_BYTES = 40_000
 const TEXT_BYTES = 36_000
 const MAX_TEXT = 20_000
 const MAX_OUTPUT = 1 << 20
-// A turn's reply goes with its Stop only while the store still recognises the same words in the turn's record (it
-// compares moments 120 s apart at most); a later store takes the reply from the record alone.
+// A completed turn's reply goes with its Stop only while the store still recognises the same words among the turn's
+// messages (it compares moments 120 s apart at most, and the reply's moment is the hook's); a reply said earlier than
+// this, or a turn that did not complete, is stored from the turn's messages alone.
 const REPLY_FRESH_MS = 60_000
 const SWEEP_MS = 60_000
 const MAX_BACKOFF_MS = 30 * 60_000
@@ -118,8 +119,10 @@ export function apply(ctx, raw) {
     child.on('error', (error) => { clearTimeout(timer); finish({ ok: false, error: `run: ${error}` }) })
     child.on('close', (code) => {
       clearTimeout(timer)
-      const answer = out.trim() ? parsed() : {}
-      finish(answer ? { ok: true, code, answer, stderr: err } : { ok: false, error: `exit ${code}`, stderr: err })
+      // A hook that ended otherwise than with 0 and no whole answer failed (its interpreter, its package): it says why on
+      // stderr, which goes with the failure instead of reading as nothing recalled.
+      const answer = out.trim() ? parsed() : code === 0 ? {} : null
+      finish(answer ? { ok: true, code, answer, stderr: err } : { ok: false, error: `exit ${code}${tail(err)}`, stderr: err })
     })
     child.stdin.on('error', () => {})
     child.stdin.end(JSON.stringify(payload))
@@ -242,11 +245,16 @@ export function apply(ctx, raw) {
     for (const entry of young.slice(0, Math.max(0, young.length - MAX_KEPT))) dropped.add(entry.k)
     const messages = all.filter((entry) => !dropped.has(entry.k))
     const lastEnd = entries.filter((entry) => entry.role === 'turn_end').at(-1)
-    const reply = lastEnd && now - lastEnd.time <= REPLY_FRESH_MS
+    const last = lastEnd?.reason === 'completed'
       ? messages.filter((entry) => entry.role === 'assistant' && entry.turn === lastEnd.turn).at(-1) : null
+    const reply = last && now - last.time <= REPLY_FRESH_MS ? last : null
     const stored = new Set()
     let failure = null
-    for (const chunk of chunks(messages)) {
+    // A Stop stores what it can in its time (the hook reads at most 3 s of lines): the rest goes with the next one, and
+    // only a Stop that stores nothing ends the store.
+    let queue = messages
+    while (queue.length) {
+      const [chunk] = chunks(queue)
       const payload = { hook_event_name: 'Stop', session_id: sessionId, cwd: lastEnd?.cwd ?? chunk[0]?.cwd ?? process.cwd(),
                         record: chunk.map(({ id, role, text, time }) => ({ id, role, text, time })) }
       if (reply && chunk.includes(reply) && bytes(payload) + bytes(reply.text) <= PAYLOAD_BYTES) {
@@ -255,8 +263,9 @@ export function apply(ctx, raw) {
       const result = await runHook(payload, cfg.storeTimeoutMs)
       const through = result.ok ? Number(result.answer?.through) : NaN
       if (!Number.isInteger(through) || through < 0) { failure = result.error ?? 'no count in the answer'; break }
+      if (through === 0) { failure = 'nothing stored'; break }
       for (const entry of chunk.slice(0, through)) stored.add(entry.k)
-      if (through < chunk.length) { failure = `stored ${through} of ${chunk.length}`; break }
+      queue = queue.slice(Math.min(through, chunk.length))
     }
     // Synchronous from here: no event of this process can append in between, and no other process writes this file.
     try {
@@ -379,6 +388,12 @@ function isMessage(entry) {
 
 function bytes(value) {
   return Buffer.byteLength(JSON.stringify(value), 'utf8')
+}
+
+// The end of what a hook wrote on stderr, for a failure: its last two lines, at most 300 characters.
+function tail(text) {
+  const end = String(text ?? '').trim().split(/\r?\n/).slice(-2).join(' | ').slice(-300)
+  return end ? `: ${end}` : ''
 }
 
 function chunks(messages) {

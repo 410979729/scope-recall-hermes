@@ -227,7 +227,7 @@ reads WorkBuddy's session record. Take the hooks out with `apply-uninstall` befo
 
 ## Attach dsh
 
-Every process on the store, its worker included, must run 3.7.0 or later before dsh (DeepSeek
+Every process on the store, its worker included, must run 3.7.0rc1 or later before dsh (DeepSeek
 Harness) attaches: an older one does not know the host, and cannot replay a capture this entry
 queued.
 
