@@ -211,7 +211,7 @@ def _add_install_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--host", required=True, choices=("hermes", "codex", "claude-code", "workbuddy"))
     parser.add_argument("--target-plugin-dir", default=None,
                         help="the plugin directory the installer writes; for workbuddy, WorkBuddy's own home, whose "
-                        "settings.json and .mcp.json it merges its entries into (default: WORKBUDDY_CONFIG_DIR, else "
+                        "settings.json and mcp.json it merges its entries into (default: WORKBUDDY_CONFIG_DIR, else "
                         "~/.workbuddy)")
     parser.add_argument("--instance-root", required=True)
     parser.add_argument("--project-root", default=None,

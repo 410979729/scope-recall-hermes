@@ -2,6 +2,13 @@
 
 All notable changes to `scope-recall` will be documented in this file.
 
+## [Unreleased]
+
+### Scope Recall 3.5.1rc1 - 2026-10-03
+
+- The version moves past the `v3.5.0` tag.
+- `--target-plugin-dir`'s help names `mcp.json`, the file the WorkBuddy installer writes, instead of `.mcp.json`.
+
 ## [3.5.0] - 2026-10-03
 
 3.5.0 brings WorkBuddy into the shared store, and keeps the first recall after an idle stretch whole. Measured on this machine's Claude Code, on the prompts that came after 40 or more idle minutes:
