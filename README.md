@@ -1,14 +1,14 @@
-# Scope Recall 3.6 autonomous memory
+# Scope Recall 3.7 autonomous memory
 
 Scope Recall v3 is a bounded local memory core with SQLite as the authority and rebuildable vector companions. It provides host adapters for Hermes, Codex and Claude Code (the last two share one adapter of hooks and an MCP server), with the MCP tools when the optional `codex` extra is installed. The public package is `hermes-scope-recall`; the Python import is `scope_recall`; the host wrapper identity remains `scope-recall`.
 WorkBuddy runs that same hook adapter and MCP server, as an entry of a shared store, and so does DeepSeek Harness (dsh), through a plugin.
 
-This checkout is `3.7.0rc1`, a candidate after the `3.6.2` release, in which DeepSeek Harness (dsh) joins the shared store too: a dsh plugin recalls before each turn and stores each turn's messages, and dsh's upload of its session logs is switched off ([docs/install.md](docs/install.md), section 13). Hermes, Codex, Claude Code, WorkBuddy and dsh can keep one memory: each attaches to a shared
+This checkout is `3.7.0`, in which DeepSeek Harness (dsh) joins the shared store too: a dsh plugin recalls before each turn and stores each turn's messages, and dsh's upload of its session logs is switched off ([docs/install.md](docs/install.md), section 13). Hermes, Codex, Claude Code, WorkBuddy and dsh can keep one memory: each attaches to a shared
 store as an entry, what the owner tells one of them another can recall, and each memory says
 which agent it came in through ([docs/shared-store.md](docs/shared-store.md)). Hermes agents
 could share a store from 3.2.0; Codex and Claude Code join in 3.3.0. An agent that is not
 attached keeps its own store. A tool's output is still kept and found, but no longer turned
-into facts. The notes are the `[3.7.0 candidates]`, `[3.6.x]`, `[3.5.x]` and `[3.4.x]` sections of [CHANGELOG.md](CHANGELOG.md), newest first; upgrading
+into facts. The notes are the `[3.7.0]`, `[3.6.x]`, `[3.5.x]` and `[3.4.x]` sections of [CHANGELOG.md](CHANGELOG.md), newest first; upgrading
 from `3.4.x`, `3.3.x` or `3.2.x` is `pip install -U`, `apply-install` and a host restart, and the store's
 schema does not change; on a shared store in the shipped embedding space, set `vector_threshold`
 from 0.653 to 0.70 by hand ([docs/configuration.md](docs/configuration.md#vector_threshold)). From `3.1.x` the store moves to schema 1110 the first time it is opened,
@@ -54,12 +54,12 @@ The package is `hermes-scope-recall` on PyPI. Install it into the same isolated 
 environment the host uses:
 
 ```text
-python -m pip install hermes-scope-recall==3.6.2
-python -m pip install "hermes-scope-recall[codex]==3.6.2"
+python -m pip install hermes-scope-recall==3.7.0
+python -m pip install "hermes-scope-recall[codex]==3.7.0"
 ```
 
 The same wheel and sdist are attached to the
-[GitHub Release](https://github.com/410979729/scope-recall-hermes/releases/tag/v3.6.2)
+[GitHub Release](https://github.com/410979729/scope-recall-hermes/releases/tag/v3.7.0)
 alongside `SHA256SUMS` and `RELEASE-PROVENANCE.json`, for an offline install
 (`python -m pip install "<path-to-wheel>"`). To build it yourself from this checkout instead:
 

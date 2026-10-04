@@ -2,13 +2,11 @@
 
 All notable changes to `scope-recall` will be documented in this file.
 
-## [3.7.0 candidates] - 2026-10-04
+## [3.7.0] - 2026-10-04
 
-### Scope Recall 3.7.0rc1 - 2026-10-04
+3.7.0 lets DeepSeek Harness (dsh) join a shared store: its prompts are recalled before each turn and each turn's messages are stored, by a dsh plugin that runs the entry's hooks.
 
-3.7.0rc1 lets DeepSeek Harness (dsh) join a shared store: its prompts are recalled before each turn and each turn's messages are stored, by a dsh plugin that runs the entry's hooks.
-
-#### Features
+### Features
 
 - **dsh as an entry of a shared store** (`attach --host dsh`, `plan-install` / `apply-install --host dsh`), the owner at this machine, measured with dsh 0.2.0-rc.2. dsh's own hooks name no turn and no reply, and its session log is compressed (multi-frame Zstandard), so no hook could record a turn there.
   - A native dsh plugin (`distribution/dsh/scope-recall/index.mjs`, an ES module run inside dsh, no dependencies) runs the entry's hook client (`hook_entry --host dsh`), the one the other clients' hooks run. It owns no memory policy.
@@ -26,15 +24,15 @@ All notable changes to `scope-recall` will be documented in this file.
   - Every other line is kept byte for byte (lines split at line feeds alone, an indented `[]` kept as the value it is). An install after an uninstall writes the block before an operation of the person's that names one of its rows.
 - The host `dsh` is known wherever a client host is: `attach`, `hook_entry`, `mcp_entry`, `resident`, `doctor` and the install commands.
 
-#### Known limits
+### Known limits
 
 - Local only: the remote client (`remote-entries.md`) does not take dsh yet.
 - dsh 0.2.0-rc.2 is a candidate; the plugin relies on its plugin interface and session format V4.
 - dsh's feedback upload (`session-telemetry-otel`, a session sent when you send feedback on it) is not changed by the install; `DSH_TELEMETRY_DISABLED=1` switches it off.
 
-#### Upgrading
+### Upgrading from 3.6.2
 
-Every process on a store must run 3.7.0rc1 or later before a dsh entry attaches to it: an older one does not know the host and cannot replay a capture the entry queued. The store's schema is unchanged (1110).
+Nothing changes for the hosts already attached: install the package and run `plan-install` and `apply-install` where you upgrade. Every process on a store must run 3.7.0 or later before a dsh entry attaches to it: an older one does not know the host and cannot replay a capture the entry queued. The store's schema is unchanged (1110).
 
 ## [3.6.2] - 2026-10-04
 
