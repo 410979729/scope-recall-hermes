@@ -860,21 +860,30 @@ that started it still opening its vector store, and a cold server answered with 
 only 12.7 s after its start, past the hook's 6 s. The resident server runs apart from WorkBuddy's
 processes:
 
-- The prompt hook starts it after its answer when none runs, at most once a minute, and so does
-  the MCP server when WorkBuddy starts it. No task or service is registered with the system.
+- The prompt hook starts it after its answer when none runs, at most once a minute. The MCP
+  server WorkBuddy runs with a conversation starts it too, and looks again every 30 s while that
+  conversation's process runs. No task or service is registered with the system.
 - It names itself in the entry's endpoint folder; the hook asks it before any other server.
-- It ends after `resident_recall_minutes` without a prompt's recall (120 for WorkBuddy, set in
-  the entry's runtime config, 0 for none; see [configuration.md](configuration.md)).
+- It ends `resident_recall_minutes` after the last prompt's recall or the last look of a running
+  MCP server, whichever is later: 120 for WorkBuddy, set in the entry's runtime config (see
+  [configuration.md](configuration.md)). It reads the value every 30 s; set to 0, it ends within
+  30 s and none is started again.
+- It ends within 30 s once its package on disk is replaced or removed; the next prompt, or a
+  running MCP server, starts the new version's.
 - While it runs it holds a vector helper, about 1 GB. The MCP server WorkBuddy runs with each
-  conversation then holds none of its own: it serves the tools and answers no hook.
+  conversation keeps no helper warm of its own and answers no hook; a tool's vector search starts
+  one in that server.
 - The first prompt after it ended, or after a reboot, starts it and is recalled the old way,
   usually by words and the stored structure alone; the next prompts find it warm.
-- It writes nothing to the store. One runs for each entry: a second gives way to the first.
+- It writes nothing to the store. One runs for each entry: a second of the same version gives way
+  to the first, and one that starts stops a running one of another version.
 
-Stop it before a `package-upgrade` of the entry's package, as WorkBuddy itself:
-`scope-recall resident stop --home <instance-root> --host workbuddy` (`status` shows it).
-`apply-uninstall` stops it too. Until the MCP server is approved, the hooks still store and
-recall, and start the resident server all the same.
+Stop it before a `package-upgrade` of the entry's package, after quitting WorkBuddy (a running MCP
+server starts it again): `scope-recall resident stop --home <instance-root> --host workbuddy`
+(`status` shows it). Where a process's start time cannot be read (macOS), `stop` cannot tell the
+server from another process that took its id and leaves it alone (`verified: false`); it ends
+itself within 30 s of the upgrade. `apply-uninstall` stops it too. Until the MCP server is
+approved, the hooks still store and recall, and start the resident server all the same.
 
 To check it: `doctor --host workbuddy --instance-root <instance-root>` checks the binding and the
 store (it does not read WorkBuddy's settings; `host_registration_status: pending` is healthy, as
@@ -890,9 +899,9 @@ then ends the entry. `detach` alone leaves WorkBuddy's settings as they are.
 
 Known limits:
 
-- The first prompt after the resident recall server ended (`resident_recall_minutes` without a
-  prompt) or after a reboot starts it and is recalled without the warm server, usually by words
-  and the stored structure alone. A WorkBuddy on another machine is answered by its entry's server
+- The first prompt after the resident recall server ended (`resident_recall_minutes` after the
+  last prompt and the last conversation process) or after a reboot starts it and is recalled
+  without the warm server, usually by words and the stored structure alone. A WorkBuddy on another machine is answered by its entry's server
   here, which runs on ([remote-entries.md](remote-entries.md)).
 - WorkBuddy hands the prompt hook a prompt with its line breaks removed, so a multi-line message
   is stored as one line.

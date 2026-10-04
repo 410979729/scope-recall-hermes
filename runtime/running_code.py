@@ -230,8 +230,9 @@ def package_modified_at(package_path: Path, *, now: float | None = None) -> str 
 _VERSION_LINE = re.compile(r"""^__version__\s*=\s*["']([^"']+)["']""", re.MULTILINE)
 
 
-def _version_on_disk(package_path: Path) -> str | None:
-    """The version a restart would load from ``package_path``; ``None`` when it cannot be read."""
+def version_on_disk(package_path: Path) -> str | None:
+    """The version a restart would load from ``package_path``; ``None`` when it cannot be read.  A resident recall
+    server ends once it differs from its own (``adapters/codex/resident_entry``)."""
     try:
         match = _VERSION_LINE.search((package_path / "_version.py").read_text(encoding="utf-8"))
     except OSError:
@@ -272,7 +273,7 @@ def stale_records(
         folder: Path | None = package_path
         version = disk_version
         if package_path is not None and not _same_folder(record.package_path, package_path):
-            foreign = _version_on_disk(Path(record.package_path))
+            foreign = version_on_disk(Path(record.package_path))
             folder = Path(record.package_path) if foreign is not None else None
             version = foreign or disk_version
         package_modified = modified_at(folder) if folder is not None else None
@@ -307,4 +308,5 @@ __all__ = [
     "record_running_code",
     "running_code_dir",
     "stale_records",
+    "version_on_disk",
 ]

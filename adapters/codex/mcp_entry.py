@@ -87,15 +87,16 @@ def main(argv: list[str] | None = None) -> int:
         # The client runs this server for as long as it is open: its prompt hooks, each a process of their own, have
         # their recall answered here, warm (``local_endpoint``).  An override of the runtime config is this server's.
         # A client that keeps a resident recall server instead (WorkBuddy, which runs this one only with a
-        # conversation's process) has it started here when none runs, and this server answers no hook: warmed for
-        # every conversation, each held a vector helper of its own (about 1 GB) beside the resident one.
-        endpoint = None
+        # conversation's process) has it started and kept from here while this runs (``keep_resident``), and this
+        # server answers no hook: warmed for every conversation, each held a vector helper of its own (about 1 GB)
+        # beside the resident one.  Which of the two is decided once, here: a changed ``resident_recall_minutes``
+        # reaches this side when the client starts this server again.
+        endpoint = keeping = None
         if isinstance(config, SharedClientConfig) and runtime_config is None:
-            from .local_endpoint import ensure_resident, resident_minutes, serve
+            from .local_endpoint import keep_resident, resident_minutes, serve
             env_file = _absolute(args.env_file, "env-file") if args.env_file else None
-            minutes = resident_minutes(config.home, config.host)
-            if minutes > 0:
-                ensure_resident(config.home, config.host, minutes=minutes, env_file=env_file)
+            if resident_minutes(config.home, config.host) > 0:
+                keeping = keep_resident(config.home, config.host, env_file=env_file)
             else:
                 endpoint = serve(config.home, config.host, env_file=env_file,
                                  runtime_config=config.runtime_config_path,
@@ -107,6 +108,8 @@ def main(argv: list[str] | None = None) -> int:
         finally:
             if endpoint is not None:
                 endpoint.stop()
+            if keeping is not None:
+                keeping.set()
     except (CodexConfigError, ValueError) as exc:
         raise SystemExit(str(exc)) from None
     return 0

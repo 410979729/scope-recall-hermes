@@ -84,7 +84,8 @@ without a restart.
 ## Bringing an agent's memories along
 
 `attach` starts an agent on the shared store without what its own store held. To bring that in,
-stop every attached host and pause the shared worker, then run for each agent:
+stop every attached host (and a WorkBuddy entry's resident recall server: `scope-recall resident stop`) and pause
+the shared worker, then run for each agent:
 
 ```text
 scope-recall import-entry --root D:\ScopeRecall\shared --entry desk --from <home>\scope-recall.local-<date>
@@ -176,7 +177,8 @@ recalled by a handler of its own, as before. It is made anew when the env file o
 after a recall that raised, or when its runtime could not be attached. A recall that fails in the server is answered as
 failed, with the last frames of its traceback on the server's stderr (the client's MCP log). It reads its key again at the next prompt
 after its env file or the runtime config changed, or when it could not read them before. A server
-started before an upgrade is not asked until its client restarts. Each open client keeps one LanceDB
+started before an upgrade is not asked until its client restarts; a resident recall server ends itself
+within 30 s of the upgrade ([install.md](install.md), section 12). Each open client keeps one LanceDB
 helper, which its kept handler, the handlers made for prompts that come meanwhile and its tools share (3.4.9).
 The system pages it out while it is idle, and the server searches it once more after each 10 minutes
 without a recall that searched it (3.5.0). Each prompt hook still starts one of its own, which
@@ -215,13 +217,12 @@ scope-recall apply-install --host workbuddy --instance-root D:\ScopeRecall\workb
 
 Quit WorkBuddy before `apply-install` and start it again after, then approve the MCP server
 `scope-recall` in WorkBuddy's MCP settings: WorkBuddy starts a server of `mcp.json` only once it
-is approved. Its prompt hook asks the entry's MCP server for the recall as described above.
-WorkBuddy 5.6.2 runs that server only with a conversation's agent process, so the entry keeps a
-resident recall server apart from it, started by its hooks and ended after
-`resident_recall_minutes` without a prompt ([install.md](install.md), section 12). Its `Stop` reads
-WorkBuddy's
-session record. Take the hooks out with `apply-uninstall` before
-`detach`; `detach` alone leaves WorkBuddy's settings as they are.
+is approved. WorkBuddy 5.6.2 runs that server only with a conversation's agent process, so its
+prompt hook asks a resident recall server instead, which the entry keeps apart from WorkBuddy's
+processes: started by its hooks and its MCP server, and ended `resident_recall_minutes` after the
+last prompt and the last conversation process ([install.md](install.md), section 12). Its `Stop`
+reads WorkBuddy's session record. Take the hooks out with `apply-uninstall` before `detach`;
+`detach` alone leaves WorkBuddy's settings as they are.
 
 ## Check
 
@@ -248,7 +249,9 @@ autostart and start its gateway.
 
 ## Moving the store
 
-1. Pause the shared worker (`autostart pause`), stop every attached host, and take a `backup`.
+1. Pause the shared worker (`autostart pause`), stop every attached host and a WorkBuddy entry's resident recall
+   server (`scope-recall resident stop`), and take a `backup`. The server reads the store, and on Windows its open
+   files keep the old root from being removed.
 2. Copy the whole root directory to the new place.
 3. `scope-recall adopt --root <new root>`. It checks the store is the one its manifest names,
    records the new directory in the store, the manifest and the worker's config, and says what

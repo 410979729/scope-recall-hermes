@@ -109,6 +109,7 @@ def main(argv: list[str] | None = None) -> int:
         if outcome is not None:
             sys.stderr.write(f"CODEX_RECALL_RESIDENT:{outcome}\n")
         if handler.diagnostics.last_event == "UserPromptSubmit":
+            sys.stdout.flush()  # the answer leaves now, not at this process's exit
             _keep_a_resident_server(location, args.host, args.env_file)
     return 0
 

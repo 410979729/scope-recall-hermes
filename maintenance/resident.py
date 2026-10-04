@@ -3,14 +3,22 @@
     scope-recall resident status --home <entry home> --host workbuddy
     scope-recall resident stop   --home <entry home> --host workbuddy
 
-A resident server runs from the entry's package: stop it before a ``package-upgrade`` of that package, as the client
-itself.  It writes nothing, so stopping it loses nothing; the next prompt starts one again when the client keeps one.
+A resident server runs from the entry's package: stop it before a ``package-upgrade`` of that package, after the client
+itself (a live MCP server of the client starts one again within ``RESIDENT_KEEP_SECONDS``).  It writes nothing, so
+stopping it loses nothing; the next prompt starts one again when the client keeps one.  ``running`` says whether one
+holds the entry's lock; ``servers`` lists those whose process is known.  One whose identity cannot be proven, where a
+process's start time cannot be read (macOS), is listed ``verified: false`` and never stopped: it ends itself within
+``IDLE_CHECK_SECONDS`` once its package is replaced or its minutes are 0 (``adapters/codex/resident_entry``).
 """
 from __future__ import annotations
 
 import argparse
 import json
+import time
 from pathlib import Path
+
+#: How long ``stop`` waits for a stopped server to let go of the entry's lock.
+STOP_WAIT_SECONDS = 5.0
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -23,16 +31,21 @@ def main(argv: list[str] | None = None) -> int:
     if not home.is_absolute():
         print(json.dumps({"status": "error", "code": "home_not_absolute"}))
         return 2
-    from ..adapters.codex.local_endpoint import _residents, resident_minutes, stop_residents
+    from ..adapters.codex.local_endpoint import _residents, resident_minutes, resident_running, stop_residents
 
+    stopped = stop_residents(home, args.host) if args.action == "stop" else []
+    # A stopped process lets go of the entry's lock as it ends: what is said after, and an upgrade after that, waits
+    # for it a moment.
+    deadline = time.monotonic() + STOP_WAIT_SECONDS
+    while stopped and resident_running(home, args.host) and time.monotonic() < deadline:
+        time.sleep(0.1)
+    servers = [{"pid": int(info["pid"]), "version": info.get("version"), "verified": proven}
+               for _paths, info, proven in _residents(home, args.host, any_version=True)]
+    said = {"status": "ok", "action": args.action, "resident_recall_minutes": resident_minutes(home, args.host),
+            "running": resident_running(home, args.host), "servers": servers}
     if args.action == "stop":
-        stopped = stop_residents(home, args.host)
-        print(json.dumps({"status": "ok", "action": "stop", "stopped": stopped}, indent=2))
-        return 0
-    running = [{"pid": int(info["pid"]), "version": info.get("version")}
-               for _path, info in _residents(home, args.host, any_version=True)]
-    print(json.dumps({"status": "ok", "action": "status", "resident_recall_minutes": resident_minutes(home, args.host),
-                      "running": running}, indent=2))
+        said["stopped"] = stopped
+    print(json.dumps(said, indent=2))
     return 0
 
 

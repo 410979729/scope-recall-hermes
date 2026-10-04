@@ -534,6 +534,24 @@ def test_warming_opens_the_store_and_searches_one_of_its_partitions(tmp_path):
         instance.close()
 
 
+def test_a_server_s_start_asks_the_query_embedding_route_for_one_vector(tmp_path):
+    """Warmed by the store alone, a cold server's first recalls lost their vector search to the embedding's time
+    (measured 2026-10-03).  Its start asks the route once, with a fixed text and its own time; nothing is kept."""
+    asked = []
+
+    class Embedding:
+        def embed_query(self, text, *, remaining_seconds):
+            asked.append((text, remaining_seconds))
+            return (0.1, 0.2)
+
+    instance, _binding = _vector_instance(tmp_path, _ScopedStore(), Embedding())
+    try:
+        assert instance.warm_query_embedding(5.0) is True
+        assert len(asked) == 1 and asked[0][0] == "scope recall warm-up" and 0 < asked[0][1] <= 5.0
+    finally:
+        instance.close()
+
+
 def test_warming_searches_every_partition_a_recall_of_the_runtime_searches(tmp_path):
     """Review of 3.5.0rc2: a search reads the index codes of the rows its filter keeps.  The warm search filtered on
     the first allowed scope's partition only, which holds no rows for any of the five entries a kept handler serves

@@ -347,7 +347,8 @@ def _read(path):
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def test_a_workbuddy_entry_installs_into_workbuddy_s_own_files_and_uninstalls_only_its_own(tmp_path, capsys, root):
+def test_a_workbuddy_entry_installs_into_workbuddy_s_own_files_and_uninstalls_only_its_own(tmp_path, capsys, root,
+                                                                                          monkeypatch):
     """WorkBuddy joins a shared store as the other clients do, the owner at this machine.  Its hooks and MCP server go
     into WorkBuddy's own settings.json and mcp.json, beside whatever else is there; a copy of each file is kept
     first, a second install changes nothing, an older hook of this entry is updated where it stands, and uninstall
@@ -440,7 +441,12 @@ def test_a_workbuddy_entry_installs_into_workbuddy_s_own_files_and_uninstalls_on
     assert removal.conflicts == [] and removal.files_to_remove == []
     assert sorted(Path(path).name for path in removal.unmerged_files) == ["mcp.json", "settings.json"]
     held = {name: (workbuddy / name).read_bytes() for name in before}
+    from scope_recall.adapters.codex import local_endpoint
+
+    stopped = []
+    monkeypatch.setattr(local_endpoint, "stop_residents", lambda home, host: stopped.append((home, host)) or [])
     removed = apply_uninstall(removal)
+    assert stopped == [(entry, "workbuddy")], "the entry's resident recall server runs from the package"
     assert sorted(Path(path).name for path in removed.unmerged_files) == ["mcp.json", "settings.json"]
     assert {Path(path).name: Path(path).read_bytes() for path in removed.backups} == held
     assert _read(workbuddy / "settings.json") == {**settings, "hooks": {

@@ -75,6 +75,11 @@ the current wheel; do not route wheel-based installations through that engine.
    delay, up to `worker_min_interval_seconds`); a supervisor in the middle of a pass leaves when
    that pass ends (`drain_seconds`). A host that runs elevated hides these children
    from a normal shell's process listing, so an empty listing is not proof.
+   A client attached to a shared store may keep a resident recall server apart from its own
+   processes (WorkBuddy by default): after quitting the client, stop it with
+   `python -I -X utf8 -m scope_recall.maintenance.cli resident stop --home <entry home> --host <client>`
+   (`resident status` shows it). It writes nothing; left running, it ends itself within 30 s of the
+   package being replaced, and until then it holds the store's files open.
 3. From an independent helper/candidate environment outside the target venv run:
    `python -I -m scope_recall.maintenance.cli package-upgrade --python <target-python>
    --wheel <verified-offline-wheel> --backup <new-private-backup-dir>

@@ -10,14 +10,15 @@ A WorkBuddy entry's prompts are recalled with the vector search, a new conversat
 
 - **A resident recall server** keeps the entry's vector search and embedding connection warm apart from the client's own processes (`adapters/codex/resident_entry.py`).
   - WorkBuddy 5.6.2 runs the entry's MCP server, and with it the recall server its hooks asked, only inside a conversation's agent process. A prompt that started one met a server still opening its vector store: a cold server answered with its vector search 12.7 s after its start (measured 2026-10-03), past the prompt hook's 6 s. All three prompts measured on 3.5.0 went without it.
-  - The prompt hook starts the resident server after its answer when none runs, at most once a minute, and so does the MCP server when WorkBuddy starts it. It is started in a process group of its own, broken away from the client's job where Windows allows it. No task or service is registered with the system.
+  - The prompt hook starts the resident server after its answer when none runs, at most once a minute. The MCP server WorkBuddy runs with a conversation starts it too, and looks again every 30 s while that process runs. It is started through a process that ends at once, in a process group of its own, broken away from the client's job where Windows allows it, so ending a conversation's process tree does not end it. No task or service is registered with the system.
   - It names itself resident in the entry's endpoint folder, and a hook asks it before any other server.
-  - It ends after `resident_recall_minutes` without a prompt's recall: 120 for WorkBuddy by default, set in the entry's runtime config, 0 for none. Claude Code and Codex keep none by default, since their server runs as long as the client.
+  - It ends `resident_recall_minutes` after the last prompt's recall and the last look of a running MCP server: 120 for WorkBuddy by default, set in the entry's runtime config, 0 for none. It reads the value every 30 s. Claude Code and Codex keep none by default, since their server runs as long as the client.
+  - It ends within 30 s once its package on disk is replaced or removed, and one that starts stops a running one of another version, so a server left from before an upgrade does not keep the new version's out.
   - While it runs it holds a vector helper, about 1 GB. The MCP server WorkBuddy runs with each conversation then answers no hook and warms nothing.
-  - One runs for each entry and client; a second gives way to the first. It writes nothing to the store.
-  - `scope-recall resident status|stop --home <entry> --host workbuddy` shows it or stops it. Stop it before a `package-upgrade` of the entry's package; `apply-uninstall` stops it.
+  - One runs for each entry and client, held by a file lock; a second of the same version gives way to the first. It writes nothing to the store.
+  - `scope-recall resident status|stop --home <entry> --host workbuddy` shows it or stops it. A process whose identity cannot be proven (no start time, as on macOS) is never stopped. Stop it before a `package-upgrade` of the entry's package, after quitting the client; `apply-uninstall` stops it.
   - The first prompt after it ended, or after a reboot, starts it and is recalled the old way.
-- **A recall server's start warms its query embedding as well as its vector store**, once, for every client. Warmed by the store alone, a cold server lost the vector search of its first two recalls to the embedding's time (`AuxiliaryModelError:timeout`).
+- **A recall server's start warms its query embedding as well as its vector store**, once, for every client, within 10 s. Warmed by the store alone, a cold server lost the vector search of its first two recalls to the embedding's time (`AuxiliaryModelError:timeout`).
 
 ## [3.5.1] - 2026-10-03
 
