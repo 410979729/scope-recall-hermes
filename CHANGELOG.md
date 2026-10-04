@@ -2,11 +2,11 @@
 
 All notable changes to `scope-recall` will be documented in this file.
 
-## [3.6.0 candidates] - 2026-10-03
+## [3.6.0] - 2026-10-04
 
-### Scope Recall 3.6.0rc1 - 2026-10-03
+3.6.0 recalls a WorkBuddy entry's prompts with the vector search, a new conversation's first prompt included.
 
-A WorkBuddy entry's prompts are recalled with the vector search, a new conversation's first prompt included.
+### Features
 
 - **A resident recall server** keeps the entry's vector search and embedding connection warm apart from the client's own processes (`adapters/codex/resident_entry.py`).
   - WorkBuddy 5.6.2 runs the entry's MCP server, and with it the recall server its hooks asked, only inside a conversation's agent process. A prompt that started one met a server still opening its vector store: a cold server answered with its vector search 12.7 s after its start (measured 2026-10-03), past the prompt hook's 6 s. All three prompts measured on 3.5.0 went without it.
@@ -20,6 +20,10 @@ A WorkBuddy entry's prompts are recalled with the vector search, a new conversat
   - `scope-recall resident status|stop --home <entry> --host workbuddy` shows it or stops it; `stop` exits 1 when one still holds the lock. A process whose identity cannot be proven (no start time, as on macOS) is never stopped. Stop it before a `package-upgrade` of the entry's package, after quitting the client; `apply-install` and `apply-uninstall` stop it.
   - The first prompt after it ended, or after a reboot, starts it and is recalled the old way.
 - **A recall server's start warms its query embedding as well as its vector store**, once, for every client, within 10 s. Warmed by the store alone, a cold server lost the vector search of its first two recalls to the embedding's time (`AuxiliaryModelError:timeout`).
+
+### Upgrading from 3.5.1
+
+Install the package, run `plan-install` and `apply-install` for each host, and restart the clients and the Hermes gateways. Quit WorkBuddy before its entry's upgrade. A WorkBuddy entry starts its resident recall server at its next conversation or prompt, with nothing to configure; `resident_recall_minutes` in the entry's runtime config changes its minutes, and 0 keeps none. From 3.6.0 on, stop a running resident with `scope-recall resident stop` before a `package-upgrade` of the entry's package; left running, it ends itself within 30 s of the upgrade. The store's schema is unchanged (1110).
 
 ## [3.5.1] - 2026-10-03
 
