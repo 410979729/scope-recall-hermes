@@ -11,17 +11,17 @@ All notable changes to `scope-recall` will be documented in this file.
 - A Hermes tool result whose write met the shared store's writer busy past its 1 s was kept in memory, to be written again at the end of the turn. Some never were stored: 10 of tianji's on 2026-10-04, and 6 of tianxuan's, 6 of yuheng's and 2 of tianquan's in the days before. Each was logged once as `not stored (exception), kept to retry at the next turn` and is not in the store.
   - Hermes runs the end-of-turn hook only after a turn with a message and a reply. A turn it injected (a watch notification), one it interrupted and one without a reply wrote nothing again.
   - The retry at a turn's end had a capture's own 1 s for all of them: it wrote about one of up to 16 each time.
-  - A session switch (a compression, a new conversation) cleared what was kept, and a shutdown (an idle agent's eviction from Hermes' cache, a gateway restart) dropped it.
+  - An idle agent evicted from Hermes' cache keeps its adapter without a shutdown, so nothing wrote them again until a gateway restart dropped them. A session started again in the same adapter cleared them too.
 - Now:
-  - A retry thread writes the kept tool results every 30 s while there are any, whatever the turns.
-  - A turn's end gives the retry 5 s, off any hook's time.
-  - A session switch keeps them. Each is written in the session it was said in, under its own scope's grant as the installation's manifest gives it now, whatever audience the session that is current has.
-  - A shutdown writes them once more before it ends.
-  - One dropped because its scope was taken away, or still failing at shutdown, is logged with its key.
+  - A retry thread writes the kept tool results every 30 s while there are any, whatever the turns, in passes of up to 5 s, off any hook's time and off Hermes' memory worker. A turn's end still tries for 1 s.
+  - Kept across a session switch, each is written in the session it was said in, under its own scope's grant as the installation's manifest gives it now, whatever audience the session that is current has.
+  - A shutdown writes them once more, for up to 2 s.
+  - One still failing after 30 minutes is given up.
+  - Each is logged once when it is kept (`not stored (<reason>), kept to retry`) and once when it is stored (`stored on retry`). One given up, one dropped because its scope was taken away, and one still failing at shutdown are logged as lost, with their key.
 
 ### Upgrading from 3.6.0
 
-Install the package, run `plan-install` and `apply-install` for each host, and restart the Hermes gateways. A gateway still on 3.6.0 or earlier drops at its restart what it keeps to retry. The store's schema is unchanged (1110).
+Install the package, run `plan-install` and `apply-install` for each host, and restart the Hermes gateways. A gateway still on 3.6.0 or earlier drops at its restart what it keeps to retry. The log line of a kept capture now ends `kept to retry`, not `kept to retry at the next turn`. The store's schema is unchanged (1110).
 
 ## [3.6.0] - 2026-10-04
 
