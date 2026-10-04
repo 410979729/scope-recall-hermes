@@ -8,7 +8,8 @@ server when none runs, names itself resident (hooks ask it first), and ends ``re
 prompt's recall or the last mark of a live client process (``local_endpoint.keep_resident``), once the minutes are 0,
 once its package on disk is replaced, or once a recall has been stuck for minutes.  One runs for each entry and
 client: a second of the same version gives way to the first, and a prompt hook that finds one of another version stops
-it and starts its own (``local_endpoint.ensure_resident``).  It writes nothing to the store.
+it, where it can prove and end it, and starts its own (``local_endpoint.ensure_resident``).  It writes nothing to the
+store.
 
     python -I -B -m scope_recall.adapters.codex.resident_entry --home <entry home> --host workbuddy [--env-file <file>]
 """
@@ -28,6 +29,7 @@ from ...runtime.running_code import version_on_disk
 from .config import load_shared_client
 from .local_endpoint import (
     _forget,
+    _upgrading,
     configured_minutes,
     endpoints,
     resident_alive,
@@ -86,8 +88,8 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if _start_apart(command, cwd=endpoints(home)) else 1
     configured = args.idle_seconds is None
     idle = resident_minutes(home, args.host) * 60.0 if configured else args.idle_seconds
-    if idle <= 0:
-        return 0
+    if idle <= 0 or _upgrading():
+        return 0  # none kept, or the package being replaced: a later look starts one from the new files
     # One of another version runs the code it was started with, and hooks ask it nothing (review of 3.6.0rc1).  The
     # prompt hook stops one that holds the lock before it starts this one; one that took the lock meanwhile ends here.
     stopped = stop_residents(home, args.host, other_versions=True)
@@ -117,7 +119,7 @@ def _serve_until_idle(home: Path, host: str, env_file: Path | None, idle: float,
     try:
         while not stopped.wait(min(IDLE_CHECK_SECONDS, idle)):
             package = _package_state()
-            minutes = configured_minutes(home, host) if configured else None
+            minutes = configured_minutes(home, host, missing=None) if configured else None
             if minutes is not None:
                 # A change of the entry's minutes is taken here: set to 0 to free the server's memory, it kept serving,
                 # and every prompt put its end off (review of 3.6.0rc1).
@@ -128,8 +130,9 @@ def _serve_until_idle(home: Path, host: str, env_file: Path | None, idle: float,
                     or _idle_seconds(endpoint.last_used, alive) >= idle):
                 break
     finally:
-        _forget(record)
+        # The record goes last: ``stop`` can wait for a stuck recall, and ``resident stop`` finds the server by it.
         endpoint.stop()
+        _forget(record)
     return 0
 
 

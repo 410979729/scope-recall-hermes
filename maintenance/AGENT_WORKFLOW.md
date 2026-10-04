@@ -79,7 +79,10 @@ the current wheel; do not route wheel-based installations through that engine.
    processes (WorkBuddy by default): after quitting the client, stop it with
    `python -I -X utf8 -m scope_recall.maintenance.cli resident stop --home <entry home> --host <client>`
    (`resident status` shows it). It writes nothing; left running, it ends itself within 30 s of the
-   package being replaced, and until then it holds the store's files open.
+   package being replaced, and until then it holds the store's files open. If `stop` says
+   `still_running` (exit 1), a client process is still up (quit it and stop again), or the server
+   cannot be proven or ended by this account (`verified: false` in `status`): check that process
+   and end it by hand, or wait for its end.
 3. From an independent helper/candidate environment outside the target venv run:
    `python -I -m scope_recall.maintenance.cli package-upgrade --python <target-python>
    --wheel <verified-offline-wheel> --backup <new-private-backup-dir>

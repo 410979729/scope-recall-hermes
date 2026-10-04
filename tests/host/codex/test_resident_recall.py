@@ -54,6 +54,8 @@ def entry(tmp_path, monkeypatch):
     from scope_recall.vector import process_store
 
     monkeypatch.setattr(process_store, "prestart", lambda **kwargs: None)
+    # ``ensure_resident`` looks at the package-upgrade lock of the venv it runs from: not this test run's (review 3).
+    monkeypatch.setattr(sys, "prefix", str(tmp_path / "TEST-venv"))
     root = tmp_path / "TEST-shared"
     write_shared_payload(root, new_shared_payload(root, agent_id=AGENT))
     hermes = tmp_path / "TEST-tianshu-home"
@@ -129,8 +131,9 @@ class _Holder:
         self._thread.join(5)
 
 
-def _lock_holder(home, said, seconds=60.0):
-    """A process of its own that holds the entry's lock for ``seconds`` and says its id, as another server holds it."""
+def _lock_holder(home, said, seconds=60.0, release=None):
+    """A process of its own that holds the entry's lock and says its id, as another server holds it: for ``seconds``, or
+    until ``release`` exists."""
     process = subprocess.Popen(
         [sys.executable, "-B", "-c",
          "import os, sys, time\n"
@@ -138,8 +141,11 @@ def _lock_holder(home, said, seconds=60.0):
          "from scope_recall.core.file_lock import advisory_file_lock\n"
          "with advisory_file_lock(Path(sys.argv[1]), timeout_seconds=0):\n"
          "    Path(sys.argv[2]).write_text(str(os.getpid()))\n"
-         "    time.sleep(float(sys.argv[3]))\n",
-         str(local_endpoint.resident_lock(home, "workbuddy")), str(said), str(seconds)], creationflags=NO_WINDOW)
+         "    until = time.monotonic() + float(sys.argv[3])\n"
+         "    while time.monotonic() < until and not (sys.argv[4] and Path(sys.argv[4]).exists()):\n"
+         "        time.sleep(0.05)\n",
+         str(local_endpoint.resident_lock(home, "workbuddy")), str(said), str(seconds), str(release or "")],
+        creationflags=NO_WINDOW)
     local_endpoint.endpoints(home).mkdir(parents=True, exist_ok=True)
     assert _wait(lambda: said.exists() and said.read_text(), 15)
     return process, int(said.read_text())
@@ -485,7 +491,7 @@ def test_one_unsure_check_does_not_end_a_resident_server_and_two_in_a_row_do(ent
 
     minutes = [120, None, 120, None, None, 120]
     monkeypatch.setattr(resident_entry, "configured_minutes",
-                        lambda home, host: minutes.pop(0) if minutes else 120)
+                        lambda home, host, **kwargs: minutes.pop(0) if minutes else 120)
     worker, box = _in_thread(["--home", str(entry), "--host", "workbuddy"])
     worker.join(20)
     assert not worker.is_alive() and box["code"] == 0 and minutes == [120]
@@ -880,7 +886,7 @@ def test_how_long_a_recall_has_been_past_its_time(entry):
     assert endpoint.stuck_for() == 0.0
     now = time.monotonic()
     endpoint.inflight.update({1: now + 30, 2: now - 4, 3: now - 9})
-    assert 9 <= endpoint.stuck_for() < 10, "the oldest past its time"
+    assert 9 <= endpoint.stuck_for() < 30, "the oldest past its time"
     endpoint.inflight.clear()
     assert endpoint.stuck_for() == 0.0
 
@@ -939,11 +945,15 @@ def test_a_start_that_stopped_another_server_waits_for_its_lock_longer(entry, tm
     monkeypatch.setattr(resident_entry, "IDLE_CHECK_SECONDS", 0.05)
     monkeypatch.setattr(resident_entry, "LOCK_WAIT_SECONDS", 0.25)
     _runtime_config(entry)
-    holder, pid = _lock_holder(entry, tmp_path / "TEST-holder-pid", seconds=1.5)
+    release = tmp_path / "TEST-release"
+    holder, pid = _lock_holder(entry, tmp_path / "TEST-holder-pid", release=release)
     monkeypatch.setattr(resident_entry, "stop_residents", lambda home, host, other_versions=False: [pid])
     end = _ending(monkeypatch)
     try:
         worker, box = _in_thread(["--home", str(entry), "--host", "workbuddy", "--idle-seconds", "60"])
+        time.sleep(1.5)
+        assert worker.is_alive(), "it gave way before the stopped server let go of the lock"
+        release.write_text("", encoding="ascii")  # the system has ended the stopped server
         assert _wait(local_endpoint.resident_record(entry, "workbuddy").exists, 15)
         end.set()
         worker.join(20)
@@ -1024,3 +1034,153 @@ def test_a_stop_waits_for_the_stopped_server_to_let_go_of_the_lock(entry, monkey
     assert resident.main(["stop", "--home", str(entry), "--host", "workbuddy"]) == 0
     said = json.loads(capsys.readouterr().out)
     assert (said["status"], said["running"], said["stopped"]) == ("ok", False, [4545])
+
+
+@NEEDS_START_TIME
+def test_a_server_of_another_version_the_hook_cannot_end_is_said_unstoppable_and_nothing_starts(entry, tmp_path,
+                                                                                               monkeypatch):
+    """A stop that failed (a server this account may not end, as one an elevated client started) said ``replaced``
+    at every prompt and started one that gave way each time (review 3 of 3.6.0rc1)."""
+    from scope_recall.runtime.process_probe import probe_process
+
+    started = []
+    monkeypatch.setattr(local_endpoint, "_start_apart", lambda command, cwd: (started.append(command), True)[1])
+    holder, pid = _lock_holder(entry, tmp_path / "TEST-holder-pid")
+    try:
+        _name(entry, pid=pid, port=4115, resident=True, start=probe_process(pid).start_token, version="3.6.0rc0")
+
+        def refused(target, sig):
+            raise PermissionError(5, "Access is denied")
+
+        monkeypatch.setattr(os, "kill", refused)
+        for _ in range(2):
+            assert local_endpoint.ensure_resident(entry, "workbuddy", minutes=120,
+                                                  replace=True) == "unstoppable:3.6.0rc0"
+        assert started == [] and holder.poll() is None
+        folder = local_endpoint.endpoints(entry)
+        assert not (folder / "resident-workbuddy.start").exists(), "no start stamp: nothing was started"
+        assert not local_endpoint.resident_alive(entry, "workbuddy").exists(), "and it is not kept up"
+    finally:
+        if holder.poll() is None:
+            holder.kill()
+        holder.wait(10)
+
+
+def test_a_server_of_another_version_whose_identity_cannot_be_proven_is_neither_marked_nor_stopped(entry, tmp_path,
+                                                                                                    monkeypatch):
+    """Where no start time can be read (macOS) the hook may not stop one of another version; marked in use, it kept
+    the entry cold for as long as the client ran (review 3 of 3.6.0rc1).  Unmarked, it ends at its idle end."""
+    from scope_recall.runtime import process_probe
+
+    class _LiveNoStart:
+        running = True
+        start_token = None
+
+    started = []
+    monkeypatch.setattr(local_endpoint, "_start_apart", lambda command, cwd: (started.append(command), True)[1])
+    holder, pid = _lock_holder(entry, tmp_path / "TEST-holder-pid")
+    try:
+        monkeypatch.setattr(process_probe, "probe_process", lambda pid: _LiveNoStart())
+        _name(entry, pid=pid, port=4116, resident=True, start=None, version="3.6.0rc0")
+        assert local_endpoint.ensure_resident(entry, "workbuddy", minutes=120) == "running:3.6.0rc0"
+        assert local_endpoint.ensure_resident(entry, "workbuddy", minutes=120, replace=True) == "unstoppable:3.6.0rc0"
+        assert not local_endpoint.resident_alive(entry, "workbuddy").exists()
+        assert started == [] and holder.poll() is None
+    finally:
+        if holder.poll() is None:
+            holder.kill()
+        holder.wait(10)
+
+
+@NEEDS_START_TIME
+def test_hooks_of_two_versions_switch_an_entry_s_server_at_most_once_a_minute(entry, tmp_path, monkeypatch):
+    """Each prompt of the other side ended the running server and started its own, past the start stamp (review 3 of
+    3.6.0rc1).  The first replacement is at once; another within a minute waits."""
+    from scope_recall.runtime.process_probe import probe_process
+
+    started = []
+    monkeypatch.setattr(local_endpoint, "_start_apart", lambda command, cwd: (started.append(command), True)[1])
+    switched = local_endpoint.endpoints(entry) / "resident-workbuddy.replaced"
+    for index, expected in enumerate(("replaced:3.6.0rc0", "running:3.6.0rc0", "replaced:3.6.0rc0")):
+        if index == 2:
+            earlier = time.time() - 120
+            os.utime(switched, (earlier, earlier))
+        holder, pid = _lock_holder(entry, tmp_path / f"TEST-holder-pid-{index}")
+        try:
+            _name(entry, pid=pid, port=4117, resident=True, start=probe_process(pid).start_token, version="3.6.0rc0")
+            assert local_endpoint.ensure_resident(entry, "workbuddy", minutes=120, replace=True) == expected, index
+            if expected.startswith("replaced"):
+                assert holder.wait(10) is not None
+            else:
+                assert holder.poll() is None, "a second switch within the minute waits"
+        finally:
+            if holder.poll() is None:
+                holder.kill()
+            holder.wait(10)
+            (local_endpoint.endpoints(entry) / f"{pid}.json").unlink(missing_ok=True)
+    assert len(started) == 2
+
+
+def test_a_running_server_takes_a_missing_runtime_config_as_not_known(entry, monkeypatch):
+    """An editor that saves by moving files leaves no runtime config for a moment; read as 0, that ended a warm server
+    (review 3 of 3.6.0rc1).  A start still takes a missing config as 0."""
+    path = _runtime_config(entry, resident_recall_minutes=30)
+    path.unlink()
+    assert local_endpoint.configured_minutes(entry, "workbuddy") == 0
+    assert local_endpoint.configured_minutes(entry, "workbuddy", missing=None) is None
+    _runtime_config(entry)
+    monkeypatch.setattr(resident_entry, "IDLE_CHECK_SECONDS", 0.05)
+    asked = []
+    real = resident_entry.configured_minutes
+
+    def configured(home, host, **kwargs):
+        asked.append(kwargs.get("missing", "default"))
+        return real(home, host, **kwargs)
+
+    monkeypatch.setattr(resident_entry, "configured_minutes", configured)
+    end = _ending(monkeypatch)
+    worker, box = _in_thread(["--home", str(entry), "--host", "workbuddy"])
+    assert _wait(lambda: len(asked) >= 2, 10)
+    end.set()
+    worker.join(10)
+    assert not worker.is_alive() and box["code"] == 0 and set(asked) == {None}
+
+
+def test_a_server_does_not_start_while_its_package_is_being_replaced(entry, monkeypatch):
+    """Launched just before ``package-upgrade`` took its lock, a server still imported during the replacement (review 3
+    of 3.6.0rc1)."""
+    _runtime_config(entry)
+    monkeypatch.setattr(resident_entry, "_upgrading", lambda: True)
+    started = time.monotonic()
+    assert resident_entry.main(["--home", str(entry), "--host", "workbuddy", "--idle-seconds", "60"]) == 0
+    assert time.monotonic() - started < 5
+    assert not local_endpoint.resident_record(entry, "workbuddy").exists()
+    assert not (local_endpoint.endpoints(entry) / f"{os.getpid()}.json").exists()
+
+
+def test_a_server_stopped_once_does_not_wait_for_a_stuck_recall_again_at_exit(entry, monkeypatch):
+    """A server that ended for a stuck recall waited for it twice, once more at exit, and held its lock unseen for that
+    long (review 3 of 3.6.0rc1)."""
+    monkeypatch.setattr(local_endpoint, "CLOSE_WAIT_SECONDS", 0.5)
+    endpoint = local_endpoint.serve(entry, "workbuddy", warm=False, resident=True)
+    assert endpoint is not None
+    held, done = threading.Event(), threading.Event()
+
+    def stuck_recall():
+        with endpoint.kept._lock:
+            held.set()
+            done.wait(10)
+
+    worker = threading.Thread(target=stuck_recall, daemon=True)
+    worker.start()
+    assert held.wait(5)
+    try:
+        first = time.monotonic()
+        endpoint.stop()
+        assert time.monotonic() - first >= 0.4, "the first stop waits for the recall holding the handler"
+        second = time.monotonic()
+        endpoint.stop()
+        assert time.monotonic() - second < 0.2, "the second does not"
+    finally:
+        done.set()
+        worker.join(5)

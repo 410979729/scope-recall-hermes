@@ -228,15 +228,22 @@ def _plan_merges(adapter: ModuleType, plan: InstallPlan, host_files: tuple[Path,
 
 def _stop_residents(host: str, instance_root: Path) -> None:
     """Stop the entry's resident recall servers, for a client that may keep one (``adapters/codex/resident_entry``).
-    They write nothing; one that cannot be stopped now is replaced by the next prompt's hook."""
+    They write nothing.  One that cannot be stopped (its identity not proven, as on macOS, or this account may not end
+    it) is said on stderr and left to its own end; nothing here fails the install."""
     if host not in ("codex", "claude-code", "workbuddy"):
         return
-    from ..adapters.codex.local_endpoint import stop_residents
+    import sys
+
+    from ..adapters.codex.local_endpoint import _residents, stop_residents
 
     try:
         stop_residents(instance_root, host)
+        left = [int(info["pid"]) for _paths, info, _proven in _residents(instance_root, host, any_version=True)]
     except Exception:  # noqa: BLE001 - see above
-        pass
+        return
+    if left:
+        sys.stderr.write(f"scope-recall: resident recall server {left} of {host} still runs; "
+                         f"see scope-recall resident status --home {instance_root} --host {host}\n")
 
 
 def apply_install(plan: InstallPlan) -> InstallResult:
