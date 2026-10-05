@@ -421,6 +421,27 @@ def asks_without_answering(text: str) -> bool:
     return _QUESTION_MARK.search(body) is not None or _QUESTION_ENDING.search(body) is not None
 
 
+#: What may close a message without changing what it says: spaces and closing punctuation, question marks included.
+_CLOSING = re.compile(r"[\s。！!？?~～…,.，、;；:：)）\]】\"'”’]+$")
+
+
+def same_message(text: str, other: str) -> bool:
+    """Whether two messages say the same words, whatever their closing punctuation, surrounding spaces and case.
+
+    The automatic recall sets an older copy of the current message aside (``RetrievalPipeline._hydrate_admit``):
+    the message already says it.  Compared character for character, "我家窗外有什么" and "我家窗外有什么？" were
+    two messages, and the copy without the question mark took a packet slot as if it answered the one with it.  A
+    message of closing punctuation alone is compared as it is.
+    """
+    if type(text) is not str or type(other) is not str:
+        return False
+    plain, other_plain = unicodedata.normalize("NFKC", text).strip(), unicodedata.normalize("NFKC", other).strip()
+    words, other_words = _CLOSING.sub("", plain).casefold(), _CLOSING.sub("", other_plain).casefold()
+    if words or other_words:
+        return words == other_words
+    return plain == other_plain
+
+
 def meaningful_query_terms(query: str) -> tuple[str, ...]:
     """Terms that can establish lexical relevance for one candidate."""
 

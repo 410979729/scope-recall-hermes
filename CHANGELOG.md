@@ -4,9 +4,29 @@ All notable changes to `scope-recall` will be documented in this file.
 
 ## [Unreleased]
 
-### Scope Recall 3.7.1rc1 - 2026-10-04
+## [3.7.1] - 2026-10-05
 
-- The version moves past the `v3.7.0` tag.
+3.7.1 gives a short question asked again what it was told, as a longer one already was, and lets the MCP tools say why they refused a call.
+
+### Fixes
+
+- **A short question asked again.** The automatic recall sets an older copy of the current message aside and follows it to what that copy was told (3.4.7): the last reply of the latest copy's turn goes before the best candidate of its time. A query needed five search terms for that, so that a short command sent again ("按你说的做" holds four) does not bring back every old turn it opened. A question names what it asks about in fewer: "我家窗外有什么" holds four.
+  - Seen 2026-10-04 on the shared store: the owner asked dsh "我家窗外有什么？". tianji had been asked the same on 09-28 and had answered it. With vectors on, the automatic recall delivered six items, the questions like it and the talk about them, and none said what is outside the window; the answer ranked twelfth.
+  - A query that only asks (`asks_without_answering`: a question mark, or an asking particle at its end) now needs four terms (`ECHO_TURN_MIN_QUESTION_TERMS`); any other query still needs five. "继续执行吗？" holds three and still leads nowhere.
+- **An older copy whatever its closing punctuation.** An older copy of the current message is recognised whatever its closing punctuation, surrounding spaces and letter case (`same_message`). "我家窗外有什么" and "我家窗外有什么？" were two messages, and the copy without the question mark took a packet slot as if it answered the one with it. Different words, or a space between them, still make another message.
+- **MCP tools say why they refused a call.** mcp 2 shows the model only `Error executing tool <name>` for an exception other than its own `ToolError`, so a refused call (a scope the caller may not write, an `inspect` asked for 40 lines) gave no reason to correct. A contract refusal now reaches the model as its code and the field it refused (`ACCESS_DENIED: invalid codex_thread_id`), never what the field held. `inspect` advertises its `limit` bound (1 to 24), as the Hermes tool already did.
+
+### Measured
+
+On copies of the shared store, each entry asking with its own binding and audience, 3.7.0 against 3.7.1:
+
+- The window question on the copy taken before the owner's dsh test (2026-10-04 19:42), with vectors on, through the `tianshu` and `claude-code` entries: in every spelling ("我家窗外有什么", with "？", with "?", with " ？") 3.7.0 delivered no item saying what is outside the window; 3.7.1 delivers tianji's answer second.
+- The owner's 173 real questions asked again on the automatic path, on a copy taken at 21:39: words only, every case identical (rank and item count, 147 in the top five); with vectors, 139 and 140 in the top five: one of tianji's questions (four terms, asking) gained, none lost.
+- The older sets (facts, no-match, rephrased questions and the older QA set on the recall tool's path, tianshu and tianji): identical case by case, words only; the set holding the automatic no-match questions also with vectors.
+
+### Upgrading from 3.7.0
+
+Install the package and run `plan-install` and `apply-install` where you upgrade, and restart the clients' MCP servers and the Hermes gateways. The store's schema is unchanged (1110).
 
 ## [3.7.0] - 2026-10-04
 

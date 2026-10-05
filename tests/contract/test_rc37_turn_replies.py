@@ -301,6 +301,53 @@ def test_a_short_command_sent_again_does_not_bring_back_an_old_turn(app):
         assert told.ref not in [item["ref"] for item in _packet(core, reader, command, mode="auto")["items"]], command
 
 
+WINDOW = "我家窗外有什么？"
+PIGEON = "一只鸽子在飞。"
+
+
+def test_a_short_question_asked_again_is_given_what_it_was_told(app):
+    """A question names what it asks about in fewer terms than the bar a command needs: "我家窗外有什么" holds four,
+    and five keeps "按你说的做" from bringing back every old turn it opened.  Asked again, its older copy led nowhere,
+    and the reply, which shares no word with it, was never found (the owner's window question on the shared store,
+    2026-10-04)."""
+    core, ctx = app
+    question = _say(core, ctx, WINDOW, origin="human_direct", role="user", when="2026-09-02T09:00:00Z",
+                    key="TEST-turn/window-ask")
+    answer = _say(core, ctx, PIGEON, origin="assistant_visible", role="assistant", when="2026-09-02T09:00:12Z",
+                  key="TEST-turn/window-answer")
+    reader = replace(ctx, session_id="TEST-turn-window-reader")
+    refs = [item["ref"] for item in _packet(core, reader, WINDOW, mode="auto")["items"]]
+    assert answer.ref in refs
+    assert question.ref not in refs
+
+
+def test_an_older_copy_without_the_question_mark_is_still_an_older_copy(app):
+    """The same question asked once without its question mark and once with it: the copy is set aside and leads to
+    its turn.  Compared character for character it was another message, delivered as if it answered."""
+    core, ctx = app
+    question = _say(core, ctx, WINDOW.rstrip("？"), origin="human_direct", role="user", when="2026-09-02T09:00:00Z",
+                    key="TEST-turn/window-bare-ask")
+    answer = _say(core, ctx, PIGEON, origin="assistant_visible", role="assistant", when="2026-09-02T09:00:12Z",
+                  key="TEST-turn/window-bare-answer")
+    reader = replace(ctx, session_id="TEST-turn-window-bare-reader")
+    refs = [item["ref"] for item in _packet(core, reader, WINDOW, mode="auto")["items"]]
+    assert question.ref not in refs
+    assert answer.ref in refs
+
+
+def test_a_question_too_short_to_name_its_subject_does_not_bring_back_an_old_turn(app):
+    """The question's bar is lower than a command's, not gone: "继续执行吗？" asks, and its three terms name nothing an
+    old turn answered."""
+    core, ctx = app
+    for index, question in enumerate(("继续吗？", "继续执行吗？")):
+        _say(core, ctx, question, origin="human_direct", role="user", when=f"2026-09-03T09:{index:02d}:00Z",
+             key=f"TEST-turn/short-question-{index}")
+        told = _say(core, ctx, f"{TOLD}（第{index}问）", origin="assistant_visible", role="assistant",
+                    when=f"2026-09-03T09:{index:02d}:12Z", key=f"TEST-turn/short-question-answer-{index}")
+        reader = replace(ctx, session_id=f"TEST-turn-short-question-reader-{index}")
+        assert told.ref not in [item["ref"] for item in _packet(core, reader, question, mode="auto")["items"]], question
+
+
 def test_a_reply_belongs_to_the_turn_it_was_written_in(app):
     """Once the person speaks again the turn is over; later replies answer that message."""
     core, ctx = app

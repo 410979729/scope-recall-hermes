@@ -158,6 +158,11 @@ def test_mcp_stdio_all_tools_and_host_thread_bound_mutations(tmp_path: Path) -> 
                     "expected_revisions": {claim_ref: 2},
                 })
                 assert denied.is_error
+                # A refusal says what was refused; mcp 2 showed only "Error executing tool forget".
+                assert "ACCESS_DENIED" in denied.content[0].text, denied
+                too_long = await session.call_tool("inspect", {"protocol_version": "1.1", "ref": first, "limit": 40},
+                                                   meta=meta)
+                assert too_long.is_error and "24" in too_long.content[0].text, too_long
                 bad_meta = await session.call_tool("revise", {
                     "protocol_version": "1.1", "target_ref": claim_ref, "expected_revision": 2,
                     "new_value": "绿茶", "conditions": [], "source_evidence_refs": [f"{correction}@1"], "valid_from": None,

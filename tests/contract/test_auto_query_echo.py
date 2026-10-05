@@ -92,3 +92,23 @@ def test_auto_followup_keeps_original_query_filter(app):
     # followup round; its internal query must not redefine the original echo.
     assert query not in _contents(packet)
     assert neutral in _contents(packet), packet
+
+
+@pytest.mark.parametrize(
+    ("older", "query", "same"),
+    (
+        ("我家窗外有什么", "我家窗外有什么？", True),
+        ("我家窗外有什么？", "我家窗外有什么", True),
+        ("  Is P12 done?  ", "is p12 done", True),
+        ("继续。", "继续", True),
+        ("我家窗外有什么", "我家 窗外有什么？", False),
+        ("我家窗外有什么", "我家窗外有什么哇", False),
+        ("？", "？", True),
+        ("？", "!", False),
+    ),
+)
+def test_an_older_copy_is_the_same_words_whatever_closes_them(older, query, same):
+    """Only the closing punctuation, surrounding spaces and letter case may differ; the words may not."""
+    from scope_recall.core.recall_policy import same_message
+
+    assert same_message(older, query) is same

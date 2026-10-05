@@ -5,7 +5,6 @@ from dataclasses import replace
 from itertools import islice
 import sqlite3
 import time
-import unicodedata
 from typing import Protocol
 
 from ..contracts import ContractError
@@ -16,7 +15,14 @@ from .duplicate_collapse import DistinctContent, note_duplicates
 from .events import lexical_terms
 from .recall_budget import estimate_tokens, event_admission_order
 from .recall_needs import CHOICE_MARKERS, directed_followup_query, evidence_roots, mentions, unmet_needs
-from .recall_policy import RecallPolicy, asks_without_answering, identifiers_compatible, meaningful_query_terms, rrf_score
+from .recall_policy import (
+    RecallPolicy,
+    asks_without_answering,
+    identifiers_compatible,
+    meaningful_query_terms,
+    rrf_score,
+    same_message,
+)
 from .recall_scope import asks_what_was_said, query_scope
 from .retrieval import (
     CandidateRef,
@@ -59,6 +65,17 @@ CONTEXT_ONLY_WEIGHT = 0.6
 #: every old turn they had opened (review of 3.4.4); five is about six characters.  Of the owner's prompts over
 #: two weeks, 33 of the 115 with fewer had an exact older copy; of the owner's real questions, 167 of 173 have five.
 ECHO_TURN_MIN_TERMS = 5
+#: The same bar for a query that only asks (``asks_without_answering``), which no command does.  A question names
+#: what it asks about: "我家窗外有什么" holds four terms, and asked again with the bar at five its older copy led
+#: nowhere, so the packet held the questions like it and the talk about them, but not what it had been told (2026-10-04,
+#: the owner's window question on the shared store, with vectors on).
+ECHO_TURN_MIN_QUESTION_TERMS = 4
+
+
+def echo_leads_to_turn(query: str) -> bool:
+    """Whether an older copy of ``query`` leads to what that copy was told (``ECHO_TURN_MIN_TERMS``)."""
+    bar = ECHO_TURN_MIN_QUESTION_TERMS if asks_without_answering(query) else ECHO_TURN_MIN_TERMS
+    return len(meaningful_query_terms(query)) >= bar
 #: SQLite virtual-machine steps between two looks at the recall's deadline while a candidate statement runs: one
 #: every 10-60 ms of statement time.  Each look takes the GIL back from the statement, and beside a busy thread (the
 #: MCP server's hook threads, a gateway's) waits for it: one every 10,000 steps made a 25 ms statement take 1.4 s
@@ -332,7 +349,7 @@ class RetrievalPipeline:
         # aside in ``echoes`` to lead to its turn's replies, never delivered.
         if context.mode == "auto" and obj.kind == "event":
             query = context.query if original_query is None else original_query
-            if unicodedata.normalize("NFKC", obj.content).strip() == unicodedata.normalize("NFKC", query).strip():
+            if same_message(obj.content, query):
                 if echoes is not None:
                     echoes.append(candidate)
                 return None
@@ -586,7 +603,7 @@ class RetrievalPipeline:
                 working = self._scoped(tx, working, gaps)
                 echoes: list[CandidateRef] = []
                 hydrated, seed_count = self._collect_rounds(tx, working, gaps, prefetched=prefetched, echoes=echoes)
-                if len(meaningful_query_terms(working.query)) < ECHO_TURN_MIN_TERMS:
+                if not echo_leads_to_turn(working.query):
                     echoes.clear()
                 self._hydrate_related(tx, working, hydrated, gaps, echoes=tuple(echoes))
                 ranked, query_items = self._select(tx, working, hydrated, gaps)
