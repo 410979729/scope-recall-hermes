@@ -4,6 +4,10 @@ All notable changes to `scope-recall` will be documented in this file.
 
 ## [Unreleased]
 
+### Scope Recall 3.7.3rc1 - 2026-10-05
+
+- The version moves past the `v3.7.2` tag.
+
 ## [3.7.2] - 2026-10-05
 
 3.7.2 lets a question reach the reply to what the person added before that reply came. It stores the messages Hermes writes into a conversation itself as the host's, not the owner's, and it lets `retry-failures` clear `http_protocol` failures.
