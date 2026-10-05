@@ -806,9 +806,10 @@ def test_a_prompt_longer_than_a_recall_query_is_still_recalled_for(store):
     assert any("KZ-42" in item["content"] for item in json.loads(body)["items"])
 
 
-def test_a_failed_recall_says_what_stopped_it(store, monkeypatch, capsys):
+def test_a_failed_recall_says_what_stopped_it(store, ample_budget, monkeypatch, capsys):
     """The work computer's server logged recall_exception three times with nothing else: the cause had to be found
-    by reading the store."""
+    by reading the store.  The hook needs time enough to reach the recall: on the 2 s default a slow CI runner spent
+    it attaching the runtime, and the hook said deadline_exceeded instead (windows-latest, 2026-10-05)."""
     from scope_recall.adapters.codex.handler import emit_result
     from scope_recall.core import MemoryCore
 
