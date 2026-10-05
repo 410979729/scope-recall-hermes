@@ -357,6 +357,15 @@ def recall_echo(tx, source) -> bool:
     return lookups >= RECALL_ECHO_MIN_LOOKUPS
 
 
+def _said_by(stamp: str | None, end: str) -> bool:
+    """Whether a stored time is at or before ``end`` (both ``canonical_time``); a time that cannot be read is not."""
+    try:
+        moment = canonical_time(stamp) if stamp else None
+    except ContractError:
+        return False
+    return moment is not None and moment <= end
+
+
 def _occurred_metadata(stamp: str | None) -> tuple[tuple[str, str], ...]:
     return (("occurred_at", stamp),) if stamp else ()
 
@@ -425,6 +434,12 @@ class CollectionPage:
 #: How long after a person's message its turn's replies may come, and how many are followed.
 TURN_REPLY_SECONDS = 1800
 TURN_REPLY_LIMIT = 3
+#: How long after a person's message a further message of theirs, sent before the agent's first reply, still joins
+#: its turn (``RetrievalStorage._turn``).  The person adds to what they asked while the agent works, and the reply
+#: answers both: of the owner's 1,242 messages of 2026-09-20..10-05, 141 had such a follow-up before a reply, 70 of
+#: them inside the same host turn, and their turns read empty, so a question asked again never reached what it had
+#: been told.  Nine in ten such follow-ups came within ten minutes; a later one may open a turn of its own.
+TURN_FOLLOWUP_SECONDS = 600
 #: Rows of one named day (and entries) the scoped channel reads before it chooses (``RetrievalStorage.scoped``), in
 #: time order.  The shared store's busiest day was 861 messages of every entry, 542 of one; read only to 400 rows,
 #: it lost its evening.
@@ -728,7 +743,7 @@ class RetrievalStorage:
         turn's replies (``_turn``)."""
         conn = tx._check()
         opening = self._opening(conn, candidate)
-        return self._turn(conn, *opening, limit=TURN_REPLY_LIMIT)[0] if opening is not None else ()
+        return self._turn(conn, *opening, limit=TURN_REPLY_LIMIT, join=True)[0] if opening is not None else ()
 
     def latest_turn(self, tx, candidates, *, now: str) -> tuple[str, tuple[CandidateRef, ...], bool] | None:
         """Of the turns the person's messages ``candidates`` opened, the latest that received a reply: when it opened
@@ -745,7 +760,8 @@ class RetrievalStorage:
 
     @staticmethod
     def _opening(conn, candidate: CandidateRef):
-        """The row of a person's message that opens a turn, and when (``canonical_time``); None for anything else."""
+        """The row of a message that opens a turn, the person's or one the host wrote into the conversation (a finished
+        background process, which Hermes opens a turn with), and when (``canonical_time``); None for anything else."""
         if candidate.kind != "event":
             return None
         row = conn.execute(
@@ -753,14 +769,15 @@ class RetrievalStorage:
                WHERE event_id=? AND source_revision=?""",
             (candidate.ref, candidate.revision),
         ).fetchone()
-        if row is None or row["role"] != "user" or row["origin"] != "human_direct" or not row["occurred_at"]:
+        if (row is None or row["role"] != "user" or row["origin"] not in ("human_direct", "host_generated")
+                or not row["occurred_at"]):
             return None
         opened = canonical_time(row["occurred_at"])
         return (row, opened) if opened is not None else None
 
     @staticmethod
-    def _turn(conn, row, opened: str, *, limit: int | None = None,
-              now: str | None = None) -> tuple[tuple[CandidateRef, ...], bool]:
+    def _turn(conn, row, opened: str, *, limit: int | None = None, now: str | None = None,
+              join: bool = False) -> tuple[tuple[CandidateRef, ...], bool]:
         """A turn's replies, at most ``limit`` of them, and whether they were read to its end by ``now`` (never, when
         cut at ``limit``, or with no reply or no ``now`` to judge by).
 
@@ -785,11 +802,22 @@ class RetrievalStorage:
         a second time, with the reply, under the host's ordinal: 125 of the 209
         Hermes turns of 2026-09-16..29 that seemed to have no reply were that,
         and the first copy stopped at the second before reaching the answer.
+        With ``join``, neither is what the person adds before the agent's first
+        reply, within ``TURN_FOLLOWUP_SECONDS``: the reply often answers both.
+        Only the replies a turn offers as candidates join (``turn_replies``),
+        which rank them like any other: the reply can answer a new request
+        instead ("算了，先查值班表"), so it never leads an older copy to it
+        (``latest_turn``), where the last reply is raised above the rest
+        (review of 3.7.2).  A message the host writes into the conversation
+        (a finished background process) ends a turn as the person's does: the
+        rows do not say which turn its job began in.
         """
         window_end = (datetime.fromisoformat(opened) + timedelta(seconds=TURN_REPLY_SECONDS)).isoformat(
             timespec="microseconds").replace("+00:00", "Z")
+        followup_end = (datetime.fromisoformat(opened) + timedelta(seconds=TURN_FOLLOWUP_SECONDS)).isoformat(
+            timespec="microseconds")
         rows = conn.execute(
-            """SELECT event_id,source_revision,role,origin,content_sha256 FROM source_events
+            """SELECT event_id,source_revision,role,origin,content_sha256,occurred_at FROM source_events
                WHERE scope_id=? AND occurred_at>=? AND occurred_at<=? AND session_id=?
                  AND (occurred_at>? OR rowid>?) AND read_blocked=0 AND suppressed=0
                ORDER BY occurred_at,rowid LIMIT 64""",
@@ -799,6 +827,9 @@ class RetrievalStorage:
         for reply in rows:
             if reply["role"] == "user":
                 if reply["origin"] == "human_direct" and reply["content_sha256"] == row["content_sha256"]:
+                    continue
+                if (join and not replies and reply["origin"] == "human_direct"
+                        and _said_by(reply["occurred_at"], followup_end)):
                     continue
                 return tuple(replies), True
             if reply["role"] == "assistant" and reply["origin"] == "assistant_visible":

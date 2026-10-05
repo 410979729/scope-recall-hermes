@@ -218,6 +218,22 @@ def test_the_last_reply_of_a_turn_that_goes_on_is_not_raised(app):
         assert scores.get(tail.ref, 0.0) < scores[fresh.ref], tail
 
 
+def test_a_host_record_after_the_window_is_not_the_person_speaking(app):
+    """What the session says next decides whether the replies read were the turn's last.  A record a coding client's
+    host writes there (an interrupt, ``role='system'``) is not the person speaking: the agent's long tool call was
+    cut, and its last narration is not the turn's answer (review of 3.7.2)."""
+    core, ctx = app
+    copy, (_step, last) = _turn(core, ctx, 2, ["正在跑一个很长的测试。", "测试还在跑。"], tag="cut-host")
+    _say(core, ctx, '{"lifecycle": "interrupted"}', origin="host_generated", role="system",
+         when="2026-09-02T09:35:00Z", key="TEST-turn/cut-host-interrupt")
+    _say(core, ctx, "怎么样了？", origin="human_direct", role="user", when="2026-09-02T09:36:00Z",
+         key="TEST-turn/cut-host-person")
+    fresh = _say(core, ctx, "TEST-project 的发布窗口本周不变。", origin="human_direct", role="user",
+                 when="2026-09-01T09:00:00Z", key="TEST-turn/cut-host-fresh")
+    _ranked, scores = _asked_again(core, ctx, [(fresh, (1, 1))], [copy])
+    assert scores.get(last.ref, 0.0) < scores[fresh.ref]
+
+
 def test_the_latest_copy_that_was_answered_is_raised_and_equal_times_go_by_capture(app):
     """A newer copy that received no reply leads nowhere and the latest one answered is raised; of two copies asked
     at the same moment, the one captured last (second review of 3.4.7)."""
@@ -227,6 +243,9 @@ def test_the_latest_copy_that_was_answered_is_raised_and_equal_times_go_by_captu
                       key="TEST-turn/unanswered-ask")
     _say(core, ctx, "我们换个话题。", origin="human_direct", role="user", when="2026-09-03T09:01:00Z",
          key="TEST-turn/unanswered-next")
+    # Answered after the change of subject: a reply to that, never to the question (review of 3.7.2).
+    _say(core, ctx, "好的，聊什么？", origin="assistant_visible", role="assistant", when="2026-09-03T09:01:20Z",
+         key="TEST-turn/unanswered-next-reply")
     fresh = _say(core, ctx, "TEST-project 的发布窗口本周不变。", origin="human_direct", role="user",
                  when="2026-08-30T09:00:00Z", key="TEST-turn/unanswered-fresh")
     ranked, _scores = _asked_again(core, ctx, [(fresh, (1, 1))], [answered, unanswered])
@@ -386,6 +405,99 @@ def test_the_same_message_stored_again_does_not_end_its_turn(app):
     assert _turn_replies(core, ctx, other) != [], "a different message still opens its own turn"
 
 
+def test_what_the_person_adds_before_the_reply_stays_in_the_turn(app):
+    """The person adds to what they asked while the agent works, and the reply answers both.  Of the owner's 1,242
+    messages of 2026-09-20..10-05, 141 had such a follow-up before a reply; their turns read empty, and a question
+    asked again never reached what it had been told."""
+    core, ctx = app
+    question = _say(core, ctx, ASK, origin="human_direct", role="user", when="2026-09-02T09:00:00Z",
+                    key="TEST-turn/add-ask")
+    added = _say(core, ctx, "顺便把回滚方案也确认一下。", origin="human_direct", role="user",
+                 when="2026-09-02T09:10:00Z", key="TEST-turn/add-more")
+    told = _say(core, ctx, TOLD, origin="assistant_visible", role="assistant", when="2026-09-02T09:11:00Z",
+                key="TEST-turn/add-answer")
+    assert _turn_replies(core, ctx, question) == [told.ref], "ten minutes on, an addition still joins"
+    assert _turn_replies(core, ctx, added) == [told.ref]
+
+
+def test_a_message_long_after_with_no_reply_opens_its_own_turn(app):
+    """Past ten minutes a message is no longer an addition to an unanswered question; what follows answers it."""
+    core, ctx = app
+    question = _say(core, ctx, ASK, origin="human_direct", role="user", when="2026-09-02T09:00:00Z",
+                    key="TEST-turn/late-ask")
+    later = _say(core, ctx, "那值班表呢", origin="human_direct", role="user", when="2026-09-02T09:10:01Z",
+                 key="TEST-turn/late-next")
+    theirs = _say(core, ctx, "值班表还是老样子。", origin="assistant_visible", role="assistant",
+                  when="2026-09-02T09:10:09Z", key="TEST-turn/late-answer")
+    assert _turn_replies(core, ctx, question) == []
+    assert _turn_replies(core, ctx, later) == [theirs.ref]
+
+
+def test_what_follows_a_host_message_is_not_the_question_s_answer(app):
+    """A background job begun for an earlier request finished after the question was answered, and the agent
+    reported on it.  The rows do not say which turn the job began in, so the host's message ends the question's turn
+    as the person's would: what the question was told stays its answer (review of 3.7.2)."""
+    core, ctx = app
+    copy, (told,) = _turn(core, ctx, 2, [TOLD], tag="job")
+    _say(core, ctx, "[IMPORTANT: Background process TEST-proc finished (exit code 0).]", origin="host_generated", role="user",
+         when="2026-09-02T09:15:00Z", key="TEST-turn/job-notice")
+    report = _say(core, ctx, "构建通过了，结果如下。", origin="assistant_visible", role="assistant",
+                  when="2026-09-02T09:15:10Z", key="TEST-turn/job-report")
+    fresh = _say(core, ctx, "TEST-project 的发布窗口本周不变。", origin="human_direct", role="user",
+                 when="2026-09-01T09:00:00Z", key="TEST-turn/job-fresh")
+    assert _turn_replies(core, ctx, copy) == [told.ref]
+    ranked, scores = _asked_again(core, ctx, [(fresh, (1, 1))], [copy])
+    assert ranked[0] == told.ref and scores.get(report.ref, 0.0) < scores[fresh.ref]
+
+
+def test_a_host_message_after_an_unanswered_question_does_not_answer_it(app):
+    """The question's turn ended without a reply; then a background job finished and the agent reported on it.  The
+    report is not what the question was told: the copy answered before still is (review of 3.7.2)."""
+    core, ctx = app
+    answered, (told,) = _turn(core, ctx, 1, [TOLD], tag="failed")
+    failed = _say(core, ctx, ASK, origin="human_direct", role="user", when="2026-09-03T09:00:00Z",
+                  key="TEST-turn/failed-ask")
+    _say(core, ctx, "[IMPORTANT: Background process TEST-proc finished (exit code 0).]", origin="host_generated", role="user",
+         when="2026-09-03T09:03:00Z", key="TEST-turn/failed-notice")
+    _say(core, ctx, "构建通过了。", origin="assistant_visible", role="assistant", when="2026-09-03T09:03:20Z",
+         key="TEST-turn/failed-report")
+    fresh = _say(core, ctx, "TEST-project 的发布窗口本周不变。", origin="human_direct", role="user",
+                 when="2026-08-30T09:00:00Z", key="TEST-turn/failed-fresh")
+    assert _turn_replies(core, ctx, failed) == []
+    ranked, _scores = _asked_again(core, ctx, [(fresh, (1, 1))], [answered, failed])
+    assert ranked[0] == told.ref
+
+
+def test_a_question_dropped_for_another_request_does_not_lead_to_that_answer(app):
+    """Asked again, the question was dropped within minutes for another request, and the reply answered that one.
+    The reply is offered as a candidate of the question's turn, ranked like any other, but never raised as what the
+    question was told: the copy answered before still is (review of 3.7.2)."""
+    core, ctx = app
+    answered, (told,) = _turn(core, ctx, 1, [TOLD], tag="dropped")
+    dropped = _say(core, ctx, ASK, origin="human_direct", role="user", when="2026-09-03T09:00:00Z",
+                   key="TEST-turn/dropped-ask")
+    _say(core, ctx, "算了，先帮我查一下值班表。", origin="human_direct", role="user", when="2026-09-03T09:02:00Z",
+         key="TEST-turn/dropped-other")
+    roster = _say(core, ctx, "值班表还是老样子。", origin="assistant_visible", role="assistant",
+                  when="2026-09-03T09:02:30Z", key="TEST-turn/dropped-roster")
+    fresh = _say(core, ctx, "TEST-project 的发布窗口本周不变。", origin="human_direct", role="user",
+                 when="2026-08-30T09:00:00Z", key="TEST-turn/dropped-fresh")
+    assert _turn_replies(core, ctx, dropped) == [roster.ref], "offered as a candidate of the turn"
+    ranked, _scores = _asked_again(core, ctx, [(fresh, (1, 1))], [answered, dropped])
+    assert ranked[0] == told.ref
+
+
+def test_a_message_the_host_writes_opens_a_turn_of_its_own(app):
+    """Hermes opens a turn itself with a finished background process; what the agent said back belongs to it, as it
+    did when such a message was stored as the person's."""
+    core, ctx = app
+    notice = _say(core, ctx, "[IMPORTANT: Background process TEST-proc finished (exit code 0).]", origin="host_generated", role="user",
+                  when="2026-09-02T09:00:00Z", key="TEST-turn/own-notice")
+    report = _say(core, ctx, "构建通过了。", origin="assistant_visible", role="assistant",
+                  when="2026-09-02T09:00:10Z", key="TEST-turn/own-report")
+    assert _turn_replies(core, ctx, notice) == [report.ref]
+
+
 def test_a_whole_turn_captured_under_one_timestamp_keeps_its_order(app):
     """A gateway can write a turn's rows with one occurred_at; capture order decides."""
     core, ctx = app
@@ -414,7 +526,7 @@ def test_a_long_turn_follows_only_its_first_replies(app):
     assert _turn_replies(core, ctx, question) == [reply.ref for reply in replies[:TURN_REPLY_LIMIT]]
 
 
-def test_only_a_persons_own_message_opens_a_turn(app):
+def test_memory_read_back_opens_no_turn(app):
     """Memory read back into a turn is not a question, and neither is a tool transcript."""
     core, ctx = app
     reinjected = _say(core, ctx, ASK, origin="memory_reinjection", role="tool",

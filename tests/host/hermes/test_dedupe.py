@@ -206,6 +206,94 @@ def test_what_the_person_sent_mid_turn_is_recorded_as_their_words(adapter, herme
     assert origins["TEST 顺便把截止日期改成周五"][1] == "2026-09-21T14:15:00.500000Z"
 
 
+_NOTICE = "[IMPORTANT: Background process TEST-proc finished (exit code 0).\nCommand: TEST make build]"
+
+
+def test_a_message_hermes_writes_itself_is_stored_as_the_host_s(adapter, hermes_home):
+    """Hermes opens a turn itself when a background process finishes, a delegation returns or a plugin speaks, with
+    a user message it marks by a display kind.  Stored as the person's, it read as something they said, and it
+    ended the turn whose reply it had been waiting for."""
+    from scope_recall.adapters.hermes.hooks import _global_callback
+
+    provider, _clock = adapter
+    asked = {"role": "user", "content": "TEST 跑一下构建"}
+    started = {"role": "assistant", "content": "TEST 已在后台运行。"}
+    notice = {"role": "user", "content": _NOTICE, "display_kind": "internal_notification"}
+    _global_callback("pre_llm_call")(session_id="TEST-session-1", turn_id="turn-asked", platform="cli",
+                                     user_message=asked["content"], conversation_history=[asked])
+    provider.sync_turn(asked["content"], started["content"], session_id="TEST-session-1")
+    _global_callback("pre_llm_call")(session_id="TEST-session-1", turn_id="turn-notice", platform="cli",
+                                     user_message=_NOTICE, conversation_history=[asked, started, notice])
+    provider.observe_post_llm_call(session_id="TEST-session-1", turn_id="turn-notice",
+                                   assistant_response="TEST 构建通过了。", conversation_history=[
+                                       asked, started, notice,
+                                       {"role": "user", "content": _STEER, "display_kind": "steer"},
+                                       {"role": "assistant", "content": "TEST 构建通过了。"}])
+    provider.sync_turn(_NOTICE, "TEST 构建通过了。", session_id="TEST-session-1")
+    rows = [(role, content, origin) for role, content, origin, _at in _stored(hermes_home)]
+    assert ("user", "TEST 跑一下构建", "human_direct") in rows
+    assert ("user", _NOTICE, "host_generated") in rows
+    assert ("user", "TEST 顺便把截止日期改成周五", "human_direct") in rows, "a steer in a notice's turn is the person's"
+    assert ("assistant", "TEST 构建通过了。", "assistant_visible") in rows
+    assert sum(content == _NOTICE for _role, content, _origin in rows) == 1
+
+
+def test_a_notice_whose_pre_llm_call_was_not_taken_is_still_the_host_s(adapter, hermes_home):
+    """A busy session leaves pre_llm_call untaken, and sync_turn stores the turn's opening message instead."""
+    provider, _clock = adapter
+    provider._session_busy("pre_llm_call", {"turn_id": "turn-busy", "user_message": _NOTICE, "conversation_history": [
+        {"role": "user", "content": _NOTICE, "display_kind": "internal_notification"}]})
+    provider.on_turn_start(7, _NOTICE)
+    provider.sync_turn(_NOTICE, "TEST 构建通过了。", session_id="TEST-session-1")
+    rows = [(role, content, origin) for role, content, origin, _at in _stored(hermes_home)]
+    assert ("user", _NOTICE, "host_generated") in rows
+    assert ("assistant", "TEST 构建通过了。", "assistant_visible") in rows
+
+
+def test_a_late_sync_of_the_person_s_turn_keeps_their_words_theirs(adapter, hermes_home):
+    """Hermes runs ``sync_turn`` on its memory worker, after the reply, and the adapter names the turn by the one
+    active then: the next turn, a notice whose ``pre_llm_call`` a busy session left untaken, may have begun.  The
+    person's message written then is still theirs (review of 3.7.2)."""
+    provider, _clock = adapter
+    said = "TEST 帮我看一下日志"
+    provider._session_busy("pre_llm_call", {"turn_id": "turn-person", "user_message": said,
+                                            "conversation_history": [{"role": "user", "content": said}]})
+    provider.on_turn_start(8, said)
+    provider._session_busy("pre_llm_call", {"turn_id": "turn-host", "user_message": _NOTICE, "conversation_history": [
+        {"role": "user", "content": said}, {"role": "assistant", "content": "TEST 日志正常。"},
+        {"role": "user", "content": _NOTICE, "display_kind": "internal_notification"}]})
+    provider.on_turn_start(9, _NOTICE)
+    provider.sync_turn(said, "TEST 日志正常。", session_id="TEST-session-1")
+    rows = [(role, content, origin) for role, content, origin, _at in _stored(hermes_home)]
+    assert ("user", said, "human_direct") in rows
+    assert not any(origin == "host_generated" for _role, _content, origin in rows)
+
+
+def test_the_turn_s_own_message_says_whether_hermes_opened_it():
+    """A compression at the turn's start can add user messages after the turn's own: a to-do list, a turn it
+    restored.  The turn's own message is the last one holding its text; one not found is the person's."""
+    from scope_recall.adapters.hermes.boundary import host_notice
+
+    notice = {"role": "user", "content": _NOTICE, "display_kind": "internal_notification"}
+    asked = {"role": "user", "content": "TEST 跑一下构建"}
+    todo = {"role": "user", "content": "[Your active task list was preserved across context compression]\n- TEST",
+            "_todo_snapshot_synthetic": True}
+    assert host_notice([asked, notice], _NOTICE)
+    assert host_notice([notice, todo], _NOTICE), "a to-do list a compression added after it"
+    assert host_notice([{"role": "user", "content": [{"type": "text", "text": _NOTICE}],
+                         "display_kind": "process_complete"}], _NOTICE)
+    assert host_notice([{"role": "user", "content": _NOTICE}, notice], _NOTICE), "the last holding its text"
+    assert not host_notice([notice, {"role": "user", "content": _NOTICE}], _NOTICE)
+    assert not host_notice([notice, asked], asked["content"]), "an earlier notice is not this turn"
+    assert not host_notice([asked, notice], asked["content"]), "nor one a compression restored after it"
+    assert not host_notice([{**asked, "display_kind": "steer"}], asked["content"]), "a steer is the person's"
+    assert not host_notice([{"role": "user", "content": _NOTICE}], _NOTICE), "no kind: the text proves nothing"
+    assert not host_notice([notice, {"role": "assistant", "content": "TEST 好"}, {**asked, "content": "[09:00] " + _NOTICE}],
+                           _NOTICE), "a message of an earlier turn, before its reply, is never this turn's"
+    assert not host_notice([{**notice, "content": _NOTICE + "\n\n" + todo["content"]}], _NOTICE), "not found"
+    assert not host_notice([], _NOTICE) and not host_notice(None, _NOTICE) and not host_notice([notice], "")
+
+
 def test_a_compression_mid_turn_keeps_the_turn(adapter, hermes_home):
     """A compression gives the conversation a new session id in the middle of a turn that goes on.  The switch
     cleared the turn: its post_llm_call no longer matched, so what it said on the way was never stored, and

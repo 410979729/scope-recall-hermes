@@ -4,6 +4,50 @@ All notable changes to `scope-recall` will be documented in this file.
 
 ## [Unreleased]
 
+## [3.7.2] - 2026-10-05
+
+3.7.2 lets a question reach the reply to what the person added before that reply came. It stores the messages Hermes writes into a conversation itself as the host's, not the owner's, and it lets `retry-failures` clear `http_protocol` failures.
+
+### Fixes
+
+- **What the person adds before the reply is part of the turn.** A recalled message offers the replies of the turn it opened as candidates (`turn_replies`), and a turn ended when the person spoke again. But people add to what they asked while the agent works, and the reply answers both. Of the owner's 1,242 messages from 2026-09-20 to 10-05, 141 had a further message of theirs before the first reply, and those turns offered nothing. Now such a further message, sent before the agent's first reply and within ten minutes of the turn's opening (`TURN_FOLLOWUP_SECONDS`), no longer ends the turn's offer.
+  - Those replies are offered and ranked like any other candidate. They never lead an older copy of the current message to what it was told (`latest_turn`, where the last reply is raised above the rest). The person may have dropped the question for another request ("算了，先查值班表"), and then the reply answers that request.
+- **A message Hermes writes itself is the host's.** Hermes opens a turn itself, with a user message it marks by a display kind, when a background process finishes, a delegation returns, a plugin speaks or a wake-up is due. The adapter stored that message as the owner's words, so it read as something the owner said ("[IMPORTANT: Background process … finished …]"). It is now stored as the host's (`host_generated`), following Hermes' own rule for what is human input: any display kind but `steer` is not.
+  - The turn's own message is the last user message holding its text, in the run of user messages that ends the conversation `pre_llm_call` hands over. A message not found there stays the owner's, as before, so the owner's words are never stored as the host's.
+  - `sync_turn` stores the opening message as the host's only when it is the very text that opened a notice turn. It names its turn by the one active when it runs, which can already be the next turn.
+  - Reading a turn treats the host's message as before. It ends the question's turn, since the rows do not say which turn its job began in, and it opens a turn of its own.
+- **`http_protocol` failures can be cleared** (#201). The transport failing mid-reply is now treated as `network_error` is:
+  - consolidation and embedding work that fails with it is recovered automatically;
+  - `retry-failures` re-opens any work that fails with it. That includes candidate evaluations, which are not retried automatically after a failure whose effect is unknown.
+  - Before, `http_protocol` was in neither set. A model served over plain HTTP left failed rows that only a hand edit could clear.
+
+### Known limits
+
+- Notices stored before 3.7.2 keep the owner's name: 108 on the shared store (tianshu 35, tianji 35, yuheng 29, tianxuan 9). Their origin is not rewritten.
+- Some messages Hermes writes carry no display kind (goal continuations, the CLI's and the TUI's heartbeat and loop prompts). They are still stored as the owner's.
+- A notice whose text changed before the hook saw it is stored as the owner's. One example is a compression at the turn's start folding a to-do list into it.
+- Changing the embedding model does not re-embed what was embedded before. `docs/configuration.md` said it did, and now says it does not; #200 proposes the re-embedding.
+
+### Measured
+
+On a copy of the shared store and its vectors taken at 2026-10-05 07:46, each entry asked with its own binding and audience, 3.7.1 against 3.7.2:
+
+- The owner's 173 real questions asked again on the automatic path:
+  - words only: 147 → 154 in the top five, 7 gained and none lost;
+  - with vectors: 139 → 142, 3 gained and none lost.
+- The older sets (facts, no-match, rephrased questions and the older QA set on the recall tool's path, tianshu and tianji), words only: one more passed (tianji's older QA set, 18 → 19 of 25), none lost.
+- The automatic no-match set with vectors: identical case by case.
+- Recalls that ran past their five seconds while the machine was busy were asked again alternately on both versions, and all of them were answered on both.
+- Review's scenarios are pinned by tests, each answered as 3.7.1 answers it:
+  - a question dropped for another request;
+  - a job's report after the question's answer;
+  - a host's record after the turn's window;
+  - a late `sync_turn`.
+
+### Upgrading from 3.7.1
+
+Install the package and run `plan-install` and `apply-install` where you upgrade, and restart the clients' MCP servers and the Hermes gateways. The store's schema is unchanged (1110).
+
 ## [3.7.1] - 2026-10-05
 
 3.7.1 lets the MCP tools say why they refused a call, and recognises an older copy of the current message whatever its closing punctuation, as long as both ask or neither does.

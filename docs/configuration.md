@@ -455,9 +455,11 @@ dialect and the digest changes. The consequences are all deliberate:
    `VECTOR_DIMENSIONS_MISMATCH`.
 3. The old directory is left alone and its vectors are refused at admission as
    coming from a different space, rather than being compared across incompatible
-   geometries. The new store starts empty, and background passes re-embed into
-   it. SQLite remains the authority throughout, so nothing is lost — only the
-   companion is rebuilt, and semantic recall is thin until it catches up.
+   geometries. The new store starts empty, and only what is captured or
+   changed from then on is embedded into it: work already embedded in the old
+   space is not embedded again (#200 proposes that). SQLite remains the
+   authority throughout, so nothing is lost, but older memory is found by its
+   words alone.
 4. `vector_threshold` no longer applies. Recalibrate it, or unset it and accept
    lexical recall in the meantime.
 

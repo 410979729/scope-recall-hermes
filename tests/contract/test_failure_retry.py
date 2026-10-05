@@ -225,7 +225,7 @@ def test_every_transient_failure_the_worker_knows_is_operator_actionable():
     assert all(retry_class(code) == "actionable" for code in AUTO_RECOVERABLE_ERRORS),         "a code the worker retries automatically must also be clearable by hand"
 
 
-@pytest.mark.parametrize("code", ["model_unavailable", "model_timeout", "network_error",
+@pytest.mark.parametrize("code", ["model_unavailable", "model_timeout", "network_error", "http_protocol",
                                   "http_429", "http_503", "http_529", "rate_limited"])
 def test_a_transient_model_failure_can_be_cleared(code):
     assert retry_class(code) == "actionable"
@@ -274,6 +274,17 @@ def test_a_transient_failure_clears_through_real_storage(app):
     assert _states(core)[0].get("failed")
     report = core.retry_failed_work(ctx, limit=64, dry_run=False)
     assert report["retried"] >= 1 and report["by_kind"].get("model_unavailable")
+    assert not _states(core)[0].get("failed")
+
+
+def test_a_transport_failure_mid_reply_clears_through_real_storage(app):
+    """#201: a model served over plain HTTP failed candidate evaluations with ``http_protocol``, and no operator
+    command could take them up again."""
+    core, ctx = app
+    _fail_one(core, ctx, "http_protocol")
+    assert _states(core)[0].get("failed")
+    report = core.retry_failed_work(ctx, limit=64, dry_run=False)
+    assert report["retried"] >= 1 and report["by_kind"].get("http_protocol")
     assert not _states(core)[0].get("failed")
 
 

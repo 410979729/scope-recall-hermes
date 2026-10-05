@@ -23,6 +23,8 @@ from ..runtime_wiring import render_host_recall_context
 from .boundary import (
     SourceIdentity,
     SourceObservationLedger,
+    extract_user_text,
+    host_notice,
     interim_messages,
     interim_source_event,
     pre_llm_source_event,
@@ -236,6 +238,11 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
         #: Turns whose opening message ``pre_llm_call`` stored: after a compression switches the session id
         #: mid-turn, ``sync_turn`` would store it again under the new session's key.
         self._user_captured_turns: dict[str, None] = {}
+        #: Turns Hermes opened itself (``host_notice``), with the text of the message that opened each, kept like
+        #: ``_user_captured_turns`` under ``_said_lock``: that message is stored as the host's wherever it is stored, by
+        #: ``pre_llm_call`` or by ``sync_turn``.  ``sync_turn`` names its turn by the one active when it runs, which can
+        #: be the next turn already, so the text decides, never the turn id alone (review of 3.7.2).
+        self._notice_turns: dict[str, str] = {}
         self._session_watermark = 0
         self._current_source_refs: list[str] = []
         #: This turn captured more sources than the fence holds; recall stays
@@ -298,9 +305,29 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
         holder = self._holder
         if kind == "pre_llm_call":
             self._skipped_turn_id = str((kwargs or {}).get("turn_id") or "").strip() or None
+            if self._skipped_turn_id:
+                self._note_turn_opener(self._skipped_turn_id, (kwargs or {}).get("conversation_history"),
+                                       (kwargs or {}).get("user_message"))
         self._count_backpressure(kind)
         _log.warning("scope-recall: %s not taken: this session has been busy in %s for %.1f s", kind,
                      holder[0] if holder else "another call", time.monotonic() - holder[1] if holder else 0.0)
+
+    def _note_turn_opener(self, turn_id: str, history: object, user_message: object) -> bool:
+        """Remember whether Hermes opened ``turn_id`` itself (``host_notice``), and with which text; True if it did."""
+        notice = host_notice(history, user_message)
+        with self._said_lock:
+            self._notice_turns.pop(turn_id, None)
+            if notice:
+                self._notice_turns[turn_id] = extract_user_text(user_message).strip()
+                while len(self._notice_turns) > _USER_CAPTURED_TURNS:
+                    self._notice_turns.pop(next(iter(self._notice_turns)))
+        return notice
+
+    def _opened_by_host(self, turn_id: str, user_content: str) -> bool:
+        """Whether ``user_content`` is the message Hermes opened ``turn_id`` with."""
+        with self._said_lock:
+            opener = self._notice_turns.get(turn_id)
+        return opener is not None and opener == user_content.strip()
 
     def _backpressure_counts(self) -> dict[str, int]:
         with self._said_lock:
@@ -395,6 +422,7 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
             with self._said_lock:
                 self._interim_said.clear()
                 self._steer_said.clear()
+                self._notice_turns.clear()
             self._user_captured_turns.clear()
             self._session_watermark = 0
             self._reset_current_source_refs()
@@ -929,7 +957,9 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
         current_message = kwargs.get("user_message")
         if type(current_message) is str and current_message:
             self._current_task_message = current_message[:8192]
-        context = identity.trusted_context(session_id=session_id, mutation=True)
+        notice = self._note_turn_opener(turn_id, kwargs.get("conversation_history"), current_message)
+        context = identity.trusted_context(
+            session_id=session_id, actor_origin="host_generated" if notice else None, mutation=True)
         event, gaps, ledger_identity = pre_llm_source_event(
             self._ledger,
             context,
@@ -1087,6 +1117,8 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
         self._retry_buffered_captures(release=True)
         context = identity.trusted_context(session_id=effective_session, mutation=True)
         shown = identity.trusted_context(session_id=effective_session, actor_origin="assistant_visible", mutation=True)
+        opened = (identity.trusted_context(session_id=effective_session, actor_origin="host_generated", mutation=True)
+                  if self._opened_by_host(turn_id, user_content) else context)
         with self._said_lock:
             interim, self._interim_said = self._interim_said, {}
             steers, self._steer_said = self._steer_said, {}
@@ -1122,7 +1154,7 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
                 self._outcomes.mark_success(effective_session, turn_id)
             event_pairs, gaps = sync_turn_source_events(
                 self._ledger,
-                context,
+                opened,
                 session_id=effective_session,
                 turn_id=turn_id,
                 user_content=user_content,
@@ -1132,7 +1164,7 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
                 include_user=turn_id not in self._user_captured_turns,
             )
         for event, ledger_identity in event_pairs:
-            event_context = shown if event["role"] == "assistant" else context
+            event_context = shown if event["role"] == "assistant" else opened
             with self._lock, self._holding("sync_turn"):
                 self._capture_event(event_context, event, identity=ledger_identity, gaps=gaps,
                                     scope_id=identity.local_scope_id, bound=identity, release=True)
@@ -1213,6 +1245,7 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
                 self._active_turn_id = ""
                 self._interim_said.clear()
                 self._steer_said.clear()
+                self._notice_turns.clear()
             self._user_captured_turns.clear()
         self._identity = fresh
         runtime_audience = fresh.runtime_audience

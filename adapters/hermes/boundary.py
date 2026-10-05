@@ -274,6 +274,30 @@ def _steer_words(content: object) -> str:
     return words
 
 
+def host_notice(history: object, user_message: object) -> bool:
+    """Whether the turn ``pre_llm_call`` opens is one Hermes opened itself, not the person.
+
+    Hermes marks the user messages it writes itself with a display kind: a finished background process, a
+    delegation's result, a wake-up, a plugin's message (``gateway.response_filters.display_kind_for_event``, the
+    CLI's ``TimelineNotification``).  A steer is the one kind that holds the person's words
+    (``ContextCompressor._is_actionable_user_turn``).  The turn's own message is the last user message holding its
+    text in the run of user messages that ends the conversation: a compression at the turn's start can add others
+    after it (``agent.turn_context.reanchor_current_turn_user_idx``), and anything before the last reply belongs to
+    an earlier turn.  One not found there is the person's, as before.  Stored as the person's, a notice read as
+    something they said.
+    """
+    text = extract_user_text(user_message)
+    if not isinstance(history, list) or not text.strip():
+        return False
+    for message in reversed(history):
+        if not isinstance(message, dict) or message.get("role") != "user":
+            return False
+        if extract_user_text(message.get("content")) == text:
+            kind = message.get("display_kind")
+            return isinstance(kind, str) and bool(kind) and kind != STEER_KIND
+    return False
+
+
 def steer_messages(history: object) -> tuple[tuple[str, str | None], ...]:
     """What the person sent while the turn that ends ``history`` ran, and when.
 
