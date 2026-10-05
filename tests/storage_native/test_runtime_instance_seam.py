@@ -61,6 +61,14 @@ def _delete_request(ref: str):
     }
 
 
+def test_a_model_switch_reembeds_done_sources_and_claims_in_lance(tmp_path: Path, monkeypatch):
+    from tests.contract import test_trace
+
+    instance = test_trace._space_instance
+    monkeypatch.setattr(test_trace, "_space_instance", lambda core, ctx, model: instance(core, ctx, model, backend="lancedb"))
+    test_trace.test_a_model_switch_reembeds_done_sources_and_claims(test_trace.app.__wrapped__(tmp_path))
+
+
 def test_a_drain_queues_and_embeds_an_import_s_history(tmp_path: Path):
     """No test reached the drain's backfill (``RuntimeInstance.drain``): an import's message with no embedding is
     queued by a pass and embedded, and the pass says so."""

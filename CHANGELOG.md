@@ -4,6 +4,10 @@ All notable changes to `scope-recall` will be documented in this file.
 
 ## [Unreleased]
 
+### Fixes
+
+- **Changing the embedding model re-embeds what was already embedded.** The work queue is unique by type, subject and revision, not embedding space, so after a model switch every source and claim embedded in the old space stayed `done` and never reached the new, empty store; the import backfill only takes sources that never had embedding work. Background drains now reopen that work in bounded pages, with a per-space, per-worker cursor and a fixed work-id ceiling taken when the new space is first seen empty. The normal worker keeps its publication fences, expired vectors stay expired, and the queue leaves room for new captures and candidate evaluations. A space that already holds vectors or upkeep receipts when first seen is treated as caught up, so upgrading does not re-embed an existing installation.
+
 ## [3.7.1] - 2026-10-05
 
 3.7.1 lets the MCP tools say why they refused a call, and recognises an older copy of the current message whatever its closing punctuation, as long as both ask or neither does.

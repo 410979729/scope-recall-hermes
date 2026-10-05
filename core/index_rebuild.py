@@ -99,6 +99,56 @@ def queue_embedding_page(
     )
 
 
+def embedding_work_ceiling(storage, context) -> int:
+    """Freeze the work this worker could have embedded before a space change."""
+    with storage.read(context) as tx:
+        visible, params = tx.work._visible_filter()
+        return int(tx._check().execute(
+            f"SELECT COALESCE(MAX(work_id),0) FROM work_items WHERE work_type='embed' AND {visible}", params,
+        ).fetchone()[0])
+
+
+def reopen_embedding_page(storage, context, *, cursor: int, ceiling_work_id: int, limit: int = 64,
+                          yield_to: frozenset[str] = frozenset(), yield_ceiling: int = IMPORT_EMBED_YIELD_CEILING,
+                          now: datetime | None = None) -> dict:
+    """Reopen old-space completed work, never look up individual vectors. Publication keeps the worker's fences."""
+    if type(limit) is not int or not 1 <= limit <= 200:
+        raise ContractError("INPUT_INVALID", "embed_respace_page")
+    if any(type(value) is not int or value < 0 for value in (cursor, ceiling_work_id)) or cursor > ceiling_work_id:
+        raise ContractError("INPUT_INVALID", "embed_respace_cursor")
+    if type(yield_ceiling) is not int or not 1 <= yield_ceiling <= IMPORT_EMBED_QUEUE_CEILING:
+        raise ContractError("INPUT_INVALID", "embed_respace_yield_ceiling")
+    moment = (now or datetime.now(timezone.utc)).isoformat()
+    with storage.write(context) as tx:
+        conn = tx._check(write=True)
+        ceiling = IMPORT_EMBED_QUEUE_CEILING
+        if yield_to and tx.work.other_work_ready(now=moment, kinds=yield_to):
+            ceiling = yield_ceiling
+        room = ceiling - tx.work.pending_depth("embed")
+        if room <= 0:
+            return dict(cursor=cursor, queued=0, held=True, finished=False)
+        scan = min(limit, room)
+        visible, params = tx.work._visible_filter()
+        rows = conn.execute(
+            f"""SELECT work_id FROM work_items WHERE work_type='embed' AND state='done'
+                AND work_id>? AND work_id<=? AND {visible} ORDER BY work_id LIMIT ?""",
+            (cursor, ceiling_work_id, *params, scan),
+        ).fetchall()
+        queued = 0
+        for row in rows:
+            # A different space gets a fresh attempt budget, not a retry of a failed model call. Non-live
+            # subjects still go through worker_projection's obsolete path before preparing any embedding.
+            queued += conn.execute(
+                """UPDATE work_items SET state='pending',attempt=0,available_at=?,lease_token=lease_token+1,
+                    lease_owner=NULL,lease_until=NULL,last_error_code='embedding_space_changed'
+                    WHERE work_id=? AND state='done' AND NOT EXISTS (
+                        SELECT 1 FROM expired_vectors e WHERE e.source_ref=work_items.subject_ref
+                        AND e.source_revision=work_items.subject_revision)""", (moment, row["work_id"]),
+            ).rowcount
+        cursor = rows[-1]["work_id"] if len(rows) == scan else ceiling_work_id
+        return dict(cursor=cursor, queued=queued, held=False, finished=cursor >= ceiling_work_id)
+
+
 def queue_import_embeddings(storage, context, *, after_key=None, limit: int = 64,
                             yield_to: frozenset[str] = frozenset(), yield_ceiling: int = IMPORT_EMBED_YIELD_CEILING,
                             now: datetime | None = None) -> dict:

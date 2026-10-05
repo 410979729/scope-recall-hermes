@@ -20,8 +20,9 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from ..vector.compaction import (EMBED_BACKFILL_STATE_SCHEMA, INDEX_STATE_FILENAME, INDEX_STATE_SCHEMA, compaction_due,
-                                 embed_backfill_filename, measure_footprint, read_state, write_state)
+from ..vector.compaction import (EMBED_BACKFILL_STATE_SCHEMA, EMBED_RESPACE_STATE_SCHEMA, INDEX_STATE_FILENAME,
+                                 INDEX_STATE_SCHEMA, compaction_due, embed_backfill_filename, embed_respace_filename,
+                                 measure_footprint, read_state, write_state)
 from ..vector.store import VECTOR_INDEX_MIN_ROWS
 from .validation import utc_now
 
@@ -164,6 +165,57 @@ EMBED_BACKFILL_RECHECK = timedelta(days=1)
 EMBED_BACKFILL_PAGE = 64
 
 
+def respace_if_due(storage: Any, context: Any, store: Any, vector_config: Any, *, now: datetime | None = None,
+                   yield_to: frozenset[str] = frozenset(), yield_ceiling: int | None = None) -> dict | None:
+    """Reopen one bounded page once per empty space and worker partition. Never fails the drain."""
+    if storage is None or context is None or store is None or vector_config is None:
+        return None
+    storage_dir = Path(vector_config.storage_dir)
+    filename = embed_respace_filename(context.allowed_scope_ids, context.project_id, context.branch_id)
+    state = read_state(storage_dir, filename=filename, schema=EMBED_RESPACE_STATE_SCHEMA)
+    if state.get("outcome") == "complete":
+        return None
+    moment = now or datetime.now(timezone.utc)
+    receipt = {**state, "checked_at": moment.isoformat().replace("+00:00", "Z")}
+    receipt.pop("error", None)
+    try:
+        from ..core.index_rebuild import embedding_work_ceiling, reopen_embedding_page
+
+        if "ceiling_work_id" not in state:
+            # A space first seen empty is a new space. Existing upkeep or vectors mark an upgrade, not a
+            # model switch; do not re-embed a populated installation just because this receipt is new. Once
+            # any partition has a respace receipt here, this version saw the space start, so another
+            # partition's vectors or upkeep say nothing about this one.
+            existing = receipt.get("existing_space")
+            if existing is None:
+                existing = not any(storage_dir.glob("embed-respace-*.json")) and (
+                    any(storage_dir.glob("embed-backfill-*.json"))
+                    or (storage_dir / INDEX_STATE_FILENAME).exists() or store.count_rows() > 0)
+                receipt["existing_space"] = existing
+            receipt.update(cursor=0, ceiling_work_id=embedding_work_ceiling(storage, context),
+                           outcome="complete" if existing else "progress")
+            if existing:
+                receipt["cursor"] = receipt["ceiling_work_id"]
+            write_state(storage_dir, receipt, filename=filename, schema=EMBED_RESPACE_STATE_SCHEMA)
+            # Unlike an upkeep report, the initial high-water mark must survive before any work is reopened.
+            if read_state(storage_dir, filename=filename, schema=EMBED_RESPACE_STATE_SCHEMA).get("ceiling_work_id") != receipt["ceiling_work_id"]:
+                raise OSError("embed_respace_state_not_written")
+            if existing:
+                return receipt
+        # Rows newer than the frozen ceiling use normal enqueue. A row already done in the new space before
+        # the first page (or a page replayed after a crash) is harmless: publication upserts by vector id.
+        page = reopen_embedding_page(storage, context, cursor=receipt["cursor"],
+                                     ceiling_work_id=receipt["ceiling_work_id"], limit=EMBED_BACKFILL_PAGE,
+                                     yield_to=yield_to, now=moment,
+                                     **({} if yield_ceiling is None else {"yield_ceiling": yield_ceiling}))
+        receipt.update(cursor=page["cursor"], queued=page["queued"],
+                       outcome="held" if page["held"] else "complete" if page["finished"] else "progress")
+    except Exception as exc:  # noqa: BLE001 - upkeep never fails a drain.
+        receipt.update(outcome="failed", error=type(exc).__name__)
+    write_state(storage_dir, receipt, filename=filename, schema=EMBED_RESPACE_STATE_SCHEMA)
+    return receipt
+
+
 def backfill_if_due(storage: Any, context: Any, vector_config: Any, *, now: datetime | None = None,
                     yield_to: frozenset[str] = frozenset(), yield_ceiling: int | None = None) -> dict | None:
     """Queue the next page of an import's embeddings, unless the last look found none left within a day.  While
@@ -205,4 +257,4 @@ def backfill_if_due(storage: Any, context: Any, vector_config: Any, *, now: date
 
 
 __all__ = ["EMBED_BACKFILL_RECHECK", "INDEX_RECHECK", "RESERVE_SECONDS", "backfill_if_due", "compact_if_due",
-           "index_if_due"]
+           "index_if_due", "respace_if_due"]

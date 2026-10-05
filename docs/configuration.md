@@ -455,9 +455,17 @@ dialect and the digest changes. The consequences are all deliberate:
    `VECTOR_DIMENSIONS_MISMATCH`.
 3. The old directory is left alone and its vectors are refused at admission as
    coming from a different space, rather than being compared across incompatible
-   geometries. The new store starts empty, and background passes re-embed into
-   it. SQLite remains the authority throughout, so nothing is lost — only the
-   companion is rebuilt, and semantic recall is thin until it catches up.
+   geometries. When first seen empty, the new store gets a bounded background
+   pass over each worker's completed source and claim embeddings, reopening them
+   for the normal worker to publish into the new space. A per-space, per-worker
+   cursor and fixed work-id ceiling keep progress across drains; completed passes
+   do not reopen again. The pass respects the embedding queue ceiling and yields
+   room to candidate evaluations. Intentionally expired vectors stay expired,
+   and the worker still rejects obsolete subjects. New captures use normal enqueue.
+   A space already containing vectors or index/backfill state when first seen is
+   treated as caught up, so upgrading does not re-embed an existing installation.
+   SQLite remains the authority throughout; semantic recall is thin until the
+   companion catches up.
 4. `vector_threshold` no longer applies. Recalibrate it, or unset it and accept
    lexical recall in the meantime.
 

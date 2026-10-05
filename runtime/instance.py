@@ -41,7 +41,7 @@ from .validation import (
     utc_now,
 )
 from .vector_retention import expire_if_due
-from .vector_upkeep import backfill_if_due, compact_if_due, index_if_due
+from .vector_upkeep import backfill_if_due, compact_if_due, index_if_due, respace_if_due
 
 
 _RUNTIME_ORIGINS: frozenset[Origin] = frozenset(
@@ -497,6 +497,8 @@ class RuntimeInstance:
     vector_retention: dict | None = None
     #: Receipt of the page of an import's embeddings this drain queued (``backfill_if_due``), or ``None``.
     embed_backfill: dict | None = None
+    #: Receipt of the old-space embeddings reopened by this drain, or ``None``.
+    embed_respace: dict | None = None
     #: Work types this drain left alone, each with the held model and when its
     #: hold ends (runtime/model_budget.py ``provider_holds``).
     provider_holds: dict = field(default_factory=dict)
@@ -655,12 +657,6 @@ class RuntimeInstance:
             available_seconds=max(0.0, deadline - time.monotonic()),
             reason=f"vectors_expired:{expired}" if expired else None,
         )
-        # A store this pass could not open says nothing about its index; a look now would be recorded as a
-        # failure and put off the build for hours.
-        self.vector_index = None if vector_gaps else index_if_due(
-            self._vector_store, self.config.vector,
-            available_seconds=max(0.0, deadline - time.monotonic()),
-        )
         from ..core.worker import WorkerConfig, drain_worker
         from .model_budget import provider_holds
 
@@ -675,6 +671,16 @@ class RuntimeInstance:
         evaluations = frozenset() if purge_only or candidate is None \
             else frozenset({"evaluate_candidate"}) - frozenset(self.provider_holds)
         page = self.config.max_items if max_items is None else max_items
+        # Observe a new space before index/backfill upkeep writes receipts that would make it look pre-existing.
+        self.embed_respace = None if vector_gaps or (embed if embed is not None else self._default_embed) is None \
+            else respace_if_due(self.core.storage, self.config.context(), self._vector_store, self.config.vector,
+                                yield_to=evaluations, yield_ceiling=min(IMPORT_EMBED_QUEUE_CEILING, max(1, page // 2)))
+        # A store this pass could not open says nothing about its index; a look now would be recorded as a
+        # failure and put off the build for hours.
+        self.vector_index = None if vector_gaps else index_if_due(
+            self._vector_store, self.config.vector,
+            available_seconds=max(0.0, deadline - time.monotonic()),
+        )
         self.embed_backfill = None if vector_gaps or (embed if embed is not None else self._default_embed) is None \
             else backfill_if_due(self.core.storage, self.config.context(), self.config.vector, yield_to=evaluations,
                                  yield_ceiling=min(IMPORT_EMBED_QUEUE_CEILING, max(1, page // 2)))

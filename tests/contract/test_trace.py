@@ -458,6 +458,235 @@ def test_the_backfill_leaves_room_for_candidate_evaluations(app, tmp_path):
     assert (page["queued"], page["finished"]) == (2, True) and all(ref in _embeds(core) for ref in said)
 
 
+def _space_instance(core, ctx, model, *, backend="sqlite-bruteforce"):
+    from types import SimpleNamespace
+
+    from scope_recall.runtime.auxiliary import AuxiliaryRuntimeConfig
+    from scope_recall.runtime.instance import RuntimeInstance, RuntimeInstanceConfig, VectorRuntimeConfig, default_vector_factory
+
+    class Embedding:
+        def embed_query(self, text, *, remaining_seconds):
+            return (1.0,) + (0.0,) * 7
+
+        def embed_source(self, source, *, remaining_seconds):
+            return (1.0,) + (0.0,) * 7
+
+        def embed_text(self, text, *, remaining_seconds):
+            return (1.0,) + (0.0,) * 7
+
+    auxiliary = AuxiliaryRuntimeConfig.from_mapping({
+        "external_embedding": False, "external_consolidation": False,
+        "embedding": {"credential_env": "TEST_EMBED_KEY", "model": model,
+                      "endpoint": "https://test.invalid/embeddings", "dimensions": 8, "dialect": "openai"},
+    })
+    config = RuntimeInstanceConfig(binding=ctx.binding, session_id=ctx.session_id, allowed_scope_ids=ctx.allowed_scope_ids,
+                                   project_id=ctx.project_id, branch_id=ctx.branch_id, auxiliary=auxiliary)
+    config = replace(config, vector=VectorRuntimeConfig(
+        backend=backend, storage_dir=ctx.binding.data_directory / "vectors" / config.embedding_space_id(),
+        table_name="TEST-respace", dimensions=8))
+    return RuntimeInstance(config, core, SimpleNamespace(query_embedding=Embedding(), source_embedding=Embedding()),
+                           _vector_factory=default_vector_factory)
+
+
+def test_a_model_switch_reembeds_done_sources_and_claims(app):
+    """The new space was empty forever: enqueue's conflict rule kept the old space's done items done."""
+    import sqlite3
+
+    from scope_recall.core.composition import SystemClock
+
+    core, ctx = app
+    core.clock = SystemClock()
+    claim, source = edge(core, ctx, "TEST-A", "TEST-B")
+    old = _space_instance(core, ctx, "TEST-model-A")
+    new = _space_instance(core, ctx, "TEST-model-B")
+    try:
+        old.drain()
+        assert old._vector_store.count_rows() == 2
+        with sqlite3.connect(core.storage.path) as conn:
+            before = conn.execute("SELECT state,lease_token FROM work_items WHERE work_type='embed' ORDER BY work_id").fetchall()
+        assert [row[0] for row in before] == ["done", "done"]
+        # Purge-only leaves the reopened items observable before publication.
+        new.drain(purge_only=True)
+        with sqlite3.connect(core.storage.path) as conn:
+            reopened = conn.execute("SELECT state,lease_token,last_error_code,attempt,lease_owner,lease_until FROM work_items "
+                                    "WHERE work_type='embed' ORDER BY work_id").fetchall()
+        assert [row[0] for row in reopened] == ["pending", "pending"], "old-space done work must be reopened"
+        assert [row[1] for row in reopened] == [row[1] + 1 for row in before]
+        assert all(row[2:] == ("embedding_space_changed", 0, None, None) for row in reopened)
+        new.drain()
+        ids = set(new._vector_store.list_ids())
+        assert ids == {f"p10:{ref}@1:{new.config.embedding_space_id()}" for ref in (source.ref, claim.ref)}
+        with sqlite3.connect(core.storage.path) as conn:
+            done = conn.execute("SELECT state,lease_token FROM work_items WHERE work_type='embed' ORDER BY work_id").fetchall()
+        new.drain()
+        assert new.embed_respace is None
+        with sqlite3.connect(core.storage.path) as conn:
+            assert conn.execute("SELECT state,lease_token FROM work_items WHERE work_type='embed' ORDER BY work_id").fetchall() == done
+        assert set(new._vector_store.list_ids()) == ids
+        assert old._vector_store.count_rows() == 2
+    finally:
+        old.close()
+        new.close()
+
+
+@pytest.mark.parametrize("existing", ["vectors", "backfill", "index"])
+def test_respace_does_not_reopen_an_existing_space_on_upgrade(app, tmp_path, existing):
+    import sqlite3
+    from types import SimpleNamespace
+
+    from scope_recall.runtime.vector_upkeep import respace_if_due
+    from scope_recall.vector.compaction import embed_backfill_filename
+
+    core, ctx = app
+    edge(core, ctx, "TEST-A", "TEST-B")
+    with sqlite3.connect(core.storage.path) as conn:
+        conn.execute("UPDATE work_items SET state='done' WHERE work_type='embed'")
+    if existing != "vectors":
+        filename = "index-state.json" if existing == "index" else embed_backfill_filename(ctx.allowed_scope_ids, ctx.project_id, ctx.branch_id)
+        (tmp_path / filename).write_text("{}", encoding="utf-8")
+    receipt = respace_if_due(core.storage, ctx, SimpleNamespace(count_rows=lambda: int(existing == "vectors")),
+                             SimpleNamespace(storage_dir=tmp_path))
+    assert receipt["outcome"] == "complete" and receipt["cursor"] == receipt["ceiling_work_id"]
+    with sqlite3.connect(core.storage.path) as conn:
+        assert conn.execute("SELECT DISTINCT state FROM work_items WHERE work_type='embed'").fetchall() == [("done",)]
+
+
+def test_respace_pages_yield_resume_skip_expired_and_freeze_the_ceiling(app, tmp_path, monkeypatch):
+    import sqlite3
+    from datetime import datetime, timezone
+    from types import SimpleNamespace
+
+    from scope_recall.core.index_rebuild import IMPORT_EMBED_QUEUE_CEILING
+    from scope_recall.runtime import vector_upkeep
+
+    core, ctx = app
+    monkeypatch.setattr(vector_upkeep, "EMBED_BACKFILL_PAGE", 1)
+    with sqlite3.connect(core.storage.path) as conn:
+        for ref in ("event-TEST-expired", "event-TEST-old-1", "event-TEST-old-2", "event-TEST-other"):
+            conn.execute("""INSERT INTO work_items(work_type,subject_ref,subject_revision,scope_id,state,available_at)
+                VALUES ('embed',?,1,'TEST-scope','done','2026-09-01T00:00:00Z')""", (ref,))
+        conn.execute("UPDATE work_items SET project_id='TEST-other' WHERE subject_ref='event-TEST-other'")
+        conn.execute("INSERT INTO expired_vectors(source_ref,source_revision,expired_at) VALUES ('event-TEST-expired',1,'2026-09-01T00:00:00Z')")
+        for index in range(IMPORT_EMBED_QUEUE_CEILING):
+            conn.execute("""INSERT INTO work_items(work_type,subject_ref,subject_revision,scope_id,available_at)
+                VALUES ('embed',?,1,'TEST-scope','2026-09-01T00:00:00Z')""", (f"event-TEST-pending-{index}",))
+        conn.execute("""INSERT INTO work_items(work_type,subject_ref,subject_revision,scope_id,available_at)
+            VALUES ('evaluate_candidate','candidate-TEST-ready',1,'TEST-scope','2026-09-01T00:00:00Z')""")
+    config = SimpleNamespace(storage_dir=tmp_path)
+    store = SimpleNamespace(count_rows=lambda: 0)
+
+    def page():
+        return vector_upkeep.respace_if_due(core.storage, ctx, store, config,
+                                            now=datetime(2026, 9, 6, 12, tzinfo=timezone.utc),
+                                            yield_to=frozenset({"evaluate_candidate"}), yield_ceiling=1)
+
+    held = page()
+    assert (held["outcome"], held["cursor"], held["queued"]) == ("held", 0, 0)
+    with sqlite3.connect(core.storage.path) as conn:
+        conn.execute("DELETE FROM work_items WHERE state='pending' AND work_type='embed'")
+        conn.execute("""INSERT INTO work_items(work_type,subject_ref,subject_revision,scope_id,state,available_at)
+            VALUES ('embed','event-TEST-new',1,'TEST-scope','done','2026-09-01T00:00:00Z')""")
+        assert conn.execute("SELECT work_id FROM work_items WHERE subject_ref='event-TEST-new'").fetchone()[0] > held["ceiling_work_id"]
+    expired = page()
+    assert expired["queued"] == 0 and expired["cursor"] > held["cursor"]
+    first = page()
+    assert first["queued"] == 1 and first["cursor"] > expired["cursor"]
+    assert page()["cursor"] == first["cursor"], "yield ceiling holds the cursor until the pending embedding drains"
+    with sqlite3.connect(core.storage.path) as conn:
+        conn.execute("UPDATE work_items SET state='done' WHERE state='pending' AND work_type='embed'")
+    second = page()
+    assert second["queued"] == 1 and second["cursor"] > first["cursor"]
+    with sqlite3.connect(core.storage.path) as conn:
+        conn.execute("UPDATE work_items SET state='done' WHERE state='pending' AND work_type='embed'")
+    final = page()
+    assert final["outcome"] == "complete" and final["cursor"] == held["ceiling_work_id"]
+    assert page() is None
+    with sqlite3.connect(core.storage.path) as conn:
+        rows = dict(conn.execute("SELECT subject_ref,last_error_code FROM work_items WHERE work_type='embed'"))
+    assert rows == {"event-TEST-expired": None, "event-TEST-other": None, "event-TEST-new": None,
+                    "event-TEST-old-1": "embedding_space_changed", "event-TEST-old-2": "embedding_space_changed"}
+
+
+def test_a_second_partition_still_respaces_after_the_first_populates_the_new_space(app, tmp_path):
+    import sqlite3
+    from dataclasses import replace as replace_context
+    from types import SimpleNamespace
+
+    from scope_recall.runtime.vector_upkeep import respace_if_due
+    from scope_recall.vector.compaction import embed_backfill_filename
+
+    core, ctx = app
+    edge(core, ctx, "TEST-A", "TEST-B")
+    with sqlite3.connect(core.storage.path) as conn:
+        conn.execute("UPDATE work_items SET state='done' WHERE work_type='embed'")
+    other = replace_context(ctx, project_id="TEST-other-partition")
+    config = SimpleNamespace(storage_dir=tmp_path)
+    first = respace_if_due(core.storage, other, SimpleNamespace(count_rows=lambda: 0), config)
+    assert first["existing_space"] is False
+    # The first partition's vectors and upkeep receipts now fill the shared new space.
+    (tmp_path / embed_backfill_filename(other.allowed_scope_ids, other.project_id, other.branch_id)).write_text(
+        "{}", encoding="utf-8")
+    second = respace_if_due(core.storage, ctx, SimpleNamespace(count_rows=lambda: 5), config)
+    assert second["existing_space"] is False and second["queued"] == 2
+
+
+def test_respace_failure_is_a_receipt_and_an_unwritten_ceiling_reopens_nothing(app, tmp_path, monkeypatch):
+    import sqlite3
+    from types import SimpleNamespace
+
+    from scope_recall.runtime import vector_upkeep
+
+    core, ctx = app
+    edge(core, ctx, "TEST-A", "TEST-B")
+    with sqlite3.connect(core.storage.path) as conn:
+        conn.execute("UPDATE work_items SET state='done' WHERE work_type='embed'")
+    monkeypatch.setattr(vector_upkeep, "write_state", lambda *args, **kwargs: None)
+    receipt = vector_upkeep.respace_if_due(core.storage, ctx, SimpleNamespace(count_rows=lambda: 0),
+                                           SimpleNamespace(storage_dir=tmp_path))
+    assert receipt["outcome"] == "failed" and receipt["error"] == "OSError"
+    with sqlite3.connect(core.storage.path) as conn:
+        assert conn.execute("SELECT DISTINCT state FROM work_items WHERE work_type='embed'").fetchall() == [("done",)]
+
+
+@pytest.mark.parametrize("gap", [False, True])
+def test_the_drain_does_not_respace_without_an_embedder_or_with_a_vector_gap(app, monkeypatch, gap):
+    from scope_recall.runtime import instance as instance_module
+
+    core, ctx = app
+    instance = _space_instance(core, ctx, "TEST-model-guard")
+    monkeypatch.setattr(instance, "_open_vector_for_drain", lambda *args: ("TEST-vector-gap",) if gap else ())
+    monkeypatch.setattr(instance_module, "respace_if_due", lambda *args, **kwargs: pytest.fail("must not respace"))
+    try:
+        instance.drain(embed=object() if gap else None)
+        assert instance.embed_respace is None
+    finally:
+        instance.close()
+
+
+def test_a_reopened_non_live_subject_is_obsolete_not_embedded(app, tmp_path):
+    import sqlite3
+    from datetime import datetime, timezone
+    from types import SimpleNamespace
+
+    from scope_recall.runtime.vector_upkeep import respace_if_due
+
+    core, ctx = app
+    with sqlite3.connect(core.storage.path) as conn:
+        conn.execute("""INSERT INTO work_items(work_type,subject_ref,subject_revision,scope_id,state,available_at)
+            VALUES ('embed','event-TEST-gone',1,'TEST-scope','done','2026-09-01T00:00:00Z')""")
+    receipt = respace_if_due(core.storage, ctx, SimpleNamespace(count_rows=lambda: 0),
+                             SimpleNamespace(storage_dir=tmp_path), now=datetime(2026, 9, 1, tzinfo=timezone.utc))
+    assert receipt["queued"] == 1
+    class Embed:
+        def prepare_source(self, *args, **kwargs):
+            pytest.fail("obsolete subject must not reach the model")
+
+        def publish_source(self, *args, **kwargs):
+            pytest.fail("obsolete subject must not reach the store")
+
+    assert core.drain_worker(ctx, embed=Embed(), remaining_seconds=5).obsolete == 1
+
+
 def test_a_page_never_takes_the_embedding_queue_past_its_ceiling(app):
     """The queue was measured before a page of 64 joined it, so up to 127 embeddings waited (review of rc11).  A page
     now looks at no more sources than can join, and is not taken for the last because it looked at fewer."""

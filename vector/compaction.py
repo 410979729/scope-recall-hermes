@@ -53,6 +53,12 @@ INDEX_STATE_FILENAME = "index-state.json"
 INDEX_STATE_SCHEMA = "scope-recall.vector-index.v1"
 #: Where the backfill of an import's embeddings stopped (``runtime/vector_upkeep.backfill_if_due``), beside them.
 EMBED_BACKFILL_STATE_SCHEMA = "scope-recall.embed-backfill.v1"
+EMBED_RESPACE_STATE_SCHEMA = "scope-recall.embed-respace.v1"
+
+
+def embed_respace_filename(scope_ids, project_id: str | None, branch_id: str | None) -> str:
+    """A space-change cursor uses the same worker partition as import backfill."""
+    return embed_backfill_filename(scope_ids, project_id, branch_id).replace("embed-backfill-", "embed-respace-")
 
 
 def embed_backfill_filename(scope_ids, project_id: str | None, branch_id: str | None) -> str:
