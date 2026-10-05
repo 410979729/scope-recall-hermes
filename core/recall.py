@@ -5,7 +5,6 @@ from dataclasses import replace
 from itertools import islice
 import sqlite3
 import time
-import unicodedata
 from typing import Protocol
 
 from ..contracts import ContractError
@@ -16,7 +15,14 @@ from .duplicate_collapse import DistinctContent, note_duplicates
 from .events import lexical_terms
 from .recall_budget import estimate_tokens, event_admission_order
 from .recall_needs import CHOICE_MARKERS, directed_followup_query, evidence_roots, mentions, unmet_needs
-from .recall_policy import RecallPolicy, asks_without_answering, identifiers_compatible, meaningful_query_terms, rrf_score
+from .recall_policy import (
+    RecallPolicy,
+    asks_without_answering,
+    identifiers_compatible,
+    meaningful_query_terms,
+    rrf_score,
+    same_message,
+)
 from .recall_scope import asks_what_was_said, query_scope
 from .retrieval import (
     CandidateRef,
@@ -332,7 +338,7 @@ class RetrievalPipeline:
         # aside in ``echoes`` to lead to its turn's replies, never delivered.
         if context.mode == "auto" and obj.kind == "event":
             query = context.query if original_query is None else original_query
-            if unicodedata.normalize("NFKC", obj.content).strip() == unicodedata.normalize("NFKC", query).strip():
+            if same_message(obj.content, query):
                 if echoes is not None:
                     echoes.append(candidate)
                 return None

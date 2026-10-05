@@ -92,3 +92,44 @@ def test_auto_followup_keeps_original_query_filter(app):
     # followup round; its internal query must not redefine the original echo.
     assert query not in _contents(packet)
     assert neutral in _contents(packet), packet
+
+
+@pytest.mark.parametrize(
+    ("older", "query", "same"),
+    (
+        ("我家窗外有什么", "我家窗外有什么？", True),
+        ("我家窗外有什么？", "我家窗外有什么", True),
+        ("  Is P12 done?  ", "Is P12 done?", True),
+        ("继续。", "继续", True),
+        ("我家窗外有什么", "我家 窗外有什么？", False),
+        ("我家窗外有什么", "我家窗外有什么哇", False),
+        ("我的航班改到周五早上八点了。", "我的航班改到周五早上八点了？", False),
+        ("我的航班" + "改" * 130 + "了。", "我的航班" + "改" * 130 + "了？", False),
+        ("你说的是这个？我同意。", "你说的是这个？我同意？", False),
+        ("切到分支 Release-2", "切到分支 release-2", False),
+        ("继续", "继续?", False),
+        ("？", "？", True),
+        ("？", "!", False),
+    ),
+)
+def test_an_older_copy_is_the_same_words_whatever_closes_them(older, query, same):
+    """Only the closing marks and surrounding spaces may differ, and the two must both end asking or both not: a
+    statement asked back as a question is not a copy of it, however long (review of 3.7.1).  The words, their letter
+    case included, may not differ."""
+    from scope_recall.core.recall_policy import same_message
+
+    assert same_message(older, query) is same
+
+
+def test_closing_marks_are_read_from_the_end_once():
+    """A long run of spaces or marks inside a message costs one pass: a pattern anchored at the end tried it again from
+    every position of the run, seconds for one candidate (review of 3.7.1)."""
+    import time
+
+    from scope_recall.core.recall_policy import same_message
+
+    text = "P12" + " ." * 40_000 + "x"
+    started = time.monotonic()
+    assert same_message(text, text + "。") is True
+    assert same_message(text, "P12") is False
+    assert time.monotonic() - started < 1.0

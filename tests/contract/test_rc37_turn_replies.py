@@ -290,15 +290,68 @@ def test_the_packet_leads_with_what_the_question_was_told(app):
 def test_a_short_command_sent_again_does_not_bring_back_an_old_turn(app):
     """A short command sent again asks nothing an old turn answered, so its older copy leads nowhere.  "继续执行"
     holds three overlapping character pairs, "按你说的做" four: with three the bar, both brought back every old
-    turn they had opened (review of 3.4.4)."""
+    turn they had opened (review of 3.4.4).  Ending like a question does not make it one: "按你说的做吗？" and
+    "按你说的做呀" read as asking, and a lower bar for questions brought back an old reply for both (review of
+    3.7.1)."""
     core, ctx = app
-    for index, command in enumerate(("继续", "继续执行", "按你说的做")):
+    for index, command in enumerate(("继续", "继续执行", "按你说的做", "按你说的做吗？", "按你说的做呀")):
         _say(core, ctx, command, origin="human_direct", role="user", when=f"2026-09-02T09:{index:02d}:00Z",
              key=f"TEST-turn/short-ask-{index}")
         told = _say(core, ctx, f"{TOLD}（第{index}次）", origin="assistant_visible", role="assistant",
                     when=f"2026-09-02T09:{index:02d}:12Z", key=f"TEST-turn/short-answer-{index}")
         reader = replace(ctx, session_id=f"TEST-turn-short-reader-{index}")
         assert told.ref not in [item["ref"] for item in _packet(core, reader, command, mode="auto")["items"]], command
+
+
+def test_a_short_status_question_asked_again_does_not_put_the_old_answer_first(app):
+    """"测试通过了吗？" holds four terms: what it was told last time is not raised, so the newer message that says the
+    tests fail now stays above that old answer.  Raised for four-term questions, the old answer came first and the
+    newer one second (review of 3.7.1)."""
+    core, ctx = app
+    _say(core, ctx, "测试通过以后再合并。", origin="human_direct", role="user", when="2026-09-01T09:00:00Z",
+         key="TEST-turn/status-rule")
+    _say(core, ctx, "测试通过了吗？", origin="human_direct", role="user", when="2026-09-02T09:00:00Z",
+         key="TEST-turn/status-ask")
+    stale = _say(core, ctx, "全部绿了，87 个都过。", origin="assistant_visible", role="assistant",
+                 when="2026-09-02T09:00:12Z", key="TEST-turn/status-told")
+    newer = _say(core, ctx, "新分支的测试通过不了，还有三个失败。", origin="human_direct", role="user",
+                 when="2026-09-05T09:00:00Z", key="TEST-turn/status-newer")
+    reader = replace(ctx, session_id="TEST-turn-status-reader")
+    refs = [item["ref"] for item in _packet(core, reader, "测试通过了吗？", mode="auto")["items"]]
+    assert newer.ref in refs
+    assert stale.ref not in refs or refs.index(newer.ref) < refs.index(stale.ref)
+
+
+ASK_AGAIN = "TEST-project 的发布窗口改到几点了呢"
+
+
+def test_an_older_copy_closed_differently_is_still_an_older_copy(app):
+    """The same question asked once without its question mark and once with it, asking both times: the copy is set
+    aside and leads to its turn.  Compared character for character it was another message, delivered as if it
+    answered.  (The owner's window question of 2026-10-04, "我家窗外有什么" and "我家窗外有什么？", is now set aside
+    too; its four terms are too few to lead to its turn.)"""
+    core, ctx = app
+    question = _say(core, ctx, ASK_AGAIN, origin="human_direct", role="user", when="2026-09-02T09:00:00Z",
+                    key="TEST-turn/closed-ask")
+    answer = _say(core, ctx, TOLD, origin="assistant_visible", role="assistant", when="2026-09-02T09:00:12Z",
+                  key="TEST-turn/closed-answer")
+    reader = replace(ctx, session_id="TEST-turn-closed-reader")
+    refs = [item["ref"] for item in _packet(core, reader, ASK_AGAIN + "？", mode="auto")["items"]]
+    assert question.ref not in refs
+    assert answer.ref in refs
+
+
+def test_a_statement_asked_back_as_a_question_stays_found(app):
+    """The person's statement, asked back as a question in the same words, is not an older copy of the question: it
+    says what was asked.  Set aside, only the acknowledgement that followed it came back (review of 3.7.1)."""
+    core, ctx = app
+    statement = _say(core, ctx, "我的航班改到周五早上八点了。", origin="human_direct", role="user",
+                     when="2026-09-02T09:00:00Z", key="TEST-turn/statement")
+    _say(core, ctx, "好的，我记下了。", origin="assistant_visible", role="assistant", when="2026-09-02T09:00:12Z",
+         key="TEST-turn/statement-ack")
+    reader = replace(ctx, session_id="TEST-turn-statement-reader")
+    refs = [item["ref"] for item in _packet(core, reader, "我的航班改到周五早上八点了？", mode="auto")["items"]]
+    assert statement.ref in refs
 
 
 def test_a_reply_belongs_to_the_turn_it_was_written_in(app):

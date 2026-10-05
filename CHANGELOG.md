@@ -4,9 +4,34 @@ All notable changes to `scope-recall` will be documented in this file.
 
 ## [Unreleased]
 
-### Scope Recall 3.7.1rc1 - 2026-10-04
+## [3.7.1] - 2026-10-05
 
-- The version moves past the `v3.7.0` tag.
+3.7.1 lets the MCP tools say why they refused a call, and recognises an older copy of the current message whatever its closing punctuation, as long as both ask or neither does.
+
+### Fixes
+
+- **MCP tools say why they refused a call.** mcp 2 shows the model only `Error executing tool <name>` for an exception other than its own `ToolError`, so a refused call gave no reason to correct: a change asked from a client that sends no conversation id (Claude Code, WorkBuddy, dsh), a scope the caller may not write, a malformed argument. A contract refusal now reaches the model as its code and the name of the field it refused (`ACCESS_DENIED: invalid codex_thread_id`); nothing read from the store is in it. `inspect` advertises its `limit` bound (1 to 24), as the Hermes tool already did, so a larger one is refused by the SDK's argument check, whose message names the bound.
+- **An older copy whatever its closing marks.** The automatic recall sets an older copy of the current message aside, since the message already says it, and for a query of five search terms or more follows it to what it was told. A copy is now recognised whatever its closing punctuation and surrounding spaces, as long as both end asking (on a question mark or an asking particle) or neither does (`same_message`).
+  - Compared character for character, "我家窗外有什么" and "我家窗外有什么？" were two messages; on 2026-10-04 the copy without the question mark took a slot of the owner's automatic packet as if it answered.
+  - A statement asked back as a question ("我的航班改到周五早上八点了。", then "……八点了？") stays two messages, however long, so the person's statement is still found. Different words, a space between them, or a different letter case ("Release-2", "release-2") still make another message.
+- Whether a message only asks, and where its closing marks begin, are read from its end once. A pattern anchored at the end tried a long run of spaces or marks again from each of its positions: 7.5 s for one message holding a run of 32,000 (measured in review). No message on the shared store holds a run of even 500 inside it.
+
+### Known limits
+
+- **A short question asked again is not given what it was told.** An older copy leads to what it was told only for a query of five search terms or more, so that a short command sent again does not bring back an old turn. "我家窗外有什么" holds four. On 2026-10-04, asked of dsh with vectors on, the automatic recall delivered six items: earlier copies of the question, a complaint about it and the investigation that followed. None said what is outside the window, and the answer ranked twelfth. dsh's own reply that evening restates the answer, and on the store as it stands that reply now comes first, in 3.7.0 and 3.7.1 alike.
+  - A lower bar for questions was measured (one more of the owner's 173 questions answered, none lost) and withdrawn in review. Four-term status questions ("测试通过了吗？") would have put their last answer above newer messages that contradict it, and commands that end like questions ("按你说的做吗？") would have brought back old turns. Tests now pin both.
+
+### Measured
+
+On a copy of the shared store taken at 2026-10-04 21:39, each entry asking with its own binding and audience, 3.7.0 against 3.7.1:
+
+- The owner's 173 real questions asked again on the automatic path: identical case by case (rank and item count), words only (147 in the top five) and with vectors (139).
+- The older sets (facts, no-match, rephrased questions and the older QA set on the recall tool's path, tianshu and tianji): identical case by case, words only; the set holding the automatic no-match questions also with vectors.
+- The window question through tianshu's entry, with vectors, in four spellings ("我家窗外有什么", with "？", with "?", with " ？"): 3.7.0 set aside only the copy spelled exactly like the query (none for " ？"), and the other copy took a slot; 3.7.1 sets aside both copies in every spelling.
+
+### Upgrading from 3.7.0
+
+Install the package and run `plan-install` and `apply-install` where you upgrade, and restart the clients' MCP servers and the Hermes gateways. The store's schema is unchanged (1110).
 
 ## [3.7.0] - 2026-10-04
 

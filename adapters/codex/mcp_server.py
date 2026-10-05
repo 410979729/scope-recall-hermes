@@ -11,12 +11,14 @@ Code sends no conversation id at all, so its mutations are refused.
 """
 from __future__ import annotations
 
+import functools
 from pathlib import Path
 from typing import Annotated, Any, Literal
 import uuid
 
 from mcp.server import MCPServer
 from mcp.server.mcpserver import Context
+from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 from pydantic import Field, StrictInt, StrictStr
 
@@ -74,6 +76,23 @@ _TOOLS: tuple[tuple[str, str, ToolAnnotations], ...] = (
     ("forget", FORGET_GUIDANCE + " Protocol version 1.1.",ToolAnnotations(read_only_hint=False, destructive_hint=True, idempotent_hint=True, open_world_hint=False)),
     ("status", "Read bounded Core status and adapter capability gaps. Protocol version 1.1.", _READ_ONLY),
 )
+
+
+def _refusals_said(method):
+    """``method`` as a tool whose contract refusals reach the model as what they are.
+
+    mcp 2 shows the model ``Error executing tool <name>`` and nothing else for any exception but its own ``ToolError``,
+    so a refused call gave no reason to correct: an ``inspect`` asked for 40 lines where 24 is the most, a scope the
+    caller may not write.  A ``ContractError`` says only its code and the field it refused, never what was in it.
+    """
+    @functools.wraps(method)
+    def tool(*args: Any, **kwargs: Any) -> Any:
+        try:
+            return method(*args, **kwargs)
+        except ContractError as exc:
+            raise ToolError(str(exc)) from exc
+
+    return tool
 
 
 def _budget_retry_hint(packet: object) -> None:
@@ -165,7 +184,8 @@ class CodexMCPServer:
 
     def _register_tools(self) -> None:
         for name, description, hints in _TOOLS:
-            self.server.tool(name=name, description=description, annotations=hints, structured_output=True)(getattr(self, name))
+            self.server.tool(name=name, description=description, annotations=hints,
+                             structured_output=True)(_refusals_said(getattr(self, name)))
             # mcp 2.1 builds argument models from signatures with Pydantic's
             # default ``extra=ignore``.  Public tools must reject forged
             # identity, path, scope, and host-session fields, so tighten the
@@ -268,7 +288,9 @@ class CodexMCPServer:
         _budget_retry_hint(packet)
         return self._reply(ctx, call_id, packet)
 
-    def inspect(self, ctx: Context, protocol_version: Literal["1.1"], ref: StrictStr, limit: StrictInt = 24, request_id: StrictStr | None = None) -> dict[str, Any]:
+    def inspect(self, ctx: Context, protocol_version: Literal["1.1"], ref: StrictStr,
+                limit: Annotated[StrictInt, Field(ge=1, le=24)] = 24,
+                request_id: StrictStr | None = None) -> dict[str, Any]:
         body, call_id = self._request(protocol_version=protocol_version, request_id=request_id, ref=ref, limit=limit)
         context = self._request_context(ctx)
         ref, revision = revision_ref(body["ref"])
