@@ -412,7 +412,8 @@ class MemoryCore:
 
         ``run`` is the run as it stands after the action (before it, in a preview).  ``to_reopen`` is what a run that
         is going still has to look at, or else what a new one would reopen; ``waiting`` the embeddings still waiting
-        anywhere, which a run started now reopens once they are done (paid twice).  The run covers the whole store:
+        anywhere, which a run started now reopens once they are done: paid twice, as is whatever the new space
+        embedded before the start.  The run covers the whole store:
         each worker in the space reopens pages of it while fewer than the queue's ceiling wait anywhere, and claims
         its own share.  A preview only reads; a start it would refuse is refused in the preview too.
         """

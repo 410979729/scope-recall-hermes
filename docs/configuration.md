@@ -458,11 +458,14 @@ dialect and the digest changes. The consequences are all deliberate:
    geometries. The new store starts empty, and only what is captured or
    changed from then on is embedded into it. What was embedded in the old space
    is embedded again only when you ask, because every source and claim is then
-   embedded again and paid for once more: after switching, once the embeddings
-   still waiting have been embedded into the new space (`waiting` in the
-   command's preview), run `respace-embeddings --config <file> --start --apply`
-   with the config the worker runs (in a shared store, the shared worker's).
-   Each worker pass then
+   embedded again and paid for once more. While the old route still answers,
+   let the embeddings waiting come down first (`waiting` in the command's
+   preview), then switch and at once run
+   `respace-embeddings --config <file> --start --apply` with the config the
+   worker runs (in a shared store, the shared worker's). The run reopens
+   everything finished before it starts, so whatever waited at the switch or
+   was embedded into the new space before the start is paid for twice, and
+   waiting after the switch only adds to it. Each worker pass then
    reopens a page of the store's finished embeddings, newest first and only
    while the embedding queue has room, until it reaches the oldest; `doctor`
    shows the run (`embedding_respace`), and the command without `--start`

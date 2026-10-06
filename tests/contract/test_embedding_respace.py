@@ -378,9 +378,11 @@ def test_doctor_names_a_run_no_worker_will_go_on_with():
 
     run = {"embedding_space": SPACE_A, "next_work_id": 7, "reopened": 3, "completed": False,
            "updated_at": "2026-10-06T12:00:00Z"}
-    going = DoctorReport(host="hermes", status="degraded", embedding_respace=dict(run))
+    going = DoctorReport(host="hermes", status="degraded", embedding_respace=dict(run),
+                         embedding_health={"pending": 70, "failed": 0, "oldest_pending_at": None})
     _check_embedding_respace(going, SimpleNamespace(embedding_space_id=lambda: SPACE_A))
     assert going.capability_gaps == [] and going.checks[-1]["result"] == "running"
+    assert "70 embeddings wait in the store" in going.checks[-1]["detail"], "a held run says why it waits"
     stranded = DoctorReport(host="hermes", status="degraded", embedding_respace=dict(run))
     _check_embedding_respace(stranded, SimpleNamespace(embedding_space_id=lambda: SPACE_B))
     assert stranded.capability_gaps == ["embedding_respace_space_mismatch"]
@@ -422,7 +424,8 @@ def test_doctor_names_an_embedding_backlog_that_aged_beside_a_refusing_provider(
     assert report.embedding_health["held_model"] == "TEST-embed"
     assert report.embedding_health["last_day"]["refused"] == {"http_429": 3}
     detail = report.checks[-1]["detail"]
-    assert "the oldest for 30 h" in detail and "held for TEST-embed" in detail and "http_429 x3" in detail
+    assert "the oldest for 30 h" in detail and "held for TEST-embed" in detail
+    assert "asked 4 times and answered 1, refusing http_429 x3" in detail
     fresh = DoctorReport(host="hermes", status="degraded", embedding_health={
         "pending": 12, "failed": 0, "oldest_pending_at": datetime.now(timezone.utc).isoformat()})
     _check_embedding_health(fresh, None)
@@ -454,7 +457,36 @@ def test_doctor_says_nothing_of_a_backlog_where_nothing_embeds_and_names_a_worke
                           embedding_health={"pending": 12, "failed": 0, "oldest_pending_at": aged})
     _check_embedding_health(report, SimpleNamespace(auxiliary=route, vector=object()))
     assert report.capability_gaps == ["embedding_backlog_aged"]
-    assert "no worker has reached them" in report.checks[-1]["detail"]
+    assert "provider" not in report.checks[-1]["detail"], "no ledger: nothing to say of the provider"
+
+
+@pytest.mark.parametrize("statuses, said", [
+    ((), "nothing asked the provider in the last day, so no worker has reached them"),
+    (("network_error_usage_unknown_reserved_charge_retained",) * 3, "asked 3 times and answered 0"),
+])
+def test_doctor_blames_the_worker_only_when_nothing_asked_the_provider(tmp_path, statuses, said):
+    """A proxy outage ends calls in network errors, which are no refusals: "refused nothing, so no worker has reached
+    them" was wrong there (review of 3.8.0)."""
+    from datetime import datetime, timedelta, timezone
+    import time
+
+    from scope_recall.maintenance.doctor import DoctorReport, _check_embedding_health
+    from scope_recall.runtime.model_budget import REQUESTS_TABLE
+
+    path = tmp_path / "auxiliary-budget.sqlite3"
+    with sqlite3.connect(path) as db:
+        db.execute(REQUESTS_TABLE)
+        db.executemany("INSERT INTO requests(model,status,started_ns) VALUES (?,?,?)",
+                       [("TEST-embed", status, time.time_ns() - (3600 + step) * 10 ** 9)
+                        for step, status in enumerate(statuses)])
+    route = SimpleNamespace(ledger_path=path, external_embedding=True, external_consolidation=False,
+                            embedding=SimpleNamespace(kind="openai", space=lambda: {"model": "TEST-embed"}))
+    aged = (datetime.now(timezone.utc) - timedelta(hours=30)).isoformat()
+    report = DoctorReport(host="hermes", status="degraded",
+                          embedding_health={"pending": 12, "failed": 0, "oldest_pending_at": aged})
+    _check_embedding_health(report, SimpleNamespace(auxiliary=route, vector=object()))
+    detail = report.checks[-1]["detail"]
+    assert said in detail and ("no worker" in detail) is (not statuses), detail
 
 
 def test_the_embed_queue_is_the_store_s_and_read_by_state(app):

@@ -24,6 +24,7 @@ from scope_recall.core.capture_inbox import given_up, replayable
 from scope_recall.core.schema import SCHEMA_VERSION, UPGRADE_CHAIN, stale_header_schema
 from scope_recall.core.storage import SQLiteStorage
 from scope_recall.core.failure_retry import NEEDS_REVIEW_COUNT
+from scope_recall.core.index_rebuild import IMPORT_EMBED_QUEUE_CEILING
 from scope_recall.runtime.model_budget import embedding_calls, pre_request_refusals, provider_holds, provider_refusals
 from scope_recall.runtime.running_code import live_records, stale_records
 from scope_recall.vector.compaction import instance_vector_footprints
@@ -961,11 +962,14 @@ def _check_embedding_health(report: DoctorReport, config) -> None:
               "since then by its words alone")
     if "held_until" in health:
         detail += f"; the provider is held for {health['held_model']} until {health['held_until']}"
-    refused = (health.get("last_day") or {}).get("refused")
-    if refused:
-        detail += f"; refused in the last day: {', '.join(f'{code} x{count}' for code, count in refused.items())}"
-    if "held_until" not in health and not refused:
-        detail += ("; the provider refused nothing in the last day, so no worker has reached them: see worker_status, "
+    calls = health.get("last_day")
+    if calls is not None and calls["calls"]:
+        detail += f"; in the last day the provider was asked {calls['calls']} times and answered {calls['answered']}"
+        if calls["refused"]:
+            detail += f", refusing {', '.join(f'{code} x{count}' for code, count in calls['refused'].items())}"
+    elif calls is not None and "held_until" not in health:
+        # Asked nothing for a day while embeddings waited: the provider is not what holds them.
+        detail += ("; nothing asked the provider in the last day, so no worker has reached them: see worker_status, "
                    "and on an installation with a worker per project, whether each one runs")
     _record(report, "embedding_backlog", "aged", detail)
 
@@ -988,8 +992,12 @@ def _check_embedding_respace(report: DoctorReport, config) -> None:
                 f"the run embeds into {run['embedding_space'][:12]} but runtime-config.json into {space[:12]}; "
                 "run respace-embeddings --restart --apply for the new space, or --cancel --apply")
         return
+    # A held pass writes nothing, so the run's time alone does not say it waits (review of 3.8.0).
+    waiting = report.embedding_health.get("pending")
     _record(report, "embedding_respace", "running",
-            f"{run['reopened']} reopened, next work id {run['next_work_id']}, last page at {run['updated_at']}")
+            f"{run['reopened']} reopened, next work id {run['next_work_id']}, last page at {run['updated_at']}"
+            + (f"; {waiting} embeddings wait in the store, and the run goes on while fewer than "
+               f"{IMPORT_EMBED_QUEUE_CEILING} do" if waiting is not None else ""))
 
 
 def _check_schema(report: DoctorReport) -> None:

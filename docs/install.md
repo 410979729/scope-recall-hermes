@@ -675,15 +675,16 @@ Without `--apply` nothing is written, and without `--start` the command shows
 the run, the embeddings it still has to reopen (`to_reopen`) and those still
 waiting in the store (`waiting`).
 
-- Start once `waiting` is down to what keeps coming in. An embedding still
-  waiting at the start is embedded into the new space in its turn, and the run
-  reopens it again when it gets there, so it is paid for twice.
+- Start right after switching. The run reopens every embedding finished before
+  it starts, so whatever waited at the switch, or was embedded into the new
+  space before the start, is paid for twice. While the old route still answers,
+  let `waiting` come down before you switch.
 - The run covers the whole store and lives in SQLite. Every worker pass in that
   space reopens a page of finished embeddings, newest first. It does so only
   while fewer than 64 embeddings wait anywhere in the store, or half a pass's
   worth while candidate evaluations are ready, so messages captured meanwhile
   are embedded first. Embeddings of a project whose worker never runs hold the
-  run; the doctor then shows it not moving (`embedding_respace`).
+  run; the doctor's `embedding_respace` check then says how many wait.
 - `--start` refuses while a run is going, and after one into the same space has
   finished. `--restart --apply` starts again from the newest. `--cancel --apply`
   stops the run, and what it reopened is still embedded.
