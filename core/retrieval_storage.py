@@ -1082,9 +1082,10 @@ class RetrievalStorage:
             # One row, ordered here: each row read on its own waited for the GIL in a busy gateway (3.7.7).
             rows = sorted(json.loads(tx._check().execute(
                 f"""SELECT json_group_array(json_object('sequence',sequence,'source_ref',source_ref,
-                       'source_revision',source_revision))
+                       'source_revision',source_revision)) FROM (
+                   SELECT sequence,source_ref,source_revision
                    FROM episode_events
-                   WHERE episode_id=? AND (source_ref,source_revision) IN ({pair_marks})""",
+                   WHERE episode_id=? AND (source_ref,source_revision) IN ({pair_marks}))""",
                 (episode_id, *(value for pair in pairs for value in pair)),
             ).fetchone()[0]), key=lambda row: row["sequence"])
             _prefetch(tx, ((row["source_ref"], row["source_revision"]) for row in rows))
