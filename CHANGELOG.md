@@ -21,11 +21,11 @@ All notable changes to `scope-recall` will be documented in this file.
 - **`unindex-withheld-outputs` drops what is already there.**
   - It works a bounded page at a time (`--limit`, 500 by default, at most 5,000). Each page is its own write transaction and holds the store's writer lease while it runs. `--until-done` goes on page after page and pauses a moment between pages, so captures get the lease. Without `--until-done`, carry `next_after_id` into `--after-id`. Without `--apply` it only counts.
   - The sources stay, and so does the index of their error text.
-  - On a copy of the shared store it took 426 pages, the slowest 0.12 s, 18 s in all. Run again on the cleaned copy, it took 0.9 s and changed nothing. Every placeholder ended holding exactly its error text's terms, or none.
-  - The first version scanned every tool row on each page while it held the lease, 1–3 s a page (review of 3.7.4). It also dropped the error text with the rest.
+  - On a copy of the shared store it took 426 pages, the slowest 0.12 s: 18 s of work, about 1.7 minutes with the pauses. Run again on the cleaned copy, it changed nothing in a few seconds. Every placeholder ended holding exactly its error text's terms, or none.
+  - Review caught two faults in an unreleased first version, which ran on copies only. It scanned every tool row on each page while it held the lease, 1–3 s a page, and it dropped the error text with the rest.
   - In a shared store, run it with the shared worker's config, which reaches every scope.
 - **An embedding finishing as its claim is corrected stays on the ledger (#205).** A supersede made the old revision's pending and leased work obsolete. An embedding whose vector had already landed could then never complete, so its point stayed in the store with no finished embed to account for it.
-  - An embed that has held a lease now completes against its own revision, which stays readable, as one finished a moment earlier would have. That includes one sent back to wait after it wrote, when a dependency or its deadline moved. Work never leased is still made obsolete.
+  - An embed that has held a lease now completes against its own revision, which stays readable, as one finished a moment earlier would have. That includes one sent back to wait after it wrote, when a dependency or its deadline moved. Other work, and an embed never leased, is still made obsolete.
   - Recall was never affected. It resolves every vector hit against SQLite, and a store keeps old revisions' vectors by design.
   - On the shared store no obsolete embed had left a point. The 264 points its finished embeds name that the vector table lacks all belong to deleted objects, whose purge removes every revision's vectors.
 
