@@ -18,6 +18,7 @@ the tables itself.
 """
 from __future__ import annotations
 
+import json
 from typing import Iterable
 
 from ..contracts import ContractError
@@ -36,23 +37,32 @@ def source_id(conn, event_id: str, source_revision: int) -> int | None:
 
 
 def index_terms(conn, source: int, terms: Iterable[str]) -> int:
-    """Record that the source holds these terms.  Returns how many postings were named."""
+    """Record that the source holds these terms.  Returns how many postings were named.
+
+    One statement each, whatever the count.  A statement per term handed the GIL back and forth at every row, and in a
+    Hermes gateway whose other threads were busy each handoff waited out their switch interval: a tool output of 51,283
+    characters (9,348 terms) held the store's writer lease 42 s, every other entry's write failed meanwhile, and Hermes
+    skipped the tool hook for a minute (yuheng and tianshu, 2026-10-05).
+    """
     unique = tuple(dict.fromkeys(terms))
     if not unique:
         return 0
-    conn.executemany("INSERT OR IGNORE INTO lexical_terms(term) VALUES (?)", [(term,) for term in unique])
-    conn.executemany(
-        "INSERT OR IGNORE INTO lexical_postings(term_id,source_id) SELECT term_id,? FROM lexical_terms WHERE term=?",
-        [(source, term) for term in unique],
-    )
+    payload = json.dumps(unique, ensure_ascii=False)
+    conn.execute("INSERT OR IGNORE INTO lexical_terms(term) SELECT value FROM json_each(?)", (payload,))
+    conn.execute(
+        "INSERT OR IGNORE INTO lexical_postings(term_id,source_id) "
+        "SELECT term_id,? FROM lexical_terms WHERE term IN (SELECT value FROM json_each(?))",
+        (source, payload))
     return len(unique)
 
 
 def terms_of(conn, source: int) -> tuple[str, ...]:
-    """The terms recorded for one source version, in term order."""
-    return tuple(row[0] for row in conn.execute(
-        "SELECT t.term FROM lexical_postings p JOIN lexical_terms t ON t.term_id=p.term_id WHERE p.source_id=? ORDER BY t.term",
-        (source,)))
+    """The terms recorded for one source version, in term order: one row, whatever the count (``index_terms``)."""
+    row = conn.execute(
+        "SELECT json_group_array(t.term) FROM lexical_postings p JOIN lexical_terms t ON t.term_id=p.term_id "
+        "WHERE p.source_id=?", (source,)).fetchone()
+    # Python orders strings by code point, as SQLite's binary collation orders their UTF-8.
+    return tuple(sorted(json.loads(row[0])))
 
 
 def forget(conn, event_id: str) -> None:

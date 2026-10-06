@@ -120,7 +120,7 @@ SUITES = {
     "unit": ["tests/unit/test_v11_context.py", "tests/unit/test_check_runner.py", "tests/unit/test_secret_patterns.py", "tests/unit/test_recall_budget.py", "tests/unit/test_contract_schemas.py", "tests/unit/test_claude_code_record.py", "tests/unit/test_workbuddy_record.py", "tests/unit/test_dsh_record.py"],
     "contract": ["tests/contract/test_v11_protocol.py", "tests/contract/test_v11_inputs.py", "tests/contract/test_p13_configurable_budget.py", "tests/contract/test_autostart_cli.py", "tests/contract/test_companion_publish.py", "tests/contract/test_upgrade_store_cli.py", "tests/contract/test_request_guard_escaping.py", "tests/contract/test_relation_candidates_rank.py", "tests/contract/test_status_file_beside_its_writer.py", "tests/contract/test_every_store_meets_the_runtime.py", "tests/contract/test_a_paused_wake_lets_go.py", "tests/contract/test_a_pass_that_ends_hands_back_its_group.py"],
     "storage": ["tests/contract/test_v11_storage.py", "tests/contract/test_shared_store.py"],
-    "capture": ["tests/contract/test_v11_capture.py"],
+    "capture": ["tests/contract/test_v11_capture.py", "tests/contract/test_capture_row_crossings.py"],
     "claims": ["tests/contract/test_v11_claims.py", "tests/contract/test_claim_embed_recovery.py"],
     "deletion": ["tests/contract/test_v11_deletion.py"],
     "episodes": ["tests/contract/test_v11_episodes.py","tests/contract/test_v11_retained_artifacts.py","tests/contract/test_v11_episode_authority.py","tests/contract/test_v11_consolidation_input.py","tests/contract/test_v11_aliases.py","tests/contract/test_storage_growth.py"],

@@ -16,7 +16,9 @@ larger ranking query rather than read it: the preference match in
 """
 from __future__ import annotations
 
-_EVIDENCE_COLUMNS = "object_kind,object_ref,object_revision,source_ref,source_revision,relation,quote"
+import json
+
+_EVIDENCE_COLUMNS ="object_kind,object_ref,object_revision,source_ref,source_revision,relation,quote"
 
 #: Where an object's lineage sits.  Episode rows are written once, at the
 #: revision the source entered (``Episodes.attach``); every other kind writes
@@ -67,12 +69,17 @@ def link_unless_carried(conn, kind: str, ref: str, revision: int, source_ref: st
 
 
 def evidence(conn, kind: str, ref: str, revision: int) -> list[tuple[str, int]]:
-    """The source versions ``ref@revision`` derives from, ordered and once each."""
-    return [(row[0], row[1]) for row in conn.execute(
-        f"SELECT DISTINCT source_ref,source_revision FROM evidence_links WHERE object_kind=? AND object_ref=? "
-        f"AND object_revision{revision_bound(kind)}? ORDER BY source_ref,source_revision",
+    """The source versions ``ref@revision`` derives from, ordered and once each.
+
+    Read in one row: an episode holds up to 200, and each row read on its own cost a busy Hermes gateway a GIL handoff
+    inside a capture's write (``lexical_index.index_terms``).  Python orders the refs as SQLite's binary collation does.
+    """
+    row = conn.execute(
+        f"SELECT json_group_array(json_array(source_ref,source_revision)) FROM (SELECT DISTINCT source_ref,source_revision "
+        f"FROM evidence_links WHERE object_kind=? AND object_ref=? AND object_revision{revision_bound(kind)}?)",
         (kind, ref, revision),
-    )]
+    ).fetchone()
+    return sorted((pair[0], pair[1]) for pair in json.loads(row[0]))
 
 
 def sources_of(conn, kind: str, ref: str) -> list[str]:

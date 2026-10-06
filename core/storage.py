@@ -395,10 +395,16 @@ class Transaction:
 
     def _inherits_suppression(self, conn, scope_id: str, content: str) -> bool:
         """A source restating a suppressed claim (subject, predicate, value and every
-        condition literally present) is suppressed with it."""
-        return conn.execute("""SELECT 1 FROM claims c JOIN claim_versions v ON v.claim_id=c.claim_id AND v.revision=c.current_revision
-            WHERE c.suppressed=1 AND c.read_blocked=0 AND c.scope_id=? AND c.project_id IS ? AND c.branch_id IS ?
-            AND v.state IN ('active','disputed') AND instr(?,c.subject)>0 AND instr(?,c.predicate)>0
+        condition literally present) is suppressed with it.
+
+        The suppressed claims are picked first.  Subject and predicate are in the scope's index, so SQLite searched the
+        content for those of every claim in the scope before it read whether one was suppressed: 8,995 claims, 11 of
+        them suppressed, held the writer lease 1 s for a tool output of 51,283 characters (2026-10-05).
+        """
+        return conn.execute("""WITH muted AS MATERIALIZED (SELECT claim_id,subject,predicate,current_revision FROM claims
+                WHERE scope_id=? AND project_id IS ? AND branch_id IS ? AND suppressed=1 AND read_blocked=0)
+            SELECT 1 FROM muted c JOIN claim_versions v ON v.claim_id=c.claim_id AND v.revision=c.current_revision
+            WHERE v.state IN ('active','disputed') AND instr(?,c.subject)>0 AND instr(?,c.predicate)>0
             AND instr(?,json_extract(v.payload_json,'$.value_text'))>0
             AND NOT EXISTS(SELECT 1 FROM json_each(v.payload_json,'$.conditions') WHERE instr(?,value)=0) LIMIT 1""",
             (scope_id, self.context.project_id, self.context.branch_id, content, content, content, content)).fetchone() is not None
@@ -895,11 +901,16 @@ class SQLiteStorage:
         kind = row["installation_kind"] if "installation_kind" in row.keys() else "local"
         if kind != self.binding.installation_kind:
             raise ContractError("IDENTITY_UNBOUND", "installation_kind")
-        scopes = frozenset(r[0] for r in conn.execute("SELECT scope_id FROM instance_scopes"))
+        # Counted in one row, every transaction: read row by row, the shared store's 760 scopes cost a busy Hermes
+        # gateway 3 s per transaction (``lexical_index.index_terms``).  A binding's scopes are a set.
+        stored, held = conn.execute(
+            "SELECT (SELECT count(*) FROM instance_scopes),"
+            " (SELECT count(*) FROM instance_scopes WHERE scope_id IN (SELECT value FROM json_each(?)))",
+            (json.dumps(sorted(self.binding.scope_ids), ensure_ascii=False),)).fetchone()
         if kind == "local":
             if (row["agent_id"],row["installation_id"],row["data_directory"],row["test_mode"]) != (self.binding.agent_id,self.binding.installation_id,_directory(self.binding.data_directory),int(self.binding.test_mode)):
                 raise ContractError("IDENTITY_UNBOUND")
-            if scopes != self.binding.scope_ids:
+            if stored != held or held != len(self.binding.scope_ids):
                 raise ContractError("IDENTITY_UNBOUND", "scope_binding")
             return
         # A shared store is its fixed id, not its directory: a copied store opens
@@ -909,7 +920,7 @@ class SQLiteStorage:
             raise ContractError("IDENTITY_UNBOUND")
         if row["data_directory"] != _directory(self.binding.data_directory):
             raise ContractError("IDENTITY_UNBOUND", "store_moved:run_adopt")
-        if not self.binding.scope_ids <= scopes:
+        if held != len(self.binding.scope_ids):
             raise ContractError("IDENTITY_UNBOUND", "scope_binding")
 
     def _close(self, conn: sqlite3.Connection, original: BaseException | None) -> None:

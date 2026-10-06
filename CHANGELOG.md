@@ -4,6 +4,29 @@ All notable changes to `scope-recall` will be documented in this file.
 
 ## [Unreleased]
 
+## [3.7.6] - 2026-10-06
+
+3.7.6 makes a capture's write cost the same whatever its text holds. In a busy Hermes gateway one long tool output held the shared store's writer lease for 30 to 43 s, four times in two days. Every other entry's write failed meanwhile, and Hermes skipped the tool hook of every session for a minute, so the tool results of that minute were never stored.
+
+### Fixes
+
+- **A capture's write no longer grows with its text, its episode or the store's scopes.**
+  - Every statement, and every row read in Python, hands Python's GIL over and back. In a Hermes gateway whose other threads were busy, each handoff waited out their switch interval.
+  - A capture wrote two statements per term and read its terms back one row at a time. On yuheng, terminal outputs of 52,137 characters took 37.1 s (2026-10-04 12:22), of 51,283 characters (9,348 terms) 42.9 s (10-05 15:12) and of 25,067 characters 30.3 s (20:40); on tianshu a file of 11,502 characters took 36.2 s (10-05 12:43), beside ten other captures of the same step.
+  - Each of those writes was stored at once and committed tens of seconds later, holding the writer lease all that time. The other entries' captures failed with it, and were kept to retry. Hermes gave up on the hook at 30 s and skipped it for every session for the next minute: 36 tool results of those two days were never stored.
+  - Now the terms go in with one statement each way and come back in one row (`lexical_index.index_terms`, `terms_of`). Joining an episode reads its members' lineage, states, visibility, latest time and resume proofs in one row each, where it read up to 200 rows and ran two statements per member (`episode_storage`, `lineage.evidence`, `visibility.allowed_refs`). Every transaction counts the store's scopes in one row, where it read the shared store's 760 one by one (`storage._verify`).
+  - A source restating a muted claim is still muted with it, and the muted claims are now picked before the content is searched. SQLite had searched the content for the subject and predicate of every claim in the scope first: 8,995 claims for yuheng's, 11 of them muted, 1 s for that output.
+  - Replayed on a copy of the shared store with one busy thread beside it, as a gateway has, the 51,283-character write took 408 s and now takes 7.9 s; 7.6 s for the 25,067-character one and 7.1 s for 18 characters. Alone, 1.6 s became 0.65 s.
+  - `tests/contract/test_capture_row_crossings.py` counts what crosses the boundary: a capture of 3,000 terms against one of a few, a capture into an episode of 152 members against one of 2, a store of 502 scopes against one of 2.
+
+### Known limits
+
+- An automatic recall reads its candidates one statement and one row at a time too. Replayed on the same copy beside one busy thread, yuheng's recall of 12 real questions ran past its 5 s deadline in every stage and found none of them; alone it finds all 12 in about 1 s. Hermes logged no prefetch past its own limit in the last six days, so a gateway is seldom that busy as a turn starts. This is next.
+
+### Upgrading from 3.7.5
+
+Install the package, run `plan-install` and `apply-install` where you upgrade, then restart the clients' MCP servers and the Hermes gateways. The store's schema is unchanged (1110), and nothing needs running once. From 3.7.4, also run 3.7.5's `retry-failures` step below.
+
 ## [3.7.5] - 2026-10-06
 
 3.7.5 brings back the vector work of claims a provider failed. The automatic recovery read every embedding's subject as a source, so a claim's failed embedding was made obsolete instead of retried. On the shared store, 116 readable claim heads had no vector and were found by their words alone. `retry-failures` now brings back the vector work of 115 of them; the other one was refused on purpose.

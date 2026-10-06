@@ -19,7 +19,10 @@ from .episodes import (
     state_from_sources,
     supported_work_goal,
 )
-from .visibility import allowed
+from .visibility import allowed, allowed_refs
+
+#: A proof whose capture the episode does not hold.
+_NOT_CAPTURED = object()
 
 #: How many deleted segments in a row a task's next source steps past; each delete blocks at most the segment its
 #: task was writing to, so more than a few in a row is not a task going on.
@@ -57,18 +60,22 @@ def _cited_pairs(resume) -> tuple[tuple[str, int], ...]:
 
 
 def _source_states(conn, pairs) -> dict:
-    """Visibility, liveness and capture gaps of the given source versions, in one query."""
+    """Visibility, liveness and capture gaps of the given source versions, in one query and one row: read row by row,
+    an episode's 200 members cost a busy Hermes gateway a GIL handoff each inside a capture's write
+    (``lexical_index.index_terms``)."""
     if not pairs:
         return {}
     marks = ",".join("(?,?)" for _ in pairs)
-    rows = conn.execute(
-        f"""SELECT s.event_id,s.source_revision,s.read_blocked,s.scope_id,s.project_id,s.branch_id,s.capture_gaps_json,
-               EXISTS(SELECT 1 FROM source_events n WHERE n.source_group_key=s.source_group_key
-                      AND n.source_revision>s.source_revision) AS superseded
+    row = conn.execute(
+        f"""SELECT json_group_array(json_object('event_id',s.event_id,'source_revision',s.source_revision,
+               'read_blocked',s.read_blocked,'scope_id',s.scope_id,'project_id',s.project_id,'branch_id',s.branch_id,
+               'capture_gaps_json',s.capture_gaps_json,
+               'superseded',EXISTS(SELECT 1 FROM source_events n WHERE n.source_group_key=s.source_group_key
+                      AND n.source_revision>s.source_revision)))
             FROM source_events s WHERE (s.event_id,s.source_revision) IN ({marks})""",
         [value for pair in pairs for value in pair],
-    ).fetchall()
-    return {(row["event_id"], row["source_revision"]): row for row in rows}
+    ).fetchone()
+    return {(state["event_id"], state["source_revision"]): state for state in json.loads(row[0])}
 
 
 class Episodes:
@@ -100,9 +107,10 @@ class Episodes:
         judged = _cited_pairs(resume) if resume else tuple((r[0], r[1]) for r in links)
         gaps = []
         states = _source_states(conn, judged)
+        admitted = allowed_refs(self.tx, "event", (state["event_id"] for state in states.values()))
         for key in judged:
             state = states.get(key)
-            if state is None or not self._visible(state):
+            if state is None or not self._visible(state, admitted):
                 return None
             if state["superseded"] or (state["project_id"], state["branch_id"]) != (ctx.project_id, ctx.branch_id):
                 gaps.append("source_version_changed")
@@ -118,14 +126,19 @@ class Episodes:
             and ctx.environment_revision != row["environment_revision"]
         )
         if resume:
-            for progress in resume["verified_progress"]:
-                for proof in progress["evidence_refs"]:
-                    captured = conn.execute(
-                        "SELECT environment_revision FROM episode_events WHERE episode_id=? AND source_ref=? AND source_revision=?",
-                        (ref, *parse_source_ref(proof)),
-                    ).fetchone()
-                    if captured is None or captured[0] != ctx.environment_revision:
-                        changed = True
+            # The environment each proof was captured in, in one statement (``_source_states``).
+            proofs = [tuple(parse_source_ref(proof)) for progress in resume["verified_progress"]
+                      for proof in progress["evidence_refs"]]
+            if proofs:
+                captured = json.loads(conn.execute(
+                    f"""SELECT json_group_array(json_array(source_ref,source_revision,environment_revision))
+                        FROM episode_events WHERE episode_id=? AND (source_ref,source_revision) IN
+                        ({",".join("(?,?)" for _ in proofs)})""",
+                    (ref, *(value for pair in proofs for value in pair)),
+                ).fetchone()[0])
+                environments = {(item[0], item[1]): item[2] for item in captured}
+                if any(environments.get(pair, _NOT_CAPTURED) != ctx.environment_revision for pair in proofs):
+                    changed = True
         if changed:
             gaps.append("environment_needs_revalidation")
         if (
@@ -150,10 +163,11 @@ class Episodes:
             changed,
         )
 
-    def _visible(self, state) -> bool:
-        """What ``Transaction.source`` requires before it returns a source at all."""
+    def _visible(self, state, admitted: frozenset[str]) -> bool:
+        """What ``Transaction.source`` requires before it returns a source at all; ``admitted`` holds the events
+        ``visibility.allowed`` admits (``allowed_refs``)."""
         ctx = self.tx.context
-        return (allowed(self.tx, "event", state["event_id"]) and not state["read_blocked"]
+        return (state["event_id"] in admitted and not state["read_blocked"]
                 and state["scope_id"] in ctx.allowed_scope_ids
                 and state["project_id"] in (None, ctx.project_id) and state["branch_id"] in (None, ctx.branch_id))
 
@@ -186,18 +200,13 @@ class Episodes:
         return self.get(row[0]) if row else None
 
     def _latest_occurrence(self, ref):
-        rows = self.tx._check().execute(
-            """SELECT s.occurred_at FROM episode_events ee JOIN source_events s
-            ON s.event_id=ee.source_ref AND s.source_revision=ee.source_revision WHERE ee.episode_id=?""",
+        # One row for the episode's members (``_source_states``).
+        row = self.tx._check().execute(
+            """SELECT json_group_array(s.occurred_at) FROM episode_events ee JOIN source_events s
+            ON s.event_id=ee.source_ref AND s.source_revision=ee.source_revision WHERE ee.episode_id=? AND s.occurred_at<>''""",
             (ref,),
-        )
-        occurrences: list[str] = []
-        for row in rows:
-            if not row[0]:
-                continue
-            occurred_at = canonical_time(row[0])
-            if occurred_at is not None:
-                occurrences.append(occurred_at)
+        ).fetchone()
+        occurrences = [occurred_at for occurred_at in map(canonical_time, json.loads(row[0])) if occurred_at is not None]
         return max(occurrences, default=None)
 
     def _series_for(self, source) -> tuple[str, str]:

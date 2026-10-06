@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 
 from ..contracts import ContractError
 from .claims import select_effective
@@ -24,14 +25,39 @@ class ObjectRef:
             raise ContractError("INPUT_INVALID", "object_ref")
 
 
+def _admits(tx, block, *, automatic: bool) -> bool:
+    """What an object's block, or its having none, lets the reader of ``tx`` see."""
+    return block is None or (block["scope_id"] in tx.context.allowed_scope_ids and not block["read_blocked"]
+                             and not (automatic and block["suppressed"]))
+
+
 def allowed(tx, kind: str, ref: str, *, automatic: bool = False) -> bool:
     conn = tx._check()
     if conn.execute("SELECT 1 FROM restored_absence_blocks WHERE object_kind=? AND object_ref=?", (kind, ref)).fetchone():
         return False
     row = conn.execute("SELECT read_blocked,suppressed,scope_id FROM object_blocks WHERE object_kind=? AND object_ref=?",
                        (kind, ref)).fetchone()
-    return row is None or (row["scope_id"] in tx.context.allowed_scope_ids and not row["read_blocked"]
-                           and not (automatic and row["suppressed"]))
+    return _admits(tx, row, automatic=automatic)
+
+
+def allowed_refs(tx, kind: str, refs, *, automatic: bool = False) -> frozenset[str]:
+    """The refs of one kind that ``allowed`` admits, read in one statement and one row.
+
+    An episode's members were checked one by one, two statements each, inside every capture that joined the episode:
+    in a busy Hermes gateway each statement waited for the GIL (``lexical_index.index_terms``).
+    """
+    wanted = list(dict.fromkeys(refs))
+    if not wanted:
+        return frozenset()
+    row = tx._check().execute(
+        """SELECT json_group_array(json_object('ref',j.value,
+               'absent',EXISTS(SELECT 1 FROM restored_absence_blocks a WHERE a.object_kind=? AND a.object_ref=j.value),
+               'blocked',b.object_ref IS NOT NULL,'scope_id',b.scope_id,'read_blocked',b.read_blocked,
+               'suppressed',b.suppressed))
+           FROM json_each(?) j LEFT JOIN object_blocks b ON b.object_kind=? AND b.object_ref=j.value""",
+        (kind, json.dumps(wanted, ensure_ascii=False), kind)).fetchone()
+    return frozenset(item["ref"] for item in json.loads(row[0])
+                     if not item["absent"] and _admits(tx, item if item["blocked"] else None, automatic=automatic))
 
 
 def _released_event(tx, clock, ref: ObjectRef, *, automatic: bool, history: bool):
