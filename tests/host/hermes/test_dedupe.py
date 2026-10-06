@@ -269,12 +269,21 @@ def test_a_late_sync_of_the_person_s_turn_keeps_their_words_theirs(adapter, herm
     assert not any(origin == "host_generated" for _role, _content, origin in rows)
 
 
-def _folded(content, **marks):
-    """A user message Hermes folded a compression summary into, as ``ContextCompressor._merge_summary_into_tail_row``
-    leaves it: the summary after the message, the mark on it, its display kind kept."""
-    return {"role": "user", "content": "[Earlier turns, kept for reference]\n" + content
-            + "\n\n--- summary ---\n\nTEST 摘要：之前在后台跑构建。\n\n[END OF SUMMARY]",
-            "_compressed_summary": True, **marks}
+#: Hermes 0.21.5's own lines around a folded summary and a carried to-do list (agent.context_compressor,
+#: tools.todo_tool).
+_PRIOR = "[PRIOR CONTEXT \u2014 for reference only; not a new message]"
+_DELIMITER = "[END OF PRIOR CONTEXT \u2014 COMPACTION SUMMARY BELOW]"
+_END = "--- END OF CONTEXT SUMMARY \u2014 respond to the message below, not the summary above ---"
+_TODO = "[Your active task list was preserved across context compression]\n- TEST 整理清单"
+_ASKED_LONG = "TEST 请把 QX-17 的发布说明整理成三段，并核对每段里引用的版本号和日期是否一致"
+
+
+def _folded(own, summary="TEST 摘要：之前在后台跑构建。", *, leading=False, **marks):
+    """A user message Hermes folded a compression summary into (``ContextCompressor._merge_summary_into_tail_row``):
+    the message, its summary after it and the end line, or (``leading``) the summary first and the message after."""
+    content = (summary + "\n\n" + _END + "\n\n" + own if leading
+               else _PRIOR + "\n" + own + "\n\n" + _DELIMITER + "\n\n" + summary + "\n\n" + _END)
+    return {"role": "user", "content": content, "_compressed_summary": True, **marks}
 
 
 def test_a_notice_hermes_folded_a_summary_into_is_the_host_s(adapter, hermes_home):
@@ -294,22 +303,36 @@ def test_a_notice_hermes_folded_a_summary_into_is_the_host_s(adapter, hermes_hom
     assert ("user", _NOTICE, "host_generated") in rows
 
 
-def test_only_a_folded_message_hermes_marked_as_its_own_holds_a_notice():
+def test_only_a_folded_message_s_own_words_make_it_the_turn_s():
+    """A summary quotes the person's messages word for word, and the first version took a folded notice merely
+    holding the turn's text for the turn's own: the person's words were stored as the host's (review of 3.7.3)."""
     from scope_recall.adapters.hermes.boundary import host_notice
 
     tail = [{"role": "assistant", "content": "TEST 上一步"}]
     assert host_notice([_folded(_NOTICE, display_kind="process_complete"), *tail], _NOTICE)
+    assert host_notice([_folded(_NOTICE, leading=True, display_kind="internal_notification"), *tail], _NOTICE)
+    assert host_notice([_folded("TEST 短", display_kind="internal_notification"), *tail], "TEST 短"), "no length bar"
+    quoting = _folded(_NOTICE, summary="TEST 摘要：主人说过：" + _ASKED_LONG, display_kind="internal_notification")
+    assert not host_notice([quoting, *tail], _ASKED_LONG), "the person's words quoted in a summary"
+    assert not host_notice([quoting, *tail, {"role": "user", "content": _ASKED_LONG + "\n\n" + _TODO}], _ASKED_LONG), \
+        "the person's own message, a to-do list appended, decides first"
     assert not host_notice([_folded(_NOTICE), *tail], _NOTICE), "the person's folded message"
-    assert not host_notice([_folded(_NOTICE, display_kind="hidden"), *tail], _NOTICE), "hidden may hold the person's"
+    assert not host_notice([_folded(_NOTICE, display_kind="hidden"), *tail], _NOTICE), "hidden may wrap the person's"
     assert not host_notice([_folded(_NOTICE, display_kind="steer"), *tail], _NOTICE)
-    unmarked = _folded(_NOTICE, display_kind="internal_notification")
-    del unmarked["_compressed_summary"]
-    assert not host_notice([unmarked, *tail], _NOTICE), "only a message Hermes marked as folded"
-    short = "TEST 继续"
-    assert not host_notice([_folded(short, display_kind="internal_notification"), *tail], short), "a short text"
-    asked = {"role": "user", "content": _NOTICE}
-    assert not host_notice([_folded(_NOTICE, display_kind="internal_notification"), *tail, asked], _NOTICE), \
-        "the turn's own message, found whole, decides"
+    assert not host_notice([_folded("TEST 另一条通知", display_kind="internal_notification"), *tail], _NOTICE)
+    earlier = {"role": "user", "content": _NOTICE, "display_kind": "internal_notification"}
+    assert not host_notice([earlier, *tail], _NOTICE), "an earlier turn's notice, not folded, is not this turn's"
+    standalone = {"role": "user", "content": _NOTICE, "_compressed_summary": True, "display_kind": "internal_notification"}
+    assert not host_notice([standalone, *tail], _NOTICE), "a marked message without the lines is a summary of its own"
+
+
+def test_a_notice_a_to_do_list_was_appended_to_is_still_the_host_s():
+    """A compression appends the open to-do list to the last user message whatever its kind
+    (``_fold_todo_snapshot``); read back without it, a notice is still found (review of 3.7.3)."""
+    from scope_recall.adapters.hermes.boundary import host_notice
+
+    notice = {"role": "user", "content": _NOTICE + "\n\n" + _TODO, "display_kind": "internal_notification"}
+    assert host_notice([{"role": "assistant", "content": "TEST 好。"}, notice], _NOTICE)
 
 
 def test_the_turn_s_own_message_says_whether_hermes_opened_it():
@@ -333,7 +356,7 @@ def test_the_turn_s_own_message_says_whether_hermes_opened_it():
     assert not host_notice([{"role": "user", "content": _NOTICE}], _NOTICE), "no kind: the text proves nothing"
     assert not host_notice([notice, {"role": "assistant", "content": "TEST 好"}, {**asked, "content": "[09:00] " + _NOTICE}],
                            _NOTICE), "a message of an earlier turn, before its reply, is never this turn's"
-    assert not host_notice([{**notice, "content": _NOTICE + "\n\n" + todo["content"]}], _NOTICE), "not found"
+    assert host_notice([{**notice, "content": _NOTICE + "\n\n" + todo["content"]}], _NOTICE), "a to-do list appended"
     assert not host_notice([], _NOTICE) and not host_notice(None, _NOTICE) and not host_notice([notice], "")
 
 

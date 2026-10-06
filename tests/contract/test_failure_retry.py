@@ -232,10 +232,12 @@ def test_a_transient_model_failure_can_be_cleared(code):
     assert selects(code, include_terminal=False, generation=SCHEMA_VERSION) is True
 
 
-@pytest.mark.parametrize("code", ["http_404", "http_409", "http_413", "http_422"])
+@pytest.mark.parametrize("code", ["http_404", "http_409", "http_413", "http_422", "http_501", "http_520",
+                                  "http_524", "http_301", "http_307"])
 def test_a_refused_request_can_be_cleared_once_its_cause_is_fixed(code):
-    """A 4xx not named elsewhere: the request, its route or its model was refused, so nothing retries it by itself,
-    but an operator who fixed the cause may re-open it, as ``http_400``."""
+    """An HTTP status not named elsewhere: the request, its route or its model was refused, or the provider failed in
+    a way the worker does not recover by itself, so nothing retries it by itself, but an operator who fixed the cause
+    may re-open it, as ``http_400`` (a 5xx or redirect left out in the first version: review of 3.7.3)."""
     from scope_recall.core.work_storage import AUTO_RECOVERABLE_ERRORS
 
     assert retry_class(code) == "actionable"
@@ -243,7 +245,7 @@ def test_a_refused_request_can_be_cleared_once_its_cause_is_fixed(code):
     assert code not in AUTO_RECOVERABLE_ERRORS
 
 
-@pytest.mark.parametrize("code", ["http_4", "http_4220", "xhttp_422", "http_422x"])
+@pytest.mark.parametrize("code", ["http_4", "http_4220", "xhttp_422", "http_422x", "http_600", "http_099"])
 def test_only_a_whole_4xx_code_is_a_refused_request(code):
     assert retry_class(code) is None
 

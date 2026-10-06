@@ -276,8 +276,40 @@ def _steer_words(content: object) -> str:
 
 #: Hermes' mark on a user message it folded a compression summary into (``COMPRESSED_SUMMARY_METADATA_KEY``).
 _COMPRESSED_SUMMARY = "_compressed_summary"
-#: The shortest turn text looked for inside such a message: a shorter one could be a summary's words.
-_FOLDED_NOTICE_MIN_CHARS = 40
+#: The lines that bound a folded summary (``agent.context_compressor``: ``_MERGED_PRIOR_CONTEXT_HEADER``,
+#: ``_MERGED_SUMMARY_DELIMITER``, ``_SUMMARY_END_MARKER``) and the header of a to-do list a compression appends to the
+#: last user message (``tools.todo_tool.TODO_INJECTION_HEADER``), as Hermes 0.21.5 writes them.  Should Hermes change
+#: them, a folded message is no longer recognised: the turn is then the person's, as before.
+_PRIOR_CONTEXT_HEADER = "[PRIOR CONTEXT \u2014 for reference only; not a new message]"
+_SUMMARY_DELIMITER = "[END OF PRIOR CONTEXT \u2014 COMPACTION SUMMARY BELOW]"
+_SUMMARY_END = "--- END OF CONTEXT SUMMARY \u2014 respond to the message below, not the summary above ---"
+_TODO_HEADER = "[Your active task list was preserved across context compression]"
+
+
+def _own_text(message: dict[str, Any]) -> str:
+    """A user message's own words, as Hermes reads them back: without a compression summary folded into it
+    (``ContextCompressor._strip_context_summary_handoff_message``) and without a to-do list appended to it
+    (``_strip_stale_todo_snapshot``).  The person's words quoted inside a summary are not the message's own."""
+    text = extract_user_text(message.get("content"))
+    if _SUMMARY_DELIMITER in text:
+        text = text.split(_SUMMARY_DELIMITER, 1)[0].strip()
+        if text.startswith(_PRIOR_CONTEXT_HEADER):
+            text = text[len(_PRIOR_CONTEXT_HEADER):]
+    elif _SUMMARY_END in text:
+        text = text.split(_SUMMARY_END, 1)[1]
+    elif message.get(_COMPRESSED_SUMMARY) is True:
+        return ""
+    cut = text.find(_TODO_HEADER)
+    return (text if cut == -1 else text[:cut]).strip()
+
+
+def _notice_kind(message: dict[str, Any]) -> bool:
+    """A display kind Hermes gives the messages it writes itself: any but a steer, and on a folded message not the
+    legacy ``hidden`` either, which may wrap the person's words (``split_user_originated_turn``)."""
+    kind = message.get("display_kind")
+    if not isinstance(kind, str) or not kind or kind == STEER_KIND:
+        return False
+    return not (kind == "hidden" and message.get(_COMPRESSED_SUMMARY) is True)
 
 
 def host_notice(history: object, user_message: object) -> bool:
@@ -286,40 +318,28 @@ def host_notice(history: object, user_message: object) -> bool:
     Hermes marks the user messages it writes itself with a display kind: a finished background process, a
     delegation's result, a wake-up, a plugin's message (``gateway.response_filters.display_kind_for_event``, the
     CLI's ``TimelineNotification``).  A steer is the one kind that holds the person's words
-    (``ContextCompressor._is_actionable_user_turn``).  The turn's own message is the last user message holding its
-    text in the run of user messages that ends the conversation: a compression at the turn's start can add others
-    after it (``agent.turn_context.reanchor_current_turn_user_idx``), and anything before the last reply belongs to
-    an earlier turn.  One not found there is the person's, as before.  Stored as the person's, a notice read as
-    something they said.
+    (``ContextCompressor._is_actionable_user_turn``).  The turn's own message is the last user message whose own
+    words are the turn's text, in the run of user messages that ends the conversation: a compression at the turn's
+    start can add others after it (``agent.turn_context.reanchor_current_turn_user_idx``), and anything before the
+    last reply belongs to an earlier turn.  One not found is the person's, as before.  Stored as the person's, a
+    notice read as something they said.
 
     A compression at the turn's start can also fold its summary into the turn's own message
-    (``ContextCompressor._merge_summary_into_tail_row``), which then holds more than the turn's text and need not be
-    last: one of tianshu's three delegation results on 2026-10-05 was stored as the owner's that way.  Hermes marks
-    such a message (``_compressed_summary``) and takes it for machinery when it carries a kind other than steer or
-    hidden (``split_user_originated_turn``); so does this, when it holds the turn's text whole and that text is long
-    enough to be the notice's own (Hermes' notices name their process or delegation).
+    (``ContextCompressor._merge_summary_into_tail_row``), which then need not be last: one of tianshu's three
+    delegation results on 2026-10-05 was stored as the owner's that way.  Such a message, marked by Hermes, is the
+    turn's when its own words are the turn's text.  Its own words only: a summary quotes the person's messages word
+    for word, and a message merely holding the turn's text took the person's words for a notice (review of 3.7.3).
     """
-    text = extract_user_text(user_message)
-    if not isinstance(history, list) or not text.strip():
+    text = extract_user_text(user_message).strip()
+    if not isinstance(history, list) or not text:
         return False
     for message in reversed(history):
         if not isinstance(message, dict) or message.get("role") != "user":
             break
-        if extract_user_text(message.get("content")) == text:
-            kind = message.get("display_kind")
-            return isinstance(kind, str) and bool(kind) and kind != STEER_KIND
-    if len(text.strip()) < _FOLDED_NOTICE_MIN_CHARS:
-        return False
-    return any(_folded_notice(message, text) for message in history)
-
-
-def _folded_notice(message: object, text: str) -> bool:
-    """A user message Hermes folded a compression summary into, marked as its own, and holding ``text`` whole."""
-    if not isinstance(message, dict) or message.get("role") != "user" or message.get(_COMPRESSED_SUMMARY) is not True:
-        return False
-    kind = message.get("display_kind")
-    return (isinstance(kind, str) and kind not in ("", STEER_KIND, "hidden")
-            and text in extract_user_text(message.get("content")))
+        if _own_text(message) == text:
+            return _notice_kind(message)
+    return any(isinstance(message, dict) and message.get("role") == "user" and message.get(_COMPRESSED_SUMMARY) is True
+               and _own_text(message) == text and _notice_kind(message) for message in history)
 
 
 def steer_messages(history: object) -> tuple[tuple[str, str | None], ...]:
