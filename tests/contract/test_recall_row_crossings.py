@@ -290,3 +290,31 @@ def test_an_episode_s_sources_keep_their_order(app):
     order = json.loads(metadata["source_order"])
     assert [item[0] for item in order] == [source.ref for source in said]
     assert [item[2] for item in order] == sorted(item[2] for item in order)
+
+
+def test_a_source_in_a_scope_the_reader_lacks_stays_out_of_reach_loaded_together(shared):
+    storage, binding = shared
+    writer = shared_context(binding, entry_id="tianshu")
+    theirs = put(storage, writer, "TEST-group-source/1", scope="TEST-group-a", content="TEST 别的范围的一条。")
+    mine = put(storage, writer, "TEST-scope-source/1", scope="TEST-scope", content="TEST 本范围的一条。")
+    narrow = shared_context(binding, scopes={"TEST-scope"})
+    pairs = [(mine.ref, mine.revision), (theirs.ref, theirs.revision)]
+    with storage.read(narrow) as alone:
+        expected = [alone.source(*pair) for pair in pairs]
+    with storage.read(narrow) as together:
+        together.prefetch_sources(pairs)
+        got = [together.source(*pair) for pair in pairs]
+    assert expected[0] is not None and expected[1] is None and got == expected
+
+
+def test_a_finished_read_transaction_answers_nothing_it_had_kept(app):
+    """It lets go of what it kept: a finished transaction refuses as it always did, never answers from memory."""
+    core, ctx = app
+    source = capture(core, ctx, "TEST 一条。")
+    with core.storage.read(ctx) as tx:
+        assert tx.source(source.ref, source.revision) is not None and allowed(tx, "event", source.ref)
+        assert tx.knows(("source", source.ref, source.revision))
+    assert not tx.knows(("source", source.ref, source.revision))
+    with pytest.raises(ContractError) as refused:
+        allowed(tx, "event", source.ref)
+    assert refused.value.code == "STORAGE_UNAVAILABLE"

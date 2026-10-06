@@ -83,7 +83,7 @@ _SOURCE_COLUMNS = ("event_id", "source_event_key", "source_revision", "source_gr
 #: Source versions ``Transaction.prefetch_sources`` loads per statement.
 _PREFETCH_PAGE = 400
 #: What one read transaction keeps (``Transaction.remember``), its text counted in characters, which Python holds in
-#: about twice the room.  Over 483 recalls on a copy of the shared store: median 24 answers and 22,000 characters,
+#: a little over twice the room.  Over 483 recalls on a copy of the shared store: median 24 answers and 22,000 characters,
 #: the largest 7,595 and 13 million (review of 3.7.7).
 _MEMO_ENTRIES = 16384
 _MEMO_BYTES = 32 << 20
