@@ -252,5 +252,8 @@ def test_only_a_complete_tool_output_s_exit_code_ends_a_task():
 
     printed = '{"output": "", "exit_code": 1, "exit_code_meaning": "No matches found (not an error)"}'
     assert state_from_sources((tool(printed, "complete"),), previous="open") == "failed"
+    said = tool("继续", "partial")
+    said.event["origin"] = "human_direct"
+    assert state_from_sources((said,), previous="failed") == "open", "a person's words still move the task"
     assert state_from_sources((tool(printed, "partial"),), previous="open") == "open"
     assert state_from_sources((tool('{"output": "^C", "exit_code": 130}', "partial"),), previous="open") == "open"
