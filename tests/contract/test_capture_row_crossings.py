@@ -4,8 +4,8 @@ session's episode or the store's scopes.
 Every statement and every row read in Python hands the GIL over and back.  In a Hermes gateway whose other threads were
 busy, each handoff waited out their switch interval: a tool output of 51,283 characters (9,348 terms) held the shared
 store's writer lease 42 s, every other entry's write failed meanwhile, and Hermes skipped the tool hook for a minute
-(yuheng and tianshu, 2026-10-05).  The same write beside one busy thread took 408 s before and 12 s after.  The counts
-are what a regression raises; the time itself depends on the machine.
+(yuheng and tianshu, 2026-10-05).  The same write beside one busy thread took 408 s before and 7.9 s after.  The
+counts are what a regression raises; the time itself depends on the machine.
 """
 from dataclasses import replace
 import sqlite3
@@ -17,9 +17,11 @@ from scope_recall.core.events import lexical_terms
 from scope_recall.core.storage import SQLiteStorage
 from scope_recall.core.visibility import allowed, allowed_refs
 
+from test_r1_candidate_lifecycle import _candidate
 from test_shared_store import shared, shared_context  # noqa: F401  (fixture)
 from test_v11_claims import app, capture, initial  # noqa: F401  (fixtures)
 from test_v11_deletion import authorize, request
+from v11_support import source_event
 
 #: What two captures on the same path may differ by.
 _SLACK = 4
@@ -65,7 +67,7 @@ def test_a_capture_s_crossings_do_not_grow_with_its_terms(app, monkeypatch):
     many = " ".join(f"ident{index:05d}" for index in range(3000))
     assert len(lexical_terms(many)) >= 3000
     crossings = Crossings(monkeypatch)
-    few = crossings.during(lambda: capture(core, ctx, "TEST 第二句。"))
+    few = crossings.during(lambda: capture(core, ctx, "TEST 第二句 ident1。", origin="tool_observation"))
     lots = crossings.during(lambda: capture(core, ctx, many, origin="tool_observation"))
     assert _close(few, lots), (few, lots)
 
@@ -144,3 +146,39 @@ def test_the_batch_check_admits_exactly_what_the_single_one_does(app):
                 single = {ref for ref in blocks if allowed(tx, kind, ref, automatic=automatic)}
                 assert allowed_refs(tx, kind, blocks, automatic=automatic) == single, (kind, automatic)
         assert {ref for ref in blocks if allowed(tx, "event", ref)} == {"TEST-open", "TEST-muted"}
+
+
+def _assistant(core, ctx, text: str, key: str):
+    """What the assistant said, as Hermes stores it after a turn: not first-hand."""
+    saved = core.record_event(replace(ctx, actor_origin="assistant_visible"),
+                              source_event(source_event_key=key, origin="assistant_visible", role="assistant",
+                                           content=text), scope_id="TEST-scope", remaining_seconds=10)
+    assert saved.durability == "persisted"
+
+
+def test_what_the_assistant_said_reads_the_candidates_it_shares_a_word_with_in_one_row(app, monkeypatch):
+    """A source that is not first-hand had every reachable candidate sharing one of its words read row by row, until
+    sixteen of them were restated: none is, here (review of 3.7.6)."""
+    core, ctx = app
+    for index in range(5):
+        _candidate(core, ctx, value=f"蓝色{index}", key=f"TEST-c/{index}")
+    crossings = Crossings(monkeypatch)
+    few = crossings.during(lambda: _assistant(core, ctx, "我觉得蓝色不错。", "TEST-said/1"))
+    for index in range(5, 65):
+        _candidate(core, ctx, value=f"蓝色{index}", key=f"TEST-c/{index}")
+    lots = crossings.during(lambda: _assistant(core, ctx, "我还是觉得蓝色更好看。", "TEST-said/2"))
+    assert _close(few, lots), (few, lots)
+
+
+def test_a_part_of_more_distinct_terms_than_sqlite_takes_parameters_is_stored(app):
+    """A part of 64,000 characters can hold more distinct terms than SQLite's 32,766 parameters: matching it to the
+    candidates bound one parameter per term, and the whole capture failed as the store being unavailable, to be kept
+    and retried for good (review of 3.7.6)."""
+    import random
+
+    core, ctx = app
+    pick = random.Random(376)
+    text = "".join(chr(pick.randrange(0x4E00, 0x9FA5)) for _ in range(64000))
+    assert len(lexical_terms(text)) > 32766
+    stored = capture(core, ctx, text)
+    assert stored is not None

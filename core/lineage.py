@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import json
 
-_EVIDENCE_COLUMNS ="object_kind,object_ref,object_revision,source_ref,source_revision,relation,quote"
+_EVIDENCE_COLUMNS = "object_kind,object_ref,object_revision,source_ref,source_revision,relation,quote"
 
 #: Where an object's lineage sits.  Episode rows are written once, at the
 #: revision the source entered (``Episodes.attach``); every other kind writes
