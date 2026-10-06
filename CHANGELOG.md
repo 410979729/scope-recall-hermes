@@ -4,6 +4,31 @@ All notable changes to `scope-recall` will be documented in this file.
 
 ## [Unreleased]
 
+## [3.7.5] - 2026-10-06
+
+3.7.5 brings back the vector work of claims a provider failed. The automatic recovery read every embedding's subject as a source, so a claim's failed embedding was made obsolete instead of retried. On the shared store, 116 readable claim heads had no vector and were found by their words alone. `retry-failures` now brings back the vector work of 115 of them; the other one was refused on purpose.
+
+### Fixes
+
+- **The automatic recovery retries a claim's embedding (`_embed_retry_reason`).** Every claim head is queued for the vector index, and a provider can fail its embedding as it fails a source's: a network error, a timeout, a refusal at capacity.
+  - The recovery reopens such failures after its cooldown. It checked an embedding's subject as a source, though, and a claim is no source, so the claim's embedding was made obsolete (`authority_revoked`).
+  - Now a claim's embedding is reopened while its revision is the readable head it was queued for. An older revision's is still made obsolete: only the head needs a vector.
+- **`retry-failures` reopens what the recovery dropped (`claim_embeds_reopened`), and queues a head no earlier conversion queued (`claim_embeds_queued`).**
+  - It touches only readable heads in its config's scopes.
+  - A head refused on purpose stays as it is, for example text the request guard would not send.
+  - On a copy of the shared store, the preview reopens 114 and queues 1. One head stays without a vector, refused as sensitive.
+  - Review of 3.7.4 found the gap. 114 of the 116 heads without a vector had an obsolete embedding marked `authority_revoked`, one had never been queued, and one was refused as sensitive.
+
+### Upgrading from 3.7.4
+
+Install the package and run `plan-install` and `apply-install` where you upgrade. Then restart the clients' MCP servers and the Hermes gateways. The store's schema is unchanged (1110). Then run once per store:
+
+```bash
+scope-recall retry-failures --config <the shared worker's or the instance's runtime-config.json> --limit 256 --apply
+```
+
+Run it again until `claim_embeds_reopened` and `claim_embeds_queued` are 0.
+
 ## [3.7.4] - 2026-10-06
 
 3.7.4 indexes a withheld tool output's placeholder by the tool's own error text alone, and adds `unindex-withheld-outputs` to drop the rest of what earlier releases indexed. It also keeps the ledger whole when a claim is corrected while its embedding is being written.
