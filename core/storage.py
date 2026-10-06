@@ -75,6 +75,44 @@ class StoredSource:
     entry_id: str = "local"
 
 
+#: The columns a loaded source is built from (``_stored_source``).
+_SOURCE_COLUMNS = ("event_id", "source_event_key", "source_revision", "source_group_key", "segment_total", "scope_id",
+                   "session_id", "project_id", "branch_id", "origin", "role", "content", "content_sha256",
+                   "occurred_at", "recorded_at", "time_precision", "capture_state", "source_original_origin",
+                   "dataset_id", "extra_json", "capture_gaps_json", "suppressed", "import_provenance_sha256", "entry_id")
+#: Source versions ``Transaction.prefetch_sources`` loads per statement.
+_PREFETCH_PAGE = 400
+#: What one read transaction keeps (``Transaction.remember``): a recall keeps about 2,000 answers and a few MB.
+_MEMO_ENTRIES = 16384
+_MEMO_BYTES = 64 << 20
+
+
+def _source_size(loaded) -> int:
+    """The text a remembered source holds (``Transaction.remember``)."""
+    return 0 if loaded is None else len(loaded[0]["content"]) + len(loaded[0]["extra_json"])
+
+
+def _stored_source(row, segment_count: int | None) -> StoredSource:
+    """A source built afresh from its row, so that no reader shares another's ``event``."""
+    event = json.loads(row["extra_json"])
+    event.pop("_scope_recall_admission", None)  # Internal scheduling never enters source evidence or model input.
+    event.update(protocol_version="1.1", source_event_key=row["source_event_key"],
+                 source_revision=row["source_revision"], origin=row["origin"], role=row["role"],
+                 content=row["content"], occurred_at=row["occurred_at"], recorded_at=row["recorded_at"],
+                 time_precision=row["time_precision"], capture_state=row["capture_state"])
+    for name in ("source_original_origin", "dataset_id"):
+        if row[name] is not None:
+            event[name] = row[name]
+    gaps = list(json.loads(row["capture_gaps_json"]))
+    if "segment" in event:
+        total = row["segment_total"]
+        if total is None or segment_count != total or event["segment"]["truncated"]:
+            gaps.append("source_segments_incomplete")
+    return StoredSource(row["event_id"], row["source_revision"], row["scope_id"], row["session_id"], row["project_id"],
+                        row["branch_id"], event, row["content_sha256"], bool(row["suppressed"]), tuple(dict.fromkeys(gaps)),
+                        row["import_provenance_sha256"], row["entry_id"])
+
+
 @dataclass(frozen=True)
 class SourceWrite:
     disposition: str
@@ -93,6 +131,10 @@ class Transaction:
         self.__poisoned = False
         self.__savepoint_sequence = 0
         self.__entry_labels: dict[str, dict[str, str]] | None = None
+        #: What a read transaction loaded (``remembered``), and the size of the text it keeps; ``None`` in a write
+        #: transaction.
+        self.__memo: dict | None = None if writable else {}
+        self.__memo_bytes = 0
 
     def entry_label(self, entry_id: str) -> dict[str, str] | None:
         """The ``{id, name}`` a reader is shown for a source's entry, or None.
@@ -305,29 +347,104 @@ class Transaction:
         from .visibility import allowed
         if not allowed(self,"event",ref):
             return None
+        loaded = self.remembered(("source", ref, revision), lambda: self._source_row(conn, ref, revision),
+                                 size=_source_size)
+        return None if loaded is None else _stored_source(*loaded)
+
+    def _source_row(self, conn, ref: str, revision: int):
+        """The visible row of one source version and, for a part of a long message, how many parts of it are readable;
+        ``None`` when it is not visible."""
         scopes = sorted(self.context.allowed_scope_ids)
         marks = ",".join("?" for _ in scopes)
-        row = conn.execute(f"""SELECT * FROM source_events WHERE event_id=? AND source_revision=? AND read_blocked=0 AND scope_id IN ({marks})
+        row = conn.execute(f"""SELECT {','.join(_SOURCE_COLUMNS)} FROM source_events WHERE event_id=? AND source_revision=? AND read_blocked=0 AND scope_id IN ({marks})
             AND (project_id IS NULL OR project_id=?) AND (branch_id IS NULL OR branch_id=?)""",
             (ref, revision, *scopes,self.context.project_id,self.context.branch_id)).fetchone()
         if row is None:
             return None
-        event = json.loads(row["extra_json"])
-        event.pop("_scope_recall_admission", None)  # Internal scheduling never enters source evidence or model input.
-        event.update(protocol_version="1.1", source_event_key=row["source_event_key"],
-                     source_revision=row["source_revision"], origin=row["origin"], role=row["role"],
-                     content=row["content"], occurred_at=row["occurred_at"], recorded_at=row["recorded_at"],
-                     time_precision=row["time_precision"], capture_state=row["capture_state"])
-        for name in ("source_original_origin", "dataset_id"):
-            if row[name] is not None:
-                event[name] = row[name]
-        gaps = list(json.loads(row["capture_gaps_json"]))
-        if "segment" in event:
-            total = row["segment_total"]
+        count = None
+        if "segment" in json.loads(row["extra_json"]):
             count = conn.execute("SELECT count(*) FROM source_events WHERE source_group_key=? AND source_revision=? AND read_blocked=0", (row["source_group_key"], row["source_revision"])).fetchone()[0]
-            if total is None or count != total or event["segment"]["truncated"]:
-                gaps.append("source_segments_incomplete")
-        return StoredSource(row["event_id"], row["source_revision"], row["scope_id"], row["session_id"], row["project_id"], row["branch_id"], event, row["content_sha256"], bool(row["suppressed"]), tuple(dict.fromkeys(gaps)), row["import_provenance_sha256"], row["entry_id"])
+        return row, count
+
+    def prefetch_sources(self, pairs) -> None:
+        """Load these source versions into a read transaction's memory (``remembered``), with whether each is its
+        group's newest version and whether ``visibility.allowed`` admits it: two statements and two rows a page,
+        however many there are.  A write transaction loads nothing ahead."""
+        if self.__memo is None:
+            return
+        conn = self._check()
+        wanted = [(ref, revision) for ref, revision in dict.fromkeys(pairs)
+                  if type(ref) is str and ref and len(ref) <= 240 and type(revision) is int and revision >= 1
+                  and ("source", ref, revision) not in self.__memo]
+        from .visibility import allowed_refs
+        scopes = sorted(self.context.allowed_scope_ids)
+        # The ``+`` keeps SQLite on the primary key: with a few scopes it started from the scope index, and read every
+        # source of them, 0.24 s for a single pair on tianji's.
+        for start in range(0, len(wanted), _PREFETCH_PAGE):
+            page = wanted[start:start + _PREFETCH_PAGE]
+            admitted = allowed_refs(self, "event", (ref for ref, _revision in page))
+            fields = ",".join(f"'{column}',s.{column}" for column in _SOURCE_COLUMNS)
+            row = conn.execute(
+                f"""SELECT json_group_array(json_object({fields},
+                       'segment_count',CASE WHEN json_type(s.extra_json,'$.segment') IS NOT NULL THEN
+                           (SELECT count(*) FROM source_events g WHERE g.source_group_key=s.source_group_key
+                            AND g.source_revision=s.source_revision AND g.read_blocked=0) END,
+                       'head',NOT EXISTS(SELECT 1 FROM source_events newer WHERE newer.source_group_key=s.source_group_key
+                            AND newer.source_revision>s.source_revision)))
+                    FROM source_events s WHERE (s.event_id,s.source_revision) IN ({",".join("(?,?)" for _ in page)})
+                    AND +s.read_blocked=0 AND +s.scope_id IN ({",".join("?" for _ in scopes)})
+                    AND (s.project_id IS NULL OR s.project_id=?) AND (s.branch_id IS NULL OR s.branch_id=?)""",
+                (*(value for pair in page for value in pair), *scopes, self.context.project_id,
+                 self.context.branch_id)).fetchone()
+            found = {(item["event_id"], item["source_revision"]): item for item in json.loads(row[0])}
+            for ref, revision in page:
+                item = found.get((ref, revision))
+                if ref not in admitted:
+                    continue
+                loaded = None if item is None else (item, item["segment_count"])
+                self.remember(("source", ref, revision), loaded, size=_source_size(loaded))
+                if item is not None:
+                    self.remember(("head", ref, revision), bool(item["head"]))
+
+    def remembered(self, key: tuple, load, *, size=None):
+        """``load()``'s answer for ``key``, loaded once in a read transaction.
+
+        A read transaction reads one snapshot, so what it loaded stays true until it ends.  A recall loaded each of its
+        evidence sources up to five times, three statements each: 16,222 statements for one of yuheng's questions, and
+        in a busy Hermes gateway every statement waited for the GIL, so the recall ran past its deadline in every stage
+        (3.7.7).  A write transaction changes what it reads and remembers nothing.
+        """
+        memo = self.__memo
+        if memo is None:
+            return load()
+        if key in memo:
+            return memo[key]
+        value = load()
+        self.remember(key, value, size=0 if size is None else size(value))
+        return value
+
+    def remember(self, key: tuple, value, *, size: int = 0) -> None:
+        """Keep ``value`` for ``key`` in a read transaction's memory (``remembered``); nothing in a write transaction.
+
+        A transaction that reads a whole store keeps no more than ``_MEMO_ENTRIES`` answers and ``_MEMO_BYTES`` of
+        source text (``size``): past either, what it loads is used and not kept.
+        """
+        memo = self.__memo
+        if memo is None or key in memo:
+            return
+        if len(memo) >= _MEMO_ENTRIES or self.__memo_bytes + size > _MEMO_BYTES:
+            return
+        memo[key] = value
+        self.__memo_bytes += size
+
+    @property
+    def remembers(self) -> bool:
+        """Whether this transaction keeps what it loads (``remembered``): a read transaction does."""
+        return self.__memo is not None
+
+    def knows(self, key: tuple) -> bool:
+        """Whether a read transaction has already loaded ``key`` (``remembered``)."""
+        return self.__memo is not None and key in self.__memo
 
     def source_current(self, ref: str) -> StoredSource | None:
         """Resolve the visible current source revision in one bounded lookup."""

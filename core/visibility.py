@@ -32,6 +32,14 @@ def _admits(tx, block, *, automatic: bool) -> bool:
 
 
 def allowed(tx, kind: str, ref: str, *, automatic: bool = False) -> bool:
+    # Once per read transaction (``Transaction.remembered``).
+    remembered = getattr(tx, "remembered", None)
+    if remembered is None:
+        return _allowed_now(tx, kind, ref, automatic)
+    return remembered(("allowed", kind, ref, automatic), lambda: _allowed_now(tx, kind, ref, automatic))
+
+
+def _allowed_now(tx, kind: str, ref: str, automatic: bool) -> bool:
     conn = tx._check()
     if conn.execute("SELECT 1 FROM restored_absence_blocks WHERE object_kind=? AND object_ref=?", (kind, ref)).fetchone():
         return False
@@ -56,8 +64,13 @@ def allowed_refs(tx, kind: str, refs, *, automatic: bool = False) -> frozenset[s
                'suppressed',b.suppressed))
            FROM json_each(?) j LEFT JOIN object_blocks b ON b.object_kind=? AND b.object_ref=j.value""",
         (kind, json.dumps(wanted, ensure_ascii=False), kind)).fetchone()
-    return frozenset(item["ref"] for item in json.loads(row[0])
-                     if not item["absent"] and _admits(tx, item if item["blocked"] else None, automatic=automatic))
+    admitted = frozenset(item["ref"] for item in json.loads(row[0])
+                         if not item["absent"] and _admits(tx, item if item["blocked"] else None, automatic=automatic))
+    remember = getattr(tx, "remember", None)
+    if remember is not None:
+        for ref in wanted:
+            remember(("allowed", kind, ref, automatic), ref in admitted)
+    return admitted
 
 
 def _released_event(tx, clock, ref: ObjectRef, *, automatic: bool, history: bool):

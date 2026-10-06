@@ -4,6 +4,30 @@ All notable changes to `scope-recall` will be documented in this file.
 
 ## [Unreleased]
 
+## [3.7.7] - 2026-10-06
+
+3.7.7 makes an automatic recall read what it needs once, and together. A recall on yuheng's questions ran 16,222 statements and read 7,087 rows; it now runs 469 and reads 755, and finds the same.
+
+### Fixes
+
+- **A read transaction keeps what it loaded, and hydration loads its candidates together.**
+  - A recall loaded each evidence source of its candidates up to five times (whether it may be delivered, whether it is its group's newest version, its origin, its context, its entry), each load three statements: two for visibility and one for the row. Each candidate claim's versions were read on their own, and so was every candidate's visibility.
+  - In a Hermes gateway every statement and every row waits for the GIL while another thread is busy (3.7.6). Beside one thread that kept the CPU busy, yuheng's recall of 12 real questions ran past its 5 s deadline in every stage and found none of them.
+  - A read transaction reads one snapshot, so what it loaded stays true until it ends: it now keeps sources, their visibility, whether each is its group's newest, and claims' versions (`Transaction.remembered`). It keeps at most 16,384 answers and 64 MB of text, so one that reads a whole store keeps no more. A write transaction keeps nothing.
+  - Before hydrating, a recall loads every candidate's visibility, the events' rows and the claims' versions in a few statements, and a claim's evidence in one more (`RetrievalStorage.prefetch`, `Transaction.prefetch_sources`, `Claims.prefetch_versions`). Every reader still gets objects of its own.
+  - The same packets: on a copy of the shared store, words only and at one fixed time, 483 of 483 cases gave the identical packet, byte for byte but its diagnostic ref (173 real questions from every entry and 310 of the older sets).
+  - Faster alone, and much faster beside a busy thread. Over the 173 real questions, the two releases alternated twice on the same copy, the median recall went from 0.78 s to 0.72 s and the 90th percentile from 0.99 s to 0.91 s; on yuheng's 12 questions beside a thread busy 10% or 30% of the time, from 1.64 s to 1.31 s and from 1.95 s to 1.45 s, all 12 found either way. Beside a thread that keeps the CPU busy all the time, from 9.4 s to 6.5 s: still past the deadline.
+  - `tests/contract/test_recall_row_crossings.py`: loaded together reads as loaded alone (a part of a message whose other part never came, a whole one, a version a newer one replaced, a claim of two versions), nothing is read twice, readers never share an event, a write transaction reads what it wrote, past its limits a transaction answers alike, hydrating a claim of 16 sources costs what one of 2 does, and a recall answers alike whether or not it keeps what it loads.
+
+### Known limits
+
+- Beside a thread that keeps the CPU busy all the time, a recall still runs past its 5 s deadline; about 470 statements and 750 rows remain, and its own Python work runs at half speed. Hermes logged no prefetch past its own limit in the last six days.
+- A person's message that reads as a correction still loads the versions of every claim it may correct, up to 200, inside its write (3.7.6).
+
+### Upgrading from 3.7.6
+
+Install the package, run `plan-install` and `apply-install` where you upgrade, then restart the clients' MCP servers and the Hermes gateways. The store's schema is unchanged (1110), and nothing needs running once.
+
 ## [3.7.6] - 2026-10-06
 
 3.7.6 keeps a capture's write from growing with its words, its session's episode, the store's scopes and the candidates its words reach. In a busy Hermes gateway one long tool output held the shared store's writer lease for 30 to 43 s, four times in two days. Every other entry's write failed meanwhile, and Hermes skipped the tool hook of every session for a minute, so the tool results of that minute were never stored.

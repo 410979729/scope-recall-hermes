@@ -36,7 +36,7 @@ from .recall_policy import (
 )
 from .resume_compaction import resume_evidence_refs
 from .retrieval import STALE_RESUME_GAPS, CandidateRef, CollectionQuery, ObjectKind, PageCursor, RetrievedObject, SearchContext
-from .visibility import CLOSED_INTENTION_STATES, OBJECT_KINDS, allowed
+from .visibility import CLOSED_INTENTION_STATES, OBJECT_KINDS, allowed, allowed_refs
 
 #: Modes in which a delivered source must still be live, not merely visible.
 LIVE_MODES = frozenset({"auto", "current", "method"})
@@ -96,6 +96,13 @@ def _is_source_ref(value: object) -> bool:
     except ContractError:
         return False
     return True
+
+
+def _prefetch(tx, pairs) -> None:
+    """Load these source versions together, where the transaction can (``Transaction.prefetch_sources``)."""
+    prefetch = getattr(tx, "prefetch_sources", None)
+    if prefetch is not None:
+        prefetch(tuple(pairs))
 
 
 def _source_live(tx, ref: str, revision: int) -> bool:
@@ -603,6 +610,9 @@ class RetrievalStorage:
         ).fetchall()
         instant = context.as_of or context.now
         scored = []
+        prefetch = getattr(tx.claims, "prefetch_versions", None)
+        if prefetch is not None:
+            prefetch(row["claim_id"] for row in rows)
         for row in rows:
             chosen = _claim_version_for(tx.claims.versions(row["claim_id"]), context, instant)
             if chosen is None or chosen.payload.get("kind") == "alias":
@@ -870,7 +880,11 @@ class RetrievalStorage:
         return self._deliverable(tx, tuple(lineage.evidence(tx._check(), kind, ref, revision)), context)
 
     def _deliverable(self, tx, pairs, context: SearchContext) -> tuple[str, ...] | None:
-        """The refs of these source versions, or ``None`` when one is not deliverable in this mode."""
+        """The refs of these source versions, or ``None`` when one is not deliverable in this mode.
+
+        They are loaded together first (``Transaction.prefetch_sources``): what follows reads each of them again.
+        """
+        _prefetch(tx, pairs)
         refs = []
         for source_ref, source_revision in pairs:
             source = tx.source(source_ref, source_revision)
@@ -880,6 +894,21 @@ class RetrievalStorage:
                 return None
             refs.append(f"{source_ref}@{source_revision}")
         return tuple(refs)
+
+    def prefetch(self, tx, candidates, context: SearchContext) -> None:
+        """Load what hydrating these candidates reads first, together: their visibility, the events' rows and the
+        claims' versions (``Transaction.remembered``).  Each was read on its own, and in a busy Hermes gateway every
+        statement and row waited for the GIL, so a recall ran past its deadline in every stage (3.7.7)."""
+        if not getattr(tx, "remembers", False):
+            return
+        by_kind: dict[str, list[CandidateRef]] = {}
+        for candidate in candidates:
+            by_kind.setdefault(candidate.kind, []).append(candidate)
+        for kind, items in by_kind.items():
+            allowed_refs(tx, kind, (item.ref for item in items), automatic=context.mode == "auto")
+        _prefetch(tx, ((item.ref, item.revision) for item in by_kind.get("event", ())))
+        if "claim" in by_kind:
+            tx.claims.prefetch_versions(item.ref for item in by_kind["claim"])
 
     def hydrate(self, tx, candidate: CandidateRef, context: SearchContext) -> RetrievedObject | None:
         if not allowed(tx, candidate.kind, candidate.ref, automatic=context.mode == "auto"):
@@ -1050,13 +1079,15 @@ class RetrievalStorage:
         if retained:
             pairs = [parse_source_ref(ref) for ref in retained]
             pair_marks = ",".join("(?, ?)" for _ in pairs)
-            rows = tx._check().execute(
-                f"""SELECT sequence,source_ref,source_revision
+            # One row, ordered here: each row read on its own waited for the GIL in a busy gateway (3.7.7).
+            rows = sorted(json.loads(tx._check().execute(
+                f"""SELECT json_group_array(json_object('sequence',sequence,'source_ref',source_ref,
+                       'source_revision',source_revision))
                    FROM episode_events
-                   WHERE episode_id=? AND (source_ref,source_revision) IN ({pair_marks})
-                   ORDER BY sequence""",
+                   WHERE episode_id=? AND (source_ref,source_revision) IN ({pair_marks})""",
                 (episode_id, *(value for pair in pairs for value in pair)),
-            ).fetchall()
+            ).fetchone()[0]), key=lambda row: row["sequence"])
+            _prefetch(tx, ((row["source_ref"], row["source_revision"]) for row in rows))
             for row in rows:
                 source = tx.source(row["source_ref"], row["source_revision"])
                 if source is not None:

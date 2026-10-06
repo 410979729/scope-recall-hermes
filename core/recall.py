@@ -360,6 +360,11 @@ class RetrievalPipeline:
                      echoes: list[CandidateRef] | None = None) -> None:
         """Hydrate in rank order; once the deadline is gone, only up to ``floor`` items."""
         known = {candidate.key for candidate, _obj in hydrated}
+        candidates = tuple(candidates)
+        prefetch = getattr(self.storage_reader, "prefetch", None)
+        if prefetch is not None:
+            # What hydration reads, loaded together (``RetrievalStorage.prefetch``).
+            prefetch(tx, tuple(candidate for candidate in candidates if candidate.key not in known), context)
         for candidate in candidates:
             if self._remaining(context) <= 0 and len(hydrated) >= floor:
                 gaps.append("deadline_exceeded_hydrate")

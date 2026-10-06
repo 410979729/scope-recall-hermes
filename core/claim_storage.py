@@ -28,6 +28,27 @@ def parse_source_ref(value: str) -> tuple[str, int]:
         raise ContractError("INPUT_INVALID", "source_ref") from exc
 
 
+#: The columns a claim version is built from (``_claim_version``).
+_VERSION_COLUMNS = ("c.claim_id", "v.revision", "c.current_revision", "c.scope_id", "c.project_id", "c.branch_id",
+                    "v.payload_json", "v.state", "v.basis", "v.qualification_reason", "v.valid_from", "v.valid_to",
+                    "v.recorded_from", "v.recorded_to", "v.replaces_revision", "v.conflict_revisions_json", "c.suppressed")
+#: Claims ``Claims.prefetch_versions`` loads per statement.
+_PREFETCH_PAGE = 400
+
+
+def _versions_size(rows) -> int:
+    """The text a claim's remembered versions hold (``Transaction.remember``)."""
+    return sum(len(row["payload_json"]) for row in rows)
+
+
+def _claim_version(row) -> ClaimVersion:
+    """A claim version built afresh from its row, so that no reader shares another's payload."""
+    return ClaimVersion(row["claim_id"],row["revision"],row["current_revision"],row["scope_id"],
+                        row["project_id"],row["branch_id"],json.loads(row["payload_json"]),row["state"],row["basis"],
+                        row["qualification_reason"],row["valid_from"],row["valid_to"],row["recorded_from"],row["recorded_to"],
+                        row["replaces_revision"],tuple(json.loads(row["conflict_revisions_json"])),bool(row["suppressed"]))
+
+
 class Claims:
     def __init__(self, transaction: Transaction) -> None:
         self._tx = transaction
@@ -38,14 +59,43 @@ class Claims:
         if not allowed(self._tx,"claim",ref):
             return ()
         scopes = sorted(self._tx.context.allowed_scope_ids)
-        rows = conn.execute(f"""SELECT c.*,v.* FROM claims c JOIN claim_versions v USING(claim_id)
+        rows = self._tx.remembered(("versions", ref), lambda: tuple(conn.execute(
+            f"""SELECT {','.join(_VERSION_COLUMNS)} FROM claims c JOIN claim_versions v USING(claim_id)
             WHERE c.claim_id=? AND c.scope_id IN ({','.join('?' for _ in scopes)}) AND c.read_blocked=0
             AND (c.project_id IS NULL OR c.project_id=?) AND (c.branch_id IS NULL OR c.branch_id=?)
-            ORDER BY v.revision""", (ref, *scopes, self._tx.context.project_id, self._tx.context.branch_id)).fetchall()
-        return tuple(ClaimVersion(row["claim_id"],row["revision"],row["current_revision"],row["scope_id"],
-                    row["project_id"],row["branch_id"],json.loads(row["payload_json"]),row["state"],row["basis"],
-                    row["qualification_reason"],row["valid_from"],row["valid_to"],row["recorded_from"],row["recorded_to"],
-                    row["replaces_revision"],tuple(json.loads(row["conflict_revisions_json"])),bool(row["suppressed"])) for row in rows)
+            ORDER BY v.revision""", (ref, *scopes, self._tx.context.project_id, self._tx.context.branch_id)).fetchall()),
+            size=_versions_size)
+        return tuple(_claim_version(row) for row in rows)
+
+    def prefetch_versions(self, refs) -> None:
+        """Load the versions of these claims into a read transaction's memory, with whether ``visibility.allowed``
+        admits each: two statements and two rows a page, however many claims there are.  A recall read each candidate
+        claim's versions on its own, and in a busy Hermes gateway every statement and row waited for the GIL (3.7.7,
+        ``Transaction.remembered``).  A write transaction loads nothing ahead."""
+        tx = self._tx
+        if not tx.remembers:
+            return
+        from .visibility import allowed_refs
+        wanted = [ref for ref in dict.fromkeys(refs) if type(ref) is str and not tx.knows(("versions", ref))]
+        conn = tx._check()
+        scopes = sorted(tx.context.allowed_scope_ids)
+        fields = ",".join(f"'{column.split('.', 1)[1]}',{column}" for column in _VERSION_COLUMNS)
+        # On the primary key, never the scope's index (``Transaction.prefetch_sources``).
+        for start in range(0, len(wanted), _PREFETCH_PAGE):
+            page = wanted[start:start + _PREFETCH_PAGE]
+            admitted = allowed_refs(tx, "claim", page)
+            row = conn.execute(
+                f"""SELECT json_group_array(json_object({fields})) FROM claims c JOIN claim_versions v USING(claim_id)
+                WHERE c.claim_id IN ({','.join('?' for _ in page)}) AND +c.scope_id IN ({','.join('?' for _ in scopes)})
+                AND +c.read_blocked=0 AND (c.project_id IS NULL OR c.project_id=?) AND (c.branch_id IS NULL OR c.branch_id=?)""",
+                (*page, *scopes, tx.context.project_id, tx.context.branch_id)).fetchone()
+            by_claim: dict[str, list[dict]] = {}
+            for item in json.loads(row[0]):
+                by_claim.setdefault(item["claim_id"], []).append(item)
+            for ref in page:
+                if ref in admitted:
+                    rows = tuple(sorted(by_claim.get(ref, ()), key=lambda item: item["revision"]))
+                    tx.remember(("versions", ref), rows, size=_versions_size(rows))
 
     def version(self, ref: str, revision: int) -> ClaimVersion | None:
         """Load one visible claim version without scanning its history."""
@@ -386,9 +436,12 @@ class Claims:
         ctx = self._tx.context
         if source is None or (source.project_id,source.branch_id) != (ctx.project_id,ctx.branch_id):
             raise ContractError("SOURCE_MISSING")
-        row = self._tx._check().execute("""SELECT 1 FROM source_events e WHERE e.event_id=? AND e.source_revision=?
-            AND NOT EXISTS(SELECT 1 FROM source_events newer WHERE newer.source_group_key=e.source_group_key AND newer.source_revision>e.source_revision)""", (ref,revision)).fetchone()
-        if row is None:
+        # Whether it is its group's newest version, once per read transaction (``Transaction.prefetch_sources``).
+        head = self._tx.remembered(("head", ref, revision), lambda: self._tx._check().execute(
+            """SELECT 1 FROM source_events e WHERE e.event_id=? AND e.source_revision=?
+            AND NOT EXISTS(SELECT 1 FROM source_events newer WHERE newer.source_group_key=e.source_group_key AND newer.source_revision>e.source_revision)""",
+            (ref,revision)).fetchone() is not None)
+        if not head:
             raise ContractError("VERSION_CONFLICT", "source_revision")
 
     def current_human(self, refs: tuple[str, ...], scope_id: str):

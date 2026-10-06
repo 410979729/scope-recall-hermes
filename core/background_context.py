@@ -189,6 +189,9 @@ def background_candidates(tx, context: SearchContext, reader, clock,
     choices = []
     terms = set(meaningful_query_terms(context.query))
     rows = _profile_rows(tx, context, gaps)
+    prefetch = getattr(tx.claims, "prefetch_versions", None)
+    if prefetch is not None:
+        prefetch(row[0] for row in rows)
     for examined, row in enumerate(rows):
         if clock.monotonic() >= context.deadline:
             # Running out of time is not the same as having nothing to say.
