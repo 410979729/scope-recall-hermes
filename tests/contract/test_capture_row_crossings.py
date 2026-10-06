@@ -170,15 +170,19 @@ def test_what_the_assistant_said_reads_the_candidates_it_shares_a_word_with_in_o
     assert _close(few, lots), (few, lots)
 
 
-def test_a_part_of_more_distinct_terms_than_sqlite_takes_parameters_is_stored(app):
-    """A part of 64,000 characters can hold more distinct terms than SQLite's 32,766 parameters: matching it to the
-    candidates bound one parameter per term, and the whole capture failed as the store being unavailable, to be kept
-    and retried for good (review of 3.7.6)."""
-    import random
-
+def test_a_capture_s_words_never_take_a_parameter_each(app, monkeypatch):
+    """Matching a source to the candidates bound one parameter per term: a part of 64,000 characters held more distinct
+    terms than SQLite takes parameters (32,766 by default), and the whole capture failed as the store being unavailable,
+    to be kept and retried for good (review of 3.7.6).  The limit is lowered here, whatever the build's is."""
     core, ctx = app
-    pick = random.Random(376)
-    text = "".join(chr(pick.randrange(0x4E00, 0x9FA5)) for _ in range(64000))
-    assert len(lexical_terms(text)) > 32766
-    stored = capture(core, ctx, text)
-    assert stored is not None
+    opened = SQLiteStorage._open
+
+    def _open(storage, *args, **kwargs):
+        conn = opened(storage, *args, **kwargs)
+        conn.setlimit(sqlite3.SQLITE_LIMIT_VARIABLE_NUMBER, 999)
+        return conn
+
+    monkeypatch.setattr(SQLiteStorage, "_open", _open)
+    text = " ".join(f"ident{index:05d}" for index in range(2000))
+    assert len(lexical_terms(text)) > 999
+    assert capture(core, ctx, text) is not None

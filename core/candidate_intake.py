@@ -261,15 +261,17 @@ class CandidateIntake(CandidateTables):
         context, params = self._context("l.")
         # The terms go in as one parameter and the candidates come back in one row.  A parameter per term failed a part
         # of 63,993 distinct terms whole ("too many SQL variables", kept to retry for good), and a row per candidate
-        # waited for the GIL in a busy Hermes gateway (``lexical_index.index_terms``; review of 3.7.6).
+        # waited for the GIL in a busy Hermes gateway (``lexical_index.index_terms``; review of 3.7.6).  The CROSS JOIN
+        # starts from the terms: from the candidates, SQLite looked every term up for each reachable one, 3-12 s for a
+        # tool output of 5,001 terms beside 3,000-10,000 candidates.
         row = self._read().execute(
             f"""SELECT json_group_array(json_array(candidate_ref,candidate_revision,payload_json,updated_at)) FROM (
                 SELECT DISTINCT l.candidate_ref,l.candidate_revision,v.payload_json,l.updated_at
-                FROM candidate_trigger_terms t
+                FROM json_each(?) j CROSS JOIN candidate_trigger_terms t ON t.term=j.value
                 JOIN candidate_lifecycle l USING(candidate_ref,candidate_revision)
                 JOIN claims c ON c.claim_id=l.candidate_ref
                 JOIN claim_versions v ON v.claim_id=l.candidate_ref AND v.revision=l.candidate_revision
-                WHERE t.term IN (SELECT value FROM json_each(?)) AND {context}
+                WHERE {context}
                   AND l.scope_id=? AND l.project_id IS ? AND l.branch_id IS ?
                   AND c.current_revision=l.candidate_revision AND c.read_blocked=0 AND c.suppressed=0
                   AND {reachable_sql('l.')}
