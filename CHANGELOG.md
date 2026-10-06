@@ -4,9 +4,20 @@ All notable changes to `scope-recall` will be documented in this file.
 
 ## [Unreleased]
 
-### Scope Recall 3.7.3rc1 - 2026-10-05
+## [3.7.3] - 2026-10-05
 
-- The version moves past the `v3.7.2` tag.
+3.7.3 keeps a Hermes notice the host's when a compression folded its summary into it, and lets `retry-failures` clear every 4xx failure.
+
+### Fixes
+
+- **A notice Hermes folded a compression summary into is still the host's.** 3.7.2 found the message that opened a turn by its text, in the run of user messages that ends the conversation `pre_llm_call` hands over. A compression at the turn's start can fold its summary into that message (`ContextCompressor._merge_summary_into_tail_row`). The message then holds more than the turn's text and need not be last. One of tianshu's three delegation results after the 3.7.2 upgrade was stored as the owner's that way.
+  - Hermes marks such a message (`_compressed_summary`), and takes it for machinery when it carries a display kind other than steer or hidden (`split_user_originated_turn`). The adapter now does the same when the message holds the turn's text whole. That text must be at least 40 characters, as Hermes' notices are, since they name their process or delegation.
+  - The owner's own folded message carries no kind, so it stays the owner's.
+- **Every 4xx failure can be cleared.** A provider's 4xx answer not named elsewhere (404, 409, 413, 422, and so on) is now operator-actionable, as `http_400` is. The request, its route or its model was refused, so nothing retries it by itself. An operator who fixed the cause can re-open it with `retry-failures`. Before, these codes were in neither class: an `http_422` candidate evaluation on the shared store stayed failed, and no command could clear it, as with `http_protocol` before #201.
+
+### Upgrading from 3.7.2
+
+Install the package and run `plan-install` and `apply-install` where you upgrade, and restart the clients' MCP servers and the Hermes gateways. The store's schema is unchanged (1110).
 
 ## [3.7.2] - 2026-10-05
 

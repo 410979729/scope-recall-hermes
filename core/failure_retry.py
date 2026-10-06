@@ -124,10 +124,17 @@ def already_retried(error_code: object, *, generation: int) -> bool:
     return any(int(found) == generation for found in _MARKER_RE.findall(str(error_code or "")))
 
 
+#: A provider's 4xx answer not named above (404, 409, 413, 422, ...): the request as sent, or the route or model it
+#: named, was refused, so no automatic retry clears it, but an operator who has fixed the route, the model or a bound
+#: may re-open it, as ``http_400``.  Of neither class, a candidate evaluation failed with ``http_422`` on the shared
+#: store stayed failed with no command able to clear it, as ``http_protocol`` did before #201.
+_CLIENT_ERROR = re.compile(r"http_4\d\d")
+
+
 def retry_class(error_code: object) -> str | None:
     """``"actionable"``, ``"terminal"``, or ``None`` for anything else."""
     kind = failure_kind(error_code)
-    if kind in ACTIONABLE_FAILURES:
+    if kind in ACTIONABLE_FAILURES or _CLIENT_ERROR.fullmatch(kind):
         return "actionable"
     if kind in TERMINAL_FAILURES:
         return "terminal"

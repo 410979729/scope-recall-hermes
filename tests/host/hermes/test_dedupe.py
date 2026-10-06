@@ -269,6 +269,49 @@ def test_a_late_sync_of_the_person_s_turn_keeps_their_words_theirs(adapter, herm
     assert not any(origin == "host_generated" for _role, _content, origin in rows)
 
 
+def _folded(content, **marks):
+    """A user message Hermes folded a compression summary into, as ``ContextCompressor._merge_summary_into_tail_row``
+    leaves it: the summary after the message, the mark on it, its display kind kept."""
+    return {"role": "user", "content": "[Earlier turns, kept for reference]\n" + content
+            + "\n\n--- summary ---\n\nTEST 摘要：之前在后台跑构建。\n\n[END OF SUMMARY]",
+            "_compressed_summary": True, **marks}
+
+
+def test_a_notice_hermes_folded_a_summary_into_is_the_host_s(adapter, hermes_home):
+    """A compression at the turn's start folded its summary into the notice that opened the turn, which then held
+    more than its text and was not last: one of tianshu's three delegation results on 2026-10-05 was stored as the
+    owner's that way."""
+    from scope_recall.adapters.hermes.hooks import _global_callback
+
+    provider, _clock = adapter
+    history = [{"role": "user", "content": "TEST 第一句"}, {"role": "assistant", "content": "TEST 好。"},
+               _folded(_NOTICE, display_kind="internal_notification"),
+               {"role": "assistant", "content": "TEST 上一步", "tool_calls": [{"id": "T1"}]},
+               {"role": "tool", "tool_call_id": "T1", "content": "TEST 工具输出"}]
+    _global_callback("pre_llm_call")(session_id="TEST-session-1", turn_id="turn-folded", platform="cli",
+                                     user_message=_NOTICE, conversation_history=history)
+    rows = [(role, content, origin) for role, content, origin, _at in _stored(hermes_home)]
+    assert ("user", _NOTICE, "host_generated") in rows
+
+
+def test_only_a_folded_message_hermes_marked_as_its_own_holds_a_notice():
+    from scope_recall.adapters.hermes.boundary import host_notice
+
+    tail = [{"role": "assistant", "content": "TEST 上一步"}]
+    assert host_notice([_folded(_NOTICE, display_kind="process_complete"), *tail], _NOTICE)
+    assert not host_notice([_folded(_NOTICE), *tail], _NOTICE), "the person's folded message"
+    assert not host_notice([_folded(_NOTICE, display_kind="hidden"), *tail], _NOTICE), "hidden may hold the person's"
+    assert not host_notice([_folded(_NOTICE, display_kind="steer"), *tail], _NOTICE)
+    unmarked = _folded(_NOTICE, display_kind="internal_notification")
+    del unmarked["_compressed_summary"]
+    assert not host_notice([unmarked, *tail], _NOTICE), "only a message Hermes marked as folded"
+    short = "TEST 继续"
+    assert not host_notice([_folded(short, display_kind="internal_notification"), *tail], short), "a short text"
+    asked = {"role": "user", "content": _NOTICE}
+    assert not host_notice([_folded(_NOTICE, display_kind="internal_notification"), *tail, asked], _NOTICE), \
+        "the turn's own message, found whole, decides"
+
+
 def test_the_turn_s_own_message_says_whether_hermes_opened_it():
     """A compression at the turn's start can add user messages after the turn's own: a to-do list, a turn it
     restored.  The turn's own message is the last one holding its text; one not found is the person's."""

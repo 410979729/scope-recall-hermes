@@ -274,6 +274,12 @@ def _steer_words(content: object) -> str:
     return words
 
 
+#: Hermes' mark on a user message it folded a compression summary into (``COMPRESSED_SUMMARY_METADATA_KEY``).
+_COMPRESSED_SUMMARY = "_compressed_summary"
+#: The shortest turn text looked for inside such a message: a shorter one could be a summary's words.
+_FOLDED_NOTICE_MIN_CHARS = 40
+
+
 def host_notice(history: object, user_message: object) -> bool:
     """Whether the turn ``pre_llm_call`` opens is one Hermes opened itself, not the person.
 
@@ -285,17 +291,35 @@ def host_notice(history: object, user_message: object) -> bool:
     after it (``agent.turn_context.reanchor_current_turn_user_idx``), and anything before the last reply belongs to
     an earlier turn.  One not found there is the person's, as before.  Stored as the person's, a notice read as
     something they said.
+
+    A compression at the turn's start can also fold its summary into the turn's own message
+    (``ContextCompressor._merge_summary_into_tail_row``), which then holds more than the turn's text and need not be
+    last: one of tianshu's three delegation results on 2026-10-05 was stored as the owner's that way.  Hermes marks
+    such a message (``_compressed_summary``) and takes it for machinery when it carries a kind other than steer or
+    hidden (``split_user_originated_turn``); so does this, when it holds the turn's text whole and that text is long
+    enough to be the notice's own (Hermes' notices name their process or delegation).
     """
     text = extract_user_text(user_message)
     if not isinstance(history, list) or not text.strip():
         return False
     for message in reversed(history):
         if not isinstance(message, dict) or message.get("role") != "user":
-            return False
+            break
         if extract_user_text(message.get("content")) == text:
             kind = message.get("display_kind")
             return isinstance(kind, str) and bool(kind) and kind != STEER_KIND
-    return False
+    if len(text.strip()) < _FOLDED_NOTICE_MIN_CHARS:
+        return False
+    return any(_folded_notice(message, text) for message in history)
+
+
+def _folded_notice(message: object, text: str) -> bool:
+    """A user message Hermes folded a compression summary into, marked as its own, and holding ``text`` whole."""
+    if not isinstance(message, dict) or message.get("role") != "user" or message.get(_COMPRESSED_SUMMARY) is not True:
+        return False
+    kind = message.get("display_kind")
+    return (isinstance(kind, str) and kind not in ("", STEER_KIND, "hidden")
+            and text in extract_user_text(message.get("content")))
 
 
 def steer_messages(history: object) -> tuple[tuple[str, str | None], ...]:
