@@ -210,7 +210,9 @@ def respace_if_due(storage: Any, context: Any, space_id: str | None, *, now: dat
 
     The embed queue is topped up as the import backfill tops it up (``queue_import_embeddings``): to
     ``IMPORT_EMBED_QUEUE_CEILING``, and to ``yield_ceiling`` while work of a type in ``yield_to`` is ready, so a
-    message captured now and an evaluation that waits still move.  The run is looked at in a read; the write, and
+    message captured now and an evaluation that waits still move.  A run reopens rows of every partition, so the
+    queue it counts is the store's (``embed_queue``): counted as this worker's alone, a partition it cannot see took
+    a page every pass however much of it waited (review of 3.8.0).  The run is looked at in a read; the write, and
     the writer lease it takes, come only when a run into this space has room to go on.  Returns the page's receipt,
     ``None`` when there is no run.  Never raises: a page that failed changed nothing and is tried again next drain.
     """
@@ -229,7 +231,7 @@ def respace_if_due(storage: Any, context: Any, space_id: str | None, *, now: dat
             ceiling = IMPORT_EMBED_QUEUE_CEILING
             if yield_to and yield_ceiling is not None and tx.work.other_work_ready(now=moment, kinds=yield_to):
                 ceiling = yield_ceiling
-            room = ceiling - tx.work.pending_depth("embed")
+            room = ceiling - tx.work.embed_queue()["pending"]
         if room <= 0:
             return {"outcome": "held", "reopened": 0, "next_work_id": run["next_work_id"]}
         with storage.write(context) as tx:

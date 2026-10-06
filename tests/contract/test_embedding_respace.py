@@ -139,25 +139,50 @@ def test_a_preview_counts_what_a_run_would_reopen_and_changes_nothing(app):
     _finish_embeds(core)
     before = _embeds(core)
     report = core.respace_embeddings(ctx, space_id=SPACE_B, action="start", dry_run=True)
-    assert (report["applied"], report["run"], report["to_reopen"]) == (False, None, 2)
+    assert (report["applied"], report["run"], report["to_reopen"], report["waiting"]) == (False, None, 2, 0)
     assert core.respace_embeddings(ctx, space_id=SPACE_B)["run"] is None
     assert _embeds(core) == before
 
 
-def test_one_run_at_a_time_and_a_finished_one_is_simply_replaced(app):
+def test_the_preview_counts_what_still_waits_which_a_run_started_now_would_pay_for_twice(app):
+    """An embedding waiting at the start lies below the run: it is embedded into the new space in its turn, and the
+    run reopens it again when it gets there (review of 3.8.0)."""
+    core, ctx = app
+    edge(core, ctx, "TEST-A", "TEST-B")
+    _finish_embeds(core)
+    _queue_embeds(core, 3)
+    assert core.respace_embeddings(ctx, space_id=SPACE_B, action="start", dry_run=True)["waiting"] == 3
+    _start(core, ctx)
+    _finish_embeds(core)
+    assert core.respace_embeddings(ctx, space_id=SPACE_B)["to_reopen"] == 5, "the three are reopened too"
+
+
+def test_one_run_at_a_time_and_one_per_space_unless_started_again_on_purpose(app):
+    """A start after a finished run into the same space began a second paid run without a word (review of 3.8.0)."""
     core, ctx = app
     edge(core, ctx, "TEST-A", "TEST-B")
     _finish_embeds(core)
     run = _start(core, ctx)["run"]
     assert (run["embedding_space"], run["completed"], run["reopened"]) == (SPACE_B, False, 0)
-    for dry_run in (False, True):
-        with pytest.raises(ContractError) as refused:
-            core.respace_embeddings(ctx, space_id=SPACE_B, action="start", dry_run=dry_run)
-        assert (refused.value.code, refused.value.field) == ("VERSION_CONFLICT", "respace_running")
+
+    def refused_start(space, field):
+        for dry_run in (False, True):
+            with pytest.raises(ContractError) as refused:
+                core.respace_embeddings(ctx, space_id=space, action="start", dry_run=dry_run)
+            assert (refused.value.code, refused.value.field) == ("VERSION_CONFLICT", field)
+
+    refused_start(SPACE_B, "respace_running")
+    refused_start(SPACE_A, "respace_running")
+    preview = core.respace_embeddings(ctx, space_id=SPACE_B, action="restart", dry_run=True)
+    assert preview["run"] == run, "a preview shows the run as it stands"
     assert _start(core, ctx, action="restart")["run"]["next_work_id"] == run["next_work_id"]
     assert _page(core, ctx)["outcome"] == "complete"
+    refused_start(SPACE_B, "respace_finished")
+    assert _start(core, ctx, action="restart")["run"]["completed"] is False
+    assert _page(core, ctx)["outcome"] == "complete"
     again = _start(core, ctx, space=SPACE_A)["run"]
-    assert (again["embedding_space"], again["completed"], again["reopened"]) == (SPACE_A, False, 0)
+    assert (again["embedding_space"], again["completed"], again["reopened"]) == (SPACE_A, False, 0), \
+        "a finished run into another space gives way: the model changed again"
 
 
 def test_newest_first_within_the_room_and_never_what_came_after_the_start(app):
@@ -217,7 +242,7 @@ def test_cancel_forgets_the_run_and_what_it_reopened_is_still_embedded(app):
     _start(core, ctx)
     _page(core, ctx, room=1)
     preview = core.respace_embeddings(ctx, space_id=SPACE_B, action="cancel", dry_run=True)
-    assert preview["cancelled"] and preview["run"] is not None, "a preview names the run it would forget"
+    assert "cancelled" not in preview and preview["run"] is not None, "a preview names the run it would forget"
     report = core.respace_embeddings(ctx, space_id=SPACE_B, action="cancel", dry_run=False)
     assert report["cancelled"] and report["run"] is None
     assert sorted(row[2] for row in _embeds(core)) == ["done", "done", "done", "pending"]
@@ -247,6 +272,51 @@ def test_the_drain_s_upkeep_keeps_the_queue_to_its_ceiling_and_yields_to_evaluat
     assert (page["outcome"], page["reopened"]) == ("progress", 1), "two may wait while an evaluation is ready"
     assert respace_if_due(storage, ctx, SPACE_B, yield_to=evaluations, yield_ceiling=2)["outcome"] == "held"
     assert respace_if_due(storage, ctx, SPACE_B)["reopened"] == 4, "without one ready, up to the ceiling"
+
+
+def test_what_waits_in_a_partition_this_worker_cannot_see_holds_the_run(app):
+    """A run reopens rows of every partition, so it is held by the store's queue: counted as the worker's own,
+    300 rows of another project went pending 64 a pass (review of 3.8.0)."""
+    core, ctx = app
+    edge(core, ctx, "TEST-A", "TEST-B")
+    _finish_embeds(core)
+    _start(core, ctx)
+    _queue_embeds(core, IMPORT_EMBED_QUEUE_CEILING, prefix="event-TEST-elsewhere")
+    with sqlite3.connect(core.storage.path) as conn:
+        conn.execute("UPDATE work_items SET project_id='TEST-other-project' WHERE subject_ref LIKE 'event-TEST-elsewhere-%'")
+    storage = SQLiteStorage(ctx.binding)
+    with storage.read(ctx) as tx:
+        assert (tx.work.pending_depth("embed"), tx.work.embed_queue()["pending"]) == (0, IMPORT_EMBED_QUEUE_CEILING)
+    held = respace_if_due(storage, ctx, SPACE_B)
+    assert (held["outcome"], held["reopened"]) == ("held", 0)
+    with sqlite3.connect(core.storage.path) as conn:
+        conn.execute("UPDATE work_items SET state='done' WHERE subject_ref LIKE 'event-TEST-elsewhere-%'")
+    assert respace_if_due(storage, ctx, SPACE_B)["reopened"] == 2
+
+
+def test_a_drain_says_a_run_into_another_space_and_a_page_that_failed(app, monkeypatch):
+    """Both reach the worker's status, where the doctor reads a pass (``background_gaps``)."""
+    from scope_recall.core.composition import SystemClock
+
+    core, ctx = app
+    core.clock = SystemClock()
+    edge(core, ctx, "TEST-A", "TEST-B")
+    instance = _space_instance(core, ctx, "TEST-model-B")
+    try:
+        instance.drain()
+        _start(core, ctx, space=SPACE_A)
+        instance.drain()
+        assert "embedding_respace_space_mismatch" in instance.background_gaps
+        _start(core, ctx, space=instance.config.embedding_space_id(), action="restart")
+
+        def refuse(self, *args, **kwargs):
+            raise sqlite3.OperationalError("database is locked")
+
+        monkeypatch.setattr(work_storage.WorkItems, "respace_page", refuse)
+        instance.drain()
+        assert "embedding_respace_failed:OperationalError" in instance.background_gaps
+    finally:
+        instance.close()
 
 
 def test_a_page_looks_through_a_bounded_window_of_work_ids(app, monkeypatch):
@@ -347,7 +417,7 @@ def test_doctor_names_an_embedding_backlog_that_aged_beside_a_refusing_provider(
     aged = (datetime.now(timezone.utc) - timedelta(hours=30)).isoformat()
     report = DoctorReport(host="hermes", status="degraded",
                           embedding_health={"pending": 12, "failed": 0, "oldest_pending_at": aged})
-    _check_embedding_health(report, SimpleNamespace(auxiliary=auxiliary))
+    _check_embedding_health(report, SimpleNamespace(auxiliary=auxiliary, vector=object()))
     assert report.capability_gaps == ["embedding_backlog_aged"]
     assert report.embedding_health["held_model"] == "TEST-embed"
     assert report.embedding_health["last_day"]["refused"] == {"http_429": 3}
@@ -359,3 +429,47 @@ def test_doctor_names_an_embedding_backlog_that_aged_beside_a_refusing_provider(
     assert (fresh.capability_gaps, fresh.checks) == ([], [])
     assert embedding_calls(SimpleNamespace(ledger_path=path, external_embedding=False,
                                            embedding=auxiliary.embedding)) is None, "no external route, no calls"
+
+
+def test_doctor_says_nothing_of_a_backlog_where_nothing_embeds_and_names_a_worker_where_nothing_refused():
+    """Without a vector store or an external embedding route the queue only grows, by choice: an install without one
+    went from "attention" to "degraded" for good (review of 3.8.0)."""
+    from datetime import datetime, timedelta, timezone
+
+    from scope_recall.maintenance.doctor import DoctorReport, _check_embedding_health
+
+    aged = (datetime.now(timezone.utc) - timedelta(hours=30)).isoformat()
+    route = SimpleNamespace(ledger_path=None, external_embedding=True, external_consolidation=False,
+                            embedding=SimpleNamespace(kind="openai", space=lambda: {"model": "TEST-embed"}))
+    for config in (SimpleNamespace(auxiliary=route, vector=None),
+                   SimpleNamespace(auxiliary=SimpleNamespace(**{**vars(route), "external_embedding": False}),
+                                   vector=object()),
+                   SimpleNamespace(auxiliary=SimpleNamespace(**{**vars(route), "embedding": None}), vector=object()),
+                   SimpleNamespace(auxiliary=None, vector=object())):
+        report = DoctorReport(host="hermes", status="degraded",
+                              embedding_health={"pending": 12, "failed": 0, "oldest_pending_at": aged})
+        _check_embedding_health(report, config)
+        assert (report.capability_gaps, report.checks) == ([], []), config
+    report = DoctorReport(host="hermes", status="degraded",
+                          embedding_health={"pending": 12, "failed": 0, "oldest_pending_at": aged})
+    _check_embedding_health(report, SimpleNamespace(auxiliary=route, vector=object()))
+    assert report.capability_gaps == ["embedding_backlog_aged"]
+    assert "no worker has reached them" in report.checks[-1]["detail"]
+
+
+def test_the_embed_queue_is_the_store_s_and_read_by_state(app):
+    core, ctx = app
+    edge(core, ctx, "TEST-A", "TEST-B")
+    _queue_embeds(core, 2, prefix="event-TEST-elsewhere")
+    with sqlite3.connect(core.storage.path) as conn:
+        conn.execute("UPDATE work_items SET project_id='TEST-other-project',state='failed' "
+                     "WHERE subject_ref='event-TEST-elsewhere-0'")
+        conn.execute("UPDATE work_items SET project_id='TEST-other-project',available_at='2026-01-01T00:00:00Z' "
+                     "WHERE subject_ref='event-TEST-elsewhere-1'")
+        plan = " ".join(row[3] for row in conn.execute(
+            """EXPLAIN QUERY PLAN SELECT count(*) FROM work_items
+               WHERE state IN ('pending','failed') AND +work_type='embed'"""))
+    with core.storage.read(ctx) as tx:
+        queue = tx.work.embed_queue()
+    assert queue == {"pending": 3, "failed": 1, "oldest_pending_at": "2026-01-01T00:00:00Z"}
+    assert "work_ready" in plan, plan

@@ -561,7 +561,7 @@ Things that look wrong in a healthy report and are not:
 | `work_backlog_stalled` | Work is pending and the worker has not succeeded for more than twice `supervisor_seconds`. | The worker is not running. See the next section. |
 | `worker_capability_unavailable` | Work is pending and the last pass reported work types it could not do. `attention`. | Usually a missing model route, credential or budget. |
 | `capture_ingress_blocked` | Inbox rows carry a real error code, or wait for their next try. Always `degraded`. | Read `capture_inbox_blocked` and the recent work errors. A row whose stored capture a replay could not check again is tried after a minute, doubling to an hour; when its 24th try again fails it is given up and counted in `capture_inbox_given_up`. `retry-failures` without `--apply` counts them by what gave them up (`inbox_by_kind`); fix that, then `retry-failures --apply` returns them to the replay. |
-| `embedding_backlog_aged` | Embeddings have waited more than 24 hours. Recall goes on answering, but finds what came in since then by its words alone. The check's detail names the provider's hold and its refusals over the last day when there are any (`embedding_health`). | Usually a quota, a spend cap or a credential at the embedding provider: fix it there, and the queue drains by itself. |
+| `embedding_backlog_aged` | An external embedding route is configured, and embeddings have waited more than 24 hours. Recall goes on answering, but finds what came in since then by its words alone. The check's detail names the provider's hold and its refusals over the last day when there are any (`embedding_health`). Without a route nothing embeds, by choice, and the gap is not raised. | With a hold or refusals: a quota, a spend cap or a credential at the provider; fix it there and the queue drains by itself. Without them no worker has reached the embeddings: read `worker_status`, and where each project has a worker of its own, check that it runs. |
 | `embedding_respace_space_mismatch` | A re-embed run (`respace-embeddings`) embeds into one space while `runtime-config.json` embeds into another, after a second change of model, so no worker goes on with it. | `respace-embeddings --config <file> --restart --apply` to start again into the new space, or `--cancel --apply`. |
 | `embedding_respace_failed:<Error>` | A worker pass could not reopen the run's next page; the worker status carries it. The run is unchanged and the next pass tries again. | Read the error; a held writer lease passes by itself. |
 | `autostart_registration_missing` | The control file says enabled, but the scheduled task is gone. | Re-run `autostart enable`. |
@@ -672,12 +672,21 @@ scope-recall respace-embeddings --config /path/to/instance-root/scope-recall/run
 ```
 
 Without `--apply` nothing is written, and without `--start` the command shows
-the run and the embeddings it still has to reopen (`to_reopen`). The run covers
-the whole store and lives in SQLite. Every worker pass in that space reopens a
-page of finished embeddings, newest first, and only while fewer than 64
-embeddings wait (half a pass's worth while candidate evaluations are ready), so messages
-captured meanwhile are embedded first. `--restart --apply` starts again from
-the newest; `--cancel --apply` stops it, and what it reopened is still embedded.
+the run, the embeddings it still has to reopen (`to_reopen`) and those still
+waiting in the store (`waiting`).
+
+- Start once `waiting` is down to what keeps coming in. An embedding still
+  waiting at the start is embedded into the new space in its turn, and the run
+  reopens it again when it gets there, so it is paid for twice.
+- The run covers the whole store and lives in SQLite. Every worker pass in that
+  space reopens a page of finished embeddings, newest first. It does so only
+  while fewer than 64 embeddings wait anywhere in the store, or half a pass's
+  worth while candidate evaluations are ready, so messages captured meanwhile
+  are embedded first. Embeddings of a project whose worker never runs hold the
+  run; the doctor then shows it not moving (`embedding_respace`).
+- `--start` refuses while a run is going, and after one into the same space has
+  finished. `--restart --apply` starts again from the newest. `--cancel --apply`
+  stops the run, and what it reopened is still embedded.
 
 Since 3.2.0 a tool output is kept and embedded, found by its words and by
 meaning, but no longer consolidated into claims: what an agent read or ran is

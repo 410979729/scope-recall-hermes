@@ -140,6 +140,17 @@ _NOT_EXPIRED = """NOT EXISTS(SELECT 1 FROM expired_vectors x
                        WHERE x.source_ref=w.subject_ref AND x.source_revision=w.subject_revision)"""
 
 
+def respace_refusal(run: dict | None, space_id: str, *, restart: bool) -> str | None:
+    """Why a run into ``space_id`` may not start now, or None.  One run at a time, and one per space: a run that is
+    going, or one into the same space that finished, is started again only on purpose (``restart``); a finished run
+    into another space gives way to the new one (the model changed again)."""
+    if run is None or restart:
+        return None
+    if not run["completed"]:
+        return "respace_running"
+    return "respace_finished" if run["embedding_space"] == space_id else None
+
+
 def fresh_since(now: str) -> str:
     """The oldest ``persisted_at`` that still counts as fresh conversation."""
     return _after(now, -FRESH_LANE_SECONDS)
@@ -901,6 +912,16 @@ class WorkItems:
         return {"embedding_space": row[0], "next_work_id": int(row[1] or 0), "reopened": int(row[2]),
                 "completed": bool(row[3]), "updated_at": row[4]}
 
+    def embed_queue(self) -> dict:
+        """The store's embed queue, every partition: pending and failed rows, and the oldest pending one's time.
+
+        A re-embed run reopens rows of every partition, so it is held by what waits anywhere; and the doctor reports
+        the store.  Read through ``work_ready`` (state first): by ``work_type`` SQLite walked every embed row."""
+        pending, failed, oldest = self._tx._check().execute(
+            """SELECT sum(state='pending'),sum(state='failed'),min(CASE WHEN state='pending' THEN available_at END)
+               FROM work_items WHERE state IN ('pending','failed') AND +work_type='embed'""").fetchone()
+        return {"pending": int(pending or 0), "failed": int(failed or 0), "oldest_pending_at": oldest}
+
     def respace_remaining(self, *, at_most: int | None = None) -> int:
         """Embeddings done so far that a run would reopen: at or below work id ``at_most`` (all when None), except a
         tool output whose vector the retention window expired, which stays without one."""
@@ -910,17 +931,16 @@ class WorkItems:
                 AND {_NOT_EXPIRED}""", (bound,)).fetchone()[0])
 
     def start_respace(self, space_id: str, *, now: str, restart: bool = False) -> dict:
-        """Start a run into ``space_id`` over every embedding done so far, from the newest down.
-
-        One run at a time: a running one is replaced only with ``restart``; a finished one, or one into another
-        space, is simply replaced.  Work queued after the start is embedded into the new space as it comes and lies
-        above the run, so it is never reopened."""
+        """Start a run into ``space_id`` over every embedding done so far, from the newest down (``respace_refusal``
+        says when it may).  Work queued after the start is embedded into the new space as it comes and lies above the
+        run, so it is never reopened; an embedding still waiting at the start lies below it, is embedded into the new
+        space when its turn comes, and is reopened again when the run reaches it."""
         if type(space_id) is not str or not _SPACE_ID.fullmatch(space_id) or type(restart) is not bool:
             raise ContractError("INPUT_INVALID", "respace_space")
         conn = self._tx._check(write=True)
-        current = self.respace_run()
-        if current is not None and not current["completed"] and not restart:
-            raise ContractError("VERSION_CONFLICT", "respace_running")
+        refusal = respace_refusal(self.respace_run(), space_id, restart=restart)
+        if refusal is not None:
+            raise ContractError("VERSION_CONFLICT", refusal)
         top = int(conn.execute("SELECT coalesce(max(work_id),0) FROM work_items").fetchone()[0])
         conn.execute(
             """INSERT INTO candidate_scan_cursors(cursor_name,position_ref,position_revision,processed_count,completed,

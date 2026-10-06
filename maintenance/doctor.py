@@ -684,11 +684,7 @@ def _check_storage(report: DoctorReport, binding, data_directory: Path) -> bool:
             report.candidate_settling = transaction.candidates.settling_summary(
                 now=datetime.now(timezone.utc).isoformat())
             report.embedding_respace = transaction.work.respace_run()
-            pending, failed, oldest = conn.execute(
-                """SELECT sum(state='pending'),sum(state='failed'),min(CASE WHEN state='pending' THEN available_at END)
-                   FROM work_items WHERE work_type='embed' AND state IN ('pending','failed')""").fetchone()
-            report.embedding_health = {"pending": int(pending or 0), "failed": int(failed or 0),
-                                       "oldest_pending_at": oldest}
+            report.embedding_health = transaction.work.embed_queue()
     except Exception as exc:  # noqa: BLE001 - an unreadable store is a finding, not a crash.
         report.capability_gaps.append(f"storage_read:{type(exc).__name__}")
         _record(report, "storage_status", "unavailable", type(exc).__name__)
@@ -942,17 +938,20 @@ def _check_embedding_health(report: DoctorReport, config) -> None:
     Recall goes on answering while embeddings wait, by words alone, and nothing said so: an installation on a free
     tier met HTTP 429 most days and had embeddings waiting for over a week before a status page of its own showed it
     (reported with #200).  A backlog older than ``EMBEDDING_BACKLOG_HOURS`` is named, with the provider's hold and
-    refusals when it has them."""
+    refusals when it has them.  Without a vector store and an external embedding route nothing embeds, by choice,
+    and the queue only grows: that is no finding (review of 3.8.0)."""
     health = report.embedding_health
     auxiliary = getattr(config, "auxiliary", None) if config is not None else None
-    if auxiliary is not None:
-        hold = provider_holds(auxiliary).get("embed")
-        if hold is not None:
-            health["held_model"], until = hold
-            health["held_until"] = datetime.fromtimestamp(until, timezone.utc).isoformat()
-        calls = embedding_calls(auxiliary)
-        if calls is not None:
-            health["last_day"] = calls
+    if (getattr(config, "vector", None) is None or auxiliary is None
+            or getattr(auxiliary, "external_embedding", False) is not True or getattr(auxiliary, "embedding", None) is None):
+        return
+    hold = provider_holds(auxiliary).get("embed")
+    if hold is not None:
+        health["held_model"], until = hold
+        health["held_until"] = datetime.fromtimestamp(until, timezone.utc).isoformat()
+    calls = embedding_calls(auxiliary)
+    if calls is not None:
+        health["last_day"] = calls
     oldest = health.get("oldest_pending_at")
     age = _seconds_since(oldest) if health.get("pending") and oldest else None
     if age is None or age <= EMBEDDING_BACKLOG_HOURS * 3600:
@@ -965,6 +964,9 @@ def _check_embedding_health(report: DoctorReport, config) -> None:
     refused = (health.get("last_day") or {}).get("refused")
     if refused:
         detail += f"; refused in the last day: {', '.join(f'{code} x{count}' for code, count in refused.items())}"
+    if "held_until" not in health and not refused:
+        detail += ("; the provider refused nothing in the last day, so no worker has reached them: see worker_status, "
+                   "and on an installation with a worker per project, whether each one runs")
     _record(report, "embedding_backlog", "aged", detail)
 
 
