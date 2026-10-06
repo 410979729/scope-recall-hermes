@@ -113,6 +113,32 @@ FRESH_LANE_ORIGINS = {
 #: realistic window holds.  Fresh work beyond it is still claimed in FIFO order.
 FRESH_LANE_SCAN_ROWS = 512
 
+# --- a re-embed run after the embedding space changed ----------------------
+#
+# ``work_items`` is unique on its type and subject and says nothing of the space a vector was made in, so an
+# embedding done in one space stays done when the model changes, and the new store never receives it (#200, found
+# and reproduced by @Vivamisu).  Re-embedding a store is a deliberate, paid act: an operator starts a run
+# (``respace-embeddings``), and each drain of a worker in that space reopens a page of done embeddings
+# (``respace_page``), newest first and only while the embed queue has room, down to the bottom of the queue.
+#
+# The run is one row of the store's named cursors, the table that already keeps the store's other one-way walk
+# (``claim_backfill_1108``): a run needs a space, a position and a count, and a table of its own would have needed
+# a schema step that every entry of a shared store has to take at once.
+
+#: The run's row in ``candidate_scan_cursors``: ``position_ref`` the space it embeds into, ``position_revision`` the
+#: highest work id it has still to look at, ``processed_count`` the rows it reopened, ``completed`` once none is left.
+RESPACE_CURSOR = "embed_respace"
+#: What a reopened row says until it is embedded again.
+RESPACE_MARKER = "embedding_space_changed"
+#: Rows one page reopens at most; the embed queue's room bounds it further.
+RESPACE_PAGE = 64
+#: Work ids one page looks through at most.
+RESPACE_SCAN = 4096
+_SPACE_ID = re.compile(r"[0-9a-f]{64}")
+#: A tool output whose vector the retention window expired keeps none (``runtime/vector_retention.py``).
+_NOT_EXPIRED = """NOT EXISTS(SELECT 1 FROM expired_vectors x
+                       WHERE x.source_ref=w.subject_ref AND x.source_revision=w.subject_revision)"""
+
 
 def fresh_since(now: str) -> str:
     """The oldest ``persisted_at`` that still counts as fresh conversation."""
@@ -862,6 +888,92 @@ class WorkItems:
             if _embed_retry_reason(self._tx, ref, revision) is None:
                 heads.append((work_id, ref, revision))
         return heads
+
+    # --- a re-embed run after the embedding space changed (``respace-embeddings``) -------------------------------
+
+    def respace_run(self) -> dict | None:
+        """The store's re-embed run (``RESPACE_CURSOR``), or None when none was started."""
+        row = self._tx._check().execute(
+            """SELECT position_ref,position_revision,processed_count,completed,updated_at FROM candidate_scan_cursors
+               WHERE cursor_name=?""", (RESPACE_CURSOR,)).fetchone()
+        if row is None:
+            return None
+        return {"embedding_space": row[0], "next_work_id": int(row[1] or 0), "reopened": int(row[2]),
+                "completed": bool(row[3]), "updated_at": row[4]}
+
+    def respace_remaining(self, *, at_most: int | None = None) -> int:
+        """Embeddings done so far that a run would reopen: at or below work id ``at_most`` (all when None), except a
+        tool output whose vector the retention window expired, which stays without one."""
+        bound = (2 ** 63 - 1) if at_most is None else int(at_most)
+        return int(self._tx._check().execute(
+            f"""SELECT count(*) FROM work_items w WHERE w.work_type='embed' AND w.state='done' AND w.work_id<=?
+                AND {_NOT_EXPIRED}""", (bound,)).fetchone()[0])
+
+    def start_respace(self, space_id: str, *, now: str, restart: bool = False) -> dict:
+        """Start a run into ``space_id`` over every embedding done so far, from the newest down.
+
+        One run at a time: a running one is replaced only with ``restart``; a finished one, or one into another
+        space, is simply replaced.  Work queued after the start is embedded into the new space as it comes and lies
+        above the run, so it is never reopened."""
+        if type(space_id) is not str or not _SPACE_ID.fullmatch(space_id) or type(restart) is not bool:
+            raise ContractError("INPUT_INVALID", "respace_space")
+        conn = self._tx._check(write=True)
+        current = self.respace_run()
+        if current is not None and not current["completed"] and not restart:
+            raise ContractError("VERSION_CONFLICT", "respace_running")
+        top = int(conn.execute("SELECT coalesce(max(work_id),0) FROM work_items").fetchone()[0])
+        conn.execute(
+            """INSERT INTO candidate_scan_cursors(cursor_name,position_ref,position_revision,processed_count,completed,
+                   updated_at) VALUES (?,?,?,0,?,?)
+               ON CONFLICT(cursor_name) DO UPDATE SET position_ref=excluded.position_ref,
+                   position_revision=excluded.position_revision,processed_count=0,completed=excluded.completed,
+                   updated_at=excluded.updated_at""",
+            (RESPACE_CURSOR, space_id, top, int(top == 0), now))
+        return self.respace_run()
+
+    def cancel_respace(self) -> bool:
+        """Forget the run, if there is one.  What it reopened already stays queued and is embedded."""
+        return self._tx._check(write=True).execute(
+            "DELETE FROM candidate_scan_cursors WHERE cursor_name=?", (RESPACE_CURSOR,)).rowcount == 1
+
+    def respace_page(self, space_id: str, *, now: str, room: int) -> dict:
+        """Reopen the run's next page of done embeddings, newest first and at most ``room``, for a worker in
+        ``space_id``.
+
+        A reopened row is pending like a new one: its attempts count afresh, any lease is fenced off, and it is
+        available from ``now``, so it waits behind the queue it joins rather than ahead of it.  A page looks through
+        at most ``RESPACE_SCAN`` work ids, newest first by the primary key, so it holds the writer lease for a bounded
+        scan however sparse the done embeddings are among them.  A worker of another space leaves the run alone.
+        """
+        if type(room) is not int:
+            raise ContractError("INPUT_INVALID", "respace_room")
+        run = self.respace_run()
+        if run is None or run["completed"]:
+            return {"outcome": "none"}
+        if run["embedding_space"] != space_id:
+            return {"outcome": "space_mismatch", "embedding_space": run["embedding_space"]}
+        top = run["next_work_id"]
+        if room <= 0:
+            return {"outcome": "held", "reopened": 0, "next_work_id": top}
+        conn = self._tx._check(write=True)
+        bottom = max(1, top - RESPACE_SCAN + 1)
+        page = min(room, RESPACE_PAGE)
+        ids = [row[0] for row in conn.execute(
+            f"""SELECT w.work_id FROM work_items AS w NOT INDEXED
+                WHERE w.work_id BETWEEN ? AND ? AND w.work_type='embed' AND w.state='done' AND {_NOT_EXPIRED}
+                ORDER BY w.work_id DESC LIMIT ?""", (bottom, top, page))]
+        if ids:
+            conn.execute(
+                f"""UPDATE work_items SET state='pending',attempt=0,available_at=?,lease_token=lease_token+1,
+                    lease_owner=NULL,lease_until=NULL,last_error_code=? WHERE work_id IN ({_marks(ids)}) AND state='done'""",
+                (now, RESPACE_MARKER, *ids))
+        # A full page stops below its last row; a short one has looked through the whole window.
+        below = (ids[-1] if len(ids) == page else bottom) - 1
+        conn.execute(
+            """UPDATE candidate_scan_cursors SET position_revision=?,processed_count=processed_count+?,completed=?,
+               updated_at=? WHERE cursor_name=?""",
+            (below, len(ids), int(below < 1), now, RESPACE_CURSOR))
+        return {"outcome": "complete" if below < 1 else "progress", "reopened": len(ids), "next_work_id": below}
 
     def _reopen_failed(self, work_id: int, work_type: str, code: object, *, now: str, automatic: bool = False) -> bool:
         """Move one failed row, and its sibling tables when it has any."""

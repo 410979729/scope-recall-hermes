@@ -24,7 +24,7 @@ from scope_recall.core.capture_inbox import given_up, replayable
 from scope_recall.core.schema import SCHEMA_VERSION, UPGRADE_CHAIN, stale_header_schema
 from scope_recall.core.storage import SQLiteStorage
 from scope_recall.core.failure_retry import NEEDS_REVIEW_COUNT
-from scope_recall.runtime.model_budget import pre_request_refusals, provider_refusals
+from scope_recall.runtime.model_budget import embedding_calls, pre_request_refusals, provider_holds, provider_refusals
 from scope_recall.runtime.running_code import live_records, stale_records
 from scope_recall.vector.compaction import instance_vector_footprints
 from scope_recall._version import __version__
@@ -105,6 +105,11 @@ class DoctorReport:
     running_code: dict[str, Any] = field(default_factory=dict)
     package_health: dict[str, Any] = field(default_factory=dict)
     candidate_settling: dict[str, int] = field(default_factory=dict)
+    #: The store's re-embed run (``respace-embeddings``), or ``None`` when none was started.
+    embedding_respace: dict[str, Any] | None = None
+    #: The embedding queue (pending, failed, the oldest pending), and with an external route the provider's hold
+    #: and its answers over the last day (``_check_embedding_health``).
+    embedding_health: dict[str, Any] = field(default_factory=dict)
     #: For a home attached to a shared store: the store's root, and this home's
     #: entry.  Everything else in the report is then the shared store's.
     shared_store: dict[str, str] = field(default_factory=dict)
@@ -678,6 +683,12 @@ def _check_storage(report: DoctorReport, binding, data_directory: Path) -> bool:
             # with no sweep having run is not.
             report.candidate_settling = transaction.candidates.settling_summary(
                 now=datetime.now(timezone.utc).isoformat())
+            report.embedding_respace = transaction.work.respace_run()
+            pending, failed, oldest = conn.execute(
+                """SELECT sum(state='pending'),sum(state='failed'),min(CASE WHEN state='pending' THEN available_at END)
+                   FROM work_items WHERE work_type='embed' AND state IN ('pending','failed')""").fetchone()
+            report.embedding_health = {"pending": int(pending or 0), "failed": int(failed or 0),
+                                       "oldest_pending_at": oldest}
     except Exception as exc:  # noqa: BLE001 - an unreadable store is a finding, not a crash.
         report.capability_gaps.append(f"storage_read:{type(exc).__name__}")
         _record(report, "storage_status", "unavailable", type(exc).__name__)
@@ -921,6 +932,64 @@ def _check_vector_threshold(report: DoctorReport, binding, data_directory: Path)
             "is lexical only until a threshold calibrated for this model is set")
 
 
+#: Hours the oldest waiting embedding may wait before the doctor says so.
+EMBEDDING_BACKLOG_HOURS = 24
+
+
+def _check_embedding_health(report: DoctorReport, config) -> None:
+    """The embedding queue beside what the provider has been answering.
+
+    Recall goes on answering while embeddings wait, by words alone, and nothing said so: an installation on a free
+    tier met HTTP 429 most days and had embeddings waiting for over a week before a status page of its own showed it
+    (reported with #200).  A backlog older than ``EMBEDDING_BACKLOG_HOURS`` is named, with the provider's hold and
+    refusals when it has them."""
+    health = report.embedding_health
+    auxiliary = getattr(config, "auxiliary", None) if config is not None else None
+    if auxiliary is not None:
+        hold = provider_holds(auxiliary).get("embed")
+        if hold is not None:
+            health["held_model"], until = hold
+            health["held_until"] = datetime.fromtimestamp(until, timezone.utc).isoformat()
+        calls = embedding_calls(auxiliary)
+        if calls is not None:
+            health["last_day"] = calls
+    oldest = health.get("oldest_pending_at")
+    age = _seconds_since(oldest) if health.get("pending") and oldest else None
+    if age is None or age <= EMBEDDING_BACKLOG_HOURS * 3600:
+        return
+    report.capability_gaps.append("embedding_backlog_aged")
+    detail = (f"{health['pending']} embeddings wait, the oldest for {int(age // 3600)} h; recall finds what came in "
+              "since then by its words alone")
+    if "held_until" in health:
+        detail += f"; the provider is held for {health['held_model']} until {health['held_until']}"
+    refused = (health.get("last_day") or {}).get("refused")
+    if refused:
+        detail += f"; refused in the last day: {', '.join(f'{code} x{count}' for code, count in refused.items())}"
+    _record(report, "embedding_backlog", "aged", detail)
+
+
+def _check_embedding_respace(report: DoctorReport, config) -> None:
+    """A re-embed run's progress, and a run no worker will go on with because the config embeds into another space.
+
+    A worker reopens a page of the run at each drain only in the run's own space (``respace_if_due``); after a
+    second change of model the run would wait for good, so it is named here with what to do."""
+    run = report.embedding_respace
+    if run is None:
+        return
+    if run["completed"]:
+        _record(report, "embedding_respace", "complete", f"{run['reopened']} reopened, last at {run['updated_at']}")
+        return
+    space = config.embedding_space_id() if config is not None else None
+    if space is not None and space != run["embedding_space"]:
+        report.capability_gaps.append("embedding_respace_space_mismatch")
+        _record(report, "embedding_respace", "space_mismatch",
+                f"the run embeds into {run['embedding_space'][:12]} but runtime-config.json into {space[:12]}; "
+                "run respace-embeddings --restart --apply for the new space, or --cancel --apply")
+        return
+    _record(report, "embedding_respace", "running",
+            f"{run['reopened']} reopened, next work id {run['next_work_id']}, last page at {run['updated_at']}")
+
+
 def _check_schema(report: DoctorReport) -> None:
     if report.schema_version != SCHEMA_VERSION:
         report.capability_gaps.append("schema_version_mismatch")
@@ -1058,6 +1127,8 @@ def run_doctor(
         _check_supervisor(report, data_directory)
         _check_schema(report)
         _check_backlog(report, wake_seconds)
+        _check_embedding_health(report, config)
+        _check_embedding_respace(report, config)
         _check_candidates(report)
         _check_model_output(report)
         _check_ledger(report)

@@ -430,6 +430,40 @@ REFUSAL_SHARE = 0.5
 REFUSAL_MINIMUM_CALLS = 8
 
 
+def _refusal_code(label: str) -> str | None:
+    """The provider's code in a request's ledger status when the provider refused it, else ``None``."""
+    if "http_2" in label or not any(marker in label for marker in ("http_4", "http_5", "429")):
+        return None
+    code = label.split(":", 1)[1].split("_", 1)[0] if ":" in label else label.split("_usage", 1)[0]
+    return code[:64]
+
+
+def embedding_calls(auxiliary, *, hours: float = 24, now: float | None = None) -> dict | None:
+    """The embedding model's requests over the last ``hours``: how many, how many it answered, its refusals by code.
+
+    ``None`` without an external embedding route or a readable ledger.  A backlog of embeddings beside a provider
+    that refuses most of them is the quiet way recall comes to answer by words alone (reported with #200).
+    """
+    ledger_path = getattr(auxiliary, "ledger_path", None)
+    if auxiliary is None or ledger_path is None or not getattr(auxiliary, "external_embedding", False):
+        return None
+    model = _route_model(auxiliary, "embedding")
+    if type(model) is not str or not model:
+        return None
+    try:
+        path = Path(ledger_path)
+        if not path.is_file():
+            return None
+        since = ((time.time() if now is None else now) - hours * 3600) * 1_000_000_000
+        with closing(sqlite3.connect(_readonly_uri(path), uri=True, timeout=5)) as db:
+            rows = db.execute("SELECT status FROM requests WHERE model=? AND started_ns >= ?", (model, since)).fetchall()
+    except (sqlite3.Error, OSError, ValueError):
+        return None
+    refused = Counter(code for (status,) in rows if (code := _refusal_code(str(status or ""))) is not None)
+    return {"model": model[:64], "hours": hours, "calls": len(rows),
+            "answered": sum("http_2" in str(status or "") for (status,) in rows), "refused": dict(refused.most_common())}
+
+
 def provider_refusals(ledger_path, *, now: float | None = None) -> list[str]:
     """Models the provider is currently refusing, named by its own code.
 
@@ -454,12 +488,9 @@ def provider_refusals(ledger_path, *, now: float | None = None) -> list[str]:
     for model, status in rows:
         name = str(model or "unknown")[:64]
         totals[name] = totals.get(name, 0) + 1
-        label = str(status or "")
-        if "http_2" in label:
-            continue
-        if any(marker in label for marker in ("http_4", "http_5", "429")):
-            code = label.split(":", 1)[1].split("_", 1)[0] if ":" in label else label.split("_usage", 1)[0]
-            refused.setdefault(name, Counter())[code[:64]] += 1
+        code = _refusal_code(str(status or ""))
+        if code is not None:
+            refused.setdefault(name, Counter())[code] += 1
     gaps = []
     for name, total in sorted(totals.items()):
         counted = refused.get(name)

@@ -61,6 +61,17 @@ def _delete_request(ref: str):
     }
 
 
+def test_a_model_switch_re_embeds_in_lance_once_an_operator_starts_a_run(tmp_path: Path, monkeypatch):
+    """The re-embed run (``respace-embeddings``) against the native store the installations run."""
+    from tests.contract import test_embedding_respace, test_trace
+
+    instance = test_embedding_respace._space_instance
+    monkeypatch.setattr(test_embedding_respace, "_space_instance", lambda core, ctx, model: instance(
+        core, ctx, model, backend="lancedb", storage_dir=tmp_path / model[-1]))
+    test_embedding_respace.test_a_model_switch_re_embeds_what_was_embedded_once_an_operator_starts_a_run(
+        test_trace.app.__wrapped__(tmp_path))
+
+
 def test_a_drain_queues_and_embeds_an_import_s_history(tmp_path: Path):
     """No test reached the drain's backfill (``RuntimeInstance.drain``): an import's message with no embedding is
     queued by a pass and embedded, and the pass says so."""

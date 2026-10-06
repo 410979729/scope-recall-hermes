@@ -456,10 +456,17 @@ dialect and the digest changes. The consequences are all deliberate:
 3. The old directory is left alone and its vectors are refused at admission as
    coming from a different space, rather than being compared across incompatible
    geometries. The new store starts empty, and only what is captured or
-   changed from then on is embedded into it: work already embedded in the old
-   space is not embedded again (#200 proposes that). SQLite remains the
-   authority throughout, so nothing is lost, but older memory is found by its
-   words alone.
+   changed from then on is embedded into it. What was embedded in the old space
+   is embedded again only when you ask, because every source and claim is then
+   embedded again and paid for once more: right after switching, run
+   `respace-embeddings --config <file> --start --apply` with the config the
+   worker runs (in a shared store, the shared worker's). Each worker pass then
+   reopens a page of the store's finished embeddings, newest first and only
+   while the embedding queue has room, until it reaches the oldest; `doctor`
+   shows the run (`embedding_respace`), and the command without `--start`
+   shows it and what is left. Until then, SQLite remains the authority, so
+   nothing is lost, but older memory is found by its words alone. A tool output
+   whose vector the retention window removed stays without one.
 4. `vector_threshold` no longer applies. Recalibrate it, or unset it and accept
    lexical recall in the meantime.
 

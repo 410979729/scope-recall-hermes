@@ -204,5 +204,39 @@ def backfill_if_due(storage: Any, context: Any, vector_config: Any, *, now: date
     return receipt
 
 
+def respace_if_due(storage: Any, context: Any, space_id: str | None, *, now: datetime | None = None,
+                   yield_to: frozenset[str] = frozenset(), yield_ceiling: int | None = None) -> dict | None:
+    """Reopen the next page of an operator's re-embed run (``respace-embeddings``) for this worker's space.
+
+    The embed queue is topped up as the import backfill tops it up (``queue_import_embeddings``): to
+    ``IMPORT_EMBED_QUEUE_CEILING``, and to ``yield_ceiling`` while work of a type in ``yield_to`` is ready, so a
+    message captured now and an evaluation that waits still move.  The run is looked at in a read; the write, and
+    the writer lease it takes, come only when a run into this space has room to go on.  Returns the page's receipt,
+    ``None`` when there is no run.  Never raises: a page that failed changed nothing and is tried again next drain.
+    """
+    if storage is None or context is None or not space_id:
+        return None
+    moment = (now or datetime.now(timezone.utc)).isoformat()
+    try:
+        from ..core.index_rebuild import IMPORT_EMBED_QUEUE_CEILING
+
+        with storage.read(context) as tx:
+            run = tx.work.respace_run()
+            if run is None or run["completed"]:
+                return None
+            if run["embedding_space"] != space_id:
+                return {"outcome": "space_mismatch", "embedding_space": run["embedding_space"]}
+            ceiling = IMPORT_EMBED_QUEUE_CEILING
+            if yield_to and yield_ceiling is not None and tx.work.other_work_ready(now=moment, kinds=yield_to):
+                ceiling = yield_ceiling
+            room = ceiling - tx.work.pending_depth("embed")
+        if room <= 0:
+            return {"outcome": "held", "reopened": 0, "next_work_id": run["next_work_id"]}
+        with storage.write(context) as tx:
+            return tx.work.respace_page(space_id, now=moment, room=room)
+    except Exception as exc:  # noqa: BLE001 - upkeep never fails a drain; the receipt carries the failure.
+        return {"outcome": "failed", "error": type(exc).__name__}
+
+
 __all__ = ["EMBED_BACKFILL_RECHECK", "INDEX_RECHECK", "RESERVE_SECONDS", "backfill_if_due", "compact_if_due",
-           "index_if_due"]
+           "index_if_due", "respace_if_due"]

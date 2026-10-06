@@ -406,6 +406,39 @@ class MemoryCore:
             return tx.work.retry_failed(now=self.clock.utc_now(), include_terminal=include_terminal,
                                         limit=limit, dry_run=dry_run)
 
+    def respace_embeddings(self, context: TrustedContext, *, space_id: str, action: str = "status",
+                           dry_run: bool = True, remaining_seconds: float | None = None) -> dict:
+        """Report, start or cancel the store's re-embed run into ``space_id`` (``core/work_storage.py``).
+
+        ``to_reopen`` is what the running run still has to look at, or what a new one would reopen.  The run covers
+        the whole store: each worker in the space reopens pages of it and embeds its own share.  A preview runs in a
+        read transaction; only ``dry_run=False`` writes, and a start it would refuse is refused in the preview too.
+        """
+        if action not in ("status", "start", "restart", "cancel") or type(dry_run) is not bool:
+            raise ContractError("INPUT_INVALID", "respace_action")
+        writes = action != "status" and not dry_run
+        seconds = self.config.write_timeout_seconds if remaining_seconds is None else remaining_seconds
+        with (self.storage.write if writes else self.storage.read)(context, remaining_seconds=seconds) as tx:
+            run = tx.work.respace_run()
+            running = run is not None and not run["completed"]
+            report: dict = {"embedding_space": space_id, "action": action, "applied": writes}
+            if action == "cancel":
+                report["cancelled"] = tx.work.cancel_respace() if writes else run is not None
+                if writes:
+                    run, running = None, False
+            elif action in ("start", "restart"):
+                if running and action == "start":
+                    raise ContractError("VERSION_CONFLICT", "respace_running")
+                if writes:
+                    run = tx.work.start_respace(space_id, now=self.clock.utc_now(), restart=action == "restart")
+                    running = not run["completed"]
+                else:
+                    run, running = None, False
+            report["run"] = run
+            report["space_matches"] = run is None or run["embedding_space"] == space_id
+            report["to_reopen"] = tx.work.respace_remaining(at_most=run["next_work_id"] if running else None)
+        return report
+
     def forget(self, context: TrustedContext, value, *, remaining_seconds: float | None = None):
         from .deletion import forget
         return forget(self.storage,self.clock,context,value,

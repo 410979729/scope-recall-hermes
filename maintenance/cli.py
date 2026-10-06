@@ -213,6 +213,31 @@ def _retry_failures(args: argparse.Namespace) -> int:
     )
 
 
+def _add_respace_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--config", required=True)
+    action = parser.add_mutually_exclusive_group()
+    action.add_argument("--start", action="store_true",
+                        help="start re-embedding everything embedded so far into the config's space (paid: every "
+                        "source and claim is embedded again)")
+    action.add_argument("--restart", action="store_true", help="start again from the top, replacing a running run")
+    action.add_argument("--cancel", action="store_true", help="stop the run; what it reopened is still embedded")
+    parser.add_argument("--apply", action="store_true", help="write the change; without it nothing is changed")
+
+
+def _respace_embeddings(args: argparse.Namespace) -> int:
+    action = "start" if args.start else "restart" if args.restart else "cancel" if args.cancel else "status"
+    return _run_core(
+        args,
+        lambda core, config: core.respace_embeddings(
+            config.context(),
+            space_id=config.embedding_space_id(),
+            action=action,
+            dry_run=not args.apply,
+            remaining_seconds=config.request_seconds,
+        ),
+    )
+
+
 def _add_backup_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--database", required=True)
     parser.add_argument("--output", required=True)
@@ -563,6 +588,8 @@ _COMMANDS: tuple[tuple[str, str | None, Callable[[argparse.ArgumentParser], None
     ("retire-rootless-claims", "retire a bounded page of proposed claims no derivation root supports (tool output alone)", _add_requalify_arguments, _retire_rootless),
     ("unindex-withheld-outputs", "drop the lexical postings of withheld tool outputs' placeholders, a bounded page at a time", _add_unindex_arguments, _unindex_withheld),
     ("retry-failures", "grant one bounded re-look to failed work after a fix has shipped", _add_retry_arguments, _retry_failures),
+    ("respace-embeddings", "re-embed what was embedded so far into a new embedding space, a worker page at a time",
+     _add_respace_arguments, _respace_embeddings),
     ("backup", "create a new consistent SQLite snapshot and manifest", _add_backup_arguments, _backup),
     ("rollback", "inspect rollback; --apply may stop writes when new data must be reconciled", _add_rollback_arguments, _rollback),
     ("plan-install", None, _add_install_arguments, _plan_install),
