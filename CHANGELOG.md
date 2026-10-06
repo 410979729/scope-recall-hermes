@@ -11,9 +11,10 @@ All notable changes to `scope-recall` will be documented in this file.
 ### Fixes
 
 - **Hermes keeps a tool call that failed.** Hermes calls a tool result failed when a command exits non-zero or the result carries an error field. The plugin then refused the result as having no scope: what the agent had seen (a traceback, a failing test, a refused command) was never stored, and each one was logged as a failed capture (`not stored (capability_gap)`). On the five instances that was 460 tool results from 2026-10-01 to 2026-10-06, about 6% of their tool output. Codex already kept its failed calls.
-  - A failed, cancelled or interrupted call that printed something is now stored like any other tool output: indexed by its words and queued for an embedding. It is marked `partial`, and its outcome stays on its turn.
-  - A call that printed nothing keeps only its outcome, and is no longer logged as a failed capture.
-  - `tests/host/hermes/test_bounded_corrections.py`.
+  - A failed, cancelled or interrupted call that returned something is now stored like any other tool output: indexed by its words and queued for an embedding. It is stored `partial`, so it roots no claim and no resume field.
+  - It does not end its task either. A tool output's non-zero exit code marks its task failed, and a grep that finds nothing exits 1; a `partial` output tells its own outcome, not the task's, so it now leaves the task's state alone (`core/episodes.py`). Resume offers only an open or interrupted task, so a task marked failed this way would have dropped out of it.
+  - A call whose result is empty keeps only its outcome, in the session's diagnostics, and is no longer logged as a failed capture.
+  - `tests/host/hermes/test_bounded_corrections.py`, `tests/contract/test_v11_episode_authority.py`.
 
 ### Upgrading from 3.7.7
 

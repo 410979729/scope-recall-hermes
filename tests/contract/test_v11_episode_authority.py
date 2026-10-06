@@ -237,3 +237,20 @@ def test_omitted_same_label_version_prevents_candidate_uniqueness(app, tmp_path)
     source = capture(core, replace(ctx, display_snapshot=display), "入口海报 v1。", key="TEST-omitted", display_snapshot=display.to_payload(), artifact_refs=[one.ref, two.ref, three.ref])
     result = apply(core, ctx, references=[dict(mention="入口海报", candidate_refs=[f"{one.ref}@1", f"{two.ref}@1"], resolved_ref=None, resolution="ambiguous", evidence_refs=[ref(source)])]).items[0]
     assert result.state == "ambiguous"
+
+
+def test_only_a_complete_tool_output_s_exit_code_ends_a_task():
+    """The exit-code arm reads a tool output's own report of how it ended.  One stored partial -- a call that failed,
+    was stopped or came back cut off, which Hermes keeps since 3.7.8 -- tells its own outcome, not the task's: a grep
+    that finds nothing exits 1 (review of 3.7.8)."""
+    from types import SimpleNamespace
+
+    def tool(content, state):
+        return SimpleNamespace(ref="event-TEST-tool", revision=1, capture_gaps=(), import_provenance_sha256=None,
+                               event={"origin": "tool_observation", "content": content,
+                                      "occurred_at": "2026-10-06T12:00:00Z", "capture_state": state})
+
+    printed = '{"output": "", "exit_code": 1, "exit_code_meaning": "No matches found (not an error)"}'
+    assert state_from_sources((tool(printed, "complete"),), previous="open") == "failed"
+    assert state_from_sources((tool(printed, "partial"),), previous="open") == "open"
+    assert state_from_sources((tool('{"output": "^C", "exit_code": 130}', "partial"),), previous="open") == "open"

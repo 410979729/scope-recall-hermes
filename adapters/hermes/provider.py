@@ -998,7 +998,7 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
         A call that failed is kept as well, as Codex's are.  Hermes calls a result failed for a non-zero exit code or
         an error field, and what such a call printed (a traceback, a failing test) is what the agent saw and acted
         on; dropped as having no scope, it was about 6% of the five instances' tool results, each logged as a
-        failed capture.  Its outcome stays with it (``partial``) and with its turn.
+        failed capture.  It is stored ``partial``, which also keeps it from ending its task (``core/episodes.py``).
         """
         identity = self._require_identity()
         if identity.read_only or not identity.runtime_audience.allowed_scope_ids:

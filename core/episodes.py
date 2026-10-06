@@ -66,6 +66,11 @@ def state_from_sources(sources, *, has_goal=False, previous='unknown') -> str:
             continue
         if source_origin(source) not in {'human_direct','tool_observation','host_generated'} or source.capture_gaps:
             continue
+        # A tool call that failed, was stopped or came back cut off (stored ``partial``) tells its own outcome, not the
+        # task's: a grep that finds nothing exits 1, a command the person stopped exits 130.  Kept since 3.7.8, such a
+        # Hermes result turned the open task failed, and resume offers only an open or an interrupted one.
+        if source_origin(source)=='tool_observation' and source.event.get('capture_state')!='complete':
+            continue
         raw = source.event['content']
         if UNSETTLED.search(raw):
             continue

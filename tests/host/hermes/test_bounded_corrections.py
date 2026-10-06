@@ -228,6 +228,30 @@ def test_post_tool_call_that_failed_keeps_what_it_printed(adapter, status):
     assert postings and work == "embed"
 
 
+def test_a_failed_tool_call_leaves_the_task_s_state_alone(adapter):
+    """A grep that finds nothing exits 1, a command the person stopped exits 130.  Kept, such a result matched the
+    exit-code rule and turned the open task failed, and resume offers only an open or an interrupted task (review of
+    3.7.8)."""
+    provider, _clock = adapter
+    provider.observe_pre_llm(session_id="TEST-session-1", turn_id="turn-1",
+                             user_message="继续修 stage_orca42 的脚本")
+    context = provider._identity.trusted_context(session_id="TEST-session-1")
+
+    def states() -> set[str]:
+        return {episode.state for episode in provider._core.episodes(context)}
+
+    assert states() == {"open"}
+    for call_id, printed in (
+            ("grep-1", {"output": "", "exit_code": 1, "error": None,
+                        "exit_code_meaning": "No matches found (not an error)"}),
+            ("stopped-1", {"output": "^C", "exit_code": 130}),
+            ("trace-1", {"output": "Traceback (most recent call last):\nZeroDivisionError", "exit_code": 1})):
+        provider.observe_post_tool_call(session_id="TEST-session-1", turn_id="turn-1", tool_call_id=call_id,
+                                        tool_name="terminal", status="error", result=json.dumps(printed))
+        assert _stored_tool_result(provider, call_id) is not None
+        assert states() == {"open"}, call_id
+
+
 def test_on_pre_compress_and_session_end_bounded_gaps(adapter):
     provider, _clock = adapter
     provider.on_pre_compress([{"role": "tool", "content": ""}])
