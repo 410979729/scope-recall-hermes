@@ -22,9 +22,13 @@ from scope_recall.core.retrieval_storage import _discriminating_terms
 from test_v11_recall_admission import _app, _capture, _item_ref, recall
 
 
-def _placeholder(index: int) -> str:
+#: The tool's own error text, the one part of a placeholder that is the output's (4,348 of the shared store's).
+_ERROR = "TEST-deploy 权限不足，配置文件不可写: permission denied"
+
+
+def _placeholder(index: int, error: str | None = None) -> str:
     return (f"Tool execution summary (terminal): tool=terminal; output_chars={300 + index}; exit_code=0; "
-            "status=true; patch=applied; output_preview=omitted")
+            "status=true; patch=applied; " + (f"error={error}; " if error else "") + "output_preview=omitted")
 
 
 def _postings(core, ref: str) -> int:
@@ -33,10 +37,17 @@ def _postings(core, ref: str) -> int:
                                WHERE e.event_id=?""", (ref,)).fetchone()[0]
 
 
-def _withheld(core, ctx, count: int) -> list:
+def _terms(core, ref: str) -> set:
+    with closing(sqlite3.connect(core.storage.path)) as conn:
+        return {row[0] for row in conn.execute(
+            """SELECT t.term FROM lexical_postings p JOIN lexical_terms t ON t.term_id=p.term_id
+               JOIN source_events e ON e.source_id=p.source_id WHERE e.event_id=?""", (ref,))}
+
+
+def _withheld(core, ctx, count: int, *, error: str | None = None, key: str = "TEST-withheld") -> list:
     """Placeholders as an imported store holds them: indexed, as an earlier release, the 1109 upgrade or an import
     indexed them."""
-    made = [_capture(core, ctx, f"TEST-withheld/{index}", _placeholder(index), origin="tool_observation")
+    made = [_capture(core, ctx, f"{key}/{index}", _placeholder(index, error), origin="tool_observation")
             for index in range(count)]
     with closing(sqlite3.connect(core.storage.path)) as conn, conn:
         for source in made:
@@ -57,13 +68,30 @@ def test_a_placeholder_is_kept_and_not_indexed(tmp_path):
         assert tx.source_projection_status(output.ref, 1)[0] == "ready"
 
 
+def test_a_placeholder_is_found_by_its_error_text_alone(tmp_path):
+    """The tool's own error text is the output's, and stays findable; the envelope around it is not indexed."""
+    core, ctx, _vectors = _app(tmp_path)
+    placeholder = _capture(core, ctx, "TEST-withheld/error", _placeholder(0, _ERROR), origin="tool_observation")
+    assert _terms(core, placeholder.ref) == set(lexical_terms(_ERROR))
+    assert not {"tool", "terminal", "status", "patch", "output_preview"} & _terms(core, placeholder.ref)
+    with core.storage.read(ctx) as tx:
+        assert tx.source_projection_status(placeholder.ref, 1)[0] == "ready"
+    reader = replace(ctx, session_id="TEST-reader")
+    refs = [_item_ref(item) for item in recall(core, reader, query="TEST-deploy 配置文件不可写", mode="current").items]
+    assert placeholder.ref in refs, refs
+
+
 def test_indexing_a_placeholder_again_drops_what_an_older_release_gave_it(tmp_path):
     core, ctx, _vectors = _app(tmp_path)
     placeholder, = _withheld(core, ctx, 1)
     assert _postings(core, placeholder.ref) > 0
+    errored, = _withheld(core, ctx, 1, error=_ERROR, key="TEST-errored")
+    assert _terms(core, errored.ref) > set(lexical_terms(_ERROR))
     with core.storage.write(ctx, remaining_seconds=10) as tx:
         tx.index_source(placeholder.ref, 1)
+        tx.index_source(errored.ref, 1)
     assert _postings(core, placeholder.ref) == 0
+    assert _terms(core, errored.ref) == set(lexical_terms(_ERROR)), "its error text stays, the envelope goes"
 
 
 def test_a_legacy_conversion_does_not_index_a_placeholder(tmp_path):
@@ -113,6 +141,33 @@ def test_unindexing_goes_a_bounded_page_at_a_time_and_previews_first(tmp_path):
             core.unindex_withheld_outputs(ctx, **bad)
 
 
+def test_unindexing_keeps_a_placeholder_s_error_text(tmp_path):
+    core, ctx, _vectors = _app(tmp_path)
+    errored = _withheld(core, ctx, 2, error=_ERROR, key="TEST-errored")
+    held = sum(_postings(core, source.ref) for source in errored)
+    kept = len(set(lexical_terms(_ERROR)))
+    preview = core.unindex_withheld_outputs(ctx, limit=10)
+    assert (preview["sources"], preview["postings"]) == (2, held - 2 * kept)
+    page = core.unindex_withheld_outputs(ctx, limit=10, dry_run=False)
+    assert (page["sources"], page["postings"], page["more"]) == (2, held - 2 * kept, False)
+    assert all(_terms(core, source.ref) == set(lexical_terms(_ERROR)) for source in errored)
+    again = core.unindex_withheld_outputs(ctx, limit=10, dry_run=False)
+    assert (again["sources"], again["postings"]) == (0, 0), "a placeholder holding only its error text is done"
+
+
+def test_the_command_finds_a_placeholder_its_pattern_finds_whatever_leads_it(tmp_path):
+    """Capture keeps leading whitespace, and the pattern passes over it: so does the query that looks for the
+    command's pages (review of 3.7.4)."""
+    core, ctx, _vectors = _app(tmp_path)
+    led = _capture(core, ctx, "TEST-withheld/led", "\n  " + _placeholder(0), origin="tool_observation")
+    assert led.event["content"].startswith("\n"), "the premise: capture kept the leading whitespace"
+    with closing(sqlite3.connect(core.storage.path)) as conn, conn:
+        (source_id,), = conn.execute("SELECT source_id FROM source_events WHERE event_id=?", (led.ref,))
+        lexical_index.index_terms(conn, source_id, lexical_terms(led.event["content"]))
+    page = core.unindex_withheld_outputs(ctx, limit=10, dry_run=False)
+    assert page["sources"] == 1 and _postings(core, led.ref) == 0
+
+
 def test_unindexing_stays_inside_the_context_s_scopes(tmp_path):
     from scope_recall.contracts import InstanceBinding, TrustedContext
     from scope_recall.core import CoreConfig, MemoryCore
@@ -157,13 +212,16 @@ def test_the_command_goes_on_page_after_page_only_when_asked(monkeypatch, capsys
             return {"dry_run": kwargs["dry_run"], **next(pages)}
 
     config = SimpleNamespace(context=lambda: "TEST-context", request_seconds=5.0)
+    paused = []
     monkeypatch.setattr(cli, "_run_core", lambda args, call, **_: cli._emit(call(Core(), config)) or 0)
+    monkeypatch.setattr(cli.time, "sleep", paused.append)
     flags = ["--until-done"] if until_done else []
     assert cli.main(["unindex-withheld-outputs", "--config", "TEST-config.json", "--limit", "2", *flags, "--apply"]) == 0
     receipt = json.loads(capsys.readouterr().out)
     if until_done:
         assert receipt == {"dry_run": False, "pages": 2, "sources": 3, "postings": 29, "next_after_id": 9, "more": False}
         assert [ask["after_id"] for ask in asked] == [0, 7]
+        assert paused == [cli._UNINDEX_PAGE_PAUSE], "captures waiting for the writer get it between pages"
     else:
         assert receipt == {"dry_run": False, "pages": 1, "sources": 2, "postings": 20, "next_after_id": 7, "more": True}
     assert all(ask["limit"] == 2 and ask["dry_run"] is False for ask in asked)

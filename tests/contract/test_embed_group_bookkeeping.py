@@ -165,6 +165,46 @@ def test_a_vector_written_before_its_claim_was_superseded_is_still_on_the_ledger
     assert (target.ref, target.revision + 1) in done, "the new revision is embedded as well"
 
 
+class WritesThenStalls(SupersedingPort):
+    """Writes every vector it is given; the first claim it writes, it reports as stalled after writing, so the embed
+    goes back to wait with its vector in the store."""
+
+    def __init__(self) -> None:
+        super().__init__(None)
+        self.stalled = False
+
+    def _write(self, lease_guard, subjects) -> None:
+        assert lease_guard()
+        self.written.extend((subject.ref, subject.revision) for subject in subjects)
+        if not self.stalled and any(subject.ref.startswith("claim-") for subject in subjects):
+            from scope_recall.contracts import ContractError
+
+            self.stalled = True
+            raise ContractError("STORAGE_UNAVAILABLE")
+
+
+def test_a_vector_written_before_its_embed_was_sent_back_to_wait_is_still_on_the_ledger(app):
+    """A dependency or a deadline can send an embed back to wait after its vector landed; a supersede then made it
+    obsolete as one never leased, and the point went unaccounted for (review of 3.7.4)."""
+    core, ctx = app
+    target = _claims(core, ctx, 1)[0]
+    correction = capture(core, ctx, "Please correct TEST-project 属性0: 新值0。", key="TEST-correction/0")
+    _queue_only_embeds(core)
+    port = WritesThenStalls()
+    core.clock.now = "2026-09-06T12:00:00Z"
+    core.drain_worker(ctx, max_items=32, remaining_seconds=30, owner_id="TEST-stall", embed=port)
+    with sqlite3.connect(core.storage.path) as conn:
+        state, token = conn.execute("SELECT state,lease_token FROM work_items WHERE work_type='embed' AND subject_ref=?"
+                                    " AND subject_revision=?", (target.ref, target.revision)).fetchone()
+    assert (state, token > 0) == ("pending", True) and (target.ref, target.revision) in port.written
+    core.revise(ctx, revise_request(target, correction, "新值0"), remaining_seconds=10)
+    core.clock.now = "2026-09-06T13:00:00Z"
+    core.drain_worker(ctx, max_items=32, remaining_seconds=30, owner_id="TEST-stall", embed=port)
+    with sqlite3.connect(core.storage.path) as conn:
+        done = set(conn.execute("SELECT subject_ref,subject_revision FROM work_items WHERE work_type='embed' AND state='done'"))
+    assert set(port.written) <= done, f"points no ledger expects: {sorted(set(port.written) - done)}"
+
+
 def test_a_written_group_is_recorded_in_a_few_transactions_not_three_per_member(app):
     core, ctx = app
     made = _sources(core, ctx, 40, tag="record")

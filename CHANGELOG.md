@@ -6,29 +6,36 @@ All notable changes to `scope-recall` will be documented in this file.
 
 ## [3.7.4] - 2026-10-06
 
-3.7.4 no longer indexes a withheld tool output's placeholder by its words, and adds `unindex-withheld-outputs` to drop the postings earlier releases gave such placeholders. It also keeps the ledger whole when a claim is corrected while its embedding is being written.
+3.7.4 indexes a withheld tool output's placeholder by the tool's own error text alone, and adds `unindex-withheld-outputs` to drop the rest of what earlier releases indexed. It also keeps the ledger whole when a claim is corrected while its embedding is being written.
 
 ### Fixes
 
-- **A withheld tool output's placeholder is not indexed (#206).** The capture filter leaves a one-line summary in place of a tool output it withholds ("Tool execution summary (terminal): tool=terminal; output_chars=377; exit_code=0; output_preview=omitted"). Every word in it is the envelope's own. Admission already kept it as a source only, never embedded or derived from, but earlier releases, the 1109 upgrade and both imports indexed it all the same.
-  - On the shared store 212,773 of 311,051 sources are such placeholders, all imported. They hold 2,015,161 of its 14,727,970 postings.
-  - The common-term ceiling is 10% of all sources, and the placeholders alone pushed thirteen terms over it: tool, summary, omitted, execution, output_preview, output_chars, terminal, exit_code, 0, success, patch, true and status. The lexical channel drops such a term from a question that holds it; 289 of the owner's 1,772 messages held one.
-  - A placeholder is now kept but found by nothing (`core/events.indexed_terms`): not at capture, not in the legacy conversion, not in the shared import. Indexing one again drops what an older release gave it, and its projection status reads ready with no terms. The 1109 upgrade still carries an older store's index forward; run the command below after it.
-  - What it changes, measured on a copy of the shared store before and after the command: recall by words alone is the same, case by case, on all 484 cases: the owner's 173 real questions, the older sets, and 36 real questions that hold one of those terms. Each of those 36 found what it finds through its other words. The index loses 2,015,161 postings, and 44 MB of the store's pages are free for what it stores next.
+- **A withheld tool output's placeholder is found by its error text alone (#206).** An earlier release's capture filter left a one-line summary in place of a tool output it withheld: "Tool execution summary (terminal): tool=terminal; output_chars=377; exit_code=0; output_preview=omitted".
+  - All 212,773 such placeholders on the shared store, 68% of its 311,051 sources, came with imported history. No capture path writes one today.
+  - Their words are the envelope's own, except the tool's error text that 4,348 of them carry ("...; error=...; output_preview=omitted").
+  - Admission already kept them as sources only, never embedded or derived from. But earlier releases, the 1109 upgrade and both imports indexed the whole placeholder.
+  - They held 2,015,161 of the store's 14,727,970 postings. The common-term ceiling is 10% of all sources, and the placeholders alone pushed twelve searchable terms over it: tool, summary, omitted, execution, output_preview, output_chars, terminal, exit_code, success, patch, true and status. ("0" too, but one-character terms are never searched.) The lexical channel drops such a term from a question that holds it, and 217 of the owner's 1,776 messages hold one as that channel reads them.
+  - A placeholder is now indexed by its error text, when it carries one, and otherwise not at all (`core/events.indexed_terms`). This holds at capture, in the legacy conversion and in the shared import. Indexing one again drops what an older release gave it beyond that, and its projection status agrees. The 1109 upgrade still carries an older store's index forward; run the command below after it.
+  - Measured on copies of the shared store taken at the same moment, before and after the command, with the same code. By words alone, the only channel this touches, recall is the same case by case on all 484 cases: the owner's 173 real questions, the older sets, and 36 real questions that hold one of those terms. Each of the 36 still finds what it found, through its other words.
+  - So the change is to the index, not to recall: 1,945,720 fewer postings and 43 MB of the store's pages free for what it stores next.
 - **`unindex-withheld-outputs` drops what is already there.**
-  - It works a bounded page at a time, each page its own write transaction (`--limit`, 2,000 by default, at most 5,000), and only counts without `--apply`.
-  - `--until-done` goes on page after page; without it, carry `next_after_id` into `--after-id`.
-  - The sources stay.
-  - On a copy of the shared store it took 107 pages, the slowest 1.0 s, 66 s in all.
+  - It works a bounded page at a time (`--limit`, 500 by default, at most 5,000). Each page is its own write transaction and holds the store's writer lease while it runs. `--until-done` goes on page after page and pauses a moment between pages, so captures get the lease. Without `--until-done`, carry `next_after_id` into `--after-id`. Without `--apply` it only counts.
+  - The sources stay, and so does the index of their error text.
+  - On a copy of the shared store it took 426 pages, the slowest 0.12 s, 18 s in all. Run again on the cleaned copy, it took 0.9 s and changed nothing. Every placeholder ended holding exactly its error text's terms, or none.
+  - The first version scanned every tool row on each page while it held the lease, 1–3 s a page (review of 3.7.4). It also dropped the error text with the rest.
   - In a shared store, run it with the shared worker's config, which reaches every scope.
-- **An embedding finishing as its claim is corrected stays on the ledger (#205).** A supersede made the old revision's pending and leased work obsolete. An embedding whose vector had already landed could then never complete: its point stayed in the store with no finished embed to account for it.
-  - A leased embed now completes against its own revision, which stays readable, as one finished a moment earlier would have. Pending work is still made obsolete.
-  - Recall was never affected: it resolves every vector hit against SQLite, and a store keeps old revisions' vectors by design.
-  - On the shared store none of the 259 obsolete embeds had left a point. The 264 points its done embeds name that the vector table lacks all belong to deleted objects, whose purge removes every revision's vectors.
+- **An embedding finishing as its claim is corrected stays on the ledger (#205).** A supersede made the old revision's pending and leased work obsolete. An embedding whose vector had already landed could then never complete, so its point stayed in the store with no finished embed to account for it.
+  - An embed that has held a lease now completes against its own revision, which stays readable, as one finished a moment earlier would have. That includes one sent back to wait after it wrote, when a dependency or its deadline moved. Work never leased is still made obsolete.
+  - Recall was never affected. It resolves every vector hit against SQLite, and a store keeps old revisions' vectors by design.
+  - On the shared store no obsolete embed had left a point. The 264 points its finished embeds name that the vector table lacks all belong to deleted objects, whose purge removes every revision's vectors.
+
+### Known limits
+
+- Automatic recovery reopens a failed embed only when its subject is a source. A claim's failed embed is made obsolete instead, so 116 of the shared store's 12,746 readable claim heads have no vector and are found by their words alone. This predates 3.7.4 and is next.
 
 ### Upgrading from 3.7.3
 
-Install the package and run `plan-install` and `apply-install` where you upgrade, and restart the clients' MCP servers and the Hermes gateways. The store's schema is unchanged (1110). Then, once per store:
+Install the package and run `plan-install` and `apply-install` where you upgrade. Then restart the clients' MCP servers and the Hermes gateways. The store's schema is unchanged (1110). Then, once per store:
 
 ```bash
 scope-recall unindex-withheld-outputs --config <the shared worker's or the instance's runtime-config.json> --until-done --apply

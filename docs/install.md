@@ -664,26 +664,31 @@ by reference, never by text. A retired claim gets a retracted version and stops
 waiting for evaluation; its sources, its earlier versions and every confirmed
 claim stay as they are.
 
-The capture filter leaves a one-line summary in place of a tool output it
-withholds ("Tool execution summary ... output_preview=omitted"). Since 3.7.4 such
-a placeholder is kept but not indexed by its words, which are all the envelope's
-own. Earlier releases, the 1109 upgrade and both imports indexed them, and on a
-store that imported many they push ordinary words such as "tool", "status" and
-"patch" past the common-term ceiling, so questions lose those words. To drop the
-postings they hold:
+An earlier release's capture filter left a one-line summary in place of a tool
+output it withheld ("Tool execution summary ... output_preview=omitted"); stores
+that imported that history hold many. Since 3.7.4 such a placeholder is found by
+the tool's own error text alone, when it carries one, and otherwise by nothing:
+the rest of its words are the envelope's own. Earlier releases, the 1109 upgrade
+and both imports indexed the whole placeholder, and on a store that imported
+many they push ordinary words such as "tool", "status" and "patch" past the
+common-term ceiling, so questions lose those words. To drop the postings beyond
+their error text:
 
 ```bash
 scope-recall unindex-withheld-outputs --config /path/to/instance-root/scope-recall/runtime-config.json --until-done --apply
 ```
 
 Without `--apply` it only counts the placeholders and their postings. Each page
-(`--limit`, 2,000 by default, at most 5,000) is its own write transaction, and a
-page cut short is simply found again, so it can be stopped and run again at any
-time; without `--until-done`, carry the printed `next_after_id` into `--after-id`
-while `more` is true. The sources stay. In a shared store, run it with the shared
-worker's config (`<root>\runtime-config.json`), which reaches every scope. On the
-shared store's copy it dropped 2,015,161 postings of 212,773 placeholders in 107
-pages, the slowest 1.0 s.
+(`--limit`, 500 by default, at most 5,000) is its own write transaction, which
+holds the store's writer lease while it runs; `--until-done` pauses a moment
+between pages so captures get it. A page cut short is simply found again, so it
+can be stopped and run again at any time; without `--until-done`, carry the
+printed `next_after_id` into `--after-id` while `more` is true. The sources stay,
+and so does the index of their error text. In a shared store, run it with the
+shared worker's config (`<root>\runtime-config.json`), which reaches every scope.
+On the shared store's copy it dropped 1,945,720 postings of 212,773 placeholders
+in 426 pages, the slowest 0.12 s, and kept the error text of the 4,348 that carry
+one.
 
 To re-frame the claims an earlier release stored in a frame this release would
 not write, among them a name given for the first time ("my cat is called ...")

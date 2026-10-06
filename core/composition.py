@@ -379,10 +379,11 @@ class MemoryCore:
             return _retire(tx, now=self.clock.utc_now(), after_ref=after_ref,
                            limit=limit, dry_run=dry_run).to_dict()
 
-    def unindex_withheld_outputs(self, context: TrustedContext, *, after_id: int = 0, limit: int = 2000,
+    def unindex_withheld_outputs(self, context: TrustedContext, *, after_id: int = 0, limit: int = 500,
                                  dry_run: bool = True, remaining_seconds: float | None = None):
-        """Drop the postings of one bounded page of withheld tool outputs' placeholders; a preview unless
-        ``dry_run=False`` (#206).  The sources stay; only the lexical index loses what it never needed."""
+        """Drop the postings of one bounded page of withheld tool outputs' placeholders beyond their error text; a
+        preview unless ``dry_run=False`` (#206).  The sources stay; only the lexical index loses what it never
+        needed."""
         seconds = (self.config.write_timeout_seconds if remaining_seconds is None
                    else remaining_seconds)
         opener = self.storage.read if dry_run else self.storage.write

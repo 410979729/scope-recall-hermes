@@ -48,8 +48,9 @@ from typing import Any, Callable, Iterator
 from urllib.request import pathname2url
 
 from ..adapters.hermes.installation import read_shared_payload
+from ..core import lexical_index
 from ..core.delete_storage import group_digest
-from ..core.events import withheld_tool_output
+from ..core.events import indexed_terms, withheld_tool_output
 from ..core.schema import SCHEMA_VERSION
 from ..core.truth_connection import connect_truth_database
 from ..core.writer_lease import TruthWriterBusyError
@@ -303,14 +304,20 @@ def _import_rows(conn, src, names: _Names, *, store_installation: str, store_sco
     conn.execute("INSERT OR IGNORE INTO lexical_terms(term) SELECT term FROM temp.import_terms")
     terms = dict(conn.execute("SELECT i.old_id, t.term_id FROM temp.import_terms i JOIN lexical_terms t ON t.term=i.term"))
     conn.execute("DROP TABLE temp.import_terms")
-    # A withheld tool output's placeholder is found by nothing; the postings an older release gave it stay behind (#206).
-    withheld = {source_id for source_id, role, content in src.execute(
-        f"SELECT e.source_id, e.role, e.content FROM source_events e WHERE e.role='tool' AND {OMITTED_TOOL_OUTPUT}")
-        if withheld_tool_output({"role": role, "content": content})}
+    # A withheld tool output's placeholder is found by its error text alone, when it carries one; the rest of the
+    # postings an older release gave it stay behind (#206).
+    withheld: dict[int, tuple[str, ...]] = {}
+    for source_id, role, content in src.execute(
+            f"SELECT e.source_id, e.role, e.content FROM source_events e WHERE e.role='tool' AND {OMITTED_TOOL_OUTPUT}"):
+        event = {"role": role, "content": content}
+        if withheld_tool_output(event):
+            withheld[source_id] = indexed_terms(event)
     counts["lexical_postings"] = _copy(conn, src, "lexical_postings", lambda r: None
                                        if r["term_id"] not in terms or r["source_id"] in withheld else {
         "term_id": terms[r["term_id"]], "source_id": r["source_id"] + source_offset}, verb="INSERT OR IGNORE")
-    counts["withheld_outputs_unindexed"] = len(withheld)
+    for source_id, keep in withheld.items():
+        counts["lexical_postings"] += lexical_index.index_terms(conn, source_id + source_offset, keep)
+    counts["withheld_outputs"] = len(withheld)
 
     expired = {(ref, revision) for ref, revision in src.execute("SELECT source_ref, source_revision FROM expired_vectors")}
 

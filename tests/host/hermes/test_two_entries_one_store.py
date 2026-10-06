@@ -422,6 +422,11 @@ def test_tool_outputs_retention_would_expire_at_once_are_not_queued_for_embeddin
                                                  role="tool", content=text), scope_id=scope,
                               remaining_seconds=10).event_refs[0] for index, text in enumerate(outputs)]
     summary, first, repeat = made
+    errored = core.record_event(tool, source_event(
+        source_event_key="legacy:tools:errored", origin="tool_observation", role="tool",
+        content="Tool execution summary (terminal): tool=terminal; output_chars=88; exit_code=1; "
+                "error=TEST-deploy 配置文件不可写; output_preview=omitted"),
+        scope_id=scope, remaining_seconds=10).event_refs[0]
     with closing(sqlite3.connect(old / "memory.sqlite3")) as db:
         # The history an earlier release left: every source embedded, whatever it was.
         for ref in (said, *made):
@@ -431,20 +436,25 @@ def test_tool_outputs_retention_would_expire_at_once_are_not_queued_for_embeddin
                        (ref.ref, ref.revision, scope))
         # And indexed every source by its words, the withheld output's summary too (#206).
         db.execute("INSERT OR IGNORE INTO lexical_terms(term) VALUES ('tool'),('summary'),('omitted')")
-        db.execute("""INSERT OR IGNORE INTO lexical_postings(term_id,source_id) SELECT t.term_id,e.source_id
-                      FROM lexical_terms t JOIN source_events e ON e.event_id=?
-                      WHERE t.term IN ('tool','summary','omitted')""", (summary.ref,))
+        for ref in (summary.ref, errored.ref):
+            db.execute("""INSERT OR IGNORE INTO lexical_postings(term_id,source_id) SELECT t.term_id,e.source_id
+                          FROM lexical_terms t JOIN source_events e ON e.event_id=?
+                          WHERE t.term IN ('tool','summary','omitted')""", (ref,))
         db.commit()
 
     result = import_entry(root=root, entry_id="tianshu", source=old)
     assert result["counts"]["embeddings_retention_would_expire"] == 2, result["counts"]
-    assert result["counts"]["withheld_outputs_unindexed"] == 1, result["counts"]
+    assert result["counts"]["withheld_outputs"] == 2, result["counts"]
     held = "SELECT count(*) FROM lexical_postings p JOIN source_events e ON e.source_id=p.source_id WHERE e.event_id='{}'"
-    names = _Names("tianshu", frozenset({said.ref, *(ref.ref for ref in made)}))
+    names = _Names("tianshu", frozenset({said.ref, errored.ref, *(ref.ref for ref in made)}))
     queued = {row[0] for row in _query(root, "SELECT subject_ref FROM work_items WHERE work_type='embed' AND state='pending'")}
     assert queued == {names.event(said.ref), names.event(first.ref)}, queued
     assert set(_query(root, "SELECT source_ref, reason FROM expired_vectors")) == {
         (names.event(summary.ref), "omitted"), (names.event(repeat.ref), "repeat")}
-    assert _query(root, "SELECT count(*) FROM source_events") == [(4,)], "every source is imported; only embedding is skipped"
+    assert _query(root, "SELECT count(*) FROM source_events") == [(5,)], "every source is imported; only embedding is skipped"
     assert _query(root, held.format(names.event(summary.ref))) == [(0,)], "the summary's postings stay behind"
     assert _query(root, held.format(names.event(first.ref))) != [(0,)], "a tool output keeps its words"
+    kept = {row[0] for row in _query(root, f"""SELECT t.term FROM lexical_postings p JOIN lexical_terms t
+        ON t.term_id=p.term_id JOIN source_events e ON e.source_id=p.source_id
+        WHERE e.event_id='{names.event(errored.ref)}'""")}
+    assert kept and "tool" not in kept and "test-deploy" in kept, "a placeholder keeps its error text alone"

@@ -21,7 +21,7 @@ from __future__ import annotations
 from typing import Iterable
 
 from ..contracts import ContractError
-from .events import WITHHELD_TOOL_OUTPUT_SQL, withheld_tool_output
+from .events import WITHHELD_TOOL_OUTPUT_SQL, indexed_terms, withheld_tool_output
 
 #: ``t`` is the term, ``p`` the posting, ``e`` the source version.
 JOIN = ("lexical_terms t JOIN lexical_postings p ON p.term_id=t.term_id "
@@ -69,17 +69,31 @@ def unindex(conn, sources: Iterable[int]) -> int:
     return conn.execute(f"DELETE FROM lexical_postings WHERE source_id IN ({','.join('?' for _ in ids)})", ids).rowcount
 
 
-#: Placeholders one page may look at.  A page drops about ten postings each, in one write transaction.
+def unindex_beyond(conn, source: int, keep: Iterable[str] = ()) -> int:
+    """Drop the postings of one source version whose terms are not in ``keep``.  Returns how many went."""
+    kept = tuple(keep)
+    if not kept:
+        return unindex(conn, (source,))
+    return conn.execute(
+        f"""DELETE FROM lexical_postings WHERE source_id=? AND term_id NOT IN
+            (SELECT term_id FROM lexical_terms WHERE term IN ({','.join('?' for _ in kept)}))""",
+        (source, *kept)).rowcount
+
+
+#: Placeholders one page may look at.  A page drops about ten postings each in one write transaction, and holds the
+#: store's writer lease while it runs: a capture waits for that lease about a second.
 WITHHELD_PAGE_MAX = 5000
 
 
 def unindex_withheld(conn, scope_ids: Iterable[str], *, after_id: int, limit: int, dry_run: bool) -> dict:
-    """One page of withheld tool outputs' placeholders that still hold postings, in ``source_id`` order, and their
-    postings dropped unless ``dry_run`` (#206).
+    """One page of withheld tool outputs' placeholders that hold postings beyond their own terms, in ``source_id``
+    order, and those postings dropped unless ``dry_run`` (#206).
 
-    An older release, the 1109 upgrade and both imports indexed them; nothing indexes them now
-    (``events.indexed_terms``).  The sources stay: only the derived index loses what it never needed.  A page is
-    found again by its predicate, so a page cut short is simply redone, and ``next_after_id`` continues the scan.
+    An older release, the 1109 upgrade and both imports indexed the whole placeholder; it is found now by its error
+    text alone, when it carries one (``events.indexed_terms``).  The sources stay, and so do the postings of their
+    error text.  The scan walks ``source_id``: the ``+`` keeps SQLite from starting at the role and scope index and
+    sorting every tool row while the page holds the writer lease (review of 3.7.4).  A page cut short is found again,
+    and ``next_after_id`` continues the scan.
     """
     scopes = tuple(sorted(scope_ids))
     if type(after_id) is not int or after_id < 0:
@@ -90,20 +104,35 @@ def unindex_withheld(conn, scope_ids: Iterable[str], *, after_id: int, limit: in
         return {"dry_run": dry_run, "sources": 0, "postings": 0, "next_after_id": after_id, "more": False}
     rows = conn.execute(
         f"""SELECT e.source_id,e.role,e.content FROM source_events e
-            WHERE e.source_id>? AND e.role='tool' AND {WITHHELD_TOOL_OUTPUT_SQL}
-              AND e.scope_id IN ({','.join('?' for _ in scopes)})
+            WHERE e.source_id>? AND +e.role='tool' AND {WITHHELD_TOOL_OUTPUT_SQL}
+              AND +e.scope_id IN ({','.join('?' for _ in scopes)})
               AND EXISTS (SELECT 1 FROM lexical_postings p WHERE p.source_id=e.source_id)
             ORDER BY e.source_id LIMIT ?""",
         (after_id, *scopes, limit + 1),
     ).fetchall()
     page = rows[:limit]
-    ids = tuple(row[0] for row in page if withheld_tool_output({"role": row[1], "content": row[2]}))
+    whole: list[int] = []  # placeholders found by nothing
+    beyond: list[tuple[int, tuple[str, ...]]] = []  # those found by their error text, holding more than its terms
+    for source, role, content in page:
+        event = {"role": role, "content": content}
+        if not withheld_tool_output(event):
+            continue
+        keep = indexed_terms(event)
+        if not keep:
+            whole.append(source)
+        elif terms_of(conn, source) != keep:
+            beyond.append((source, keep))
     if dry_run:
-        postings = 0 if not ids else conn.execute(
-            f"SELECT COUNT(*) FROM lexical_postings WHERE source_id IN ({','.join('?' for _ in ids)})", ids).fetchone()[0]
+        postings = 0 if not whole else conn.execute(
+            f"SELECT COUNT(*) FROM lexical_postings WHERE source_id IN ({','.join('?' for _ in whole)})",
+            whole).fetchone()[0]
+        postings += sum(len(set(terms_of(conn, source)) - set(keep)) for source, keep in beyond)
     else:
-        postings = unindex(conn, ids)
-    return {"dry_run": dry_run, "sources": len(ids), "postings": int(postings),
+        postings = unindex(conn, whole)
+        for source, keep in beyond:
+            postings += unindex_beyond(conn, source, keep)
+            index_terms(conn, source, keep)
+    return {"dry_run": dry_run, "sources": len(whole) + len(beyond), "postings": int(postings),
             "next_after_id": page[-1][0] if page else after_id, "more": len(rows) > limit}
 
 
@@ -119,4 +148,4 @@ def document_frequency(conn, terms: Iterable[str]) -> dict[str, int]:
 
 
 __all__ = ["JOIN", "WITHHELD_PAGE_MAX", "document_frequency", "forget", "index_terms", "source_id", "terms_of", "unindex",
-           "unindex_withheld"]
+           "unindex_beyond", "unindex_withheld"]

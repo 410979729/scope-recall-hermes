@@ -5,6 +5,7 @@ import argparse
 import json
 from pathlib import Path
 import sys
+import time
 from typing import Any, Callable
 
 from .backup import BackupError
@@ -156,10 +157,14 @@ def _retire_rootless(args: argparse.Namespace) -> int:
     )
 
 
+#: Seconds between two pages of ``unindex-withheld-outputs --until-done``.
+_UNINDEX_PAGE_PAUSE = 0.2
+
+
 def _add_unindex_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--config", required=True)
     parser.add_argument("--after-id", type=int, default=0)
-    parser.add_argument("--limit", type=int, default=2000)
+    parser.add_argument("--limit", type=int, default=500)
     parser.add_argument("--until-done", action="store_true", help="go on page after page, each its own transaction")
     parser.add_argument("--apply", action="store_true", help="drop the postings; without it nothing is changed")
 
@@ -169,6 +174,9 @@ def _unindex_withheld(args: argparse.Namespace) -> int:
         total = {"dry_run": not args.apply, "pages": 0, "sources": 0, "postings": 0,
                  "next_after_id": args.after_id, "more": True}
         while total["more"]:
+            if total["pages"]:
+                # Each page holds the store's writer lease; captures waiting for it get it between pages.
+                time.sleep(_UNINDEX_PAGE_PAUSE)
             page = core.unindex_withheld_outputs(config.context(), after_id=total["next_after_id"], limit=args.limit,
                                                  dry_run=not args.apply, remaining_seconds=config.request_seconds)
             total.update(pages=total["pages"] + 1, sources=total["sources"] + page["sources"],

@@ -20,7 +20,8 @@ from .writer_lease import TruthWriterBusyError
 from . import lexical_index
 from .schema import (APPLICATION_ID, SCHEMA_VERSION, STATEMENTS, UPGRADE_CHAIN, stale_header_schema, upgrade_1105,
                      upgrade_1106, upgrade_1107, upgrade_1108, upgrade_1109)
-from .events import indexed_terms, prepare_capture, query_terms, segment_key, stored_content_digest
+from .events import (indexed_terms, prepare_capture, query_terms, segment_key, stored_content_digest,
+                     withheld_tool_output)
 
 #: How often a writer looks again for another process's lease while it waits.
 _LEASE_POLL_SECONDS = 0.01
@@ -611,9 +612,10 @@ class Transaction:
             raise ContractError("SOURCE_MISSING")
         identity = lexical_index.source_id(conn, ref, revision)
         terms = indexed_terms(source.event)
-        if not terms:
-            # A withheld output's placeholder is found by nothing; one an older release indexed is cleared (#206).
-            lexical_index.unindex(conn, (identity,))
+        if withheld_tool_output(source.event):
+            # A withheld output's placeholder is found by its error text alone; what an older release gave it beyond
+            # that goes (#206).
+            lexical_index.unindex_beyond(conn, identity, terms)
         lexical_index.index_terms(conn, identity, terms)
 
     def source_projection_status(self, ref: str, revision: int) -> tuple[str, str]:
