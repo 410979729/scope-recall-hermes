@@ -356,7 +356,11 @@ class Claims:
                 lineage.link(conn, "claim", ref, revision, *key, relation=relation)
         conn.execute("UPDATE instance_meta SET memory_epoch=memory_epoch+1 WHERE singleton=1")
         if advance_head and qualification.state != "proposed":
-            conn.execute("UPDATE work_items SET state='obsolete' WHERE subject_ref=? AND state IN ('pending','leased')", (ref,))
+            # The old revision's work is moot, except an embed that holds the lease: its vector may have landed
+            # already, and it completes against its own revision, which stays readable, as one done a moment earlier
+            # would have.  Made obsolete under the worker, it left a point in the store no ledger expected (#205).
+            conn.execute("""UPDATE work_items SET state='obsolete' WHERE subject_ref=?
+                            AND (state='pending' OR (state='leased' AND work_type<>'embed'))""", (ref,))
             conn.execute("INSERT INTO work_items(work_type,subject_ref,subject_revision,scope_id,project_id,branch_id,available_at) VALUES ('rebuild_projection',?,?,?,?,?,?)", (ref,revision,scope_id,ctx.project_id,ctx.branch_id,recorded))
         # Every head, promoted or not, is queued for the vector index. Proposals
         # are admitted to recall labelled, and search cannot surface what it has

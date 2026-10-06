@@ -13,10 +13,12 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 import sqlite3
 
+import pytest
+
 from scope_recall.adapters.lance import LanceEmbedPort
 from scope_recall.core.recall_policy import claim_embedding_text, encode_embedding_text
 
-from test_v11_claims import accept, app, capture, draft  # noqa: F401  (fixtures)
+from test_v11_claims import accept, app, capture, draft, revise_request  # noqa: F401  (fixtures)
 
 
 def _queue_only_embeds(core) -> None:
@@ -101,6 +103,66 @@ def test_claims_are_asked_for_and_written_as_a_group_like_sources(app):
     assert port.singles == 0, "a claim was still asked for on its own"
     assert receipt.completed == 10, receipt
     assert {state for _ref, state, _attempt in _embed_rows(core)} == {"done"}
+
+
+class SupersedingPort:
+    """Writes every vector it is given; the first time it writes a claim, that claim is superseded before the pass
+    records it, as a correction can land while an embed holds the lease."""
+
+    def __init__(self, supersede) -> None:
+        self.supersede = supersede
+        self.written: list[tuple[str, int]] = []
+
+    def _write(self, lease_guard, subjects) -> None:
+        assert lease_guard()
+        self.written.extend((subject.ref, subject.revision) for subject in subjects)
+        if self.supersede is not None and any(subject.ref.startswith("claim-") for subject in subjects):
+            supersede, self.supersede = self.supersede, None
+            supersede()
+
+    def prepare_sources(self, sources, *, remaining_seconds=1.0):
+        return [("source", source.ref, source.revision) for source in sources]
+
+    def prepare_claims(self, claims, *, remaining_seconds=1.0):
+        return [("claim", claim.ref, claim.revision) for claim in claims]
+
+    def prepare_source(self, source, *, remaining_seconds=1.0):
+        return ("source", source.ref, source.revision)
+
+    def prepare_claim(self, claim, *, remaining_seconds=1.0):
+        return ("claim", claim.ref, claim.revision)
+
+    def publish_sources(self, prepared, *, sources, lease_tokens, lease_owner, lease_guard, remaining_seconds=1.0):
+        self._write(lease_guard, sources)
+
+    def publish_claims(self, prepared, *, claims, lease_tokens, lease_owner, lease_guard, remaining_seconds=1.0):
+        self._write(lease_guard, claims)
+
+    def publish_source(self, prepared, *, source, lease_token, lease_owner, lease_guard, remaining_seconds=1.0):
+        self._write(lease_guard, (source,))
+
+    def publish_claim(self, prepared, *, claim, lease_token, lease_owner, lease_guard, remaining_seconds=1.0):
+        self._write(lease_guard, (claim,))
+
+
+@pytest.mark.parametrize("count", [1, 3])
+def test_a_vector_written_before_its_claim_was_superseded_is_still_on_the_ledger(app, count):
+    """Every vector a pass writes ends as a done embed.  A supersede made the old revision's work obsolete, the
+    embed holding the lease included, after its vector had landed: the point stayed in the store and no ledger
+    expected it, one per claim corrected mid-write (#205).  One claim takes the single path, three the group's."""
+    core, ctx = app
+    target = _claims(core, ctx, count)[0]
+    correction = capture(core, ctx, "Please correct TEST-project 属性0: 新值0。", key="TEST-correction/0")
+    _queue_only_embeds(core)
+    port = SupersedingPort(lambda: core.revise(ctx, revise_request(target, correction, "新值0"), remaining_seconds=10))
+    for now in ("2026-09-06T12:00:00Z", "2026-09-06T13:00:00Z"):
+        core.clock.now = now  # a member retried after the supersede waits out its backoff
+        core.drain_worker(ctx, max_items=32, remaining_seconds=30, owner_id="TEST-supersede", embed=port)
+    assert port.supersede is None and (target.ref, target.revision) in port.written
+    with sqlite3.connect(core.storage.path) as conn:
+        done = set(conn.execute("SELECT subject_ref,subject_revision FROM work_items WHERE work_type='embed' AND state='done'"))
+    assert set(port.written) <= done, f"points no ledger expects: {sorted(set(port.written) - done)}"
+    assert (target.ref, target.revision + 1) in done, "the new revision is embedded as well"
 
 
 def test_a_written_group_is_recorded_in_a_few_transactions_not_three_per_member(app):
