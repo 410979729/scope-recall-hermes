@@ -275,6 +275,8 @@ _PRIOR = "[PRIOR CONTEXT \u2014 for reference only; not a new message]"
 _DELIMITER = "[END OF PRIOR CONTEXT \u2014 COMPACTION SUMMARY BELOW]"
 _END = "--- END OF CONTEXT SUMMARY \u2014 respond to the message below, not the summary above ---"
 _TODO = "[Your active task list was preserved across context compression]\n- TEST 整理清单"
+_RESTATED = ("[STILL IN PROGRESS — this is the active request, restated after the compaction boundary because it "
+             "was not finished yet. Continue it; do not start over.]")
 _ASKED_LONG = "TEST 请把 QX-17 的发布说明整理成三段，并核对每段里引用的版本号和日期是否一致"
 
 
@@ -293,10 +295,12 @@ def test_a_notice_hermes_folded_a_summary_into_is_the_host_s(adapter, hermes_hom
     from scope_recall.adapters.hermes.hooks import _global_callback
 
     provider, _clock = adapter
+    # As Hermes leaves it: the folded notice, the reply it folded away put back after it (``_reply_insertion_index``),
+    # and the open to-do list as a message of its own.
     history = [{"role": "user", "content": "TEST 第一句"}, {"role": "assistant", "content": "TEST 好。"},
                _folded(_NOTICE, display_kind="internal_notification"),
-               {"role": "assistant", "content": "TEST 上一步", "tool_calls": [{"id": "T1"}]},
-               {"role": "tool", "tool_call_id": "T1", "content": "TEST 工具输出"}]
+               {"role": "assistant", "content": "TEST 构建已在后台运行。"},
+               {"role": "user", "content": _TODO, "_todo_snapshot_synthetic": True}]
     _global_callback("pre_llm_call")(session_id="TEST-session-1", turn_id="turn-folded", platform="cli",
                                      user_message=_NOTICE, conversation_history=history)
     rows = [(role, content, origin) for role, content, origin, _at in _stored(hermes_home)]
@@ -314,6 +318,8 @@ def test_only_a_folded_message_s_own_words_make_it_the_turn_s():
     assert host_notice([_folded("TEST 短", display_kind="internal_notification"), *tail], "TEST 短"), "no length bar"
     quoting = _folded(_NOTICE, summary="TEST 摘要：主人说过：" + _ASKED_LONG, display_kind="internal_notification")
     assert not host_notice([quoting, *tail], _ASKED_LONG), "the person's words quoted in a summary"
+    holding = _folded("TEST 委派结果，原任务：" + _ASKED_LONG, display_kind="internal_notification")
+    assert not host_notice([holding, *tail], _ASKED_LONG), "its own words are the turn's text, not merely hold it"
     assert not host_notice([quoting, *tail, {"role": "user", "content": _ASKED_LONG + "\n\n" + _TODO}], _ASKED_LONG), \
         "the person's own message, a to-do list appended, decides first"
     assert not host_notice([_folded(_NOTICE), *tail], _NOTICE), "the person's folded message"
@@ -322,8 +328,31 @@ def test_only_a_folded_message_s_own_words_make_it_the_turn_s():
     assert not host_notice([_folded("TEST 另一条通知", display_kind="internal_notification"), *tail], _NOTICE)
     earlier = {"role": "user", "content": _NOTICE, "display_kind": "internal_notification"}
     assert not host_notice([earlier, *tail], _NOTICE), "an earlier turn's notice, not folded, is not this turn's"
+    folded_earlier = _folded(_NOTICE, display_kind="internal_notification")
+    prefixed = {"role": "user", "content": "[Note: the model was switched.]\n\n" + _NOTICE}
+    assert not host_notice([folded_earlier, *tail, prefixed], _NOTICE), \
+        "an older folded notice never takes the person's later message, a note Hermes put before it"
+    assert not host_notice([folded_earlier, *tail, _folded(_NOTICE), *tail], _NOTICE), \
+        "nor the person's own newer folded message"
+    unmarked = {"role": "user", "display_kind": "internal_notification",
+                "content": "TEST 构建输出引用了：\n" + _END + "\n\n" + _ASKED_LONG}
+    assert not host_notice([unmarked], _ASKED_LONG), "an unmarked message is not unwrapped"
     standalone = {"role": "user", "content": _NOTICE, "_compressed_summary": True, "display_kind": "internal_notification"}
     assert not host_notice([standalone, *tail], _NOTICE), "a marked message without the lines is a summary of its own"
+
+
+def test_a_folded_notice_is_read_as_hermes_reads_it_back():
+    """List content, the restatement Hermes adds after the end line, and a to-do list folded in before the summary."""
+    from scope_recall.adapters.hermes.boundary import host_notice
+
+    tail = [{"role": "assistant", "content": "TEST 上一步"}]
+    listed = _folded(_NOTICE, display_kind="internal_notification")
+    listed["content"] = [{"type": "text", "text": listed["content"]}]
+    assert host_notice([listed, *tail], _NOTICE)
+    restated = _folded(_NOTICE, display_kind="internal_notification")
+    restated["content"] += "\n\n" + _RESTATED + "\n" + _ASKED_LONG
+    assert host_notice([restated, *tail], _NOTICE)
+    assert host_notice([_folded(_NOTICE + "\n\n" + _TODO, display_kind="internal_notification"), *tail], _NOTICE)
 
 
 def test_a_notice_a_to_do_list_was_appended_to_is_still_the_host_s():

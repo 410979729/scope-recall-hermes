@@ -287,18 +287,20 @@ _TODO_HEADER = "[Your active task list was preserved across context compression]
 
 
 def _own_text(message: dict[str, Any]) -> str:
-    """A user message's own words, as Hermes reads them back: without a compression summary folded into it
-    (``ContextCompressor._strip_context_summary_handoff_message``) and without a to-do list appended to it
-    (``_strip_stale_todo_snapshot``).  The person's words quoted inside a summary are not the message's own."""
+    """A user message's own words, as Hermes reads them back: without a compression summary folded into a message
+    Hermes marked as folded (``ContextCompressor._strip_context_summary_handoff_message``), and without a to-do list
+    appended to it (``_strip_stale_todo_snapshot``).  The person's words quoted inside a summary are not the
+    message's own.  An unmarked message is not unwrapped: a notice that quotes those lines keeps its words whole."""
     text = extract_user_text(message.get("content"))
-    if _SUMMARY_DELIMITER in text:
-        text = text.split(_SUMMARY_DELIMITER, 1)[0].strip()
-        if text.startswith(_PRIOR_CONTEXT_HEADER):
-            text = text[len(_PRIOR_CONTEXT_HEADER):]
-    elif _SUMMARY_END in text:
-        text = text.split(_SUMMARY_END, 1)[1]
-    elif message.get(_COMPRESSED_SUMMARY) is True:
-        return ""
+    if message.get(_COMPRESSED_SUMMARY) is True:
+        if _SUMMARY_DELIMITER in text:
+            text = text.split(_SUMMARY_DELIMITER, 1)[0].strip()
+            if text.startswith(_PRIOR_CONTEXT_HEADER):
+                text = text[len(_PRIOR_CONTEXT_HEADER):]
+        elif _SUMMARY_END in text:
+            text = text.split(_SUMMARY_END, 1)[1]
+        else:
+            return ""
     cut = text.find(_TODO_HEADER)
     return (text if cut == -1 else text[:cut]).strip()
 
@@ -325,10 +327,13 @@ def host_notice(history: object, user_message: object) -> bool:
     notice read as something they said.
 
     A compression at the turn's start can also fold its summary into the turn's own message
-    (``ContextCompressor._merge_summary_into_tail_row``), which then need not be last: one of tianshu's three
-    delegation results on 2026-10-05 was stored as the owner's that way.  Such a message, marked by Hermes, is the
-    turn's when its own words are the turn's text.  Its own words only: a summary quotes the person's messages word
-    for word, and a message merely holding the turn's text took the person's words for a notice (review of 3.7.3).
+    (``ContextCompressor._merge_summary_into_tail_row``) and put the reply it folded away after it
+    (``_reply_insertion_index``), so the message is no longer in that run: one of tianshu's three delegation results
+    on 2026-10-05 was stored as the owner's that way.  Then the latest user message with words of its own decides:
+    the turn's when it is folded, marked by Hermes, and its own words are the turn's text.  Its own words only: a
+    summary quotes the person's messages word for word, and a message merely holding the turn's text took the
+    person's words for a notice.  The latest only: an older folded notice took the person's later message with the
+    same words, which Hermes had prefixed with a note of its own (both reviews of 3.7.3).
     """
     text = extract_user_text(user_message).strip()
     if not isinstance(history, list) or not text:
@@ -338,8 +343,13 @@ def host_notice(history: object, user_message: object) -> bool:
             break
         if _own_text(message) == text:
             return _notice_kind(message)
-    return any(isinstance(message, dict) and message.get("role") == "user" and message.get(_COMPRESSED_SUMMARY) is True
-               and _own_text(message) == text and _notice_kind(message) for message in history)
+    for message in reversed(history):
+        if not isinstance(message, dict) or message.get("role") != "user":
+            continue
+        words = _own_text(message)
+        if words:
+            return message.get(_COMPRESSED_SUMMARY) is True and words == text and _notice_kind(message)
+    return False
 
 
 def steer_messages(history: object) -> tuple[tuple[str, str | None], ...]:

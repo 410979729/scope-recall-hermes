@@ -62,6 +62,9 @@ from .work_storage import ACCOUNT_REFUSALS, AUTO_RECOVERABLE_ERRORS, DERIVATION_
 _OPERATOR_ONLY_FAILURES = frozenset({
     "http_400",
     "candidate_attempt_interrupted",
+    # The HTTP worker's own refusals of a route or a size (``runtime/_http_worker.py``): a wrong or redirecting base
+    # URL, a request or an answer past its bound.  An operator fixes the route or the bound, then re-opens.
+    "endpoint_invalid", "http_redirect", "request_limit", "response_limit",
 }) | ACCOUNT_REFUSALS
 
 #: Faults.  Clearing these is what moves an instance from degraded to healthy.
@@ -125,10 +128,11 @@ def already_retried(error_code: object, *, generation: int) -> bool:
 
 
 #: Any other HTTP status a provider answered (``worker_outcomes`` records each as ``http_NNN``): a 4xx not named above
-#: (404, 409, 413, 422, ...), a 5xx the worker does not recover by itself (501, 520-524, ...), a redirect from a wrong
-#: base URL.  No automatic retry clears it, but an operator who has fixed the route, the model or a bound may re-open
-#: it, as ``http_400``.  Of neither class, a candidate evaluation failed with ``http_422`` on the shared store stayed
-#: failed with no command able to clear it, as ``http_protocol`` did before #201.
+#: (404, 409, 413, 422, ...), a 5xx the worker does not recover by itself (501, 520-524, ...).  The HTTP worker reports
+#: a redirect as ``http_redirect``, named above.  No automatic retry clears it, but an operator who has fixed the
+#: route, the model or a bound may re-open it, as ``http_400``.  Of neither class, a candidate evaluation failed
+#: with ``http_422`` on the shared store stayed failed with no command able to clear it, as ``http_protocol`` did
+#: before #201.
 _HTTP_STATUS = re.compile(r"http_[1-5]\d\d")
 
 
