@@ -26,6 +26,7 @@ All notable changes to `scope-recall` will be documented in this file.
 ### Known limits
 
 - The adapter reads a folded message with Hermes 0.21.5's own boundary lines. If Hermes changes them, a folded notice is stored as the owner's again. That is the safe side.
+- When no user message survives a compression, Hermes copies the turn's message back as an anchor and may merge it into its to-do message (`_ensure_compressed_has_user_turn`). The copy carries no display kind, so such a notice is still stored as the owner's.
 
 ### Upgrading from 3.7.2
 
