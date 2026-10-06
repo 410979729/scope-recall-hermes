@@ -648,6 +648,14 @@ config reaches only that entry's scopes. Run it after going back to an earlier
 release and forward again: a capture the earlier release could not read may have
 been given up meanwhile.
 
+Since 3.7.5 it also brings back the vector work of claim heads. Before 3.7.5 the
+automatic recovery made a claim's failed embedding obsolete instead of retrying
+it, and an earlier conversion left some heads without one. The command reopens
+the first (`claim_embeds_reopened`) and queues the second
+(`claim_embeds_queued`), a page at a time up to `--limit`. It does this only for
+heads that are readable in its config's scopes. A claim found by its words alone
+is then found by meaning too.
+
 Since 3.2.0 a tool output is kept and embedded, found by its words and by
 meaning, but no longer consolidated into claims: what an agent read or ran is
 not what it should remember, and how a task was done belongs to the host's

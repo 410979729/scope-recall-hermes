@@ -320,6 +320,16 @@ def _projection_retry_reason(tx, ref: str, revision: int, *, current_epoch: int 
     return None
 
 
+def _embed_retry_reason(tx, ref: str, revision: int, *, current_epoch: int | None = None) -> str | None:
+    """An embed's subject is a source or, since every claim head is queued for the vector index, a claim, which may
+    be worked on while it is the readable head it was queued for.  Read as a source, a claim was never found: every
+    claim embed a provider failed was made obsolete instead of reopened, and 114 readable heads of the shared store
+    had no vector (review of 3.7.4)."""
+    if ref.startswith("claim-"):
+        return _projection_retry_reason(tx, ref, revision, current_epoch=current_epoch)
+    return _source_retry_reason(tx, ref, revision, current_epoch=current_epoch)
+
+
 def _purge_retry_reason(tx, ref: str, revision: int, *, current_epoch: int | None = None) -> str | None:
     try:
         from .delete_storage import purge_work_parts
@@ -339,7 +349,7 @@ def _purge_retry_reason(tx, ref: str, revision: int, *, current_epoch: int | Non
 #: most once, and new evidence makes a new row rather than a retry.
 _RETRY_SUBJECT_REASON = {
     "consolidate": _source_retry_reason,
-    "embed": _source_retry_reason,
+    "embed": _embed_retry_reason,
     "rebuild_projection": _projection_retry_reason,
     "purge": _purge_retry_reason,
 }
@@ -774,6 +784,22 @@ class WorkItems:
             kind = str(code or "").rsplit("|", 1)[-1]
             report["by_kind"][kind] = report["by_kind"].get(kind, 0) + 1
             report["retried"] += 1
+        # The automatic recovery read every embed's subject as a source, so a claim embed a provider failed was made
+        # obsolete instead of reopened (``_embed_retry_reason``).  A readable head it left without a vector is worked
+        # on again, and one an earlier conversion never queued is queued (review of 3.7.4).
+        heads = self._claim_heads_without_vectors(limit=limit)
+        report["claim_embeds_reopened"] = sum(1 for work_id, _ref, _revision in heads if work_id is not None)
+        report["claim_embeds_queued"] = sum(1 for work_id, _ref, _revision in heads if work_id is None)
+        if not dry_run:
+            from .failure_retry import marked  # imports this module
+
+            for work_id, ref, revision in heads:
+                if work_id is None:
+                    self.enqueue("embed", ref, revision, available_at=now)
+                else:
+                    conn.execute("""UPDATE work_items SET state='pending',available_at=?,lease_owner=NULL,
+                                    lease_until=NULL,last_error_code=? WHERE work_id=? AND state='obsolete'""",
+                                 (now, marked("authority_revoked", generation=SCHEMA_VERSION), work_id))
         # Captures a replay gave up after its tries (``capture_inbox._GAVE_UP``) go back to it, their tries counted
         # anew: whatever kept them out has been fixed, or they are given up again, visibly.  Only the partition this
         # config's replay takes (``replay_inbox``): returned by what the config could see, a row of another went back
@@ -806,6 +832,29 @@ class WorkItems:
                               for token, code in abandoned])
             conn.executemany("UPDATE capture_inbox SET last_error_code=NULL WHERE token=?", [(row[0],) for row in refused])
         return report
+
+    def _claim_heads_without_vectors(self, *, limit: int) -> list[tuple[int | None, str, int]]:
+        """Readable claim heads of this context whose vector work was made obsolete or never queued: (the obsolete
+        row's work id, or None when there is none, the claim, its head revision), at most ``limit``."""
+        conn = self._tx._check()
+        context = self._tx.context
+        scopes = sorted(context.allowed_scope_ids)
+        rows = conn.execute(
+            f"""SELECT w.work_id, c.claim_id, c.current_revision FROM claims c
+                LEFT JOIN work_items w ON w.work_type='embed' AND w.subject_ref=c.claim_id
+                     AND w.subject_revision=c.current_revision
+                WHERE c.read_blocked=0 AND c.scope_id IN ({_marks(scopes)})
+                  AND (c.project_id IS NULL OR c.project_id=?) AND (c.branch_id IS NULL OR c.branch_id=?)
+                  AND (w.work_id IS NULL OR (w.state='obsolete' AND w.last_error_code='authority_revoked'))
+                ORDER BY c.claim_id LIMIT ?""",
+            (*scopes, context.project_id, context.branch_id, limit * 8)).fetchall()
+        heads: list[tuple[int | None, str, int]] = []
+        for work_id, ref, revision in rows:
+            if len(heads) >= limit:
+                break
+            if _embed_retry_reason(self._tx, ref, revision) is None:
+                heads.append((work_id, ref, revision))
+        return heads
 
     def _reopen_failed(self, work_id: int, work_type: str, code: object, *, now: str, automatic: bool = False) -> bool:
         """Move one failed row, and its sibling tables when it has any."""
