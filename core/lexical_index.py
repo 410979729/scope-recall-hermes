@@ -20,6 +20,9 @@ from __future__ import annotations
 
 from typing import Iterable
 
+from ..contracts import ContractError
+from .events import WITHHELD_TOOL_OUTPUT_SQL, withheld_tool_output
+
 #: ``t`` is the term, ``p`` the posting, ``e`` the source version.
 JOIN = ("lexical_terms t JOIN lexical_postings p ON p.term_id=t.term_id "
         "JOIN source_events e ON e.source_id=p.source_id")
@@ -58,6 +61,52 @@ def forget(conn, event_id: str) -> None:
                  (event_id,))
 
 
+def unindex(conn, sources: Iterable[int]) -> int:
+    """Drop every posting of these source versions, which stay.  Returns how many postings went."""
+    ids = tuple(sources)
+    if not ids:
+        return 0
+    return conn.execute(f"DELETE FROM lexical_postings WHERE source_id IN ({','.join('?' for _ in ids)})", ids).rowcount
+
+
+#: Placeholders one page may look at.  A page drops about ten postings each, in one write transaction.
+WITHHELD_PAGE_MAX = 5000
+
+
+def unindex_withheld(conn, scope_ids: Iterable[str], *, after_id: int, limit: int, dry_run: bool) -> dict:
+    """One page of withheld tool outputs' placeholders that still hold postings, in ``source_id`` order, and their
+    postings dropped unless ``dry_run`` (#206).
+
+    An older release, the 1109 upgrade and both imports indexed them; nothing indexes them now
+    (``events.indexed_terms``).  The sources stay: only the derived index loses what it never needed.  A page is
+    found again by its predicate, so a page cut short is simply redone, and ``next_after_id`` continues the scan.
+    """
+    scopes = tuple(sorted(scope_ids))
+    if type(after_id) is not int or after_id < 0:
+        raise ContractError("INPUT_INVALID", "after_id")
+    if type(limit) is not int or not 1 <= limit <= WITHHELD_PAGE_MAX:
+        raise ContractError("INPUT_INVALID", "limit")
+    if not scopes:
+        return {"dry_run": dry_run, "sources": 0, "postings": 0, "next_after_id": after_id, "more": False}
+    rows = conn.execute(
+        f"""SELECT e.source_id,e.role,e.content FROM source_events e
+            WHERE e.source_id>? AND e.role='tool' AND {WITHHELD_TOOL_OUTPUT_SQL}
+              AND e.scope_id IN ({','.join('?' for _ in scopes)})
+              AND EXISTS (SELECT 1 FROM lexical_postings p WHERE p.source_id=e.source_id)
+            ORDER BY e.source_id LIMIT ?""",
+        (after_id, *scopes, limit + 1),
+    ).fetchall()
+    page = rows[:limit]
+    ids = tuple(row[0] for row in page if withheld_tool_output({"role": row[1], "content": row[2]}))
+    if dry_run:
+        postings = 0 if not ids else conn.execute(
+            f"SELECT COUNT(*) FROM lexical_postings WHERE source_id IN ({','.join('?' for _ in ids)})", ids).fetchone()[0]
+    else:
+        postings = unindex(conn, ids)
+    return {"dry_run": dry_run, "sources": len(ids), "postings": int(postings),
+            "next_after_id": page[-1][0] if page else after_id, "more": len(rows) > limit}
+
+
 def document_frequency(conn, terms: Iterable[str]) -> dict[str, int]:
     """How many source versions hold each term; a term nobody holds is absent."""
     wanted = tuple(terms)
@@ -69,4 +118,5 @@ def document_frequency(conn, terms: Iterable[str]) -> dict[str, int]:
         f"WHERE t.term IN ({marks}) GROUP BY t.term", wanted)}
 
 
-__all__ = ["JOIN", "document_frequency", "forget", "index_terms", "source_id", "terms_of"]
+__all__ = ["JOIN", "WITHHELD_PAGE_MAX", "document_frequency", "forget", "index_terms", "source_id", "terms_of", "unindex",
+           "unindex_withheld"]

@@ -10,6 +10,7 @@ import uuid
 
 from ..contracts import ContractError, InstanceBinding, SourceEvent, TrustedContext
 from .file_lock import advisory_file_lock
+from . import lexical_index
 from .storage import SQLiteStorage, StoreStatus, StoredSource
 from .capture import CaptureReceipt, record_event
 from .admission import AdmissionPolicy
@@ -377,6 +378,17 @@ class MemoryCore:
         with opener(context, remaining_seconds=seconds) as tx:
             return _retire(tx, now=self.clock.utc_now(), after_ref=after_ref,
                            limit=limit, dry_run=dry_run).to_dict()
+
+    def unindex_withheld_outputs(self, context: TrustedContext, *, after_id: int = 0, limit: int = 2000,
+                                 dry_run: bool = True, remaining_seconds: float | None = None):
+        """Drop the postings of one bounded page of withheld tool outputs' placeholders; a preview unless
+        ``dry_run=False`` (#206).  The sources stay; only the lexical index loses what it never needed."""
+        seconds = (self.config.write_timeout_seconds if remaining_seconds is None
+                   else remaining_seconds)
+        opener = self.storage.read if dry_run else self.storage.write
+        with opener(context, remaining_seconds=seconds) as tx:
+            return lexical_index.unindex_withheld(tx._check(write=not dry_run), context.allowed_scope_ids,
+                                                  after_id=after_id, limit=limit, dry_run=dry_run)
 
     def retry_failed_work(self, context: TrustedContext, *, include_terminal: bool = False,
                           limit: int = 64, dry_run: bool = True,

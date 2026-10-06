@@ -16,7 +16,7 @@ import sqlite3
 from typing import Any, Callable, Iterable, Mapping
 
 from scope_recall.contracts import InstanceBinding, TrustedContext
-from scope_recall.core.events import lexical_terms
+from scope_recall.core.events import indexed_terms
 from scope_recall.core import lexical_index
 from scope_recall.core.schema import SCHEMA_VERSION, normalize_scope_authorizations
 from scope_recall.core.storage import SQLiteStorage
@@ -599,7 +599,8 @@ def _project_lexical_terms(cv: Conversion, conn: sqlite3.Connection) -> None:
         row = conn.execute("SELECT read_blocked,source_id FROM source_events WHERE event_id=?", (item["event_id"],)).fetchone()
         if row[0]:
             continue
-        cv.inserted["lexical_projection"] += lexical_index.index_terms(conn, row[1], lexical_terms(item["content"]))
+        # A withheld tool output's placeholder is found by nothing (#206).
+        cv.inserted["lexical_projection"] += lexical_index.index_terms(conn, row[1], indexed_terms(item))
 
 
 # --- the report ------------------------------------------------------------

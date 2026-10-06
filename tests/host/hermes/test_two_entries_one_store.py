@@ -429,13 +429,22 @@ def test_tool_outputs_retention_would_expire_at_once_are_not_queued_for_embeddin
                           VALUES ('embed',?,?,?,'done','2026-09-01T00:00:00Z')
                           ON CONFLICT(work_type,subject_ref,subject_revision) DO UPDATE SET state='done'""",
                        (ref.ref, ref.revision, scope))
+        # And indexed every source by its words, the withheld output's summary too (#206).
+        db.execute("INSERT OR IGNORE INTO lexical_terms(term) VALUES ('tool'),('summary'),('omitted')")
+        db.execute("""INSERT OR IGNORE INTO lexical_postings(term_id,source_id) SELECT t.term_id,e.source_id
+                      FROM lexical_terms t JOIN source_events e ON e.event_id=?
+                      WHERE t.term IN ('tool','summary','omitted')""", (summary.ref,))
         db.commit()
 
     result = import_entry(root=root, entry_id="tianshu", source=old)
     assert result["counts"]["embeddings_retention_would_expire"] == 2, result["counts"]
+    assert result["counts"]["withheld_outputs_unindexed"] == 1, result["counts"]
+    held = "SELECT count(*) FROM lexical_postings p JOIN source_events e ON e.source_id=p.source_id WHERE e.event_id='{}'"
     names = _Names("tianshu", frozenset({said.ref, *(ref.ref for ref in made)}))
     queued = {row[0] for row in _query(root, "SELECT subject_ref FROM work_items WHERE work_type='embed' AND state='pending'")}
     assert queued == {names.event(said.ref), names.event(first.ref)}, queued
     assert set(_query(root, "SELECT source_ref, reason FROM expired_vectors")) == {
         (names.event(summary.ref), "omitted"), (names.event(repeat.ref), "repeat")}
     assert _query(root, "SELECT count(*) FROM source_events") == [(4,)], "every source is imported; only embedding is skipped"
+    assert _query(root, held.format(names.event(summary.ref))) == [(0,)], "the summary's postings stay behind"
+    assert _query(root, held.format(names.event(first.ref))) != [(0,)], "a tool output keeps its words"

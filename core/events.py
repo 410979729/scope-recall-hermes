@@ -97,6 +97,27 @@ def version_suffixes(text: str) -> frozenset[str]:
     return frozenset(_VERSION_SUFFIX.findall(unicodedata.normalize("NFKC", text).casefold()))
 
 
+#: The capture filter's own placeholder for a tool output it withheld (``capture_filters.sanitize_report_text``), and
+#: the 2.0 release's form of it.  Nothing in it is the output's: on one instance 132,000 of 168,000 sources were such
+#: lines, each embedded, and the shared store imported 212,773 of them (68% of its sources).
+_WITHHELD_TOOL_OUTPUT = re.compile(r"Tool execution summary\b.*\b(?:output omitted|output_preview=omitted)\b", re.S)
+#: The same placeholders as a condition on ``source_events e``, cheap enough to test before the role.
+WITHHELD_TOOL_OUTPUT_SQL = ("e.content LIKE 'Tool execution summary%' AND "
+                            "(e.content LIKE '%output omitted%' OR e.content LIKE '%output_preview=omitted%')")
+
+
+def withheld_tool_output(event) -> bool:
+    """Whether a source is the capture filter's placeholder for a tool output it withheld."""
+    return event.get("role") == "tool" and bool(_WITHHELD_TOOL_OUTPUT.match(str(event.get("content") or "").strip()))
+
+
+def indexed_terms(event) -> tuple[str, ...]:
+    """The terms a source is found by: none for a withheld tool output's placeholder.  Its words are the envelope's
+    own, and indexed, the imported placeholders pushed ordinary words such as "tool", "status" and "patch" past the
+    common-term ceiling, so every question lost them (#206)."""
+    return () if withheld_tool_output(event) else lexical_terms(event["content"])
+
+
 def lexical_terms(text: str) -> tuple[str, ...]:
     """Chinese bigrams and intact identifiers; normalization affects index only."""
     normalized = unicodedata.normalize("NFKC", text).casefold()

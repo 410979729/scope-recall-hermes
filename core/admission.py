@@ -14,6 +14,7 @@ import re
 import unicodedata
 
 from ..contracts import ContractError
+from .events import withheld_tool_output
 from .work_storage import FRESH_CONVERSATION_ORIGINS, fresh_since
 
 ADMISSION_KEY = "_scope_recall_admission"
@@ -69,11 +70,6 @@ _REINJECTION = AdmissionDecision("source_only", "memory_reinjection")
 _ACKS = frozenset({"好", "好的", "嗯", "嗯嗯", "哦", "噢", "收到", "明白", "了解", "谢谢", "谢谢你", "你好", "早上好", "晚上好", "晚安", "哈哈", "ok", "okay", "yes", "thanks", "thankyou", "hello", "hi", "goodnight", "ack", "acknowledged", "gotit"})
 _IMPORTANT = re.compile(r"更正|纠正|改为|改成|换成|调整为|取消|作废|不再|停止使用|停止采用|弃用|不要|必须|记住|偏好|喜欢|决定|采用|截止|完成|修复|失败|错误|\b(?:correct(?:ion)?|instead|cancel(?:led)?|no longer|switch to|discontinue|remember|prefer|decid\w*|deadline|must|error|fail\w*)\b", re.I)
 _TOOL_OK = re.compile(r"(?:success|successful|done|completed|ok|process exited with (?:code|exit code) 0|exit code:? 0)[.!\s]*", re.I)
-#: The capture filter's own placeholder for a tool output it withheld
-#: (``capture_filters.sanitize_report_text``), and the 2.0 release's form of
-#: it.  There is nothing in it to search for by meaning or to derive from: on
-#: one instance 132,000 of 168,000 sources were such lines, each embedded.
-_OMITTED_TOOL_SUMMARY = re.compile(r"Tool execution summary\b.*\b(?:output omitted|output_preview=omitted)\b", re.S)
 
 
 def _ack(text):
@@ -93,7 +89,8 @@ def classify(event, policy=None):
         # evidence refs that would otherwise raise its priority.
         return _REINJECTION
     text = event["content"]
-    if event.get("role") == "tool" and _OMITTED_TOOL_SUMMARY.match(text.strip()):
+    if withheld_tool_output(event):
+        # Nothing in it to search for by meaning, to derive from or to find by its words (``core/events.py``).
         return AdmissionDecision("source_only", "tool_output_omitted")
     important = bool(event.get("artifact_refs") or event.get("evidence_refs") or event.get("segment") or _IMPORTANT.search(text))
     if important:

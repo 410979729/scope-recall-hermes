@@ -20,7 +20,7 @@ from .writer_lease import TruthWriterBusyError
 from . import lexical_index
 from .schema import (APPLICATION_ID, SCHEMA_VERSION, STATEMENTS, UPGRADE_CHAIN, stale_header_schema, upgrade_1105,
                      upgrade_1106, upgrade_1107, upgrade_1108, upgrade_1109)
-from .events import lexical_terms, prepare_capture, query_terms, segment_key, stored_content_digest
+from .events import indexed_terms, prepare_capture, query_terms, segment_key, stored_content_digest
 
 #: How often a writer looks again for another process's lease while it waits.
 _LEASE_POLL_SECONDS = 0.01
@@ -609,7 +609,12 @@ class Transaction:
         source = self.source(ref, revision)
         if source is None:
             raise ContractError("SOURCE_MISSING")
-        lexical_index.index_terms(conn, lexical_index.source_id(conn, ref, revision), lexical_terms(source.event["content"]))
+        identity = lexical_index.source_id(conn, ref, revision)
+        terms = indexed_terms(source.event)
+        if not terms:
+            # A withheld output's placeholder is found by nothing; one an older release indexed is cleared (#206).
+            lexical_index.unindex(conn, (identity,))
+        lexical_index.index_terms(conn, identity, terms)
 
     def source_projection_status(self, ref: str, revision: int) -> tuple[str, str]:
         conn = self._check()
@@ -617,7 +622,7 @@ class Transaction:
         if source is None:
             raise ContractError("SOURCE_MISSING")
         actual = lexical_index.terms_of(conn, lexical_index.source_id(conn, ref, revision))
-        lexical = "ready" if actual == lexical_terms(source.event["content"]) else "not_ready"
+        lexical = "ready" if actual == indexed_terms(source.event) else "not_ready"
         work = conn.execute("SELECT state FROM work_items WHERE work_type='embed' AND subject_ref=? AND subject_revision=?", (ref, revision)).fetchone()
         semantic = "not_scheduled" if work is None else {"pending":"pending", "leased":"pending", "done":"ready", "failed":"failed", "obsolete":"obsolete"}[work[0]]
         return lexical, semantic

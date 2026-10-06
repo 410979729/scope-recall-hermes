@@ -664,6 +664,27 @@ by reference, never by text. A retired claim gets a retracted version and stops
 waiting for evaluation; its sources, its earlier versions and every confirmed
 claim stay as they are.
 
+The capture filter leaves a one-line summary in place of a tool output it
+withholds ("Tool execution summary ... output_preview=omitted"). Since 3.7.4 such
+a placeholder is kept but not indexed by its words, which are all the envelope's
+own. Earlier releases, the 1109 upgrade and both imports indexed them, and on a
+store that imported many they push ordinary words such as "tool", "status" and
+"patch" past the common-term ceiling, so questions lose those words. To drop the
+postings they hold:
+
+```bash
+scope-recall unindex-withheld-outputs --config /path/to/instance-root/scope-recall/runtime-config.json --until-done --apply
+```
+
+Without `--apply` it only counts the placeholders and their postings. Each page
+(`--limit`, 2,000 by default, at most 5,000) is its own write transaction, and a
+page cut short is simply found again, so it can be stopped and run again at any
+time; without `--until-done`, carry the printed `next_after_id` into `--after-id`
+while `more` is true. The sources stay. In a shared store, run it with the shared
+worker's config (`<root>\runtime-config.json`), which reaches every scope. On the
+shared store's copy it dropped 2,015,161 postings of 212,773 placeholders in 107
+pages, the slowest 1.0 s.
+
 To re-frame the claims an earlier release stored in a frame this release would
 not write, among them a name given for the first time ("my cat is called ...")
 filed as an alias nothing could ever confirm:

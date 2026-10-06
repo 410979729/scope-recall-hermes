@@ -5,7 +5,8 @@ site, at the start of a drain, just before the compaction that reclaims what
 a pass deleted.  The source text, its lexical index and everything derived
 from it (claims, episodes, candidates) stay; only the vector goes.  An expired
 tool output is still found by its words and through whatever cites it, never
-again by meaning alone.
+again by meaning alone.  (A withheld output's placeholder has no words of its
+own to be found by: ``core/events.indexed_terms``.)
 
 Why tool outputs, and why a window: on a busy instance four in five captured
 sources were tool output, each carrying a 12 KB vector -- the bulk of the
@@ -27,6 +28,7 @@ from pathlib import Path
 import time
 from typing import Any, Callable
 
+from ..core.events import WITHHELD_TOOL_OUTPUT_SQL
 from .validation import utc_now
 
 #: Seconds of the drain budget set aside for one pass; below it the pass waits.
@@ -87,11 +89,10 @@ def pass_due(state: dict[str, Any], days: int, *, now: datetime) -> bool:
 
 
 #: A tool output the capture filter withheld, in this release's form and the
-#: 2.0 release's (see ``core/admission.py``).  Cheap enough to test first.
+#: 2.0 release's (see ``core/events.py``).  Cheap enough to test first.
 #: Both conditions are read against ``source_events e``; ``maintenance/shared_import.py``
 #: uses them too, so an import never queues an embedding this pass would expire at once.
-OMITTED_TOOL_OUTPUT = ("e.content LIKE 'Tool execution summary%' AND "
-                       "(e.content LIKE '%output omitted%' OR e.content LIKE '%output_preview=omitted%')")
+OMITTED_TOOL_OUTPUT = WITHHELD_TOOL_OUTPUT_SQL
 #: An earlier, still readable tool output in the same scope with the same content.
 REPEATED_TOOL_OUTPUT = """EXISTS (SELECT 1 FROM source_events f WHERE f.scope_id=e.scope_id AND f.role='tool'
     AND f.content_sha256=e.content_sha256 AND f.read_blocked=0

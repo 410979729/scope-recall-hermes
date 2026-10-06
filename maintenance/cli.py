@@ -156,6 +156,31 @@ def _retire_rootless(args: argparse.Namespace) -> int:
     )
 
 
+def _add_unindex_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--config", required=True)
+    parser.add_argument("--after-id", type=int, default=0)
+    parser.add_argument("--limit", type=int, default=2000)
+    parser.add_argument("--until-done", action="store_true", help="go on page after page, each its own transaction")
+    parser.add_argument("--apply", action="store_true", help="drop the postings; without it nothing is changed")
+
+
+def _unindex_withheld(args: argparse.Namespace) -> int:
+    def pages(core, config) -> dict:
+        total = {"dry_run": not args.apply, "pages": 0, "sources": 0, "postings": 0,
+                 "next_after_id": args.after_id, "more": True}
+        while total["more"]:
+            page = core.unindex_withheld_outputs(config.context(), after_id=total["next_after_id"], limit=args.limit,
+                                                 dry_run=not args.apply, remaining_seconds=config.request_seconds)
+            total.update(pages=total["pages"] + 1, sources=total["sources"] + page["sources"],
+                         postings=total["postings"] + page["postings"], next_after_id=page["next_after_id"],
+                         more=page["more"])
+            if not args.until_done:
+                break
+        return total
+
+    return _run_core(args, pages)
+
+
 def _add_retry_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--config", required=True)
     parser.add_argument("--limit", type=int, default=64)
@@ -528,6 +553,7 @@ _COMMANDS: tuple[tuple[str, str | None, Callable[[argparse.ArgumentParser], None
     ("repair-claim-frames", "revalidate a bounded page of legacy claim frames without model calls", _add_repair_arguments, _repair_claim_frames),
     ("requalify", "re-judge a bounded page of stored claims after a gate change", _add_requalify_arguments, _requalify),
     ("retire-rootless-claims", "retire a bounded page of proposed claims no derivation root supports (tool output alone)", _add_requalify_arguments, _retire_rootless),
+    ("unindex-withheld-outputs", "drop the lexical postings of withheld tool outputs' placeholders, a bounded page at a time", _add_unindex_arguments, _unindex_withheld),
     ("retry-failures", "grant one bounded re-look to failed work after a fix has shipped", _add_retry_arguments, _retry_failures),
     ("backup", "create a new consistent SQLite snapshot and manifest", _add_backup_arguments, _backup),
     ("rollback", "inspect rollback; --apply may stop writes when new data must be reconciled", _add_rollback_arguments, _rollback),
