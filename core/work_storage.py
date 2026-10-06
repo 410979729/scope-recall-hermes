@@ -835,7 +835,10 @@ class WorkItems:
 
     def _claim_heads_without_vectors(self, *, limit: int) -> list[tuple[int | None, str, int]]:
         """Readable claim heads of this context whose vector work was made obsolete or never queued: (the obsolete
-        row's work id, or None when there is none, the claim, its head revision), at most ``limit``."""
+        row's work id, or None when there is none, the claim, its head revision), at most ``limit``.
+
+        The query asks what ``_embed_retry_reason`` will (the exact project and branch, no block), so heads it would
+        refuse never fill the page ahead of one it takes (review of 3.7.5)."""
         conn = self._tx._check()
         context = self._tx.context
         scopes = sorted(context.allowed_scope_ids)
@@ -844,10 +847,14 @@ class WorkItems:
                 LEFT JOIN work_items w ON w.work_type='embed' AND w.subject_ref=c.claim_id
                      AND w.subject_revision=c.current_revision
                 WHERE c.read_blocked=0 AND c.scope_id IN ({_marks(scopes)})
-                  AND (c.project_id IS NULL OR c.project_id=?) AND (c.branch_id IS NULL OR c.branch_id=?)
+                  AND c.project_id IS ? AND c.branch_id IS ?
+                  AND NOT EXISTS (SELECT 1 FROM restored_absence_blocks a
+                                  WHERE a.object_kind='claim' AND a.object_ref=c.claim_id)
+                  AND NOT EXISTS (SELECT 1 FROM object_blocks b WHERE b.object_kind='claim' AND b.object_ref=c.claim_id
+                                  AND (b.read_blocked<>0 OR b.scope_id NOT IN ({_marks(scopes)})))
                   AND (w.work_id IS NULL OR (w.state='obsolete' AND w.last_error_code='authority_revoked'))
                 ORDER BY c.claim_id LIMIT ?""",
-            (*scopes, context.project_id, context.branch_id, limit * 8)).fetchall()
+            (*scopes, context.project_id, context.branch_id, *scopes, limit * 8)).fetchall()
         heads: list[tuple[int | None, str, int]] = []
         for work_id, ref, revision in rows:
             if len(heads) >= limit:

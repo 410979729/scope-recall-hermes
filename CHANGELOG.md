@@ -10,12 +10,13 @@ All notable changes to `scope-recall` will be documented in this file.
 
 ### Fixes
 
-- **The automatic recovery retries a claim's embedding (`_embed_retry_reason`).** Every claim head is queued for the vector index, and a provider can fail its embedding as it fails a source's: a network error, a timeout, a refusal at capacity.
+- **The automatic recovery retries a claim's embedding (`_embed_retry_reason`).** Every claim head is queued for the vector index, and its embedding can fail as a source's does: a network error, a timeout, a lease that ran out.
   - The recovery reopens such failures after its cooldown. It checked an embedding's subject as a source, though, and a claim is no source, so the claim's embedding was made obsolete (`authority_revoked`).
   - Now a claim's embedding is reopened while its revision is the readable head it was queued for. An older revision's is still made obsolete: only the head needs a vector.
 - **`retry-failures` reopens what the recovery dropped (`claim_embeds_reopened`), and queues a head no earlier conversion queued (`claim_embeds_queued`).**
   - It touches only readable heads in its config's scopes.
-  - A head refused on purpose stays as it is, for example text the request guard would not send.
+  - A head refused on purpose stays as it is, for example text the request guard would not send. A muted head gets its vector work back like every other head, and automatic recall still leaves it out.
+  - It asks for the heads its config's context can take, so heads of another project never fill a page ahead of them (review of 3.7.5).
   - On a copy of the shared store, the preview reopens 114 and queues 1. One head stays without a vector, refused as sensitive.
   - Review of 3.7.4 found the gap. 114 of the 116 heads without a vector had an obsolete embedding marked `authority_revoked`, one had never been queued, and one was refused as sensitive.
 
@@ -27,7 +28,7 @@ Install the package and run `plan-install` and `apply-install` where you upgrade
 scope-recall retry-failures --config <the shared worker's or the instance's runtime-config.json> --limit 256 --apply
 ```
 
-Run it again until `claim_embeds_reopened` and `claim_embeds_queued` are 0.
+Run it again until `claim_embeds_reopened` and `claim_embeds_queued` are 0. The same command also re-opens the other failed work it always has, so those failures get one more model call each.
 
 ## [3.7.4] - 2026-10-06
 
