@@ -994,6 +994,11 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
         Hermes calls the hook for each of a step's parallel tool calls at once.  Held across its write (1.4-4.4 s on
         the shared store), one capture kept the others waiting, and those past the hook's bound were not taken:
         yuheng 6 and tianji 2 tool results on 2026-10-03.
+
+        A call that failed is kept as well, as Codex's are.  Hermes calls a result failed for a non-zero exit code or
+        an error field, and what such a call printed (a traceback, a failing test) is what the agent saw and acted
+        on; dropped as having no scope, it was about 6% of the five instances' tool results, each logged as a
+        failed capture.  Its outcome stays with it (``partial``) and with its turn.
         """
         identity = self._require_identity()
         if identity.read_only or not identity.runtime_audience.allowed_scope_ids:
@@ -1037,7 +1042,7 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
             event,
             identity=ledger_identity,
             gaps=gaps,
-            scope_id=identity.local_scope_id if outcome == "success" else None,
+            scope_id=identity.local_scope_id,
             bound=identity,
             release=True,
         )

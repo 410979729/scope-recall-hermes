@@ -4,6 +4,21 @@ All notable changes to `scope-recall` will be documented in this file.
 
 ## [Unreleased]
 
+## [3.7.8] - 2026-10-06
+
+3.7.8 keeps what a failed tool call printed in Hermes.
+
+### Fixes
+
+- **Hermes keeps a tool call that failed.** Hermes calls a tool result failed when a command exits non-zero or the result carries an error field. The plugin then refused the result as having no scope: what the agent had seen (a traceback, a failing test, a refused command) was never stored, and each one was logged as a failed capture (`not stored (capability_gap)`). On the five instances that was 460 tool results from 2026-10-01 to 2026-10-06, about 6% of their tool output. Codex already kept its failed calls.
+  - A failed, cancelled or interrupted call that printed something is now stored like any other tool output: indexed by its words and queued for an embedding. It is marked `partial`, and its outcome stays on its turn.
+  - A call that printed nothing keeps only its outcome, and is no longer logged as a failed capture.
+  - `tests/host/hermes/test_bounded_corrections.py`.
+
+### Upgrading from 3.7.7
+
+Install the package, run `plan-install` and `apply-install` where you upgrade, then restart the Hermes gateways and the clients' MCP servers, so that every entry of a shared store runs one version. The store's schema is unchanged (1110), and nothing needs running once.
+
 ## [3.7.7] - 2026-10-06
 
 3.7.7 makes an automatic recall read what it needs once, and together. A recall on yuheng's questions ran 16,222 statements and read 7,087 rows; it now runs 469 and reads 755, and finds the same.

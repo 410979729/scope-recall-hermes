@@ -1,6 +1,8 @@
 """Bounded P11 correction behavior tests for manifest, audience, durability, and hooks."""
 from __future__ import annotations
 
+import json
+import sqlite3
 from unittest.mock import patch
 
 import pytest
@@ -186,6 +188,44 @@ def test_post_tool_call_failure_records_gap_not_success(adapter):
     gaps = provider.diagnostics.pending_outcome_gaps
     assert any("failure" in gap or "outcome_gap" in gap for gap in gaps)
     assert not provider.diagnostics.current_source_refs
+    # Nothing printed, nothing to keep: its outcome is the whole of it, not a capture that failed.
+    assert not provider.diagnostics.capture_failures
+
+
+def _stored_tool_result(provider, call_id: str):
+    """The stored result of one tool call, with its lexical terms and queued work, or None."""
+    db_path = provider._identity.manifest.data_directory / "memory.sqlite3"
+    key = "hermes:" + provider._identity.binding.installation_id + ":TEST-session-1:tool:" + call_id + "@1"
+    with sqlite3.connect(db_path) as connection:
+        return connection.execute(
+            """SELECT s.origin,s.capture_state,s.content,
+                      (SELECT count(*) FROM lexical_postings p WHERE p.source_id=s.source_id),
+                      (SELECT group_concat(w.work_type) FROM work_items w WHERE w.subject_ref=s.event_id)
+               FROM source_events s WHERE s.source_event_key=?""", (key,),
+        ).fetchone()
+
+
+@pytest.mark.parametrize("status", ["error", "cancelled", "interrupted"])
+def test_post_tool_call_that_failed_keeps_what_it_printed(adapter, status):
+    """What a failed call printed is what the agent saw and acted on.
+
+    Hermes calls a result failed for a non-zero exit code or an error field; such results were refused as having no
+    scope, about 6% of the five instances' tool results, each logged as a failed capture.
+    """
+    provider, _clock = adapter
+    printed = json.dumps({"output": "Traceback (most recent call last):\n  File \"stage_orca42.py\", line 7\n"
+                                    "ZeroDivisionError: division by zero", "exit_code": 1})
+    provider.observe_post_tool_call(session_id="TEST-session-1", turn_id="tool-2", tool_call_id="call-2",
+                                    tool_name="terminal", status=status, result=printed)
+    stored = _stored_tool_result(provider, "call-2")
+    assert stored is not None, "the failed call's output was not kept"
+    origin, capture_state, content, postings, work = stored
+    assert (origin, capture_state) == ("tool_observation", "partial")
+    assert "ZeroDivisionError" in content
+    assert not provider.diagnostics.capture_failures
+    assert any(gap.startswith("outcome_gap:") for gap in provider.diagnostics.pending_outcome_gaps)
+    # Found by its words and, once embedded, by meaning, as any tool output is.
+    assert postings and work == "embed"
 
 
 def test_on_pre_compress_and_session_end_bounded_gaps(adapter):

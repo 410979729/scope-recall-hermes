@@ -480,8 +480,10 @@ def tool_call_source_event(
     if outcome != "success":
         gaps.append(f"outcome_gap:{outcome}")
     content = "" if result is None else str(result)
-    if not content.strip() and outcome == "success":
-        gaps.append("outcome_gap:missing_tool_result")
+    if not content.strip():
+        # Nothing to keep.  A call that failed, was cancelled or was cut off without a word keeps only its outcome.
+        if outcome == "success":
+            gaps.append("outcome_gap:missing_tool_result")
         return None, tuple(gaps), None
     capture_state = "partial" if gaps else "complete"
     return ledger.observe(
