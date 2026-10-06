@@ -4,6 +4,26 @@ All notable changes to `scope-recall` will be documented in this file.
 
 ## [Unreleased]
 
+## [3.8.0] - 2026-10-06
+
+3.8.0 re-embeds a store into a new embedding space when an operator asks for it, and the doctor says when embeddings have waited a day.
+
+### Added
+
+- **`respace-embeddings` re-embeds what was embedded so far after the embedding model changed.** Found and reproduced by @Vivamisu (#200). `work_items` is unique on its type and subject and says nothing of the space a vector was made in, so an embedding done in one space stayed done when the model changed. The new space received only what came in afterwards, and older memory was found by its words alone.
+  - `respace-embeddings --config <file> --start --apply` starts a run over every embedding done so far. Every source and claim is then embedded again and paid for, so a run starts only when asked.
+  - Each worker pass in that space reopens a page of done embeddings, newest first. It does so only while fewer than 64 embeddings wait, or half a pass's worth while candidate evaluations are ready, so what is captured meanwhile is embedded first. A page looks through at most 4,096 work ids.
+  - A reopened row is pending like new work: its attempts count afresh and any lease on it is fenced off. A tool output whose vector the retention window removed stays without one. Work queued after the start is embedded into the new space as it arrives and is never reopened.
+  - The run lives in SQLite, as one of the store's named cursors, so there is no schema change. `--restart` starts again from the newest, `--cancel` stops it, and the plain command shows the run and what it still has to reopen.
+  - A worker in another space leaves the run alone, and the doctor names that (`embedding_respace_space_mismatch`). A page that failed is reported in the worker's status (`embedding_respace_failed:<Error>`) and tried again on the next pass.
+  - `tests/contract/test_embedding_respace.py`; the model switch is also run end to end on the native vector store (`tests/storage_native/test_runtime_instance_seam.py`).
+- **The doctor reports the embedding queue and the provider beside it** (`embedding_health`), as suggested in #200. It shows pending and failed embeddings and the oldest one waiting; with an external route, also the provider's hold and its answers over the last day.
+  - Embeddings that have waited more than 24 hours raise `embedding_backlog_aged`, with the hold and the refusals in the check's detail. While they wait, recall answers by words alone, and before this nothing said so.
+
+### Upgrading from 3.7.8
+
+Install the package, run `plan-install` and `apply-install` where you upgrade, then restart the Hermes gateways and the clients' MCP servers, so that every entry of a shared store runs one version. The store's schema is unchanged (1110), and nothing needs running once. After a change of embedding model, see `docs/configuration.md`, "Changing the embedding model rebuilds the vector store".
+
 ## [3.7.8] - 2026-10-06
 
 3.7.8 keeps what a failed tool call printed in Hermes.
