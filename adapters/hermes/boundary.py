@@ -320,35 +320,34 @@ def host_notice(history: object, user_message: object) -> bool:
     Hermes marks the user messages it writes itself with a display kind: a finished background process, a
     delegation's result, a wake-up, a plugin's message (``gateway.response_filters.display_kind_for_event``, the
     CLI's ``TimelineNotification``).  A steer is the one kind that holds the person's words
-    (``ContextCompressor._is_actionable_user_turn``).  The turn's own message is the last user message whose own
-    words are the turn's text, in the run of user messages that ends the conversation: a compression at the turn's
-    start can add others after it (``agent.turn_context.reanchor_current_turn_user_idx``), and anything before the
-    last reply belongs to an earlier turn.  One not found is the person's, as before.  Stored as the person's, a
-    notice read as something they said.
+    (``ContextCompressor._is_actionable_user_turn``).  Stored as the person's, a notice read as something they said.
 
-    A compression at the turn's start can also fold its summary into the turn's own message
-    (``ContextCompressor._merge_summary_into_tail_row``) and put the reply it folded away after it
-    (``_reply_insertion_index``), so the message is no longer in that run: one of tianshu's three delegation results
-    on 2026-10-05 was stored as the owner's that way.  Then the latest user message with words of its own decides:
-    the turn's when it is folded, marked by Hermes, and its own words are the turn's text.  Its own words only: a
-    summary quotes the person's messages word for word, and a message merely holding the turn's text took the
-    person's words for a notice.  The latest only: an older folded notice took the person's later message with the
-    same words, which Hermes had prefixed with a note of its own (both reviews of 3.7.3).
+    The latest user message with words of its own decides: the turn is Hermes's when those words are the turn's
+    text and the message carries a notice's kind.  A to-do list a compression adds after the turn's message has no
+    words of its own (``agent.turn_context.reanchor_current_turn_user_idx``).  The latest only: when Hermes put a note
+    of its own before the person's message (a model switch, a timestamp), an unanswered notice with the same words
+    took theirs, and so did an older folded one (reviews of 3.7.3).  A request Hermes restores after a notice
+    decides in its place, and the notice stays the person's: the safe side.
+
+    Past the last reply the message must be one Hermes folded and marked.  A compression at the turn's start can
+    fold its summary into the turn's own message (``ContextCompressor._merge_summary_into_tail_row``) and put the
+    reply it folded away after it (``_reply_insertion_index``): one of tianshu's three delegation results on
+    2026-10-05 was stored as the owner's that way.  Anything else before the last reply belongs to an earlier turn.
+    Its own words only: a summary quotes the person's messages word for word, and a message merely holding the
+    turn's text took the person's words for a notice (review of 3.7.3).
     """
     text = extract_user_text(user_message).strip()
     if not isinstance(history, list) or not text:
         return False
+    trailing = True
     for message in reversed(history):
         if not isinstance(message, dict) or message.get("role") != "user":
-            break
-        if _own_text(message) == text:
-            return _notice_kind(message)
-    for message in reversed(history):
-        if not isinstance(message, dict) or message.get("role") != "user":
+            trailing = False
             continue
         words = _own_text(message)
         if words:
-            return message.get(_COMPRESSED_SUMMARY) is True and words == text and _notice_kind(message)
+            return (words == text and _notice_kind(message)
+                    and (trailing or message.get(_COMPRESSED_SUMMARY) is True))
     return False
 
 

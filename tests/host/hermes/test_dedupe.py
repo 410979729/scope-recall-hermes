@@ -277,6 +277,9 @@ _END = "--- END OF CONTEXT SUMMARY \u2014 respond to the message below, not the 
 _TODO = "[Your active task list was preserved across context compression]\n- TEST 整理清单"
 _RESTATED = ("[STILL IN PROGRESS — this is the active request, restated after the compaction boundary because it "
              "was not finished yet. Continue it; do not start over.]")
+#: A delegation's result: the kind of notice Hermes appends a to-do list to (``_fold_todo_snapshot`` passes over a
+#: background process's notice, which it counts as its own scaffolding).
+_DELEGATED = "[ASYNC DELEGATION COMPLETE] TEST 子任务已完成：构建产物已上传，日志在 logs/TEST-build.txt。"
 _ASKED_LONG = "TEST 请把 QX-17 的发布说明整理成三段，并核对每段里引用的版本号和日期是否一致"
 
 
@@ -352,16 +355,32 @@ def test_a_folded_notice_is_read_as_hermes_reads_it_back():
     restated = _folded(_NOTICE, display_kind="internal_notification")
     restated["content"] += "\n\n" + _RESTATED + "\n" + _ASKED_LONG
     assert host_notice([restated, *tail], _NOTICE)
-    assert host_notice([_folded(_NOTICE + "\n\n" + _TODO, display_kind="internal_notification"), *tail], _NOTICE)
+    assert host_notice([_folded(_DELEGATED + "\n\n" + _TODO, display_kind="internal_notification"), *tail],
+                       _DELEGATED)
 
 
 def test_a_notice_a_to_do_list_was_appended_to_is_still_the_host_s():
-    """A compression appends the open to-do list to the last user message whatever its kind
-    (``_fold_todo_snapshot``); read back without it, a notice is still found (review of 3.7.3)."""
+    """A compression appends the open to-do list to the last user message Hermes counts as a real one, a
+    delegation's result included (``_fold_todo_snapshot``); read back without it, the notice is still found (review
+    of 3.7.3)."""
     from scope_recall.adapters.hermes.boundary import host_notice
 
-    notice = {"role": "user", "content": _NOTICE + "\n\n" + _TODO, "display_kind": "internal_notification"}
-    assert host_notice([{"role": "assistant", "content": "TEST 好。"}, notice], _NOTICE)
+    notice = {"role": "user", "content": _DELEGATED + "\n\n" + _TODO, "display_kind": "internal_notification"}
+    assert host_notice([{"role": "assistant", "content": "TEST 好。"}, notice], _DELEGATED)
+
+
+def test_a_note_before_the_person_s_message_keeps_an_unanswered_notice_from_taking_it():
+    """Hermes puts a note of its own before the person's message (a model switch, a timestamp) and hands
+    ``pre_llm_call`` their words alone.  An unanswered notice before it with the same words took them, folded or not:
+    the latest user message with words of its own decides (third review of 3.7.3; 3.7.2's plain notices too)."""
+    from scope_recall.adapters.hermes.boundary import host_notice
+
+    reply = {"role": "assistant", "content": "TEST 好。"}
+    noted = {"role": "user", "content": "[Note: model was just switched from TEST-a to TEST-b.]\n\n" + _NOTICE}
+    plain = {"role": "user", "content": _NOTICE, "display_kind": "internal_notification"}
+    assert not host_notice([reply, plain, noted], _NOTICE)
+    assert not host_notice([reply, _folded(_NOTICE, display_kind="internal_notification"), noted], _NOTICE)
+    assert host_notice([reply, plain], _NOTICE), "the notice alone is still the host's"
 
 
 def test_the_turn_s_own_message_says_whether_hermes_opened_it():

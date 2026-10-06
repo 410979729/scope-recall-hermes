@@ -12,21 +12,23 @@ All notable changes to `scope-recall` will be documented in this file.
 
 - **A notice stays the host's after a compression.** 3.7.2 found the message that opened a turn by its text, in the run of user messages that ends the conversation `pre_llm_call` hands over. A compression at the turn's start changes that message in two ways:
   - It can fold its summary into it (`ContextCompressor._merge_summary_into_tail_row`). The message then holds more than the turn's text, and it need not be last. One of tianshu's three delegation results after the 3.7.2 upgrade was stored as the owner's that way.
-  - It appends the open to-do list to the last user message, whatever its kind (`_fold_todo_snapshot`).
+  - It appends the open to-do list to the last user message Hermes counts as a real one, a delegation's result included (`_fold_todo_snapshot`). A background process's notice and a folded message get the list as a message of its own.
 - **How the adapter reads a message now.** It reads each message's own words as Hermes reads them back. It drops an appended to-do list, and on a message Hermes marked as folded (`_compressed_summary`) the folded summary, in either of Hermes' two layouts. A message counts as the turn's own only when those words are exactly the turn's text.
-  - The run of user messages at the end decides first, as in 3.7.2. When none of them is the turn's, the latest user message with words of its own decides: it is the turn's only when it is a marked, folded message.
+  - The latest user message with words of its own decides. Past the last reply it must be a message Hermes folded and marked.
   - It is the host's when it carries a display kind other than steer, and other than hidden on a folded message (`split_user_originated_turn`).
   - The owner's own message carries no kind, so it stays the owner's.
-- **What review changed before release.** Two versions were never released:
+  - A request Hermes restores after a notice decides in its place, and the notice stays the owner's. That is the safe side.
+- **What review changed before release.** Three versions were never released:
   - The first took a folded notice that merely contained the turn's text. A summary quotes the person's messages word for word, so the person's words could be stored as the host's.
   - The second took any older folded notice with the same words. The person's later message, which Hermes had prefixed with a note of its own, could be stored as the host's. It also unwrapped an unmarked message that quoted Hermes' lines.
-- **Every HTTP status failure can be cleared.** Any status a provider answered that is not named elsewhere is now operator-actionable, as `http_400` is. This covers a 4xx such as 404, 409, 413 or 422, and a 5xx the worker does not recover by itself such as 501 or 520–524. So are the HTTP worker's own refusals: `http_redirect` from a wrong base URL, `endpoint_invalid`, `request_limit` and `response_limit`. Nothing retries these by itself. An operator who fixed the cause can re-open them with `retry-failures`.
+  - The third still looked past such a prefixed message in the run of user messages at the end, to an unanswered notice with the same words. 3.7.2 did the same with a plain notice, so its notes were wrong to say the owner's words are never stored as the host's: with a note before their message, they could be.
+- **Every HTTP status failure can be cleared.** Any status a provider answered that is not named elsewhere is now operator-actionable, as `http_400` is. This covers a 4xx such as 404, 409, 413 or 422, and a 5xx the worker does not recover by itself such as 501 or 520–524. So are the HTTP worker's own refusals: `http_redirect` from a wrong base URL, `endpoint_invalid`, `request_limit` and `response_limit`. Once failed, nothing re-opens these by itself. An operator who fixed the cause can re-open them with `retry-failures`.
   - Before, these codes were in neither class. An `http_422` candidate evaluation on the shared store stayed failed, and no command could clear it, as with `http_protocol` before #201.
 
 ### Known limits
 
 - The adapter reads a folded message with Hermes 0.21.5's own boundary lines. If Hermes changes them, a folded notice is stored as the owner's again. That is the safe side.
-- When no user message survives a compression, Hermes copies the turn's message back as an anchor and may merge it into its to-do message (`_ensure_compressed_has_user_turn`). The copy carries no display kind, so such a notice is still stored as the owner's.
+- When no message Hermes counts as the person's survives a compression, it puts one back (`_ensure_compressed_has_user_turn`): a copy of a delegation's result, or for a background process's notice the person's previous request. A copy merged into the to-do message loses its kind, and the person's request after a folded notice hides the notice: either way the notice is stored as the owner's. A copy put back on its own keeps its kind and is stored as the host's.
 
 ### Upgrading from 3.7.2
 

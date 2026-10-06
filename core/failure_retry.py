@@ -24,8 +24,9 @@ marker is skipped, so running it twice does nothing and it cannot loop.
 Two classes, because they answer different questions:
 
 * **actionable** -- every code the worker already treats as transient
-  (``AUTO_RECOVERABLE_ERRORS``), plus two that are not auto-recoverable but are
-  still an operator's to clear.  These are faults.  They drive "degraded" and
+  (``AUTO_RECOVERABLE_ERRORS``), plus the few that are not auto-recoverable but
+  are still an operator's to clear (``_OPERATOR_ONLY_FAILURES``, and any HTTP
+  status not named there).  These are faults.  They drive "degraded" and
   clearing them is how an instance gets back to healthy.
 * **terminal** -- ``derivation_invalid`` and ``budget_checked``.  These are
   by-design outcomes that never clear (see ``doctor.TERMINAL_FAILURE_COUNT``);
@@ -62,8 +63,9 @@ from .work_storage import ACCOUNT_REFUSALS, AUTO_RECOVERABLE_ERRORS, DERIVATION_
 _OPERATOR_ONLY_FAILURES = frozenset({
     "http_400",
     "candidate_attempt_interrupted",
-    # The HTTP worker's own refusals of a route or a size (``runtime/_http_worker.py``): a wrong or redirecting base
-    # URL, a request or an answer past its bound.  An operator fixes the route or the bound, then re-opens.
+    # The model client's own refusals of a route or a size (``runtime/_http_worker.py``, ``adapters/models.py``): a
+    # wrong or redirecting base URL, a request or an answer past its bound.  An operator fixes the route or the bound,
+    # then re-opens.
     "endpoint_invalid", "http_redirect", "request_limit", "response_limit",
 }) | ACCOUNT_REFUSALS
 
