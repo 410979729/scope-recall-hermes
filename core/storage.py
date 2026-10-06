@@ -82,9 +82,11 @@ _SOURCE_COLUMNS = ("event_id", "source_event_key", "source_revision", "source_gr
                    "dataset_id", "extra_json", "capture_gaps_json", "suppressed", "import_provenance_sha256", "entry_id")
 #: Source versions ``Transaction.prefetch_sources`` loads per statement.
 _PREFETCH_PAGE = 400
-#: What one read transaction keeps (``Transaction.remember``): a recall keeps about 2,000 answers and a few MB.
+#: What one read transaction keeps (``Transaction.remember``), its text counted in characters, which Python holds in
+#: about twice the room.  Over 483 recalls on a copy of the shared store: median 24 answers and 22,000 characters,
+#: the largest 7,595 and 13 million (review of 3.7.7).
 _MEMO_ENTRIES = 16384
-_MEMO_BYTES = 64 << 20
+_MEMO_BYTES = 32 << 20
 
 
 def _source_size(loaded) -> int:
@@ -178,6 +180,10 @@ class Transaction:
 
     def _finish(self) -> None:
         self.__active = False
+        # What it loaded goes with it, also when a traceback keeps the transaction.
+        if self.__memo is not None:
+            self.__memo = {}
+            self.__memo_bytes = 0
 
     def _assert_committable(self) -> None:
         self._check(write=True)

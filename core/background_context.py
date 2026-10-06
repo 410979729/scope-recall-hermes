@@ -190,7 +190,7 @@ def background_candidates(tx, context: SearchContext, reader, clock,
     terms = set(meaningful_query_terms(context.query))
     rows = _profile_rows(tx, context, gaps)
     prefetch = getattr(tx.claims, "prefetch_versions", None)
-    if prefetch is not None:
+    if prefetch is not None and clock.monotonic() < context.deadline:
         prefetch(row[0] for row in rows)
     for examined, row in enumerate(rows):
         if clock.monotonic() >= context.deadline:

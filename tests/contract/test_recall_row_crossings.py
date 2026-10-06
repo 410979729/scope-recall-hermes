@@ -6,6 +6,7 @@ yuheng's questions on a copy of the shared store.  In a busy Hermes gateway ever
 GIL (``test_capture_row_crossings``).  Now 469 statements and 755 rows.
 """
 from dataclasses import replace
+import json
 import sqlite3
 
 import pytest
@@ -17,6 +18,7 @@ from scope_recall.core.visibility import allowed
 
 from test_capture_row_crossings import Crossings
 from test_v11_claims import accept, app, capture, draft, initial, revise_request  # noqa: F401  (fixtures)
+from test_shared_store import NOW, put, shared, shared_context  # noqa: F401  (fixture)
 from v11_support import recall_request
 
 
@@ -200,3 +202,91 @@ def test_hydrating_a_claim_does_not_grow_with_its_evidence(app, monkeypatch):
     few = crossings.during(lambda: hydrate(small))
     lots = crossings.during(lambda: hydrate(large))
     assert lots[0] - few[0] <= 4 and lots[1] - few[1] <= 4, (few, lots)
+
+
+# --- what is loaded together keeps the reader's audience (review of 3.7.7) -------------------------------------------
+
+def _both(core, ctx, pairs):
+    with core.storage.read(ctx) as alone:
+        expected = [alone.source(*pair) for pair in pairs]
+    with core.storage.read(ctx) as together:
+        together.prefetch_sources(pairs)
+        got = [together.source(*pair) for pair in pairs]
+    return expected, got
+
+
+def test_a_source_of_another_project_stays_out_of_reach_loaded_together(app):
+    core, ctx = app
+    mine = capture(core, ctx, "TEST 本项目的一条。")
+    theirs = capture(core, replace(ctx, project_id="TEST-other"), "TEST 别的项目的一条。")
+    expected, got = _both(core, ctx, [(mine.ref, mine.revision), (theirs.ref, theirs.revision)])
+    assert expected[1] is None and got == expected
+
+
+def test_a_source_blocked_from_reading_stays_out_of_reach_loaded_together(app):
+    core, ctx = app
+    plain = capture(core, ctx, "TEST 一条。")
+    blocked = capture(core, ctx, "TEST 另一条。")
+    with core.storage.write(ctx) as tx:
+        tx._check(write=True).execute("UPDATE source_events SET read_blocked=1 WHERE event_id=?", (blocked.ref,))
+    expected, got = _both(core, ctx, [(plain.ref, plain.revision), (blocked.ref, blocked.revision)])
+    assert expected[1] is None and got == expected
+
+
+def test_a_part_whose_other_part_was_blocked_reads_incomplete_loaded_together(app):
+    core, ctx = app
+    first = capture(core, ctx, "TEST 完整的前一半", key="TEST-whole1",
+                    segment=dict(group_key="TEST-whole-source", index=0, total=2, truncated=False))
+    second = capture(core, ctx, "TEST 完整的后一半", key="TEST-whole2",
+                     segment=dict(group_key="TEST-whole-source", index=1, total=2, truncated=False))
+    with core.storage.write(ctx) as tx:
+        tx._check(write=True).execute("UPDATE source_events SET read_blocked=1 WHERE event_id=?", (second.ref,))
+    expected, got = _both(core, ctx, [(first.ref, first.revision)])
+    assert "source_segments_incomplete" in expected[0].capture_gaps and got == expected
+
+
+def test_a_claim_of_another_project_stays_out_of_reach_loaded_together(app):
+    core, ctx = app
+    other = replace(ctx, project_id="TEST-other")
+    source = capture(core, other, "TEST-project 外壳 银色。")
+    item = accept(core, other, draft(source, "银色", predicate="外壳")).items[0]
+    with core.storage.read(ctx) as alone:
+        expected = alone.claims.versions(item.ref)
+    with core.storage.read(ctx) as together:
+        together.claims.prefetch_versions([item.ref])
+        got = together.claims.versions(item.ref)
+    assert expected == () and got == expected
+
+
+def test_a_claim_in_a_scope_the_reader_lacks_stays_out_of_reach_loaded_together(shared):
+    from scope_recall.core.claims import Qualification
+
+    storage, binding = shared
+    writer = shared_context(binding, entry_id="tianshu")
+    written = put(storage, writer, "TEST-group-claim/1", scope="TEST-group-a", content="TEST-project 外壳 银色。")
+    with storage.write(writer) as tx:
+        source = tx.source(written.ref, written.revision)
+        saved = tx.claims.append("TEST-group-a", draft(source, "银色", predicate="外壳"),
+                                 Qualification("proposed", "inferred_suggestion", "TEST"), recorded_at=NOW)
+    with storage.read(writer) as tx:
+        assert tx.claims.versions(saved.ref), "the writer, holding the scope, reads it"
+    narrow = shared_context(binding, scopes={"TEST-scope"})
+    with storage.read(narrow) as alone:
+        expected = alone.claims.versions(saved.ref)
+    with storage.read(narrow) as together:
+        together.claims.prefetch_versions([saved.ref])
+        got = together.claims.versions(saved.ref)
+    assert expected == () and got == expected
+
+
+def test_an_episode_s_sources_keep_their_order(app):
+    from scope_recall.core.retrieval_storage import RetrievalStorage
+
+    core, ctx = app
+    said = [capture(core, ctx, f"TEST 第{index}句。") for index in range(4)]
+    with core.storage.read(ctx) as tx:
+        episode = tx.episodes.source_episode(said[0].ref, said[0].revision)
+        metadata = dict(RetrievalStorage._episode_source_metadata(tx, episode.ref, episode))
+    order = json.loads(metadata["source_order"])
+    assert [item[0] for item in order] == [source.ref for source in said]
+    assert [item[2] for item in order] == sorted(item[2] for item in order)
