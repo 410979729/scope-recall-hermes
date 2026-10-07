@@ -100,9 +100,10 @@ jobs:
           done
           test -z "${failed}" || { echo "failed tiers:${failed}"; exit 1; }
 
-  # Nothing linted a pull request: one arrived with three findings that only
-  # a reviewer's own run caught.  The rule set and the excluded trees are
-  # pyproject.toml's, so a contributor's `ruff check .` sees what this sees.
+  # Formatting, lint and type findings, held to scripts/quality.baseline.json
+  # (a change may not add one).  The environment comes from uv.lock, which
+  # pins the ruff and pyright versions and the packages pyright reads, so a
+  # contributor's `uv run python scripts/quality.py` sees what this sees.
   lint:
     name: lint
     if: github.event_name != 'schedule'
@@ -113,12 +114,12 @@ jobs:
         with:
           python-version: "3.12"
           cache: pip
-      - name: Install ruff
-        env:
-          PIP_CONSTRAINT: constraints/release.txt
-        run: python -m pip install ruff
-      - name: Lint everything that ships or gates a release
-        run: ruff check .
+      - name: Install uv
+        run: python -m pip install uv
+      - name: Make the environment from the lock
+        run: uv sync --locked --no-editable --extra lancedb --extra codex --extra dev --python 3.12
+      - name: Check formatting, lint and types against the baseline
+        run: uv run --no-sync python scripts/quality.py
 
   windows-daily:
     name: windows-${{ matrix.tier }}

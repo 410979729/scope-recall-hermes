@@ -116,6 +116,7 @@ SCRIPT_GATE_TESTS = [
     "tests/packaging/test_check_selection.py",
     "tests/packaging/test_package_manifest.py",
     "tests/packaging/test_release_notes.py",
+    "tests/packaging/test_quality_gate.py",
 ]
 SUITES = {
     "unit": [

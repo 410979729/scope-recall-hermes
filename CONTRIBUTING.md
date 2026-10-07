@@ -16,7 +16,7 @@ in `scripts/check.py`.
 | `runtime/` | Background worker entry points, budgets and ledgers, scheduling, the HTTP helper subprocess |
 | `maintenance/` | Install (`install*`), doctor, upgrade, legacy migration (`legacy_*`, `migration_*`) and the operator CLI |
 | `tests/` | The gated test suite; `scripts/check.py --tier <tier>` selects it |
-| `scripts/` | The gate runner, the manifest stamper and the dead-code scan |
+| `scripts/` | The gate runner, the quality check and its baseline, the manifest stamper and the dead-code scan |
 | `probes/hermes/` | The P11 real-host A2A test kit (see `docs/implementation-history/p11-a2a-test.zh-CN.md`) |
 | `verification/` | Byte-exact evidence bundles cited by receipts; never edit by hand |
 
@@ -24,9 +24,17 @@ in `scripts/check.py`.
 
 1. Run the tiers that own the files you changed, then `unit` + `contract` + `packaging`:
    `python -X utf8 scripts/check.py --tier contract`
-2. If you changed the version, run `python scripts/build.package_manifest.py --write`
+2. Run the quality check, which CI's `lint` job runs: `ruff format` leaves every
+   file as it is, and ruff and pyright find nothing that
+   `scripts/quality.baseline.json` does not record (new code meets the rules in
+   `pyproject.toml`; older findings are recorded until they are fixed). Make the
+   environment from the lock, so the tool versions and packages are CI's:
+   `uv sync --locked --no-editable --reinstall-package hermes-scope-recall --extra lancedb --extra codex --extra dev`
+   then `uv run --no-sync python scripts/quality.py`. When you fixed findings it
+   asks you to record the lower numbers with `--update`.
+3. If you changed the version, run `python scripts/build.package_manifest.py --write`
    so the plugin manifests and the wheel allowlist follow `_version.py`.
-3. Update `CHANGELOG.md`, and `README.md` or `docs/` when behaviour visible to an
+4. Update `CHANGELOG.md`, and `README.md` or `docs/` when behaviour visible to an
    operator or a host changed.
 
 A new module enters the wheel only by being imported from an entry point named
