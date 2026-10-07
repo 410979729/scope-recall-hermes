@@ -12,13 +12,14 @@ third-party packages pyright reads, and this tree installed as ``scope_recall`` 
     uv run --no-sync python scripts/quality.py
 
 The baseline holds a count per file and rule, and for a function-size rule (C901, PLR0911-PLR0915) each function's
-size.  The check fails when ``ruff format`` would change a file, when a file has more findings of a rule than
-recorded, or when a function is over a size limit it was not over, or by more than recorded.  A count says how many,
-not which: one finding fixed and another of the same rule added in the same file passes.  It also fails when a file
-has fewer findings than recorded, so that the baseline only goes down: ``--update`` records them.  ``--update``
-refuses, unless ``--allow-more`` is given, to record more findings of a rule, a function grown under its name (where
-it is the one definition of that name in its file), or renamed, moved or same-named functions bigger than those that
-went (``grown``).  pyright runs as Linux and as Windows, and a finding either reports counts once.
+size.  A function is known by its name where it is the one definition of that name in its file; definitions that
+share a name are recorded as ``name#1``, ``name#2``, largest first.  The check fails when ``ruff format`` would change
+a file, when a file has more findings of a rule than recorded, or when a function is bigger than recorded: a known
+function under its name, the others (renamed, moved, sharing a name) matched largest to largest.  A count says how
+many, not which: one finding fixed and another of the same rule added in the same file passes, and so does one of the
+unknown functions growing while another shrinks as much.  The check also fails when there is less than recorded, so
+that the baseline only goes down: ``--update`` records it, and refuses to record more unless ``--allow-more`` is given.
+pyright runs as Linux and as Windows, and a finding either reports counts once.
 """
 
 from __future__ import annotations
@@ -94,7 +95,7 @@ def check_environment() -> None:
 def functions(source: str) -> list[tuple[int, int, str]]:
     """(first line, last line, name) of every function in a module, decorators included.  The name is the qualified
     one, and a definition that repeats one (a conditional ``def``, a property's setter) adds ``#2``, ``#3`` in source
-    order, so that each keeps a size of its own (``tally`` then numbers them by size)."""
+    order, so that each keeps a size of its own (``tally`` numbers them again, by size)."""
     found: list[tuple[int, int, str]] = []
     seen: dict[str, int] = {}
 
@@ -127,15 +128,23 @@ def base_name(name: str) -> str:
     return re.sub(r"#\d+", "", name)
 
 
-def by_size(sizes: dict[str, int]) -> dict[str, int]:
-    """Definitions that share a name (``f``, ``f#2``, and those nested in them) numbered by size, largest first, so
-    that removing or reordering one of them changes no other's entry.  Such a group is compared as a whole, like a
-    count: one of them growing while another shrinks as much is not seen."""
+def shared_names(defined: list[tuple[int, int, str]]) -> set[str]:
+    """The names (``#n`` taken out) that more than one definition of the module has, whether or not over a limit."""
+    counts: dict[str, int] = {}
+    for _first, _last, name in defined:
+        counts[base_name(name)] = counts.get(base_name(name), 0) + 1
+    return {name for name, count in counts.items() if count > 1}
+
+
+def by_size(sizes: dict[str, int], shared: set[str]) -> dict[str, int]:
+    """The sizes of one rule in one file under the names the baseline keeps: a name of one definition as it is, and
+    the definitions of a ``shared`` name as ``name#1``, ``name#2``, largest first, so that removing or reordering one
+    of them changes no other's entry."""
     groups: dict[str, list[int]] = {}
     for name, size in sizes.items():
         groups.setdefault(base_name(name), []).append(size)
     return {
-        name if rank == 1 else f"{name}#{rank}": size
+        f"{name}#{rank}" if name in shared else name: size
         for name, values in groups.items()
         for rank, size in enumerate(sorted(values, reverse=True), start=1)
     }
@@ -157,10 +166,10 @@ def tally(findings: list[Finding], sources: dict[str, str]) -> dict:
         sizes = rules.setdefault(rule, {})
         sizes[name] = max(sizes.get(name, 0), int(size.group(1)))
     for files in record.values():
-        for rules in files.values():
+        for path, rules in files.items():
             for rule, value in rules.items():
                 if isinstance(value, dict):
-                    rules[rule] = by_size(value)
+                    rules[rule] = by_size(value, shared_names(defined[path]))
     return record
 
 
@@ -193,6 +202,46 @@ def pyright_findings() -> list[Finding]:
     return [("pyright", path, row, rule, message.splitlines()[0]) for path, row, _, rule, message in seen]
 
 
+def _sizes(record: dict, tool: str) -> dict[str, dict[tuple[str, str], int]]:
+    """Each size rule's functions, by (file, name)."""
+    found: dict[str, dict[tuple[str, str], int]] = {}
+    for path, rules in record.get(tool, {}).items():
+        for rule, value in rules.items():
+            if isinstance(value, dict):
+                found.setdefault(rule, {}).update({(path, name): size for name, size in value.items()})
+    return found
+
+
+def size_changes(
+    tool: str, rule: str, before: dict[tuple[str, str], int], after: dict[tuple[str, str], int]
+) -> tuple[list[tuple[str, str]], list[str]]:
+    """One size rule's functions above the record, as (file, line), and below or moved, as lines.  A function is known
+    by its name where it is the one definition of that name in its file before and after; the rest (renamed, moved,
+    sharing a name) are matched largest to largest, which allows any renaming or reordering in which none grew."""
+    known = {key for key in before.keys() & after.keys() if "#" not in key[1]}
+    over: list[tuple[str, str]] = []
+    under: list[str] = []
+    for path, name in sorted(known):
+        was, now = before[(path, name)], after[(path, name)]
+        if now > was:
+            over.append((path, f"{tool} {path} {rule} {name}: {now}, recorded {was}"))
+        elif now < was:
+            under.append(f"{tool} {path} {rule} {name}: {now}, recorded {was}")
+    gone = sorted(((size, key) for key, size in before.items() if key not in known), reverse=True)
+    came = sorted(((size, key) for key, size in after.items() if key not in known), reverse=True)
+    pooled = [
+        (path, f"{tool} {path} {rule} {name}: {size}, above the {left} it may have been")
+        for (size, (path, name)), left in zip(came, [size for size, _key in gone] + [0] * len(came), strict=False)
+        if size > left
+    ]
+    over += pooled
+    if gone != came and not pooled:
+        recorded = ", ".join(f"{path} {name} {size}" for size, (path, name) in gone) or "none"
+        now_held = ", ".join(f"{path} {name} {size}" for size, (path, name) in came) or "none"
+        under.append(f"{tool} {rule} renamed, moved or sharing a name: recorded {recorded}; now {now_held}")
+    return over, under
+
+
 def compare(recorded: dict, current: dict) -> tuple[list[str], list[str], set[tuple[str, str, str]]]:
     """What the tree has above the record, what the record holds that the tree no longer has, and where it is above."""
     over: list[str] = []
@@ -203,21 +252,21 @@ def compare(recorded: dict, current: dict) -> tuple[list[str], list[str], set[tu
         for path in sorted(set(old_files) | set(new_files)):
             old_rules, new_rules = old_files.get(path, {}), new_files.get(path, {})
             for rule in sorted(set(old_rules) | set(new_rules)):
-                old, new = old_rules.get(rule), new_rules.get(rule)
-                if isinstance(old, dict) or isinstance(new, dict):
-                    pairs = [
-                        (f" {name}", (old or {}).get(name, 0), (new or {}).get(name, 0))
-                        for name in sorted(set(old or {}) | set(new or {}))
-                    ]
-                else:
-                    pairs = [(" findings", old or 0, new or 0)]
-                for label, was, now in pairs:
-                    line = f"{tool} {path} {rule}{label}: {now}, recorded {was}"
-                    if now > was:
-                        over.append(line)
-                        flagged.add((tool, path, rule))
-                    elif now < was:
-                        under.append(line)
+                if isinstance(old_rules.get(rule), dict) or isinstance(new_rules.get(rule), dict):
+                    continue  # function sizes, below
+                was, now = old_rules.get(rule) or 0, new_rules.get(rule) or 0
+                line = f"{tool} {path} {rule} findings: {now}, recorded {was}"
+                if now > was:
+                    over.append(line)
+                    flagged.add((tool, path, rule))
+                elif now < was:
+                    under.append(line)
+        before, after = _sizes(recorded, tool), _sizes(current, tool)
+        for rule in sorted(before.keys() | after.keys()):
+            above, below = size_changes(tool, rule, before.get(rule, {}), after.get(rule, {}))
+            over += [line for _path, line in above]
+            flagged |= {(tool, path, rule) for path, _line in above}
+            under += below
     return over, under, flagged
 
 
@@ -229,30 +278,9 @@ def _totals(record: dict, tool: str) -> dict[str, int]:
     return counts
 
 
-def _sizes(record: dict, tool: str) -> dict[str, dict[tuple[str, str], int]]:
-    """Each size rule's functions, by (file, name)."""
-    found: dict[str, dict[tuple[str, str], int]] = {}
-    for path, rules in record.get(tool, {}).items():
-        for rule, value in rules.items():
-            if isinstance(value, dict):
-                found.setdefault(rule, {}).update({(path, name): size for name, size in value.items()})
-    return found
-
-
-def _alone(sizes: dict[tuple[str, str], int]) -> set[tuple[str, str]]:
-    """The functions that are the only definition of their name in their file."""
-    groups: dict[tuple[str, str], int] = {}
-    for path, name in sizes:
-        groups[(path, base_name(name))] = groups.get((path, base_name(name)), 0) + 1
-    return {(path, name) for path, name in sizes if groups[(path, base_name(name))] == 1}
-
-
 def grown(recorded: dict, current: dict) -> list[str]:
-    """What ``--update`` would record above the baseline: more findings of a rule, a function bigger under its name,
-    or the rest bigger than before.  A name is a function's identity only where it is the one definition of that name
-    in its file, before and after.  The rest (renamed, moved, definitions sharing a name) are matched largest to
-    largest, which allows any renaming or reordering in which none grew; like a count, that cannot tell a renamed
-    function from a new one taking the place of one brought under the limit."""
+    """What ``--update`` would record above the baseline: more findings of a rule than recorded across the tree, or a
+    function bigger than recorded (``size_changes``)."""
     lines: list[str] = []
     for tool in TOOLS:
         was, now = _totals(recorded, tool), _totals(current, tool)
@@ -261,22 +289,9 @@ def grown(recorded: dict, current: dict) -> list[str]:
             for rule, count in sorted(now.items())
             if count > was.get(rule, 0)
         ]
-        before_sizes, after_sizes = _sizes(recorded, tool), _sizes(current, tool)
-        for rule, after in sorted(after_sizes.items()):
-            before = before_sizes.get(rule, {})
-            known = _alone(before) & _alone(after)
-            lines += [
-                f"{tool} {path} {rule} {name}: {after[(path, name)]}, recorded {before[(path, name)]}"
-                for path, name in sorted(known)
-                if after[(path, name)] > before[(path, name)]
-            ]
-            gone = sorted((size for key, size in before.items() if key not in known), reverse=True)
-            came = sorted(((size, key) for key, size in after.items() if key not in known), reverse=True)
-            lines += [
-                f"{tool} {path} {rule} {name}: {size}, above the {left} it may have been (renamed, moved or shared)"
-                for (size, (path, name)), left in zip(came, gone, strict=False)
-                if size > left
-            ]
+        before, after = _sizes(recorded, tool), _sizes(current, tool)
+        for rule in sorted(after):
+            lines += [line for _path, line in size_changes(tool, rule, before.get(rule, {}), after[rule])[0]]
     return lines
 
 
@@ -320,7 +335,7 @@ def main(argv: list[str] | None = None) -> int:
         failed = True
     if under:
         print("\n".join(under))
-        print("fewer findings than recorded: run `python scripts/quality.py --update` to lower the baseline")
+        print("below the baseline, or renamed or moved: run `python scripts/quality.py --update` to record it")
         failed = True
     if not failed:
         print(f"quality: formatted, and nothing above the baseline ({len(findings)} findings recorded)")

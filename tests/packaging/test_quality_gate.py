@@ -31,10 +31,24 @@ class Store:
 
         return check(row)
 """
+SINGLE = "def f(a):\n    return a\n"
+TWINS = "if X:\n    def f(a):\n        return a\nelse:\n    def f(a):\n        return a\n"
 
 
 def _ruff(files: dict) -> dict:
     return {"ruff": files, "pyright": {}}
+
+
+def _arguments(path: str, row: int, count: int) -> tuple:
+    return ("ruff", path, row, "PLR0913", f"Too many arguments in function definition ({count} > 8)")
+
+
+def _twins(first: int, second: int | None) -> dict:
+    """Two conditional definitions of ``f`` over the limit with ``first`` and ``second`` arguments (None: the second
+    is gone)."""
+    if second is None:
+        return quality.tally([_arguments("a.py", 1, first)], {"a.py": SINGLE})
+    return quality.tally([_arguments("a.py", 2, first), _arguments("a.py", 5, second)], {"a.py": TWINS})
 
 
 def test_a_finding_beyond_the_record_is_over_and_fewer_is_under():
@@ -50,12 +64,19 @@ def test_a_finding_beyond_the_record_is_over_and_fewer_is_under():
 def test_a_function_is_held_to_its_recorded_size():
     recorded = _ruff({"core/a.py": {"C901": {"Store.put": 20, "plain": 16}}})
     current = _ruff({"core/a.py": {"C901": {"Store.put": 21, "plain": 16, "fresh": 16}}})
-    over, under, _ = quality.compare(recorded, current)
-    assert over == ["ruff core/a.py C901 Store.put: 21, recorded 20", "ruff core/a.py C901 fresh: 16, recorded 0"]
+    over, under, flagged = quality.compare(recorded, current)
+    assert over == [
+        "ruff core/a.py C901 Store.put: 21, recorded 20",
+        "ruff core/a.py C901 fresh: 16, above the 0 it may have been",
+    ]
     assert under == []
+    assert flagged == {("ruff", "core/a.py", "C901")}
     over, under, _ = quality.compare(recorded, _ruff({"core/a.py": {"C901": {"Store.put": 18}}}))
     assert over == []
-    assert under == ["ruff core/a.py C901 Store.put: 18, recorded 20", "ruff core/a.py C901 plain: 0, recorded 16"]
+    assert under == [
+        "ruff core/a.py C901 Store.put: 18, recorded 20",
+        "ruff C901 renamed, moved or sharing a name: recorded core/a.py plain 16; now none",
+    ]
 
 
 def test_the_baseline_records_no_more_findings_unless_asked():
@@ -73,57 +94,37 @@ def test_the_baseline_records_no_more_findings_unless_asked():
 def test_a_renamed_or_moved_function_may_not_grow_on_its_way():
     recorded = _ruff({"core/a.py": {"C901": {"old": 16, "other": 30}}})
     renamed = _ruff({"core/a.py": {"C901": {"renamed": 100, "other": 30}}})
-    assert quality.grown(recorded, renamed) == [
-        "ruff core/a.py C901 renamed: 100, above the 16 it may have been (renamed, moved or shared)"
-    ]
+    assert quality.grown(recorded, renamed) == ["ruff core/a.py C901 renamed: 100, above the 16 it may have been"]
     moved = _ruff({"core/a.py": {"C901": {"other": 30}}, "core/b.py": {"C901": {"old": 100}}})
-    assert quality.grown(recorded, moved) == [
-        "ruff core/b.py C901 old: 100, above the 16 it may have been (renamed, moved or shared)"
-    ]
+    assert quality.grown(recorded, moved) == ["ruff core/b.py C901 old: 100, above the 16 it may have been"]
     # Two renamed at once, each no bigger than one that went: matched largest to largest.
     both = _ruff({"core/b.py": {"C901": {"first": 29, "second": 16}}})
     assert quality.grown(recorded, both) == []
 
 
 def test_a_definition_repeated_under_one_name_is_held_to_its_own_size():
-    source = "if X:\n    def f(a):\n        return a\nelse:\n    def f(a):\n        return a\n"
-    defined = quality.functions(source)
+    defined = quality.functions(TWINS)
     assert [name for *_, name in defined] == ["f", "f#2"]
-    findings = [
-        ("ruff", "a.py", 2, "PLR0913", "Too many arguments in function definition (9 > 8)"),
-        ("ruff", "a.py", 5, "PLR0913", "Too many arguments in function definition (9 > 8)"),
-    ]
-    assert quality.tally(findings, {"a.py": source})["ruff"] == {"a.py": {"PLR0913": {"f": 9, "f#2": 9}}}
-    recorded = _ruff({"a.py": {"PLR0913": {"f": 9}}})
-    over, _under, _flagged = quality.compare(recorded, quality.tally(findings, {"a.py": source}))
-    assert over == ["ruff a.py PLR0913 f#2: 9, recorded 0"]
-
-
-def _twins(first: int, second: int | None) -> tuple[list, dict]:
-    """Two conditional definitions of ``f`` with ``first`` and ``second`` arguments (None: the second is gone)."""
-    source = "if X:\n    def f(a):\n        return a\n" + ("else:\n    def f(a):\n        return a\n" if second else "")
-    message = "Too many arguments in function definition ({} > 8)"
-    findings = [("ruff", "a.py", 2, "PLR0913", message.format(first))]
-    if second:
-        findings.append(("ruff", "a.py", 5, "PLR0913", message.format(second)))
-    return findings, {"a.py": source}
+    both = [_arguments("a.py", 2, 9), _arguments("a.py", 5, 9)]
+    assert quality.tally(both, {"a.py": TWINS})["ruff"] == {"a.py": {"PLR0913": {"f#1": 9, "f#2": 9}}}
+    recorded = quality.tally(both[:1], {"a.py": TWINS})
+    assert recorded["ruff"] == {"a.py": {"PLR0913": {"f#1": 9}}}  # shared, though only one is over the limit
+    over, _under, _flagged = quality.compare(recorded, quality.tally(both, {"a.py": TWINS}))
+    assert over == ["ruff a.py PLR0913 f#1: 9, above the 0 it may have been"]
 
 
 def test_removing_or_reordering_one_of_twins_is_not_taken_for_growth():
-    recorded = quality.tally(*_twins(9, 10))
-    assert recorded["ruff"] == {"a.py": {"PLR0913": {"f": 10, "f#2": 9}}}
-    for current in (quality.tally(*_twins(10, None)), quality.tally(*_twins(9, None))):
+    recorded = _twins(9, 10)
+    assert recorded["ruff"] == {"a.py": {"PLR0913": {"f#1": 10, "f#2": 9}}}
+    for current in (_twins(10, None), _twins(9, None)):
         assert quality.grown(recorded, current) == []
         assert quality.compare(recorded, current)[0] == []
-    assert quality.tally(*_twins(10, 9)) == recorded
+    assert _twins(10, 9) == recorded
     # Either twin growing is still growth, also beneath the other.
-    over, _under, _flagged = quality.compare(recorded, quality.tally(*_twins(9, 11)))
-    assert over == ["ruff a.py PLR0913 f: 11, recorded 10"]
-    assert quality.grown(recorded, quality.tally(*_twins(10, 10))) == [
-        "ruff a.py PLR0913 f: 10, above the 9 it may have been (renamed, moved or shared)"
-    ]
+    assert quality.compare(recorded, _twins(9, 11))[0] == ["ruff a.py PLR0913 f#1: 11, above the 10 it may have been"]
+    assert quality.grown(recorded, _twins(10, 10)) == ["ruff a.py PLR0913 f#1: 10, above the 9 it may have been"]
     # Only the larger twin renamed or moved: neither grew.
-    twins = _ruff({"a.py": {"PLR0913": {"f": 12, "f#2": 9}}})
+    twins = _ruff({"a.py": {"PLR0913": {"f#1": 12, "f#2": 9}}})
     assert quality.grown(twins, _ruff({"a.py": {"PLR0913": {"f": 9, "g": 12}}})) == []
     assert quality.grown(twins, _ruff({"a.py": {"PLR0913": {"f": 9}}, "b.py": {"PLR0913": {"f": 12}}})) == []
     # A function alone under its name stays held to its own size, whatever another does.
@@ -132,7 +133,17 @@ def test_removing_or_reordering_one_of_twins_is_not_taken_for_growth():
         "ruff a.py PLR0913 g: 12, recorded 9"
     ]
     # A function nested in one of twins is numbered with those nested in the other.
-    assert quality.by_size({"f.g": 16, "f#2.g": 20, "f#2": 30}) == {"f.g": 20, "f.g#2": 16, "f": 30}
+    assert quality.by_size({"f.g": 16, "f#2.g": 20, "f#2": 30}, {"f", "f.g"}) == {"f.g#1": 20, "f.g#2": 16, "f#1": 30}
+
+
+def test_a_twin_under_the_limit_still_makes_the_name_shared():
+    # Twins of 9 and 8 arguments (only 9 over the limit) and a function of 12 in another file; then the 9 goes and
+    # the 12 is moved into its place.  Nothing grew.
+    recorded = quality.tally([_arguments("a.py", 2, 9), _arguments("b.py", 1, 12)], {"a.py": TWINS, "b.py": SINGLE})
+    assert recorded["ruff"] == {"a.py": {"PLR0913": {"f#1": 9}}, "b.py": {"PLR0913": {"f": 12}}}
+    current = quality.tally([_arguments("a.py", 2, 12)], {"a.py": TWINS})
+    assert quality.grown(recorded, current) == []
+    assert quality.compare(recorded, current)[0] == []
 
 
 def test_the_installed_package_must_hold_exactly_what_this_tree_ships(tmp_path):
