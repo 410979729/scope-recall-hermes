@@ -1,0 +1,248 @@
+"""What a busy store kept in memory for the Hermes adapter to write again.
+
+A capture that met a busy store or ran out of time is kept, at most 16 at a time, and written again by a thread of
+its own every ``_RETRY_EVERY_S`` while any is kept, at each turn's end, before a compression, at the session's end and
+at shutdown; one kept longer than ``_RETRY_GIVE_UP_S`` is dropped and logged as lost.  It works on the adapter's
+state under the adapter's lock (``self._adapter``) and writes through the adapter's capture."""
+
+from __future__ import annotations
+
+import logging
+import sqlite3
+import threading
+import time
+from dataclasses import dataclass, replace
+from typing import TYPE_CHECKING
+
+from scope_recall.contracts import ContractError, TrustedContext
+from scope_recall.core import MemoryCore
+
+from .authorization import build_ingress_authorizer
+from .boundary import SourceIdentity
+from .capture import CAPTURE_TIMEOUT_S, label
+from .identity import (
+    HermesIdentity,
+    HermesIdentityError,
+    HermesRuntimeScope,
+    resolve_runtime_audience,
+)
+from .installation import assert_binding_matches_manifest, load_binding_for_home
+
+if TYPE_CHECKING:
+    from .provider import ScopeRecallHermesAdapter
+
+_log = logging.getLogger(__name__)
+
+#: What the retry thread's pass may spend, off any hook's time and off Hermes' single memory worker.  At a capture's
+#: own ``CAPTURE_TIMEOUT_S`` a pass wrote about one of up to 16 buffered tool results, each write 1-4 s on the busy
+#: shared store (2026-10-04).  A turn's end keeps that 1 s: it runs on Hermes' memory worker, which the next turn's
+#: writes queue behind (review of 3.6.1).
+_RETRY_PASS_SECONDS = 5.0
+#: What a shutdown's last pass may spend: the thread wrote again within the last ``_RETRY_EVERY_S``, and on a busy store
+#: a longer pass seldom changes the outcome while it holds up a gateway's planned stop (review of 3.6.1).
+SHUTDOWN_RETRY_SECONDS = 2.0
+#: How long a capture is kept to retry: one that cannot be written by then is dropped and logged as lost.  Kept for
+#: good, a capture of a full inbox or of an installation whose scopes changed under a running gateway was retried every
+#: ``_RETRY_EVERY_S`` for the life of the process, and its thread held an evicted agent's adapter (review of 3.6.1).
+_RETRY_GIVE_UP_S = 1800.0
+#: How often the retry thread writes again what the buffer holds, for as long as it holds anything.  Hermes runs
+#: ``sync_turn`` only after a turn with a message and a reply: a turn it injected (a watch notification), one it
+#: interrupted, or one with no reply ran no retry.  An idle agent evicted from Hermes' cache keeps its adapter without
+#: a shutdown, so nothing wrote the buffer again until a gateway restart dropped it.  tianji lost 10 tool results so on
+#: 2026-10-04 (``capture_failure`` logged once, never in the store).
+_RETRY_EVERY_S = 30.0
+
+
+@dataclass(frozen=True)
+class RetryCapture:
+    context: TrustedContext
+    event: dict
+    gaps: tuple[str, ...]
+    scope_id: str
+    host_scope: HermesRuntimeScope
+    #: When it was kept (the monotonic clock), for ``_RETRY_GIVE_UP_S``.
+    kept_at: float
+
+
+class CaptureRetry:
+    """The adapter's retry buffer and the thread that writes it again; one per adapter."""
+
+    def __init__(self, adapter: ScopeRecallHermesAdapter) -> None:
+        self._adapter = adapter
+        self.captures: dict[SourceIdentity, RetryCapture] = {}
+        #: The retry thread (``_run``), running while the buffer holds anything; None otherwise.  Started and
+        #: cleared under the adapter's ``_lock``.
+        self.thread: threading.Thread | None = None
+        #: Set while a retry pass runs, under the adapter's ``_lock``: one pass at a time writes the buffer (``write_buffered``).
+        self.retrying = False
+        #: Set by ``shutdown`` to end the retry thread's wait at once.
+        self.wake = threading.Event()
+        #: Buffered captures a pass is writing without ``_lock``: a shutdown's pass, which may overlap it, skips them.
+        self.in_flight: set[SourceIdentity] = set()
+
+    def write_observed(self) -> None:
+        """Retry only previously observed DTOs with their original identities.
+
+        Raw history without event IDs is deliberately not promoted to new user
+        evidence.  This also avoids re-saving compacted summaries as originals.
+        """
+        identity = self._adapter._require_identity()
+        core = self._adapter._require_core()
+        if isinstance(core, MemoryCore) and not identity.read_only:
+            try:
+                from ...core.capture_inbox import INGRESS_PENDING_GAP, replay_inbox
+
+                receipts = replay_inbox(
+                    core.storage,
+                    core.clock,
+                    identity.trusted_context(),
+                    authorize=build_ingress_authorizer(identity.binding),
+                    admission_policy=core.config.admission_policy,
+                    remaining_seconds=CAPTURE_TIMEOUT_S,
+                )
+            except (ContractError, OSError, RuntimeError, sqlite3.Error, ValueError):
+                self._adapter._merge_gaps(("capture_gap:durable_ingress_pending",))
+            else:
+                # A busy store stops the replay's page with a receipt that says so, where it used to raise.
+                if any(INGRESS_PENDING_GAP in receipt.gaps for receipt in receipts):
+                    self._adapter._merge_gaps((INGRESS_PENDING_GAP,))
+        self.write_buffered()
+
+    def write_buffered(self, *, release: bool = False, seconds: float = CAPTURE_TIMEOUT_S, force: bool = False) -> None:
+        """Write again what a busy store kept in memory; nothing to do, and nothing opened, when it holds none.
+
+        Run at every ``sync_turn``, by the retry thread while the buffer holds anything (``_run``), at the
+        session's end, before a compression and at shutdown: waiting for the turns left a capture that timed out on
+        the writer lease in memory for hours, and an eviction or a restart lost it.  One pass at a time; ``force`` is
+        shutdown's, which may run while another pass waits for the lock between two captures.  One retry per hold of
+        the lock; with ``release`` (``sync_turn`` and the retry thread, which do not hold it) each writes without.
+        """
+        with self._adapter._lock:
+            if not self.captures or (self.retrying and not force):
+                return
+            identity = self._adapter._require_identity()
+            pending_items = tuple(self.captures.items())
+            self.retrying = True
+        try:
+            self._pass(identity, pending_items, deadline=time.monotonic() + seconds, release=release, force=force)
+        finally:
+            with self._adapter._lock:
+                self.retrying = False
+
+    def _pass(
+        self, identity: HermesIdentity, pending_items: tuple, *, deadline: float, release: bool, force: bool
+    ) -> None:
+        try:
+            manifest = load_binding_for_home(identity.hermes_home)
+            assert_binding_matches_manifest(identity.binding, manifest)
+        except (HermesIdentityError, ContractError, OSError, ValueError, TypeError):
+            with self._adapter._lock:
+                self._adapter._merge_gaps(("capture_gap:retry_authorization_unverified",))
+                expired = self.give_up_expired(pending_items)
+            if len(expired) < len(pending_items):
+                _log.warning(
+                    "scope-recall: %d buffered capture(s) not written again now: their authorization could not be read",
+                    len(pending_items) - len(expired),
+                )
+            return
+        for key, pending in pending_items:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            with self._adapter._lock, self._adapter._holding("retry_buffered_captures"):
+                if self._adapter._identity is not identity or not (self._adapter._initialized or force):
+                    # A session switch or a shutdown came in between: what is left stays for the next pass.
+                    break
+                # A capture another pass is writing (a shutdown's pass may overlap the thread's) is left to it.
+                if self.captures.get(key) is not pending or key in self.in_flight:
+                    continue
+                if self.give_up_expired(((key, pending),)):
+                    continue
+                # The capture's own audience as the manifest grants it now: a scope taken away since is not written
+                # to.  Not the current session's: kept across a session switch, a direct message's tool result written
+                # again while the agent served a group would have been dropped as revoked.
+                try:
+                    audience = resolve_runtime_audience(manifest, pending.host_scope)
+                except (HermesIdentityError, ContractError, ValueError, TypeError):
+                    audience = None
+                allowed_scopes = (
+                    pending.context.allowed_scope_ids & audience.writable_scope_ids
+                    if audience is not None
+                    else frozenset()
+                )
+                if pending.context.binding != identity.binding or pending.scope_id not in allowed_scopes:
+                    self.captures.pop(key, None)
+                    self._adapter._ledger.rollback(key)
+                    self._adapter._merge_gaps(("capture_gap:retry_authorization_revoked",))
+                    _log.warning("scope-recall: not stored (authorization revoked), dropped: %s", label(key))
+                    continue
+                # Not the current session's read-only state either: a capture is buffered only after a write its own
+                # session was allowed, and one kept while a read-only session (an unknown user, a delegated agent)
+                # was current waited and was dropped at shutdown.
+                # Narrow current authorization only. Original actor, session,
+                # project, branch, occurrence time and DTO identity stay intact.
+                context = replace(pending.context, allowed_scope_ids=frozenset(allowed_scopes))
+                self.in_flight.add(key)
+                try:
+                    self._adapter._capture_event(
+                        context,
+                        pending.event,
+                        identity=key,
+                        gaps=pending.gaps,
+                        scope_id=pending.scope_id,
+                        remaining_seconds=remaining,
+                        replay=True,
+                        bound=identity,
+                        release=release,
+                    )
+                finally:
+                    self.in_flight.discard(key)
+
+    def give_up_expired(self, items) -> list:
+        """Drop the buffered captures kept longer than ``_RETRY_GIVE_UP_S``, each logged as lost; the caller holds
+        ``_lock``.  Returns their keys."""
+        expired = [
+            key
+            for key, pending in items
+            if self.captures.get(key) is pending
+            and key not in self.in_flight
+            and time.monotonic() - pending.kept_at > _RETRY_GIVE_UP_S
+        ]
+        for key in expired:
+            self.captures.pop(key, None)
+            self._adapter._ledger.rollback(key)
+            self._adapter._merge_gaps(("capture_gap:retry_gave_up",))
+            _log.warning(
+                "scope-recall: not stored (still failing after %d minutes), lost: %s",
+                int(_RETRY_GIVE_UP_S // 60),
+                label(key),
+            )
+        return expired
+
+    def start(self) -> None:
+        """Start the retry thread when none runs; the caller holds ``_lock``."""
+        if self.thread is not None:
+            return
+        self.wake.clear()
+        thread = threading.Thread(target=self._run, name="scope-recall-capture-retry", daemon=True)
+        self.thread = thread
+        thread.start()
+
+    def _run(self) -> None:
+        """Write the buffer again every ``_RETRY_EVERY_S``, off any hook's time, until it is empty or the adapter is
+        shut down: Hermes runs no ``sync_turn`` after a turn it injected, interrupted or got no reply for."""
+        while True:
+            if self.wake.wait(_RETRY_EVERY_S):
+                self.wake.clear()
+            with self._adapter._lock:
+                if not self._adapter._initialized or not self.captures:
+                    self.thread = None
+                    return
+            try:
+                self.write_buffered(release=True, seconds=_RETRY_PASS_SECONDS)
+            except Exception as exc:  # noqa: BLE001 - the next pass, a turn's end or the shutdown writes it
+                _log.warning("scope-recall: a retry of buffered captures failed (%s)", type(exc).__name__)
+                # A pass that raised before its captures' own check still gives up the expired ones: it would hold
+                # them, and an evicted agent's adapter, for good (review of 3.6.1).
+                with self._adapter._lock:
+                    self.give_up_expired(tuple(self.captures.items()))

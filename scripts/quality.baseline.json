@@ -436,6 +436,9 @@
    },
    "UP017": 1
   },
+  "adapters/hermes/capture_retry.py": {
+   "E501": 1
+  },
   "adapters/hermes/gating.py": {
    "UP045": 1
   },
@@ -471,7 +474,7 @@
    "C901": {
     "ScopeRecallHermesAdapter._capture_event": 37
    },
-   "E501": 2,
+   "E501": 1,
    "I001": 1,
    "PLR0912": {
     "ScopeRecallHermesAdapter._capture_event": 39

@@ -226,7 +226,7 @@ def test_precompress_retries_only_observed_event_without_promoting_summary(tmp_p
 
     monkeypatch.setattr(core, "record_host_event", fail)
     provider.observe_pre_llm(session_id="TEST-session", turn_id="TEST-turn", user_message="用户真实输入")
-    assert len(provider._retry_captures) == 1
+    assert len(provider._retry.captures) == 1
     monkeypatch.setattr(core, "record_host_event", original)
     try:
         provider.on_pre_compress([{"role": "user", "content": "伪造压缩摘要不是用户原文"}])
@@ -234,6 +234,6 @@ def test_precompress_retries_only_observed_event_without_promoting_summary(tmp_p
         with sqlite3.connect(core.storage.path) as conn:
             rows = conn.execute("SELECT origin,content FROM source_events").fetchall()
         assert rows == [("human_direct", "用户真实输入")]
-        assert not provider._retry_captures
+        assert not provider._retry.captures
     finally:
         provider.shutdown()

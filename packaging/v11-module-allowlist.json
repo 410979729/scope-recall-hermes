@@ -50,6 +50,8 @@
     "adapters/hermes/audiences.py",
     "adapters/hermes/authorization.py",
     "adapters/hermes/boundary.py",
+    "adapters/hermes/capture.py",
+    "adapters/hermes/capture_retry.py",
     "adapters/hermes/gating.py",
     "adapters/hermes/hooks.py",
     "adapters/hermes/identity.py",

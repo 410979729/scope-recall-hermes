@@ -12,6 +12,8 @@ import pytest
 
 from scope_recall.adapters.hermes import ScopeRecallHermesAdapter, install_hermes_scope_recall
 from scope_recall.adapters.hermes import hooks, provider as provider_module
+from scope_recall.adapters.hermes import capture_retry
+from scope_recall.adapters.hermes import capture
 from scope_recall.adapters.hermes.hooks import (
     _SUPPORTED_HOOKS,
     _global_callback,
@@ -964,7 +966,7 @@ def test_another_sessions_hook_waits_only_its_write_budget_on_a_held_store(
         release.set()
         writer.join(_PROMPTLY)
         _unregister_adapter_instance(other)
-    other._retry_buffered_captures()
+    other._retry.write_buffered()
     other.shutdown()
     assert _tool_rows(hermes_home) == 1
 
@@ -1001,14 +1003,14 @@ def test_a_buffered_tool_result_is_written_again_without_a_turn_s_end(adapter, h
     without a shutdown, and a gateway restart then dropped it (tianji, 10 tool results on 2026-10-04).  The retry
     thread writes it, and ends once the buffer is empty."""
     provider, _clock = adapter
-    monkeypatch.setattr(provider_module, "_RETRY_EVERY_S", 3600.0)  # held until the capture is seen kept
+    monkeypatch.setattr(capture_retry, "_RETRY_EVERY_S", 3600.0)  # held until the capture is seen kept
     _busy_store(provider, monkeypatch, 1)
     _tool_result(provider, "turn-1", "busy-call", "TEST tool output busy-call")
-    assert len(provider._retry_captures) == 1 and _tool_rows(hermes_home) == 0
-    monkeypatch.setattr(provider_module, "_RETRY_EVERY_S", 0.05)
-    provider._retry_wake.set()
+    assert len(provider._retry.captures) == 1 and _tool_rows(hermes_home) == 0
+    monkeypatch.setattr(capture_retry, "_RETRY_EVERY_S", 0.05)
+    provider._retry.wake.set()
     assert _until(lambda: _tool_rows(hermes_home) == 1), "no turn ended, and the buffer was not written again"
-    assert _until(lambda: provider._retry_thread is None) and not provider._retry_captures
+    assert _until(lambda: provider._retry.thread is None) and not provider._retry.captures
 
 
 def test_a_retry_pass_writes_every_buffered_capture_it_has_time_for(adapter, hermes_home, monkeypatch):
@@ -1016,29 +1018,29 @@ def test_a_retry_pass_writes_every_buffered_capture_it_has_time_for(adapter, her
     shared store (2026-10-04).  The thread's pass has 5 s; a turn's end keeps 1 s, on Hermes' single memory worker,
     which the next turn's writes queue behind (review of 3.6.1)."""
     provider, _clock = adapter
-    monkeypatch.setattr(provider_module, "_RETRY_EVERY_S", 3600.0)
+    monkeypatch.setattr(capture_retry, "_RETRY_EVERY_S", 3600.0)
     _busy_store(provider, monkeypatch, 4, delay=0.4)
     for index in range(4):
         _tool_result(provider, "turn-1", f"busy-call-{index}", f"TEST tool output {index}")
-    assert len(provider._retry_captures) == 4
-    provider._retry_buffered_captures(release=True, seconds=provider_module._RETRY_PASS_SECONDS)
-    assert _tool_rows(hermes_home) == 4 and not provider._retry_captures
+    assert len(provider._retry.captures) == 4
+    provider._retry.write_buffered(release=True, seconds=capture_retry._RETRY_PASS_SECONDS)
+    assert _tool_rows(hermes_home) == 4 and not provider._retry.captures
 
     passes = []
-    real = provider._retry_buffered_captures
+    real = provider._retry.write_buffered
 
     def recorded(**kwargs):
-        passes.append((threading.current_thread().name, kwargs.get("seconds", provider_module._CAPTURE_TIMEOUT_S)))
+        passes.append((threading.current_thread().name, kwargs.get("seconds", capture.CAPTURE_TIMEOUT_S)))
         return real(**kwargs)
 
-    monkeypatch.setattr(provider, "_retry_buffered_captures", recorded)
+    monkeypatch.setattr(provider._retry, "write_buffered", recorded)
     _busy_store(provider, monkeypatch, 2)  # the capture, and the turn's retry of it: the thread then writes it
     _tool_result(provider, "turn-2", "busy-call-again", "TEST tool output again")
     provider.sync_turn("TEST user words", "TEST reply words", session_id="TEST-session-1")
-    monkeypatch.setattr(provider_module, "_RETRY_EVERY_S", 0.05)
-    provider._retry_wake.set()
+    monkeypatch.setattr(capture_retry, "_RETRY_EVERY_S", 0.05)
+    provider._retry.wake.set()
     assert _until(lambda: any(name == "scope-recall-capture-retry" for name, _ in passes))
-    assert ("scope-recall-capture-retry", provider_module._RETRY_PASS_SECONDS) in passes
+    assert ("scope-recall-capture-retry", capture_retry._RETRY_PASS_SECONDS) in passes
     assert [seconds for name, seconds in passes if name != "scope-recall-capture-retry"] == [1.0], passes
 
 
@@ -1047,63 +1049,63 @@ def test_a_capture_that_cannot_be_written_is_given_up_and_said(adapter, hermes_h
     was retried every 30 s for the life of the process, and its thread held an evicted agent's adapter (review of
     3.6.1).  Past its time it is dropped and logged as lost, and the thread ends."""
     provider, _clock = adapter
-    monkeypatch.setattr(provider_module, "_RETRY_EVERY_S", 3600.0)
-    monkeypatch.setattr(provider_module, "_RETRY_GIVE_UP_S", 0.2)
+    monkeypatch.setattr(capture_retry, "_RETRY_EVERY_S", 3600.0)
+    monkeypatch.setattr(capture_retry, "_RETRY_GIVE_UP_S", 0.2)
     _busy_store(provider, monkeypatch, 10**6)
     _tool_result(provider, "turn-1", "never-call", "TEST tool output never")
     _tool_result(provider, "turn-1", "unverified-call", "TEST tool output unverified")
-    assert len(provider._retry_captures) == 2
+    assert len(provider._retry.captures) == 2
     time.sleep(0.3)
-    provider._retry_buffered_captures(seconds=_PROMPTLY)  # the store refuses at once: the time costs nothing
-    assert not provider._retry_captures and _tool_rows(hermes_home) == 0
+    provider._retry.write_buffered(seconds=_PROMPTLY)  # the store refuses at once: the time costs nothing
+    assert not provider._retry.captures and _tool_rows(hermes_home) == 0
     assert len([record for record in caplog.records if "still failing after" in record.getMessage()]) == 2
 
     _tool_result(provider, "turn-2", "unverified-call-2", "TEST tool output unverified 2")
-    monkeypatch.setattr(provider_module, "load_binding_for_home", lambda home: (_ for _ in ()).throw(OSError()))
+    monkeypatch.setattr(capture_retry, "load_binding_for_home", lambda home: (_ for _ in ()).throw(OSError()))
     time.sleep(0.3)
-    provider._retry_buffered_captures(seconds=0.1)
-    assert not provider._retry_captures, "an authorization that could not be read kept it for good"
-    monkeypatch.setattr(provider_module, "_RETRY_EVERY_S", 0.05)
-    provider._retry_wake.set()
-    assert _until(lambda: provider._retry_thread is None), "the thread outlived an empty buffer"
+    provider._retry.write_buffered(seconds=0.1)
+    assert not provider._retry.captures, "an authorization that could not be read kept it for good"
+    monkeypatch.setattr(capture_retry, "_RETRY_EVERY_S", 0.05)
+    provider._retry.wake.set()
+    assert _until(lambda: provider._retry.thread is None), "the thread outlived an empty buffer"
 
 
 def test_a_retry_pass_that_raises_still_gives_up_what_is_past_its_time(adapter, hermes_home, monkeypatch, caplog):
     """A manifest that is JSON but not an object raised past the pass's own handling, before any capture's give-up:
     the thread retried for good and held an evicted agent's adapter (review of 3.6.1)."""
     provider, _clock = adapter
-    monkeypatch.setattr(provider_module, "_RETRY_EVERY_S", 3600.0)
-    monkeypatch.setattr(provider_module, "_RETRY_GIVE_UP_S", 0.2)
+    monkeypatch.setattr(capture_retry, "_RETRY_EVERY_S", 3600.0)
+    monkeypatch.setattr(capture_retry, "_RETRY_GIVE_UP_S", 0.2)
     _busy_store(provider, monkeypatch, 10**6)
     _tool_result(provider, "turn-1", "raising-call", "TEST tool output raising")
     monkeypatch.setattr(
-        provider_module,
+        capture_retry,
         "load_binding_for_home",
         lambda home: (_ for _ in ()).throw(AttributeError("TEST not an object")),
     )
     time.sleep(0.3)
-    monkeypatch.setattr(provider_module, "_RETRY_EVERY_S", 0.05)
-    provider._retry_wake.set()
-    assert _until(lambda: not provider._retry_captures), "a pass that raised kept the capture for good"
-    assert _until(lambda: provider._retry_thread is None)
+    monkeypatch.setattr(capture_retry, "_RETRY_EVERY_S", 0.05)
+    provider._retry.wake.set()
+    assert _until(lambda: not provider._retry.captures), "a pass that raised kept the capture for good"
+    assert _until(lambda: provider._retry.thread is None)
     assert [record for record in caplog.records if "still failing after" in record.getMessage()]
 
 
 def test_a_capture_being_written_is_not_given_up_under_its_writer(adapter, monkeypatch):
     provider, _clock = adapter
-    monkeypatch.setattr(provider_module, "_RETRY_EVERY_S", 3600.0)
-    monkeypatch.setattr(provider_module, "_RETRY_GIVE_UP_S", 0.0)
+    monkeypatch.setattr(capture_retry, "_RETRY_EVERY_S", 3600.0)
+    monkeypatch.setattr(capture_retry, "_RETRY_GIVE_UP_S", 0.0)
     _busy_store(provider, monkeypatch, 1)
     _tool_result(provider, "turn-1", "busy-call", "TEST tool output busy-call")
-    (key,) = provider._retry_captures
+    (key,) = provider._retry.captures
     time.sleep(0.05)  # past its 0 s by more than one tick of Windows' monotonic clock (15.6 ms)
     with provider._lock:
-        provider._retry_in_flight.add(key)
+        provider._retry.in_flight.add(key)
         try:
-            assert provider._give_up_expired(tuple(provider._retry_captures.items())) == []
+            assert provider._retry.give_up_expired(tuple(provider._retry.captures.items())) == []
         finally:
-            provider._retry_in_flight.discard(key)
-        assert provider._give_up_expired(tuple(provider._retry_captures.items())) == [key]
+            provider._retry.in_flight.discard(key)
+        assert provider._retry.give_up_expired(tuple(provider._retry.captures.items())) == [key]
 
 
 def test_a_capture_kept_to_retry_is_said_once_until_it_is_stored(adapter, hermes_home, monkeypatch, caplog):
@@ -1111,13 +1113,13 @@ def test_a_capture_kept_to_retry_is_said_once_until_it_is_stored(adapter, hermes
     (review of 3.6.1).  It is said once when it is kept, and once when it is stored."""
     import logging
 
-    caplog.set_level(logging.INFO, logger="scope_recall.adapters.hermes.provider")
+    caplog.set_level(logging.INFO, logger="scope_recall.adapters.hermes")
     provider, _clock = adapter
-    monkeypatch.setattr(provider_module, "_RETRY_EVERY_S", 3600.0)
+    monkeypatch.setattr(capture_retry, "_RETRY_EVERY_S", 3600.0)
     _busy_store(provider, monkeypatch, 6)
     _tool_result(provider, "turn-1", "busy-call", "TEST tool output busy-call")
-    monkeypatch.setattr(provider_module, "_RETRY_EVERY_S", 0.02)
-    provider._retry_wake.set()
+    monkeypatch.setattr(capture_retry, "_RETRY_EVERY_S", 0.02)
+    provider._retry.wake.set()
     # The row is in the store a moment before its line is said, on the retry thread.
     assert _until(lambda: any("stored on retry" in record.getMessage() for record in caplog.records))
     assert _tool_rows(hermes_home) == 1
@@ -1134,7 +1136,7 @@ def test_a_shutdown_on_a_held_store_spends_at_most_its_short_pass(adapter, herme
     from scope_recall.contracts import ContractError
 
     provider, _clock = adapter
-    monkeypatch.setattr(provider_module, "_RETRY_EVERY_S", 3600.0)
+    monkeypatch.setattr(capture_retry, "_RETRY_EVERY_S", 3600.0)
     _busy_store(provider, monkeypatch, 1)
     _tool_result(provider, "turn-1", "held-call", "TEST tool output held")
 
@@ -1145,8 +1147,8 @@ def test_a_shutdown_on_a_held_store_spends_at_most_its_short_pass(adapter, herme
     monkeypatch.setattr(provider._core, "record_host_event", held)
     started = time.monotonic()
     provider.shutdown()
-    assert time.monotonic() - started < provider_module._SHUTDOWN_RETRY_SECONDS + 1.5
-    assert provider_module._SHUTDOWN_RETRY_SECONDS == 2.0
+    assert time.monotonic() - started < capture_retry.SHUTDOWN_RETRY_SECONDS + 1.5
+    assert capture_retry.SHUTDOWN_RETRY_SECONDS == 2.0
 
 
 def test_a_turn_s_end_waits_for_a_held_capture_no_longer_than_a_capture_s_time(adapter, hermes_home, monkeypatch):
@@ -1155,7 +1157,7 @@ def test_a_turn_s_end_waits_for_a_held_capture_no_longer_than_a_capture_s_time(a
     from scope_recall.contracts import ContractError
 
     provider, _clock = adapter
-    monkeypatch.setattr(provider_module, "_RETRY_EVERY_S", 3600.0)
+    monkeypatch.setattr(capture_retry, "_RETRY_EVERY_S", 3600.0)
     _busy_store(provider, monkeypatch, 1)
     _tool_result(provider, "turn-1", "held-call", "TEST tool output held")
     real = provider._core.record_host_event
@@ -1171,7 +1173,7 @@ def test_a_turn_s_end_waits_for_a_held_capture_no_longer_than_a_capture_s_time(a
     monkeypatch.setattr(provider._core, "record_host_event", record_host_event)
     started = time.monotonic()
     provider.sync_turn("TEST user words", "TEST reply words", session_id="TEST-session-1")
-    assert first_own and first_own[0] - started < provider_module._CAPTURE_TIMEOUT_S + 1.5, first_own
+    assert first_own and first_own[0] - started < capture.CAPTURE_TIMEOUT_S + 1.5, first_own
 
 
 def test_a_shutdown_leaves_a_replay_still_in_flight_to_its_thread_and_says_its_end(
@@ -1181,9 +1183,9 @@ def test_a_shutdown_leaves_a_replay_still_in_flight_to_its_thread_and_says_its_e
     it came, was never said (reviews of 3.6.1)."""
     import logging
 
-    caplog.set_level(logging.INFO, logger="scope_recall.adapters.hermes.provider")
+    caplog.set_level(logging.INFO, logger="scope_recall.adapters.hermes")
     provider, _clock = adapter
-    monkeypatch.setattr(provider_module, "_RETRY_EVERY_S", 3600.0)
+    monkeypatch.setattr(capture_retry, "_RETRY_EVERY_S", 3600.0)
     monkeypatch.setattr(provider_module, "_CAPTURE_DRAIN_WAIT_S", 0.3)
     _busy_store(provider, monkeypatch, 1)
     _tool_result(provider, "turn-1", "slow-call", "TEST tool output slow")
@@ -1198,8 +1200,8 @@ def test_a_shutdown_leaves_a_replay_still_in_flight_to_its_thread_and_says_its_e
         return real(context, event, **kwargs)
 
     monkeypatch.setattr(provider._core, "record_host_event", record_host_event)
-    monkeypatch.setattr(provider_module, "_RETRY_EVERY_S", 0.02)
-    provider._retry_wake.set()
+    monkeypatch.setattr(capture_retry, "_RETRY_EVERY_S", 0.02)
+    provider._retry.wake.set()
     assert entered.wait(_PROMPTLY), "the thread did not write the kept capture again"
     shut, _, shut_thread = _in_thread(provider.shutdown)
     assert shut.wait(_PROMPTLY), "the shutdown waited out the replay"
@@ -1213,16 +1215,16 @@ def test_a_shutdown_leaves_a_replay_still_in_flight_to_its_thread_and_says_its_e
 
 def test_a_shutdown_leaves_a_capture_another_pass_is_writing_to_it(adapter, hermes_home, monkeypatch, caplog):
     provider, _clock = adapter
-    monkeypatch.setattr(provider_module, "_RETRY_EVERY_S", 3600.0)
+    monkeypatch.setattr(capture_retry, "_RETRY_EVERY_S", 3600.0)
     _busy_store(provider, monkeypatch, 1)
     _tool_result(provider, "turn-1", "busy-call", "TEST tool output busy-call")
-    (key,) = provider._retry_captures
-    provider._retry_in_flight.add(key)  # the thread's write of it runs
-    provider._retry_buffered_captures(seconds=_PROMPTLY, force=True)
+    (key,) = provider._retry.captures
+    provider._retry.in_flight.add(key)  # the thread's write of it runs
+    provider._retry.write_buffered(seconds=_PROMPTLY, force=True)
     assert _tool_rows(hermes_home) == 0, "a shutdown's pass wrote a capture another pass was writing"
     provider.shutdown()
     assert [record for record in caplog.records if "still being written at shutdown" in record.getMessage()]
-    provider._retry_in_flight.discard(key)
+    provider._retry.in_flight.discard(key)
 
 
 @pytest.mark.parametrize("next_user", ["TEST-user", "TEST-unknown-user"])
@@ -1233,13 +1235,13 @@ def test_a_session_switch_keeps_the_buffer_and_writes_it_in_the_session_it_was_s
     store were lost without a word.  Each is written under its own scope's grant: a next session of another audience,
     here one with none at all, does not take it away."""
     provider, _clock = adapter
-    monkeypatch.setattr(provider_module, "_RETRY_EVERY_S", 3600.0)
+    monkeypatch.setattr(capture_retry, "_RETRY_EVERY_S", 3600.0)
     _busy_store(provider, monkeypatch, 1)
     _tool_result(provider, "turn-1", "busy-call", "TEST tool output busy-call")
-    (said_in,) = [pending.context.session_id for pending in provider._retry_captures.values()]
+    (said_in,) = [pending.context.session_id for pending in provider._retry.captures.values()]
     provider.initialize("TEST-session-2", **{**initialize_kwargs, "user_id": next_user})
-    assert len(provider._retry_captures) == 1, "the session switch dropped the buffer"
-    provider._retry_buffered_captures(seconds=_PROMPTLY)
+    assert len(provider._retry.captures) == 1, "the session switch dropped the buffer"
+    provider._retry.write_buffered(seconds=_PROMPTLY)
     with sqlite3.connect(hermes_home / "scope-recall" / "memory.sqlite3") as conn:
         rows = conn.execute("SELECT session_id FROM source_events WHERE role='tool'").fetchall()
     assert rows == [(said_in,)], "written in the session it was said in"
@@ -1252,17 +1254,17 @@ def test_a_capture_whose_scope_was_taken_away_is_dropped_and_said(adapter, herme
     from dataclasses import replace
 
     provider, _clock = adapter
-    monkeypatch.setattr(provider_module, "_RETRY_EVERY_S", 3600.0)
+    monkeypatch.setattr(capture_retry, "_RETRY_EVERY_S", 3600.0)
     _busy_store(provider, monkeypatch, 1)
     _tool_result(provider, "turn-1", "busy-call", "TEST tool output busy-call")
-    real = provider_module.resolve_runtime_audience
+    real = capture_retry.resolve_runtime_audience
     monkeypatch.setattr(
-        provider_module,
+        capture_retry,
         "resolve_runtime_audience",
         lambda manifest, scope: replace(real(manifest, scope), writable_scope_ids=frozenset()),
     )
-    provider._retry_buffered_captures(seconds=_PROMPTLY)
-    assert _tool_rows(hermes_home) == 0 and not provider._retry_captures
+    provider._retry.write_buffered(seconds=_PROMPTLY)
+    assert _tool_rows(hermes_home) == 0 and not provider._retry.captures
     assert [
         record
         for record in caplog.records
@@ -1276,7 +1278,7 @@ def test_a_shutdown_writes_the_buffer_once_more_and_says_what_it_could_not(
     """A shutdown reported the buffer as pending in memory and dropped it: every gateway restart lost what it held
     (2026-10-04)."""
     provider, _clock = adapter
-    monkeypatch.setattr(provider_module, "_RETRY_EVERY_S", 3600.0)
+    monkeypatch.setattr(capture_retry, "_RETRY_EVERY_S", 3600.0)
     _busy_store(provider, monkeypatch, 1)
     _tool_result(provider, "turn-1", "busy-call", "TEST tool output busy-call")
     provider.shutdown()
@@ -1284,7 +1286,7 @@ def test_a_shutdown_writes_the_buffer_once_more_and_says_what_it_could_not(
     assert not [record for record in caplog.records if "still failing at shutdown" in record.getMessage()]
 
     other = _another_session(installed_core, initialize_kwargs)
-    monkeypatch.setattr(provider_module, "_RETRY_EVERY_S", 3600.0)
+    monkeypatch.setattr(capture_retry, "_RETRY_EVERY_S", 3600.0)
     _busy_store(other, monkeypatch, 10**6)
     _tool_result(other, "turn-2", "still-busy-call", "TEST tool output still-busy-call")
     other.shutdown()
@@ -1294,22 +1296,22 @@ def test_a_shutdown_writes_the_buffer_once_more_and_says_what_it_could_not(
         if "not stored (still failing at shutdown), lost" in record.getMessage()
         and "still-busy-call" in record.getMessage()
     ]
-    assert not other._retry_captures
+    assert not other._retry.captures
 
 
 def test_a_shutdown_ends_the_retry_thread_and_one_pass_runs_at_a_time(adapter, hermes_home, monkeypatch):
     provider, _clock = adapter
-    monkeypatch.setattr(provider_module, "_RETRY_EVERY_S", 3600.0)
+    monkeypatch.setattr(capture_retry, "_RETRY_EVERY_S", 3600.0)
     _busy_store(provider, monkeypatch, 1)  # the store takes the next write
     _tool_result(provider, "turn-1", "busy-call-a", "TEST tool output a")
-    thread = provider._retry_thread
+    thread = provider._retry.thread
     assert thread is not None and thread.is_alive()
     with provider._lock:
-        provider._retrying = True  # another pass runs
-    provider._retry_buffered_captures(seconds=_PROMPTLY)
-    assert len(provider._retry_captures) == 1 and _tool_rows(hermes_home) == 0, "a second pass ran beside the first"
+        provider._retry.retrying = True  # another pass runs
+    provider._retry.write_buffered(seconds=_PROMPTLY)
+    assert len(provider._retry.captures) == 1 and _tool_rows(hermes_home) == 0, "a second pass ran beside the first"
     with provider._lock:
-        provider._retrying = False
+        provider._retry.retrying = False
     provider.shutdown()
     thread.join(_PROMPTLY)
-    assert not thread.is_alive() and provider._retry_thread is None
+    assert not thread.is_alive() and provider._retry.thread is None

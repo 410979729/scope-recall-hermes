@@ -705,7 +705,7 @@ def test_a_busy_store_met_by_a_session_s_capture_retry_says_pending(adapter, ins
 
     monkeypatch.setattr(capture_inbox, "_revalidated", busy)
     provider._diagnostics.pending_outcome_gaps = ()
-    provider._retry_observed_captures()
+    provider._retry.write_observed()
     with closing(sqlite3.connect(core.storage.path)) as conn:
         assert conn.execute("SELECT last_error_code FROM capture_inbox").fetchall() == [(None,)]
     assert capture_inbox.INGRESS_PENDING_GAP in provider._diagnostics.pending_outcome_gaps
