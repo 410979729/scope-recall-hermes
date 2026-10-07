@@ -16,6 +16,7 @@ hook, each refused request and the server's own errors go to ``remote-server.log
         --listen 100.64.0.10 --port 18765 --token-sha256 <hex>
     python -m scope_recall.adapters.codex.remote_server serve --home <home> --host claude-code [--env-file <file>]
 """
+
 from __future__ import annotations
 
 import argparse
@@ -118,8 +119,13 @@ def write_server_config(home: Path, host: str, *, listen: str, port: int, token_
     """Record where the entry is served and the SHA-256 of the client's token; the client must exist."""
     load_shared_client(home, host)
     path = config_path(home)
-    body = {"schema": "scope-recall.remote-server/1", "host": host, "listen": _listen_address(listen),
-            "port": _port(port), "token_sha256": _digest(token_sha256)}
+    body = {
+        "schema": "scope-recall.remote-server/1",
+        "host": host,
+        "listen": _listen_address(listen),
+        "port": _port(port),
+        "token_sha256": _digest(token_sha256),
+    }
     pending = path.with_name(f"{path.stem}.{os.getpid()}.tmp")
     pending.write_text(json.dumps(body, indent=2) + "\n", encoding="utf-8")
     os.replace(pending, path)
@@ -133,8 +139,13 @@ def load_server_config(home: Path, host: str) -> RemoteServerConfig:
         raise RemoteServerError(f"no readable {CONFIG_NAME} under {home}: configure it first") from exc
     if not isinstance(raw, dict) or raw.get("schema") != "scope-recall.remote-server/1" or raw.get("host") != host:
         raise RemoteServerError(f"{CONFIG_NAME} is not a remote server config for {host}")
-    return RemoteServerConfig(home=home, host=host, listen=_listen_address(raw.get("listen")),
-                              port=_port(raw.get("port")), token_sha256=_digest(raw.get("token_sha256")))
+    return RemoteServerConfig(
+        home=home,
+        host=host,
+        listen=_listen_address(raw.get("listen")),
+        port=_port(raw.get("port")),
+        token_sha256=_digest(raw.get("token_sha256")),
+    )
 
 
 def token_matches(authorization: bytes | str | None, token_sha256: str) -> bool:
@@ -143,7 +154,7 @@ def token_matches(authorization: bytes | str | None, token_sha256: str) -> bool:
         authorization = authorization.decode("latin-1")
     if type(authorization) is not str or not authorization.startswith("Bearer "):
         return False
-    token = authorization[len("Bearer "):].strip()
+    token = authorization[len("Bearer ") :].strip()
     if not token:
         return False
     return hmac.compare_digest(hashlib.sha256(token.encode("utf-8")).hexdigest(), token_sha256)
@@ -188,9 +199,16 @@ def client_times(body: dict[str, Any]) -> tuple[str | None, RecordLines | None]:
     if lead <= timedelta(seconds=CLOCK_AHEAD_SECONDS):
         return (_stamp(observed) if observed is not None else None), record
     if record is not None:
-        record = replace(record, lines=[
-            (offset, replace(said, occurred_at=_stamp(_moment(said.occurred_at) - lead)) if said is not None else None)
-            for offset, said in record.lines])
+        record = replace(
+            record,
+            lines=[
+                (
+                    offset,
+                    replace(said, occurred_at=_stamp(_moment(said.occurred_at) - lead)) if said is not None else None,
+                )
+                for offset, said in record.lines
+            ],
+        )
     return (_stamp(observed - lead) if observed is not None else None), record
 
 
@@ -232,8 +250,13 @@ class _Asked:
         return answer
 
 
-def handle_request(config: RemoteServerConfig, body: dict[str, Any], *, started: float | None = None,
-                   recaller: Callable[..., Any] | None = None) -> dict[str, Any]:
+def handle_request(
+    config: RemoteServerConfig,
+    body: dict[str, Any],
+    *,
+    started: float | None = None,
+    recaller: Callable[..., Any] | None = None,
+) -> dict[str, Any]:
     """One forwarded hook: the handler's answer, and how far the client's record was stored.  A prompt's recall is
     asked of ``recaller`` (the server's ``local_endpoint.KeptRecaller``), whose vector store and embedding worker
     stay open between prompts, while this request's handler stores the prompt and recalls itself only if that has
@@ -254,7 +277,8 @@ def handle_request(config: RemoteServerConfig, body: dict[str, Any], *, started:
     observed_at, record = client_times(body)
     building = time.monotonic()
     handler = CodexHookHandler.from_home(
-        str(config.home), config.host,
+        str(config.home),
+        config.host,
         event_clock=_ObservedClock(observed_at) if observed_at is not None else None,
         hook_started_at=started if started is not None else time.monotonic(),
     )
@@ -263,8 +287,9 @@ def handle_request(config: RemoteServerConfig, body: dict[str, Any], *, started:
     if recaller is not None and payload.get("hook_event_name") == "UserPromptSubmit":
         asked = handler.resident_recall = _Asked(recaller)
     try:
-        result = handler.handle_payload(payload, record=record, local_record=False,
-                                        error_reply=body.get("error_reply") is True)
+        result = handler.handle_payload(
+            payload, record=record, local_record=False, error_reply=body.get("error_reply") is True
+        )
     finally:
         closing = time.monotonic()
         handler.close()
@@ -279,14 +304,20 @@ def handle_request(config: RemoteServerConfig, body: dict[str, Any], *, started:
     # the rest is its recall (rc13).
     # ``error``: the capture's code, or the class of what failed it when it was no contract error (a store that is
     # locked or broken), which the log would otherwise not name (review of rc13).
-    return {"result": result, "through": record.through if record is not None else None,
-            "reason": handler.diagnostics.last_reason,
-            "error": handler.diagnostics.capture_error_detail or handler.diagnostics.capture_error_type,
-            "recall_error": handler.diagnostics.recall_error_detail,
-            "recall_vector": handler.diagnostics.recall_vector_gap,
-            "retry": not handler.diagnostics.capture_settled, "warm": warm,
-            "build_ms": built, "capture_ms": handler.diagnostics.capture_total_ms,
-            "attach_ms": handler.diagnostics.runtime_attach_ms, "close_ms": closed}
+    return {
+        "result": result,
+        "through": record.through if record is not None else None,
+        "reason": handler.diagnostics.last_reason,
+        "error": handler.diagnostics.capture_error_detail or handler.diagnostics.capture_error_type,
+        "recall_error": handler.diagnostics.recall_error_detail,
+        "recall_vector": handler.diagnostics.recall_vector_gap,
+        "retry": not handler.diagnostics.capture_settled,
+        "warm": warm,
+        "build_ms": built,
+        "capture_ms": handler.diagnostics.capture_total_ms,
+        "attach_ms": handler.diagnostics.runtime_attach_ms,
+        "close_ms": closed,
+    }
 
 
 def build_app(config: RemoteServerConfig, *, warm: bool = False):
@@ -302,8 +333,10 @@ def build_app(config: RemoteServerConfig, *, warm: bool = False):
     client = load_shared_client(config.home, config.host)
     host_name = f"[{config.listen}]" if ":" in config.listen else config.listen
     tools = build_server(client, workspace=None)
-    kept = KeptRecaller(lambda: CodexHookHandler.from_home(str(config.home), config.host),
-                        stamp=lambda: file_stamp(client.runtime_config_path, *entry_files(config.home)))
+    kept = KeptRecaller(
+        lambda: CodexHookHandler.from_home(str(config.home), config.host),
+        stamp=lambda: file_stamp(client.runtime_config_path, *entry_files(config.home)),
+    )
     atexit.register(kept.close)
     if warm:
         kept.warm()
@@ -344,21 +377,36 @@ def build_app(config: RemoteServerConfig, *, warm: bool = False):
             _log.error("hook: the entry is unavailable: %s", str(exc)[:200])
             return JSONResponse({"error": "entry_unavailable"}, status_code=503)
         # The error is the capture's code (DEADLINE_EXCEEDED, SECRET_DETECTED, ...), never any of its text.
-        shares = ", ".join(f"{name} {answer[key]} ms" for name, key in (
-            ("build", "build_ms"), ("capture", "capture_ms"), ("attach", "attach_ms"), ("close", "close_ms"))
-            if answer.get(key) is not None)
-        _log.info("hook %s: %s%s%s%s%s, record through %s, %d ms%s%s", event, answer["reason"],
-                  f" ({answer['error']})" if answer.get("error") else "",
-                  f" ({answer['recall_error']})" if answer.get("recall_error") else "",
-                  f" (recall without vectors: {answer['recall_vector']})" if answer.get("recall_vector") else "",
-                  (", not stored, to be sent again" if config.host == "codex" else ", not stored")
-                  if answer.get("retry") else "", answer["through"],
-                  round((time.monotonic() - started) * 1000), f" ({shares})" if shares else "",
-                  f", warm recall {answer['warm']}" if answer.get("warm") else "")
+        shares = ", ".join(
+            f"{name} {answer[key]} ms"
+            for name, key in (
+                ("build", "build_ms"),
+                ("capture", "capture_ms"),
+                ("attach", "attach_ms"),
+                ("close", "close_ms"),
+            )
+            if answer.get(key) is not None
+        )
+        _log.info(
+            "hook %s: %s%s%s%s%s, record through %s, %d ms%s%s",
+            event,
+            answer["reason"],
+            f" ({answer['error']})" if answer.get("error") else "",
+            f" ({answer['recall_error']})" if answer.get("recall_error") else "",
+            f" (recall without vectors: {answer['recall_vector']})" if answer.get("recall_vector") else "",
+            (", not stored, to be sent again" if config.host == "codex" else ", not stored")
+            if answer.get("retry")
+            else "",
+            answer["through"],
+            round((time.monotonic() - started) * 1000),
+            f" ({shares})" if shares else "",
+            f", warm recall {answer['warm']}" if answer.get("warm") else "",
+        )
         return JSONResponse(answer)
 
     async def health(request: Request) -> JSONResponse:
         from ..._version import __version__
+
         return JSONResponse({"entry_id": client.entry_id, "host": config.host, "version": __version__})
 
     app.router.routes.append(Route("/hook", hook, methods=["POST"]))
@@ -395,6 +443,7 @@ class _TokenGate:
             headers = dict(scope.get("headers") or ())
             if not token_matches(headers.get(b"authorization"), self.token_sha256):
                 from starlette.responses import JSONResponse
+
                 client = scope.get("client") or ("?", 0)
                 _log.warning("refused %s %s from %s: no valid token", scope.get("method"), scope.get("path"), client[0])
                 await _drain(receive)
@@ -405,8 +454,9 @@ class _TokenGate:
 
 def log_to_file(home: Path) -> logging.Handler:
     """Send this server's lines, and warnings from the libraries it runs, to ``remote-server.log``."""
-    handler = logging.handlers.RotatingFileHandler(config_path(home).with_name(LOG_NAME), maxBytes=LOG_BYTES,
-                                                   backupCount=2, encoding="utf-8")
+    handler = logging.handlers.RotatingFileHandler(
+        config_path(home).with_name(LOG_NAME), maxBytes=LOG_BYTES, backupCount=2, encoding="utf-8"
+    )
     handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
     root = logging.getLogger()
     root.addHandler(handler)
@@ -427,6 +477,7 @@ def serve(config: RemoteServerConfig, *, env_file: Path | None = None) -> None:
         # importing LanceDB and opening the table: every handler of this process searches one store
         # (``vector.process_store.share``), whose helper is started now (``prestart``).
         from ...vector.process_store import prestart, share
+
         share()
         try:
             prestart()
@@ -434,11 +485,19 @@ def serve(config: RemoteServerConfig, *, env_file: Path | None = None) -> None:
             # Without it each recall starts its own helper, as before: slower, never a reason not to serve.
             _log.warning("could not start a vector helper ahead: %s", type(exc).__name__)
     from ..._version import __version__
-    _log.info("serving the %s entry at %s on %s:%d (%s)", config.host, config.home, config.listen, config.port,
-              __version__)
+
+    _log.info(
+        "serving the %s entry at %s on %s:%d (%s)", config.host, config.home, config.listen, config.port, __version__
+    )
     # log_config=None keeps uvicorn's own errors in the file above instead of a console there is none of.
-    uvicorn.run(build_app(config, warm=True), host=config.listen, port=config.port, log_level="warning", log_config=None,
-                timeout_graceful_shutdown=5)
+    uvicorn.run(
+        build_app(config, warm=True),
+        host=config.listen,
+        port=config.port,
+        log_level="warning",
+        log_config=None,
+        timeout_graceful_shutdown=5,
+    )
 
 
 def _absolute(value: str, field: str) -> Path:
@@ -459,17 +518,24 @@ def main(argv: list[str] | None = None) -> int:
     setup.add_argument("--listen", required=True, help="this machine's private (tailnet) address")
     setup.add_argument("--port", required=True, type=int)
     setup.add_argument("--token-sha256", required=True, help="what remote_client token printed on the client")
-    run.add_argument("--env-file", default=None, help="absolute file holding the credential names the runtime "
-                     "config declares, read in place")
+    run.add_argument(
+        "--env-file",
+        default=None,
+        help="absolute file holding the credential names the runtime config declares, read in place",
+    )
     args = parser.parse_args(argv)
     home = _absolute(args.home, "home")
     try:
         if args.command == "configure":
-            path = write_server_config(home, args.host, listen=args.listen, port=args.port, token_sha256=args.token_sha256)
+            path = write_server_config(
+                home, args.host, listen=args.listen, port=args.port, token_sha256=args.token_sha256
+            )
             print(json.dumps({"status": "configured", "config": str(path)}))
             return 0
-        serve(load_server_config(home, args.host),
-              env_file=_absolute(args.env_file, "env_file") if args.env_file else None)
+        serve(
+            load_server_config(home, args.host),
+            env_file=_absolute(args.env_file, "env_file") if args.env_file else None,
+        )
     except (RemoteServerError, CodexConfigError) as exc:
         raise SystemExit(str(exc)) from None
     return 0

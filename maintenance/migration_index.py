@@ -3,6 +3,7 @@
 The job orchestrator owns its lock and persistence. This module only schedules
 one bounded Core page; vectors remain derived and no model is called here.
 """
+
 # Historical callers also import maintenance.migrate_v2 without the package alias.
 from scope_recall.contracts import TrustedContext
 from scope_recall.core.storage import SQLiteStorage
@@ -29,8 +30,6 @@ def queue_index_page(binding, value: dict, *, limit: int = 128) -> dict:
         index_watermark=list(page["watermark"]),
         index_queue_complete=page["finished"],
         vector_state="queued",
-        next_agent_action="start_existing_runtime_worker"
-        if page["finished"]
-        else "queue_next_index_page",
+        next_agent_action="start_existing_runtime_worker" if page["finished"] else "queue_next_index_page",
     )
     return value

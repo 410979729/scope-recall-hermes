@@ -37,6 +37,7 @@ Not responsible for: reading or writing any of these timestamps
 (``core/candidate_intake.py`` and ``core/candidate_sweeps.py`` own the SQL), or
 for choosing the evidence set.
 """
+
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
@@ -46,6 +47,7 @@ QUIET_SECONDS = 900
 
 #: Longest a candidate may keep accumulating before being judged anyway.
 MAX_DEFERRAL_SECONDS = 3600
+
 
 def parse_stamp(value: object) -> datetime | None:
     """A stored time; one written without a zone is UTC, and anything that is not a time is ``None``."""

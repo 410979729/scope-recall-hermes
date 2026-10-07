@@ -1,4 +1,5 @@
 """Shared trusted runtime glue contracts."""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -35,12 +36,16 @@ def test_memory_times_reach_the_model_in_the_hosts_zone():
     from scope_recall.core.recall_budget import canonical_render_json
 
     said = "TEST told at 2026-09-23T06:52:03Z"
-    packet = {"items": [{"content": said, "occurred_at": "2026-09-23T06:52:03.250000Z"}, {"content": "TEST undated"}],
-              "status": "ok"}
+    packet = {
+        "items": [{"content": said, "occurred_at": "2026-09-23T06:52:03.250000Z"}, {"content": "TEST undated"}],
+        "status": "ok",
+    }
     new_york, shanghai = timezone(timedelta(hours=-4)), timezone(timedelta(hours=8))
 
     def shown(zone):
-        return json.loads(render_host_recall_context(canonical_render_json(packet), zone=zone).split("\n", 1)[1])["items"]
+        return json.loads(render_host_recall_context(canonical_render_json(packet), zone=zone).split("\n", 1)[1])[
+            "items"
+        ]
 
     assert shown(new_york)[0]["occurred_at"] == "2026-09-23T02:52:03.250000-04:00"
     assert shown(shanghai)[0]["occurred_at"] == "2026-09-23T14:52:03.250000+08:00"
@@ -49,11 +54,22 @@ def test_memory_times_reach_the_model_in_the_hosts_zone():
     here = datetime(2026, 9, 23, 6, 52, 3, 250000, tzinfo=timezone.utc).astimezone().isoformat()
     assert shown(None)[0]["occurred_at"] == here, "a host without a zone of its own gets this machine's"
 
-    result = envelope("TEST-reply", {
-        "as_of": "2026-09-23T06:52:03Z",
-        "items": [{"occurred_at": "2026-09-23T06:52:03+00:00", "valid_from": "2026-09-01T04:00:00Z", "valid_to": None,
-                   "recorded_at": "TEST not a time"}],
-    }, origin="memory_reinjection", zone=new_york)["result"]
+    result = envelope(
+        "TEST-reply",
+        {
+            "as_of": "2026-09-23T06:52:03Z",
+            "items": [
+                {
+                    "occurred_at": "2026-09-23T06:52:03+00:00",
+                    "valid_from": "2026-09-01T04:00:00Z",
+                    "valid_to": None,
+                    "recorded_at": "TEST not a time",
+                }
+            ],
+        },
+        origin="memory_reinjection",
+        zone=new_york,
+    )["result"]
     assert result["as_of"] == result["items"][0]["occurred_at"] == "2026-09-23T02:52:03-04:00"
     assert result["items"][0]["valid_from"] == "2026-09-01T00:00:00-04:00"
     assert (result["items"][0]["valid_to"], result["items"][0]["recorded_at"]) == (None, "TEST not a time")
@@ -120,7 +136,9 @@ def test_default_runtime_config_rejects_foreign_binding(tmp_path: Path):
     data = tmp_path / "owned-data"
     data.mkdir()
     binding = InstanceBinding("TEST-agent", "TEST-installation", data, frozenset({"TEST-scope"}), True)
-    foreign = dict(_runtime_payload(binding), binding={**_runtime_payload(binding)["binding"], "agent_id": "OTHER-agent"})
+    foreign = dict(
+        _runtime_payload(binding), binding={**_runtime_payload(binding)["binding"], "agent_id": "OTHER-agent"}
+    )
     (data / "runtime-config.json").write_text(json.dumps(foreign), encoding="utf-8")
     attached = attach_trusted_host_runtime(
         config_path=None,
@@ -160,8 +178,15 @@ def test_a_delivered_view_is_blanked_only_for_a_withdrawal_after_it():
     compiled one capture ago: blanking on any move blanked most explicit recalls there."""
     from scope_recall.adapters.tool_common import FENCED_RECALL, fence_epoch
 
-    view = {"memory_epoch": 7, "status": "ok", "items": [{"content": "TEST 内容"}], "gaps": [], "unmet_needs": [],
-            "answerability": "supported", "coverage": "complete_for_query"}
+    view = {
+        "memory_epoch": 7,
+        "status": "ok",
+        "items": [{"content": "TEST 内容"}],
+        "gaps": [],
+        "unmet_needs": [],
+        "answerability": "supported",
+        "coverage": "complete_for_query",
+    }
     assert fence_epoch(view, 7, FENCED_RECALL) is view
     assert fence_epoch(view, 9, FENCED_RECALL, retracted=lambda since: False) is view, "only captures moved the epoch"
     asked = []

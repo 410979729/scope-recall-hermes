@@ -5,6 +5,7 @@ the accepted spelling is UTC only, the name ``as_of`` was already in the error's
 and the keyword was reported instead.  The same field is what a failed derivation hands back
 to the model for its one repair attempt, where ``required`` told it nothing either.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -38,12 +39,23 @@ def test_a_model_writes_the_instant_back_in_the_zone_it_was_shown(tmp_path):
     from tests.v11_support import context
 
     trusted = context(tmp_path / "TEST-db")
-    request = validate_model_request("recall_request", _recall(mode="as_of", as_of="2026-09-17T08:00:00.5-04:00"), trusted)
+    request = validate_model_request(
+        "recall_request", _recall(mode="as_of", as_of="2026-09-17T08:00:00.5-04:00"), trusted
+    )
     assert request["as_of"] == "2026-09-17T12:00:00.5Z"
-    revise = validate_model_request("revise_request", {
-        "protocol_version": "1.1", "target_ref": "TEST-claim", "expected_revision": 1, "new_value": "TEST",
-        "conditions": [], "source_evidence_refs": ["TEST-source@1"], "valid_from": "2026-09-17T20:00:00+08:00",
-    }, trusted)
+    revise = validate_model_request(
+        "revise_request",
+        {
+            "protocol_version": "1.1",
+            "target_ref": "TEST-claim",
+            "expected_revision": 1,
+            "new_value": "TEST",
+            "conditions": [],
+            "source_evidence_refs": ["TEST-source@1"],
+            "valid_from": "2026-09-17T20:00:00+08:00",
+        },
+        trusted,
+    )
     assert revise["valid_from"] == "2026-09-17T12:00:00Z"
     for spelling in ("2026-09-17", "2026-09-17T08:00:00", "2026-09-17T08:00:00-00:00", "2026-09-17T08:00:00+24:00"):
         with pytest.raises(ContractError) as rejected:

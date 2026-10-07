@@ -4,6 +4,7 @@ A claim version becomes a candidate when C2 registers it; sources that mention
 it afterwards add evidence and, once that evidence settles, one evaluation is
 queued per open question.  Nothing here writes a claim or grants authority.
 """
+
 from __future__ import annotations
 
 import json
@@ -11,11 +12,22 @@ import json
 from ..contracts import ContractError
 from . import lineage
 from .candidate_lifecycle import (
-    RULE_VERSION, SOURCE_MATCH_LIMIT, CandidateRegistration, CandidateSourceTrigger,
+    RULE_VERSION,
+    SOURCE_MATCH_LIMIT,
+    CandidateRegistration,
+    CandidateSourceTrigger,
 )
 from .candidate_tables import (
-    ECHO_ORIGINS, EMPTY_FINGERPRINT, JUDGEABLE_STATES, CandidateTables, encode_refs, is_reachable, reachable_sql,
-    rule, settled_reason, utc,
+    ECHO_ORIGINS,
+    EMPTY_FINGERPRINT,
+    JUDGEABLE_STATES,
+    CandidateTables,
+    encode_refs,
+    is_reachable,
+    reachable_sql,
+    rule,
+    settled_reason,
+    utc,
 )
 from .events import lexical_terms
 from .evidence_question import (
@@ -63,7 +75,12 @@ class CandidateIntake(CandidateTables):
         rule_version = rule(rule_version)
         if type(schedule_initial) is not bool:
             raise ContractError("INPUT_INVALID", "candidate_schedule_initial")
-        if type(candidate_ref) is not str or not candidate_ref or type(candidate_revision) is not int or candidate_revision < 1:
+        if (
+            type(candidate_ref) is not str
+            or not candidate_ref
+            or type(candidate_revision) is not int
+            or candidate_revision < 1
+        ):
             raise ContractError("INPUT_INVALID", "candidate_ref")
         candidate = self._tx.claims.version(candidate_ref, candidate_revision)
         if candidate is None:
@@ -74,7 +91,8 @@ class CandidateIntake(CandidateTables):
         prior = self._lifecycle_row(candidate_ref, candidate_revision)
         state, reason, updated_at = _registration_target(candidate, prior, rule_version, now)
         if state == "pending_evaluation" and needs_absent_person(
-                candidate.payload, self._cited_origins(candidate.ref, candidate.revision)):
+            candidate.payload, self._cited_origins(candidate.ref, candidate.revision)
+        ):
             # See core/evidence_question.py: only the person's own words can
             # promote it, and their consolidation proposes it with that authority.
             state, reason, updated_at = "archived", PERSON_ABSENT_REASON, now
@@ -86,16 +104,26 @@ class CandidateIntake(CandidateTables):
             if state == "pending_evaluation" and schedule_initial:
                 evaluation_id, queued = self._schedule(candidate, now=now, rule_version=rule_version)
             elif state == "pending_evaluation":
-                self._move(candidate.ref, candidate.revision, "waiting_evidence", "evaluated_waiting_evidence",
-                           now=now, evaluated_at=now)
+                self._move(
+                    candidate.ref,
+                    candidate.revision,
+                    "waiting_evidence",
+                    "evaluated_waiting_evidence",
+                    now=now,
+                    evaluated_at=now,
+                )
             current = self._lifecycle_row(candidate.ref, candidate.revision)
             state, reason = current["processing_state"], current["reason"]
         disposition = "inserted" if prior is None else "updated"
         if prior is not None and (prior["processing_state"], prior["reason"]) == (state, reason) and not queued:
             disposition = "unchanged"
-        return CandidateRegistration(candidate.ref, candidate.revision, state, reason, disposition, evaluation_id, queued)
+        return CandidateRegistration(
+            candidate.ref, candidate.revision, state, reason, disposition, evaluation_id, queued
+        )
 
-    def _write_lifecycle(self, candidate, state: str, reason: str, rule_version: str, now: str, updated_at: str) -> None:
+    def _write_lifecycle(
+        self, candidate, state: str, reason: str, rule_version: str, now: str, updated_at: str
+    ) -> None:
         """Upsert the candidate's row; older revisions of the claim can no longer be judged."""
         conn = self._write()
         conn.execute(
@@ -113,8 +141,19 @@ class CandidateIntake(CandidateTables):
                 ON CONFLICT(candidate_ref,candidate_revision) DO UPDATE SET
                     processing_state=excluded.processing_state,reason=excluded.reason,
                     rule_version=excluded.rule_version,updated_at=excluded.updated_at""",
-            (candidate.ref, candidate.revision, candidate.scope_id, candidate.project_id, candidate.branch_id,
-             state, reason, rule_version, EMPTY_FINGERPRINT, now, updated_at),
+            (
+                candidate.ref,
+                candidate.revision,
+                candidate.scope_id,
+                candidate.project_id,
+                candidate.branch_id,
+                state,
+                reason,
+                rule_version,
+                EMPTY_FINGERPRINT,
+                now,
+                updated_at,
+            ),
         )
         conn.execute(
             "DELETE FROM candidate_trigger_terms WHERE candidate_ref=? AND candidate_revision=?",
@@ -136,15 +175,22 @@ class CandidateIntake(CandidateTables):
         if source is None or source.suppressed or (source.event or {}).get("origin") in ECHO_ORIGINS:
             return False
         if (source.scope_id, source.project_id, source.branch_id) != (
-            candidate.scope_id, candidate.project_id, candidate.branch_id,
+            candidate.scope_id,
+            candidate.project_id,
+            candidate.branch_id,
         ):
             return False
-        return self._write().execute(
-            """INSERT INTO candidate_evidence(
+        return (
+            self._write()
+            .execute(
+                """INSERT INTO candidate_evidence(
                 candidate_ref,candidate_revision,source_ref,source_revision,observed_at)
                 VALUES (?,?,?,?,?) ON CONFLICT DO NOTHING""",
-            (candidate.ref, candidate.revision, source_ref, source_revision, now),
-        ).rowcount == 1
+                (candidate.ref, candidate.revision, source_ref, source_revision, now),
+            )
+            .rowcount
+            == 1
+        )
 
     def observe_source(
         self,
@@ -176,8 +222,14 @@ class CandidateIntake(CandidateTables):
             (source_ref, source_revision),
         ).fetchone()
         if prior is not None and not (_resume and prior["truncated"]):
-            return CandidateSourceTrigger(source_ref, source_revision, "duplicate", prior["matched_count"],
-                                          prior["scheduled_count"], bool(prior["truncated"]))
+            return CandidateSourceTrigger(
+                source_ref,
+                source_revision,
+                "duplicate",
+                prior["matched_count"],
+                prior["scheduled_count"],
+                bool(prior["truncated"]),
+            )
         # Only first-hand testimony can pose a new question (``question_digest``).  Other evidence is recorded for
         # the next evaluation and changes nothing else about the candidate: marked pending and its clock reset,
         # 2,045 candidates on the pilot waited for an evaluation nothing would schedule, and a tool output every
@@ -194,8 +246,11 @@ class CandidateIntake(CandidateTables):
                 if recheck:
                     # Read before this write: it may have been archived, suppressed or resolved since.
                     lifecycle = self._lifecycle_row(candidate.ref, candidate.revision)
-                    if (candidate.suppressed or lifecycle is None
-                            or not is_reachable(lifecycle["processing_state"], lifecycle["reason"])):
+                    if (
+                        candidate.suppressed
+                        or lifecycle is None
+                        or not is_reachable(lifecycle["processing_state"], lifecycle["reason"])
+                    ):
                         continue
                 if not self._add_evidence(candidate, source_ref, source_revision, now):
                     continue
@@ -213,8 +268,10 @@ class CandidateIntake(CandidateTables):
             return matched, scheduled
 
         def here() -> list[tuple[str, int]]:
-            return [(row["candidate_ref"], row["candidate_revision"])
-                    for row in self._candidates_mentioned_by(source, limit + 1)]
+            return [
+                (row["candidate_ref"], row["candidate_revision"])
+                for row in self._candidates_mentioned_by(source, limit + 1)
+            ]
 
         rows = here() if _matched is None else _matched
         matched, scheduled = link(rows, recheck=_matched is not None)
@@ -264,8 +321,10 @@ class CandidateIntake(CandidateTables):
         # waited for the GIL in a busy Hermes gateway (``lexical_index.index_terms``; review of 3.7.6).  The CROSS JOIN
         # starts from the terms: from the candidates, SQLite looked every term up for each reachable one, 3-12 s for a
         # tool output of 5,001 terms beside 3,000-10,000 candidates.
-        row = self._read().execute(
-            f"""SELECT json_group_array(json_array(candidate_ref,candidate_revision,payload_json,updated_at)) FROM (
+        row = (
+            self._read()
+            .execute(
+                f"""SELECT json_group_array(json_array(candidate_ref,candidate_revision,payload_json,updated_at)) FROM (
                 SELECT DISTINCT l.candidate_ref,l.candidate_revision,v.payload_json,l.updated_at
                 FROM json_each(?) j CROSS JOIN candidate_trigger_terms t ON t.term=j.value
                 JOIN candidate_lifecycle l USING(candidate_ref,candidate_revision)
@@ -274,17 +333,29 @@ class CandidateIntake(CandidateTables):
                 WHERE {context}
                   AND l.scope_id=? AND l.project_id IS ? AND l.branch_id IS ?
                   AND c.current_revision=l.candidate_revision AND c.read_blocked=0 AND c.suppressed=0
-                  AND {reachable_sql('l.')}
+                  AND {reachable_sql("l.")}
                   AND NOT EXISTS(SELECT 1 FROM candidate_evidence e
                       WHERE e.candidate_ref=l.candidate_ref AND e.candidate_revision=l.candidate_revision
                         AND e.source_ref=? AND e.source_revision=?))""",
-            (json.dumps(terms, ensure_ascii=False), *params, source.scope_id, source.project_id, source.branch_id,
-             source.ref, source.revision),
-        ).fetchone()
+                (
+                    json.dumps(terms, ensure_ascii=False),
+                    *params,
+                    source.scope_id,
+                    source.project_id,
+                    source.branch_id,
+                    source.ref,
+                    source.revision,
+                ),
+            )
+            .fetchone()
+        )
         # In the order the statement gave them: by when each was last updated, then by ref and revision.
-        found = [{"candidate_ref": ref, "candidate_revision": revision, "payload_json": payload}
-                 for _updated, ref, revision, payload in sorted(
-                     (updated, ref, revision, payload) for ref, revision, payload, updated in json.loads(row[0]))]
+        found = [
+            {"candidate_ref": ref, "candidate_revision": revision, "payload_json": payload}
+            for _updated, ref, revision, payload in sorted(
+                (updated, ref, revision, payload) for ref, revision, payload, updated in json.loads(row[0])
+            )
+        ]
         if first_hand:
             return found[:limit]
         letters = _letters_and_digits(source.event["content"])
@@ -307,10 +378,15 @@ class CandidateIntake(CandidateTables):
         row = self._lifecycle_row(candidate.ref, candidate.revision)
         if row is None:
             return None, False
-        queued = self._read().execute(
-            "SELECT 1 FROM candidate_evaluations WHERE candidate_ref=? AND candidate_revision=? AND state='queued'",
-            (candidate.ref, candidate.revision),
-        ).fetchone() is not None
+        queued = (
+            self._read()
+            .execute(
+                "SELECT 1 FROM candidate_evaluations WHERE candidate_ref=? AND candidate_revision=? AND state='queued'",
+                (candidate.ref, candidate.revision),
+            )
+            .fetchone()
+            is not None
+        )
         if settled_reason(row, now, has_queued_evaluation=queued) is None:
             return None, False
         return self._schedule(candidate, now=now, rule_version=rule_version)
@@ -331,8 +407,10 @@ class CandidateIntake(CandidateTables):
             # A candidate registered before this rule: archive it the way registration now would.
             self._retire_evaluations(candidate.ref, candidate.revision, PERSON_ABSENT_REASON, now)
             self._move(candidate.ref, candidate.revision, "archived", PERSON_ABSENT_REASON, now=now, dormant_at=now)
-            conn.execute("DELETE FROM candidate_trigger_terms WHERE candidate_ref=? AND candidate_revision=?",
-                         (candidate.ref, candidate.revision))
+            conn.execute(
+                "DELETE FROM candidate_trigger_terms WHERE candidate_ref=? AND candidate_revision=?",
+                (candidate.ref, candidate.revision),
+            )
             return None, False
         refs, digest = self._question(candidate.ref, candidate.revision)
         if not refs:
@@ -345,8 +423,9 @@ class CandidateIntake(CandidateTables):
             if verdicts >= AUTOMATIC_VERDICTS and not self._restated_in_unjudged(payload, refs, judged):
                 unanswerable = REPEAT_WITHOUT_RESTATEMENT_REASON
         if unanswerable is not None:
-            self._record_unanswerable(candidate, refs, digest, unanswerable, epoch=epoch, now=now,
-                                      rule_version=rule_version)
+            self._record_unanswerable(
+                candidate, refs, digest, unanswerable, epoch=epoch, now=now, rule_version=rule_version
+            )
             return None, False
         inserted = conn.execute(
             """INSERT INTO candidate_evaluations(
@@ -384,11 +463,13 @@ class CandidateIntake(CandidateTables):
                 # Unreadable evidence is the worker's fence to judge, not this one.
                 return None
             evidence.append(evidence_text(source))
-        return (unanswerable_reason(payload, evidence)
-                or rootless(self._cited_origins(candidate.ref, candidate.revision), evidence))
+        return unanswerable_reason(payload, evidence) or rootless(
+            self._cited_origins(candidate.ref, candidate.revision), evidence
+        )
 
-    def _record_unanswerable(self, candidate, refs, digest: str, reason: str, *, epoch: int, now: str,
-                             rule_version: str) -> None:
+    def _record_unanswerable(
+        self, candidate, refs, digest: str, reason: str, *, epoch: int, now: str, rule_version: str
+    ) -> None:
         """Answer the question without a model: recorded like a verdict, so it is never asked again.
 
         The row carries no work item and no model attempt.  Its fingerprint is
@@ -446,18 +527,27 @@ class CandidateIntake(CandidateTables):
         subject = "candidate:" + candidate_ref
         if not self._tx.work.enqueue("evaluate_candidate", subject, evaluation_id, available_at=now):
             raise ContractError("STORAGE_UNAVAILABLE", "candidate_work_missing")
-        return self._read().execute(
-            """SELECT work_id FROM work_items WHERE work_type='evaluate_candidate'
+        return (
+            self._read()
+            .execute(
+                """SELECT work_id FROM work_items WHERE work_type='evaluate_candidate'
                AND subject_ref=? AND subject_revision=?""",
-            (subject, evaluation_id),
-        ).fetchone()[0]
+                (subject, evaluation_id),
+            )
+            .fetchone()[0]
+        )
 
     def pending_source_pages(self) -> int:
         """The scoped durable remainder, including pages with no work yet."""
         context, params = self._context("s.")
-        return self._read().execute(
-            f"SELECT count(*) {_TRUNCATED_TRIGGERS.format(context=context)}", params,
-        ).fetchone()[0]
+        return (
+            self._read()
+            .execute(
+                f"SELECT count(*) {_TRUNCATED_TRIGGERS.format(context=context)}",
+                params,
+            )
+            .fetchone()[0]
+        )
 
     def next_source_page(self) -> tuple[str, int, list[tuple[str, int]] | None] | None:
         """The next page a truncated trigger owes, chosen in a read: its source and the candidates it names.
@@ -470,21 +560,33 @@ class CandidateIntake(CandidateTables):
         The candidates are ``None`` when the source is gone: that write closes the trigger.
         """
         context, params = self._context("s.")
-        row = self._read().execute(
-            f"""SELECT t.source_ref,t.source_revision {_TRUNCATED_TRIGGERS.format(context=context)}
-                ORDER BY t.processed_at,t.source_ref,t.source_revision LIMIT 1""", params,
-        ).fetchone()
+        row = (
+            self._read()
+            .execute(
+                f"""SELECT t.source_ref,t.source_revision {_TRUNCATED_TRIGGERS.format(context=context)}
+                ORDER BY t.processed_at,t.source_ref,t.source_revision LIMIT 1""",
+                params,
+            )
+            .fetchone()
+        )
         if row is None:
             return None
         source = self._tx.source(row["source_ref"], row["source_revision"])
         current = self._tx.source_current(row["source_ref"])
         if source is None or source.suppressed or current is None or current.revision != source.revision:
             return row["source_ref"], row["source_revision"], None
-        return row["source_ref"], row["source_revision"], [
-            (match["candidate_ref"], match["candidate_revision"])
-            for match in self._candidates_mentioned_by(source, SOURCE_MATCH_LIMIT + 1)]
+        return (
+            row["source_ref"],
+            row["source_revision"],
+            [
+                (match["candidate_ref"], match["candidate_revision"])
+                for match in self._candidates_mentioned_by(source, SOURCE_MATCH_LIMIT + 1)
+            ],
+        )
 
-    def resume_source_pages(self, *, now: str, page: tuple[str, int, list[tuple[str, int]] | None] | None = None) -> int:
+    def resume_source_pages(
+        self, *, now: str, page: tuple[str, int, list[tuple[str, int]] | None] | None = None
+    ) -> int:
         """Continue one bounded page using persisted evidence membership as cursor.
 
         With ``page`` (from ``next_source_page``) the candidates are the ones that read found; without it
@@ -492,10 +594,15 @@ class CandidateIntake(CandidateTables):
         """
         if page is None:
             context, params = self._context("s.")
-            row = self._read().execute(
-                f"""SELECT t.source_ref,t.source_revision {_TRUNCATED_TRIGGERS.format(context=context)}
-                    ORDER BY t.processed_at,t.source_ref,t.source_revision LIMIT 1""", params,
-            ).fetchone()
+            row = (
+                self._read()
+                .execute(
+                    f"""SELECT t.source_ref,t.source_revision {_TRUNCATED_TRIGGERS.format(context=context)}
+                    ORDER BY t.processed_at,t.source_ref,t.source_revision LIMIT 1""",
+                    params,
+                )
+                .fetchone()
+            )
             if row is None:
                 return 0
             source_ref, source_revision, matched = row["source_ref"], row["source_revision"], None
@@ -503,14 +610,20 @@ class CandidateIntake(CandidateTables):
             # A source the read found gone comes back as ``None`` candidates, found again here: the source is
             # checked first, so the trigger closes below.
             source_ref, source_revision, matched = page
-            still = self._read().execute(
-                "SELECT truncated FROM candidate_source_triggers WHERE source_ref=? AND source_revision=?",
-                (source_ref, source_revision)).fetchone()
+            still = (
+                self._read()
+                .execute(
+                    "SELECT truncated FROM candidate_source_triggers WHERE source_ref=? AND source_revision=?",
+                    (source_ref, source_revision),
+                )
+                .fetchone()
+            )
             if still is None or not still["truncated"]:
                 return 0
         try:
-            return self.observe_source(source_ref, source_revision, observed_at=now, _resume=True,
-                                       _matched=matched).matched
+            return self.observe_source(
+                source_ref, source_revision, observed_at=now, _resume=True, _matched=matched
+            ).matched
         except ContractError as exc:
             if exc.code != "SOURCE_MISSING":
                 raise
@@ -603,10 +716,16 @@ def _speaks_to(payload, letters: str) -> bool:
 def _trigger_terms(candidate) -> tuple[str, ...]:
     payload = candidate.payload
     conditions = payload.get("conditions")
-    text = " ".join(str(value) for value in (
-        payload.get("subject", ""), payload.get("predicate", ""), payload.get("value_text", ""),
-        " ".join(conditions) if isinstance(conditions, list) else "",
-    ) if value)
+    text = " ".join(
+        str(value)
+        for value in (
+            payload.get("subject", ""),
+            payload.get("predicate", ""),
+            payload.get("value_text", ""),
+            " ".join(conditions) if isinstance(conditions, list) else "",
+        )
+        if value
+    )
     return lexical_terms(text)[:64]
 
 

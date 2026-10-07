@@ -26,6 +26,7 @@ has registered yet", not "everything is current".
 Not responsible for: acting on a stale process (doctor reports, the operator
 restarts), or any form of process control.
 """
+
 from __future__ import annotations
 
 import json
@@ -89,9 +90,7 @@ class RunningCodeRecord:
                 start_token=None if raw.get("start_token") is None else str(raw["start_token"]),
                 host_adapter=None if raw.get("host_adapter") is None else str(raw["host_adapter"]),
                 installation_id=None if raw.get("installation_id") is None else str(raw["installation_id"]),
-                python_executable=(
-                    None if raw.get("python_executable") is None else str(raw["python_executable"])
-                ),
+                python_executable=(None if raw.get("python_executable") is None else str(raw["python_executable"])),
             )
         except (KeyError, TypeError, ValueError):
             return None

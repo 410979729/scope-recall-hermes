@@ -23,6 +23,7 @@ Run it against a copy, never the live store::
 Not responsible for: building the shadow copy or supplying credentials -- the
 runner takes an instance root and works on a copy of it.
 """
+
 from __future__ import annotations
 
 import re
@@ -33,22 +34,23 @@ import re
 #: version quoted one instance's real conversations, an installation id and a
 #: project id, in a repository anyone can read.
 ANSWERABLE: tuple[tuple[str, str], ...] = (
-    ("What installation id does this instance report?",
-     r"install:[0-9a-f]{8,}"),
-    ("Which API protocol does the configured chat model speak, and how large is its context?",
-     r"(?is)(protocol|格式|协议).{0,400}(context|上下文)"),
-    ("What has to be watched when one instance inherits another's memory?",
-     r"(?is)(inherit|继承).{0,40}(workflow|工作流|bulk|整库)"),
-    ("What does the screen-reading helper script do?",
-     r"(?is)ocr.{0,600}(recognis|识别|screen|截图)"),
-    ("Which identifier does the acceptance project use?",
-     r"[A-Z]{3,}-[0-9a-f]{6,}"),
-    ("What happens if only the suppressed flag is cleared during a recovery?",
-     r"(?is)(suppressed).{0,200}(not enough|still|仍|不够)"),
-    ("How far behind its upstream is the host application?",
-     r"(?is)(behind|落后).{0,20}\d+"),
-    ("What went wrong with capture admission on the other host?",
-     r"(?is)(capture|捕获).{0,40}(admission|准入)"),
+    ("What installation id does this instance report?", r"install:[0-9a-f]{8,}"),
+    (
+        "Which API protocol does the configured chat model speak, and how large is its context?",
+        r"(?is)(protocol|格式|协议).{0,400}(context|上下文)",
+    ),
+    (
+        "What has to be watched when one instance inherits another's memory?",
+        r"(?is)(inherit|继承).{0,40}(workflow|工作流|bulk|整库)",
+    ),
+    ("What does the screen-reading helper script do?", r"(?is)ocr.{0,600}(recognis|识别|screen|截图)"),
+    ("Which identifier does the acceptance project use?", r"[A-Z]{3,}-[0-9a-f]{6,}"),
+    (
+        "What happens if only the suppressed flag is cleared during a recovery?",
+        r"(?is)(suppressed).{0,200}(not enough|still|仍|不够)",
+    ),
+    ("How far behind its upstream is the host application?", r"(?is)(behind|落后).{0,20}\d+"),
+    ("What went wrong with capture admission on the other host?", r"(?is)(capture|捕获).{0,40}(admission|准入)"),
 )
 
 #: Questions the corpus cannot answer. The packet must say so rather than

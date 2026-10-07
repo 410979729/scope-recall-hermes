@@ -1,4 +1,5 @@
 """Deny-first governance and dependency traversal in the sole truth transaction."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -9,13 +10,17 @@ from ..contracts import ContractError
 from . import lexical_index, lineage
 from .claims import canonical_time
 
-OBJECT_TABLES = {'event':('source_events','event_id'),'claim':('claims','claim_id'),
-                 'episode':('episodes','episode_id'),'artifact':('artifacts','artifact_id'),
-                 'reference':('reference_bindings','reference_id')}
+OBJECT_TABLES = {
+    "event": ("source_events", "event_id"),
+    "claim": ("claims", "claim_id"),
+    "episode": ("episodes", "episode_id"),
+    "artifact": ("artifacts", "artifact_id"),
+    "reference": ("reference_bindings", "reference_id"),
+}
 
 
 def canonical(value):
-    return json.dumps(value,ensure_ascii=False,sort_keys=True,separators=(",",":"),allow_nan=False)
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
 
 
 def retraction_after(conn, scope_ids, epoch: int) -> bool:
@@ -30,11 +35,14 @@ def retraction_after(conn, scope_ids, epoch: int) -> bool:
     if not scopes:
         return False
     marks = ",".join("?" for _ in scopes)
-    return conn.execute(
-        f"""SELECT 1 FROM deletion_operations o WHERE o.memory_epoch>?
+    return (
+        conn.execute(
+            f"""SELECT 1 FROM deletion_operations o WHERE o.memory_epoch>?
             AND EXISTS(SELECT 1 FROM json_each(o.scope_ids_json) s WHERE s.value IN ({marks})) LIMIT 1""",
-        (epoch, *scopes),
-    ).fetchone() is not None
+            (epoch, *scopes),
+        ).fetchone()
+        is not None
+    )
 
 
 def purge_work_ref(operation_id: str, scope_id: str) -> str:
@@ -53,13 +61,15 @@ def purge_work_parts(ref: str) -> tuple[str, str]:
     return operation_id, scope_id
 
 
-def group_digest(binding,scope_id,project_id,branch_id,group_key):
-    return hashlib.sha256(canonical([binding.installation_id,scope_id,project_id,branch_id,group_key]).encode()).hexdigest()
+def group_digest(binding, scope_id, project_id, branch_id, group_key):
+    return hashlib.sha256(
+        canonical([binding.installation_id, scope_id, project_id, branch_id, group_key]).encode()
+    ).hexdigest()
 
 
 def purged_group_key(group_key: str) -> str:
     """The key a purge gives a deleted source group's rows (``purge_sqlite``), by which they are still found."""
-    return "removed-"+hashlib.sha256(group_key.encode()).hexdigest()
+    return "removed-" + hashlib.sha256(group_key.encode()).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -73,24 +83,34 @@ class DeleteTarget:
 
 
 class Deletions:
-    def __init__(self,tx): self._tx = tx
+    def __init__(self, tx):
+        self._tx = tx
 
-    def target(self,ref: str) -> DeleteTarget:
-        conn,ctx = self._tx._check(),self._tx.context
+    def target(self, ref: str) -> DeleteTarget:
+        conn, ctx = self._tx._check(), self._tx.context
         # No target body is returned during eligibility/ownership checks.
         if ref.startswith("event-"):
-            row = conn.execute("SELECT max(source_revision) AS revision,scope_id,project_id,branch_id FROM source_events WHERE event_id=? GROUP BY event_id",(ref,)).fetchone()
+            row = conn.execute(
+                "SELECT max(source_revision) AS revision,scope_id,project_id,branch_id FROM source_events WHERE event_id=? GROUP BY event_id",
+                (ref,),
+            ).fetchone()
             kind = "event"
-        elif (kind:=ref.split('-',1)[0]) in OBJECT_TABLES:
-            table,key=OBJECT_TABLES[kind]
-            row = conn.execute(f"SELECT current_revision AS revision,scope_id,project_id,branch_id FROM {table} WHERE {key}=?",(ref,)).fetchone()
+        elif (kind := ref.split("-", 1)[0]) in OBJECT_TABLES:
+            table, key = OBJECT_TABLES[kind]
+            row = conn.execute(
+                f"SELECT current_revision AS revision,scope_id,project_id,branch_id FROM {table} WHERE {key}=?", (ref,)
+            ).fetchone()
         else:
-            raise ContractError("ACCESS_DENIED","target_unavailable")
-        if row is None or row["scope_id"] not in ctx.allowed_scope_ids or (row["project_id"],row["branch_id"]) != (ctx.project_id,ctx.branch_id):
-            raise ContractError("ACCESS_DENIED","target_unavailable")
-        return DeleteTarget(kind,ref,row["revision"],row["scope_id"],row["project_id"],row["branch_id"])
+            raise ContractError("ACCESS_DENIED", "target_unavailable")
+        if (
+            row is None
+            or row["scope_id"] not in ctx.allowed_scope_ids
+            or (row["project_id"], row["branch_id"]) != (ctx.project_id, ctx.branch_id)
+        ):
+            raise ContractError("ACCESS_DENIED", "target_unavailable")
+        return DeleteTarget(kind, ref, row["revision"], row["scope_id"], row["project_id"], row["branch_id"])
 
-    def closure(self,targets: tuple[DeleteTarget, ...], *, delete: bool) -> tuple[DeleteTarget, ...]:
+    def closure(self, targets: tuple[DeleteTarget, ...], *, delete: bool) -> tuple[DeleteTarget, ...]:
         conn = self._tx._check()
         pending = list(targets)
         seen = {}
@@ -99,56 +119,92 @@ class Deletions:
         # A source is the minimum capture unit; exact source-span redaction is
         # not fabricated as a new human occurrence.
         for target in targets:
-            if target.kind != 'event':
-                pending.extend(self.target(source_ref) for source_ref in lineage.sources_of(conn, target.kind, target.ref))
+            if target.kind != "event":
+                pending.extend(
+                    self.target(source_ref) for source_ref in lineage.sources_of(conn, target.kind, target.ref)
+                )
         while pending:
             target = pending.pop()
-            key = (target.kind,target.ref)
+            key = (target.kind, target.ref)
             if key in seen:
                 continue
             if len(seen) >= 2000:
-                raise ContractError("INPUT_INVALID","dependency_budget")
+                raise ContractError("INPUT_INVALID", "dependency_budget")
             seen[key] = target
             if target.kind == "event":
-                siblings = conn.execute("SELECT DISTINCT event_id FROM source_events WHERE source_group_key IN (SELECT source_group_key FROM source_events WHERE event_id=?)",(target.ref,))
+                siblings = conn.execute(
+                    "SELECT DISTINCT event_id FROM source_events WHERE source_group_key IN (SELECT source_group_key FROM source_events WHERE event_id=?)",
+                    (target.ref,),
+                )
                 pending.extend(self.target(r[0]) for r in siblings)
                 for row in lineage.dependents(conn, target.ref):
                     if row[0] in OBJECT_TABLES:
                         pending.append(self.target(row[1]))
                     else:
-                        raise ContractError("DERIVATION_INVALID","unresolved_dependency_kind")
+                        raise ContractError("DERIVATION_INVALID", "unresolved_dependency_kind")
             for row in lineage.dependents_on(conn, target.kind, target.ref):
                 if row[0] not in OBJECT_TABLES:
-                    raise ContractError('DERIVATION_INVALID','unresolved_dependency_kind')
+                    raise ContractError("DERIVATION_INVALID", "unresolved_dependency_kind")
                 pending.append(self.target(row[1]))
             if target.kind == "claim":
-                aliases = conn.execute("""SELECT DISTINCT c.claim_id FROM claims c JOIN claim_versions v USING(claim_id)
-                    WHERE json_extract(v.payload_json,'$.alias.target_ref')=?""",(target.ref,))
+                aliases = conn.execute(
+                    """SELECT DISTINCT c.claim_id FROM claims c JOIN claim_versions v USING(claim_id)
+                    WHERE json_extract(v.payload_json,'$.alias.target_ref')=?""",
+                    (target.ref,),
+                )
                 pending.extend(self.target(r[0]) for r in aliases)
         return tuple(seen[k] for k in sorted(seen))
 
-    def request_key(self,request) -> tuple[str,str]:
+    def request_key(self, request) -> tuple[str, str]:
         ctx = self._tx.context
-        material = [ctx.binding.installation_id,sorted(ctx.allowed_scope_ids),ctx.project_id,ctx.branch_id,
-                    request["mode"],sorted(request["target_refs"]),request["expected_revisions"]]
+        material = [
+            ctx.binding.installation_id,
+            sorted(ctx.allowed_scope_ids),
+            ctx.project_id,
+            ctx.branch_id,
+            request["mode"],
+            sorted(request["target_refs"]),
+            request["expected_revisions"],
+        ]
         digest = hashlib.sha256(canonical(material).encode()).hexdigest()
-        return "forget-"+digest,digest
+        return "forget-" + digest, digest
 
-    def receipt(self,operation_id: str) -> dict | None:
-        row = self._tx._check().execute("SELECT * FROM deletion_operations WHERE operation_id=?",(operation_id,)).fetchone()
+    def receipt(self, operation_id: str) -> dict | None:
+        row = (
+            self._tx._check()
+            .execute("SELECT * FROM deletion_operations WHERE operation_id=?", (operation_id,))
+            .fetchone()
+        )
         if row is None:
             return None
         ctx = self._tx.context
-        if not set(json.loads(row["scope_ids_json"])) <= ctx.allowed_scope_ids or (row["project_id"],row["branch_id"]) != (ctx.project_id,ctx.branch_id):
-            raise ContractError("ACCESS_DENIED","operation_unavailable")
+        if not set(json.loads(row["scope_ids_json"])) <= ctx.allowed_scope_ids or (
+            row["project_id"],
+            row["branch_id"],
+        ) != (ctx.project_id, ctx.branch_id):
+            raise ContractError("ACCESS_DENIED", "operation_unavailable")
         layers = json.loads(row["layers_json"])
-        count = self._tx._check().execute("SELECT count(*) FROM deletion_members WHERE operation_id=?",(operation_id,)).fetchone()[0]
-        return dict(operation_id=operation_id,mode=row["mode"],memory_epoch=row["memory_epoch"],
-                    scope_ids=json.loads(row["scope_ids_json"]),project_id=row["project_id"],branch_id=row["branch_id"],
-                    requested_refs=json.loads(row["requested_refs_json"]),minimum_content_unit="source_group",
-                    read_blocked=row["mode"]=="delete",suppressed=True,affected_objects=count,
-                    active_content_removed=bool(row["active_content_removed"]),layers=layers,
-                    declared_scope_complete=False if row["mode"]=="delete" else True)
+        count = (
+            self._tx._check()
+            .execute("SELECT count(*) FROM deletion_members WHERE operation_id=?", (operation_id,))
+            .fetchone()[0]
+        )
+        return dict(
+            operation_id=operation_id,
+            mode=row["mode"],
+            memory_epoch=row["memory_epoch"],
+            scope_ids=json.loads(row["scope_ids_json"]),
+            project_id=row["project_id"],
+            branch_id=row["branch_id"],
+            requested_refs=json.loads(row["requested_refs_json"]),
+            minimum_content_unit="source_group",
+            read_blocked=row["mode"] == "delete",
+            suppressed=True,
+            affected_objects=count,
+            active_content_removed=bool(row["active_content_removed"]),
+            layers=layers,
+            declared_scope_complete=False if row["mode"] == "delete" else True,
+        )
 
     def physical_members(self, operation_id: str) -> tuple[dict, ...]:
         """Return opaque active object identities for an external purge port."""
@@ -194,29 +250,51 @@ class Deletions:
                     members.append({"kind": kind, "ref": ref, "revision": int(revision["revision"])})
         return tuple(members)
 
-    def block(self,request,targets: tuple[DeleteTarget, ...],*,now: str) -> str:
-        conn,ctx = self._tx._check(write=True),self._tx.context
-        op,digest = self.request_key(request)
+    def block(self, request, targets: tuple[DeleteTarget, ...], *, now: str) -> str:
+        conn, ctx = self._tx._check(write=True), self._tx.context
+        op, digest = self.request_key(request)
         if self.receipt(op) is not None:
             return op
         delete = request["mode"] == "delete"
-        layers = dict(sqlite_active="pending" if delete else "retained",sqlite_history="maintenance_pending" if delete else "retained",
-                      vector_active="inventory_pending" if delete else "retained",vector_history="inventory_pending" if delete else "retained",
-                      attachments="inventory_pending" if delete else "retained",backups="unknown",host_sources="outside_plugin_scope",physical_media="unverifiable")
+        layers = dict(
+            sqlite_active="pending" if delete else "retained",
+            sqlite_history="maintenance_pending" if delete else "retained",
+            vector_active="inventory_pending" if delete else "retained",
+            vector_history="inventory_pending" if delete else "retained",
+            attachments="inventory_pending" if delete else "retained",
+            backups="unknown",
+            host_sources="outside_plugin_scope",
+            physical_media="unverifiable",
+        )
         conn.execute("UPDATE instance_meta SET memory_epoch=memory_epoch+1 WHERE singleton=1")
         epoch = self._tx.status().memory_epoch
-        conn.execute("""INSERT INTO deletion_operations(operation_id,request_sha256,mode,scope_ids_json,project_id,branch_id,
+        conn.execute(
+            """INSERT INTO deletion_operations(operation_id,request_sha256,mode,scope_ids_json,project_id,branch_id,
             requested_refs_json,expected_revisions_json,created_at,memory_epoch,layers_json) VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
-            (op,digest,request["mode"],canonical(sorted({t.scope_id for t in targets})),ctx.project_id,ctx.branch_id,
-             canonical(sorted(request["target_refs"])),canonical(request["expected_revisions"]),canonical_time(now),epoch,canonical(layers)))
-        self.apply_blocks(op,targets,delete=delete,now=canonical_time(now))
+            (
+                op,
+                digest,
+                request["mode"],
+                canonical(sorted({t.scope_id for t in targets})),
+                ctx.project_id,
+                ctx.branch_id,
+                canonical(sorted(request["target_refs"])),
+                canonical(request["expected_revisions"]),
+                canonical_time(now),
+                epoch,
+                canonical(layers),
+            ),
+        )
+        self.apply_blocks(op, targets, delete=delete, now=canonical_time(now))
         if delete:
             for scope in sorted({t.scope_id for t in targets}):
-                conn.execute("INSERT INTO work_items(work_type,subject_ref,subject_revision,scope_id,project_id,branch_id,available_at) VALUES ('purge',?,1,?,?,?,?)",
-                             (purge_work_ref(op,scope),scope,ctx.project_id,ctx.branch_id,canonical_time(now)))
+                conn.execute(
+                    "INSERT INTO work_items(work_type,subject_ref,subject_revision,scope_id,project_id,branch_id,available_at) VALUES ('purge',?,1,?,?,?,?)",
+                    (purge_work_ref(op, scope), scope, ctx.project_id, ctx.branch_id, canonical_time(now)),
+                )
         return op
 
-    def requeue_unfinished_purges(self,*,now: str,limit: int = 8) -> int:
+    def requeue_unfinished_purges(self, *, now: str, limit: int = 8) -> int:
         """Give once more the purge a worker marked obsolete before it removed anything.
 
         Up to 3.4.0rc8 the worker read a purge's operation id at the last colon of its subject (see
@@ -234,7 +312,7 @@ class Deletions:
         for row in rows:
             if requeued >= limit:
                 break
-            operation_id,scope_id = purge_work_parts(row["subject_ref"])
+            operation_id, scope_id = purge_work_parts(row["subject_ref"])
             if scope_id not in self._tx.context.allowed_scope_ids:
                 continue
             try:
@@ -246,12 +324,14 @@ class Deletions:
             layers = receipt["layers"]
             if layers.get("sqlite_active") == "removed" and layers.get("vector_active") == "removed":
                 continue
-            requeued += conn.execute("""UPDATE work_items SET state='pending',available_at=?,lease_token=lease_token+1,
+            requeued += conn.execute(
+                """UPDATE work_items SET state='pending',available_at=?,lease_token=lease_token+1,
                 lease_owner=NULL,lease_until=NULL,last_error_code='purge_requeued' WHERE work_id=? AND state='obsolete'""",
-                (now,row["work_id"])).rowcount
+                (now, row["work_id"]),
+            ).rowcount
         return requeued
 
-    def apply_blocks(self,op,targets,*,delete: bool,now: str | None = None):
+    def apply_blocks(self, op, targets, *, delete: bool, now: str | None = None):
         conn = self._tx._check(write=True)
         if now is None:
             row = conn.execute("SELECT created_at FROM deletion_operations WHERE operation_id=?", (op,)).fetchone()
@@ -275,8 +355,9 @@ class Deletions:
         digests, groups, versions = set(), set(), set()
         for target in targets:
             for digest, group, revision in conn.execute(
-                    "SELECT content_sha256,source_group_key,source_revision FROM source_events WHERE event_id=?",
-                    (target.ref,)).fetchall():
+                "SELECT content_sha256,source_group_key,source_revision FROM source_events WHERE event_id=?",
+                (target.ref,),
+            ).fetchall():
                 digests.add(digest)
                 groups.add(group)
                 versions.add((group, revision))
@@ -286,46 +367,86 @@ class Deletions:
             # Each version of a deleted message is put together once, and only when a waiting row is looked into:
             # put together for each of its segments, under the writer lease, a delete of long messages took seconds.
             if not texts:
-                texts.append(frozenset(deleted_text("".join(content for (content,) in conn.execute(
-                    "SELECT content FROM source_events WHERE source_group_key=? AND source_revision=? ORDER BY segment_index",
-                    version))) for version in versions))
+                texts.append(
+                    frozenset(
+                        deleted_text(
+                            "".join(
+                                content
+                                for (content,) in conn.execute(
+                                    "SELECT content FROM source_events WHERE source_group_key=? AND source_revision=? ORDER BY segment_index",
+                                    version,
+                                )
+                            )
+                        )
+                        for version in versions
+                    )
+                )
             return texts[0]
 
-        for scope, project, branch in ({(t.scope_id, t.project_id, t.branch_id) for t in targets} if delete else ()):
+        for scope, project, branch in {(t.scope_id, t.project_id, t.branch_id) for t in targets} if delete else ():
             for token, code in conn.execute(
-                    "SELECT token,last_error_code FROM capture_inbox WHERE scope_id=? AND project_id IS ? AND branch_id IS ?",
-                    (scope, project, branch)).fetchall():
+                "SELECT token,last_error_code FROM capture_inbox WHERE scope_id=? AND project_id IS ? AND branch_id IS ?",
+                (scope, project, branch),
+            ).fetchall():
                 # One payload at a time: the inbox holds up to 64 MB.
-                if holds(conn.execute("SELECT payload_json FROM capture_inbox WHERE token=?", (token,)).fetchone()[0],
-                         frozenset(digests), frozenset(groups), forgotten_texts(), rekeyed=taking_a_new_key(code),
-                         versions=frozenset(versions)):
+                if holds(
+                    conn.execute("SELECT payload_json FROM capture_inbox WHERE token=?", (token,)).fetchone()[0],
+                    frozenset(digests),
+                    frozenset(groups),
+                    forgotten_texts(),
+                    rekeyed=taking_a_new_key(code),
+                    versions=frozenset(versions),
+                ):
                     conn.execute("DELETE FROM capture_inbox WHERE token=?", (token,))
         for target in targets:
-            conn.execute("DELETE FROM consolidation_fragments WHERE work_id IN (SELECT work_id FROM work_items WHERE subject_ref=?)", (target.ref,))
-            conn.execute("""INSERT INTO object_blocks(object_kind,object_ref,scope_id,project_id,branch_id,read_blocked,suppressed,operation_id)
+            conn.execute(
+                "DELETE FROM consolidation_fragments WHERE work_id IN (SELECT work_id FROM work_items WHERE subject_ref=?)",
+                (target.ref,),
+            )
+            conn.execute(
+                """INSERT INTO object_blocks(object_kind,object_ref,scope_id,project_id,branch_id,read_blocked,suppressed,operation_id)
                 VALUES (?,?,?,?,?,?,1,?) ON CONFLICT(object_kind,object_ref) DO UPDATE SET
                 read_blocked=max(object_blocks.read_blocked,excluded.read_blocked),suppressed=1,operation_id=excluded.operation_id""",
-                (target.kind,target.ref,target.scope_id,target.project_id,target.branch_id,int(delete),op))
-            conn.execute("INSERT INTO deletion_members(operation_id,object_kind,object_ref) VALUES (?,?,?) ON CONFLICT DO NOTHING",(op,target.kind,target.ref))
+                (target.kind, target.ref, target.scope_id, target.project_id, target.branch_id, int(delete), op),
+            )
+            conn.execute(
+                "INSERT INTO deletion_members(operation_id,object_kind,object_ref) VALUES (?,?,?) ON CONFLICT DO NOTHING",
+                (op, target.kind, target.ref),
+            )
             if target.kind == "event":
-                for group in conn.execute("SELECT DISTINCT source_group_key FROM source_events WHERE event_id=?",(target.ref,)):
-                    digest = group_digest(self._tx.context.binding,target.scope_id,target.project_id,target.branch_id,group[0])
-                    conn.execute("""INSERT INTO source_group_blocks(group_sha256,scope_id,project_id,branch_id,read_blocked,suppressed,operation_id)
+                for group in conn.execute(
+                    "SELECT DISTINCT source_group_key FROM source_events WHERE event_id=?", (target.ref,)
+                ):
+                    digest = group_digest(
+                        self._tx.context.binding, target.scope_id, target.project_id, target.branch_id, group[0]
+                    )
+                    conn.execute(
+                        """INSERT INTO source_group_blocks(group_sha256,scope_id,project_id,branch_id,read_blocked,suppressed,operation_id)
                         VALUES (?,?,?,?,?,1,?) ON CONFLICT(group_sha256) DO UPDATE SET read_blocked=max(source_group_blocks.read_blocked,excluded.read_blocked),suppressed=1,operation_id=excluded.operation_id""",
-                        (digest,target.scope_id,target.project_id,target.branch_id,int(delete),op))
-            table,key = OBJECT_TABLES[target.kind]
-            conn.execute(f"UPDATE {table} SET read_blocked=max(read_blocked,?),suppressed=1 WHERE {key}=?",(int(delete),target.ref))
+                        (digest, target.scope_id, target.project_id, target.branch_id, int(delete), op),
+                    )
+            table, key = OBJECT_TABLES[target.kind]
+            conn.execute(
+                f"UPDATE {table} SET read_blocked=max(read_blocked,?),suppressed=1 WHERE {key}=?",
+                (int(delete), target.ref),
+            )
             if delete:
-                conn.execute("UPDATE work_items SET state='obsolete',lease_token=lease_token+1,lease_owner=NULL,lease_until=NULL WHERE subject_ref=? AND state IN ('pending','leased')",(target.ref,))
-                conn.execute("""UPDATE unresolved_updates SET state='obsolete' WHERE state='unresolved' AND
-                    (source_ref=? OR EXISTS(SELECT 1 FROM json_each(candidate_refs_json) WHERE value=?))""",(target.ref,target.ref))
+                conn.execute(
+                    "UPDATE work_items SET state='obsolete',lease_token=lease_token+1,lease_owner=NULL,lease_until=NULL WHERE subject_ref=? AND state IN ('pending','leased')",
+                    (target.ref,),
+                )
+                conn.execute(
+                    """UPDATE unresolved_updates SET state='obsolete' WHERE state='unresolved' AND
+                    (source_ref=? OR EXISTS(SELECT 1 FROM json_each(candidate_refs_json) WHERE value=?))""",
+                    (target.ref, target.ref),
+                )
         self._tx.candidates.block_objects(targets, operation_id=op, delete=delete, now=now)
 
-    def purge_sqlite(self,operation_id: str) -> dict:
+    def purge_sqlite(self, operation_id: str) -> dict:
         conn = self._tx._check(write=True)
         receipt = self.receipt(operation_id)
         if receipt is None or receipt["mode"] != "delete":
-            raise ContractError("ACCESS_DENIED","operation_unavailable")
+            raise ContractError("ACCESS_DENIED", "operation_unavailable")
         # This is deliberately only the SQLite scrub phase.  The active vector
         # layer is owned by the native purge port and cannot be acknowledged by
         # a truth-database transaction.  A repeated call after the scrub is
@@ -336,60 +457,86 @@ class Deletions:
         # This overwrites SQLite payload cells, not host logs, copies or SSD
         # internals. VACUUM/checkpoint inventory remains explicit maintenance.
         conn.execute("PRAGMA secure_delete=ON")
-        members = conn.execute("SELECT object_kind,object_ref FROM deletion_members WHERE operation_id=?",(operation_id,)).fetchall()
+        members = conn.execute(
+            "SELECT object_kind,object_ref FROM deletion_members WHERE operation_id=?", (operation_id,)
+        ).fetchall()
         # What a purge keeps of each version of a deleted message to know a later copy under its key by, once its
         # words are gone: digests of them spaced otherwise and of their letters and digits (``capture_inbox.
         # deleted_forms``, compared by ``Transaction.refuse_under_a_deleted_key``).  Read before any group key below
         # is replaced (review of rc13).
         from .capture_inbox import deleted_forms
-        forms,versions,groups = {},{},set()
-        for kind,ref in members:
+
+        forms, versions, groups = {}, {}, set()
+        for kind, ref in members:
             if kind != "event":
                 continue
-            for group,revision in conn.execute("SELECT source_group_key,source_revision FROM source_events WHERE event_id=?",(ref,)).fetchall():
+            for group, revision in conn.execute(
+                "SELECT source_group_key,source_revision FROM source_events WHERE event_id=?", (ref,)
+            ).fetchall():
                 # Once per version, not once per part: joined and read again for each part of a long message, a purge
                 # took seconds under the writer lease (review of rc13).
-                if (group,revision) not in versions:
-                    text = "".join(content for (content,) in conn.execute(
-                        "SELECT content FROM source_events WHERE source_group_key=? AND source_revision=? ORDER BY segment_index",(group,revision)))
-                    versions[group,revision] = sorted(deleted_forms(text)) if text else []
-                forms[ref,revision] = versions[group,revision]
+                if (group, revision) not in versions:
+                    text = "".join(
+                        content
+                        for (content,) in conn.execute(
+                            "SELECT content FROM source_events WHERE source_group_key=? AND source_revision=? ORDER BY segment_index",
+                            (group, revision),
+                        )
+                    )
+                    versions[group, revision] = sorted(deleted_forms(text)) if text else []
+                forms[ref, revision] = versions[group, revision]
                 groups.add(group)
         # Each group key is replaced once, by the key ``purged_group_key`` gives: replaced for each of its parts, a
         # long message's key had been hashed once a part, and a later capture under it could not find its rows
         # (review of rc13).  A key an earlier purge left stays as it is.
         for group in sorted(groups):
             if not group.startswith("removed-"):
-                conn.execute("UPDATE source_events SET source_group_key=? WHERE source_group_key=?",(purged_group_key(group),group))
-        for kind,ref in members:
+                conn.execute(
+                    "UPDATE source_events SET source_group_key=? WHERE source_group_key=?",
+                    (purged_group_key(group), group),
+                )
+        for kind, ref in members:
             if kind == "event":
                 lexical_index.forget(conn, ref)
                 # A row already purged keeps what it has: a restore purges its file again, and written over from its
                 # empty text, the digests a first purge kept were lost; a row purged before rc13 keeps having none
                 # (review of rc13).
-                for (revision,) in conn.execute("SELECT DISTINCT source_revision FROM source_events WHERE event_id=?",(ref,)).fetchall():
-                    conn.execute("""UPDATE source_events SET content='',source_event_key='removed-'||event_id,
+                for (revision,) in conn.execute(
+                    "SELECT DISTINCT source_revision FROM source_events WHERE event_id=?", (ref,)
+                ).fetchall():
+                    conn.execute(
+                        """UPDATE source_events SET content='',source_event_key='removed-'||event_id,
                         extra_json=CASE WHEN source_event_key='removed-'||event_id THEN extra_json ELSE ? END,
                         source_original_origin=NULL,dataset_id=NULL,
                         capture_state='gap',capture_gaps_json='["deleted"]' WHERE event_id=? AND source_revision=?""",
-                        (canonical({"evidence_refs":[],"deleted_forms":forms.get((ref,revision),[])}),ref,revision))
+                        (
+                            canonical({"evidence_refs": [], "deleted_forms": forms.get((ref, revision), [])}),
+                            ref,
+                            revision,
+                        ),
+                    )
             elif kind == "claim":
-                conn.execute("UPDATE claims SET subject='',predicate='' WHERE claim_id=?",(ref,))
-                conn.execute("UPDATE claim_versions SET payload_json='{}' WHERE claim_id=?",(ref,))
-            elif kind == 'episode':
-                conn.execute('UPDATE episode_versions SET resume_json=NULL,environment_revision=NULL WHERE episode_id=?',(ref,))
-            elif kind == 'artifact':
+                conn.execute("UPDATE claims SET subject='',predicate='' WHERE claim_id=?", (ref,))
+                conn.execute("UPDATE claim_versions SET payload_json='{}' WHERE claim_id=?", (ref,))
+            elif kind == "episode":
+                conn.execute(
+                    "UPDATE episode_versions SET resume_json=NULL,environment_revision=NULL WHERE episode_id=?", (ref,)
+                )
+            elif kind == "artifact":
                 # Keep only opaque retention metadata needed by attachment
                 # cleanup. The public repository is already read-blocked.
-                conn.execute("UPDATE artifact_versions SET label='',description_json='[]' WHERE artifact_id=?",(ref,))
-            elif kind == 'reference':
-                conn.execute("UPDATE reference_versions SET payload_json='{}' WHERE reference_id=?",(ref,))
+                conn.execute("UPDATE artifact_versions SET label='',description_json='[]' WHERE artifact_id=?", (ref,))
+            elif kind == "reference":
+                conn.execute("UPDATE reference_versions SET payload_json='{}' WHERE reference_id=?", (ref,))
             else:
-                raise ContractError("DERIVATION_INVALID","unresolved_purge_kind")
+                raise ContractError("DERIVATION_INVALID", "unresolved_purge_kind")
             lineage.purge_quotes(conn, kind, ref)
         layers = receipt["layers"]
         layers["sqlite_active"] = "removed"
-        conn.execute("UPDATE deletion_operations SET active_content_removed=0,layers_json=? WHERE operation_id=?",(canonical(layers),operation_id))
+        conn.execute(
+            "UPDATE deletion_operations SET active_content_removed=0,layers_json=? WHERE operation_id=?",
+            (canonical(layers), operation_id),
+        )
         updated = self.receipt(operation_id)
         if updated is None:
             raise ContractError("STORAGE_UNAVAILABLE", "deletion_receipt")
@@ -424,62 +571,76 @@ class Deletions:
             raise ContractError("STORAGE_UNAVAILABLE", "deletion_receipt")
         return updated
 
-    def attachment_plan(self,operation_id: str) -> dict:
+    def attachment_plan(self, operation_id: str) -> dict:
         """Snapshot attachment cleanup candidates without deleting files."""
-        conn=self._tx._check()
-        receipt=self.receipt(operation_id)
-        if receipt is None or receipt['mode'] != 'delete':
-            raise ContractError('ACCESS_DENIED','operation_unavailable')
-        if receipt['layers']['attachments'] in {'removed','shared_authorized_copy_retained'}:
+        conn = self._tx._check()
+        receipt = self.receipt(operation_id)
+        if receipt is None or receipt["mode"] != "delete":
+            raise ContractError("ACCESS_DENIED", "operation_unavailable")
+        if receipt["layers"]["attachments"] in {"removed", "shared_authorized_copy_retained"}:
             return dict(operation_id=operation_id, entries=(), already_done=True)
-        rows=conn.execute('''SELECT v.* FROM deletion_members m JOIN artifact_versions v ON v.artifact_id=m.object_ref
-            WHERE m.operation_id=? AND m.object_kind='artifact' AND v.blob_json IS NOT NULL''',(operation_id,)).fetchall()
-        entries=[]
+        rows = conn.execute(
+            """SELECT v.* FROM deletion_members m JOIN artifact_versions v ON v.artifact_id=m.object_ref
+            WHERE m.operation_id=? AND m.object_kind='artifact' AND v.blob_json IS NOT NULL""",
+            (operation_id,),
+        ).fetchall()
+        entries = []
         for row in rows:
-            live=conn.execute('''SELECT 1 FROM artifact_versions v JOIN artifacts a USING(artifact_id)
-                WHERE v.sha256=? AND a.read_blocked=0 LIMIT 1''',(row['sha256'],)).fetchone()
-            entries.append(dict(
-                artifact_id=row['artifact_id'], revision=row['revision'],
-                blob=json.loads(row['blob_json']), shared=bool(live),
-            ))
+            live = conn.execute(
+                """SELECT 1 FROM artifact_versions v JOIN artifacts a USING(artifact_id)
+                WHERE v.sha256=? AND a.read_blocked=0 LIMIT 1""",
+                (row["sha256"],),
+            ).fetchone()
+            entries.append(
+                dict(
+                    artifact_id=row["artifact_id"],
+                    revision=row["revision"],
+                    blob=json.loads(row["blob_json"]),
+                    shared=bool(live),
+                )
+            )
         return dict(operation_id=operation_id, entries=tuple(entries), already_done=False)
 
-    def finalize_attachments(self,operation_id: str, plan: dict, *, erased: bool) -> dict:
+    def finalize_attachments(self, operation_id: str, plan: dict, *, erased: bool) -> dict:
         """Commit attachment metadata only after the physical phase returns."""
-        conn=self._tx._check(write=True)
-        receipt=self.receipt(operation_id)
-        if receipt is None or receipt['mode'] != 'delete':
-            raise ContractError('ACCESS_DENIED','operation_unavailable')
-        if receipt['layers']['attachments'] in {'removed','shared_authorized_copy_retained'}:
+        conn = self._tx._check(write=True)
+        receipt = self.receipt(operation_id)
+        if receipt is None or receipt["mode"] != "delete":
+            raise ContractError("ACCESS_DENIED", "operation_unavailable")
+        if receipt["layers"]["attachments"] in {"removed", "shared_authorized_copy_retained"}:
             return receipt
-        if not isinstance(plan, dict) or plan.get('operation_id') != operation_id:
-            raise ContractError('VERSION_CONFLICT','attachment_plan')
+        if not isinstance(plan, dict) or plan.get("operation_id") != operation_id:
+            raise ContractError("VERSION_CONFLICT", "attachment_plan")
         if not erased:
             return receipt
-        shared=any(bool(entry.get('shared')) for entry in plan.get('entries',()))
-        for entry in plan.get('entries',()):
-            conn.execute('UPDATE artifact_versions SET relative_path=NULL,blob_json=NULL WHERE artifact_id=? AND revision=?',
-                         (entry['artifact_id'],entry['revision']))
-        layers=receipt['layers']
-        layers['attachments']='shared_authorized_copy_retained' if shared else 'removed'
+        shared = any(bool(entry.get("shared")) for entry in plan.get("entries", ()))
+        for entry in plan.get("entries", ()):
+            conn.execute(
+                "UPDATE artifact_versions SET relative_path=NULL,blob_json=NULL WHERE artifact_id=? AND revision=?",
+                (entry["artifact_id"], entry["revision"]),
+            )
+        layers = receipt["layers"]
+        layers["attachments"] = "shared_authorized_copy_retained" if shared else "removed"
         active_removed = (
-            layers.get('sqlite_active') == 'removed'
-            and layers.get('vector_active') == 'removed'
-            and layers.get('attachments') in {'removed','shared_authorized_copy_retained'}
+            layers.get("sqlite_active") == "removed"
+            and layers.get("vector_active") == "removed"
+            and layers.get("attachments") in {"removed", "shared_authorized_copy_retained"}
         )
-        conn.execute('UPDATE deletion_operations SET active_content_removed=?,layers_json=? WHERE operation_id=?',
-                     (int(active_removed),canonical(layers),operation_id))
+        conn.execute(
+            "UPDATE deletion_operations SET active_content_removed=?,layers_json=? WHERE operation_id=?",
+            (int(active_removed), canonical(layers), operation_id),
+        )
         updated = self.receipt(operation_id)
         if updated is None:
-            raise ContractError('STORAGE_UNAVAILABLE','deletion_receipt')
+            raise ContractError("STORAGE_UNAVAILABLE", "deletion_receipt")
         return updated
 
-    def purge_attachments(self,operation_id: str) -> dict:
+    def purge_attachments(self, operation_id: str) -> dict:
         """Compatibility shim: planning is separate from physical deletion."""
         plan = self.attachment_plan(operation_id)
-        if plan.get('already_done'):
+        if plan.get("already_done"):
             updated = self.receipt(operation_id)
             if updated is None:
-                raise ContractError('STORAGE_UNAVAILABLE','deletion_receipt')
+                raise ContractError("STORAGE_UNAVAILABLE", "deletion_receipt")
             return updated
-        raise ContractError('STORAGE_UNAVAILABLE','attachment_physical_phase_required')
+        raise ContractError("STORAGE_UNAVAILABLE", "attachment_physical_phase_required")

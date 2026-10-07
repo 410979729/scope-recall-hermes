@@ -1,4 +1,5 @@
 """Real process-tree lifecycle checks for the owned runtime watchdog."""
+
 from __future__ import annotations
 
 import json
@@ -162,13 +163,14 @@ def test_busy_child_finishes_inside_the_window_it_was_handed(tmp_path: Path, mon
     payload.update(supervisor_seconds=window, supervisor_max_drains=1)
     config_path.write_text(json.dumps(payload), encoding="utf-8")
     data = Path(payload["binding"]["data_directory"])
-    predecessor = subprocess.Popen([sys.executable, "-B", "-c", "import time; time.sleep(2.5)"],
-                                   creationflags=int(getattr(subprocess, "CREATE_NO_WINDOW", 0)))
+    predecessor = subprocess.Popen(
+        [sys.executable, "-B", "-c", "import time; time.sleep(2.5)"],
+        creationflags=int(getattr(subprocess, "CREATE_NO_WINDOW", 0)),
+    )
     record, children = _owned_children(monkeypatch, tmp_path, "busy")
     try:
         started = time.time()
-        code = worker_watchdog.run(config_path, Path(sys.executable), cleanup_config=False,
-                                   after_pid=predecessor.pid)
+        code = worker_watchdog.run(config_path, Path(sys.executable), cleanup_config=False, after_pid=predecessor.pid)
         finished = time.time()
     finally:
         if predecessor.poll() is None:
@@ -179,7 +181,7 @@ def test_busy_child_finishes_inside_the_window_it_was_handed(tmp_path: Path, mon
     # The supervisor's remaining window, not restarted after the 2.5 s wait.
     # The slack covers the supervisor's own synced state writes before the pass.
     assert drained["handed"] <= started + window + 1.0
-    clock_reads = .1  # Epoch/monotonic conversions, a few 15.6 ms Windows ticks.
+    clock_reads = 0.1  # Epoch/monotonic conversions, a few 15.6 ms Windows ticks.
     assert drained["drain_ends"] <= drained["handed"] - FINALIZE_MARGIN_SECONDS + clock_reads
     assert finished < drained["handed"] + KILL_GRACE_SECONDS  # It exited; nothing was killed.
     receipt = json.loads(capsys.readouterr().out.strip().splitlines()[-1])
@@ -240,10 +242,10 @@ def test_assignment_failure_aborts_real_blocked_worker(tmp_path: Path, monkeypat
 def test_detached_trailing_wake_survives_short_host_shutdown(tmp_path: Path):
     config_path, _ = _runtime_payload(tmp_path, drain_seconds=5.0)
     payload = json.loads(config_path.read_text(encoding="utf-8"))
-    payload['worker_min_interval_seconds'] = 1.0
+    payload["worker_min_interval_seconds"] = 1.0
     config_path.write_text(json.dumps(payload), encoding="utf-8")
-    marker = tmp_path / 'host-receipt.json'
-    script = '''import json,os,sys,time
+    marker = tmp_path / "host-receipt.json"
+    script = """import json,os,sys,time
 from pathlib import Path
 from scope_recall.runtime.worker_entry import load_config
 from scope_recall.adapters.hermes.runtime_wiring import attach_trusted_host_runtime
@@ -258,23 +260,27 @@ Path(sys.argv[2]).write_text(json.dumps({'pids':[active.pid,tail.pid],
     'configs':[str(active.config_path),str(tail.config_path)]}),encoding='utf-8')
 host.close()
 os._exit(0)
-'''
+"""
     env = os.environ.copy()
     root = str(Path(worker_watchdog.__file__).resolve().parents[1])
-    env['PYTHONPATH'] = root + os.pathsep + env.get('PYTHONPATH', '')
-    parent = subprocess.Popen([sys.executable, '-B', '-c', script, str(config_path), str(marker)],
-                              env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                              creationflags=int(getattr(subprocess, 'CREATE_NO_WINDOW', 0)))
+    env["PYTHONPATH"] = root + os.pathsep + env.get("PYTHONPATH", "")
+    parent = subprocess.Popen(
+        [sys.executable, "-B", "-c", script, str(config_path), str(marker)],
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        creationflags=int(getattr(subprocess, "CREATE_NO_WINDOW", 0)),
+    )
     out, err = parent.communicate(timeout=5)
     assert parent.returncode == 0, (out, err)
-    receipt = json.loads(marker.read_text(encoding='utf-8'))
+    receipt = json.loads(marker.read_text(encoding="utf-8"))
     deadline = time.monotonic() + 8
-    while any(_alive(pid) for pid in receipt['pids']) and time.monotonic() < deadline:
-        time.sleep(.02)
-    assert not any(_alive(pid) for pid in receipt['pids'])
-    assert all(not Path(path).exists() for path in receipt['configs'])
-    status = json.loads((Path(payload['binding']['data_directory'])/'runtime-worker-status.json').read_text())
-    assert status['exit_code'] == 0 and status['status'] == 'idle'
+    while any(_alive(pid) for pid in receipt["pids"]) and time.monotonic() < deadline:
+        time.sleep(0.02)
+    assert not any(_alive(pid) for pid in receipt["pids"])
+    assert all(not Path(path).exists() for path in receipt["configs"])
+    status = json.loads((Path(payload["binding"]["data_directory"]) / "runtime-worker-status.json").read_text())
+    assert status["exit_code"] == 0 and status["status"] == "idle"
 
 
 def _runtime_payload(tmp_path: Path, *, drain_seconds: float) -> tuple[Path, Path]:
@@ -346,8 +352,10 @@ def test_cleanup_config_never_deletes_a_config_it_did_not_write(tmp_path: Path):
     assert real.exists(), "a config the run did not write outlives the run"
     assert "not_an_ephemeral_worker_config" in err, "the refusal is said, not silent"
     ephemeral = write_ephemeral_worker_config(
-        real, session_id="TEST-naming",
-        allowed_scope_ids=frozenset(json.loads(real.read_text(encoding="utf-8"))["allowed_scope_ids"]))
+        real,
+        session_id="TEST-naming",
+        allowed_scope_ids=frozenset(json.loads(real.read_text(encoding="utf-8"))["allowed_scope_ids"]),
+    )
     assert is_ephemeral_worker_config(ephemeral), "the writer and the watchdog agree on the name"
     for name in ("runtime-config.json", "runtime.json", "my-worker-config.json", "x-worker-abcdefgh.yaml"):
         assert not is_ephemeral_worker_config(tmp_path / name), name
@@ -355,6 +363,7 @@ def test_cleanup_config_never_deletes_a_config_it_did_not_write(tmp_path: Path):
 
 
 # --- #87: the interpreter is executed as given ---------------------------------
+
 
 def _linked_interpreter(tmp_path: Path) -> Path:
     """The interpreter reached through a link, as a venv's bin/python is on POSIX.
@@ -417,8 +426,11 @@ def test_a_child_that_dies_before_its_receipt_names_the_reason(tmp_path: Path, m
 
     def spawn(command, **kwargs):
         if len(command) > 2 and str(command[2]).endswith("_worker_bootstrap.py"):
-            command = [command[0], "-c",
-                       "import sys; sys.stdin.read(1); raise ModuleNotFoundError(\"No module named 'scope_recall'\")"]
+            command = [
+                command[0],
+                "-c",
+                "import sys; sys.stdin.read(1); raise ModuleNotFoundError(\"No module named 'scope_recall'\")",
+            ]
         return real_popen(command, **kwargs)
 
     monkeypatch.setattr(worker_watchdog.subprocess, "Popen", spawn)
@@ -442,18 +454,26 @@ def test_a_pass_that_yielded_to_another_writer_is_not_a_failed_exit(tmp_path: Pa
     config_path, _ = _runtime_payload(tmp_path, drain_seconds=5.0)
     config = load_config(config_path)
     for payload, exit_code, failed in (
-            ({"status": "busy", "capability_gaps": ["worker_writer_busy"]}, 75, False),
-            ({"status": "busy", "capability_gaps": ["worker_wait_timeout"]}, 75, False),
-            ({"status": "degraded", "capability_gaps": ["worker_process_failed"]}, 1, True)):
-        persist_worker_status(config, {**payload, "installation_id": config.binding.installation_id},
-                              started_at="2026-09-30T08:00:00Z", exit_code=exit_code)
+        ({"status": "busy", "capability_gaps": ["worker_writer_busy"]}, 75, False),
+        ({"status": "busy", "capability_gaps": ["worker_wait_timeout"]}, 75, False),
+        ({"status": "degraded", "capability_gaps": ["worker_process_failed"]}, 1, True),
+    ):
+        persist_worker_status(
+            config,
+            {**payload, "installation_id": config.binding.installation_id},
+            started_at="2026-09-30T08:00:00Z",
+            exit_code=exit_code,
+        )
         report = run_doctor(host="codex", instance_root=tmp_path / "install")
         assert report.worker_status["exit_code"] == exit_code
         assert ("worker_last_exit_failed" in report.capability_gaps) is failed, payload
 
 
 def test_only_a_traceback_tail_is_kept_as_the_reason():
-    assert worker_watchdog._failure_reason("Traceback (most recent call last):\n  File x\nKeyError: 'k'\n") == "KeyError: 'k'"
+    assert (
+        worker_watchdog._failure_reason("Traceback (most recent call last):\n  File x\nKeyError: 'k'\n")
+        == "KeyError: 'k'"
+    )
     assert worker_watchdog._failure_reason("just some chatter\n/some/path: not a reason\n") is None
     assert worker_watchdog._failure_reason("") is None
     assert worker_watchdog._failure_reason("RuntimeError: token sk-ant-api03-" + "A" * 40 + "\n") is None

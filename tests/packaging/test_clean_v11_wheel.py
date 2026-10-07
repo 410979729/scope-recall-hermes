@@ -1,4 +1,5 @@
 """Packaging tests for the bounded v11 clean wheel."""
+
 from __future__ import annotations
 
 import json
@@ -31,10 +32,7 @@ def _expected_wheel_members(allowlist: dict) -> set[str]:
 
 def _build_wheel(dist_dir: Path) -> Path:
     dist_dir.mkdir(parents=True, exist_ok=True)
-    uv = (
-        os.environ.get("SCOPE_RECALL_UV")
-        or shutil.which("uv")
-        )
+    uv = os.environ.get("SCOPE_RECALL_UV") or shutil.which("uv")
     completed = subprocess.run(
         [uv, "build", "--wheel", "--out-dir", str(dist_dir)],
         cwd=REPO_ROOT,
@@ -45,11 +43,7 @@ def _build_wheel(dist_dir: Path) -> Path:
         creationflags=_CREATE_FLAGS,
     )
     if completed.returncode != 0:
-        pytest.fail(
-            "wheel build failed\n"
-            f"stdout:\n{completed.stdout}\n"
-            f"stderr:\n{completed.stderr}"
-        )
+        pytest.fail(f"wheel build failed\nstdout:\n{completed.stdout}\nstderr:\n{completed.stderr}")
     wheels = sorted(dist_dir.glob("*.whl"))
     assert len(wheels) == 1, wheels
     return wheels[0]

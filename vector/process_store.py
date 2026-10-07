@@ -5,6 +5,7 @@ only the selected Lance table and speaks a bounded, sequential JSON protocol
 over anonymous pipes.  A crash or timeout is never retried here: a write with
 an uncertain physical outcome stays owned by the idempotent vector outbox.
 """
+
 from __future__ import annotations
 
 import atexit
@@ -26,11 +27,25 @@ from . import VectorStore, VectorStoreCompatibilityError
 from .lance_native import helper_command, python_subprocess_options
 
 MAX_LANCE_FRAME_BYTES = 64 * 1024 * 1024
-LANCE_WORKER_METHODS = frozenset({
-    "is_available", "open", "open_existing", "upsert_records", "fenced_upsert_records",
-    "delete_by_ids", "contains_id", "list_ids", "list_records", "search", "search_scopes", "count_rows",
-    "compact", "ensure_vector_index", "purge_governed_members",
-})
+LANCE_WORKER_METHODS = frozenset(
+    {
+        "is_available",
+        "open",
+        "open_existing",
+        "upsert_records",
+        "fenced_upsert_records",
+        "delete_by_ids",
+        "contains_id",
+        "list_ids",
+        "list_records",
+        "search",
+        "search_scopes",
+        "count_rows",
+        "compact",
+        "ensure_vector_index",
+        "purge_governed_members",
+    }
+)
 # Lance's Rust object writer appends table/data/temp components to the root and
 # uses ordinary Win32 paths, so the extended-length prefix does not help.  The
 # projected first data object must stay within legacy MAX_PATH, counted in
@@ -92,7 +107,12 @@ def _remote_failure(error_type: Any, message: str) -> RuntimeError:
     which fault it was instead of the bare class.
     """
     error = RuntimeError(message)
-    if type(error_type) is str and 0 < len(error_type) <= 64 and error_type.isascii() and error_type.replace("_", "").isalnum():
+    if (
+        type(error_type) is str
+        and 0 < len(error_type) <= 64
+        and error_type.isascii()
+        and error_type.replace("_", "").isalnum()
+    ):
         error.error_type = error_type
     return error
 
@@ -108,7 +128,9 @@ def _worker_command() -> list[str]:
 def _spawn_helper() -> subprocess.Popen:
     return subprocess.Popen(
         _worker_command(),
-        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
         **python_subprocess_options(),
     )
 
@@ -380,8 +402,10 @@ class ProcessLanceVectorStore(VectorStore):
         self._process = _take_spare() or _spawn_helper()
         self._finalizer = weakref.finalize(self, _stop_worker, self._process)
         self._reader = threading.Thread(
-            target=_read_worker_frames, args=(self._process.stdout, self._responses),
-            name="scope-recall-lance-pipe", daemon=True,
+            target=_read_worker_frames,
+            args=(self._process.stdout, self._responses),
+            name="scope-recall-lance-pipe",
+            daemon=True,
         )
         self._reader.start()
 
@@ -521,9 +545,16 @@ class ProcessLanceVectorStore(VectorStore):
             args = (*args, nonce)
             kwargs = {**kwargs, "guard_timeout_seconds": remaining_seconds()}
         request = {
-            "id": request_id, "method": method, "args": args, "kwargs": kwargs,
-            "store": {"db_path": str(self.db_path), "table_name": self.table_name,
-                      "dimensions": self.dimensions, "metric": self.metric},
+            "id": request_id,
+            "method": method,
+            "args": args,
+            "kwargs": kwargs,
+            "store": {
+                "db_path": str(self.db_path),
+                "table_name": self.table_name,
+                "dimensions": self.dimensions,
+                "metric": self.metric,
+            },
         }
         encoded = (json.dumps(request, ensure_ascii=False, allow_nan=False) + "\n").encode("utf-8")
         if len(encoded) > MAX_LANCE_FRAME_BYTES:
@@ -549,7 +580,8 @@ class ProcessLanceVectorStore(VectorStore):
                         self._detach_helper(failed=True)
                         raise
                 response = self._receive_response_locked(
-                    request_id, only_if_ready=during_wait is not None and (work_failed or _budget_exhausted()),
+                    request_id,
+                    only_if_ready=during_wait is not None and (work_failed or _budget_exhausted()),
                 )
         except _RequestBudgetExpired:
             self._park_pending_response(request_id, method)
@@ -577,8 +609,10 @@ class ProcessLanceVectorStore(VectorStore):
         # A wedged worker may stop reading stdin; put pipe backpressure inside
         # the receive deadline rather than blocking on the write.
         self._sender = threading.Thread(
-            target=_write_worker_frame, args=(self._process.stdin, encoded, self._responses),
-            name="scope-recall-lance-send", daemon=True,
+            target=_write_worker_frame,
+            args=(self._process.stdin, encoded, self._responses),
+            name="scope-recall-lance-send",
+            daemon=True,
         )
         self._sender.start()
 
@@ -603,7 +637,9 @@ class ProcessLanceVectorStore(VectorStore):
         if self._sender.is_alive() or not outcome.get(False):
             raise RuntimeError("native vector fence handshake send failed")
 
-    def _fenced_exchange(self, request_id: int, encoded: bytes, nonce: str, guard: Callable[[], bool]) -> dict[str, Any]:
+    def _fenced_exchange(
+        self, request_id: int, encoded: bytes, nonce: str, guard: Callable[[], bool]
+    ) -> dict[str, Any]:
         """Send, answer the helper's guard request, then take the terminal frame.
 
         Each step waits only for what is left of the shared budget, re-read
@@ -616,8 +652,10 @@ class ProcessLanceVectorStore(VectorStore):
             raise RuntimeError("native vector fence deadline exhausted before guard")
         frame = self._responses.get(timeout=self._bounded_wait())
         if (
-            not isinstance(frame, dict) or frame.get("id") != request_id
-            or frame.get("kind") != "guard_request" or frame.get("nonce") != nonce
+            not isinstance(frame, dict)
+            or frame.get("id") != request_id
+            or frame.get("kind") != "guard_request"
+            or frame.get("nonce") != nonce
         ):
             raise RuntimeError("native vector fence guard request mismatch")
         try:
@@ -626,9 +664,13 @@ class ProcessLanceVectorStore(VectorStore):
             approved = False
         if _budget_exhausted():
             approved = False
-        reply = json.dumps(
-            {"id": request_id, "kind": "guard_result", "nonce": nonce, "approved": approved}, ensure_ascii=False,
-        ).encode("utf-8") + b"\n"
+        reply = (
+            json.dumps(
+                {"id": request_id, "kind": "guard_result", "nonce": nonce, "approved": approved},
+                ensure_ascii=False,
+            ).encode("utf-8")
+            + b"\n"
+        )
         self._send_fence_frame(reply, self._bounded_wait())
         if _budget_exhausted():
             raise RuntimeError("native vector fence deadline exhausted before final")
@@ -726,29 +768,51 @@ class ProcessLanceVectorStore(VectorStore):
     # -- store interface -------------------------------------------------------------
 
     def fenced_upsert_records(
-        self, rows: Iterable[dict[str, Any]], *, guard: Callable[[], bool], remaining_seconds: float,
+        self,
+        rows: Iterable[dict[str, Any]],
+        *,
+        guard: Callable[[], bool],
+        remaining_seconds: float,
     ) -> bool:
         """Upsert only if ``guard`` still approves once the helper holds the native lock."""
         if not callable(guard):
             raise TypeError("guard must be callable")
-        if type(remaining_seconds) not in (int, float) or not math.isfinite(float(remaining_seconds)) or remaining_seconds <= 0:
+        if (
+            type(remaining_seconds) not in (int, float)
+            or not math.isfinite(float(remaining_seconds))
+            or remaining_seconds <= 0
+        ):
             raise RuntimeError("native vector fence deadline exhausted")
         with _request_budget(remaining_seconds), self._helper_locked():
             return bool(self._invoke_locked("fenced_upsert_records", list(rows), guard=guard))
 
-    def purge_governed_members(self, *, members, agent_id, installation_id,
-                               partitions, project_id, branch_id, remaining_seconds: float) -> bool:
+    def purge_governed_members(
+        self, *, members, agent_id, installation_id, partitions, project_id, branch_id, remaining_seconds: float
+    ) -> bool:
         """One cumulative budget covers locking, inventory, deletion and acknowledgement."""
-        if type(remaining_seconds) not in (int, float) or not math.isfinite(remaining_seconds) or remaining_seconds <= 0:
+        if (
+            type(remaining_seconds) not in (int, float)
+            or not math.isfinite(remaining_seconds)
+            or remaining_seconds <= 0
+        ):
             raise RuntimeError("native vector purge deadline exhausted")
         with _request_budget(remaining_seconds) as deadline, self._helper_locked():
             budget = deadline.remaining()
             if budget <= 0:
                 raise RuntimeError("native vector purge deadline exhausted")
-            return self._invoke_locked(
-                "purge_governed_members", members=members, agent_id=agent_id, installation_id=installation_id,
-                partitions=partitions, project_id=project_id, branch_id=branch_id, budget_seconds=budget,
-            ) is True
+            return (
+                self._invoke_locked(
+                    "purge_governed_members",
+                    members=members,
+                    agent_id=agent_id,
+                    installation_id=installation_id,
+                    partitions=partitions,
+                    project_id=project_id,
+                    branch_id=branch_id,
+                    budget_seconds=budget,
+                )
+                is True
+            )
 
     def is_available(self) -> bool:
         return bool(self._call("is_available"))
@@ -851,8 +915,9 @@ def _a_shared_store_holds_a_helper() -> bool:
     return any(store._holds_live_helper() for store in stores)
 
 
-def store_for(db_path: Path, *, table_name: str, dimensions: int,
-              metric: str = "cosine") -> ProcessLanceVectorStore | SharedStore:
+def store_for(
+    db_path: Path, *, table_name: str, dimensions: int, metric: str = "cosine"
+) -> ProcessLanceVectorStore | SharedStore:
     """The process's one store of this table, while it shares them (``share``); a store of its own otherwise."""
     if not _sharing:
         return ProcessLanceVectorStore(db_path, table_name=table_name, dimensions=dimensions, metric=metric)
@@ -860,8 +925,9 @@ def store_for(db_path: Path, *, table_name: str, dimensions: int,
     with _shared_lock:
         shared = _shared.get(key)
         if shared is None:
-            shared = _shared[key] = _Shared(ProcessLanceVectorStore(db_path, table_name=table_name,
-                                                                    dimensions=dimensions, metric=metric))
+            shared = _shared[key] = _Shared(
+                ProcessLanceVectorStore(db_path, table_name=table_name, dimensions=dimensions, metric=metric)
+            )
     return SharedStore(shared)
 
 
@@ -947,5 +1013,14 @@ def _reset_sharing_for_tests() -> None:
     _sharing = False
 
 
-__all__ =["LANCE_WORKER_METHODS", "MAX_LANCE_FRAME_BYTES", "NativeVectorPathError", "ProcessLanceVectorStore",
-           "SharedStore", "discard_spare", "prestart", "share", "store_for"]
+__all__ = [
+    "LANCE_WORKER_METHODS",
+    "MAX_LANCE_FRAME_BYTES",
+    "NativeVectorPathError",
+    "ProcessLanceVectorStore",
+    "SharedStore",
+    "discard_spare",
+    "prestart",
+    "share",
+    "store_for",
+]

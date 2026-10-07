@@ -7,6 +7,7 @@ store's writer lease 42 s, every other entry's write failed meanwhile, and Herme
 (yuheng and tianshu, 2026-10-05).  The same write beside one busy thread took 408 s before and 7.9 s after.  The
 counts are what a regression raises; the time itself depends on the machine.
 """
+
 from dataclasses import replace
 import sqlite3
 
@@ -113,7 +114,8 @@ def test_a_local_store_still_opens_only_for_exactly_its_scopes(app):
         with core.storage.read(ctx):
             pass
     assert {(missing.value.code, missing.value.field), (extra.value.code, extra.value.field)} == {
-        ("IDENTITY_UNBOUND", "scope_binding")}
+        ("IDENTITY_UNBOUND", "scope_binding")
+    }
 
 
 def test_a_source_restating_a_muted_claim_is_muted_and_one_that_does_not_is_not(app):
@@ -130,16 +132,24 @@ def test_a_source_restating_a_muted_claim_is_muted_and_one_that_does_not_is_not(
 
 def test_the_batch_check_admits_exactly_what_the_single_one_does(app):
     core, ctx = app
-    blocks = {"TEST-open": None, "TEST-read-blocked": (1, 0, "TEST-scope"), "TEST-muted": (0, 1, "TEST-scope"),
-              "TEST-elsewhere": (0, 0, "TEST-elsewhere")}
+    blocks = {
+        "TEST-open": None,
+        "TEST-read-blocked": (1, 0, "TEST-scope"),
+        "TEST-muted": (0, 1, "TEST-scope"),
+        "TEST-elsewhere": (0, 0, "TEST-elsewhere"),
+    }
     with sqlite3.connect(core.storage.path) as conn:
         for kind in ("event", "claim"):
             for ref, block in blocks.items():
                 if block:
-                    conn.execute("INSERT INTO object_blocks VALUES (?,?,?,NULL,NULL,?,?,'TEST-op')",
-                                 (kind, ref, block[2], block[0], block[1]))
-        conn.execute("INSERT INTO restored_absence_blocks VALUES ('claim','TEST-open','TEST-scope',NULL,NULL,?,'TEST')",
-                     ("0" * 64,))
+                    conn.execute(
+                        "INSERT INTO object_blocks VALUES (?,?,?,NULL,NULL,?,?,'TEST-op')",
+                        (kind, ref, block[2], block[0], block[1]),
+                    )
+        conn.execute(
+            "INSERT INTO restored_absence_blocks VALUES ('claim','TEST-open','TEST-scope',NULL,NULL,?,'TEST')",
+            ("0" * 64,),
+        )
     with core.storage.read(ctx) as tx:
         for kind in ("event", "claim"):
             for automatic in (False, True):
@@ -150,9 +160,12 @@ def test_the_batch_check_admits_exactly_what_the_single_one_does(app):
 
 def _assistant(core, ctx, text: str, key: str):
     """What the assistant said, as Hermes stores it after a turn: not first-hand."""
-    saved = core.record_event(replace(ctx, actor_origin="assistant_visible"),
-                              source_event(source_event_key=key, origin="assistant_visible", role="assistant",
-                                           content=text), scope_id="TEST-scope", remaining_seconds=10)
+    saved = core.record_event(
+        replace(ctx, actor_origin="assistant_visible"),
+        source_event(source_event_key=key, origin="assistant_visible", role="assistant", content=text),
+        scope_id="TEST-scope",
+        remaining_seconds=10,
+    )
     assert saved.durability == "persisted"
 
 

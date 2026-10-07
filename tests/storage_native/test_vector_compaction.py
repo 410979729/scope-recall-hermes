@@ -5,6 +5,7 @@ install, because the properties worth asserting -- that fragments actually
 collapse, that no row is lost, that a reader follows the table forward -- are
 properties of LanceDB, not of our arithmetic about it.
 """
+
 from __future__ import annotations
 
 import importlib.util
@@ -19,8 +20,7 @@ from scope_recall.runtime.vector_upkeep import INDEX_RECHECK, RESERVE_SECONDS, c
 
 
 def _footprint(fragments, manifests=1, transactions=1, size=0):
-    return vc.VectorFootprint(fragments=fragments, manifests=manifests,
-                              transactions=transactions, bytes=size)
+    return vc.VectorFootprint(fragments=fragments, manifests=manifests, transactions=transactions, bytes=size)
 
 
 def _state(finished_at):
@@ -30,6 +30,7 @@ def _state(finished_at):
 # --------------------------------------------------------------------------
 # Policy: when is a compaction due?
 # --------------------------------------------------------------------------
+
 
 def test_a_small_store_is_left_alone():
     assert vc.compaction_due(_footprint(vc.FRAGMENT_THRESHOLD), {}) is None
@@ -67,7 +68,10 @@ def test_state_round_trips_and_replaces_cleanly(tmp_path):
 
 def test_footprint_of_a_missing_store_is_zero(tmp_path):
     assert vc.measure_footprint(tmp_path / "lancedb", "scope_recall").as_dict() == {
-        "fragments": 0, "manifests": 0, "transactions": 0, "bytes": 0,
+        "fragments": 0,
+        "manifests": 0,
+        "transactions": 0,
+        "bytes": 0,
     }
 
 
@@ -109,14 +113,28 @@ def test_a_backfill_no_worker_looks_at_any_more_is_not_the_store_s_outcome(tmp_p
     space = tmp_path / "vectors" / "TEST-space"
     (space / "lancedb" / "scope_recall.lance").mkdir(parents=True)
     now = datetime.now(timezone.utc)
-    for scopes, checked, outcome, total in ((["TEST-a"], now - timedelta(days=5), "failed", 3),
-                                            (["TEST-b"], now - timedelta(hours=1), "finished", 5)):
-        vc.write_state(space, {"checked_at": checked.isoformat(), "outcome": outcome, "queued_total": total,
-                               "error": "RuntimeError" if outcome == "failed" else None},
-                       filename=vc.embed_backfill_filename(scopes, None, None), schema=vc.EMBED_BACKFILL_STATE_SCHEMA)
+    for scopes, checked, outcome, total in (
+        (["TEST-a"], now - timedelta(days=5), "failed", 3),
+        (["TEST-b"], now - timedelta(hours=1), "finished", 5),
+    ):
+        vc.write_state(
+            space,
+            {
+                "checked_at": checked.isoformat(),
+                "outcome": outcome,
+                "queued_total": total,
+                "error": "RuntimeError" if outcome == "failed" else None,
+            },
+            filename=vc.embed_backfill_filename(scopes, None, None),
+            schema=vc.EMBED_BACKFILL_STATE_SCHEMA,
+        )
     # An rc10 test store's single file is not a partition's.
-    vc.write_state(space, {"checked_at": now.isoformat(), "outcome": "failed"}, filename="embed-backfill-state.json",
-                   schema=vc.EMBED_BACKFILL_STATE_SCHEMA)
+    vc.write_state(
+        space,
+        {"checked_at": now.isoformat(), "outcome": "failed"},
+        filename="embed-backfill-state.json",
+        schema=vc.EMBED_BACKFILL_STATE_SCHEMA,
+    )
     [report] = vc.instance_vector_footprints(tmp_path)
     assert (report["embed_backfill_outcome"], report["embed_backfill_error"]) == ("finished", None)
     assert report["embed_backfill_queued_total"] == 8
@@ -125,6 +143,7 @@ def test_a_backfill_no_worker_looks_at_any_more_is_not_the_store_s_outcome(tmp_p
 # --------------------------------------------------------------------------
 # Orchestration: never fail a drain, never act without budget
 # --------------------------------------------------------------------------
+
 
 class _FakeStore:
     def __init__(self, failure: Exception | None = None):
@@ -293,6 +312,7 @@ def test_a_reader_survives_a_compaction_performed_by_another_writer(tmp_path):
 # The nearest-neighbour index: built once the table needs one, by a pass with the time for it
 # --------------------------------------------------------------------------
 
+
 class _FakeIndexStore:
     """``looks`` is what the store reports without building: needs_build, present, below_threshold."""
 
@@ -351,6 +371,7 @@ def test_a_failed_index_build_is_recorded_and_not_tried_on_every_pass(tmp_path):
 def test_a_build_the_watchdog_ended_is_not_started_again_on_the_next_pass(tmp_path):
     """Off Windows the build runs in the worker's own process, and a pass the watchdog ended mid-build wrote no
     receipt: the next pass started the same build, and the next."""
+
     class Killed(_FakeIndexStore):
         def ensure_vector_index(self, *, min_rows, timeout_seconds, build=True):
             if not build:
@@ -386,11 +407,19 @@ def _spread_rows(count: int, dimensions: int = 8) -> list[dict]:
     import random
 
     generator = random.Random(20260928)
-    return [{"id": f"TEST-vector-{index}", "scope_id": "TEST-scope", "source": "TEST-source", "target": "TEST-target",
-             "content": f"TEST content {index}", "summary": "TEST summary",
-             "updated_at": "2026-09-28T00:00:00+00:00",
-             "vector": [generator.uniform(-1.0, 1.0) for _ in range(dimensions)]}
-            for index in range(count)]
+    return [
+        {
+            "id": f"TEST-vector-{index}",
+            "scope_id": "TEST-scope",
+            "source": "TEST-source",
+            "target": "TEST-target",
+            "content": f"TEST content {index}",
+            "summary": "TEST summary",
+            "updated_at": "2026-09-28T00:00:00+00:00",
+            "vector": [generator.uniform(-1.0, 1.0) for _ in range(dimensions)],
+        }
+        for index in range(count)
+    ]
 
 
 @pytest_native
@@ -459,7 +488,7 @@ def test_index_segments_past_the_limit_are_built_again_as_one(tmp_path, monkeypa
         store.upsert_records(rows[:1200])
         assert store.ensure_vector_index(min_rows=1000)["outcome"] == "built"
         for start in (1200, 1300, 1400, 1500):
-            store.upsert_records(rows[start:start + 100])
+            store.upsert_records(rows[start : start + 100])
             store.compact()
         segments = store._fresh_table().index_stats("vector_idx").num_indices
         assert segments > 2, segments
@@ -471,9 +500,10 @@ def test_index_segments_past_the_limit_are_built_again_as_one(tmp_path, monkeypa
         store.close()
 
 
-pytest_windows_helper = pytest.mark.skipif(importlib.util.find_spec("lancedb") is None
-                                           or __import__("sys").platform != "win32",
-                                           reason="the helper process store is the Windows one")
+pytest_windows_helper = pytest.mark.skipif(
+    importlib.util.find_spec("lancedb") is None or __import__("sys").platform != "win32",
+    reason="the helper process store is the Windows one",
+)
 
 
 @pytest_windows_helper
@@ -497,7 +527,10 @@ def test_a_helper_started_ahead_is_the_one_the_store_uses(tmp_path):
         try:
             assert store._process is spare and process_store._spare is None
             assert store.ensure_vector_index(min_rows=1000, timeout_seconds=120)["outcome"] == "built"
-            assert store.search(_spread_rows(1200)[5]["vector"], scope_id="TEST-scope", limit=1)[0]["id"] == "TEST-vector-5"
+            assert (
+                store.search(_spread_rows(1200)[5]["vector"], scope_id="TEST-scope", limit=1)[0]["id"]
+                == "TEST-vector-5"
+            )
         finally:
             store.close()
         assert process_store._spare is None, "taken once: a server's runtimes share the store that took it"

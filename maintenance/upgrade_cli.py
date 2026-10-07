@@ -37,9 +37,7 @@ def main(argv=None):
         action="store_true",
         help="print the bundled agent-operated workflow",
     )
-    migrate = sub.add_parser(
-        "migrate", help="resumable migration using the existing legacy converter"
-    )
+    migrate = sub.add_parser("migrate", help="resumable migration using the existing legacy converter")
     stages = migrate.add_subparsers(dest="stage", required=True)
     prepare = stages.add_parser("prepare")
     prepare.add_argument("--source", required=True)
@@ -65,9 +63,7 @@ def main(argv=None):
                 return 0
             if not args.home:
                 parser.error("setup requires --home or --workflow")
-            result = inspect_installation(
-                args.home, host=args.host, database=args.database
-            )
+            result = inspect_installation(args.home, host=args.host, database=args.database)
         elif args.stage == "prepare":
             mapping = None
             if args.scope_map:
@@ -109,9 +105,7 @@ def main(argv=None):
         result = dict(
             status="blocked",
             error_type=type(exc).__name__,
-            reason=str(exc)
-            if isinstance(exc, (MigrationError, BackupError))
-            else "invalid_or_unavailable_input",
+            reason=str(exc) if isinstance(exc, (MigrationError, BackupError)) else "invalid_or_unavailable_input",
             safe_action="preserve_old_host_and_diagnose",
             user_memory_review_required=False,
         )
@@ -121,8 +115,7 @@ def main(argv=None):
     return (
         3
         if result.get("state") == "blocked"
-        or result.get("route")
-        in {"unsupported", "repair_required", "needs_agent_inspection"}
+        or result.get("route") in {"unsupported", "repair_required", "needs_agent_inspection"}
         else 0
     )
 

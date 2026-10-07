@@ -5,6 +5,7 @@ evidence reference stays intact JSON.  Trusted source order -- the
 ``episode_events`` sequence attached at hydration -- decides which correction
 or progress entry is current; the order of a model-written list never does.
 """
+
 from __future__ import annotations
 
 import unicodedata
@@ -48,8 +49,13 @@ def source_order(obj: RetrievedObject) -> dict[str, int]:
         return {}
     order: dict[str, int] = {}
     for value in values[:32]:
-        if (isinstance(value, list) and len(value) == 3 and type(value[0]) is str
-                and type(value[1]) is int and type(value[2]) is int):
+        if (
+            isinstance(value, list)
+            and len(value) == 3
+            and type(value[0]) is str
+            and type(value[1]) is int
+            and type(value[2]) is int
+        ):
             order[f"{value[0]}@{value[1]}"] = value[2]
     return order
 
@@ -80,8 +86,11 @@ def _supported_next_refs(resume: dict, order: dict[str, int], texts: dict[str, s
     historically carried only global evidence refs.
     """
     next_step = resume.get("next_step")
-    refs = [ref for ref in resume.get("evidence_refs", ())
-            if type(ref) is str and ref in order and _mentions_next_step(texts.get(ref, ""), next_step)]
+    refs = [
+        ref
+        for ref in resume.get("evidence_refs", ())
+        if type(ref) is str and ref in order and _mentions_next_step(texts.get(ref, ""), next_step)
+    ]
     return sorted(refs, key=lambda ref: order[ref])
 
 
@@ -163,8 +172,12 @@ def compact_episode_variants(obj: RetrievedObject) -> tuple[dict, ...]:
 
     # All independently supported fields first, then progressively fewer.
     variants = [dict(selected)]
-    for drop in (("goal",), ("verified_progress",), ("open_items",),
-                 ("next_step", "next_step_basis", "next_step_evidence_refs")):
+    for drop in (
+        ("goal",),
+        ("verified_progress",),
+        ("open_items",),
+        ("next_step", "next_step_basis", "next_step_evidence_refs"),
+    ):
         candidate = {key: value for key, value in selected.items() if key not in drop}
         if candidate and candidate not in variants:
             variants.append(candidate)

@@ -1,4 +1,5 @@
 """Convert Hermes host callbacks into core SourceEvent DTOs at the boundary."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -216,23 +217,35 @@ def sync_turn_source_events(
 
 
 #: The blocks Hermes strips from what a reply shows (its ``turn_truncation._THINK_TAG_RE`` tags).
-_HIDDEN_BLOCK = re.compile(r"<(think|thinking|reasoning|REASONING_SCRATCHPAD)\b[^>]*>.*?(?:</\1\s*>|\Z)",
-                           re.IGNORECASE | re.DOTALL)
+_HIDDEN_BLOCK = re.compile(
+    r"<(think|thinking|reasoning|REASONING_SCRATCHPAD)\b[^>]*>.*?(?:</\1\s*>|\Z)", re.IGNORECASE | re.DOTALL
+)
 
 
 def _shown_text(message: dict[str, Any]) -> str:
     """What one assistant message showed: its Codex commentary items if any, else its content."""
     items = message.get("codex_message_items")
     commentary = [
-        "".join(part["text"] for part in item["content"]
-                if isinstance(part, dict) and part.get("type") == "output_text" and isinstance(part.get("text"), str))
+        "".join(
+            part["text"]
+            for part in item["content"]
+            if isinstance(part, dict) and part.get("type") == "output_text" and isinstance(part.get("text"), str)
+        )
         for item in (items if isinstance(items, list) else ())
-        if isinstance(item, dict) and item.get("type") == "message" and isinstance(item.get("content"), list)
-        and str(item.get("phase") or "").strip().lower() == "commentary"]
+        if isinstance(item, dict)
+        and item.get("type") == "message"
+        and isinstance(item.get("content"), list)
+        and str(item.get("phase") or "").strip().lower() == "commentary"
+    ]
     text: object = "\n\n".join(said.strip() for said in commentary if said.strip()) or message.get("content")
     if isinstance(text, list):
-        text = "\n".join(part["text"] for part in text if isinstance(part, dict)
-                         and part.get("type") in ("text", "output_text") and isinstance(part.get("text"), str))
+        text = "\n".join(
+            part["text"]
+            for part in text
+            if isinstance(part, dict)
+            and part.get("type") in ("text", "output_text")
+            and isinstance(part.get("text"), str)
+        )
     return _HIDDEN_BLOCK.sub("", text).strip() if isinstance(text, str) else ""
 
 
@@ -270,7 +283,7 @@ def _steer_words(content: object) -> str:
     if words.startswith(_STEER_ORIGIN):
         # The preamble ends at its first blank line; without one nothing here is known to be the person's.
         blank = words.find("\n\n")
-        words = words[blank + 2:].strip() if blank != -1 else ""
+        words = words[blank + 2 :].strip() if blank != -1 else ""
     return words
 
 
@@ -296,7 +309,7 @@ def _own_text(message: dict[str, Any]) -> str:
         if _SUMMARY_DELIMITER in text:
             text = text.split(_SUMMARY_DELIMITER, 1)[0].strip()
             if text.startswith(_PRIOR_CONTEXT_HEADER):
-                text = text[len(_PRIOR_CONTEXT_HEADER):]
+                text = text[len(_PRIOR_CONTEXT_HEADER) :]
         elif _SUMMARY_END in text:
             text = text.split(_SUMMARY_END, 1)[1]
         else:
@@ -346,8 +359,7 @@ def host_notice(history: object, user_message: object) -> bool:
             continue
         words = _own_text(message)
         if words:
-            return (words == text and _notice_kind(message)
-                    and (trailing or message.get(_COMPRESSED_SUMMARY) is True))
+            return words == text and _notice_kind(message) and (trailing or message.get(_COMPRESSED_SUMMARY) is True)
     return False
 
 
@@ -503,5 +515,3 @@ def tool_call_source_event(
         capture_state=capture_state,
         gaps=tuple(gaps),
     )
-
-

@@ -3,6 +3,7 @@
 Owned by the worker drain.  Vector and file I/O stay outside SQLite
 transactions, and every physical step is fenced by the work lease.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -89,9 +90,9 @@ def _live_claim(tx, ref: str, revision: int):
 class _EmbedSubject:
     """What differs between embedding a source event and a claim version."""
 
-    keyword: str        # the port's keyword for the subject: publish_*(prepared, source=... | claim=...)
-    live: Callable      # (tx, ref, revision) -> the subject while it is live, else None
-    prepare: str        # port method names; a port may support sources only
+    keyword: str  # the port's keyword for the subject: publish_*(prepared, source=... | claim=...)
+    live: Callable  # (tx, ref, revision) -> the subject while it is live, else None
+    prepare: str  # port method names; a port may support sources only
     publish: str
 
 
@@ -102,8 +103,10 @@ _EMBED_SUBJECTS = {
     "claim": _EmbedSubject("claim", _live_claim, "prepare_claim", "publish_claim"),
 }
 #: A group's port methods per subject, and the keyword each group publish takes its subjects by.
-_GROUP_METHODS = {"source": ("prepare_sources", "publish_sources", "sources"),
-                  "claim": ("prepare_claims", "publish_claims", "claims")}
+_GROUP_METHODS = {
+    "source": ("prepare_sources", "publish_sources", "sources"),
+    "claim": ("prepare_claims", "publish_claims", "claims"),
+}
 #: Members recorded per write transaction when a group completes.  One transaction for a
 #: thousand would hold the store's write lock for as long as a capture waits for it.
 GROUP_RECORD_CHUNK = 200
@@ -177,15 +180,18 @@ def _prepare_in_halves(batch, members: list, *, clock, started: float, budget: f
         if _provider_refusal(error_code):
             raise EmbedGroupRefused(error_code) from exc
         middle = len(members) // 2
-        return {**_prepare_in_halves(batch, members[:middle], clock=clock, started=started, budget=budget),
-                **_prepare_in_halves(batch, members[middle:], clock=clock, started=started, budget=budget)}
+        return {
+            **_prepare_in_halves(batch, members[:middle], clock=clock, started=started, budget=budget),
+            **_prepare_in_halves(batch, members[middle:], clock=clock, started=started, budget=budget),
+        }
     if len(prepared) != len(members):
         return {}
     return {(subject.ref, subject.revision): vector for subject, vector in zip(members, prepared)}
 
 
-def publish_embed_group(storage, clock, context, items, *, embed, prepared_group: dict,
-                        started: float, budget: float) -> dict:
+def publish_embed_group(
+    storage, clock, context, items, *, embed, prepared_group: dict, started: float, budget: float
+) -> dict:
     """Write a group's vectors in one fenced commit per kind; answer with each written member's fence.
 
     The store's write API is plural and the adapter used it one row at a time, so a pass paid
@@ -201,17 +207,32 @@ def publish_embed_group(storage, clock, context, items, *, embed, prepared_group
     if len(items) < 2 or not prepared_group:
         return published
     for kind in ("source", "claim"):
-        members = [item for item in items if _subject_kind(item) == kind
-                   and (item.subject_ref, item.subject_revision) in prepared_group]
+        members = [
+            item
+            for item in items
+            if _subject_kind(item) == kind and (item.subject_ref, item.subject_revision) in prepared_group
+        ]
         publish = getattr(embed, _GROUP_METHODS[kind][1], None)
         if callable(publish) and len(members) >= 2 and _remaining(started, clock, budget) > 0:
-            published.update(_publish_kind(storage, clock, context, members, kind=kind, publish=publish,
-                                           prepared_group=prepared_group, started=started, budget=budget))
+            published.update(
+                _publish_kind(
+                    storage,
+                    clock,
+                    context,
+                    members,
+                    kind=kind,
+                    publish=publish,
+                    prepared_group=prepared_group,
+                    started=started,
+                    budget=budget,
+                )
+            )
     return published
 
 
-def _publish_kind(storage, clock, context, items, *, kind: str, publish, prepared_group: dict,
-                  started: float, budget: float) -> dict:
+def _publish_kind(
+    storage, clock, context, items, *, kind: str, publish, prepared_group: dict, started: float, budget: float
+) -> dict:
     """One fenced commit for the group's members of one subject kind."""
     live = _EMBED_SUBJECTS[kind].live
     members, prepared, fences = [], [], {}
@@ -222,9 +243,11 @@ def _publish_kind(storage, clock, context, items, *, kind: str, publish, prepare
                 if subject is None:
                     continue
                 fences[item.work_id] = read_derivation_fence(
-                    tx, scope_id=item.scope_id,
+                    tx,
+                    scope_id=item.scope_id,
                     sources=(subject,) if kind == "source" else (),
-                    claims=((subject.ref, subject.revision),) if kind == "claim" else ())
+                    claims=((subject.ref, subject.revision),) if kind == "claim" else (),
+                )
                 members.append((item, subject))
                 prepared.append(prepared_group[(item.subject_ref, item.subject_revision)])
     except ContractError:
@@ -272,8 +295,7 @@ def _publish_kind(storage, clock, context, items, *, kind: str, publish, prepare
     return {(item.subject_ref, item.subject_revision): fences[item.work_id] for item, _subject in members}
 
 
-def complete_embed_group(storage, clock, context, items, *, published: dict,
-                         started: float, budget: float) -> dict:
+def complete_embed_group(storage, clock, context, items, *, published: dict, started: float, budget: float) -> dict:
     """Record the group's published members together; each one's outcome by work id.
 
     Each member used to answer for itself in three transactions -- read it, guard it, complete
@@ -290,7 +312,7 @@ def complete_embed_group(storage, clock, context, items, *, published: dict,
     for start in range(0, len(members), GROUP_RECORD_CHUNK):
         if _remaining(started, clock, budget) <= 0:
             break
-        chunk = members[start:start + GROUP_RECORD_CHUNK]
+        chunk = members[start : start + GROUP_RECORD_CHUNK]
         recorded: dict = {}
         try:
             with storage.write(context, remaining_seconds=_remaining(started, clock, budget)) as tx:
@@ -333,10 +355,15 @@ def _process_embed(
     finish = partial(_finalize_work, storage, clock, context, item, started=started, budget=budget)
     with storage.read(context, remaining_seconds=_remaining(started, clock, budget)) as tx:
         subject = kind.live(tx, item.subject_ref, item.subject_revision)
-        dependencies = None if subject is None else read_derivation_fence(
-            tx, scope_id=item.scope_id,
-            sources=(subject,) if kind.keyword == "source" else (),
-            claims=((subject.ref, subject.revision),) if kind.keyword == "claim" else (),
+        dependencies = (
+            None
+            if subject is None
+            else read_derivation_fence(
+                tx,
+                scope_id=item.scope_id,
+                sources=(subject,) if kind.keyword == "source" else (),
+                claims=((subject.ref, subject.revision),) if kind.keyword == "claim" else (),
+            )
         )
     if subject is None:
         return finish("obsolete", "authority_revoked")
@@ -411,7 +438,9 @@ def _process_embed(
         return _work_result(tx.work.complete(*item.lease, now=now))
 
 
-def _process_rebuild_projection(storage, clock, context, item, *, started: float, budget: float) -> tuple[str, str | None, str]:
+def _process_rebuild_projection(
+    storage, clock, context, item, *, started: float, budget: float
+) -> tuple[str, str | None, str]:
     """Re-index one source, or acknowledge one claim revision's projection."""
     now = clock.utc_now()
     if _remaining(started, clock, budget) <= 0:
@@ -527,7 +556,9 @@ def _purge_layers(storage, clock, context, item, *, purge, started, budget, fini
                     receipt = tx.deletions.mark_vector_active_removed(operation_id)
                 receipt = tx.deletions.finalize_attachments(operation_id, attachment_plan, erased=True)
                 if not receipt["active_content_removed"]:
-                    return _work_result(tx.work.fail(*item.lease, error_code="storage_unavailable", now=now, recoverable=True))
+                    return _work_result(
+                        tx.work.fail(*item.lease, error_code="storage_unavailable", now=now, recoverable=True)
+                    )
                 return _work_result(tx.work.complete(*item.lease, now=now))
         except Exception:
             # Physical layers may already be gone when the final CAS fails.

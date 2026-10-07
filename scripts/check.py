@@ -78,8 +78,9 @@ def distribution_is_installed(python_executable: str | None = None) -> bool:
     if python_executable is not None and python_executable != sys.executable:
         probe = "import importlib.metadata as m; print(m.version('hermes-scope-recall'))"
         try:
-            done = subprocess.run([python_executable, "-I", "-B", "-c", probe],
-                                  capture_output=True, text=True, timeout=30, check=False)
+            done = subprocess.run(
+                [python_executable, "-I", "-B", "-c", probe], capture_output=True, text=True, timeout=30, check=False
+            )
         except (OSError, subprocess.TimeoutExpired):
             return False
         return done.returncode == 0
@@ -117,14 +118,60 @@ SCRIPT_GATE_TESTS = [
     "tests/packaging/test_release_notes.py",
 ]
 SUITES = {
-    "unit": ["tests/unit/test_v11_context.py", "tests/unit/test_check_runner.py", "tests/unit/test_secret_patterns.py", "tests/unit/test_recall_budget.py", "tests/unit/test_contract_schemas.py", "tests/unit/test_claude_code_record.py", "tests/unit/test_workbuddy_record.py", "tests/unit/test_dsh_record.py"],
-    "contract": ["tests/contract/test_v11_protocol.py", "tests/contract/test_v11_inputs.py", "tests/contract/test_p13_configurable_budget.py", "tests/contract/test_autostart_cli.py", "tests/contract/test_companion_publish.py", "tests/contract/test_upgrade_store_cli.py", "tests/contract/test_request_guard_escaping.py", "tests/contract/test_relation_candidates_rank.py", "tests/contract/test_status_file_beside_its_writer.py", "tests/contract/test_every_store_meets_the_runtime.py", "tests/contract/test_a_paused_wake_lets_go.py", "tests/contract/test_a_pass_that_ends_hands_back_its_group.py", "tests/contract/test_settle_window_wake.py"],
-    "storage": ["tests/contract/test_v11_storage.py", "tests/contract/test_shared_store.py", "tests/contract/test_embedding_respace.py", "tests/known_answer/test_recall_invariants_check.py"],
+    "unit": [
+        "tests/unit/test_v11_context.py",
+        "tests/unit/test_check_runner.py",
+        "tests/unit/test_secret_patterns.py",
+        "tests/unit/test_recall_budget.py",
+        "tests/unit/test_contract_schemas.py",
+        "tests/unit/test_claude_code_record.py",
+        "tests/unit/test_workbuddy_record.py",
+        "tests/unit/test_dsh_record.py",
+    ],
+    "contract": [
+        "tests/contract/test_v11_protocol.py",
+        "tests/contract/test_v11_inputs.py",
+        "tests/contract/test_p13_configurable_budget.py",
+        "tests/contract/test_autostart_cli.py",
+        "tests/contract/test_companion_publish.py",
+        "tests/contract/test_upgrade_store_cli.py",
+        "tests/contract/test_request_guard_escaping.py",
+        "tests/contract/test_relation_candidates_rank.py",
+        "tests/contract/test_status_file_beside_its_writer.py",
+        "tests/contract/test_every_store_meets_the_runtime.py",
+        "tests/contract/test_a_paused_wake_lets_go.py",
+        "tests/contract/test_a_pass_that_ends_hands_back_its_group.py",
+        "tests/contract/test_settle_window_wake.py",
+    ],
+    "storage": [
+        "tests/contract/test_v11_storage.py",
+        "tests/contract/test_shared_store.py",
+        "tests/contract/test_embedding_respace.py",
+        "tests/known_answer/test_recall_invariants_check.py",
+    ],
     "capture": ["tests/contract/test_v11_capture.py", "tests/contract/test_capture_row_crossings.py"],
     "claims": ["tests/contract/test_v11_claims.py", "tests/contract/test_claim_embed_recovery.py"],
     "deletion": ["tests/contract/test_v11_deletion.py"],
-    "episodes": ["tests/contract/test_v11_episodes.py","tests/contract/test_v11_retained_artifacts.py","tests/contract/test_v11_episode_authority.py","tests/contract/test_v11_consolidation_input.py","tests/contract/test_v11_aliases.py","tests/contract/test_storage_growth.py"],
-    "retrieval": ["tests/contract/test_p08_retrieval.py", "tests/contract/test_p08_evidence_followup.py", "tests/contract/test_v11_recall_admission.py", "tests/contract/test_v11_retrieval_history_state.py", "tests/contract/test_v11_vector_timeout_fallback.py", "tests/contract/test_auto_query_echo.py", "tests/contract/test_vector_retention.py", "tests/contract/test_recall_scope.py", "tests/contract/test_withheld_outputs_unindexed.py", "tests/contract/test_recall_row_crossings.py"],
+    "episodes": [
+        "tests/contract/test_v11_episodes.py",
+        "tests/contract/test_v11_retained_artifacts.py",
+        "tests/contract/test_v11_episode_authority.py",
+        "tests/contract/test_v11_consolidation_input.py",
+        "tests/contract/test_v11_aliases.py",
+        "tests/contract/test_storage_growth.py",
+    ],
+    "retrieval": [
+        "tests/contract/test_p08_retrieval.py",
+        "tests/contract/test_p08_evidence_followup.py",
+        "tests/contract/test_v11_recall_admission.py",
+        "tests/contract/test_v11_retrieval_history_state.py",
+        "tests/contract/test_v11_vector_timeout_fallback.py",
+        "tests/contract/test_auto_query_echo.py",
+        "tests/contract/test_vector_retention.py",
+        "tests/contract/test_recall_scope.py",
+        "tests/contract/test_withheld_outputs_unindexed.py",
+        "tests/contract/test_recall_row_crossings.py",
+    ],
     "model_runtime": ["tests/host/test_eval_model_runtime.py"],
     "native": [
         "tests/contract/test_v11_lance_embed_fence.py",
@@ -217,7 +264,11 @@ TIER_METADATA = {
     "migration": {"level": "T2", "requires": ["migration"], "model_calls": False},
     "packaging": {"level": "T3", "requires": ["clean_wheel"], "model_calls": False},
     "integration": {"level": "T2", "requires": ["native", "hermes", "codex"], "model_calls": False},
-    "release": {"level": "T3", "requires": ["native", "hermes", "codex", "migration", "clean_wheel"], "model_calls": False},
+    "release": {
+        "level": "T3",
+        "requires": ["native", "hermes", "codex", "migration", "clean_wheel"],
+        "model_calls": False,
+    },
     "eval": {"level": "T4", "requires": ["model"], "model_calls": True},
     "model_runtime": {"level": "T4", "requires": ["model"], "model_calls": True},
 }
@@ -238,18 +289,47 @@ SAFETY_BASELINE = [
 def _dedupe(paths: list[str]) -> list[str]:
     return list(dict.fromkeys(paths))
 
+
 # The I-contract bottom line is explicit so a path-based selector cannot
 # accidentally turn an authority change into a surface-only test.  These are
 # existing deterministic tests, not a new scheduler or a semantic benchmark.
 I_SAFETY_MATRIX = {
     "I01": ["tests/unit/test_v11_context.py", "tests/host/hermes/test_identity.py", "tests/host/codex/test_hooks.py"],
     "I03": ["tests/contract/test_v11_capture.py", "tests/contract/test_v11_worker.py"],
-    "I04": ["tests/contract/test_v11_capture.py", "tests/contract/test_v11_episodes.py", "tests/host/hermes/test_dedupe.py"],
-    "I06": ["tests/contract/test_v11_claims.py", "tests/contract/test_v11_episode_authority.py", "tests/contract/test_v11_recall_admission.py"],
-    "I07": ["tests/contract/test_v11_deletion.py", "tests/contract/test_v11_worker.py", "tests/contract/test_v11_lance_embed_fence.py"],
-    "I08": ["tests/contract/test_p08_retrieval.py", "tests/contract/test_v11_recall_admission.py", "tests/contract/test_v11_retrieval_history_state.py", "tests/contract/test_v11_vector_timeout_fallback.py", "tests/integration/test_v11_lance_retrieval.py"],
-    "I09": ["tests/contract/test_v11_storage.py", "tests/contract/test_v11_deletion.py", "tests/contract/test_v11_worker.py", "tests/contract/test_v11_worker_incremental_batch.py"],
-    "I10": ["tests/contract/test_v11_worker.py", "tests/contract/test_v11_worker_incremental_batch.py", "tests/contract/test_v11_lance_embed_fence.py", "tests/contract/test_v11_retained_lock_deadline.py"],
+    "I04": [
+        "tests/contract/test_v11_capture.py",
+        "tests/contract/test_v11_episodes.py",
+        "tests/host/hermes/test_dedupe.py",
+    ],
+    "I06": [
+        "tests/contract/test_v11_claims.py",
+        "tests/contract/test_v11_episode_authority.py",
+        "tests/contract/test_v11_recall_admission.py",
+    ],
+    "I07": [
+        "tests/contract/test_v11_deletion.py",
+        "tests/contract/test_v11_worker.py",
+        "tests/contract/test_v11_lance_embed_fence.py",
+    ],
+    "I08": [
+        "tests/contract/test_p08_retrieval.py",
+        "tests/contract/test_v11_recall_admission.py",
+        "tests/contract/test_v11_retrieval_history_state.py",
+        "tests/contract/test_v11_vector_timeout_fallback.py",
+        "tests/integration/test_v11_lance_retrieval.py",
+    ],
+    "I09": [
+        "tests/contract/test_v11_storage.py",
+        "tests/contract/test_v11_deletion.py",
+        "tests/contract/test_v11_worker.py",
+        "tests/contract/test_v11_worker_incremental_batch.py",
+    ],
+    "I10": [
+        "tests/contract/test_v11_worker.py",
+        "tests/contract/test_v11_worker_incremental_batch.py",
+        "tests/contract/test_v11_lance_embed_fence.py",
+        "tests/contract/test_v11_retained_lock_deadline.py",
+    ],
     # Codex MCP requires its optional extra and belongs to the Codex host tier;
     # Core safety selection must remain runnable in the base test environment.
     "I14": ["tests/contract/test_v11_inputs.py", "tests/host/hermes/test_audience_isolation.py"],
@@ -386,9 +466,7 @@ RUNTIME_BOUNDARY_TESTS = [
 ]
 HERMES_HOST_TESTS = [path for path in SUITES["host"] if "/hermes/" in path]
 CODEX_HOST_TESTS = [path for path in SUITES["host"] if "/codex/" in path]
-INTEGRATION_STABLE_BASELINE = _dedupe(
-    list(SUITES["native"]) + list(SUITES["host"]) + list(SUITES["migration"])
-)
+INTEGRATION_STABLE_BASELINE = _dedupe(list(SUITES["native"]) + list(SUITES["host"]) + list(SUITES["migration"]))
 
 _IMPACT_PATTERNS = {
     "scope": ("scope", "identity", "path", "binding", "visibility"),
@@ -487,7 +565,9 @@ def _impact(changed: list[str]) -> tuple[set[str], list[str]]:
         if path == "scripts/check.py":
             impacts.add("selector")
             continue
-        if path in {"pyproject.toml", "setup.py", "manifest.in", "manifests.in"} or path.startswith(("packaging/", "packaging_hooks/")):
+        if path in {"pyproject.toml", "setup.py", "manifest.in", "manifests.in"} or path.startswith(
+            ("packaging/", "packaging_hooks/")
+        ):
             impacts.update({"packaging", "unknown_config"})
             continue
         path_impacts: set[str] = set()
@@ -513,7 +593,25 @@ def _impact(changed: list[str]) -> tuple[set[str], list[str]]:
         if path in {"adapters/lance.py", "lance_process_store.py", "_lance_worker.py", "vector_store.py"}:
             impacts.add("native")
             path_impacts.add("native")
-        if not path_impacts.intersection({"scope", "write", "delete", "time", "read", "claims", "episodes", "packaging", "unknown_config", "host", "host_both", "hermes_host", "codex_host", "runtime_boundary", "native"}):
+        if not path_impacts.intersection(
+            {
+                "scope",
+                "write",
+                "delete",
+                "time",
+                "read",
+                "claims",
+                "episodes",
+                "packaging",
+                "unknown_config",
+                "host",
+                "host_both",
+                "hermes_host",
+                "codex_host",
+                "runtime_boundary",
+                "native",
+            }
+        ):
             unknown.append(raw)
     return impacts, unknown
 
@@ -532,7 +630,9 @@ def select_tests(tier: str, *, changed: list[str] | None = None) -> tuple[list[s
         )
     else:
         selected = list(SUITES.get(tier, []))
-    changed_tests = [path for path in changed if path.startswith("tests/") and path.endswith(".py") and (ROOT / path).is_file()]
+    changed_tests = [
+        path for path in changed if path.startswith("tests/") and path.endswith(".py") and (ROOT / path).is_file()
+    ]
     if changed_tests:
         selected = _dedupe(selected + changed_tests)
     impacts, unknown = _impact(changed)
@@ -551,9 +651,7 @@ def select_tests(tier: str, *, changed: list[str] | None = None) -> tuple[list[s
         host_impacts = {"host", "host_both", "hermes_host", "codex_host", "runtime_boundary"}
         authority_impacts = impacts - host_impacts
         production_changed = [
-            path.replace("\\", "/")
-            for path in changed
-            if not path.replace("\\", "/").startswith("tests/")
+            path.replace("\\", "/") for path in changed if not path.replace("\\", "/").startswith("tests/")
         ]
         host_only_change = bool(production_changed) and all(
             path.startswith(("adapters/", "runtime/")) for path in production_changed
@@ -651,14 +749,41 @@ _PROCESS_TIERS = frozenset({"native", "host", "integration", "migration", "packa
 def _test_environment(tier: str, isolated: Path) -> dict[str, str]:
     """A clean, isolated environment for one pytest run: only the OS essentials,
     every user/config/temp location redirected under ``isolated``."""
-    env = {k: v for k, v in os.environ.items() if k.upper() in {"SYSTEMROOT", "WINDIR", "COMSPEC", "PATH", "PATHEXT", "PROCESSOR_ARCHITECTURE", "NUMBER_OF_PROCESSORS"}}
-    for key in ("HOME", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "TEMP", "TMP", "HERMES_HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME"):
+    env = {
+        k: v
+        for k, v in os.environ.items()
+        if k.upper()
+        in {"SYSTEMROOT", "WINDIR", "COMSPEC", "PATH", "PATHEXT", "PROCESSOR_ARCHITECTURE", "NUMBER_OF_PROCESSORS"}
+    }
+    for key in (
+        "HOME",
+        "USERPROFILE",
+        "APPDATA",
+        "LOCALAPPDATA",
+        "TEMP",
+        "TMP",
+        "HERMES_HOME",
+        "XDG_CONFIG_HOME",
+        "XDG_CACHE_HOME",
+    ):
         target = isolated / key.lower()
         target.mkdir()
         env[key] = str(target)
     test_root = ROOT / "tests"
     test_import_paths = (test_root, test_root / "contract", test_root / "migration", ROOT)
-    env.update(PYTHONUTF8="1", PYTHONDONTWRITEBYTECODE="1", PYTEST_DISABLE_PLUGIN_AUTOLOAD="1", PYTHONPATH=os.pathsep.join(str(path) for path in test_import_paths), SCOPE_RECALL_TEST_BOUNDARY_PARENT=str(isolated), SCOPE_RECALL_TEST_PROTECTED_HOME=str(Path.home()), SCOPE_RECALL_ACTIVE_HERMES_HOME=str(isolated / "protected-unused"), SCOPE_RECALL_REAL_HOME=str(isolated / "unused-real"), SCOPE_RECALL_TEST_TIER=tier, HF_HUB_OFFLINE="1", TRANSFORMERS_OFFLINE="1")
+    env.update(
+        PYTHONUTF8="1",
+        PYTHONDONTWRITEBYTECODE="1",
+        PYTEST_DISABLE_PLUGIN_AUTOLOAD="1",
+        PYTHONPATH=os.pathsep.join(str(path) for path in test_import_paths),
+        SCOPE_RECALL_TEST_BOUNDARY_PARENT=str(isolated),
+        SCOPE_RECALL_TEST_PROTECTED_HOME=str(Path.home()),
+        SCOPE_RECALL_ACTIVE_HERMES_HOME=str(isolated / "protected-unused"),
+        SCOPE_RECALL_REAL_HOME=str(isolated / "unused-real"),
+        SCOPE_RECALL_TEST_TIER=tier,
+        HF_HUB_OFFLINE="1",
+        TRANSFORMERS_OFFLINE="1",
+    )
     env.update(packaging_helper_env(tier))
     env.update(node_helper_env(tier))
     if tier in _PROCESS_TIERS:
@@ -711,17 +836,31 @@ def main() -> int:
     selected, selection = select_tests(args.tier, changed=changed)
     selection["diagnostics"] = change_diagnostics
     if TIER_METADATA.get(args.tier, {}).get("model_calls") and not args.allow_model_calls:
-        return _early_exit(args.tier, selected, selection, status="model_calls_disabled", missing_gates=["explicit_model_authorization"])
+        return _early_exit(
+            args.tier,
+            selected,
+            selection,
+            status="model_calls_disabled",
+            missing_gates=["explicit_model_authorization"],
+        )
     if args.tier == "release" and not distribution_is_installed():
         # Release asks the doctor whether a host can actually reach this
         # provider, and the doctor probes the interpreter for the
         # ``hermes_agent.memory_providers`` entry point in isolated mode, which
         # sees installed distributions only.  Say so here instead of failing
         # later on an assertion that names neither the cause nor the cure.
-        return _early_exit(args.tier, selected, selection, status="distribution_not_installed", missing_gates=["installed_distribution"],
-                           remedy=f"uv pip install -e . --no-deps --python {sys.executable}")
+        return _early_exit(
+            args.tier,
+            selected,
+            selection,
+            status="distribution_not_installed",
+            missing_gates=["installed_distribution"],
+            remedy=f"uv pip install -e . --no-deps --python {sys.executable}",
+        )
     if not selected:
-        print(json.dumps(_selection_output(args.tier, selected, selection, status="not_implemented"), ensure_ascii=False))
+        print(
+            json.dumps(_selection_output(args.tier, selected, selection, status="not_implemented"), ensure_ascii=False)
+        )
         return 2
     missing = [p for p in selected if not (ROOT / p).is_file()]
     if missing:
@@ -772,17 +911,44 @@ def _execute(args, selected: list[str], selection: dict) -> int:
         isolated = Path(directory.name if hasattr(directory, "name") else directory)
         env = _test_environment(args.tier, isolated)
         junit = isolated / "junit.xml"
-        command = [sys.executable, "-B", "-m", "pytest", *selected, "-q", "--import-mode=importlib", "-p", "v11_guard", "-p", "no:cacheprovider", "--durations=10", f"--junitxml={junit}"]
+        command = [
+            sys.executable,
+            "-B",
+            "-m",
+            "pytest",
+            *selected,
+            "-q",
+            "--import-mode=importlib",
+            "-p",
+            "v11_guard",
+            "-p",
+            "no:cacheprovider",
+            "--durations=10",
+            f"--junitxml={junit}",
+        ]
         transitions.append("pytest_started")
         start = time.perf_counter()
         try:
-            result = subprocess.run(command, cwd=ROOT, env=env, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=watchdog_seconds)
+            result = subprocess.run(
+                command,
+                cwd=ROOT,
+                env=env,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=watchdog_seconds,
+            )
         except subprocess.TimeoutExpired as exc:
-            result = subprocess.CompletedProcess(command, 124, _as_text(exc.stdout), f"TEST_TIMEOUT after {watchdog_seconds} seconds\n")
+            result = subprocess.CompletedProcess(
+                command, 124, _as_text(exc.stdout), f"TEST_TIMEOUT after {watchdog_seconds} seconds\n"
+            )
         elapsed = time.perf_counter() - start
         output_parts.extend((_as_text(result.stdout), _as_text(result.stderr)))
         counts = _junit_counts(junit)
-        pytest_exit_code = result.returncode if result.returncode else (0 if counts["passed"] and not counts["failed"] else 2)
+        pytest_exit_code = (
+            result.returncode if result.returncode else (0 if counts["passed"] and not counts["failed"] else 2)
+        )
         pytest_state = "completed"
         transitions.append("pytest_completed_waiting_cleanup")
     except Exception as exc:
@@ -805,13 +971,26 @@ def _execute(args, selected: list[str], selection: dict) -> int:
                 cleanup_exit_code = 3
                 cleanup_state = "failed"
                 cleanup_error = _safe_error(exc)
-                output_parts.append(json.dumps({"transition": "cleanup_failed", "error": cleanup_error}, sort_keys=True))
+                output_parts.append(
+                    json.dumps({"transition": "cleanup_failed", "error": cleanup_error}, sort_keys=True)
+                )
                 transitions.append("cleanup_failed")
 
     overall_code = cleanup_exit_code or wrapper_exit_code or pytest_exit_code
     transitions.append("receipt_written")
     log_lines = [part for part in output_parts if part]
-    log_lines.append(json.dumps({"transition_history": transitions, "pytest_exit_code": pytest_exit_code, "wrapper_exit_code": wrapper_exit_code, "cleanup_exit_code": cleanup_exit_code, "overall_exit_code": overall_code}, sort_keys=True))
+    log_lines.append(
+        json.dumps(
+            {
+                "transition_history": transitions,
+                "pytest_exit_code": pytest_exit_code,
+                "wrapper_exit_code": wrapper_exit_code,
+                "cleanup_exit_code": cleanup_exit_code,
+                "overall_exit_code": overall_code,
+            },
+            sort_keys=True,
+        )
+    )
     log.write_text("\n".join(log_lines) + "\n", encoding="utf-8")
     receipt = {
         "command": command,
@@ -821,7 +1000,11 @@ def _execute(args, selected: list[str], selection: dict) -> int:
         "wrapper_exit_code": wrapper_exit_code,
         "cleanup_exit_code": cleanup_exit_code,
         "pytest": {"state": pytest_state, "exit_code": pytest_exit_code, "error": None},
-        "wrapper": {"state": "failed" if wrapper_exit_code else "succeeded", "exit_code": wrapper_exit_code, "error": wrapper_error},
+        "wrapper": {
+            "state": "failed" if wrapper_exit_code else "succeeded",
+            "exit_code": wrapper_exit_code,
+            "error": wrapper_error,
+        },
         "cleanup": {"state": cleanup_state, "exit_code": cleanup_exit_code, "error": cleanup_error},
         "transition_history": transitions,
         "duration_seconds": elapsed,
@@ -833,7 +1016,9 @@ def _execute(args, selected: list[str], selection: dict) -> int:
         "missing_gates": [],
         "log": log.relative_to(ROOT).as_posix(),
         "model_calls": bool(args.allow_model_calls and TIER_METADATA.get(args.tier, {}).get("model_calls", False)),
-        "process_policy": "v11_guard_with_allowlisted_test_subprocesses" if args.tier in _PROCESS_TIERS else "v11_guard_no_child_processes",
+        "process_policy": "v11_guard_with_allowlisted_test_subprocesses"
+        if args.tier in _PROCESS_TIERS
+        else "v11_guard_no_child_processes",
         "test_data": "synthetic_only",
         "source_base": subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True).strip(),
         "source_inputs_sha256": _source_inputs_sha256(manifest),

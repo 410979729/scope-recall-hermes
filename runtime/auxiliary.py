@@ -1,4 +1,5 @@
 """Explicit auxiliary runtime composition for approved external routes only."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -59,7 +60,9 @@ class AuxiliaryRuntimeConfig:
             ledger_path = installation_dir / DEFAULT_LEDGER_NAME
         return AuxiliaryRuntimeConfig(
             external_embedding=strict_bool("external_embedding_bool_required", raw.get("external_embedding")),
-            external_consolidation=strict_bool("external_consolidation_bool_required", raw.get("external_consolidation")),
+            external_consolidation=strict_bool(
+                "external_consolidation_bool_required", raw.get("external_consolidation")
+            ),
             installation_dir=installation_dir,
             ledger_path=ledger_path,
             budget=_budget_policy_from_mapping(raw.get("budget")),
@@ -178,8 +181,11 @@ def _embedding_route_from_mapping(raw: object) -> EmbeddingRouteConfig | None:
     # shipped Gemini space, or state all four to address another provider.
     # EmbeddingRouteConfig rejects a partial descriptor.
     # The width's field name is a wire detail of the openai dialect, optional on its own.
-    wire = {} if raw.get("dimensions_field") is None else {
-        "dimensions_field": text("embedding_dimensions_field", raw.get("dimensions_field"))}
+    wire = (
+        {}
+        if raw.get("dimensions_field") is None
+        else {"dimensions_field": text("embedding_dimensions_field", raw.get("dimensions_field"))}
+    )
     if all(raw.get(key) is None for key in ("model", "endpoint", "dimensions", "dialect")):
         return EmbeddingRouteConfig(credential_env=credential_env, **wire)
     return EmbeddingRouteConfig(
@@ -196,8 +202,14 @@ def _embedding_route_from_mapping(raw: object) -> EmbeddingRouteConfig | None:
 #: has no legacy to stay compatible with and an unknown key is a setting nobody
 #: reads rather than a field to ignore.
 _RESPONSES_ROUTE_KEYS = (
-    "kind", "model", "endpoint", "credential_env", "max_output_tokens",
-    "reasoning_effort", "text_format", "stream",
+    "kind",
+    "model",
+    "endpoint",
+    "credential_env",
+    "max_output_tokens",
+    "reasoning_effort",
+    "text_format",
+    "stream",
 )
 
 
@@ -216,7 +228,9 @@ def _responses_route_from_mapping(raw: Mapping[str, Any]) -> ResponsesRouteConfi
     )
 
 
-def _consolidation_route_from_mapping(raw: object) -> ConsolidationRouteConfig | ResponsesRouteConfig | CodexCliRouteConfig | None:
+def _consolidation_route_from_mapping(
+    raw: object,
+) -> ConsolidationRouteConfig | ResponsesRouteConfig | CodexCliRouteConfig | None:
     if raw is None:
         return None
     raw = mapping("consolidation_mapping_required", raw)
@@ -285,11 +299,17 @@ def build_auxiliary_runtime(
         # Same ledger, transport, deadline, response cap and settlement; only
         # the request dialect and the answer extraction differ.
         consolidation_adapter = ResponsesConsolidationAdapter(
-            config.consolidation, ledger=ledger, reserve_input=reserve_input, transport=transport,
+            config.consolidation,
+            ledger=ledger,
+            reserve_input=reserve_input,
+            transport=transport,
         )
     else:
         consolidation_adapter = OpenAIConsolidationAdapter(
-            config.consolidation, ledger=ledger, reserve_input=reserve_input, transport=transport,
+            config.consolidation,
+            ledger=ledger,
+            reserve_input=reserve_input,
+            transport=transport,
         )
     return AuxiliaryRuntime(
         source_embedding=embed_adapter,
@@ -314,6 +334,7 @@ def auxiliary_runtime_status(config: AuxiliaryRuntimeConfig) -> dict:
         "budget": budget,
         "subscription_budget": (
             runtime.consolidation.ledger.status()
-            if isinstance(runtime.consolidation, CodexCliConsolidationAdapter) else None
+            if isinstance(runtime.consolidation, CodexCliConsolidationAdapter)
+            else None
         ),
     }

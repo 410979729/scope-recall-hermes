@@ -1,4 +1,5 @@
 """Actual stdio MCP boundary tests; Hook tests remain in test_hooks.py."""
+
 from __future__ import annotations
 
 import asyncio
@@ -30,7 +31,14 @@ def test_mcp_stdio_exposes_public_tools_and_strict_boundary(tmp_path: Path) -> N
         env["PYTHONPATH"] = os.pathsep.join(part for part in (str(repo), env.get("PYTHONPATH", "")) if part)
         params = StdioServerParameters(
             command=sys.executable,
-            args=["-m", "scope_recall.adapters.codex.mcp_entry", "--config", str(config.config_path), "--workspace", str(project)],
+            args=[
+                "-m",
+                "scope_recall.adapters.codex.mcp_entry",
+                "--config",
+                str(config.config_path),
+                "--workspace",
+                str(project),
+            ],
             env=env,
             cwd=str(repo),
         )
@@ -43,13 +51,22 @@ def test_mcp_stdio_exposes_public_tools_and_strict_boundary(tmp_path: Path) -> N
                 assert not status.is_error
                 assert status.structured_content["origin"] == "memory_reinjection"
                 assert status.structured_content["result"]["session"] == "independent_mcp_server"
-                recall = await session.call_tool("recall", {
-                    "protocol_version": "1.1", "request_id": "recall-1", "query": "无命中查询",
-                    "mode": "current", "max_items": 6, "budget_tokens": 1200,
-                })
+                recall = await session.call_tool(
+                    "recall",
+                    {
+                        "protocol_version": "1.1",
+                        "request_id": "recall-1",
+                        "query": "无命中查询",
+                        "mode": "current",
+                        "max_items": 6,
+                        "budget_tokens": 1200,
+                    },
+                )
                 assert not recall.is_error
                 assert recall.structured_content["result"]["request_id"] == "recall-1"
-                extra = await session.call_tool("status", {"protocol_version": "1.1", "request_id": "status-2", "agent_id": "forbidden"})
+                extra = await session.call_tool(
+                    "status", {"protocol_version": "1.1", "request_id": "status-2", "agent_id": "forbidden"}
+                )
                 assert extra.is_error
 
     asyncio.run(run())
@@ -67,12 +84,20 @@ def test_mcp_stdio_all_tools_and_host_thread_bound_mutations(tmp_path: Path) -> 
     handler = CodexHookHandler(config, core=core)
 
     def hook_capture(content: str, turn_id: str):
-        handler.handle_payload({
-            "hook_event_name": "UserPromptSubmit", "session_id": thread_id,
-            "cwd": str(project), "turn_id": turn_id, "prompt": content,
-        })
+        handler.handle_payload(
+            {
+                "hook_event_name": "UserPromptSubmit",
+                "session_id": thread_id,
+                "cwd": str(project),
+                "turn_id": turn_id,
+                "prompt": content,
+            }
+        )
         with sqlite3.connect(config.data_directory / "memory.sqlite3") as db:
-            row = db.execute("SELECT event_id FROM source_events WHERE session_id=? AND content=? ORDER BY rowid DESC LIMIT 1", (thread_id, content)).fetchone()
+            row = db.execute(
+                "SELECT event_id FROM source_events WHERE session_id=? AND content=? ORDER BY rowid DESC LIMIT 1",
+                (thread_id, content),
+            ).fetchone()
         # Spell the diagnostics out: the dataclass repr is long enough that
         # pytest elides ``capability_gaps``, which is the field that says why a
         # capture did not persist.
@@ -84,10 +109,17 @@ def test_mcp_stdio_all_tools_and_host_thread_bound_mutations(tmp_path: Path) -> 
 
     def capture(key: str, content: str, revision: int = 1):
         event: SourceEvent = {
-            "protocol_version": "1.1", "source_event_key": key, "source_revision": revision,
-            "origin": "human_direct", "role": "user", "content": content,
-            "occurred_at": None, "recorded_at": core.clock.utc_now(), "time_precision": "unknown",
-            "capture_state": "complete", "evidence_refs": [],
+            "protocol_version": "1.1",
+            "source_event_key": key,
+            "source_revision": revision,
+            "origin": "human_direct",
+            "role": "user",
+            "content": content,
+            "occurred_at": None,
+            "recorded_at": core.clock.utc_now(),
+            "time_precision": "unknown",
+            "capture_state": "complete",
+            "evidence_refs": [],
         }
         receipt = core.record_event(human, event, scope_id=audience.capture_scope_id)
         return receipt.event_refs[0].ref
@@ -95,13 +127,23 @@ def test_mcp_stdio_all_tools_and_host_thread_bound_mutations(tmp_path: Path) -> 
     first = hook_capture("我喜欢茶。", "turn-1")
     historical = capture("human-history", "我喜欢咖啡。", revision=2)
     proposal = {
-        "protocol_version": "1.1", "source_refs": [f"{first}@1"],
-        "claim_proposals": [{
-            "kind": "preference", "subject": "饮品", "predicate": "喜欢", "value_text": "茶",
-            "conditions": [], "statement_kind": "assertion", "valid_from": None, "valid_to": None,
-            "evidence_spans": [{"source_ref": first, "source_revision": 1, "quote": "我喜欢茶。"}],
-        }],
-        "resume_proposals": [], "reference_proposals": [],
+        "protocol_version": "1.1",
+        "source_refs": [f"{first}@1"],
+        "claim_proposals": [
+            {
+                "kind": "preference",
+                "subject": "饮品",
+                "predicate": "喜欢",
+                "value_text": "茶",
+                "conditions": [],
+                "statement_kind": "assertion",
+                "valid_from": None,
+                "valid_to": None,
+                "evidence_spans": [{"source_ref": first, "source_revision": 1, "quote": "我喜欢茶。"}],
+            }
+        ],
+        "resume_proposals": [],
+        "reference_proposals": [],
     }
     claim_receipt = core.accept_claim_proposals(human, proposal, scope_id=audience.capture_scope_id)
     claim_ref = claim_receipt.items[0].ref
@@ -115,7 +157,14 @@ def test_mcp_stdio_all_tools_and_host_thread_bound_mutations(tmp_path: Path) -> 
         env["PYTHONPATH"] = os.pathsep.join(part for part in (str(repo), env.get("PYTHONPATH", "")) if part)
         params = StdioServerParameters(
             command=sys.executable,
-            args=["-m", "scope_recall.adapters.codex.mcp_entry", "--config", str(config.config_path), "--workspace", str(project)],
+            args=[
+                "-m",
+                "scope_recall.adapters.codex.mcp_entry",
+                "--config",
+                str(config.config_path),
+                "--workspace",
+                str(project),
+            ],
             env=env,
             cwd=str(repo),
         )
@@ -129,44 +178,82 @@ def test_mcp_stdio_all_tools_and_host_thread_bound_mutations(tmp_path: Path) -> 
                 assert not source.is_error, source
                 assert source.structured_content["capability_gaps"] == []
                 assert source.structured_content["result"]["value"]["event"]["content"] == "我喜欢茶。"
-                historical_result = await session.call_tool("inspect", {"protocol_version": "1.1", "ref": f"{historical}@2"}, meta=meta)
+                historical_result = await session.call_tool(
+                    "inspect", {"protocol_version": "1.1", "ref": f"{historical}@2"}, meta=meta
+                )
                 assert not historical_result.is_error, historical_result
                 assert historical_result.structured_content["result"]["revision"] == 2
-                current_historical = await session.call_tool("inspect", {"protocol_version": "1.1", "ref": historical}, meta=meta)
+                current_historical = await session.call_tool(
+                    "inspect", {"protocol_version": "1.1", "ref": historical}, meta=meta
+                )
                 assert not current_historical.is_error, current_historical
                 assert current_historical.structured_content["result"]["revision"] == 2
-                denied_candidate = await session.call_tool("propose_memory", {"protocol_version": "1.1", "content": "无宿主绑定的候选"})
+                denied_candidate = await session.call_tool(
+                    "propose_memory", {"protocol_version": "1.1", "content": "无宿主绑定的候选"}
+                )
                 assert denied_candidate.is_error
-                candidate = await session.call_tool("propose_memory", {"protocol_version": "1.1", "content": "候选，不是权威事实"}, meta=meta)
+                candidate = await session.call_tool(
+                    "propose_memory", {"protocol_version": "1.1", "content": "候选，不是权威事实"}, meta=meta
+                )
                 assert not candidate.is_error, candidate
                 assert candidate.structured_content["result"]["authority"] == "assistant_visible_only"
-                revised = await session.call_tool("revise", {
-                    "protocol_version": "1.1", "target_ref": claim_ref, "expected_revision": 1,
-                    "new_value": "咖啡", "conditions": [], "source_evidence_refs": [f"{correction}@1"], "valid_from": None,
-                }, meta=meta)
+                revised = await session.call_tool(
+                    "revise",
+                    {
+                        "protocol_version": "1.1",
+                        "target_ref": claim_ref,
+                        "expected_revision": 1,
+                        "new_value": "咖啡",
+                        "conditions": [],
+                        "source_evidence_refs": [f"{correction}@1"],
+                        "valid_from": None,
+                    },
+                    meta=meta,
+                )
                 assert not revised.is_error, revised
                 # Core's authority rule requires the latest same-thread human
                 # source to be the evidence for each destructive operation.
                 hook_capture(f"删除 {claim_ref}。", "turn-3")
-                forgotten = await session.call_tool("forget", {
-                    "protocol_version": "1.1", "target_refs": [claim_ref], "mode": "delete",
-                    "expected_revisions": {claim_ref: 2},
-                }, meta=meta)
+                forgotten = await session.call_tool(
+                    "forget",
+                    {
+                        "protocol_version": "1.1",
+                        "target_refs": [claim_ref],
+                        "mode": "delete",
+                        "expected_revisions": {claim_ref: 2},
+                    },
+                    meta=meta,
+                )
                 assert not forgotten.is_error, forgotten
-                denied = await session.call_tool("forget", {
-                    "protocol_version": "1.1", "target_refs": [claim_ref], "mode": "delete",
-                    "expected_revisions": {claim_ref: 2},
-                })
+                denied = await session.call_tool(
+                    "forget",
+                    {
+                        "protocol_version": "1.1",
+                        "target_refs": [claim_ref],
+                        "mode": "delete",
+                        "expected_revisions": {claim_ref: 2},
+                    },
+                )
                 assert denied.is_error
                 # A refusal says what was refused; mcp 2 showed only "Error executing tool forget".
                 assert "ACCESS_DENIED" in denied.content[0].text, denied
-                too_long = await session.call_tool("inspect", {"protocol_version": "1.1", "ref": first, "limit": 40},
-                                                   meta=meta)
+                too_long = await session.call_tool(
+                    "inspect", {"protocol_version": "1.1", "ref": first, "limit": 40}, meta=meta
+                )
                 assert too_long.is_error and "24" in too_long.content[0].text, too_long
-                bad_meta = await session.call_tool("revise", {
-                    "protocol_version": "1.1", "target_ref": claim_ref, "expected_revision": 2,
-                    "new_value": "绿茶", "conditions": [], "source_evidence_refs": [f"{correction}@1"], "valid_from": None,
-                }, meta={"threadId": "not-a-uuid"})
+                bad_meta = await session.call_tool(
+                    "revise",
+                    {
+                        "protocol_version": "1.1",
+                        "target_ref": claim_ref,
+                        "expected_revision": 2,
+                        "new_value": "绿茶",
+                        "conditions": [],
+                        "source_evidence_refs": [f"{correction}@1"],
+                        "valid_from": None,
+                    },
+                    meta={"threadId": "not-a-uuid"},
+                )
                 assert bad_meta.is_error
                 wrong_type = await session.call_tool("status", {"protocol_version": "1.1", "request_id": True})
                 assert wrong_type.is_error
@@ -185,29 +272,53 @@ def test_mcp_revise_with_a_null_value_withdraws_the_fact(tmp_path: Path) -> None
 
     adapter = build_server(config, workspace=project, core=core)
     thread = str(uuid4())  # the conversation Codex names in each call's metadata, as its hooks name it
-    human = trusted_context(config, resolve_runtime_audience(config, str(project)), session_id=thread,
-                            actor_origin="human_direct")
+    human = trusted_context(
+        config, resolve_runtime_audience(config, str(project)), session_id=thread, actor_origin="human_direct"
+    )
     scope_id = config.audience_scopes["project"]
 
     def said(key: str, text: str) -> str:
         event: SourceEvent = {
-            "protocol_version": "1.1", "source_event_key": key, "source_revision": 1, "origin": "human_direct",
-            "role": "user", "content": text, "occurred_at": None, "recorded_at": core.clock.utc_now(),
-            "time_precision": "unknown", "capture_state": "complete", "evidence_refs": [],
+            "protocol_version": "1.1",
+            "source_event_key": key,
+            "source_revision": 1,
+            "origin": "human_direct",
+            "role": "user",
+            "content": text,
+            "occurred_at": None,
+            "recorded_at": core.clock.utc_now(),
+            "time_precision": "unknown",
+            "capture_state": "complete",
+            "evidence_refs": [],
         }
         return core.record_event(human, event, scope_id=scope_id).event_refs[0].ref
 
     def fact(key: str, predicate: str, value: str):
         text = f"TEST-project {predicate} {value}。"
         stated = said(key, text)
-        return core.accept_claim_proposals(human, {
-            "protocol_version": "1.1", "source_refs": [f"{stated}@1"],
-            "claim_proposals": [{"kind": "fact", "subject": "TEST-project", "predicate": predicate, "value_text": value,
-                                 "conditions": [], "statement_kind": "assertion", "valid_from": None,
-                                 "valid_to": None,
-                                 "evidence_spans": [{"source_ref": stated, "source_revision": 1, "quote": text}]}],
-            "resume_proposals": [], "reference_proposals": [],
-        }, scope_id=scope_id).items[0]
+        return core.accept_claim_proposals(
+            human,
+            {
+                "protocol_version": "1.1",
+                "source_refs": [f"{stated}@1"],
+                "claim_proposals": [
+                    {
+                        "kind": "fact",
+                        "subject": "TEST-project",
+                        "predicate": predicate,
+                        "value_text": value,
+                        "conditions": [],
+                        "statement_kind": "assertion",
+                        "valid_from": None,
+                        "valid_to": None,
+                        "evidence_spans": [{"source_ref": stated, "source_revision": 1, "quote": text}],
+                    }
+                ],
+                "resume_proposals": [],
+                "reference_proposals": [],
+            },
+            scope_id=scope_id,
+        ).items[0]
 
     claim = fact("TEST-withdraw-1", "配色", "蓝色")
     fact("TEST-withdraw-2", "字体", "宋体")
@@ -215,8 +326,16 @@ def test_mcp_revise_with_a_null_value_withdraws_the_fact(tmp_path: Path) -> None
     asked = said("TEST-withdraw-3", "撤回 TEST-project 的蓝色。")
     assert core.current_claim(human, claim.ref).revision == claim.revision
     revise = adapter.server._tool_manager.get_tool("revise")
-    result = revise.fn(SimpleNamespace(request_context=SimpleNamespace(meta={"threadId": thread})), "1.1", claim.ref,
-                       claim.revision, None, [], [f"{asked}@1"], None)
+    result = revise.fn(
+        SimpleNamespace(request_context=SimpleNamespace(meta={"threadId": thread})),
+        "1.1",
+        claim.ref,
+        claim.revision,
+        None,
+        [],
+        [f"{asked}@1"],
+        None,
+    )
     assert "error" not in result, result
     assert core.current_claim(human, claim.ref) is None
     assert core.claim_history(human, claim.ref)[-1].state == "retracted"
@@ -232,22 +351,38 @@ def test_recall_epoch_race_scrubs_compiled_payload_surface(tmp_path: Path) -> No
 
     class RaceCore:
         class Clock:
-            def utc_now(self): return "2026-09-06T12:00:00Z"
-            def monotonic(self): return 1.0
+            def utc_now(self):
+                return "2026-09-06T12:00:00Z"
+
+            def monotonic(self):
+                return 1.0
+
         clock = real_core.clock
 
         def recall_packet(self, context, request, **kwargs):
             before = real_core.status(context).memory_epoch
-            real_core.forget(human_context, {
-                "protocol_version": "1.1", "target_refs": [claim_ref], "mode": "delete",
-                "expected_revisions": {claim_ref: 1},
-            })
+            real_core.forget(
+                human_context,
+                {
+                    "protocol_version": "1.1",
+                    "target_refs": [claim_ref],
+                    "mode": "delete",
+                    "expected_revisions": {claim_ref: 1},
+                },
+            )
             return {
-                "protocol_version": "1.1", "request_id": request["request_id"], "status": "ok",
-                "memory_epoch": before, "items": [{"content": "SECRET-DELETED", "ref": claim_ref, "revision": 1}],
-                "gaps": [], "diagnostic_ref": None, "answerability": "supported",
-                "coverage": "complete_for_query", "unmet_needs": [],
-                "canonical_text": "SECRET-DELETED", "context": {"body": "SECRET-DELETED"},
+                "protocol_version": "1.1",
+                "request_id": request["request_id"],
+                "status": "ok",
+                "memory_epoch": before,
+                "items": [{"content": "SECRET-DELETED", "ref": claim_ref, "revision": 1}],
+                "gaps": [],
+                "diagnostic_ref": None,
+                "answerability": "supported",
+                "coverage": "complete_for_query",
+                "unmet_needs": [],
+                "canonical_text": "SECRET-DELETED",
+                "context": {"body": "SECRET-DELETED"},
             }
 
         def status(self, context):
@@ -260,26 +395,65 @@ def test_recall_epoch_race_scrubs_compiled_payload_surface(tmp_path: Path) -> No
             return real_core.memory_retracted_since(context, epoch)
 
     adapter = build_server(config, workspace=project, core=RaceCore())
-    human_context = trusted_context(config, resolve_runtime_audience(config, str(project)), session_id=adapter.context.session_id, actor_origin="human_direct")
+    human_context = trusted_context(
+        config,
+        resolve_runtime_audience(config, str(project)),
+        session_id=adapter.context.session_id,
+        actor_origin="human_direct",
+    )
     scope_id = config.audience_scopes["project"]
     source_event: SourceEvent = {
-        "protocol_version": "1.1", "source_event_key": "race-human-1", "source_revision": 1,
-        "origin": "human_direct", "role": "user", "content": "SECRET-DELETED state present。",
-        "occurred_at": None, "recorded_at": real_core.clock.utc_now(), "time_precision": "unknown",
-        "capture_state": "complete", "evidence_refs": [],
+        "protocol_version": "1.1",
+        "source_event_key": "race-human-1",
+        "source_revision": 1,
+        "origin": "human_direct",
+        "role": "user",
+        "content": "SECRET-DELETED state present。",
+        "occurred_at": None,
+        "recorded_at": real_core.clock.utc_now(),
+        "time_precision": "unknown",
+        "capture_state": "complete",
+        "evidence_refs": [],
     }
     source_ref = real_core.record_event(human_context, source_event, scope_id=scope_id).event_refs[0].ref
-    claim = real_core.accept_claim_proposals(human_context, {
-        "protocol_version": "1.1", "source_refs": [f"{source_ref}@1"],
-        "claim_proposals": [{"kind": "fact", "subject": "SECRET-DELETED", "predicate": "state", "value_text": "present", "conditions": [], "statement_kind": "assertion", "valid_from": None, "valid_to": None, "evidence_spans": [{"source_ref": source_ref, "source_revision": 1, "quote": "SECRET-DELETED state present。"}]}],
-        "resume_proposals": [], "reference_proposals": [],
-    }, scope_id=scope_id)
+    claim = real_core.accept_claim_proposals(
+        human_context,
+        {
+            "protocol_version": "1.1",
+            "source_refs": [f"{source_ref}@1"],
+            "claim_proposals": [
+                {
+                    "kind": "fact",
+                    "subject": "SECRET-DELETED",
+                    "predicate": "state",
+                    "value_text": "present",
+                    "conditions": [],
+                    "statement_kind": "assertion",
+                    "valid_from": None,
+                    "valid_to": None,
+                    "evidence_spans": [
+                        {"source_ref": source_ref, "source_revision": 1, "quote": "SECRET-DELETED state present。"}
+                    ],
+                }
+            ],
+            "resume_proposals": [],
+            "reference_proposals": [],
+        },
+        scope_id=scope_id,
+    )
     claim_ref = claim.items[0].ref
     proof_event: SourceEvent = {
-        "protocol_version": "1.1", "source_event_key": "race-human-2", "source_revision": 1,
-        "origin": "human_direct", "role": "user", "content": f"删除 {claim_ref} SECRET-DELETED state present。",
-        "occurred_at": None, "recorded_at": real_core.clock.utc_now(), "time_precision": "unknown",
-        "capture_state": "complete", "evidence_refs": [],
+        "protocol_version": "1.1",
+        "source_event_key": "race-human-2",
+        "source_revision": 1,
+        "origin": "human_direct",
+        "role": "user",
+        "content": f"删除 {claim_ref} SECRET-DELETED state present。",
+        "occurred_at": None,
+        "recorded_at": real_core.clock.utc_now(),
+        "time_precision": "unknown",
+        "capture_state": "complete",
+        "evidence_refs": [],
     }
     real_core.record_event(human_context, proof_event, scope_id=scope_id)
     tool = adapter.server._tool_manager.get_tool("recall")
@@ -300,27 +474,59 @@ def test_mcp_recall_without_evidence_is_no_match_while_prompt_hook_keeps_backgro
     human = trusted_context(config, audience, session_id=str(uuid4()), actor_origin="human_direct")
     text = "TEST-project 表达偏好 简洁。"
     event: SourceEvent = {
-        "protocol_version": "1.1", "source_event_key": "TEST-preference", "source_revision": 1,
-        "origin": "human_direct", "role": "user", "content": text,
-        "occurred_at": None, "recorded_at": clock.utc_now(), "time_precision": "unknown",
-        "capture_state": "complete", "evidence_refs": [],
+        "protocol_version": "1.1",
+        "source_event_key": "TEST-preference",
+        "source_revision": 1,
+        "origin": "human_direct",
+        "role": "user",
+        "content": text,
+        "occurred_at": None,
+        "recorded_at": clock.utc_now(),
+        "time_precision": "unknown",
+        "capture_state": "complete",
+        "evidence_refs": [],
     }
     source = core.record_event(human, event, scope_id=audience.capture_scope_id).event_refs[0]
-    claim_ref = core.accept_claim_proposals(human, {
-        "protocol_version": "1.1", "source_refs": [f"{source.ref}@{source.revision}"],
-        "claim_proposals": [{
-            "kind": "preference", "subject": "TEST-project", "predicate": "表达偏好", "value_text": "简洁",
-            "conditions": [], "statement_kind": "assertion", "valid_from": None, "valid_to": None,
-            "evidence_spans": [{"source_ref": source.ref, "source_revision": source.revision, "quote": text}],
-        }],
-        "resume_proposals": [], "reference_proposals": [],
-    }, scope_id=audience.capture_scope_id).items[0].ref
+    claim_ref = (
+        core.accept_claim_proposals(
+            human,
+            {
+                "protocol_version": "1.1",
+                "source_refs": [f"{source.ref}@{source.revision}"],
+                "claim_proposals": [
+                    {
+                        "kind": "preference",
+                        "subject": "TEST-project",
+                        "predicate": "表达偏好",
+                        "value_text": "简洁",
+                        "conditions": [],
+                        "statement_kind": "assertion",
+                        "valid_from": None,
+                        "valid_to": None,
+                        "evidence_spans": [
+                            {"source_ref": source.ref, "source_revision": source.revision, "quote": text}
+                        ],
+                    }
+                ],
+                "resume_proposals": [],
+                "reference_proposals": [],
+            },
+            scope_id=audience.capture_scope_id,
+        )
+        .items[0]
+        .ref
+    )
     query = "紫色海豚量子温泉"
 
-    ambient = CodexHookHandler(config, core=core, clock=clock).handle_payload({
-        "hook_event_name": "UserPromptSubmit", "session_id": "TEST-session-1", "turn_id": "TEST-turn-1",
-        "cwd": str(project), "prompt": query,
-    })
+    ambient = CodexHookHandler(config, core=core, clock=clock).handle_payload(
+        {
+            "hook_event_name": "UserPromptSubmit",
+            "session_id": "TEST-session-1",
+            "turn_id": "TEST-turn-1",
+            "cwd": str(project),
+            "prompt": query,
+        }
+    )
     assert claim_ref in ambient["hookSpecificOutput"]["additionalContext"]
 
     tool = build_server(config, workspace=project, core=core).server._tool_manager.get_tool("recall")
@@ -339,10 +545,17 @@ def test_mcp_inspect_resolves_old_episode_by_explicit_ref(tmp_path: Path) -> Non
 
     def event(index: int) -> SourceEvent:
         return {
-            "protocol_version": "1.1", "source_event_key": f"episode-{index}", "source_revision": 1,
-            "origin": "human_direct", "role": "user", "content": f"episode event {index}",
-            "occurred_at": None, "recorded_at": core.clock.utc_now(), "time_precision": "unknown",
-            "capture_state": "complete", "evidence_refs": [],
+            "protocol_version": "1.1",
+            "source_event_key": f"episode-{index}",
+            "source_revision": 1,
+            "origin": "human_direct",
+            "role": "user",
+            "content": f"episode event {index}",
+            "occurred_at": None,
+            "recorded_at": core.clock.utc_now(),
+            "time_precision": "unknown",
+            "capture_state": "complete",
+            "evidence_refs": [],
         }
 
     # A fresh session creates a fresh episode.  This makes the target truly
@@ -368,14 +581,23 @@ def test_mcp_inspect_resolves_old_episode_by_explicit_ref(tmp_path: Path) -> Non
         env["PYTHONPATH"] = os.pathsep.join(part for part in (str(repo), env.get("PYTHONPATH", "")) if part)
         params = StdioServerParameters(
             command=sys.executable,
-            args=["-m", "scope_recall.adapters.codex.mcp_entry", "--config", str(config.config_path), "--workspace", str(project)],
+            args=[
+                "-m",
+                "scope_recall.adapters.codex.mcp_entry",
+                "--config",
+                str(config.config_path),
+                "--workspace",
+                str(project),
+            ],
             env=env,
             cwd=str(repo),
         )
         async with stdio_client(params) as (read, write):
             async with ClientSession(read, write) as session:
                 await session.initialize()
-                inspected = await session.call_tool("inspect", {"protocol_version": "1.1", "ref": old_ref}, meta={"threadId": thread_id})
+                inspected = await session.call_tool(
+                    "inspect", {"protocol_version": "1.1", "ref": old_ref}, meta={"threadId": thread_id}
+                )
                 assert not inspected.is_error, inspected
                 assert inspected.structured_content["result"]["kind"] == "episode"
                 assert inspected.structured_content["result"]["ref"] == old_ref
@@ -458,7 +680,14 @@ def test_mcp_public_schema_advertises_only_protocol_1_1(tmp_path: Path) -> None:
         env["PYTHONPATH"] = os.pathsep.join(part for part in (str(repo), env.get("PYTHONPATH", "")) if part)
         params = StdioServerParameters(
             command=sys.executable,
-            args=["-m", "scope_recall.adapters.codex.mcp_entry", "--config", str(config.config_path), "--workspace", str(project)],
+            args=[
+                "-m",
+                "scope_recall.adapters.codex.mcp_entry",
+                "--config",
+                str(config.config_path),
+                "--workspace",
+                str(project),
+            ],
             env=env,
             cwd=str(repo),
         )
@@ -490,9 +719,7 @@ def _assert_recall_budget_discoverable(schema: dict, *, description: str) -> Non
     assert isinstance(field, dict), field
     assert field.get("default") == 4096, field
     assert field.get("type") == "integer", field
-    advertised = " ".join(
-        str(part) for part in (description, field.get("description")) if part
-    ).lower()
+    advertised = " ".join(str(part) for part in (description, field.get("description")) if part).lower()
     for marker in _BUDGET_SCHEMA_MARKERS:
         assert marker in advertised, (marker, advertised)
     required = schema.get("required") or []
@@ -524,7 +751,14 @@ def test_mcp_recall_budget_schema_default_and_description(tmp_path: Path) -> Non
         env["PYTHONPATH"] = os.pathsep.join(part for part in (str(repo), env.get("PYTHONPATH", "")) if part)
         params = StdioServerParameters(
             command=sys.executable,
-            args=["-m", "scope_recall.adapters.codex.mcp_entry", "--config", str(config.config_path), "--workspace", str(project)],
+            args=[
+                "-m",
+                "scope_recall.adapters.codex.mcp_entry",
+                "--config",
+                str(config.config_path),
+                "--workspace",
+                str(project),
+            ],
             env=env,
             cwd=str(repo),
         )
@@ -553,10 +787,17 @@ def test_mcp_recall_budget_default_tiny_clip_and_invalid_types(tmp_path: Path) -
     # that an episode with no summary no longer takes a slot of its own.
     for index, suffix in enumerate(("ALPHA", "BETA", "GAMMA"), start=1):
         event: SourceEvent = {
-            "protocol_version": "1.1", "source_event_key": f"TEST-budget-{index}", "source_revision": 1,
-            "origin": "human_direct", "role": "user", "content": f"{fat} {suffix}",
-            "occurred_at": None, "recorded_at": core.clock.utc_now(), "time_precision": "unknown",
-            "capture_state": "complete", "evidence_refs": [],
+            "protocol_version": "1.1",
+            "source_event_key": f"TEST-budget-{index}",
+            "source_revision": 1,
+            "origin": "human_direct",
+            "role": "user",
+            "content": f"{fat} {suffix}",
+            "occurred_at": None,
+            "recorded_at": core.clock.utc_now(),
+            "time_precision": "unknown",
+            "capture_state": "complete",
+            "evidence_refs": [],
         }
         core.record_event(human, event, scope_id=audience.capture_scope_id)
 
@@ -602,38 +843,68 @@ def test_mcp_recall_budget_default_tiny_clip_and_invalid_types(tmp_path: Path) -
         env["PYTHONPATH"] = os.pathsep.join(part for part in (str(repo), env.get("PYTHONPATH", "")) if part)
         params = StdioServerParameters(
             command=sys.executable,
-            args=["-m", "scope_recall.adapters.codex.mcp_entry", "--config", str(config.config_path), "--workspace", str(project)],
+            args=[
+                "-m",
+                "scope_recall.adapters.codex.mcp_entry",
+                "--config",
+                str(config.config_path),
+                "--workspace",
+                str(project),
+            ],
             env=env,
             cwd=str(repo),
         )
         async with stdio_client(params) as (read, write):
             async with ClientSession(read, write) as session:
                 await session.initialize()
-                omitted = await session.call_tool("recall", {
-                    "protocol_version": "1.1", "query": "TEST-BUDGET 房间号",
-                    "mode": "auto", "max_items": 6,
-                })
+                omitted = await session.call_tool(
+                    "recall",
+                    {
+                        "protocol_version": "1.1",
+                        "query": "TEST-BUDGET 房间号",
+                        "mode": "auto",
+                        "max_items": 6,
+                    },
+                )
                 assert not omitted.is_error, omitted
                 omitted_items = omitted.structured_content["result"]["items"]
                 assert len(omitted_items) >= 2
-                tiny = await session.call_tool("recall", {
-                    "protocol_version": "1.1", "query": "TEST-BUDGET 房间号",
-                    "mode": "auto", "max_items": 6, "budget_tokens": 768,
-                })
+                tiny = await session.call_tool(
+                    "recall",
+                    {
+                        "protocol_version": "1.1",
+                        "query": "TEST-BUDGET 房间号",
+                        "mode": "auto",
+                        "max_items": 6,
+                        "budget_tokens": 768,
+                    },
+                )
                 assert not tiny.is_error, tiny
                 assert len(tiny.structured_content["result"]["items"]) < len(omitted_items)
                 assert {"budget_token_cap", "budget_packet_cap"} & set(tiny.structured_content["result"]["gaps"])
                 assert BUDGET_RETRY_HINT in tiny.structured_content["result"]["unmet_needs"]
                 for value in (True, False, "4096", "768", 4096.0):
-                    rejected = await session.call_tool("recall", {
-                        "protocol_version": "1.1", "query": "TEST-BUDGET 房间号",
-                        "mode": "auto", "max_items": 6, "budget_tokens": value,
-                    })
+                    rejected = await session.call_tool(
+                        "recall",
+                        {
+                            "protocol_version": "1.1",
+                            "query": "TEST-BUDGET 房间号",
+                            "mode": "auto",
+                            "max_items": 6,
+                            "budget_tokens": value,
+                        },
+                    )
                     assert rejected.is_error, value
-                bad_mode = await session.call_tool("recall", {
-                    "protocol_version": "1.1", "query": "TEST-BUDGET 房间号",
-                    "mode": "bogus", "max_items": 6, "budget_tokens": 4096,
-                })
+                bad_mode = await session.call_tool(
+                    "recall",
+                    {
+                        "protocol_version": "1.1",
+                        "query": "TEST-BUDGET 房间号",
+                        "mode": "bogus",
+                        "max_items": 6,
+                        "budget_tokens": 4096,
+                    },
+                )
                 assert bad_mode.is_error
 
     asyncio.run(run())
@@ -654,7 +925,14 @@ def test_mcp_illegal_protocol_values_rejected_and_legal_strict_path_kept(tmp_pat
         env["PYTHONPATH"] = os.pathsep.join(part for part in (str(repo), env.get("PYTHONPATH", "")) if part)
         params = StdioServerParameters(
             command=sys.executable,
-            args=["-m", "scope_recall.adapters.codex.mcp_entry", "--config", str(config.config_path), "--workspace", str(project)],
+            args=[
+                "-m",
+                "scope_recall.adapters.codex.mcp_entry",
+                "--config",
+                str(config.config_path),
+                "--workspace",
+                str(project),
+            ],
             env=env,
             cwd=str(repo),
         )
@@ -664,17 +942,25 @@ def test_mcp_illegal_protocol_values_rejected_and_legal_strict_path_kept(tmp_pat
                 for value in ("1", "0.1", "1.0", 1, 1.1, True, False):
                     rejected = await session.call_tool("status", {"protocol_version": value})
                     assert rejected.is_error, value
-                recall_alias = await session.call_tool("recall", {
-                    "protocol_version": "1", "query": "无命中查询",
-                    "mode": "current", "max_items": 6, "budget_tokens": 1200,
-                })
+                recall_alias = await session.call_tool(
+                    "recall",
+                    {
+                        "protocol_version": "1",
+                        "query": "无命中查询",
+                        "mode": "current",
+                        "max_items": 6,
+                        "budget_tokens": 1200,
+                    },
+                )
                 assert recall_alias.is_error
                 defaulted = await session.call_tool("status", {})
                 assert not defaulted.is_error
                 legal = await session.call_tool("status", {"protocol_version": "1.1", "request_id": "status-legal"})
                 assert not legal.is_error
                 assert legal.structured_content["origin"] == "memory_reinjection"
-                extra = await session.call_tool("status", {"protocol_version": "1.1", "request_id": "status-extra", "agent_id": "forbidden"})
+                extra = await session.call_tool(
+                    "status", {"protocol_version": "1.1", "request_id": "status-extra", "agent_id": "forbidden"}
+                )
                 assert extra.is_error
 
     asyncio.run(run())

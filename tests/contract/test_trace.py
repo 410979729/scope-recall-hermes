@@ -30,9 +30,7 @@ def query(core, ctx, **kwargs):
 
 def edge(core, ctx, subject, target, **kwargs):
     predicate = kwargs.pop("predicate", "负责")
-    text = (
-        "，".join(kwargs.get("conditions", [])) + f" {subject} {predicate} {target}。"
-    )
+    text = "，".join(kwargs.get("conditions", [])) + f" {subject} {predicate} {target}。"
     scope = sorted(ctx.allowed_scope_ids)[0]
     event = source_event(
         source_event_key=f"TEST-trace/{next(core.test_sequence)}",
@@ -67,10 +65,7 @@ def edge(core, ctx, subject, target, **kwargs):
 
 def test_two_and_three_hop_paths_use_real_edges_and_never_write(app):
     core, ctx = app
-    refs = [
-        edge(core, ctx, a, b)[0].ref
-        for a, b in [("TEST-A", "TEST-B"), ("TEST-B", "TEST-C"), ("TEST-C", "TEST-D")]
-    ]
+    refs = [edge(core, ctx, a, b)[0].ref for a, b in [("TEST-A", "TEST-B"), ("TEST-B", "TEST-C"), ("TEST-C", "TEST-D")]]
     before = core.status(ctx)
     result = query(core, ctx, target="TEST-C", direction="outgoing")
     assert len(result["paths"]) == 1
@@ -91,12 +86,8 @@ def test_cycles_conditions_and_text_cooccurrence_are_not_invented_edges(app):
     edge(core, ctx, "TEST-A", "TEST-X, TEST-Y", predicate="名单")
     edge(core, ctx, "TEST-X", "TEST-Z")
     result = query(core, ctx, max_hops=3, direction="outgoing")
-    assert all(
-        len({n["id"] for n in p["nodes"]}) == len(p["nodes"]) for p in result["paths"]
-    )
-    assert not any(
-        n["label"] in {"TEST-C", "TEST-Z"} for p in result["paths"] for n in p["nodes"]
-    )
+    assert all(len({n["id"] for n in p["nodes"]}) == len(p["nodes"]) for p in result["paths"])
+    assert not any(n["label"] in {"TEST-C", "TEST-Z"} for p in result["paths"] for n in p["nodes"])
     assert "conditional_relation_not_traversed" in result["gaps"]
 
 
@@ -128,10 +119,7 @@ def test_path_and_byte_limits_keep_whole_paths_and_report_partial(app):
     result = query(core, ctx, max_paths=1, direction="outgoing")
     assert result["truncated"] and "path_limit" in result["gaps"]
     result = query(core, ctx, budget_bytes=1024, direction="outgoing")
-    assert (
-        len(json.dumps(result, ensure_ascii=False, separators=(",", ":")).encode())
-        <= 1024
-    )
+    assert len(json.dumps(result, ensure_ascii=False, separators=(",", ":")).encode()) <= 1024
     assert all(len(p["nodes"]) == len(p["edges"]) + 1 for p in result["paths"])
 
 
@@ -173,10 +161,7 @@ def test_long_requirement_is_a_terminal_value_not_an_invalid_entity(app):
     requirement = "验收需求内容" * 50
     edge(core, ctx, "TEST-B", requirement, predicate="需求")
     result = query(core, ctx, max_hops=3, direction="outgoing")
-    assert any(
-        p["hops"] == 2 and p["nodes"][-1]["label"] == requirement
-        for p in result["paths"]
-    )
+    assert any(p["hops"] == 2 and p["nodes"][-1]["label"] == requirement for p in result["paths"])
     validate_payload("trace_view", result)
 
 
@@ -241,9 +226,7 @@ def test_index_page_excludes_deleted_sources_and_is_idempotent(app):
     with storage.read(ctx) as tx:
         before = (
             tx._check()
-            .execute(
-                "SELECT subject_ref FROM work_items WHERE work_type='embed' AND state='pending'"
-            )
+            .execute("SELECT subject_ref FROM work_items WHERE work_type='embed' AND state='pending'")
             .fetchall()
         )
     assert source.ref not in {r[0] for r in before}
@@ -251,9 +234,7 @@ def test_index_page_excludes_deleted_sources_and_is_idempotent(app):
     with storage.read(ctx) as tx:
         after = (
             tx._check()
-            .execute(
-                "SELECT subject_ref FROM work_items WHERE work_type='embed' AND state='pending'"
-            )
+            .execute("SELECT subject_ref FROM work_items WHERE work_type='embed' AND state='pending'")
             .fetchall()
         )
     assert [r[0] for r in after] == [r[0] for r in before]
@@ -265,14 +246,32 @@ def _imported(core, ctx, text, *, role, key):
 
     from scope_recall.contracts import ImportProvenance, import_source_fingerprint
 
-    original = ("human_direct" if role == "user" else "assistant_visible" if role == "assistant"
-                else "tool_observation" if role == "tool" else "origin_unknown")
-    event = source_event(source_event_key=key, source_revision=1, origin="imported", role=role, content=text,
-                         occurred_at="2026-07-01T12:00:00Z", time_precision="instant",
-                         source_original_origin=original)
+    original = (
+        "human_direct"
+        if role == "user"
+        else "assistant_visible"
+        if role == "assistant"
+        else "tool_observation"
+        if role == "tool"
+        else "origin_unknown"
+    )
+    event = source_event(
+        source_event_key=key,
+        source_revision=1,
+        origin="imported",
+        role=role,
+        content=text,
+        occurred_at="2026-07-01T12:00:00Z",
+        time_precision="instant",
+        source_original_origin=original,
+    )
     importer = ImportProvenance(original, "a" * 64, frozenset({import_source_fingerprint(event)}))
-    saved = core.record_event(replace(ctx, actor_origin="imported", import_provenance=importer), event,
-                              scope_id="TEST-scope", remaining_seconds=10)
+    saved = core.record_event(
+        replace(ctx, actor_origin="imported", import_provenance=importer),
+        event,
+        scope_id="TEST-scope",
+        remaining_seconds=10,
+    )
     ref = saved.event_refs[0].ref
     with sqlite3.connect(core.storage.path) as conn:
         conn.execute("DELETE FROM work_items WHERE subject_ref=? AND work_type='embed'", (ref,))
@@ -332,10 +331,15 @@ def test_the_backfill_queues_only_what_this_worker_embeds(app):
         conn.execute("UPDATE source_events SET suppressed=1 WHERE event_id=?", (hidden,))
         # A later revision of the same source: only it is current.
         columns = [row[1] for row in conn.execute("PRAGMA table_info(source_events)")]
-        picked = ["source_revision+1" if name == "source_revision" else "NULL" if name == "source_id" else name
-                  for name in columns]
-        conn.execute(f"INSERT INTO source_events({','.join(columns)}) SELECT {','.join(picked)} FROM source_events"
-                     " WHERE event_id=?", (old,))
+        picked = [
+            "source_revision+1" if name == "source_revision" else "NULL" if name == "source_id" else name
+            for name in columns
+        ]
+        conn.execute(
+            f"INSERT INTO source_events({','.join(columns)}) SELECT {','.join(picked)} FROM source_events"
+            " WHERE event_id=?",
+            (old,),
+        )
         conn.commit()
     finally:
         conn.close()
@@ -394,8 +398,11 @@ def test_the_backfill_waits_while_captured_messages_wait_for_their_embeddings(ap
     said = _imported(core, ctx, "TEST 家里的猫叫小橘。", role="user", key="TEST-import/held")
     with sqlite3.connect(core.storage.path) as conn:
         for index in range(IMPORT_EMBED_QUEUE_CEILING):
-            conn.execute("""INSERT INTO work_items(work_type,subject_ref,subject_revision,scope_id,available_at)
-                VALUES ('embed',?,1,'TEST-scope','2026-09-28T00:00:00Z')""", (f"event-TEST-waiting-{index}",))
+            conn.execute(
+                """INSERT INTO work_items(work_type,subject_ref,subject_revision,scope_id,available_at)
+                VALUES ('embed',?,1,'TEST-scope','2026-09-28T00:00:00Z')""",
+                (f"event-TEST-waiting-{index}",),
+            )
         conn.commit()
     page = queue_import_embeddings(SQLiteStorage(ctx.binding), ctx)
     assert page["held"] and page["queued"] == 0 and page["after_key"] == ("", 0)
@@ -436,20 +443,29 @@ def test_the_backfill_leaves_room_for_candidate_evaluations(app, tmp_path):
     from scope_recall.runtime.vector_upkeep import backfill_if_due
 
     core, ctx = app
-    said = [_imported(core, ctx, f"TEST 导入的第{index}句话。", role="user", key=f"TEST-import/room-{index}")
-            for index in range(4)]
+    said = [
+        _imported(core, ctx, f"TEST 导入的第{index}句话。", role="user", key=f"TEST-import/room-{index}")
+        for index in range(4)
+    ]
     with sqlite3.connect(core.storage.path) as conn:
-        for ref, due in (("candidate-TEST-ready", "2026-09-28T00:00:00Z"), ("candidate-TEST-later", "2999-01-01T00:00:00Z")):
-            conn.execute("""INSERT INTO work_items(work_type,subject_ref,subject_revision,scope_id,available_at)
-                VALUES ('evaluate_candidate',?,1,'TEST-scope',?)""", (ref, due))
+        for ref, due in (
+            ("candidate-TEST-ready", "2026-09-28T00:00:00Z"),
+            ("candidate-TEST-later", "2999-01-01T00:00:00Z"),
+        ):
+            conn.execute(
+                """INSERT INTO work_items(work_type,subject_ref,subject_revision,scope_id,available_at)
+                VALUES ('evaluate_candidate',?,1,'TEST-scope',?)""",
+                (ref, due),
+            )
         conn.commit()
     storage = SQLiteStorage(ctx.binding)
     evaluations = frozenset({"evaluate_candidate"})
     page = queue_import_embeddings(storage, ctx, yield_to=evaluations, yield_ceiling=2)
     assert (page["held"], page["queued"], page["finished"]) == (False, 2, False), page
     assert sum(ref in _embeds(core) for ref in said) == 2
-    receipt = backfill_if_due(storage, ctx, SimpleNamespace(storage_dir=tmp_path), yield_to=evaluations,
-                              yield_ceiling=2)
+    receipt = backfill_if_due(
+        storage, ctx, SimpleNamespace(storage_dir=tmp_path), yield_to=evaluations, yield_ceiling=2
+    )
     assert (receipt["outcome"], receipt["queued"]) == ("held", 0), "the drain's upkeep passes it on"
     with sqlite3.connect(core.storage.path) as conn:
         conn.execute("UPDATE work_items SET state='done' WHERE subject_ref='candidate-TEST-ready'")
@@ -467,12 +483,17 @@ def test_a_page_never_takes_the_embedding_queue_past_its_ceiling(app):
     from scope_recall.core.storage import SQLiteStorage
 
     core, ctx = app
-    said = [_imported(core, ctx, f"TEST 导入的第{index}句。", role="user", key=f"TEST-import/over-{index}")
-            for index in range(3)]
+    said = [
+        _imported(core, ctx, f"TEST 导入的第{index}句。", role="user", key=f"TEST-import/over-{index}")
+        for index in range(3)
+    ]
     with sqlite3.connect(core.storage.path) as conn:
         for index in range(IMPORT_EMBED_QUEUE_CEILING - 1):
-            conn.execute("""INSERT INTO work_items(work_type,subject_ref,subject_revision,scope_id,available_at)
-                VALUES ('embed',?,1,'TEST-scope','2026-09-28T00:00:00Z')""", (f"event-TEST-waiting-{index}",))
+            conn.execute(
+                """INSERT INTO work_items(work_type,subject_ref,subject_revision,scope_id,available_at)
+                VALUES ('embed',?,1,'TEST-scope','2026-09-28T00:00:00Z')""",
+                (f"event-TEST-waiting-{index}",),
+            )
         conn.commit()
     page = queue_import_embeddings(SQLiteStorage(ctx.binding), ctx)
     assert (page["queued"], page["scanned"], page["finished"]) == (1, 1, False), page

@@ -19,6 +19,7 @@ to load.  The behaviour is written once, as the ``check_*`` functions below: thi
 against the SQLite companion, and ``tests/storage_native/test_in_process_lance_store.py`` runs them
 against the in-process LanceDB store in the native tier.
 """
+
 from __future__ import annotations
 
 import inspect
@@ -33,15 +34,26 @@ from scope_recall.vector.store import LanceVectorStore, build_vector_store
 SPACE, SCOPE, AGENT, INSTALLATION = "TEST-space", "TEST-scope", "TEST-agent", "TEST-installation"
 
 
-def _record(ref: str, vector: tuple[float, ...] = (0.25, 0.75), *, revision: int = 1, scope: str = SCOPE,
-            vector_id: str | None = None) -> LanceVectorRecord:
-    return LanceVectorRecord("event", ref, revision, vector_id or f"TEST:{ref}:{revision}", SPACE, vector, scope,
-                             AGENT, INSTALLATION)
+def _record(
+    ref: str,
+    vector: tuple[float, ...] = (0.25, 0.75),
+    *,
+    revision: int = 1,
+    scope: str = SCOPE,
+    vector_id: str | None = None,
+) -> LanceVectorRecord:
+    return LanceVectorRecord(
+        "event", ref, revision, vector_id or f"TEST:{ref}:{revision}", SPACE, vector, scope, AGENT, INSTALLATION
+    )
 
 
 def _receipt(*refs: str, scope: str = SCOPE) -> dict:
-    return {"physical_members": [{"kind": "event", "ref": ref} for ref in refs], "scope_ids": [scope],
-            "project_id": None, "branch_id": None}
+    return {
+        "physical_members": [{"kind": "event", "ref": ref} for ref in refs],
+        "scope_ids": [scope],
+        "project_id": None,
+        "branch_id": None,
+    }
 
 
 def _port(store) -> LancePurgePort:
@@ -53,8 +65,16 @@ def test_each_store_class_takes_the_two_calls_the_runtime_makes(store_class):
     fenced = inspect.signature(store_class.fenced_upsert_records)
     fenced.bind(None, [], guard=lambda: True, remaining_seconds=1.0)
     purge = inspect.signature(store_class.purge_governed_members)
-    purge.bind(None, members=[], agent_id=AGENT, installation_id=INSTALLATION, partitions=[],
-               project_id=None, branch_id=None, remaining_seconds=1.0)
+    purge.bind(
+        None,
+        members=[],
+        agent_id=AGENT,
+        installation_id=INSTALLATION,
+        partitions=[],
+        project_id=None,
+        branch_id=None,
+        remaining_seconds=1.0,
+    )
     inspect.signature(store_class.search_scopes).bind(None, [1.0, 0.0], scope_ids=[], limit=1)
 
 
@@ -67,32 +87,57 @@ def test_the_store_chosen_for_this_platform_has_both(backend, tmp_path):
 
 # -- the behaviour, for whichever in-process store is handed in ------------------------------------
 
+
 def check_a_group_is_published_under_one_guard_check_and_a_refusal_writes_nothing(store) -> None:
     checks: list[bool] = []
     writer = LanceIndexWriter(store)
-    assert writer.upsert_fenced_many([_record("event-1"), _record("event-2", (0.5, 0.5))],
-                                     guard=lambda: not checks.append(True), remaining_seconds=5.0) is True
+    assert (
+        writer.upsert_fenced_many(
+            [_record("event-1"), _record("event-2", (0.5, 0.5))],
+            guard=lambda: not checks.append(True),
+            remaining_seconds=5.0,
+        )
+        is True
+    )
     assert sorted(store.list_ids()) == ["TEST:event-1:1", "TEST:event-2:1"] and checks == [True]
     assert writer.upsert_fenced(_record("event-3"), guard=lambda: False, remaining_seconds=5.0) is False
     assert "TEST:event-3:1" not in store.list_ids()
 
 
 def check_a_forget_removes_every_revision_of_its_members_and_only_those(store) -> None:
-    published = [_record("event-1"), _record("event-1", (0.3, 0.7), revision=2), _record("event-2", (0.5, 0.5)),
-                 _record("event-1", scope="TEST-other-scope", vector_id="TEST:other-scope:event-1:1")]
+    published = [
+        _record("event-1"),
+        _record("event-1", (0.3, 0.7), revision=2),
+        _record("event-2", (0.5, 0.5)),
+        _record("event-1", scope="TEST-other-scope", vector_id="TEST:other-scope:event-1:1"),
+    ]
     assert LanceIndexWriter(store).upsert_fenced_many(published, guard=lambda: True, remaining_seconds=5.0) is True
 
     assert _port(store).purge_active("TEST-operation", receipt=_receipt("event-1"), remaining_seconds=5.0) is True
 
-    assert sorted(store.list_ids()) == ["TEST:event-2:1", "TEST:other-scope:event-1:1"], \
+    assert sorted(store.list_ids()) == ["TEST:event-2:1", "TEST:other-scope:event-1:1"], (
         "both revisions of the member are gone; another member, and the same ref in another scope, are not this forget's"
-    assert _port(store).purge_active("TEST-operation", receipt=_receipt("event-1"), remaining_seconds=5.0) is True, \
+    )
+    assert _port(store).purge_active("TEST-operation", receipt=_receipt("event-1"), remaining_seconds=5.0) is True, (
         "an inventory verified empty is acknowledged"
+    )
 
 
 def check_a_row_that_cannot_be_classified_is_never_acknowledged_as_gone(store) -> None:
-    store.upsert_records([dict(id="TEST:stray", scope_id="TEST-partition", source="event-9", target="not json",
-                               content="", summary="", updated_at="", vector=[0.1, 0.9])])
+    store.upsert_records(
+        [
+            dict(
+                id="TEST:stray",
+                scope_id="TEST-partition",
+                source="event-9",
+                target="not json",
+                content="",
+                summary="",
+                updated_at="",
+                vector=[0.1, 0.9],
+            )
+        ]
+    )
 
     assert _port(store).purge_active("TEST-operation", receipt=_receipt("event-1"), remaining_seconds=5.0) is False
     assert store.list_ids() == ["TEST:stray"], "and nothing is deleted on a guess"
@@ -107,18 +152,33 @@ def check_a_search_over_several_partitions_filters_before_it_ranks(store) -> Non
     from scope_recall.adapters.lance import physical_partition_scope_id
 
     def partition(scope: str) -> str:
-        return physical_partition_scope_id(agent_id=AGENT, installation_id=INSTALLATION, embedding_space=SPACE,
-                                           logical_scope_id=scope, project_id=None, branch_id=None)
+        return physical_partition_scope_id(
+            agent_id=AGENT,
+            installation_id=INSTALLATION,
+            embedding_space=SPACE,
+            logical_scope_id=scope,
+            project_id=None,
+            branch_id=None,
+        )
 
     crowd = [_record(f"event-crowd-{index}", (1.0, 0.001 * index), scope="TEST-crowded") for index in range(30)]
-    mine = [_record("event-near", (0.8, 0.6), scope="TEST-mine-a"), _record("event-far", (0.0, 1.0), scope="TEST-mine-b")]
-    assert LanceIndexWriter(store).upsert_fenced_many([*crowd, *mine], guard=lambda: True, remaining_seconds=5.0) is True
+    mine = [
+        _record("event-near", (0.8, 0.6), scope="TEST-mine-a"),
+        _record("event-far", (0.0, 1.0), scope="TEST-mine-b"),
+    ]
+    assert (
+        LanceIndexWriter(store).upsert_fenced_many([*crowd, *mine], guard=lambda: True, remaining_seconds=5.0) is True
+    )
 
     listed = [partition("TEST-mine-a"), partition("TEST-mine-b")]
     rows = store.search_scopes([1.0, 0.0], scope_ids=listed, limit=5)
-    assert [row["id"] for row in rows] == ["TEST:event-near:1", "TEST:event-far:1"], "only the listed partitions, nearest first"
+    assert [row["id"] for row in rows] == ["TEST:event-near:1", "TEST:event-far:1"], (
+        "only the listed partitions, nearest first"
+    )
     one_at_a_time = [row["id"] for scope in listed for row in store.search([1.0, 0.0], scope_id=scope, limit=5)]
-    assert sorted(one_at_a_time) == sorted(row["id"] for row in rows), "one request finds what a request per partition did"
+    assert sorted(one_at_a_time) == sorted(row["id"] for row in rows), (
+        "one request finds what a request per partition did"
+    )
     assert store.search_scopes([1.0, 0.0], scope_ids=[], limit=5) == []
 
 
@@ -132,7 +192,9 @@ CHECKS = (
 
 @pytest.mark.parametrize("check", CHECKS, ids=lambda check: check.__name__.removeprefix("check_"))
 def test_the_sqlite_companion(check, tmp_path):
-    store = build_vector_store("sqlite-bruteforce", storage_dir=tmp_path, table_name="TEST_vectors", dimensions=2, metric="cosine")
+    store = build_vector_store(
+        "sqlite-bruteforce", storage_dir=tmp_path, table_name="TEST_vectors", dimensions=2, metric="cosine"
+    )
     store.open()
     try:
         check(store)

@@ -1,4 +1,5 @@
 """Owned process-tree watchdog and optional finite worker supervisor."""
+
 from __future__ import annotations
 
 import argparse
@@ -17,8 +18,13 @@ import time
 
 from .validation import utc_now
 from .worker_entry import load_config, persist_worker_status
-from .worker_launch import (detached_creationflags, is_ephemeral_worker_config, reap_process, taskkill_tree,
-                            validate_wake_arguments)
+from .worker_launch import (
+    detached_creationflags,
+    is_ephemeral_worker_config,
+    reap_process,
+    taskkill_tree,
+    validate_wake_arguments,
+)
 
 #: ``ExceptionClass: message`` -- the last line of a traceback, and nothing else.
 _TRACEBACK_TAIL = re.compile(r"^[A-Za-z_][\w.]*(?:Error|Exception|Exit|Interrupt)\b.*")
@@ -70,7 +76,10 @@ class _OwnedWindowsJob:
         kernel.CreateJobObjectW.argtypes = [ctypes.c_void_p, wintypes.LPCWSTR]
         kernel.CreateJobObjectW.restype = wintypes.HANDLE
         kernel.SetInformationJobObject.argtypes = [
-            wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD,
+            wintypes.HANDLE,
+            ctypes.c_int,
+            ctypes.c_void_p,
+            wintypes.DWORD,
         ]
         kernel.SetInformationJobObject.restype = wintypes.BOOL
         kernel.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
@@ -149,8 +158,10 @@ def _unlink_quietly(path: Path) -> None:
 def _remove_ephemeral_config(path: Path) -> None:
     """Delete the per-pass config copy this run was given; refuse any other file, and say so."""
     if not is_ephemeral_worker_config(path):
-        print(json.dumps({"cleanup_config": "refused", "path": str(path),
-                          "reason": "not_an_ephemeral_worker_config"}), file=sys.stderr)
+        print(
+            json.dumps({"cleanup_config": "refused", "path": str(path), "reason": "not_an_ephemeral_worker_config"}),
+            file=sys.stderr,
+        )
         return
     _unlink_quietly(path)
 
@@ -160,6 +171,7 @@ def _wait_for_prior_worker(pid: int, deadline: float) -> bool:
     if os.name == "nt":
         import ctypes
         from ctypes import wintypes
+
         kernel = ctypes.WinDLL("kernel32", use_last_error=True)
         kernel.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
         kernel.OpenProcess.restype = wintypes.HANDLE
@@ -191,7 +203,7 @@ def _wait_for_prior_worker(pid: int, deadline: float) -> bool:
                 return True
         except (OSError, IndexError):
             pass
-        time.sleep(min(.02, max(0, deadline - time.monotonic())))
+        time.sleep(min(0.02, max(0, deadline - time.monotonic())))
     return False
 
 
@@ -260,8 +272,9 @@ class _ChildOutput:
                 continue
             buffer: deque[str] = deque(maxlen=self.LINES)
             self._buffers[name] = buffer
-            thread = threading.Thread(target=self._read, args=(stream, buffer),
-                                      name=f"scope-recall-worker-{name}", daemon=True)
+            thread = threading.Thread(
+                target=self._read, args=(stream, buffer), name=f"scope-recall-worker-{name}", daemon=True
+            )
             thread.start()
             self._threads.append(thread)
 
@@ -320,9 +333,16 @@ def _relay_output(stdout: str, stderr: str, result_sink: dict | None) -> None:
         sys.stderr.flush()
 
 
-def _run_once(config_path: Path, python_executable: Path, *, cleanup_config: bool,
-        after_pid: int | None = None, delay_seconds: float = 0.0,
-        timeout_seconds: float | None = None, result_sink: dict | None = None) -> int:
+def _run_once(
+    config_path: Path,
+    python_executable: Path,
+    *,
+    cleanup_config: bool,
+    after_pid: int | None = None,
+    delay_seconds: float = 0.0,
+    timeout_seconds: float | None = None,
+    result_sink: dict | None = None,
+) -> int:
     started_at = utc_now()
     config = None
     child: subprocess.Popen[str] | None = None
@@ -334,8 +354,13 @@ def _run_once(config_path: Path, python_executable: Path, *, cleanup_config: boo
             result_sink.update(payload)
         if config is not None:
             try:
-                persist_worker_status(config, payload, started_at=started_at,
-                                      exit_code=exit_code, worker_pid=child.pid if child is not None else None)
+                persist_worker_status(
+                    config,
+                    payload,
+                    started_at=started_at,
+                    exit_code=exit_code,
+                    worker_pid=child.pid if child is not None else None,
+                )
             except (OSError, ValueError):
                 pass
 
@@ -373,8 +398,11 @@ def _run_once(config_path: Path, python_executable: Path, *, cleanup_config: boo
         if not _wait_for_exit(child, deadline + KILL_GRACE_SECONDS):
             _kill_tree(child, job)
             tree_stopped = True
-            payload = {**_degraded("worker_watchdog_timeout"), "owner_id": config.owner_id,
-                       "installation_id": config.binding.installation_id}
+            payload = {
+                **_degraded("worker_watchdog_timeout"),
+                "owner_id": config.owner_id,
+                "installation_id": config.binding.installation_id,
+            }
             reason = _failure_reason(output.collect(timeout=1.0)[1])
             if reason:
                 payload["worker_error"] = reason
@@ -406,16 +434,24 @@ def _run_once(config_path: Path, python_executable: Path, *, cleanup_config: boo
             _remove_ephemeral_config(config_path)
 
 
-def run(config_path: Path, python_executable: Path, *, cleanup_config: bool,
-        after_pid: int | None = None, delay_seconds: float = 0.0) -> int:
+def run(
+    config_path: Path,
+    python_executable: Path,
+    *,
+    cleanup_config: bool,
+    after_pid: int | None = None,
+    delay_seconds: float = 0.0,
+) -> int:
     passes = 0
     try:
         config = load_config(config_path)
         if not config.supervisor_enabled:
-            return _run_once(config_path, python_executable, cleanup_config=False,
-                             after_pid=after_pid, delay_seconds=delay_seconds)
+            return _run_once(
+                config_path, python_executable, cleanup_config=False, after_pid=after_pid, delay_seconds=delay_seconds
+            )
         validate_wake_arguments(after_pid, delay_seconds)
         from .scheduling import supervise
+
         predecessor = after_pid
         latest = {}
 
@@ -425,8 +461,14 @@ def run(config_path: Path, python_executable: Path, *, cleanup_config: bool,
             # Preserve the process protocol: one final compact JSON receipt,
             # not an unbounded stream or a pipe inherited by sleeping helpers.
             with redirect_stdout(StringIO()):
-                code = _run_once(config_path, python_executable, cleanup_config=False,
-                                 after_pid=predecessor, timeout_seconds=remaining, result_sink=payload)
+                code = _run_once(
+                    config_path,
+                    python_executable,
+                    cleanup_config=False,
+                    after_pid=predecessor,
+                    timeout_seconds=remaining,
+                    result_sink=payload,
+                )
             passes += 1
             predecessor = None
             latest.clear()
@@ -434,7 +476,7 @@ def run(config_path: Path, python_executable: Path, *, cleanup_config: bool,
             return code, payload
 
         code = supervise(config_path, drain_once, delay_seconds=delay_seconds)
-        _emit(latest or {'status': 'coalesced', 'processed': 0, 'items': [], 'capability_gaps': []})
+        _emit(latest or {"status": "coalesced", "processed": 0, "items": [], "capability_gaps": []})
         return code
     except Exception as exc:
         # Scheduling reads the bound database before the first pass, so a
@@ -442,9 +484,10 @@ def run(config_path: Path, python_executable: Path, *, cleanup_config: bool,
         # When no pass ever started, run one bounded pass directly: the worker
         # names the real cause.  The delay is dropped; the wake already passed.
         if not passes:
-            return _run_once(config_path, python_executable, cleanup_config=False,
-                             after_pid=after_pid, delay_seconds=0.0)
-        _emit(_degraded(f'watchdog_error:{type(exc).__name__}'))
+            return _run_once(
+                config_path, python_executable, cleanup_config=False, after_pid=after_pid, delay_seconds=0.0
+            )
+        _emit(_degraded(f"watchdog_error:{type(exc).__name__}"))
         return 1
     finally:
         if cleanup_config:
@@ -477,8 +520,13 @@ def main(argv: list[str] | None = None) -> int:
             raise SystemExit(143)
 
         signal.signal(signal.SIGTERM, terminate_owned)
-    return run(config_path, python_executable, cleanup_config=bool(args.cleanup_config),
-               after_pid=args.after_pid, delay_seconds=args.delay_seconds)
+    return run(
+        config_path,
+        python_executable,
+        cleanup_config=bool(args.cleanup_config),
+        after_pid=args.after_pid,
+        delay_seconds=args.delay_seconds,
+    )
 
 
 if __name__ == "__main__":

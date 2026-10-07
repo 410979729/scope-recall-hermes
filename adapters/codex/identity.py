@@ -4,6 +4,7 @@ A client attached to a shared store has one audience, the owner's, whatever its
 cwd; its captures carry the entry's route so a replay is re-checked against the
 entry's grants in the store's manifest.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -46,13 +47,19 @@ def _shared_principal(config: SharedClientConfig, origin: Origin) -> TrustedSour
     # The entry was attached as the owner at this machine: the operator's approval,
     # like the Hermes CLI's, is what verifies the person typing into the client.
     if origin == "human_direct":
-        return TrustedSourcePrincipal("human", "verified",
-                                      principal_ref("human", config.installation_id, config.host, LOCAL_USER_ID))
+        return TrustedSourcePrincipal(
+            "human", "verified", principal_ref("human", config.installation_id, config.host, LOCAL_USER_ID)
+        )
     if origin == "assistant_visible":
-        return TrustedSourcePrincipal("assistant", "verified",
-                                      principal_ref("assistant", config.installation_id, config.agent_id, config.entry_id))
+        return TrustedSourcePrincipal(
+            "assistant",
+            "verified",
+            principal_ref("assistant", config.installation_id, config.agent_id, config.entry_id),
+        )
     if origin == "host_generated":
-        return TrustedSourcePrincipal("host", "verified", principal_ref("host", config.installation_id, config.entry_id))
+        return TrustedSourcePrincipal(
+            "host", "verified", principal_ref("host", config.installation_id, config.entry_id)
+        )
     return None
 
 
@@ -81,8 +88,14 @@ def _source_principal(config: CodexInstallationConfig | SharedClientConfig, orig
 def resolve_runtime_audience(config: CodexInstallationConfig | SharedClientConfig, cwd: object) -> CodexRuntimeAudience:
     if isinstance(config, SharedClientConfig):
         audience = config.audience
-        return CodexRuntimeAudience(audience.allowed_scope_ids, audience.capture_scope_id, None, (),
-                                    host_scope_payload(config.scope), audience.writable_scope_ids)
+        return CodexRuntimeAudience(
+            audience.allowed_scope_ids,
+            audience.capture_scope_id,
+            None,
+            (),
+            host_scope_payload(config.scope),
+            audience.writable_scope_ids,
+        )
     if type(cwd) is not str or not cwd.strip():
         return CodexRuntimeAudience(frozenset(), None, None, ("capability_gap:missing_cwd",))
     try:
@@ -133,8 +146,11 @@ def trusted_context(
     if not scopes:
         raise ValueError("allowed_scope_ids is required")
     stored = stored_session_id(config, session_id)
-    anchor = (_opaque_context(f"{config.host}-task", config.installation_id, stored) if shared
-              else _opaque_context("codex-task", config.installation_id, session_id))
+    anchor = (
+        _opaque_context(f"{config.host}-task", config.installation_id, stored)
+        if shared
+        else _opaque_context("codex-task", config.installation_id, session_id)
+    )
     return TrustedContext(
         config.to_binding(),
         stored,

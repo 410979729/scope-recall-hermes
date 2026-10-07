@@ -9,6 +9,7 @@ identity.  A client attached to a shared store (Codex or Claude Code) is given
 its entry instead, and has no workspace: its audience is the entry's.  Claude
 Code sends no conversation id at all, so its mutations are refused.
 """
+
 from __future__ import annotations
 
 import functools
@@ -66,14 +67,51 @@ _READ_ONLY = ToolAnnotations(read_only_hint=True, destructive_hint=False, idempo
 #: argument/output schema titles from the function name, so the method name is
 #: part of the frozen contract.
 _TOOLS: tuple[tuple[str, str, ToolAnnotations], ...] = (
-    ("recall", "Run the shared bounded read-only recall pipeline. Protocol version 1.1. " + _RECALL_BUDGET_GUIDANCE + " " + RECALL_CONTEXT_GUIDANCE, _READ_ONLY),
-    ("inspect", "Inspect one visible, versioned object or source, or a recall packet's diagnostic_ref from this session. Protocol version 1.1.", _READ_ONLY),
-    ("profile", "Read-only categorized current-fact profile for one explicitly named subject. Uses only admitted consolidated claims; does not dump raw chat or USER.md/MEMORY.md. Protocol version 1.1. " + READ_VIEW_BUDGET_GUIDANCE + " " + RECALL_CONTEXT_GUIDANCE, _READ_ONLY),
+    (
+        "recall",
+        "Run the shared bounded read-only recall pipeline. Protocol version 1.1. "
+        + _RECALL_BUDGET_GUIDANCE
+        + " "
+        + RECALL_CONTEXT_GUIDANCE,
+        _READ_ONLY,
+    ),
+    (
+        "inspect",
+        "Inspect one visible, versioned object or source, or a recall packet's diagnostic_ref from this session. Protocol version 1.1.",
+        _READ_ONLY,
+    ),
+    (
+        "profile",
+        "Read-only categorized current-fact profile for one explicitly named subject. Uses only admitted consolidated claims; does not dump raw chat or USER.md/MEMORY.md. Protocol version 1.1. "
+        + READ_VIEW_BUDGET_GUIDANCE
+        + " "
+        + RECALL_CONTEXT_GUIDANCE,
+        _READ_ONLY,
+    ),
     ("trace", TRACE_GUIDANCE, _READ_ONLY),
-    ("entity", "Read-only exact one-hop entity view. action=probe returns current facts about the subject; action=related returns direct recorded statements. Incoming matches full scalar value_text only. No multi-hop traversal or inferred identity merge. Protocol version 1.1. " + READ_VIEW_BUDGET_GUIDANCE + " " + RECALL_CONTEXT_GUIDANCE, _READ_ONLY),
-    ("propose_memory", "Record an assistant-visible candidate without promoting it to authority. Protocol version 1.1.", ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=False, open_world_hint=False)),
-    ("revise", REVISE_GUIDANCE + " Protocol version 1.1.",ToolAnnotations(read_only_hint=False, destructive_hint=True, idempotent_hint=False, open_world_hint=False)),
-    ("forget", FORGET_GUIDANCE + " Protocol version 1.1.",ToolAnnotations(read_only_hint=False, destructive_hint=True, idempotent_hint=True, open_world_hint=False)),
+    (
+        "entity",
+        "Read-only exact one-hop entity view. action=probe returns current facts about the subject; action=related returns direct recorded statements. Incoming matches full scalar value_text only. No multi-hop traversal or inferred identity merge. Protocol version 1.1. "
+        + READ_VIEW_BUDGET_GUIDANCE
+        + " "
+        + RECALL_CONTEXT_GUIDANCE,
+        _READ_ONLY,
+    ),
+    (
+        "propose_memory",
+        "Record an assistant-visible candidate without promoting it to authority. Protocol version 1.1.",
+        ToolAnnotations(read_only_hint=False, destructive_hint=False, idempotent_hint=False, open_world_hint=False),
+    ),
+    (
+        "revise",
+        REVISE_GUIDANCE + " Protocol version 1.1.",
+        ToolAnnotations(read_only_hint=False, destructive_hint=True, idempotent_hint=False, open_world_hint=False),
+    ),
+    (
+        "forget",
+        FORGET_GUIDANCE + " Protocol version 1.1.",
+        ToolAnnotations(read_only_hint=False, destructive_hint=True, idempotent_hint=True, open_world_hint=False),
+    ),
     ("status", "Read bounded Core status and adapter capability gaps. Protocol version 1.1.", _READ_ONLY),
 )
 
@@ -85,6 +123,7 @@ def _refusals_said(method):
     so a refused call gave no reason to correct: an ``inspect`` asked for 40 lines where 24 is the most, a scope the
     caller may not write.  A ``ContractError`` says only its code and the field it refused, never what was in it.
     """
+
     @functools.wraps(method)
     def tool(*args: Any, **kwargs: Any) -> Any:
         try:
@@ -184,8 +223,9 @@ class CodexMCPServer:
 
     def _register_tools(self) -> None:
         for name, description, hints in _TOOLS:
-            self.server.tool(name=name, description=description, annotations=hints,
-                             structured_output=True)(_refusals_said(getattr(self, name)))
+            self.server.tool(name=name, description=description, annotations=hints, structured_output=True)(
+                _refusals_said(getattr(self, name))
+            )
             # mcp 2.1 builds argument models from signatures with Pydantic's
             # default ``extra=ignore``.  Public tools must reject forged
             # identity, path, scope, and host-session fields, so tighten the
@@ -214,7 +254,9 @@ class CodexMCPServer:
         except ValueError:
             return None
 
-    def _request_context(self, ctx: Context, *, mutation: bool = False, origin: Origin = "memory_reinjection") -> TrustedContext:
+    def _request_context(
+        self, ctx: Context, *, mutation: bool = False, origin: Origin = "memory_reinjection"
+    ) -> TrustedContext:
         """Bind one call to Codex's reserved MCP thread metadata.
 
         The model cannot provide this value as a tool argument.  A missing or
@@ -248,7 +290,9 @@ class CodexMCPServer:
         bounded size/depth contract that free-form values like ``new_value``
         still need, on the same code path Hermes uses.
         """
-        body = strict_object({key: value for key, value in fields.items() if value is not None}, allowed=frozenset(fields))
+        body = strict_object(
+            {key: value for key, value in fields.items() if value is not None}, allowed=frozenset(fields)
+        )
         check_protocol(body)
         call_id = bounded_request_id(body, prefix="mcp-call")
         body["request_id"] = call_id
@@ -266,14 +310,22 @@ class CodexMCPServer:
         query: StrictStr,
         mode: Literal["auto", "current", "history", "as_of", "method"],
         max_items: StrictInt,
-        budget_tokens: Annotated[StrictInt, Field(description=_RECALL_BUDGET_GUIDANCE)] = RECOMMENDED_EXPLICIT_BUDGET_TOKENS,
+        budget_tokens: Annotated[
+            StrictInt, Field(description=_RECALL_BUDGET_GUIDANCE)
+        ] = RECOMMENDED_EXPLICIT_BUDGET_TOKENS,
         as_of: StrictStr | None = None,
         focus_refs: list[StrictStr] | None = None,
         request_id: StrictStr | None = None,
     ) -> dict[str, Any]:
         body, call_id = self._request(
-            protocol_version=protocol_version, request_id=request_id, query=query, mode=mode,
-            max_items=max_items, budget_tokens=budget_tokens, as_of=as_of, focus_refs=focus_refs,
+            protocol_version=protocol_version,
+            request_id=request_id,
+            query=query,
+            mode=mode,
+            max_items=max_items,
+            budget_tokens=budget_tokens,
+            as_of=as_of,
+            focus_refs=focus_refs,
         )
         # validate_model_request remains the single DTO authority; no MCP
         # identity fields are merged into this request.
@@ -283,21 +335,36 @@ class CodexMCPServer:
         # mode is still clamped by the trusted CoreConfig budget.  A lookup
         # that finds nothing says so; the prompt hook keeps background.
         packet = self.core.recall_packet(context, body, deadline_seconds=5.0, background_without_evidence=False)
-        packet = fence_epoch(packet, self.core.memory_epoch(context), FENCED_RECALL,
-                             retracted=lambda since: self.core.memory_retracted_since(context, since))
+        packet = fence_epoch(
+            packet,
+            self.core.memory_epoch(context),
+            FENCED_RECALL,
+            retracted=lambda since: self.core.memory_retracted_since(context, since),
+        )
         _budget_retry_hint(packet)
         return self._reply(ctx, call_id, packet)
 
-    def inspect(self, ctx: Context, protocol_version: Literal["1.1"], ref: StrictStr,
-                limit: Annotated[StrictInt, Field(ge=1, le=24)] = 24,
-                request_id: StrictStr | None = None) -> dict[str, Any]:
+    def inspect(
+        self,
+        ctx: Context,
+        protocol_version: Literal["1.1"],
+        ref: StrictStr,
+        limit: Annotated[StrictInt, Field(ge=1, le=24)] = 24,
+        request_id: StrictStr | None = None,
+    ) -> dict[str, Any]:
         body, call_id = self._request(protocol_version=protocol_version, request_id=request_id, ref=ref, limit=limit)
         context = self._request_context(ctx)
         ref, revision = revision_ref(body["ref"])
         if not 1 <= body["limit"] <= 24:
             raise ContractError("INPUT_INVALID", "limit")
         inspected = self.core.inspect_object(context, ref, revision, limit=body["limit"])
-        result = {"kind": inspected.kind, "ref": inspected.ref, "revision": inspected.revision, "value": inspected.value, "memory_epoch": inspected.memory_epoch}
+        result = {
+            "kind": inspected.kind,
+            "ref": inspected.ref,
+            "revision": inspected.revision,
+            "value": inspected.value,
+            "memory_epoch": inspected.memory_epoch,
+        }
         return self._reply(ctx, call_id, result)
 
     def profile(
@@ -310,13 +377,20 @@ class CodexMCPServer:
         request_id: StrictStr | None = None,
     ) -> dict[str, Any]:
         body, call_id = self._request(
-            protocol_version=protocol_version, request_id=request_id, subject=subject,
-            max_items=max_items, budget_tokens=budget_tokens,
+            protocol_version=protocol_version,
+            request_id=request_id,
+            subject=subject,
+            max_items=max_items,
+            budget_tokens=budget_tokens,
         )
         context = self._request_context(ctx)
         view = self.core.profile(context, body)
-        view = fence_epoch(view, self.core.status(context).memory_epoch, FENCED_PROFILE,
-                           retracted=lambda since: self.core.memory_retracted_since(context, since))
+        view = fence_epoch(
+            view,
+            self.core.status(context).memory_epoch,
+            FENCED_PROFILE,
+            retracted=lambda since: self.core.memory_retracted_since(context, since),
+        )
         return self._reply(ctx, call_id, view)
 
     def trace(
@@ -333,13 +407,23 @@ class CodexMCPServer:
         request_id: StrictStr | None = None,
     ) -> dict[str, Any]:
         body, call_id = self._request(
-            protocol_version=protocol_version, request_id=request_id, subject=subject, target=target,
-            max_hops=max_hops, max_nodes=max_nodes, max_paths=max_paths, direction=direction, budget_bytes=budget_bytes,
+            protocol_version=protocol_version,
+            request_id=request_id,
+            subject=subject,
+            target=target,
+            max_hops=max_hops,
+            max_nodes=max_nodes,
+            max_paths=max_paths,
+            direction=direction,
+            budget_bytes=budget_bytes,
         )
         context = self._request_context(ctx)
         view = self.core.trace(context, body)
-        view = fence_trace_epoch(view, self.core.status(context).memory_epoch,
-                                 retracted=lambda since: self.core.memory_retracted_since(context, since))
+        view = fence_trace_epoch(
+            view,
+            self.core.status(context).memory_epoch,
+            retracted=lambda since: self.core.memory_retracted_since(context, since),
+        )
         return self._reply(ctx, call_id, view)
 
     def entity(
@@ -355,13 +439,23 @@ class CodexMCPServer:
         request_id: StrictStr | None = None,
     ) -> dict[str, Any]:
         body, call_id = self._request(
-            protocol_version=protocol_version, request_id=request_id, subject=subject, action=action,
-            direction=direction, predicate=predicate, max_items=max_items, budget_tokens=budget_tokens,
+            protocol_version=protocol_version,
+            request_id=request_id,
+            subject=subject,
+            action=action,
+            direction=direction,
+            predicate=predicate,
+            max_items=max_items,
+            budget_tokens=budget_tokens,
         )
         context = self._request_context(ctx)
         view = self.core.entity(context, body)
-        view = fence_epoch(view, self.core.status(context).memory_epoch, FENCED_ENTITY,
-                           retracted=lambda since: self.core.memory_retracted_since(context, since))
+        view = fence_epoch(
+            view,
+            self.core.status(context).memory_epoch,
+            FENCED_ENTITY,
+            retracted=lambda since: self.core.memory_retracted_since(context, since),
+        )
         return self._reply(ctx, call_id, view)
 
     def propose_memory(
@@ -374,8 +468,11 @@ class CodexMCPServer:
         request_id: StrictStr | None = None,
     ) -> dict[str, Any]:
         body, call_id = self._request(
-            protocol_version=protocol_version, request_id=request_id, content=content,
-            evidence_refs=evidence_refs, reason=reason,
+            protocol_version=protocol_version,
+            request_id=request_id,
+            content=content,
+            evidence_refs=evidence_refs,
+            reason=reason,
         )
         context = self._request_context(ctx, mutation=True, origin="assistant_visible")
         if not 1 <= len(body["content"]) <= MAX_CONTENT:
@@ -417,8 +514,12 @@ class CodexMCPServer:
         request_id: StrictStr | None = None,
     ) -> dict[str, Any]:
         body, call_id = self._request(
-            protocol_version=protocol_version, request_id=request_id, target_ref=target_ref,
-            expected_revision=expected_revision, new_value=new_value, conditions=conditions,
+            protocol_version=protocol_version,
+            request_id=request_id,
+            target_ref=target_ref,
+            expected_revision=expected_revision,
+            new_value=new_value,
+            conditions=conditions,
             source_evidence_refs=source_evidence_refs,
         )
         # Required by the DTO, where None is a value and not "unset": a null new value withdraws the fact.
@@ -428,7 +529,9 @@ class CodexMCPServer:
         # The stdio server has no attested Codex user turn.  Core still
         # requires its own human evidence and expected revision before
         # changing state.
-        receipt = self.core.revise(self._request_context(ctx, mutation=True, origin="human_direct"), body, remaining_seconds=1.0)
+        receipt = self.core.revise(
+            self._request_context(ctx, mutation=True, origin="human_direct"), body, remaining_seconds=1.0
+        )
         return self._reply(ctx, call_id, receipt)
 
     def forget(
@@ -442,14 +545,22 @@ class CodexMCPServer:
         request_id: StrictStr | None = None,
     ) -> dict[str, Any]:
         body, call_id = self._request(
-            protocol_version=protocol_version, request_id=request_id, target_refs=target_refs,
-            mode=mode, expected_revisions=expected_revisions, reason=reason,
+            protocol_version=protocol_version,
+            request_id=request_id,
+            target_refs=target_refs,
+            mode=mode,
+            expected_revisions=expected_revisions,
+            reason=reason,
         )
         body.pop("request_id")
-        receipt = self.core.forget(self._request_context(ctx, mutation=True, origin="human_direct"), body, remaining_seconds=1.0)
+        receipt = self.core.forget(
+            self._request_context(ctx, mutation=True, origin="human_direct"), body, remaining_seconds=1.0
+        )
         return self._reply(ctx, call_id, receipt)
 
-    def status(self, ctx: Context, protocol_version: Literal["1.1"] = "1.1", request_id: StrictStr | None = None) -> dict[str, Any]:
+    def status(
+        self, ctx: Context, protocol_version: Literal["1.1"] = "1.1", request_id: StrictStr | None = None
+    ) -> dict[str, Any]:
         _body, call_id = self._request(protocol_version=protocol_version, request_id=request_id)
         result = {
             "status": self.core.status(self._request_context(ctx)),

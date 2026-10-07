@@ -1,4 +1,5 @@
 """The one production retrieval pipeline used by automatic and tool recall."""
+
 from __future__ import annotations
 
 from dataclasses import replace
@@ -100,16 +101,22 @@ class ChannelBudget:
     """
 
     def __init__(self, limits: SearchLimits) -> None:
-        self.left = {"scoped": SCOPED_CANDIDATES, "exact": limits.candidate_pool, "lexical": limits.candidate_pool,
-                     "claim": min(CLAIM_CANDIDATES, limits.candidate_pool),
-                     "recent": limits.recent_items, "vector": limits.vector_limit}
+        self.left = {
+            "scoped": SCOPED_CANDIDATES,
+            "exact": limits.candidate_pool,
+            "lexical": limits.candidate_pool,
+            "claim": min(CLAIM_CANDIDATES, limits.candidate_pool),
+            "recent": limits.recent_items,
+            "vector": limits.vector_limit,
+        }
         self.total = sum(self.left.values())
         self.reserve = dict.fromkeys(_CHANNELS, 0)
 
     def hold(self, future_rounds: int) -> None:
         # A follow-up round never reads the day a question names (``RetrievalPipeline._collect_rounds``).
-        self.reserve = {channel: 0 if channel == "scoped" else min(future_rounds, self.left[channel])
-                        for channel in _CHANNELS}
+        self.reserve = {
+            channel: 0 if channel == "scoped" else min(future_rounds, self.left[channel]) for channel in _CHANNELS
+        }
 
     def allowance(self, channel: str, limit: int) -> int:
         free_total = self.total - sum(self.reserve.values())
@@ -157,7 +164,15 @@ RELATION_WEIGHT = 0.5
 class RetrievalPipeline:
     """Collect, hydrate, admit, and rank candidates in one read-only pass."""
 
-    def __init__(self, storage, *, vector_port=None, policy: RecallPolicy | None = None, clock: RetrievalClock | None = None, storage_reader: RetrievalStorage | None = None):
+    def __init__(
+        self,
+        storage,
+        *,
+        vector_port=None,
+        policy: RecallPolicy | None = None,
+        clock: RetrievalClock | None = None,
+        storage_reader: RetrievalStorage | None = None,
+    ):
         self.storage = storage
         self.vector_port = vector_port
         self.policy = policy if policy is not None else RecallPolicy(vector_threshold=None)
@@ -187,12 +202,15 @@ class RetrievalPipeline:
         except Exception:
             return None
 
-    def _vector_candidates(self, context: SearchContext, gaps: list[str], *, budget: ChannelBudget | None = None,
-                           prefetched=None) -> tuple[CandidateRef, ...]:
+    def _vector_candidates(
+        self, context: SearchContext, gaps: list[str], *, budget: ChannelBudget | None = None, prefetched=None
+    ) -> tuple[CandidateRef, ...]:
         if self.vector_port is None or context.limits.vector_limit == 0:
             gaps.append("vector_unavailable")
             return ()
-        limit = context.limits.vector_limit if budget is None else budget.allowance("vector", context.limits.vector_limit)
+        limit = (
+            context.limits.vector_limit if budget is None else budget.allowance("vector", context.limits.vector_limit)
+        )
         if limit <= 0:
             return ()
         remaining = self._remaining(context)
@@ -205,8 +223,17 @@ class RetrievalPipeline:
         # The embedding asked for when the recall started is this round's only if the round kept its query.
         early = {"prefetched": prefetched} if prefetched is not None and prefetched.query == context.query else {}
         try:
-            raw = tuple(islice(iter(self.vector_port.search(vector_context, limit=limit, remaining_seconds=remaining * 0.75,
-                                                            **early) or ()), limit))
+            raw = tuple(
+                islice(
+                    iter(
+                        self.vector_port.search(
+                            vector_context, limit=limit, remaining_seconds=remaining * 0.75, **early
+                        )
+                        or ()
+                    ),
+                    limit,
+                )
+            )
         except Exception as exc:
             # The class alone does not say what went wrong; see core/vector_failure.py.
             gaps.append("vector_unavailable")
@@ -240,7 +267,9 @@ class RetrievalPipeline:
             return True
         return self.policy.lexical_admission(candidate, context.query, exact=False)[0]
 
-    def _fuse_candidates(self, admitted: list[CandidateRef], seen: set[tuple[str, str, int]] | None) -> tuple[CandidateRef, ...]:
+    def _fuse_candidates(
+        self, admitted: list[CandidateRef], seen: set[tuple[str, str, int]] | None
+    ) -> tuple[CandidateRef, ...]:
         by_key: dict[tuple[str, str, int], list[CandidateRef]] = {}
         for candidate in admitted:
             if seen is not None and candidate.key in seen:
@@ -260,8 +289,16 @@ class RetrievalPipeline:
             seeds.append(replace(representative, fusion_score=fusion))
         return tuple(seeds)
 
-    def _collect(self, tx, context: SearchContext, gaps: list[str], *, seen: set[tuple[str, str, int]], budget: ChannelBudget,
-                 prefetched=None) -> tuple[CandidateRef, ...]:
+    def _collect(
+        self,
+        tx,
+        context: SearchContext,
+        gaps: list[str],
+        *,
+        seen: set[tuple[str, str, int]],
+        budget: ChannelBudget,
+        prefetched=None,
+    ) -> tuple[CandidateRef, ...]:
         """One round of exact, lexical, recent and vector candidates, fused by identity."""
         if self._remaining(context) <= 0:
             gaps.append("deadline_exceeded_collect")
@@ -275,8 +312,11 @@ class RetrievalPipeline:
 
         channels = (
             # First, so a slow statement after it cannot cost the one channel that reads what the question names.
-            ("scoped", getattr(self.storage_reader, "scoped", None) if context.scope is not None else None,
-             SCOPED_CANDIDATES),
+            (
+                "scoped",
+                getattr(self.storage_reader, "scoped", None) if context.scope is not None else None,
+                SCOPED_CANDIDATES,
+            ),
             ("exact", self.storage_reader.exact, context.limits.candidate_pool),
             ("lexical", self.storage_reader.lexical, context.limits.candidate_pool),
             # A reader predating the claim channel simply offers no claims.
@@ -327,8 +367,15 @@ class RetrievalPipeline:
 
     # -- hydration and admission ----------------------------------------------
 
-    def _hydrate_admit(self, tx, candidate: CandidateRef, context: SearchContext, *, original_query: str | None = None,
-                       echoes: list[CandidateRef] | None = None) -> RetrievedObject | None:
+    def _hydrate_admit(
+        self,
+        tx,
+        candidate: CandidateRef,
+        context: SearchContext,
+        *,
+        original_query: str | None = None,
+        echoes: list[CandidateRef] | None = None,
+    ) -> RetrievedObject | None:
         obj = self.storage_reader.hydrate(tx, candidate, context)
         if obj is None:
             return None
@@ -355,9 +402,18 @@ class RetrievalPipeline:
             return None
         return obj
 
-    def _hydrate_all(self, tx, hydrated: list[tuple[CandidateRef, RetrievedObject]], candidates, context: SearchContext,
-                     gaps: list[str], *, floor: int, original_query: str | None = None,
-                     echoes: list[CandidateRef] | None = None) -> None:
+    def _hydrate_all(
+        self,
+        tx,
+        hydrated: list[tuple[CandidateRef, RetrievedObject]],
+        candidates,
+        context: SearchContext,
+        gaps: list[str],
+        *,
+        floor: int,
+        original_query: str | None = None,
+        echoes: list[CandidateRef] | None = None,
+    ) -> None:
         """Hydrate in rank order; once the deadline is gone, only up to ``floor`` items."""
         known = {candidate.key for candidate, _obj in hydrated}
         candidates = tuple(candidates)
@@ -401,8 +457,15 @@ class RetrievalPipeline:
     #: what the question was told, and are read before the hops.
     RELATION_WEIGHT = RELATION_WEIGHT
 
-    def _expand(self, tx, context: SearchContext, seeds: tuple[CandidateRef, ...], gaps: list[str], *,
-                echoes: tuple[CandidateRef, ...] = ()) -> tuple[CandidateRef, ...]:
+    def _expand(
+        self,
+        tx,
+        context: SearchContext,
+        seeds: tuple[CandidateRef, ...],
+        gaps: list[str],
+        *,
+        echoes: tuple[CandidateRef, ...] = (),
+    ) -> tuple[CandidateRef, ...]:
         """Bounded relation hops out of the seeds; every inspected object counts.
 
         ``echoes`` are older copies of the current message (``_hydrate_admit``): each leads to the replies of its turn
@@ -452,7 +515,9 @@ class RetrievalPipeline:
                         continue
                     if self._hydrate_admit(tx, candidate, context) is None:
                         continue
-                    all_candidates.append(replace(candidate, fusion_score=rrf_score((candidate.rank + 1,), k=self.policy.rrf_k)))
+                    all_candidates.append(
+                        replace(candidate, fusion_score=rrf_score((candidate.rank + 1,), k=self.policy.rrf_k))
+                    )
 
         for _hop in range(limits.relation_hops):
             next_frontier: list[CandidateRef] = []
@@ -473,7 +538,10 @@ class RetrievalPipeline:
                             return stopped("relation_bound_reached")
                         continue
                     seen.add(candidate.key)
-                    if candidate.kind == "event" and f"{candidate.ref}@{candidate.revision}" in context.current_source_refs:
+                    if (
+                        candidate.kind == "event"
+                        and f"{candidate.ref}@{candidate.revision}" in context.current_source_refs
+                    ):
                         continue
                     if self._hydrate_admit(tx, candidate, context) is None:
                         if bound_reached:
@@ -494,19 +562,26 @@ class RetrievalPipeline:
 
     # -- ranking and budget ---------------------------------------------------
 
-    def _rank_hydrated(self, hydrated: list[tuple[CandidateRef, RetrievedObject]], context: SearchContext | None = None) -> list[tuple[CandidateRef, RetrievedObject]]:
+    def _rank_hydrated(
+        self, hydrated: list[tuple[CandidateRef, RetrievedObject]], context: SearchContext | None = None
+    ) -> list[tuple[CandidateRef, RetrievedObject]]:
         context_only: set[tuple[str, str, int]] = set()
         if context is not None and context.mode in {"auto", "current"}:
             # A bare question, and a reply restating what a recall tool returned
             # in its turn, are context, not evidence.  The weight goes on the
             # candidate itself: budget admission re-sorts on fusion score, and a
             # short question would otherwise win its place back there.
-            context_only = {candidate.key for candidate, obj in hydrated
-                         if obj.kind == "event" and candidate.source != "exact_ref"
-                         and (asks_without_answering(obj.content) or dict(obj.metadata).get("recall_echo") == "true")}
+            context_only = {
+                candidate.key
+                for candidate, obj in hydrated
+                if obj.kind == "event"
+                and candidate.source != "exact_ref"
+                and (asks_without_answering(obj.content) or dict(obj.metadata).get("recall_echo") == "true")
+            }
             hydrated = [
                 (replace(candidate, fusion_score=candidate.fusion_score * CONTEXT_ONLY_WEIGHT), obj)
-                if candidate.key in context_only else (candidate, obj)
+                if candidate.key in context_only
+                else (candidate, obj)
                 for candidate, obj in hydrated
             ]
         ranked = sorted(
@@ -527,7 +602,9 @@ class RetrievalPipeline:
         query_terms = set(meaningful_query_terms(context.query))
         if not query_terms:
             return ranked
-        matched = {candidate.key: query_terms.intersection(lexical_terms(_statement_text(obj))) for candidate, obj in ranked}
+        matched = {
+            candidate.key: query_terms.intersection(lexical_terms(_statement_text(obj))) for candidate, obj in ranked
+        }
         selected: list[tuple[CandidateRef, RetrievedObject]] = []
         covered: set[str] = set()
         selected_roots: set[str] = set()
@@ -544,8 +621,10 @@ class RetrievalPipeline:
             # An earlier question or a restating reply covers the query's words
             # by construction, so its coverage bonus is weighted like its fusion.
             weight = CONTEXT_ONLY_WEIGHT if candidate.key in context_only else 1.0
-            return (candidate.source == "exact_ref",
-                    candidate.fusion_score + weight * (.008 * relevance + .008 * additional) - .006 * repeated)
+            return (
+                candidate.source == "exact_ref",
+                candidate.fusion_score + weight * (0.008 * relevance + 0.008 * additional) - 0.006 * repeated,
+            )
 
         while ranked:
             if self._remaining(context) <= 0:
@@ -557,7 +636,9 @@ class RetrievalPipeline:
             selected_roots.update(evidence_roots(pair[1]))
         return selected
 
-    def _apply_budget(self, ranked: list[tuple[CandidateRef, RetrievedObject]], limits: SearchLimits) -> list[tuple[CandidateRef, RetrievedObject]]:
+    def _apply_budget(
+        self, ranked: list[tuple[CandidateRef, RetrievedObject]], limits: SearchLimits
+    ) -> list[tuple[CandidateRef, RetrievedObject]]:
         kept: list[tuple[CandidateRef, RetrievedObject]] = []
         oversized: list[tuple[CandidateRef, RetrievedObject]] = []
         total_tokens = 0
@@ -578,7 +659,7 @@ class RetrievalPipeline:
         # An item that alone exceeds the whole budget cannot fit in what is
         # left of it, so it is worth returning only when there is nothing else
         # to show: the expandable hint is a fallback, not a suffix.
-        return (kept or oversized)[:limits.max_items]
+        return (kept or oversized)[: limits.max_items]
 
     # -- the search itself ----------------------------------------------------
 
@@ -592,7 +673,9 @@ class RetrievalPipeline:
         gaps: list[str] = []
         prefetched = self._prefetch_query(working)
         try:
-            with self.storage.read(working.trusted_context, remaining_seconds=max(self._remaining(working), 0.001)) as tx:
+            with self.storage.read(
+                working.trusted_context, remaining_seconds=max(self._remaining(working), 0.001)
+            ) as tx:
                 epoch = self.storage_reader.epoch(tx)
                 working = self._scoped(tx, working, gaps)
                 echoes: list[CandidateRef] = []
@@ -622,8 +705,11 @@ class RetrievalPipeline:
         try:
             if query_scope(working.query, now=working.now, zone=working.zone, entries={}) is not None:
                 entries = getattr(tx, "entries", None)
-                names = ({entry_id: str(value.get("name") or entry_id) for entry_id, value in entries().items()}
-                         if callable(entries) else {})
+                names = (
+                    {entry_id: str(value.get("name") or entry_id) for entry_id, value in entries().items()}
+                    if callable(entries)
+                    else {}
+                )
                 scope = query_scope(working.query, now=working.now, zone=working.zone, entries=names)
                 if scope is not None and not asks_what_was_said(scope.rest):
                     scope = None
@@ -632,8 +718,9 @@ class RetrievalPipeline:
             scope = None
         return working if working.scope == scope else replace(working, scope=scope)
 
-    def _collect_rounds(self, tx, working: SearchContext, gaps: list[str], *, prefetched=None,
-                        echoes: list[CandidateRef] | None = None) -> tuple[list[tuple[CandidateRef, RetrievedObject]], int]:
+    def _collect_rounds(
+        self, tx, working: SearchContext, gaps: list[str], *, prefetched=None, echoes: list[CandidateRef] | None = None
+    ) -> tuple[list[tuple[CandidateRef, RetrievedObject]], int]:
         """The first round plus at most one directed follow-up for an open need; older copies of the current
         message found on the way go to ``echoes``."""
         hydrated: list[tuple[CandidateRef, RetrievedObject]] = []
@@ -654,8 +741,9 @@ class RetrievalPipeline:
             seeds = self._collect(tx, round_context, gaps, seen=seen, budget=budget, prefetched=prefetched)
             seed_count += len(seeds)
             seen.update(candidate.key for candidate in seeds)
-            self._hydrate_all(tx, hydrated, seeds, round_context, gaps, floor=floor, original_query=working.query,
-                              echoes=echoes)
+            self._hydrate_all(
+                tx, hydrated, seeds, round_context, gaps, floor=floor, original_query=working.query, echoes=echoes
+            )
             if round_index + 1 >= max_rounds:
                 break
             items = tuple(obj for _candidate, obj in hydrated)
@@ -675,18 +763,34 @@ class RetrievalPipeline:
                     hydrated.append((replace(task[0], source="relation", lexical_score=1.0), task[1]))
         return hydrated, seed_count
 
-    def _hydrate_related(self, tx, working: SearchContext, hydrated: list[tuple[CandidateRef, RetrievedObject]], gaps: list[str],
-                         *, echoes: tuple[CandidateRef, ...] = ()) -> None:
+    def _hydrate_related(
+        self,
+        tx,
+        working: SearchContext,
+        hydrated: list[tuple[CandidateRef, RetrievedObject]],
+        gaps: list[str],
+        *,
+        echoes: tuple[CandidateRef, ...] = (),
+    ) -> None:
         seeds = tuple(candidate for candidate, _obj in hydrated)
         known = {candidate.key for candidate in (*seeds, *echoes)}
-        expanded = [candidate for candidate in self._expand(tx, working, seeds, gaps, echoes=echoes)
-                    if candidate.key not in known]
+        expanded = [
+            candidate
+            for candidate in self._expand(tx, working, seeds, gaps, echoes=echoes)
+            if candidate.key not in known
+        ]
         floor = min(working.limits.max_items, MINIMUM_HYDRATION_CAP)
         self._hydrate_all(tx, hydrated, expanded, working, gaps, floor=floor)
         self._raise_echo_turn(tx, working, hydrated, echoes, gaps)
 
-    def _raise_echo_turn(self, tx, working: SearchContext, hydrated: list[tuple[CandidateRef, RetrievedObject]],
-                         echoes: tuple[CandidateRef, ...], gaps: list[str]) -> None:
+    def _raise_echo_turn(
+        self,
+        tx,
+        working: SearchContext,
+        hydrated: list[tuple[CandidateRef, RetrievedObject]],
+        echoes: tuple[CandidateRef, ...],
+        gaps: list[str],
+    ) -> None:
         """What the same question was told the last time it was asked goes before the best candidate of its time.
 
         Reached as any seed's turn is, at a first rank's fixed score, it fell below every candidate two channels agreed
@@ -719,13 +823,19 @@ class RetrievalPipeline:
         # At most half the packet: the replies a channel ranked highest, then the last reply of a whole turn.
         room = max(1, working.limits.max_items // 2)
         final = replies[-1] if ended else None
-        by_score = [reply for reply in sorted(found, key=lambda reply: -hydrated[at[reply.key]][0].fusion_score)
-                    if final is None or reply.key != final.key]
-        raised = [*by_score[:room - (final is not None)], *([final] if final is not None else [])]
+        by_score = [
+            reply
+            for reply in sorted(found, key=lambda reply: -hydrated[at[reply.key]][0].fusion_score)
+            if final is None or reply.key != final.key
+        ]
+        raised = [*by_score[: room - (final is not None)], *([final] if final is not None else [])]
         # The turn's other replies are of its time, and stay below what is raised of it.
         of_turn, lifted = {reply.key for reply in replies}, {reply.key for reply in raised}
-        others = [(candidate.fusion_score, candidate.key not in of_turn and _said_after(obj, opened))
-                  for candidate, obj in hydrated if candidate.key not in lifted]
+        others = [
+            (candidate.fusion_score, candidate.key not in of_turn and _said_after(obj, opened))
+            for candidate, obj in hydrated
+            if candidate.key not in lifted
+        ]
         best = max((score for score, after in others if not after), default=0.0)
         for index, reply in enumerate(raised):
             score = best + rrf_score((index + 2,), k=self.policy.rrf_k)
@@ -733,11 +843,15 @@ class RetrievalPipeline:
                 candidate, obj = hydrated[at[reply.key]]
                 if candidate.fusion_score < score:
                     hydrated[at[reply.key]] = (replace(candidate, fusion_score=score), obj)
-            elif (f"{reply.ref}@{reply.revision}" not in working.current_source_refs
-                  and (obj := self._hydrate_admit(tx, reply, working)) is not None):
+            elif (
+                f"{reply.ref}@{reply.revision}" not in working.current_source_refs
+                and (obj := self._hydrate_admit(tx, reply, working)) is not None
+            ):
                 hydrated.append((replace(reply, fusion_score=score), obj))
 
-    def _select(self, tx, working: SearchContext, hydrated: list[tuple[CandidateRef, RetrievedObject]], gaps: list[str]):
+    def _select(
+        self, tx, working: SearchContext, hydrated: list[tuple[CandidateRef, RetrievedObject]], gaps: list[str]
+    ):
         """Rank, fold duplicate bodies, fit the item budget, then add background."""
         # Distinct *content*, not distinct rows: candidates are already unique
         # by (kind, ref, revision), but a corpus where a legacy import
@@ -748,20 +862,28 @@ class RetrievalPipeline:
         ranked = self._apply_budget(distinct.filtered(self._rank_hydrated(hydrated, working)), working.limits)
         query_items = tuple(obj for _candidate, obj in ranked)
         if working.mode == "auto" and self._remaining(working) > 0:
-            background = background_candidates(tx, working, self.storage_reader, self.clock, gaps,
-                                               query_evidence=bool(query_items))
+            background = background_candidates(
+                tx, working, self.storage_reader, self.clock, gaps, query_evidence=bool(query_items)
+            )
             present = {candidate.key for candidate, _obj in ranked}
             # Query evidence comes first; background shares the final byte
             # budget and can only consume remaining packet slots.
             ranked.extend(pair for pair in background if pair[0].key not in present and distinct.admits(pair[1]))
             note_truncation(gaps, "packet_slots", considered=working.limits.max_items, available=len(ranked))
-            ranked = ranked[:working.limits.max_items]
+            ranked = ranked[: working.limits.max_items]
         note_duplicates(gaps, distinct.collapsed)
         return ranked, query_items
 
     @staticmethod
-    def _result(working: SearchContext, epoch: int, ranked, query_items: tuple[RetrievedObject, ...], gaps: list[str],
-                seed_count: int, hydrated_count: int) -> RetrievalResult:
+    def _result(
+        working: SearchContext,
+        epoch: int,
+        ranked,
+        query_items: tuple[RetrievedObject, ...],
+        gaps: list[str],
+        seed_count: int,
+        hydrated_count: int,
+    ) -> RetrievalResult:
         items = tuple(obj for _candidate, obj in ranked)
         needs = unmet_needs(working.query, query_items)
         if items and not query_items:
@@ -797,6 +919,8 @@ class RetrievalPipeline:
             return self.storage_reader.collection(tx, context, query, cursor)
 
 
-def recall(context: SearchContext, *, storage, vector_port=None, policy: RecallPolicy | None = None, clock=None) -> RetrievalResult:
+def recall(
+    context: SearchContext, *, storage, vector_port=None, policy: RecallPolicy | None = None, clock=None
+) -> RetrievalResult:
     """Small functional entry point for adapters that do not retain a service."""
     return RetrievalPipeline(storage, vector_port=vector_port, policy=policy, clock=clock).search(context)

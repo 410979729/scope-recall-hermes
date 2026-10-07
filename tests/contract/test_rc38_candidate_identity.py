@@ -8,6 +8,7 @@ the rest in ``value_text``.  One candidate had been refused four times over its 
 each refusal a model call.  What the candidate is was recorded before the call; the verdict
 decides whether the evidence supports it, with what value and on which quote.
 """
+
 from __future__ import annotations
 
 from scope_recall.core.candidate_lifecycle import candidate_name_matches
@@ -46,7 +47,7 @@ def test_a_subject_that_picked_up_a_heading_still_settles_the_candidate(app):
 
 def test_a_name_quoted_by_the_model_is_the_same_name(app):
     core, ctx = app
-    current, evaluation, _work = _verdict(core, ctx, subject='「entity-blue」')
+    current, evaluation, _work = _verdict(core, ctx, subject="「entity-blue」")
     assert evaluation["state"] == "resolved" and current.payload["subject"] == "entity-blue"
 
 

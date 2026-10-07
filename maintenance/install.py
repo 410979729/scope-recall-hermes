@@ -1,4 +1,5 @@
 """Explicit plan/apply install and receipt-backed uninstall for v1.1 host wrappers."""
+
 from __future__ import annotations
 
 import json
@@ -49,8 +50,13 @@ __all__ = [
 # from its own configuration (WorkBuddy) names those files in ``host_config_files``: its target is then the host's own
 # home, which the host shares, and the install merges its entries into those files (``merged_file``) and takes them
 # out again at uninstall (``unmerged_file``) instead of owning files there.
-_HOSTS: dict[str, ModuleType] = {"codex": install_codex, "claude-code": install_claude_code, "hermes": install_hermes,
-                                 "workbuddy": install_workbuddy, "dsh": install_dsh}
+_HOSTS: dict[str, ModuleType] = {
+    "codex": install_codex,
+    "claude-code": install_claude_code,
+    "hermes": install_hermes,
+    "workbuddy": install_workbuddy,
+    "dsh": install_dsh,
+}
 
 
 def _instance_files(host: ModuleType, instance_root: Path) -> tuple[Path, Path]:
@@ -142,7 +148,9 @@ def plan_install(
     owned: dict[str, str] = {}
     if receipt is not None:
         try:
-            owned = _validate_receipt_binding(receipt, host=host_choice, instance_root=instance, target_plugin_dir=target)
+            owned = _validate_receipt_binding(
+                receipt, host=host_choice, instance_root=instance, target_plugin_dir=target
+            )
         except InstallError as exc:
             plan.conflicts.append(str(exc))
         stored_workspace = receipt.get("agent_workspace")
@@ -166,14 +174,22 @@ def plan_install(
         else:
             plan.changes.append(PlannedChange("validate", str(instance), "reuse initialized instance binding"))
             for platform in adapter.unapproved_local_platforms(plan):
-                plan.changes.append(PlannedChange(
-                    "write", str(adapter.config_path(instance)),
-                    f"approve local platform {platform}: a session there that names no user binds as the local owner"))
+                plan.changes.append(
+                    PlannedChange(
+                        "write",
+                        str(adapter.config_path(instance)),
+                        f"approve local platform {platform}: a session there that names no user binds as the local owner",
+                    )
+                )
             for platform, login in adapter.unapproved_owner_logins(plan):
-                plan.changes.append(PlannedChange(
-                    "write", str(adapter.config_path(instance)),
-                    f"approve login {login} on {platform} as the owner: its sessions there bind with the owner's "
-                    "private memory, from any machine that login reaches the host from"))
+                plan.changes.append(
+                    PlannedChange(
+                        "write",
+                        str(adapter.config_path(instance)),
+                        f"approve login {login} on {platform} as the owner: its sessions there bind with the owner's "
+                        "private memory, from any machine that login reaches the host from",
+                    )
+                )
     else:
         for path in adapter.foreign_instance_entries(instance):
             plan.conflicts.append(f"foreign instance content: {path}")
@@ -191,8 +207,9 @@ def plan_install(
                 # is the one installed before keeps the agent's edit; one the package changed is a conflict.
                 if path.name.lower() == "skill.md" and _written_digest(planned[path]) == owned[norm]:
                     plan.kept[norm] = owned[norm]
-                    plan.changes.append(PlannedChange("keep", str(path), "keep the agent's edit: the package's copy "
-                                                                         "has not changed"))
+                    plan.changes.append(
+                        PlannedChange("keep", str(path), "keep the agent's edit: the package's copy has not changed")
+                    )
                     continue
                 plan.conflicts.append(f"edited prior file: {path}")
         plan.changes.append(PlannedChange("write", str(path), "install host wrapper artifact"))
@@ -209,8 +226,9 @@ def plan_install(
 def _plan_merges(adapter: ModuleType, plan: InstallPlan, host_files: tuple[Path, ...]) -> None:
     """What the install changes in the host's own files, or why it cannot."""
     if host_files and not plan.target_plugin_dir.is_dir():
-        plan.conflicts.append(f"{plan.target_plugin_dir} does not exist: start the host once, or name its home with "
-                              "--target-plugin-dir")
+        plan.conflicts.append(
+            f"{plan.target_plugin_dir} does not exist: start the host once, or name its home with --target-plugin-dir"
+        )
         return
     for path in host_files:
         try:
@@ -219,11 +237,18 @@ def _plan_merges(adapter: ModuleType, plan: InstallPlan, host_files: tuple[Path,
             plan.conflicts.append(str(exc))
             continue
         if merged is None:
-            plan.changes.append(PlannedChange("unchanged", str(path), "already holds this entry's entries as they "
-                                                                      "would be written"))
+            plan.changes.append(
+                PlannedChange("unchanged", str(path), "already holds this entry's entries as they would be written")
+            )
         else:
-            plan.changes.append(PlannedChange("merge", str(path), "add or update this entry's entries, keeping every "
-                                                                  "other key; the file is copied to the backups first"))
+            plan.changes.append(
+                PlannedChange(
+                    "merge",
+                    str(path),
+                    "add or update this entry's entries, keeping every "
+                    "other key; the file is copied to the backups first",
+                )
+            )
 
 
 def _stop_residents(host: str, instance_root: Path) -> None:
@@ -242,8 +267,10 @@ def _stop_residents(host: str, instance_root: Path) -> None:
     except Exception:  # noqa: BLE001 - see above
         return
     if left:
-        sys.stderr.write(f"scope-recall: resident recall server {left} of {host} still runs; "
-                         f"see scope-recall resident status --home {instance_root} --host {host}\n")
+        sys.stderr.write(
+            f"scope-recall: resident recall server {left} of {host} still runs; "
+            f"see scope-recall resident status --home {instance_root} --host {host}\n"
+        )
 
 
 def apply_install(plan: InstallPlan) -> InstallResult:
@@ -313,8 +340,9 @@ def apply_install(plan: InstallPlan) -> InstallResult:
             merged.append(str(path))
             touched.append((path, backup_path))
 
-        receipt_path = _write_receipt(plan, installation_id=installation_id, written=written, tracked=tracked,
-                                      kept=plan.kept)
+        receipt_path = _write_receipt(
+            plan, installation_id=installation_id, written=written, tracked=tracked, kept=plan.kept
+        )
         written.append(str(receipt_path))
     except Exception:
         for path, backup_path in reversed(touched):
@@ -338,7 +366,8 @@ def apply_install(plan: InstallPlan) -> InstallResult:
         files_written=written,
         # Registration is what the doctor can actually observe; hook trust is a
         # Codex operator step and full mode is never verified by an install.
-        host_registration_pending=_host_registration_status(plan.host, plan.instance_root, plan.python_executable) != "registered",
+        host_registration_pending=_host_registration_status(plan.host, plan.instance_root, plan.python_executable)
+        != "registered",
         hook_trust_pending=plan.host == "codex",
         full_mode_unverified=True,
         receipt_path=str(receipt_path),
@@ -475,7 +504,9 @@ def apply_uninstall(plan: UninstallPlan, *, purge: bool = False) -> UninstallRes
     return UninstallResult(
         files_removed=removed,
         # An entry of a shared store keeps its memory in the store, which its pointer still names.
-        memory_retained=False if purge else any((data_dir / name).is_file() for name in ("memory.sqlite3", "attachment.json")),
+        memory_retained=False
+        if purge
+        else any((data_dir / name).is_file() for name in ("memory.sqlite3", "attachment.json")),
         purged=bool(purge and purged_paths),
         edited_files=list(plan.edited_files),
         purged_paths=purged_paths,

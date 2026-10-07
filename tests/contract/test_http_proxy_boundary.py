@@ -1,4 +1,5 @@
 """Offline HTTP worker proxy and transport guards; no external network."""
+
 from __future__ import annotations
 
 import base64

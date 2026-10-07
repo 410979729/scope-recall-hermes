@@ -4,6 +4,7 @@ One ``Conversion`` is built per ``migrate_legacy`` call and handed to every
 stage in order; each stage reads what earlier stages filled in and adds its
 own. ``Blocked`` carries a finished blocked report out of any pre-write stage.
 """
+
 from __future__ import annotations
 
 from collections import defaultdict

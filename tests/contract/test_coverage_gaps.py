@@ -4,6 +4,7 @@ Covers ``core/coverage.py`` and the three places background selection used to
 truncate in silence: the reserved profile windows, the request deadline, and
 the two background slots.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -22,9 +23,9 @@ from tests.v11_support import recall_request
 
 
 def _search(core, ctx, query, *, seconds=5):
-    return SearchContext.from_request(recall_request(query=query), ctx,
-                                      now=core.clock.utc_now(),
-                                      deadline=core.clock.monotonic() + seconds)
+    return SearchContext.from_request(
+        recall_request(query=query), ctx, now=core.clock.utc_now(), deadline=core.clock.monotonic() + seconds
+    )
 
 
 def _coverage(gaps, stage=None):
@@ -37,6 +38,7 @@ def _coverage(gaps, stage=None):
 # The vocabulary
 # --------------------------------------------------------------------------
 
+
 def test_nothing_cut_means_no_gap():
     assert truncation_gap("stage", considered=8, available=8) is None
     assert truncation_gap("stage", considered=8, available=3) is None
@@ -44,22 +46,27 @@ def test_nothing_cut_means_no_gap():
 
 
 def test_a_truncation_carries_both_numbers():
-    assert truncation_gap("profile_stable", considered=8, available=9) == \
-        f"{COVERAGE_GAP_PREFIX}:profile_stable:8of9"
-    assert truncation_gap("profile_stable", considered=8, available=9, at_least=True) == \
-        f"{COVERAGE_GAP_PREFIX}:profile_stable:8of9+"
+    assert truncation_gap("profile_stable", considered=8, available=9) == f"{COVERAGE_GAP_PREFIX}:profile_stable:8of9"
+    assert (
+        truncation_gap("profile_stable", considered=8, available=9, at_least=True)
+        == f"{COVERAGE_GAP_PREFIX}:profile_stable:8of9+"
+    )
 
 
 @pytest.mark.parametrize("at_least", [False, True])
 def test_a_gap_reads_back_into_its_parts(at_least):
     gap = truncation_gap("background_deadline", considered=5, available=17, at_least=at_least)
     assert parse_coverage_gap(gap) == {
-        "stage": "background_deadline", "considered": 5, "available": 17, "at_least": at_least,
+        "stage": "background_deadline",
+        "considered": 5,
+        "available": 17,
+        "at_least": at_least,
     }
 
 
-@pytest.mark.parametrize("value", [None, 7, "", "deadline_exceeded_hydrate",
-                                   "coverage_truncated:mangled", "coverage_truncated:s:xofy"])
+@pytest.mark.parametrize(
+    "value", [None, 7, "", "deadline_exceeded_hydrate", "coverage_truncated:mangled", "coverage_truncated:s:xofy"]
+)
 def test_anything_that_is_not_a_coverage_gap_reads_as_none(value):
     assert parse_coverage_gap(value) is None
 
@@ -82,6 +89,7 @@ def test_the_counts_survive_into_the_public_packet():
 # The three real truncations
 # --------------------------------------------------------------------------
 
+
 def _fill_preferences(core, ctx, count, *, predicate_prefix="配色"):
     for index in range(count):
         source = capture(core, ctx, f"TEST-project {predicate_prefix}{index} 蓝色。")
@@ -93,8 +101,9 @@ def test_a_store_that_fits_reports_no_truncation(app):
     _fill_preferences(core, ctx, 2)
     gaps: list[str] = []
     with core.storage.read(ctx) as tx:
-        background_candidates(tx, _search(core, ctx, "配色0 怎么定"), core.recall_pipeline.storage_reader,
-                              core.clock, gaps)
+        background_candidates(
+            tx, _search(core, ctx, "配色0 怎么定"), core.recall_pipeline.storage_reader, core.clock, gaps
+        )
     assert _coverage(gaps, "profile_stable") == []
     assert _coverage(gaps, "profile_recent") == []
 
@@ -104,8 +113,9 @@ def test_a_full_profile_window_reports_how_much_it_did_not_see(app):
     _fill_preferences(core, ctx, PROFILE_WINDOW + 4)
     gaps: list[str] = []
     with core.storage.read(ctx) as tx:
-        background_candidates(tx, _search(core, ctx, "配色0 配色1 配色2 怎么定"),
-                              core.recall_pipeline.storage_reader, core.clock, gaps)
+        background_candidates(
+            tx, _search(core, ctx, "配色0 配色1 配色2 怎么定"), core.recall_pipeline.storage_reader, core.clock, gaps
+        )
     # Which of the three reserved windows fills depends on the query and on
     # whether the preferences are project-scoped, so the property under test is
     # that a filled window reports itself -- not which one it happened to be.
@@ -125,8 +135,13 @@ def test_more_applicable_preferences_than_slots_are_reported(app):
         accept(core, ctx, draft(source, "简洁", kind="preference", predicate=f"语气{index}"))
     gaps: list[str] = []
     with core.storage.read(ctx) as tx:
-        selected = background_candidates(tx, _search(core, ctx, "语气0 语气1 语气2 语气3 怎么写"),
-                                         core.recall_pipeline.storage_reader, core.clock, gaps)
+        selected = background_candidates(
+            tx,
+            _search(core, ctx, "语气0 语气1 语气2 语气3 怎么写"),
+            core.recall_pipeline.storage_reader,
+            core.clock,
+            gaps,
+        )
     assert len(selected) <= 3  # two preferences plus at most one task
     slots = _coverage(gaps, "background_slots")
     assert slots, f"expected a background_slots truncation, got {gaps}"
@@ -152,13 +167,13 @@ def test_background_selection_still_works_without_a_gap_list(app):
     core, ctx = app
     _fill_preferences(core, ctx, 2)
     with core.storage.read(ctx) as tx:
-        background_candidates(tx, _search(core, ctx, "配色0 怎么定"),
-                              core.recall_pipeline.storage_reader, core.clock)
+        background_candidates(tx, _search(core, ctx, "配色0 怎么定"), core.recall_pipeline.storage_reader, core.clock)
 
 
 # --------------------------------------------------------------------------
 # A vector failure says which failure it was
 # --------------------------------------------------------------------------
+
 
 def test_a_vector_failure_carries_the_auxiliary_error_type(app):
     """Every auxiliary failure is an ``AuxiliaryModelError``; whether it was
@@ -204,6 +219,7 @@ def test_a_vector_failure_without_a_kind_is_still_named(app):
 # A blown deadline degrades the packet; it must not empty it
 # --------------------------------------------------------------------------
 
+
 def test_an_optional_channel_that_overruns_does_not_empty_the_packet(app):
     """Measured: a vector port that respects its allowance and then fails still
     returns a full packet, while one that overruns it by a second returned
@@ -227,14 +243,14 @@ def test_an_optional_channel_that_overruns_does_not_empty_the_packet(app):
     pipeline = core.recall_pipeline
     original, pipeline.vector_port = pipeline.vector_port, _Overrunning()
     try:
-        result = core.recall(ctx, recall_request(query="TEST-project 配色", max_items=6),
-                             deadline_seconds=0.6)
+        result = core.recall(ctx, recall_request(query="TEST-project 配色", max_items=6), deadline_seconds=0.6)
     finally:
         pipeline.vector_port = original
 
     assert result.items, f"a slow optional channel emptied the packet: {result.gaps}"
-    assert any(gap.startswith("deadline_exceeded") for gap in result.gaps), \
+    assert any(gap.startswith("deadline_exceeded") for gap in result.gaps), (
         "the overrun was hidden rather than reported"
+    )
 
 
 def test_the_floor_is_the_packet_the_caller_asked_for(app):
@@ -253,4 +269,3 @@ def test_a_healthy_read_is_unchanged(app):
     result = core.recall(ctx, recall_request(query="TEST-project 配色", max_items=6))
     assert result.items
     assert not any(gap.startswith("deadline_exceeded") for gap in result.gaps), result.gaps
-

@@ -31,6 +31,7 @@ dsh's session log is Zstandard-compressed and its hooks name no record, so its p
 turn's messages and sends them with the Stop (``dsh_lines``), as a client on another machine sends
 the lines of its own record.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -70,8 +71,11 @@ def _text(value: object) -> str:
         return value
     if not isinstance(value, list):
         return ""
-    return "\n".join(block["text"] for block in value
-                     if isinstance(block, dict) and block.get("type") == "text" and isinstance(block.get("text"), str))
+    return "\n".join(
+        block["text"]
+        for block in value
+        if isinstance(block, dict) and block.get("type") == "text" and isinstance(block.get("text"), str)
+    )
 
 
 def _stamp(value: object) -> str | None:
@@ -97,15 +101,19 @@ def said(row: object) -> Said | None:
     kind = row.get("type")
     if kind == "user" and _human(row.get("origin")) and message.get("role") == "user":
         content = message.get("content")
-        if isinstance(content, list) and any(isinstance(block, dict) and block.get("type") == "tool_result"
-                                             for block in content):
+        if isinstance(content, list) and any(
+            isinstance(block, dict) and block.get("type") == "tool_result" for block in content
+        ):
             return None
         role, text = "user", _text(content)
     elif kind == "attachment":
         # A message the person sent while a turn was running reaches the model as a queued command.
         attachment = row.get("attachment") if isinstance(row.get("attachment"), dict) else {}
-        if (attachment.get("type") != "queued_command" or attachment.get("commandMode") != "prompt"
-                or not _human(attachment.get("origin"))):
+        if (
+            attachment.get("type") != "queued_command"
+            or attachment.get("commandMode") != "prompt"
+            or not _human(attachment.get("origin"))
+        ):
             return None
         role, text = "user", _text(attachment.get("prompt"))
     elif kind == "assistant" and message.get("role") == "assistant":
@@ -188,8 +196,11 @@ def workbuddy_said(row: object) -> Said | None:
     if isinstance(content, str):
         blocks = [content]
     elif isinstance(content, list):
-        blocks = [block["text"] for block in content
-                  if isinstance(block, dict) and block.get("type") == kind and isinstance(block.get("text"), str)]
+        blocks = [
+            block["text"]
+            for block in content
+            if isinstance(block, dict) and block.get("type") == kind and isinstance(block.get("text"), str)
+        ]
     else:
         return None
     text = "".join(blocks) if role == "assistant" else workbuddy_record_words("\n".join(blocks))
@@ -252,8 +263,15 @@ def _dsh_said(row: object) -> Said | None:
         return None
     entry_id, role, text = row.get("id"), row.get("role"), row.get("text")
     occurred_at = _milliseconds(row.get("time"))
-    if (type(entry_id) is not str or not entry_id.strip() or len(entry_id) > 100 or role not in ("user", "assistant")
-            or type(text) is not str or not text.strip() or occurred_at is None):
+    if (
+        type(entry_id) is not str
+        or not entry_id.strip()
+        or len(entry_id) > 100
+        or role not in ("user", "assistant")
+        or type(text) is not str
+        or not text.strip()
+        or occurred_at is None
+    ):
         return None
     try:
         entry_id.encode("utf-8")
@@ -270,16 +288,23 @@ def workbuddy_projects() -> Path:
     return base / "projects"
 
 
-def workbuddy_record_path(value: object, session_id: str, *, record_id: str | None = None,
-                          projects: Path | None = None) -> Path | None:
+def workbuddy_record_path(
+    value: object, session_id: str, *, record_id: str | None = None, projects: Path | None = None
+) -> Path | None:
     """A WorkBuddy session's record: the hook's ``transcript_path`` when it is an existing ``<id>.jsonl`` of this
     session, else that file in one of the workspace folders of ``projects`` (``workbuddy_projects``), else None.
 
     The record is named by the session's store id when it has one (``record_id``, the hook's ``agent_id``), else by
     the session id.  The hook's path has been reported wrong (``.json`` for ``.jsonl``, cut two characters short), so
     any other path is not read and the record is looked for by its name instead."""
-    names = [f"{name.strip()}.jsonl" for name in (record_id, session_id) if type(name) is str and name.strip()
-             and not any(mark in name for mark in "/\\:") and name.strip() not in (".", "..")]
+    names = [
+        f"{name.strip()}.jsonl"
+        for name in (record_id, session_id)
+        if type(name) is str
+        and name.strip()
+        and not any(mark in name for mark in "/\\:")
+        and name.strip() not in (".", "..")
+    ]
     if type(value) is str and value.strip():
         path = Path(value)
         if path.is_absolute() and path.name in names and path.is_file():
@@ -302,8 +327,13 @@ WIRE_TEXT_LIMIT = 1_000_000
 
 def said_to_wire(entry: Said) -> dict[str, object]:
     """One message, as a client on another machine sends it to its entry's server."""
-    return {"entry_id": entry.entry_id, "role": entry.role, "text": entry.text,
-            "occurred_at": entry.occurred_at, "prompt_id": entry.prompt_id}
+    return {
+        "entry_id": entry.entry_id,
+        "role": entry.role,
+        "text": entry.text,
+        "occurred_at": entry.occurred_at,
+        "prompt_id": entry.prompt_id,
+    }
 
 
 def said_from_wire(value: object) -> Said | None:
@@ -312,11 +342,20 @@ def said_from_wire(value: object) -> Said | None:
         return None
     entry_id, role, text = value.get("entry_id"), value.get("role"), value.get("text")
     occurred_at, prompt_id = _stamp(value.get("occurred_at")), value.get("prompt_id")
-    if (type(entry_id) is not str or not entry_id.strip() or len(entry_id) > 100 or role not in ("user", "assistant")
-            or type(text) is not str or not text.strip() or len(text) > WIRE_TEXT_LIMIT or occurred_at is None):
+    if (
+        type(entry_id) is not str
+        or not entry_id.strip()
+        or len(entry_id) > 100
+        or role not in ("user", "assistant")
+        or type(text) is not str
+        or not text.strip()
+        or len(text) > WIRE_TEXT_LIMIT
+        or occurred_at is None
+    ):
         return None
-    if prompt_id is not None and (role != "user" or type(prompt_id) is not str or not prompt_id.strip()
-                                  or len(prompt_id) > 240):
+    if prompt_id is not None and (
+        role != "user" or type(prompt_id) is not str or not prompt_id.strip() or len(prompt_id) > 240
+    ):
         return None
     text = without_lone_surrogates(text)
     try:
@@ -338,8 +377,9 @@ def record_path(value: object, session_id: str) -> Path | None:
     return path
 
 
-def read(path: Path, offset: int, *, limit: int = READ_BYTES,
-         rows: Callable[[object], Said | None] = said) -> list[tuple[int, Said | None]]:
+def read(
+    path: Path, offset: int, *, limit: int = READ_BYTES, rows: Callable[[object], Said | None] = said
+) -> list[tuple[int, Said | None]]:
     """The complete lines after ``offset``, each with the offset just past it and what it shows being said
     (``rows``: ``said`` for the claude-code host's record, ``workbuddy_said`` for WorkBuddy's).
 
@@ -392,8 +432,9 @@ class Cursor:
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             pending = self.path.with_name(f"{self.path.stem}.{os.getpid()}.tmp")
-            pending.write_text(json.dumps({"offset": offset, "head": _head(self.record, min(offset, _HEAD_BYTES))}),
-                               encoding="utf-8")
+            pending.write_text(
+                json.dumps({"offset": offset, "head": _head(self.record, min(offset, _HEAD_BYTES))}), encoding="utf-8"
+            )
             os.replace(pending, self.path)
         except OSError:
             pass

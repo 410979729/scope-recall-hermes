@@ -1,4 +1,5 @@
 """P08 integration against the real LanceDB helper and SQLite truth."""
+
 from __future__ import annotations
 
 from dataclasses import replace
@@ -8,7 +9,12 @@ from typing import Any
 
 import pytest
 
-from scope_recall.adapters.lance import LanceIndexWriter, LanceVectorPort, LanceVectorRecord, physical_partition_scope_id
+from scope_recall.adapters.lance import (
+    LanceIndexWriter,
+    LanceVectorPort,
+    LanceVectorRecord,
+    physical_partition_scope_id,
+)
 from scope_recall.core import CoreConfig, MemoryCore
 from scope_recall.core.recall_policy import RecallPolicy, SPACE_ID
 from scope_recall.vector.process_store import ProcessLanceVectorStore
@@ -54,7 +60,16 @@ def native_app(tmp_path: Path):
         store.close()
 
 
-def _record(source, *, vector_id: str, space: str = SPACE_ID, project: str | None = "TEST-project", branch: str | None = "TEST-main", revision: int | None = None, embedding: tuple[float, ...] = (1.0, 0.0)):
+def _record(
+    source,
+    *,
+    vector_id: str,
+    space: str = SPACE_ID,
+    project: str | None = "TEST-project",
+    branch: str | None = "TEST-main",
+    revision: int | None = None,
+    embedding: tuple[float, ...] = (1.0, 0.0),
+):
     return LanceVectorRecord(
         object_kind="event",
         object_ref=source.ref,
@@ -100,7 +115,9 @@ def test_construction_is_lazy_and_native_query_returns_metadata_only(tmp_path):
 def test_native_scope_and_metadata_boundary_hydrates_only_sqlite_truth(native_app):
     core, ctx, store = native_app
     source = capture(core, ctx, "海上晨雾项目采用暮光方案。", key="TEST-P08/native", revision=1)
-    newer = capture(core, ctx, "海上晨雾项目采用晨星方案。", key="TEST-P08/native", revision=2, when="2026-09-05T12:00:00Z")
+    newer = capture(
+        core, ctx, "海上晨雾项目采用晨星方案。", key="TEST-P08/native", revision=2, when="2026-09-05T12:00:00Z"
+    )
     writer = LanceIndexWriter(store)
     writer.upsert_records(
         (

@@ -4,6 +4,7 @@ Probe this file with the target interpreter: its metadata, marker environment
 and installed versions must answer, not the doctor's own environment. No imports
 of optional native dependencies, package installation or network calls occur.
 """
+
 from __future__ import annotations
 
 import base64
@@ -40,8 +41,12 @@ def record_integrity(dist) -> dict:
                 mismatches.append(relative)
     except (ValueError, TypeError, csv.Error):
         return {"status": "unavailable", "reason": "record_invalid", "checked": checked}
-    return {"status": "mismatch" if mismatches else ("ok" if checked else "unavailable"),
-            "checked": checked, "mismatches": mismatches[:32], "mismatch_count": len(mismatches)}
+    return {
+        "status": "mismatch" if mismatches else ("ok" if checked else "unavailable"),
+        "checked": checked,
+        "mismatches": mismatches[:32],
+        "mismatch_count": len(mismatches),
+    }
 
 
 def dependency_health(requirements, *, version_lookup=metadata.version) -> dict:
@@ -68,16 +73,18 @@ def dependency_health(requirements, *, version_lookup=metadata.version) -> dict:
                 pass
             env = default_environment()
             required = req.marker is None or req.marker.evaluate({**env, "extra": ""})
-            optional = any(req.marker and req.marker.evaluate({**env, "extra": extra})
-                           for extra in ("lancedb", "codex"))
+            optional = any(
+                req.marker and req.marker.evaluate({**env, "extra": extra}) for extra in ("lancedb", "codex")
+            )
             if not required and not (optional and installed is not None):
                 continue
             try:
                 ok = installed is not None and req.specifier.contains(installed, prereleases=True)
             except InvalidVersion:
                 ok = False
-            rows.append({"name": canonicalize_name(req.name), "spec": str(req.specifier),
-                         "installed": installed, "ok": ok})
+            rows.append(
+                {"name": canonicalize_name(req.name), "spec": str(req.specifier), "installed": installed, "ok": ok}
+            )
     except (ValueError, TypeError):
         return {"status": "unavailable", "reason": "requirement_invalid"}
     return {"status": "mismatch" if any(not row["ok"] for row in rows) else "ok", "requirements": rows}
@@ -86,10 +93,16 @@ def dependency_health(requirements, *, version_lookup=metadata.version) -> dict:
 def package_probe() -> dict:
     """Measure the package actually imported by the target interpreter."""
     import scope_recall._version as version
+
     path = Path(version.__file__).resolve()
-    result = {"source": "development", "version": version.__version__, "path": str(path),
-              "distribution_version": None, "hot_patched": {"status": "unavailable"},
-              "dependency_drift": {"status": "unavailable"}}
+    result = {
+        "source": "development",
+        "version": version.__version__,
+        "path": str(path),
+        "distribution_version": None,
+        "hot_patched": {"status": "unavailable"},
+        "dependency_drift": {"status": "unavailable"},
+    }
     try:
         dist = metadata.distribution(DISTRIBUTION)
     except metadata.PackageNotFoundError:
@@ -113,9 +126,12 @@ def version_health(instance: Path, probe: dict, running: dict) -> dict:
         receipt_version = receipt.get("package_version")
     except (OSError, ValueError, TypeError):
         pass
-    versions = {"receipt": receipt_version, "distribution": probe.get("distribution_version"),
-                "imported": probe.get("version"),
-                "running": [record.get("version") for record in running.get("live_processes", [])]}
+    versions = {
+        "receipt": receipt_version,
+        "distribution": probe.get("distribution_version"),
+        "imported": probe.get("version"),
+        "running": [record.get("version") for record in running.get("live_processes", [])],
+    }
     values = [versions["receipt"], versions["distribution"], versions["imported"], *versions["running"]]
     known = [v for v in values if isinstance(v, str) and v]
     mismatch = len(set(known)) > 1

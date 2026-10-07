@@ -13,6 +13,7 @@ between a guard that holds and one that only holds while the instance is idle
 
 Not responsible for: deciding the threshold, or performing the native work.
 """
+
 from __future__ import annotations
 
 import time
@@ -20,8 +21,16 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from ..vector.compaction import (EMBED_BACKFILL_STATE_SCHEMA, INDEX_STATE_FILENAME, INDEX_STATE_SCHEMA, compaction_due,
-                                 embed_backfill_filename, measure_footprint, read_state, write_state)
+from ..vector.compaction import (
+    EMBED_BACKFILL_STATE_SCHEMA,
+    INDEX_STATE_FILENAME,
+    INDEX_STATE_SCHEMA,
+    compaction_due,
+    embed_backfill_filename,
+    measure_footprint,
+    read_state,
+    write_state,
+)
 from ..vector.store import VECTOR_INDEX_MIN_ROWS
 from .validation import utc_now
 
@@ -31,8 +40,9 @@ from .validation import utc_now
 RESERVE_SECONDS = 8.0
 
 
-def compact_if_due(store: Any, vector_config: Any, *, available_seconds: float,
-                   reason: str | None = None) -> dict[str, Any] | None:
+def compact_if_due(
+    store: Any, vector_config: Any, *, available_seconds: float, reason: str | None = None
+) -> dict[str, Any] | None:
     """Compact when the policy says so.  Returns the receipt, or ``None``.
 
     ``reason`` names a cause the caller already knows, such as a retention
@@ -108,8 +118,9 @@ INDEX_RECHECK = {
 }
 
 
-def index_if_due(store: Any, vector_config: Any, *, available_seconds: float,
-                 now: datetime | None = None) -> dict[str, Any] | None:
+def index_if_due(
+    store: Any, vector_config: Any, *, available_seconds: float, now: datetime | None = None
+) -> dict[str, Any] | None:
     """Build the nearest-neighbour index when the table needs one and this pass has the time.  Returns the receipt.
 
     The receipt goes to ``index-state.json`` beside the store, where the doctor reads it.  Never raises: without
@@ -142,10 +153,18 @@ def index_if_due(store: Any, vector_config: Any, *, available_seconds: float,
                 receipt["outcome"] = "deferred"
                 receipt["available_seconds"] = round(available_seconds, 1)
             else:
-                write_state(storage_dir, {**receipt, "outcome": "started"}, filename=INDEX_STATE_FILENAME,
-                            schema=INDEX_STATE_SCHEMA)
-                receipt.update(build(min_rows=VECTOR_INDEX_MIN_ROWS,
-                                     timeout_seconds=max(1.0, available_seconds - INDEX_MARGIN_SECONDS / 2)))
+                write_state(
+                    storage_dir,
+                    {**receipt, "outcome": "started"},
+                    filename=INDEX_STATE_FILENAME,
+                    schema=INDEX_STATE_SCHEMA,
+                )
+                receipt.update(
+                    build(
+                        min_rows=VECTOR_INDEX_MIN_ROWS,
+                        timeout_seconds=max(1.0, available_seconds - INDEX_MARGIN_SECONDS / 2),
+                    )
+                )
     except Exception as exc:  # noqa: BLE001 - see docstring; upkeep never fails a drain.
         receipt["outcome"] = "failed"
         receipt["error"] = type(exc).__name__
@@ -164,8 +183,15 @@ EMBED_BACKFILL_RECHECK = timedelta(days=1)
 EMBED_BACKFILL_PAGE = 64
 
 
-def backfill_if_due(storage: Any, context: Any, vector_config: Any, *, now: datetime | None = None,
-                    yield_to: frozenset[str] = frozenset(), yield_ceiling: int | None = None) -> dict | None:
+def backfill_if_due(
+    storage: Any,
+    context: Any,
+    vector_config: Any,
+    *,
+    now: datetime | None = None,
+    yield_to: frozenset[str] = frozenset(),
+    yield_ceiling: int | None = None,
+) -> dict | None:
     """Queue the next page of an import's embeddings, unless the last look found none left within a day.  While
     work of a type in ``yield_to`` is ready, the queue is kept to ``yield_ceiling`` (``queue_import_embeddings``).
 
@@ -193,19 +219,36 @@ def backfill_if_due(storage: Any, context: Any, vector_config: Any, *, now: date
     try:
         from ..core.index_rebuild import queue_import_embeddings
 
-        page = queue_import_embeddings(storage, context, after_key=after_key, limit=EMBED_BACKFILL_PAGE,
-                                       yield_to=yield_to, now=moment,
-                                       **({} if yield_ceiling is None else {"yield_ceiling": yield_ceiling}))
-        receipt.update(after_key=list(page["after_key"]), queued=page["queued"], queued_total=earlier + page["queued"],
-                       outcome="held" if page["held"] else "finished" if page["finished"] else "progress")
+        page = queue_import_embeddings(
+            storage,
+            context,
+            after_key=after_key,
+            limit=EMBED_BACKFILL_PAGE,
+            yield_to=yield_to,
+            now=moment,
+            **({} if yield_ceiling is None else {"yield_ceiling": yield_ceiling}),
+        )
+        receipt.update(
+            after_key=list(page["after_key"]),
+            queued=page["queued"],
+            queued_total=earlier + page["queued"],
+            outcome="held" if page["held"] else "finished" if page["finished"] else "progress",
+        )
     except Exception as exc:  # noqa: BLE001 - see docstring; upkeep never fails a drain.
         receipt.update(after_key=after_key, queued_total=earlier, outcome="failed", error=type(exc).__name__)
     write_state(storage_dir, receipt, filename=filename, schema=EMBED_BACKFILL_STATE_SCHEMA)
     return receipt
 
 
-def respace_if_due(storage: Any, context: Any, space_id: str | None, *, now: datetime | None = None,
-                   yield_to: frozenset[str] = frozenset(), yield_ceiling: int | None = None) -> dict | None:
+def respace_if_due(
+    storage: Any,
+    context: Any,
+    space_id: str | None,
+    *,
+    now: datetime | None = None,
+    yield_to: frozenset[str] = frozenset(),
+    yield_ceiling: int | None = None,
+) -> dict | None:
     """Reopen the next page of an operator's re-embed run (``respace-embeddings``) for this worker's space.
 
     The embed queue is topped up as the import backfill tops it up (``queue_import_embeddings``): to
@@ -240,5 +283,12 @@ def respace_if_due(storage: Any, context: Any, space_id: str | None, *, now: dat
         return {"outcome": "failed", "error": type(exc).__name__}
 
 
-__all__ = ["EMBED_BACKFILL_RECHECK", "INDEX_RECHECK", "RESERVE_SECONDS", "backfill_if_due", "compact_if_due",
-           "index_if_due", "respace_if_due"]
+__all__ = [
+    "EMBED_BACKFILL_RECHECK",
+    "INDEX_RECHECK",
+    "RESERVE_SECONDS",
+    "backfill_if_due",
+    "compact_if_due",
+    "index_if_due",
+    "respace_if_due",
+]

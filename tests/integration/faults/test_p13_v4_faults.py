@@ -1,4 +1,5 @@
 """P13 v4 bounded storage fault probes (TEST data only)."""
+
 from __future__ import annotations
 
 import hashlib
@@ -16,11 +17,33 @@ def test_p13_sqlite_full_keeps_core_source_transaction_uncommitted(tmp_path):
     database = core.storage.path
     content = "Z" * 60_000
     values = (
-        "p13-full-event", "p13-full", 1, "p13-full", 0, None,
-        "TEST-scope", "TEST-session", "P13", "main", "human_direct", "user",
-        content, hashlib.sha256(content.encode()).hexdigest(), "p13-full-hash",
-        "2026-09-06T12:00:00Z", "2026-09-06T12:00:00Z", "2026-09-06T12:00:00Z",
-        "instant", "complete", None, "P13-V4-SQLITE-FULL", None, "{}", "[]", 0, 0,
+        "p13-full-event",
+        "p13-full",
+        1,
+        "p13-full",
+        0,
+        None,
+        "TEST-scope",
+        "TEST-session",
+        "P13",
+        "main",
+        "human_direct",
+        "user",
+        content,
+        hashlib.sha256(content.encode()).hexdigest(),
+        "p13-full-hash",
+        "2026-09-06T12:00:00Z",
+        "2026-09-06T12:00:00Z",
+        "2026-09-06T12:00:00Z",
+        "instant",
+        "complete",
+        None,
+        "P13-V4-SQLITE-FULL",
+        None,
+        "{}",
+        "[]",
+        0,
+        0,
     )
     columns = (
         "event_id,source_event_key,source_revision,source_group_key,segment_index,segment_total,"

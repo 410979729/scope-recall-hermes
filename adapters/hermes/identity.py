@@ -1,4 +1,5 @@
 """Fail-closed Hermes initialize kwargs to immutable manifest-backed identity binding."""
+
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
@@ -62,7 +63,9 @@ def _normalize_platform(value: object) -> str:
     return text or "cli"
 
 
-def _normalize_user_id(platform: str, user_id: object, user_id_alt: object, local_platforms: frozenset[str] = frozenset()) -> str:
+def _normalize_user_id(
+    platform: str, user_id: object, user_id_alt: object, local_platforms: frozenset[str] = frozenset()
+) -> str:
     primary = str(user_id or "").strip()
     alternate = str(user_id_alt or "").strip()
     # The host's user_id_alt is another stable id of the same sender in another namespace
@@ -75,7 +78,11 @@ def _normalize_user_id(platform: str, user_id: object, user_id_alt: object, loca
     # else it is nobody's, and is refused.
     if resolved or platform == "cli" or platform in local_platforms:
         return resolved or LOCAL_USER_ID
-    hint = f"; approve it as the owner's local surface with apply-install --local-platform {platform}" if platform in LOCAL_PLATFORMS else ""
+    hint = (
+        f"; approve it as the owner's local surface with apply-install --local-platform {platform}"
+        if platform in LOCAL_PLATFORMS
+        else ""
+    )
     raise HermesIdentityError("user principal required for non-cli platform" + hint)
 
 
@@ -239,7 +246,9 @@ class HermesIdentity:
             )
         if origin == "host_generated":
             return TrustedSourcePrincipal(
-                "host", "verified", principal_ref("host", self.binding.installation_id, *entry),
+                "host",
+                "verified",
+                principal_ref("host", self.binding.installation_id, *entry),
             )
         kinds = {
             "tool_observation": "tool",
@@ -268,8 +277,10 @@ def unbound_session_hint(scope: HermesRuntimeScope) -> str:
     if scope.platform in LOCAL_PLATFORMS and scope.user_id == LOCAL_USER_ID:
         hint = f"approve the surface with apply-install --local-platform {scope.platform}"
     elif scope.platform in LOCAL_PLATFORMS:
-        hint = ("if this login is the owner's own, approve it with apply-install "
-                f"--owner-login {scope.platform}={scope.user_id[:240]}")
+        hint = (
+            "if this login is the owner's own, approve it with apply-install "
+            f"--owner-login {scope.platform}={scope.user_id[:240]}"
+        )
     else:
         hint = "a route is granted by an exact audience row in installation.json (docs/install.md)"
     if scope.entry_id:
@@ -294,8 +305,9 @@ def _route_matches(row: Mapping[str, object], route: Mapping[str, str]) -> bool:
     relayed ``local`` gateway session to plugins as ``cli``, with its key, and that is not the CLI.
     """
     unpinned = row.get("gateway_session_key") == "" and route.get("platform") != "cli"
-    return all(row.get(field) == value or (field == "gateway_session_key" and unpinned)
-               for field, value in route.items())
+    return all(
+        row.get(field) == value or (field == "gateway_session_key" and unpinned) for field, value in route.items()
+    )
 
 
 def resolve_runtime_audience(manifest: InstallationManifest, scope: HermesRuntimeScope) -> RuntimeAudience:
@@ -353,8 +365,12 @@ def resolve_runtime_audience(manifest: InstallationManifest, scope: HermesRuntim
         # A row that differs only in how the plain chat's thread is written: the host sends
         # an empty thread_id for an unthreaded chat, and rows copied from the CLI's "main"
         # never match it (#124).  Named for the operator to correct; it grants nothing.
-        near = [row for row in manifest.audiences if row.get("thread_id") in {"", "main"}
-                and _route_matches(row, dict(exact_fields, thread_id=row.get("thread_id")))]
+        near = [
+            row
+            for row in manifest.audiences
+            if row.get("thread_id") in {"", "main"}
+            and _route_matches(row, dict(exact_fields, thread_id=row.get("thread_id")))
+        ]
         if near and scope.thread_id in {"", "main"}:
             gaps.append(f"capability_gap:audience_thread_mismatch:row_says_{near[0].get('thread_id') or 'empty'}")
     elif not allowed:
@@ -463,7 +479,11 @@ def bind_hermes_identity(session_id: str, **kwargs: object) -> HermesIdentity:
 
 
 def switch_hermes_identity(
-    current: HermesIdentity, new_session_id: str, *, parent_session_id: str = "", **kwargs: object,
+    current: HermesIdentity,
+    new_session_id: str,
+    *,
+    parent_session_id: str = "",
+    **kwargs: object,
 ) -> HermesIdentity:
     """Rebind with initialize's validation; presence, not truthiness, wins.
 
@@ -478,8 +498,10 @@ def switch_hermes_identity(
     elif _normalize_platform(values["platform"]) != current.scope.platform:
         values["user_id"] = ""
     fresh = bind_hermes_identity(
-        new_session_id, hermes_home=current.hermes_home,
-        parent_session_id=parent_session_id or current.parent_session_id, **values,
+        new_session_id,
+        hermes_home=current.hermes_home,
+        parent_session_id=parent_session_id or current.parent_session_id,
+        **values,
     )
     assert_same_installation(current, fresh)
     return fresh
@@ -499,4 +521,3 @@ def assert_same_installation(current: HermesIdentity | None, fresh: HermesIdenti
         raise HermesIdentityError("installation binding conflict")
     if current.owner_private_scope_id != fresh.owner_private_scope_id:
         raise HermesIdentityError("owner_private scope conflict")
-

@@ -1,5 +1,6 @@
 """The upgrade-store command brings one store forward now, with a snapshot first, and never
 takes a running worker's store from it."""
+
 import json
 import sqlite3
 import time
@@ -22,8 +23,18 @@ def test_upgrade_store_takes_a_snapshot_and_brings_the_store_forward(tmp_path, c
     _config, core = install_codex_scope_recall(tmp_path / "install", project_root=project)
     downgrade_store(core.storage.path, 1108)
     backups = tmp_path / "backups"
-    code, out = _run(capsys, ["upgrade-store", "--host", "codex", "--instance-root", str(tmp_path / "install"),
-                              "--backup-dir", str(backups)])
+    code, out = _run(
+        capsys,
+        [
+            "upgrade-store",
+            "--host",
+            "codex",
+            "--instance-root",
+            str(tmp_path / "install"),
+            "--backup-dir",
+            str(backups),
+        ],
+    )
     assert code == 0, out
     assert (out["status"], out["schema_before"], out["schema_after"]) == ("upgraded", 1108, SCHEMA_VERSION)
     assert out["journal_mode"] == "wal" and out["seconds"] >= 0
@@ -45,8 +56,20 @@ def test_upgrade_store_waits_for_the_worker_and_leaves_a_held_store_alone(tmp_pa
     holder = sqlite3.connect(core.storage.path, isolation_level=None)
     holder.execute("BEGIN IMMEDIATE")
     try:
-        code, out = _run(capsys, ["upgrade-store", "--host", "codex", "--instance-root", str(tmp_path / "install"),
-                                  "--backup-dir", str(tmp_path / "backups"), "--wait-seconds", "0.5"])
+        code, out = _run(
+            capsys,
+            [
+                "upgrade-store",
+                "--host",
+                "codex",
+                "--instance-root",
+                str(tmp_path / "install"),
+                "--backup-dir",
+                str(tmp_path / "backups"),
+                "--wait-seconds",
+                "0.5",
+            ],
+        )
     finally:
         holder.execute("ROLLBACK")
         holder.close()
@@ -71,15 +94,29 @@ def test_upgrade_store_retries_the_worker_lease_until_it_is_released(tmp_path, c
         return acquire(lease)
 
     monkeypatch.setattr(TruthWriterLease, "acquire", acquire_after_worker_release)
-    code, out = _run(capsys, ["upgrade-store", "--host", "codex", "--instance-root", str(tmp_path / "install"),
-                              "--backup-dir", str(tmp_path / "backups"), "--wait-seconds", "0.5"])
+    code, out = _run(
+        capsys,
+        [
+            "upgrade-store",
+            "--host",
+            "codex",
+            "--instance-root",
+            str(tmp_path / "install"),
+            "--backup-dir",
+            str(tmp_path / "backups"),
+            "--wait-seconds",
+            "0.5",
+        ],
+    )
 
     assert code == 0, out
     assert attempts >= 2
     assert (out["status"], out["schema_before"], out["schema_after"]) == ("upgraded", 1108, SCHEMA_VERSION)
 
 
-def test_upgrade_store_asks_storage_for_no_more_than_its_wait_when_the_clock_has_not_ticked(tmp_path, capsys, monkeypatch):
+def test_upgrade_store_asks_storage_for_no_more_than_its_wait_when_the_clock_has_not_ticked(
+    tmp_path, capsys, monkeypatch
+):
     """Before Python 3.13 ``time.monotonic()`` ticks every 15.6 ms on Windows, so the loop's first
     reading is the one the deadline was built from, and ``(started + 30.0) - started`` is
     30.000000000000014 at this clock value.  Storage refuses a timeout above 30, so the command
@@ -93,8 +130,18 @@ def test_upgrade_store_asks_storage_for_no_more_than_its_wait_when_the_clock_has
     assert (standing + 30.0) - standing > 30.0
     monkeypatch.setattr(time, "monotonic", lambda: standing)
 
-    code, out = _run(capsys, ["upgrade-store", "--host", "codex", "--instance-root", str(tmp_path / "install"),
-                              "--backup-dir", str(tmp_path / "backups")])
+    code, out = _run(
+        capsys,
+        [
+            "upgrade-store",
+            "--host",
+            "codex",
+            "--instance-root",
+            str(tmp_path / "install"),
+            "--backup-dir",
+            str(tmp_path / "backups"),
+        ],
+    )
 
     assert code == 0, out
     assert (out["status"], out["schema_before"], out["schema_after"]) == ("upgraded", 1108, SCHEMA_VERSION)
@@ -157,8 +204,18 @@ def test_a_restamped_older_store_is_then_brought_forward(tmp_path, capsys):
     _config, core = install_codex_scope_recall(tmp_path / "install", project_root=project)
     downgrade_store(core.storage.path, 1108)
     _stamp_header(core.storage.path, 10815)
-    code, out = _run(capsys, ["upgrade-store", "--host", "codex", "--instance-root", str(tmp_path / "install"),
-                              "--backup-dir", str(tmp_path / "backups")])
+    code, out = _run(
+        capsys,
+        [
+            "upgrade-store",
+            "--host",
+            "codex",
+            "--instance-root",
+            str(tmp_path / "install"),
+            "--backup-dir",
+            str(tmp_path / "backups"),
+        ],
+    )
     assert code == 0, out
     assert out["header_restamped"]["to"] == 1108
     assert (out["status"], out["schema_after"]) == ("upgraded", SCHEMA_VERSION)
@@ -170,8 +227,18 @@ def test_a_header_that_is_not_ours_is_still_refused(tmp_path, capsys):
     project.mkdir()
     _config, core = install_codex_scope_recall(tmp_path / "install", project_root=project)
     _stamp_header(core.storage.path, 10815, application_id=0)
-    code, out = _run(capsys, ["upgrade-store", "--host", "codex", "--instance-root", str(tmp_path / "install"),
-                              "--backup-dir", str(tmp_path / "backups")])
+    code, out = _run(
+        capsys,
+        [
+            "upgrade-store",
+            "--host",
+            "codex",
+            "--instance-root",
+            str(tmp_path / "install"),
+            "--backup-dir",
+            str(tmp_path / "backups"),
+        ],
+    )
     assert code == 2 and (out["status"], out["error"]) == ("unsupported", "schema_not_in_upgrade_chain")
     with sqlite3.connect(core.storage.path) as conn:
         assert conn.execute("PRAGMA user_version").fetchone()[0] == 10815
@@ -187,8 +254,18 @@ def test_rows_the_2_0_process_wrote_into_its_own_tables_are_named_not_passed_ove
         conn.execute("CREATE TABLE memories(id INTEGER PRIMARY KEY, content TEXT)")
         conn.executemany("INSERT INTO memories(content) VALUES (?)", [("TEST one",), ("TEST two",)])
     _stamp_header(core.storage.path, 10815)
-    code, out = _run(capsys, ["upgrade-store", "--host", "codex", "--instance-root", str(tmp_path / "install"),
-                              "--backup-dir", str(tmp_path / "backups")])
+    code, out = _run(
+        capsys,
+        [
+            "upgrade-store",
+            "--host",
+            "codex",
+            "--instance-root",
+            str(tmp_path / "install"),
+            "--backup-dir",
+            str(tmp_path / "backups"),
+        ],
+    )
     assert code == 0 and out["status"] == "restamped", out
     assert out["tables_not_in_schema"] == {"memories": 2} and "another program's" in out["warning"]
 
@@ -200,8 +277,18 @@ def test_a_header_in_this_products_own_numbering_is_never_restamped(tmp_path, ca
     project.mkdir()
     _config, core = install_codex_scope_recall(tmp_path / "install", project_root=project)
     _stamp_header(core.storage.path, SCHEMA_VERSION + 1)
-    code, out = _run(capsys, ["upgrade-store", "--host", "codex", "--instance-root", str(tmp_path / "install"),
-                              "--backup-dir", str(tmp_path / "backups")])
+    code, out = _run(
+        capsys,
+        [
+            "upgrade-store",
+            "--host",
+            "codex",
+            "--instance-root",
+            str(tmp_path / "install"),
+            "--backup-dir",
+            str(tmp_path / "backups"),
+        ],
+    )
     assert code == 2 and "header_restamped" not in out, out
     with sqlite3.connect(core.storage.path) as conn:
         assert conn.execute("PRAGMA user_version").fetchone()[0] == SCHEMA_VERSION + 1
@@ -218,7 +305,17 @@ def test_a_table_list_that_cannot_be_read_never_costs_the_restamp_its_result(tmp
         raise sqlite3.OperationalError("database is locked")
 
     monkeypatch.setattr(cli, "_tables_not_in_schema", locked)
-    code, out = _run(capsys, ["upgrade-store", "--host", "codex", "--instance-root", str(tmp_path / "install"),
-                              "--backup-dir", str(tmp_path / "backups")])
+    code, out = _run(
+        capsys,
+        [
+            "upgrade-store",
+            "--host",
+            "codex",
+            "--instance-root",
+            str(tmp_path / "install"),
+            "--backup-dir",
+            str(tmp_path / "backups"),
+        ],
+    )
     assert code == 0 and out["status"] == "restamped" and out["backup"]
     assert out["tables_not_in_schema_error"] == "OperationalError: database is locked" and out["warning"]

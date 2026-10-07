@@ -1,4 +1,5 @@
 """Source-preserving cost admission with real isolated SQLite transactions."""
+
 from dataclasses import replace
 import itertools
 import json
@@ -8,7 +9,14 @@ import pytest
 
 from scope_recall.contracts import ContractError
 from scope_recall.core import CoreConfig, MemoryCore
-from scope_recall.core.admission import ADMISSION_KEY, AdmissionDecision, AdmissionPolicy, classify, pending_count, store_decision
+from scope_recall.core.admission import (
+    ADMISSION_KEY,
+    AdmissionDecision,
+    AdmissionPolicy,
+    classify,
+    pending_count,
+    store_decision,
+)
 from v11_support import context, source_event
 
 
@@ -22,14 +30,18 @@ def app_at(tmp_path, policy=None):
 def counts(app):
     conn = sqlite3.connect(f"{app.storage.path.as_uri()}?mode=ro", uri=True)
     try:
-        return {name: conn.execute(f"SELECT count(*) FROM {name}").fetchone()[0]
-                for name in ("source_events", "lexical_postings", "work_items")}
+        return {
+            name: conn.execute(f"SELECT count(*) FROM {name}").fetchone()[0]
+            for name in ("source_events", "lexical_postings", "work_items")
+        }
     finally:
         conn.close()
 
 
 def capture(app, ctx, key, text, **changes):
-    return app.record_event(ctx, source_event(source_event_key=key, content=text, **changes), scope_id="TEST-scope", remaining_seconds=10)
+    return app.record_event(
+        ctx, source_event(source_event_key=key, content=text, **changes), scope_id="TEST-scope", remaining_seconds=10
+    )
 
 
 def test_nothing_deferred_takes_no_writer_lease(tmp_path, monkeypatch):
@@ -40,7 +52,9 @@ def test_nothing_deferred_takes_no_writer_lease(tmp_path, monkeypatch):
     writes = []
     storage_type = type(app.storage)
     real_write = storage_type.write
-    monkeypatch.setattr(storage_type, "write", lambda self, *args, **kwargs: writes.append(1) or real_write(self, *args, **kwargs))
+    monkeypatch.setattr(
+        storage_type, "write", lambda self, *args, **kwargs: writes.append(1) or real_write(self, *args, **kwargs)
+    )
     assert app.resume_deferred(ctx, remaining_seconds=10) == ()
     assert writes == []
 
@@ -49,7 +63,9 @@ def _count_writes(app, monkeypatch) -> list[int]:
     writes: list[int] = []
     storage_type = type(app.storage)
     real_write = storage_type.write
-    monkeypatch.setattr(storage_type, "write", lambda self, *args, **kwargs: writes.append(1) or real_write(self, *args, **kwargs))
+    monkeypatch.setattr(
+        storage_type, "write", lambda self, *args, **kwargs: writes.append(1) or real_write(self, *args, **kwargs)
+    )
     return writes
 
 
@@ -139,7 +155,18 @@ def test_ack_is_source_only_and_exact_occurrence_replay_remains_write_free(tmp_p
     assert app.storage.path.read_bytes() == before
 
 
-@pytest.mark.parametrize("text", ["好，以后都用中文。", "不要使用这个版本", "更正：实际日期为明天", "我喜欢蓝色", "决定采用方案 B", "TEST 未知但可能有用的内容", "好？"])
+@pytest.mark.parametrize(
+    "text",
+    [
+        "好，以后都用中文。",
+        "不要使用这个版本",
+        "更正：实际日期为明天",
+        "我喜欢蓝色",
+        "决定采用方案 B",
+        "TEST 未知但可能有用的内容",
+        "好？",
+    ],
+)
 def test_substantive_unknown_or_important_content_is_never_trivial_filtered(tmp_path, text):
     app, ctx = app_at(tmp_path)
     receipt = capture(app, ctx, "TEST-important", text)
@@ -147,14 +174,17 @@ def test_substantive_unknown_or_important_content_is_never_trivial_filtered(tmp_
     assert counts(app)["work_items"] == 2
 
 
-@pytest.mark.parametrize("text,expected", [
-    ('{"exit_code":0,"stdout":"","stderr":""}', "source_only"),
-    ('{"status":"success","result":"new source evidence"}', "schedule"),
-    ('{"exit_code":0,"stdout":"TEST build artifact at output.txt"}', "schedule"),
-    ('{"exit_code":1,"stderr":"missing input"}', "schedule"),
-    ('{"status":["unknown"]}', "schedule"),
-    ('{"ok":true,"message":"remember new behavior"}', "schedule"),
-])
+@pytest.mark.parametrize(
+    "text,expected",
+    [
+        ('{"exit_code":0,"stdout":"","stderr":""}', "source_only"),
+        ('{"status":"success","result":"new source evidence"}', "schedule"),
+        ('{"exit_code":0,"stdout":"TEST build artifact at output.txt"}', "schedule"),
+        ('{"exit_code":1,"stderr":"missing input"}', "schedule"),
+        ('{"status":["unknown"]}', "schedule"),
+        ('{"ok":true,"message":"remember new behavior"}', "schedule"),
+    ],
+)
 def test_only_content_free_successful_tool_wrappers_are_cheap(text, expected):
     assert classify(source_event(content=text, role="tool", origin="tool_trusted")).disposition == expected
 
@@ -186,10 +216,22 @@ def test_memory_reinjection_is_source_only_at_capture_refill_and_on_demand(tmp_p
     app, ctx = app_at(tmp_path)
     # Recall output routinely repeats the words that raise ordinary priority.
     text = "记住：TEST-ECHO-ANCHOR 决定采用蓝色方案。"
-    echo = capture(app, replace(ctx, actor_origin="memory_reinjection"), "TEST-echo", text,
-                   origin="memory_reinjection", role="tool")
-    observed = capture(app, replace(ctx, actor_origin="tool_observation"), "TEST-observed", text,
-                       origin="tool_observation", role="tool")
+    echo = capture(
+        app,
+        replace(ctx, actor_origin="memory_reinjection"),
+        "TEST-echo",
+        text,
+        origin="memory_reinjection",
+        role="tool",
+    )
+    observed = capture(
+        app,
+        replace(ctx, actor_origin="tool_observation"),
+        "TEST-observed",
+        text,
+        origin="tool_observation",
+        role="tool",
+    )
     ref = echo.event_refs[0].ref
     assert echo.durability == "persisted" and echo.semantic_state == "not_scheduled"
     assert echo.admission == ("admission_source_only:memory_reinjection",)
@@ -233,7 +275,20 @@ def test_on_demand_activation_is_idempotent_and_does_not_bypass_visibility(tmp_p
         app.schedule_source(replace(ctx, allowed_scope_ids=frozenset()), ref, 1)
 
 
-@pytest.mark.parametrize("text", ["换成蓝色", "调整为蓝色", "不再使用蓝色", "不再采用蓝色", "停止使用蓝色", "停止采用蓝色", "弃用蓝色", "switch to blue", "discontinue blue"])
+@pytest.mark.parametrize(
+    "text",
+    [
+        "换成蓝色",
+        "调整为蓝色",
+        "不再使用蓝色",
+        "不再采用蓝色",
+        "停止使用蓝色",
+        "停止采用蓝色",
+        "弃用蓝色",
+        "switch to blue",
+        "discontinue blue",
+    ],
+)
 def test_correction_language_can_use_reserved_capacity(tmp_path, text):
     app, ctx = app_at(tmp_path, AdmissionPolicy(max_pending_work=2, important_reserve=2))
     capture(app, ctx, "TEST-fill", "TEST ordinary source")
@@ -263,7 +318,9 @@ def test_schedule_does_not_resurrect_deleted_suppressed_or_old_revisions(tmp_pat
     with pytest.raises(ContractError, match="SOURCE_MISSING"):
         app.schedule_source(ctx, saved.event_refs[0].ref, 1)
     with app.storage.write(ctx) as tx:
-        tx._check(write=True).execute("UPDATE source_events SET read_blocked=1 WHERE event_id=?", (saved.event_refs[0].ref,))
+        tx._check(write=True).execute(
+            "UPDATE source_events SET read_blocked=1 WHERE event_id=?", (saved.event_refs[0].ref,)
+        )
     before = app.storage.path.read_bytes()
     with pytest.raises(ContractError, match="SOURCE_MISSING"):
         app.schedule_source(ctx, saved.event_refs[0].ref, 2)
@@ -283,8 +340,9 @@ def test_full_backlog_does_not_demote_correction_evidence_or_block_immediate_rev
     app, ctx = app_at(tmp_path, AdmissionPolicy(max_pending_work=2, important_reserve=0))
     app.test_sequence = itertools.count(1)
     item, original = initial(app, ctx, value="H100", kind="fact")
-    correction = capture(app, ctx, "TEST-full-correction", "TEST-project 配色换成 H200。",
-                         occurred_at="2026-09-06T12:00:00Z")
+    correction = capture(
+        app, ctx, "TEST-full-correction", "TEST-project 配色换成 H200。", occurred_at="2026-09-06T12:00:00Z"
+    )
     assert correction.semantic_state == "not_scheduled"
     assert correction.admission == ("admission_deferred:queue_capacity",)
     assert correction.gaps == () and correction.mutation == "revised"
@@ -300,8 +358,13 @@ def test_input_cannot_spoof_internal_admission_metadata(tmp_path):
     app, ctx = app_at(tmp_path)
     before = app.storage.path.read_bytes()
     with pytest.raises(ContractError, match="INPUT_INVALID"):
-        capture(app, ctx, "TEST-spoof", "TEST substantive evidence",
-                **{ADMISSION_KEY: {"disposition": "source_only", "reason": "acknowledgement"}})
+        capture(
+            app,
+            ctx,
+            "TEST-spoof",
+            "TEST substantive evidence",
+            **{ADMISSION_KEY: {"disposition": "source_only", "reason": "acknowledgement"}},
+        )
     assert app.storage.path.read_bytes() == before
 
 
@@ -365,8 +428,9 @@ def test_fresh_message_at_queue_capacity_is_consolidated_within_one_pass(tmp_pat
 
     # Two per type ordinarily, three with the reserve.
     app, ctx, clock, yesterday = clocked_app(tmp_path, AdmissionPolicy(max_pending_work=4, important_reserve=2))
-    backlog = [capture(app, yesterday, f"TEST-backlog/{index}", f"TEST yesterday backlog source {index}")
-               for index in range(2)]
+    backlog = [
+        capture(app, yesterday, f"TEST-backlog/{index}", f"TEST yesterday backlog source {index}") for index in range(2)
+    ]
     waiting = capture(app, yesterday, "TEST-backlog/waiting", "TEST yesterday waiting source")
     clock.advance(iso="2026-09-06T12:00:00Z")
     fresh = capture(app, ctx, "TEST-fresh", "TEST the message typed just now")
@@ -377,8 +441,9 @@ def test_fresh_message_at_queue_capacity_is_consolidated_within_one_pass(tmp_pat
         batches.append([source.ref for source in sources])
         return consolidation_payload(*sources)
 
-    receipt = app.drain_worker(ctx, owner_id="TEST-worker", consolidation=FakeConsolidation(record),
-                               max_items=2, remaining_seconds=10)
+    receipt = app.drain_worker(
+        ctx, owner_id="TEST-worker", consolidation=FakeConsolidation(record), max_items=2, remaining_seconds=10
+    )
     # The pass refills the fresh message into the reserve before it claims, so
     # the same pass consolidates it.  The older deferred source still waits.
     assert receipt.completed == 2
@@ -402,8 +467,9 @@ def test_freshness_lends_the_reserve_without_becoming_importance(tmp_path):
     assert (partial.ref, partial.disposition, partial.queued_work) == (ref, "partial", 1)
     conn = sqlite3.connect(f"{app.storage.path.as_uri()}?mode=ro", uri=True)
     try:
-        marker = conn.execute("SELECT json_extract(extra_json,'$._scope_recall_admission') FROM source_events WHERE event_id=?",
-                              (ref,)).fetchone()[0]
+        marker = conn.execute(
+            "SELECT json_extract(extra_json,'$._scope_recall_admission') FROM source_events WHERE event_id=?", (ref,)
+        ).fetchone()[0]
     finally:
         conn.close()
     assert json.loads(marker) == {"disposition": "deferred", "reason": "queue_capacity", "important": False}
@@ -436,10 +502,15 @@ def test_unavailable_embedding_never_starves_consolidation_or_its_deferred_refil
     # Simulate capability restoration by completing the existing embed via
     # its real lease. Only one old embedding is admitted into the freed slot.
     with app.storage.write(ctx, remaining_seconds=10) as tx:
-        pending = tx._check().execute("SELECT work_type,count(*) FROM work_items WHERE state='pending' GROUP BY work_type").fetchall()
+        pending = (
+            tx._check()
+            .execute("SELECT work_type,count(*) FROM work_items WHERE state='pending' GROUP BY work_type")
+            .fetchall()
+        )
         assert dict(pending) == {"consolidate": 1, "embed": 1}
-        work = tx.work.claim_next("TEST-embed", app.clock.utc_now(), lease_seconds=10,
-                                  allowed_work_types=frozenset({"embed"}))[0]
+        work = tx.work.claim_next(
+            "TEST-embed", app.clock.utc_now(), lease_seconds=10, allowed_work_types=frozenset({"embed"})
+        )[0]
         tx.work.complete(work.work_id, work.lease_token, work.lease_owner, now=app.clock.utc_now())
     catchup = app.resume_deferred(ctx, limit=16, remaining_seconds=10)
     assert sum(item.queued_work for item in catchup) == 1
@@ -464,17 +535,21 @@ def test_a_repeated_tool_output_is_kept_as_a_source_only(tmp_path):
     assert human.semantic_state == "pending" and human.admission == ()
 
 
-@pytest.mark.parametrize("text", [
-    "Tool execution summary (terminal): output omitted",
-    "Tool execution summary (patch): output omitted [REDACTED_PATH]",
-    "Tool execution summary (terminal): tool=terminal; output_chars=123; output_preview=omitted",
-])
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Tool execution summary (terminal): output omitted",
+        "Tool execution summary (patch): output omitted [REDACTED_PATH]",
+        "Tool execution summary (terminal): tool=terminal; output_chars=123; output_preview=omitted",
+    ],
+)
 def test_a_withheld_tool_output_summary_is_kept_as_a_source_only(tmp_path, text):
     """The capture filter's placeholder for an output it withheld, and the 2.0
     release's form of it: nothing to search by meaning or to derive from."""
     app, ctx = app_at(tmp_path)
-    receipt = capture(app, replace(ctx, actor_origin="tool_observation"), "TEST-summary", text,
-                      origin="tool_observation", role="tool")
+    receipt = capture(
+        app, replace(ctx, actor_origin="tool_observation"), "TEST-summary", text, origin="tool_observation", role="tool"
+    )
     assert receipt.semantic_state == "not_scheduled"
     assert receipt.admission == ("admission_source_only:tool_output_omitted",)
     assert counts(app)["source_events"] == 1 and counts(app)["work_items"] == 0
@@ -497,7 +572,9 @@ def test_a_tool_output_waiting_for_an_embedding_slot_never_holds_the_refill_page
     for _ in range(2):
         resumed = app.resume_deferred(ctx, limit=1, remaining_seconds=10)
         assert [(item.ref, item.disposition, item.queued_work) for item in resumed] in (
-            [(said.event_refs[0].ref, "partial", 1)], [])
+            [(said.event_refs[0].ref, "partial", 1)],
+            [],
+        )
     assert work_for(app, said.event_refs[0].ref) == {"consolidate": "pending"}
     assert work_for(app, read.event_refs[0].ref) == {}
 

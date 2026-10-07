@@ -4,6 +4,7 @@ Host adapters translate requests and bind trusted identity.  The bounded JSON
 contract, the reply envelope and the memory-epoch delivery fence are the same
 on every host, so they live here once and never construct identity.
 """
+
 from __future__ import annotations
 
 import copy
@@ -23,9 +24,18 @@ MAX_REFS = 32
 _MAX_JSON_BYTES = 2 * 1024 * 1024
 _MAX_JSON_DEPTH = 32
 #: Every rendered/body surface a raced stale packet must not carry.
-_CONTENT_SURFACES = frozenset({
-    "canonical_text", "context", "rendered", "additionalContext", "injection_text", "text", "body", "content",
-})
+_CONTENT_SURFACES = frozenset(
+    {
+        "canonical_text",
+        "context",
+        "rendered",
+        "additionalContext",
+        "injection_text",
+        "text",
+        "body",
+        "content",
+    }
+)
 
 #: What each read view still has to carry once the epoch fence empties it.
 FENCED_RECALL: dict[str, Any] = {"items": []}
@@ -141,8 +151,10 @@ def local_times(value: object, zone: tzinfo | None = None) -> object:
     change, never what a memory says; an instant the zone cannot place stays UTC.
     """
     if isinstance(value, dict):
-        return {key: _local_instant(item, zone) if key in _TIME_KEYS or key.endswith("_at") else local_times(item, zone)
-                for key, item in value.items()}
+        return {
+            key: _local_instant(item, zone) if key in _TIME_KEYS or key.endswith("_at") else local_times(item, zone)
+            for key, item in value.items()
+        }
     if isinstance(value, list):
         return [local_times(item, zone) for item in value]
     return value
@@ -158,8 +170,9 @@ def _local_instant(value: object, zone: tzinfo | None) -> object:
         return value
 
 
-def envelope(request_id: str, result: object, *, origin: str, capability_gaps: tuple[str, ...] = (),
-             zone: tzinfo | None = None) -> dict[str, Any]:
+def envelope(
+    request_id: str, result: object, *, origin: str, capability_gaps: tuple[str, ...] = (), zone: tzinfo | None = None
+) -> dict[str, Any]:
     """The bounded v1.1 reply, times in the host's ``zone``; oversized or unserializable results fail as OUTPUT_LIMIT."""
     converted = local_times(json_value(result), zone)
     try:
@@ -186,8 +199,13 @@ def scrub_no_content(value: object) -> object:
     return value
 
 
-def fence_epoch(view: dict[str, Any], current_epoch: object, empty: dict[str, Any], *,
-                retracted: Callable[[int], bool] | None = None) -> dict[str, Any]:
+def fence_epoch(
+    view: dict[str, Any],
+    current_epoch: object,
+    empty: dict[str, Any],
+    *,
+    retracted: Callable[[int], bool] | None = None,
+) -> dict[str, Any]:
     """Never deliver a view compiled before a withdrawal it may hold.
 
     A deletion can race the read-only compiler.  Rather than hand a host a

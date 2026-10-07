@@ -160,11 +160,7 @@ def install_plugin_tree(
     plugin_dir.parent.mkdir(parents=True, exist_ok=True)
     if plugin_dir.exists():
         return "existing"
-    if (
-        not force_copy
-        and not env_flag(FORCE_COPY_PLUGIN_ENV)
-        and not assume_no_symlink_privilege()
-    ):
+    if not force_copy and not env_flag(FORCE_COPY_PLUGIN_ENV) and not assume_no_symlink_privilege():
         try:
             plugin_dir.symlink_to(repo_root, target_is_directory=True)
             return "symlink"

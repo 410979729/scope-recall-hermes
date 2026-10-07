@@ -1,4 +1,5 @@
 """Bounded authority-backed object inspection for host adapters."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -17,7 +18,9 @@ class InspectedObject:
     memory_epoch: int
 
 
-def inspect_object(storage: SQLiteStorage, clock, context: TrustedContext, ref: str, revision: int | None = None, *, limit: int = 24) -> InspectedObject:
+def inspect_object(
+    storage: SQLiteStorage, clock, context: TrustedContext, ref: str, revision: int | None = None, *, limit: int = 24
+) -> InspectedObject:
     """Resolve one object by direct repository lookups, then release it again.
 
     No history/list scan is used: current revisions come from their owning head

@@ -9,6 +9,7 @@ the same for ordinary Chinese sources under the old character bound: providers
 count tokens, and a Chinese character is about one.  #151 found it for
 digit-dense ASCII, one token a character, under an estimate of three.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -31,9 +32,14 @@ GEMINI_TOKENS = 2048
 #: Characters a token for each class of text, measured against embedding-3 by bisecting to the longest accepted
 #: prefix and reading ``usage.prompt_tokens`` (#151); Chinese from #125.
 MEASURED_CHARS_PER_TOKEN = {
-    "letters": ("a", 4.0), "hex": ("deadbeef", 2.66), "code": ("def f(x): return x+1\n", 2.46),
-    "symbols": ("(){}[]!@#$%^&*", 2.0), "base64": ("QUJDREVGR0hJSktM", 1.40), "digits": ("1029384756", 1.0),
-    "letters and digits": ("a1b2c3d4e5", 1.16), "chinese": ("测", 1.0),
+    "letters": ("a", 4.0),
+    "hex": ("deadbeef", 2.66),
+    "code": ("def f(x): return x+1\n", 2.46),
+    "symbols": ("(){}[]!@#$%^&*", 2.0),
+    "base64": ("QUJDREVGR0hJSktM", 1.40),
+    "digits": ("1029384756", 1.0),
+    "letters and digits": ("a1b2c3d4e5", 1.16),
+    "chinese": ("测", 1.0),
 }
 
 
@@ -93,14 +99,17 @@ def _mixed(length: int, chinese_share: float) -> str:
     return "".join("测" if every and index % every == 0 else "a" for index in range(length))
 
 
-@pytest.mark.parametrize("length,chinese_share,largest_safe_prefix", [
-    (8020, 0.0, 7121),     # work 34435: symbol-dense ASCII, 2.3 characters a token
-    (8020, 0.04, 7721),    # work 34420
-    (5937, 0.15, 5853),    # work 37702: failed while 12,271 ASCII characters passed
-    (6800, 0.13, 5895),    # work 37714
-    (8020, 0.31, 5941),    # work 34444
-    (3068, 1.0, 3068),     # pure Chinese at the provider's 3,072 tokens
-])
+@pytest.mark.parametrize(
+    "length,chinese_share,largest_safe_prefix",
+    [
+        (8020, 0.0, 7121),  # work 34435: symbol-dense ASCII, 2.3 characters a token
+        (8020, 0.04, 7721),  # work 34420
+        (5937, 0.15, 5853),  # work 37702: failed while 12,271 ASCII characters passed
+        (6800, 0.13, 5895),  # work 37714
+        (8020, 0.31, 5941),  # work 34444
+        (3068, 1.0, 3068),  # pure Chinese at the provider's 3,072 tokens
+    ],
+)
 def test_what_the_bound_keeps_fits_under_every_measured_provider_limit(length, chinese_share, largest_safe_prefix):
     """#125's measurements against a 3,072-token provider: the old 8,000-character bound kept all of
     these whole and every one failed with http_400."""
@@ -119,6 +128,7 @@ def test_every_character_counts_as_a_token_whatever_the_script():
 # Through the one encoder every embedded body passes
 # --------------------------------------------------------------------------
 
+
 @pytest.mark.parametrize("kind", ["document", "query"])
 def test_every_embedded_body_is_bounded(kind):
     """Source, claim and query all go through this one function."""
@@ -130,8 +140,7 @@ def test_every_embedded_body_is_bounded(kind):
 def test_a_short_body_keeps_its_exact_encoding():
     """The bound must not disturb the prompt encoding the space digest pins."""
     assert encode_embedding_text("hello", kind="document") == "title: none | text: hello"
-    assert encode_embedding_text("hello", kind="query") == \
-        "task: question answering | query: hello"
+    assert encode_embedding_text("hello", kind="query") == "task: question answering | query: hello"
 
 
 def test_the_encoder_still_refuses_what_it_always_refused():
@@ -142,7 +151,6 @@ def test_the_encoder_still_refuses_what_it_always_refused():
 
 
 def test_a_huge_claim_payload_is_bounded_too():
-    payload = {"subject": "TEST-subject", "predicate": "是", "value_text": "v" * 70000,
-               "conditions": []}
+    payload = {"subject": "TEST-subject", "predicate": "是", "value_text": "v" * 70000, "conditions": []}
     encoded = encode_embedding_text(claim_embedding_text(payload), kind="document")
     assert len(encoded) < 70000 and encoded.endswith(TRUNCATION_MARKER)

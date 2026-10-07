@@ -6,6 +6,7 @@ the process is already gone, so the import is rehearsed in a child process
 first and the verdict cached for the life of this interpreter.  A failed
 rehearsal lets the runtime fall back to the SQLite store instead of crashing.
 """
+
 from __future__ import annotations
 
 import importlib
@@ -178,5 +179,12 @@ def native_modules() -> tuple[Any, Any] | None:
         return None
 
 
-__all__ = ["helper_command", "helper_import_roots", "helper_start_failure", "native_import_is_safe", "native_modules",
-           "python_subprocess_options", "skip_native_probe"]
+__all__ = [
+    "helper_command",
+    "helper_import_roots",
+    "helper_start_failure",
+    "native_import_is_safe",
+    "native_modules",
+    "python_subprocess_options",
+    "skip_native_probe",
+]

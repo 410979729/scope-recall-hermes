@@ -26,9 +26,7 @@ IMPORT_EMBED_QUEUE_CEILING = 64
 IMPORT_EMBED_YIELD_CEILING = 16
 
 
-def queue_embedding_page(
-    storage, context, *, after_key=None, limit=128, watermark=None
-):
+def queue_embedding_page(storage, context, *, after_key=None, limit=128, watermark=None):
     if context.actor_origin not in {"host_generated", "human_direct"}:
         raise ContractError("ACCESS_DENIED", "index_rebuild")
     if type(limit) is not int or not 1 <= limit <= 200:
@@ -75,19 +73,13 @@ def queue_embedding_page(
         )
         with storage.write(scoped) as tx:
             source = tx.source(row["event_id"], row["source_revision"])
-            if (
-                source is None
-                or source.suppressed
-                or not allowed(tx, "event", source.ref, automatic=True)
-            ):
+            if source is None or source.suppressed or not allowed(tx, "event", source.ref, automatic=True):
                 continue
             try:
                 tx.claims.require_live_source(source.ref, source.revision)
             except ContractError:
                 continue
-            tx.enqueue_source(
-                source.ref, source.revision, work_type="embed", available_at=now
-            )
+            tx.enqueue_source(source.ref, source.revision, work_type="embed", available_at=now)
             scheduled += 1
     cursor = (rows[-1]["event_id"], rows[-1]["source_revision"]) if rows else watermark
     return dict(
@@ -99,9 +91,16 @@ def queue_embedding_page(
     )
 
 
-def queue_import_embeddings(storage, context, *, after_key=None, limit: int = 64,
-                            yield_to: frozenset[str] = frozenset(), yield_ceiling: int = IMPORT_EMBED_YIELD_CEILING,
-                            now: datetime | None = None) -> dict:
+def queue_import_embeddings(
+    storage,
+    context,
+    *,
+    after_key=None,
+    limit: int = 64,
+    yield_to: frozenset[str] = frozenset(),
+    yield_ceiling: int = IMPORT_EMBED_YIELD_CEILING,
+    now: datetime | None = None,
+) -> dict:
     """Queue an embedding for imported sources in ``IMPORT_EMBED_ROLES`` that never had one, a page at a time.
 
     ``after_key`` is where the last page stopped: a source the admission rules keep without one (an
@@ -118,8 +117,12 @@ def queue_import_embeddings(storage, context, *, after_key=None, limit: int = 64
     """
     if type(limit) is not int or not 1 <= limit <= 200:
         raise ContractError("INPUT_INVALID", "import_embed_page")
-    if after_key is not None and (type(after_key) not in (list, tuple) or len(after_key) != 2
-                                  or type(after_key[0]) is not str or type(after_key[1]) is not int):
+    if after_key is not None and (
+        type(after_key) not in (list, tuple)
+        or len(after_key) != 2
+        or type(after_key[0]) is not str
+        or type(after_key[1]) is not int
+    ):
         raise ContractError("INPUT_INVALID", "import_embed_cursor")
     if type(yield_ceiling) is not int or not 1 <= yield_ceiling <= IMPORT_EMBED_QUEUE_CEILING:
         raise ContractError("INPUT_INVALID", "import_embed_yield_ceiling")
@@ -137,8 +140,10 @@ def queue_import_embeddings(storage, context, *, after_key=None, limit: int = 64
             return dict(after_key=after_key, queued=0, scanned=0, held=True, finished=False)
         # No more sources are looked at than can join the queue: the cursor passes every one looked at.
         scan = min(limit, room)
-        rows = tx._check().execute(
-            f"""SELECT s.event_id,s.source_revision,s.scope_id,s.project_id,s.branch_id FROM source_events s
+        rows = (
+            tx._check()
+            .execute(
+                f"""SELECT s.event_id,s.source_revision,s.scope_id,s.project_id,s.branch_id FROM source_events s
                 WHERE s.scope_id IN ({marks}) AND (s.event_id,s.source_revision)>(?,?)
                   AND (s.project_id IS NULL OR s.project_id=?) AND (s.branch_id IS NULL OR s.branch_id=?)
                   AND s.import_provenance_sha256 IS NOT NULL AND s.role IN ({roles})
@@ -149,8 +154,10 @@ def queue_import_embeddings(storage, context, *, after_key=None, limit: int = 64
                   AND NOT EXISTS(SELECT 1 FROM work_items w WHERE w.work_type='embed'
                       AND w.subject_ref=s.event_id AND w.subject_revision=s.source_revision)
                 ORDER BY s.event_id,s.source_revision LIMIT ?""",
-            (*scopes, *after_key, context.project_id, context.branch_id, *IMPORT_EMBED_ROLES, scan),
-        ).fetchall()
+                (*scopes, *after_key, context.project_id, context.branch_id, *IMPORT_EMBED_ROLES, scan),
+            )
+            .fetchall()
+        )
     groups: dict[tuple, list] = {}
     for row in rows:
         groups.setdefault((row["scope_id"], row["project_id"], row["branch_id"]), []).append(row)

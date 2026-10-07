@@ -7,6 +7,7 @@ its stderr went nowhere.  The host here is an environment with no packages of it
 site-packages on PYTHONPATH and this checkout as a directory plugin, so the interpreter hint of #139 resolves
 nothing.  LanceDB is not needed: the import the helper died on is ``jsonschema``.
 """
+
 from __future__ import annotations
 
 from dataclasses import replace
@@ -26,9 +27,10 @@ from scope_recall.vector import lance_native, process_store
 _IGNORED_FROM_ENVIRONMENT = {"PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP", "__PYVENV_LAUNCHER__", "VIRTUAL_ENV"}
 _ABSENT = "scope_recall_176_absent_module"
 _windows_helper = pytest.mark.skipif(
-    sys.platform != "win32", reason="the helper process is the Windows vector store (vector/store.py)",
+    sys.platform != "win32",
+    reason="the helper process is the Windows vector store (vector/store.py)",
 )
-_HELPER_DRIVER = '''\
+_HELPER_DRIVER = """\
 import importlib.util, json, sys, types
 from pathlib import Path
 
@@ -48,8 +50,8 @@ finally:
     store.close()
 answer["rehearsal"] = native_import_is_safe()
 print(json.dumps(answer))
-'''
-_START_DRIVER = '''\
+"""
+_START_DRIVER = """\
 import json, sys, time, types
 
 package = types.ModuleType("scope_recall")
@@ -60,7 +62,7 @@ from scope_recall.vector import lance_native
 
 lance_native._HELPER_DEPENDENCIES = ()  # the launch #176 met: nothing of the host's path handed over
 print(json.dumps({"line": _helper_start_failure(time.monotonic() + 60.0)}))
-'''
+"""
 
 
 def _environment(**extra: str) -> dict[str, str]:
@@ -80,8 +82,13 @@ def _run(python: Path, driver: str, work: Path, *arguments: str) -> dict:
     script.write_text(driver, encoding="utf-8")
     done = subprocess.run(
         [str(python), "-B", str(script), str(Path(next(iter(scope_recall.__path__))).resolve()), *arguments],
-        env=_environment(PYTHONPATH=str(_site_holding("jsonschema"))), cwd=str(work),
-        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=180,
+        env=_environment(PYTHONPATH=str(_site_holding("jsonschema"))),
+        cwd=str(work),
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=180,
     )
     assert done.returncode == 0, f"driver failed:\n{done.stdout}\n{done.stderr}"
     return json.loads(done.stdout.strip().splitlines()[-1])
@@ -95,8 +102,9 @@ def empty_host(tmp_path_factory) -> Path:
     made = subprocess.run([sys.executable, "-m", "venv", "--without-pip", str(root)], capture_output=True, timeout=180)
     assert made.returncode == 0, made.stderr
     python = root / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
-    alone = subprocess.run([str(python), "-I", "-c", "import jsonschema"], env=_environment(), capture_output=True,
-                           timeout=60)
+    alone = subprocess.run(
+        [str(python), "-I", "-c", "import jsonschema"], env=_environment(), capture_output=True, timeout=60
+    )
     assert alone.returncode != 0, "an environment made without packages has jsonschema"
     return python
 
@@ -113,12 +121,19 @@ def test_a_host_given_its_packages_on_pythonpath_hands_them_to_the_helper(empty_
 
 def test_the_same_host_on_the_base_interpreter(tmp_path) -> None:
     """Closer to Hermes Desktop, which boots a bare interpreter; possible only where the base has no jsonschema."""
-    base = next((candidate for candidate in (Path(sys.base_prefix) / "python.exe",
-                                             Path(sys.base_prefix) / "bin" / "python3") if candidate.is_file()), None)
+    base = next(
+        (
+            candidate
+            for candidate in (Path(sys.base_prefix) / "python.exe", Path(sys.base_prefix) / "bin" / "python3")
+            if candidate.is_file()
+        ),
+        None,
+    )
     if base is None:
         pytest.skip(f"no interpreter beside sys.base_prefix {sys.base_prefix!r}")
-    alone = subprocess.run([str(base), "-I", "-c", "import jsonschema"], env=_environment(), capture_output=True,
-                           timeout=60)
+    alone = subprocess.run(
+        [str(base), "-I", "-c", "import jsonschema"], env=_environment(), capture_output=True, timeout=60
+    )
     if alone.returncode == 0:
         pytest.skip("this base interpreter has jsonschema itself")
     _helper_answers(_run(base, _HELPER_DRIVER, tmp_path, str(tmp_path / "lancedb")))
@@ -148,14 +163,21 @@ def test_a_pass_whose_helper_cannot_start_names_the_module(tmp_path, monkeypatch
     monkeypatch.setattr(process_store, "_spare", None)
     monkeypatch.setattr(process_store, "_worker_command", _failing)
     monkeypatch.setattr(lance_native, "helper_command", _failing)
-    monkeypatch.setattr(core_worker, "drain_worker",
-                        lambda *args, **kwargs: core_worker.WorkerReceipt(0, 0, 0, 0, 0, 0, 0, True, ()))
+    monkeypatch.setattr(
+        core_worker, "drain_worker", lambda *args, **kwargs: core_worker.WorkerReceipt(0, 0, 0, 0, 0, 0, 0, True, ())
+    )
     binding = _binding(tmp_path / "data")
     MemoryCore(CoreConfig(binding)).initialize()
-    payload = _config_payload(binding, vector={
-        "backend": "lancedb", "storage_dir": str(tmp_path / "vectors"), "table_name": "TEST-176",
-        "dimensions": 2, "test_injection_override": True,
-    })
+    payload = _config_payload(
+        binding,
+        vector={
+            "backend": "lancedb",
+            "storage_dir": str(tmp_path / "vectors"),
+            "table_name": "TEST-176",
+            "dimensions": 2,
+            "test_injection_override": True,
+        },
+    )
     output = StringIO()
     assert worker_entry.run_worker(_write_config(tmp_path / "worker.json", payload), output=output) == 0
     receipt = json.loads(output.getvalue())
@@ -180,30 +202,51 @@ def test_a_recall_never_runs_the_helper_s_start_up(tmp_path, monkeypatch) -> Non
     from scope_recall.contracts import InstanceBinding
     from scope_recall.runtime.auxiliary import AuxiliaryRuntimeConfig
     from scope_recall.runtime.instance import (
-        RuntimeInstanceConfig, VectorRuntimeConfig, build_runtime_instance, default_vector_factory,
+        RuntimeInstanceConfig,
+        VectorRuntimeConfig,
+        build_runtime_instance,
+        default_vector_factory,
     )
 
     replays: list[float] = []
     monkeypatch.setattr(lance_native, "helper_start_failure", lambda timeout: replays.append(timeout))
     monkeypatch.setattr(process_store, "_spare", None)
     monkeypatch.setattr(process_store, "_worker_command", _failing)
-    binding = InstanceBinding("TEST-176-agent", "TEST-176-installation", tmp_path / "truth",
-                              frozenset({"TEST-scope"}), True)
+    binding = InstanceBinding(
+        "TEST-176-agent", "TEST-176-installation", tmp_path / "truth", frozenset({"TEST-scope"}), True
+    )
     config = RuntimeInstanceConfig(
-        binding=binding, session_id="TEST-176-session", allowed_scope_ids=binding.scope_ids,
-        request_seconds=45.0, drain_seconds=120.0, max_items=32, lease_seconds=60.0,
+        binding=binding,
+        session_id="TEST-176-session",
+        allowed_scope_ids=binding.scope_ids,
+        request_seconds=45.0,
+        drain_seconds=120.0,
+        max_items=32,
+        lease_seconds=60.0,
         auxiliary=AuxiliaryRuntimeConfig.from_mapping({"external_embedding": False, "external_consolidation": False}),
-        vector=VectorRuntimeConfig(backend="lancedb", storage_dir=tmp_path / "vectors", table_name="TEST-176",
-                                   dimensions=2, test_injection_override=True),
+        vector=VectorRuntimeConfig(
+            backend="lancedb",
+            storage_dir=tmp_path / "vectors",
+            table_name="TEST-176",
+            dimensions=2,
+            test_injection_override=True,
+        ),
     )
     instance = build_runtime_instance(config, vector_factory=default_vector_factory)
     try:
         instance.core.initialize()
         instance.auxiliary = replace(instance.auxiliary, query_embedding=_Embedding(), source_embedding=_Embedding())
         (tmp_path / "vectors" / "lancedb" / "TEST-176.lance").mkdir(parents=True)
-        result = instance.recall({"protocol_version": "1.1", "request_id": "TEST-176-recall",
-                                  "query": "TEST 只有向量能找到的问题", "mode": "current",
-                                  "max_items": 6, "budget_tokens": 1200})
+        result = instance.recall(
+            {
+                "protocol_version": "1.1",
+                "request_id": "TEST-176-recall",
+                "query": "TEST 只有向量能找到的问题",
+                "mode": "current",
+                "max_items": 6,
+                "budget_tokens": 1200,
+            }
+        )
         recalled = list(replays)
         drained = instance._open_vector_for_drain(time.monotonic() + 60.0, 60.0)
     finally:

@@ -16,6 +16,7 @@ under the store's ``receipts/``.  Hermes homes attach with the grants their own
 installation had; a local client (Codex, Claude Code) has none of its own and
 attaches as the owner, with grants taken from Hermes entries' owner rows.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -108,8 +109,9 @@ def _fits(config: dict[str, Any] | None, what: str) -> None:
 
 def _write_json(path: Path, value: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    handle = tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path.parent, prefix=f".{path.stem}-",
-                                         suffix=".json", delete=False)
+    handle = tempfile.NamedTemporaryFile(
+        "w", encoding="utf-8", dir=path.parent, prefix=f".{path.stem}-", suffix=".json", delete=False
+    )
     with handle:
         handle.write(_encoded(value))
     for attempt in range(40):
@@ -188,8 +190,15 @@ def _worker_config(raw: dict[str, Any], binding: InstanceBinding) -> dict[str, A
     return out
 
 
-def _entry_config(raw: dict[str, Any], binding: InstanceBinding, *, home: Path, host: str, entry_id: str,
-                  worker: dict[str, Any] | None) -> dict[str, Any]:
+def _entry_config(
+    raw: dict[str, Any],
+    binding: InstanceBinding,
+    *,
+    home: Path,
+    host: str,
+    entry_id: str,
+    worker: dict[str, Any] | None,
+) -> dict[str, Any]:
     """An entry's config: its model routes, bound to its scopes, searching the store's vector table.
 
     The table is the worker's: the routes may come from a store that named its
@@ -199,13 +208,20 @@ def _entry_config(raw: dict[str, Any], binding: InstanceBinding, *, home: Path, 
     come from another home, so the names its runtime reports are made its own.
     """
     out = _bound(raw, binding)
-    table = (worker or {}).get("vector", {}).get("table_name") if isinstance((worker or {}).get("vector"), dict) else None
+    table = (
+        (worker or {}).get("vector", {}).get("table_name") if isinstance((worker or {}).get("vector"), dict) else None
+    )
     if table and isinstance(out.get("vector"), dict):
         out["vector"]["table_name"] = table
     _ledger_in(out, attachment_path(home).parent)
     if host in CLIENT_HOSTS:
-        out.update(host_adapter=host, session_id=f"{entry_id}-background", owner_id=f"{entry_id}-scope-recall",
-                   project_id=None, branch_id=None)
+        out.update(
+            host_adapter=host,
+            session_id=f"{entry_id}-background",
+            owner_id=f"{entry_id}-scope-recall",
+            project_id=None,
+            branch_id=None,
+        )
     RuntimeInstanceConfig.from_mapping(out)
     return out
 
@@ -219,8 +235,11 @@ def _client_grants(payload: dict[str, Any], like: tuple[str, ...], capture_like:
     row of every attached Hermes entry reads: what the owner says in the client
     reaches every agent, and no Hermes entry's grants change.
     """
-    hermes = {entry["entry_id"]: entry for entry in payload["entries"]
-              if entry["host"] == "hermes" and not entry.get("detached_at")}
+    hermes = {
+        entry["entry_id"]: entry
+        for entry in payload["entries"]
+        if entry["host"] == "hermes" and not entry.get("detached_at")
+    }
     names = tuple(hermes) if like == ("all",) else like
     unknown = sorted(set(names) - set(hermes)) + ([capture_like] if capture_like not in hermes else [])
     if not names or unknown:
@@ -233,13 +252,21 @@ def _client_grants(payload: dict[str, Any], like: tuple[str, ...], capture_like:
     writable = {scope for name in names for row in owner_rows(name) for scope in row["writable_scope_ids"]}
     captures = {row["capture_scope_id"] for row in owner_rows(capture_like)}
     if len(captures) != 1:
-        raise SharedStoreError(f"{capture_like}'s owner rows capture into {len(captures)} scopes; name an entry with one")
+        raise SharedStoreError(
+            f"{capture_like}'s owner rows capture into {len(captures)} scopes; name an entry with one"
+        )
     capture = next(iter(captures))
-    unread = sorted(f"{name}:{row['platform']}" for name in hermes for row in owner_rows(name)
-                    if capture not in row["allowed_scope_ids"])
+    unread = sorted(
+        f"{name}:{row['platform']}"
+        for name in hermes
+        for row in owner_rows(name)
+        if capture not in row["allowed_scope_ids"]
+    )
     if unread:
-        raise SharedStoreError(f"{capture_like}'s capture scope is not read by these owner rows: {', '.join(unread)}; "
-                               "what the owner says in the client would not reach them")
+        raise SharedStoreError(
+            f"{capture_like}'s capture scope is not read by these owner rows: {', '.join(unread)}; "
+            "what the owner says in the client would not reach them"
+        )
     return allowed | {capture}, writable | {capture}, capture
 
 
@@ -260,21 +287,31 @@ def _ledger_made(raw: dict[str, Any]) -> list[str]:
 
 
 def _store_binding(payload: dict[str, Any], root: Path, scope_ids: frozenset[str]) -> InstanceBinding:
-    return InstanceBinding(payload["agent_id"], payload["installation_id"], root, scope_ids,
-                           payload["test_mode"], "shared")
+    return InstanceBinding(
+        payload["agent_id"], payload["installation_id"], root, scope_ids, payload["test_mode"], "shared"
+    )
 
 
-def init_shared(*, root: Path, agent_id: str = "default", test_mode: bool = False, now: str | None = None) -> dict[str, Any]:
+def init_shared(
+    *, root: Path, agent_id: str = "default", test_mode: bool = False, now: str | None = None
+) -> dict[str, Any]:
     now = now or _now()
     if root.exists() and (not root.is_dir() or any(root.iterdir())):
         raise SharedStoreError("root must be a new or empty directory")
     for parent in (root, *root.parents):
         if (parent / "scope-recall").is_dir() or (parent / CODEX_CONFIG_FILENAME).is_file():
-            raise SharedStoreError(f"root is inside an agent's home ({parent}); put the shared store outside every agent")
+            raise SharedStoreError(
+                f"root is inside an agent's home ({parent}); put the shared store outside every agent"
+            )
     payload = new_shared_payload(root, agent_id=agent_id, test_mode=test_mode)
     write_shared_payload(root, payload)
     receipt = _Run(root, "init", now).receipt({"root": str(root), "installation_id": payload["installation_id"]})
-    return {"status": "initialized", "root": str(root), "installation_id": payload["installation_id"], "receipt": receipt}
+    return {
+        "status": "initialized",
+        "root": str(root),
+        "installation_id": payload["installation_id"],
+        "receipt": receipt,
+    }
 
 
 def attach(
@@ -296,14 +333,24 @@ def attach(
     python = str(python_executable) if python_executable else None
     if host == "hermes":
         if grants_like or capture_like:
-            raise SharedStoreError("--grants-like and --capture-like are for a client's entry; a Hermes home "
-                                   "carries its own grants over")
+            raise SharedStoreError(
+                "--grants-like and --capture-like are for a client's entry; a Hermes home carries its own grants over"
+            )
         if (instance_root / "scope-recall" / MANIFEST_FILENAME).exists():
-            raise SharedStoreError("this home still has its own store: move its scope-recall directory aside (for "
-                                   "example to scope-recall.local-<date>) and pass that installation.json as --grants-from")
-        source = (load_archived_installation(grants_from, instance_root) if grants_from is not None else
-                  build_installation_manifest(instance_root, agent_id=payload["agent_id"],
-                                              agent_workspace=DEFAULT_AGENT_WORKSPACE, test_mode=payload["test_mode"]))
+            raise SharedStoreError(
+                "this home still has its own store: move its scope-recall directory aside (for "
+                "example to scope-recall.local-<date>) and pass that installation.json as --grants-from"
+            )
+        source = (
+            load_archived_installation(grants_from, instance_root)
+            if grants_from is not None
+            else build_installation_manifest(
+                instance_root,
+                agent_id=payload["agent_id"],
+                agent_workspace=DEFAULT_AGENT_WORKSPACE,
+                test_mode=payload["test_mode"],
+            )
+        )
         record = shared_entry_record(source, entry_id=entry_id, display_name=display_name, attached_at=now)
     elif host in CLIENT_HOSTS:
         if grants_from is not None:
@@ -311,12 +358,22 @@ def attach(
         if not grants_like or not capture_like:
             raise SharedStoreError("a client's entry needs --grants-like and --capture-like")
         if (instance_root / CODEX_CONFIG_FILENAME).exists() or (instance_root / "data" / "memory.sqlite3").exists():
-            raise SharedStoreError(f"this home still has its own store: move {CODEX_CONFIG_FILENAME} and data aside "
-                                   "(for example into local-<date>); the client's memory is then the store's")
+            raise SharedStoreError(
+                f"this home still has its own store: move {CODEX_CONFIG_FILENAME} and data aside "
+                "(for example into local-<date>); the client's memory is then the store's"
+            )
         allowed, writable, capture = _client_grants(payload, grants_like, capture_like)
-        record = client_entry_record(host=host, home=instance_root, entry_id=entry_id, display_name=display_name,
-                                     attached_at=now, allowed_scope_ids=sorted(allowed), writable_scope_ids=sorted(writable),
-                                     capture_scope_id=capture, python_executable=python)
+        record = client_entry_record(
+            host=host,
+            home=instance_root,
+            entry_id=entry_id,
+            display_name=display_name,
+            attached_at=now,
+            allowed_scope_ids=sorted(allowed),
+            writable_scope_ids=sorted(writable),
+            capture_scope_id=capture,
+            python_executable=python,
+        )
     else:
         raise SharedStoreError(f"host must be one of {', '.join(ENTRY_HOSTS)}")
     scopes = frozenset(record["scope_ids"])
@@ -329,14 +386,22 @@ def attach(
     # Everything written below is built and checked first.
     if runtime_config_from is not None:
         routes = _read_json(runtime_config_from)
-        entry_config = _entry_config(routes, _store_binding(payload, root, scopes), home=instance_root, host=host,
-                                     entry_id=record["entry_id"], worker=worker_now)
+        entry_config = _entry_config(
+            routes,
+            _store_binding(payload, root, scopes),
+            home=instance_root,
+            host=host,
+            entry_id=record["entry_id"],
+            worker=worker_now,
+        )
         if worker_now is None:
             worker_config = _worker_config(routes, _store_binding(payload, root, union))
         elif _space(worker_now) != _space(routes):
             # A query vector from another model searches a directory the worker never fills.
-            raise SharedStoreError("embedding_space_differs: this entry's embedding route addresses another space "
-                                   "than the shared worker's; give both the same embedding model")
+            raise SharedStoreError(
+                "embedding_space_differs: this entry's embedding route addresses another space "
+                "than the shared worker's; give both the same embedding model"
+            )
     else:
         notes.append("vector_recall_unavailable: no runtime config for this entry; its recall is lexical only")
     if worker_config is None and worker_now is not None:
@@ -355,8 +420,9 @@ def attach(
     run.keep(attachment_path(instance_root), "entry")
     run.keep(entry_path, "entry")
     if host == "hermes":
-        view = attach_shared_entry(root, source, entry_id=entry_id, display_name=display_name, now=now,
-                                   python_executable=python)
+        view = attach_shared_entry(
+            root, source, entry_id=entry_id, display_name=display_name, now=now, python_executable=python
+        )
     else:
         view = attach_shared_record(root, record, now=now)
     ledgers = []
@@ -401,10 +467,16 @@ def detach(*, instance_root: Path, now: str | None = None) -> dict[str, Any]:
     pointer, entry_config = attachment_path(instance_root), entry_dir / RUNTIME_CONFIG_FILENAME
     # The entry's spend ledger lives beside its pointer (attach made it); it is
     # a record of what the entry spent, so it moves out with the receipt, whole.
-    ledger = getattr(RuntimeInstanceConfig.from_mapping(_read_json(entry_config)).auxiliary, "ledger_path", None) \
-        if entry_config.is_file() else None
-    ledgers = [path for path in ((ledger, Path(f"{ledger}-wal"), Path(f"{ledger}-shm")) if ledger is not None else ())
-               if path.parent.resolve() == entry_dir.resolve() and path.is_file()]
+    ledger = (
+        getattr(RuntimeInstanceConfig.from_mapping(_read_json(entry_config)).auxiliary, "ledger_path", None)
+        if entry_config.is_file()
+        else None
+    )
+    ledgers = [
+        path
+        for path in ((ledger, Path(f"{ledger}-wal"), Path(f"{ledger}-shm")) if ledger is not None else ())
+        if path.parent.resolve() == entry_dir.resolve() and path.is_file()
+    ]
     run.keep(root / MANIFEST_FILENAME, "store")
     run.keep(pointer, "entry")
     run.keep(entry_config, "entry")
@@ -420,8 +492,13 @@ def detach(*, instance_root: Path, now: str | None = None) -> dict[str, Any]:
         path.unlink(missing_ok=True)
     if entry_dir.is_dir() and not any(entry_dir.iterdir()):
         entry_dir.rmdir()
-    result = {"status": "detached", "root": str(root), "entry_id": attachment.entry_id, "home": str(instance_root),
-              "home_directory_left": entry_dir.is_dir()}
+    result = {
+        "status": "detached",
+        "root": str(root),
+        "entry_id": attachment.entry_id,
+        "home": str(instance_root),
+        "home_directory_left": entry_dir.is_dir(),
+    }
     result["receipt"] = run.receipt(result)
     return result
 
@@ -447,8 +524,10 @@ def adopt(*, root: Path, now: str | None = None) -> dict[str, Any]:
     try:
         previous = SQLiteStorage(binding).adopt()
     except sqlite3.OperationalError as exc:
-        raise SharedStoreError("the store is busy: pause the shared worker (autostart pause) and stop every "
-                               "attached host, then adopt again") from exc
+        raise SharedStoreError(
+            "the store is busy: pause the shared worker (autostart pause) and stop every "
+            "attached host, then adopt again"
+        ) from exc
     payload["data_directory"] = str(root)
     write_shared_payload(root, payload)
     if worker_config is not None:
@@ -457,8 +536,10 @@ def adopt(*, root: Path, now: str | None = None) -> dict[str, Any]:
         "status": "adopted",
         "root": str(root),
         "previous_directory": previous,
-        "next": ["register the shared worker again: autostart enable --config <root>/runtime-config.json",
-                 "attach every agent again from its home"],
+        "next": [
+            "register the shared worker again: autostart enable --config <root>/runtime-config.json",
+            "attach every agent again from its home",
+        ],
     }
     result["receipt"] = run.receipt(result)
     return result
@@ -471,8 +552,9 @@ def entries(*, root: Path) -> dict[str, Any]:
     if payload["scope_ids"] and (root / "memory.sqlite3").is_file():
         binding = _store_binding(payload, root, frozenset(payload["scope_ids"]))
         try:
-            with SQLiteStorage(binding).read(TrustedContext(binding, "shared-store-entries", binding.scope_ids,
-                                                            "host_generated")) as tx:
+            with SQLiteStorage(binding).read(
+                TrustedContext(binding, "shared-store-entries", binding.scope_ids, "host_generated")
+            ) as tx:
                 seen = tx.entries()
             store = "ok"
         except ContractError as exc:
@@ -486,11 +568,19 @@ def entries(*, root: Path) -> dict[str, Any]:
         except HermesIdentityError:
             here = False
         found = seen.get(record["entry_id"], {})
-        rows.append({
-            "entry_id": record["entry_id"], "display_name": record["display_name"], "host": record["host"],
-            "home": record["home"], "attached_at": record.get("attached_at"), "detached_at": record.get("detached_at"),
-            "pointer_present": here, "first_seen": found.get("first_seen"), "last_seen": found.get("last_seen"),
-        })
+        rows.append(
+            {
+                "entry_id": record["entry_id"],
+                "display_name": record["display_name"],
+                "host": record["host"],
+                "home": record["home"],
+                "attached_at": record.get("attached_at"),
+                "detached_at": record.get("detached_at"),
+                "pointer_present": here,
+                "first_seen": found.get("first_seen"),
+                "last_seen": found.get("last_seen"),
+            }
+        )
     return {
         "status": "ok" if store in {"ok", "empty"} else "degraded",
         "root": str(root),
@@ -516,10 +606,15 @@ def main(argv: list[str]) -> int:
     join.add_argument("--entry", required=True, help="2 to 32 lowercase letters, digits or hyphens")
     join.add_argument("--display-name", required=True, help="the name a reader is shown, at most 32 characters")
     join.add_argument("--grants-from", help="the installation.json of the home's own store, moved aside")
-    join.add_argument("--grants-like", help="a client's entry: the attached Hermes entries whose owner grants it "
-                      "gets, comma separated, or all")
-    join.add_argument("--capture-like", help="a client's entry: the Hermes entry whose owner capture scope it "
-                      "writes into; every owner row of the store must read that scope")
+    join.add_argument(
+        "--grants-like",
+        help="a client's entry: the attached Hermes entries whose owner grants it gets, comma separated, or all",
+    )
+    join.add_argument(
+        "--capture-like",
+        help="a client's entry: the Hermes entry whose owner capture scope it "
+        "writes into; every owner row of the store must read that scope",
+    )
     join.add_argument("--runtime-config-from", help="the runtime-config.json with this entry's model routes")
     join.add_argument("--python", help="the interpreter this home's host runs, recorded for the operator")
     leave = sub.add_parser("detach", help="stop a home being an entry; its memories stay in the store")
@@ -528,11 +623,17 @@ def main(argv: list[str]) -> int:
     take.add_argument("--root", required=True)
     listing = sub.add_parser("entries", help="list a shared store's entries and when each was last heard from")
     listing.add_argument("--root", required=True)
-    bring = sub.add_parser("import-entry", help="copy an entry's own store, moved aside at attach, into the shared store")
+    bring = sub.add_parser(
+        "import-entry", help="copy an entry's own store, moved aside at attach, into the shared store"
+    )
     bring.add_argument("--root", required=True)
     bring.add_argument("--entry", required=True)
-    bring.add_argument("--from", dest="source", required=True,
-                       help="the entry's own store directory (scope-recall.local-<date>) or its memory.sqlite3")
+    bring.add_argument(
+        "--from",
+        dest="source",
+        required=True,
+        help="the entry's own store directory (scope-recall.local-<date>) or its memory.sqlite3",
+    )
     bring.add_argument("--dry-run", action="store_true", help="run the whole import, then roll it back")
     args = parser.parse_args(argv)
     try:
@@ -546,7 +647,9 @@ def main(argv: list[str]) -> int:
                 entry_id=args.entry,
                 display_name=args.display_name,
                 grants_from=_absolute(args.grants_from, "grants_from") if args.grants_from else None,
-                runtime_config_from=_absolute(args.runtime_config_from, "runtime_config_from") if args.runtime_config_from else None,
+                runtime_config_from=_absolute(args.runtime_config_from, "runtime_config_from")
+                if args.runtime_config_from
+                else None,
                 python_executable=_absolute(args.python, "python") if args.python else None,
                 grants_like=tuple(name.strip() for name in (args.grants_like or "").split(",") if name.strip()),
                 capture_like=args.capture_like,
@@ -557,8 +660,13 @@ def main(argv: list[str]) -> int:
             result = adopt(root=_absolute(args.root, "root"))
         elif args.command == "import-entry":
             from .shared_import import import_entry
-            result = import_entry(root=_absolute(args.root, "root"), entry_id=args.entry,
-                                  source=_absolute(args.source, "from"), dry_run=args.dry_run)
+
+            result = import_entry(
+                root=_absolute(args.root, "root"),
+                entry_id=args.entry,
+                source=_absolute(args.source, "from"),
+                dry_run=args.dry_run,
+            )
         else:
             result = entries(root=_absolute(args.root, "root"))
     except ContractError as exc:

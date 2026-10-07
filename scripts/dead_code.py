@@ -15,6 +15,7 @@ deleting one definition can orphan the helpers only it used.
 The shipped module set is ``packaging/v11-module-allowlist.json``, so this
 never reasons about modules the wheel does not carry.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -77,9 +78,21 @@ def dead_definitions(relative: str) -> tuple[ast.Module, list[tuple[str, ast.stm
     tree = ast.parse(source)
     nodes = _definitions(tree)
     corpus = _corpus(relative)
-    live = {name for name in nodes if name.startswith("__") or name in _KEEP or re.search(r"\b" + re.escape(name) + r"\b", corpus)}
+    live = {
+        name
+        for name in nodes
+        if name.startswith("__") or name in _KEEP or re.search(r"\b" + re.escape(name) + r"\b", corpus)
+    }
     pending = list(live)
-    definitions = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Assign, ast.AnnAssign, ast.Import, ast.ImportFrom)
+    definitions = (
+        ast.FunctionDef,
+        ast.AsyncFunctionDef,
+        ast.ClassDef,
+        ast.Assign,
+        ast.AnnAssign,
+        ast.Import,
+        ast.ImportFrom,
+    )
     for node in tree.body:
         if not isinstance(node, definitions):
             for name in _references(node, set(nodes)) - live:
@@ -105,7 +118,11 @@ def remove(relative: str, tree: ast.Module, dead: list[tuple[str, ast.stmt]]) ->
             after += 1
     dead_names = {name for name, _ in dead}
     for node in tree.body:
-        if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "__all__" for t in node.targets) and isinstance(node.value, (ast.List, ast.Tuple)):
+        if (
+            isinstance(node, ast.Assign)
+            and any(isinstance(t, ast.Name) and t.id == "__all__" for t in node.targets)
+            and isinstance(node.value, (ast.List, ast.Tuple))
+        ):
             kept = [e.value for e in node.value.elts if isinstance(e, ast.Constant) and e.value not in dead_names]
             drop.update(range(node.lineno - 1, node.end_lineno))
             lines[node.lineno - 1] = "__all__ = [" + ", ".join(repr(k) for k in kept) + "]"
@@ -126,7 +143,10 @@ def main() -> int:
             continue
         lines = sum(node.end_lineno - node.lineno + 1 for _, node in dead)
         total += lines
-        print(f"{lines:5d} {relative}: " + ", ".join(f"{name}({node.end_lineno - node.lineno + 1})" for name, node in dead))
+        print(
+            f"{lines:5d} {relative}: "
+            + ", ".join(f"{name}({node.end_lineno - node.lineno + 1})" for name, node in dead)
+        )
         if args.apply:
             remove(relative, tree, dead)
     print("dead lines:", total)

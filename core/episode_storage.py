@@ -121,31 +121,29 @@ class Episodes:
         ).fetchone()[0]
         if pending:
             gaps.append("unprocessed_events")
-        changed = (
-            row["environment_revision"] is not None
-            and ctx.environment_revision != row["environment_revision"]
-        )
+        changed = row["environment_revision"] is not None and ctx.environment_revision != row["environment_revision"]
         if resume:
             # The environment each proof was captured in, in one statement (``_source_states``).
-            proofs = [tuple(parse_source_ref(proof)) for progress in resume["verified_progress"]
-                      for proof in progress["evidence_refs"]]
+            proofs = [
+                tuple(parse_source_ref(proof))
+                for progress in resume["verified_progress"]
+                for proof in progress["evidence_refs"]
+            ]
             if proofs:
-                captured = json.loads(conn.execute(
-                    f"""SELECT json_group_array(json_array(source_ref,source_revision,environment_revision))
+                captured = json.loads(
+                    conn.execute(
+                        f"""SELECT json_group_array(json_array(source_ref,source_revision,environment_revision))
                         FROM episode_events WHERE episode_id=? AND (source_ref,source_revision) IN
                         ({",".join("(?,?)" for _ in proofs)})""",
-                    (ref, *(value for pair in proofs for value in pair)),
-                ).fetchone()[0])
+                        (ref, *(value for pair in proofs for value in pair)),
+                    ).fetchone()[0]
+                )
                 environments = {(item[0], item[1]): item[2] for item in captured}
                 if any(environments.get(pair, _NOT_CAPTURED) != ctx.environment_revision for pair in proofs):
                     changed = True
         if changed:
             gaps.append("environment_needs_revalidation")
-        if (
-            gaps
-            and row["resume_json"] is not None
-            and any(g != "environment_needs_revalidation" for g in gaps)
-        ):
+        if gaps and row["resume_json"] is not None and any(g != "environment_needs_revalidation" for g in gaps):
             gaps.append("resume_requires_rebuild")
         return Episode(
             ref,
@@ -167,9 +165,13 @@ class Episodes:
         """What ``Transaction.source`` requires before it returns a source at all; ``admitted`` holds the events
         ``visibility.allowed`` admits (``allowed_refs``)."""
         ctx = self.tx.context
-        return (state["event_id"] in admitted and not state["read_blocked"]
-                and state["scope_id"] in ctx.allowed_scope_ids
-                and state["project_id"] in (None, ctx.project_id) and state["branch_id"] in (None, ctx.branch_id))
+        return (
+            state["event_id"] in admitted
+            and not state["read_blocked"]
+            and state["scope_id"] in ctx.allowed_scope_ids
+            and state["project_id"] in (None, ctx.project_id)
+            and state["branch_id"] in (None, ctx.branch_id)
+        )
 
     def list(self, *, limit=200):
         if type(limit) is not int or not 1 <= limit <= 200:
@@ -201,12 +203,18 @@ class Episodes:
 
     def _latest_occurrence(self, ref):
         # One row for the episode's members (``_source_states``).
-        row = self.tx._check().execute(
-            """SELECT json_group_array(s.occurred_at) FROM episode_events ee JOIN source_events s
+        row = (
+            self.tx._check()
+            .execute(
+                """SELECT json_group_array(s.occurred_at) FROM episode_events ee JOIN source_events s
             ON s.event_id=ee.source_ref AND s.source_revision=ee.source_revision WHERE ee.episode_id=? AND s.occurred_at<>''""",
-            (ref,),
-        ).fetchone()
-        occurrences = [occurred_at for occurred_at in map(canonical_time, json.loads(row[0])) if occurred_at is not None]
+                (ref,),
+            )
+            .fetchone()
+        )
+        occurrences = [
+            occurred_at for occurred_at in map(canonical_time, json.loads(row[0])) if occurred_at is not None
+        ]
         return max(occurrences, default=None)
 
     def _series_for(self, source) -> tuple[str, str]:
@@ -220,7 +228,9 @@ class Episodes:
         conn, ctx = self.tx._check(write=True), self.tx.context
         prefix = [ctx.binding.installation_id, source.scope_id, source.project_id, source.branch_id]
         if ctx.task_anchor is not None:
-            return hashlib.sha256(canonical([*prefix, "task", ctx.task_anchor]).encode()).hexdigest(), "task" if ctx.task_anchor else "session"
+            return hashlib.sha256(
+                canonical([*prefix, "task", ctx.task_anchor]).encode()
+            ).hexdigest(), "task" if ctx.task_anchor else "session"
         snapshot = source.event.get("display_snapshot")
         if snapshot and snapshot["order"] == "observed" and snapshot["items"]:
             pairs = " OR ".join(
@@ -249,15 +259,21 @@ class Episodes:
         topic_break = source_origin(source) == "human_direct" and TOPIC_BREAK.search(source.event["content"])
         if previous and not topic_break:
             return previous["series_key"], "session"
-        return hashlib.sha256(canonical([*prefix, "session", source.session_id, source.ref]).encode()).hexdigest(), "session"
+        return hashlib.sha256(
+            canonical([*prefix, "session", source.session_id, source.ref]).encode()
+        ).hexdigest(), "session"
 
     def _segment_index(self, series: str) -> int:
         """Episodes roll to a new segment once the current one holds 200 events."""
-        segment = self.tx._check(write=True).execute(
-            """SELECT e.segment_index,(SELECT count(*) FROM episode_events ee WHERE ee.episode_id=e.episode_id) AS count
+        segment = (
+            self.tx._check(write=True)
+            .execute(
+                """SELECT e.segment_index,(SELECT count(*) FROM episode_events ee WHERE ee.episode_id=e.episode_id) AS count
             FROM episodes e WHERE e.series_key=? ORDER BY e.segment_index DESC LIMIT 1""",
-            (series,),
-        ).fetchone()
+                (series,),
+            )
+            .fetchone()
+        )
         if segment is None:
             return 0
         return segment["segment_index"] + (1 if segment["count"] >= 200 else 0)
@@ -294,14 +310,20 @@ class Episodes:
             occurred_at = canonical_time(source.event["occurred_at"])
             if latest and (occurred_at is None or occurred_at < latest):
                 state = previous.state
-        prior = conn.execute(
-            "SELECT processed_sequence,resume_json,source_watermark,environment_revision FROM episode_versions WHERE episode_id=? AND revision=?",
-            (ref, row[0]),
-        ).fetchone() if row else None
+        prior = (
+            conn.execute(
+                "SELECT processed_sequence,resume_json,source_watermark,environment_revision FROM episode_versions WHERE episode_id=? AND revision=?",
+                (ref, row[0]),
+            ).fetchone()
+            if row
+            else None
+        )
         conn.execute(
             "INSERT INTO episode_versions(episode_id,revision,state,resume_json,source_watermark,processed_sequence,recorded_at,environment_revision) VALUES (?,?,?,?,?,?,?,?)",
             (
-                ref, revision, state,
+                ref,
+                revision,
+                state,
                 prior["resume_json"] if prior else None,
                 prior["source_watermark"] if prior else source_watermark(()),
                 prior["processed_sequence"] if prior else 0,
@@ -315,7 +337,13 @@ class Episodes:
         )
         conn.execute(
             "INSERT INTO episode_events(episode_id,source_ref,source_revision,membership,environment_revision) VALUES (?,?,?,?,?)",
-            (ref, source.ref, source.revision, "anchored" if kind != "session" else "provisional", ctx.environment_revision),
+            (
+                ref,
+                source.ref,
+                source.revision,
+                "anchored" if kind != "session" else "provisional",
+                ctx.environment_revision,
+            ),
         )
         # One lineage row per source, at the revision it entered: a revision's
         # evidence is every row at or below it, so nothing is copied forward.
@@ -324,12 +352,7 @@ class Episodes:
     def sources(self, ref, *, after_sequence=0, limit=32):
         if self.get(ref) is None:
             raise ContractError("SOURCE_MISSING")
-        if (
-            type(limit) is not int
-            or not 1 <= limit <= 200
-            or type(after_sequence) is not int
-            or after_sequence < 0
-        ):
+        if type(limit) is not int or not 1 <= limit <= 200 or type(after_sequence) is not int or after_sequence < 0:
             raise ContractError("INPUT_INVALID", "episode_page")
         rows = (
             self.tx._check()
@@ -339,18 +362,17 @@ class Episodes:
             )
             .fetchall()
         )
-        items = tuple(
-            (r[0], s)
-            for r in rows[:limit]
-            if (s := self.tx.source(r[1], r[2])) is not None
-        )
+        items = tuple((r[0], s) for r in rows[:limit] if (s := self.tx.source(r[1], r[2])) is not None)
         return items, (rows[limit - 1][0] if len(rows) > limit else None)
 
     def _resume_sources(self, proposal, scope_id):
         """Resolve the cited sources and the single live episode they all belong to."""
         ctx = self.tx.context
         sources = [self.tx.source(*parse_source_ref(ref)) for ref in proposal["evidence_refs"]]
-        if any(s is None or (s.scope_id, s.project_id, s.branch_id) != (scope_id, ctx.project_id, ctx.branch_id) for s in sources):
+        if any(
+            s is None or (s.scope_id, s.project_id, s.branch_id) != (scope_id, ctx.project_id, ctx.branch_id)
+            for s in sources
+        ):
             raise ContractError("SOURCE_MISSING")
         for source in sources:
             self.tx.claims.require_live_source(source.ref, source.revision)
@@ -397,7 +419,9 @@ class Episodes:
     def _resume_state(self, ref: str, sources, current) -> str:
         """A resume built from evidence older than the latest event cannot move the state."""
         latest = self._latest_occurrence(ref)
-        used_times = [t for s in sources if s.event["occurred_at"] if (t := canonical_time(s.event["occurred_at"])) is not None]
+        used_times = [
+            t for s in sources if s.event["occurred_at"] if (t := canonical_time(s.event["occurred_at"])) is not None
+        ]
         if latest and (not used_times or max(used_times) < latest):
             return current.state
         return state_from_sources(sources, has_goal=True, previous=current.state)
@@ -422,7 +446,16 @@ class Episodes:
         state = self._resume_state(ref, sources, current)
         conn.execute(
             "INSERT INTO episode_versions VALUES (?,?,?,?,?,?,?,?)",
-            (ref, revision, state, canonical(payload), payload["source_watermark"], processed, now, ctx.environment_revision),
+            (
+                ref,
+                revision,
+                state,
+                canonical(payload),
+                payload["source_watermark"],
+                processed,
+                now,
+                ctx.environment_revision,
+            ),
         )
         conn.execute("UPDATE episodes SET current_revision=? WHERE episode_id=?", (revision, ref))
         for source in sources:

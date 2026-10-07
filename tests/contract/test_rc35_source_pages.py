@@ -6,6 +6,7 @@ and each pass resumed one page.  56 of them named memory read back to the model,
 which is never evidence, so every page linked nothing and stayed open; the other
 64 owed 1,091 pages of sixteen candidates, at one page a pass.
 """
+
 from __future__ import annotations
 
 from dataclasses import replace
@@ -21,15 +22,22 @@ from tests.v11_support import source_event
 
 def _candidates(core, ctx, count):
     """``count`` proposed candidates, each sharing ``sharedtoken`` with any later source."""
-    sources = [capture(core, ctx, f"entity{i} property{i} sharedtoken value{i}。", key=f"TEST-rc35/candidate/{i}")
-               for i in range(count)]
+    sources = [
+        capture(core, ctx, f"entity{i} property{i} sharedtoken value{i}。", key=f"TEST-rc35/candidate/{i}")
+        for i in range(count)
+    ]
     refs = []
     with core.storage.write(ctx) as tx:
         for index, source in enumerate(sources):
-            proposal = draft(source, f"sharedtoken value{index}", subject=f"entity{index}", predicate=f"property{index}")
-            saved = tx.claims.append("TEST-scope", proposal,
-                                     Qualification("proposed", "inferred_suggestion", "TEST_candidate"),
-                                     recorded_at=core.clock.utc_now())
+            proposal = draft(
+                source, f"sharedtoken value{index}", subject=f"entity{index}", predicate=f"property{index}"
+            )
+            saved = tx.claims.append(
+                "TEST-scope",
+                proposal,
+                Qualification("proposed", "inferred_suggestion", "TEST_candidate"),
+                recorded_at=core.clock.utc_now(),
+            )
             tx.candidates.register(saved.ref, saved.revision, observed_at=core.clock.utc_now())
             refs.append(saved.ref)
     return refs
@@ -42,8 +50,9 @@ def _pending_pages(core, ctx):
 
 def _trigger(core, source_ref):
     with sqlite3.connect(core.storage.path) as db:
-        return db.execute("SELECT matched_count,truncated FROM candidate_source_triggers WHERE source_ref=?",
-                          (source_ref,)).fetchone()
+        return db.execute(
+            "SELECT matched_count,truncated FROM candidate_source_triggers WHERE source_ref=?", (source_ref,)
+        ).fetchone()
 
 
 def _linked(core, source_ref):
@@ -56,15 +65,23 @@ def test_a_trigger_left_on_memory_read_back_is_closed_without_linking_it(app):
     _candidates(core, ctx, SOURCE_MATCH_LIMIT + 4)
     saved = core.record_event(
         replace(ctx, actor_origin="memory_reinjection"),
-        source_event(source_event_key="TEST-rc35/echo", content="sharedtoken 召回结果。",
-                     origin="memory_reinjection", role="tool"),
-        scope_id="TEST-scope", remaining_seconds=10)
+        source_event(
+            source_event_key="TEST-rc35/echo",
+            content="sharedtoken 召回结果。",
+            origin="memory_reinjection",
+            role="tool",
+        ),
+        scope_id="TEST-scope",
+        remaining_seconds=10,
+    )
     echo = saved.event_refs[0]
     # Reinjection is admitted source-only today; older code opened a trigger for it.
     assert _trigger(core, echo.ref) is None
     with sqlite3.connect(core.storage.path) as db:
-        db.execute("INSERT INTO candidate_source_triggers VALUES (?,?,0,0,1,?)",
-                   (echo.ref, echo.revision, core.clock.utc_now()))
+        db.execute(
+            "INSERT INTO candidate_source_triggers VALUES (?,?,0,0,1,?)",
+            (echo.ref, echo.revision, core.clock.utc_now()),
+        )
     assert _pending_pages(core, ctx) == 1
 
     with core.storage.write(ctx) as tx:
@@ -83,7 +100,8 @@ def test_a_page_that_links_nothing_closes_its_trigger(app):
     with sqlite3.connect(core.storage.path) as db:
         db.executemany(
             "INSERT INTO restored_absence_blocks VALUES ('claim',?,'TEST-scope','TEST-project','TEST-main',?,'TEST')",
-            [(ref, "a" * 64) for ref in refs])
+            [(ref, "a" * 64) for ref in refs],
+        )
 
     trigger = capture(core, ctx, "sharedtoken 提供了统一的新证据。", key="TEST-rc35/trigger")
 
@@ -146,15 +164,23 @@ def test_a_candidate_archived_after_the_page_was_read_takes_no_evidence(app):
     assert page is not None and page[0] == trigger.ref and page[2]
     archived = page[2][0]
     with sqlite3.connect(core.storage.path) as db:
-        db.execute("UPDATE candidate_lifecycle SET processing_state='archived',reason='TEST_archived' "
-                   "WHERE candidate_ref=? AND candidate_revision=?", archived)
+        db.execute(
+            "UPDATE candidate_lifecycle SET processing_state='archived',reason='TEST_archived' "
+            "WHERE candidate_ref=? AND candidate_revision=?",
+            archived,
+        )
     with core.storage.write(ctx) as tx:
         linked = tx.candidates.resume_source_pages(now=core.clock.utc_now(), page=page)
     assert linked == min(SOURCE_MATCH_LIMIT, len(page[2])) - 1
     assert _linked(core, trigger.ref) == before + linked
     with sqlite3.connect(core.storage.path) as db:
-        assert db.execute("SELECT count(*) FROM candidate_evidence WHERE source_ref=? AND candidate_ref=?",
-                          (trigger.ref, archived[0])).fetchone()[0] == 0
+        assert (
+            db.execute(
+                "SELECT count(*) FROM candidate_evidence WHERE source_ref=? AND candidate_ref=?",
+                (trigger.ref, archived[0]),
+            ).fetchone()[0]
+            == 0
+        )
     assert archived[0] in refs
 
 
@@ -176,8 +202,9 @@ def test_the_page_queries_read_the_triggers_first(app):
         tx.candidates.pending_source_pages()
         tx.candidates.resume_source_pages(now=core.clock.utc_now())
         connection.set_trace_callback(None)
-    page_queries = [sql for sql in statements
-                    if "candidate_source_triggers t" in sql and sql.lstrip().upper().startswith("SELECT")]
+    page_queries = [
+        sql for sql in statements if "candidate_source_triggers t" in sql and sql.lstrip().upper().startswith("SELECT")
+    ]
     assert len(page_queries) == 2, statements
     with sqlite3.connect(core.storage.path) as db:
         for sql in page_queries:

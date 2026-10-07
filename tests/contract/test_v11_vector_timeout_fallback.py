@@ -35,12 +35,15 @@ def test_timed_out_vector_preserves_authorized_lexical_packet(tmp_path, seconds)
     vectors = TimeoutVector(clock)
     ctx = context(tmp_path / "TEST-vector-timeout")
     ctx = replace(ctx, binding=replace(ctx.binding, scope_ids=frozenset({"TEST-scope", "TEST-other"})))
-    core = MemoryCore(CoreConfig(ctx.binding), clock=clock, vectors=vectors,
-                      retrieval_policy=RecallPolicy(vector_threshold=0.8))
+    core = MemoryCore(
+        CoreConfig(ctx.binding), clock=clock, vectors=vectors, retrieval_policy=RecallPolicy(vector_threshold=0.8)
+    )
     core.initialize()
     source = _capture(core, ctx, "TEST/vector-timeout/fact", "TEST测试灯塔的颜色是青绿色。")
     other_scope = replace(ctx, allowed_scope_ids=frozenset({"TEST-other"}))
-    packet = core.recall_packet(ctx, recall_request(query="TEST测试灯塔是什么颜色", mode="auto"), deadline_seconds=seconds)
+    packet = core.recall_packet(
+        ctx, recall_request(query="TEST测试灯塔是什么颜色", mode="auto"), deadline_seconds=seconds
+    )
     assert source.ref in {item["ref"] for item in packet["items"]}
     assert "vector_unavailable" in packet["gaps"]
     assert "vector_error:TimeoutError" in packet["gaps"]
@@ -48,5 +51,7 @@ def test_timed_out_vector_preserves_authorized_lexical_packet(tmp_path, seconds)
     assert all(deadline <= 100 + seconds for deadline, _ in vectors.calls)
     assert core.status(ctx).sources == 1
     # A failed optional channel does not grant a wider source audience.
-    excluded = core.recall_packet(other_scope, recall_request(query="TEST测试灯塔是什么颜色", mode="auto"), deadline_seconds=seconds)
+    excluded = core.recall_packet(
+        other_scope, recall_request(query="TEST测试灯塔是什么颜色", mode="auto"), deadline_seconds=seconds
+    )
     assert source.ref not in {item["ref"] for item in excluded["items"]}

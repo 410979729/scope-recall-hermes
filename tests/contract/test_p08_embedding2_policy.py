@@ -28,7 +28,10 @@ def test_P08_gem2_descriptor_is_authorized_and_canonical():
     canonical = canonical_embedding_space(descriptor["embedding_space"])
     assert canonical == EMBEDDING_SPACE
     assert embedding_space_id(canonical) == descriptor["space_id"] == SPACE_ID
-    assert hashlib.sha256(json.dumps(canonical, ensure_ascii=False, separators=(",", ":")).encode("utf-8")).hexdigest() == descriptor["canonical_json_sha256"]
+    assert (
+        hashlib.sha256(json.dumps(canonical, ensure_ascii=False, separators=(",", ":")).encode("utf-8")).hexdigest()
+        == descriptor["canonical_json_sha256"]
+    )
     assert canonical["task_type"] is None
     assert canonical["request_encoding"]["task_type_field"] is None
 
@@ -53,10 +56,12 @@ def test_P08_gem2_old_space_rejected_and_explicit_threshold_tolerates_float_roun
     assert embedding_space_id(canonical_embedding_space(old)) != SPACE_ID
 
     # A malformed descriptor is still refused.
-    for broken in ({**EMBEDDING_SPACE, "dimensions": 0},
-                   {**EMBEDDING_SPACE, "endpoint": "http://insecure"},
-                   {**EMBEDDING_SPACE, "metric": "dot"},
-                   {**EMBEDDING_SPACE, "model": ""}):
+    for broken in (
+        {**EMBEDDING_SPACE, "dimensions": 0},
+        {**EMBEDDING_SPACE, "endpoint": "http://insecure"},
+        {**EMBEDDING_SPACE, "metric": "dot"},
+        {**EMBEDDING_SPACE, "model": ""},
+    ):
         with pytest.raises(ContractError):
             canonical_embedding_space(broken)
 
@@ -72,24 +77,51 @@ def test_P08_gem2_old_space_rejected_and_explicit_threshold_tolerates_float_roun
     policy = RecallPolicy(vector_threshold=0.653189984350642)
     assert VECTOR_SCORE_TOLERANCE == 1e-6
     assert policy.vector_admission(candidate) == (True, None)
-    assert policy.vector_admission(CandidateRef(
-        "event", "event-gem2-low", 1, "vector", vector_id="low",
-        embedding_space=SPACE_ID, vector_score=0.653179984350642,
-    ))[1] == "vector_below_threshold"
-    assert policy.vector_admission(CandidateRef(
-        "event", "event-old", 1, "vector", vector_id="old",
-        embedding_space="old-gemini-space", vector_score=0.999,
-    ))[1] == "embedding_space_mismatch"
+    assert (
+        policy.vector_admission(
+            CandidateRef(
+                "event",
+                "event-gem2-low",
+                1,
+                "vector",
+                vector_id="low",
+                embedding_space=SPACE_ID,
+                vector_score=0.653179984350642,
+            )
+        )[1]
+        == "vector_below_threshold"
+    )
+    assert (
+        policy.vector_admission(
+            CandidateRef(
+                "event",
+                "event-old",
+                1,
+                "vector",
+                vector_id="old",
+                embedding_space="old-gemini-space",
+                vector_score=0.999,
+            )
+        )[1]
+        == "embedding_space_mismatch"
+    )
     assert RecallPolicy(vector_threshold=None).vector_admission(candidate)[1] == "vector_threshold_unconfigured"
 
 
 def test_P08_gem2_vector_rejects_scores_outside_cosine_domain():
     policy = RecallPolicy(vector_threshold=0.5)
     for score in (1.0 + 2 * VECTOR_SCORE_TOLERANCE, -1.0 - 2 * VECTOR_SCORE_TOLERANCE):
-        accepted, reason = policy.vector_admission(CandidateRef(
-            "event", "event-malformed", 1, "vector", vector_id="malformed",
-            embedding_space=SPACE_ID, vector_score=score,
-        ))
+        accepted, reason = policy.vector_admission(
+            CandidateRef(
+                "event",
+                "event-malformed",
+                1,
+                "vector",
+                vector_id="malformed",
+                embedding_space=SPACE_ID,
+                vector_score=score,
+            )
+        )
         assert accepted is False
         assert reason == "vector_score_invalid"
 
@@ -111,18 +143,25 @@ def test_P08_embedding_model_is_configuration_not_a_constant():
     assert default.wire_dialect() == "gemini"
 
     other = EmbeddingRouteConfig(
-        credential_env="TEST_EMBED_KEY", model="MiniMax-embedding-01",
-        endpoint="https://api.minimaxi.com/v1/embeddings", dimensions=1536, dialect="openai",
+        credential_env="TEST_EMBED_KEY",
+        model="MiniMax-embedding-01",
+        endpoint="https://api.minimaxi.com/v1/embeddings",
+        dimensions=1536,
+        dialect="openai",
     )
     assert other.wire_dialect() == "openai"
     assert embedding_space_id(other.space()) != SPACE_ID, "a different model must move the store"
     assert other.space()["dimensions"] == 1536
 
     # Same inputs, same digest: the directory name has to be reproducible.
-    assert embedding_space_id(other.space()) == embedding_space_id(build_embedding_space(
-        model="MiniMax-embedding-01", endpoint="https://api.minimaxi.com/v1/embeddings",
-        dimensions=1536, dialect="openai",
-    ))
+    assert embedding_space_id(other.space()) == embedding_space_id(
+        build_embedding_space(
+            model="MiniMax-embedding-01",
+            endpoint="https://api.minimaxi.com/v1/embeddings",
+            dimensions=1536,
+            dialect="openai",
+        )
+    )
 
     # Half a descriptor would pair a new model with the old dimensionality and
     # the digest would not reveal the mix, so it is refused outright.
@@ -130,8 +169,11 @@ def test_P08_embedding_model_is_configuration_not_a_constant():
         EmbeddingRouteConfig(credential_env="TEST_EMBED_KEY", model="only-a-model")
     with pytest.raises(ValueError):
         EmbeddingRouteConfig(
-            credential_env="TEST_EMBED_KEY", model="m", endpoint="https://e",
-            dimensions=1536, dialect="not-a-dialect",
+            credential_env="TEST_EMBED_KEY",
+            model="m",
+            endpoint="https://e",
+            dimensions=1536,
+            dialect="not-a-dialect",
         )
 
 
@@ -144,19 +186,25 @@ def test_P08_admission_is_bound_to_the_configured_space_not_the_shipped_one():
     """
     from scope_recall.core.recall_policy import build_embedding_space
 
-    named = embedding_space_id(build_embedding_space(
-        model="MiniMax-embedding-01", endpoint="https://api.minimaxi.com/v1/embeddings",
-        dimensions=1536, dialect="openai",
-    ))
-    stated_default = embedding_space_id(build_embedding_space(
-        model=EMBEDDING_SPACE["model"], endpoint=EMBEDDING_SPACE["endpoint"],
-        dimensions=EMBEDDING_SPACE["dimensions"],
-    ))
+    named = embedding_space_id(
+        build_embedding_space(
+            model="MiniMax-embedding-01",
+            endpoint="https://api.minimaxi.com/v1/embeddings",
+            dimensions=1536,
+            dialect="openai",
+        )
+    )
+    stated_default = embedding_space_id(
+        build_embedding_space(
+            model=EMBEDDING_SPACE["model"],
+            endpoint=EMBEDDING_SPACE["endpoint"],
+            dimensions=EMBEDDING_SPACE["dimensions"],
+        )
+    )
     assert SPACE_ID not in {named, stated_default}
 
     def hit(space: str) -> CandidateRef:
-        return CandidateRef("event", "event-space", 1, "vector", vector_id="v",
-                            embedding_space=space, vector_score=0.9)
+        return CandidateRef("event", "event-space", 1, "vector", vector_id="v", embedding_space=space, vector_score=0.9)
 
     for space in (named, stated_default):
         bound = RecallPolicy(vector_threshold=0.5, embedding_space_id=space)
@@ -192,13 +240,13 @@ def test_P08_embedding_wire_dialects_round_trip_both_shapes():
 
     vector = [0.5] * 64
     got, usage = parse_embedding_response(
-        {"embeddings": [{"values": vector}], "usageMetadata": {"promptTokenCount": 7}},
-        dialect="gemini", dimensions=64)
+        {"embeddings": [{"values": vector}], "usageMetadata": {"promptTokenCount": 7}}, dialect="gemini", dimensions=64
+    )
     assert len(got) == 64 and usage == {"promptTokenCount": 7}
 
     got, usage = parse_embedding_response(
-        {"data": [{"embedding": vector}], "usage": {"prompt_tokens": 7}},
-        dialect="openai", dimensions=64)
+        {"data": [{"embedding": vector}], "usage": {"prompt_tokens": 7}}, dialect="openai", dimensions=64
+    )
     assert len(got) == 64 and usage == {"promptTokenCount": 7}
 
     # A provider that ignores the requested width must not slip through: the
@@ -215,19 +263,41 @@ def test_P08_an_openai_route_may_name_the_field_that_carries_the_width():
     from scope_recall.adapters.models import EmbeddingRouteConfig, build_openai_embed_body
     from scope_recall.runtime.auxiliary import _embedding_route_from_mapping
 
-    body = json.loads(build_openai_embed_body("t", model="voyage-4-large", dimensions=2048, dimensions_field="output_dimension"))
+    body = json.loads(
+        build_openai_embed_body("t", model="voyage-4-large", dimensions=2048, dimensions_field="output_dimension")
+    )
     assert body == {"model": "voyage-4-large", "input": ["t"], "output_dimension": 2048}
-    assert json.loads(build_openai_embed_body("t", model="m", dimensions=64)) == {"model": "m", "input": ["t"], "dimensions": 64}
-    voyage = _embedding_route_from_mapping({
-        "credential_env": "TEST_EMBED_KEY", "model": "voyage-4-large",
-        "endpoint": "https://api.voyageai.com/v1/embeddings", "dimensions": 2048, "dialect": "openai",
-        "dimensions_field": "output_dimension",
-    })
-    plain = EmbeddingRouteConfig(credential_env="TEST_EMBED_KEY", model="voyage-4-large",
-                                 endpoint="https://api.voyageai.com/v1/embeddings", dimensions=2048, dialect="openai")
+    assert json.loads(build_openai_embed_body("t", model="m", dimensions=64)) == {
+        "model": "m",
+        "input": ["t"],
+        "dimensions": 64,
+    }
+    voyage = _embedding_route_from_mapping(
+        {
+            "credential_env": "TEST_EMBED_KEY",
+            "model": "voyage-4-large",
+            "endpoint": "https://api.voyageai.com/v1/embeddings",
+            "dimensions": 2048,
+            "dialect": "openai",
+            "dimensions_field": "output_dimension",
+        }
+    )
+    plain = EmbeddingRouteConfig(
+        credential_env="TEST_EMBED_KEY",
+        model="voyage-4-large",
+        endpoint="https://api.voyageai.com/v1/embeddings",
+        dimensions=2048,
+        dialect="openai",
+    )
     assert voyage.dimensions_field == "output_dimension" and plain.dimensions_field == "dimensions"
     assert embedding_space_id(voyage.space()) == embedding_space_id(plain.space())
     for bad in ("", "output dimension", "x" * 65, 3):
         with pytest.raises(ValueError, match="dimensions_field"):
-            EmbeddingRouteConfig(credential_env="TEST_EMBED_KEY", model="m", endpoint="https://e",
-                                 dimensions=64, dialect="openai", dimensions_field=bad)
+            EmbeddingRouteConfig(
+                credential_env="TEST_EMBED_KEY",
+                model="m",
+                endpoint="https://e",
+                dimensions=64,
+                dialect="openai",
+                dimensions_field=bad,
+            )

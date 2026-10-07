@@ -7,11 +7,19 @@ import sys
 
 import pytest
 
-from scope_recall.contracts import ArtifactVersion, ContractError, DisplaySnapshot, validate_capture, validate_model_request
+from scope_recall.contracts import (
+    ArtifactVersion,
+    ContractError,
+    DisplaySnapshot,
+    validate_capture,
+    validate_model_request,
+)
 from v11_support import FixedInputs, context, recall_request, source_event
 
 
-@pytest.mark.parametrize("field", ["database_path", "agent_id", "installation_id", "allowed_scope_ids", "actor_origin", "sql", "scope"])
+@pytest.mark.parametrize(
+    "field", ["database_path", "agent_id", "installation_id", "allowed_scope_ids", "actor_origin", "sql", "scope"]
+)
 def test_model_cannot_supply_trusted_identity(tmp_path, field):
     with pytest.raises(ContractError, match="INPUT_INVALID"):
         validate_model_request("recall_request", recall_request(**{field: "TEST-forged"}), context(tmp_path))
@@ -27,7 +35,9 @@ def test_scope_can_only_narrow_installation_binding(tmp_path):
         ctx.session_id = "changed"
 
 
-@pytest.mark.parametrize("origin", ["assistant_visible", "tool_observation", "host_generated", "memory_reinjection", "origin_unknown"])
+@pytest.mark.parametrize(
+    "origin", ["assistant_visible", "tool_observation", "host_generated", "memory_reinjection", "origin_unknown"]
+)
 def test_user_role_does_not_make_human_origin(tmp_path, origin):
     ctx = context(tmp_path, origin)
     event = validate_capture(source_event(role="user", origin=origin), ctx)
@@ -48,7 +58,10 @@ def test_test_dataset_requires_isolated_installation(tmp_path):
     assert validate_capture(event, context(tmp_path))["dataset_id"] == "SYNTHETIC_TEST_ONLY"
 
 
-@pytest.mark.parametrize("changes", [dict(agent_id=""), dict(data_directory=Path("relative")), dict(scope_ids={"mutable"}), dict(test_mode=1)])
+@pytest.mark.parametrize(
+    "changes",
+    [dict(agent_id=""), dict(data_directory=Path("relative")), dict(scope_ids={"mutable"}), dict(test_mode=1)],
+)
 def test_invalid_installation_is_not_bound(tmp_path, changes):
     with pytest.raises(ContractError, match="IDENTITY_UNBOUND"):
         replace(context(tmp_path).binding, **changes)
@@ -141,14 +154,17 @@ def test_packaging_helper_roots_follow_declared_tier(tmp_path):
 
 
 def test_windows_extended_paths_are_normalized_without_expanding_test_authority(tmp_path):
-    if os.name!='nt':pytest.skip('Windows namespace contract')
+    if os.name != "nt":
+        pytest.skip("Windows namespace contract")
     from v11_guard import _check_path
-    marker=tmp_path/'TEST-extended.txt'
-    native=Path('\\\\?\\'+str(marker))
-    native.write_text('TEST same authorized location',encoding='utf-8')
-    assert marker.read_text(encoding='utf-8')=='TEST same authorized location'
-    protected=Path(os.environ['SCOPE_RECALL_TEST_PROTECTED_HOME'])/'TEST-no-read'
-    with pytest.raises(PermissionError,match='TEST_BOUNDARY'):
-        Path('\\\\?\\'+str(protected)).read_bytes()
-    for device in ('\\\\.\\PhysicalDrive0','\\\\?\\GLOBALROOT\\Device\\HarddiskVolumeShadowCopy1'):
-        with pytest.raises(PermissionError,match='TEST_BOUNDARY'):_check_path(device)
+
+    marker = tmp_path / "TEST-extended.txt"
+    native = Path("\\\\?\\" + str(marker))
+    native.write_text("TEST same authorized location", encoding="utf-8")
+    assert marker.read_text(encoding="utf-8") == "TEST same authorized location"
+    protected = Path(os.environ["SCOPE_RECALL_TEST_PROTECTED_HOME"]) / "TEST-no-read"
+    with pytest.raises(PermissionError, match="TEST_BOUNDARY"):
+        Path("\\\\?\\" + str(protected)).read_bytes()
+    for device in ("\\\\.\\PhysicalDrive0", "\\\\?\\GLOBALROOT\\Device\\HarddiskVolumeShadowCopy1"):
+        with pytest.raises(PermissionError, match="TEST_BOUNDARY"):
+            _check_path(device)

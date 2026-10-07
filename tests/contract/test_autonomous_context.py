@@ -1,4 +1,5 @@
 """Ambient memory stays bounded, attributed, current, and distinct from answers."""
+
 from dataclasses import replace
 import itertools
 import sqlite3
@@ -27,8 +28,11 @@ def app(tmp_path):
 
 def preference(core, ctx, value="简洁", **changes):
     source = capture(core, ctx, f"{changes.get('subject', 'TEST-project')} 表达偏好 {value}。")
-    item = accept(core, ctx, draft(source, value=value, kind="preference", predicate="表达偏好",
-                                   statement_kind="assertion", **changes)).items[0]
+    item = accept(
+        core,
+        ctx,
+        draft(source, value=value, kind="preference", predicate="表达偏好", statement_kind="assertion", **changes),
+    ).items[0]
     return item, source
 
 
@@ -80,8 +84,18 @@ def test_expired_preferences_stay_out(app):
 def test_unmatched_conditional_preference_is_not_ambient_rule(app):
     core, ctx = app
     source = capture(core, ctx, "只在写文案时 TEST-project 表达偏好 简洁。")
-    item = accept(core, ctx, draft(source, value="简洁", kind="preference", predicate="表达偏好",
-                                   statement_kind="assertion", conditions=["写文案时"])).items[0]
+    item = accept(
+        core,
+        ctx,
+        draft(
+            source,
+            value="简洁",
+            kind="preference",
+            predicate="表达偏好",
+            statement_kind="assertion",
+            conditions=["写文案时"],
+        ),
+    ).items[0]
     assert item.ref not in {entry["ref"] for entry in packet(core, ctx)["items"]}
 
 
@@ -121,8 +135,9 @@ def test_small_budget_never_overflows_or_drops_question_for_background(app):
 def test_background_is_rechecked_after_deletion_between_search_and_compile(app):
     core, ctx = app
     item, _ = preference(core, ctx)
-    search = SearchContext.from_request(recall_request(query="火星咖啡报价"), ctx,
-                                        now=core.clock.utc_now(), deadline=core.clock.monotonic() + 5)
+    search = SearchContext.from_request(
+        recall_request(query="火星咖啡报价"), ctx, now=core.clock.utc_now(), deadline=core.clock.monotonic() + 5
+    )
     result = core.recall_pipeline.search(search)
     assert item.ref in {entry.ref for entry in result.items}
     authorize(core, ctx, item)
@@ -158,8 +173,9 @@ def test_explicit_resume_without_evidence_keeps_only_its_grounded_task(app):
     claim, _ = preference(core, replace(ctx, task_anchor="TEST-other-task"))
 
     def items(**flag):
-        search = SearchContext.from_request(recall_request(query="继续"), ctx, now=core.clock.utc_now(),
-                                            deadline=core.clock.monotonic() + 5, **flag)
+        search = SearchContext.from_request(
+            recall_request(query="继续"), ctx, now=core.clock.utc_now(), deadline=core.clock.monotonic() + 5, **flag
+        )
         # Without the directed follow-up the task can only arrive as background.
         return core.recall_pipeline.search(replace(search, limits=replace(search.limits, followups=0))).items
 
@@ -185,14 +201,29 @@ def test_precompress_retries_only_observed_event_without_promoting_summary(tmp_p
 
     home = tmp_path / "TEST-hermes"
     home.mkdir()
-    _, core = install_hermes_scope_recall(home, agent_id="TEST-agent", platform="cli", user_id="TEST-user",
-                                         agent_workspace="TEST-workspace", clock=Clock())
+    _, core = install_hermes_scope_recall(
+        home,
+        agent_id="TEST-agent",
+        platform="cli",
+        user_id="TEST-user",
+        agent_workspace="TEST-workspace",
+        clock=Clock(),
+    )
     provider = ScopeRecallHermesAdapter(core=core, clock=Clock())
-    provider.initialize("TEST-session", hermes_home=str(home), platform="cli", agent_context="primary",
-                        agent_identity="TEST-agent", agent_workspace="TEST-workspace", user_id="TEST-user")
+    provider.initialize(
+        "TEST-session",
+        hermes_home=str(home),
+        platform="cli",
+        agent_context="primary",
+        agent_identity="TEST-agent",
+        agent_workspace="TEST-workspace",
+        user_id="TEST-user",
+    )
     original = core.record_host_event
+
     def fail(*args, **kwargs):
         raise RuntimeError("synthetic interrupted capture")
+
     monkeypatch.setattr(core, "record_host_event", fail)
     provider.observe_pre_llm(session_id="TEST-session", turn_id="TEST-turn", user_message="用户真实输入")
     assert len(provider._retry_captures) == 1

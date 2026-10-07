@@ -26,6 +26,7 @@ keeping everything else in them and a copy of each file it changes under the sta
 ``codex`` or ``workbuddy``), ``token_file`` and ``state_dir``, all absolute.  The token never leaves this
 machine except in the requests' ``Authorization`` header.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -104,11 +105,19 @@ def load_client_config(path: Path) -> dict[str, Any]:
     if not isinstance(raw, dict) or raw.get("host") not in HOSTS:
         raise RemoteClientError(f"client config needs host: {', '.join(HOSTS)}")
     url = raw.get("url")
-    if type(url) is not str or urllib.parse.urlsplit(url).scheme not in ("http", "https") \
-            or not urllib.parse.urlsplit(url).hostname:
+    if (
+        type(url) is not str
+        or urllib.parse.urlsplit(url).scheme not in ("http", "https")
+        or not urllib.parse.urlsplit(url).hostname
+    ):
         raise RemoteClientError("client config needs the server's url")
-    return {"url": url.rstrip("/"), "host": raw["host"], "token_file": _absolute(raw.get("token_file"), "token_file"),
-            "state_dir": _absolute(raw.get("state_dir"), "state_dir"), "config": path}
+    return {
+        "url": url.rstrip("/"),
+        "host": raw["host"],
+        "token_file": _absolute(raw.get("token_file"), "token_file"),
+        "state_dir": _absolute(raw.get("state_dir"), "state_dir"),
+        "config": path,
+    }
 
 
 def _now() -> str:
@@ -169,8 +178,12 @@ def _post(config: dict[str, Any], body: dict[str, Any], timeout: float) -> dict[
                 pass
             return None
         connection.sock.settimeout(max(0.2, until - time.monotonic()))
-        connection.request("POST", f"{url.path}/hook", body=json.dumps(body, ensure_ascii=False).encode("utf-8"),
-                           headers={"Content-Type": "application/json", "Authorization": f"Bearer {token}"})
+        connection.request(
+            "POST",
+            f"{url.path}/hook",
+            body=json.dumps(body, ensure_ascii=False).encode("utf-8"),
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {token}"},
+        )
         response = connection.getresponse()
         raw = response.read()
         if response.status in _REFUSED_FOR_GOOD:
@@ -194,6 +207,7 @@ def _post(config: dict[str, Any], body: dict[str, Any], timeout: float) -> dict[
 
 # -- the spool (Codex) -------------------------------------------------------
 
+
 def _spool_dir(config: dict[str, Any]) -> Path:
     return config["state_dir"] / "spool"
 
@@ -206,7 +220,7 @@ def _spool(config: dict[str, Any], payload: dict[str, Any], observed_at: str) ->
     try:
         folder.mkdir(parents=True, exist_ok=True)
         kept = sorted(folder.glob("*.json"))
-        dropped = kept[:max(0, len(kept) - SPOOL_LIMIT + 1)]
+        dropped = kept[: max(0, len(kept) - SPOOL_LIMIT + 1)]
         for stale in dropped:
             stale.unlink(missing_ok=True)
         if dropped:
@@ -214,8 +228,9 @@ def _spool(config: dict[str, Any], payload: dict[str, Any], observed_at: str) ->
         # The clock can read the same twice in a row, and a name taken twice replaced the hook kept under it.
         name = f"{time.time_ns():020d}-{os.getpid()}-{next(_SPOOL_SEQUENCE):06d}.json"
         pending = folder / f"{name}.tmp"
-        pending.write_text(json.dumps({"payload": payload, "observed_at": observed_at}, ensure_ascii=False),
-                           encoding="utf-8")
+        pending.write_text(
+            json.dumps({"payload": payload, "observed_at": observed_at}, ensure_ascii=False), encoding="utf-8"
+        )
         os.replace(pending, folder / name)
         return folder / name
     except OSError:
@@ -272,15 +287,30 @@ def _start_flush(config: dict[str, Any]) -> None:
     """
     flags = subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
     try:
-        subprocess.Popen([sys.executable, "-I", "-B", "-m", "scope_recall.adapters.codex.remote_client", "flush",
-                          "--config", str(config["config"])], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                         stderr=subprocess.DEVNULL, close_fds=True, creationflags=flags,
-                         start_new_session=os.name != "nt")
+        subprocess.Popen(
+            [
+                sys.executable,
+                "-I",
+                "-B",
+                "-m",
+                "scope_recall.adapters.codex.remote_client",
+                "flush",
+                "--config",
+                str(config["config"]),
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            close_fds=True,
+            creationflags=flags,
+            start_new_session=os.name != "nt",
+        )
     except OSError:
         pass
 
 
 # -- the hook ----------------------------------------------------------------
+
 
 def _record_part(config: dict[str, Any], payload: dict[str, Any]) -> tuple[dict[str, Any], "transcript.Cursor"] | None:
     """What this Stop sends of the session record, and the cursor to move on success."""
@@ -288,16 +318,21 @@ def _record_part(config: dict[str, Any], payload: dict[str, Any]) -> tuple[dict[
     if type(session_id) is not str or not session_id.strip():
         return None
     workbuddy = config["host"] == "workbuddy"
-    record = (transcript.workbuddy_record_path(payload.get("transcript_path"), session_id.strip(),
-                                               record_id=payload.get("agent_id"))
-              if workbuddy else transcript.record_path(payload.get("transcript_path"), session_id.strip()))
+    record = (
+        transcript.workbuddy_record_path(
+            payload.get("transcript_path"), session_id.strip(), record_id=payload.get("agent_id")
+        )
+        if workbuddy
+        else transcript.record_path(payload.get("transcript_path"), session_id.strip())
+    )
     if record is None:
         return None
     cursor = transcript.Cursor(config["state_dir"], session_id.strip(), record)
     start = cursor.load()
     try:
-        lines = transcript.read(record, start, limit=RECORD_READ_BYTES,
-                                rows=transcript.workbuddy_said if workbuddy else transcript.said)
+        lines = transcript.read(
+            record, start, limit=RECORD_READ_BYTES, rows=transcript.workbuddy_said if workbuddy else transcript.said
+        )
     except OSError:
         return None
     if not lines:
@@ -314,8 +349,9 @@ def _error_reply(payload: dict[str, Any]) -> bool:
     if type(reply) is not str or type(session_id) is not str or not session_id.strip():
         return False
     try:
-        record = transcript.workbuddy_record_path(payload.get("transcript_path"), session_id.strip(),
-                                                  record_id=payload.get("agent_id"))
+        record = transcript.workbuddy_record_path(
+            payload.get("transcript_path"), session_id.strip(), record_id=payload.get("agent_id")
+        )
     except OSError:
         return False
     return record is not None and transcript.workbuddy_error_reply(record, reply)
@@ -343,8 +379,11 @@ def run_hook(config: dict[str, Any], raw: bytes, *, started: float | None = None
     observed_at = _now()
     body: dict[str, Any] = {"payload": payload, "observed_at": observed_at}
     cursor = None
-    if (host in _RECORD_HOSTS and event in ("Stop", "SessionEnd")
-            and not (host == "workbuddy" and is_workbuddy_agent_run(payload))):
+    if (
+        host in _RECORD_HOSTS
+        and event in ("Stop", "SessionEnd")
+        and not (host == "workbuddy" and is_workbuddy_agent_run(payload))
+    ):
         part = _record_part(config, payload)
         if part is not None:
             body["record"], cursor = part
@@ -377,6 +416,7 @@ def run_hook(config: dict[str, Any], raw: bytes, *, started: float | None = None
 
 # -- setup on this machine ---------------------------------------------------
 
+
 def make_token(config: dict[str, Any]) -> str:
     """Create the entry's token here if there is none, readable by this user only; return its SHA-256."""
     path = config["token_file"]
@@ -386,8 +426,11 @@ def make_token(config: dict[str, Any]) -> str:
         pending.write_text(secrets.token_urlsafe(32), encoding="utf-8")
         if os.name == "nt":
             user = os.environ.get("USERNAME", "")
-            subprocess.run(["icacls", str(pending), "/inheritance:r", "/grant:r", f"{user}:F", "*S-1-5-18:F"],
-                           check=True, capture_output=True)
+            subprocess.run(
+                ["icacls", str(pending), "/inheritance:r", "/grant:r", f"{user}:F", "*S-1-5-18:F"],
+                check=True,
+                capture_output=True,
+            )
         else:
             pending.chmod(0o600)
         os.replace(pending, path)
@@ -395,8 +438,15 @@ def make_token(config: dict[str, Any]) -> str:
 
 
 def _hook_argv(config: dict[str, Any]) -> list[str]:
-    return [Path(sys.executable).as_posix(), "-I", "-B", "-m", "scope_recall.adapters.codex.remote_client",
-            "--config", config["config"].as_posix()]
+    return [
+        Path(sys.executable).as_posix(),
+        "-I",
+        "-B",
+        "-m",
+        "scope_recall.adapters.codex.remote_client",
+        "--config",
+        config["config"].as_posix(),
+    ]
 
 
 def plugin_files(config: dict[str, Any], plugin_dir: Path) -> dict[Path, str]:
@@ -405,8 +455,10 @@ def plugin_files(config: dict[str, Any], plugin_dir: Path) -> dict[Path, str]:
 
     host = config["host"]
     if host == "workbuddy":
-        raise RemoteClientError("a WorkBuddy client has no plugin: install merges its hooks and server into "
-                                "WorkBuddy's own settings (workbuddy_files)")
+        raise RemoteClientError(
+            "a WorkBuddy client has no plugin: install merges its hooks and server into "
+            "WorkBuddy's own settings (workbuddy_files)"
+        )
     token = config["token_file"].read_text(encoding="utf-8").strip()
     argv = _hook_argv(config)
     mcp_url = f"{config['url']}/mcp"
@@ -418,33 +470,67 @@ def plugin_files(config: dict[str, Any], plugin_dir: Path) -> dict[Path, str]:
 
         unsafe = [part for part in argv if not _SHELL_WORD.fullmatch(part)]
         if unsafe:
-            raise RemoteClientError("Claude Code runs a hook through a shell: keep the interpreter and client.json "
-                                    f"on paths of ASCII letters, digits and ._-/: only (not {unsafe[0]!r})")
+            raise RemoteClientError(
+                "Claude Code runs a hook through a shell: keep the interpreter and client.json "
+                f"on paths of ASCII letters, digits and ._-/: only (not {unsafe[0]!r})"
+            )
         command = " ".join(argv)
-        hooks = {"hooks": {event: [{"hooks": [{"type": "command", "command": command, "timeout": timeout}]}]
-                           for event, timeout in sorted(HOOK_TIMEOUTS[host].items())}}
+        hooks = {
+            "hooks": {
+                event: [{"hooks": [{"type": "command", "command": command, "timeout": timeout}]}]
+                for event, timeout in sorted(HOOK_TIMEOUTS[host].items())
+            }
+        }
         return {
-            plugin_dir / ".claude-plugin" / "plugin.json": dump({
-                "name": plugin_dir.name, "version": _manifest_version(), "author": {"name": "Local developer"},
-                "description": "Scope Recall: a shared memory store on another machine, in Claude Code",
-                "hooks": "./hooks/hooks.json", "mcpServers": "./.mcp.json"}),
+            plugin_dir / ".claude-plugin" / "plugin.json": dump(
+                {
+                    "name": plugin_dir.name,
+                    "version": _manifest_version(),
+                    "author": {"name": "Local developer"},
+                    "description": "Scope Recall: a shared memory store on another machine, in Claude Code",
+                    "hooks": "./hooks/hooks.json",
+                    "mcpServers": "./.mcp.json",
+                }
+            ),
             plugin_dir / "hooks" / "hooks.json": dump(hooks),
-            plugin_dir / ".mcp.json": dump({"mcpServers": {"scope-recall": {"type": "http", "url": mcp_url,
-                                                                            "headers": auth}}}),
+            plugin_dir / ".mcp.json": dump(
+                {"mcpServers": {"scope-recall": {"type": "http", "url": mcp_url, "headers": auth}}}
+            ),
             plugin_dir / "skills" / "scope-recall-memory" / "SKILL.md": skill,
         }
     cmd = plugin_dir / "hooks" / "scope-recall-hook.cmd"
-    windows = "@echo off\r\nchcp 65001 >nul\r\n" + " ".join(f'"{part}"' for part in argv) + "\r\nexit /b %ERRORLEVEL%\r\n"
-    hooks = {"hooks": {event: [{"hooks": [{"type": "command", "command": shlex.join(argv),
-                                            "commandWindows": str(cmd), "timeout": timeout}]}]
-                       for event, timeout in sorted(HOOK_TIMEOUTS[host].items())}}
+    windows = (
+        "@echo off\r\nchcp 65001 >nul\r\n" + " ".join(f'"{part}"' for part in argv) + "\r\nexit /b %ERRORLEVEL%\r\n"
+    )
+    hooks = {
+        "hooks": {
+            event: [
+                {
+                    "hooks": [
+                        {"type": "command", "command": shlex.join(argv), "commandWindows": str(cmd), "timeout": timeout}
+                    ]
+                }
+            ]
+            for event, timeout in sorted(HOOK_TIMEOUTS[host].items())
+        }
+    }
     return {
-        plugin_dir / ".codex-plugin" / "plugin.json": dump({
-            "name": plugin_dir.name, "version": _manifest_version().replace("rc", "-rc."),
-            "author": {"name": "Local developer"}, "mcpServers": "./.mcp.json",
-            "description": "Scope Recall: a shared memory store on another machine, in Codex",
-            "interface": {"displayName": "Scope Recall", "shortDescription": "Use Scope Recall in Codex.",
-                          "category": "Productivity", "capabilities": [], "developerName": "Local developer"}}),
+        plugin_dir / ".codex-plugin" / "plugin.json": dump(
+            {
+                "name": plugin_dir.name,
+                "version": _manifest_version().replace("rc", "-rc."),
+                "author": {"name": "Local developer"},
+                "mcpServers": "./.mcp.json",
+                "description": "Scope Recall: a shared memory store on another machine, in Codex",
+                "interface": {
+                    "displayName": "Scope Recall",
+                    "shortDescription": "Use Scope Recall in Codex.",
+                    "category": "Productivity",
+                    "capabilities": [],
+                    "developerName": "Local developer",
+                },
+            }
+        ),
         plugin_dir / "hooks" / "hooks.json": dump(hooks),
         cmd: windows,
         plugin_dir / ".mcp.json": dump({"mcpServers": {"scope-recall": {"url": mcp_url, "http_headers": auth}}}),
@@ -465,24 +551,40 @@ def workbuddy_files(config: dict[str, Any], home: Path) -> dict[Path, bytes]:
 
     argv = _hook_argv(config)
     token = config["token_file"].read_text(encoding="utf-8").strip()
-    server = {"type": "http", "url": f"{config['url']}/mcp", "headers": {"Authorization": f"Bearer {token}"},
-              "description": workbuddy.SERVER_DESCRIPTION}
+    server = {
+        "type": "http",
+        "url": f"{config['url']}/mcp",
+        "headers": {"Authorization": f"Bearer {token}"},
+        "description": workbuddy.SERVER_DESCRIPTION,
+    }
 
     def this_client(parts: list[str]) -> bool:
-        return ("scope_recall.adapters.codex.remote_client" in parts
-                and workbuddy.same_path(workbuddy.option(parts, "--config"), config["config"]))
+        return "scope_recall.adapters.codex.remote_client" in parts and workbuddy.same_path(
+            workbuddy.option(parts, "--config"), config["config"]
+        )
 
     def this_server(value: object) -> bool:
         return isinstance(value, dict) and value.get("url") == server["url"]
 
     changed = {}
     try:
-        command = " ".join([workbuddy.quoted(Path(argv[0]), "interpreter"), *argv[1:-1],
-                            workbuddy.quoted(config["config"], "client.json")]) + workbuddy.FAIL_OPEN
+        command = (
+            " ".join(
+                [
+                    workbuddy.quoted(Path(argv[0]), "interpreter"),
+                    *argv[1:-1],
+                    workbuddy.quoted(config["config"], "client.json"),
+                ]
+            )
+            + workbuddy.FAIL_OPEN
+        )
         for name in (workbuddy.SETTINGS_FILENAME, workbuddy.MCP_FILENAME):
             value, raw = workbuddy.read_config(home / name)
-            merged = (workbuddy.with_hooks(value, command, HOOK_TIMEOUTS["workbuddy"], this_client)
-                      if name == workbuddy.SETTINGS_FILENAME else workbuddy.with_server(value, server, this_server))
+            merged = (
+                workbuddy.with_hooks(value, command, HOOK_TIMEOUTS["workbuddy"], this_client)
+                if name == workbuddy.SETTINGS_FILENAME
+                else workbuddy.with_server(value, server, this_server)
+            )
             if raw is None or merged != value:
                 changed[home / name] = workbuddy.encode_config(merged, raw)
     except InstallError as exc:
@@ -498,8 +600,9 @@ def install(config: dict[str, Any], plugin_dir: Path) -> dict[str, list[str]]:
     backups = []
     if config["host"] == "workbuddy":
         if not plugin_dir.is_dir():
-            raise RemoteClientError(f"{plugin_dir} does not exist: name WorkBuddy's home (~/.workbuddy), or start "
-                                    "WorkBuddy once")
+            raise RemoteClientError(
+                f"{plugin_dir} does not exist: name WorkBuddy's home (~/.workbuddy), or start WorkBuddy once"
+            )
         files = workbuddy_files(config, plugin_dir)
         kept = config["state_dir"] / "backups" / datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
         for path in files:

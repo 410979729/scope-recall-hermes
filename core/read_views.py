@@ -5,6 +5,7 @@ versions in a first read, release them through the authority boundary, recheck
 them in a second read, then render.  They differ only in which refs are
 enumerated and how the released statements are grouped.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -36,6 +37,7 @@ _CURRENT_SUBJECT_ALIASES = frozenset({"user", "current_user", "用户", "我"})
 
 
 # -- request and subject ------------------------------------------------------
+
 
 def _verified_current_principal(context: TrustedContext) -> str | None:
     principal = context.source_principal
@@ -87,6 +89,7 @@ def _public_markers(values: list[str], *, limit: int) -> list[str]:
 
 
 # -- claim versions -----------------------------------------------------------
+
 
 def _claim_evidence_keys(version: ClaimVersion) -> tuple[str, ...]:
     return tuple(dict.fromkeys(evidence_refs(version.payload)))[:32]
@@ -145,7 +148,11 @@ def _claim_item(version: ClaimVersion, contexts: list[SourceContext] | None, *, 
     item = {**identity, **statement} if direction is None else {"direction": direction, **statement, **identity}
     item.update(
         conditions=list(payload.get("conditions") or []),
-        temporal_status="disputed" if version.state == "disputed" else "current" if version.state == "active" else "unknown",
+        temporal_status="disputed"
+        if version.state == "disputed"
+        else "current"
+        if version.state == "active"
+        else "unknown",
         claim_state="disputed" if version.state == "disputed" else "active",
         valid_from=version.valid_from,
         valid_to=version.valid_to,
@@ -158,6 +165,7 @@ def _claim_item(version: ClaimVersion, contexts: list[SourceContext] | None, *, 
 
 
 # -- alias resolution ---------------------------------------------------------
+
 
 @dataclass(frozen=True)
 class _AliasResolution:
@@ -216,7 +224,9 @@ def resolve_subject(tx, queried: str, now: str) -> _AliasResolution:
         try:
             if target is None:
                 raise ContractError("SOURCE_MISSING", "alias_target")
-            validate_alias_target(target, scope_id=alias.scope_id, project_id=tx.context.project_id, branch_id=tx.context.branch_id)
+            validate_alias_target(
+                target, scope_id=alias.scope_id, project_id=tx.context.project_id, branch_id=tx.context.branch_id
+            )
             if alias.payload["subject"] != target.payload["subject"]:
                 raise ContractError("ACCESS_DENIED", "alias_subject_identity")
         except ContractError:
@@ -236,6 +246,7 @@ def resolve_subject(tx, queried: str, now: str) -> _AliasResolution:
 
 
 # -- select, release, recheck -------------------------------------------------
+
 
 @dataclass(frozen=True)
 class _Selection:
@@ -282,12 +293,16 @@ def _clip_candidate_refs(*groups: tuple[str, ...], reserved: int = 0) -> tuple[t
     return tuple(sorted(merged))[:room], overflow
 
 
-def _clip_versions_for_view(versions: tuple[ClaimVersion, ...], *, max_items: int) -> tuple[tuple[ClaimVersion, ...], bool]:
+def _clip_versions_for_view(
+    versions: tuple[ClaimVersion, ...], *, max_items: int
+) -> tuple[tuple[ClaimVersion, ...], bool]:
     ordered = tuple(sorted(versions, key=_sort_key))
     return ordered[:max_items], len(ordered) > max_items
 
 
-def _release_selected(storage, clock, context, versions: tuple[ClaimVersion, ...], fence: tuple[ObjectRef, ...], epoch: int):
+def _release_selected(
+    storage, clock, context, versions: tuple[ClaimVersion, ...], fence: tuple[ObjectRef, ...], epoch: int
+):
     refs = tuple(dict.fromkeys((*(ObjectRef("claim", version.ref, version.revision) for version in versions), *fence)))
     if not refs:
         with storage.read(context) as tx:
@@ -310,7 +325,9 @@ def _recheck_released(tx, released, expected: tuple[ClaimVersion, ...]) -> tuple
     return tuple(checked)
 
 
-def _load_view(storage, clock, context: TrustedContext, lookup_subject: str, select: Selector) -> _Loaded | _Unavailable:
+def _load_view(
+    storage, clock, context: TrustedContext, lookup_subject: str, select: Selector
+) -> _Loaded | _Unavailable:
     """Resolve, select, release and recheck; the epoch must hold across all three reads."""
     now = clock.utc_now()
     try:
@@ -329,7 +346,9 @@ def _load_view(storage, clock, context: TrustedContext, lookup_subject: str, sel
             if checked is None and selection.versions:
                 return _Unavailable(epoch)
             versions = {version.ref: version for version in checked or ()}
-            contexts = {ref: evidence_source_contexts(tx, _claim_evidence_keys(version)) for ref, version in versions.items()}
+            contexts = {
+                ref: evidence_source_contexts(tx, _claim_evidence_keys(version)) for ref, version in versions.items()
+            }
             current = tx.status().memory_epoch
             if current != epoch:
                 return _Unavailable(current)
@@ -346,6 +365,7 @@ def _load_view(storage, clock, context: TrustedContext, lookup_subject: str, sel
 
 
 # -- rendering ----------------------------------------------------------------
+
 
 def _empty_sections() -> dict[str, list]:
     return {name: [] for name in _SECTION_ORDER}
@@ -514,6 +534,7 @@ def _view_result(payload: dict, loaded: _Loaded, lookup_subject: str, body: dict
 
 # -- the two views ------------------------------------------------------------
 
+
 def read_profile(storage, clock, context: TrustedContext, request) -> dict:
     payload = _normalize_read_request("profile_request", request, context, entity=False)
     lookup_subject = _profile_subject(context, payload["subject"])
@@ -521,7 +542,9 @@ def read_profile(storage, clock, context: TrustedContext, request) -> dict:
     def select(tx, now: str, subject: str, resolution: _AliasResolution) -> _Selection:
         refs = tx.claims.list_refs(subject=subject, limit=CANDIDATE_CAP)
         clipped, overflow = _clip_candidate_refs(refs, reserved=len(resolution.fence))
-        versions, truncated = _clip_versions_for_view(_select_versions(tx, clipped, now), max_items=payload["max_items"])
+        versions, truncated = _clip_versions_for_view(
+            _select_versions(tx, clipped, now), max_items=payload["max_items"]
+        )
         return _Selection(versions, resolution.scan_capped or len(refs) >= CANDIDATE_CAP or overflow, truncated)
 
     loaded = _load_view(storage, clock, context, lookup_subject, select)
@@ -573,10 +596,14 @@ def read_entity(storage, clock, context: TrustedContext, request) -> dict:
         incoming_names: tuple[str, ...] = ()
         scan_hit = False
         if want_out:
-            outgoing_refs = tx.claims.list_refs(subject=subject, predicate=predicate, kind="fact" if probe else None, limit=CANDIDATE_CAP)
+            outgoing_refs = tx.claims.list_refs(
+                subject=subject, predicate=predicate, kind="fact" if probe else None, limit=CANDIDATE_CAP
+            )
             scan_hit = len(outgoing_refs) >= CANDIDATE_CAP
         if want_in:
-            incoming_names = (lookup_subject,) if resolution.status == "literal" else tuple(dict.fromkeys((lookup_subject, subject)))
+            incoming_names = (
+                (lookup_subject,) if resolution.status == "literal" else tuple(dict.fromkeys((lookup_subject, subject)))
+            )
             collected: list[str] = []
             for name in incoming_names:
                 refs = tx.claims.list_refs(value_text=name, predicate=predicate, limit=CANDIDATE_CAP)
@@ -588,11 +615,17 @@ def read_entity(storage, clock, context: TrustedContext, request) -> dict:
         outgoing = {v.ref for v in loaded if v.ref in outgoing_refs and (not probe or v.payload["kind"] == "fact")}
         incoming = {v.ref for v in loaded if v.ref in incoming_refs and v.payload.get("value_text") in incoming_names}
         versions, truncated = _clip_versions_for_view(
-            tuple(v for v in loaded if v.ref in outgoing or v.ref in incoming), max_items=payload["max_items"],
+            tuple(v for v in loaded if v.ref in outgoing or v.ref in incoming),
+            max_items=payload["max_items"],
         )
         kept = {v.ref for v in versions}
-        return _Selection(versions, resolution.scan_capped or scan_hit or overflow, truncated,
-                          outgoing=frozenset(outgoing & kept), incoming=frozenset(incoming & kept))
+        return _Selection(
+            versions,
+            resolution.scan_capped or scan_hit or overflow,
+            truncated,
+            outgoing=frozenset(outgoing & kept),
+            incoming=frozenset(incoming & kept),
+        )
 
     loaded = _load_view(storage, clock, context, lookup_subject, select)
     if isinstance(loaded, _Unavailable):
@@ -602,7 +635,9 @@ def read_entity(storage, clock, context: TrustedContext, request) -> dict:
     if not ambiguous:
         for group, side in ((loaded.selection.outgoing, "outgoing"), (loaded.selection.incoming, "incoming")):
             members = [loaded.versions[ref] for ref in group if ref in loaded.versions]
-            statements.extend(_claim_item(v, loaded.contexts.get(v.ref), direction=side) for v in sorted(members, key=_sort_key))
+            statements.extend(
+                _claim_item(v, loaded.contexts.get(v.ref), direction=side) for v in sorted(members, key=_sort_key)
+            )
     gaps: list[str] = ["alias_ambiguous"] if ambiguous else []
     if not statements and not ambiguous:
         gaps.append("consolidation_required")

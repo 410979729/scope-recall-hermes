@@ -5,6 +5,7 @@ also runs from a clean installed wheel.  Losing the parent's pipe before the
 one-byte release token exits without opening a database or starting children.
 An optional second argument is the owner's deadline in epoch seconds.
 """
+
 from __future__ import annotations
 
 import sys

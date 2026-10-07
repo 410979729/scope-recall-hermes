@@ -9,6 +9,7 @@ evidence arrivals sat between consecutive verdicts -- 679 tool observations
 against 74 first-hand statements -- and 93% of the verdicts bought were
 ``insufficient_evidence`` again.
 """
+
 from __future__ import annotations
 
 import sqlite3
@@ -35,12 +36,14 @@ def _person(n):
 # What counts as testimony
 # --------------------------------------------------------------------------
 
+
 def test_a_person_speaking_is_first_hand():
     assert is_first_hand("human_direct") is True
 
 
-@pytest.mark.parametrize("origin", ["tool_observation", "assistant_visible",
-                                    "memory_reinjection", "imported", None, ""])
+@pytest.mark.parametrize(
+    "origin", ["tool_observation", "assistant_visible", "memory_reinjection", "imported", None, ""]
+)
 def test_everything_else_is_not(origin):
     assert is_first_hand(origin) is False
 
@@ -52,6 +55,7 @@ def test_the_notion_is_named_once():
 # --------------------------------------------------------------------------
 # The question itself
 # --------------------------------------------------------------------------
+
 
 def test_one_more_tool_observation_is_the_same_question():
     """The exact case that defeated the guard: an arrival displaces an older
@@ -72,7 +76,7 @@ def test_testimony_order_does_not_matter():
 def test_accumulating_tool_output_is_never_a_new_question():
     """Replayed over Alpha, re-judgements bought by growing non-first-hand
     support came to 955 model calls and exactly one conclusion."""
-    assert question_digest([_tool(n) for n in range(4)]) ==         question_digest([_tool(n) for n in range(64)])
+    assert question_digest([_tool(n) for n in range(4)]) == question_digest([_tool(n) for n in range(64)])
 
 
 def test_a_candidate_with_no_testimony_waits_rather_than_loops():
@@ -90,10 +94,10 @@ def test_an_empty_set_still_has_a_digest():
 # Against real storage
 # --------------------------------------------------------------------------
 
+
 def _queued(core):
     with sqlite3.connect(core.storage.path) as conn:
-        return conn.execute(
-            "SELECT count(*) FROM candidate_evaluations WHERE state='queued'").fetchone()[0]
+        return conn.execute("SELECT count(*) FROM candidate_evaluations WHERE state='queued'").fetchone()[0]
 
 
 def test_tool_output_alone_does_not_buy_another_evaluation(app):
@@ -106,11 +110,15 @@ def test_tool_output_alone_does_not_buy_another_evaluation(app):
     _retire_live_evaluations(core)
     before = _queued(core)
     for index in range(4):
-        noise = capture(core, ctx, f"entity1 property1 sharedtoken 工具输出{index}。",
-                        origin="tool_observation", key=f"TEST-noise/{index}")
+        noise = capture(
+            core,
+            ctx,
+            f"entity1 property1 sharedtoken 工具输出{index}。",
+            origin="tool_observation",
+            key=f"TEST-noise/{index}",
+        )
         with core.storage.write(ctx, remaining_seconds=10) as tx:
-            tx.candidates.observe_source(noise.ref, noise.revision,
-                                         observed_at=core.clock.utc_now())
+            tx.candidates.observe_source(noise.ref, noise.revision, observed_at=core.clock.utc_now())
     _settle(core)
     _sweep(core, ctx)
     assert _queued(core) <= before + 1, "tool output bought a fresh evaluation each time"
@@ -124,11 +132,9 @@ def test_a_person_speaking_is_judged_at_once(app):
     _register(core, ctx, 1)
     _retire_live_evaluations(core)
     before = _queued(core)
-    said = capture(core, ctx, "entity1 property1 sharedtoken 我确认是值1。",
-                   origin="human_direct", key="TEST-said/1")
+    said = capture(core, ctx, "entity1 property1 sharedtoken 我确认是值1。", origin="human_direct", key="TEST-said/1")
     with core.storage.write(ctx, remaining_seconds=10) as tx:
-        tx.candidates.observe_source(said.ref, said.revision,
-                                     observed_at=core.clock.utc_now())
+        tx.candidates.observe_source(said.ref, said.revision, observed_at=core.clock.utc_now())
     _settle(core)
     _sweep(core, ctx)
     assert _queued(core) > before, "new testimony did not produce an evaluation"
@@ -142,24 +148,42 @@ def test_a_person_s_imported_words_are_in_the_window_as_testimony(app):
 
     core, ctx = app
     candidate = _register(core, ctx, 1)
-    said = capture(core, ctx, "entity1 property1 sharedtoken 我确认是值1。", origin="imported", attested=True,
-                   source_original_origin="human_direct", key="TEST-import/said")
-    noise = [capture(core, ctx, f"entity1 property1 sharedtoken 工具输出{index}。", origin="tool_observation",
-                     key=f"TEST-window-noise/{index}") for index in range(20)]
+    said = capture(
+        core,
+        ctx,
+        "entity1 property1 sharedtoken 我确认是值1。",
+        origin="imported",
+        attested=True,
+        source_original_origin="human_direct",
+        key="TEST-import/said",
+    )
+    noise = [
+        capture(
+            core,
+            ctx,
+            f"entity1 property1 sharedtoken 工具输出{index}。",
+            origin="tool_observation",
+            key=f"TEST-window-noise/{index}",
+        )
+        for index in range(20)
+    ]
     with core.storage.write(ctx, remaining_seconds=10) as tx:
         for source in (said, *noise):
             tx.candidates.observe_source(source.ref, source.revision, observed_at=core.clock.utc_now())
     # Every tool output arrived after the person's words.
     with sqlite3.connect(core.storage.path) as conn:
-        conn.execute("UPDATE candidate_evidence SET observed_at='2026-09-01T00:00:00Z' WHERE source_ref=?",
-                     (said.ref,))
+        conn.execute("UPDATE candidate_evidence SET observed_at='2026-09-01T00:00:00Z' WHERE source_ref=?", (said.ref,))
         for index, source in enumerate(noise):
-            conn.execute("UPDATE candidate_evidence SET observed_at=? WHERE source_ref=?",
-                         (f"2026-09-02T00:00:{index:02d}Z", source.ref))
+            conn.execute(
+                "UPDATE candidate_evidence SET observed_at=? WHERE source_ref=?",
+                (f"2026-09-02T00:00:{index:02d}Z", source.ref),
+            )
         conn.commit()
     with core.storage.read(ctx, remaining_seconds=10) as tx:
-        window = {(row["source_ref"], row["source_revision"]): row["origin"]
-                  for row in tx.candidates._evaluation_evidence(candidate.ref, candidate.revision)}
+        window = {
+            (row["source_ref"], row["source_revision"]): row["origin"]
+            for row in tx.candidates._evaluation_evidence(candidate.ref, candidate.revision)
+        }
         _refs, digest = tx.candidates._question(candidate.ref, candidate.revision)
     assert len(window) == 16 and sum(origin == "tool_observation" for origin in window.values()) == 14
     assert window.get((said.ref, said.revision)) == "human_direct", "the person's imported words fell out"
@@ -168,6 +192,7 @@ def test_a_person_s_imported_words_are_in_the_window_as_testimony(app):
 
 
 # --------------------------------------------------------------------------
+
 
 def _said(content, *, origin="human_direct", complete=True):
     from scope_recall.core.evidence_question import EvidenceText
@@ -198,8 +223,7 @@ def test_spacing_width_and_punctuation_never_hide_the_value(content):
     assert _unanswerable(_payload(), [_said(content)]) is None
 
 
-@pytest.mark.parametrize("value,content", [("2026-09-17", "上线日期 2026.09.17"),
-                                           ("Scope Recall", "scope-recall")])
+@pytest.mark.parametrize("value,content", [("2026-09-17", "上线日期 2026.09.17"), ("Scope Recall", "scope-recall")])
 def test_a_value_is_matched_on_letters_and_digits_only(value, content):
     assert _unanswerable(_payload(kind="fact", value=value), [_said(content)]) is None
 
@@ -236,9 +260,16 @@ def test_kinds_proved_without_the_value_are_not_held_to_it(kind):
     assert _unanswerable(_payload(kind=kind), [_said("这里没有那个值。")]) is None
 
 
-@pytest.mark.parametrize("payload", [{"kind": "novel_kind", "value_text": "蓝色"}, {"value_text": "蓝色"}, None,
-                                     {"kind": "decision", "value_text": ""},
-                                     {"kind": "decision", "value_text": "——"}])
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"kind": "novel_kind", "value_text": "蓝色"},
+        {"value_text": "蓝色"},
+        None,
+        {"kind": "decision", "value_text": ""},
+        {"kind": "decision", "value_text": "——"},
+    ],
+)
 def test_what_the_rules_cannot_read_is_left_to_the_model(payload):
     assert _unanswerable(payload, [_said("这里没有那个值。")]) is None
 
@@ -256,8 +287,15 @@ def test_an_imported_source_speaks_with_its_verified_origin(app):
     from scope_recall.core.evidence_question import evidence_text
 
     core, ctx = app
-    verified = capture(core, ctx, "配色 蓝色", origin="imported", attested=True,
-                       source_original_origin="human_direct", key="TEST-import/verified")
+    verified = capture(
+        core,
+        ctx,
+        "配色 蓝色",
+        origin="imported",
+        attested=True,
+        source_original_origin="human_direct",
+        key="TEST-import/verified",
+    )
     assert evidence_text(verified).origin == "human_direct"
     observed = capture(core, ctx, "配色 蓝色", origin="tool_observation", key="TEST-import/observed")
     assert evidence_text(observed).origin == "tool_observation" and evidence_text(observed).complete
@@ -267,23 +305,29 @@ def test_an_imported_source_speaks_with_its_verified_origin(app):
 # Questions worth asking at most so often
 # --------------------------------------------------------------------------
 
+
 @pytest.mark.parametrize("kind", ["preference", "constraint", "decision", "intention", "alias"])
-@pytest.mark.parametrize("origins", [{"tool_observation"}, {"external_document"}, {"tool_observation", "external_document"}])
+@pytest.mark.parametrize(
+    "origins", [{"tool_observation"}, {"external_document"}, {"tool_observation", "external_document"}]
+)
 def test_a_person_kind_from_impersonal_sources_needs_an_absent_person(kind, origins):
     from scope_recall.core.evidence_question import needs_absent_person
 
     assert needs_absent_person({"kind": kind}, origins) is True
 
 
-@pytest.mark.parametrize("kind,origins", [
-    ("constraint", {"tool_observation", "human_direct"}),
-    ("constraint", {"tool_observation", "assistant_visible"}),   # may lead to a person through lineage
-    ("constraint", {"origin_unknown"}),
-    ("constraint", set()),
-    ("fact", {"tool_observation"}),                              # an observation can establish a fact
-    ("procedure", {"tool_observation"}),
-    (None, {"tool_observation"}),
-])
+@pytest.mark.parametrize(
+    "kind,origins",
+    [
+        ("constraint", {"tool_observation", "human_direct"}),
+        ("constraint", {"tool_observation", "assistant_visible"}),  # may lead to a person through lineage
+        ("constraint", {"origin_unknown"}),
+        ("constraint", set()),
+        ("fact", {"tool_observation"}),  # an observation can establish a fact
+        ("procedure", {"tool_observation"}),
+        (None, {"tool_observation"}),
+    ],
+)
 def test_anything_less_certain_stays_a_candidate(kind, origins):
     from scope_recall.core.evidence_question import needs_absent_person
 
@@ -325,8 +369,10 @@ def test_a_verdict_rests_on_what_a_person_or_a_document_said():
     assert not rooted_verdict(fact, [(_said(line, complete=False), line)])
     assert rooted_verdict(_payload(kind="intention"), [(person, "另外该收尾了。")])
     procedure = dict(_payload(kind="procedure"), procedure={"method": ["先备份", "再升级"]})
-    assert not rooted_verdict(procedure, [(_said("先备份，再升级。", origin="tool_observation"), "先备份，再升级。"),
-                                          (person, "另外该收尾了。")])
+    assert not rooted_verdict(
+        procedure,
+        [(_said("先备份，再升级。", origin="tool_observation"), "先备份，再升级。"), (person, "另外该收尾了。")],
+    )
     assert rooted_verdict(procedure, [(_said("先备份，再升级。"), "先备份，再升级。")])
     no_steps = dict(_payload(kind="procedure"), procedure={"method": []})
     assert not rooted_verdict(no_steps, [(_said("先备份，再升级。"), "先备份，再升级。")])

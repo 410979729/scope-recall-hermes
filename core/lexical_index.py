@@ -16,6 +16,7 @@ named in one place: filter on ``t.term``, aggregate on ``e``.  The preference
 match in ``background_context`` starts from its few claims instead and names
 the tables itself.
 """
+
 from __future__ import annotations
 
 import json
@@ -25,14 +26,14 @@ from ..contracts import ContractError
 from .events import WITHHELD_TOOL_OUTPUT_SQL, indexed_terms, withheld_tool_output
 
 #: ``t`` is the term, ``p`` the posting, ``e`` the source version.
-JOIN = ("lexical_terms t JOIN lexical_postings p ON p.term_id=t.term_id "
-        "JOIN source_events e ON e.source_id=p.source_id")
+JOIN = "lexical_terms t JOIN lexical_postings p ON p.term_id=t.term_id JOIN source_events e ON e.source_id=p.source_id"
 
 
 def source_id(conn, event_id: str, source_revision: int) -> int | None:
     """The integer identity of one source version, or ``None`` when it does not exist."""
-    row = conn.execute("SELECT source_id FROM source_events WHERE event_id=? AND source_revision=?",
-                       (event_id, source_revision)).fetchone()
+    row = conn.execute(
+        "SELECT source_id FROM source_events WHERE event_id=? AND source_revision=?", (event_id, source_revision)
+    ).fetchone()
     return None if row is None else row[0]
 
 
@@ -52,7 +53,8 @@ def index_terms(conn, source: int, terms: Iterable[str]) -> int:
     conn.execute(
         "INSERT OR IGNORE INTO lexical_postings(term_id,source_id) "
         "SELECT term_id,? FROM lexical_terms WHERE term IN (SELECT value FROM json_each(?))",
-        (source, payload))
+        (source, payload),
+    )
     return len(unique)
 
 
@@ -60,15 +62,19 @@ def terms_of(conn, source: int) -> tuple[str, ...]:
     """The terms recorded for one source version, in term order: one row, whatever the count (``index_terms``)."""
     row = conn.execute(
         "SELECT json_group_array(t.term) FROM lexical_postings p JOIN lexical_terms t ON t.term_id=p.term_id "
-        "WHERE p.source_id=?", (source,)).fetchone()
+        "WHERE p.source_id=?",
+        (source,),
+    ).fetchone()
     # Python orders strings by code point, as SQLite's binary collation orders their UTF-8.
     return tuple(sorted(json.loads(row[0])))
 
 
 def forget(conn, event_id: str) -> None:
     """Drop the postings of every version of the source (deletion)."""
-    conn.execute("DELETE FROM lexical_postings WHERE source_id IN (SELECT source_id FROM source_events WHERE event_id=?)",
-                 (event_id,))
+    conn.execute(
+        "DELETE FROM lexical_postings WHERE source_id IN (SELECT source_id FROM source_events WHERE event_id=?)",
+        (event_id,),
+    )
 
 
 def unindex(conn, sources: Iterable[int]) -> int:
@@ -86,8 +92,9 @@ def unindex_beyond(conn, source: int, keep: Iterable[str] = ()) -> int:
         return unindex(conn, (source,))
     return conn.execute(
         f"""DELETE FROM lexical_postings WHERE source_id=? AND term_id NOT IN
-            (SELECT term_id FROM lexical_terms WHERE term IN ({','.join('?' for _ in kept)}))""",
-        (source, *kept)).rowcount
+            (SELECT term_id FROM lexical_terms WHERE term IN ({",".join("?" for _ in kept)}))""",
+        (source, *kept),
+    ).rowcount
 
 
 #: Placeholders one page may look at.  A page drops about ten postings each in one write transaction, and holds the
@@ -115,7 +122,7 @@ def unindex_withheld(conn, scope_ids: Iterable[str], *, after_id: int, limit: in
     rows = conn.execute(
         f"""SELECT e.source_id,e.role,e.content FROM source_events e
             WHERE e.source_id>? AND +e.role='tool' AND {WITHHELD_TOOL_OUTPUT_SQL}
-              AND +e.scope_id IN ({','.join('?' for _ in scopes)})
+              AND +e.scope_id IN ({",".join("?" for _ in scopes)})
               AND EXISTS (SELECT 1 FROM lexical_postings p WHERE p.source_id=e.source_id)
             ORDER BY e.source_id LIMIT ?""",
         (after_id, *scopes, limit + 1),
@@ -133,17 +140,26 @@ def unindex_withheld(conn, scope_ids: Iterable[str], *, after_id: int, limit: in
         elif terms_of(conn, source) != keep:
             beyond.append((source, keep))
     if dry_run:
-        postings = 0 if not whole else conn.execute(
-            f"SELECT COUNT(*) FROM lexical_postings WHERE source_id IN ({','.join('?' for _ in whole)})",
-            whole).fetchone()[0]
+        postings = (
+            0
+            if not whole
+            else conn.execute(
+                f"SELECT COUNT(*) FROM lexical_postings WHERE source_id IN ({','.join('?' for _ in whole)})", whole
+            ).fetchone()[0]
+        )
         postings += sum(len(set(terms_of(conn, source)) - set(keep)) for source, keep in beyond)
     else:
         postings = unindex(conn, whole)
         for source, keep in beyond:
             postings += unindex_beyond(conn, source, keep)
             index_terms(conn, source, keep)
-    return {"dry_run": dry_run, "sources": len(whole) + len(beyond), "postings": int(postings),
-            "next_after_id": page[-1][0] if page else after_id, "more": len(rows) > limit}
+    return {
+        "dry_run": dry_run,
+        "sources": len(whole) + len(beyond),
+        "postings": int(postings),
+        "next_after_id": page[-1][0] if page else after_id,
+        "more": len(rows) > limit,
+    }
 
 
 def document_frequency(conn, terms: Iterable[str]) -> dict[str, int]:
@@ -152,10 +168,25 @@ def document_frequency(conn, terms: Iterable[str]) -> dict[str, int]:
     if not wanted:
         return {}
     marks = ",".join("?" for _ in wanted)
-    return {row[0]: int(row[1]) for row in conn.execute(
-        f"SELECT t.term,COUNT(*) FROM lexical_terms t JOIN lexical_postings p ON p.term_id=t.term_id "
-        f"WHERE t.term IN ({marks}) GROUP BY t.term", wanted)}
+    return {
+        row[0]: int(row[1])
+        for row in conn.execute(
+            f"SELECT t.term,COUNT(*) FROM lexical_terms t JOIN lexical_postings p ON p.term_id=t.term_id "
+            f"WHERE t.term IN ({marks}) GROUP BY t.term",
+            wanted,
+        )
+    }
 
 
-__all__ = ["JOIN", "WITHHELD_PAGE_MAX", "document_frequency", "forget", "index_terms", "source_id", "terms_of", "unindex",
-           "unindex_beyond", "unindex_withheld"]
+__all__ = [
+    "JOIN",
+    "WITHHELD_PAGE_MAX",
+    "document_frequency",
+    "forget",
+    "index_terms",
+    "source_id",
+    "terms_of",
+    "unindex",
+    "unindex_beyond",
+    "unindex_withheld",
+]

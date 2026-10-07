@@ -41,5 +41,7 @@ def test_bare_git_local_init_hash_and_status_are_allowed(tmp_path):
     blob.write_text("TEST-git-blob", encoding="utf-8")
     hashed = subprocess.run(["git", "hash-object", str(blob)], cwd=repo, check=False, capture_output=True, text=True)
     assert hashed.returncode == 0, hashed.stdout + hashed.stderr
-    status = subprocess.run(["git", "-C", str(repo), "status", "--short"], cwd=tmp_path, check=False, capture_output=True, text=True)
+    status = subprocess.run(
+        ["git", "-C", str(repo), "status", "--short"], cwd=tmp_path, check=False, capture_output=True, text=True
+    )
     assert status.returncode == 0, status.stdout + status.stderr

@@ -1,4 +1,5 @@
 """Hermes MemoryProvider adapter that delegates recall/capture to the core boundary."""
+
 from __future__ import annotations
 
 from contextlib import contextmanager
@@ -91,11 +92,13 @@ GAP_CURRENT_SOURCE_REFS_LIMIT = "degraded:current_source_refs_limit"
 #: and an automatic recall takes up to 5.
 _PREFETCH_STATE_WAIT_S = 2.0
 
+
 def _serialized_host_event(method):
     @wraps(method)
     def guarded(self, *args, **kwargs):
         with self._lock, self._holding(method.__name__):
             return method(self, *args, **kwargs)
+
     return guarded
 
 
@@ -135,6 +138,7 @@ def _start_vector_helper(host_runtime) -> None:
         return
     try:
         from ...vector.process_store import prestart
+
         prestart()
     except OSError as exc:
         # The first search starts its own helper, as before: slower, never a reason not to bind.
@@ -155,7 +159,7 @@ def _same_stored_content(stored_event: dict, content: object) -> bool:
     if type(stored) is not str:
         return False
     if "segment" in stored_event:
-        return admitted[:len(stored)] == stored
+        return admitted[: len(stored)] == stored
     return admitted == stored
 
 
@@ -306,11 +310,18 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
         if kind == "pre_llm_call":
             self._skipped_turn_id = str((kwargs or {}).get("turn_id") or "").strip() or None
             if self._skipped_turn_id:
-                self._note_turn_opener(self._skipped_turn_id, (kwargs or {}).get("conversation_history"),
-                                       (kwargs or {}).get("user_message"))
+                self._note_turn_opener(
+                    self._skipped_turn_id,
+                    (kwargs or {}).get("conversation_history"),
+                    (kwargs or {}).get("user_message"),
+                )
         self._count_backpressure(kind)
-        _log.warning("scope-recall: %s not taken: this session has been busy in %s for %.1f s", kind,
-                     holder[0] if holder else "another call", time.monotonic() - holder[1] if holder else 0.0)
+        _log.warning(
+            "scope-recall: %s not taken: this session has been busy in %s for %.1f s",
+            kind,
+            holder[0] if holder else "another call",
+            time.monotonic() - holder[1] if holder else 0.0,
+        )
 
     def _note_turn_opener(self, turn_id: str, history: object, user_message: object) -> bool:
         """Remember whether Hermes opened ``turn_id`` itself (``host_notice``), and with which text; True if it did."""
@@ -346,9 +357,7 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
     @property
     def diagnostics(self) -> AdapterDiagnostics:
         pending = self._pending_capture_identities()
-        self._diagnostics.pending_capture_identities = tuple(
-            f"{key}@{revision}" for key, revision in pending
-        )
+        self._diagnostics.pending_capture_identities = tuple(f"{key}@{revision}" for key, revision in pending)
         self._diagnostics.current_source_refs = tuple(self._current_source_refs)
         self._diagnostics.durable_pending_captures = self._durable_pending_count()
         self._diagnostics.host_backpressure = self._backpressure_counts() or None
@@ -360,9 +369,15 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
         try:
             context = self._identity.trusted_context()
             scopes = sorted(context.allowed_scope_ids)
-            with self._core.storage.read(context, remaining_seconds=.1) as tx:
-                return tx._check().execute(f"SELECT count(*) FROM capture_inbox WHERE scope_id IN ({','.join('?' for _ in scopes)}) AND project_id IS ? AND branch_id IS ?",
-                                          (*scopes, context.project_id, context.branch_id)).fetchone()[0]
+            with self._core.storage.read(context, remaining_seconds=0.1) as tx:
+                return (
+                    tx._check()
+                    .execute(
+                        f"SELECT count(*) FROM capture_inbox WHERE scope_id IN ({','.join('?' for _ in scopes)}) AND project_id IS ? AND branch_id IS ?",
+                        (*scopes, context.project_id, context.branch_id),
+                    )
+                    .fetchone()[0]
+                )
         except (ContractError, OSError, RuntimeError, sqlite3.Error):
             return None
 
@@ -431,9 +446,7 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
             # its own scope's grant (``_retry_pass``).  Cleared here, a session started again in this adapter dropped
             # tool results that had only met a busy store.
             self._diagnostics.capability_gaps = tuple(
-                dict.fromkeys(
-                    (*fresh.runtime_audience.capability_gaps, *self._host_runtime.capability_gaps)
-                )
+                dict.fromkeys((*fresh.runtime_audience.capability_gaps, *self._host_runtime.capability_gaps))
             )
             self._worker_launch_gaps = ()
             self._initialized = True
@@ -453,18 +466,26 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
         gap codes only, never what was said, and nothing a login could make into a line of its own.
         """
         scope = identity.scope
-        if (scope.platform not in LOCAL_PLATFORMS or scope.agent_context != "primary"
-                or identity.runtime_audience.allowed_scope_ids):
+        if (
+            scope.platform not in LOCAL_PLATFORMS
+            or scope.agent_context != "primary"
+            or identity.runtime_audience.allowed_scope_ids
+        ):
             self._unbound_route = None
             return
         route = (scope.platform, scope.user_id, scope.chat_type, scope.chat_id, scope.thread_id, scope.agent_workspace)
         if route == self._unbound_route:
             return
         self._unbound_route = route
-        said = ("scope-recall: session bound to no memory scope: a %s session for %s (%s); nothing in it is "
-                "captured or recalled; %s") % (scope.platform, scope.user_id[:120],
-                                               ", ".join(identity.runtime_audience.capability_gaps),
-                                               unbound_session_hint(scope))
+        said = (
+            "scope-recall: session bound to no memory scope: a %s session for %s (%s); nothing in it is "
+            "captured or recalled; %s"
+        ) % (
+            scope.platform,
+            scope.user_id[:120],
+            ", ".join(identity.runtime_audience.capability_gaps),
+            unbound_session_hint(scope),
+        )
         _log.warning("%s", "".join(character for character in said if character.isprintable()))
 
     def _require_identity(self) -> HermesIdentity:
@@ -525,10 +546,14 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
         """
         previous = self._worker_launch_gaps
         self._worker_launch_gaps = tuple(gaps)
-        self._diagnostics.capability_gaps = tuple(dict.fromkeys((
-            *(gap for gap in self._diagnostics.capability_gaps if gap not in previous),
-            *self._worker_launch_gaps,
-        )))
+        self._diagnostics.capability_gaps = tuple(
+            dict.fromkeys(
+                (
+                    *(gap for gap in self._diagnostics.capability_gaps if gap not in previous),
+                    *self._worker_launch_gaps,
+                )
+            )
+        )
 
     def _record_capture_failure(self, identity: SourceIdentity | None, reason: str, *, replay: bool = False) -> None:
         if identity is not None:
@@ -546,7 +571,8 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
         # no trace outside this process's memory.  A retry that fails again, and is still kept, is not said again:
         # driven by the retry thread, that was a line per capture every 30 s; its end is said (stored, dropped, lost).
         (_log.debug if replay and retried else _log.warning)(
-            "scope-recall: not stored (%s)%s: %s", reason, ", kept to retry" if retried else "", label[:200])
+            "scope-recall: not stored (%s)%s: %s", reason, ", kept to retry" if retried else "", label[:200]
+        )
 
     def _capture_event(
         self,
@@ -597,7 +623,9 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
             else:
                 self._merge_gaps(("capture_gap:retry_buffer_full",))
 
-        host_scope = self._retry_captures[identity].host_scope if replay and identity in self._retry_captures else bound.scope
+        host_scope = (
+            self._retry_captures[identity].host_scope if replay and identity in self._retry_captures else bound.scope
+        )
         failure, holder = None, self._holder
         if release:
             # The store I/O without the lock, which the caller (``sync_turn``, a tool hook) holds exactly once.  Held
@@ -614,23 +642,39 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
             # numbers turns from 1 again, so a different message can arrive under
             # an old key.  Storage re-keys that one, and it must keep its own time.
             if identity is not None:
-                previous = self._require_core().source_by_event_key(context, identity[0], identity[1],
-                            remaining_seconds=max(.001, remaining_seconds - (time.monotonic() - started)))
-                if (previous is not None and previous.scope_id == scope_id
-                        and previous.session_id == context.session_id
-                        and previous.project_id == context.project_id and previous.branch_id == context.branch_id
-                        and _same_stored_content(previous.event, event.get("content"))):
+                previous = self._require_core().source_by_event_key(
+                    context,
+                    identity[0],
+                    identity[1],
+                    remaining_seconds=max(0.001, remaining_seconds - (time.monotonic() - started)),
+                )
+                if (
+                    previous is not None
+                    and previous.scope_id == scope_id
+                    and previous.session_id == context.session_id
+                    and previous.project_id == context.project_id
+                    and previous.branch_id == context.branch_id
+                    and _same_stored_content(previous.event, event.get("content"))
+                ):
                     for field in ("occurred_at", "recorded_at", "time_precision"):
                         if field in previous.event:
                             event[field] = previous.event[field]
             core = self._require_core()
             if isinstance(core, MemoryCore):
-                receipt = core.record_host_event(context, event, scope_id=scope_id,
+                receipt = core.record_host_event(
+                    context,
+                    event,
+                    scope_id=scope_id,
                     host_scope=host_scope_payload(host_scope),
-                    remaining_seconds=max(.001, remaining_seconds - (time.monotonic() - started)))
+                    remaining_seconds=max(0.001, remaining_seconds - (time.monotonic() - started)),
+                )
             else:
-                receipt = core.record_event(context, event, scope_id=scope_id,
-                    remaining_seconds=max(.001, remaining_seconds - (time.monotonic() - started)))
+                receipt = core.record_event(
+                    context,
+                    event,
+                    scope_id=scope_id,
+                    remaining_seconds=max(0.001, remaining_seconds - (time.monotonic() - started)),
+                )
         except (ContractError, OSError, RuntimeError, sqlite3.Error) as exc:
             failure = exc
         finally:
@@ -649,8 +693,11 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
             if replay and identity is not None:
                 # Said "still being written" at shutdown: its end is said here (review of 3.6.1).
                 if failure is None and receipt.durability in ("persisted", "queued"):
-                    _log.info("scope-recall: %s on retry: %s",
-                              "stored" if receipt.durability == "persisted" else "queued", _label(identity))
+                    _log.info(
+                        "scope-recall: %s on retry: %s",
+                        "stored" if receipt.durability == "persisted" else "queued",
+                        _label(identity),
+                    )
                 else:
                     _log.warning("scope-recall: not stored (still failing at shutdown), lost: %s", _label(identity))
             return None if failure is not None else receipt
@@ -733,9 +780,15 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
         if isinstance(core, MemoryCore) and not identity.read_only:
             try:
                 from ...core.capture_inbox import INGRESS_PENDING_GAP, replay_inbox
-                receipts = replay_inbox(core.storage, core.clock, identity.trusted_context(),
-                    authorize=build_ingress_authorizer(identity.binding), admission_policy=core.config.admission_policy,
-                    remaining_seconds=_CAPTURE_TIMEOUT_S)
+
+                receipts = replay_inbox(
+                    core.storage,
+                    core.clock,
+                    identity.trusted_context(),
+                    authorize=build_ingress_authorizer(identity.binding),
+                    admission_policy=core.config.admission_policy,
+                    remaining_seconds=_CAPTURE_TIMEOUT_S,
+                )
             except (ContractError, OSError, RuntimeError, sqlite3.Error, ValueError):
                 self._merge_gaps(("capture_gap:durable_ingress_pending",))
             else:
@@ -744,8 +797,9 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
                     self._merge_gaps((INGRESS_PENDING_GAP,))
         self._retry_buffered_captures()
 
-    def _retry_buffered_captures(self, *, release: bool = False, seconds: float = _CAPTURE_TIMEOUT_S,
-                                 force: bool = False) -> None:
+    def _retry_buffered_captures(
+        self, *, release: bool = False, seconds: float = _CAPTURE_TIMEOUT_S, force: bool = False
+    ) -> None:
         """Write again what a busy store kept in memory; nothing to do, and nothing opened, when it holds none.
 
         Run at every ``sync_turn``, by the retry thread while the buffer holds anything (``_keep_retrying``), at the
@@ -761,14 +815,14 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
             pending_items = tuple(self._retry_captures.items())
             self._retrying = True
         try:
-            self._retry_pass(identity, pending_items, deadline=time.monotonic() + seconds, release=release,
-                             force=force)
+            self._retry_pass(identity, pending_items, deadline=time.monotonic() + seconds, release=release, force=force)
         finally:
             with self._lock:
                 self._retrying = False
 
-    def _retry_pass(self, identity: HermesIdentity, pending_items: tuple, *, deadline: float, release: bool,
-                    force: bool) -> None:
+    def _retry_pass(
+        self, identity: HermesIdentity, pending_items: tuple, *, deadline: float, release: bool, force: bool
+    ) -> None:
         try:
             manifest = load_binding_for_home(identity.hermes_home)
             assert_binding_matches_manifest(identity.binding, manifest)
@@ -777,8 +831,10 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
                 self._merge_gaps(("capture_gap:retry_authorization_unverified",))
                 expired = self._give_up_expired(pending_items)
             if len(expired) < len(pending_items):
-                _log.warning("scope-recall: %d buffered capture(s) not written again now: their authorization could "
-                             "not be read", len(pending_items) - len(expired))
+                _log.warning(
+                    "scope-recall: %d buffered capture(s) not written again now: their authorization could not be read",
+                    len(pending_items) - len(expired),
+                )
             return
         for key, pending in pending_items:
             remaining = deadline - time.monotonic()
@@ -800,8 +856,11 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
                     audience = resolve_runtime_audience(manifest, pending.host_scope)
                 except (HermesIdentityError, ContractError, ValueError, TypeError):
                     audience = None
-                allowed_scopes = (pending.context.allowed_scope_ids & audience.writable_scope_ids
-                                  if audience is not None else frozenset())
+                allowed_scopes = (
+                    pending.context.allowed_scope_ids & audience.writable_scope_ids
+                    if audience is not None
+                    else frozenset()
+                )
                 if pending.context.binding != identity.binding or pending.scope_id not in allowed_scopes:
                     self._retry_captures.pop(key, None)
                     self._ledger.rollback(key)
@@ -816,24 +875,39 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
                 context = replace(pending.context, allowed_scope_ids=frozenset(allowed_scopes))
                 self._retry_in_flight.add(key)
                 try:
-                    self._capture_event(context, pending.event, identity=key, gaps=pending.gaps,
-                                        scope_id=pending.scope_id, remaining_seconds=remaining, replay=True,
-                                        bound=identity, release=release)
+                    self._capture_event(
+                        context,
+                        pending.event,
+                        identity=key,
+                        gaps=pending.gaps,
+                        scope_id=pending.scope_id,
+                        remaining_seconds=remaining,
+                        replay=True,
+                        bound=identity,
+                        release=release,
+                    )
                 finally:
                     self._retry_in_flight.discard(key)
 
     def _give_up_expired(self, items) -> list:
         """Drop the buffered captures kept longer than ``_RETRY_GIVE_UP_S``, each logged as lost; the caller holds
         ``_lock``.  Returns their keys."""
-        expired = [key for key, pending in items
-                   if self._retry_captures.get(key) is pending and key not in self._retry_in_flight
-                   and time.monotonic() - pending.kept_at > _RETRY_GIVE_UP_S]
+        expired = [
+            key
+            for key, pending in items
+            if self._retry_captures.get(key) is pending
+            and key not in self._retry_in_flight
+            and time.monotonic() - pending.kept_at > _RETRY_GIVE_UP_S
+        ]
         for key in expired:
             self._retry_captures.pop(key, None)
             self._ledger.rollback(key)
             self._merge_gaps(("capture_gap:retry_gave_up",))
-            _log.warning("scope-recall: not stored (still failing after %d minutes), lost: %s",
-                         int(_RETRY_GIVE_UP_S // 60), _label(key))
+            _log.warning(
+                "scope-recall: not stored (still failing after %d minutes), lost: %s",
+                int(_RETRY_GIVE_UP_S // 60),
+                _label(key),
+            )
         return expired
 
     def _start_retrying(self) -> None:
@@ -910,7 +984,8 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
                 self._diagnostics.last_render_ref = preparation.render_ref
                 self._pre_llm_pending = False
         return render_host_recall_context(
-            preparation.canonical_text, context=preparation.context,
+            preparation.canonical_text,
+            context=preparation.context,
             entry=(identity.entry_id, identity.manifest.entry_name) if identity.entry_id is not None else None,
             zone=display_zone(),
         )
@@ -959,7 +1034,8 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
             self._current_task_message = current_message[:8192]
         notice = self._note_turn_opener(turn_id, kwargs.get("conversation_history"), current_message)
         context = identity.trusted_context(
-            session_id=session_id, actor_origin="host_generated" if notice else None, mutation=True)
+            session_id=session_id, actor_origin="host_generated" if notice else None, mutation=True
+        )
         event, gaps, ledger_identity = pre_llm_source_event(
             self._ledger,
             context,
@@ -1122,34 +1198,69 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
         self._retry_buffered_captures(release=True)
         context = identity.trusted_context(session_id=effective_session, mutation=True)
         shown = identity.trusted_context(session_id=effective_session, actor_origin="assistant_visible", mutation=True)
-        opened = (identity.trusted_context(session_id=effective_session, actor_origin="host_generated", mutation=True)
-                  if self._opened_by_host(turn_id, user_content) else context)
+        opened = (
+            identity.trusted_context(session_id=effective_session, actor_origin="host_generated", mutation=True)
+            if self._opened_by_host(turn_id, user_content)
+            else context
+        )
         with self._said_lock:
             interim, self._interim_said = self._interim_said, {}
             steers, self._steer_said = self._steer_said, {}
         limited = False
         for said_turn, said in interim.items():
             if len(said) > _INTERIM_PER_TURN:
-                _log.warning("scope-recall: turn %s showed %d messages between tool calls; the first %d are kept",
-                             said_turn, len(said), _INTERIM_PER_TURN)
+                _log.warning(
+                    "scope-recall: turn %s showed %d messages between tool calls; the first %d are kept",
+                    said_turn,
+                    len(said),
+                    _INTERIM_PER_TURN,
+                )
                 limited, said = True, said[:_INTERIM_PER_TURN]
             for ordinal, (text, occurred_at) in enumerate(said, 1):
                 with self._lock, self._holding("sync_turn"):
                     event, gaps, ledger_identity = interim_source_event(
-                        self._ledger, shown, session_id=effective_session, turn_id=said_turn, ordinal=ordinal,
-                        content=text, recorded_at=self._utc_now(), occurred_at=occurred_at)
+                        self._ledger,
+                        shown,
+                        session_id=effective_session,
+                        turn_id=said_turn,
+                        ordinal=ordinal,
+                        content=text,
+                        recorded_at=self._utc_now(),
+                        occurred_at=occurred_at,
+                    )
                     if event is not None or gaps:
-                        self._capture_event(shown, event, identity=ledger_identity, gaps=gaps,
-                                            scope_id=identity.local_scope_id, bound=identity, release=True)
+                        self._capture_event(
+                            shown,
+                            event,
+                            identity=ledger_identity,
+                            gaps=gaps,
+                            scope_id=identity.local_scope_id,
+                            bound=identity,
+                            release=True,
+                        )
         for said_turn, said in steers.items():
             for ordinal, (text, occurred_at) in enumerate(said, 1):
                 with self._lock, self._holding("sync_turn"):
                     event, gaps, ledger_identity = steer_source_event(
-                        self._ledger, context, session_id=effective_session, turn_id=said_turn, ordinal=ordinal,
-                        content=text, recorded_at=self._utc_now(), occurred_at=occurred_at)
+                        self._ledger,
+                        context,
+                        session_id=effective_session,
+                        turn_id=said_turn,
+                        ordinal=ordinal,
+                        content=text,
+                        recorded_at=self._utc_now(),
+                        occurred_at=occurred_at,
+                    )
                     if event is not None or gaps:
-                        self._capture_event(context, event, identity=ledger_identity, gaps=gaps,
-                                            scope_id=identity.local_scope_id, bound=identity, release=True)
+                        self._capture_event(
+                            context,
+                            event,
+                            identity=ledger_identity,
+                            gaps=gaps,
+                            scope_id=identity.local_scope_id,
+                            bound=identity,
+                            release=True,
+                        )
         outcome = "success"
         with self._lock:
             if not assistant_content.strip():
@@ -1171,8 +1282,15 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
         for event, ledger_identity in event_pairs:
             event_context = shown if event["role"] == "assistant" else opened
             with self._lock, self._holding("sync_turn"):
-                self._capture_event(event_context, event, identity=ledger_identity, gaps=gaps,
-                                    scope_id=identity.local_scope_id, bound=identity, release=True)
+                self._capture_event(
+                    event_context,
+                    event,
+                    identity=ledger_identity,
+                    gaps=gaps,
+                    scope_id=identity.local_scope_id,
+                    bound=identity,
+                    release=True,
+                )
         with self._lock:
             if self._active_turn_id == active_turn:
                 # The next turn may have begun between these writes; its pre_llm marker is its own.
@@ -1219,8 +1337,10 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
                 # the foreground lifecycle hook.
                 core = self._require_core()
                 context = identity.trusted_context(mutation=True)
+
                 def drain() -> None:
                     core.drain_worker(context, max_items=8, remaining_seconds=_CAPTURE_TIMEOUT_S)
+
             self._worker.submit(drain, kind="drain")
 
     @_serialized_host_event
@@ -1255,7 +1375,9 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
         self._identity = fresh
         runtime_audience = fresh.runtime_audience
         self._diagnostics.capability_gaps = tuple(
-            dict.fromkeys((*runtime_audience.capability_gaps, *(self._host_runtime.capability_gaps if self._host_runtime else ())))
+            dict.fromkeys(
+                (*runtime_audience.capability_gaps, *(self._host_runtime.capability_gaps if self._host_runtime else ()))
+            )
         )
         self._worker_launch_gaps = ()
         self._say_if_unbound(fresh)
@@ -1299,7 +1421,8 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
             try:
                 self._retry_buffered_captures(
                     seconds=min(_SHUTDOWN_RETRY_SECONDS, max(_CAPTURE_TIMEOUT_S, deadline - time.monotonic())),
-                    force=True)
+                    force=True,
+                )
             except Exception as exc:  # noqa: BLE001 - the shutdown goes on; what is left is said below
                 _log.warning("scope-recall: a retry of buffered captures failed at shutdown (%s)", type(exc).__name__)
             pending = self._pending_capture_identities()

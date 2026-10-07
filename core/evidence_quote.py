@@ -20,6 +20,7 @@ nothing that passes now can begin to fail.  Every later rung returns a slice
 of the stored content itself, which is why the callers stay byte-strict: by
 the time they run, the quote already *is* a literal substring.
 """
+
 from __future__ import annotations
 
 import json

@@ -41,7 +41,12 @@ def _read_guard_reply(stdin, *, request_id: int, nonce: str, timeout: float | No
         reply = json.loads(line)
     except (TypeError, ValueError, json.JSONDecodeError) as exc:
         raise FenceHandshakeError("guard reply malformed") from exc
-    if not isinstance(reply, dict) or reply.get("id") != request_id or reply.get("kind") != "guard_result" or reply.get("nonce") != nonce:
+    if (
+        not isinstance(reply, dict)
+        or reply.get("id") != request_id
+        or reply.get("kind") != "guard_result"
+        or reply.get("nonce") != nonce
+    ):
         raise FenceHandshakeError("guard reply mismatch")
     if type(reply.get("approved")) is not bool:
         raise FenceHandshakeError("guard approval must be boolean")
@@ -56,8 +61,9 @@ def _take_import_roots(arguments: list[str]) -> None:
     interpreter's own as PYTHONPATH put them for the host, none twice.
     """
     known = {os.path.normcase(os.path.abspath(entry)) for entry in sys.path if entry}
-    sys.path[:0] = [entry for entry in arguments
-                    if os.path.isabs(entry) and os.path.normcase(os.path.abspath(entry)) not in known]
+    sys.path[:0] = [
+        entry for entry in arguments if os.path.isabs(entry) and os.path.normcase(os.path.abspath(entry)) not in known
+    ]
 
 
 def main() -> None:
@@ -83,6 +89,7 @@ def main() -> None:
         # (``lance_native.helper_start_failure``).  The imports above are where the helper died in #176.  A failed
         # native import fails this run; the helper below leaves it to its first request, which reports it.
         import lancedb, pyarrow  # noqa: E401,F401
+
         return
 
     # This entire interpreter is already disposable. A second import-probe
@@ -104,6 +111,7 @@ def main() -> None:
     except Exception:  # noqa: BLE001
         pass
     try:
+
         def fenced_upsert(rows, nonce, *, request_id, guard_timeout_seconds):
             if not isinstance(nonce, str) or not nonce:
                 raise FenceHandshakeError("guard nonce missing")
@@ -135,8 +143,12 @@ def main() -> None:
                 with contextlib.redirect_stdout(sys.stderr):
                     if store is None:
                         spec = request["store"]
-                        store = LanceVectorStore(Path(spec["db_path"]), table_name=spec["table_name"],
-                                                 dimensions=int(spec["dimensions"]), metric=spec["metric"])
+                        store = LanceVectorStore(
+                            Path(spec["db_path"]),
+                            table_name=spec["table_name"],
+                            dimensions=int(spec["dimensions"]),
+                            metric=spec["metric"],
+                        )
                     method = request["method"]
                     if method not in LANCE_WORKER_METHODS:
                         raise ValueError("unsupported native vector operation")
@@ -158,12 +170,24 @@ def main() -> None:
                 # reply. EOF makes the host fail closed and reap this helper.
                 return
             except Exception as exc:
-                response = {"id": request_id, "ok": False, "error_type": type(exc).__name__,
-                            "error": sanitize_report_text(str(exc))[:500]}
+                response = {
+                    "id": request_id,
+                    "ok": False,
+                    "error_type": type(exc).__name__,
+                    "error": sanitize_report_text(str(exc))[:500],
+                }
             encoded = (json.dumps(response, ensure_ascii=False, allow_nan=False) + "\n").encode("utf-8")
             if len(encoded) > MAX_LANCE_FRAME_BYTES:
-                encoded = (json.dumps({"id": request_id, "ok": False,
-                                       "error": "native vector response exceeds the 64 MiB frame limit"}) + "\n").encode()
+                encoded = (
+                    json.dumps(
+                        {
+                            "id": request_id,
+                            "ok": False,
+                            "error": "native vector response exceeds the 64 MiB frame limit",
+                        }
+                    )
+                    + "\n"
+                ).encode()
             output.write(encoded)
             output.flush()
     finally:

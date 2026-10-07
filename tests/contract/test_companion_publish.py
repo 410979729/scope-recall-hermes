@@ -10,6 +10,7 @@ the store's own lock, an approving guard writes the whole group once, a
 refusing guard writes nothing, and a spent deadline or a non-callable guard is
 refused before anything is touched.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -21,15 +22,23 @@ from scope_recall.vector.store import build_vector_store
 
 def _record(ref: str = "event-1", vector: tuple[float, ...] = (0.25, 0.75)) -> LanceVectorRecord:
     return LanceVectorRecord(
-        "event", ref, 1, f"TEST:{ref}:1", "TEST-space", vector,
-        "TEST-scope", "TEST-agent", "TEST-installation",
+        "event",
+        ref,
+        1,
+        f"TEST:{ref}:1",
+        "TEST-space",
+        vector,
+        "TEST-scope",
+        "TEST-agent",
+        "TEST-installation",
     )
 
 
 @pytest.fixture
 def store(tmp_path):
-    companion = build_vector_store("sqlite-bruteforce", storage_dir=tmp_path, table_name="TEST_vectors",
-                                   dimensions=2, metric="cosine")
+    companion = build_vector_store(
+        "sqlite-bruteforce", storage_dir=tmp_path, table_name="TEST_vectors", dimensions=2, metric="cosine"
+    )
     companion.open()
     try:
         yield companion
@@ -68,8 +77,16 @@ def test_the_guard_is_evaluated_under_the_store_lock(store):
         store._lock.release()
         return True
 
-    row = dict(id="TEST:event-1:1", scope_id="TEST-scope", source="event", target="event-1",
-               content="", summary="", updated_at="", vector=[0.25, 0.75])
+    row = dict(
+        id="TEST:event-1:1",
+        scope_id="TEST-scope",
+        source="event",
+        target="event-1",
+        content="",
+        summary="",
+        updated_at="",
+        vector=[0.25, 0.75],
+    )
     assert store.fenced_upsert_records([row], guard=guard, remaining_seconds=1.0) is True
     assert store.list_ids() == ["TEST:event-1:1"]
 
@@ -82,14 +99,19 @@ def test_a_spent_deadline_is_refused_before_anything_is_written(store):
 
 def test_a_guard_that_is_not_callable_is_rejected(store):
     with pytest.raises(TypeError):
-        store.fenced_upsert_records([{"id": "TEST:event-1:1", "scope_id": "s", "vector": [0.0, 1.0]}],
-                                    guard=None, remaining_seconds=1.0)  # type: ignore[arg-type]
+        store.fenced_upsert_records(
+            [{"id": "TEST:event-1:1", "scope_id": "s", "vector": [0.0, 1.0]}], guard=None, remaining_seconds=1.0
+        )  # type: ignore[arg-type]
     assert store.list_ids() == []
 
 
 def test_an_empty_group_is_a_successful_no_op(store):
-    assert store.fenced_upsert_records([], guard=lambda: (_ for _ in ()).throw(AssertionError("not asked")),
-                                       remaining_seconds=1.0) is True
+    assert (
+        store.fenced_upsert_records(
+            [], guard=lambda: (_ for _ in ()).throw(AssertionError("not asked")), remaining_seconds=1.0
+        )
+        is True
+    )
 
 
 def test_a_companion_without_the_fenced_write_still_names_the_gap():

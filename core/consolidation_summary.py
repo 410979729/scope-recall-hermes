@@ -1,4 +1,5 @@
 """Consecutive fragment coverage and grounded, bounded summary assembly."""
+
 from __future__ import annotations
 
 import json
@@ -16,7 +17,9 @@ def _unique(values):
 
 def resume_seed(tx, work_id):
     goals = []
-    for row in tx._check().execute("SELECT proposals_json FROM consolidation_fragments WHERE work_id=? ORDER BY start_offset", (work_id,)):
+    for row in tx._check().execute(
+        "SELECT proposals_json FROM consolidation_fragments WHERE work_id=? ORDER BY start_offset", (work_id,)
+    ):
         for p in json.loads(row[0])["resume_proposals"]:
             proposed = _unique([*goals, p["goal"]])
             if len(_json(proposed).encode("utf-8")) <= 2048:
@@ -29,7 +32,7 @@ def validate_fragment(tx, value, fence, content):
     # other proposed item must be grounded in the current page; final Core
     # qualification still uses the complete original including negations.
     seeds = resume_seed(tx, fence.work_id)
-    page = content[fence.chunk.start:fence.chunk.end]
+    page = content[fence.chunk.start : fence.chunk.end]
     for proposal in value["resume_proposals"]:
         if proposal["goal"] not in seeds and proposal["goal"]["text"] not in page:
             raise ContractError("DERIVATION_INVALID", "fragment_goal")
@@ -49,7 +52,10 @@ def stage_fragment(tx, value, fence, now):
     encoded = _json({k: value[k] for k in ("resume_proposals", "reference_proposals")})
     if len(encoded) > 131072:
         raise ContractError("DERIVATION_INVALID", "fragment_summary_budget")
-    conn.execute("INSERT INTO consolidation_fragments VALUES (?,?,?,?,?)", (fence.work_id, chunk.start, chunk.end, chunk.total, encoded))
+    conn.execute(
+        "INSERT INTO consolidation_fragments VALUES (?,?,?,?,?)",
+        (fence.work_id, chunk.start, chunk.end, chunk.total, encoded),
+    )
     result = dict(value, resume_proposals=[], reference_proposals=[])
     if not chunk.final:
         return result
@@ -58,15 +64,19 @@ def stage_fragment(tx, value, fence, now):
     result["resume_proposals"] = _merge_resumes(resumes, gaps)
     result["reference_proposals"] = _merge_references(references, gaps)
     validate_payload("consolidation_result", result)
-    conn.execute("INSERT OR REPLACE INTO consolidation_outcomes VALUES (?,?,?,?)",
-                 (fence.work_id, "partial" if gaps else "complete", ",".join(sorted(set(gaps))) or "all_fragments_covered", now))
+    conn.execute(
+        "INSERT OR REPLACE INTO consolidation_outcomes VALUES (?,?,?,?)",
+        (fence.work_id, "partial" if gaps else "complete", ",".join(sorted(set(gaps))) or "all_fragments_covered", now),
+    )
     conn.execute("DELETE FROM consolidation_fragments WHERE work_id=?", (fence.work_id,))
     return result
 
 
 def _covered_fragments(conn, work_id, total):
     """Every accepted page in order with no gap or overlap, or the coverage is invalid."""
-    rows = conn.execute("SELECT * FROM consolidation_fragments WHERE work_id=? ORDER BY start_offset", (work_id,)).fetchall()
+    rows = conn.execute(
+        "SELECT * FROM consolidation_fragments WHERE work_id=? ORDER BY start_offset", (work_id,)
+    ).fetchall()
     cursor, resumes, references = 0, [], []
     for row in rows:
         if row["start_offset"] != cursor or row["total"] != total or row["end_offset"] <= cursor:
@@ -145,11 +155,19 @@ def apply_summary(tx, fence, kind, proposal, scope_id, now):
             raise
         detail = kind + "_qualification_failed"
         if fence.chunk is None:
-            conn.execute("INSERT OR REPLACE INTO consolidation_outcomes VALUES (?,?,?,?)", (fence.work_id, "partial", detail, now))
+            conn.execute(
+                "INSERT OR REPLACE INTO consolidation_outcomes VALUES (?,?,?,?)",
+                (fence.work_id, "partial", detail, now),
+            )
         else:
-            conn.execute("UPDATE consolidation_outcomes SET disposition='partial',detail=? WHERE work_id=?", (detail, fence.work_id))
-        conn.execute("INSERT INTO work_error_details(work_id,lease_token,stage,error_code,error_field,recorded_at) VALUES (?,?,?,?,?,?)",
-                     (fence.work_id, fence.lease_token, "summary", exc.code, exc.field, now))
+            conn.execute(
+                "UPDATE consolidation_outcomes SET disposition='partial',detail=? WHERE work_id=?",
+                (detail, fence.work_id),
+            )
+        conn.execute(
+            "INSERT INTO work_error_details(work_id,lease_token,stage,error_code,error_field,recorded_at) VALUES (?,?,?,?,?,?)",
+            (fence.work_id, fence.lease_token, "summary", exc.code, exc.field, now),
+        )
         return None
     finally:
         conn.execute("RELEASE consolidation_summary")

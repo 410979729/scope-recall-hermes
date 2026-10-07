@@ -1,4 +1,5 @@
 """Codex-owned authorization for durable ingress replay."""
+
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping

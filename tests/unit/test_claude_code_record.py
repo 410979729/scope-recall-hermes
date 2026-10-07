@@ -2,6 +2,7 @@
 
 Rows are synthetic and shaped like the record's; nothing here is a person's conversation.
 """
+
 from __future__ import annotations
 
 import json
@@ -28,21 +29,50 @@ def test_the_person_s_messages_are_said():
     assert said == transcript.Said("TEST-uuid", "user", "TEST 你好", "2026-09-25T11:16:54.627000Z")
     pasted = transcript.said(_person([{"type": "image", "source": {}}, {"type": "text", "text": "TEST 看这张图"}]))
     assert pasted is not None and pasted.text == "TEST 看这张图"
-    queued = transcript.said(_row("attachment", attachment={
-        "type": "queued_command", "commandMode": "prompt", "origin": {"kind": "human"}, "prompt": "TEST 顺便"}))
+    queued = transcript.said(
+        _row(
+            "attachment",
+            attachment={
+                "type": "queued_command",
+                "commandMode": "prompt",
+                "origin": {"kind": "human"},
+                "prompt": "TEST 顺便",
+            },
+        )
+    )
     assert queued is not None and (queued.role, queued.text) == ("user", "TEST 顺便")
 
 
 def test_only_entries_marked_as_the_person_s_are_the_person_s():
     assert transcript.said(_row("user", message={"role": "user", "content": "TEST no origin"})) is None
-    assert transcript.said(_row("user", origin={"kind": "task-notification"},
-                                message={"role": "user", "content": "<task-notification>TEST</task-notification>"})) is None
+    assert (
+        transcript.said(
+            _row(
+                "user",
+                origin={"kind": "task-notification"},
+                message={"role": "user", "content": "<task-notification>TEST</task-notification>"},
+            )
+        )
+        is None
+    )
     assert transcript.said(_person([{"type": "tool_result", "tool_use_id": "T", "content": "TEST"}])) is None
     assert transcript.said(_person("TEST summary", isCompactSummary=True)) is None
     assert transcript.said(_person("TEST meta", isMeta=True)) is None
     assert transcript.said(_person("TEST side", isSidechain=True)) is None
-    assert transcript.said(_row("attachment", attachment={
-        "type": "queued_command", "commandMode": "task-notification", "origin": {"kind": "human"}, "prompt": "TEST"})) is None
+    assert (
+        transcript.said(
+            _row(
+                "attachment",
+                attachment={
+                    "type": "queued_command",
+                    "commandMode": "task-notification",
+                    "origin": {"kind": "human"},
+                    "prompt": "TEST",
+                },
+            )
+        )
+        is None
+    )
 
 
 def test_the_model_s_visible_text_is_said_and_nothing_else_of_it():
@@ -70,8 +100,9 @@ def test_a_prompt_id_the_store_cannot_bind_is_dropped_and_the_message_kept():
     Stop of the session stopped at that line.  From another machine such a line is refused whole."""
     said = transcript.said(_person("TEST 你好", promptId="TEST-\ud800"))
     assert said is not None and said.text == "TEST 你好" and said.prompt_id is None
-    wire = transcript.said_to_wire(transcript.Said("TEST-uuid", "user", "TEST 你好", "2026-09-25T11:16:54.627000Z",
-                                                   "TEST-p1"))
+    wire = transcript.said_to_wire(
+        transcript.Said("TEST-uuid", "user", "TEST 你好", "2026-09-25T11:16:54.627000Z", "TEST-p1")
+    )
     assert transcript.said_from_wire(wire) is not None
     assert transcript.said_from_wire(dict(wire, prompt_id="TEST-\ud800")) is None
 

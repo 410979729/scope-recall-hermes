@@ -7,6 +7,7 @@ a model call to get there.  Two rules put that right.  A pass queues at most wha
 evaluate, and stops queueing entirely once the queue is deeper than passes can reach.  The
 batch limit stands candidates down only while work it can still do waits behind them.
 """
+
 from __future__ import annotations
 
 import json
@@ -29,10 +30,16 @@ class Model:
 
     def _empty(self, sources) -> str:
         self.calls += 1
-        return json.dumps({"protocol_version": "1.1",
-                           "source_refs": [f"{s.ref}@{s.revision}" for s in sources],
-                           "claim_proposals": [], "resume_proposals": [], "reference_proposals": []},
-                          ensure_ascii=False)
+        return json.dumps(
+            {
+                "protocol_version": "1.1",
+                "source_refs": [f"{s.ref}@{s.revision}" for s in sources],
+                "claim_proposals": [],
+                "resume_proposals": [],
+                "reference_proposals": [],
+            },
+            ensure_ascii=False,
+        )
 
     def propose(self, sources, *, episode_ref=None, remaining_seconds=1.0, validation_feedback=None) -> str:
         return self._empty(sources)
@@ -51,8 +58,9 @@ def _claimed(receipt, work_type):
 
 def _pending(core, work_type):
     with sqlite3.connect(core.storage.path) as conn:
-        return conn.execute("SELECT count(*) FROM work_items WHERE work_type=? AND state='pending'",
-                            (work_type,)).fetchone()[0]
+        return conn.execute(
+            "SELECT count(*) FROM work_items WHERE work_type=? AND state='pending'", (work_type,)
+        ).fetchone()[0]
 
 
 def test_candidates_use_the_rest_of_the_pass_when_nothing_else_is_waiting(app):
@@ -103,17 +111,27 @@ def test_a_queue_deeper_than_passes_can_reach_stops_taking_more(app):
         columns = [column[0] for column in conn.execute("SELECT * FROM work_items LIMIT 0").description]
         template = dict(zip(columns, row))
         for index in range(CANDIDATE_QUEUE_CEILING + 2):
-            filler = dict(template, work_id=900000 + index, state="pending", attempt=0,
-                          subject_ref=f"candidate:TEST-filler-{index}", lease_owner=None, lease_until=None)
-            conn.execute(f"INSERT INTO work_items ({','.join(filler)}) VALUES ({','.join('?' * len(filler))})",
-                         tuple(filler.values()))
+            filler = dict(
+                template,
+                work_id=900000 + index,
+                state="pending",
+                attempt=0,
+                subject_ref=f"candidate:TEST-filler-{index}",
+                lease_owner=None,
+                lease_until=None,
+            )
+            conn.execute(
+                f"INSERT INTO work_items ({','.join(filler)}) VALUES ({','.join('?' * len(filler))})",
+                tuple(filler.values()),
+            )
         conn.commit()
     deep = _pending(core, "evaluate_candidate")
     assert deep > CANDIDATE_QUEUE_CEILING
     with core.storage.write(ctx) as tx:
         assert tx.work.pending_depth("evaluate_candidate") == deep
-        assert not tx.work.other_work_ready(now=core.clock.utc_now(),
-                                            kinds=frozenset({"consolidate", "embed", "purge"}))
+        assert not tx.work.other_work_ready(
+            now=core.clock.utc_now(), kinds=frozenset({"consolidate", "embed", "purge"})
+        )
 
 
 def test_a_queue_nothing_can_touch_does_not_hold_candidates_back(app):

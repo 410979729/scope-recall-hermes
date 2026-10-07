@@ -1,4 +1,5 @@
 """Authorized host attachment metadata; reject untrusted paths and traversal."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass

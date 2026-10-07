@@ -8,14 +8,10 @@ import re
 from collections.abc import Iterable, Mapping
 from typing import Any
 
-MEMORY_CONTEXT_RE = re.compile(
-    r"<memory-context>[\s\S]*?</memory-context>\s*", re.IGNORECASE
-)
+MEMORY_CONTEXT_RE = re.compile(r"<memory-context>[\s\S]*?</memory-context>\s*", re.IGNORECASE)
 
 
-SUPERMEMORY_CONTEXT_RE = re.compile(
-    r"<supermemory-context>[\s\S]*?</supermemory-context>\s*", re.IGNORECASE
-)
+SUPERMEMORY_CONTEXT_RE = re.compile(r"<supermemory-context>[\s\S]*?</supermemory-context>\s*", re.IGNORECASE)
 
 
 def stringify_content(value: Any) -> str:
@@ -40,14 +36,10 @@ def stringify_content(value: Any) -> str:
         if content is not None:
             return stringify_content(content)
         return " ".join(
-            stringify_content(item)
-            for key, item in value.items()
-            if key not in {"type", "mime_type", "media_type"}
+            stringify_content(item) for key, item in value.items() if key not in {"type", "mime_type", "media_type"}
         ).strip()
     if isinstance(value, Iterable):
-        return "\n".join(
-            part for part in (stringify_content(item).strip() for item in value) if part
-        )
+        return "\n".join(part for part in (stringify_content(item).strip() for item in value) if part)
     return str(value)
 
 

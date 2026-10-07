@@ -5,6 +5,7 @@ reads it, marks the single model attempt, and then reports one of four
 outcomes; each moves the evaluation, its lifecycle row and its work item
 together, because ``begin_model_attempt`` will only accept the three in step.
 """
+
 from __future__ import annotations
 
 from ..contracts import ContractError
@@ -40,15 +41,19 @@ class CandidateEvaluations(CandidateTables):
         if type(evaluation_id) is not int or evaluation_id < 1:
             raise ContractError("INPUT_INVALID", "candidate_evaluation")
         context, params = self._context("l.")
-        row = self._read().execute(
-            f"""SELECT e.evaluation_id,e.state,e.evidence_refs_json,e.evidence_fingerprint,e.memory_epoch,
+        row = (
+            self._read()
+            .execute(
+                f"""SELECT e.evaluation_id,e.state,e.evidence_refs_json,e.evidence_fingerprint,e.memory_epoch,
                        e.model_attempted_at,{HEAD_COLUMNS}
                 FROM candidate_evaluations e
                 JOIN candidate_lifecycle l ON l.candidate_ref=e.candidate_ref AND l.candidate_revision=e.candidate_revision
                 {HEAD_JOINS}
                 WHERE e.evaluation_id=? AND {context}""",
-            (evaluation_id, *params),
-        ).fetchone()
+                (evaluation_id, *params),
+            )
+            .fetchone()
+        )
         if row is None or row["state"] != "queued" or row["processing_state"] != "pending_evaluation":
             return None
         if not is_live_head(row):
@@ -58,8 +63,13 @@ class CandidateEvaluations(CandidateTables):
         except (ValueError, TypeError, AttributeError) as exc:
             raise ContractError("STORAGE_UNAVAILABLE", "candidate_evidence_shape") from exc
         return CandidateEvaluationSnapshot(
-            row["evaluation_id"], snapshot(row), refs, row["evidence_fingerprint"], row["memory_epoch"],
-            row["state"], row["model_attempted_at"],
+            row["evaluation_id"],
+            snapshot(row),
+            refs,
+            row["evidence_fingerprint"],
+            row["memory_epoch"],
+            row["state"],
+            row["model_attempted_at"],
         )
 
     def settle_without_model(self, evaluation: CandidateEvaluationSnapshot, work, sources, *, now: str):
@@ -80,15 +90,18 @@ class CandidateEvaluations(CandidateTables):
             if reason is not None:
                 answer = ("waiting_evidence", reason)
             else:
-                verdicts, judged = self._model_verdicts(candidate.ref, candidate.revision,
-                                                        excluding=evaluation.evaluation_id)
+                verdicts, judged = self._model_verdicts(
+                    candidate.ref, candidate.revision, excluding=evaluation.evaluation_id
+                )
                 if verdicts >= AUTOMATIC_VERDICTS and not self._restated_in_unjudged(
-                        candidate.payload, evaluation.evidence_refs, judged):
+                    candidate.payload, evaluation.evidence_refs, judged
+                ):
                     answer = ("waiting_evidence", REPEAT_WITHOUT_RESTATEMENT_REASON)
         if answer is None:
             return None
-        return self.complete(evaluation.evaluation_id, work, now=now, state=answer[0], reason=answer[1],
-                             result_digest=None)
+        return self.complete(
+            evaluation.evaluation_id, work, now=now, state=answer[0], reason=answer[1], result_digest=None
+        )
 
     def begin_model_attempt(self, evaluation_id: int, work_id: int, lease_token: int, owner: str, *, now: str) -> bool:
         """Claim the single model attempt; False when the lease or the evaluation has moved."""
@@ -99,14 +112,22 @@ class CandidateEvaluations(CandidateTables):
             "SELECT state,model_attempted_at,work_id FROM candidate_evaluations WHERE evaluation_id=?",
             (evaluation_id,),
         ).fetchone()
-        if row is None or row["state"] != "queued" or row["work_id"] != work_id or row["model_attempted_at"] is not None:
+        if (
+            row is None
+            or row["state"] != "queued"
+            or row["work_id"] != work_id
+            or row["model_attempted_at"] is not None
+        ):
             return False
-        return conn.execute(
-            """UPDATE candidate_evaluations SET model_attempted_at=?,
+        return (
+            conn.execute(
+                """UPDATE candidate_evaluations SET model_attempted_at=?,
                memory_epoch=(SELECT memory_epoch FROM instance_meta WHERE singleton=1)
                WHERE evaluation_id=? AND model_attempted_at IS NULL""",
-            (now, evaluation_id),
-        ).rowcount == 1
+                (now, evaluation_id),
+            ).rowcount
+            == 1
+        )
 
     def _record_error(self, work_id: int, lease_token: int, code: str, now: str, field: str | None = None) -> None:
         self._write().execute(
@@ -125,15 +146,32 @@ class CandidateEvaluations(CandidateTables):
         self._release_attempt(evaluation_id, "budget_paused", code)
         self._move_for(evaluation_id, "pending_evaluation", "budget_paused")
         return self._tx.work.defer_without_attempt(
-            work.work_id, work.lease_token, work.lease_owner, now=now, error_code=code, seconds=3600,
+            work.work_id,
+            work.lease_token,
+            work.lease_owner,
+            now=now,
+            error_code=code,
+            seconds=3600,
         )
 
-    def fail(self, evaluation_id: int, work, *, now: str, code: str, field: str | None = None,
-             validation_code: str | None = None):
+    def fail(
+        self,
+        evaluation_id: int,
+        work,
+        *,
+        now: str,
+        code: str,
+        field: str | None = None,
+        validation_code: str | None = None,
+    ):
         """An explicit rejection has no usable result to replay."""
         self._record_error(work.work_id, work.lease_token, validation_code or code, now, field)
         mutation = self._tx.work.fail(
-            work.work_id, work.lease_token, work.lease_owner, error_code=code, now=now,
+            work.work_id,
+            work.lease_token,
+            work.lease_owner,
+            error_code=code,
+            now=now,
             recoverable=code in RETRYABLE_CODES,
         )
         if mutation.disposition == "retry":
@@ -149,8 +187,9 @@ class CandidateEvaluations(CandidateTables):
             raise ContractError("INPUT_INVALID", "candidate_completion")
         mutation = self._tx.work.complete(work.work_id, work.lease_token, work.lease_owner, now=now)
         self._close_evaluation(evaluation_id, state, reason, now, result_digest=result_digest)
-        self._move_for(evaluation_id, state, reason, now=now, evaluated_at=now,
-                       dormant_at=now if state == "archived" else None)
+        self._move_for(
+            evaluation_id, state, reason, now=now, evaluated_at=now, dormant_at=now if state == "archived" else None
+        )
         return mutation
 
     def obsolete(self, evaluation_id: int, work, *, now: str, reason: str):
@@ -165,10 +204,14 @@ class CandidateEvaluations(CandidateTables):
         Returns False when there is nothing to move, so the caller leaves the
         work item alone rather than creating the mismatch it is avoiding.
         """
-        row = self._read().execute(
-            "SELECT evaluation_id,candidate_ref,candidate_revision FROM candidate_evaluations WHERE work_id=? AND state='failed'",
-            (work_id,),
-        ).fetchone()
+        row = (
+            self._read()
+            .execute(
+                "SELECT evaluation_id,candidate_ref,candidate_revision FROM candidate_evaluations WHERE work_id=? AND state='failed'",
+                (work_id,),
+            )
+            .fetchone()
+        )
         if row is None or self._requeue_failed(row["evaluation_id"], reason) != 1:
             return False
         self._move(row["candidate_ref"], row["candidate_revision"], "pending_evaluation", reason, now=now)

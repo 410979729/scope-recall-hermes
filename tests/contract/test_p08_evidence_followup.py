@@ -1,4 +1,5 @@
 """P08 evidence qualification, directed follow-up, and collection as_of contracts."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
@@ -125,7 +126,9 @@ def _recall(core: MemoryCore, ctx, **changes):
 
 def test_comparison_single_source_explicitly_covers_both_objects(app):
     core, ctx = app
-    shared = capture(core, ctx, "H100 与 H200 共用同一套部署配置。", key="TEST-p08/shared-root", when="2026-09-05T12:00:00Z")
+    shared = capture(
+        core, ctx, "H100 与 H200 共用同一套部署配置。", key="TEST-p08/shared-root", when="2026-09-05T12:00:00Z"
+    )
     result = _recall(core, ctx, query="比较 H100 和 H200 部署配置", mode="history")
     assert "comparison_second_side" not in result.unmet_needs
     assert result.answerability_hint == "supported"
@@ -148,9 +151,11 @@ def test_comparison_counts_a_suffixed_version_and_its_suffix_as_one_side():
     Counted as two sides, a report naming 3.1.0rc28 and a note naming rc28
     passed for both sides of 3.1.0rc28 versus 3.1.0rc29.
     """
+
     def event(ref: str, content: str) -> RetrievedObject:
-        return RetrievedObject(ref, 1, "event", content, "human_direct", "current", "trusted scope",
-                               (f"{ref}@1",), "direct_report", True)
+        return RetrievedObject(
+            ref, 1, "event", content, "human_direct", "current", "trusted scope", (f"{ref}@1",), "direct_report", True
+        )
 
     note = event("event-a-note", "rc28 安装后网关正常。")
     report = event("event-b-report", "hermes-scope-recall 3.1.0rc28 已安装。")
@@ -293,7 +298,9 @@ def test_collection_as_of_reports_complete_when_time_slice_is_fully_scanned(app)
 def test_collection_page_size_31_uses_collection_budget(app):
     core, ctx = app
     for index in range(31):
-        capture(core, ctx, f"TEST collection row {index}", key=f"TEST-p08/page31/{index:02d}", when="2026-09-05T12:00:00Z")
+        capture(
+            core, ctx, f"TEST collection row {index}", key=f"TEST-p08/page31/{index:02d}", when="2026-09-05T12:00:00Z"
+        )
     epoch = core.status(ctx).memory_epoch
     query = CollectionQuery("event", page_size=31, memory_epoch=epoch, scope_digest=scope_digest(ctx), mode="current")
     page = core.collection(ctx, query, deadline_seconds=5)
@@ -310,7 +317,14 @@ def test_collection_scans_bounded_invalid_as_of_candidates_before_valid_tail(tmp
         capture(core, ctx, f"undated row {index}", key=f"TEST-p08/scan/a{index}", when=None)
     valid = capture(core, ctx, "historical valid tail", key="TEST-p08/scan/zvalid", when="2026-09-01T12:00:00Z")
     epoch = core.status(ctx).memory_epoch
-    query = CollectionQuery("event", page_size=1, memory_epoch=epoch, scope_digest=scope_digest(ctx), mode="as_of", as_of="2026-09-02T00:00:00Z")
+    query = CollectionQuery(
+        "event",
+        page_size=1,
+        memory_epoch=epoch,
+        scope_digest=scope_digest(ctx),
+        mode="as_of",
+        as_of="2026-09-02T00:00:00Z",
+    )
     page = core.collection(ctx, query, deadline_seconds=5)
     assert [item.ref for item in page.items] == [valid.ref]
     assert page.coverage == "partial"
@@ -428,10 +442,7 @@ def test_compound_chinese_query_requires_overlap_within_one_substantive_clause(a
 
 
 def test_chinese_clause_fallback_requires_two_substantive_cjk_clauses():
-    query = (
-        "alpha bravo charlie delta echo foxtrot golf hotel india juliet；"
-        "补充边缘暗化处理依据"
-    )
+    query = "alpha bravo charlie delta echo foxtrot golf hotel india juliet；补充边缘暗化处理依据"
     matches = lexical_terms("补充边缘暗化")
     assert len(set(meaningful_query_terms(query))) == 19
     assert len(set(meaningful_query_terms(query)).intersection(matches)) == 5

@@ -48,6 +48,7 @@ inference this project refuses everywhere else.
 Not responsible for: writing (``core/mutate.capture_confirmation`` owns the
 version), or for what a host shows the person before they confirm.
 """
+
 from __future__ import annotations
 
 import re
@@ -127,7 +128,7 @@ def _clauses(text: str) -> list[str]:
     """Split on the same clause boundaries the evidence gates use."""
     parts, start = [], 0
     for match in CLAUSE_BREAK.finditer(text):
-        parts.append(text[start:match.start()])
+        parts.append(text[start : match.start()])
         start = match.end()
     parts.append(text[start:])
     return [part for part in parts if part.strip()]
@@ -152,8 +153,7 @@ def confirmation_targets(text: str, versions, *, bound_literal) -> tuple:
     matches = []
     for version in versions:
         payload = version.payload or {}
-        fields = (version.ref, payload.get("subject"), payload.get("predicate"),
-                  payload.get("value_text"))
+        fields = (version.ref, payload.get("subject"), payload.get("predicate"), payload.get("value_text"))
         if any(field and bound_literal(clause, str(field)) for field in fields):
             matches.append(version)
     return tuple(matches)

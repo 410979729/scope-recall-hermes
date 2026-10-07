@@ -21,6 +21,7 @@ Not responsible for: building the wheel (``packaging_hooks/v11_build.py``) or
 deciding what the entry points are -- that list is right here, in the open,
 because it *is* the product's public surface.
 """
+
 from __future__ import annotations
 
 import ast
@@ -85,7 +86,7 @@ def source_version(repo_root: Path | None = None) -> str:
 
 def _relative_paths(module: str, root: Path) -> list[str]:
     """The file or files that provide a dotted ``scope_recall.*`` name."""
-    tail = module[len("scope_recall"):].lstrip(".")
+    tail = module[len("scope_recall") :].lstrip(".")
     if not tail:
         return ["__init__.py"]
     base = tail.replace(".", "/")
@@ -251,7 +252,9 @@ def write_all(repo_root: Path | None = None) -> list[str]:
     expected = expected_allowlist(root)
     current = json.loads(allowlist_path.read_text(encoding="utf-8"))
     if current != expected:
-        allowlist_path.write_text(json.dumps(expected, ensure_ascii=False, indent=2) + "\n", encoding="utf-8", newline="\n")
+        allowlist_path.write_text(
+            json.dumps(expected, ensure_ascii=False, indent=2) + "\n", encoding="utf-8", newline="\n"
+        )
         changed.append("packaging/v11-module-allowlist.json")
     return changed
 

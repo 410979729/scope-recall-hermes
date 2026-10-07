@@ -4,6 +4,7 @@ The objects in this module deliberately contain no host, Provider, or vector
 database implementation.  A request is copied into :class:`SearchContext`
 once at the trusted boundary; downstream stages receive that frozen snapshot.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
@@ -18,8 +19,9 @@ from .recall_scope import QueryScope
 
 
 ObjectKind = Literal["event", "claim", "episode", "artifact", "reference"]
-CandidateChannel = Literal["lexical", "claim_lexical", "exact_ref", "vector", "recent_raw", "relation", "background",
-                           "scoped"]
+CandidateChannel = Literal[
+    "lexical", "claim_lexical", "exact_ref", "vector", "recent_raw", "relation", "background", "scoped"
+]
 RecallMode = Literal["auto", "current", "history", "as_of", "method"]
 Coverage = Literal["complete_for_query", "partial", "unknown"]
 Answerability = Literal["supported", "partial", "ambiguous", "unknown"]
@@ -219,8 +221,16 @@ class CandidateRef:
             raise ContractError("INPUT_INVALID", "candidate_ref")
         if type(self.revision) is not int or self.revision < 1:
             raise ContractError("INPUT_INVALID", "candidate_revision")
-        if self.source not in {"lexical", "claim_lexical", "exact_ref", "vector", "recent_raw", "relation", "background",
-                               "scoped"}:
+        if self.source not in {
+            "lexical",
+            "claim_lexical",
+            "exact_ref",
+            "vector",
+            "recent_raw",
+            "relation",
+            "background",
+            "scoped",
+        }:
             raise ContractError("INPUT_INVALID", "candidate_source")
         if type(self.rank) is not int or self.rank < 1:
             raise ContractError("INPUT_INVALID", "candidate_rank")
@@ -299,7 +309,9 @@ class CollectionQuery:
             raise ContractError("INPUT_INVALID", "collection_kind")
         if type(self.where) is not tuple or len(self.where) > 8:
             raise ContractError("INPUT_INVALID", "collection_where")
-        if any(type(pair) is not tuple or len(pair) != 2 or any(type(v) is not str for v in pair) for pair in self.where):
+        if any(
+            type(pair) is not tuple or len(pair) != 2 or any(type(v) is not str for v in pair) for pair in self.where
+        ):
             raise ContractError("INPUT_INVALID", "collection_where")
         if type(self.page_size) is not int or not 1 <= self.page_size <= 100:
             raise ContractError("INPUT_INVALID", "collection_page_size")

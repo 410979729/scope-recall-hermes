@@ -1,4 +1,5 @@
 """Pure admission and ranking policy for the P08 retrieval pipeline."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -35,15 +36,15 @@ EMBEDDING_SPACE = {
         "prompt_encoding": "official-question-answering-v1",
     },
 }
-_SPACE_BYTES = json.dumps(
-    EMBEDDING_SPACE, ensure_ascii=False, separators=(",", ":")
-).encode("utf-8")
+_SPACE_BYTES = json.dumps(EMBEDDING_SPACE, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
 SPACE_ID = hashlib.sha256(_SPACE_BYTES).hexdigest()
 VECTOR_SCORE_TOLERANCE = 1e-6
 
 _WEAK_QUERY = frozenset({"那次", "那件", "那个", "这个", "怎样", "如何", "what", "that", "it"})
 _IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]{1,239}")
-_HARD_IDENTIFIER = re.compile(r"(?<![A-Za-z0-9_])(?:[A-Za-z]{1,12}\d[A-Za-z0-9._/-]*|\d+[A-Za-z][A-Za-z0-9._/-]*)(?![A-Za-z0-9_])")
+_HARD_IDENTIFIER = re.compile(
+    r"(?<![A-Za-z0-9_])(?:[A-Za-z]{1,12}\d[A-Za-z0-9._/-]*|\d+[A-Za-z][A-Za-z0-9._/-]*)(?![A-Za-z0-9_])"
+)
 _CJK_TEXT = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]")
 _IDENTIFIER_JOINT = re.compile(r"(?<=[A-Za-z])[ \t_-](?=\d)")
 _CLAUSE_BOUNDARY = re.compile(r"[，,；;。！？!?\n]+")
@@ -75,19 +76,33 @@ def canonical_embedding_space(value: dict) -> dict:
         raise ContractError("INPUT_INVALID", "embedding_space")
     if value["prompt_encoding"] != EMBEDDING_SPACE["prompt_encoding"]:
         raise ContractError("INPUT_INVALID", "embedding_space")
-    if type(value.get("input_preprocessing")) is not dict or set(value["input_preprocessing"]) != {"id", "unicode_version"}:
+    if type(value.get("input_preprocessing")) is not dict or set(value["input_preprocessing"]) != {
+        "id",
+        "unicode_version",
+    }:
         raise ContractError("INPUT_INVALID", "embedding_space")
     if value["input_preprocessing"] != EMBEDDING_SPACE["input_preprocessing"]:
         raise ContractError("INPUT_INVALID", "embedding_space")
     if value.get("metric") != "cosine" or value.get("vector_normalization") != "l2_at_scoring":
         raise ContractError("INPUT_INVALID", "embedding_space")
-    if type(value.get("request_encoding")) is not dict or set(value["request_encoding"]) != {"id", "task_type_field", "task_type_location", "prompt_encoding"}:
+    if type(value.get("request_encoding")) is not dict or set(value["request_encoding"]) != {
+        "id",
+        "task_type_field",
+        "task_type_location",
+        "prompt_encoding",
+    }:
         raise ContractError("INPUT_INVALID", "embedding_space")
     if type(value["request_encoding"].get("id")) is not str or not value["request_encoding"]["id"]:
         raise ContractError("INPUT_INVALID", "embedding_space")
-    if value["request_encoding"]["task_type_field"] is not None or value["request_encoding"]["task_type_location"] is not None:
+    if (
+        value["request_encoding"]["task_type_field"] is not None
+        or value["request_encoding"]["task_type_location"] is not None
+    ):
         raise ContractError("INPUT_INVALID", "embedding_space")
-    if type(value["request_encoding"].get("prompt_encoding")) is not str or not value["request_encoding"]["prompt_encoding"]:
+    if (
+        type(value["request_encoding"].get("prompt_encoding")) is not str
+        or not value["request_encoding"]["prompt_encoding"]
+    ):
         raise ContractError("INPUT_INVALID", "embedding_space")
     result = {
         "model": value["model"],
@@ -138,22 +153,24 @@ def build_embedding_space(*, model: str, dimensions: int, endpoint: str, dialect
     """
     if dialect not in EMBEDDING_DIALECTS:
         raise ContractError("INPUT_INVALID", "embedding_dialect")
-    return canonical_embedding_space({
-        "model": model,
-        "dimensions": dimensions,
-        "endpoint": endpoint,
-        "task_type": None,
-        "prompt_encoding": dict(EMBEDDING_SPACE["prompt_encoding"]),
-        "input_preprocessing": dict(EMBEDDING_SPACE["input_preprocessing"]),
-        "metric": "cosine",
-        "vector_normalization": "l2_at_scoring",
-        "request_encoding": {
-            "id": f"{dialect}-embed-v1",
-            "task_type_field": None,
-            "task_type_location": None,
-            "prompt_encoding": EMBEDDING_SPACE["request_encoding"]["prompt_encoding"],
-        },
-    })
+    return canonical_embedding_space(
+        {
+            "model": model,
+            "dimensions": dimensions,
+            "endpoint": endpoint,
+            "task_type": None,
+            "prompt_encoding": dict(EMBEDDING_SPACE["prompt_encoding"]),
+            "input_preprocessing": dict(EMBEDDING_SPACE["input_preprocessing"]),
+            "metric": "cosine",
+            "vector_normalization": "l2_at_scoring",
+            "request_encoding": {
+                "id": f"{dialect}-embed-v1",
+                "task_type_field": None,
+                "task_type_location": None,
+                "prompt_encoding": EMBEDDING_SPACE["request_encoding"]["prompt_encoding"],
+            },
+        }
+    )
 
 
 def encode_embedding_text(raw_text: str, *, kind: str) -> str:
@@ -190,14 +207,11 @@ def claim_embedding_text(payload: dict) -> str:
     if not isinstance(payload, dict):
         raise ContractError("INPUT_INVALID", "claim_embedding_text")
     statement = " ".join(
-        part for field in ("subject", "predicate", "value_text")
-        if (part := str(payload.get(field) or "").strip())
+        part for field in ("subject", "predicate", "value_text") if (part := str(payload.get(field) or "").strip())
     )
     conditions = payload.get("conditions")
     if isinstance(conditions, (list, tuple)):
-        qualifiers = " ".join(
-            text for item in conditions if (text := str(item).strip())
-        )
+        qualifiers = " ".join(text for item in conditions if (text := str(item).strip()))
         if qualifiers:
             statement = f"{statement}（{qualifiers}）" if statement else qualifiers
     if not statement:
@@ -363,10 +377,7 @@ def query_is_specific(
     matches = frozenset(matched_query_terms or ())
     for clause_terms in _substantive_chinese_clauses(query):
         clause_hits = len(matches.intersection(clause_terms))
-        if (
-            clause_hits >= max(5, _specificity_required(len(clause_terms)))
-            and clause_hits / len(clause_terms) >= 0.30
-        ):
+        if clause_hits >= max(5, _specificity_required(len(clause_terms))) and clause_hits / len(clause_terms) >= 0.30:
             return True
     return False
 
@@ -382,11 +393,41 @@ _ASKING_CHARACTERS = frozenset("什么吗呢呀吧嘛哪啥")
 #: but 多 in 多少 and 多个, 是 in 是否 and 于是).
 _ASKING_WORDS = frozenset({"怎样", "如何", "为何", "多少", "是否", "何时", "几时"})
 #: English asking and helper words: in a question they carry no subject matter.
-_ASKING_ENGLISH = frozenset({
-    "what", "which", "who", "whom", "whose", "when", "where", "why", "how",
-    "is", "are", "was", "were", "do", "does", "did", "can", "could", "should", "would",
-    "the", "an", "of", "to", "in", "on", "for", "at", "by", "with", "about",
-})
+_ASKING_ENGLISH = frozenset(
+    {
+        "what",
+        "which",
+        "who",
+        "whom",
+        "whose",
+        "when",
+        "where",
+        "why",
+        "how",
+        "is",
+        "are",
+        "was",
+        "were",
+        "do",
+        "does",
+        "did",
+        "can",
+        "could",
+        "should",
+        "would",
+        "the",
+        "an",
+        "of",
+        "to",
+        "in",
+        "on",
+        "for",
+        "at",
+        "by",
+        "with",
+        "about",
+    }
+)
 
 
 def _asks_only(term: str) -> bool:
@@ -464,8 +505,9 @@ def same_message(text: str, other: str) -> bool:
 def meaningful_query_terms(query: str) -> tuple[str, ...]:
     """Terms that can establish lexical relevance for one candidate."""
 
-    return tuple(term for term in query_terms(query)
-                 if term not in _WEAK_QUERY and len(term) > 1 and not _asks_only(term))
+    return tuple(
+        term for term in query_terms(query) if term not in _WEAK_QUERY and len(term) > 1 and not _asks_only(term)
+    )
 
 
 #: Chinese words that agent-operations conversations use interchangeably.
@@ -497,8 +539,7 @@ SYNONYM_GROUPS: tuple[tuple[str, ...], ...] = (
     ("默认", "缺省"),  # default
     ("截图", "截屏"),  # screenshot
 )
-_SYNONYMS = {member: tuple(other for other in group if other != member)
-             for group in SYNONYM_GROUPS for member in group}
+_SYNONYMS = {member: tuple(other for other in group if other != member) for group in SYNONYM_GROUPS for member in group}
 #: Bound on the synonym terms one query adds to the lexical search.
 _SYNONYM_TERM_LIMIT = 64
 
@@ -520,10 +561,10 @@ def synonym_expansions(query: str) -> dict[str, str]:
     expansions: dict[str, str] = {}
     for run in _CJK.findall(unicodedata.normalize("NFKC", query).casefold()):
         for start in range(len(run) - 1):
-            for other in _SYNONYMS.get(run[start:start + 2], ()):
-                variant = run[:start] + other + run[start + 2:]
+            for other in _SYNONYMS.get(run[start : start + 2], ()):
+                variant = run[:start] + other + run[start + 2 :]
                 for position in range(max(start - 1, 0), min(start + 2, len(run) - 1)):
-                    original, replacement = run[position:position + 2], variant[position:position + 2]
+                    original, replacement = run[position : position + 2], variant[position : position + 2]
                     # A neighbouring member is an occurrence of its own and is
                     # expanded as one; blending it with this swap makes noise.
                     if position != start and original in _SYNONYMS:

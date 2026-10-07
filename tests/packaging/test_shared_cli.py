@@ -5,6 +5,7 @@ attached to a shared store with the grants and routes that store had; then it
 is checked, reinstalled over, detached, and the store copied and adopted.
 Nothing here opens a real instance or a person's memory.
 """
+
 from __future__ import annotations
 
 import json
@@ -45,8 +46,15 @@ def _installed(tmp_path, name, *, workspace=None):
     project = (tmp_path / f"TEST-{name}-project").resolve()
     plugin.mkdir(parents=True)
     project.mkdir()
-    options = dict(host="hermes", target_plugin_dir=plugin, instance_root=home, project_root=project,
-                   agent_id=AGENT, python_executable=Path(sys.executable), agent_workspace=workspace)
+    options = dict(
+        host="hermes",
+        target_plugin_dir=plugin,
+        instance_root=home,
+        project_root=project,
+        agent_id=AGENT,
+        python_executable=Path(sys.executable),
+        agent_workspace=workspace,
+    )
     apply_install(plan_install(**options))
     return home, options
 
@@ -58,14 +66,22 @@ def _routes(home, *, model=None):
     if model is not None:
         embedding.update(model=model, endpoint="https://example.test/v1/embeddings", dimensions=64, dialect="openai")
     return {
-        "binding": {"agent_id": manifest["agent_id"], "installation_id": manifest["installation_id"],
-                    "data_directory": manifest["data_directory"], "scope_ids": manifest["scope_ids"],
-                    "test_mode": manifest["test_mode"]},
+        "binding": {
+            "agent_id": manifest["agent_id"],
+            "installation_id": manifest["installation_id"],
+            "data_directory": manifest["data_directory"],
+            "scope_ids": manifest["scope_ids"],
+            "test_mode": manifest["test_mode"],
+        },
         "session_id": "TEST-background",
         "allowed_scope_ids": manifest["scope_ids"],
         "owner_id": "TEST-worker",
-        "auxiliary": {"external_embedding": False, "external_consolidation": False, "embedding": embedding,
-                      "installation_dir": manifest["data_directory"]},
+        "auxiliary": {
+            "external_embedding": False,
+            "external_consolidation": False,
+            "embedding": embedding,
+            "installation_dir": manifest["data_directory"],
+        },
     }
 
 
@@ -77,15 +93,36 @@ def _moved_aside(home, routes):
 
 
 def _attach(capsys, home, root, archive, entry, name):
-    return _run(capsys, "attach", "--host", "hermes", "--instance-root", str(home), "--root", str(root),
-                "--entry", entry, "--display-name", name,
-                "--grants-from", str(archive / "installation.json"),
-                "--runtime-config-from", str(archive / "runtime-config.json"))
+    return _run(
+        capsys,
+        "attach",
+        "--host",
+        "hermes",
+        "--instance-root",
+        str(home),
+        "--root",
+        str(root),
+        "--entry",
+        entry,
+        "--display-name",
+        name,
+        "--grants-from",
+        str(archive / "installation.json"),
+        "--runtime-config-from",
+        str(archive / "runtime-config.json"),
+    )
 
 
 def _bind(home):
-    return bind_hermes_identity("TEST-session", hermes_home=str(home), platform="cli", agent_identity=AGENT,
-                                agent_workspace="hermes", user_id="local", agent_context="primary")
+    return bind_hermes_identity(
+        "TEST-session",
+        hermes_home=str(home),
+        platform="cli",
+        agent_identity=AGENT,
+        agent_workspace="hermes",
+        user_id="local",
+        agent_context="primary",
+    )
 
 
 @pytest.fixture
@@ -117,11 +154,16 @@ def test_a_home_moved_aside_attaches_with_the_grants_it_had(tmp_path, capsys, ro
     # Every model request reserves in the spend ledger first, and nothing but an installer makes one.
     assert entry.auxiliary.ledger_path == home / "scope-recall" / "auxiliary-budget.sqlite3"
     assert worker.auxiliary.ledger_path == root / "auxiliary-budget.sqlite3"
-    assert sorted(result["ledgers_created"]) == sorted(str(path) for path in (entry.auxiliary.ledger_path,
-                                                                                  worker.auxiliary.ledger_path))
+    assert sorted(result["ledgers_created"]) == sorted(
+        str(path) for path in (entry.auxiliary.ledger_path, worker.auxiliary.ledger_path)
+    )
     for ledger in (entry.auxiliary.ledger_path, worker.auxiliary.ledger_path):
-        assert read_auxiliary_budget_status(ledger) == {"ledger_exists": True, "requests": 0, "charge_micro_usd": 0,
-                                                         "meter_breach": False}
+        assert read_auxiliary_budget_status(ledger) == {
+            "ledger_exists": True,
+            "requests": 0,
+            "charge_micro_usd": 0,
+            "meter_breach": False,
+        }
 
     # After an upgrade the installer runs again over the attached home.
     installed = apply_install(plan_install(**options))
@@ -138,8 +180,20 @@ def test_a_home_moved_aside_attaches_with_the_grants_it_had(tmp_path, capsys, ro
 
 def test_attach_refuses_a_home_whose_own_store_is_still_in_place(tmp_path, capsys, root):
     home, _options = _installed(tmp_path, "tianshu")
-    code, result = _run(capsys, "attach", "--host", "hermes", "--instance-root", str(home), "--root", str(root),
-                        "--entry", "tianshu", "--display-name", "天枢")
+    code, result = _run(
+        capsys,
+        "attach",
+        "--host",
+        "hermes",
+        "--instance-root",
+        str(home),
+        "--root",
+        str(root),
+        "--entry",
+        "tianshu",
+        "--display-name",
+        "天枢",
+    )
     assert code == 2 and "still has its own store" in result["error"]
     assert read_shared_payload(root)["entries"] == []
 
@@ -175,8 +229,10 @@ def test_detach_leaves_the_memories_and_the_record(tmp_path, capsys, root):
     code, result = _run(capsys, "detach", "--instance-root", str(home))
     assert (code, result["status"], result["home_directory_left"]) == (0, "detached", False)
     assert not (home / "scope-recall").exists()
-    assert any(Path(kept).name == "entry-auxiliary-budget.sqlite3" for kept in json.loads(
-        Path(result["receipt"]).read_text(encoding="utf-8"))["backups"]), "the entry's spend record is kept"
+    assert any(
+        Path(kept).name == "entry-auxiliary-budget.sqlite3"
+        for kept in json.loads(Path(result["receipt"]).read_text(encoding="utf-8"))["backups"]
+    ), "the entry's spend record is kept"
     with pytest.raises(HermesIdentityError):
         _bind(home)
     record = read_shared_payload(root)["entries"][0]
@@ -225,9 +281,17 @@ def _with_scopes(home, name, count):
     for index in range(count):
         scope = f"conversation:TEST-{name}-{index:03d}-{'x' * 64}"
         manifest["scope_ids"].append(scope)
-        manifest["audiences"].append(dict(manifest["audiences"][0], kind="conversation", chat_type="group",
-                                          chat_id=f"TEST-group-{index:03d}", allowed_scope_ids=[scope],
-                                          writable_scope_ids=[scope], capture_scope_id=scope))
+        manifest["audiences"].append(
+            dict(
+                manifest["audiences"][0],
+                kind="conversation",
+                chat_type="group",
+                chat_id=f"TEST-group-{index:03d}",
+                allowed_scope_ids=[scope],
+                writable_scope_ids=[scope],
+                capture_scope_id=scope,
+            )
+        )
     path.write_text(json.dumps(manifest), encoding="utf-8")
 
 
@@ -242,7 +306,9 @@ def test_a_worker_config_past_64_kb_still_takes_entries_and_detaches(tmp_path, c
         assert (code, result["status"]) == (0, "attached"), result
         homes.append(home)
     assert (root / "runtime-config.json").stat().st_size > 65536
-    assert len(load_config(root / "runtime-config.json").binding.scope_ids) == len(read_shared_payload(root)["scope_ids"])
+    assert len(load_config(root / "runtime-config.json").binding.scope_ids) == len(
+        read_shared_payload(root)["scope_ids"]
+    )
     code, result = _run(capsys, "detach", "--instance-root", str(homes[-1]))
     assert (code, result["status"]) == (0, "detached"), result
     copy = tmp_path / "TEST-moved"
@@ -261,9 +327,23 @@ def _hermes_pair(tmp_path, capsys, root, *, second_workspace=None):
 
 
 def _attach_client(capsys, root, home, *, host="claude-code", like="all", capture="tianshu", routes=None):
-    argv = ["attach", "--host", host, "--instance-root", str(home), "--root", str(root), "--entry", host,
-            "--display-name", "Claude Code" if host == "claude-code" else "Codex", "--grants-like", like,
-            "--capture-like", capture]
+    argv = [
+        "attach",
+        "--host",
+        host,
+        "--instance-root",
+        str(home),
+        "--root",
+        str(root),
+        "--entry",
+        host,
+        "--display-name",
+        "Claude Code" if host == "claude-code" else "Codex",
+        "--grants-like",
+        like,
+        "--capture-like",
+        capture,
+    ]
     if routes is not None:
         argv += ["--runtime-config-from", str(routes)]
     return _run(capsys, *argv)
@@ -281,8 +361,9 @@ def test_a_client_attaches_as_the_owner_installs_and_is_checked_like_an_entry(tm
     assert (root / "runtime-config.json").read_bytes() == worker_before, "an unchanged worker is not restarted"
     assert read_attachment(client).host == "claude-code"
     config = load_shared_client(client, "claude-code")
-    tianshu_owner = next(row for row in read_shared_payload(root)["entries"][0]["audiences"]
-                         if row["kind"] == "owner_private")
+    tianshu_owner = next(
+        row for row in read_shared_payload(root)["entries"][0]["audiences"] if row["kind"] == "owner_private"
+    )
     assert config.audience.capture_scope_id == tianshu_owner["capture_scope_id"]
     assert config.audience.allowed_scope_ids == frozenset(tianshu_owner["allowed_scope_ids"])
     entry = load_config(client / "scope-recall" / "runtime-config.json")
@@ -292,8 +373,14 @@ def test_a_client_attaches_as_the_owner_installs_and_is_checked_like_an_entry(tm
     assert str(entry.auxiliary.ledger_path) in result["ledgers_created"]
 
     plugin = (tmp_path / "TEST-claude" / "skills" / "scope-recall").resolve()
-    options = dict(host="claude-code", target_plugin_dir=plugin, instance_root=client, project_root=None,
-                   agent_id=AGENT, python_executable=Path(sys.executable))
+    options = dict(
+        host="claude-code",
+        target_plugin_dir=plugin,
+        instance_root=client,
+        project_root=None,
+        agent_id=AGENT,
+        python_executable=Path(sys.executable),
+    )
     installed = apply_install(plan_install(**options))
     assert installed.installation_id == config.installation_id
     hooks = json.loads((plugin / "hooks" / "hooks.json").read_text(encoding="utf-8"))["hooks"]
@@ -313,7 +400,10 @@ def test_a_client_attaches_as_the_owner_installs_and_is_checked_like_an_entry(tm
     assert report.shared_store == {"root": str(root), "entry_id": "claude-code", "entry_name": "Claude Code"}
     code, listing = _run(capsys, "entries", "--root", str(root))
     assert [(row["entry_id"], row["host"], row["pointer_present"]) for row in listing["entries"]][-1] == (
-        "claude-code", "claude-code", True)
+        "claude-code",
+        "claude-code",
+        True,
+    )
 
     code, result = _run(capsys, "detach", "--instance-root", str(client))
     assert (code, result["status"]) == (0, "detached")
@@ -327,19 +417,32 @@ def _workbuddy_home(tmp_path):
     home.mkdir(parents=True)
     settings = {
         "sandbox": {"enabled": True, "profile": "TEST"},
-        "hooks": {"UserPromptSubmit": [{"matcher": "", "hooks": [{"type": "command", "command": "TEST-other-tool",
-                                                                   "timeout": 5}]}]},
+        "hooks": {
+            "UserPromptSubmit": [
+                {"matcher": "", "hooks": [{"type": "command", "command": "TEST-other-tool", "timeout": 5}]}
+            ]
+        },
         "claw": {"TEST": [1, 2]},
         "enabledPlugins": {"TEST-plugin@TEST-market": True},
     }
     # The person's own MCP servers.  WorkBuddy's .mcp.json beside them is the app's record of its connector proxy,
     # which its agent is started with alone: no install touches it.
-    mcp = {"mcpServers": {"TEST-other-server": {"command": "C:/TEST/other.exe", "args": ["--TEST"],
-                                                "description": "TEST"}}}
+    mcp = {
+        "mcpServers": {"TEST-other-server": {"command": "C:/TEST/other.exe", "args": ["--TEST"], "description": "TEST"}}
+    }
     (home / "settings.json").write_text(json.dumps(settings, indent=2), encoding="utf-8")
     (home / "mcp.json").write_text(json.dumps(mcp, indent=2), encoding="utf-8")
-    (home / ".mcp.json").write_text(json.dumps({"mcpServers": {"connector-proxy": {
-        "type": "http", "url": "http://127.0.0.1:9/mcp", "description": "TEST proxy"}}}, indent=2), encoding="utf-8")
+    (home / ".mcp.json").write_text(
+        json.dumps(
+            {
+                "mcpServers": {
+                    "connector-proxy": {"type": "http", "url": "http://127.0.0.1:9/mcp", "description": "TEST proxy"}
+                }
+            },
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
     return home, settings, mcp
 
 
@@ -347,8 +450,9 @@ def _read(path):
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def test_a_workbuddy_entry_installs_into_workbuddy_s_own_files_and_uninstalls_only_its_own(tmp_path, capsys, root,
-                                                                                          monkeypatch):
+def test_a_workbuddy_entry_installs_into_workbuddy_s_own_files_and_uninstalls_only_its_own(
+    tmp_path, capsys, root, monkeypatch
+):
     """WorkBuddy joins a shared store as the other clients do, the owner at this machine.  Its hooks and MCP server go
     into WorkBuddy's own settings.json and mcp.json, beside whatever else is there; a copy of each file is kept
     first, a second install changes nothing, an older hook of this entry is updated where it stands, and uninstall
@@ -356,10 +460,26 @@ def test_a_workbuddy_entry_installs_into_workbuddy_s_own_files_and_uninstalls_on
     first, _second = _hermes_pair(tmp_path, capsys, root)
     entry = (tmp_path / "TEST-workbuddy-entry").resolve()
     entry.mkdir()
-    code, result = _run(capsys, "attach", "--host", "workbuddy", "--instance-root", str(entry), "--root", str(root),
-                        "--entry", "workbuddy", "--display-name", "WorkBuddy", "--grants-like", "all",
-                        "--capture-like", "tianshu",
-                        "--runtime-config-from", str(first / "scope-recall" / "runtime-config.json"))
+    code, result = _run(
+        capsys,
+        "attach",
+        "--host",
+        "workbuddy",
+        "--instance-root",
+        str(entry),
+        "--root",
+        str(root),
+        "--entry",
+        "workbuddy",
+        "--display-name",
+        "WorkBuddy",
+        "--grants-like",
+        "all",
+        "--capture-like",
+        "tianshu",
+        "--runtime-config-from",
+        str(first / "scope-recall" / "runtime-config.json"),
+    )
     assert (code, result["status"]) == (0, "attached"), result
     assert read_attachment(entry).host == "workbuddy"
     config = load_shared_client(entry, "workbuddy")
@@ -370,8 +490,14 @@ def test_a_workbuddy_entry_installs_into_workbuddy_s_own_files_and_uninstalls_on
     workbuddy, settings, mcp = _workbuddy_home(tmp_path)
     before = {name: (workbuddy / name).read_bytes() for name in ("settings.json", "mcp.json")}
     proxy, present = (workbuddy / ".mcp.json").read_bytes(), {path.name for path in workbuddy.iterdir()}
-    options = dict(host="workbuddy", target_plugin_dir=workbuddy, instance_root=entry, project_root=None,
-                   agent_id=AGENT, python_executable=Path(sys.executable))
+    options = dict(
+        host="workbuddy",
+        target_plugin_dir=workbuddy,
+        instance_root=entry,
+        project_root=None,
+        agent_id=AGENT,
+        python_executable=Path(sys.executable),
+    )
     plan = plan_install(**options)
     assert plan.conflicts == [], plan.conflicts
     changes = [(change.action, Path(change.path).name) for change in plan.changes]
@@ -391,8 +517,9 @@ def test_a_workbuddy_entry_installs_into_workbuddy_s_own_files_and_uninstalls_on
     assert stopped == [(entry, "workbuddy")]
     assert installed.installation_id == config.installation_id
     assert sorted(Path(path).name for path in installed.files_merged) == ["mcp.json", "settings.json"]
-    assert not any(name in Path(path).name for path in installed.files_written for name in before), \
+    assert not any(name in Path(path).name for path in installed.files_written for name in before), (
         "WorkBuddy's files are never the receipt's"
+    )
     copies = {Path(path).name: Path(path).read_bytes() for path in installed.backups if Path(path).name in before}
     assert copies == before, "each file is copied before it is changed"
     assert {path.name for path in workbuddy.iterdir()} == present, "nothing else is left in WorkBuddy's home"
@@ -400,12 +527,16 @@ def test_a_workbuddy_entry_installs_into_workbuddy_s_own_files_and_uninstalls_on
 
     written = _read(workbuddy / "settings.json")
     assert list(written) == list(settings)
-    assert {key: value for key, value in written.items() if key != "hooks"} == \
-        {key: value for key, value in settings.items() if key != "hooks"}
+    assert {key: value for key, value in written.items() if key != "hooks"} == {
+        key: value for key, value in settings.items() if key != "hooks"
+    }
     assert written["hooks"]["UserPromptSubmit"][0] == settings["hooks"]["UserPromptSubmit"][0], "another hook stays"
     ours = {event: groups[-1]["hooks"] for event, groups in written["hooks"].items()}
     assert {event: [(hook["type"], hook["timeout"]) for hook in hooks] for event, hooks in ours.items()} == {
-        "UserPromptSubmit": [("command", 15)], "Stop": [("command", 10)], "SessionEnd": [("command", 10)]}
+        "UserPromptSubmit": [("command", 15)],
+        "Stop": [("command", 10)],
+        "SessionEnd": [("command", 10)],
+    }
     command = ours["UserPromptSubmit"][0]["command"]
     assert all(hooks[0]["command"] == command for hooks in ours.values())
     assert command.startswith(f'"{Path(sys.executable).as_posix()}" -I -B -m scope_recall.adapters.codex.hook_entry ')
@@ -415,7 +546,10 @@ def test_a_workbuddy_entry_installs_into_workbuddy_s_own_files_and_uninstalls_on
     servers = _read(workbuddy / "mcp.json")["mcpServers"]
     assert list(servers) == ["TEST-other-server", "scope-recall"]
     assert servers["TEST-other-server"] == mcp["mcpServers"]["TEST-other-server"]
-    assert servers["scope-recall"]["type"] == "stdio" and servers["scope-recall"]["command"] == Path(sys.executable).as_posix()
+    assert (
+        servers["scope-recall"]["type"] == "stdio"
+        and servers["scope-recall"]["command"] == Path(sys.executable).as_posix()
+    )
     assert servers["scope-recall"]["description"] == install_workbuddy.SERVER_DESCRIPTION
     assert servers["scope-recall"]["args"][-4:] == ["--home", entry.as_posix(), "--host", "workbuddy"]
 
@@ -423,7 +557,8 @@ def test_a_workbuddy_entry_installs_into_workbuddy_s_own_files_and_uninstalls_on
     stamps = {name: ((workbuddy / name).read_bytes(), (workbuddy / name).stat().st_mtime_ns) for name in before}
     plan = plan_install(**options)
     assert {("unchanged", "settings.json"), ("unchanged", "mcp.json")} <= {
-        (change.action, Path(change.path).name) for change in plan.changes}
+        (change.action, Path(change.path).name) for change in plan.changes
+    }
     again = apply_install(plan)
     assert again.files_merged == [] and not any(Path(path).name in before for path in again.backups)
     assert {name: ((workbuddy / name).read_bytes(), (workbuddy / name).stat().st_mtime_ns) for name in before} == stamps
@@ -432,13 +567,20 @@ def test_a_workbuddy_entry_installs_into_workbuddy_s_own_files_and_uninstalls_on
     # where it stands, the other hook kept after it.
     edited = _read(workbuddy / "settings.json")
     old = edited["hooks"]["Stop"][0]["hooks"][0]
-    old.update(command=old["command"].replace(Path(sys.executable).as_posix(), "C:/TEST-old-venv/python.exe"),
-               timeout=3)
+    old.update(
+        command=old["command"].replace(Path(sys.executable).as_posix(), "C:/TEST-old-venv/python.exe"), timeout=3
+    )
     edited["hooks"]["Stop"][0]["hooks"].append({"type": "command", "command": "TEST-after"})
     (workbuddy / "settings.json").write_text(json.dumps(edited, indent=2), encoding="utf-8")
     assert [Path(path).name for path in apply_install(plan_install(**options)).files_merged] == ["settings.json"]
     assert _read(workbuddy / "settings.json")["hooks"]["Stop"] == [
-        {"hooks": [{"type": "command", "command": command, "timeout": 10}, {"type": "command", "command": "TEST-after"}]}]
+        {
+            "hooks": [
+                {"type": "command", "command": command, "timeout": 10},
+                {"type": "command", "command": "TEST-after"},
+            ]
+        }
+    ]
 
     report = run_doctor(host="workbuddy", instance_root=entry, python_executable=Path(sys.executable))
     assert report.binding_ok and report.database_present
@@ -452,9 +594,13 @@ def test_a_workbuddy_entry_installs_into_workbuddy_s_own_files_and_uninstalls_on
     assert stopped == [(entry, "workbuddy")] * 4, "each install and the uninstall stop the entry's resident server"
     assert sorted(Path(path).name for path in removed.unmerged_files) == ["mcp.json", "settings.json"]
     assert {Path(path).name: Path(path).read_bytes() for path in removed.backups} == held
-    assert _read(workbuddy / "settings.json") == {**settings, "hooks": {
-        "UserPromptSubmit": settings["hooks"]["UserPromptSubmit"],
-        "Stop": [{"hooks": [{"type": "command", "command": "TEST-after"}]}]}}
+    assert _read(workbuddy / "settings.json") == {
+        **settings,
+        "hooks": {
+            "UserPromptSubmit": settings["hooks"]["UserPromptSubmit"],
+            "Stop": [{"hooks": [{"type": "command", "command": "TEST-after"}]}],
+        },
+    }
     assert _read(workbuddy / "mcp.json") == mcp and (workbuddy / ".mcp.json").read_bytes() == proxy
     assert plan_uninstall(instance_root=entry).unmerged_files == [], "nothing of this entry's is left"
 
@@ -466,16 +612,23 @@ def test_a_workbuddy_install_refuses_what_it_cannot_merge_and_writes_nothing(tmp
     entry = (tmp_path / "TEST-workbuddy-entry").resolve()
     entry.mkdir()
     workbuddy, settings, mcp = _workbuddy_home(tmp_path)
-    options = dict(host="workbuddy", target_plugin_dir=workbuddy, instance_root=entry, project_root=None,
-                   agent_id=AGENT, python_executable=Path(sys.executable))
+    options = dict(
+        host="workbuddy",
+        target_plugin_dir=workbuddy,
+        instance_root=entry,
+        project_root=None,
+        agent_id=AGENT,
+        python_executable=Path(sys.executable),
+    )
     plan = plan_install(**options)
     assert any("not attached to a shared store" in conflict for conflict in plan.conflicts), plan.conflicts
     with pytest.raises(InstallError):
         apply_install(plan)
 
     def conflicts(settings_value=None, mcp_value=None, *, settings_text=None):
-        (workbuddy / "settings.json").write_text(settings_text if settings_text is not None else
-                                                 json.dumps(settings_value or settings), encoding="utf-8")
+        (workbuddy / "settings.json").write_text(
+            settings_text if settings_text is not None else json.dumps(settings_value or settings), encoding="utf-8"
+        )
         (workbuddy / "mcp.json").write_text(json.dumps(mcp_value or mcp), encoding="utf-8")
         before = {path.name: path.read_bytes() for path in workbuddy.iterdir()}
         found = plan_install(**options).conflicts
@@ -483,7 +636,9 @@ def test_a_workbuddy_install_refuses_what_it_cannot_merge_and_writes_nothing(tmp
         return found
 
     # WorkBuddy would run both, and each would record the turn.
-    another = '"C:/TEST/python.exe" -I -B -m scope_recall.adapters.codex.hook_entry --home "C:/TEST-other" --host workbuddy'
+    another = (
+        '"C:/TEST/python.exe" -I -B -m scope_recall.adapters.codex.hook_entry --home "C:/TEST-other" --host workbuddy'
+    )
     remote = '"C:/TEST/python.exe" -I -B -m scope_recall.adapters.codex.remote_client --config "C:/TEST/client.json"'
     for command in (another, remote):
         value = json.loads(json.dumps(settings))
@@ -510,23 +665,52 @@ def test_a_workbuddy_install_refuses_what_it_cannot_merge_and_writes_nothing(tmp
 def test_a_workbuddy_hook_command_is_quoted_with_forward_slashes_and_its_wait_covers_start_and_work(tmp_path):
     """WorkBuddy runs a hook through Git Bash on Windows, and blocks a prompt whose hook runs past its wait."""
     python = Path("C:/TEST venv/Scripts/python.exe")
-    plan = InstallPlan(host="workbuddy", target_plugin_dir=tmp_path, instance_root=Path("D:/TEST homes/workbuddy"),
-                       project_root=None, agent_id=AGENT, python_executable=python,
-                       env_file=Path("D:/TEST homes/embedding.env"))
+    plan = InstallPlan(
+        host="workbuddy",
+        target_plugin_dir=tmp_path,
+        instance_root=Path("D:/TEST homes/workbuddy"),
+        project_root=None,
+        agent_id=AGENT,
+        python_executable=python,
+        env_file=Path("D:/TEST homes/embedding.env"),
+    )
     command = install_workbuddy.hook_command(plan)
     assert command.startswith('"C:/TEST venv/Scripts/python.exe" ')
     assert "\\" not in command and "~" not in command
-    assert shlex.split(command) == ["C:/TEST venv/Scripts/python.exe", "-I", "-B", "-m",
-                                    "scope_recall.adapters.codex.hook_entry", "--home", "D:/TEST homes/workbuddy",
-                                    "--host", "workbuddy", "--env-file", "D:/TEST homes/embedding.env",
-                                    "||", "exit", "1"]
+    assert shlex.split(command) == [
+        "C:/TEST venv/Scripts/python.exe",
+        "-I",
+        "-B",
+        "-m",
+        "scope_recall.adapters.codex.hook_entry",
+        "--home",
+        "D:/TEST homes/workbuddy",
+        "--host",
+        "workbuddy",
+        "--env-file",
+        "D:/TEST homes/embedding.env",
+        "||",
+        "exit",
+        "1",
+    ]
     # WorkBuddy blocks the prompt on a hook's exit 2, argparse's code when an older package does not know an option.
     assert command.endswith(" || exit 1")
-    for unsafe in ("C:/TEST$HOME/python.exe", "C:/TEST`id`/python.exe", 'C:/TEST"/python.exe', "C:/TEST/" + chr(0x5929)):
+    for unsafe in (
+        "C:/TEST$HOME/python.exe",
+        "C:/TEST`id`/python.exe",
+        'C:/TEST"/python.exe',
+        "C:/TEST/" + chr(0x5929),
+    ):
         with pytest.raises(InstallError, match="Git Bash"):
             install_workbuddy.quoted(Path(unsafe), "interpreter")
-    tilde = plan_install(host="workbuddy", target_plugin_dir=tmp_path, instance_root="~/TEST-workbuddy-entry",
-                         project_root=None, agent_id=AGENT, python_executable=Path(sys.executable))
+    tilde = plan_install(
+        host="workbuddy",
+        target_plugin_dir=tmp_path,
+        instance_root="~/TEST-workbuddy-entry",
+        project_root=None,
+        agent_id=AGENT,
+        python_executable=Path(sys.executable),
+    )
     assert "~" not in install_workbuddy.hook_command(tilde), "a home given with ~ is written out"
 
     # WorkBuddy's timeout is in seconds; each wait covers the interpreter's start and the most the hook may work.
@@ -562,9 +746,16 @@ def test_a_client_writes_only_where_every_owner_row_reads(tmp_path, capsys, root
     assert [entry["entry_id"] for entry in read_shared_payload(root)["entries"]] == ["tianshu", "tianquan"]
     assert read_attachment(client) is None
     with pytest.raises(InstallError):
-        apply_install(plan_install(host="claude-code", target_plugin_dir=(tmp_path / "TEST-plugin" / "scope-recall"),
-                                   instance_root=client, project_root=None, agent_id=AGENT,
-                                   python_executable=Path(sys.executable)))
+        apply_install(
+            plan_install(
+                host="claude-code",
+                target_plugin_dir=(tmp_path / "TEST-plugin" / "scope-recall"),
+                instance_root=client,
+                project_root=None,
+                agent_id=AGENT,
+                python_executable=Path(sys.executable),
+            )
+        )
 
 
 def test_a_codex_home_with_its_own_store_still_in_place_is_refused(tmp_path, capsys, root):
@@ -583,20 +774,26 @@ def test_a_codex_home_with_its_own_store_still_in_place_is_refused(tmp_path, cap
 def test_an_entry_searches_the_worker_s_vector_table_whatever_its_routes_named(tmp_path, capsys, root):
     """tianji's routes came from its own 3.1 store, which named its table source_embeddings; its entry then
     searched a table the shared worker never fills, and recall lost its vector half (2026-09-24)."""
+
     def with_table(home, table):
         routes = _routes(home)
         space = RuntimeInstanceConfig.from_mapping(routes)
-        routes["vector"] = {"storage_dir": str(Path(routes["binding"]["data_directory"]) / "vectors"
-                                               / space.embedding_space_id()),
-                            "table_name": table, "dimensions": space.embedding_space()["dimensions"]}
+        routes["vector"] = {
+            "storage_dir": str(Path(routes["binding"]["data_directory"]) / "vectors" / space.embedding_space_id()),
+            "table_name": table,
+            "dimensions": space.embedding_space()["dimensions"],
+        }
         return routes
 
     first, _options = _installed(tmp_path, "tianshu")
-    code, result = _attach(capsys, first, root, _moved_aside(first, with_table(first, "scope_recall")), "tianshu", "天枢")
+    code, result = _attach(
+        capsys, first, root, _moved_aside(first, with_table(first, "scope_recall")), "tianshu", "天枢"
+    )
     assert code == 0, result
     second, _options = _installed(tmp_path, "tianji")
-    code, result = _attach(capsys, second, root, _moved_aside(second, with_table(second, "source_embeddings")),
-                           "tianji", "天姬")
+    code, result = _attach(
+        capsys, second, root, _moved_aside(second, with_table(second, "source_embeddings")), "tianji", "天姬"
+    )
     assert code == 0, result
     worker = load_config(root / "runtime-config.json").vector
     entry = load_config(second / "scope-recall" / "runtime-config.json").vector
@@ -605,6 +802,7 @@ def test_an_entry_searches_the_worker_s_vector_table_whatever_its_routes_named(t
 
 
 # -- dsh (DeepSeek Harness) -------------------------------------------------------------------------------------
+
 
 def _dsh_home(tmp_path, text=None):
     """A dsh home with a patch file of the person's own (``text``), or none."""
@@ -622,15 +820,24 @@ def _patch_ops(path):
 
 
 def _dsh_plan(home, entry, env_file=None):
-    return InstallPlan(host="dsh", target_plugin_dir=home, instance_root=entry, project_root=None, agent_id=AGENT,
-                       python_executable=Path(sys.executable), env_file=env_file)
+    return InstallPlan(
+        host="dsh",
+        target_plugin_dir=home,
+        instance_root=entry,
+        project_root=None,
+        agent_id=AGENT,
+        python_executable=Path(sys.executable),
+        env_file=env_file,
+    )
 
 
-_DSH_OWN = ("# TEST the person's own rows\n"
-            "- id: TEST-other\n"
-            "  disabled: true\n"
-            "- id: TEST-gated\n"
-            "  disabled: !!js \"process.env.TEST_OFF === '1'\"\n")
+_DSH_OWN = (
+    "# TEST the person's own rows\n"
+    "- id: TEST-other\n"
+    "  disabled: true\n"
+    "- id: TEST-gated\n"
+    "  disabled: !!js \"process.env.TEST_OFF === '1'\"\n"
+)
 
 
 def test_a_dsh_entry_installs_its_plugin_and_rows_and_uninstalls_only_its_own(tmp_path, capsys, root, monkeypatch):
@@ -640,23 +847,49 @@ def test_a_dsh_entry_installs_its_plugin_and_rows_and_uninstalls_only_its_own(tm
     first, _second = _hermes_pair(tmp_path, capsys, root)
     entry = (tmp_path / "TEST-dsh-entry").resolve()
     entry.mkdir()
-    code, result = _run(capsys, "attach", "--host", "dsh", "--instance-root", str(entry), "--root", str(root),
-                        "--entry", "dsh", "--display-name", "DeepSeek Harness", "--grants-like", "all",
-                        "--capture-like", "tianshu",
-                        "--runtime-config-from", str(first / "scope-recall" / "runtime-config.json"))
+    code, result = _run(
+        capsys,
+        "attach",
+        "--host",
+        "dsh",
+        "--instance-root",
+        str(entry),
+        "--root",
+        str(root),
+        "--entry",
+        "dsh",
+        "--display-name",
+        "DeepSeek Harness",
+        "--grants-like",
+        "all",
+        "--capture-like",
+        "tianshu",
+        "--runtime-config-from",
+        str(first / "scope-recall" / "runtime-config.json"),
+    )
     assert (code, result["status"]) == (0, "attached"), result
     assert read_attachment(entry).host == "dsh"
     runtime = load_config(entry / "scope-recall" / "runtime-config.json")
-    assert runtime.host_adapter == "dsh" and (runtime.session_id, runtime.owner_id) == ("dsh-background",
-                                                                                        "dsh-scope-recall")
+    assert runtime.host_adapter == "dsh" and (runtime.session_id, runtime.owner_id) == (
+        "dsh-background",
+        "dsh-scope-recall",
+    )
     from scope_recall.adapters.codex import local_endpoint
 
-    assert local_endpoint.resident_minutes(entry, "dsh") == 120, "dsh's hooks are processes of their own, as WorkBuddy's"
+    assert local_endpoint.resident_minutes(entry, "dsh") == 120, (
+        "dsh's hooks are processes of their own, as WorkBuddy's"
+    )
 
     home = _dsh_home(tmp_path, _DSH_OWN)
     before = (home / "cordis.patch.yml").read_bytes()
-    options = dict(host="dsh", target_plugin_dir=home, instance_root=entry, project_root=None, agent_id=AGENT,
-                   python_executable=Path(sys.executable))
+    options = dict(
+        host="dsh",
+        target_plugin_dir=home,
+        instance_root=entry,
+        project_root=None,
+        agent_id=AGENT,
+        python_executable=Path(sys.executable),
+    )
     plan = plan_install(**options)
     assert plan.conflicts == [], plan.conflicts
     changes = [(change.action, Path(change.path).name) for change in plan.changes]
@@ -673,19 +906,35 @@ def test_a_dsh_entry_installs_its_plugin_and_rows_and_uninstalls_only_its_own(tm
     assert [Path(path).read_bytes() for path in installed.backups if Path(path).name == "cordis.patch.yml"] == [before]
 
     ops = _patch_ops(home / "cordis.patch.yml")
-    assert ops[:2] == [{"id": "TEST-other", "disabled": True},
-                       {"id": "TEST-gated", "disabled": ("!!js", "process.env.TEST_OFF === '1'")}], "the person's rows stay"
+    assert ops[:2] == [
+        {"id": "TEST-other", "disabled": True},
+        {"id": "TEST-gated", "disabled": ("!!js", "process.env.TEST_OFF === '1'")},
+    ], "the person's rows stay"
     assert ops[2] == {"id": "session-log-deepseek", "config": {"enabled": False}}
     rows = ops[3]["insert"]
     assert [row["id"] for row in rows] == ["scope-recall", "mcp-scope-recall"]
     assert rows[0]["name"] == plugin.as_uri()
-    assert rows[0]["config"] == {"python": Path(sys.executable).as_posix(), "home": entry.as_posix(),
-                                 "version": install_dsh.PACKAGE_VERSION}
+    assert rows[0]["config"] == {
+        "python": Path(sys.executable).as_posix(),
+        "home": entry.as_posix(),
+        "version": install_dsh.PACKAGE_VERSION,
+    }
     assert rows[1]["name"] == "@deepseek-ai/dsh-mcp-client"
-    assert rows[1]["config"] == {"serverName": "scope-recall", "transport": "stdio",
-                                 "command": Path(sys.executable).as_posix(),
-                                 "args": ["-I", "-B", "-m", "scope_recall.adapters.codex.mcp_entry", "--home",
-                                          entry.as_posix(), "--host", "dsh"]}
+    assert rows[1]["config"] == {
+        "serverName": "scope-recall",
+        "transport": "stdio",
+        "command": Path(sys.executable).as_posix(),
+        "args": [
+            "-I",
+            "-B",
+            "-m",
+            "scope_recall.adapters.codex.mcp_entry",
+            "--home",
+            entry.as_posix(),
+            "--host",
+            "dsh",
+        ],
+    }
 
     stamp = ((home / "cordis.patch.yml").read_bytes(), (home / "cordis.patch.yml").stat().st_mtime_ns)
     plan = plan_install(**options)
@@ -694,8 +943,11 @@ def test_a_dsh_entry_installs_its_plugin_and_rows_and_uninstalls_only_its_own(tm
     assert ((home / "cordis.patch.yml").read_bytes(), (home / "cordis.patch.yml").stat().st_mtime_ns) == stamp
 
     report = run_doctor(host="dsh", instance_root=entry, python_executable=Path(sys.executable))
-    assert report.binding_ok and report.shared_store == {"root": str(root), "entry_id": "dsh",
-                                                         "entry_name": "DeepSeek Harness"}
+    assert report.binding_ok and report.shared_store == {
+        "root": str(root),
+        "entry_id": "dsh",
+        "entry_name": "DeepSeek Harness",
+    }
 
     removal = plan_uninstall(instance_root=entry)
     assert removal.conflicts == [] and [Path(path).name for path in removal.files_to_remove] == ["index.mjs"]
@@ -709,17 +961,25 @@ def test_a_dsh_entry_installs_its_plugin_and_rows_and_uninstalls_only_its_own(tm
     assert (code, result["status"]) == (0, "detached")
 
 
-@pytest.mark.parametrize("text, refused", [
-    ("[{id: TEST-flow, disabled: true}]\n", "not a block list"),
-    ("  - id: TEST-indented\n    disabled: true\n", "not a block list"),
-    ("TEST: a mapping\n", "does not hold a list"),
-    ("- [\n", "is not YAML dsh can read"),
-    ("- insert:\n    - id: scope-recall\n      name: TEST-another\n", "already has a row scope-recall"),
-    ("- insert:\n    - id: TEST-mcp\n      name: '@deepseek-ai/dsh-mcp-client'\n      config:\n        serverName: scope-recall\n",
-     "already has an MCP server named scope-recall"),
-    ("# SCOPE_RECALL_DSH_START (scope-recall 3.7.0 for C:/TEST/another-entry; apply-uninstall takes this block out)\n"
-     "- insert:\n    - id: scope-recall\n      name: TEST\n# SCOPE_RECALL_DSH_END\n", "another Scope Recall entry"),
-])
+@pytest.mark.parametrize(
+    "text, refused",
+    [
+        ("[{id: TEST-flow, disabled: true}]\n", "not a block list"),
+        ("  - id: TEST-indented\n    disabled: true\n", "not a block list"),
+        ("TEST: a mapping\n", "does not hold a list"),
+        ("- [\n", "is not YAML dsh can read"),
+        ("- insert:\n    - id: scope-recall\n      name: TEST-another\n", "already has a row scope-recall"),
+        (
+            "- insert:\n    - id: TEST-mcp\n      name: '@deepseek-ai/dsh-mcp-client'\n      config:\n        serverName: scope-recall\n",
+            "already has an MCP server named scope-recall",
+        ),
+        (
+            "# SCOPE_RECALL_DSH_START (scope-recall 3.7.0 for C:/TEST/another-entry; apply-uninstall takes this block out)\n"
+            "- insert:\n    - id: scope-recall\n      name: TEST\n# SCOPE_RECALL_DSH_END\n",
+            "another Scope Recall entry",
+        ),
+    ],
+)
 def test_a_dsh_install_refuses_a_patch_it_cannot_edit_safely(tmp_path, text, refused):
     home = _dsh_home(tmp_path, text)
     entry = (tmp_path / "TEST-dsh-entry").resolve()
@@ -755,8 +1015,9 @@ def test_a_dsh_patch_keeps_its_bytes_and_an_upload_switch_of_the_person_s_own(tm
         assert _patch_ops_text(stripped) == [{"id": "session-log-deepseek", "config": {"enabled": False}}]
 
     path.write_text("# TEST\n" + "\n".join(install_dsh._rows(_dsh_plan(home, entry))) + "\n", encoding="utf-8")
-    assert install_dsh.unmerged_file(entry, path).decode("utf-8").strip().splitlines()[-1] == "[]", \
+    assert install_dsh.unmerged_file(entry, path).decode("utf-8").strip().splitlines()[-1] == "[]", (
         "a file left with comments alone fails dsh's boot"
+    )
     assert install_dsh.unmerged_file((tmp_path / "TEST-another").resolve(), path) is None, "another entry's rows stay"
 
 
@@ -772,7 +1033,9 @@ def test_a_dsh_reinstall_keeps_the_block_where_it_stands_and_an_operation_after_
     changed = _patch_ops_text(install_dsh.merged_file(_dsh_plan(home, entry, env_file=Path(sys.executable)), path))
     at = next(index for index, operation in enumerate(changed) if "insert" in operation)
     assert changed[at]["insert"][0]["config"]["envFile"] == Path(sys.executable).as_posix(), "the block is rewritten"
-    assert changed[at + 1:] == [{"id": "scope-recall", "disabled": True}], "and the person's operation is still after it"
+    assert changed[at + 1 :] == [{"id": "scope-recall", "disabled": True}], (
+        "and the person's operation is still after it"
+    )
     assert changed[:2] == _patch_ops_text(_DSH_OWN.encode("utf-8")), "the person's rows before it stay before it"
 
 
@@ -785,18 +1048,25 @@ def test_a_dsh_upload_counts_as_off_only_as_dsh_works_it_out(tmp_path):
     defaulting to true): an upload switched off and then given another config is on, and gets the install's switch after
     it; one the person switches on again after the install's switch gets the switch again, last."""
     entry = (tmp_path / "TEST-dsh-entry").resolve()
-    home = _dsh_home(tmp_path, "- id: session-log-deepseek\n  config:\n    enabled: false\n"
-                               "- id: session-log-deepseek\n  config:\n    maxBytes: 4194304\n")
+    home = _dsh_home(
+        tmp_path,
+        "- id: session-log-deepseek\n  config:\n    enabled: false\n"
+        "- id: session-log-deepseek\n  config:\n    maxBytes: 4194304\n",
+    )
     path = home / "cordis.patch.yml"
     merged = install_dsh.merged_file(_dsh_plan(home, entry), path)
-    assert _upload_ops(merged) == [{"id": "session-log-deepseek", "config": {"enabled": False}},
-                                   {"id": "session-log-deepseek", "config": {"maxBytes": 4194304}},
-                                   {"id": "session-log-deepseek", "config": {"enabled": False}}]
+    assert _upload_ops(merged) == [
+        {"id": "session-log-deepseek", "config": {"enabled": False}},
+        {"id": "session-log-deepseek", "config": {"maxBytes": 4194304}},
+        {"id": "session-log-deepseek", "config": {"enabled": False}},
+    ]
     assert install_dsh.upload_off(_patch_ops_text(merged)), "the install's switch comes after the person's"
 
     path.write_bytes(merged)
-    path.write_text(path.read_text(encoding="utf-8") + "- id: session-log-deepseek\n  config:\n    enabled: true\n",
-                    encoding="utf-8")
+    path.write_text(
+        path.read_text(encoding="utf-8") + "- id: session-log-deepseek\n  config:\n    enabled: true\n",
+        encoding="utf-8",
+    )
     again = install_dsh.merged_file(_dsh_plan(home, entry), path)
     assert [operation["config"] for operation in _upload_ops(again)][-2:] == [{"enabled": True}, {"enabled": False}]
     assert again.decode("utf-8").count(install_dsh.PRIVACY_START) == 1, "the switch moved, not copied"
@@ -813,7 +1083,7 @@ def test_a_dsh_install_after_an_uninstall_goes_before_the_person_s_operation_on_
     path.write_bytes(install_dsh.unmerged_file(entry, path))
     operations = _patch_ops_text(install_dsh.merged_file(_dsh_plan(home, entry), path))
     at = next(index for index, operation in enumerate(operations) if "insert" in operation)
-    assert operations[at + 1:] == [{"id": "scope-recall", "disabled": True}]
+    assert operations[at + 1 :] == [{"id": "scope-recall", "disabled": True}]
 
 
 def test_a_dsh_patch_keeps_every_other_line_byte_for_byte(tmp_path):
@@ -822,7 +1092,7 @@ def test_a_dsh_patch_keeps_every_other_line_byte_for_byte(tmp_path):
     entry = (tmp_path / "TEST-dsh-entry").resolve()
     home = _dsh_home(tmp_path)
     path = home / "cordis.patch.yml"
-    own = ("- id: TEST-row\n  config:\n    args:\n      []\n    note: \"TEST a" + chr(0x2028) + "b\"\n")
+    own = '- id: TEST-row\n  config:\n    args:\n      []\n    note: "TEST a' + chr(0x2028) + 'b"\n'
     path.write_bytes(own.encode("utf-8"))
     merged = install_dsh.merged_file(_dsh_plan(home, entry), path).decode("utf-8")
     assert merged.startswith(own)

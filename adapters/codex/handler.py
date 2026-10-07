@@ -1,4 +1,5 @@
 """Dispatch Codex (and Claude Code) hook events through the single MemoryCore boundary."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -76,13 +77,19 @@ _RESIDENT_REASONS = frozenset({"deadline_exceeded", "recall_exception", "recall_
 _SETTLED_CAPTURE_CODES = frozenset({"SECRET_DETECTED", "INPUT_INVALID", "VERSION_CONFLICT"})
 #: How a capture says it refused a message as holding a credential: as a code, or as the rejection it returns.
 _SECRET_REFUSALS = frozenset({"SECRET_DETECTED", "plaintext_secret_rejected"})
-_CAPTURE_ERROR_CODES = frozenset({
-    "ACCESS_DENIED", "IDENTITY_UNBOUND", "INPUT_INVALID", "VERSION_CONFLICT",
-    "DEADLINE_EXCEEDED", "STORAGE_UNAVAILABLE", "SOURCE_MISSING", "SECRET_DETECTED",
-})
-_SUPPORTED_EVENTS = frozenset(
-    {"SessionStart", "UserPromptSubmit", "Stop", "PostToolUse", "Interrupt", "SessionEnd"}
+_CAPTURE_ERROR_CODES = frozenset(
+    {
+        "ACCESS_DENIED",
+        "IDENTITY_UNBOUND",
+        "INPUT_INVALID",
+        "VERSION_CONFLICT",
+        "DEADLINE_EXCEEDED",
+        "STORAGE_UNAVAILABLE",
+        "SOURCE_MISSING",
+        "SECRET_DETECTED",
+    }
 )
+_SUPPORTED_EVENTS = frozenset({"SessionStart", "UserPromptSubmit", "Stop", "PostToolUse", "Interrupt", "SessionEnd"})
 #: Where each client's hooks differ.  Claude Code's were the model for Codex's and send the
 #: same fields, except that a turn is named by ``prompt_id``.  Its tool output is not recorded:
 #: a tool result never becomes a memory, and a coding session's tool traffic would be most of
@@ -107,12 +114,14 @@ _RECORD_READ_S = 3.0
 _RECORD_CAPTURE_MIN_S = 0.5
 #: A hook's copy of a message and the record's are the same message when the words match and the moments are this close.
 _RECORD_SAME_MESSAGE_S = 120.0
-_HOST_EVENTS = {"codex": _SUPPORTED_EVENTS,
-                "claude-code": frozenset({"UserPromptSubmit", "Stop", "SessionEnd"}),
-                "workbuddy": frozenset({"UserPromptSubmit", "Stop", "SessionEnd"}),
-                # dsh's plugin (``distribution/dsh``) sends a prompt hook before a turn's first step and a Stop at its
-                # end; dsh has no session end.
-                "dsh": frozenset({"UserPromptSubmit", "Stop"})}
+_HOST_EVENTS = {
+    "codex": _SUPPORTED_EVENTS,
+    "claude-code": frozenset({"UserPromptSubmit", "Stop", "SessionEnd"}),
+    "workbuddy": frozenset({"UserPromptSubmit", "Stop", "SessionEnd"}),
+    # dsh's plugin (``distribution/dsh``) sends a prompt hook before a turn's first step and a Stop at its
+    # end; dsh has no session end.
+    "dsh": frozenset({"UserPromptSubmit", "Stop"}),
+}
 
 
 class HookClock(Protocol):
@@ -165,9 +174,12 @@ class HookDiagnostics:
         """No capture, or one stored, queued, or refused in a way no retry changes (a secret, an invalid message,
         its id already taken, its id's message deleted, or taken from the inbox by a pass that stored it).
         Otherwise the store was busy or away, and the same hook sent again may store it."""
-        return (self.capture_stage is None or self.capture_durability in ("persisted", "queued")
-                or self.capture_disposition in ("rejected", "conflict", "cancelled")
-                or self.capture_error_code in _SETTLED_CAPTURE_CODES)
+        return (
+            self.capture_stage is None
+            or self.capture_durability in ("persisted", "queued")
+            or self.capture_disposition in ("rejected", "conflict", "cancelled")
+            or self.capture_error_code in _SETTLED_CAPTURE_CODES
+        )
 
 
 @dataclass
@@ -285,8 +297,9 @@ class CodexHookHandler:
         """
         config = load_shared_client(home, host)
         core = MemoryCore(CoreConfig(config.to_binding()), clock=clock)
-        handler = cls(config, core=core, clock=event_clock if event_clock is not None else clock,
-                      hook_started_at=hook_started_at)
+        handler = cls(
+            config, core=core, clock=event_clock if event_clock is not None else clock, hook_started_at=hook_started_at
+        )
         handler._pending_runtime_config_path = trusted_runtime_config_path or str(config.runtime_config_path)
         if host in _CONFIGURED_PROMPT_BUDGET:
             handler._prompt_budget = _configured_budget(handler._pending_runtime_config_path)
@@ -446,8 +459,14 @@ class CodexHookHandler:
             return None
         return audience
 
-    def handle_payload(self, payload: dict[str, Any], *, record: RecordLines | None = None,
-                       local_record: bool = True, error_reply: bool = False) -> dict[str, Any]:
+    def handle_payload(
+        self,
+        payload: dict[str, Any],
+        *,
+        record: RecordLines | None = None,
+        local_record: bool = True,
+        error_reply: bool = False,
+    ) -> dict[str, Any]:
         payload = without_lone_surrogates(payload)
         self._persisted_this_call = False
         self._queued_this_call = False
@@ -485,7 +504,10 @@ class CodexHookHandler:
                 # status a local installation reads here counts the whole store: 7-8 s on the pilot's
                 # shared store of 277,000 sources, past Codex's 2 s hook timeout at every session start.
                 return {}
-            if self._session_start(session_id, audience, deadline) and self._remaining(deadline) >= _RUNTIME_ATTACH_MIN_S:
+            if (
+                self._session_start(session_id, audience, deadline)
+                and self._remaining(deadline) >= _RUNTIME_ATTACH_MIN_S
+            ):
                 self._ensure_host_runtime(audience)
                 self._maybe_launch_owned_worker(session_id, audience, require_persisted=False)
             return {}
@@ -536,8 +558,17 @@ class CodexHookHandler:
 
     # -- capture ---------------------------------------------------------
 
-    def _capture(self, context, audience, event, *, deadline: float, gaps: tuple[str, ...] = (),
-                 via_inbox: bool = True, wait: float = _CAPTURE_TIMEOUT_S) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    def _capture(
+        self,
+        context,
+        audience,
+        event,
+        *,
+        deadline: float,
+        gaps: tuple[str, ...] = (),
+        via_inbox: bool = True,
+        wait: float = _CAPTURE_TIMEOUT_S,
+    ) -> tuple[tuple[str, ...], tuple[str, ...]]:
         """Record one host event; returns the committed source refs and the accumulated gaps.
 
         ``via_inbox=False`` is for a message read from the session record, which keeps it until it is
@@ -563,8 +594,12 @@ class CodexHookHandler:
                     remaining_seconds=min(wait, self._remaining(deadline)),
                 )
             else:
-                receipt = self.core.record_event(context, event, scope_id=audience.capture_scope_id,
-                                                 remaining_seconds=min(wait, self._remaining(deadline)))
+                receipt = self.core.record_event(
+                    context,
+                    event,
+                    scope_id=audience.capture_scope_id,
+                    remaining_seconds=min(wait, self._remaining(deadline)),
+                )
         except (ContractError, OSError, RuntimeError, sqlite3.Error) as exc:
             self.diagnostics.capture_durability = "unknown"
             self.diagnostics.capture_error_type = type(exc).__name__
@@ -602,11 +637,15 @@ class CodexHookHandler:
         return refs, (*gaps, *receipt.gaps)
 
     def _reads_record(self, event: object) -> bool:
-        return (event in ("Stop", "SessionEnd") and self.host in _READS_RECORD
-                and isinstance(self.config, SharedClientConfig))
+        return (
+            event in ("Stop", "SessionEnd")
+            and self.host in _READS_RECORD
+            and isinstance(self.config, SharedClientConfig)
+        )
 
-    def _read_record(self, session_id: str, audience, payload: dict[str, Any], deadline: float, *,
-                     remote: RecordLines | None = None) -> None:
+    def _read_record(
+        self, session_id: str, audience, payload: dict[str, Any], deadline: float, *, remote: RecordLines | None = None
+    ) -> None:
         """Record what the session record shows was said since the last read (see ``transcript``).
 
         What a hook already stored is recognised by its words and moment and skipped.  A capture that
@@ -619,9 +658,13 @@ class CodexHookHandler:
         if remote is not None:
             start, lines = remote.start, remote.lines
         else:
-            record = (transcript.workbuddy_record_path(payload.get("transcript_path"), session_id,
-                                                       record_id=payload.get("agent_id"))
-                      if workbuddy else transcript.record_path(payload.get("transcript_path"), session_id))
+            record = (
+                transcript.workbuddy_record_path(
+                    payload.get("transcript_path"), session_id, record_id=payload.get("agent_id")
+                )
+                if workbuddy
+                else transcript.record_path(payload.get("transcript_path"), session_id)
+            )
             if record is None:
                 self._diag("session_record_unavailable", gaps=("capture_gap:session_record_unavailable",))
                 return
@@ -642,11 +685,15 @@ class CodexHookHandler:
         if said:
             try:
                 held = self.core.said_in_session(
-                    self._context(audience, session_id, "host_generated"), audience.capture_scope_id,
-                    [(entry.role, entry.text, entry.occurred_at, self._record_key(session_id, entry, turns, replied))
-                     for entry in said],
+                    self._context(audience, session_id, "host_generated"),
+                    audience.capture_scope_id,
+                    [
+                        (entry.role, entry.text, entry.occurred_at, self._record_key(session_id, entry, turns, replied))
+                        for entry in said
+                    ],
                     window_seconds=_RECORD_SAME_MESSAGE_S,
-                    remaining_seconds=max(0.0, self._remaining(deadline)))
+                    remaining_seconds=max(0.0, self._remaining(deadline)),
+                )
             except (ContractError, OSError, RuntimeError, sqlite3.Error) as exc:
                 # Named, so that a store that fails otherwise than busy says what failed (review of rc13).
                 self.diagnostics.capture_error_type = type(exc).__name__
@@ -678,8 +725,9 @@ class CodexHookHandler:
         elif position != start:
             cursor.save(position)
 
-    def _record_key(self, session_id: str, entry: "transcript.Said", turns: dict[str, str],
-                    replied: tuple[str, str] | None) -> str | None:
+    def _record_key(
+        self, session_id: str, entry: "transcript.Said", turns: dict[str, str], replied: tuple[str, str] | None
+    ) -> str | None:
         """The key a hook stored a record message under, when the record or a kept turn names it."""
         if entry.role == "user" and (turns.get(entry.entry_id) or entry.prompt_id):
             kind, event_id = "user", turns.get(entry.entry_id) or entry.prompt_id
@@ -687,8 +735,13 @@ class CodexHookHandler:
             kind, event_id = "assistant", replied[1]
         else:
             return None
-        return host_source_key(host=self.host, installation_id=self.config.installation_id, session_id=session_id,
-                               event_kind=kind, event_id=event_id)
+        return host_source_key(
+            host=self.host,
+            installation_id=self.config.installation_id,
+            session_id=session_id,
+            event_kind=kind,
+            event_id=event_id,
+        )
 
     def _captured_for_good(self, context, audience, event, deadline: float) -> bool:
         """Capture one record message; False when it may succeed later and the read must stop here."""
@@ -735,10 +788,14 @@ class CodexHookHandler:
             recorded_at=self.clock.utc_now(),
             gaps=gaps,
         )
-        self._capture(self._context(audience, session_id, "host_generated"), audience, event, deadline=deadline, gaps=gaps)
+        self._capture(
+            self._context(audience, session_id, "host_generated"), audience, event, deadline=deadline, gaps=gaps
+        )
         return {}
 
-    def _user_prompt_submit(self, session_id: str, audience, payload: dict[str, Any], deadline: float) -> dict[str, Any]:
+    def _user_prompt_submit(
+        self, session_id: str, audience, payload: dict[str, Any], deadline: float
+    ) -> dict[str, Any]:
         if self.host == "workbuddy":
             prompt = payload.get("prompt")
             if type(prompt) is not str:
@@ -748,8 +805,10 @@ class CodexHookHandler:
             prompt = workbuddy_person_text(prompt)
             notice = is_workbuddy_notice(prompt)
             # A turn is kept for a notice too, so that the reply to it is stored under a turn of its own.
-            turn_id, gaps = _open_turn(self.config, session_id, payload, None if notice else prompt,
-                                       self.clock.utc_now()), ()
+            turn_id, gaps = (
+                _open_turn(self.config, session_id, payload, None if notice else prompt, self.clock.utc_now()),
+                (),
+            )
         else:
             turn_id, gaps = turn_id_from_payload(payload, required=True, field=_TURN_FIELD[self.host])
             if turn_id is None:
@@ -794,15 +853,15 @@ class CodexHookHandler:
             event["artifact_refs"] = attachment_refs
         context = self._context(audience, session_id, "human_direct")
         wait = min(_PROMPT_CAPTURE_TIMEOUT_S, max(_CAPTURE_TIMEOUT_S, self._remaining(deadline) / 2))
-        current_refs, capture_gaps = self._capture(context, audience, event, deadline=deadline, gaps=gaps,
-                                                   wait=wait)
+        current_refs, capture_gaps = self._capture(context, audience, event, deadline=deadline, gaps=gaps, wait=wait)
         # The vector search comes with the runtime.  A prompt the store was too busy to take is recalled by
         # meaning as well: six on the work computer's two entries in one night were recalled by words alone.  One
         # the capture refused, or that holds a credential however the capture ended, goes without it, so that
         # nothing of it reaches an embedding provider.
-        vectors = ((self._captured_this_call()
-                    or (event is not None and not self._refused_this_call() and not contains_secret_like_text(prompt)))
-                   and self._remaining(deadline) >= _RUNTIME_ATTACH_MIN_S)
+        vectors = (
+            self._captured_this_call()
+            or (event is not None and not self._refused_this_call() and not contains_secret_like_text(prompt))
+        ) and self._remaining(deadline) >= _RUNTIME_ATTACH_MIN_S
         if vectors:
             self._ensure_host_runtime(audience)
             if self._queued_this_call:
@@ -821,8 +880,16 @@ class CodexHookHandler:
             return self._resident_answer(payload, context, prompt, request_id, current_refs, deadline, capture_gaps)
         return self._auto_recall(context, prompt, request_id, current_refs, deadline, capture_gaps)
 
-    def _resident_answer(self, payload: dict[str, Any], context, prompt: str, request_id: str,
-                         current_refs: tuple[str, ...], deadline: float, gaps: tuple[str, ...]) -> dict[str, Any]:
+    def _resident_answer(
+        self,
+        payload: dict[str, Any],
+        context,
+        prompt: str,
+        request_id: str,
+        current_refs: tuple[str, ...],
+        deadline: float,
+        gaps: tuple[str, ...],
+    ) -> dict[str, Any]:
         """This prompt's recall from the entry's MCP server, with its vector search warm, or the hook's own.
 
         The server is asked from a thread and given all of the hook's time but its answer's way back.  One that has
@@ -853,8 +920,11 @@ class CodexHookHandler:
         answered.wait(max(0.0, self._remaining(deadline) - _LOCAL_RECALL_RESERVE_S))
         read = answered.is_set()
         server = self._resident_taken(answers[0]) if read else None
-        if server is not None and (server[1].get("recall_vectors") is True or not self._vector_route()
-                                   or not _server_own_vector_fault(server[1].get("recall_vector_gap"))):
+        if server is not None and (
+            server[1].get("recall_vectors") is True
+            or not self._vector_route()
+            or not _server_own_vector_fault(server[1].get("recall_vector_gap"))
+        ):
             return self._resident_used(server)
         reason = self.diagnostics.last_reason
         own = self._auto_recall(context, prompt, request_id, current_refs, deadline, gaps)
@@ -874,8 +944,9 @@ class CodexHookHandler:
             self.resident_outcome = "slow" if own_vectors else "late"
         return own
 
-    def _resident_taken(self, answered: tuple[dict[str, Any], dict[str, Any]] | None
-                        ) -> tuple[dict[str, Any], dict[str, Any]] | None:
+    def _resident_taken(
+        self, answered: tuple[dict[str, Any], dict[str, Any]] | None
+    ) -> tuple[dict[str, Any], dict[str, Any]] | None:
         """The server's answer and its diagnostics, or None when there is none to take (it ran out of time or
         failed, which the hook's stderr then says)."""
         if answered is None:
@@ -903,8 +974,9 @@ class CodexHookHandler:
         runtime = self._host_runtime.runtime if self._host_runtime is not None else None
         return runtime is not None and getattr(runtime.config, "vector", None) is not None
 
-    def resident_recall_for(self, payload: dict[str, Any], current_refs: tuple[str, ...], gaps: tuple[str, ...],
-                            remaining: float) -> dict[str, Any]:
+    def resident_recall_for(
+        self, payload: dict[str, Any], current_refs: tuple[str, ...], gaps: tuple[str, ...], remaining: float
+    ) -> dict[str, Any]:
         """A prompt's automatic recall and nothing else, for the hook that stored the prompt itself
         (``local_endpoint``): the identity, audience and recall ``_user_prompt_submit`` gives it, in ``remaining``
         seconds.  It writes nothing."""
@@ -923,22 +995,37 @@ class CodexHookHandler:
                 return {}
             # The turn the hook kept for these words moments ago (``_open_turn``), or one of this recall's own.
             prompt = workbuddy_person_text(prompt)
-            turn_id = _kept_turn(self.config, session_id, prompt) or _derived_turn(session_id, prompt,
-                                                                                  self.clock.utc_now())
+            turn_id = _kept_turn(self.config, session_id, prompt) or _derived_turn(
+                session_id, prompt, self.clock.utc_now()
+            )
         # What the hook would have recalled nothing for, or recalled without the vector channel, is not asked here;
         # the server checks again rather than take the hook's word for it.
-        if (turn_id is None or type(prompt) is not str or not prompt.strip() or contains_secret_like_text(prompt)
-                or (self.host == "claude-code" and is_task_notification(prompt))
-                or (self.host == "workbuddy" and is_workbuddy_notice(prompt))
-                or (self.host == "codex" and is_codex_suggestions_prompt(prompt))):
+        if (
+            turn_id is None
+            or type(prompt) is not str
+            or not prompt.strip()
+            or contains_secret_like_text(prompt)
+            or (self.host == "claude-code" and is_task_notification(prompt))
+            or (self.host == "workbuddy" and is_workbuddy_notice(prompt))
+            or (self.host == "codex" and is_codex_suggestions_prompt(prompt))
+        ):
             return {}
         deadline = self.clock.monotonic() + max(0.0, remaining)
         self._ensure_host_runtime(audience)
         context = self._context(audience, session_id, "human_direct")
-        return self._auto_recall(context, prompt, f"{self.host}-auto:{session_id}:{turn_id}", current_refs, deadline,
-                                 gaps)
+        return self._auto_recall(
+            context, prompt, f"{self.host}-auto:{session_id}:{turn_id}", current_refs, deadline, gaps
+        )
 
-    def _auto_recall(self, context, prompt: str, request_id: str, current_refs: tuple[str, ...], deadline: float, gaps: tuple[str, ...]) -> dict[str, Any]:
+    def _auto_recall(
+        self,
+        context,
+        prompt: str,
+        request_id: str,
+        current_refs: tuple[str, ...],
+        deadline: float,
+        gaps: tuple[str, ...],
+    ) -> dict[str, Any]:
         """Render this turn's automatic recall context, or nothing once the budget is gone."""
         remaining = self._remaining(deadline)
         self.diagnostics.recall_vectors = None
@@ -954,12 +1041,15 @@ class CodexHookHandler:
             "budget_tokens": AUTOMATIC_PACKET_BUDGET_UNITS,
         }
         try:
-            packet = self.core.recall_packet(context, request, current_source_refs=current_refs, deadline_seconds=remaining)
+            packet = self.core.recall_packet(
+                context, request, current_source_refs=current_refs, deadline_seconds=remaining
+            )
             preparation = self.core.prepare_recall_render(context, packet)
         except (ContractError, OSError, RuntimeError, sqlite3.Error) as exc:
             code = getattr(exc, "code", None)
             self.diagnostics.recall_error_detail = _error_detail(
-                f"{type(exc).__name__}:{code}" if isinstance(code, str) else type(exc).__name__)
+                f"{type(exc).__name__}:{code}" if isinstance(code, str) else type(exc).__name__
+            )
             self._diag("recall_exception", gaps=gaps)
             return {}
         without = recall_without_vectors(packet.get("gaps") or ())
@@ -980,8 +1070,7 @@ class CodexHookHandler:
             self._diag("deadline_exceeded", gaps=gaps)
             return {}
         # In a shared store the model is told which agent it is, so another entry's items read as theirs.
-        entry = ((self.config.entry_id, self.config.entry_name) if isinstance(self.config, SharedClientConfig)
-                 else None)
+        entry = (self.config.entry_id, self.config.entry_name) if isinstance(self.config, SharedClientConfig) else None
         text = render_host_recall_context(preparation.canonical_text, context=preparation.context, entry=entry)
         if not text:
             return {}
@@ -1001,8 +1090,9 @@ class CodexHookHandler:
                 _note_error_reply(self.config, session_id, reply)
                 self._diag("client_error_reply")
                 return {}
-            turn_id, repeated = _close_turn(self.config, session_id, payload, reply if type(reply) is str else "",
-                                            self.clock.utc_now())
+            turn_id, repeated = _close_turn(
+                self.config, session_id, payload, reply if type(reply) is str else "", self.clock.utc_now()
+            )
             self._closed_reply = (turn_id, _words(reply)) if type(reply) is str and reply.strip() else None
             gaps = ()
             if repeated:
@@ -1041,8 +1131,9 @@ class CodexHookHandler:
         if not self._local_record:
             return self._client_error_reply
         try:
-            record = transcript.workbuddy_record_path(payload.get("transcript_path"), session_id,
-                                                      record_id=payload.get("agent_id"))
+            record = transcript.workbuddy_record_path(
+                payload.get("transcript_path"), session_id, record_id=payload.get("agent_id")
+            )
         except OSError:
             return False
         return record is not None and transcript.workbuddy_error_reply(record, reply)
@@ -1086,8 +1177,9 @@ _SUGGESTIONS_THREAD_SECONDS = 24 * 3600
 def _session_marks(config, kind: str, session_id: str) -> Path:
     """One session's mark of ``kind``: beside the pointer for an entry of a shared store, in its data for a store of
     its own."""
-    folder = (Path(config.home) / "scope-recall" if isinstance(config, SharedClientConfig)
-              else Path(config.data_directory)) / kind
+    folder = (
+        Path(config.home) / "scope-recall" if isinstance(config, SharedClientConfig) else Path(config.data_directory)
+    ) / kind
     return folder / hashlib.sha256(session_id.encode("utf-8")).hexdigest()[:32]
 
 
@@ -1162,11 +1254,20 @@ def _turns(config, session_id: str) -> dict[str, Any]:
         return {"turns": [], "reply": None, "error": None}
     if not isinstance(kept, dict):
         return {"turns": [], "reply": None, "error": None}
-    turns = [list(item) for item in kept.get("turns") or () if isinstance(item, list) and len(item) == 2
-             and type(item[0]) is str and (item[1] is None or type(item[1]) is str)]
+    turns = [
+        list(item)
+        for item in kept.get("turns") or ()
+        if isinstance(item, list)
+        and len(item) == 2
+        and type(item[0]) is str
+        and (item[1] is None or type(item[1]) is str)
+    ]
     reply, error = kept.get("reply"), kept.get("error")
-    return {"turns": turns[-_TURNS_KEPT:], "reply": reply if type(reply) is str else None,
-            "error": error if type(error) is str else None}
+    return {
+        "turns": turns[-_TURNS_KEPT:],
+        "reply": reply if type(reply) is str else None,
+        "error": error if type(error) is str else None,
+    }
 
 
 def _keep_turns(config, session_id: str, kept: dict[str, Any]) -> None:
@@ -1198,8 +1299,11 @@ def _open_turn(config, session_id: str, payload: dict[str, Any], words: str | No
     """The turn a WorkBuddy prompt opens, kept for its Stop; ``words`` are the person's, None for a notice."""
     kept = _turns(config, session_id)
     given, _gaps = turn_id_from_payload(payload, required=False, field=_TURN_FIELD["workbuddy"])
-    turn = (given if given is not None and all(given != known for known, _words_of in kept["turns"])
-            else _derived_turn(session_id, words or "", moment))
+    turn = (
+        given
+        if given is not None and all(given != known for known, _words_of in kept["turns"])
+        else _derived_turn(session_id, words or "", moment)
+    )
     kept["turns"] = [*kept["turns"], [turn, _words(words) if words and words.strip() else None]][-_TURNS_KEPT:]
     _keep_turns(config, session_id, kept)
     return turn
@@ -1362,9 +1466,12 @@ def emit_result(result: dict[str, Any], *, diagnostics: HookDiagnostics | None =
         sys.stderr.write(f"CODEX_HOOK:{diagnostics.last_reason}\n")
     if diagnostics is not None and diagnostics.capture_stage:
         detail = {
-            "stage": diagnostics.capture_stage, "disposition": diagnostics.capture_disposition,
-            "durability": diagnostics.capture_durability, "error_type": diagnostics.capture_error_type,
-            "error_code": diagnostics.capture_error_code, "elapsed_ms": diagnostics.capture_elapsed_ms,
+            "stage": diagnostics.capture_stage,
+            "disposition": diagnostics.capture_disposition,
+            "durability": diagnostics.capture_durability,
+            "error_type": diagnostics.capture_error_type,
+            "error_code": diagnostics.capture_error_code,
+            "elapsed_ms": diagnostics.capture_elapsed_ms,
         }
         # Local operator channel only.  stdout carries the host contract; this
         # line is what a person reads when the contract code is not specific

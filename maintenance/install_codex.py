@@ -4,6 +4,7 @@ launcher, plus the instance binding a receipt-backed uninstall verifies.
 A Codex home is either an installation of its own (``codex-installation.json``
 and ``data/``) or, once ``scope-recall attach --host codex`` made it one, an
 entry of a shared store: its wrappers then name the home, not a config."""
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -37,8 +38,14 @@ CODEX_HOOK_EVENTS = frozenset({"SessionStart", "UserPromptSubmit", "PostToolUse"
 #: answers as soon as its work is done, and a prompt's work is bounded by the entry's ``hook_processing_seconds``
 #: (6 s unless set lower), as Claude Code's is.  With 2 s, most of Codex's automatic recalls on a large store came
 #: back empty.  PostToolUse runs at every tool call and records one observation, so it keeps 2 s.
-HOOK_TIMEOUTS = {"SessionStart": 5, "UserPromptSubmit": 15, "PostToolUse": 2, "Stop": 10, "Interrupt": 3,
-                 "SessionEnd": 3}
+HOOK_TIMEOUTS = {
+    "SessionStart": 5,
+    "UserPromptSubmit": 15,
+    "PostToolUse": 2,
+    "Stop": 10,
+    "Interrupt": 3,
+    "SessionEnd": 3,
+}
 WINDOWS_HOOK_LAUNCHER = "scope-recall-hook.cmd"
 
 
@@ -150,16 +157,21 @@ def _hook_command(
     return shlex.join(argv), str(launcher.resolve())
 
 
-def _hooks_json(python_executable: Path, config: Path, *, windows_launcher: Path, env_file: Path | None = None) -> dict[str, Any]:
+def _hooks_json(
+    python_executable: Path, config: Path, *, windows_launcher: Path, env_file: Path | None = None
+) -> dict[str, Any]:
     command, command_windows = _hook_command(
         python_executable, config, windows_launcher=windows_launcher, write_launcher=False, env_file=env_file
     )
     hook = {"type": "command", "command": command, "commandWindows": command_windows}
-    return {"hooks": {event: [{"hooks": [dict(hook, timeout=HOOK_TIMEOUTS[event])]}]
-                      for event in sorted(CODEX_HOOK_EVENTS)}}
+    return {
+        "hooks": {event: [{"hooks": [dict(hook, timeout=HOOK_TIMEOUTS[event])]}] for event in sorted(CODEX_HOOK_EVENTS)}
+    }
 
 
-def _mcp_json(python_executable: Path, config: Path, workspace: Path | None, *, env_file: Path | None = None) -> dict[str, Any]:
+def _mcp_json(
+    python_executable: Path, config: Path, workspace: Path | None, *, env_file: Path | None = None
+) -> dict[str, Any]:
     # An entry's audience is the entry's wherever Codex runs; only an installation of its own maps a workspace.
     mapped = ["--workspace", str(workspace)] if config.name != ATTACHMENT_FILENAME else []
     args = ["-I", "-B", "-m", "scope_recall.adapters.codex.mcp_entry", *_binding_argv(config), *mapped]
@@ -200,8 +212,10 @@ def planned_files(plan: InstallPlan) -> dict[Path, str | bytes]:
         plan.target_plugin_dir / "hooks" / "hooks.json": _json_dump(
             _hooks_json(plan.python_executable, config, windows_launcher=launcher, env_file=plan.env_file)
         ),
-        **{plan.target_plugin_dir / "skills" / name / "SKILL.md": source.read_text(encoding="utf-8")
-           for name, source in SKILLS.items()},
+        **{
+            plan.target_plugin_dir / "skills" / name / "SKILL.md": source.read_text(encoding="utf-8")
+            for name, source in SKILLS.items()
+        },
         plan.target_plugin_dir / ".mcp.json": _json_dump(
             _mcp_json(plan.python_executable, config, plan.project_root, env_file=plan.env_file)
         ),
@@ -245,8 +259,7 @@ def validate_reuse(plan: InstallPlan) -> None:
         raise InstallError("existing Codex installation agent_id mismatch")
     if config.test_mode != plan.test_mode:
         raise InstallError(
-            "existing Codex installation test_mode mismatch: "
-            f"stored={config.test_mode}, requested={plan.test_mode}"
+            f"existing Codex installation test_mode mismatch: stored={config.test_mode}, requested={plan.test_mode}"
         )
 
 

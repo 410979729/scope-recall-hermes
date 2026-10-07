@@ -9,6 +9,7 @@ Three passes later they were failed as ``lease_exhausted``; the automatic recove
 the same oversized group four times; 888 embeddings ended ``auto_retry:4|lease_exhausted`` in an hour
 without one of them ever having been sent to the provider.
 """
+
 from __future__ import annotations
 
 import sqlite3
@@ -20,8 +21,9 @@ from tests.contract.test_v11_claims import app  # noqa: F401  (fixture)
 
 def _rows(core):
     with sqlite3.connect(core.storage.path) as conn:
-        return conn.execute("SELECT subject_ref, state, attempt, lease_owner FROM work_items "
-                            "WHERE work_type='embed' ORDER BY work_id").fetchall()
+        return conn.execute(
+            "SELECT subject_ref, state, attempt, lease_owner FROM work_items WHERE work_type='embed' ORDER BY work_id"
+        ).fetchall()
 
 
 def test_the_untouched_rest_of_a_group_is_pending_again_with_its_attempt_unspent(app):
@@ -47,7 +49,9 @@ def test_the_untouched_rest_of_a_group_is_pending_again_with_its_attempt_unspent
     assert rows[0][1] == "done" and rows[0][0] in {source.ref for source in made}
     # The second member was being worked on when the time went; what it spent is its own.
     for ref, state, attempt, owner in rows[2:]:
-        assert state == "pending" and owner is None, f"{ref} is still {state}, leased to {owner}, until its lease runs out"
+        assert state == "pending" and owner is None, (
+            f"{ref} is still {state}, leased to {owner}, until its lease runs out"
+        )
         assert attempt == 0, f"{ref} was never looked at and has spent {attempt} attempt(s)"
 
 

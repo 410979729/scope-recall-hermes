@@ -5,6 +5,7 @@ terminal classification in the doctor.  The properties that matter: a fault can
 be cleared so an instance can return to healthy, a by-design terminal outcome
 is not re-run by accident, and nothing can loop.
 """
+
 from __future__ import annotations
 
 import sqlite3
@@ -32,14 +33,18 @@ from test_v11_claims import app
 # Reading a decorated error code
 # --------------------------------------------------------------------------
 
-@pytest.mark.parametrize("code,kind", [
-    ("timeout", "timeout"),
-    ("auto_retry:1|timeout", "timeout"),
-    ("budget_checked:1108|input_invalid", "input_invalid"),
-    ("DERIVATION_INVALID", "derivation_invalid"),
-    ("", ""),
-    (None, ""),
-])
+
+@pytest.mark.parametrize(
+    "code,kind",
+    [
+        ("timeout", "timeout"),
+        ("auto_retry:1|timeout", "timeout"),
+        ("budget_checked:1108|input_invalid", "input_invalid"),
+        ("DERIVATION_INVALID", "derivation_invalid"),
+        ("", ""),
+        (None, ""),
+    ],
+)
 def test_the_kind_is_the_last_segment(code, kind):
     """Codes accumulate history; the failure itself is always on the end."""
     assert failure_kind(code) == kind
@@ -83,6 +88,7 @@ def test_a_stamp_from_another_generation_does_not_block():
 # Against real storage
 # --------------------------------------------------------------------------
 
+
 class _Failing:
     def __init__(self, code="network_error"):
         self.code = code
@@ -110,8 +116,7 @@ def _states(core):
     with sqlite3.connect(core.storage.path) as conn:
         conn.row_factory = sqlite3.Row
         work = dict(conn.execute("SELECT state,count(*) FROM work_items GROUP BY 1").fetchall())
-        evaluations = dict(conn.execute(
-            "SELECT state,count(*) FROM candidate_evaluations GROUP BY 1").fetchall())
+        evaluations = dict(conn.execute("SELECT state,count(*) FROM candidate_evaluations GROUP BY 1").fetchall())
     return work, evaluations
 
 
@@ -127,7 +132,8 @@ def test_a_fault_is_cleared_and_its_three_tables_move_together(app):
     with sqlite3.connect(core.storage.path) as conn:
         mismatched = conn.execute(
             """SELECT count(*) FROM candidate_evaluations e JOIN work_items w ON w.work_id=e.work_id
-               WHERE w.state='pending' AND e.state<>'queued'""").fetchone()[0]
+               WHERE w.state='pending' AND e.state<>'queued'"""
+        ).fetchone()[0]
     assert mismatched == 0, "a re-queued work item whose evaluation stayed failed dies immediately"
 
 
@@ -167,12 +173,16 @@ def test_the_page_is_bounded(app, limit):
 # The doctor no longer pins itself at degraded for these
 # --------------------------------------------------------------------------
 
-@pytest.mark.parametrize("code", [
-    "derivation_invalid",
-    "DERIVATION_INVALID",
-    "auto_retry:1|derivation_invalid",
-    "budget_checked:1108|input_invalid",
-])
+
+@pytest.mark.parametrize(
+    "code",
+    [
+        "derivation_invalid",
+        "DERIVATION_INVALID",
+        "auto_retry:1|derivation_invalid",
+        "budget_checked:1108|input_invalid",
+    ],
+)
 def test_every_by_design_terminal_failure_counts_as_terminal(app, code):
     """Counting only ``consolidate`` left 213 identical candidate failures
     driving "degraded" with nobody able to act on them."""
@@ -214,6 +224,7 @@ def test_a_fault_still_counts_as_actionable(app):
 # The two lists of "failures that may pass" must not drift apart again
 # --------------------------------------------------------------------------
 
+
 def test_every_transient_failure_the_worker_knows_is_operator_actionable():
     """They drifted once: ``model_unavailable`` was auto-recoverable but absent
     here, so four rows from one outage pinned a live instance at degraded with
@@ -222,18 +233,45 @@ def test_every_transient_failure_the_worker_knows_is_operator_actionable():
 
     # Compared on the normalised kind, which is what ``retry_class`` is given.
     assert {code.lower() for code in AUTO_RECOVERABLE_ERRORS} <= ACTIONABLE_FAILURES
-    assert all(retry_class(code) == "actionable" for code in AUTO_RECOVERABLE_ERRORS),         "a code the worker retries automatically must also be clearable by hand"
+    assert all(retry_class(code) == "actionable" for code in AUTO_RECOVERABLE_ERRORS), (
+        "a code the worker retries automatically must also be clearable by hand"
+    )
 
 
-@pytest.mark.parametrize("code", ["model_unavailable", "model_timeout", "network_error", "http_protocol",
-                                  "http_429", "http_503", "http_529", "rate_limited"])
+@pytest.mark.parametrize(
+    "code",
+    [
+        "model_unavailable",
+        "model_timeout",
+        "network_error",
+        "http_protocol",
+        "http_429",
+        "http_503",
+        "http_529",
+        "rate_limited",
+    ],
+)
 def test_a_transient_model_failure_can_be_cleared(code):
     assert retry_class(code) == "actionable"
     assert selects(code, include_terminal=False, generation=SCHEMA_VERSION) is True
 
 
-@pytest.mark.parametrize("code", ["http_404", "http_409", "http_413", "http_422", "http_501", "http_520",
-                                  "http_524", "endpoint_invalid", "http_redirect", "request_limit", "response_limit"])
+@pytest.mark.parametrize(
+    "code",
+    [
+        "http_404",
+        "http_409",
+        "http_413",
+        "http_422",
+        "http_501",
+        "http_520",
+        "http_524",
+        "endpoint_invalid",
+        "http_redirect",
+        "request_limit",
+        "response_limit",
+    ],
+)
 def test_a_refused_request_can_be_cleared_once_its_cause_is_fixed(code):
     """An HTTP status not named elsewhere: the request, its route or its model was refused, or the provider failed in
     a way the worker does not recover by itself, so nothing retries it by itself, but an operator who fixed the cause
@@ -320,6 +358,7 @@ def test_a_transport_failure_mid_reply_clears_through_real_storage(app):
 # A provider refusing everyone must not spend an item's own budget
 # --------------------------------------------------------------------------
 
+
 def test_a_capacity_refusal_does_not_consume_an_attempt(app):
     """Four hours of "monthly usage limit reached" pushed 195 live work items
     into failed at attempt=3 apiece, each needing an operator to grant it back.
@@ -327,7 +366,7 @@ def test_a_capacity_refusal_does_not_consume_an_attempt(app):
     from scope_recall.core.work_storage import CAPACITY_REFUSALS, MAX_RECOVERABLE_ATTEMPTS
 
     core, ctx = app
-    _fail_one(core, ctx, "timeout")   # build one leasable work item
+    _fail_one(core, ctx, "timeout")  # build one leasable work item
     with sqlite3.connect(core.storage.path) as conn:
         conn.execute("UPDATE work_items SET state='pending', attempt=0, last_error_code=NULL")
         conn.commit()
@@ -339,8 +378,14 @@ def test_a_capacity_refusal_does_not_consume_an_attempt(app):
             if not leased:
                 break
             item = leased[0]
-            tx.work.fail(item.work_id, item.lease_token, item.lease_owner,
-                         error_code="http_429", now=core.clock.utc_now(), recoverable=True)
+            tx.work.fail(
+                item.work_id,
+                item.lease_token,
+                item.lease_owner,
+                error_code="http_429",
+                now=core.clock.utc_now(),
+                recoverable=True,
+            )
         with sqlite3.connect(core.storage.path) as conn:
             conn.row_factory = sqlite3.Row
             row = conn.execute("SELECT state,attempt FROM work_items WHERE state<>'done'").fetchone()
@@ -349,8 +394,9 @@ def test_a_capacity_refusal_does_not_consume_an_attempt(app):
             conn.commit()
 
     assert all(state == "pending" for state, _attempt in seen if state), seen
-    assert not any(state == "failed" for state, _ in seen if state), \
+    assert not any(state == "failed" for state, _ in seen if state), (
         f"a provider outage exhausted the item's budget: {seen}"
+    )
     assert "http_429" in CAPACITY_REFUSALS
 
 
@@ -371,8 +417,14 @@ def test_an_ordinary_fault_still_exhausts_its_budget(app):
             if not leased:
                 break
             item = leased[0]
-            tx.work.fail(item.work_id, item.lease_token, item.lease_owner,
-                         error_code="timeout", now=core.clock.utc_now(), recoverable=True)
+            tx.work.fail(
+                item.work_id,
+                item.lease_token,
+                item.lease_owner,
+                error_code="timeout",
+                now=core.clock.utc_now(),
+                recoverable=True,
+            )
         with sqlite3.connect(core.storage.path) as conn:
             conn.row_factory = sqlite3.Row
             row = conn.execute("SELECT state FROM work_items WHERE state<>'done'").fetchone()
@@ -391,6 +443,7 @@ def test_a_terminal_failure_is_unaffected_by_the_refund(app):
 # --------------------------------------------------------------------------
 # Never given up on, but never asked continuously either
 # --------------------------------------------------------------------------
+
 
 def test_the_wait_grows_with_each_refusal_in_a_row():
     """Refunding the attempt alone left the ordinary 60s ceiling in place, and
@@ -462,12 +515,17 @@ def test_consecutive_refusals_space_the_retries_out(app):
     waits, codes = [], []
     for _ in range(4):
         with core.storage.write(ctx, remaining_seconds=10) as tx:
-            leased = tx.work.claim_next("TEST-owner", core.clock.utc_now(),
-                                        lease_seconds=30, limit=1)
+            leased = tx.work.claim_next("TEST-owner", core.clock.utc_now(), lease_seconds=30, limit=1)
             assert leased, "the item stopped being claimable"
             item = leased[0]
-            tx.work.fail(item.work_id, item.lease_token, item.lease_owner,
-                         error_code="http_429", now=core.clock.utc_now(), recoverable=True)
+            tx.work.fail(
+                item.work_id,
+                item.lease_token,
+                item.lease_owner,
+                error_code="http_429",
+                now=core.clock.utc_now(),
+                recoverable=True,
+            )
         with sqlite3.connect(core.storage.path) as conn:
             conn.row_factory = sqlite3.Row
             row = conn.execute("SELECT state,available_at,last_error_code FROM work_items").fetchone()
@@ -490,29 +548,37 @@ def test_the_two_rate_limit_sets_cannot_drift_apart():
 
     assert _RATE_LIMITED_ERRORS is CAPACITY_REFUSALS
 
+
 @pytest.mark.parametrize("legacy", [False, True])
 @pytest.mark.parametrize("repair_success", [False, True])
 def test_invalid_candidate_gets_one_extra_attempt_repair_or_visible_review(app, legacy, repair_success):
     """Real candidate worker; legacy failures and fresh output share one cap."""
     from scope_recall.core.failure_retry import NEEDS_REVIEW_COUNT
+
     core, ctx = app
     _candidate(core, ctx)
     _finish_source_work(core)
     import json
     from scope_recall.core.worker import build_consolidation_model
     from scope_recall.runtime.instance import _BoundedCandidate
+
     calls = []
 
     class InvalidPort:
         def propose(self, messages, *, remaining_seconds):
             calls.append(json.dumps(messages))
-            expected = {"code": "DERIVATION_INVALID" if legacy else "INPUT_INVALID",
-                        "field": "payload" if legacy or not repair_success else "source_refs"}
+            expected = {
+                "code": "DERIVATION_INVALID" if legacy else "INPUT_INVALID",
+                "field": "payload" if legacy or not repair_success else "source_refs",
+            }
             hint = "validation_error=" + json.dumps(expected, sort_keys=True, separators=(",", ":"))
             if repair_success:
                 if any(hint in message["content"] for message in messages if message["role"] == "system"):
-                    body = next(json.loads(message["content"]) for message in messages
-                                if message["role"] == "user" and message["content"].startswith("{"))
+                    body = next(
+                        json.loads(message["content"])
+                        for message in messages
+                        if message["role"] == "user" and message["content"].startswith("{")
+                    )
                     return json.dumps(body["empty_result"])
                 return '{"protocol_version":"1.1"}'
             return "{not-json FAILED_BODY_SENTINEL"
@@ -520,7 +586,9 @@ def test_invalid_candidate_gets_one_extra_attempt_repair_or_visible_review(app, 
     model = _BoundedCandidate(build_consolidation_model(InvalidPort()), 3)
     if legacy:
         with sqlite3.connect(core.storage.path) as db:
-            db.execute("UPDATE work_items SET state='failed',attempt=3,last_error_code='derivation_invalid' WHERE work_type='evaluate_candidate'")
+            db.execute(
+                "UPDATE work_items SET state='failed',attempt=3,last_error_code='derivation_invalid' WHERE work_type='evaluate_candidate'"
+            )
             db.execute("UPDATE candidate_evaluations SET state='failed',model_attempted_at=?", (core.clock.utc_now(),))
             db.execute("UPDATE candidate_lifecycle SET processing_state='waiting_evidence',reason='evaluation_failed'")
     for _ in range(4):
@@ -529,10 +597,13 @@ def test_invalid_candidate_gets_one_extra_attempt_repair_or_visible_review(app, 
         core.drain_worker(ctx, max_items=8, remaining_seconds=10, consolidation=model)
     lifecycle, evaluations, work = _candidate_rows(core)
     assert len(calls) == (1 if legacy else 2), (work, evaluations)
-    hint = {"code": "DERIVATION_INVALID" if legacy else "INPUT_INVALID",
-            "field": "payload" if legacy or not repair_success else "source_refs"}
+    hint = {
+        "code": "DERIVATION_INVALID" if legacy else "INPUT_INVALID",
+        "field": "payload" if legacy or not repair_success else "source_refs",
+    }
     assert "validation_error=" + json.dumps(hint, sort_keys=True, separators=(",", ":")) in " ".join(
-        message["content"] for message in json.loads(calls[-1]))
+        message["content"] for message in json.loads(calls[-1])
+    )
     assert "FAILED_BODY_SENTINEL" not in calls[-1]
     if not legacy:
         assert "validation_error=" not in calls[0] and calls[0] != calls[1]

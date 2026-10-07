@@ -1,4 +1,5 @@
 """Signed install receipt: which files the installer wrote and may later remove."""
+
 from __future__ import annotations
 
 import hashlib
@@ -138,8 +139,13 @@ def _write_receipt(
         seen.add(norm)
     for norm, digest in sorted((kept or {}).items()):
         if norm not in seen:
-            files.append({"path": norm, "sha256": digest,
-                          "role": "instance" if norm.startswith(instance_norm + os.sep) else "plugin"})
+            files.append(
+                {
+                    "path": norm,
+                    "sha256": digest,
+                    "role": "instance" if norm.startswith(instance_norm + os.sep) else "plugin",
+                }
+            )
             seen.add(norm)
     for path in tracked:
         norm = _norm(path)

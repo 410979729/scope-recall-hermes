@@ -3,6 +3,7 @@
 Rows are synthetic, shaped like the plugin's (``distribution/dsh/scope-recall/index.mjs``): ``{id, role, text, time}``
 with ``time`` in milliseconds.  Nothing here is a person's conversation.
 """
+
 from __future__ import annotations
 
 from scope_recall.adapters.codex import transcript
@@ -17,16 +18,32 @@ def _row(role="user", text="TEST 一句话", **fields):
 
 def test_each_message_is_a_line_numbered_from_one():
     lines = transcript.dsh_lines([_row(), _row("assistant", "TEST 回答", id="TEST-reply")])
-    assert lines == [(1, transcript.Said("TEST-id", "user", "TEST 一句话", AT)),
-                     (2, transcript.Said("TEST-reply", "assistant", "TEST 回答", AT))]
+    assert lines == [
+        (1, transcript.Said("TEST-id", "user", "TEST 一句话", AT)),
+        (2, transcript.Said("TEST-reply", "assistant", "TEST 回答", AT)),
+    ]
 
 
 def test_a_row_that_is_no_message_is_counted_and_shows_nothing():
-    rows = [None, "TEST", _row(role="system"), _row(text="  "), _row(id=""), _row(id="x" * 101), _row(time="TEST"),
-            _row(time=-5), _row(text=3), _row()]
+    rows = [
+        None,
+        "TEST",
+        _row(role="system"),
+        _row(text="  "),
+        _row(id=""),
+        _row(id="x" * 101),
+        _row(time="TEST"),
+        _row(time=-5),
+        _row(text=3),
+        _row(),
+    ]
     lines = transcript.dsh_lines(rows)
-    assert [index for index, _said in lines] == list(range(1, len(rows) + 1)), "every row is a line, so all can be dropped"
-    assert [said for _index, said in lines if said is not None] == [transcript.Said("TEST-id", "user", "TEST 一句话", AT)]
+    assert [index for index, _said in lines] == list(range(1, len(rows) + 1)), (
+        "every row is a line, so all can be dropped"
+    )
+    assert [said for _index, said in lines if said is not None] == [
+        transcript.Said("TEST-id", "user", "TEST 一句话", AT)
+    ]
 
 
 def test_only_a_list_has_lines_and_one_stop_takes_at_most_five_hundred():

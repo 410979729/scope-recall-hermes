@@ -1,4 +1,5 @@
 """Hermes hook registration with one global, instance-aware dispatcher."""
+
 from __future__ import annotations
 
 from typing import Any, Callable
@@ -11,8 +12,12 @@ import weakref
 _log = logging.getLogger(__name__)
 
 _SUPPORTED_HOOKS = ("pre_llm_call", "api_request_error", "post_tool_call", "post_llm_call")
-_OBSERVERS = {"pre_llm_call": "observe_pre_llm", "api_request_error": "observe_api_request_error",
-              "post_tool_call": "observe_post_tool_call", "post_llm_call": "observe_post_llm_call"}
+_OBSERVERS = {
+    "pre_llm_call": "observe_pre_llm",
+    "api_request_error": "observe_api_request_error",
+    "post_tool_call": "observe_post_tool_call",
+    "post_llm_call": "observe_post_llm_call",
+}
 #: Hermes' default ``plugins.hook_callback_timeout``.  Past it Hermes 0.21.5 abandons the call and skips the callback
 #: for 60 s; this dispatcher is one callback per hook for every session of the gateway, so every session's hook is
 #: skipped.
@@ -62,10 +67,17 @@ def _active_adapter(kwargs: dict[str, Any]) -> Any | None:
         if not matches:
             return None
         bindings = {adapter._identity.binding for adapter in matches}
-        audiences = {(tuple(sorted(item._identity.runtime_audience.allowed_scope_ids)),
-                      item._identity.local_scope_id, item._identity.read_only,
-                      item._identity.scope.chat_type, item._identity.scope.chat_id,
-                      item._identity.scope.thread_id) for item in matches}
+        audiences = {
+            (
+                tuple(sorted(item._identity.runtime_audience.allowed_scope_ids)),
+                item._identity.local_scope_id,
+                item._identity.read_only,
+                item._identity.scope.chat_type,
+                item._identity.scope.chat_id,
+                item._identity.scope.thread_id,
+            )
+            for item in matches
+        }
         if len(bindings) != 1 or len(audiences) != 1:
             # A global hook must never choose one installation for an
             # ambiguous session identifier.
@@ -83,6 +95,7 @@ def host_hook_timeout() -> float | None:
     the operator set it to 0 or less, with which Hermes waits for a hook however long it takes."""
     try:
         from hermes_cli.plugins import _resolve_hook_callback_timeout  # pyright: ignore[reportMissingImports]
+
         timeout = float(_resolve_hook_callback_timeout())
     except Exception:
         return _HOST_HOOK_TIMEOUT_S
@@ -123,12 +136,18 @@ def _dispatch(event: str, kwargs: dict[str, Any], *, wait: float) -> Any | None:
 def _global_callback(event: str) -> Callable[..., None]:
     def callback(**kwargs: Any) -> None:
         started, timeout = time.monotonic(), host_hook_timeout()
-        adapter = _dispatch(event, kwargs, wait=_SESSION_WAIT_CAP_S if timeout is None else
-                            min(_SESSION_WAIT_CAP_S, timeout / 3))
+        adapter = _dispatch(
+            event, kwargs, wait=_SESSION_WAIT_CAP_S if timeout is None else min(_SESSION_WAIT_CAP_S, timeout / 3)
+        )
         elapsed = time.monotonic() - started
         if timeout is not None and elapsed >= timeout:
-            _log.warning("scope-recall: %s took %.1f s, past the host's %g s hook timeout; the host skips it for "
-                         "every session for the next minute", event, elapsed, timeout)
+            _log.warning(
+                "scope-recall: %s took %.1f s, past the host's %g s hook timeout; the host skips it for "
+                "every session for the next minute",
+                event,
+                elapsed,
+                timeout,
+            )
             if adapter is not None:
                 adapter._count_backpressure(f"{event}_overran")
 

@@ -1,4 +1,5 @@
 """Conservative validation for durable project-name aliases."""
+
 from __future__ import annotations
 
 import re
@@ -97,6 +98,11 @@ def validate_alias_target(target, *, scope_id: str, project_id: str | None, bran
     if target.state != "active" or target.suppressed:
         raise ContractError("ACCESS_DENIED", "alias_target_not_live")
     if target.payload["kind"] != "fact" or target.payload["predicate"].casefold() not in {
-        "项目名称", "项目名", "名称", "project_name", "project name", "name"
+        "项目名称",
+        "项目名",
+        "名称",
+        "project_name",
+        "project name",
+        "name",
     }:
         raise ContractError("ACCESS_DENIED", "alias_target_not_name_identity")

@@ -11,6 +11,7 @@ These cases run a real base interpreter whose package belongs to a real external
 environment laid out beside it, and assert on the child the production options
 actually spawn.
 """
+
 from __future__ import annotations
 
 import json
@@ -32,7 +33,7 @@ pytestmark = pytest.mark.skipif(
 
 _ENV_ONLY_DEPENDENCY = "env_only_dependency"
 _IGNORED_FROM_ENVIRONMENT = {"PYTHONPATH", "PYTHONHOME", "PYTHONSTARTUP", "__PYVENV_LAUNCHER__"}
-_DRIVER = '''\
+_DRIVER = """\
 import json
 import subprocess
 import sys
@@ -62,7 +63,7 @@ print(json.dumps({
     "stdout": done.stdout,
     "stderr": done.stderr,
 }))
-'''
+"""
 
 
 def _base_interpreter() -> Path:
@@ -82,19 +83,21 @@ def _run_driver(work: Path, *, site_packages: Path | None = None, plugin_dir: Pa
     """Run one real base interpreter on the production options and return what it saw."""
     driver = work / "driver.py"
     driver.write_text(_DRIVER, encoding="utf-8")
-    environment = {
-        key: value
-        for key, value in os.environ.items()
-        if key.upper() not in _IGNORED_FROM_ENVIRONMENT
-    }
+    environment = {key: value for key, value in os.environ.items() if key.upper() not in _IGNORED_FROM_ENVIRONMENT}
     if site_packages is not None:
         environment["PYTHONPATH"] = str(site_packages)
     command = [str(_base_interpreter()), "-B", str(driver)]
     if plugin_dir is not None:
         command.append(str(plugin_dir))
     done = subprocess.run(
-        command, cwd=str(work), env=environment,
-        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300,
+        command,
+        cwd=str(work),
+        env=environment,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=300,
     )
     assert done.returncode == 0, f"driver failed:\n{done.stdout}\n{done.stderr}"
     return json.loads(done.stdout.strip().splitlines()[-1])
@@ -116,8 +119,7 @@ def _install_package(destination: Path) -> None:
     destination.mkdir(parents=True, exist_ok=True)
     for name in ("__init__.py", "contracts.py", "_lance_worker.py"):
         shutil.copy2(root / name, destination / name)
-    shutil.copytree(root / "vector", destination / "vector",
-                    ignore=shutil.ignore_patterns("__pycache__"))
+    shutil.copytree(root / "vector", destination / "vector", ignore=shutil.ignore_patterns("__pycache__"))
 
 
 def _owning_environment(work: Path, *, interpreter_file: bool = True) -> Path:
@@ -128,7 +130,8 @@ def _owning_environment(work: Path, *, interpreter_file: bool = True) -> Path:
     dependency.mkdir(parents=True, exist_ok=True)
     (dependency / "__init__.py").write_text("VALUE = 'environment-only'\n", encoding="utf-8")
     (root / "pyvenv.cfg").write_text(
-        f"home = {sys.base_prefix}\ninclude-system-site-packages = false\n", encoding="utf-8",
+        f"home = {sys.base_prefix}\ninclude-system-site-packages = false\n",
+        encoding="utf-8",
     )
     _install_package(site_packages / "scope_recall")
     if interpreter_file:
@@ -164,8 +167,7 @@ def test_the_helper_runs_in_the_environment_that_owns_the_package(owning_outcome
     root, outcome = owning_outcome
 
     assert _child_prefix(outcome).resolve() == root.resolve(), (
-        "the helper must run in the environment that owns scope_recall, not in the "
-        f"interpreter hosting it:\n{outcome}"
+        f"the helper must run in the environment that owns scope_recall, not in the interpreter hosting it:\n{outcome}"
     )
 
 
@@ -173,8 +175,9 @@ def test_a_dependency_only_the_package_environment_has_reaches_the_helper(owning
     root, outcome = owning_outcome
 
     assert outcome["returncode"] == 0, f"the helper could not import its environment:\n{outcome}"
-    dependency = [line.removeprefix("DEPENDENCY:") for line in outcome["stdout"].splitlines()
-                  if line.startswith("DEPENDENCY:")]
+    dependency = [
+        line.removeprefix("DEPENDENCY:") for line in outcome["stdout"].splitlines() if line.startswith("DEPENDENCY:")
+    ]
     assert dependency, outcome
     assert Path(dependency[0]).resolve().is_relative_to((root / "Lib" / "site-packages").resolve()), outcome
 

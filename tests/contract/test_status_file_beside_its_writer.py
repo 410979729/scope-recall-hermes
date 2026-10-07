@@ -7,6 +7,7 @@ refusal ended a supervisor.  It was seen as a nightly CI failure: ``control.read
 ``PermissionError: [Errno 13]`` in ``test_real_detached_supervisor_processes_future_local_work_after_host_exit``
 while the real supervisor process was writing the same file.
 """
+
 from __future__ import annotations
 
 import json

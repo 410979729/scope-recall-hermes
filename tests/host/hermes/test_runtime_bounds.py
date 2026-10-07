@@ -1,4 +1,5 @@
 """P11 runtime bounds: turn-local echo fences, worker coalescing, and hooks."""
+
 from __future__ import annotations
 
 import json
@@ -12,7 +13,10 @@ import pytest
 from scope_recall.adapters.hermes import ScopeRecallHermesAdapter, install_hermes_scope_recall
 from scope_recall.adapters.hermes import hooks, provider as provider_module
 from scope_recall.adapters.hermes.hooks import (
-    _SUPPORTED_HOOKS, _global_callback, _register_adapter_instance, _unregister_adapter_instance,
+    _SUPPORTED_HOOKS,
+    _global_callback,
+    _register_adapter_instance,
+    _unregister_adapter_instance,
 )
 from scope_recall.adapters.hermes.provider import GAP_CURRENT_SOURCE_REFS_LIMIT
 from scope_recall.adapters.hermes.worker import AdapterWorker
@@ -25,21 +29,37 @@ _MODES = ("history", "current", "auto")
 
 
 def _recall(provider, mode: str, request_id: str) -> str:
-    return provider.handle_tool_call("recall", {
-        "protocol_version": "1.1", "request_id": request_id, "query": "where does the orca42 rollout run",
-        "mode": mode, "max_items": 6, "budget_tokens": 4096,
-    })
+    return provider.handle_tool_call(
+        "recall",
+        {
+            "protocol_version": "1.1",
+            "request_id": request_id,
+            "query": "where does the orca42 rollout run",
+            "mode": mode,
+            "max_items": 6,
+            "budget_tokens": 4096,
+        },
+    )
 
 
 def _tool_result(provider, turn_id: str, call_id: str, result: str, *, tool_name: str = "terminal") -> None:
-    provider.observe_post_tool_call(session_id="TEST-session-1", turn_id=turn_id, tool_call_id=call_id,
-                                    tool_name=tool_name, result=result, status="success")
+    provider.observe_post_tool_call(
+        session_id="TEST-session-1",
+        turn_id=turn_id,
+        tool_call_id=call_id,
+        tool_name=tool_name,
+        result=result,
+        status="success",
+    )
 
 
 def _earlier_turn_ref(provider) -> str:
     """A fact from a finished turn, which recall must keep finding."""
-    provider.observe_pre_llm(session_id="TEST-session-1", turn_id="turn-earlier",
-                             user_message="The orca42 rollout runs from the blue cluster.")
+    provider.observe_pre_llm(
+        session_id="TEST-session-1",
+        turn_id="turn-earlier",
+        user_message="The orca42 rollout runs from the blue cluster.",
+    )
     (ref,) = provider.diagnostics.current_source_refs
     return ref
 
@@ -130,8 +150,11 @@ def test_same_text_new_uuid_is_distinct_and_overflow_is_degraded(adapter):
 def test_tool_heavy_turn_keeps_explicit_recall_working_and_fenced(adapter):
     provider, _clock = adapter
     earlier_ref = _earlier_turn_ref(provider)
-    provider.observe_pre_llm(session_id="TEST-session-1", turn_id="turn-heavy",
-                             user_message="heavy-turn: check where the orca42 rollout runs")
+    provider.observe_pre_llm(
+        session_id="TEST-session-1",
+        turn_id="turn-heavy",
+        user_message="heavy-turn: check where the orca42 rollout runs",
+    )
     provider.on_turn_start(2, "heavy-turn: check where the orca42 rollout runs", turn_id="turn-heavy")
     for index in range(40):
         if index % 2:
@@ -148,8 +171,9 @@ def test_tool_heavy_turn_keeps_explicit_recall_working_and_fenced(adapter):
 def test_every_segment_of_a_long_tool_result_stays_fenced(adapter):
     provider, _clock = adapter
     earlier_ref = _earlier_turn_ref(provider)
-    provider.observe_pre_llm(session_id="TEST-session-1", turn_id="turn-long",
-                             user_message="long-turn: read the orca42 rollout log")
+    provider.observe_pre_llm(
+        session_id="TEST-session-1", turn_id="turn-long", user_message="long-turn: read the orca42 rollout log"
+    )
     line = "long-turn: orca42 rollout log line\n"
     log = line * (2 * MAX_SEGMENT_CHARS // len(line) + 64)
     assert len(log) > 2 * MAX_SEGMENT_CHARS
@@ -255,9 +279,18 @@ def test_global_hook_dispatch_is_session_scoped_and_conflict_closed(tmp_path, in
     )
     provider_a = ScopeRecallHermesAdapter(core=core_a)
     provider_b = ScopeRecallHermesAdapter(core=core_b)
-    common = dict(hermes_home=str(home_a), platform="cli", user_id="local", agent_context="primary", agent_identity="agent-a", agent_workspace="workspace-a")
+    common = dict(
+        hermes_home=str(home_a),
+        platform="cli",
+        user_id="local",
+        agent_context="primary",
+        agent_identity="agent-a",
+        agent_workspace="workspace-a",
+    )
     provider_a.initialize("session-a", **common)
-    provider_b.initialize("session-b", **dict(common, hermes_home=str(home_b), agent_identity="agent-b", agent_workspace="workspace-b"))
+    provider_b.initialize(
+        "session-b", **dict(common, hermes_home=str(home_b), agent_identity="agent-b", agent_workspace="workspace-b")
+    )
     _register_adapter_instance(provider_a)
     _register_adapter_instance(provider_b)
     callback = _global_callback("pre_llm_call")
@@ -269,7 +302,9 @@ def test_global_hook_dispatch_is_session_scoped_and_conflict_closed(tmp_path, in
     provider_b.on_session_switch("session-a")
     before_a = provider_a.diagnostics.current_source_refs
     before_b = provider_b.diagnostics.current_source_refs
-    callback(session_id="session-a", turn_id="collision", platform="cli", sender_id="local", user_message="must not write")
+    callback(
+        session_id="session-a", turn_id="collision", platform="cli", sender_id="local", user_message="must not write"
+    )
     assert provider_a.diagnostics.current_source_refs == before_a
     assert provider_b.diagnostics.current_source_refs == before_b
     provider_a.shutdown()
@@ -304,9 +339,18 @@ def test_post_llm_call_does_not_wait_for_the_adapter_lock(adapter, hermes_home):
         holder = threading.Thread(target=busy_capture)
         holder.start()
         assert held.wait(5)
-        caller = threading.Thread(target=lambda: (_global_callback("post_llm_call")(
-            session_id="TEST-session-1", turn_id="turn-9", platform="cli", assistant_response="TEST QX-29 已经完成。",
-            conversation_history=history), done.set()))
+        caller = threading.Thread(
+            target=lambda: (
+                _global_callback("post_llm_call")(
+                    session_id="TEST-session-1",
+                    turn_id="turn-9",
+                    platform="cli",
+                    assistant_response="TEST QX-29 已经完成。",
+                    conversation_history=history,
+                ),
+                done.set(),
+            )
+        )
         started = time.monotonic()
         caller.start()
         returned = done.wait(1.0)
@@ -317,7 +361,10 @@ def test_post_llm_call_does_not_wait_for_the_adapter_lock(adapter, hermes_home):
         assert time.monotonic() - started < 1.0
         provider.sync_turn("TEST 查一下 QX-29", "TEST QX-29 已经完成。", session_id="TEST-session-1")
         with sqlite3.connect(hermes_home / "scope-recall" / "memory.sqlite3") as conn:
-            said = [row[0] for row in conn.execute("SELECT content FROM source_events WHERE role='assistant' ORDER BY rowid")]
+            said = [
+                row[0]
+                for row in conn.execute("SELECT content FROM source_events WHERE role='assistant' ORDER BY rowid")
+            ]
         assert said == ["TEST 我先看记录。", "TEST QX-29 已经完成。"]
     finally:
         _unregister_adapter_instance(provider)
@@ -335,12 +382,19 @@ def test_a_turn_writes_at_most_64_interim_messages(adapter, monkeypatch):
         history.append({"role": "assistant", "content": f"TEST 第 {step} 步。", "tool_calls": [{"id": f"T{step}"}]})
         history.append({"role": "tool", "tool_call_id": f"T{step}", "content": "TEST 工具输出"})
     history.append({"role": "assistant", "content": "TEST 三百步都跑完了。"})
-    provider.observe_post_llm_call(session_id="TEST-session-1", turn_id="turn-10",
-                                   assistant_response="TEST 三百步都跑完了。", conversation_history=history)
+    provider.observe_post_llm_call(
+        session_id="TEST-session-1",
+        turn_id="turn-10",
+        assistant_response="TEST 三百步都跑完了。",
+        conversation_history=history,
+    )
     keys = []
     queued = SimpleNamespace(durability="queued", disposition="queued", error_code=None, event_refs=(), gaps=())
-    monkeypatch.setattr(provider._core, "record_host_event",
-                        lambda _context, event, **kwargs: keys.append(event["source_event_key"]) or queued)
+    monkeypatch.setattr(
+        provider._core,
+        "record_host_event",
+        lambda _context, event, **kwargs: keys.append(event["source_event_key"]) or queued,
+    )
     monkeypatch.setattr(provider._core, "source_by_event_key", lambda *args, **kwargs: None, raising=False)
     provider.sync_turn("TEST 跑三百步", "TEST 三百步都跑完了。", session_id="TEST-session-1")
     assert sum(":interim:" in key for key in keys) == 64
@@ -370,8 +424,13 @@ def _in_thread(call):
 
 def _tool_hook(session_id: str, call_id: str):
     return lambda: _global_callback("post_tool_call")(
-        session_id=session_id, turn_id="turn-1", tool_call_id=call_id, tool_name="terminal",
-        result=f"TEST tool output {call_id}", status="success")
+        session_id=session_id,
+        turn_id="turn-1",
+        tool_call_id=call_id,
+        tool_name="terminal",
+        result=f"TEST tool output {call_id}",
+        status="success",
+    )
 
 
 def _held_capture(provider, monkeypatch, call_id: str):
@@ -393,8 +452,11 @@ def _held_message(provider, monkeypatch):
     """A message's capture holds its session while its store write waits until ``release`` is set: pre_llm_call
     writes with the session held, as a tool hook no longer does."""
     entered, release = _held_capture(provider, monkeypatch, "turn-held")
-    done, _, thread = _in_thread(lambda: provider.observe_pre_llm(
-        session_id="TEST-session-1", turn_id="turn-held", user_message="TEST a message whose write is held"))
+    done, _, thread = _in_thread(
+        lambda: provider.observe_pre_llm(
+            session_id="TEST-session-1", turn_id="turn-held", user_message="TEST a message whose write is held"
+        )
+    )
     return entered, release, done, thread
 
 
@@ -431,7 +493,8 @@ def test_a_hook_does_not_wait_out_its_busy_session(adapter, monkeypatch, caplog)
     assert provider.diagnostics.host_backpressure == {"post_tool_call": 1}
     said = [record.getMessage() for record in caplog.records if " not taken: " in record.getMessage()]
     assert said and said[0].startswith(
-        "scope-recall: post_tool_call not taken: this session has been busy in observe_pre_llm for "), said
+        "scope-recall: post_tool_call not taken: this session has been busy in observe_pre_llm for "
+    ), said
 
 
 def test_a_steps_tool_results_are_written_side_by_side(adapter, hermes_home, monkeypatch):
@@ -529,8 +592,9 @@ def test_a_turns_retry_pass_leaves_a_tool_result_being_written_alone(adapter, he
     try:
         first, _, first_thread = _in_thread(_tool_hook("TEST-session-1", "slow-call"))
         assert entered.wait(_PROMPTLY)
-        synced, sync_box, sync_thread = _in_thread(lambda: provider.sync_turn(
-            "TEST user words", "TEST reply words", session_id="TEST-session-1"))
+        synced, sync_box, sync_thread = _in_thread(
+            lambda: provider.sync_turn("TEST user words", "TEST reply words", session_id="TEST-session-1")
+        )
         assert synced.wait(_PROMPTLY), "the turn waited for the tool result's write"
         assert len(writes) == 1, "the turn's retry pass wrote the tool result being written a second time"
     finally:
@@ -545,8 +609,7 @@ def test_a_turns_retry_pass_leaves_a_tool_result_being_written_alone(adapter, he
 
 
 @pytest.mark.parametrize("switch", ["session", "audience"])
-def test_a_switch_during_a_tool_results_write_keeps_its_session_and_audience(adapter, hermes_home, monkeypatch,
-                                                                              switch):
+def test_a_switch_during_a_tool_results_write_keeps_its_session_and_audience(adapter, hermes_home, monkeypatch, switch):
     """The write runs without the session, so a session or audience switch can come in meanwhile: the capture
     keeps the session and scope it was said in, and stays out of the new session's fence (review of 3.5.1)."""
     provider, _clock = adapter
@@ -566,8 +629,7 @@ def test_a_switch_during_a_tool_results_write_keeps_its_session_and_audience(ada
     try:
         first, first_box, first_thread = _in_thread(_tool_hook("TEST-session-1", "slow-call"))
         assert entered.wait(_PROMPTLY)
-        switched, switch_box, switch_thread = _in_thread(lambda: provider.on_session_switch("TEST-session-2",
-                                                                                            **kwargs))
+        switched, switch_box, switch_thread = _in_thread(lambda: provider.on_session_switch("TEST-session-2", **kwargs))
         assert switched.wait(_PROMPTLY), "the switch waited for the tool result's write"
     finally:
         release.set()
@@ -666,8 +728,12 @@ def test_the_next_turn_starts_while_the_last_one_is_written(adapter, monkeypatch
         history.append({"role": "assistant", "content": f"TEST 第 {step} 步。", "tool_calls": [{"id": f"T{step}"}]})
         history.append({"role": "tool", "tool_call_id": f"T{step}", "content": "TEST 工具输出"})
     history.append({"role": "assistant", "content": "TEST 三步都跑完了。"})
-    provider.observe_post_llm_call(session_id="TEST-session-1", turn_id="turn-10",
-                                   assistant_response="TEST 三步都跑完了。", conversation_history=history)
+    provider.observe_post_llm_call(
+        session_id="TEST-session-1",
+        turn_id="turn-10",
+        assistant_response="TEST 三步都跑完了。",
+        conversation_history=history,
+    )
     keys = []
     entered, release = threading.Event(), threading.Event()
     queued = SimpleNamespace(durability="queued", disposition="queued", error_code=None, event_refs=(), gaps=())
@@ -681,8 +747,9 @@ def test_the_next_turn_starts_while_the_last_one_is_written(adapter, monkeypatch
 
     monkeypatch.setattr(provider._core, "record_host_event", record_host_event)
     monkeypatch.setattr(provider._core, "source_by_event_key", lambda *args, **kwargs: None, raising=False)
-    synced, _, sync_thread = _in_thread(lambda: provider.sync_turn("TEST 跑三步", "TEST 三步都跑完了。",
-                                                                   session_id="TEST-session-1"))
+    synced, _, sync_thread = _in_thread(
+        lambda: provider.sync_turn("TEST 跑三步", "TEST 三步都跑完了。", session_id="TEST-session-1")
+    )
     start_thread = None
     try:
         assert entered.wait(_PROMPTLY)
@@ -755,8 +822,9 @@ def _turn_with_interim(provider, turn: str, steps: int) -> None:
         history.append({"role": "assistant", "content": f"TEST 第 {step} 步。", "tool_calls": [{"id": f"T{step}"}]})
         history.append({"role": "tool", "tool_call_id": f"T{step}", "content": "TEST 工具输出"})
     history.append({"role": "assistant", "content": "TEST 跑完了。"})
-    provider.observe_post_llm_call(session_id="TEST-session-1", turn_id=turn, assistant_response="TEST 跑完了。",
-                                   conversation_history=history)
+    provider.observe_post_llm_call(
+        session_id="TEST-session-1", turn_id=turn, assistant_response="TEST 跑完了。", conversation_history=history
+    )
 
 
 def test_a_shutdown_waits_for_the_turn_being_written(adapter, monkeypatch):
@@ -777,8 +845,9 @@ def test_a_shutdown_waits_for_the_turn_being_written(adapter, monkeypatch):
 
     monkeypatch.setattr(provider._core, "record_host_event", record_host_event)
     monkeypatch.setattr(provider._core, "source_by_event_key", lambda *args, **kwargs: None, raising=False)
-    synced, _, sync_thread = _in_thread(lambda: provider.sync_turn("TEST 跑几步", "TEST 跑完了。",
-                                                                   session_id="TEST-session-1"))
+    synced, _, sync_thread = _in_thread(
+        lambda: provider.sync_turn("TEST 跑几步", "TEST 跑完了。", session_id="TEST-session-1")
+    )
     shut_thread = None
     try:
         assert entered.wait(_PROMPTLY)
@@ -822,8 +891,11 @@ def test_a_skipped_pre_llm_call_leaves_its_turn_id_for_the_turn(adapter, monkeyp
     _register_adapter_instance(provider)
     provider._lock.acquire()
     try:
-        done, _, thread = _in_thread(lambda: _global_callback("pre_llm_call")(
-            session_id="TEST-session-1", turn_id="turn-uuid-7", user_message="TEST 第七轮"))
+        done, _, thread = _in_thread(
+            lambda: _global_callback("pre_llm_call")(
+                session_id="TEST-session-1", turn_id="turn-uuid-7", user_message="TEST 第七轮"
+            )
+        )
         assert done.wait(_PROMPTLY)
         thread.join(_PROMPTLY)
     finally:
@@ -836,7 +908,8 @@ def test_a_skipped_pre_llm_call_leaves_its_turn_id_for_the_turn(adapter, monkeyp
 def test_the_dispatcher_callbacks_carry_scope_recall_names():
     """Hermes names a callback in its timeout and skip lines; every plugin's closure called ``callback`` read alike."""
     assert {event: _global_callback(event).__name__ for event in _SUPPORTED_HOOKS} == {
-        event: f"scope_recall_{event}" for event in _SUPPORTED_HOOKS}
+        event: f"scope_recall_{event}" for event in _SUPPORTED_HOOKS
+    }
 
 
 def test_another_session_never_waits_for_this_one(adapter, installed_core, initialize_kwargs, hermes_home, monkeypatch):
@@ -864,8 +937,9 @@ def test_another_session_never_waits_for_this_one(adapter, installed_core, initi
     assert _tool_rows(hermes_home) == 1
 
 
-def test_another_sessions_hook_waits_only_its_write_budget_on_a_held_store(adapter, installed_core, initialize_kwargs,
-                                                                            hermes_home):
+def test_another_sessions_hook_waits_only_its_write_budget_on_a_held_store(
+    adapter, installed_core, initialize_kwargs, hermes_home
+):
     """The store is shared: a session's write waits at most its capture's 1 s budget for another's, and what it
     could not write is kept to retry."""
     provider, _clock = adapter
@@ -975,7 +1049,7 @@ def test_a_capture_that_cannot_be_written_is_given_up_and_said(adapter, hermes_h
     provider, _clock = adapter
     monkeypatch.setattr(provider_module, "_RETRY_EVERY_S", 3600.0)
     monkeypatch.setattr(provider_module, "_RETRY_GIVE_UP_S", 0.2)
-    _busy_store(provider, monkeypatch, 10 ** 6)
+    _busy_store(provider, monkeypatch, 10**6)
     _tool_result(provider, "turn-1", "never-call", "TEST tool output never")
     _tool_result(provider, "turn-1", "unverified-call", "TEST tool output unverified")
     assert len(provider._retry_captures) == 2
@@ -1000,10 +1074,13 @@ def test_a_retry_pass_that_raises_still_gives_up_what_is_past_its_time(adapter, 
     provider, _clock = adapter
     monkeypatch.setattr(provider_module, "_RETRY_EVERY_S", 3600.0)
     monkeypatch.setattr(provider_module, "_RETRY_GIVE_UP_S", 0.2)
-    _busy_store(provider, monkeypatch, 10 ** 6)
+    _busy_store(provider, monkeypatch, 10**6)
     _tool_result(provider, "turn-1", "raising-call", "TEST tool output raising")
-    monkeypatch.setattr(provider_module, "load_binding_for_home",
-                        lambda home: (_ for _ in ()).throw(AttributeError("TEST not an object")))
+    monkeypatch.setattr(
+        provider_module,
+        "load_binding_for_home",
+        lambda home: (_ for _ in ()).throw(AttributeError("TEST not an object")),
+    )
     time.sleep(0.3)
     monkeypatch.setattr(provider_module, "_RETRY_EVERY_S", 0.05)
     provider._retry_wake.set()
@@ -1046,7 +1123,9 @@ def test_a_capture_kept_to_retry_is_said_once_until_it_is_stored(adapter, hermes
     assert _tool_rows(hermes_home) == 1
     lines = [record for record in caplog.records if "busy-call" in record.getMessage()]
     assert [(record.levelname, record.getMessage().split(":")[1].strip()) for record in lines] == [
-        ("WARNING", "not stored (exception), kept to retry"), ("INFO", "stored on retry")], lines
+        ("WARNING", "not stored (exception), kept to retry"),
+        ("INFO", "stored on retry"),
+    ], lines
 
 
 def test_a_shutdown_on_a_held_store_spends_at_most_its_short_pass(adapter, hermes_home, monkeypatch):
@@ -1095,8 +1174,9 @@ def test_a_turn_s_end_waits_for_a_held_capture_no_longer_than_a_capture_s_time(a
     assert first_own and first_own[0] - started < provider_module._CAPTURE_TIMEOUT_S + 1.5, first_own
 
 
-def test_a_shutdown_leaves_a_replay_still_in_flight_to_its_thread_and_says_its_end(adapter, hermes_home, monkeypatch,
-                                                                                  caplog):
+def test_a_shutdown_leaves_a_replay_still_in_flight_to_its_thread_and_says_its_end(
+    adapter, hermes_home, monkeypatch, caplog
+):
     """A replay that outlived the shutdown's drain was written once more by the shutdown's pass; and its end, once
     it came, was never said (reviews of 3.6.1)."""
     import logging
@@ -1146,9 +1226,9 @@ def test_a_shutdown_leaves_a_capture_another_pass_is_writing_to_it(adapter, herm
 
 
 @pytest.mark.parametrize("next_user", ["TEST-user", "TEST-unknown-user"])
-def test_a_session_switch_keeps_the_buffer_and_writes_it_in_the_session_it_was_said_in(adapter, hermes_home,
-                                                                                         initialize_kwargs,
-                                                                                         monkeypatch, next_user):
+def test_a_session_switch_keeps_the_buffer_and_writes_it_in_the_session_it_was_said_in(
+    adapter, hermes_home, initialize_kwargs, monkeypatch, next_user
+):
     """A session started again in the same adapter cleared the buffer, and the tool results that had only met a busy
     store were lost without a word.  Each is written under its own scope's grant: a next session of another audience,
     here one with none at all, does not take it away."""
@@ -1176,16 +1256,23 @@ def test_a_capture_whose_scope_was_taken_away_is_dropped_and_said(adapter, herme
     _busy_store(provider, monkeypatch, 1)
     _tool_result(provider, "turn-1", "busy-call", "TEST tool output busy-call")
     real = provider_module.resolve_runtime_audience
-    monkeypatch.setattr(provider_module, "resolve_runtime_audience", lambda manifest, scope: replace(
-        real(manifest, scope), writable_scope_ids=frozenset()))
+    monkeypatch.setattr(
+        provider_module,
+        "resolve_runtime_audience",
+        lambda manifest, scope: replace(real(manifest, scope), writable_scope_ids=frozenset()),
+    )
     provider._retry_buffered_captures(seconds=_PROMPTLY)
     assert _tool_rows(hermes_home) == 0 and not provider._retry_captures
-    assert [record for record in caplog.records
-            if "not stored (authorization revoked), dropped" in record.getMessage() and "busy-call" in record.getMessage()]
+    assert [
+        record
+        for record in caplog.records
+        if "not stored (authorization revoked), dropped" in record.getMessage() and "busy-call" in record.getMessage()
+    ]
 
 
-def test_a_shutdown_writes_the_buffer_once_more_and_says_what_it_could_not(adapter, installed_core, initialize_kwargs,
-                                                                           hermes_home, monkeypatch, caplog):
+def test_a_shutdown_writes_the_buffer_once_more_and_says_what_it_could_not(
+    adapter, installed_core, initialize_kwargs, hermes_home, monkeypatch, caplog
+):
     """A shutdown reported the buffer as pending in memory and dropped it: every gateway restart lost what it held
     (2026-10-04)."""
     provider, _clock = adapter
@@ -1198,12 +1285,15 @@ def test_a_shutdown_writes_the_buffer_once_more_and_says_what_it_could_not(adapt
 
     other = _another_session(installed_core, initialize_kwargs)
     monkeypatch.setattr(provider_module, "_RETRY_EVERY_S", 3600.0)
-    _busy_store(other, monkeypatch, 10 ** 6)
+    _busy_store(other, monkeypatch, 10**6)
     _tool_result(other, "turn-2", "still-busy-call", "TEST tool output still-busy-call")
     other.shutdown()
-    assert [record for record in caplog.records
-            if "not stored (still failing at shutdown), lost" in record.getMessage()
-            and "still-busy-call" in record.getMessage()]
+    assert [
+        record
+        for record in caplog.records
+        if "not stored (still failing at shutdown), lost" in record.getMessage()
+        and "still-busy-call" in record.getMessage()
+    ]
     assert not other._retry_captures
 
 

@@ -1,4 +1,5 @@
 """Trusted local runtime wiring for Hermes host adapters."""
+
 from __future__ import annotations
 
 import json
@@ -13,7 +14,12 @@ import pytest
 
 from scope_recall.adapters.hermes import ScopeRecallHermesAdapter, install_hermes_scope_recall
 from scope_recall.adapters.hermes.provider import GAP_CURRENT_SOURCE_REFS_LIMIT
-from scope_recall.adapters.hermes.runtime_wiring import GAP_BINDING_MISMATCH, GAP_UNCONFIGURED, GAP_WORKER_BUSY, GAP_WORKER_LAUNCH_FAILED
+from scope_recall.adapters.hermes.runtime_wiring import (
+    GAP_BINDING_MISMATCH,
+    GAP_UNCONFIGURED,
+    GAP_WORKER_BUSY,
+    GAP_WORKER_LAUNCH_FAILED,
+)
 from scope_recall.core.retrieval import MAX_CURRENT_SOURCE_REFS
 
 
@@ -106,7 +112,9 @@ def test_binding_directory_runtime_config_attaches_without_host_kwarg(hermes_hom
         test_mode=False,
     )
     default_path = binding.data_directory / "runtime-config.json"
-    _write_runtime_config(default_path, _runtime_payload(binding, session_id="TEST-session-1", allowed_scope_ids=binding.scope_ids))
+    _write_runtime_config(
+        default_path, _runtime_payload(binding, session_id="TEST-session-1", allowed_scope_ids=binding.scope_ids)
+    )
     provider = ScopeRecallHermesAdapter()
     provider.initialize("TEST-session-1", **initialize_kwargs)
     assert provider._host_runtime is not None and provider._host_runtime.configured
@@ -135,8 +143,12 @@ def test_a_gateway_starts_its_vector_helper_when_it_first_binds(hermes_home, ini
 
     payload = _runtime_payload(binding, session_id="TEST-session-1", allowed_scope_ids=binding.scope_ids)
     space = dict(EMBEDDING_SPACE)
-    payload["vector"] = {"backend": "lancedb", "table_name": "TEST_vectors", "dimensions": space["dimensions"],
-                         "storage_dir": str(binding.data_directory / "vectors" / embedding_space_id(space))}
+    payload["vector"] = {
+        "backend": "lancedb",
+        "table_name": "TEST_vectors",
+        "dimensions": space["dimensions"],
+        "storage_dir": str(binding.data_directory / "vectors" / embedding_space_id(space)),
+    }
     config_path = _write_runtime_config(hermes_home / "trusted-runtime.json", payload)
     provider = ScopeRecallHermesAdapter()
     try:
@@ -208,8 +220,9 @@ def test_every_runtime_a_hermes_process_attaches_searches_one_store_of_a_table(c
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="LanceDB runs in a helper process on Windows only")
-def test_two_hermes_agents_build_views_of_one_vector_store_and_a_shutdown_leaves_it(hermes_home, initialize_kwargs,
-                                                                                     monkeypatch):
+def test_two_hermes_agents_build_views_of_one_vector_store_and_a_shutdown_leaves_it(
+    hermes_home, initialize_kwargs, monkeypatch
+):
     """Both runtimes' stores, built through their real factories (nothing is opened, no helper starts), are views of
     one store; a provider's shutdown leaves it to the process (review of 3.5.0rc4)."""
     import scope_recall.vector.process_store as process_store
@@ -218,22 +231,31 @@ def test_two_hermes_agents_build_views_of_one_vector_store_and_a_shutdown_leaves
     started = []
     monkeypatch.setattr(process_store, "prestart", lambda **_options: started.append(True))
     binding, _core = install_hermes_scope_recall(
-        hermes_home, agent_id=initialize_kwargs["agent_identity"], platform=initialize_kwargs["platform"],
-        user_id=initialize_kwargs["user_id"], agent_workspace=initialize_kwargs["agent_workspace"], test_mode=False,
+        hermes_home,
+        agent_id=initialize_kwargs["agent_identity"],
+        platform=initialize_kwargs["platform"],
+        user_id=initialize_kwargs["user_id"],
+        agent_workspace=initialize_kwargs["agent_workspace"],
+        test_mode=False,
     )
     space = dict(EMBEDDING_SPACE)
     payload = {
         **_runtime_payload(binding, session_id="TEST-session-1", allowed_scope_ids=binding.scope_ids),
-        "vector": {"backend": "lancedb", "table_name": "TEST_vectors", "dimensions": space["dimensions"],
-                   "storage_dir": str(binding.data_directory / "vectors" / embedding_space_id(space))},
+        "vector": {
+            "backend": "lancedb",
+            "table_name": "TEST_vectors",
+            "dimensions": space["dimensions"],
+            "storage_dir": str(binding.data_directory / "vectors" / embedding_space_id(space)),
+        },
     }
     config_path = _write_runtime_config(hermes_home / "trusted-runtime.json", payload)
     providers = [ScopeRecallHermesAdapter(), ScopeRecallHermesAdapter()]
     running = list(providers)
     try:
         for index, provider in enumerate(providers):
-            provider.initialize(f"TEST-session-{index}",
-                                **{**initialize_kwargs, "trusted_runtime_config_path": str(config_path)})
+            provider.initialize(
+                f"TEST-session-{index}", **{**initialize_kwargs, "trusted_runtime_config_path": str(config_path)}
+            )
         runtimes = [provider._host_runtime.runtime for provider in providers]
         views = [runtime._vector_factory(runtime.config.vector) for runtime in runtimes]
         assert all(isinstance(view, process_store.SharedStore) for view in views)
@@ -267,7 +289,7 @@ def test_session_end_detaches_bounded_worker_without_shared_drain(configured_pro
     launch = Mock(return_value=worker)
     monkeypatch.setattr("scope_recall.adapters.hermes.runtime_wiring.launch_worker", launch)
     shutdown = provider._worker.shutdown
-    monkeypatch.setattr(provider._worker, "shutdown", lambda: shutdown(timeout=.01))
+    monkeypatch.setattr(provider._worker, "shutdown", lambda: shutdown(timeout=0.01))
     try:
         provider.on_session_end([])
         provider.on_session_end([])
@@ -275,7 +297,7 @@ def test_session_end_detaches_bounded_worker_without_shared_drain(configured_pro
         provider.on_session_switch("TEST-session-2")
         started = time.monotonic()
         provider.shutdown()
-        assert time.monotonic() - started < .5
+        assert time.monotonic() - started < 0.5
         assert not entered.is_set()
         runtime.drain.assert_not_called()
         close.assert_called_once()
@@ -337,8 +359,14 @@ def test_worker_busy_gap_lasts_only_until_a_later_launch_is_not_busy(configured_
         # A gap that is no launch result must outlive the replacement.  The
         # capture's own wake still finds both workers alive, so it stays busy.
         provider._current_source_refs = [f"ref-{index}" for index in range(MAX_CURRENT_SOURCE_REFS)]
-        provider.observe_post_tool_call(session_id="TEST-session-1", turn_id="turn-1", tool_call_id="over-1",
-                                        tool_name="terminal", result="one source past the fence", status="success")
+        provider.observe_post_tool_call(
+            session_id="TEST-session-1",
+            turn_id="turn-1",
+            tool_call_id="over-1",
+            tool_name="terminal",
+            result="one source past the fence",
+            status="success",
+        )
         assert GAP_WORKER_BUSY in reply_gaps()
         worker.poll.return_value = 0  # every worker has exited
         provider.on_session_end([])
@@ -356,10 +384,12 @@ def test_owned_worker_rejects_scope_widening_and_closed_runtime(configured_provi
     launch = Mock()
     monkeypatch.setattr("scope_recall.adapters.hermes.runtime_wiring.launch_worker", launch)
     assert runtime.maybe_launch_bounded_worker(
-        session_id="TEST-session", allowed_scope_ids=frozenset({"foreign"}),
+        session_id="TEST-session",
+        allowed_scope_ids=frozenset({"foreign"}),
     ) == (GAP_BINDING_MISMATCH,)
     runtime.close()
     assert runtime.maybe_launch_bounded_worker(
-        session_id="TEST-session", allowed_scope_ids=configured_provider._identity.runtime_audience.allowed_scope_ids,
+        session_id="TEST-session",
+        allowed_scope_ids=configured_provider._identity.runtime_audience.allowed_scope_ids,
     ) == (GAP_UNCONFIGURED,)
     launch.assert_not_called()

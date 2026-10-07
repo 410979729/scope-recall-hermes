@@ -13,19 +13,36 @@ from jsonschema import Draft202012Validator, FormatChecker
 
 
 Origin = Literal[
-    "human_direct", "assistant_visible", "tool_observation", "external_document",
-    "host_generated", "memory_reinjection", "imported", "origin_unknown",
+    "human_direct",
+    "assistant_visible",
+    "tool_observation",
+    "external_document",
+    "host_generated",
+    "memory_reinjection",
+    "imported",
+    "origin_unknown",
 ]
 PrincipalKind = Literal["human", "assistant", "tool", "host", "document", "unknown"]
 PrincipalResolution = Literal["verified", "unresolved"]
 OriginalOrigin = Literal[
-    "human_direct", "assistant_visible", "tool_observation", "external_document",
-    "host_generated", "memory_reinjection", "origin_unknown",
+    "human_direct",
+    "assistant_visible",
+    "tool_observation",
+    "external_document",
+    "host_generated",
+    "memory_reinjection",
+    "origin_unknown",
 ]
 DisplayOrder = Literal["observed", "unknown"]
 StatementKind = Literal[
-    "assertion", "decision", "request", "proposal", "hypothetical",
-    "quotation", "fictional", "unknown",
+    "assertion",
+    "decision",
+    "request",
+    "proposal",
+    "hypothetical",
+    "quotation",
+    "fictional",
+    "unknown",
 ]
 Basis = Literal["direct_report", "observed", "derived_summary", "inferred_suggestion", "unknown"]
 JsonValue = str | int | float | bool | None | list["JsonValue"] | dict[str, "JsonValue"]
@@ -60,6 +77,7 @@ class SourceContext(TypedDict):
 
 class EntryLabel(TypedDict):
     """Which agent a shared store's item came in through, as a reader is shown it."""
+
     id: str
     name: str
 
@@ -237,15 +255,33 @@ class ContractError(ValueError):
         super().__init__(f"{code}: invalid {field}")
 
 
-_SCHEMAS = frozenset({
-    "source_event", "recall_request", "recall_packet", "revise_request",
-    "forget_request", "consolidation_result", "task_receipt",
-    "profile_request", "entity_request", "profile_view", "entity_view", "trace_request", "trace_view",
-})
-_MODEL_REQUESTS = frozenset({
-    "recall_request", "revise_request", "forget_request",
-    "profile_request", "entity_request", "trace_request",
-})
+_SCHEMAS = frozenset(
+    {
+        "source_event",
+        "recall_request",
+        "recall_packet",
+        "revise_request",
+        "forget_request",
+        "consolidation_result",
+        "task_receipt",
+        "profile_request",
+        "entity_request",
+        "profile_view",
+        "entity_view",
+        "trace_request",
+        "trace_view",
+    }
+)
+_MODEL_REQUESTS = frozenset(
+    {
+        "recall_request",
+        "revise_request",
+        "forget_request",
+        "profile_request",
+        "entity_request",
+        "trace_request",
+    }
+)
 #: The instants a model writes into a request, rewritten to UTC before validation.
 _MODEL_INSTANTS = {"recall_request": ("as_of",), "revise_request": ("valid_from",)}
 _ORIGINS = frozenset(get_args(Origin))
@@ -521,7 +557,10 @@ class DisplaySnapshot:
             raise ContractError("INPUT_INVALID", "display_snapshot")
 
     def to_payload(self) -> DisplaySnapshotPayload:
-        return {"order": self.order, "items": [{"artifact_ref": item.artifact_ref, "revision": item.revision} for item in self.items]}
+        return {
+            "order": self.order,
+            "items": [{"artifact_ref": item.artifact_ref, "revision": item.revision} for item in self.items],
+        }
 
 
 #: ``local`` is one host's own store, bound to its directory and exact scope set.
@@ -573,14 +612,20 @@ class ImportProvenance:
     The importer verifies the manifest and its source records before constructing
     this value. A role label or source_original_origin in raw input is insufficient.
     """
+
     original_origin: OriginalOrigin
     manifest_sha256: str
     source_fingerprints: frozenset[str]
 
     def __post_init__(self) -> None:
-        if (self.original_origin not in get_args(OriginalOrigin) or type(self.manifest_sha256) is not str
-            or not re.fullmatch(r"[0-9a-f]{64}", self.manifest_sha256) or type(self.source_fingerprints) is not frozenset
-            or not 1 <= len(self.source_fingerprints) <= 200 or any(type(s) is not str or not re.fullmatch(r"[0-9a-f]{64}",s) for s in self.source_fingerprints)):
+        if (
+            self.original_origin not in get_args(OriginalOrigin)
+            or type(self.manifest_sha256) is not str
+            or not re.fullmatch(r"[0-9a-f]{64}", self.manifest_sha256)
+            or type(self.source_fingerprints) is not frozenset
+            or not 1 <= len(self.source_fingerprints) <= 200
+            or any(type(s) is not str or not re.fullmatch(r"[0-9a-f]{64}", s) for s in self.source_fingerprints)
+        ):
             raise ContractError("IDENTITY_UNBOUND", "import_provenance")
 
 
@@ -602,9 +647,7 @@ class TrustedSourcePrincipal:
         elif self.principal_ref is not None:
             raise ContractError("IDENTITY_UNBOUND", "source_principal")
         if self.display_name is not None and (
-            type(self.display_name) is not str
-            or not self.display_name.strip()
-            or len(self.display_name) > 120
+            type(self.display_name) is not str or not self.display_name.strip() or len(self.display_name) > 120
         ):
             raise ContractError("IDENTITY_UNBOUND", "source_principal")
 
@@ -623,8 +666,10 @@ def import_source_fingerprint(event: SourceEvent) -> str:
     A later transport receipt timestamp is not a new source version.
     """
     value = validate_payload("source_event", cast(dict[str, JsonValue], event))
-    body = {k:v for k,v in value.items() if k != "recorded_at"}
-    return hashlib.sha256(json.dumps(body,ensure_ascii=False,sort_keys=True,separators=(",",":"),allow_nan=False).encode()).hexdigest()
+    body = {k: v for k, v in value.items() if k != "recorded_at"}
+    return hashlib.sha256(
+        json.dumps(body, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
+    ).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -656,14 +701,20 @@ class TrustedContext:
             raise ContractError("ACCESS_DENIED")
         if type(self.actor_origin) is not str or self.actor_origin not in _ORIGINS:
             raise ContractError("IDENTITY_UNBOUND", "actor_origin")
-        for key in (self.project_id, self.branch_id,self.task_anchor,self.environment_revision):
+        for key in (self.project_id, self.branch_id, self.task_anchor, self.environment_revision):
             if key is not None and (type(key) is not str or not key.strip() or len(key) > 240):
                 raise ContractError("IDENTITY_UNBOUND", "context_key")
-        if type(self.recent_messages) is not tuple or len(self.recent_messages) > 8 or any(type(x) is not str or len(x) > 8192 for x in self.recent_messages):
+        if (
+            type(self.recent_messages) is not tuple
+            or len(self.recent_messages) > 8
+            or any(type(x) is not str or len(x) > 8192 for x in self.recent_messages)
+        ):
             raise ContractError("INPUT_INVALID", "context_budget")
         if self.display_snapshot is not None and not isinstance(self.display_snapshot, DisplaySnapshot):
             raise ContractError("INPUT_INVALID", "display_snapshot")
-        if self.import_provenance is not None and (self.actor_origin != "imported" or not isinstance(self.import_provenance, ImportProvenance)):
+        if self.import_provenance is not None and (
+            self.actor_origin != "imported" or not isinstance(self.import_provenance, ImportProvenance)
+        ):
             raise ContractError("IDENTITY_UNBOUND", "import_provenance")
         if self.source_principal is not None and not isinstance(self.source_principal, TrustedSourcePrincipal):
             raise ContractError("IDENTITY_UNBOUND", "source_principal")
@@ -719,8 +770,10 @@ class SourceSnapshot:
             raise ContractError("INPUT_INVALID", "source_revision")
         if type(self.content) is not str or type(self.origin) is not str or self.origin not in _ORIGINS:
             raise ContractError("INPUT_INVALID", "source_snapshot")
-        if self.verified_original_origin is not None and (self.origin!='imported' or self.verified_original_origin not in get_args(OriginalOrigin)):
-            raise ContractError('INPUT_INVALID','verified_original_origin')
+        if self.verified_original_origin is not None and (
+            self.origin != "imported" or self.verified_original_origin not in get_args(OriginalOrigin)
+        ):
+            raise ContractError("INPUT_INVALID", "verified_original_origin")
 
 
 def validate_proposal_references(
@@ -766,7 +819,11 @@ def validate_proposal_references(
         if not set(refs) <= declared:
             raise ContractError("SOURCE_MISSING")
         for item in resume["verified_progress"]:
-            if not any((available[ref].verified_original_origin or available[ref].origin) in {"human_direct", "tool_observation"} for ref in item["evidence_refs"]):
+            if not any(
+                (available[ref].verified_original_origin or available[ref].origin)
+                in {"human_direct", "tool_observation"}
+                for ref in item["evidence_refs"]
+            ):
                 raise ContractError("DERIVATION_INVALID", "verified_progress_origin")
     for binding in result["reference_proposals"]:
         if not set(binding["evidence_refs"]) <= declared:

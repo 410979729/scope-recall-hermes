@@ -6,6 +6,7 @@ every source -- measured at 4.4 seconds on an instance with 150,000 queued items
 the answer away.  Proving the binding is one indexed row; the scans belong to the diagnostics
 that are about sources.
 """
+
 from __future__ import annotations
 
 import sqlite3

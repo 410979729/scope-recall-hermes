@@ -5,6 +5,7 @@ property under test is asymmetric on purpose: a stale process must always be
 caught, and a current process must never be accused, because a health check
 that reports a healthy instance as degraded stops being read at all.
 """
+
 from __future__ import annotations
 
 import json
@@ -147,14 +148,16 @@ def test_each_process_of_a_shared_store_is_judged_by_the_package_it_loaded(tmp_p
     upgraded = _package(tmp_path / "TEST-entry-a", "3.9.0", minutes_ago=5)
     other = _package(tmp_path / "TEST-entry-b", "3.8.0", minutes_ago=60)
     loaded_at = datetime.now(timezone.utc) - timedelta(minutes=30)
-    _write_record(directory, os.getpid(), version="3.8.0", first_record_at=loaded_at.isoformat(),
-                  package_path=str(other))
+    _write_record(
+        directory, os.getpid(), version="3.8.0", first_record_at=loaded_at.isoformat(), package_path=str(other)
+    )
     assert rc.stale_records(tmp_path, disk_version="3.9.0", package_path=upgraded) == []
 
     (other / "_version.py").write_text('__version__ = "3.9.0"\n', encoding="utf-8")
     stale = rc.stale_records(tmp_path, disk_version="3.9.0", package_path=upgraded)
     assert [(item["reason"], item["disk_version"], item["package_path"]) for item in stale] == [
-        ("version_mismatch", "3.9.0", str(other))]
+        ("version_mismatch", "3.9.0", str(other))
+    ]
 
 
 def test_dead_process_records_are_not_reported_stale(tmp_path):
@@ -237,6 +240,7 @@ def _age(path, *, minutes: int) -> None:
 # A stamp in the future is not evidence
 # --------------------------------------------------------------------------
 
+
 def test_a_future_modification_time_is_ignored(tmp_path):
     """An unpacking tool that mishandles the archive's local-time entries would
     otherwise make every process look stale forever.  On Alpha one extraction
@@ -251,8 +255,7 @@ def test_a_future_modification_time_is_ignored(tmp_path):
 
     stamp = package_modified_at(package)
     assert stamp is not None
-    assert datetime.fromisoformat(stamp).timestamp() == pytest.approx(past, abs=2), \
-        "the future stamp was believed"
+    assert datetime.fromisoformat(stamp).timestamp() == pytest.approx(past, abs=2), "the future stamp was believed"
 
 
 def test_a_package_whose_every_stamp_is_future_reports_nothing(tmp_path):
@@ -310,23 +313,26 @@ def test_the_ceiling_can_be_supplied_for_a_deterministic_test(tmp_path):
 # Usage is reported in units everyone shares; money is not one of them
 # --------------------------------------------------------------------------
 
+
 def _headroom(tmp_path, *, calls=3, charge=999999, inputs=1200, outputs=340):
     import sqlite3
     from types import SimpleNamespace
 
     ledger = tmp_path / "auxiliary-budget.sqlite3"
     with sqlite3.connect(ledger) as conn:
-        conn.execute("CREATE TABLE requests (id INTEGER PRIMARY KEY, charge_micro_usd INTEGER,"
-                     " reserved_input INTEGER, actual_input INTEGER,"
-                     " reserved_output INTEGER, actual_output INTEGER)")
+        conn.execute(
+            "CREATE TABLE requests (id INTEGER PRIMARY KEY, charge_micro_usd INTEGER,"
+            " reserved_input INTEGER, actual_input INTEGER,"
+            " reserved_output INTEGER, actual_output INTEGER)"
+        )
         for _ in range(calls):
-            conn.execute("INSERT INTO requests(charge_micro_usd,reserved_input,actual_input,"
-                         "reserved_output,actual_output) VALUES (?,?,?,?,?)",
-                         (charge // calls, inputs // calls, inputs // calls,
-                          outputs // calls, outputs // calls))
+            conn.execute(
+                "INSERT INTO requests(charge_micro_usd,reserved_input,actual_input,"
+                "reserved_output,actual_output) VALUES (?,?,?,?,?)",
+                (charge // calls, inputs // calls, inputs // calls, outputs // calls, outputs // calls),
+            )
         conn.commit()
-    policy = SimpleNamespace(cap_micro_usd=None, total_call_cap=None,
-                             total_input_cap=None, total_output_cap=None)
+    policy = SimpleNamespace(cap_micro_usd=None, total_call_cap=None, total_input_cap=None, total_output_cap=None)
     return doctor._ledger_headroom(ledger, policy)
 
 
@@ -359,21 +365,27 @@ def test_usage_is_recorded_without_being_capped(tmp_path):
 # A provider refusing everything must be said out loud
 # --------------------------------------------------------------------------
 
+
 def _ledger(tmp_path, rows):
     import sqlite3
     import time as _time
 
     path = tmp_path / "auxiliary-budget.sqlite3"
     with sqlite3.connect(path) as conn:
-        conn.execute("CREATE TABLE IF NOT EXISTS requests (id INTEGER PRIMARY KEY,"
-                     " model TEXT, status TEXT, started_ns INTEGER,"
-                     " charge_micro_usd INTEGER, reserved_input INTEGER, actual_input INTEGER,"
-                     " reserved_output INTEGER, actual_output INTEGER)")
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS requests (id INTEGER PRIMARY KEY,"
+            " model TEXT, status TEXT, started_ns INTEGER,"
+            " charge_micro_usd INTEGER, reserved_input INTEGER, actual_input INTEGER,"
+            " reserved_output INTEGER, actual_output INTEGER)"
+        )
         now_ns = int(_time.time() * 1_000_000_000)
         for model, status in rows:
-            conn.execute("INSERT INTO requests(model,status,started_ns,charge_micro_usd,"
-                         "reserved_input,actual_input,reserved_output,actual_output)"
-                         " VALUES (?,?,?,0,1,1,1,1)", (model, status, now_ns))
+            conn.execute(
+                "INSERT INTO requests(model,status,started_ns,charge_micro_usd,"
+                "reserved_input,actual_input,reserved_output,actual_output)"
+                " VALUES (?,?,?,0,1,1,1,1)",
+                (model, status, now_ns),
+            )
         conn.commit()
     return path
 
@@ -381,10 +393,8 @@ def _ledger(tmp_path, rows):
 def test_a_provider_refusing_everything_is_named(tmp_path):
     """Four hours of "degraded" with an empty gap list, while the provider
     answered every call with "monthly usage limit reached"."""
-    path = _ledger(tmp_path, [("deepseek-v4-flash",
-                               "http_429:GoUsageLimitError_usage_unknown")] * 12)
-    assert provider_refusals(path) == \
-        ["model_refused:deepseek-v4-flash:GoUsageLimitError"]
+    path = _ledger(tmp_path, [("deepseek-v4-flash", "http_429:GoUsageLimitError_usage_unknown")] * 12)
+    assert provider_refusals(path) == ["model_refused:deepseek-v4-flash:GoUsageLimitError"]
 
 
 def test_a_provider_without_a_code_is_still_named(tmp_path):
@@ -429,9 +439,17 @@ def test_one_model_refusing_does_not_implicate_another(tmp_path):
 # ``reserve`` raises before the request is sent, so an unapproved model writes
 # no ledger row.  These cover the gap that measurement cannot reach.
 
-def _auxiliary(*, consolidation_model="chat", approved=("chat",), priced=None,
-               external_consolidation=True, external_embedding=False,
-               embedding_model=None, ledger_path=None):
+
+def _auxiliary(
+    *,
+    consolidation_model="chat",
+    approved=("chat",),
+    priced=None,
+    external_consolidation=True,
+    external_embedding=False,
+    embedding_model=None,
+    ledger_path=None,
+):
     from decimal import Decimal
 
     from scope_recall.adapters.models import ConsolidationRouteConfig, EmbeddingRouteConfig
@@ -439,30 +457,53 @@ def _auxiliary(*, consolidation_model="chat", approved=("chat",), priced=None,
     from scope_recall.runtime.model_budget import BudgetPolicy, ModelPricing
 
     names = tuple(approved)
-    pricing = {name: ModelPricing(input_usd_per_million=Decimal("0.30"),
-                                  output_usd_per_million=Decimal("1.20"))
-               for name in (names if priced is None else priced)}
+    pricing = {
+        name: ModelPricing(input_usd_per_million=Decimal("0.30"), output_usd_per_million=Decimal("1.20"))
+        for name in (names if priced is None else priced)
+    }
     budget = BudgetPolicy(
-        batch="test", cap_micro_usd=None, total_input_cap=None, total_output_cap=None,
-        total_call_cap=None, max_request_bytes=131072, default_reserve_input=32768,
-        default_reserve_output=8192, model_reserve_output={},
-        model_token_caps={}, pricing=pricing, approved_models=frozenset(names),
+        batch="test",
+        cap_micro_usd=None,
+        total_input_cap=None,
+        total_output_cap=None,
+        total_call_cap=None,
+        max_request_bytes=131072,
+        default_reserve_input=32768,
+        default_reserve_output=8192,
+        model_reserve_output={},
+        model_token_caps={},
+        pricing=pricing,
+        approved_models=frozenset(names),
     )
     embedding = None
     if external_embedding:
-        embedding = EmbeddingRouteConfig(credential_env="SCOPE_RECALL_EMBED_KEY",
-                                         **({} if embedding_model is None else {
-                                             "model": embedding_model,
-                                             "endpoint": "https://example.invalid/embed",
-                                             "dimensions": 8, "dialect": "gemini"}))
+        embedding = EmbeddingRouteConfig(
+            credential_env="SCOPE_RECALL_EMBED_KEY",
+            **(
+                {}
+                if embedding_model is None
+                else {
+                    "model": embedding_model,
+                    "endpoint": "https://example.invalid/embed",
+                    "dimensions": 8,
+                    "dialect": "gemini",
+                }
+            ),
+        )
     return AuxiliaryRuntimeConfig(
         external_embedding=external_embedding,
         external_consolidation=external_consolidation,
-        installation_dir=None, ledger_path=ledger_path, budget=budget, embedding=embedding,
+        installation_dir=None,
+        ledger_path=ledger_path,
+        budget=budget,
+        embedding=embedding,
         consolidation=ConsolidationRouteConfig(
-            model=consolidation_model, endpoint="https://example.invalid/chat",
-            credential_env="SCOPE_RECALL_CHAT_KEY", output_limit_field="max_tokens",
-            max_output_tokens=8192),
+            model=consolidation_model,
+            endpoint="https://example.invalid/chat",
+            credential_env="SCOPE_RECALL_CHAT_KEY",
+            output_limit_field="max_tokens",
+            max_output_tokens=8192,
+        ),
         consolidation_reserve_input=32768,
     )
 
@@ -471,6 +512,7 @@ def test_a_model_the_budget_will_not_approve_is_named():
     """The live fault: a provider switch registered the endpoint and credential
     but not the name, and nineteen work items deferred hourly in silence."""
     from scope_recall.runtime.model_budget import pre_request_refusals
+
     aux = _auxiliary(consolidation_model="deepseek-chat", approved=("deepseek-v4-flash",))
     assert pre_request_refusals(aux) == ["model_not_approved:consolidation:deepseek-chat"]
 
@@ -487,14 +529,15 @@ def test_an_approved_model_always_has_a_price():
 
 def test_a_fully_registered_model_raises_nothing():
     from scope_recall.runtime.model_budget import pre_request_refusals
+
     assert pre_request_refusals(_auxiliary()) == []
 
 
 def test_a_route_that_is_switched_off_is_not_a_gap():
     """An unapproved name on a route nothing calls is not a fault to chase."""
     from scope_recall.runtime.model_budget import pre_request_refusals
-    aux = _auxiliary(consolidation_model="unknown", approved=("chat",),
-                     priced=("chat",), external_consolidation=False)
+
+    aux = _auxiliary(consolidation_model="unknown", approved=("chat",), priced=("chat",), external_consolidation=False)
     assert pre_request_refusals(aux) == []
 
 
@@ -503,6 +546,7 @@ def test_the_embedding_default_is_checked_under_the_name_it_will_send():
     name is what ``reserve`` will judge."""
     from scope_recall.adapters.models import EMBEDDING_SPACE
     from scope_recall.runtime.model_budget import pre_request_refusals
+
     default = EMBEDDING_SPACE["model"]
     approved = _auxiliary(external_embedding=True, approved=("chat", default))
     assert pre_request_refusals(approved) == []
@@ -514,6 +558,7 @@ def test_no_auxiliary_and_no_allowlist_are_not_gaps():
     """An empty allowlist refuses every model; saying so once per route would
     report a single fault as many."""
     from scope_recall.runtime.model_budget import pre_request_refusals
+
     assert pre_request_refusals(None) == []
     assert pre_request_refusals(_auxiliary(approved=())) == []
 
@@ -528,7 +573,7 @@ def test_a_ledger_that_is_not_there_is_named(tmp_path):
     absent = tmp_path / "auxiliary-budget.sqlite3"
     assert provider_refusals(absent) == [], "the ledger cannot report its own absence"
     assert _ledger_headroom(absent, object()) == {}, "nor can the headroom read"
-    assert pre_request_refusals(_auxiliary(ledger_path=absent)) ==         ["ledger_missing:auxiliary-budget.sqlite3"]
+    assert pre_request_refusals(_auxiliary(ledger_path=absent)) == ["ledger_missing:auxiliary-budget.sqlite3"]
 
 
 def test_a_ledger_that_is_there_is_not_a_gap(tmp_path):
@@ -543,6 +588,5 @@ def test_an_instance_that_calls_no_model_needs_no_ledger(tmp_path):
     """Nothing reserves anything, so an absent ledger refuses nothing."""
     from scope_recall.runtime.model_budget import pre_request_refusals
 
-    aux = _auxiliary(ledger_path=tmp_path / "absent.sqlite3",
-                     external_consolidation=False, external_embedding=False)
+    aux = _auxiliary(ledger_path=tmp_path / "absent.sqlite3", external_consolidation=False, external_embedding=False)
     assert pre_request_refusals(aux) == []

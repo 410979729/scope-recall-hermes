@@ -12,6 +12,7 @@ its own module so it can be read on its own:
 
 ``candidate_tables`` underneath holds the SQL they share.
 """
+
 from __future__ import annotations
 
 from .candidate_evaluations import CandidateEvaluations

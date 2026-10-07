@@ -6,6 +6,7 @@ checkout, on a fresh temp store with synthetic data: no model, no network, no
 key.  The test fails on the first answer that differs from
 ``expected_answers.json``, in the order the standalone run prints them.
 """
+
 from __future__ import annotations
 
 import importlib.util

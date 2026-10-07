@@ -1,4 +1,5 @@
 """Offline transport checks; sockets are restricted to synthetic loopback HTTP."""
+
 from __future__ import annotations
 
 import base64
@@ -45,10 +46,7 @@ def test_http_response_parser_consumes_chunked_framing_without_read1() -> None:
 
 
 def test_http_response_parser_honors_content_length_on_keepalive() -> None:
-    response = _response(
-        b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: keep-alive\r\n\r\n"
-        b"helloEXTRA-WIRE-BYTES"
-    )
+    response = _response(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: keep-alive\r\n\r\nhelloEXTRA-WIRE-BYTES")
     assert response.read() == b"hello"
 
 
@@ -82,18 +80,14 @@ def test_parent_worker_protocol_success_and_error(tmp_path, monkeypatch) -> None
     success = tmp_path / "success_worker.py"
     _write_worker(
         success,
-        "import sys\n"
-        "sys.stdin.buffer.read()\n"
-        f"sys.stdout.write({ _worker_result(ok=True, body=b'response')!r})\n",
+        f"import sys\nsys.stdin.buffer.read()\nsys.stdout.write({_worker_result(ok=True, body=b'response')!r})\n",
     )
     assert _post(monkeypatch, success) == (200, b"response")
 
     failure = tmp_path / "failure_worker.py"
     _write_worker(
         failure,
-        "import sys\n"
-        "sys.stdin.buffer.read()\n"
-        f"sys.stdout.write({_worker_result(ok=False, error='http_protocol')!r})\n",
+        f"import sys\nsys.stdin.buffer.read()\nsys.stdout.write({_worker_result(ok=False, error='http_protocol')!r})\n",
     )
     with pytest.raises(models.AuxiliaryModelError) as exc:
         _post(monkeypatch, failure)
@@ -102,9 +96,7 @@ def test_parent_worker_protocol_success_and_error(tmp_path, monkeypatch) -> None
     oversized = tmp_path / "oversized_worker.py"
     _write_worker(
         oversized,
-        "import sys\n"
-        "sys.stdin.buffer.read()\n"
-        f"sys.stdout.write({_worker_result(ok=True, body=b'1234')!r})\n",
+        f"import sys\nsys.stdin.buffer.read()\nsys.stdout.write({_worker_result(ok=True, body=b'1234')!r})\n",
     )
     with pytest.raises(models.AuxiliaryModelError) as oversize_exc:
         _post(monkeypatch, oversized, max_response_bytes=3)
@@ -158,8 +150,13 @@ def persistent_transport(tmp_path, monkeypatch):
             if body == b"slow":
                 slow_started.set()
                 time.sleep(0.5)
-            response = (json.dumps({"embeddings": [{"values": [0.01] * 3072}], "usageMetadata": {"promptTokenCount": 10}}).encode()
-                        if body.startswith(b"{") else b"ok")
+            response = (
+                json.dumps(
+                    {"embeddings": [{"values": [0.01] * 3072}], "usageMetadata": {"promptTokenCount": 10}}
+                ).encode()
+                if body.startswith(b"{")
+                else b"ok"
+            )
             self.send_response(200)
             self.send_header("Content-Length", str(len(response)))
             self.end_headers()
@@ -178,7 +175,8 @@ def persistent_transport(tmp_path, monkeypatch):
         f"s=importlib.util.spec_from_file_location('worker', {str(models._HTTP_WORKER_PATH)!r})\n"
         "w=importlib.util.module_from_spec(s); s.loader.exec_module(w)\n"
         f"w._open_https_connection=lambda *a, **k: http.client.HTTPConnection('127.0.0.1', {server.server_port})\n"
-        "raise SystemExit(w.main())\n", encoding="utf-8",
+        "raise SystemExit(w.main())\n",
+        encoding="utf-8",
     )
     monkeypatch.setattr(models, "_HTTP_WORKER_PATH", worker)
     transport = models.HttpsTransport(persistent=True)
@@ -192,9 +190,13 @@ def persistent_transport(tmp_path, monkeypatch):
 
 
 def _persistent_post(transport, body=b"request", *, timeout=2, limit=1024):
-    return transport.post("https://synthetic.invalid/embed", body=body,
-                          headers={"X-Synthetic": "not-a-credential"},
-                          timeout_seconds=timeout, max_response_bytes=limit)
+    return transport.post(
+        "https://synthetic.invalid/embed",
+        body=body,
+        headers={"X-Synthetic": "not-a-credential"},
+        timeout_seconds=timeout,
+        max_response_bytes=limit,
+    )
 
 
 def test_query_helper_reuses_process_and_connection_and_recovers(persistent_transport):
@@ -221,6 +223,7 @@ def test_query_helper_reuses_process_and_connection_and_recovers(persistent_tran
 def test_query_adapter_uses_persistent_helper_but_source_does_not(persistent_transport, tmp_path, monkeypatch):
     from test_runtime_auxiliary import _runtime_config, _source
     from scope_recall.runtime.auxiliary import build_auxiliary_runtime
+
     _, connections, _ = persistent_transport
     monkeypatch.setenv("SCOPE_RECALL_TEST_EMBED_KEY", "synthetic-local-value")
     config, _, _ = _runtime_config(tmp_path)
@@ -245,6 +248,7 @@ def test_query_adapter_uses_persistent_helper_but_source_does_not(persistent_tra
 
 def test_query_helper_close_cancels_active_request(persistent_transport):
     from concurrent.futures import ThreadPoolExecutor
+
     transport, _, slow_started = persistent_transport
     assert _persistent_post(transport) == (200, b"ok")
     process = transport._session._process
@@ -294,7 +298,8 @@ def _closing_transport(tmp_path, monkeypatch, *, idle_reuse=None, close=True):
         "w=importlib.util.module_from_spec(s); s.loader.exec_module(w)\n"
         f"w._open_https_connection=lambda *a, **k: http.client.HTTPConnection('127.0.0.1', {server.server_port})\n"
         + (f"w.IDLE_REUSE_SECONDS={idle_reuse!r}\n" if idle_reuse is not None else "")
-        + "raise SystemExit(w.main())\n", encoding="utf-8",
+        + "raise SystemExit(w.main())\n",
+        encoding="utf-8",
     )
     monkeypatch.setattr(models, "_HTTP_WORKER_PATH", worker)
     return models.HttpsTransport(persistent=True), connections, server, thread
@@ -323,8 +328,9 @@ def test_the_helper_does_not_reuse_a_connection_idle_past_its_limit(tmp_path, mo
 
     assert worker.IDLE_REUSE_SECONDS == 30.0
     for limit, expected in ((None, 1), (0.0, 2)):
-        transport, connections, server, thread = _closing_transport(tmp_path / f"TEST-{expected}", monkeypatch,
-                                                                    idle_reuse=limit, close=False)
+        transport, connections, server, thread = _closing_transport(
+            tmp_path / f"TEST-{expected}", monkeypatch, idle_reuse=limit, close=False
+        )
         try:
             assert _persistent_post(transport) == (200, b"ok")
             time.sleep(0.1)  # past a tick of Windows' 15.6 ms clock: an idle time of 0 is not past a limit of 0

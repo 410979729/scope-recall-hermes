@@ -1,4 +1,5 @@
 """Launch one bounded worker process without creating a second queue."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -21,8 +22,13 @@ def is_ephemeral_worker_config(path: Path) -> bool:
     """Whether ``path`` is named as a per-pass config copy, the only kind ``--cleanup-config`` removes."""
     stem, infix, tail = path.name.rpartition(EPHEMERAL_CONFIG_INFIX)
     random, _, suffix = tail.partition(".")
-    return bool(stem) and bool(infix) and suffix == "json" and len(random) == 8 and all(
-        character in "abcdefghijklmnopqrstuvwxyz0123456789_" for character in random)
+    return (
+        bool(stem)
+        and bool(infix)
+        and suffix == "json"
+        and len(random) == 8
+        and all(character in "abcdefghijklmnopqrstuvwxyz0123456789_" for character in random)
+    )
 
 
 def validate_wake_arguments(after_pid: int | None, delay_seconds: float) -> None:
@@ -166,9 +172,7 @@ def launch_worker(
         child_env.update(environment)
     package_root = Path(__file__).resolve().parents[1]
     inherited_pythonpath = child_env.get("PYTHONPATH")
-    child_env["PYTHONPATH"] = str(package_root) + (
-        os.pathsep + inherited_pythonpath if inherited_pythonpath else ""
-    )
+    child_env["PYTHONPATH"] = str(package_root) + (os.pathsep + inherited_pythonpath if inherited_pythonpath else "")
     process = subprocess.Popen(
         command,
         cwd=str(package_root),

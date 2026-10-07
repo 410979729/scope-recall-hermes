@@ -12,6 +12,7 @@ carries them in its environment and this entry point had no way to be given them
 refused each item with ``credential_missing``, stood the work types down, and exited 0.  An
 operator watching that receipt saw a success that had done nothing.
 """
+
 from __future__ import annotations
 
 import json
@@ -77,6 +78,7 @@ def _supervise(tmp_path, codes, *, monkeypatch, max_drains=16):
     monkeypatch.setattr(scheduling, "_acquire_ownership", lambda ctl: _Owner())
     monkeypatch.setattr(scheduling, "read_control", lambda cfg: {"enabled": True}, raising=False)
     import scope_recall.runtime.resume_entry as resume_entry
+
     monkeypatch.setattr(resume_entry, "read_control", lambda cfg: {"enabled": True})
 
     passes = iter(codes)
@@ -94,14 +96,16 @@ def _supervise(tmp_path, codes, *, monkeypatch, max_drains=16):
 
     def planner(cfg, *, now, unavailable_until):
         # Due in the past, so the loop drains rather than waiting out its window.
-        return WakePlan("2000-01-01T00:00:00+00:00", "work_available", 1, 0, 0) if len(made) < len(codes) \
+        return (
+            WakePlan("2000-01-01T00:00:00+00:00", "work_available", 1, 0, 0)
+            if len(made) < len(codes)
             else WakePlan(None, "idle", 0, 0, 0)
+        )
 
     def sleep(seconds):
         clock[0] += max(0.0, float(seconds))
 
-    exit_code = supervise(tmp_path / "config.json", drain_once, clock=lambda: clock[0],
-                          sleep=sleep, planner=planner)
+    exit_code = supervise(tmp_path / "config.json", drain_once, clock=lambda: clock[0], sleep=sleep, planner=planner)
     return exit_code, control, made
 
 
@@ -138,12 +142,23 @@ def test_a_success_forgets_the_earlier_failures(tmp_path, monkeypatch):
 
 # -- the doctor says so --------------------------------------------------------
 
+
 def test_the_doctor_reports_a_loop_that_stood_down(tmp_path):
     from scope_recall.maintenance.doctor import DoctorReport, _check_supervisor
 
-    (tmp_path / "runtime-supervisor-aaa.json").write_text(json.dumps(
-        {"state": "failed", "reason": "worker_failed", "exit_code": 1, "drains": 217,
-         "started_at": "2026-09-17T07:41:26Z", "worker_failures": 3}), encoding="utf-8")
+    (tmp_path / "runtime-supervisor-aaa.json").write_text(
+        json.dumps(
+            {
+                "state": "failed",
+                "reason": "worker_failed",
+                "exit_code": 1,
+                "drains": 217,
+                "started_at": "2026-09-17T07:41:26Z",
+                "worker_failures": 3,
+            }
+        ),
+        encoding="utf-8",
+    )
     report = DoctorReport(host="hermes", status="ok")
     _check_supervisor(report, tmp_path)
     assert any(gap.startswith("supervisor_stood_down:1") for gap in report.capability_gaps), report.capability_gaps
@@ -152,9 +167,18 @@ def test_the_doctor_reports_a_loop_that_stood_down(tmp_path):
 def test_the_doctor_reports_a_loop_that_is_limping(tmp_path):
     from scope_recall.maintenance.doctor import DoctorReport, _check_supervisor
 
-    (tmp_path / "runtime-supervisor-aaa.json").write_text(json.dumps(
-        {"state": "degraded", "reason": "worker_failed", "drains": 9,
-         "started_at": "2026-09-18T07:00:00Z", "worker_failures": 2}), encoding="utf-8")
+    (tmp_path / "runtime-supervisor-aaa.json").write_text(
+        json.dumps(
+            {
+                "state": "degraded",
+                "reason": "worker_failed",
+                "drains": 9,
+                "started_at": "2026-09-18T07:00:00Z",
+                "worker_failures": 2,
+            }
+        ),
+        encoding="utf-8",
+    )
     report = DoctorReport(host="hermes", status="ok")
     _check_supervisor(report, tmp_path)
     assert "worker_failures:2" in report.capability_gaps, report.capability_gaps
@@ -163,15 +187,25 @@ def test_the_doctor_reports_a_loop_that_is_limping(tmp_path):
 def test_an_operator_pause_is_not_a_failure(tmp_path):
     from scope_recall.maintenance.doctor import DoctorReport, _check_supervisor
 
-    (tmp_path / "runtime-supervisor-aaa.json").write_text(json.dumps(
-        {"state": "paused", "reason": "operator_pause", "drains": 0,
-         "started_at": "2026-09-18T07:00:00Z", "finished_at": "2026-09-18T07:00:01Z"}), encoding="utf-8")
+    (tmp_path / "runtime-supervisor-aaa.json").write_text(
+        json.dumps(
+            {
+                "state": "paused",
+                "reason": "operator_pause",
+                "drains": 0,
+                "started_at": "2026-09-18T07:00:00Z",
+                "finished_at": "2026-09-18T07:00:01Z",
+            }
+        ),
+        encoding="utf-8",
+    )
     report = DoctorReport(host="hermes", status="ok")
     _check_supervisor(report, tmp_path)
     assert not report.capability_gaps, report.capability_gaps
 
 
 # -- a pass may be handed its credentials --------------------------------------
+
 
 def test_a_pass_can_be_handed_the_credentials_a_wake_would_have_carried(tmp_path, monkeypatch):
     from scope_recall.runtime import worker_entry
@@ -223,6 +257,7 @@ def test_an_unusable_env_file_stops_the_pass_instead_of_starting_it_blind(tmp_pa
     from scope_recall.runtime import worker_entry
 
     monkeypatch.setattr(worker_entry, "run_worker", lambda *a, **k: pytest.fail("the pass ran blind"))
-    code = worker_entry.main(["--config", str(tmp_path / "config.json"),
-                              "--env-file", str(tmp_path / "TEST-missing.env")])
+    code = worker_entry.main(
+        ["--config", str(tmp_path / "config.json"), "--env-file", str(tmp_path / "TEST-missing.env")]
+    )
     assert code == 2

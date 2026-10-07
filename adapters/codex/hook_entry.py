@@ -3,6 +3,7 @@
 ``--config`` names a local Codex installation; ``--home`` with ``--host`` names
 a client attached to a shared store, Codex or Claude Code.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -23,8 +24,12 @@ def main(argv: list[str] | None = None) -> int:
     where = parser.add_mutually_exclusive_group(required=True)
     where.add_argument("--config", type=Path, help="Absolute path to codex-installation.json")
     where.add_argument("--home", type=Path, help="Absolute home of a client attached to a shared store")
-    parser.add_argument("--host", choices=("codex", "claude-code", "workbuddy", "dsh"), default="codex",
-                        help="the client whose hooks call this, for --home")
+    parser.add_argument(
+        "--host",
+        choices=("codex", "claude-code", "workbuddy", "dsh"),
+        default="codex",
+        help="the client whose hooks call this, for --home",
+    )
     parser.add_argument(
         "--runtime-config",
         type=Path,
@@ -66,7 +71,9 @@ def main(argv: list[str] | None = None) -> int:
         else:
             try:
                 if args.config is not None:
-                    declared = runtime_config or (load_codex_config(str(location)).data_directory / "runtime-config.json")
+                    declared = runtime_config or (
+                        load_codex_config(str(location)).data_directory / "runtime-config.json"
+                    )
                 else:
                     declared = runtime_config or load_shared_client(location, args.host).runtime_config_path
                 os.environ.update(host_process_credential_environment(declared, env_file))
@@ -125,8 +132,9 @@ def _keep_a_resident_server(home: Path, host: str, env_file: Path | None) -> Non
         if minutes <= 0:
             return
         env = env_file.expanduser() if env_file is not None else None
-        started = ensure_resident(home, host, minutes=minutes,
-                                  env_file=env if env is not None and env.is_absolute() else None, replace=True)
+        started = ensure_resident(
+            home, host, minutes=minutes, env_file=env if env is not None and env.is_absolute() else None, replace=True
+        )
     except Exception:  # noqa: BLE001 - the prompt is answered; a server not started is started by a later one
         started = "failed"
     if started not in ("running", "off"):
@@ -149,6 +157,7 @@ def _prestart_vector_helper(raw: bytes) -> None:
         return
     try:
         from ...vector.process_store import prestart
+
         prestart()
     except OSError:
         sys.stderr.write("CODEX_HOOK:vector_prestart_failed\n")

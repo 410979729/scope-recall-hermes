@@ -5,6 +5,7 @@ store, the id and the memories are one.  What the owner tells one entry, another
 recalls, marked with where it came in; a deletion through one is gone for all.
 Sources are synthetic; nothing here is a person's memory.
 """
+
 from __future__ import annotations
 
 from contextlib import closing
@@ -34,8 +35,16 @@ OWNER = "TEST-owner"
 
 
 def _kwargs(home, **given):
-    return {"hermes_home": str(home), "platform": "cli", "agent_context": "primary", "agent_identity": AGENT,
-            "agent_workspace": WORKSPACE, "user_id": OWNER, "parent_session_id": "", **given}
+    return {
+        "hermes_home": str(home),
+        "platform": "cli",
+        "agent_context": "primary",
+        "agent_identity": AGENT,
+        "agent_workspace": WORKSPACE,
+        "user_id": OWNER,
+        "parent_session_id": "",
+        **given,
+    }
 
 
 def _home(tmp_path, name, **options):
@@ -79,7 +88,9 @@ def _query(root, sql):
 
 
 def _sources(root):
-    return _query(root, "SELECT entry_id, session_id, source_event_key FROM source_events WHERE role='user' ORDER BY entry_id")
+    return _query(
+        root, "SELECT entry_id, session_id, source_event_key FROM source_events WHERE role='user' ORDER BY entry_id"
+    )
 
 
 def _items(injected):
@@ -143,7 +154,9 @@ def test_the_same_host_session_and_turn_on_two_entries_are_two_sources(root, ent
 
     rows = _sources(root)
     assert [(entry, session) for entry, session, _key in rows] == [
-        ("tianquan", "tianquan:TEST-same-session"), ("tianshu", "tianshu:TEST-same-session")]
+        ("tianquan", "tianquan:TEST-same-session"),
+        ("tianshu", "tianshu:TEST-same-session"),
+    ]
     assert len({key for _entry, _session, key in rows}) == 2
     assert all(f":{entry}:TEST-same-session:" in key for entry, _session, key in rows)
 
@@ -152,13 +165,22 @@ def test_a_deletion_through_one_entry_is_gone_for_every_entry(root, entries):
     tianshu, tianquan = entries
     told, deleting = _provider(tianquan), _provider(tianshu)
     try:
-        told.observe_pre_llm(session_id="TEST-session-1", turn_id="TEST-turn-1", user_message="TEST 我的储物柜密码是 4471。")
+        told.observe_pre_llm(
+            session_id="TEST-session-1", turn_id="TEST-turn-1", user_message="TEST 我的储物柜密码是 4471。"
+        )
         ref, revision = told._current_source_refs[-1].rsplit("@", 1)
         deleting.observe_pre_llm(session_id="TEST-session-1", turn_id="TEST-turn-2", user_message=f"忘记 {ref}。")
-        receipt = json.loads(deleting.handle_tool_call("forget", {
-            "protocol_version": "1.1", "target_refs": [ref], "mode": "delete",
-            "expected_revisions": {ref: int(revision)},
-        }))
+        receipt = json.loads(
+            deleting.handle_tool_call(
+                "forget",
+                {
+                    "protocol_version": "1.1",
+                    "target_refs": [ref],
+                    "mode": "delete",
+                    "expected_revisions": {ref: int(revision)},
+                },
+            )
+        )
         assert receipt["result"]["mode"] == "delete", receipt
         told.on_session_switch("TEST-session-2")
         injected = told.prefetch("储物柜密码 4471")
@@ -172,8 +194,9 @@ def test_a_deletion_through_one_entry_is_gone_for_every_entry(root, entries):
                 purged.append(operation_id)
                 return True
 
-        drained = deleting._require_core().drain_worker(deleting._tool_context(mutation=True), purge=Purge(),
-                                                         max_items=1, remaining_seconds=10)
+        drained = deleting._require_core().drain_worker(
+            deleting._tool_context(mutation=True), purge=Purge(), max_items=1, remaining_seconds=10
+        )
     finally:
         told.shutdown()
         deleting.shutdown()
@@ -182,7 +205,9 @@ def test_a_deletion_through_one_entry_is_gone_for_every_entry(root, entries):
     assert [(item.work_type, item.disposition) for item in drained.items] == [("purge", "completed")], drained
     operation = receipt["result"]["operation_id"]
     assert purged == [operation]
-    layers = json.loads(_query(root, f"SELECT layers_json FROM deletion_operations WHERE operation_id='{operation}'")[0][0])
+    layers = json.loads(
+        _query(root, f"SELECT layers_json FROM deletion_operations WHERE operation_id='{operation}'")[0][0]
+    )
     assert layers["sqlite_active"] == "removed" and layers["vector_active"] == "removed", layers
     assert _query(root, "SELECT count(*) FROM source_events WHERE content LIKE '%4471%'") == [(0,)]
 
@@ -209,10 +234,17 @@ def test_a_shared_entry_never_starts_a_worker(root, entries, monkeypatch):
     identity = bind_hermes_identity("TEST-session-1", **_kwargs(tianshu))
     binding = identity.binding
     config = {
-        "binding": {"agent_id": binding.agent_id, "installation_id": binding.installation_id,
-                    "data_directory": str(binding.data_directory), "scope_ids": sorted(binding.scope_ids),
-                    "test_mode": binding.test_mode, "installation_kind": "shared"},
-        "session_id": "TEST-session-1", "allowed_scope_ids": sorted(binding.scope_ids), "owner_id": "TEST-entry",
+        "binding": {
+            "agent_id": binding.agent_id,
+            "installation_id": binding.installation_id,
+            "data_directory": str(binding.data_directory),
+            "scope_ids": sorted(binding.scope_ids),
+            "test_mode": binding.test_mode,
+            "installation_kind": "shared",
+        },
+        "session_id": "TEST-session-1",
+        "allowed_scope_ids": sorted(binding.scope_ids),
+        "owner_id": "TEST-entry",
         "auxiliary": {"external_embedding": False, "external_consolidation": False},
     }
     (tianshu / "scope-recall" / "runtime-config.json").write_text(json.dumps(config), encoding="utf-8")
@@ -238,14 +270,18 @@ def test_a_session_switch_keeps_the_entry_and_a_pointer_binds_only_its_own_home(
 
     stray = tmp_path / "TEST-stray-home"
     (stray / "scope-recall").mkdir(parents=True)
-    (stray / "scope-recall" / "attachment.json").write_bytes((tianquan / "scope-recall" / "attachment.json").read_bytes())
+    (stray / "scope-recall" / "attachment.json").write_bytes(
+        (tianquan / "scope-recall" / "attachment.json").read_bytes()
+    )
     with pytest.raises(HermesIdentityError, match="another home"):
         load_binding_for_home(stray)
 
 
 def test_a_home_with_its_own_installation_and_a_pointer_binds_nothing(tmp_path, root, entries):
     tianshu, _tianquan = entries
-    write_installation_manifest(build_installation_manifest(tianshu, agent_id=AGENT, user_id=OWNER, agent_workspace=WORKSPACE))
+    write_installation_manifest(
+        build_installation_manifest(tianshu, agent_id=AGENT, user_id=OWNER, agent_workspace=WORKSPACE)
+    )
     with pytest.raises(HermesIdentityError, match="both its own installation and a shared store"):
         bind_hermes_identity("TEST-session-1", **_kwargs(tianshu))
 
@@ -265,6 +301,7 @@ def test_attach_refuses_an_entry_id_from_another_home_and_a_home_twice(tmp_path,
 
 # --- an entry brings the store it had before it attached ---------------------------------------
 
+
 def _old_store(home, scope_id, *said, installation_id="hermes-install:TEST-legacy", session="TEST-old-session"):
     """The store a home had before it attached, moved aside.  Two of these share an installation id,
     as the legacy migration left the pilot's stores, so one key gives both the same source id."""
@@ -276,8 +313,15 @@ def _old_store(home, scope_id, *said, installation_id="hermes-install:TEST-legac
     core = MemoryCore(CoreConfig(binding))
     core.initialize()
     context = TrustedContext(binding, session, frozenset({scope_id}), "human_direct")
-    refs = [core.record_event(context, source_event(source_event_key=f"legacy:memories:{index}", content=text),
-                              scope_id=scope_id, remaining_seconds=10).event_refs[0] for index, text in enumerate(said)]
+    refs = [
+        core.record_event(
+            context,
+            source_event(source_event_key=f"legacy:memories:{index}", content=text),
+            scope_id=scope_id,
+            remaining_seconds=10,
+        ).event_refs[0]
+        for index, text in enumerate(said)
+    ]
     return core, context, refs, binding.data_directory
 
 
@@ -290,15 +334,18 @@ def test_each_entry_brings_its_old_store_and_the_same_old_id_stays_two_memories(
 
     tianshu, tianquan = entries
     *_, shu_old = _old_store(tianshu, _scope(tianshu), "TEST 天枢旧库记着：仓库钥匙挂在北门 K-12。")
-    *_, quan_old = _old_store(tianquan, _scope(tianquan), "TEST 天权旧库记着：备用电源放在西侧 W-7。",
-                              session="TEST-old-session-2")
+    *_, quan_old = _old_store(
+        tianquan, _scope(tianquan), "TEST 天权旧库记着：备用电源放在西侧 W-7。", session="TEST-old-session-2"
+    )
     for entry, old in (("tianshu", shu_old), ("tianquan", quan_old)):
         result = import_entry(root=root, entry_id=entry, source=old)
         assert (result["status"], result["counts"]["sources"]) == ("imported", 1), result
 
     rows = _query(root, "SELECT entry_id, session_id, source_event_key FROM source_events ORDER BY entry_id")
-    assert rows == [("tianquan", "tianquan:TEST-old-session-2", "import:tianquan:legacy:memories:0"),
-                    ("tianshu", "tianshu:TEST-old-session", "import:tianshu:legacy:memories:0")]
+    assert rows == [
+        ("tianquan", "tianquan:TEST-old-session-2", "import:tianquan:legacy:memories:0"),
+        ("tianshu", "tianshu:TEST-old-session", "import:tianshu:legacy:memories:0"),
+    ]
     asked = _provider(tianshu)
     try:
         _guidance, items = _items(asked.prefetch("仓库钥匙 北门 K-12 挂在哪里"))
@@ -310,8 +357,11 @@ def test_each_entry_brings_its_old_store_and_the_same_old_id_stays_two_memories(
     assert again["status"] == "already_imported"
     assert _query(root, "SELECT count(*) FROM source_events") == [(2,)]
     # The embedding each old store had queued for it is queued again, under the source's new id.
-    assert _query(root, """SELECT count(*) FROM work_items w JOIN source_events e ON e.event_id=w.subject_ref
-                           WHERE w.work_type='embed' AND w.state='pending'""") == [(2,)]
+    assert _query(
+        root,
+        """SELECT count(*) FROM work_items w JOIN source_events e ON e.event_id=w.subject_ref
+                           WHERE w.work_type='embed' AND w.state='pending'""",
+    ) == [(2,)]
 
 
 def test_an_id_two_old_stores_share_otherwise_refuses_the_second_and_writes_nothing(root, entries):
@@ -348,13 +398,28 @@ def test_what_an_old_store_forgot_stays_forgotten(root, entries):
     scope = _scope(tianshu)
     core, context, (secret,), old = _old_store(tianshu, scope, "TEST 旧库里的保险柜密码是 5520。")
     for index in range(1, 9):  # the old store ran for a while: its epoch is well past the new store's
-        core.record_event(context, source_event(source_event_key=f"legacy:memories:{index}",
-                                                content=f"TEST 旧库里的第 {index} 句话。"),
-                          scope_id=scope, remaining_seconds=10)
-    core.record_event(context, source_event(source_event_key="legacy:memories:9", content=f"删除 {secret.ref}"),
-                      scope_id=scope, remaining_seconds=10)
-    core.forget(context, {"protocol_version": "1.1", "target_refs": [secret.ref], "mode": "delete",
-                          "expected_revisions": {secret.ref: secret.revision}}, remaining_seconds=10)
+        core.record_event(
+            context,
+            source_event(source_event_key=f"legacy:memories:{index}", content=f"TEST 旧库里的第 {index} 句话。"),
+            scope_id=scope,
+            remaining_seconds=10,
+        )
+    core.record_event(
+        context,
+        source_event(source_event_key="legacy:memories:9", content=f"删除 {secret.ref}"),
+        scope_id=scope,
+        remaining_seconds=10,
+    )
+    core.forget(
+        context,
+        {
+            "protocol_version": "1.1",
+            "target_refs": [secret.ref],
+            "mode": "delete",
+            "expected_revisions": {secret.ref: secret.revision},
+        },
+        remaining_seconds=10,
+    )
 
     result = import_entry(root=root, entry_id="tianshu", source=old)
     assert result["counts"]["group_blocks_without_sources"] == 0
@@ -365,7 +430,8 @@ def test_what_an_old_store_forgot_stays_forgotten(root, entries):
     # A deletion takes the message that asked for it along; both groups stay blocked under the store's id.
     store = SimpleNamespace(installation_id=read_shared_payload(root)["installation_id"])
     assert set(_query(root, "SELECT group_sha256 FROM source_group_blocks")) == {
-        (group_digest(store, scope, None, None, f"import:tianshu:legacy:memories:{index}"),) for index in (0, 9)}
+        (group_digest(store, scope, None, None, f"import:tianshu:legacy:memories:{index}"),) for index in (0, 9)
+    }
     asked = _provider(tianshu)
     try:
         injected = asked.prefetch("保险柜密码 5520")
@@ -388,15 +454,17 @@ def test_a_legacy_source_id_is_renamed_wherever_the_old_store_names_it(root, ent
         for (table,) in db.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall():
             for column in [row[1] for row in db.execute(f"PRAGMA table_info({table})") if row[2] == "TEXT"]:
                 db.execute(f"UPDATE {table} SET {column}=? WHERE {column}=?", (legacy, said.ref))
-        db.execute("UPDATE source_events SET extra_json=? WHERE event_id=?",
-                   (json.dumps({"TEST_cites": [f"{legacy}@1", "event-driven"]}), legacy))
+        db.execute(
+            "UPDATE source_events SET extra_json=? WHERE event_id=?",
+            (json.dumps({"TEST_cites": [f"{legacy}@1", "event-driven"]}), legacy),
+        )
         db.commit()
 
     import_entry(root=root, entry_id="tianshu", source=old)
     new = _Names("tianshu").event(legacy)
     assert _query(root, f"SELECT count(*) FROM work_items WHERE work_type='embed' AND subject_ref='{new}'") == [(1,)]
     assert _query(root, "SELECT count(*) FROM work_items WHERE subject_ref LIKE 'event-legacy-%'") == [(0,)]
-    (extra,), = _query(root, f"SELECT extra_json FROM source_events WHERE event_id='{new}'")
+    ((extra,),) = _query(root, f"SELECT extra_json FROM source_events WHERE event_id='{new}'")
     assert json.loads(extra)["TEST_cites"] == [f"{new}@1", "event-driven"], "an id-shaped word that is no id stays"
 
 
@@ -416,45 +484,82 @@ def test_tool_outputs_retention_would_expire_at_once_are_not_queued_for_embeddin
     scope = _scope(tianshu)
     core, context, (said,), old = _old_store(tianshu, scope, "TEST 一句用户说过的话。")
     tool = replace(context, actor_origin="tool_observation")
-    outputs = ("Tool execution summary: TEST-list-files (exit 0) — output omitted",
-               "TEST 工具输出：目录里有三个文件。", "TEST 工具输出：目录里有三个文件。")
-    made = [core.record_event(tool, source_event(source_event_key=f"legacy:tools:{index}", origin="tool_observation",
-                                                 role="tool", content=text), scope_id=scope,
-                              remaining_seconds=10).event_refs[0] for index, text in enumerate(outputs)]
+    outputs = (
+        "Tool execution summary: TEST-list-files (exit 0) — output omitted",
+        "TEST 工具输出：目录里有三个文件。",
+        "TEST 工具输出：目录里有三个文件。",
+    )
+    made = [
+        core.record_event(
+            tool,
+            source_event(
+                source_event_key=f"legacy:tools:{index}", origin="tool_observation", role="tool", content=text
+            ),
+            scope_id=scope,
+            remaining_seconds=10,
+        ).event_refs[0]
+        for index, text in enumerate(outputs)
+    ]
     summary, first, repeat = made
-    errored = core.record_event(tool, source_event(
-        source_event_key="legacy:tools:errored", origin="tool_observation", role="tool",
-        content="Tool execution summary (terminal): tool=terminal; output_chars=88; exit_code=1; "
-                "error=TEST-deploy 配置文件不可写; output_preview=omitted"),
-        scope_id=scope, remaining_seconds=10).event_refs[0]
+    errored = core.record_event(
+        tool,
+        source_event(
+            source_event_key="legacy:tools:errored",
+            origin="tool_observation",
+            role="tool",
+            content="Tool execution summary (terminal): tool=terminal; output_chars=88; exit_code=1; "
+            "error=TEST-deploy 配置文件不可写; output_preview=omitted",
+        ),
+        scope_id=scope,
+        remaining_seconds=10,
+    ).event_refs[0]
     with closing(sqlite3.connect(old / "memory.sqlite3")) as db:
         # The history an earlier release left: every source embedded, whatever it was.
         for ref in (said, *made):
-            db.execute("""INSERT INTO work_items(work_type,subject_ref,subject_revision,scope_id,state,available_at)
+            db.execute(
+                """INSERT INTO work_items(work_type,subject_ref,subject_revision,scope_id,state,available_at)
                           VALUES ('embed',?,?,?,'done','2026-09-01T00:00:00Z')
                           ON CONFLICT(work_type,subject_ref,subject_revision) DO UPDATE SET state='done'""",
-                       (ref.ref, ref.revision, scope))
+                (ref.ref, ref.revision, scope),
+            )
         # And indexed every source by its words, the withheld output's summary too (#206).
         db.execute("INSERT OR IGNORE INTO lexical_terms(term) VALUES ('tool'),('summary'),('omitted')")
         for ref in (summary.ref, errored.ref):
-            db.execute("""INSERT OR IGNORE INTO lexical_postings(term_id,source_id) SELECT t.term_id,e.source_id
+            db.execute(
+                """INSERT OR IGNORE INTO lexical_postings(term_id,source_id) SELECT t.term_id,e.source_id
                           FROM lexical_terms t JOIN source_events e ON e.event_id=?
-                          WHERE t.term IN ('tool','summary','omitted')""", (ref,))
+                          WHERE t.term IN ('tool','summary','omitted')""",
+                (ref,),
+            )
         db.commit()
 
     result = import_entry(root=root, entry_id="tianshu", source=old)
     assert result["counts"]["embeddings_retention_would_expire"] == 2, result["counts"]
     assert result["counts"]["withheld_outputs"] == 2, result["counts"]
-    held = "SELECT count(*) FROM lexical_postings p JOIN source_events e ON e.source_id=p.source_id WHERE e.event_id='{}'"
+    held = (
+        "SELECT count(*) FROM lexical_postings p JOIN source_events e ON e.source_id=p.source_id WHERE e.event_id='{}'"
+    )
     names = _Names("tianshu", frozenset({said.ref, errored.ref, *(ref.ref for ref in made)}))
-    queued = {row[0] for row in _query(root, "SELECT subject_ref FROM work_items WHERE work_type='embed' AND state='pending'")}
+    queued = {
+        row[0] for row in _query(root, "SELECT subject_ref FROM work_items WHERE work_type='embed' AND state='pending'")
+    }
     assert queued == {names.event(said.ref), names.event(first.ref)}, queued
     assert set(_query(root, "SELECT source_ref, reason FROM expired_vectors")) == {
-        (names.event(summary.ref), "omitted"), (names.event(repeat.ref), "repeat")}
-    assert _query(root, "SELECT count(*) FROM source_events") == [(5,)], "every source is imported; only embedding is skipped"
+        (names.event(summary.ref), "omitted"),
+        (names.event(repeat.ref), "repeat"),
+    }
+    assert _query(root, "SELECT count(*) FROM source_events") == [(5,)], (
+        "every source is imported; only embedding is skipped"
+    )
     assert _query(root, held.format(names.event(summary.ref))) == [(0,)], "the summary's postings stay behind"
     assert _query(root, held.format(names.event(first.ref))) != [(0,)], "a tool output keeps its words"
-    kept = {row[0] for row in _query(root, f"""SELECT t.term FROM lexical_postings p JOIN lexical_terms t
+    kept = {
+        row[0]
+        for row in _query(
+            root,
+            f"""SELECT t.term FROM lexical_postings p JOIN lexical_terms t
         ON t.term_id=p.term_id JOIN source_events e ON e.source_id=p.source_id
-        WHERE e.event_id='{names.event(errored.ref)}'""")}
+        WHERE e.event_id='{names.event(errored.ref)}'""",
+        )
+    }
     assert kept and "tool" not in kept and "test-deploy" in kept, "a placeholder keeps its error text alone"

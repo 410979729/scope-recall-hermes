@@ -12,6 +12,7 @@ failure is telling you to run.
 All of the logic lives in ``packaging_hooks/module_inventory.py`` so the build
 hook and the tests share it; this file is only the command line.
 """
+
 from __future__ import annotations
 
 import argparse

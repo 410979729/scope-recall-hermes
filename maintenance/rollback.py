@@ -5,6 +5,7 @@ the new store contains a source or deletion event that the old format cannot
 express, this module records durable stop-write protection and leaves both
 stores untouched.
 """
+
 from __future__ import annotations
 
 import json
@@ -58,7 +59,9 @@ def _install_core_restore_fence(current: Path) -> dict[str, str]:
     conn = sqlite3.connect(f"{current.as_uri()}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
     try:
-        meta = conn.execute("SELECT agent_id,installation_id,data_directory,test_mode FROM instance_meta WHERE singleton=1").fetchone()
+        meta = conn.execute(
+            "SELECT agent_id,installation_id,data_directory,test_mode FROM instance_meta WHERE singleton=1"
+        ).fetchone()
         scopes = frozenset(str(row[0]) for row in conn.execute("SELECT scope_id FROM instance_scopes"))
     finally:
         conn.close()
@@ -67,7 +70,9 @@ def _install_core_restore_fence(current: Path) -> dict[str, str]:
     expected_dir = os.path.normcase(os.path.abspath(os.fspath(current.parent)))
     if os.path.normcase(str(meta["data_directory"])) != expected_dir:
         raise RollbackError("Core identity data directory does not match rollback database")
-    binding = InstanceBinding(str(meta["agent_id"]), str(meta["installation_id"]), current.parent, scopes, bool(meta["test_mode"]))
+    binding = InstanceBinding(
+        str(meta["agent_id"]), str(meta["installation_id"]), current.parent, scopes, bool(meta["test_mode"])
+    )
     storage = SQLiteStorage(binding, timeout_seconds=3.0)
     context = TrustedContext(binding, "p15-rollback", scopes, "host_generated")
     authority = InstallationMaintenance(context)
@@ -83,12 +88,18 @@ def _install_core_restore_fence(current: Path) -> dict[str, str]:
             marker_payload = json.loads(restore_marker.read_text(encoding="utf-8"))
         except (OSError, ValueError) as exc:
             raise RollbackError("unreadable existing Core restore fence") from exc
-        if marker_payload.get("expected_ledger_sha256") != digest or marker_payload.get("agent_id") != binding.agent_id or marker_payload.get("installation_id") != binding.installation_id:
+        if (
+            marker_payload.get("expected_ledger_sha256") != digest
+            or marker_payload.get("agent_id") != binding.agent_id
+            or marker_payload.get("installation_id") != binding.installation_id
+        ):
             raise RollbackError("existing Core restore fence does not match latest deletion ledger")
     return {"restore_required_marker": str(restore_marker), "deletion_ledger_sha256": digest}
 
 
-def plan_rollback(current_db: str | Path, old_snapshot: str | Path, *, destination: str | Path | None = None) -> dict[str, Any]:
+def plan_rollback(
+    current_db: str | Path, old_snapshot: str | Path, *, destination: str | Path | None = None
+) -> dict[str, Any]:
     """Inspect a rollback without installing a stop-write fence or copying data."""
     current = _safe_path(current_db, must_exist=True, error_type=RollbackError)
     snapshot = _safe_path(old_snapshot, must_exist=True, error_type=RollbackError)
@@ -100,12 +111,21 @@ def plan_rollback(current_db: str | Path, old_snapshot: str | Path, *, destinati
         target = _safe_path(destination, error_type=RollbackError)
         if target.exists() or target in {current, snapshot}:
             raise RollbackError("rollback output must be a new path")
-    return dict(status="planned", action="stop_write_for_reconciliation" if protects_new_data else "copy_verified_snapshot",
-                current_db=str(current), old_snapshot=str(snapshot), current_counts=counts,
-                old_snapshot_preserved=True, restored=False, requires_apply=True)
+    return dict(
+        status="planned",
+        action="stop_write_for_reconciliation" if protects_new_data else "copy_verified_snapshot",
+        current_db=str(current),
+        old_snapshot=str(snapshot),
+        current_counts=counts,
+        old_snapshot_preserved=True,
+        restored=False,
+        requires_apply=True,
+    )
 
 
-def rollback_to_verified_snapshot(current_db: str | Path, old_snapshot: str | Path, *, destination: str | Path | None = None) -> dict[str, Any]:
+def rollback_to_verified_snapshot(
+    current_db: str | Path, old_snapshot: str | Path, *, destination: str | Path | None = None
+) -> dict[str, Any]:
     """Return a safe rollback result without overwriting either input.
 
     An old-format snapshot is usable only when the new database has no source
@@ -132,18 +152,32 @@ def rollback_to_verified_snapshot(current_db: str | Path, old_snapshot: str | Pa
         marker = current.with_name(current.name + ".stop-write.json")
         if marker.exists() or marker.is_symlink():
             raise RollbackError("stop-write marker already exists")
-        receipt.update(status="stop_write_protection_required", reason="old format cannot losslessly represent new sources/deletions/permissions", **fence)
+        receipt.update(
+            status="stop_write_protection_required",
+            reason="old format cannot losslessly represent new sources/deletions/permissions",
+            **fence,
+        )
         _safe_path(marker, error_type=RollbackError)
         with marker.open("x", encoding="utf-8") as stream:
             stream.write(json.dumps(receipt, ensure_ascii=False, sort_keys=True, indent=2) + "\n")
         receipt["stop_write_marker"] = str(marker)
         return receipt
-    target = _safe_path(destination, error_type=RollbackError) if destination is not None else current.with_name(current.stem + ".rolledback.sqlite3")
+    target = (
+        _safe_path(destination, error_type=RollbackError)
+        if destination is not None
+        else current.with_name(current.stem + ".rolledback.sqlite3")
+    )
     if target.exists() or target.is_symlink():
         raise RollbackError("refusing to overwrite rollback output")
     target.parent.mkdir(parents=True, exist_ok=True)
     quick = _verified_snapshot_copy(snapshot, target)
-    receipt.update(status="verified_old_snapshot_available", restored=True, snapshot_quick_check=quick, rollback_output=str(target), rollback_output_sha256=_sha256(target))
+    receipt.update(
+        status="verified_old_snapshot_available",
+        restored=True,
+        snapshot_quick_check=quick,
+        rollback_output=str(target),
+        rollback_output_sha256=_sha256(target),
+    )
     return receipt
 
 

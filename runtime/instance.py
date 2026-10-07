@@ -10,6 +10,7 @@ demonstrably loaded the package and bound itself to this instance, the write
 is one small file that can neither block nor fail the caller, and it acquires
 no lock and opens no store.
 """
+
 from __future__ import annotations
 
 from dataclasses import MISSING, dataclass, field, fields, replace
@@ -44,9 +45,7 @@ from .vector_retention import expire_if_due
 from .vector_upkeep import backfill_if_due, compact_if_due, index_if_due, respace_if_due
 
 
-_RUNTIME_ORIGINS: frozenset[Origin] = frozenset(
-    {"human_direct", "tool_observation", "external_document", "imported"}
-)
+_RUNTIME_ORIGINS: frozenset[Origin] = frozenset({"human_direct", "tool_observation", "external_document", "imported"})
 #: Claude Code runs the Codex adapter as an entry of a shared store (``adapters/codex/config.py``).
 _HOST_ADAPTERS = frozenset({"hermes", "codex", "claude-code", "workbuddy", "dsh"})
 _VECTOR_BACKENDS = frozenset({"lancedb", "sqlite-bruteforce"})
@@ -167,8 +166,11 @@ class RuntimeInstanceConfig:
         if not isinstance(self.binding, InstanceBinding):
             raise ValueError("binding")
         identifier("session_id", self.session_id)
-        if (type(self.allowed_scope_ids) is not frozenset or not self.allowed_scope_ids
-                or not self.allowed_scope_ids <= self.binding.scope_ids):
+        if (
+            type(self.allowed_scope_ids) is not frozenset
+            or not self.allowed_scope_ids
+            or not self.allowed_scope_ids <= self.binding.scope_ids
+        ):
             raise ContractError("ACCESS_DENIED")
         member("actor_origin", self.actor_origin, _RUNTIME_ORIGINS)
         identifier("project_id", self.project_id, required=False)
@@ -253,7 +255,8 @@ class RuntimeInstanceConfig:
         vector_raw = raw.get("vector")
         plain = {
             item.name: raw.get(item.name, None if item.default is MISSING else item.default)
-            for item in fields(cls) if item.name not in _COMPOSED_FIELDS
+            for item in fields(cls)
+            if item.name not in _COMPOSED_FIELDS
         }
         return cls(
             binding=binding,
@@ -305,8 +308,9 @@ class _QueryEmbedding:
                     raise TimeoutError("query embedding stage deadline exhausted")
                 # A connection that failed in milliseconds costs the whole
                 # semantic channel otherwise; a rejected request is not retried.
-                self._vector = embed_with_one_retry(lambda seconds: embed(self.query, seconds),
-                                                    budget_seconds=budget, remaining=deadline.remaining)
+                self._vector = embed_with_one_retry(
+                    lambda seconds: embed(self.query, seconds), budget_seconds=budget, remaining=deadline.remaining
+                )
         except BaseException as exc:  # the recall that waits for it reports it
             self._error = exc
         finally:
@@ -360,14 +364,15 @@ class _LazyVectorPort:
         threading.Thread(target=pending.run, args=(embed,), name="scope-recall-query-embedding", daemon=True).start()
         return pending
 
-    def search(self, context: SearchContext, *, limit: int, remaining_seconds: float,
-               prefetched: _QueryEmbedding | None = None):
+    def search(
+        self, context: SearchContext, *, limit: int, remaining_seconds: float, prefetched: _QueryEmbedding | None = None
+    ):
         if not isinstance(context, SearchContext):
             raise TypeError("context must be SearchContext")
         if type(limit) is not int or not 1 <= limit <= 200:
-            raise ValueError('limit must be between 1 and 200')
+            raise ValueError("limit must be between 1 and 200")
         if type(remaining_seconds) not in (int, float) or not math.isfinite(float(remaining_seconds)):
-            raise ValueError('remaining_seconds must be finite')
+            raise ValueError("remaining_seconds must be finite")
         if prefetched is not None and prefetched.query != context.query:
             prefetched = None
         now = time.monotonic()
@@ -394,19 +399,25 @@ class _LazyVectorPort:
                 embedding_remaining = deadline.remaining()
                 if embedding_remaining <= 0:
                     raise TimeoutError("query embedding stage deadline exhausted")
-                prepared.append((context.query, embed_with_one_retry(
-                    lambda seconds: embed(context.query, seconds),
-                    budget_seconds=embedding_remaining,
-                    remaining=deadline.remaining,
-                )))
+                prepared.append(
+                    (
+                        context.query,
+                        embed_with_one_retry(
+                            lambda seconds: embed(context.query, seconds),
+                            budget_seconds=embedding_remaining,
+                            remaining=deadline.remaining,
+                        ),
+                    )
+                )
                 return True
             except Exception as exc:
                 failed.append(exc)
                 return False
 
         with using_request_deadline(deadline):
-            port = self._instance._ensure_vector_port(allow_create=False, deadline=effective_deadline,
-                                                      during_open=embed_while_opening)
+            port = self._instance._ensure_vector_port(
+                allow_create=False, deadline=effective_deadline, during_open=embed_while_opening
+            )
             if port is None:
                 return ()
             if failed:
@@ -507,8 +518,9 @@ class RuntimeInstance:
         if self._closed:
             raise RuntimeError("runtime_instance_closed")
 
-    def _ensure_vector_port(self, *, allow_create: bool = False, deadline: float | None = None,
-                            during_open=None) -> Any:
+    def _ensure_vector_port(
+        self, *, allow_create: bool = False, deadline: float | None = None, during_open=None
+    ) -> Any:
         """Open the companion store once and compose the Core ports over it.
 
         Query paths pass ``allow_create=False`` and may only open an existing
@@ -519,8 +531,7 @@ class RuntimeInstance:
         self._ensure_open()
         if self._vector_store is not None:
             if getattr(self._vector_store, "requires_reopen", False):
-                _open_store(self._vector_store, allow_create=allow_create, deadline=deadline,
-                            during_open=during_open)
+                _open_store(self._vector_store, allow_create=allow_create, deadline=deadline, during_open=during_open)
             return self._vector_port
         if self.config.vector is None or self._vector_factory is None:
             return None
@@ -562,8 +573,11 @@ class RuntimeInstance:
             # touches only the codes of the rows its filter keeps.  Filtered on the first scope's partition, which
             # held no rows for any entry of the shared store, the search touched 26 MB of the 306 MB the next recall
             # paged back in once the helper's memory was trimmed (review of 3.5.0rc2).  What it finds is not looked at.
-            search_scopes([1.0] + [0.0] * (self.config.vector.dimensions - 1),
-                          scope_ids=list(search_partitions(trusted, self.config.embedding_space_id())), limit=1)
+            search_scopes(
+                [1.0] + [0.0] * (self.config.vector.dimensions - 1),
+                scope_ids=list(search_partitions(trusted, self.config.embedding_space_id())),
+                limit=1,
+            )
         return True
 
     def warm_query_embedding(self, seconds: float) -> bool:
@@ -583,8 +597,11 @@ class RuntimeInstance:
         now = time.monotonic()
         deadline = RequestDeadline.from_absolute(now + float(seconds), now=now)
         with using_request_deadline(deadline):
-            embed_with_one_retry(lambda budget: embed("scope recall warm-up", budget),
-                                 budget_seconds=deadline.remaining(), remaining=deadline.remaining)
+            embed_with_one_retry(
+                lambda budget: embed("scope recall warm-up", budget),
+                budget_seconds=deadline.remaining(),
+                remaining=deadline.remaining,
+            )
         return True
 
     def _compose_ports(self, resource: Any) -> None:
@@ -603,20 +620,26 @@ class RuntimeInstance:
             source_embedding = getattr(self.auxiliary, "source_embedding", None)
             if source_embedding is not None:
                 self._default_embed = LanceEmbedPort(
-                    resource, source_embedding, agent_id=binding.agent_id,
-                    installation_id=binding.installation_id, embedding_space=space_id,
+                    resource,
+                    source_embedding,
+                    agent_id=binding.agent_id,
+                    installation_id=binding.installation_id,
+                    embedding_space=space_id,
                 )
         self._default_purge = LancePurgePort(
-            resource, embedding_spaces=(space_id,),
-            agent_id=binding.agent_id, installation_id=binding.installation_id,
+            resource,
+            embedding_spaces=(space_id,),
+            agent_id=binding.agent_id,
+            installation_id=binding.installation_id,
         )
         self._vector_store = resource
         self._vector_port = port
 
     def status(self, *, include_admission: bool = True, include_queue_age: bool = True) -> Any:
         self._ensure_open()
-        return self.core.status(self.config.context(), include_admission=include_admission,
-                                include_queue_age=include_queue_age)
+        return self.core.status(
+            self.config.context(), include_admission=include_admission, include_queue_age=include_queue_age
+        )
 
     def memory_epoch(self) -> int:
         """Read the authority fence without counting the backlog.
@@ -631,15 +654,26 @@ class RuntimeInstance:
         return self.core.memory_epoch(self.config.context())
 
     def recall(self, request: Mapping[str, Any], *, current_source_refs: tuple[str, ...] = ()) -> Any:
-        return self.core.recall(self.config.context(), dict(request), current_source_refs=current_source_refs,
-                                deadline_seconds=self.config.request_seconds)
+        return self.core.recall(
+            self.config.context(),
+            dict(request),
+            current_source_refs=current_source_refs,
+            deadline_seconds=self.config.request_seconds,
+        )
 
-    def drain(self, *, embed: Any = None, purge: Any = None, consolidation: Any = None,
-              max_items: int | None = None, purge_only: bool = False,
-              remaining_seconds: float | None = None) -> Any:
+    def drain(
+        self,
+        *,
+        embed: Any = None,
+        purge: Any = None,
+        consolidation: Any = None,
+        max_items: int | None = None,
+        purge_only: bool = False,
+        remaining_seconds: float | None = None,
+    ) -> Any:
         self._ensure_open()
         budget = self.config.drain_seconds if remaining_seconds is None else remaining_seconds
-        strict_float("remaining_seconds", budget, minimum=.001, maximum=self.config.drain_seconds)
+        strict_float("remaining_seconds", budget, minimum=0.001, maximum=self.config.drain_seconds)
         deadline = time.monotonic() + budget
         ingress_gaps = self._replay_ingress(budget)
         vector_gaps = self._open_vector_for_drain(deadline, budget)
@@ -648,20 +682,29 @@ class RuntimeInstance:
         # budget is gone by the time the queue drains, so upkeep at the end is
         # upkeep that only ever runs when it is not needed.
         self.vector_retention = expire_if_due(
-            self._vector_store, self.config, self.core.storage, self.config.context(),
+            self._vector_store,
+            self.config,
+            self.core.storage,
+            self.config.context(),
             available_seconds=max(0.0, deadline - time.monotonic()),
         )
         expired = (self.vector_retention or {}).get("expired", 0)
         self.vector_compaction = compact_if_due(
-            self._vector_store, self.config.vector,
+            self._vector_store,
+            self.config.vector,
             available_seconds=max(0.0, deadline - time.monotonic()),
             reason=f"vectors_expired:{expired}" if expired else None,
         )
         # A store this pass could not open says nothing about its index; a look now would be recorded as a
         # failure and put off the build for hours.
-        self.vector_index = None if vector_gaps else index_if_due(
-            self._vector_store, self.config.vector,
-            available_seconds=max(0.0, deadline - time.monotonic()),
+        self.vector_index = (
+            None
+            if vector_gaps
+            else index_if_due(
+                self._vector_store,
+                self.config.vector,
+                available_seconds=max(0.0, deadline - time.monotonic()),
+            )
         )
         from ..core.worker import WorkerConfig, drain_worker
         from .model_budget import provider_holds
@@ -674,18 +717,37 @@ class RuntimeInstance:
         # a pass of them is kept waiting: evaluations share every pass, and the backfill still moves when they
         # cannot be done.  One without an evaluator, under a provider hold, or in a pass that only purges does not
         # count.
-        evaluations = frozenset() if purge_only or candidate is None \
+        evaluations = (
+            frozenset()
+            if purge_only or candidate is None
             else frozenset({"evaluate_candidate"}) - frozenset(self.provider_holds)
+        )
         page = self.config.max_items if max_items is None else max_items
         embeds = not vector_gaps and (embed if embed is not None else self._default_embed) is not None
-        self.embed_backfill = None if not embeds \
-            else backfill_if_due(self.core.storage, self.config.context(), self.config.vector, yield_to=evaluations,
-                                 yield_ceiling=min(IMPORT_EMBED_QUEUE_CEILING, max(1, page // 2)))
+        self.embed_backfill = (
+            None
+            if not embeds
+            else backfill_if_due(
+                self.core.storage,
+                self.config.context(),
+                self.config.vector,
+                yield_to=evaluations,
+                yield_ceiling=min(IMPORT_EMBED_QUEUE_CEILING, max(1, page // 2)),
+            )
+        )
         # An operator's re-embed run (``respace-embeddings``) goes on behind the import backfill, under the same
         # queue ceiling.  A run into another space, or a page that failed, is said where the doctor reads it.
-        self.embed_respace = None if not embeds or purge_only \
-            else respace_if_due(self.core.storage, self.config.context(), self.config.embedding_space_id(),
-                                yield_to=evaluations, yield_ceiling=min(IMPORT_EMBED_QUEUE_CEILING, max(1, page // 2)))
+        self.embed_respace = (
+            None
+            if not embeds or purge_only
+            else respace_if_due(
+                self.core.storage,
+                self.config.context(),
+                self.config.embedding_space_id(),
+                yield_to=evaluations,
+                yield_ceiling=min(IMPORT_EMBED_QUEUE_CEILING, max(1, page // 2)),
+            )
+        )
         outcome = (self.embed_respace or {}).get("outcome")
         if outcome == "failed":
             self.background_gaps = (*self.background_gaps, f"embedding_respace_failed:{self.embed_respace['error']}")
@@ -695,18 +757,22 @@ class RuntimeInstance:
         effective_embed = embed if embed is not None else self._default_embed
         effective_purge = purge if purge is not None else self._default_purge
         return drain_worker(
-            self.core.storage, self.core.clock, self.config.context(),
-            config=WorkerConfig(owner_id=self.config.owner_id,
-                                max_items=self.config.max_items if max_items is None else max_items,
-                                lease_seconds=self.config.lease_seconds,
-                                auto_retry_cooldown_seconds=self.config.auto_retry_cooldown_seconds,
-                                max_auto_recoveries=self.config.max_auto_recoveries,
-                                purge_only=purge_only,
-                                admission_policy=self.core.config.admission_policy,
-                                # The bound the model and embedding ports below are clamped to.
-                                request_seconds=limit,
-                                held_work_types=frozenset(self.provider_holds)),
-            remaining_seconds=max(.001, deadline - time.monotonic()),
+            self.core.storage,
+            self.core.clock,
+            self.config.context(),
+            config=WorkerConfig(
+                owner_id=self.config.owner_id,
+                max_items=self.config.max_items if max_items is None else max_items,
+                lease_seconds=self.config.lease_seconds,
+                auto_retry_cooldown_seconds=self.config.auto_retry_cooldown_seconds,
+                max_auto_recoveries=self.config.max_auto_recoveries,
+                purge_only=purge_only,
+                admission_policy=self.core.config.admission_policy,
+                # The bound the model and embedding ports below are clamped to.
+                request_seconds=limit,
+                held_work_types=frozenset(self.provider_holds),
+            ),
+            remaining_seconds=max(0.001, deadline - time.monotonic()),
             consolidation=model,
             candidate=candidate,
             embed=_BoundedEmbed(effective_embed, limit) if effective_embed is not None else None,
@@ -722,9 +788,11 @@ class RuntimeInstance:
             context = self.config.context()
             if self._ingress_authorizer is None:
                 return self._unauthorized_ingress_gaps(context, budget)
-            options = dict(authorize=self._ingress_authorizer,
-                           admission_policy=self.core.config.admission_policy,
-                           remaining_seconds=min(2.0, budget / 4))
+            options = dict(
+                authorize=self._ingress_authorizer,
+                admission_policy=self.core.config.admission_policy,
+                remaining_seconds=min(2.0, budget / 4),
+            )
         except (ContractError, OSError, RuntimeError, ValueError):
             return (INGRESS_PENDING_GAP,)
         # A key-collided capture is invisible to the first replay, which only
@@ -745,12 +813,16 @@ class RuntimeInstance:
         """Without an authorizer, pending ingress can only be reported, not replayed."""
         scopes = tuple(sorted(context.allowed_scope_ids))
         with self.core.storage.read(context, remaining_seconds=min(1.0, budget / 8)) as tx:
-            pending = tx._check().execute(
-                f"""SELECT 1 FROM capture_inbox
-                WHERE scope_id IN ({','.join('?' for _ in scopes)})
+            pending = (
+                tx._check()
+                .execute(
+                    f"""SELECT 1 FROM capture_inbox
+                WHERE scope_id IN ({",".join("?" for _ in scopes)})
                   AND project_id IS ? AND branch_id IS ? LIMIT 1""",
-                (*scopes, context.project_id, context.branch_id),
-            ).fetchone()
+                    (*scopes, context.project_id, context.branch_id),
+                )
+                .fetchone()
+            )
         if pending is None:
             return ()
         return ("capture_gap:durable_ingress_authorizer_unconfigured", "capture_gap:durable_ingress_pending")
@@ -793,10 +865,7 @@ class RuntimeInstance:
                 port = port.for_pass()
             model = build_consolidation_model(port)
         limit = self.config.request_seconds
-        candidate = (
-            _BoundedCandidate(model, limit)
-            if callable(getattr(model, "evaluate_candidate", None)) else None
-        )
+        candidate = _BoundedCandidate(model, limit) if callable(getattr(model, "evaluate_candidate", None)) else None
         return (_BoundedConsolidation(model, limit) if model is not None else None), candidate
 
     def retry_failed(
@@ -820,9 +889,7 @@ class RuntimeInstance:
             raise ContractError("IDENTITY_UNBOUND")
         if not maintenance_context.allowed_scope_ids <= self.config.allowed_scope_ids:
             raise ContractError("ACCESS_DENIED")
-        with self.core.storage.write(
-            maintenance_context, remaining_seconds=self.config.request_seconds
-        ) as tx:
+        with self.core.storage.write(maintenance_context, remaining_seconds=self.config.request_seconds) as tx:
             return tx.work.operator_retry_failed(
                 work_ids,
                 now=utc_now(),
@@ -903,8 +970,16 @@ class _BoundedEmbed(_Bounded):
     # document per request and one commit per vector as if the capability did
     # not exist.  That is exactly how rc40's batching reached production doing
     # nothing.
-    methods = ("prepare_source", "prepare_sources", "publish_source", "publish_sources",
-               "prepare_claim", "prepare_claims", "publish_claim", "publish_claims")
+    methods = (
+        "prepare_source",
+        "prepare_sources",
+        "publish_source",
+        "publish_sources",
+        "prepare_claim",
+        "prepare_claims",
+        "publish_claim",
+        "publish_claims",
+    )
 
 
 class _BoundedPurge(_Bounded):

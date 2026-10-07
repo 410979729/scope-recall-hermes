@@ -1,4 +1,5 @@
 """Attachment authorization and bounded worker shutdown contracts."""
+
 from __future__ import annotations
 
 import time

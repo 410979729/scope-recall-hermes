@@ -1,4 +1,5 @@
 """Synthetic regressions for candidate evidence selection, not admission."""
+
 from __future__ import annotations
 
 import json
@@ -8,22 +9,46 @@ import pytest
 
 from scope_recall.contracts import ContractError
 from scope_recall.core.candidate_lifecycle import (
-    CandidateSnapshot, candidate_evaluation_messages, evidence_window,
+    CandidateSnapshot,
+    candidate_evaluation_messages,
+    evidence_window,
 )
 from scope_recall.core.storage import StoredSource
 
 
 def _source(content, *, ref="src:TEST-window", revision=1):
-    return StoredSource(ref, revision, "TEST-scope", "TEST-session", None, None,
-                        {"content": content, "origin": "tool_observation", "occurred_at": "2026-01-01T00:00:00Z"},
-                        "TEST-hash", False)
+    return StoredSource(
+        ref,
+        revision,
+        "TEST-scope",
+        "TEST-session",
+        None,
+        None,
+        {"content": content, "origin": "tool_observation", "occurred_at": "2026-01-01T00:00:00Z"},
+        "TEST-hash",
+        False,
+    )
 
 
 def _candidate(source, spans):
-    return CandidateSnapshot("clm:TEST-window", 1, source.scope_id, None, None, "proposed",
-                             {"kind": "fact", "subject": "TEST-build", "predicate": "result",
-                              "value_text": "ready", "evidence_spans": spans},
-                             "pending_evaluation", "new_evidence", "r1-candidate-v1")
+    return CandidateSnapshot(
+        "clm:TEST-window",
+        1,
+        source.scope_id,
+        None,
+        None,
+        "proposed",
+        {
+            "kind": "fact",
+            "subject": "TEST-build",
+            "predicate": "result",
+            "value_text": "ready",
+            "evidence_spans": spans,
+        },
+        "pending_evaluation",
+        "new_evidence",
+        "r1-candidate-v1",
+    )
 
 
 def _span(source, quote):
@@ -42,18 +67,25 @@ def test_saved_exact_quote_wins_over_an_earlier_repeated_value():
     record = _record(candidate, source)
     assert quote in record["content"]
     window = record["source_window"]
-    assert source.event["content"][window["start"]:window["end"]] == record["content"]
+    assert source.event["content"][window["start"] : window["end"]] == record["content"]
     assert window["coverage"] == "fragment_only"
     assert window["total"] == len(source.event["content"])
     assert len(record["content"]) <= 3000 + len(quote)
     assert candidate.fact_state == "proposed"
 
 
-@pytest.mark.parametrize("change", [
-    {"source_ref": "src:TEST-other"}, {"source_revision": 2},
-    {"quote": "not in the source"}, {"quote": "TEST build result ready"},
-    {"quote": ""}, {"quote": None}, {"quote": 42},
-])
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"source_ref": "src:TEST-other"},
+        {"source_revision": 2},
+        {"quote": "not in the source"},
+        {"quote": "TEST build result ready"},
+        {"quote": ""},
+        {"quote": None},
+        {"quote": 42},
+    ],
+)
 def test_unverified_span_falls_back_to_the_existing_value_window(change):
     quote = "TEST-build result ready"
     source = _source("ready" + "x" * 4000 + quote + "z" * 4000)
@@ -77,7 +109,7 @@ def test_multiple_spans_choose_first_valid_quote_without_joining_distant_fragmen
     assert first in record["content"] and second not in record["content"]
     assert len(record["content"]) == 3000 + len(first)
     window = record["source_window"]
-    assert record["content"] == source.event["content"][window["start"]:window["end"]]
+    assert record["content"] == source.event["content"][window["start"] : window["end"]]
 
 
 def test_quote_matching_is_per_supplied_source_version():
@@ -154,8 +186,13 @@ def test_window_selection_does_not_mutate_candidate_identity_or_source():
     assert "Return zero claim_proposals when evidence is insufficient" in messages[0]["content"]
     # The model-safe principal rule also survives selecting a quote window.
     principal = "TEST-private-principal"
-    identified = replace(source, event={**source.event, "source_principal": {
-        "kind": "human", "resolution": "verified", "principal_ref": principal}})
+    identified = replace(
+        source,
+        event={
+            **source.event,
+            "source_principal": {"kind": "human", "resolution": "verified", "principal_ref": principal},
+        },
+    )
     human = replace(candidate, payload={**candidate.payload, "subject": principal})
     messages = candidate_evaluation_messages(human, (identified,))
     assert principal not in "".join(message["content"] for message in messages)

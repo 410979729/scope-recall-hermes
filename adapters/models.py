@@ -1,4 +1,5 @@
 """Small production auxiliary-model adapters with explicit two-route configuration."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -98,9 +99,11 @@ def provider_refusal_code(raw: object) -> str | None:
     if not isinstance(payload, dict):
         return None
     error = payload.get("error")
-    for candidate in (error.get("type") if isinstance(error, dict) else None,
-                      error.get("code") if isinstance(error, dict) else None,
-                      payload.get("type")):
+    for candidate in (
+        error.get("type") if isinstance(error, dict) else None,
+        error.get("code") if isinstance(error, dict) else None,
+        payload.get("type"),
+    ):
         if type(candidate) is str and _REFUSAL_CODE.match(candidate) and not contains_secret_like_text(candidate):
             return candidate
     return None
@@ -123,10 +126,17 @@ _HTTP_WORKER_STDOUT_MARGIN = 8 * 1024
 _HTTP_WORKER_MAX_REQUEST_BYTES = 3 * 1024 * 1024
 _HTTP_WORKER_CLEANUP_GRACE_SECONDS = 0.2
 #: Replies the worker may send; anything else is a protocol fault, not a provider answer.
-_HTTP_WORKER_ERRORS = frozenset({
-    "endpoint_invalid", "http_redirect", "http_protocol", "network_error",
-    "request_limit", "response_limit", "timeout",
-})
+_HTTP_WORKER_ERRORS = frozenset(
+    {
+        "endpoint_invalid",
+        "http_redirect",
+        "http_protocol",
+        "network_error",
+        "request_limit",
+        "response_limit",
+        "timeout",
+    }
+)
 
 
 def _cleanup_http_worker(process: subprocess.Popen[bytes] | None) -> None:
@@ -174,8 +184,9 @@ def _hidden_window() -> dict[str, Any]:
     return {"startupinfo": startupinfo, "creationflags": getattr(subprocess, "CREATE_NO_WINDOW", 0)}
 
 
-def _worker_request(url: str, *, body: bytes, headers: Mapping[str, str], budget: float,
-                    max_response_bytes: int) -> bytes:
+def _worker_request(
+    url: str, *, body: bytes, headers: Mapping[str, str], budget: float, max_response_bytes: int
+) -> bytes:
     """The one request line the worker accepts, validated before any process starts."""
     parsed = urllib.parse.urlparse(url)
     if parsed.scheme != "https" or not parsed.hostname:
@@ -227,8 +238,11 @@ def _worker_reply(stdout: bytes, max_response_bytes: int) -> tuple[int, bytes]:
             raise AuxiliaryModelError("transport_worker_protocol")
         return status, response_body
     error_type = result.get("error")
-    if (set(result) - {"ok", "error", "status", "body_b64"}
-            or type(error_type) is not str or error_type not in _HTTP_WORKER_ERRORS):
+    if (
+        set(result) - {"ok", "error", "status", "body_b64"}
+        or type(error_type) is not str
+        or error_type not in _HTTP_WORKER_ERRORS
+    ):
         raise AuxiliaryModelError("transport_worker_protocol")
     raise AuxiliaryModelError(error_type, detail=None if status is None else str(status))
 
@@ -238,6 +252,7 @@ class HttpsTransport:
 
     def __init__(self, *, persistent: bool = False):
         from ..runtime.http_session import HttpWorkerSession
+
         self._session = HttpWorkerSession() if persistent else None
         self._post_lock = threading.Lock()
 
@@ -249,19 +264,25 @@ class HttpsTransport:
         if self._session is not None:
             self._session.discard()
 
-    def post(self, url: str, *, body: bytes, headers: Mapping[str, str],
-             timeout_seconds: float, max_response_bytes: int) -> tuple[int, bytes]:
+    def post(
+        self, url: str, *, body: bytes, headers: Mapping[str, str], timeout_seconds: float, max_response_bytes: int
+    ) -> tuple[int, bytes]:
         """Bound the entire exchange, including waiting for a query session."""
         if self._session is None:
-            return self._post(url, body=body, headers=headers,
-                              timeout_seconds=timeout_seconds, max_response_bytes=max_response_bytes)
+            return self._post(
+                url, body=body, headers=headers, timeout_seconds=timeout_seconds, max_response_bytes=max_response_bytes
+            )
         deadline = time.monotonic() + validate_timeout_seconds(timeout_seconds)
         if not self._post_lock.acquire(timeout=max(0, _remaining_seconds(deadline))):
             raise AuxiliaryModelError("timeout")
         try:
-            return self._post(url, body=body, headers=headers,
-                              timeout_seconds=_remaining_seconds(deadline),
-                              max_response_bytes=max_response_bytes)
+            return self._post(
+                url,
+                body=body,
+                headers=headers,
+                timeout_seconds=_remaining_seconds(deadline),
+                max_response_bytes=max_response_bytes,
+            )
         except BaseException:
             self._discard_session()
             raise
@@ -280,8 +301,9 @@ class HttpsTransport:
         """Build the request line, exchange it with the helper, decode its reply."""
         budget = validate_timeout_seconds(timeout_seconds)
         deadline = time.monotonic() + budget
-        request_bytes = _worker_request(url, body=body, headers=headers, budget=budget,
-                                        max_response_bytes=max_response_bytes)
+        request_bytes = _worker_request(
+            url, body=body, headers=headers, budget=budget, max_response_bytes=max_response_bytes
+        )
         command = [sys.executable, "-I", "-B", str(_HTTP_WORKER_PATH)]
         max_stdout = (max_response_bytes * 4) // 3 + _HTTP_WORKER_STDOUT_MARGIN
         process: subprocess.Popen[bytes] | None = None
@@ -290,11 +312,18 @@ class HttpsTransport:
                 raise AuxiliaryModelError("timeout")
             if self._session is not None:
                 stdout, stderr = self._session.exchange(
-                    command, request_bytes, deadline=deadline, max_stdout=max_stdout, **_hidden_window(),
+                    command,
+                    request_bytes,
+                    deadline=deadline,
+                    max_stdout=max_stdout,
+                    **_hidden_window(),
                 )
             else:
                 process = subprocess.Popen(
-                    command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    command,
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
                     **_hidden_window(),
                 )
                 remaining = _remaining_seconds(deadline)
@@ -369,8 +398,12 @@ def validate_chat_messages(messages: object, *, roles: frozenset[str] = _CHAT_RO
     if not isinstance(messages, list) or not messages:
         raise AuxiliaryModelError("input_invalid")
     for message in messages:
-        if (not isinstance(message, dict) or set(message) != {"role", "content"}
-                or message["role"] not in roles or type(message["content"]) is not str):
+        if (
+            not isinstance(message, dict)
+            or set(message) != {"role", "content"}
+            or message["role"] not in roles
+            or type(message["content"]) is not str
+        ):
             raise AuxiliaryModelError("input_invalid")
         _reject_secrets(message["content"])
 
@@ -459,15 +492,18 @@ def _cached_prompt_tokens(usage: Mapping[str, Any]) -> int | None:
     otherwise invisible from here.
     """
     details = usage.get("prompt_tokens_details")
-    for value in (usage.get("prompt_cache_hit_tokens"),
-                  details.get("cached_tokens") if isinstance(details, dict) else None):
+    for value in (
+        usage.get("prompt_cache_hit_tokens"),
+        details.get("cached_tokens") if isinstance(details, dict) else None,
+    ):
         if type(value) is int and 0 <= value <= usage["prompt_tokens"]:
             return value
     return None
 
 
-def build_gemini_embed_body(encoded_text: str | Sequence[str], *, model: str | None = None,
-                            dimensions: int | None = None) -> bytes:
+def build_gemini_embed_body(
+    encoded_text: str | Sequence[str], *, model: str | None = None, dimensions: int | None = None
+) -> bytes:
     """One ``batchEmbedContents`` request for one or many already-encoded texts.
 
     The endpoint is a batch endpoint and always was; sending arrays of one is
@@ -514,8 +550,9 @@ def request_chunks(texts: Sequence[str], *, body: Callable[[Sequence[str]], byte
     return chunks
 
 
-def build_openai_embed_body(encoded_text: str | Sequence[str], *, model: str, dimensions: int,
-                            dimensions_field: str = "dimensions") -> bytes:
+def build_openai_embed_body(
+    encoded_text: str | Sequence[str], *, model: str, dimensions: int, dimensions_field: str = "dimensions"
+) -> bytes:
     """The /v1/embeddings request shape MiniMax, Qwen and OpenAI all accept.
 
     The width is sent because the space digest commits to one: a provider that
@@ -554,8 +591,9 @@ def _embedding_vector(payload: Mapping[str, Any], *, dialect: str, dimensions: i
     return validate_embedding_vector(data[0].get("embedding"), dimensions=dimensions)
 
 
-def _embedding_vectors(payload: Mapping[str, Any], *, dialect: str, dimensions: int,
-                       count: int) -> tuple[tuple[float, ...], ...]:
+def _embedding_vectors(
+    payload: Mapping[str, Any], *, dialect: str, dimensions: int, count: int
+) -> tuple[tuple[float, ...], ...]:
     """Exactly ``count`` vectors, in the order the texts were sent.
 
     A provider that returns a different number has not answered this request:
@@ -582,8 +620,9 @@ def _embedding_vectors(payload: Mapping[str, Any], *, dialect: str, dimensions: 
     return tuple(validate_embedding_vector(row.get("embedding"), dimensions=dimensions) for row in data)
 
 
-def parse_embedding_batch_response(payload: object, *, dialect: str, dimensions: int,
-                                   count: int) -> tuple[tuple[tuple[float, ...], ...], dict[str, int] | None]:
+def parse_embedding_batch_response(
+    payload: object, *, dialect: str, dimensions: int, count: int
+) -> tuple[tuple[tuple[float, ...], ...], dict[str, int] | None]:
     """Read ``count`` vectors, and any usage the provider reported, from one response."""
     if not isinstance(payload, dict):
         raise AuxiliaryModelError("unsupported_response_shape")
@@ -591,7 +630,9 @@ def parse_embedding_batch_response(payload: object, *, dialect: str, dimensions:
     return _embedding_vectors(payload, dialect=dialect, dimensions=dimensions, count=count), usage
 
 
-def parse_embedding_response(payload: object, *, dialect: str, dimensions: int) -> tuple[tuple[float, ...], dict[str, int] | None]:
+def parse_embedding_response(
+    payload: object, *, dialect: str, dimensions: int
+) -> tuple[tuple[float, ...], dict[str, int] | None]:
     """Read one vector, and any usage the provider reported, from a response.
 
     The two dialects differ only here and in the request body; reservation,
@@ -683,8 +724,11 @@ def _opencode_go_endpoint(endpoint: str) -> bool:
     if type(endpoint) is not str:
         return False
     parsed = urllib.parse.urlsplit(endpoint)
-    return (parsed.scheme == "https" and parsed.hostname == "opencode.ai"
-            and (parsed.path == "/zen/go" or parsed.path.startswith("/zen/go/")))
+    return (
+        parsed.scheme == "https"
+        and parsed.hostname == "opencode.ai"
+        and (parsed.path == "/zen/go" or parsed.path.startswith("/zen/go/"))
+    )
 
 
 def _opencode_session_id() -> str:
@@ -762,8 +806,10 @@ class EmbeddingRouteConfig:
         if self.model is None:
             return dict(EMBEDDING_SPACE)
         return build_embedding_space(
-            model=self.model, dimensions=self.dimensions,
-            endpoint=self.endpoint, dialect=self.dialect,
+            model=self.model,
+            dimensions=self.dimensions,
+            endpoint=self.endpoint,
+            dialect=self.dialect,
         )
 
     def wire_dialect(self) -> str:
@@ -802,9 +848,11 @@ class ConsolidationRouteConfig:
             raise ValueError("thinking")
         object.__setattr__(self, "response_format", _validate_consolidation_response_format(self.response_format))
         object.__setattr__(
-            self, "reasoning_effort", _validate_consolidation_reasoning_effort(
+            self,
+            "reasoning_effort",
+            _validate_consolidation_reasoning_effort(
                 self.reasoning_effort, opencode_go=_opencode_go_endpoint(self.endpoint)
-            )
+            ),
         )
         object.__setattr__(self, "headers", _validate_consolidation_headers(self.headers))
 
@@ -866,9 +914,14 @@ class ResponsesRouteConfig:
 
 
 #: Ledger refusals that mean "not now" rather than "over budget".
-_BUDGET_UNAVAILABLE = frozenset({
-    "ledger_not_initialized", "unsupported_model", "unsupported_model_or_size", "ledger_busy_timeout",
-})
+_BUDGET_UNAVAILABLE = frozenset(
+    {
+        "ledger_not_initialized",
+        "unsupported_model",
+        "unsupported_model_or_size",
+        "ledger_busy_timeout",
+    }
+)
 
 
 def _ledger_error(exc: ValueError) -> AuxiliaryModelError:
@@ -881,8 +934,14 @@ def _ledger_error(exc: ValueError) -> AuxiliaryModelError:
     return AuxiliaryModelError("request_rejected", detail=type(exc).__name__)
 
 
-def _settle(settle: Callable[..., str], request_id: int, status: str, usage: Mapping[str, int] | None,
-            deadline: float, pending: BaseException | None) -> BaseException | None:
+def _settle(
+    settle: Callable[..., str],
+    request_id: int,
+    status: str,
+    usage: Mapping[str, int] | None,
+    deadline: float,
+    pending: BaseException | None,
+) -> BaseException | None:
     """Close the reservation; the exception to raise afterwards, if any.
 
     A failure that already happened stays authoritative over anything the
@@ -890,7 +949,7 @@ def _settle(settle: Callable[..., str], request_id: int, status: str, usage: Map
     200 came back without the usage the ledger needs.
     """
     try:
-        final = settle(request_id, status, usage, timeout_seconds=max(.001, _remaining_seconds(deadline)))
+        final = settle(request_id, status, usage, timeout_seconds=max(0.001, _remaining_seconds(deadline)))
     except Exception as settle_exc:
         return pending if pending is not None else settle_exc
     if pending is not None:
@@ -902,11 +961,22 @@ def _settle(settle: Callable[..., str], request_id: int, status: str, usage: Map
     return None
 
 
-def _metered_post(*, ledger: AuxiliaryBudgetLedger, settle: Callable[..., str], model: str, body: bytes,
-                  reserved_input: int, reserved_output: int, deadline: float, transport: HttpTransport,
-                  endpoint: str, headers: Mapping[str, str], max_response_bytes: int,
-                  read_usage: Callable[[Mapping[str, Any]], dict[str, int] | None],
-                  read_result: Callable[[Mapping[str, Any]], Any]) -> Any:
+def _metered_post(
+    *,
+    ledger: AuxiliaryBudgetLedger,
+    settle: Callable[..., str],
+    model: str,
+    body: bytes,
+    reserved_input: int,
+    reserved_output: int,
+    deadline: float,
+    transport: HttpTransport,
+    endpoint: str,
+    headers: Mapping[str, str],
+    max_response_bytes: int,
+    read_usage: Callable[[Mapping[str, Any]], dict[str, int] | None],
+    read_result: Callable[[Mapping[str, Any]], Any],
+) -> Any:
     """Reserve, send, parse, settle -- and settle even when sending failed.
 
     The reservation row is committed before the request leaves the process
@@ -921,13 +991,19 @@ def _metered_post(*, ledger: AuxiliaryBudgetLedger, settle: Callable[..., str], 
     pending: BaseException | None = None
     result: Any = None
     try:
-        request_id = ledger.reserve(model, body, reserved_input=reserved_input, reserved_output=reserved_output,
-                                    timeout_seconds=_remaining_seconds(deadline))
+        request_id = ledger.reserve(
+            model,
+            body,
+            reserved_input=reserved_input,
+            reserved_output=reserved_output,
+            timeout_seconds=_remaining_seconds(deadline),
+        )
         http_remaining = _remaining_seconds(deadline)
         if http_remaining <= 0:
             raise AuxiliaryModelError("timeout")
-        status_code, raw = transport.post(endpoint, body=body, headers=headers,
-                                          timeout_seconds=http_remaining, max_response_bytes=max_response_bytes)
+        status_code, raw = transport.post(
+            endpoint, body=body, headers=headers, timeout_seconds=http_remaining, max_response_bytes=max_response_bytes
+        )
         status = f"http_{status_code}"
         if status_code != 200:
             refusal = provider_refusal_code(raw)
@@ -989,7 +1065,9 @@ class GeminiEmbeddingAdapter:
         encoded = encode_embedding_text(source.event["content"], kind="document")
         return self._embed(encoded, remaining_seconds=remaining_seconds)
 
-    def embed_sources(self, sources: Sequence[StoredSource], *, remaining_seconds: float) -> tuple[tuple[float, ...], ...]:
+    def embed_sources(
+        self, sources: Sequence[StoredSource], *, remaining_seconds: float
+    ) -> tuple[tuple[float, ...], ...]:
         """One request for many documents, answered in the order they were sent.
 
         The provider charges per token either way; what a batch saves is the
@@ -1022,10 +1100,11 @@ class GeminiEmbeddingAdapter:
             return self._embed_many(chunk, remaining_seconds=_remaining_seconds(deadline))
 
         vectors: list[tuple[float, ...]] = []
-        with ThreadPoolExecutor(max_workers=min(EMBED_REQUEST_CONCURRENCY, len(chunks)),
-                                thread_name_prefix="scope-recall-embed") as pool:
+        with ThreadPoolExecutor(
+            max_workers=min(EMBED_REQUEST_CONCURRENCY, len(chunks)), thread_name_prefix="scope-recall-embed"
+        ) as pool:
             answers = [pool.submit(request, chunk) for chunk in chunks]
-            for answer in answers:                     # in the order they were asked
+            for answer in answers:  # in the order they were asked
                 vectors.extend(answer.result())
         return tuple(vectors)
 
@@ -1043,8 +1122,9 @@ class GeminiEmbeddingAdapter:
         """The request body for ``texts`` in this route's dialect."""
         if self._dialect == "gemini":
             return build_gemini_embed_body(texts, model=self._model, dimensions=self._dimensions)
-        return build_openai_embed_body(texts, model=self._model, dimensions=self._dimensions,
-                                       dimensions_field=self._dimensions_field)
+        return build_openai_embed_body(
+            texts, model=self._model, dimensions=self._dimensions, dimensions_field=self._dimensions_field
+        )
 
     def _embed_many(self, texts: list[str], *, remaining_seconds: float) -> tuple[tuple[float, ...], ...]:
         """The one-request path, for any number of texts; identical bounds to ``_embed``."""
@@ -1059,24 +1139,34 @@ class GeminiEmbeddingAdapter:
         key = _load_credential(self._route.credential_env)
         auth = {"x-goog-api-key": key} if self._dialect == "gemini" else {"Authorization": f"Bearer {key}"}
         return _metered_post(
-            ledger=self._ledger, settle=self._ledger.finish_embedding, model=self._model, body=body,
-            reserved_input=conservative_embed_reserve(body), reserved_output=0, deadline=deadline,
-            transport=self._transport, endpoint=self._endpoint,
+            ledger=self._ledger,
+            settle=self._ledger.finish_embedding,
+            model=self._model,
+            body=body,
+            reserved_input=conservative_embed_reserve(body),
+            reserved_output=0,
+            deadline=deadline,
+            transport=self._transport,
+            endpoint=self._endpoint,
             headers={"Content-Type": "application/json", **auth, "User-Agent": "ScopeRecall-AuxiliaryEmbed/1.1"},
             max_response_bytes=MAX_EMBED_RESPONSE_BYTES,
             read_usage=partial(_embedding_usage, dialect=self._dialect),
-            read_result=partial(_embedding_vectors, dialect=self._dialect, dimensions=self._dimensions,
-                                count=len(texts)),
+            read_result=partial(
+                _embedding_vectors, dialect=self._dialect, dimensions=self._dimensions, count=len(texts)
+            ),
         )
 
-    def _embed(self, encoded_text: str, *, remaining_seconds: float, transport: HttpTransport | None = None) -> Sequence[float]:
+    def _embed(
+        self, encoded_text: str, *, remaining_seconds: float, transport: HttpTransport | None = None
+    ) -> Sequence[float]:
         deadline = time.monotonic() + validate_timeout_seconds(remaining_seconds)
         _reject_secrets(encoded_text)
         if self._dialect == "gemini":
             body = build_gemini_embed_body(encoded_text, model=self._model, dimensions=self._dimensions)
         else:
-            body = build_openai_embed_body(encoded_text, model=self._model, dimensions=self._dimensions,
-                                           dimensions_field=self._dimensions_field)
+            body = build_openai_embed_body(
+                encoded_text, model=self._model, dimensions=self._dimensions, dimensions_field=self._dimensions_field
+            )
         if _remaining_seconds(deadline) <= 0:
             raise AuxiliaryModelError("timeout")
         if self._ledger.provider_hold_until(self._model) is not None:
@@ -1088,9 +1178,15 @@ class GeminiEmbeddingAdapter:
         # provider uses bearer auth.
         auth = {"x-goog-api-key": key} if self._dialect == "gemini" else {"Authorization": f"Bearer {key}"}
         return _metered_post(
-            ledger=self._ledger, settle=self._ledger.finish_embedding, model=self._model, body=body,
-            reserved_input=conservative_embed_reserve(body), reserved_output=0, deadline=deadline,
-            transport=transport or self._transport, endpoint=self._endpoint,
+            ledger=self._ledger,
+            settle=self._ledger.finish_embedding,
+            model=self._model,
+            body=body,
+            reserved_input=conservative_embed_reserve(body),
+            reserved_output=0,
+            deadline=deadline,
+            transport=transport or self._transport,
+            endpoint=self._endpoint,
             headers={"Content-Type": "application/json", **auth, "User-Agent": "ScopeRecall-AuxiliaryEmbed/1.1"},
             max_response_bytes=MAX_EMBED_RESPONSE_BYTES,
             read_usage=partial(_embedding_usage, dialect=self._dialect),
@@ -1141,13 +1237,19 @@ class OpenAIConsolidationAdapter:
             raise AuxiliaryModelError("provider_hold")
         key = _load_credential(self._route.credential_env)
         return _metered_post(
-            ledger=self._ledger, settle=self._ledger.finish, model=self._route.model, body=body,
+            ledger=self._ledger,
+            settle=self._ledger.finish,
+            model=self._route.model,
+            body=body,
             reserved_input=conservative_consolidation_input_reserve(body, self._reserve_input),
-            reserved_output=reserved_output, deadline=deadline,
-            transport=self._transport, endpoint=self._route.endpoint,
+            reserved_output=reserved_output,
+            deadline=deadline,
+            transport=self._transport,
+            endpoint=self._route.endpoint,
             headers=_consolidation_request_headers(self._route, key),
             max_response_bytes=MAX_CHAT_RESPONSE_BYTES,
-            read_usage=_chat_usage, read_result=_extract_chat_content,
+            read_usage=_chat_usage,
+            read_result=_extract_chat_content,
         )
 
 
@@ -1164,8 +1266,7 @@ def _responses_usage(payload: Mapping[str, Any]) -> dict[str, int] | None:
     candidate = payload.get("usage")
     if not isinstance(candidate, dict):
         return None
-    if any(type(candidate.get(name)) is not int or candidate[name] < 0
-           for name in ("input_tokens", "output_tokens")):
+    if any(type(candidate.get(name)) is not int or candidate[name] < 0 for name in ("input_tokens", "output_tokens")):
         return None
     usage = {"prompt_tokens": candidate["input_tokens"], "completion_tokens": candidate["output_tokens"]}
     details = candidate.get("input_tokens_details")
@@ -1261,14 +1362,18 @@ class ResponsesConsolidationAdapter:
         items: list[dict[str, Any]] = []
         for message in messages:
             role, content = message["role"], message["content"]
-            items.append({
-                "type": "message",
-                "role": role,
-                "content": [{
-                    "type": "output_text" if role == "assistant" else "input_text",
-                    "text": content,
-                }],
-            })
+            items.append(
+                {
+                    "type": "message",
+                    "role": role,
+                    "content": [
+                        {
+                            "type": "output_text" if role == "assistant" else "input_text",
+                            "text": content,
+                        }
+                    ],
+                }
+            )
         body: dict[str, Any] = {
             "model": route.model,
             "max_output_tokens": route.max_output_tokens,
@@ -1294,10 +1399,15 @@ class ResponsesConsolidationAdapter:
             raise AuxiliaryModelError("provider_hold")
         key = _load_credential(self._route.credential_env)
         return _metered_post(
-            ledger=self._ledger, settle=self._ledger.finish, model=self._route.model, body=body,
+            ledger=self._ledger,
+            settle=self._ledger.finish,
+            model=self._route.model,
+            body=body,
             reserved_input=conservative_consolidation_input_reserve(body, self._reserve_input),
-            reserved_output=reserved_output, deadline=deadline,
-            transport=self._transport, endpoint=self._route.endpoint,
+            reserved_output=reserved_output,
+            deadline=deadline,
+            transport=self._transport,
+            endpoint=self._route.endpoint,
             headers={
                 "Authorization": f"Bearer {key}",
                 "Content-Type": "application/json",
@@ -1305,5 +1415,6 @@ class ResponsesConsolidationAdapter:
             },
             # The consolidation answer cap, shared with the chat dialect.
             max_response_bytes=MAX_CHAT_RESPONSE_BYTES,
-            read_usage=_responses_usage, read_result=_responses_output_text,
+            read_usage=_responses_usage,
+            read_result=_responses_output_text,
         )

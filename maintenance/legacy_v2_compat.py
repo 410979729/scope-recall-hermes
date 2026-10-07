@@ -30,6 +30,7 @@ The named reader contract must be explicitly attested by the integrator after
 source review. A one-to-one map preserves partitions, not runtime audience ACLs:
 manifest audience binding must separately preserve the old read boundary.
 """
+
 from __future__ import annotations
 
 from collections.abc import Mapping
@@ -54,9 +55,7 @@ _MEMORY_COLUMNS = tuple(
     "agent_workspace session_id source target content summary created_at updated_at "
     "last_recalled_turn dedup_key metadata".split()
 )
-_MEMORY_REQUIRED = frozenset(
-    "scope_id source target content summary created_at updated_at last_recalled_turn".split()
-)
+_MEMORY_REQUIRED = frozenset("scope_id source target content summary created_at updated_at last_recalled_turn".split())
 _MEMORY_SCHEMA = tuple(
     (name, "INTEGER" if name == "last_recalled_turn" else "TEXT", int(name in _MEMORY_REQUIRED), int(name == "id"))
     for name in _MEMORY_COLUMNS
@@ -64,9 +63,7 @@ _MEMORY_SCHEMA = tuple(
 MEMORY_READER_CONTRACT = "legacy-2.0.1/memories-physical-scope-in-accessible-scopes"
 _ARCHIVE_FORMAT = "scope-recall-completed-bridge-audit/1"
 IMPORT_LEDGER_TABLE = "import_ledger"
-IMPORT_LEDGER_COLUMNS = tuple(
-    "import_fingerprint source_kind source_scope source_path memory_id imported_at".split()
-)
+IMPORT_LEDGER_COLUMNS = tuple("import_fingerprint source_kind source_scope source_path memory_id imported_at".split())
 _IMPORT_LEDGER_SCHEMA = tuple(
     (name, "TEXT", int(name != "import_fingerprint"), int(name == "import_fingerprint"))
     for name in IMPORT_LEDGER_COLUMNS
@@ -86,7 +83,9 @@ def _schema(conn: sqlite3.Connection, table: str) -> tuple[tuple[Any, ...], ...]
 
 
 def _digest(value: Any) -> str:
-    return sha256(json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")).hexdigest()
+    return sha256(
+        json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
+    ).hexdigest()
 
 
 def build_completed_bridge_archive(conn: sqlite3.Connection) -> dict[str, Any]:
@@ -101,9 +100,10 @@ def build_completed_bridge_archive(conn: sqlite3.Connection) -> dict[str, Any]:
     if _schema(conn, BRIDGE_TABLE) != _BRIDGE_SCHEMA:
         raise LegacyCompatibilityError("unverified shared_bridge_outbox schema")
     columns = ",".join(f'"{name}"' for name in BRIDGE_COLUMNS)
-    rows = [dict(zip(BRIDGE_COLUMNS, tuple(row))) for row in conn.execute(
-        f'SELECT {columns} FROM "{BRIDGE_TABLE}" ORDER BY id'
-    )]
+    rows = [
+        dict(zip(BRIDGE_COLUMNS, tuple(row)))
+        for row in conn.execute(f'SELECT {columns} FROM "{BRIDGE_TABLE}" ORDER BY id')
+    ]
     ids: set[int] = set()
     keys: set[str] = set()
     for row in rows:
@@ -152,9 +152,10 @@ def build_import_ledger_archive(conn: sqlite3.Connection) -> dict[str, Any]:
     if _schema(conn, IMPORT_LEDGER_TABLE) != _IMPORT_LEDGER_SCHEMA:
         raise LegacyCompatibilityError("unverified_import_ledger_schema")
     columns = ",".join(f'"{name}"' for name in IMPORT_LEDGER_COLUMNS)
-    rows = [dict(zip(IMPORT_LEDGER_COLUMNS, tuple(row))) for row in conn.execute(
-        f'SELECT {columns} FROM "{IMPORT_LEDGER_TABLE}" ORDER BY import_fingerprint'
-    )]
+    rows = [
+        dict(zip(IMPORT_LEDGER_COLUMNS, tuple(row)))
+        for row in conn.execute(f'SELECT {columns} FROM "{IMPORT_LEDGER_TABLE}" ORDER BY import_fingerprint')
+    ]
     fingerprints: set[str] = set()
     memory_ids: set[str] = set()
     for row in rows:
@@ -170,7 +171,9 @@ def build_import_ledger_archive(conn: sqlite3.Connection) -> dict[str, Any]:
         "disposition": "audit_import_provenance",
         "replay": False,
         "columns": list(IMPORT_LEDGER_COLUMNS),
-        "schema_sql": conn.execute("SELECT sql FROM sqlite_master WHERE name = ?", (IMPORT_LEDGER_TABLE,)).fetchone()[0],
+        "schema_sql": conn.execute("SELECT sql FROM sqlite_master WHERE name = ?", (IMPORT_LEDGER_TABLE,)).fetchone()[
+            0
+        ],
         "row_count": len(rows),
         "rows": rows,
     }
@@ -192,6 +195,7 @@ class MemoryStorageAuthority:
     The map is already resolved against a trusted installation manifest; this
     object creates no runtime grants and must not outlive its frozen snapshot.
     """
+
     reader_contract: str
     source_scope_map: Mapping[str, str]
     original_rows: Mapping[str, tuple[str, Any]]
@@ -254,13 +258,15 @@ def resolve_memory_scope(
         raise LegacyCompatibilityError("memory_original_row_unverified")
     source, raw_metadata = original
     target = authority.source_scope_map[source]
-    if (row.get("__legacy_source_scope_id", row.get("scope_id")) != source
-            or row.get("scope_id") != target
-            or row.get("metadata") != raw_metadata
-            or result.get("source_scope_id") != source
-            or result.get("row_scope_id") != target
-            or row.get("__scope_mapping_gap")
-            or "__legacy_default_scope" in row):
+    if (
+        row.get("__legacy_source_scope_id", row.get("scope_id")) != source
+        or row.get("scope_id") != target
+        or row.get("metadata") != raw_metadata
+        or result.get("source_scope_id") != source
+        or result.get("row_scope_id") != target
+        or row.get("__scope_mapping_gap")
+        or "__legacy_default_scope" in row
+    ):
         raise LegacyCompatibilityError("memory_scope_or_metadata_provenance_changed")
     try:
         metadata = json.loads(raw_metadata) if raw_metadata not in (None, "") else {}
@@ -276,13 +282,18 @@ def resolve_memory_scope(
         return result
     mode = mode.strip().lower()
     field = {"shared": "shared_scope_id", "shared_pool": "shared_pool_scope_id"}.get(mode)
-    allowed_gap = {"shared": "explicit_shared_scope_mismatch", "shared_pool": "explicit_shared_pool_scope_mismatch"}.get(mode)
+    allowed_gap = {
+        "shared": "explicit_shared_scope_mismatch",
+        "shared_pool": "explicit_shared_pool_scope_mismatch",
+    }.get(mode)
     if field is None or not allowed_gap or result.get("gap") != allowed_gap:
         return result
     # Only missing or string-valued old descriptors are established compatible.
     # Structured values may encode an unknown policy and must not be discarded.
-    if any(metadata.get(key) is not None and not isinstance(metadata[key], str)
-           for key in ("runtime_scope_id", "shared_scope_id", "shared_pool_scope_id")):
+    if any(
+        metadata.get(key) is not None and not isinstance(metadata[key], str)
+        for key in ("runtime_scope_id", "shared_scope_id", "shared_pool_scope_id")
+    ):
         return result
     result["gap"] = ""
     result["legacy_storage_authority"] = {

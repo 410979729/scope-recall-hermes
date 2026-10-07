@@ -1,4 +1,5 @@
 """Trusted local runtime wiring for Codex host adapters."""
+
 from __future__ import annotations
 
 import json
@@ -18,9 +19,10 @@ from scope_recall.contracts import ContractError
 
 def test_runtime_wiring_uses_this_source_checkout(record_property):
     from scope_recall.adapters.codex import runtime_wiring
+
     actual = Path(runtime_wiring.__file__).resolve()
-    expected = Path(__file__).resolve().parents[3] / 'adapters' / 'codex' / 'runtime_wiring.py'
-    record_property('runtime_wiring_file', str(actual))
+    expected = Path(__file__).resolve().parents[3] / "adapters" / "codex" / "runtime_wiring.py"
+    record_property("runtime_wiring_file", str(actual))
     assert actual == expected
 
 
@@ -120,14 +122,17 @@ def test_session_end_launches_owned_worker_without_foreground_model(codex_instal
         worker = Mock()
         worker.poll.return_value = None
         launch_worker.return_value = worker
-        assert handler.handle_payload(
-            {
-                "hook_event_name": "SessionEnd",
-                "session_id": "TEST-session",
-                "cwd": str(project),
-                "reason": "logout",
-            }
-        ) == {}
+        assert (
+            handler.handle_payload(
+                {
+                    "hook_event_name": "SessionEnd",
+                    "session_id": "TEST-session",
+                    "cwd": str(project),
+                    "reason": "logout",
+                }
+            )
+            == {}
+        )
         launch_worker.assert_called_once()
     handler.close()
 
@@ -182,7 +187,7 @@ def test_real_owned_watchdog_outlives_short_hook_and_cleans_config(codex_install
     assert worker.wait(timeout=30.0) == 0
     stdout, _stderr = worker.communicate(timeout=5.0)
     assert stdout == ""
-    receipt = json.loads((config.data_directory / 'runtime-worker-status.json').read_text())
+    receipt = json.loads((config.data_directory / "runtime-worker-status.json").read_text())
     assert receipt["status"] == "waiting"
     assert receipt["processed"] == 0 and receipt["failed_work"] == 0
     assert all(not path.exists() for path in ephemeral)

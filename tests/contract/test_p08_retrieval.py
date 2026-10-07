@@ -1,4 +1,5 @@
 """Deterministic P08 core retrieval contracts using synthetic TEST identity."""
+
 from contextlib import contextmanager
 from dataclasses import FrozenInstanceError, replace
 from pathlib import Path
@@ -54,7 +55,9 @@ def test_semantic_candidate_can_admit_without_lexical_overlap(app):
 
     class Vector:
         def search(self, context, *, limit, remaining_seconds):
-            return (CandidateRef("event", ref, 1, "vector", vector_id="v1", embedding_space=SPACE_ID, vector_score=0.91),)
+            return (
+                CandidateRef("event", ref, 1, "vector", vector_id="v1", embedding_space=SPACE_ID, vector_score=0.91),
+            )
 
     core.recall_pipeline.vector_port = Vector()
     core.recall_pipeline.policy = RecallPolicy(vector_threshold=0.8)
@@ -65,10 +68,16 @@ def test_semantic_candidate_can_admit_without_lexical_overlap(app):
 
 def test_hard_identifiers_remain_distinct_but_comparison_keeps_both(app):
     core, ctx = app
-    first = capture(core, ctx, "H100 使用第一套部署配置。", key="TEST-p08/hard", revision=1, when="2026-09-01T12:00:00Z")
-    second = capture(core, ctx, "H200 使用第二套部署配置。", key="TEST-p08/hard", revision=2, when="2026-09-05T12:00:00Z")
+    first = capture(
+        core, ctx, "H100 使用第一套部署配置。", key="TEST-p08/hard", revision=1, when="2026-09-01T12:00:00Z"
+    )
+    second = capture(
+        core, ctx, "H200 使用第二套部署配置。", key="TEST-p08/hard", revision=2, when="2026-09-05T12:00:00Z"
+    )
     single = core.recall(ctx, recall_request(query="H100 部署配置", mode="current"), deadline_seconds=5)
-    comparison = core.recall(ctx, recall_request(query="比较 H100 和 H200 部署配置", mode="history"), deadline_seconds=5)
+    comparison = core.recall(
+        ctx, recall_request(query="比较 H100 和 H200 部署配置", mode="history"), deadline_seconds=5
+    )
     assert [item.content for item in single.items] == []
     assert {item.content for item in comparison.items} == {"H100 使用第一套部署配置。", "H200 使用第二套部署配置。"}
 
@@ -77,7 +86,9 @@ def test_as_of_hydrates_historical_source_before_new_revision(app):
     core, ctx = app
     old = capture(core, ctx, "旧版本 H100 配置。", key="TEST-p08/asof", revision=1, when="2026-09-01T12:00:00Z")
     capture(core, ctx, "新版本 H200 配置。", key="TEST-p08/asof", revision=2, when="2026-09-05T12:00:00Z")
-    result = core.recall(ctx, recall_request(query="H100 配置", mode="as_of", as_of="2026-09-03T00:00:00Z"), deadline_seconds=5)
+    result = core.recall(
+        ctx, recall_request(query="H100 配置", mode="as_of", as_of="2026-09-03T00:00:00Z"), deadline_seconds=5
+    )
     assert [item.content for item in result.items] == ["旧版本 H100 配置。"]
     assert result.items[0].revision == old.revision
 
@@ -86,7 +97,9 @@ def test_current_source_receipt_excludes_only_that_source(app):
     core, ctx = app
     source = capture(core, ctx, "本轮刚捕获的 TEST 计划。", key="TEST-p08/current")
     key = f"{source.ref}@{source.revision}"
-    result = core.recall(ctx, recall_request(query="TEST 计划", mode="current"), current_source_refs=(key,), deadline_seconds=5)
+    result = core.recall(
+        ctx, recall_request(query="TEST 计划", mode="current"), current_source_refs=(key,), deadline_seconds=5
+    )
     assert result.items == ()
 
 
@@ -112,7 +125,6 @@ def test_cursor_encoding_is_validated_before_scope_binding(app):
         PageCursor.decode("not-a-cursor")
 
 
-
 def test_P08_lexical_skips_terms_too_common_to_separate_anything(app):
     """A term matching most of the corpus costs the most and tells the least.
 
@@ -132,14 +144,19 @@ def test_P08_lexical_skips_terms_too_common_to_separate_anything(app):
         capture(core, ctx, f"TEST boilerplate 第{index}条。", key=f"TEST-p08/common/{index}")
 
     with core.storage.read(ctx) as tx:
-        assert _discriminating_terms(tx, ("quarkonium", "boilerplate")) == ("quarkonium",),             "the common term is dropped, the rare one stays"
+        assert _discriminating_terms(tx, ("quarkonium", "boilerplate")) == ("quarkonium",), (
+            "the common term is dropped, the rare one stays"
+        )
         # A query made only of common terms must still answer: falling back to
         # the rarest of them beats returning nothing at all.
         assert _discriminating_terms(tx, ("boilerplate",)) == ("boilerplate",)
         # A term the index has never seen has no frequency and is never pruned.
         assert _discriminating_terms(tx, ("neverindexed",)) == ("neverindexed",)
         # A kept term survives however common it is.
-        assert _discriminating_terms(tx, ("quarkonium", "boilerplate"), keep=("boilerplate",)) == ("quarkonium", "boilerplate")
+        assert _discriminating_terms(tx, ("quarkonium", "boilerplate"), keep=("boilerplate",)) == (
+            "quarkonium",
+            "boilerplate",
+        )
 
 
 def test_P08_a_long_prompt_searches_its_rarest_terms_within_a_posting_budget(monkeypatch):
@@ -163,7 +180,12 @@ def test_P08_a_long_prompt_searches_its_rarest_terms_within_a_posting_budget(mon
     assert retrieval_storage._within_posting_budget(terms, frequencies, ()) == ("a", "b", "f", "unindexed")
     # A term one source holds (the prompt's own, stored before its recall) stays but takes no rarest place.
     assert retrieval_storage._within_posting_budget(("only", *terms), {**frequencies, "only": 1}, ()) == (
-        "only", "a", "b", "f", "unindexed")
+        "only",
+        "a",
+        "b",
+        "f",
+        "unindexed",
+    )
 
 
 def test_P08_a_long_prompt_s_related_memory_is_admitted_with_the_terms_the_budget_left_out(app, monkeypatch):
@@ -180,14 +202,26 @@ def test_P08_a_long_prompt_s_related_memory_is_admitted_with_the_terms_the_budge
     prompt = capture(core, ctx, query, key="TEST-p08/budget-admission/prompt")
     target = capture(core, ctx, " ".join(topical) + " answerbody explanation", key="TEST-p08/budget-admission/target")
     for index in range(12):
-        capture(core, ctx, " ".join(topical[(index + step) % 14] for step in range(7)) + f" filler{letters[index]}text",
-                key=f"TEST-p08/budget-admission/filler/{index}")
+        capture(
+            core,
+            ctx,
+            " ".join(topical[(index + step) % 14] for step in range(7)) + f" filler{letters[index]}text",
+            key=f"TEST-p08/budget-admission/filler/{index}",
+        )
     for index in range(4):
-        capture(core, ctx, " ".join(rare[index * 3:(index + 1) * 3]) + f" noise{letters[index]}body",
-                key=f"TEST-p08/budget-admission/noise/{index}")
+        capture(
+            core,
+            ctx,
+            " ".join(rare[index * 3 : (index + 1) * 3]) + f" noise{letters[index]}body",
+            key=f"TEST-p08/budget-admission/noise/{index}",
+        )
     monkeypatch.setattr(retrieval_storage, "_LEXICAL_POSTING_BUDGET", 60)
-    result = core.recall(ctx, recall_request(query=query, mode="current"),
-                         current_source_refs=(f"{prompt.ref}@{prompt.revision}",), deadline_seconds=10)
+    result = core.recall(
+        ctx,
+        recall_request(query=query, mode="current"),
+        current_source_refs=(f"{prompt.ref}@{prompt.revision}",),
+        deadline_seconds=10,
+    )
     assert target.ref in [item.ref for item in result.items], result.gaps
 
 
@@ -273,8 +307,12 @@ def test_P08_the_recent_channel_reads_the_pending_queue_not_every_consolidation(
                 plans.append(self._conn.execute("EXPLAIN QUERY PLAN " + sql, params).fetchall()[0][3])
             return self._conn.execute(sql, params)
 
-    context = SearchContext.from_request(recall_request(query="TEST 值班表", mode="current"), ctx,
-                                         now=core.clock.utc_now(), deadline=_time.monotonic() + 30)
+    context = SearchContext.from_request(
+        recall_request(query="TEST 值班表", mode="current"),
+        ctx,
+        now=core.clock.utc_now(),
+        deadline=_time.monotonic() + 30,
+    )
     with core.storage.read(ctx) as tx:
         check = tx._check
         monkeypatch.setattr(tx, "_check", lambda: Planned(check()))
@@ -295,8 +333,9 @@ def test_P08_a_candidate_statement_past_the_deadline_is_interrupted(app, monkeyp
     capture(core, ctx, "TEST 值班表明天换人。", key="TEST-p08/interrupt")
 
     def slow(self, tx, context, *, limit):
-        tx._check().execute("WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n LIMIT 60000000) "
-                            "SELECT count(*) FROM n").fetchone()
+        tx._check().execute(
+            "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n LIMIT 60000000) SELECT count(*) FROM n"
+        ).fetchone()
         return ()
 
     monkeypatch.setattr(retrieval_storage.RetrievalStorage, "lexical", slow)
@@ -320,16 +359,18 @@ def test_P08_what_the_channels_before_an_interrupted_one_found_still_answers(app
     target = capture(core, ctx, "TEST 值班表明天换人。", key="TEST-p08/interrupt-exact")
 
     def slow(self, tx, context, *, limit):
-        tx._check().execute("WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n LIMIT 60000000) "
-                            "SELECT count(*) FROM n").fetchone()
+        tx._check().execute(
+            "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n LIMIT 60000000) SELECT count(*) FROM n"
+        ).fetchone()
         return ()
 
     hydrate = retrieval_storage.RetrievalStorage.hydrate
 
     def hydrate_after_a_statement(self, tx, candidate, context):
         # Far more steps than the handler lets pass between two looks at the deadline.
-        tx._check().execute("WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n LIMIT 300000) "
-                            "SELECT count(*) FROM n").fetchone()
+        tx._check().execute(
+            "WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n LIMIT 300000) SELECT count(*) FROM n"
+        ).fetchone()
         return hydrate(self, tx, candidate, context)
 
     monkeypatch.setattr(recall_module, "_INTERRUPT_STEPS", 1_000)
@@ -372,10 +413,20 @@ def test_P08_lexical_never_prunes_a_common_hard_identifier(app):
 
     core, ctx = app
     for index in range(_LEXICAL_DF_FLOOR):
-        capture(core, ctx, f"rc28 构建日志 第{index}条", key=f"TEST-p08/common-identifier/{index}",
-                when="2026-09-02T12:00:00Z")
-    target = capture(core, ctx, "现在还是 rc28，旧记忆和设置没动。", key="TEST-p08/common-identifier/target",
-                     when="2026-09-03T12:00:00Z")
+        capture(
+            core,
+            ctx,
+            f"rc28 构建日志 第{index}条",
+            key=f"TEST-p08/common-identifier/{index}",
+            when="2026-09-02T12:00:00Z",
+        )
+    target = capture(
+        core,
+        ctx,
+        "现在还是 rc28，旧记忆和设置没动。",
+        key="TEST-p08/common-identifier/target",
+        when="2026-09-03T12:00:00Z",
+    )
     reader = replace(ctx, session_id="TEST-p08-common-identifier-reader")
     for mode in ("auto", "current", "history"):
         result = core.recall(reader, recall_request(query="rc28 升级结果", mode=mode), deadline_seconds=5)
@@ -393,15 +444,26 @@ def test_P08_lexical_pool_ranks_rows_naming_the_hard_identifier_first(app):
 
     core, ctx = app
     query = "阿乙仍然是 Scope Recall rc28"
-    target = capture(core, ctx, "阿乙升级收尾：排空超时，现在还是 rc28，旧记忆和设置没动。",
-                     key="TEST-p08/identifier-pool/target", when="2026-09-01T12:00:00Z")
+    target = capture(
+        core,
+        ctx,
+        "阿乙升级收尾：排空超时，现在还是 rc28，旧记忆和设置没动。",
+        key="TEST-p08/identifier-pool/target",
+        when="2026-09-01T12:00:00Z",
+    )
     for index in range(60):
-        capture(core, ctx, f"阿乙仍然是 Scope Recall 的测试对象（记录 {index}）",
-                key=f"TEST-p08/identifier-pool/{index}", when="2026-09-02T12:00:00Z")
+        capture(
+            core,
+            ctx,
+            f"阿乙仍然是 Scope Recall 的测试对象（记录 {index}）",
+            key=f"TEST-p08/identifier-pool/{index}",
+            when="2026-09-02T12:00:00Z",
+        )
     # Another session reads, so the recent channel cannot supply the target.
     reader = replace(ctx, session_id="TEST-p08-identifier-pool-reader")
-    search = SearchContext.from_request(recall_request(query=query, mode="history"), reader,
-                                        now=Clock.now, deadline=core.clock.monotonic() + 5)
+    search = SearchContext.from_request(
+        recall_request(query=query, mode="history"), reader, now=Clock.now, deadline=core.clock.monotonic() + 5
+    )
     with core.storage.read(reader) as tx:
         pool = RetrievalStorage().lexical(tx, search, limit=47)
     assert pool[0].ref == target.ref
@@ -413,9 +475,15 @@ def test_P08_lexical_pool_ranks_rows_naming_the_hard_identifier_first(app):
     # Memory reinjection naming the identifier, and every query term, still ranks last.
     reinjected = core.record_event(
         replace(ctx, actor_origin="memory_reinjection"),
-        source_event(source_event_key="TEST-p08/identifier-pool/reinjected", origin="memory_reinjection", role="tool",
-                     content="召回注入：阿乙仍然是 Scope Recall，现在还是 rc28。", occurred_at="2026-09-03T12:00:00Z"),
-        scope_id="TEST-scope", remaining_seconds=10,
+        source_event(
+            source_event_key="TEST-p08/identifier-pool/reinjected",
+            origin="memory_reinjection",
+            role="tool",
+            content="召回注入：阿乙仍然是 Scope Recall，现在还是 rc28。",
+            occurred_at="2026-09-03T12:00:00Z",
+        ),
+        scope_id="TEST-scope",
+        remaining_seconds=10,
     ).event_refs[0]
     with core.storage.read(reader) as tx:
         pool = RetrievalStorage().lexical(tx, search, limit=100)
@@ -438,8 +506,9 @@ def _without_synonyms():
 def _lexical_pool(core, reader, query, *, mode="history"):
     from scope_recall.core.retrieval_storage import RetrievalStorage
 
-    search = SearchContext.from_request(recall_request(query=query, mode=mode), reader,
-                                        now=Clock.now, deadline=core.clock.monotonic() + 5)
+    search = SearchContext.from_request(
+        recall_request(query=query, mode=mode), reader, now=Clock.now, deadline=core.clock.monotonic() + 5
+    )
     with core.storage.read(reader) as tx:
         return RetrievalStorage().lexical(tx, search, limit=47)
 
@@ -471,7 +540,7 @@ def test_P08_judged_probe_questions_are_outside_the_synonym_table():
 
 @pytest.mark.parametrize("mode", ["current", "history"])
 def test_P08_lexical_synonym_reaches_a_paraphrase_without_the_query_word(app, mode):
-    """"阿乙装上了吗" shares one of its five terms with "阿乙已经安装好了"; three are needed."""
+    """ "阿乙装上了吗" shares one of its five terms with "阿乙已经安装好了"; three are needed."""
     core, ctx = app
     target = capture(core, ctx, "阿乙已经安装好了", key="TEST-p08/synonym/installed")
     reader = replace(ctx, session_id="TEST-p08-synonym-reader")
@@ -482,7 +551,10 @@ def test_P08_lexical_synonym_reaches_a_paraphrase_without_the_query_word(app, mo
     # credited once, and coverage is still counted against the query's five.
     [candidate] = _lexical_pool(core, reader, query, mode=mode)
     assert (candidate.ref, candidate.lexical_score, candidate.matched_query_terms) == (
-        target.ref, 3.0, ("上了", "装上", "阿乙"))
+        target.ref,
+        3.0,
+        ("上了", "装上", "阿乙"),
+    )
     # The source leads; its capture episode may follow by relation.
     assert _recalled(core, reader, query, mode)[:1] == [target.ref]
 
@@ -494,8 +566,10 @@ def test_P08_lexical_synonym_hit_counts_once_for_the_query_term_it_stands_in_for
     every = capture(core, ctx, "先安装依赖，再把插件装好", key="TEST-p08/synonym-bound/every")
     reader = replace(ctx, session_id="TEST-p08-synonym-bound-reader")
     query = "阿乙装上了吗"
-    pool = {candidate.ref: (candidate.lexical_score, candidate.matched_query_terms)
-            for candidate in _lexical_pool(core, reader, query)}
+    pool = {
+        candidate.ref: (candidate.lexical_score, candidate.matched_query_terms)
+        for candidate in _lexical_pool(core, reader, query)
+    }
     assert pool == {one.ref: (1.0, ("装上",)), every.ref: (1.0, ("装上",))}
     for mode in ("current", "history"):
         assert _recalled(core, reader, query, mode) == [], mode
@@ -504,8 +578,9 @@ def test_P08_lexical_synonym_hit_counts_once_for_the_query_term_it_stands_in_for
 def test_P08_lexical_admission_counts_only_the_query_s_own_terms():
     query = "阿乙装上了吗"
     policy = RecallPolicy(vector_threshold=None)
-    credited = CandidateRef("event", "event-TEST", 1, "lexical", lexical_score=3.0,
-                            matched_query_terms=("上了", "装上", "阿乙"))
+    credited = CandidateRef(
+        "event", "event-TEST", 1, "lexical", lexical_score=3.0, matched_query_terms=("上了", "装上", "阿乙")
+    )
     assert policy.lexical_admission(credited, query) == (True, None)
     # The same count reported over synonym terms is one query term, not three.
     inflated = replace(credited, matched_query_terms=("安装", "装上", "装好"))
@@ -513,7 +588,7 @@ def test_P08_lexical_admission_counts_only_the_query_s_own_terms():
 
 
 def test_P08_lexical_synonym_ranks_a_paraphrased_release_status_into_the_pool(app):
-    """"依然是 rc28" is answered by "仍然是 rc28", never by rc29, however many rc28 logs compete."""
+    """ "依然是 rc28" is answered by "仍然是 rc28", never by rc29, however many rc28 logs compete."""
     core, ctx = app
     query = "阿乙依然是 rc28 吗"
     target = capture(core, ctx, "阿乙仍然是 rc28", key="TEST-p08/synonym-pool/target", when="2026-09-01T12:00:00Z")
@@ -528,8 +603,13 @@ def test_P08_lexical_synonym_ranks_a_paraphrased_release_status_into_the_pool(ap
     # Sixty newer rc28 logs share three terms each, as many as the target
     # shares literally: unexpanded, they fill the pool and the answer is lost.
     for index in range(60):
-        capture(core, ctx, f"阿乙 rc28 回归记录 {index}：结果当然是通过",
-                key=f"TEST-p08/synonym-pool/{index}", when="2026-09-02T12:00:00Z")
+        capture(
+            core,
+            ctx,
+            f"阿乙 rc28 回归记录 {index}：结果当然是通过",
+            key=f"TEST-p08/synonym-pool/{index}",
+            when="2026-09-02T12:00:00Z",
+        )
     with _without_synonyms():
         assert target.ref not in {candidate.ref for candidate in _lexical_pool(core, reader, query)}
         for mode in ("current", "history"):
@@ -544,12 +624,14 @@ def test_P08_lexical_query_without_a_synonym_is_untouched_by_the_table(app):
     from scope_recall.core.recall_policy import synonym_expansions
 
     core, ctx = app
-    for index, text in enumerate((
-        "阿乙升级收尾：现在还是 rc28，旧记忆和设置没动。",
-        "阿乙仍然是 Scope Recall 的测试对象",
-        "网关安装日志：rc28 已就绪",
-        "安全审计：阿乙网关日志 rc28 已归档",
-    )):
+    for index, text in enumerate(
+        (
+            "阿乙升级收尾：现在还是 rc28，旧记忆和设置没动。",
+            "阿乙仍然是 Scope Recall 的测试对象",
+            "网关安装日志：rc28 已就绪",
+            "安全审计：阿乙网关日志 rc28 已归档",
+        )
+    ):
         capture(core, ctx, text, key=f"TEST-p08/synonym-free/{index}", when=f"2026-09-0{index + 1}T12:00:00Z")
     reader = replace(ctx, session_id="TEST-p08-synonym-free-reader")
     for query in ("阿乙升级结果怎么样", "rc28 网关日志", "安全审计归档了吗"):

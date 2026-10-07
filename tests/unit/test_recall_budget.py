@@ -4,6 +4,7 @@ The per-character loop cost 180 ms of a 2.5 s automatic recall on the shared sto
 candidate it considers, 1.9 million characters in that recall.  The estimate itself must not move, so the
 rewrite is checked against the loop it replaced.
 """
+
 import random
 import unicodedata
 
@@ -12,9 +13,14 @@ from scope_recall.core.recall_budget import estimate_tokens
 
 def _reference(text: str) -> int:
     """The estimate as it was counted before, one character at a time."""
+
     def cjk(code: int) -> bool:
-        return (0x2E80 <= code <= 0xA4CF or 0xAC00 <= code <= 0xD7AF
-                or 0xF900 <= code <= 0xFAFF or 0x20000 <= code <= 0x323AF)
+        return (
+            0x2E80 <= code <= 0xA4CF
+            or 0xAC00 <= code <= 0xD7AF
+            or 0xF900 <= code <= 0xFAFF
+            or 0x20000 <= code <= 0x323AF
+        )
 
     quarters = 0
     for char in text:
@@ -29,9 +35,21 @@ def _reference(text: str) -> int:
 
 
 SAMPLES = [
-    "", " ", "a", "hello world", "TEST 项目偏好白色。", "继续", "def f(x): return x+1  # ok",
-    "emoji 🧪🚀 and ✓ marks ≤ ≥ ∑", "\x00\x1c\x1f\x7f control", "ｆｕｌｌ ｗｉｄｔｈ，标点！",
-    "한국어 텍스트", "𠀀𠀁 extension B", "tabs\tand\nlines\r\n", "€ £ ¥ © ® ™", "a·b—c…d",
+    "",
+    " ",
+    "a",
+    "hello world",
+    "TEST 项目偏好白色。",
+    "继续",
+    "def f(x): return x+1  # ok",
+    "emoji 🧪🚀 and ✓ marks ≤ ≥ ∑",
+    "\x00\x1c\x1f\x7f control",
+    "ｆｕｌｌ ｗｉｄｔｈ，标点！",
+    "한국어 텍스트",
+    "𠀀𠀁 extension B",
+    "tabs\tand\nlines\r\n",
+    "€ £ ¥ © ® ™",
+    "a·b—c…d",
 ]
 
 
@@ -41,8 +59,12 @@ def test_the_estimate_is_unchanged_for_every_kind_of_character():
 
 
 def test_the_estimate_is_unchanged_for_random_mixed_text():
-    alphabet = ([chr(code) for code in range(0, 128)] + list("项目偏好白色中文记忆，。！？「」") +
-                list("🧪🚀✓≤∑€©™·—…ｆ한𠀀") + [chr(0x0301), chr(0x200B), chr(0x3000)])
+    alphabet = (
+        [chr(code) for code in range(0, 128)]
+        + list("项目偏好白色中文记忆，。！？「」")
+        + list("🧪🚀✓≤∑€©™·—…ｆ한𠀀")
+        + [chr(0x0301), chr(0x200B), chr(0x3000)]
+    )
     rng = random.Random(20260928)
     for _ in range(400):
         text = "".join(rng.choice(alphabet) for _ in range(rng.randint(0, 300)))

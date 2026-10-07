@@ -1,4 +1,5 @@
 """Small P13 fault probes; no model/API and no production paths."""
+
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor

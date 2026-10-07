@@ -4,6 +4,7 @@ Until 3.2.0rc6 consolidation derived claims from tool output; on the pilot 2,773
 it alone.  ``retire_rootless_proposals`` retires proposals no derivation root supports and leaves
 proved claims, proposals a person supports, and mixed evidence as they are.
 """
+
 from __future__ import annotations
 
 import sqlite3
@@ -16,16 +17,22 @@ def _claims(core, ctx):
     """One claim of each kind the retirement must tell apart."""
     tool = capture(core, ctx, "TEST-project 的配色决定是蓝色。", origin="tool_observation")
     rootless = accept(core, ctx, draft(tool)).items[0]
-    seen = capture(core, ctx, "2026年8月1日TEST-project 报价 100单位，这是当日报价。", origin="tool_observation",
-                   when="2026-08-01T00:00:00Z")
+    seen = capture(
+        core,
+        ctx,
+        "2026年8月1日TEST-project 报价 100单位，这是当日报价。",
+        origin="tool_observation",
+        when="2026-08-01T00:00:00Z",
+    )
     proved = accept(core, ctx, draft(seen, "100单位", kind="fact", predicate="报价")).items[0]
     said = capture(core, ctx, "TEST-project 的配色也许是银色？")
     person = accept(core, ctx, draft(said, "银色", predicate="备选配色")).items[0]
     both = capture(core, ctx, "TEST-project 的配色决定是绿色。")
     mixed_draft = draft(both, "绿色", predicate="新配色")
     tool_green = capture(core, ctx, "TEST-project 的配色决定是绿色。", origin="tool_observation")
-    mixed_draft["evidence_spans"].append(dict(source_ref=tool_green.ref, source_revision=tool_green.revision,
-                                              quote=tool_green.event["content"]))
+    mixed_draft["evidence_spans"].append(
+        dict(source_ref=tool_green.ref, source_revision=tool_green.revision, quote=tool_green.event["content"])
+    )
     mixed = accept(core, ctx, mixed_draft).items[0]
     return rootless, proved, person, mixed
 
@@ -55,9 +62,11 @@ def test_retire_rootless_retires_only_proposals_resting_on_tool_output(app):
         waiting = conn.execute(
             """SELECT count(*) FROM candidate_lifecycle WHERE candidate_ref=? AND candidate_revision<?
                AND processing_state IN ('pending_evaluation','waiting_evidence')""",
-            (rootless.ref, head.revision)).fetchone()[0]
-        queued = conn.execute("SELECT count(*) FROM candidate_evaluations WHERE candidate_ref=? AND state='queued'",
-                              (rootless.ref,)).fetchone()[0]
+            (rootless.ref, head.revision),
+        ).fetchone()[0]
+        queued = conn.execute(
+            "SELECT count(*) FROM candidate_evaluations WHERE candidate_ref=? AND state='queued'", (rootless.ref,)
+        ).fetchone()[0]
     assert (waiting, queued) == (0, 0), "a retired proposal no longer waits for an evaluation"
     assert core.retire_rootless_proposals(ctx, limit=32, dry_run=False)["changed"] == []
 
@@ -70,14 +79,18 @@ def test_a_proposal_a_person_has_since_said_is_left_to_its_evaluation(app):
     core, ctx = app
     tool = capture(core, ctx, "TEST-project 磁盘剩余 42GB。", origin="tool_observation")
     with core.storage.write(ctx) as tx:
-        saved = tx.claims.append("TEST-scope", draft(tool, "42GB", kind="fact", predicate="磁盘剩余"),
-                                 Qualification("proposed", "inferred_suggestion", "TEST_candidate"),
-                                 recorded_at=core.clock.utc_now())
+        saved = tx.claims.append(
+            "TEST-scope",
+            draft(tool, "42GB", kind="fact", predicate="磁盘剩余"),
+            Qualification("proposed", "inferred_suggestion", "TEST_candidate"),
+            recorded_at=core.clock.utc_now(),
+        )
         tx.candidates.register(saved.ref, saved.revision, observed_at=core.clock.utc_now(), schedule_initial=False)
     said = capture(core, ctx, "TEST-project 磁盘剩余 42GB。")
     with sqlite3.connect(core.storage.path) as conn:
-        heard = conn.execute("SELECT count(*) FROM candidate_evidence WHERE candidate_ref=? AND source_ref=?",
-                             (saved.ref, said.ref)).fetchone()[0]
+        heard = conn.execute(
+            "SELECT count(*) FROM candidate_evidence WHERE candidate_ref=? AND source_ref=?", (saved.ref, said.ref)
+        ).fetchone()[0]
     assert heard == 1
     preview = core.retire_rootless_proposals(ctx, limit=32, dry_run=True)
     assert preview["changed"] == []

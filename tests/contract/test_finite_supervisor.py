@@ -1,4 +1,5 @@
 """Focused finite scheduling checks with no model or network calls."""
+
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
@@ -23,61 +24,93 @@ NOW = datetime(2026, 9, 12, 0, 0, tzinfo=timezone.utc)
 
 
 def fixture(tmp_path, **settings):
-    binding = InstanceBinding('TEST-agent', 'TEST-installation', tmp_path/'data',
-                              frozenset({'TEST-a', 'TEST-b'}), True)
-    core = MemoryCore(CoreConfig(binding)); core.initialize()
-    raw = dict(binding=dict(agent_id=binding.agent_id, installation_id=binding.installation_id,
-                            data_directory=str(binding.data_directory), scope_ids=sorted(binding.scope_ids), test_mode=True),
-               session_id='TEST-session', allowed_scope_ids=['TEST-a'], actor_origin='human_direct',
-               project_id='TEST-project', branch_id='TEST-main', supervisor_seconds=180,
-               supervisor_max_drains=8, worker_min_interval_seconds=1,
-               auxiliary=dict(external_embedding=False, external_consolidation=False))
+    binding = InstanceBinding(
+        "TEST-agent", "TEST-installation", tmp_path / "data", frozenset({"TEST-a", "TEST-b"}), True
+    )
+    core = MemoryCore(CoreConfig(binding))
+    core.initialize()
+    raw = dict(
+        binding=dict(
+            agent_id=binding.agent_id,
+            installation_id=binding.installation_id,
+            data_directory=str(binding.data_directory),
+            scope_ids=sorted(binding.scope_ids),
+            test_mode=True,
+        ),
+        session_id="TEST-session",
+        allowed_scope_ids=["TEST-a"],
+        actor_origin="human_direct",
+        project_id="TEST-project",
+        branch_id="TEST-main",
+        supervisor_seconds=180,
+        supervisor_max_drains=8,
+        worker_min_interval_seconds=1,
+        auxiliary=dict(external_embedding=False, external_consolidation=False),
+    )
     raw.update(settings)
-    path = tmp_path/'worker.json'; path.write_text(json.dumps(raw), encoding='utf-8')
+    path = tmp_path / "worker.json"
+    path.write_text(json.dumps(raw), encoding="utf-8")
     return core, RuntimeInstanceConfig.from_mapping(raw), path
 
 
-def queue(core, cfg, *, ref='TEST-source', kind='rebuild_projection', state='pending',
-          due=NOW, error=None, scope='TEST-a', project='TEST-project'):
+def queue(
+    core,
+    cfg,
+    *,
+    ref="TEST-source",
+    kind="rebuild_projection",
+    state="pending",
+    due=NOW,
+    error=None,
+    scope="TEST-a",
+    project="TEST-project",
+):
     with core.storage.write(cfg.context()) as tx:
-        tx._check(write=True).execute('''INSERT INTO work_items
+        tx._check(write=True).execute(
+            """INSERT INTO work_items
             (work_type,subject_ref,subject_revision,scope_id,project_id,branch_id,state,available_at,last_error_code)
-            VALUES (?,?,1,?,?,'TEST-main',?,?,?)''',
-            (kind,ref,scope,project,state,due.isoformat().replace('+00:00','Z'),error))
+            VALUES (?,?,1,?,?,'TEST-main',?,?,?)""",
+            (kind, ref, scope, project, state, due.isoformat().replace("+00:00", "Z"), error),
+        )
 
 
 def test_next_due_preserves_audience_cooldown_budget_and_purge(tmp_path):
-    core,cfg,_ = fixture(tmp_path)
-    queue(core,cfg,state='failed',error='http_503',due=NOW)
-    queue(core,cfg,ref='TEST-foreign-scope',scope='TEST-b',due=NOW-timedelta(days=2))
-    queue(core,cfg,ref='TEST-foreign-project',project='TEST-other',due=NOW-timedelta(days=2))
-    queue(core,cfg,ref='TEST-exhausted',state='failed',error='auto_retry:2|http_503',due=NOW-timedelta(days=2))
-    queue(core,cfg,ref='TEST-no-embedding',kind='embed',due=NOW-timedelta(days=2))
-    plan=next_wake(cfg,now=NOW)
-    assert plan.due_at == '2026-09-12T01:00:00Z' and plan.reason == 'failure_cooldown'
+    core, cfg, _ = fixture(tmp_path)
+    queue(core, cfg, state="failed", error="http_503", due=NOW)
+    queue(core, cfg, ref="TEST-foreign-scope", scope="TEST-b", due=NOW - timedelta(days=2))
+    queue(core, cfg, ref="TEST-foreign-project", project="TEST-other", due=NOW - timedelta(days=2))
+    queue(core, cfg, ref="TEST-exhausted", state="failed", error="auto_retry:2|http_503", due=NOW - timedelta(days=2))
+    queue(core, cfg, ref="TEST-no-embedding", kind="embed", due=NOW - timedelta(days=2))
+    plan = next_wake(cfg, now=NOW)
+    assert plan.due_at == "2026-09-12T01:00:00Z" and plan.reason == "failure_cooldown"
     assert plan.blocked == 1
     # daily_work_limit defaults to 0 (uncapped), so an exhausted cap must be
     # stated to be exercised.
     capped = replace(cfg, daily_work_limit=256)
-    budget=cfg.binding.data_directory/'runtime-worker-day.json'
-    budget.write_text(json.dumps(dict(installation_id=cfg.binding.installation_id,day='2026-09-12',used=capped.daily_work_limit)))
-    before=budget.read_bytes()
-    assert next_wake(capped,now=NOW).due_at == '2026-09-13T00:00:00Z'
+    budget = cfg.binding.data_directory / "runtime-worker-day.json"
+    budget.write_text(
+        json.dumps(dict(installation_id=cfg.binding.installation_id, day="2026-09-12", used=capped.daily_work_limit))
+    )
+    before = budget.read_bytes()
+    assert next_wake(capped, now=NOW).due_at == "2026-09-13T00:00:00Z"
     # The same spent counter under the uncapped default must NOT defer. With a
     # limit of 0 every `used >= limit` comparison is trivially true, which would
     # put an uncapped instance to sleep until tomorrow — the exact dormancy that
     # setting exists to avoid.
-    assert next_wake(cfg,now=NOW).due_at != '2026-09-13T00:00:00Z'
-    queue(core,cfg,ref='TEST-purge',kind='purge')
-    assert next_wake(capped,now=NOW).due_at == '2026-09-12T00:00:00Z'
+    assert next_wake(cfg, now=NOW).due_at != "2026-09-13T00:00:00Z"
+    queue(core, cfg, ref="TEST-purge", kind="purge")
+    assert next_wake(capped, now=NOW).due_at == "2026-09-12T00:00:00Z"
     assert budget.read_bytes() == before  # Planning neither spends nor resets.
-    plan = next_wake(replace(capped, daily_work_limit=capped.daily_work_limit+1),now=NOW,
-                     unavailable_until={'purge':NOW+timedelta(seconds=300)})
-    assert plan.due_at == '2026-09-12T00:05:00Z' and plan.reason == 'capability_cooldown'
+    plan = next_wake(
+        replace(capped, daily_work_limit=capped.daily_work_limit + 1),
+        now=NOW,
+        unavailable_until={"purge": NOW + timedelta(seconds=300)},
+    )
+    assert plan.due_at == "2026-09-12T00:05:00Z" and plan.reason == "capability_cooldown"
     with core.storage.write(cfg.context()) as tx:
         tx._check(write=True).execute("UPDATE work_items SET state='failed',last_error_code='invalid_derivation'")
-    plan=next_wake(cfg,now=NOW)
-    assert plan.due_at is None and plan.reason=='failed_terminal' and plan.failed>0
+    plan = next_wake(cfg, now=NOW)
+    assert plan.due_at is None and plan.reason == "failed_terminal" and plan.failed > 0
 
 
 def test_an_inbox_row_a_replay_will_store_wakes_the_worker(tmp_path):
@@ -90,167 +123,234 @@ def test_an_inbox_row_a_replay_will_store_wakes_the_worker(tmp_path):
     from scope_recall._version import __version__
 
     core, cfg, _path = fixture(tmp_path)
-    later = (NOW + timedelta(minutes=40)).strftime('%Y-%m-%dT%H:%M:%SZ')
+    later = (NOW + timedelta(minutes=40)).strftime("%Y-%m-%dT%H:%M:%SZ")
     # Put off until later, by any release and on either path: each wakes the worker when its time is up.  Given up:
     # nothing, until an operator returns it.
-    codes = ('SOURCE_MISSING', 'VERSION_CONFLICT', 'VERSION_CONFLICT:rekeyed', 'SOURCE_MISSING:TEST-final',
-             f'DEFERRED|{__version__}|{later}|1|replay|IDENTITY_UNBOUND', f'DEFERRED|0.0.1|{later}|3|rekey|TypeError',
-             f'GAVE_UP|{__version__}|24|replay|TypeError', 'GAVE_UP|0.0.1|24|rekey|TypeError')
+    codes = (
+        "SOURCE_MISSING",
+        "VERSION_CONFLICT",
+        "VERSION_CONFLICT:rekeyed",
+        "SOURCE_MISSING:TEST-final",
+        f"DEFERRED|{__version__}|{later}|1|replay|IDENTITY_UNBOUND",
+        f"DEFERRED|0.0.1|{later}|3|rekey|TypeError",
+        f"GAVE_UP|{__version__}|24|replay|TypeError",
+        "GAVE_UP|0.0.1|24|rekey|TypeError",
+    )
     for index, code in enumerate(codes):
-        event = source_event(source_event_key=f'TEST-inbox-{index}', content=f'TEST 第{index}条。')
-        token, _prepared = capture_inbox.enqueue(core.storage, core.clock, cfg.context(), event,
-                                                 scope_id='TEST-a', host_scope=None)
+        event = source_event(source_event_key=f"TEST-inbox-{index}", content=f"TEST 第{index}条。")
+        token, _prepared = capture_inbox.enqueue(
+            core.storage, core.clock, cfg.context(), event, scope_id="TEST-a", host_scope=None
+        )
         with core.storage.write(cfg.context()) as tx:
-            tx._check(write=True).execute('UPDATE capture_inbox SET last_error_code=? WHERE token=?', (code, token))
+            tx._check(write=True).execute("UPDATE capture_inbox SET last_error_code=? WHERE token=?", (code, token))
     # A row of another partition (here none at all) is not this worker's to replay: counted, it woke a pass that
     # never took it (review of rc10).
-    elsewhere = TrustedContext(cfg.binding, 'TEST-session', frozenset({'TEST-a'}), 'human_direct')
-    capture_inbox.enqueue(core.storage, core.clock, elsewhere, source_event(
-        source_event_key='TEST-inbox-elsewhere', content='TEST 别处的一条。'), scope_id='TEST-a', host_scope=None)
+    elsewhere = TrustedContext(cfg.binding, "TEST-session", frozenset({"TEST-a"}), "human_direct")
+    capture_inbox.enqueue(
+        core.storage,
+        core.clock,
+        elsewhere,
+        source_event(source_event_key="TEST-inbox-elsewhere", content="TEST 别处的一条。"),
+        scope_id="TEST-a",
+        host_scope=None,
+    )
     plan = next_wake(cfg, now=NOW)
-    assert (plan.reason, plan.pending) == ('durable_capture_ingress', 2)
+    assert (plan.reason, plan.pending) == ("durable_capture_ingress", 2)
     with core.storage.write(cfg.context()) as tx:
         tx._check(write=True).execute("DELETE FROM capture_inbox WHERE last_error_code NOT LIKE 'DEFERRED|%'")
     plan = next_wake(cfg, now=NOW)
-    assert (plan.reason, plan.due_at, plan.pending) == ('durable_capture_deferred', later, 0)
+    assert (plan.reason, plan.due_at, plan.pending) == ("durable_capture_deferred", later, 0)
     plan = next_wake(cfg, now=NOW + timedelta(minutes=41))
-    assert (plan.reason, plan.pending) == ('durable_capture_ingress', 2)
+    assert (plan.reason, plan.pending) == ("durable_capture_ingress", 2)
 
 
 def test_busy_day_counter_still_plans_and_both_readers_share_one_bound(tmp_path, monkeypatch):
     # The planner once rejected any counter above 10,000 while the worker kept
     # counting: every supervisor ended as failed after its first drain, and
     # autostart could not launch, until the UTC date changed.
-    core,cfg,_ = fixture(tmp_path)
-    queue(core,cfg)
-    budget=cfg.binding.data_directory/'runtime-worker-day.json'
+    core, cfg, _ = fixture(tmp_path)
+    queue(core, cfg)
+    budget = cfg.binding.data_directory / "runtime-worker-day.json"
+
     def day(used):
-        budget.write_text(json.dumps(dict(installation_id=cfg.binding.installation_id,day='2026-09-12',used=used)))
+        budget.write_text(json.dumps(dict(installation_id=cfg.binding.installation_id, day="2026-09-12", used=used)))
+
     day(10_001)  # Uncapped (the default): a busy day is not a spent one.
-    plan=next_wake(cfg,now=NOW)
-    assert plan.due_at == '2026-09-12T00:00:00Z' and plan.reason == 'work_available'
-    capped=replace(cfg,daily_work_limit=20_000)
-    assert next_wake(capped,now=NOW).reason == 'work_available'
+    plan = next_wake(cfg, now=NOW)
+    assert plan.due_at == "2026-09-12T00:00:00Z" and plan.reason == "work_available"
+    capped = replace(cfg, daily_work_limit=20_000)
+    assert next_wake(capped, now=NOW).reason == "work_available"
     for used in (20_000, 20_001):
         day(used)
-        plan=next_wake(capped,now=NOW)
-        assert plan.due_at == '2026-09-13T00:00:00Z' and plan.reason == 'daily_queue_budget'
+        plan = next_wake(capped, now=NOW)
+        assert plan.due_at == "2026-09-13T00:00:00Z" and plan.reason == "daily_queue_budget"
     # The reservation reads the same file for the same day; one bound decides
     # for both what a valid counter is, so neither can accept what the other refuses.
-    monkeypatch.setitem(_reserve_daily_work.__globals__, 'utc_now', lambda: '2026-09-12T00:00:00Z')
-    for corrupt in (-1, DAILY_COUNTER_MAX + 1, True, 1.5, '12'):
+    monkeypatch.setitem(_reserve_daily_work.__globals__, "utc_now", lambda: "2026-09-12T00:00:00Z")
+    for corrupt in (-1, DAILY_COUNTER_MAX + 1, True, 1.5, "12"):
         day(corrupt)
-        with pytest.raises(ValueError, match='supervisor_budget_invalid'):
-            next_wake(cfg,now=NOW)
-        with pytest.raises(ValueError, match='worker_budget_invalid'):
+        with pytest.raises(ValueError, match="supervisor_budget_invalid"):
+            next_wake(cfg, now=NOW)
+        with pytest.raises(ValueError, match="worker_budget_invalid"):
             _reserve_daily_work(cfg)
     day(DAILY_COUNTER_MAX)
-    assert next_wake(cfg,now=NOW).reason == 'work_available'
+    assert next_wake(cfg, now=NOW).reason == "work_available"
     assert _reserve_daily_work(cfg)[2] == cfg.max_items
 
 
 def test_quiet_supervisor_wakes_due_work_without_chat_and_does_not_spin(tmp_path):
-    core,cfg,path=fixture(tmp_path)
-    queue(core,cfg,ref='TEST-now')
-    queue(core,cfg,ref='TEST-later',due=NOW+timedelta(seconds=65))
-    elapsed=[0.0]; calls=[]; sleeps=[]
+    core, cfg, path = fixture(tmp_path)
+    queue(core, cfg, ref="TEST-now")
+    queue(core, cfg, ref="TEST-later", due=NOW + timedelta(seconds=65))
+    elapsed = [0.0]
+    calls = []
+    sleeps = []
+
     def sleep(seconds):
-        sleeps.append(seconds); elapsed[0]+=seconds
+        sleeps.append(seconds)
+        elapsed[0] += seconds
+
     def utc():
-        return NOW+timedelta(seconds=elapsed[0])
+        return NOW + timedelta(seconds=elapsed[0])
+
     def drain(remaining):
         assert 0 < remaining <= cfg.drain_seconds
         calls.append(elapsed[0])
         with core.storage.write(cfg.context()) as tx:
-            cur=tx._check(write=True).execute("""UPDATE work_items SET state='done' WHERE work_id=(
+            cur = tx._check(write=True).execute(
+                """UPDATE work_items SET state='done' WHERE work_id=(
                 SELECT work_id FROM work_items WHERE state='pending' AND available_at<=? ORDER BY work_id LIMIT 1)""",
-                (utc().isoformat().replace('+00:00','Z'),))
-            return 0, {'completed':cur.rowcount}
-    assert supervise(path,drain,clock=lambda:elapsed[0],sleep=sleep,utc_now=utc) == 0
-    assert calls == [0,65,66]
+                (utc().isoformat().replace("+00:00", "Z"),),
+            )
+            return 0, {"completed": cur.rowcount}
+
+    assert supervise(path, drain, clock=lambda: elapsed[0], sleep=sleep, utc_now=utc) == 0
+    assert calls == [0, 65, 66]
     assert max(sleeps) <= 60 and len(sleeps) == 3
-    assert SupervisorControl(cfg).read()['state'] == 'idle'
+    assert SupervisorControl(cfg).read()["state"] == "idle"
 
 
 def test_supervisor_single_owner_and_idle_exit_generation_handshake(tmp_path):
-    _,cfg,path=fixture(tmp_path)
-    entered=threading.Event(); release=threading.Event(); calls=[]
+    _, cfg, path = fixture(tmp_path)
+    entered = threading.Event()
+    release = threading.Event()
+    calls = []
+
     def drain(_remaining):
-        calls.append(1); entered.set(); assert release.wait(2)
-        return 0, {'completed':0}
+        calls.append(1)
+        entered.set()
+        assert release.wait(2)
+        return 0, {"completed": 0}
+
     with ThreadPoolExecutor(max_workers=1) as pool:
-        first=pool.submit(supervise,path,drain)
+        first = pool.submit(supervise, path, drain)
         assert entered.wait(2)
         try:
-            assert supervise(path,lambda _: (_ for _ in ()).throw(AssertionError('duplicate drain'))) == 0
+            assert supervise(path, lambda _: (_ for _ in ()).throw(AssertionError("duplicate drain"))) == 0
         finally:
             release.set()
         assert first.result(2) == 0
-    assert len(calls)==1
-    control=SupervisorControl(cfg)
-    revision=control.read()['wake_revision']
+    assert len(calls) == 1
+    control = SupervisorControl(cfg)
+    revision = control.read()["wake_revision"]
     control.request()
-    assert not control.close_if_unchanged(revision,state='idle')
-    assert control.close_if_unchanged(control.read()['wake_revision'],state='idle')
+    assert not control.close_if_unchanged(revision, state="idle")
+    assert control.close_if_unchanged(control.read()["wake_revision"], state="idle")
 
 
 def test_finite_limit_does_not_renew_and_records_pending_resume(tmp_path):
-    core,cfg,path=fixture(tmp_path,supervisor_max_drains=2)
-    queue(core,cfg)
-    elapsed=[0.0]; calls=[]
+    core, cfg, path = fixture(tmp_path, supervisor_max_drains=2)
+    queue(core, cfg)
+    elapsed = [0.0]
+    calls = []
+
     def drain(_remaining):
-        calls.append(elapsed[0]); SupervisorControl(cfg).request()
-        return 0, {'completed':1}
-    assert supervise(path,drain,clock=lambda:elapsed[0],sleep=lambda t:elapsed.__setitem__(0,elapsed[0]+t),
-                     utc_now=lambda:NOW+timedelta(seconds=elapsed[0])) == 0
-    state=SupervisorControl(cfg).read()
-    assert calls==[0,1] and state['state']=='suspended' and state['drains']==2
-    assert state['reason']=='supervisor_limit' and state['accepting'] is False
-    assert state['deadline_at']=='2026-09-12T00:03:00Z'
+        calls.append(elapsed[0])
+        SupervisorControl(cfg).request()
+        return 0, {"completed": 1}
+
+    assert (
+        supervise(
+            path,
+            drain,
+            clock=lambda: elapsed[0],
+            sleep=lambda t: elapsed.__setitem__(0, elapsed[0] + t),
+            utc_now=lambda: NOW + timedelta(seconds=elapsed[0]),
+        )
+        == 0
+    )
+    state = SupervisorControl(cfg).read()
+    assert calls == [0, 1] and state["state"] == "suspended" and state["drains"] == 2
+    assert state["reason"] == "supervisor_limit" and state["accepting"] is False
+    assert state["deadline_at"] == "2026-09-12T00:03:00Z"
 
 
 def test_recovery_progress_continues_once_and_budget_waits_legacy_repair(tmp_path):
-    core,cfg,path=fixture(tmp_path)
-    queue(core,cfg,kind='consolidate',state='failed',error='INPUT_INVALID')
+    core, cfg, path = fixture(tmp_path)
+    queue(core, cfg, kind="consolidate", state="failed", error="INPUT_INVALID")
     # An explicit cap: the default is 0, which means uncapped and never defers.
-    configured=replace(cfg,daily_work_limit=256,
-                       auxiliary=replace(cfg.auxiliary,external_consolidation=True,consolidation=object(),
-                                         ledger_path=tmp_path/'TEST-ledger.sqlite3'))
-    assert next_wake(configured,now=NOW).reason == 'legacy_source_repair'
-    budget=cfg.binding.data_directory/'runtime-worker-day.json'
-    budget.write_text(json.dumps(dict(installation_id=cfg.binding.installation_id,day='2026-09-12',used=configured.daily_work_limit)))
-    assert next_wake(configured,now=NOW).due_at=='2026-09-13T00:00:00Z'
-    assert next_wake(replace(configured,daily_work_limit=0),now=NOW).reason == 'legacy_source_repair'
+    configured = replace(
+        cfg,
+        daily_work_limit=256,
+        auxiliary=replace(
+            cfg.auxiliary,
+            external_consolidation=True,
+            consolidation=object(),
+            ledger_path=tmp_path / "TEST-ledger.sqlite3",
+        ),
+    )
+    assert next_wake(configured, now=NOW).reason == "legacy_source_repair"
+    budget = cfg.binding.data_directory / "runtime-worker-day.json"
+    budget.write_text(
+        json.dumps(
+            dict(installation_id=cfg.binding.installation_id, day="2026-09-12", used=configured.daily_work_limit)
+        )
+    )
+    assert next_wake(configured, now=NOW).due_at == "2026-09-13T00:00:00Z"
+    assert next_wake(replace(configured, daily_work_limit=0), now=NOW).reason == "legacy_source_repair"
     with core.storage.write(cfg.context()) as tx:
         tx._check(write=True).execute("UPDATE work_items SET last_error_code='chunk_checked:1106|INPUT_INVALID'")
-    assert next_wake(configured,now=NOW).due_at is None
-    elapsed=[0.0]; calls=[]
+    assert next_wake(configured, now=NOW).due_at is None
+    elapsed = [0.0]
+    calls = []
+
     def drain(_remaining):
         calls.append(elapsed[0])
-        return 0, {'completed':0,'recovered':1 if len(calls)==1 else 0}
-    assert supervise(path,drain,clock=lambda:elapsed[0],sleep=lambda t:elapsed.__setitem__(0,elapsed[0]+t),
-                     utc_now=lambda:NOW+timedelta(seconds=elapsed[0]))==0
-    assert calls==[0,1]
-    assert SupervisorControl(cfg).read()['state']=='blocked'
+        return 0, {"completed": 0, "recovered": 1 if len(calls) == 1 else 0}
+
+    assert (
+        supervise(
+            path,
+            drain,
+            clock=lambda: elapsed[0],
+            sleep=lambda t: elapsed.__setitem__(0, elapsed[0] + t),
+            utc_now=lambda: NOW + timedelta(seconds=elapsed[0]),
+        )
+        == 0
+    )
+    assert calls == [0, 1]
+    assert SupervisorControl(cfg).read()["state"] == "blocked"
 
 
 def test_real_detached_supervisor_processes_future_local_work_after_host_exit(tmp_path):
     # A wall-clock +3s due date raced Python startup and could be consumed by
     # the first drain. Handshake at the actual scheduler sleep, then advance its
     # injected clocks; the worker, SQLite and host-exit boundary remain real.
-    core,cfg,path=fixture(tmp_path,supervisor_seconds=180,supervisor_max_drains=5,
-                          drain_seconds=30,daily_work_limit=16)
-    receipt=core.record_event(cfg.context(),source_event(),scope_id='TEST-a')
-    ref=receipt.event_refs[0].ref
-    base=datetime.now(timezone.utc)
-    due=(base+timedelta(days=1)).isoformat().replace('+00:00','Z')
+    core, cfg, path = fixture(
+        tmp_path, supervisor_seconds=180, supervisor_max_drains=5, drain_seconds=30, daily_work_limit=16
+    )
+    receipt = core.record_event(cfg.context(), source_event(), scope_id="TEST-a")
+    ref = receipt.event_refs[0].ref
+    base = datetime.now(timezone.utc)
+    due = (base + timedelta(days=1)).isoformat().replace("+00:00", "Z")
     with core.storage.write(cfg.context()) as tx:
-        tx.work.enqueue('rebuild_projection',ref,1,available_at=due)
-    marker=tmp_path/'host-exited.json'
-    waiting=tmp_path/'supervisor-waiting'
-    release=tmp_path/'work-now-due'
-    child=tmp_path/'TEST-controlled-supervisor.py'
-    child.write_text("""import sys,types,time
+        tx.work.enqueue("rebuild_projection", ref, 1, available_at=due)
+    marker = tmp_path / "host-exited.json"
+    waiting = tmp_path / "supervisor-waiting"
+    release = tmp_path / "work-now-due"
+    child = tmp_path / "TEST-controlled-supervisor.py"
+    child.write_text(
+        """import sys,types,time
 from datetime import datetime,timedelta
 from pathlib import Path
 root,config,waiting,release,base=sys.argv[1:]
@@ -271,8 +371,10 @@ def controlled(path,drain,**kwargs):
                     utc_now=lambda:base+timedelta(seconds=elapsed[0]))
 scheduling.supervise=controlled
 raise SystemExit(worker_watchdog.main(['--config',config,'--python',sys.executable]))
-""",encoding='utf-8')
-    script="""import json,os,subprocess,sys
+""",
+        encoding="utf-8",
+    )
+    script = """import json,os,subprocess,sys
 from pathlib import Path
 child=subprocess.Popen([sys.executable,'-B',*sys.argv[1:-1]],
                        stdout=(log:=open(Path(sys.argv[1]).with_suffix('.log'),'w')),stderr=log,
@@ -281,39 +383,54 @@ child=subprocess.Popen([sys.executable,'-B',*sys.argv[1:-1]],
 Path(sys.argv[-1]).write_text(json.dumps({'pid':child.pid}))
 os._exit(0)
 """
-    parent=subprocess.Popen([sys.executable,'-B','-c',script,str(child),
-                             str(Path(__file__).resolve().parents[2]),str(path),
-                             str(waiting),str(release),base.isoformat(),str(marker)],
-                            stdout=subprocess.PIPE,stderr=subprocess.PIPE,
-                            creationflags=int(getattr(subprocess,'CREATE_NO_WINDOW',0)))
-    out,err=parent.communicate(timeout=15)
-    assert parent.returncode==0,(out,err)
+    parent = subprocess.Popen(
+        [
+            sys.executable,
+            "-B",
+            "-c",
+            script,
+            str(child),
+            str(Path(__file__).resolve().parents[2]),
+            str(path),
+            str(waiting),
+            str(release),
+            base.isoformat(),
+            str(marker),
+        ],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        creationflags=int(getattr(subprocess, "CREATE_NO_WINDOW", 0)),
+    )
+    out, err = parent.communicate(timeout=15)
+    assert parent.returncode == 0, (out, err)
     assert marker.exists()
-    control=SupervisorControl(cfg); deadline=time.monotonic()+40
+    control = SupervisorControl(cfg)
+    deadline = time.monotonic() + 40
     try:
-        while not waiting.exists() and time.monotonic()<deadline:
-            time.sleep(.02)
-        assert waiting.exists(),(control.read(),child.with_suffix('.log').read_text(encoding='utf-8'))
-        assert control.read()['state']=='waiting'
+        while not waiting.exists() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert waiting.exists(), (control.read(), child.with_suffix(".log").read_text(encoding="utf-8"))
+        assert control.read()["state"] == "waiting"
         # Only after observing the second-pass scheduler do we release real DB
         # work. No 3-second startup assumption and no pytest/CI retries.
         with core.storage.write(cfg.context()) as tx:
             tx._check(write=True).execute(
                 "UPDATE work_items SET available_at=? WHERE work_type='rebuild_projection'",
-                (base.isoformat().replace('+00:00','Z'),))
+                (base.isoformat().replace("+00:00", "Z"),),
+            )
     finally:
         release.touch()  # also releases the owned child on an assertion failure
-    while time.monotonic()<deadline:
-        state=control.read()
-        if state.get('state') in {'idle','blocked','failed','suspended'}:
+    while time.monotonic() < deadline:
+        state = control.read()
+        if state.get("state") in {"idle", "blocked", "failed", "suspended"}:
             break
-        time.sleep(.02)
-    assert state['state']=='blocked' and state['drains']>=2,state
+        time.sleep(0.02)
+    assert state["state"] == "blocked" and state["drains"] >= 2, state
     with core.storage.read(cfg.context()) as tx:
-        row=tx._check().execute("SELECT state FROM work_items WHERE work_type='rebuild_projection'").fetchone()
-        assert row['state']=='done'
-    budget=json.loads((cfg.binding.data_directory/'runtime-worker-day.json').read_text())
-    assert budget['used']==1  # An explicit cap, never the uncapped default.
+        row = tx._check().execute("SELECT state FROM work_items WHERE work_type='rebuild_projection'").fetchone()
+        assert row["state"] == "done"
+    budget = json.loads((cfg.binding.data_directory / "runtime-worker-day.json").read_text())
+    assert budget["used"] == 1  # An explicit cap, never the uncapped default.
 
 
 def test_an_edited_setting_is_taken_up_without_failing_the_supervisor(tmp_path):
@@ -324,46 +441,62 @@ def test_an_edited_setting_is_taken_up_without_failing_the_supervisor(tmp_path):
     minutes later.  Seen on the pilot, four times in one morning, while its rebuild was sped up.
     """
     core, cfg, path = fixture(tmp_path)
-    queue(core, cfg, ref='TEST-first')
-    queue(core, cfg, ref='TEST-second')
+    queue(core, cfg, ref="TEST-first")
+    queue(core, cfg, ref="TEST-second")
     elapsed = [0.0]
     calls = []
 
     def drain(_remaining):
         calls.append(elapsed[0])
         if len(calls) == 1:
-            raw = json.loads(path.read_text(encoding='utf-8'))
-            raw['worker_min_interval_seconds'] = 7
-            path.write_text(json.dumps(raw), encoding='utf-8')
+            raw = json.loads(path.read_text(encoding="utf-8"))
+            raw["worker_min_interval_seconds"] = 7
+            path.write_text(json.dumps(raw), encoding="utf-8")
         with core.storage.write(cfg.context()) as tx:
             cur = tx._check(write=True).execute("""UPDATE work_items SET state='done' WHERE work_id=(
                 SELECT work_id FROM work_items WHERE state='pending' ORDER BY work_id LIMIT 1)""")
-            return 0, {'completed': cur.rowcount}
+            return 0, {"completed": cur.rowcount}
 
-    assert supervise(path, drain, clock=lambda: elapsed[0], sleep=lambda t: elapsed.__setitem__(0, elapsed[0] + t),
-                     utc_now=lambda: NOW + timedelta(seconds=elapsed[0])) == 0
+    assert (
+        supervise(
+            path,
+            drain,
+            clock=lambda: elapsed[0],
+            sleep=lambda t: elapsed.__setitem__(0, elapsed[0] + t),
+            utc_now=lambda: NOW + timedelta(seconds=elapsed[0]),
+        )
+        == 0
+    )
     assert len(calls) >= 2 and calls[1] - calls[0] == 7, f"the next pass did not keep the edited interval: {calls}"
     state = SupervisorControl(cfg).read()
-    assert state['state'] == 'idle' and state['reason'] != 'supervisor_failed', state
+    assert state["state"] == "idle" and state["reason"] != "supervisor_failed", state
 
 
 def test_a_config_that_names_another_store_ends_the_supervisor_cleanly(tmp_path):
     """The one edit a supervisor cannot take up: its control files belong to the store it started for."""
     core, cfg, path = fixture(tmp_path)
-    queue(core, cfg, ref='TEST-first')
-    queue(core, cfg, ref='TEST-second')
+    queue(core, cfg, ref="TEST-first")
+    queue(core, cfg, ref="TEST-second")
     elapsed = [0.0]
     calls = []
 
     def drain(_remaining):
         calls.append(elapsed[0])
-        raw = json.loads(path.read_text(encoding='utf-8'))
-        raw['binding']['installation_id'] = 'TEST-another-installation'
-        path.write_text(json.dumps(raw), encoding='utf-8')
-        return 0, {'completed': 1}
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        raw["binding"]["installation_id"] = "TEST-another-installation"
+        path.write_text(json.dumps(raw), encoding="utf-8")
+        return 0, {"completed": 1}
 
-    assert supervise(path, drain, clock=lambda: elapsed[0], sleep=lambda t: elapsed.__setitem__(0, elapsed[0] + t),
-                     utc_now=lambda: NOW + timedelta(seconds=elapsed[0])) == 0
+    assert (
+        supervise(
+            path,
+            drain,
+            clock=lambda: elapsed[0],
+            sleep=lambda t: elapsed.__setitem__(0, elapsed[0] + t),
+            utc_now=lambda: NOW + timedelta(seconds=elapsed[0]),
+        )
+        == 0
+    )
     assert calls == [0], calls
     state = SupervisorControl(cfg).read()
-    assert (state['state'], state['reason'], state['accepting']) == ('suspended', 'config_changed', False), state
+    assert (state["state"], state["reason"], state["accepting"]) == ("suspended", "config_changed", False), state

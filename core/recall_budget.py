@@ -4,6 +4,7 @@ The unit is a tokenizer-independent estimate, not an exact model token count.
 UTF-8 bytes remain a separate diagnostic; CJK characters must not cost three
 budget units merely because their encoding uses three bytes.
 """
+
 from __future__ import annotations
 
 from collections import Counter
@@ -97,16 +98,22 @@ def event_admission_order(ranked, limits):
         # short statements by raw fusion score loses the ranker's semantic
         # tie-breaks (for example a decisive answer versus an assistant echo).
         if any(cost > 256 for cost in costs):
-            density = sorted(fusion, key=lambda index: max(run[index][0].fusion_score, 1e-6) /
-                             math.sqrt(1 + costs[index] / DENSITY_QUANTUM_UNITS), reverse=True)
+            density = sorted(
+                fusion,
+                key=lambda index: (
+                    max(run[index][0].fusion_score, 1e-6) / math.sqrt(1 + costs[index] / DENSITY_QUANTUM_UNITS)
+                ),
+                reverse=True,
+            )
             density_taken, density_after = _admitted(costs, density, limits, used)
             if density_taken != taken:
                 # Density decides which events enter, never where they stand:
                 # the admitted keep the ranker's order, and the rest follow in
                 # density order.  Re-sorted outright, a reply that won its slot
                 # still sat below every snippet that won one.
-                run[:] = ([run[index] for index in fusion if index in density_taken]
-                          + [run[index] for index in density if index not in density_taken])
+                run[:] = [run[index] for index in fusion if index in density_taken] + [
+                    run[index] for index in density if index not in density_taken
+                ]
                 after = density_after
         used = after
         ordered.extend(run)

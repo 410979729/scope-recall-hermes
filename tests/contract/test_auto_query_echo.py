@@ -1,4 +1,5 @@
 """P12 regression: automatic recall must not let an old query echo crowd out facts."""
+
 from __future__ import annotations
 
 from dataclasses import replace

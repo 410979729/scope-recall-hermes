@@ -5,6 +5,7 @@ gate in ``core/claims.qualify``.  The asymmetry is the point: widening must let
 through subjects that are genuinely in the evidence and must not let through
 anything invented, pointed at, or clause-shaped.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -22,6 +23,7 @@ from scope_recall.core.subject_binding import (
 # --------------------------------------------------------------------------
 # The rungs
 # --------------------------------------------------------------------------
+
 
 def test_rung_one_is_todays_rule():
     assert subject_binding("Kimi K3", quote="Kimi K3 上下文 262144", content="…") == "quote"
@@ -51,23 +53,33 @@ def test_a_pointer_is_never_a_subject_at_any_distance(subject):
     assert subject_binding(subject, quote="这条引文紧挨着它", content=content) is None
 
 
-@pytest.mark.parametrize("subject", [
-    "If the session ran smoothly with no corrections",
-    "When the queue drains",
-    "unless the worker is running",
-    "如果会话顺利结束",
-    "除非工作进程还在跑",
-])
+@pytest.mark.parametrize(
+    "subject",
+    [
+        "If the session ran smoothly with no corrections",
+        "When the queue drains",
+        "unless the worker is running",
+        "如果会话顺利结束",
+        "除非工作进程还在跑",
+    ],
+)
 def test_a_clause_is_never_a_subject(subject):
     content = f"{subject}，就直接停下。"
     assert names_a_thing(subject) is False
     assert subject_binding(subject, quote="就直接停下", content=content) is None
 
 
-@pytest.mark.parametrize("subject", [
-    "Kimi K3", "windows-ocr.ps1", "此测试项目", "跨实例记忆继承（整库灌入）的治理",
-    "the user's laptop", "用户手册",
-])
+@pytest.mark.parametrize(
+    "subject",
+    [
+        "Kimi K3",
+        "windows-ocr.ps1",
+        "此测试项目",
+        "跨实例记忆继承（整库灌入）的治理",
+        "the user's laptop",
+        "用户手册",
+    ],
+)
 def test_something_that_names_a_thing_is_allowed_to_reach_rung_two(subject):
     assert names_a_thing(subject) is True
 
@@ -94,16 +106,31 @@ def test_a_subject_that_is_not_text_binds_nothing(bad):
 # Through the real gate
 # --------------------------------------------------------------------------
 
+
 def _qualify(text, *, subject, quote, value="262144", predicate="上下文窗口", kind="fact"):
     """Same shape the sibling claim-semantics tests use: one root, one span."""
-    root = RootEvidence("TEST-root", 1, "human_direct", None, text,
-                        "2026-09-06T12:00:00Z", "complete", "TEST-session",
-                        source_principal={"kind": "human", "resolution": "verified",
-                                          "principal_ref": "principal:TEST-owner"})
-    proposal = dict(kind=kind, subject=subject, predicate=predicate, value_text=value,
-                    conditions=[], statement_kind="assertion",
-                    valid_from=root.occurred_at, valid_to=None,
-                    evidence_spans=[dict(source_ref=root.ref, source_revision=1, quote=quote)])
+    root = RootEvidence(
+        "TEST-root",
+        1,
+        "human_direct",
+        None,
+        text,
+        "2026-09-06T12:00:00Z",
+        "complete",
+        "TEST-session",
+        source_principal={"kind": "human", "resolution": "verified", "principal_ref": "principal:TEST-owner"},
+    )
+    proposal = dict(
+        kind=kind,
+        subject=subject,
+        predicate=predicate,
+        value_text=value,
+        conditions=[],
+        statement_kind="assertion",
+        valid_from=root.occurred_at,
+        valid_to=None,
+        evidence_spans=[dict(source_ref=root.ref, source_revision=1, quote=quote)],
+    )
     return qualify(proposal, (root,))
 
 
@@ -145,6 +172,7 @@ def test_a_subject_two_sentences_away_is_still_refused():
 # A quote that already ends a sentence must not read the next one
 # --------------------------------------------------------------------------
 
+
 def test_a_quote_ending_a_sentence_does_not_read_the_next_sentence():
     """Found on alpha: a question in the *following* sentence vetoed a claim.
 
@@ -156,8 +184,7 @@ def test_a_quote_ending_a_sentence_does_not_read_the_next_sentence():
     """
     from scope_recall.core.claims import assertion_clause
 
-    source = ("项目【TEST-青岚】内部技术总结应使用银色，对外版仍是绿色。"
-              "我只是问“是不是应该默认红色？”，这不是确认。")
+    source = "项目【TEST-青岚】内部技术总结应使用银色，对外版仍是绿色。我只是问“是不是应该默认红色？”，这不是确认。"
     quote = "项目【TEST-青岚】内部技术总结应使用银色，对外版仍是绿色。"
     assert assertion_clause(source, quote) == quote
 
@@ -178,6 +205,9 @@ def test_an_escaped_break_still_ends_a_clause():
 
 def test_the_question_gate_still_refuses_a_question_in_the_quoted_sentence():
     """Narrowing the radius must not let an actual question through."""
-    verdict = _qualify("TEST-instrument 的上下文窗口是 262144 吗？",
-                       subject="TEST-instrument", quote="TEST-instrument 的上下文窗口是 262144 吗？")
+    verdict = _qualify(
+        "TEST-instrument 的上下文窗口是 262144 吗？",
+        subject="TEST-instrument",
+        quote="TEST-instrument 的上下文窗口是 262144 吗？",
+    )
     assert verdict.state == "proposed" and verdict.reason == "question_not_asserted"

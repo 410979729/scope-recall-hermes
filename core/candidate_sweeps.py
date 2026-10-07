@@ -6,6 +6,7 @@ evidence settled after their conversation ended, candidates that went quiet
 for a month, and evaluations that died only on an input bound that has since
 changed.
 """
+
 from __future__ import annotations
 
 from datetime import timedelta
@@ -15,7 +16,15 @@ from .candidate_debounce import MAX_DEFERRAL_SECONDS, QUIET_SECONDS, parse_stamp
 from .candidate_intake import CandidateIntake
 from .candidate_lifecycle import DORMANCY_DAYS, RULE_VERSION, CandidateSummary
 from .candidate_tables import (
-    HEAD_COLUMNS, HEAD_JOINS, is_live_head, parse_refs, parse_time, rule, settled_reason, snapshot, stamp,
+    HEAD_COLUMNS,
+    HEAD_JOINS,
+    is_live_head,
+    parse_refs,
+    parse_time,
+    rule,
+    settled_reason,
+    snapshot,
+    stamp,
 )
 from .schema import SCHEMA_VERSION
 
@@ -29,16 +38,26 @@ class CandidateSweeps(CandidateIntake):
         moment = parse_time(now)
         now, cutoff = stamp(moment), stamp(moment - timedelta(days=days))
         context, params = self._context()
-        rows = self._read().execute(
-            f"""SELECT candidate_ref,candidate_revision FROM candidate_lifecycle
+        rows = (
+            self._read()
+            .execute(
+                f"""SELECT candidate_ref,candidate_revision FROM candidate_lifecycle
                 WHERE {context} AND processing_state='waiting_evidence'
                   AND COALESCE(last_evidence_at,updated_at)<=?
                 ORDER BY COALESCE(last_evidence_at,updated_at),candidate_ref,candidate_revision LIMIT ?""",
-            (*params, cutoff, limit),
-        ).fetchall()
+                (*params, cutoff, limit),
+            )
+            .fetchall()
+        )
         for row in rows:
-            self._move(row["candidate_ref"], row["candidate_revision"], "archived", "dormant_no_evidence",
-                       now=now, dormant_at=now)
+            self._move(
+                row["candidate_ref"],
+                row["candidate_revision"],
+                "archived",
+                "dormant_no_evidence",
+                now=now,
+                dormant_at=now,
+            )
         return len(rows)
 
     def _nothing_new_to_ask(self, ref: str, revision: int, *, rule_version: str) -> bool:
@@ -46,14 +65,20 @@ class CandidateSweeps(CandidateIntake):
         refs, digest = self._question(ref, revision)
         if not refs:
             return True
-        return self._read().execute(
-            """SELECT 1 FROM candidate_evaluations WHERE candidate_ref=? AND candidate_revision=?
+        return (
+            self._read()
+            .execute(
+                """SELECT 1 FROM candidate_evaluations WHERE candidate_ref=? AND candidate_revision=?
                AND evidence_fingerprint=? AND rule_version=?""",
-            (ref, revision, digest, rule_version),
-        ).fetchone() is not None
+                (ref, revision, digest, rule_version),
+            )
+            .fetchone()
+            is not None
+        )
 
-    def stale_pending(self, *, now: str, rule_version: str = RULE_VERSION,
-                      limit: int = 64) -> tuple[tuple[str, int], ...]:
+    def stale_pending(
+        self, *, now: str, rule_version: str = RULE_VERSION, limit: int = 64
+    ) -> tuple[tuple[str, int], ...]:
         """Pending candidates whose evidence was already put to the evaluator, found with reads only.
 
         Before 3.4.0rc10 any evidence marked a candidate pending, first-hand or not, and one whose question had
@@ -64,15 +89,19 @@ class CandidateSweeps(CandidateIntake):
             raise ContractError("INPUT_INVALID", "stale_pending_limit")
         rule_version = rule(rule_version)
         context, params = self._context("l.")
-        rows = self._read().execute(
-            f"""SELECT l.candidate_ref,l.candidate_revision,l.last_evidence_at,l.last_evaluated_at,l.created_at
+        rows = (
+            self._read()
+            .execute(
+                f"""SELECT l.candidate_ref,l.candidate_revision,l.last_evidence_at,l.last_evaluated_at,l.created_at
                 FROM candidate_lifecycle l
                 WHERE {context} AND l.processing_state='pending_evaluation' AND l.reason='new_evidence'
                   AND NOT EXISTS(SELECT 1 FROM candidate_evaluations e WHERE e.candidate_ref=l.candidate_ref
                       AND e.candidate_revision=l.candidate_revision AND e.state='queued')
                 ORDER BY l.updated_at,l.candidate_ref,l.candidate_revision LIMIT ?""",
-            (*params, limit * 4),
-        ).fetchall()
+                (*params, limit * 4),
+            )
+            .fetchall()
+        )
         found = []
         for row in rows:
             if len(found) >= limit:
@@ -84,8 +113,9 @@ class CandidateSweeps(CandidateIntake):
                 found.append((row["candidate_ref"], int(row["candidate_revision"])))
         return tuple(found)
 
-    def settle_stale_pending(self, refs: tuple[tuple[str, int], ...], *, now: str,
-                             rule_version: str = RULE_VERSION) -> int:
+    def settle_stale_pending(
+        self, refs: tuple[tuple[str, int], ...], *, now: str, rule_version: str = RULE_VERSION
+    ) -> int:
         """Return the named pending candidates with nothing new to ask to waiting for evidence, each checked again."""
         rule_version = rule(rule_version)
         moved = 0
@@ -93,10 +123,14 @@ class CandidateSweeps(CandidateIntake):
             row = self._lifecycle_row(ref, revision)
             if row is None or (row["processing_state"], row["reason"]) != ("pending_evaluation", "new_evidence"):
                 continue
-            queued = self._read().execute(
-                "SELECT 1 FROM candidate_evaluations WHERE candidate_ref=? AND candidate_revision=? AND state='queued'",
-                (ref, revision),
-            ).fetchone()
+            queued = (
+                self._read()
+                .execute(
+                    "SELECT 1 FROM candidate_evaluations WHERE candidate_ref=? AND candidate_revision=? AND state='queued'",
+                    (ref, revision),
+                )
+                .fetchone()
+            )
             if queued is not None or not self._nothing_new_to_ask(ref, revision, rule_version=rule_version):
                 continue
             moved += self._move(ref, revision, "waiting_evidence", "no_new_question", now=now)
@@ -107,10 +141,12 @@ class CandidateSweeps(CandidateIntake):
             raise ContractError("INPUT_INVALID", "candidate_summary_scope")
         conn = self._read()
         context, params = self._context(all_projects=include_all_projects)
-        counts = dict(conn.execute(
-            f"SELECT processing_state,count(*) FROM candidate_lifecycle WHERE {context} GROUP BY processing_state",
-            params,
-        ).fetchall())
+        counts = dict(
+            conn.execute(
+                f"SELECT processing_state,count(*) FROM candidate_lifecycle WHERE {context} GROUP BY processing_state",
+                params,
+            ).fetchall()
+        )
         dormant, oldest, capability = conn.execute(
             f"""SELECT sum(processing_state='archived' AND reason='dormant_no_evidence'),
                        min(CASE WHEN processing_state IN ('pending_evaluation','waiting_evidence') THEN updated_at END),
@@ -143,15 +179,19 @@ class CandidateSweeps(CandidateIntake):
 
     def mark_capability_unavailable(self) -> int:
         context, params = self._context()
-        return self._write().execute(
-            f"""UPDATE candidate_lifecycle SET reason='capability_unavailable'
+        return (
+            self._write()
+            .execute(
+                f"""UPDATE candidate_lifecycle SET reason='capability_unavailable'
                 WHERE {context} AND processing_state='pending_evaluation'
                   AND EXISTS(SELECT 1 FROM candidate_evaluations e JOIN work_items w ON w.work_id=e.work_id
                       WHERE e.candidate_ref=candidate_lifecycle.candidate_ref
                         AND e.candidate_revision=candidate_lifecycle.candidate_revision
                         AND e.state='queued' AND w.state='pending')""",
-            params,
-        ).rowcount
+                params,
+            )
+            .rowcount
+        )
 
     def _settling_rows(self, refs: tuple[tuple[str, int], ...] | None = None):
         """Live candidates holding evidence, for the settle sweep and the doctor alike.
@@ -169,8 +209,10 @@ class CandidateSweeps(CandidateIntake):
                 return []
             only = f"AND (l.candidate_ref,l.candidate_revision) IN (VALUES {','.join('(?,?)' for _ in refs)})"
             only_params = tuple(value for ref in refs for value in ref)
-        return self._read().execute(
-            f"""SELECT {HEAD_COLUMNS},l.last_evidence_at,l.last_evaluated_at,l.created_at,
+        return (
+            self._read()
+            .execute(
+                f"""SELECT {HEAD_COLUMNS},l.last_evidence_at,l.last_evaluated_at,l.created_at,
                        EXISTS(SELECT 1 FROM candidate_evaluations e WHERE e.candidate_ref=l.candidate_ref
                          AND e.candidate_revision=l.candidate_revision AND e.state='queued') AS queued
                 FROM candidate_lifecycle l {HEAD_JOINS}
@@ -181,8 +223,10 @@ class CandidateSweeps(CandidateIntake):
                   AND EXISTS(SELECT 1 FROM candidate_evidence ev
                       WHERE ev.candidate_ref=l.candidate_ref AND ev.candidate_revision=l.candidate_revision)
                 ORDER BY l.last_evidence_at,l.candidate_ref,l.candidate_revision""",
-            (*params, *only_params),
-        ).fetchall()
+                (*params, *only_params),
+            )
+            .fetchall()
+        )
 
     def _settling_eligible(self, row, *, now: str, rule_version: str) -> str | None:
         """The settle reason, but only when scheduling would ask a new question."""
@@ -194,15 +238,20 @@ class CandidateSweeps(CandidateIntake):
         refs, digest = self._question(row["candidate_ref"], row["candidate_revision"])
         if not refs:
             return None
-        asked = self._read().execute(
-            """SELECT 1 FROM candidate_evaluations WHERE candidate_ref=? AND candidate_revision=?
+        asked = (
+            self._read()
+            .execute(
+                """SELECT 1 FROM candidate_evaluations WHERE candidate_ref=? AND candidate_revision=?
                AND evidence_fingerprint=? AND rule_version=?""",
-            (row["candidate_ref"], row["candidate_revision"], digest, rule_version),
-        ).fetchone()
+                (row["candidate_ref"], row["candidate_revision"], digest, rule_version),
+            )
+            .fetchone()
+        )
         return None if asked else reason
 
-    def settled_to_schedule(self, *, now: str, rule_version: str = RULE_VERSION,
-                            limit: int = 16) -> tuple[tuple[str, int], ...]:
+    def settled_to_schedule(
+        self, *, now: str, rule_version: str = RULE_VERSION, limit: int = 16
+    ) -> tuple[tuple[str, int], ...]:
         """The candidate versions ``schedule_settled_candidates`` would queue now, found with reads only.
 
         Finding them walks every candidate still settling -- on the shared store on 2026-09-27, 7.6 s to find
@@ -219,8 +268,14 @@ class CandidateSweeps(CandidateIntake):
                 found.append((row["candidate_ref"], int(row["candidate_revision"])))
         return tuple(found)
 
-    def schedule_settled_candidates(self, *, now: str, rule_version: str = RULE_VERSION, limit: int = 16,
-                                    refs: tuple[tuple[str, int], ...] | None = None) -> int:
+    def schedule_settled_candidates(
+        self,
+        *,
+        now: str,
+        rule_version: str = RULE_VERSION,
+        limit: int = 16,
+        refs: tuple[tuple[str, int], ...] | None = None,
+    ) -> int:
         """Queue one evaluation for each candidate whose evidence has settled.
 
         ``observe_source`` does not schedule while evidence is still arriving,
@@ -241,8 +296,9 @@ class CandidateSweeps(CandidateIntake):
             reason = self._settling_eligible(row, now=now, rule_version=rule_version)
             if reason is None:
                 continue
-            _, queued = self._schedule(snapshot(row, processing_state="pending_evaluation"),
-                                       now=now, rule_version=rule_version)
+            _, queued = self._schedule(
+                snapshot(row, processing_state="pending_evaluation"), now=now, rule_version=rule_version
+            )
             if queued:
                 self._move(row["candidate_ref"], row["candidate_revision"], "pending_evaluation", reason, now=now)
                 scheduled += 1
@@ -270,8 +326,12 @@ class CandidateSweeps(CandidateIntake):
         changed_floor = stamp(moment - timedelta(seconds=1)) if moment is not None else ""
         context, params = self._context("l.")
         conn = self._read()
-        queued = {(row[0], row[1]) for row in conn.execute(
-            "SELECT candidate_ref,candidate_revision FROM candidate_evaluations WHERE state='queued'")}
+        queued = {
+            (row[0], row[1])
+            for row in conn.execute(
+                "SELECT candidate_ref,candidate_revision FROM candidate_evaluations WHERE state='queued'"
+            )
+        }
         newest = """(SELECT e.created_at FROM candidate_evaluations e WHERE e.evaluation_id=(
                          SELECT max(q.evaluation_id) FROM candidate_evaluations q
                          WHERE q.candidate_ref=l.candidate_ref AND q.candidate_revision=l.candidate_revision))"""
@@ -296,8 +356,11 @@ class CandidateSweeps(CandidateIntake):
             for row in rows:
                 if (row["candidate_ref"], row["candidate_revision"]) in queued:
                     continue
-                when = settles_at(last_evidence_at=row["last_evidence_at"], last_evaluated_at=row["last_evaluated_at"],
-                                  created_at=row["created_at"])
+                when = settles_at(
+                    last_evidence_at=row["last_evidence_at"],
+                    last_evaluated_at=row["last_evaluated_at"],
+                    created_at=row["created_at"],
+                )
                 if when is None:
                     continue
                 asked = parse_stamp(row["asked_at"])
@@ -319,8 +382,10 @@ class CandidateSweeps(CandidateIntake):
         ``new_evidence`` until a pass of its partition queues an evaluation or returns it to waiting.  Counts and
         times only.
         """
-        rows = self._read().execute(
-            f"""SELECT l.scope_id,l.project_id,l.branch_id,count(*) AS n,min(l.last_evidence_at) AS oldest
+        rows = (
+            self._read()
+            .execute(
+                f"""SELECT l.scope_id,l.project_id,l.branch_id,count(*) AS n,min(l.last_evidence_at) AS oldest
                 FROM candidate_lifecycle l {HEAD_JOINS}
                 WHERE l.processing_state='pending_evaluation' AND l.updated_at<? AND l.reason='new_evidence'
                   AND c.current_revision=l.candidate_revision AND c.read_blocked=0 AND c.suppressed=0
@@ -328,10 +393,20 @@ class CandidateSweeps(CandidateIntake):
                   AND NOT EXISTS(SELECT 1 FROM candidate_evaluations e WHERE e.candidate_ref=l.candidate_ref
                       AND e.candidate_revision=l.candidate_revision AND e.state='queued')
                 GROUP BY l.scope_id,l.project_id,l.branch_id""",
-            (before,),
-        ).fetchall()
-        return [{"scope_id": row["scope_id"], "project_id": row["project_id"], "branch_id": row["branch_id"],
-                 "candidates": int(row["n"]), "oldest": row["oldest"]} for row in rows]
+                (before,),
+            )
+            .fetchall()
+        )
+        return [
+            {
+                "scope_id": row["scope_id"],
+                "project_id": row["project_id"],
+                "branch_id": row["branch_id"],
+                "candidates": int(row["n"]),
+                "oldest": row["oldest"],
+            }
+            for row in rows
+        ]
 
     def settling_summary(self, *, now: str) -> dict[str, int]:
         """Candidates waiting inside their window versus waiting for the sweep.
@@ -360,7 +435,9 @@ class CandidateSweeps(CandidateIntake):
         summary["max_deferral_seconds"] = MAX_DEFERRAL_SECONDS
         return summary
 
-    def reschedule_budget_blocked_candidates(self, *, now: str, rule_version: str = RULE_VERSION, limit: int = 8) -> int:
+    def reschedule_budget_blocked_candidates(
+        self, *, now: str, rule_version: str = RULE_VERSION, limit: int = 8
+    ) -> int:
         """Give candidates a fresh evaluation after the evidence bound changed.
 
         ``recover_oversized_evaluations`` re-runs the *same* evidence set, so a
@@ -406,9 +483,12 @@ class CandidateSweeps(CandidateIntake):
             )
             if not is_live_head(row):
                 continue
-            self._move(row["candidate_ref"], row["candidate_revision"], "pending_evaluation", "evidence_bound_changed", now=now)
-            _, queued = self._schedule(snapshot(row, processing_state="pending_evaluation"),
-                                       now=now, rule_version=rule_version)
+            self._move(
+                row["candidate_ref"], row["candidate_revision"], "pending_evaluation", "evidence_bound_changed", now=now
+            )
+            _, queued = self._schedule(
+                snapshot(row, processing_state="pending_evaluation"), now=now, rule_version=rule_version
+            )
             rescheduled += int(queued)
         return rescheduled
 
@@ -422,8 +502,10 @@ class CandidateSweeps(CandidateIntake):
         if type(limit) is not int or not 1 <= limit <= 16:
             raise ContractError("INPUT_INVALID", "repair_limit")
         context, params = self._context("l.")
-        rows = self._read().execute(
-            f"""SELECT e.evaluation_id,e.evidence_refs_json,w.work_id,{HEAD_COLUMNS}
+        rows = (
+            self._read()
+            .execute(
+                f"""SELECT e.evaluation_id,e.evidence_refs_json,w.work_id,{HEAD_COLUMNS}
                 FROM candidate_evaluations e
                 JOIN candidate_lifecycle l ON l.candidate_ref=e.candidate_ref AND l.candidate_revision=e.candidate_revision
                 {HEAD_JOINS}
@@ -432,8 +514,10 @@ class CandidateSweeps(CandidateIntake):
                   AND w.work_type='evaluate_candidate' AND w.state='failed'
                   AND UPPER(w.last_error_code)='INPUT_INVALID' AND {context}
                 ORDER BY e.evaluation_id LIMIT ?""",
-            (*params, limit),
-        ).fetchall()
+                (*params, limit),
+            )
+            .fetchall()
+        )
         recovered = 0
         for row in rows:
             fits = self._fits_budget(row, formatter)

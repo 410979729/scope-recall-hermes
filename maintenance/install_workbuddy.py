@@ -16,6 +16,7 @@ path in the command is a double-quoted forward-slash path.  A hook's ``timeout``
 runs past it blocks the prompt.  The remote client (``adapters/codex/remote_client.py``) merges its own hooks and
 server into the same files with the functions here.
 """
+
 from __future__ import annotations
 
 import codecs
@@ -49,8 +50,10 @@ START_SECONDS = 4
 HOOK_TIMEOUTS = {"UserPromptSubmit": 15, "Stop": 10, "SessionEnd": 10}
 #: What the plan says once, whatever changed: a running WorkBuddy may write settings.json itself, and it starts a new
 #: MCP server only once the user approves it.
-RESTART_NOTE = ("quit WorkBuddy before apply-install and start it again after; then approve the MCP server "
-                "scope-recall in WorkBuddy's MCP settings, where it waits for approval")
+RESTART_NOTE = (
+    "quit WorkBuddy before apply-install and start it again after; then approve the MCP server "
+    "scope-recall in WorkBuddy's MCP settings, where it waits for approval"
+)
 #: What ends every hook command.  WorkBuddy blocks the prompt when its hook exits 2 (and a Stop hook's 2 asks the
 #: model to go on), which is argparse's code when the package predates an option the command names, as after a
 #: rollback: any failure is shown as 1 instead, which WorkBuddy reports and lets the prompt through.
@@ -130,6 +133,7 @@ def planned_files(plan: InstallPlan) -> dict[Path, str | bytes]:
 
 # -- the hook command and the server ----------------------------------------------------------------------------
 
+
 def quoted(path: Path, what: str) -> str:
     """``path`` as one word of a Git Bash command: forward slashes, in double quotes.
 
@@ -138,14 +142,18 @@ def quoted(path: Path, what: str) -> str:
     """
     text = path.as_posix()
     if any(char in _NOT_LITERAL or not " " <= char <= "~" for char in text):
-        raise InstallError(f"WorkBuddy runs a hook through Git Bash: keep the {what} on a path of printable ASCII "
-                           f"without \", $, ` or \\ (not {text!r})")
+        raise InstallError(
+            f"WorkBuddy runs a hook through Git Bash: keep the {what} on a path of printable ASCII "
+            f'without ", $, ` or \\ (not {text!r})'
+        )
     return f'"{text}"'
 
 
 def hook_command(plan: InstallPlan) -> str:
-    command = (f"{quoted(plan.python_executable, 'interpreter')} -I -B -m {_HOOK_MODULE} "
-               f"--home {quoted(plan.instance_root, 'home')} --host {HOST}")
+    command = (
+        f"{quoted(plan.python_executable, 'interpreter')} -I -B -m {_HOOK_MODULE} "
+        f"--home {quoted(plan.instance_root, 'home')} --host {HOST}"
+    )
     if plan.env_file is not None:
         command += f" --env-file {quoted(plan.env_file, 'env file')}"
     return command + FAIL_OPEN
@@ -155,8 +163,12 @@ def _server(plan: InstallPlan) -> dict[str, Any]:
     args = ["-I", "-B", "-m", _SERVER_MODULE, "--home", plan.instance_root.as_posix(), "--host", HOST]
     if plan.env_file is not None:
         args += ["--env-file", plan.env_file.as_posix()]
-    return {"type": "stdio", "command": plan.python_executable.as_posix(), "args": args,
-            "description": SERVER_DESCRIPTION}
+    return {
+        "type": "stdio",
+        "command": plan.python_executable.as_posix(),
+        "args": args,
+        "description": SERVER_DESCRIPTION,
+    }
 
 
 def words(command: object) -> list[str]:
@@ -183,8 +195,9 @@ def same_path(value: object, path: Path) -> bool:
 
 def _this_entry(instance_root: Path) -> Callable[[list[str]], bool]:
     """Recognises the hook this install writes for ``instance_root``, whatever interpreter or env file it names."""
-    return lambda parts: (_HOOK_MODULE in parts and option(parts, "--host") == HOST
-                          and same_path(option(parts, "--home"), instance_root))
+    return lambda parts: (
+        _HOOK_MODULE in parts and option(parts, "--host") == HOST and same_path(option(parts, "--home"), instance_root)
+    )
 
 
 def _this_server(instance_root: Path) -> Callable[[object], bool]:
@@ -192,12 +205,17 @@ def _this_server(instance_root: Path) -> Callable[[object], bool]:
         args = server.get("args") if isinstance(server, dict) else None
         if not isinstance(args, list) or not all(type(arg) is str for arg in args):
             return False
-        return _SERVER_MODULE in args and option(args, "--host") == HOST and same_path(option(args, "--home"),
-                                                                                         instance_root)
+        return (
+            _SERVER_MODULE in args
+            and option(args, "--host") == HOST
+            and same_path(option(args, "--home"), instance_root)
+        )
+
     return recognise
 
 
 # -- merging into WorkBuddy's files -----------------------------------------------------------------------------
+
 
 def read_config(path: Path) -> tuple[dict[str, Any], bytes | None]:
     """One of WorkBuddy's JSON files as an object, and the bytes it holds (None: there is no such file yet)."""
@@ -211,8 +229,9 @@ def read_config(path: Path) -> tuple[dict[str, Any], bytes | None]:
         value = json.loads(raw.decode("utf-8-sig")) if raw.strip() else {}
     except (UnicodeError, ValueError) as exc:
         # WorkBuddy reads comments in these files; written back as JSON they would be lost.
-        raise InstallError(f"{path} is not plain JSON: add this entry's hooks and server by hand, or take the "
-                           "comments out") from exc
+        raise InstallError(
+            f"{path} is not plain JSON: add this entry's hooks and server by hand, or take the comments out"
+        ) from exc
     if not isinstance(value, dict):
         raise InstallError(f"{path} does not hold a JSON object")
     return value, raw
@@ -231,8 +250,9 @@ def encode_config(value: dict[str, Any], original: bytes | None) -> bytes:
 
 
 def _is(entry: object, recognise: Callable[[list[str]], bool]) -> bool:
-    return (isinstance(entry, dict) and entry.get("type", "command") == "command"
-            and recognise(words(entry.get("command"))))
+    return (
+        isinstance(entry, dict) and entry.get("type", "command") == "command" and recognise(words(entry.get("command")))
+    )
 
 
 def _scope_recall(entry: object) -> bool:
@@ -282,8 +302,9 @@ def _event_hooks(settings: dict[str, Any]) -> dict[str, Any] | None:
     return hooks
 
 
-def with_hooks(settings: dict[str, Any], command: str, timeouts: Mapping[str, int],
-               recognise: Callable[[list[str]], bool]) -> dict[str, Any]:
+def with_hooks(
+    settings: dict[str, Any], command: str, timeouts: Mapping[str, int], recognise: Callable[[list[str]], bool]
+) -> dict[str, Any]:
     """``settings`` with one command hook running ``command`` for each event of ``timeouts``.
 
     A hook ``recognise`` names is this install's: updated where it stands, any further copy taken out, and taken out
@@ -293,14 +314,17 @@ def with_hooks(settings: dict[str, Any], command: str, timeouts: Mapping[str, in
     hooks = _event_hooks(settings) or {}
     for event, hook in _every_hook(hooks):
         if _scope_recall(hook) and not _is(hook, recognise):
-            raise InstallError(f"WorkBuddy's {SETTINGS_FILENAME} already runs another Scope Recall hook for {event} "
-                               f"({hook.get('command')}): uninstall it first")
+            raise InstallError(
+                f"WorkBuddy's {SETTINGS_FILENAME} already runs another Scope Recall hook for {event} "
+                f"({hook.get('command')}): uninstall it first"
+            )
     merged: dict[str, Any] = {}
     for event, groups in hooks.items():
         if not isinstance(groups, list):
             if event in timeouts:
-                raise InstallError(f"WorkBuddy's {SETTINGS_FILENAME} has {event} hooks that are not a list: fix them "
-                                   "by hand")
+                raise InstallError(
+                    f"WorkBuddy's {SETTINGS_FILENAME} has {event} hooks that are not a list: fix them by hand"
+                )
             merged[event] = groups
             continue
         entry = {"type": "command", "command": command, "timeout": timeouts[event]} if event in timeouts else None
@@ -345,8 +369,10 @@ def with_server(config: dict[str, Any], server: dict[str, Any], recognise: Calla
     servers = _servers(config) or {}
     present = servers.get(SERVER_NAME)
     if present is not None and not recognise(present):
-        raise InstallError(f"WorkBuddy's {MCP_FILENAME} already has an MCP server named {SERVER_NAME} that is not "
-                           "this entry's: take it out first")
+        raise InstallError(
+            f"WorkBuddy's {MCP_FILENAME} already has an MCP server named {SERVER_NAME} that is not "
+            "this entry's: take it out first"
+        )
     return {**copy.deepcopy(config), "mcpServers": {**copy.deepcopy(servers), SERVER_NAME: server}}
 
 
@@ -383,6 +409,7 @@ def unmerged_file(instance_root: Path, path: Path) -> bytes | None:
 
 # -- the entry --------------------------------------------------------------------------------------------------
 
+
 def foreign_instance_entries(instance_root: Path) -> list[str]:
     """A home this installer is asked to create: WorkBuddy's is only ever an attached one."""
     return [f"{instance_root} is not attached to a shared store; run scope-recall attach --host workbuddy first"]
@@ -409,8 +436,7 @@ def validate_reuse(plan: InstallPlan) -> None:
         raise InstallError("existing WorkBuddy entry agent_id mismatch: the store's is " + config.agent_id)
     if config.test_mode != plan.test_mode:
         raise InstallError(
-            "existing WorkBuddy entry test_mode mismatch: "
-            f"stored={config.test_mode}, requested={plan.test_mode}"
+            f"existing WorkBuddy entry test_mode mismatch: stored={config.test_mode}, requested={plan.test_mode}"
         )
 
 

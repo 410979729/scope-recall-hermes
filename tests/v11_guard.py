@@ -26,9 +26,19 @@ _NODE = Path(os.environ["SCOPE_RECALL_TEST_NODE"]).resolve() if os.environ.get("
 # intentionally bare on Windows, so permit only this one tool while retaining
 # the owned-test cwd check above; all other bare child commands remain denied.
 _CHECKOUT_BARE_COMMANDS = frozenset({"git", "git.exe"})
-_CHECKOUT_GIT_SUBCOMMANDS = frozenset({
-    "add", "commit", "config", "diff", "hash-object", "init", "ls-files", "rev-parse", "status",
-})
+_CHECKOUT_GIT_SUBCOMMANDS = frozenset(
+    {
+        "add",
+        "commit",
+        "config",
+        "diff",
+        "hash-object",
+        "init",
+        "ls-files",
+        "rev-parse",
+        "status",
+    }
+)
 _ALLOW_LOOPBACK = os.environ.get("SCOPE_RECALL_TEST_ALLOW_LOOPBACK") == "1"
 
 
@@ -190,18 +200,18 @@ def _check_owned_child_process(args) -> None:
 def _check_path(value, writing=False):
     if not isinstance(value, (str, bytes, os.PathLike)):
         return
-    logical=os.fsdecode(value)
-    if os.name=='nt' and logical.upper() in {'NUL','\\\\.\\NUL'}:
+    logical = os.fsdecode(value)
+    if os.name == "nt" and logical.upper() in {"NUL", "\\\\.\\NUL"}:
         return
-    if os.name=='nt' and logical.startswith('\\\\?\\'):
-        if logical.upper().startswith('\\\\?\\UNC\\'):
-            logical='\\\\'+logical[8:]
-        elif re.match(r'^[A-Za-z]:\\',logical[4:]):
-            logical=logical[4:]
+    if os.name == "nt" and logical.startswith("\\\\?\\"):
+        if logical.upper().startswith("\\\\?\\UNC\\"):
+            logical = "\\\\" + logical[8:]
+        elif re.match(r"^[A-Za-z]:\\", logical[4:]):
+            logical = logical[4:]
         else:
-            raise PermissionError('TEST_BOUNDARY: device namespace denied')
-    if os.name=='nt' and logical.startswith('\\\\.\\'):
-        raise PermissionError('TEST_BOUNDARY: device namespace denied')
+            raise PermissionError("TEST_BOUNDARY: device namespace denied")
+    if os.name == "nt" and logical.startswith("\\\\.\\"):
+        raise PermissionError("TEST_BOUNDARY: device namespace denied")
     path = Path(logical).resolve(strict=False)
     if path == Path(os.devnull).resolve():
         return
@@ -210,14 +220,13 @@ def _check_path(value, writing=False):
         # replaces the message in shutil's re-raise chain, so the judged
         # path must be printed, not only carried.
         import sys as _sys
+
         print(
             f"TEST_BOUNDARY deny: writing={writing} isolated={_ISOLATED} judged={path} raw={value!r}",
             file=_sys.stderr,
             flush=True,
         )
-        raise PermissionError(
-            "TEST_BOUNDARY: write outside isolated test directory (%s)" % path
-        )
+        raise PermissionError("TEST_BOUNDARY: write outside isolated test directory (%s)" % path)
     if any(path.is_relative_to(root) for root in (_ROOT, _ISOLATED, *_RUNTIME, _SYSTEM)):
         return
     raise PermissionError("TEST_BOUNDARY: protected data access")
@@ -303,7 +312,9 @@ def _audit(event, args):
     if event == "open":
         mode, flags = args[1:3]
         writing = bool(isinstance(mode, str) and any(c in mode for c in "wax+"))
-        writing |= bool(isinstance(flags, int) and flags & (os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC | os.O_APPEND))
+        writing |= bool(
+            isinstance(flags, int) and flags & (os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC | os.O_APPEND)
+        )
         _check_path(args[0], writing)
     if event in {"os.listdir", "os.scandir", "os.chdir"}:
         _check_path(args[0])

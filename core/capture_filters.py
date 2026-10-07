@@ -17,7 +17,6 @@ from .secret_patterns import (
 )
 
 
-
 PRIVATE_PATH_PATTERNS: tuple[re.Pattern[str], ...] = (
     # Windows drive paths first so `C:/Users/...` is fully redacted before the
     # POSIX `/Users/...` fallback can leave a `C:` fragment behind.
@@ -48,7 +47,10 @@ INLINE_ATTACHMENT_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"\[screenshot\]", re.IGNORECASE),
     # The greedy prefix already consumes the entire non-whitespace token.
     # Start there once, instead of rescanning every suffix of long CJK prose.
-    re.compile(r"(?<![^\s\]])(?:[A-Za-z]:)?[^\s\]]*[/\\]image_cache[/\\]img_[A-Za-z0-9_-]+\.(?:jpe?g|png|webp|gif)\b", re.IGNORECASE),
+    re.compile(
+        r"(?<![^\s\]])(?:[A-Za-z]:)?[^\s\]]*[/\\]image_cache[/\\]img_[A-Za-z0-9_-]+\.(?:jpe?g|png|webp|gif)\b",
+        re.IGNORECASE,
+    ),
 )
 
 DATA_URL_PREFIX_RE = re.compile(
@@ -338,4 +340,3 @@ def sanitize_structured_value(value: Any, *, _depth: int = 0) -> tuple[Any, bool
         return value, False
     safe = sanitize_report_text(str(value))
     return safe, True
-

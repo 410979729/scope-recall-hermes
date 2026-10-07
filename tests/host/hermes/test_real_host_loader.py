@@ -1,4 +1,5 @@
 """Real Hermes v0.21.0 loader/dispatch probe in an isolated HOME."""
+
 from __future__ import annotations
 
 import hashlib
@@ -75,9 +76,7 @@ def test_real_hermes_memory_loader_and_hooks(tmp_path):
         "def register(ctx):\n    return register_adapter(ctx)\n",
         encoding="utf-8",
     )
-    (plugin / "plugin.yaml").write_text(
-        "description: isolated P11 host loader probe\n", encoding="utf-8"
-    )
+    (plugin / "plugin.yaml").write_text("description: isolated P11 host loader probe\n", encoding="utf-8")
     evidence_dir = worktree / ".execution" / "TEST-P11-HOST"
     evidence_dir.mkdir(parents=True, exist_ok=True)
     evidence_path = evidence_dir / "host-loader-run.json"

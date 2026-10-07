@@ -1,4 +1,5 @@
 """Hermes plugin entry for the bounded core adapter slice."""
+
 from __future__ import annotations
 
 from typing import Any

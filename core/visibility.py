@@ -1,4 +1,5 @@
 """One authority check for all content exits and cached-result release."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -20,15 +21,23 @@ class ObjectRef:
     revision: int
 
     def __post_init__(self):
-        if (self.kind not in OBJECT_KINDS or type(self.ref) is not str or not 1 <= len(self.ref) <= 240
-                or type(self.revision) is not int or self.revision < 1):
+        if (
+            self.kind not in OBJECT_KINDS
+            or type(self.ref) is not str
+            or not 1 <= len(self.ref) <= 240
+            or type(self.revision) is not int
+            or self.revision < 1
+        ):
             raise ContractError("INPUT_INVALID", "object_ref")
 
 
 def _admits(tx, block, *, automatic: bool) -> bool:
     """What an object's block, or its having none, lets the reader of ``tx`` see."""
-    return block is None or (block["scope_id"] in tx.context.allowed_scope_ids and not block["read_blocked"]
-                             and not (automatic and block["suppressed"]))
+    return block is None or (
+        block["scope_id"] in tx.context.allowed_scope_ids
+        and not block["read_blocked"]
+        and not (automatic and block["suppressed"])
+    )
 
 
 def allowed(tx, kind: str, ref: str, *, automatic: bool = False) -> bool:
@@ -41,10 +50,13 @@ def allowed(tx, kind: str, ref: str, *, automatic: bool = False) -> bool:
 
 def _allowed_now(tx, kind: str, ref: str, automatic: bool) -> bool:
     conn = tx._check()
-    if conn.execute("SELECT 1 FROM restored_absence_blocks WHERE object_kind=? AND object_ref=?", (kind, ref)).fetchone():
+    if conn.execute(
+        "SELECT 1 FROM restored_absence_blocks WHERE object_kind=? AND object_ref=?", (kind, ref)
+    ).fetchone():
         return False
-    row = conn.execute("SELECT read_blocked,suppressed,scope_id FROM object_blocks WHERE object_kind=? AND object_ref=?",
-                       (kind, ref)).fetchone()
+    row = conn.execute(
+        "SELECT read_blocked,suppressed,scope_id FROM object_blocks WHERE object_kind=? AND object_ref=?", (kind, ref)
+    ).fetchone()
     return _admits(tx, row, automatic=automatic)
 
 
@@ -57,15 +69,23 @@ def allowed_refs(tx, kind: str, refs, *, automatic: bool = False) -> frozenset[s
     wanted = list(dict.fromkeys(refs))
     if not wanted:
         return frozenset()
-    row = tx._check().execute(
-        """SELECT json_group_array(json_object('ref',j.value,
+    row = (
+        tx._check()
+        .execute(
+            """SELECT json_group_array(json_object('ref',j.value,
                'absent',EXISTS(SELECT 1 FROM restored_absence_blocks a WHERE a.object_kind=? AND a.object_ref=j.value),
                'blocked',b.object_ref IS NOT NULL,'scope_id',b.scope_id,'read_blocked',b.read_blocked,
                'suppressed',b.suppressed))
            FROM json_each(?) j LEFT JOIN object_blocks b ON b.object_kind=? AND b.object_ref=j.value""",
-        (kind, json.dumps(wanted, ensure_ascii=False), kind)).fetchone()
-    admitted = frozenset(item["ref"] for item in json.loads(row[0])
-                         if not item["absent"] and _admits(tx, item if item["blocked"] else None, automatic=automatic))
+            (kind, json.dumps(wanted, ensure_ascii=False), kind),
+        )
+        .fetchone()
+    )
+    admitted = frozenset(
+        item["ref"]
+        for item in json.loads(row[0])
+        if not item["absent"] and _admits(tx, item if item["blocked"] else None, automatic=automatic)
+    )
     remember = getattr(tx, "remember", None)
     if remember is not None:
         for ref in wanted:
@@ -117,15 +137,28 @@ def epoch_retracted(tx, context, epoch: int) -> bool:
     return tx.status().memory_epoch != epoch and retraction_after(tx._check(), context.allowed_scope_ids, epoch)
 
 
-def release_objects(storage, clock, context, refs: tuple[ObjectRef, ...], *, expected_epoch: int,
-                    automatic: bool = True, history: bool = False) -> tuple:
+def release_objects(
+    storage,
+    clock,
+    context,
+    refs: tuple[ObjectRef, ...],
+    *,
+    expected_epoch: int,
+    automatic: bool = True,
+    history: bool = False,
+) -> tuple:
     """Return freshly loaded SQLite objects; never echo cached/vector text.
 
     The successful read transaction is the last authority-release boundary.
     Already delivered host text is outside a local transaction's control.
     """
-    if (type(refs) is not tuple or len(refs) > 200 or any(not isinstance(ref, ObjectRef) for ref in refs)
-            or type(expected_epoch) is not int or expected_epoch < 0):
+    if (
+        type(refs) is not tuple
+        or len(refs) > 200
+        or any(not isinstance(ref, ObjectRef) for ref in refs)
+        or type(expected_epoch) is not int
+        or expected_epoch < 0
+    ):
         raise ContractError("INPUT_INVALID", "release_request")
     with storage.read(context) as tx:
         if epoch_retracted(tx, context, expected_epoch):

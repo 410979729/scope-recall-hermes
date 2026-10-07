@@ -1,4 +1,5 @@
 """P13 operator retry boundary over isolated SQLite work items."""
+
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
@@ -30,9 +31,7 @@ def _fail_three_times(core: MemoryCore, context: TrustedContext, work_id: int) -
     for index in range(3):
         now = (base + timedelta(hours=index)).isoformat().replace("+00:00", "Z")
         with core.storage.write(context) as tx:
-            claimed = tx.work.claim_next(
-                "TEST-p13-failer", now, lease_seconds=60.0, limit=32
-            )
+            claimed = tx.work.claim_next("TEST-p13-failer", now, lease_seconds=60.0, limit=32)
             target = next(value for value in claimed if value.work_id == work_id)
             for item in claimed:
                 mutation = tx.work.fail(
@@ -148,8 +147,11 @@ def test_operator_retry_checks_expected_epoch_and_finite_request(tmp_path):
 
 def test_operator_retry_rejects_work_outside_trusted_allowed_scopes(tmp_path):
     binding = InstanceBinding(
-        "TEST-p13-agent", "TEST-p13-installation", tmp_path / "data",
-        frozenset({"TEST-p13-scope-a", "TEST-p13-scope-b"}), True,
+        "TEST-p13-agent",
+        "TEST-p13-installation",
+        tmp_path / "data",
+        frozenset({"TEST-p13-scope-a", "TEST-p13-scope-b"}),
+        True,
     )
     core = MemoryCore(CoreConfig(binding))
     core.initialize()
@@ -168,9 +170,7 @@ def test_operator_retry_rejects_work_outside_trusted_allowed_scopes(tmp_path):
     _fail_three_times(core, all_context, work_id)
     restricted = TrustedContext(binding, "TEST-p13-restricted", frozenset({"TEST-p13-scope-a"}), "human_direct")
     with core.storage.write(restricted) as tx:
-        result = tx.work.operator_retry_failed(
-            (work_id,), now="2099-09-06T05:00:00Z", operation_id="TEST-p13-foreign"
-        )
+        result = tx.work.operator_retry_failed((work_id,), now="2099-09-06T05:00:00Z", operation_id="TEST-p13-foreign")
     assert result[0].disposition == "rejected"
     assert result[0].reason == "scope_denied"
 
@@ -180,9 +180,7 @@ def test_operator_retry_rejects_untrusted_origins_without_state_change(tmp_path)
     untrusted = TrustedContext(binding, context.session_id, binding.scope_ids, "origin_unknown")
     with core.storage.write(untrusted) as tx:
         with pytest.raises(ContractError, match="operator_origin"):
-            tx.work.operator_retry_failed(
-                (work_id,), now="2099-09-06T05:30:00Z", operation_id="TEST-p13-untrusted"
-            )
+            tx.work.operator_retry_failed((work_id,), now="2099-09-06T05:30:00Z", operation_id="TEST-p13-untrusted")
     with core.storage.read(context) as tx:
         assert tx.work.read_state(work_id) == "failed"
 
@@ -221,9 +219,12 @@ def test_operator_retry_rejects_untrusted_origins_without_state_change(tmp_path)
 def test_operator_retry_has_two_explicit_cycles_then_stops(tmp_path):
     binding, core, context, work_id, _ = _failed_embed(tmp_path)
     with core.storage.write(context) as tx:
-        assert tx.work.operator_retry_failed(
-            (work_id,), now="2099-09-06T06:00:00Z", operation_id="TEST-p13-cycle-1"
-        )[0].disposition == "requeued"
+        assert (
+            tx.work.operator_retry_failed((work_id,), now="2099-09-06T06:00:00Z", operation_id="TEST-p13-cycle-1")[
+                0
+            ].disposition
+            == "requeued"
+        )
     for index in (1, 2):
         with core.storage.write(context) as tx:
             claimed = tx.work.claim_next(
@@ -231,43 +232,56 @@ def test_operator_retry_has_two_explicit_cycles_then_stops(tmp_path):
             )
             assert claimed and claimed[0].work_id == work_id
             tx.work.fail(
-                work_id, claimed[0].lease_token, claimed[0].lease_owner,
-                error_code="model_unavailable", now=f"2099-09-06T0{6 + index}:00:01Z", recoverable=True,
+                work_id,
+                claimed[0].lease_token,
+                claimed[0].lease_owner,
+                error_code="model_unavailable",
+                now=f"2099-09-06T0{6 + index}:00:01Z",
+                recoverable=True,
             )
         if index == 1:
             with core.storage.write(context) as tx:
-                assert tx.work.operator_retry_failed(
-                    (work_id,), now="2099-09-06T08:00:00Z", operation_id="TEST-p13-cycle-2"
-                )[0].disposition == "requeued"
+                assert (
+                    tx.work.operator_retry_failed(
+                        (work_id,), now="2099-09-06T08:00:00Z", operation_id="TEST-p13-cycle-2"
+                    )[0].disposition
+                    == "requeued"
+                )
     with core.storage.write(context) as tx:
-        result = tx.work.operator_retry_failed(
-            (work_id,), now="2099-09-06T09:00:00Z", operation_id="TEST-p13-cycle-3"
-        )
+        result = tx.work.operator_retry_failed((work_id,), now="2099-09-06T09:00:00Z", operation_id="TEST-p13-cycle-3")
     assert result[0].reason == "operator_retry_budget"
 
 
 def test_operator_retry_operation_tokens_are_exact_and_bounded(tmp_path):
     binding, core, context, work_id, _ = _failed_embed(tmp_path)
     with core.storage.write(context) as tx:
-        assert tx.work.operator_retry_failed(
-            (work_id,), now="2099-09-06T10:00:00Z", operation_id="TEST-p13-op-1"
-        )[0].disposition == "requeued"
+        assert (
+            tx.work.operator_retry_failed((work_id,), now="2099-09-06T10:00:00Z", operation_id="TEST-p13-op-1")[
+                0
+            ].disposition
+            == "requeued"
+        )
     with core.storage.write(context) as tx:
         claimed = tx.work.claim_next("TEST-p13-token-worker", "2099-09-06T10:00:01Z", lease_seconds=60, limit=1)
         assert claimed and claimed[0].work_id == work_id
         tx.work.fail(
-            work_id, claimed[0].lease_token, claimed[0].lease_owner,
-            error_code="model_unavailable", now="2099-09-06T10:00:02Z", recoverable=True,
+            work_id,
+            claimed[0].lease_token,
+            claimed[0].lease_owner,
+            error_code="model_unavailable",
+            now="2099-09-06T10:00:02Z",
+            recoverable=True,
         )
     with core.storage.write(context) as tx:
         # op-10 must not be confused with the earlier exact op-1 token.
-        assert tx.work.operator_retry_failed(
-            (work_id,), now="2099-09-06T11:00:00Z", operation_id="TEST-p13-op-10"
-        )[0].disposition == "requeued"
+        assert (
+            tx.work.operator_retry_failed((work_id,), now="2099-09-06T11:00:00Z", operation_id="TEST-p13-op-10")[
+                0
+            ].disposition
+            == "requeued"
+        )
         with pytest.raises(ContractError, match="retry_operation"):
-            tx.work.operator_retry_failed(
-                (work_id,), now="2099-09-06T11:00:00Z", operation_id="operator_retry:forged"
-            )
+            tx.work.operator_retry_failed((work_id,), now="2099-09-06T11:00:00Z", operation_id="operator_retry:forged")
 
 
 def test_operator_retry_preserves_marker_when_failed_item_was_not_attempt_exhausted(tmp_path):
@@ -291,21 +305,32 @@ def test_operator_retry_preserves_marker_when_failed_item_was_not_attempt_exhaus
         target = next(item for item in claimed if item.work_id == work_id)
         for item in claimed:
             mutation = tx.work.fail(
-                item.work_id, item.lease_token, item.lease_owner,
-                error_code="derivation_invalid", now="2099-09-06T12:00:01Z", recoverable=False,
+                item.work_id,
+                item.lease_token,
+                item.lease_owner,
+                error_code="derivation_invalid",
+                now="2099-09-06T12:00:01Z",
+                recoverable=False,
             )
             if item.work_id == target.work_id:
                 assert mutation.state == "failed"
-        assert tx.work.operator_retry_failed(
-            (work_id,), now="2099-09-06T12:00:02Z", operation_id="TEST-p13-extra-1"
-        )[0].disposition == "requeued"
+        assert (
+            tx.work.operator_retry_failed((work_id,), now="2099-09-06T12:00:02Z", operation_id="TEST-p13-extra-1")[
+                0
+            ].disposition
+            == "requeued"
+        )
     with core.storage.write(context) as tx:
         claimed = tx.work.claim_next("TEST-p13-extra-worker", "2099-09-06T12:00:03Z", lease_seconds=60, limit=32)
         target = next(item for item in claimed if item.work_id == work_id)
         for item in claimed:
             mutation = tx.work.fail(
-                item.work_id, item.lease_token, item.lease_owner,
-                error_code="model_unavailable", now="2099-09-06T12:00:04Z", recoverable=True,
+                item.work_id,
+                item.lease_token,
+                item.lease_owner,
+                error_code="model_unavailable",
+                now="2099-09-06T12:00:04Z",
+                recoverable=True,
             )
             if item.work_id == target.work_id:
                 assert mutation.state == "pending"

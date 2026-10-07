@@ -29,9 +29,7 @@ TRACE_GUIDANCE = (
 
 def trace_tool_schema():
     schema = json.loads(
-        (
-            Path(__file__).parents[1] / "contracts" / "trace_request.schema.json"
-        ).read_text(encoding="utf-8")
+        (Path(__file__).parents[1] / "contracts" / "trace_request.schema.json").read_text(encoding="utf-8")
     )
     schema.pop("$schema", None)
     schema.pop("title", None)
@@ -50,16 +48,12 @@ class _DeadlineStorage:
         remaining = self.deadline - time.monotonic()
         if remaining <= 0:
             raise TimeoutError
-        with self.storage.read(
-            context, remaining_seconds=min(remaining, remaining_seconds or remaining)
-        ) as tx:
+        with self.storage.read(context, remaining_seconds=min(remaining, remaining_seconds or remaining)) as tx:
             yield tx
 
 
 def _node(scope: str, subject: str) -> dict:
-    key = hashlib.sha256(
-        json.dumps([scope, subject], ensure_ascii=False).encode()
-    ).hexdigest()
+    key = hashlib.sha256(json.dumps([scope, subject], ensure_ascii=False).encode()).hexdigest()
     return {"id": "entity:" + key, "label": subject}
 
 
@@ -153,20 +147,12 @@ def read_trace(storage, clock, context, request, *, seconds: float = 5.0) -> dic
             current_nodes = nodes + [_node(scope, canonical)]
             current_seen = seen | {canonical, subject}
             for edge in view.get("statements", []):
-                if (
-                    edge["kind"] != "fact"
-                    or edge["claim_state"] != "active"
-                    or edge["temporal_status"] != "current"
-                ):
+                if edge["kind"] != "fact" or edge["claim_state"] != "active" or edge["temporal_status"] != "current":
                     continue
                 if edge.get("conditions"):
                     gaps.add("conditional_relation_not_traversed")
                     continue
-                next_subject = (
-                    edge["value_text"]
-                    if edge["direction"] == "outgoing"
-                    else edge["subject"]
-                )
+                next_subject = edge["value_text"] if edge["direction"] == "outgoing" else edge["subject"]
                 if not next_subject.strip():
                     continue
                 if next_subject in current_seen:
@@ -178,32 +164,22 @@ def read_trace(storage, clock, context, request, *, seconds: float = 5.0) -> dic
                     "hops": len(next_edges),
                     "basis": "recorded_relations",
                 }
-                key = tuple(
-                    (e["ref"], e["revision"], e["direction"]) for e in next_edges
-                )
-                if key not in path_keys and (
-                    not body.get("target") or next_subject == body["target"]
-                ):
+                key = tuple((e["ref"], e["revision"], e["direction"]) for e in next_edges)
+                if key not in path_keys and (not body.get("target") or next_subject == body["target"]):
                     path_keys.add(key)
                     candidates.append(path)
                 # A long attribute can be a terminal answer (e.g. a recorded
                 # requirement), but cannot be a subject under the Core schema.
-                expandable = (
-                    len(next_edges) < body["max_hops"] and len(next_subject) <= 240
-                )
+                expandable = len(next_edges) < body["max_hops"] and len(next_subject) <= 240
                 if expandable and len(queue) < body["max_nodes"]:
-                    queue.append(
-                        (scope, next_subject, current_nodes, next_edges, current_seen)
-                    )
+                    queue.append((scope, next_subject, current_nodes, next_edges, current_seen))
                 elif expandable:
                     gaps.add("node_limit")
     except TimeoutError:
         gaps.add("deadline")
     # Each step is already released by entity. A final epoch fence rejects a
     # deletion/revision racing any earlier hop; stale prefixes are never sent.
-    with storage.read(
-        context, remaining_seconds=max(0.001, deadline - time.monotonic())
-    ) as tx:
+    with storage.read(context, remaining_seconds=max(0.001, deadline - time.monotonic())) as tx:
         if tx.status().memory_epoch != epoch:
             return _unavailable(result, "memory_changed")
     result["visited_nodes"] = len(cache)
@@ -221,10 +197,7 @@ def read_trace(storage, clock, context, request, *, seconds: float = 5.0) -> dic
         result["status"] = "partial"
     if result["paths"]:
         result["answerability"] = "supported_paths_only"
-    while (
-        len(json.dumps(result, ensure_ascii=False, separators=(",", ":")).encode())
-        > body["budget_bytes"]
-    ):
+    while len(json.dumps(result, ensure_ascii=False, separators=(",", ":")).encode()) > body["budget_bytes"]:
         if not result["paths"]:
             raise ContractError("INPUT_INVALID", "budget_bytes")
         result["paths"].pop()
@@ -257,6 +230,4 @@ def fence_trace_epoch(view, current_epoch, *, retracted=None):
         return view
     if retracted is not None and type(view["memory_epoch"]) is int and not retracted(view["memory_epoch"]):
         return view
-    return _unavailable(
-        dict(view, memory_epoch=current_epoch), "memory_changed_before_delivery"
-    )
+    return _unavailable(dict(view, memory_epoch=current_epoch), "memory_changed_before_delivery")

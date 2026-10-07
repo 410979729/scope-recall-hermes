@@ -3,6 +3,7 @@
 Loads installer identity, validates injective audience maps and seals completed
 TEST archive handoffs. Never stops a service or changes a scheduled principal.
 """
+
 from __future__ import annotations
 from collections import defaultdict
 import hashlib
@@ -17,6 +18,7 @@ from .migration_records import MigrationError
 _ARCHIVE_REPORT_NAME = "p15-archive-migration-report.json"
 _HEX64 = re.compile(r"[0-9a-fA-F]{64}")
 _STORAGE_DB_NAMES = ("memory.sqlite3",)
+
 
 def _load_installation_handoff(
     manifest_path: str | Path, host: str | None
@@ -122,9 +124,7 @@ def _existing_target_scopes(path: Path) -> frozenset[str] | None:
         return None
     conn = sqlite3.connect(f"file:{db.resolve().as_posix()}?mode=ro", uri=True)
     try:
-        return frozenset(
-            str(row[0]) for row in conn.execute("SELECT scope_id FROM instance_scopes")
-        )
+        return frozenset(str(row[0]) for row in conn.execute("SELECT scope_id FROM instance_scopes"))
     finally:
         conn.close()
 
@@ -141,9 +141,7 @@ def _require_test_absolute_target(raw: str) -> Path:
         raise MigrationError("archive-install-test target must be an absolute TEST path")
     resolved = _safe_path(target, error_type=MigrationError)
     if not any(part.upper().startswith("TEST") for part in resolved.parts):
-        raise MigrationError(
-            "archive-install-test target must be beneath a TEST-named path component"
-        )
+        raise MigrationError("archive-install-test target must be beneath a TEST-named path component")
     return resolved
 
 
@@ -261,9 +259,7 @@ def _accept_identical_archive_run(
     try:
         manifest = load_installation_manifest(target_path)
     except HermesIdentityError as exc:
-        raise MigrationError(
-            f"installed manifest is invalid or does not bind this run: {exc}"
-        ) from exc
+        raise MigrationError(f"installed manifest is invalid or does not bind this run: {exc}") from exc
     if manifest.test_mode is not True:
         raise MigrationError("installed manifest is not a TEST archive installation")
     if (
@@ -314,5 +310,3 @@ def _write_complete_archive_receipt(
         receipt_path,
         json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
     )
-
-

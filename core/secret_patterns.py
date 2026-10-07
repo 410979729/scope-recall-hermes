@@ -42,12 +42,8 @@ COMMON_SECRET_PATTERNS: dict[str, re.Pattern[str]] = {
         r"(?<![A-Za-z0-9_])(?:github_pat_[A-Za-z0-9_]{20,}|"
         r"gh[pousr]_[A-Za-z0-9_*_]{20,})(?![A-Za-z0-9_])"
     ),
-    "gitlab_token": re.compile(
-        r"(?<![A-Za-z0-9_-])glpat-[A-Za-z0-9_-]{20,}(?![A-Za-z0-9_-])"
-    ),
-    "npm_token": re.compile(
-        r"(?<![A-Za-z0-9_])npm_[A-Za-z0-9]{24,}(?![A-Za-z0-9_])"
-    ),
+    "gitlab_token": re.compile(r"(?<![A-Za-z0-9_-])glpat-[A-Za-z0-9_-]{20,}(?![A-Za-z0-9_-])"),
+    "npm_token": re.compile(r"(?<![A-Za-z0-9_])npm_[A-Za-z0-9]{24,}(?![A-Za-z0-9_])"),
     "pypi_token": re.compile(
         r"(?<![A-Za-z0-9_-])pypi-[A-Za-z0-9_-]{20,}(?![A-Za-z0-9_-])",
         re.IGNORECASE,
@@ -93,9 +89,7 @@ COMMON_SECRET_PATTERNS: dict[str, re.Pattern[str]] = {
     ),
 }
 
-COMMON_SECRET_PATTERN_VALUES: tuple[re.Pattern[str], ...] = tuple(
-    COMMON_SECRET_PATTERNS.values()
-)
+COMMON_SECRET_PATTERN_VALUES: tuple[re.Pattern[str], ...] = tuple(COMMON_SECRET_PATTERNS.values())
 
 #: What follows a credential word without being a credential, kept narrow on purpose: a password can be any
 #: word in any script, so only what cannot be one is let through.  Every message that said
@@ -143,8 +137,11 @@ _EXEMPT_IN_QUOTES = (
 )
 _NOT_A_VALUE = (
     r"(?!"
-    r"(?P<vq>[\"'`]?)(?:" + _EXEMPT_IN_QUOTES + r")(?P=vq)" + _END +
-    r"|(?:[A-Za-z_][A-Za-z0-9_]*\.)+[A-Za-z_][A-Za-z0-9_]*[(\[]"
+    r"(?P<vq>[\"'`]?)(?:"
+    + _EXEMPT_IN_QUOTES
+    + r")(?P=vq)"
+    + _END
+    + r"|(?:[A-Za-z_][A-Za-z0-9_]*\.)+[A-Za-z_][A-Za-z0-9_]*[(\[]"
     r"|(?-i:[a-z_][a-z0-9_]*)\((?:\)|[\"'])"
     r"|[^\s\w]++(?:\s|$)"
     r"|(?:什么|多少|哪个|哪些|啥|怎么|怎样|如何|不是|是否|必须|必需|必填|可选|过期|无效|有效)"
@@ -159,7 +156,8 @@ _IS_NOT_A_WORD = (
     r"generated|created|issued|refreshed|rotated|returned|passed|included|attached|shown|printed|logged|signed|"
     r"verified|checked|validated|accepted|rejected|denied|blocked|disabled|enabled|not|none|null|true|false|the|"
     r"a|an|in|on|at|for|out|ok|fine|weak|strong|long|short|same|different|what|where|that|this|it|here|there))"
-    + _END + r")"
+    + _END
+    + r")"
 )
 _SEPARATOR = r"(?:[ \t]*(?::|=|是)[ \t]*|[ \t]+is[ \t]+" + _IS_NOT_A_WORD + r")"
 
@@ -167,8 +165,7 @@ _SEPARATOR = r"(?:[ \t]*(?::|=|是)[ \t]*|[ \t]+is[ \t]+" + _IS_NOT_A_WORD + r")
 #: every repeat, 1 s for 20 kB.
 SECRET_ASSIGNMENT_RE = re.compile(
     r"(?:api[_ \t-]?key|secret|password|passwd|"
-    r"credential(?:[_ \t-]?[a-z0-9_]{1,64})?|private[_ \t-]?key)[\"']?"
-    + _SEPARATOR + _NOT_A_VALUE + r"[^\s]+",
+    r"credential(?:[_ \t-]?[a-z0-9_]{1,64})?|private[_ \t-]?key)[\"']?" + _SEPARATOR + _NOT_A_VALUE + r"[^\s]+",
     re.IGNORECASE,
 )
 
@@ -176,7 +173,9 @@ SECRET_ASSIGNMENT_RE = re.compile(
 #: kebab-case slug) was tried from every hyphen to its end, 18 s for 60,000 characters.
 TOKEN_ASSIGNMENT_RE = re.compile(
     r"(?P<key>(?<![A-Za-z0-9_])(?:[A-Za-z_][A-Za-z0-9_-]{0,126}[_-])?token)[\"']?"
-    + _SEPARATOR + _NOT_A_VALUE + r"[^\s]+",
+    + _SEPARATOR
+    + _NOT_A_VALUE
+    + r"[^\s]+",
     re.IGNORECASE,
 )
 
@@ -230,11 +229,7 @@ def secret_scan_shadow(value: Any) -> str:
 
     normalized = unicodedata.normalize("NFKC", str(value or ""))
     normalized = _ESCAPED_BREAK_RE.sub(lambda match: _ESCAPED_BREAKS[match.group(1)] * len(match.group(0)), normalized)
-    return "".join(
-        character
-        for character in normalized
-        if unicodedata.category(character) != "Cf"
-    )
+    return "".join(character for character in normalized if unicodedata.category(character) != "Cf")
 
 
 def normalize_secret_mapping_key(value: Any) -> str:
@@ -257,10 +252,7 @@ def is_safe_token_metric_key(value: Any) -> bool:
     if not normalized.endswith(suffix):
         return False
     metric_prefix = normalized[: -len(suffix)]
-    return not bool(
-        SENSITIVE_MAPPING_KEY_RE.search(metric_prefix)
-        or SENSITIVE_KEY_COMPONENT_RE.search(metric_prefix)
-    )
+    return not bool(SENSITIVE_MAPPING_KEY_RE.search(metric_prefix) or SENSITIVE_KEY_COMPONENT_RE.search(metric_prefix))
 
 
 def is_sensitive_mapping_key(value: Any) -> bool:
@@ -270,9 +262,7 @@ def is_sensitive_mapping_key(value: Any) -> bool:
         return False
     shadow = secret_scan_shadow(value)
     normalized = normalize_secret_mapping_key(shadow)
-    if SENSITIVE_MAPPING_KEY_RE.search(shadow) or SENSITIVE_MAPPING_KEY_RE.search(
-        normalized
-    ):
+    if SENSITIVE_MAPPING_KEY_RE.search(shadow) or SENSITIVE_MAPPING_KEY_RE.search(normalized):
         return True
     if normalized == "token" or normalized.endswith("_token"):
         return True
@@ -291,8 +281,7 @@ def scan_secret_like_text(value: Any) -> tuple[SecretTextMatch, ...]:
     patterns = (("api_key_assignment", SECRET_ASSIGNMENT_RE), *COMMON_SECRET_PATTERNS.items())
     for name, pattern in patterns:
         candidates.extend(
-            SecretTextMatch(name, match.start(), match.end(), match.group(0))
-            for match in pattern.finditer(shadow)
+            SecretTextMatch(name, match.start(), match.end(), match.group(0)) for match in pattern.finditer(shadow)
         )
     candidates.extend(
         SecretTextMatch(

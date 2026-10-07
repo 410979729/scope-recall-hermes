@@ -4,6 +4,7 @@ Owned by the worker drain; model calls stay outside SQLite transactions.
 Every processor returns ``(disposition, error_code, state)`` and records its
 verdict only through the helpers here.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
@@ -14,27 +15,34 @@ from .delete_storage import retraction_after
 from .failure_retry import validation_feedback
 from .work_storage import ACCOUNT_REFUSALS
 
-_NON_RETRYABLE_MODEL_ERRORS = frozenset({
-    "budget_exhausted",
-    "meter_breach",
-    "input_invalid",
-    "budget_unavailable",
-    # The request guard refused secret-like text; the payload will not change.
-    "sensitive_request",
-})
+_NON_RETRYABLE_MODEL_ERRORS = frozenset(
+    {
+        "budget_exhausted",
+        "meter_breach",
+        "input_invalid",
+        "budget_unavailable",
+        # The request guard refused secret-like text; the payload will not change.
+        "sensitive_request",
+    }
+)
 
 #: Refusals that say nothing about the item: raised before any network attempt,
 #: or the provider declining the account (``ACCOUNT_REFUSALS``).  The item is
 #: parked for an hour without spending an attempt, and its work type stands down
 #: for the pass.  ``provider_hold`` is the adapter declining to ask a provider
 #: that refused the calls just before (runtime/model_budget.py).
-BUDGET_PAUSE_ERRORS = frozenset({
-    "budget_exhausted",
-    "budget_unavailable",
-    "credential_missing",
-    "credential_shape_invalid",
-    "provider_hold",
-}) | ACCOUNT_REFUSALS
+BUDGET_PAUSE_ERRORS = (
+    frozenset(
+        {
+            "budget_exhausted",
+            "budget_unavailable",
+            "credential_missing",
+            "credential_shape_invalid",
+            "provider_hold",
+        }
+    )
+    | ACCOUNT_REFUSALS
+)
 
 #: Port rejections that describe this payload rather than the provider;
 #: sending the same input again would fail the same way.
@@ -160,14 +168,18 @@ def _source_state(tx, ref: str, revision: int) -> tuple | None:
 
 
 def _claim_state(tx, ref: str, revision: int) -> tuple | None:
-    row = tx._check().execute(
-        """SELECT c.read_blocked,c.suppressed,v.state,v.payload_json,b.read_blocked,b.suppressed,b.operation_id,
+    row = (
+        tx._check()
+        .execute(
+            """SELECT c.read_blocked,c.suppressed,v.state,v.payload_json,b.read_blocked,b.suppressed,b.operation_id,
                   EXISTS(SELECT 1 FROM restored_absence_blocks a WHERE a.object_kind='claim' AND a.object_ref=c.claim_id)
            FROM claims c JOIN claim_versions v ON v.claim_id=c.claim_id AND v.revision=?
            LEFT JOIN object_blocks b ON b.object_kind='claim' AND b.object_ref=c.claim_id
            WHERE c.claim_id=?""",
-        (revision, ref),
-    ).fetchone()
+            (revision, ref),
+        )
+        .fetchone()
+    )
     return None if row is None else (*tuple(row[:3]), _digest(row[3]), *tuple(row[4:]))
 
 
@@ -179,24 +191,31 @@ def _episode_state(tx, ref: str) -> tuple | None:
     in the same session is not a change; applying a resume or revising a
     reference binding that the resume depends on is.
     """
-    row = tx._check().execute(
-        """SELECT e.read_blocked,v.resume_json,v.source_watermark,v.processed_sequence,b.read_blocked,b.suppressed
+    row = (
+        tx._check()
+        .execute(
+            """SELECT e.read_blocked,v.resume_json,v.source_watermark,v.processed_sequence,b.read_blocked,b.suppressed
            FROM episodes e JOIN episode_versions v ON v.episode_id=e.episode_id AND v.revision=e.current_revision
            LEFT JOIN object_blocks b ON b.object_kind='episode' AND b.object_ref=e.episode_id
            WHERE e.episode_id=?""",
-        (ref,),
-    ).fetchone()
+            (ref,),
+        )
+        .fetchone()
+    )
     return None if row is None else (row[0], _digest(row[1]), *tuple(row[2:]))
 
 
 def _reference_state(tx, episode_ref: str) -> tuple[tuple, ...]:
-    return tuple(tuple(row) for row in tx._check().execute(
-        """SELECT r.reference_id,r.current_revision,r.read_blocked,b.read_blocked,b.suppressed
+    return tuple(
+        tuple(row)
+        for row in tx._check().execute(
+            """SELECT r.reference_id,r.current_revision,r.read_blocked,b.read_blocked,b.suppressed
            FROM reference_bindings r
            LEFT JOIN object_blocks b ON b.object_kind='reference' AND b.object_ref=r.reference_id
            WHERE r.episode_id=? ORDER BY r.reference_id""",
-        (episode_ref,),
-    ))
+            (episode_ref,),
+        )
+    )
 
 
 def _last_row(tx, table: str, identity: str) -> tuple:
@@ -221,7 +240,9 @@ def _mark_moved(tx, table: str, identity: str, mark: tuple) -> bool:
     return row is None or tuple(row) != mark[1:]
 
 
-def read_derivation_fence(tx, *, scope_id: str, sources=(), claims=(), episode_ref: str | None = None) -> DerivationFence:
+def read_derivation_fence(
+    tx, *, scope_id: str, sources=(), claims=(), episode_ref: str | None = None
+) -> DerivationFence:
     """Record, in the transaction the derivation's inputs were read from, what its result depends on."""
     source_keys = tuple(dict.fromkeys((source.ref, source.revision) for source in sources))
     return DerivationFence(
@@ -248,8 +269,9 @@ def derivation_changed(tx, fence: DerivationFence, *, episode: bool = False, ref
     """
     if retraction_after(tx._check(), (fence.scope_id,), fence.memory_epoch):
         return "deletion_operation"
-    if (_mark_moved(tx, "source_events", _SOURCE_IDENTITY, fence.source_mark)
-            or _mark_moved(tx, "claim_versions", _CLAIM_IDENTITY, fence.claim_mark)):
+    if _mark_moved(tx, "source_events", _SOURCE_IDENTITY, fence.source_mark) or _mark_moved(
+        tx, "claim_versions", _CLAIM_IDENTITY, fence.claim_mark
+    ):
         return "database_replaced"
     if any(_source_state(tx, ref, revision) != state for ref, revision, state in fence.sources):
         return "source"
@@ -284,18 +306,22 @@ def claims_changed(tx, fence: DerivationFence, *, until: int, claim_refs=None) -
         return True
     conn = tx._check()
     if claim_refs is None:
-        return conn.execute(
-            """SELECT 1 FROM claim_versions v JOIN claims c ON c.claim_id=v.claim_id
+        return (
+            conn.execute(
+                """SELECT 1 FROM claim_versions v JOIN claims c ON c.claim_id=v.claim_id
                WHERE v.rowid>? AND v.rowid<=? AND c.scope_id=? AND c.project_id IS ? AND c.branch_id IS ? LIMIT 1""",
-            (mark[0], until, fence.scope_id, tx.context.project_id, tx.context.branch_id),
-        ).fetchone() is not None
+                (mark[0], until, fence.scope_id, tx.context.project_id, tx.context.branch_id),
+            ).fetchone()
+            is not None
+        )
     refs = sorted(set(claim_refs))
     return any(
         conn.execute(
             f"SELECT 1 FROM claim_versions WHERE rowid>? AND rowid<=? AND claim_id IN ({','.join('?' for _ in part)}) LIMIT 1",
             (mark[0], until, *part),
-        ).fetchone() is not None
-        for part in (refs[index:index + 200] for index in range(0, len(refs), 200))
+        ).fetchone()
+        is not None
+        for part in (refs[index : index + 200] for index in range(0, len(refs), 200))
     )
 
 
@@ -342,9 +368,20 @@ def _record_error_detail(conn, item, *, now: str, stage: str, code: str, detail:
     )
 
 
-def _finalize_work(storage, clock, context, item, disposition: str, error_code: str | None, *, started: float, budget: float,
-                   error_detail: str | None = None, stage: str = "process",
-                   validation_code: str | None = None) -> tuple[str, str | None, str]:
+def _finalize_work(
+    storage,
+    clock,
+    context,
+    item,
+    disposition: str,
+    error_code: str | None,
+    *,
+    started: float,
+    budget: float,
+    error_detail: str | None = None,
+    stage: str = "process",
+    validation_code: str | None = None,
+) -> tuple[str, str | None, str]:
     """Record a retry, failed or obsolete verdict under the lease.
 
     A spent deadline or a lost lease reports the row instead of mutating it.
@@ -357,7 +394,9 @@ def _finalize_work(storage, clock, context, item, disposition: str, error_code: 
         if not tx.work._verify_lease(*item.lease, now=now):
             return _stale(tx, item, error_code)
         if error_code:
-            _record_error_detail(conn, item, now=now, stage=stage, code=validation_code or error_code, detail=error_detail)
+            _record_error_detail(
+                conn, item, now=now, stage=stage, code=validation_code or error_code, detail=error_detail
+            )
         if error_code in BUDGET_PAUSE_ERRORS:
             return _work_result(
                 tx.work.defer_without_attempt(*item.lease, now=now, error_code=error_code, seconds=3600),

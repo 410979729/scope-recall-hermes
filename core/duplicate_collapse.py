@@ -22,6 +22,7 @@ Not responsible for: stopping duplicates at capture, or choosing which copy is
 canonical.  The caller passes candidates in the order it wants them kept and
 the first occurrence wins, so the ranking already made that decision.
 """
+
 from __future__ import annotations
 
 import hashlib

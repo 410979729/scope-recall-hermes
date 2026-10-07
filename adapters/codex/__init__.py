@@ -15,8 +15,10 @@ def __getattr__(name):
     # Import the optional transport only when its public entry is requested.
     if name in {"CodexMCPServer", "build_server"}:
         from . import mcp_server
+
         return getattr(mcp_server, name)
     raise AttributeError(name)
+
 
 __all__ = [
     "CodexConfigError",

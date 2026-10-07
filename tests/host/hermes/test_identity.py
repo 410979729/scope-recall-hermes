@@ -1,4 +1,5 @@
 """Identity binding and public signature contracts for the Hermes adapter."""
+
 from __future__ import annotations
 
 import inspect
@@ -75,8 +76,7 @@ def test_a2a_default_context_is_not_human_attested(hermes_home, initialize_kwarg
         )
         with sqlite3.connect(hermes_home / "scope-recall" / "memory.sqlite3") as connection:
             rows = connection.execute(
-                "SELECT event_id, source_revision, origin FROM source_events "
-                "WHERE role='user' ORDER BY rowid DESC"
+                "SELECT event_id, source_revision, origin FROM source_events WHERE role='user' ORDER BY rowid DESC"
             ).fetchall()
         assert rows and all(row[2] == "origin_unknown" for row in rows)
         row = rows[0]

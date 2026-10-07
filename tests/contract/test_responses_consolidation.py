@@ -10,6 +10,7 @@ the response byte cap, usage settlement and conservative billing -- is asserted
 here, because a second wire dialect that quietly stopped using the ledger would
 be worse than no second dialect.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -129,32 +130,45 @@ def _rows(ledger: Path) -> list[dict]:
         return [dict(row) for row in db.execute("SELECT * FROM requests ORDER BY id")]
 
 
-def _answer(text: str = '{"protocol_version":"1.1"}', *, status: str = "completed",
-            usage: dict | None = None, reasoning: bool = False) -> bytes:
+def _answer(
+    text: str = '{"protocol_version":"1.1"}',
+    *,
+    status: str = "completed",
+    usage: dict | None = None,
+    reasoning: bool = False,
+) -> bytes:
     output = []
     if reasoning:
-        output.append({
-            "type": "reasoning",
-            "id": "rs_1",
-            "status": "completed",
-            "content": [{"type": "reasoning_text", "text": "thinking nobody asked to keep"}],
-            "summary": [],
-        })
-    output.append({
-        "type": "message",
-        "id": "msg_1",
-        "status": "completed" if status != "incomplete" else "incomplete",
-        "role": "assistant",
-        "content": [{"type": "output_text", "text": text, "annotations": []}],
-    })
+        output.append(
+            {
+                "type": "reasoning",
+                "id": "rs_1",
+                "status": "completed",
+                "content": [{"type": "reasoning_text", "text": "thinking nobody asked to keep"}],
+                "summary": [],
+            }
+        )
+    output.append(
+        {
+            "type": "message",
+            "id": "msg_1",
+            "status": "completed" if status != "incomplete" else "incomplete",
+            "role": "assistant",
+            "content": [{"type": "output_text", "text": text, "annotations": []}],
+        }
+    )
     payload = {"id": "resp_1", "object": "response", "status": status, "output": output, "store": False}
-    payload["usage"] = usage if usage is not None else {
-        "input_tokens": 22,
-        "input_tokens_details": {"cached_tokens": 0},
-        "output_tokens": 29,
-        "output_tokens_details": {"reasoning_tokens": 27},
-        "total_tokens": 51,
-    }
+    payload["usage"] = (
+        usage
+        if usage is not None
+        else {
+            "input_tokens": 22,
+            "input_tokens_details": {"cached_tokens": 0},
+            "output_tokens": 29,
+            "output_tokens_details": {"reasoning_tokens": 27},
+            "total_tokens": 51,
+        }
+    )
     return json.dumps(payload).encode()
 
 
@@ -163,15 +177,19 @@ def _answer(text: str = '{"protocol_version":"1.1"}', *, status: str = "complete
 # non-streaming store-less shape
 # ---------------------------------------------------------------------------
 
+
 def test_responses_route_sends_the_documented_non_streaming_request(tmp_path, monkeypatch):
     monkeypatch.setenv(CREDENTIAL_ENV, "test-key")
     transport = FakeTransport(lambda **kwargs: (200, _answer("{}")))
     runtime = _runtime(_payload(tmp_path), transport)
 
-    assert runtime.consolidation.propose(
-        [{"role": "system", "content": "propose only"}, {"role": "user", "content": "bounded input"}],
-        remaining_seconds=2.0,
-    ) == "{}"
+    assert (
+        runtime.consolidation.propose(
+            [{"role": "system", "content": "propose only"}, {"role": "user", "content": "bounded input"}],
+            remaining_seconds=2.0,
+        )
+        == "{}"
+    )
 
     call = transport.calls[0]
     assert call["url"] == ENDPOINT
@@ -179,10 +197,10 @@ def test_responses_route_sends_the_documented_non_streaming_request(tmp_path, mo
     assert call["headers"]["Content-Type"] == "application/json"
     assert call["body"] == {
         "model": MODEL,
-        "input": [{"type": "message", "role": "system",
-                   "content": [{"type": "input_text", "text": "propose only"}]},
-                  {"type": "message", "role": "user",
-                   "content": [{"type": "input_text", "text": "bounded input"}]}],
+        "input": [
+            {"type": "message", "role": "system", "content": [{"type": "input_text", "text": "propose only"}]},
+            {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "bounded input"}]},
+        ],
         "max_output_tokens": 8192,
         "stream": False,
         "store": False,
@@ -230,8 +248,9 @@ def test_responses_route_preserves_a_system_only_input(tmp_path, monkeypatch):
 
     body = transport.calls[0]["body"]
     assert "instructions" not in body
-    assert body["input"] == [{"type": "message", "role": "system",
-                              "content": [{"type": "input_text", "text": "only instructions"}]}]
+    assert body["input"] == [
+        {"type": "message", "role": "system", "content": [{"type": "input_text", "text": "only instructions"}]}
+    ]
 
 
 def test_responses_route_reuses_the_deadline_and_response_cap(tmp_path, monkeypatch):
@@ -249,11 +268,14 @@ def test_responses_route_reuses_the_deadline_and_response_cap(tmp_path, monkeypa
     assert observed["max_response_bytes"] == 1_048_576
 
 
-@pytest.mark.parametrize("messages,error_type", [
-    ([{"role": "tool", "content": "tool output has no Responses item shape here"}], "input_invalid"),
-    ([{"role": "user", "content": "ok", "name": "extra"}], "input_invalid"),
-    ([], "input_invalid"),
-])
+@pytest.mark.parametrize(
+    "messages,error_type",
+    [
+        ([{"role": "tool", "content": "tool output has no Responses item shape here"}], "input_invalid"),
+        ([{"role": "user", "content": "ok", "name": "extra"}], "input_invalid"),
+        ([], "input_invalid"),
+    ],
+)
 def test_responses_route_accepts_only_its_closed_message_shape(tmp_path, monkeypatch, messages, error_type):
     monkeypatch.setenv(CREDENTIAL_ENV, "test-key")
     transport = FakeTransport(lambda **kwargs: (200, _answer("{}")))
@@ -268,25 +290,29 @@ def test_responses_route_accepts_only_its_closed_message_shape(tmp_path, monkeyp
 # Strict configuration: the route refuses what it cannot honestly serve
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize("overrides,failure", [
-    ({"stream": True}, "stream"),
-    ({"stream": "false"}, "stream"),
-    ({"reasoning_effort": "medium"}, "reasoning_effort"),
-    ({"reasoning_effort": "xhigh"}, "reasoning_effort"),
-    ({"reasoning_effort": 4}, "reasoning_effort"),
-    ({"text_format": {"type": "text"}}, "text_format"),
-    ({"text_format": {"type": "json_schema", "name": "p", "schema": {}}}, "text_format"),
-    ({"text_format": ["json_object"]}, "text_format"),
-    ({"max_output_tokens": 0}, "max_output_tokens"),
-    ({"max_output_tokens": 131_073}, "max_output_tokens"),
-    ({"max_output_tokens": True}, "max_output_tokens"),
-    ({"max_output_tokens": "8192"}, "max_output_tokens"),
-    ({"model": ""}, "model"),
-    ({"endpoint": "http://api.deepseek.com/responses"}, "endpoint"),
-    ({"endpoint": ""}, "endpoint"),
-    ({"credential_env": "lowercase_name"}, "credential_env"),
-    ({"thinking": {"type": "disabled"}}, "consolidation_unknown_config"),
-])
+
+@pytest.mark.parametrize(
+    "overrides,failure",
+    [
+        ({"stream": True}, "stream"),
+        ({"stream": "false"}, "stream"),
+        ({"reasoning_effort": "medium"}, "reasoning_effort"),
+        ({"reasoning_effort": "xhigh"}, "reasoning_effort"),
+        ({"reasoning_effort": 4}, "reasoning_effort"),
+        ({"text_format": {"type": "text"}}, "text_format"),
+        ({"text_format": {"type": "json_schema", "name": "p", "schema": {}}}, "text_format"),
+        ({"text_format": ["json_object"]}, "text_format"),
+        ({"max_output_tokens": 0}, "max_output_tokens"),
+        ({"max_output_tokens": 131_073}, "max_output_tokens"),
+        ({"max_output_tokens": True}, "max_output_tokens"),
+        ({"max_output_tokens": "8192"}, "max_output_tokens"),
+        ({"model": ""}, "model"),
+        ({"endpoint": "http://api.deepseek.com/responses"}, "endpoint"),
+        ({"endpoint": ""}, "endpoint"),
+        ({"credential_env": "lowercase_name"}, "credential_env"),
+        ({"thinking": {"type": "disabled"}}, "consolidation_unknown_config"),
+    ],
+)
 def test_responses_route_refuses_configuration_it_cannot_serve(tmp_path, overrides, failure):
     """A route that silently ignored ``stream: true`` would buy a streamed body
     with a non-streaming reader; an unknown key would be a setting nobody reads."""
@@ -331,14 +357,16 @@ def test_an_unrelated_kind_is_still_refused(tmp_path, kind):
 # The answer: only a completed assistant ``output_text`` is one
 # ---------------------------------------------------------------------------
 
+
 def test_responses_answer_is_the_completed_assistant_output_text(tmp_path, monkeypatch):
     monkeypatch.setenv(CREDENTIAL_ENV, "test-key")
     transport = FakeTransport(lambda **kwargs: (200, _answer('{"claims":[]}', reasoning=True)))
     runtime = _runtime(_payload(tmp_path), transport)
 
-    assert runtime.consolidation.propose(
-        [{"role": "user", "content": "bounded input"}], remaining_seconds=2.0
-    ) == '{"claims":[]}'
+    assert (
+        runtime.consolidation.propose([{"role": "user", "content": "bounded input"}], remaining_seconds=2.0)
+        == '{"claims":[]}'
+    )
 
 
 def test_responses_route_joins_parts_within_a_message_and_separates_messages(tmp_path, monkeypatch):
@@ -346,20 +374,33 @@ def test_responses_route_joins_parts_within_a_message_and_separates_messages(tmp
     payload = {
         "status": "completed",
         "output": [
-            {"type": "message", "id": "msg_1", "status": "completed", "role": "assistant",
-             "content": [{"type": "output_text", "text": '{"claims":["a"]', "annotations": []},
-                         {"type": "output_text", "text": "}"}]},
-            {"type": "message", "id": "msg_2", "status": "completed", "role": "assistant",
-             "content": [{"type": "output_text", "text": "trailing"}]},
+            {
+                "type": "message",
+                "id": "msg_1",
+                "status": "completed",
+                "role": "assistant",
+                "content": [
+                    {"type": "output_text", "text": '{"claims":["a"]', "annotations": []},
+                    {"type": "output_text", "text": "}"},
+                ],
+            },
+            {
+                "type": "message",
+                "id": "msg_2",
+                "status": "completed",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "trailing"}],
+            },
         ],
         "usage": {"input_tokens": 3, "output_tokens": 4},
     }
     transport = FakeTransport(lambda **kwargs: (200, json.dumps(payload).encode()))
     runtime = _runtime(_payload(tmp_path), transport)
 
-    assert runtime.consolidation.propose(
-        [{"role": "user", "content": "bounded input"}], remaining_seconds=2.0
-    ) == '{"claims":["a"]}\n\ntrailing'
+    assert (
+        runtime.consolidation.propose([{"role": "user", "content": "bounded input"}], remaining_seconds=2.0)
+        == '{"claims":["a"]}\n\ntrailing'
+    )
 
 
 def test_responses_incomplete_is_the_named_truncated_derivation(tmp_path, monkeypatch):
@@ -380,11 +421,14 @@ def test_responses_incomplete_is_the_named_truncated_derivation(tmp_path, monkey
     ]
 
 
-@pytest.mark.parametrize("payload_status,error", [
-    ("failed", "response_status_failed"),
-    ("in_progress", "unsupported_response_shape"),
-    (None, "unsupported_response_shape"),
-])
+@pytest.mark.parametrize(
+    "payload_status,error",
+    [
+        ("failed", "response_status_failed"),
+        ("in_progress", "unsupported_response_shape"),
+        (None, "unsupported_response_shape"),
+    ],
+)
 def test_non_completed_response_status_is_not_an_answer(tmp_path, monkeypatch, payload_status, error):
     monkeypatch.setenv(CREDENTIAL_ENV, "test-key")
     body = json.loads(_answer("{}").decode())
@@ -411,14 +455,31 @@ def test_responses_refusal_part_is_not_an_answer(tmp_path, monkeypatch):
     assert exc.value.error_type == "model_refused"
 
 
-@pytest.mark.parametrize("output", [
-    [{"type": "reasoning", "id": "rs_1", "status": "completed",
-      "content": [{"type": "reasoning_text", "text": "only thinking was produced"}], "summary": []}],
-    [{"type": "message", "id": "msg_1", "status": "completed", "role": "assistant", "content": []}],
-    [{"type": "message", "id": "msg_1", "status": "completed", "role": "assistant",
-      "content": [{"type": "output_text", "text": ""}]}],
-    [],
-])
+@pytest.mark.parametrize(
+    "output",
+    [
+        [
+            {
+                "type": "reasoning",
+                "id": "rs_1",
+                "status": "completed",
+                "content": [{"type": "reasoning_text", "text": "only thinking was produced"}],
+                "summary": [],
+            }
+        ],
+        [{"type": "message", "id": "msg_1", "status": "completed", "role": "assistant", "content": []}],
+        [
+            {
+                "type": "message",
+                "id": "msg_1",
+                "status": "completed",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": ""}],
+            }
+        ],
+        [],
+    ],
+)
 def test_responses_without_answer_text_is_not_success(tmp_path, monkeypatch, output):
     monkeypatch.setenv(CREDENTIAL_ENV, "test-key")
     body = json.loads(_answer("{}").decode())
@@ -431,10 +492,20 @@ def test_responses_without_answer_text_is_not_success(tmp_path, monkeypatch, out
     assert exc.value.error_type == "empty_output"
 
 
-@pytest.mark.parametrize("item", [
-    {"type": "function_call", "id": "fc_1", "status": "completed", "call_id": "fc_1", "name": "x", "arguments": "{}"},
-    {"type": "web_search_call", "id": "ws_1", "status": "completed"},
-])
+@pytest.mark.parametrize(
+    "item",
+    [
+        {
+            "type": "function_call",
+            "id": "fc_1",
+            "status": "completed",
+            "call_id": "fc_1",
+            "name": "x",
+            "arguments": "{}",
+        },
+        {"type": "web_search_call", "id": "ws_1", "status": "completed"},
+    ],
+)
 def test_responses_tool_protocol_is_not_answer_text(tmp_path, monkeypatch, item):
     monkeypatch.setenv(CREDENTIAL_ENV, "test-key")
     body = json.loads(_answer("{}").decode())
@@ -474,17 +545,19 @@ def test_an_answer_item_marked_unfinished_contradicts_a_completed_response(tmp_p
 def test_responses_route_returns_raw_content_without_json_repair(tmp_path, monkeypatch):
     """The proposal is judged by the existing validator, not by this adapter."""
     monkeypatch.setenv(CREDENTIAL_ENV, "test-key")
-    transport = FakeTransport(lambda **kwargs: (200, _answer('{not valid json')))
+    transport = FakeTransport(lambda **kwargs: (200, _answer("{not valid json")))
     runtime = _runtime(_payload(tmp_path), transport)
 
-    assert runtime.consolidation.propose(
-        [{"role": "user", "content": "bounded input"}], remaining_seconds=2.0
-    ) == "{not valid json"
+    assert (
+        runtime.consolidation.propose([{"role": "user", "content": "bounded input"}], remaining_seconds=2.0)
+        == "{not valid json"
+    )
 
 
 # ---------------------------------------------------------------------------
 # Usage and money: the same ledger, the same settlement, no double counting
 # ---------------------------------------------------------------------------
+
 
 def test_responses_usage_is_recorded_and_charged_without_billing_reasoning_twice(tmp_path, monkeypatch):
     """DeepSeek counts reasoning inside ``output_tokens``, so a thinking call is
@@ -512,14 +585,17 @@ def test_responses_usage_is_recorded_and_charged_without_billing_reasoning_twice
     assert row["charge_micro_usd"] == budget.pricing[MODEL].charge_micro_usd(1000, 500)
 
 
-@pytest.mark.parametrize("usage", [
-    None,
-    {},
-    {"input_tokens": 10},
-    {"input_tokens": 10.5, "output_tokens": 5},
-    {"input_tokens": -1, "output_tokens": 5},
-    {"input_tokens": "10", "output_tokens": 5},
-])
+@pytest.mark.parametrize(
+    "usage",
+    [
+        None,
+        {},
+        {"input_tokens": 10},
+        {"input_tokens": 10.5, "output_tokens": 5},
+        {"input_tokens": -1, "output_tokens": 5},
+        {"input_tokens": "10", "output_tokens": 5},
+    ],
+)
 def test_responses_missing_usage_keeps_the_reserved_charge(tmp_path, monkeypatch, usage):
     monkeypatch.setenv(CREDENTIAL_ENV, "test-key")
     budget = _budget()
@@ -674,6 +750,7 @@ def test_responses_route_shares_the_ledger_cap_of_the_installation(tmp_path, mon
 # The chat-completions and codex_cli routes are untouched
 # ---------------------------------------------------------------------------
 
+
 def test_the_chat_completions_route_still_sends_its_own_body(tmp_path, monkeypatch):
     monkeypatch.setenv("SCOPE_RECALL_TEST_CHAT_KEY", "test-key")
     budget = _budget()
@@ -693,19 +770,28 @@ def test_the_chat_completions_route_still_sends_its_own_body(tmp_path, monkeypat
             "response_format": {"type": "json_object"},
         },
     }
-    transport = FakeTransport(lambda **kwargs: (200, json.dumps({
-        "usage": {"prompt_tokens": 10, "completion_tokens": 5},
-        "choices": [{"message": {"role": "assistant", "content": "{}"}, "finish_reason": "stop"}],
-    }).encode()))
+    transport = FakeTransport(
+        lambda **kwargs: (
+            200,
+            json.dumps(
+                {
+                    "usage": {"prompt_tokens": 10, "completion_tokens": 5},
+                    "choices": [{"message": {"role": "assistant", "content": "{}"}, "finish_reason": "stop"}],
+                }
+            ).encode(),
+        )
+    )
     runtime = _runtime(payload, transport)
 
-    assert runtime.consolidation.propose(
-        [{"role": "system", "content": "propose only"}, {"role": "user", "content": "bounded input"}],
-        remaining_seconds=2.0,
-    ) == "{}"
+    assert (
+        runtime.consolidation.propose(
+            [{"role": "system", "content": "propose only"}, {"role": "user", "content": "bounded input"}],
+            remaining_seconds=2.0,
+        )
+        == "{}"
+    )
 
     call = transport.calls[0]
     assert call["url"] == "https://api.deepseek.com/chat/completions"
     assert set(call["body"]) == {"model", "messages", "stream", "n", "max_tokens", "response_format"}
     assert call["body"]["messages"][0] == {"role": "system", "content": "propose only"}
-

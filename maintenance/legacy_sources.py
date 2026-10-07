@@ -4,6 +4,7 @@ Every legacy record that carries content or history is archived as an imported
 source event so later authority (claims, episodes, deletions) can cite it by a
 stable Core id instead of a legacy row identity.
 """
+
 from __future__ import annotations
 
 from collections import defaultdict
@@ -17,7 +18,15 @@ from scope_recall.maintenance.legacy_v2_compat import resolve_memory_scope
 from .legacy_catalog import _DIGEST_TABLES, _HISTORY
 from .legacy_plan import Conversion, Row
 from .migration_records import (
-    LEGACY_BASELINE, _canon, _digest, _json, _recorded, _safe, _safe_text, _stable, _time,
+    LEGACY_BASELINE,
+    _canon,
+    _digest,
+    _json,
+    _recorded,
+    _safe,
+    _safe_text,
+    _stable,
+    _time,
 )
 
 SOURCE_EVENT_FIELDS = (
@@ -63,7 +72,13 @@ _ROLE_ORIGINS = {
 }
 _SCOPE_MODES = ("local", "shared", "shared_pool")
 _JOURNAL_EXTRA = (
-    "turn_number", "platform", "user_id", "chat_id", "thread_id", "agent_identity", "agent_workspace",
+    "turn_number",
+    "platform",
+    "user_id",
+    "chat_id",
+    "thread_id",
+    "agent_identity",
+    "agent_workspace",
 )
 _DIGEST_EXTRA = {
     "memory_digest_sources": {
@@ -80,6 +95,7 @@ _DIGEST_EXTRA = {
 
 
 # --- row readers -----------------------------------------------------------
+
 
 def _role_origin(role: object) -> tuple[str, str]:
     return _ROLE_ORIGINS.get(str(role or "").lower(), ("unknown", "origin_unknown"))
@@ -114,10 +130,7 @@ def _evidence_items(value: object) -> list[dict[str, Any]]:
 
 
 def _safe_list(value: object) -> list[str]:
-    return [
-        _safe_text(item)[0] if isinstance(item, str) else _canon(_safe(item))
-        for item in _json_list(value)
-    ]
+    return [_safe_text(item)[0] if isinstance(item, str) else _canon(_safe(item)) for item in _json_list(value)]
 
 
 def _anchor_ref(anchor: dict[str, Any]) -> object:
@@ -210,6 +223,7 @@ def _resolve(
 
 # --- source events ---------------------------------------------------------
 
+
 def _source_event(
     table: str,
     identity: str,
@@ -301,12 +315,29 @@ def archive(
     return item
 
 
-def _archive_record(cv: Conversion, table: str, identity: str, scope_row: Row, row: Row, kind: str, scope: dict[str, Any] | None = None, **extra: Any) -> Row:
+def _archive_record(
+    cv: Conversion,
+    table: str,
+    identity: str,
+    scope_row: Row,
+    row: Row,
+    kind: str,
+    scope: dict[str, Any] | None = None,
+    **extra: Any,
+) -> Row:
     """Archive a row whose content is its own sanitized canonical JSON."""
     content, changed = _safe_text(_canon(_safe(row)))
     item = archive(
-        cv, table, identity, {**scope_row, "id": identity}, content, kind, "origin_unknown",
-        {"legacy_row": _safe(row), **extra}, scope if scope is not None else _scope(scope_row), changed,
+        cv,
+        table,
+        identity,
+        {**scope_row, "id": identity},
+        content,
+        kind,
+        "origin_unknown",
+        {"legacy_row": _safe(row), **extra},
+        scope if scope is not None else _scope(scope_row),
+        changed,
     )
     cv.archives[(table, identity)] = item["event_id"]
     return item
@@ -318,8 +349,16 @@ def archive_journal(cv: Conversion) -> None:
         content, changed = _safe_text(row.get("content"))
         extra = {"role": role, **{key: row.get(key) for key in _JOURNAL_EXTRA}, "metadata": _metadata(row)}
         item = archive(
-            cv, "journal_entries", str(row.get("id") or "unknown"), row, content,
-            "raw_event", original, extra, _scope(row), changed,
+            cv,
+            "journal_entries",
+            str(row.get("id") or "unknown"),
+            row,
+            content,
+            "raw_event",
+            original,
+            extra,
+            _scope(row),
+            changed,
         )
         cv.journal_refs[str(row.get("id"))] = item["event_id"]
 
@@ -345,8 +384,16 @@ def archive_memories(cv: Conversion) -> None:
             "legacy_metadata": meta,
         }
         item = archive(
-            cv, "memories", str(row.get("id") or "unknown"), row, content,
-            "durable_memory_evidence", "origin_unknown", extra, scope, changed_content or changed_summary,
+            cv,
+            "memories",
+            str(row.get("id") or "unknown"),
+            row,
+            content,
+            "durable_memory_evidence",
+            "origin_unknown",
+            extra,
+            scope,
+            changed_content or changed_summary,
         )
         cv.memory_refs[str(row.get("id"))] = item["event_id"]
         cv.memory_items[str(row.get("id"))] = item
@@ -366,13 +413,20 @@ def archive_fact_records(cv: Conversion) -> None:
 
 
 def _inherit(row: Row, parent: Row) -> Row:
-    return {**row, "scope_id": parent.get("scope_id"), "project_id": parent.get("project_id"), "branch_id": parent.get("branch_id")}
+    return {
+        **row,
+        "scope_id": parent.get("scope_id"),
+        "project_id": parent.get("project_id"),
+        "branch_id": parent.get("branch_id"),
+    }
 
 
 def report_target_tombstones(cv: Conversion) -> None:
     for row in cv.rows["privacy_purge_tombstones"]:
         identity = _digest({key: row.get(key) for key in ("operation_id", "target_hash", "content_hash", "erased_at")})
-        cv.unmapped("privacy_purge_tombstones", identity, "unmapped_target_tombstone_blocks_cutover", redacted_row=_safe(row))
+        cv.unmapped(
+            "privacy_purge_tombstones", identity, "unmapped_target_tombstone_blocks_cutover", redacted_row=_safe(row)
+        )
 
 
 def _history_parent(table: str, row: Row, parents: dict[str, dict[str, Row]]) -> Row:
@@ -397,8 +451,12 @@ def archive_history(cv: Conversion) -> None:
     for table in sorted(_HISTORY | {"procedural_playbooks", "playbook_versions"}):
         for row in cv.rows[table]:
             identity = str(
-                row.get("id") or row.get("action_id") or row.get("evidence_id")
-                or row.get("playbook_id") or row.get("version") or "unknown"
+                row.get("id")
+                or row.get("action_id")
+                or row.get("evidence_id")
+                or row.get("playbook_id")
+                or row.get("version")
+                or "unknown"
             )
             scope_row = row
             if not row.get("scope_id"):
@@ -475,6 +533,4 @@ def archive_sources(cv: Conversion) -> None:
     report_target_tombstones(cv)
     archive_history(cv)
     archive_digests(cv)
-    cv.episode_refs = {
-        str(row.get("id")): _stable("episode", row.get("id")) for row in cv.rows["task_episodes"]
-    }
+    cv.episode_refs = {str(row.get("id")): _stable("episode", row.get("id")) for row in cv.rows["task_episodes"]}

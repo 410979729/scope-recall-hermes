@@ -6,6 +6,7 @@ recorded: 24 of beta's candidates and 5 of alpha's sat there, and waiting for ne
 evidence never comes for a candidate whose evidence is already in.  One extra attempt, with
 a durable marker, so a repeating interruption cannot become a loop of model calls.
 """
+
 from __future__ import annotations
 
 import sqlite3
@@ -25,12 +26,15 @@ EVALUATIONS = frozenset({"evaluate_candidate"})
 def _interrupt(core, ctx):
     """Begin the one model attempt, then lose the lease the way a killed worker does."""
     with core.storage.write(ctx) as tx:
-        item = tx.work.claim_next("TEST-crashed", core.clock.utc_now(), lease_seconds=60, limit=1,
-                                  allowed_work_types=EVALUATIONS)[0]
-        assert tx.candidates.begin_model_attempt(item.subject_revision, item.work_id, item.lease_token,
-                                                 item.lease_owner, now=core.clock.utc_now())
-        tx._check(write=True).execute("UPDATE work_items SET lease_until='2026-09-06T11:00:00Z' WHERE work_id=?",
-                                      (item.work_id,))
+        item = tx.work.claim_next(
+            "TEST-crashed", core.clock.utc_now(), lease_seconds=60, limit=1, allowed_work_types=EVALUATIONS
+        )[0]
+        assert tx.candidates.begin_model_attempt(
+            item.subject_revision, item.work_id, item.lease_token, item.lease_owner, now=core.clock.utc_now()
+        )
+        tx._check(write=True).execute(
+            "UPDATE work_items SET lease_until='2026-09-06T11:00:00Z' WHERE work_id=?", (item.work_id,)
+        )
     return item.work_id
 
 
@@ -88,8 +92,12 @@ def test_recovery_asks_for_evaluations_only(app):
     core, ctx = app
     work_id = _interrupted_candidate(core, ctx)
     with core.storage.write(ctx) as tx:
-        assert tx.work.recover_interrupted_attempts(now=core.clock.utc_now(),
-                                                    allowed_work_types=frozenset({"consolidate"})) == 0
+        assert (
+            tx.work.recover_interrupted_attempts(
+                now=core.clock.utc_now(), allowed_work_types=frozenset({"consolidate"})
+            )
+            == 0
+        )
     assert _error_code(core, work_id) == "candidate_attempt_interrupted"
 
 

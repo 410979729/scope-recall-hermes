@@ -1,4 +1,5 @@
 """P07 consolidation input is bounded, source-faithful, and data-only."""
+
 from dataclasses import replace
 import json
 from pathlib import Path
@@ -15,13 +16,16 @@ def local_contract_resource(monkeypatch):
     # The isolated checker loads the worktree directly; pin the resource root
     # in this test so the behavior under test is not masked by package metadata.
     import scope_recall.core.consolidate as consolidate
+
     monkeypatch.setattr(consolidate, "files", lambda _package: Path(__file__).parents[2])
 
 
 def test_consolidation_preserves_authorized_origin_role_and_attested_import(app):
     core, ctx = app
     direct = capture(core, ctx, "TEST 用户明确决定保留蓝色。", origin="human_direct")
-    imported = capture(core, ctx, "TEST imported human record", origin="imported", attested=True, source_original_origin="human_direct")
+    imported = capture(
+        core, ctx, "TEST imported human record", origin="imported", attested=True, source_original_origin="human_direct"
+    )
     messages = consolidation_messages((direct, imported), episode_ref="episode-TEST")
     assert [m["role"] for m in messages] == ["system", "user"]
     body = json.loads(messages[1]["content"])

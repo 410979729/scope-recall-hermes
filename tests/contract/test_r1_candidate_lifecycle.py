@@ -1,4 +1,5 @@
 """R1 candidate lifecycle, bounded scheduling and migration contracts."""
+
 from __future__ import annotations
 
 import json
@@ -66,9 +67,18 @@ def _snapshot(core, ref, revision):
                WHERE l.candidate_ref=? AND l.candidate_revision=?""",
             (ref, revision),
         ).fetchone()
-    return CandidateSnapshot(ref, revision, row["scope_id"], row["project_id"], row["branch_id"],
-                             row["fact_state"], json.loads(row["payload_json"]),
-                             row["processing_state"], row["reason"], row["rule_version"])
+    return CandidateSnapshot(
+        ref,
+        revision,
+        row["scope_id"],
+        row["project_id"],
+        row["branch_id"],
+        row["fact_state"],
+        json.loads(row["payload_json"]),
+        row["processing_state"],
+        row["reason"],
+        row["rule_version"],
+    )
 
 
 def _candidate(core, ctx, *, value="蓝色", key=None):
@@ -85,7 +95,9 @@ def _candidate(core, ctx, *, value="蓝色", key=None):
             recorded_at=core.clock.utc_now(),
         )
         registration = tx.candidates.register(
-            saved.ref, saved.revision, observed_at=core.clock.utc_now(),
+            saved.ref,
+            saved.revision,
+            observed_at=core.clock.utc_now(),
         )
     return saved, source, proposal, registration
 
@@ -99,15 +111,15 @@ def _finish_source_work(core):
 def _candidate_rows(core):
     with sqlite3.connect(core.storage.path) as conn:
         conn.row_factory = sqlite3.Row
-        lifecycle = [dict(row) for row in conn.execute(
-            "SELECT * FROM candidate_lifecycle ORDER BY candidate_ref,candidate_revision"
-        )]
-        evaluations = [dict(row) for row in conn.execute(
-            "SELECT * FROM candidate_evaluations ORDER BY evaluation_id"
-        )]
-        work = [dict(row) for row in conn.execute(
-            "SELECT * FROM work_items WHERE work_type='evaluate_candidate' ORDER BY work_id"
-        )]
+        lifecycle = [
+            dict(row)
+            for row in conn.execute("SELECT * FROM candidate_lifecycle ORDER BY candidate_ref,candidate_revision")
+        ]
+        evaluations = [dict(row) for row in conn.execute("SELECT * FROM candidate_evaluations ORDER BY evaluation_id")]
+        work = [
+            dict(row)
+            for row in conn.execute("SELECT * FROM work_items WHERE work_type='evaluate_candidate' ORDER BY work_id")
+        ]
     return lifecycle, evaluations, work
 
 
@@ -121,13 +133,16 @@ class Evaluator:
         self.calls += 1
         if self.callback is not None:
             self.callback()
-        return json.dumps({
-            "protocol_version": "1.1",
-            "source_refs": [f"{source.ref}@{source.revision}" for source in sources],
-            "claim_proposals": [] if self.proposal is None else [self.proposal],
-            "resume_proposals": [],
-            "reference_proposals": [],
-        }, ensure_ascii=False)
+        return json.dumps(
+            {
+                "protocol_version": "1.1",
+                "source_refs": [f"{source.ref}@{source.revision}" for source in sources],
+                "claim_proposals": [] if self.proposal is None else [self.proposal],
+                "resume_proposals": [],
+                "reference_proposals": [],
+            },
+            ensure_ascii=False,
+        )
 
 
 class ModelRefusal(Exception):
@@ -232,8 +247,9 @@ def test_candidate_unrelated_capture_during_attempt_still_applies_verdict(app):
     core, ctx = app
     saved, _source, proposal, _registration = _candidate(core, ctx)
     _finish_source_work(core)
-    evaluator = Evaluator(proposal, callback=lambda: capture(
-        core, ctx, "另一个项目刚更新。", key="TEST-r1/during-model"))
+    evaluator = Evaluator(
+        proposal, callback=lambda: capture(core, ctx, "另一个项目刚更新。", key="TEST-r1/during-model")
+    )
     result = core.drain_worker(ctx, max_items=1, remaining_seconds=10, consolidation=evaluator)
     assert evaluator.calls == 1
     assert result.completed == 1 and result.obsolete == 0
@@ -276,8 +292,14 @@ def test_candidate_slot_written_during_attempt_blocks_publication(app):
     def write_history():
         with core.storage.write(ctx) as tx:
             head = tx.claims.version(saved.ref, saved.revision)
-            tx.claims.append("TEST-scope", proposal, Qualification("proposed", "inferred_suggestion", "TEST_history"),
-                             recorded_at=core.clock.utc_now(), previous=head, advance_head=False)
+            tx.claims.append(
+                "TEST-scope",
+                proposal,
+                Qualification("proposed", "inferred_suggestion", "TEST_history"),
+                recorded_at=core.clock.utc_now(),
+                previous=head,
+                advance_head=False,
+            )
 
     evaluator = Evaluator(proposal, callback=write_history)
     result = core.drain_worker(ctx, max_items=1, remaining_seconds=10, consolidation=evaluator)
@@ -314,7 +336,10 @@ def test_r1_candidate_hides_c1_principal_from_model_and_rebinds_via_c2(app):
     actor = replace(
         ctx,
         source_principal=TrustedSourcePrincipal(
-            "human", "verified", principal_ref=principal_ref, display_name="Alice",
+            "human",
+            "verified",
+            principal_ref=principal_ref,
+            display_name="Alice",
         ),
     )
     source = capture(core, actor, "我喜欢蓝色。", key="TEST-r1/private-principal")
@@ -327,20 +352,25 @@ def test_r1_candidate_hides_c1_principal_from_model_and_rebinds_via_c2(app):
         "statement_kind": "assertion",
         "valid_from": source.event["occurred_at"],
         "valid_to": None,
-        "evidence_spans": [{
-            "source_ref": source.ref,
-            "source_revision": source.revision,
-            "quote": source.event["content"],
-        }],
+        "evidence_spans": [
+            {
+                "source_ref": source.ref,
+                "source_revision": source.revision,
+                "quote": source.event["content"],
+            }
+        ],
     }
     with core.storage.write(actor) as tx:
         candidate = tx.claims.append(
-            "TEST-scope", stored,
+            "TEST-scope",
+            stored,
             Qualification("proposed", "inferred_suggestion", "TEST_candidate"),
             recorded_at=core.clock.utc_now(),
         )
         registration = tx.candidates.register(
-            candidate.ref, candidate.revision, observed_at=core.clock.utc_now(),
+            candidate.ref,
+            candidate.revision,
+            observed_at=core.clock.utc_now(),
         )
         evaluation = tx.candidates.evaluation(registration.evaluation_id)
     assert evaluation is not None
@@ -355,7 +385,10 @@ def test_r1_candidate_hides_c1_principal_from_model_and_rebinds_via_c2(app):
     _finish_source_work(core)
     evaluator = Evaluator(proposal)
     receipt = core.drain_worker(
-        actor, max_items=8, remaining_seconds=10, consolidation=evaluator,
+        actor,
+        max_items=8,
+        remaining_seconds=10,
+        consolidation=evaluator,
     )
     current = core.current_claim(ctx, candidate.ref)
     candidate_items = [item for item in receipt.items if item.work_type == "evaluate_candidate"]
@@ -405,16 +438,19 @@ def test_r1_candidate_batch_stops_at_the_pass_bound_and_persists_remainder(app):
 def test_r1_candidate_source_matching_is_capped_at_sixteen(app):
     core, ctx = app
     sources = [
-        capture(core, ctx, f"entity{i} property{i} sharedtoken value{i}。", key=f"TEST-r1/match/{i}")
-        for i in range(20)
+        capture(core, ctx, f"entity{i} property{i} sharedtoken value{i}。", key=f"TEST-r1/match/{i}") for i in range(20)
     ]
     with core.storage.write(ctx) as tx:
         for index, source in enumerate(sources):
             proposal = draft(
-                source, f"sharedtoken value{index}", subject=f"entity{index}", predicate=f"property{index}",
+                source,
+                f"sharedtoken value{index}",
+                subject=f"entity{index}",
+                predicate=f"property{index}",
             )
             saved = tx.claims.append(
-                "TEST-scope", proposal,
+                "TEST-scope",
+                proposal,
                 Qualification("proposed", "inferred_suggestion", "TEST_candidate"),
                 recorded_at=core.clock.utc_now(),
             )
@@ -423,7 +459,8 @@ def test_r1_candidate_source_matching_is_capped_at_sixteen(app):
     with sqlite3.connect(core.storage.path) as conn:
         row = conn.execute(
             """SELECT matched_count,scheduled_count,truncated FROM candidate_source_triggers
-               WHERE source_ref=? AND source_revision=1""", (trigger.ref,),
+               WHERE source_ref=? AND source_revision=1""",
+            (trigger.ref,),
         ).fetchone()
     # matched and truncated are the cap under test.  scheduled is now zero for
     # two independent reasons -- the evidence has only just arrived, and each of
@@ -505,7 +542,9 @@ def test_r1_candidate_failed_combination_rejects_operator_retry_and_needs_new_ev
     assert receipt.failed == 1 and work[0]["state"] == "failed"
     with core.storage.write(ctx) as tx:
         retried = tx.work.operator_retry_failed(
-            [work[0]["work_id"]], now=core.clock.utc_now(), operation_id="TEST-r1-retry",
+            [work[0]["work_id"]],
+            now=core.clock.utc_now(),
+            operation_id="TEST-r1-retry",
         )
     assert retried[0].disposition == "rejected"
     assert retried[0].reason == "new_evidence_required"
@@ -523,15 +562,22 @@ def test_r1_candidate_interrupted_attempt_never_calls_model_again(app):
     _finish_source_work(core)
     with core.storage.write(ctx) as tx:
         item = tx.work.claim_next(
-            "TEST-crashed", core.clock.utc_now(), lease_seconds=60, limit=1,
+            "TEST-crashed",
+            core.clock.utc_now(),
+            lease_seconds=60,
+            limit=1,
             allowed_work_types=frozenset({"evaluate_candidate"}),
         )[0]
         assert tx.candidates.begin_model_attempt(
-            item.subject_revision, item.work_id, item.lease_token, item.lease_owner,
+            item.subject_revision,
+            item.work_id,
+            item.lease_token,
+            item.lease_owner,
             now=core.clock.utc_now(),
         )
         tx._check(write=True).execute(
-            "UPDATE work_items SET lease_until='2026-09-06T11:00:00Z' WHERE work_id=?", (item.work_id,),
+            "UPDATE work_items SET lease_until='2026-09-06T11:00:00Z' WHERE work_id=?",
+            (item.work_id,),
         )
     evaluator = Evaluator()
     receipt = core.drain_worker(ctx, max_items=8, remaining_seconds=10, consolidation=evaluator)
@@ -607,18 +653,25 @@ def test_r1_candidate_scheduler_distinguishes_missing_capability_and_daily_budge
         # be observed against a cap that was actually asked for.
         daily_work_limit=256,
         auxiliary=replace(
-            config.auxiliary, external_consolidation=True, consolidation=object(),
+            config.auxiliary,
+            external_consolidation=True,
+            consolidation=object(),
             ledger_path=tmp_path / "TEST-ledger.sqlite3",
         ),
     )
     ready = next_wake(capable, now=NOW)
     assert ready.due_at == "2026-09-12T00:00:00Z" and ready.reason == "work_available"
     budget = capable.binding.data_directory / "runtime-worker-day.json"
-    budget.write_text(json.dumps({
-        "installation_id": capable.binding.installation_id,
-        "day": "2026-09-12",
-        "used": capable.daily_work_limit,
-    }), encoding="utf-8")
+    budget.write_text(
+        json.dumps(
+            {
+                "installation_id": capable.binding.installation_id,
+                "day": "2026-09-12",
+                "used": capable.daily_work_limit,
+            }
+        ),
+        encoding="utf-8",
+    )
     paused = next_wake(capable, now=NOW)
     assert paused.due_at == "2026-09-13T00:00:00Z" and paused.reason == "daily_queue_budget"
     # The same spent counter, uncapped: candidate work stays due instead of
@@ -637,11 +690,13 @@ def test_r1_candidate_1107_migration_preserves_work_ids_leases_and_error_history
         ).fetchone()[0]
         conn.execute(
             """UPDATE work_items SET state='leased',attempt=2,lease_token=7,lease_owner='TEST-owner',
-               lease_until='2099-01-01T00:00:00Z',last_error_code='held' WHERE work_id=?""", (work_id,)
+               lease_until='2099-01-01T00:00:00Z',last_error_code='held' WHERE work_id=?""",
+            (work_id,),
         )
         conn.execute(
             """INSERT INTO work_error_details(work_id,lease_token,stage,error_code,error_field,recorded_at)
-               VALUES (?,7,'TEST','held','field','2026-09-06T12:00:00Z')""", (work_id,)
+               VALUES (?,7,'TEST','held','field','2026-09-06T12:00:00Z')""",
+            (work_id,),
         )
         conn.execute(
             """INSERT INTO capture_inbox(token,scope_id,project_id,branch_id,created_at,payload_json,last_error_code)
@@ -652,6 +707,7 @@ def test_r1_candidate_1107_migration_preserves_work_ids_leases_and_error_history
 
     import scope_recall.core.schema as schema_module
     import scope_recall.core.storage as storage_module
+
     original = schema_module.upgrade_1107
 
     def fail_after_upgrade(connection):
@@ -663,26 +719,45 @@ def test_r1_candidate_1107_migration_preserves_work_ids_leases_and_error_history
         core.initialize()
     with sqlite3.connect(core.storage.path) as conn:
         assert conn.execute("PRAGMA user_version").fetchone()[0] == 1107
-        assert conn.execute("SELECT state,attempt,lease_token,lease_owner,last_error_code FROM work_items WHERE work_id=?", (work_id,)).fetchone() == (
-            "leased", 2, 7, "TEST-owner", "held",
+        assert conn.execute(
+            "SELECT state,attempt,lease_token,lease_owner,last_error_code FROM work_items WHERE work_id=?", (work_id,)
+        ).fetchone() == (
+            "leased",
+            2,
+            7,
+            "TEST-owner",
+            "held",
         )
     monkeypatch.setattr(storage_module, "upgrade_1107", original)
     status = core.initialize()
     with sqlite3.connect(core.storage.path) as conn:
         assert status.schema_version == SCHEMA_VERSION == 1110
-        assert conn.execute("SELECT state,attempt,lease_token,lease_owner,last_error_code FROM work_items WHERE work_id=?", (work_id,)).fetchone() == (
-            "leased", 2, 7, "TEST-owner", "held",
+        assert conn.execute(
+            "SELECT state,attempt,lease_token,lease_owner,last_error_code FROM work_items WHERE work_id=?", (work_id,)
+        ).fetchone() == (
+            "leased",
+            2,
+            7,
+            "TEST-owner",
+            "held",
         )
-        assert conn.execute("SELECT lease_token,stage,error_code,error_field FROM work_error_details WHERE work_id=?", (work_id,)).fetchone() == (
-            7, "TEST", "held", "field",
+        assert conn.execute(
+            "SELECT lease_token,stage,error_code,error_field FROM work_error_details WHERE work_id=?", (work_id,)
+        ).fetchone() == (
+            7,
+            "TEST",
+            "held",
+            "field",
         )
-        assert conn.execute("SELECT payload_json,last_error_code FROM capture_inbox WHERE token='TEST-inbox'").fetchone() == (
-            "{}", "held",
+        assert conn.execute(
+            "SELECT payload_json,last_error_code FROM capture_inbox WHERE token='TEST-inbox'"
+        ).fetchone() == (
+            "{}",
+            "held",
         )
         assert conn.execute("PRAGMA foreign_key_check").fetchall() == []
         ddl = conn.execute("SELECT sql FROM sqlite_master WHERE name='work_items'").fetchone()[0]
         assert "evaluate_candidate" in ddl
-
 
 
 def test_r1_one_candidate_never_accumulates_a_queue_of_stale_evaluations(app):
@@ -758,11 +833,14 @@ def test_r1_a_started_evaluation_is_never_retired_by_new_evidence(app):
 # Questions no verdict could settle are answered without the model
 # --------------------------------------------------------------------------
 
+
 def _register_candidate(core, ctx, source, value, *, slug):
     proposal = draft(source, value, subject=f"entity-{slug}", predicate=f"property-{slug}")
     with core.storage.write(ctx) as tx:
         saved = tx.claims.append(
-            "TEST-scope", proposal, Qualification("proposed", "inferred_suggestion", "TEST_candidate"),
+            "TEST-scope",
+            proposal,
+            Qualification("proposed", "inferred_suggestion", "TEST_candidate"),
             recorded_at=core.clock.utc_now(),
         )
         registration = tx.candidates.register(saved.ref, saved.revision, observed_at=core.clock.utc_now())
@@ -805,10 +883,16 @@ def test_a_value_absent_from_every_source_is_not_sent_to_the_model(app):
 def test_a_fact_without_any_authority_is_not_sent_to_the_model(app):
     core, ctx = app
     source = capture(core, ctx, "entity-said property-said 灰色", origin="assistant_visible", key="TEST-r1/said")
-    proposal = draft(source, "灰色", subject="entity-said", predicate="property-said", kind="fact", statement_kind="fact")
+    proposal = draft(
+        source, "灰色", subject="entity-said", predicate="property-said", kind="fact", statement_kind="fact"
+    )
     with core.storage.write(ctx) as tx:
-        saved = tx.claims.append("TEST-scope", proposal, Qualification("proposed", "inferred_suggestion", "TEST_candidate"),
-                                 recorded_at=core.clock.utc_now())
+        saved = tx.claims.append(
+            "TEST-scope",
+            proposal,
+            Qualification("proposed", "inferred_suggestion", "TEST_candidate"),
+            recorded_at=core.clock.utc_now(),
+        )
         registration = tx.candidates.register(saved.ref, saved.revision, observed_at=core.clock.utc_now())
     assert (registration.work_queued, registration.reason) == (False, "no_authoritative_evidence")
     _lifecycle, _evaluations, work = _candidate_rows(core)
@@ -822,11 +906,16 @@ def test_a_person_only_kind_proposed_from_a_tool_is_not_a_candidate(app):
     source = capture(core, ctx, "entity-tool property-tool 灰色", origin="tool_observation", key="TEST-r1/tool")
     saved, registration = _register_candidate(core, ctx, source, "灰色", slug="tool")
     assert (registration.processing_state, registration.reason, registration.work_queued) == (
-        "archived", "person_kind_without_person", False)
+        "archived",
+        "person_kind_without_person",
+        False,
+    )
     lifecycle, evaluations, work = _candidate_rows(core)
     assert work == [] and evaluations == []
     with sqlite3.connect(core.storage.path) as conn:
-        terms = conn.execute("SELECT count(*) FROM candidate_trigger_terms WHERE candidate_ref=?", (saved.ref,)).fetchone()[0]
+        terms = conn.execute(
+            "SELECT count(*) FROM candidate_trigger_terms WHERE candidate_ref=?", (saved.ref,)
+        ).fetchone()[0]
     assert terms == 0, "an archived candidate must not be woken by later sources"
 
 
@@ -843,11 +932,20 @@ def test_a_person_only_kind_queued_before_the_rule_is_archived_without_the_model
         tx._check(write=True).execute(
             """INSERT INTO candidate_evaluations(candidate_ref,candidate_revision,evidence_fingerprint,evidence_refs_json,
                rule_version,memory_epoch,state,reason,created_at) VALUES (?,?,?,?,?,0,'queued','new_evidence',?)""",
-            (saved.ref, saved.revision, digest, json.dumps([f"{r}@{v}" for r, v in refs]), "r1-candidate-v1",
-             core.clock.utc_now()))
+            (
+                saved.ref,
+                saved.revision,
+                digest,
+                json.dumps([f"{r}@{v}" for r, v in refs]),
+                "r1-candidate-v1",
+                core.clock.utc_now(),
+            ),
+        )
         evaluation_id = tx._check().execute("SELECT max(evaluation_id) FROM candidate_evaluations").fetchone()[0]
         work_id = tx.candidates._enqueue(saved.ref, evaluation_id, core.clock.utc_now())
-        tx._check(write=True).execute("UPDATE candidate_evaluations SET work_id=? WHERE evaluation_id=?", (work_id, evaluation_id))
+        tx._check(write=True).execute(
+            "UPDATE candidate_evaluations SET work_id=? WHERE evaluation_id=?", (work_id, evaluation_id)
+        )
     _finish_source_work(core)
     evaluator = Evaluator()
     core.drain_worker(ctx, max_items=8, remaining_seconds=10, consolidation=evaluator)
@@ -865,8 +963,10 @@ def test_an_evaluation_queued_before_the_check_is_settled_without_the_model(app)
     unrelated = capture(core, ctx, "entity-blue property-blue 今天先不讨论。", key="TEST-r1/unrelated")
     _finish_source_work(core)
     with sqlite3.connect(core.storage.path) as conn:
-        conn.execute("UPDATE candidate_evaluations SET evidence_refs_json=? WHERE state='queued'",
-                     (json.dumps([f"{unrelated.ref}@{unrelated.revision}"]),))
+        conn.execute(
+            "UPDATE candidate_evaluations SET evidence_refs_json=? WHERE state='queued'",
+            (json.dumps([f"{unrelated.ref}@{unrelated.revision}"]),),
+        )
         conn.commit()
     evaluator = Evaluator()
     receipt = core.drain_worker(ctx, max_items=8, remaining_seconds=10, consolidation=evaluator)
@@ -886,8 +986,18 @@ def _long_evidence_messages(core, ctx, content):
         head = tx.claims.version(saved.ref, saved.revision)
     from scope_recall.core.candidate_lifecycle import CandidateSnapshot
 
-    snapshot_ = CandidateSnapshot(saved.ref, saved.revision, "TEST-scope", None, None, "proposed", head.payload,
-                                  "pending_evaluation", "new_evidence", "r1-candidate-v1")
+    snapshot_ = CandidateSnapshot(
+        saved.ref,
+        saved.revision,
+        "TEST-scope",
+        None,
+        None,
+        "proposed",
+        head.payload,
+        "pending_evaluation",
+        "new_evidence",
+        "r1-candidate-v1",
+    )
     messages = candidate_evaluation_messages(snapshot_, (long_source,))
     record = json.loads(messages[2]["content"])["sources"][0]
     return record, long_source
@@ -903,7 +1013,7 @@ def test_a_long_source_reaches_the_evaluation_as_a_window_around_the_value(app):
     assert len(record["content"]) <= 3000 + len("蓝 色")
     window = record["source_window"]
     assert window["total"] == total and window["coverage"] == "fragment_only"
-    assert source.event["content"][window["start"]:window["end"]] == record["content"]
+    assert source.event["content"][window["start"] : window["end"]] == record["content"]
 
 
 def test_a_long_source_without_the_value_sends_its_head_and_a_short_one_is_whole(app):
@@ -916,8 +1026,18 @@ def test_a_long_source_without_the_value_sends_its_head_and_a_short_one_is_whole
         head = tx.claims.version(saved.ref, saved.revision)
     from scope_recall.core.candidate_lifecycle import CandidateSnapshot
 
-    snapshot_ = CandidateSnapshot(saved.ref, saved.revision, "TEST-scope", None, None, "proposed", head.payload,
-                                  "pending_evaluation", "new_evidence", "r1-candidate-v1")
+    snapshot_ = CandidateSnapshot(
+        saved.ref,
+        saved.revision,
+        "TEST-scope",
+        None,
+        None,
+        "proposed",
+        head.payload,
+        "pending_evaluation",
+        "new_evidence",
+        "r1-candidate-v1",
+    )
     whole = json.loads(candidate_evaluation_messages(snapshot_, (short_source,))[2]["content"])["sources"][0]
     assert whole["content"] == short_source.event["content"] and "source_window" not in whole
 
@@ -967,7 +1087,10 @@ def test_a_candidate_gets_two_verdicts_then_only_a_restatement_reopens_it(app):
     core.drain_worker(ctx, max_items=8, remaining_seconds=10, consolidation=evaluator)
     assert evaluator.calls == 2
     lifecycle, evaluations, _work = _candidate_rows(core)
-    assert (lifecycle[0]["processing_state"], lifecycle[0]["reason"]) == ("waiting_evidence", "repeat_without_restatement")
+    assert (lifecycle[0]["processing_state"], lifecycle[0]["reason"]) == (
+        "waiting_evidence",
+        "repeat_without_restatement",
+    )
     assert evaluations[-1]["reason"] == "repeat_without_restatement" and evaluations[-1]["work_id"] is None
 
     # Someone says the value again: that is worth a third verdict.
@@ -994,8 +1117,15 @@ def test_a_repeat_queued_before_the_limit_is_answered_without_the_model(app):
         conn.execute(
             """INSERT INTO candidate_evaluations(candidate_ref,candidate_revision,evidence_fingerprint,evidence_refs_json,
                rule_version,memory_epoch,state,reason,created_at) VALUES (?,?,?,?,?,0,'queued','new_evidence',?)""",
-            (saved.ref, saved.revision, digest, json.dumps([f"{r}@{v}" for r, v in refs]), "r1-candidate-v1",
-             core.clock.utc_now()))
+            (
+                saved.ref,
+                saved.revision,
+                digest,
+                json.dumps([f"{r}@{v}" for r, v in refs]),
+                "r1-candidate-v1",
+                core.clock.utc_now(),
+            ),
+        )
         evaluation_id = conn.execute("SELECT max(evaluation_id) FROM candidate_evaluations").fetchone()[0]
         work_id = tx.candidates._enqueue(saved.ref, evaluation_id, core.clock.utc_now())
         conn.execute("UPDATE candidate_evaluations SET work_id=? WHERE evaluation_id=?", (work_id, evaluation_id))
@@ -1059,8 +1189,10 @@ def test_a_verdict_citing_a_source_it_was_not_given_is_still_refused(app):
     current = core.current_claim(ctx, saved.ref)
     assert current is None or current.state != "active"
     with sqlite3.connect(core.storage.path) as conn:
-        fields = {row[0] for row in conn.execute(
-            "SELECT error_field FROM work_error_details WHERE stage='candidate_evaluation'")}
+        fields = {
+            row[0]
+            for row in conn.execute("SELECT error_field FROM work_error_details WHERE stage='candidate_evaluation'")
+        }
     assert fields == {"evidence_undeclared_source"}, fields
 
 
@@ -1075,8 +1207,13 @@ def test_evidence_that_cannot_pose_a_new_question_does_not_wake_a_candidate(app)
     lifecycle, _evaluations, _work = _candidate_rows(core)
     before = (lifecycle[0]["processing_state"], lifecycle[0]["reason"], lifecycle[0]["last_evidence_at"])
     assert before[0] == "waiting_evidence"
-    tool = capture(core, ctx, "TEST 工具输出：entity-blue property-blue 蓝色。", origin="tool_observation",
-                   key="TEST-rc10/tool-evidence")
+    tool = capture(
+        core,
+        ctx,
+        "TEST 工具输出：entity-blue property-blue 蓝色。",
+        origin="tool_observation",
+        key="TEST-rc10/tool-evidence",
+    )
     with sqlite3.connect(core.storage.path) as conn:
         linked = conn.execute("SELECT count(*) FROM candidate_evidence WHERE source_ref=?", (tool.ref,)).fetchone()[0]
     assert linked == 1, "the evidence is kept for the next evaluation"
@@ -1097,8 +1234,13 @@ def test_a_tool_output_does_not_keep_a_quiet_candidate_from_going_dormant(app):
     core.drain_worker(ctx, max_items=8, remaining_seconds=10, consolidation=Evaluator())
     start = datetime.fromisoformat(core.clock.utc_now().replace("Z", "+00:00"))
     core.clock.now = (start + timedelta(days=20)).isoformat().replace("+00:00", "Z")
-    tool = capture(core, ctx, "TEST 工具输出：entity-blue property-blue 蓝色。", origin="tool_observation",
-                   key="TEST-rc10/tool-late")
+    tool = capture(
+        core,
+        ctx,
+        "TEST 工具输出：entity-blue property-blue 蓝色。",
+        origin="tool_observation",
+        key="TEST-rc10/tool-late",
+    )
     conn = sqlite3.connect(core.storage.path)
     try:
         assert conn.execute("SELECT count(*) FROM candidate_evidence WHERE source_ref=?", (tool.ref,)).fetchone()[0]

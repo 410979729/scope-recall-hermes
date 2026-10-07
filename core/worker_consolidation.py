@@ -2,6 +2,7 @@
 
 Owned by the worker drain; model calls stay outside SQLite transactions.
 """
+
 from __future__ import annotations
 
 from dataclasses import replace
@@ -31,8 +32,14 @@ from .worker_outcomes import (
 
 
 class ConsolidationModel(Protocol):
-    def propose(self, sources: tuple[StoredSource, ...], *, episode_ref: str | None, remaining_seconds: float,
-                validation_feedback: dict[str, str] | None = None) -> str: ...
+    def propose(
+        self,
+        sources: tuple[StoredSource, ...],
+        *,
+        episode_ref: str | None,
+        remaining_seconds: float,
+        validation_feedback: dict[str, str] | None = None,
+    ) -> str: ...
 
 
 def _fit_prompt_budget(
@@ -74,26 +81,42 @@ def _episode_batch(tx, source: StoredSource, item, *, now: str):
     episode = tx.episodes.source_episode(source.ref, source.revision)
     if episode is None:
         return None, (source,), ()
-    prior = tx._check().execute(
-        """SELECT v.processed_sequence,v.resume_json,ee.sequence FROM episode_versions v
+    prior = (
+        tx._check()
+        .execute(
+            """SELECT v.processed_sequence,v.resume_json,ee.sequence FROM episode_versions v
            JOIN episode_events ee ON ee.episode_id=v.episode_id
            WHERE v.episode_id=? AND v.revision=? AND ee.source_ref=? AND ee.source_revision=?""",
-        (episode.ref, episode.revision, source.ref, source.revision),
-    ).fetchone()
+            (episode.ref, episode.revision, source.ref, source.revision),
+        )
+        .fetchone()
+    )
     processed_sequence = prior["processed_sequence"] if prior and prior["resume_json"] else 0
     if prior and prior["sequence"] <= processed_sequence:
         return episode.ref, (), ()
-    batch_rows = tx._check().execute(
-        """SELECT ee.sequence,ee.source_ref,ee.source_revision,w.lease_token,w.work_id
+    batch_rows = (
+        tx._check()
+        .execute(
+            """SELECT ee.sequence,ee.source_ref,ee.source_revision,w.lease_token,w.work_id
            FROM episode_events ee JOIN work_items w ON w.work_type='consolidate'
              AND w.subject_ref=ee.source_ref AND w.subject_revision=ee.source_revision
            WHERE ee.episode_id=? AND ee.sequence>? AND w.scope_id=?
              AND w.project_id IS ? AND w.branch_id IS ?
              AND (w.work_id=? OR (w.state='pending' AND w.available_at<=? AND w.consolidation_offset=0))
            ORDER BY (w.work_id=?) DESC,ee.sequence LIMIT 32""",
-        (episode.ref, processed_sequence, source.scope_id, source.project_id, source.branch_id,
-         item.work_id, now, item.work_id),
-    ).fetchall()
+            (
+                episode.ref,
+                processed_sequence,
+                source.scope_id,
+                source.project_id,
+                source.branch_id,
+                item.work_id,
+                now,
+                item.work_id,
+            ),
+        )
+        .fetchall()
+    )
     batch, pending = [], []
     lease_tokens: dict[tuple[str, int], int] = {}
     for row in sorted(batch_rows, key=lambda row: row["sequence"]):
@@ -230,6 +253,7 @@ def _process_consolidate(
             offset = tx.work.consolidation_offset(*item.lease, now=clock.utc_now())
             if offset:
                 from .consolidation_summary import resume_seed
+
                 seed = resume_seed(tx, item.work_id)
                 episode = tx.episodes.source_episode(source.ref, source.revision)
                 episode_ref, batch, pending_sources = episode.ref if episode else None, (source,), ()
@@ -237,8 +261,9 @@ def _process_consolidate(
                 episode_ref, batch, pending_sources = _episode_batch(tx, source, item, now=clock.utc_now())
             roots = _root_only_sources(tx, batch)
             # The dependencies come from the same snapshot as the batch itself.
-            dependencies = read_derivation_fence(tx, scope_id=item.scope_id, sources=(source, *batch),
-                                                 episode_ref=episode_ref)
+            dependencies = read_derivation_fence(
+                tx, scope_id=item.scope_id, sources=(source, *batch), episode_ref=episode_ref
+            )
     # Do not open a write transaction while the read transaction above is
     # still active.  SQLite's reader lock otherwise turns an obsolete source
     # into a spurious "database is locked" failure.
@@ -259,11 +284,15 @@ def _process_consolidate(
                 return _mark_obsolete(tx, item, now)
             if derivation_changed(tx, dependencies) is not None:
                 return _epoch_changed(tx, item, now)
-            return _work_result(tx.work.complete_consolidation(
-                *item.lease, now=now,
-                covered_source_refs=frozenset(f"{s.ref}@{s.revision}" for s in batch) | {f"{source.ref}@{source.revision}"},
-                pending_sources=pending_sources,
-            ))
+            return _work_result(
+                tx.work.complete_consolidation(
+                    *item.lease,
+                    now=now,
+                    covered_source_refs=frozenset(f"{s.ref}@{s.revision}" for s in batch)
+                    | {f"{source.ref}@{source.revision}"},
+                    pending_sources=pending_sources,
+                )
+            )
     if model is None:
         return finish("retry", "model_unavailable")
     try:
@@ -276,12 +305,19 @@ def _process_consolidate(
                     raise
                 needs_chunk = True
         if needs_chunk:
-            page, chunk = source_chunk(source, offset, formatter=partial(consolidation_messages, validation_feedback=feedback),
-                                       episode_ref=episode_ref, resume_seed=seed)
+            page, chunk = source_chunk(
+                source,
+                offset,
+                formatter=partial(consolidation_messages, validation_feedback=feedback),
+                episode_ref=episode_ref,
+                resume_seed=seed,
+            )
             roots, batch, pending_sources = (page,), (source,), ()
         allowed_refs = frozenset(f"{stored.ref}@{stored.revision}" for stored in roots)
         repair = {"validation_feedback": feedback} if feedback is not None else {}
-        raw = model.propose(roots, episode_ref=episode_ref, remaining_seconds=_remaining(started, clock, budget), **repair)
+        raw = model.propose(
+            roots, episode_ref=episode_ref, remaining_seconds=_remaining(started, clock, budget), **repair
+        )
     except ContractError as exc:
         # A probabilistic model occasionally emits an invalid derivation; give
         # the work item a bounded fresh attempt instead of killing it on the
@@ -293,9 +329,16 @@ def _process_consolidate(
         value = _decode_consolidation_result(raw, roots)
     except (ContractError, ValueError, TypeError, json.JSONDecodeError) as exc:
         detail = exc.field if isinstance(exc, ContractError) else "json_envelope"
-        return _Outcome(*finish("retry", "derivation_invalid", error_detail=detail, stage="decode",
-                                validation_code=exc.code if isinstance(exc, ContractError) else "INPUT_INVALID"),
-                        detail=detail)
+        return _Outcome(
+            *finish(
+                "retry",
+                "derivation_invalid",
+                error_detail=detail,
+                stage="decode",
+                validation_code=exc.code if isinstance(exc, ContractError) else "INPUT_INVALID",
+            ),
+            detail=detail,
+        )
     fence = ConsolidationWorkFence(
         item.work_id,
         item.lease_token,
@@ -335,8 +378,10 @@ def _process_consolidate(
         # Keep the clause that rejected the result. Without it a terminal
         # DERIVATION_INVALID cannot be told apart from any other, and diagnosing
         # one costs a full reproduction against live work.
-        return _Outcome(*finish("retry" if recoverable else "failed", code, error_detail=exc.field, stage="accept"),
-                        detail=exc.field)
+        return _Outcome(
+            *finish("retry" if recoverable else "failed", code, error_detail=exc.field, stage="accept"),
+            detail=exc.field,
+        )
     if chunk is not None and not chunk.final:
         return "deferred", None, "pending"
     return "completed", None, "done"

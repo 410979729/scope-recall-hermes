@@ -1,4 +1,5 @@
 """Packaging tests for the bounded v1.1 installer scaffold."""
+
 from __future__ import annotations
 
 import hashlib
@@ -25,6 +26,7 @@ def _assert_hook_uses_current_interpreter(command: str, executable: Path) -> Non
     assert invoked.samefile(executable)
     assert tokens[1:4] == ["-I", "-B", "-m"]
     assert tokens[4] == "scope_recall.adapters.codex.hook_entry"
+
 
 # Bind local maintenance/ to scope_recall.maintenance until root wires package metadata.
 if importlib.util.find_spec("scope_recall.maintenance") is None:
@@ -82,8 +84,14 @@ def test_relative_paths_rejected(tmp_path):
 def test_agent_setup_skill_discovery_ownership_and_uninstall(tmp_path, host):
     instance, plugin, project = _install_paths(tmp_path, host=host)
     skill = (instance if host == "hermes" else plugin) / "skills" / "scope-recall-setup" / "SKILL.md"
-    options = dict(host=host, target_plugin_dir=plugin, instance_root=instance,
-                   project_root=project, agent_id="TEST-setup-skill", python_executable=Path(sys.executable))
+    options = dict(
+        host=host,
+        target_plugin_dir=plugin,
+        instance_root=instance,
+        project_root=project,
+        agent_id="TEST-setup-skill",
+        python_executable=Path(sys.executable),
+    )
     apply_install(plan_install(**options))
     assert "scope-recall setup" in skill.read_text(encoding="utf-8")
     receipt = json.loads((instance / ".scope-recall-install-receipt.json").read_text())
@@ -101,8 +109,14 @@ def test_hermes_existing_user_skill_is_not_overwritten(tmp_path):
     skill = instance / "skills" / "scope-recall-setup" / "SKILL.md"
     skill.parent.mkdir(parents=True)
     skill.write_text("TEST-user-owned skill")
-    plan = plan_install(host="hermes", target_plugin_dir=plugin, instance_root=instance,
-                        project_root=project, agent_id="TEST-setup-skill", python_executable=Path(sys.executable))
+    plan = plan_install(
+        host="hermes",
+        target_plugin_dir=plugin,
+        instance_root=instance,
+        project_root=project,
+        agent_id="TEST-setup-skill",
+        python_executable=Path(sys.executable),
+    )
     with pytest.raises(InstallError):
         apply_install(plan)
     assert skill.read_text() == "TEST-user-owned skill"
@@ -292,8 +306,10 @@ def test_preview_creates_nothing_and_codex_install_doctor_uninstall(tmp_path):
         assert report.package_source in {"development", "installed"}
     elif report.package_version is not None:
         assert report.package_source in {"development", "installed"}
-        assert any(gap in report.capability_gaps for gap in
-                   {"python_package_version_mismatch", "python_package_metadata_mismatch"})
+        assert any(
+            gap in report.capability_gaps
+            for gap in {"python_package_version_mismatch", "python_package_metadata_mismatch"}
+        )
     else:
         assert report.package_source is None
         assert "python_package_missing" in report.capability_gaps
@@ -363,9 +379,16 @@ def test_a_hermes_wrapper_may_sit_where_hermes_looks_a_provider_up(tmp_path):
     home; any other plugin directory still may not."""
     instance_root, _outside, project_root = _install_paths(tmp_path, host="hermes")
     inside = instance_root / "plugins" / "scope-recall"
-    apply_install(plan_install(host="hermes", target_plugin_dir=inside, instance_root=instance_root,
-                               project_root=project_root, agent_id="TEST-P14-agent",
-                               python_executable=Path(sys.executable)))
+    apply_install(
+        plan_install(
+            host="hermes",
+            target_plugin_dir=inside,
+            instance_root=instance_root,
+            project_root=project_root,
+            agent_id="TEST-P14-agent",
+            python_executable=Path(sys.executable),
+        )
+    )
     assert "register_memory_provider" in (inside / "__init__.py").read_text(encoding="utf-8")
     assert (inside / "plugin.yaml").is_file()
     assert (instance_root / "scope-recall" / "memory.sqlite3").is_file()
@@ -373,13 +396,20 @@ def test_a_hermes_wrapper_may_sit_where_hermes_looks_a_provider_up(tmp_path):
     assert not (inside / "plugin.yaml").exists() and not (inside / "__init__.py").exists()
     assert uninstall.memory_retained is True
 
-    for host, target in (("hermes", instance_root / "plugins" / "other"),
-                         ("hermes", instance_root / "wrappers" / "scope-recall"),
-                         ("codex", instance_root / "plugins" / "scope-recall")):
+    for host, target in (
+        ("hermes", instance_root / "plugins" / "other"),
+        ("hermes", instance_root / "wrappers" / "scope-recall"),
+        ("codex", instance_root / "plugins" / "scope-recall"),
+    ):
         with pytest.raises(InstallError, match="instance_root overlaps target_plugin_dir"):
-            plan_install(host=host, target_plugin_dir=target, instance_root=instance_root,
-                         project_root=project_root, agent_id="TEST-P14-agent",
-                         python_executable=Path(sys.executable))
+            plan_install(
+                host=host,
+                target_plugin_dir=target,
+                instance_root=instance_root,
+                project_root=project_root,
+                agent_id="TEST-P14-agent",
+                python_executable=Path(sys.executable),
+            )
 
 
 def test_hermes_wrapper_names_a_missing_core_and_passes_other_import_errors_through(tmp_path):
@@ -399,8 +429,9 @@ def test_hermes_wrapper_names_a_missing_core_and_passes_other_import_errors_thro
 
     def load(core: str) -> str:
         # -S: no site-packages, so no installed core unless ``core`` puts one on the path.
-        result = subprocess.run([sys.executable, "-I", "-S", "-c", probe, str(wrapper), core],
-                                capture_output=True, text=True, timeout=60)
+        result = subprocess.run(
+            [sys.executable, "-I", "-S", "-c", probe, str(wrapper), core], capture_output=True, text=True, timeout=60
+        )
         assert result.returncode == 0, result.stderr
         return result.stdout.strip()
 
@@ -411,7 +442,8 @@ def test_hermes_wrapper_names_a_missing_core_and_passes_other_import_errors_thro
         (older / package / "__init__.py").write_text("", encoding="utf-8")
     assert load(str(older)).startswith("ImportError cannot import name 'register_adapter'")
     (older / "scope_recall" / "adapters" / "hermes" / "__init__.py").write_text(
-        "import TEST_missing_dependency\n", encoding="utf-8")
+        "import TEST_missing_dependency\n", encoding="utf-8"
+    )
     assert load(str(older)) == "ModuleNotFoundError No module named 'TEST_missing_dependency'"
 
 
@@ -493,9 +525,7 @@ def test_maintenance_cli_requires_explicit_test_mode(tmp_path, capsys):
         ("codex", True, False),
     ],
 )
-def test_reuse_rejects_mode_mismatch_without_writes(
-    tmp_path, host, existing_mode, requested_mode
-):
+def test_reuse_rejects_mode_mismatch_without_writes(tmp_path, host, existing_mode, requested_mode):
     instance_root, plugin_dir, project_root = _install_paths(tmp_path / "existing", host=host)
     initial = plan_install(
         host=host,
@@ -700,6 +730,7 @@ def test_purge_rejects_reparse_retained_directory(tmp_path):
         if os.name != "nt":
             pytest.skip("test environment does not permit directory symlinks")
         import _winapi
+
         _winapi.CreateJunction(str(outside), str(retained))
     purge_plan = plan_uninstall(instance_root=instance_root, target_plugin_dir=plugin_dir, purge=True)
     assert any("symlink or reparse" in item for item in purge_plan.conflicts)
@@ -1074,25 +1105,41 @@ def test_hermes_reuse_rejects_workspace_mismatch_without_writes(tmp_path):
 
 def test_hermes_reuse_preserves_explicit_legacy_workspace_audience(tmp_path):
     from scope_recall.adapters.hermes.installation import (
-        build_installation_manifest, install_hermes_scope_recall,
+        build_installation_manifest,
+        install_hermes_scope_recall,
     )
+
     instance, plugin, project = _install_paths(tmp_path, host="hermes")
     base = build_installation_manifest(instance, agent_id="TEST-matrix", agent_workspace="hermes", test_mode=True)
     owner = base.audiences[0]
-    historical = {**owner, "kind": "conversation", "agent_workspace": "legacy-workspace",
-                  "allowed_scope_ids": ["TEST-legacy-scope"], "writable_scope_ids": ["TEST-legacy-scope"],
-                  "capture_scope_id": "TEST-legacy-scope"}
-    install_hermes_scope_recall(instance, agent_id="TEST-matrix", agent_workspace="hermes",
-                               audiences=[owner, historical], test_mode=True)
+    historical = {
+        **owner,
+        "kind": "conversation",
+        "agent_workspace": "legacy-workspace",
+        "allowed_scope_ids": ["TEST-legacy-scope"],
+        "writable_scope_ids": ["TEST-legacy-scope"],
+        "capture_scope_id": "TEST-legacy-scope",
+    }
+    install_hermes_scope_recall(
+        instance, agent_id="TEST-matrix", agent_workspace="hermes", audiences=[owner, historical], test_mode=True
+    )
     manifest_path = instance / "scope-recall/installation.json"
     before = manifest_path.read_bytes()
-    plan = plan_install(host="hermes", target_plugin_dir=plugin, instance_root=instance,
-                        project_root=project, agent_id="TEST-matrix", agent_workspace="hermes",
-                        python_executable=Path(sys.executable), test_mode=True)
+    plan = plan_install(
+        host="hermes",
+        target_plugin_dir=plugin,
+        instance_root=instance,
+        project_root=project,
+        agent_id="TEST-matrix",
+        agent_workspace="hermes",
+        python_executable=Path(sys.executable),
+        test_mode=True,
+    )
     assert not plan.conflicts
     apply_install(plan)
     assert manifest_path.read_bytes() == before
     import yaml
+
     assert yaml.safe_load((plugin / "plugin.yaml").read_text())["version"] == __version__
 
 
@@ -1175,9 +1222,23 @@ def test_hermes_cli_default_and_explicit_workspace(tmp_path, capsys):
 
 def _hermes_cli(tmp_path: Path, command: str, *extra: str) -> list[str]:
     instance_root, plugin_dir, project_root = _install_paths(tmp_path, host="hermes")
-    return [command, "--host", "hermes", "--target-plugin-dir", str(plugin_dir), "--instance-root", str(instance_root),
-            "--project-root", str(project_root), "--agent-id", "default", "--python", str(Path(sys.executable)),
-            "--test-mode", *extra]
+    return [
+        command,
+        "--host",
+        "hermes",
+        "--target-plugin-dir",
+        str(plugin_dir),
+        "--instance-root",
+        str(instance_root),
+        "--project-root",
+        str(project_root),
+        "--agent-id",
+        "default",
+        "--python",
+        str(Path(sys.executable)),
+        "--test-mode",
+        *extra,
+    ]
 
 
 def test_local_platform_is_approved_on_a_fresh_install_and_binds_a_session_that_names_no_user(tmp_path, capsys):
@@ -1191,7 +1252,9 @@ def test_local_platform_is_approved_on_a_fresh_install_and_binds_a_session_that_
 
     manifest = json.loads((instance_root / "scope-recall" / "installation.json").read_text(encoding="utf-8"))
     assert {"platform": "desktop", "user_id": "local"} in manifest["owner_principals"]
-    session = dict(hermes_home=str(instance_root), agent_identity="default", agent_workspace="hermes", agent_context="primary")
+    session = dict(
+        hermes_home=str(instance_root), agent_identity="default", agent_workspace="hermes", agent_context="primary"
+    )
     identity = bind_hermes_identity("TEST-desktop-session", platform="desktop", **session)
     assert identity.runtime_audience.includes_owner_private and not identity.read_only
     with pytest.raises(HermesIdentityError, match="--local-platform tui"):
@@ -1210,28 +1273,49 @@ def test_local_platform_is_added_to_an_existing_installation_in_place_and_once(t
     before = json.loads(manifest_path.read_text(encoding="utf-8"))
     database = _sha256_file(instance_root / "scope-recall" / "memory.sqlite3")
 
-    assert maintenance_cli.main(_hermes_cli(tmp_path, "plan-install", "--local-platform", "desktop", "--local-platform", "tui")) == 0
+    assert (
+        maintenance_cli.main(
+            _hermes_cli(tmp_path, "plan-install", "--local-platform", "desktop", "--local-platform", "tui")
+        )
+        == 0
+    )
     planned = json.loads(capsys.readouterr().out)
     assert planned["local_platforms"] == ["desktop", "tui"]
     approvals = [change["detail"] for change in planned["changes"] if change["path"] == str(manifest_path)]
-    assert [detail.split(":")[0] for detail in approvals] == ["approve local platform desktop", "approve local platform tui"]
+    assert [detail.split(":")[0] for detail in approvals] == [
+        "approve local platform desktop",
+        "approve local platform tui",
+    ]
     assert json.loads(manifest_path.read_text(encoding="utf-8")) == before, "a plan writes nothing"
 
-    assert maintenance_cli.main(_hermes_cli(tmp_path, "apply-install", "--local-platform", "desktop", "--local-platform", "tui")) == 0
+    assert (
+        maintenance_cli.main(
+            _hermes_cli(tmp_path, "apply-install", "--local-platform", "desktop", "--local-platform", "tui")
+        )
+        == 0
+    )
     applied = json.loads(capsys.readouterr().out)
     after = json.loads(manifest_path.read_text(encoding="utf-8"))
-    assert after["audiences"][:len(before["audiences"])] == before["audiences"]
-    assert [(row["platform"], row["user_id"], row["kind"]) for row in after["audiences"][len(before["audiences"]):]]         == [("desktop", "local", "owner_private"), ("tui", "local", "owner_private")]
-    assert {key: after[key] for key in ("installation_id", "scope_ids", "audience_scopes")}         == {key: before[key] for key in ("installation_id", "scope_ids", "audience_scopes")}
+    assert after["audiences"][: len(before["audiences"])] == before["audiences"]
+    assert [
+        (row["platform"], row["user_id"], row["kind"]) for row in after["audiences"][len(before["audiences"]) :]
+    ] == [("desktop", "local", "owner_private"), ("tui", "local", "owner_private")]
+    assert {key: after[key] for key in ("installation_id", "scope_ids", "audience_scopes")} == {
+        key: before[key] for key in ("installation_id", "scope_ids", "audience_scopes")
+    }
     assert _sha256_file(instance_root / "scope-recall" / "memory.sqlite3") == database, "the store is not touched"
     kept = [Path(item) for item in applied["backups"] if item.endswith("installation.json")]
     assert len(kept) == 1 and json.loads(kept[0].read_text(encoding="utf-8")) == before
     receipt = json.loads((instance_root / ".scope-recall-install-receipt.json").read_text(encoding="utf-8"))
     tracked = {item["path"]: item["sha256"] for item in receipt["files"]}
     assert tracked[_norm(manifest_path)] == _sha256_file(manifest_path), "the receipt tracks the manifest as it now is"
-    session = dict(hermes_home=str(instance_root), agent_identity="default", agent_workspace="hermes", agent_context="primary")
+    session = dict(
+        hermes_home=str(instance_root), agent_identity="default", agent_workspace="hermes", agent_context="primary"
+    )
     for platform in ("desktop", "tui"):
-        assert bind_hermes_identity(f"TEST-{platform}-session", platform=platform, **session).runtime_audience.includes_owner_private
+        assert bind_hermes_identity(
+            f"TEST-{platform}-session", platform=platform, **session
+        ).runtime_audience.includes_owner_private
 
     assert maintenance_cli.main(_hermes_cli(tmp_path, "plan-install", "--local-platform", "desktop")) == 0
     again = json.loads(capsys.readouterr().out)
@@ -1264,8 +1348,14 @@ def test_local_platform_names_only_a_local_surface_and_only_on_hermes(tmp_path):
     with pytest.raises(SystemExit):
         maintenance_cli.main(_hermes_cli(tmp_path, "plan-install", "--local-platform", "cron"))
     instance_root, plugin_dir, project_root = _install_paths(tmp_path, host="hermes")
-    common = dict(target_plugin_dir=plugin_dir, instance_root=instance_root, project_root=project_root,
-                  agent_id="default", python_executable=Path(sys.executable), test_mode=True)
+    common = dict(
+        target_plugin_dir=plugin_dir,
+        instance_root=instance_root,
+        project_root=project_root,
+        agent_id="default",
+        python_executable=Path(sys.executable),
+        test_mode=True,
+    )
     with pytest.raises(InstallError, match="local platform must be one of"):
         plan_install(host="hermes", local_platforms=("telegram",), **common)
     with pytest.raises(InstallError, match="only used for Hermes"):
@@ -1297,14 +1387,22 @@ def test_an_owner_login_is_approved_in_place_once_and_binds_that_login_only(tmp_
     assert maintenance_cli.main(_hermes_cli(tmp_path, "apply-install", *login)) == 0
     capsys.readouterr()
     after = json.loads(manifest_path.read_text(encoding="utf-8"))
-    assert after["owner_principals"] == [*before["owner_principals"], {"platform": "desktop", "user_id": "basic:TEST-owner"}]
-    added = after["audiences"][len(before["audiences"]):]
-    assert [(row["platform"], row["user_id"], row["chat_type"], row["chat_id"], row["thread_id"], row["kind"])
-            for row in added] == [("desktop", "basic:TEST-owner", "private", "basic:TEST-owner", "main", "owner_private")]
-    assert {key: after[key] for key in ("installation_id", "scope_ids", "audience_scopes")} \
-        == {key: before[key] for key in ("installation_id", "scope_ids", "audience_scopes")}
+    assert after["owner_principals"] == [
+        *before["owner_principals"],
+        {"platform": "desktop", "user_id": "basic:TEST-owner"},
+    ]
+    added = after["audiences"][len(before["audiences"]) :]
+    assert [
+        (row["platform"], row["user_id"], row["chat_type"], row["chat_id"], row["thread_id"], row["kind"])
+        for row in added
+    ] == [("desktop", "basic:TEST-owner", "private", "basic:TEST-owner", "main", "owner_private")]
+    assert {key: after[key] for key in ("installation_id", "scope_ids", "audience_scopes")} == {
+        key: before[key] for key in ("installation_id", "scope_ids", "audience_scopes")
+    }
 
-    session = dict(hermes_home=str(instance_root), agent_identity="default", agent_workspace="hermes", agent_context="primary")
+    session = dict(
+        hermes_home=str(instance_root), agent_identity="default", agent_workspace="hermes", agent_context="primary"
+    )
     owner = bind_hermes_identity("TEST-login-session", platform="desktop", user_id="basic:TEST-owner", **session)
     assert owner.runtime_audience.includes_owner_private and not owner.read_only
     visitor = bind_hermes_identity("TEST-visitor-session", platform="desktop", user_id="basic:TEST-visitor", **session)
@@ -1319,9 +1417,22 @@ def test_an_owner_login_is_approved_in_place_once_and_binds_that_login_only(tmp_
 
 def test_an_owner_login_names_one_login_on_one_local_surface_and_only_on_hermes(tmp_path):
     instance_root, plugin_dir, project_root = _install_paths(tmp_path, host="hermes")
-    common = dict(target_plugin_dir=plugin_dir, instance_root=instance_root, project_root=project_root,
-                  agent_id="default", python_executable=Path(sys.executable), test_mode=True)
-    for refused in ("basic:TEST-owner", "cron=basic:TEST-owner", "telegram=12345", "desktop=local", "desktop=", "desktop=*"):
+    common = dict(
+        target_plugin_dir=plugin_dir,
+        instance_root=instance_root,
+        project_root=project_root,
+        agent_id="default",
+        python_executable=Path(sys.executable),
+        test_mode=True,
+    )
+    for refused in (
+        "basic:TEST-owner",
+        "cron=basic:TEST-owner",
+        "telegram=12345",
+        "desktop=local",
+        "desktop=",
+        "desktop=*",
+    ):
         with pytest.raises(InstallError, match="owner login"):
             plan_install(host="hermes", owner_logins=(refused,), **common)
     with pytest.raises(InstallError, match="only used for Hermes"):
@@ -1343,8 +1454,9 @@ def test_doctor_names_an_owner_grant_that_no_owner_principal_can_use(tmp_path, c
 
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     owner_row = next(row for row in manifest["audiences"] if row["kind"] == "owner_private")
-    manifest["audiences"].append(dict(owner_row, platform="desktop", user_id="basic:TEST-owner",
-                                      chat_type="private", chat_id="basic:TEST-owner"))
+    manifest["audiences"].append(
+        dict(owner_row, platform="desktop", user_id="basic:TEST-owner", chat_type="private", chat_id="basic:TEST-owner")
+    )
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
 
     report = run_doctor(host="hermes", instance_root=instance_root, python_executable=Path(sys.executable))
@@ -1423,16 +1535,29 @@ def test_codex_env_file_is_written_into_every_wrapper_and_hermes_rejects_it(tmp_
             env_file=env_file,
             test_mode=True,
         )
-    assert maintenance_cli.main([
-        "plan-install", "--host", "hermes",
-        "--target-plugin-dir", str(hermes_plugin),
-        "--instance-root", str(hermes_instance),
-        "--project-root", str(hermes_project),
-        "--agent-id", "default",
-        "--python", str(Path(sys.executable)),
-        "--env-file", str(env_file),
-        "--test-mode",
-    ]) == 2
+    assert (
+        maintenance_cli.main(
+            [
+                "plan-install",
+                "--host",
+                "hermes",
+                "--target-plugin-dir",
+                str(hermes_plugin),
+                "--instance-root",
+                str(hermes_instance),
+                "--project-root",
+                str(hermes_project),
+                "--agent-id",
+                "default",
+                "--python",
+                str(Path(sys.executable)),
+                "--env-file",
+                str(env_file),
+                "--test-mode",
+            ]
+        )
+        == 2
+    )
     capsys.readouterr()
 
 
@@ -1452,14 +1577,27 @@ def test_package_health_record_bytes_and_declared_dependencies(tmp_path, monkeyp
     payload.write_bytes(raw)
     digest = base64.urlsafe_b64encode(hashlib.sha256(raw).digest()).decode().rstrip("=")
     (dist_dir / "RECORD").write_text(f"scope_recall/sample.py,sha256={digest},{len(raw)}\n", encoding="utf-8")
-    project = tomllib.loads((Path(__file__).resolve().parents[2] / "pyproject.toml").read_text(encoding="utf-8"))["project"]
+    project = tomllib.loads((Path(__file__).resolve().parents[2] / "pyproject.toml").read_text(encoding="utf-8"))[
+        "project"
+    ]
     specs = list(project["dependencies"])
     for extra in ("lancedb", "codex"):
         specs.extend(f"{spec}; extra == '{extra}'" for spec in project["optional-dependencies"][extra])
-    (dist_dir / "METADATA").write_text("Metadata-Version: 2.1\nName: hermes-scope-recall\nVersion: 3.1.0rc28\n" +
-                                     "".join(f"Requires-Dist: {s}\n" for s in specs), encoding="utf-8")
-    versions = {"PyYAML": "6.0.3", "jsonschema": "4.25.1", "packaging": "25.0", "tzdata": "2026.1",
-                "lancedb": "0.37.1", "pyarrow": "24.0.0", "mcp": "2.0.0", "pydantic": "2.13.4"}
+    (dist_dir / "METADATA").write_text(
+        "Metadata-Version: 2.1\nName: hermes-scope-recall\nVersion: 3.1.0rc28\n"
+        + "".join(f"Requires-Dist: {s}\n" for s in specs),
+        encoding="utf-8",
+    )
+    versions = {
+        "PyYAML": "6.0.3",
+        "jsonschema": "4.25.1",
+        "packaging": "25.0",
+        "tzdata": "2026.1",
+        "lancedb": "0.37.1",
+        "pyarrow": "24.0.0",
+        "mcp": "2.0.0",
+        "pydantic": "2.13.4",
+    }
     for name, version in versions.items():
         info = site / f"{name}-{version}.dist-info"
         info.mkdir()
@@ -1483,8 +1621,15 @@ def test_package_health_record_bytes_and_declared_dependencies(tmp_path, monkeyp
     assert any(row["name"] == "mcp" and not row["ok"] for row in bad["requirements"])
     mcp_metadata.write_text(original, encoding="utf-8")
     assert dependency_health(dist.requires)["status"] == "ok"
-    print(json.dumps({"record_bytes": "clean / same-size edit / CRLF edit / restored",
-                      "dependencies": {"clean": good, "defect": bad}}, ensure_ascii=False))
+    print(
+        json.dumps(
+            {
+                "record_bytes": "clean / same-size edit / CRLF edit / restored",
+                "dependencies": {"clean": good, "defect": bad},
+            },
+            ensure_ascii=False,
+        )
+    )
 
 
 def test_package_health_doctor_three_way_versions(tmp_path, monkeypatch):
@@ -1492,19 +1637,34 @@ def test_package_health_doctor_three_way_versions(tmp_path, monkeypatch):
     from scope_recall.runtime.running_code import record_running_code
 
     instance, plugin, project = _install_paths(tmp_path, host="hermes")
-    apply_install(plan_install(host="hermes", target_plugin_dir=plugin, instance_root=instance,
-                              project_root=project, agent_id="TEST-health", python_executable=Path(sys.executable)))
+    apply_install(
+        plan_install(
+            host="hermes",
+            target_plugin_dir=plugin,
+            instance_root=instance,
+            project_root=project,
+            agent_id="TEST-health",
+            python_executable=Path(sys.executable),
+        )
+    )
     record_path = record_running_code(instance / "scope-recall", host_adapter="hermes")
     assert record_path is not None
     original = record_path.read_text(encoding="utf-8")
-    probe = {"source": "installed", "version": __version__, "distribution_version": __version__,
-             "hot_patched": {"status": "ok"}, "dependency_drift": {"status": "ok"}}
+    probe = {
+        "source": "installed",
+        "version": __version__,
+        "distribution_version": __version__,
+        "hot_patched": {"status": "ok"},
+        "dependency_drift": {"status": "ok"},
+    }
     monkeypatch.setattr(package_health, "package_probe", lambda: probe)
 
     def check():
         report = run_doctor(host="hermes", instance_root=instance)
-        assert all(name in report.to_dict()["package_health"] for name in
-                   ("hot_patched", "dependency_drift", "version_mismatch"))
+        assert all(
+            name in report.to_dict()["package_health"]
+            for name in ("hot_patched", "dependency_drift", "version_mismatch")
+        )
         return report
 
     assert check().package_health["version_mismatch"]["status"] == "ok"
@@ -1548,8 +1708,14 @@ def test_plan_install_keeps_a_symlinked_interpreter_as_given(tmp_path):
     if link is None:
         pytest.skip("no link to an interpreter can be created here")
     instance, plugin, project = _install_paths(tmp_path, host="codex")
-    plan = plan_install(host="codex", target_plugin_dir=plugin, instance_root=instance, project_root=project,
-                        agent_id="TEST-venv-link", python_executable=link)
+    plan = plan_install(
+        host="codex",
+        target_plugin_dir=plugin,
+        instance_root=instance,
+        project_root=project,
+        agent_id="TEST-venv-link",
+        python_executable=link,
+    )
     assert Path(plan.python_executable) == link
     apply_install(plan)
     hooks = json.loads((plugin / "hooks" / "hooks.json").read_text(encoding="utf-8"))
@@ -1573,8 +1739,20 @@ def test_the_cli_passes_a_symlinked_interpreter_on_as_given(tmp_path, capsys):
     if link is None:
         pytest.skip("no link to an interpreter can be created here")
     instance, plugin, project = _install_paths(tmp_path, host="codex")
-    install = ["--host", "codex", "--target-plugin-dir", str(plugin), "--instance-root", str(instance),
-               "--project-root", str(project), "--agent-id", "TEST-venv-link", "--python", str(link)]
+    install = [
+        "--host",
+        "codex",
+        "--target-plugin-dir",
+        str(plugin),
+        "--instance-root",
+        str(instance),
+        "--project-root",
+        str(project),
+        "--agent-id",
+        "TEST-venv-link",
+        "--python",
+        str(link),
+    ]
     assert maintenance_cli.main(["plan-install", *install]) == 0
     assert json.loads(capsys.readouterr().out)["python_executable"] == str(link)
     assert maintenance_cli.main(["apply-install", *install]) == 0
@@ -1598,6 +1776,9 @@ def test_a_released_wrapper_declares_its_core_and_a_candidate_declares_nothing()
     (spec,) = yaml.safe_load(wrapper_manifest(template, "3.3.0"))["pip_dependencies"]
     requirement = Requirement(spec)
     assert (requirement.name, requirement.extras, str(requirement.specifier)) == (
-        "hermes-scope-recall", {"lancedb"}, "==3.3.0")
+        "hermes-scope-recall",
+        {"lancedb"},
+        "==3.3.0",
+    )
     for build in ("3.3.0rc4", "3.3.0.dev1", "3.3.0+local"):
         assert wrapper_manifest(template, build) == template

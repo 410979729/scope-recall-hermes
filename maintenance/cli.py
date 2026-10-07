@@ -1,4 +1,5 @@
 """CLI entry for bounded v1.1 install, doctor, and uninstall flows."""
+
 from __future__ import annotations
 
 import argparse
@@ -71,9 +72,10 @@ _DELEGATED: dict[str, tuple[str, Callable[[list[str]], int]]] = {
     "setup": ("agent-operated fresh install/update/migration routing", _upgrade_cli),
     "migrate": ("prepare, resume, verify and index a legacy migration job", _upgrade_cli),
     "package-upgrade": ("offline wheel replacement after stopping all target writers", _package_upgrade),
-    "autostart": ("plan, enable, pause or remove a bounded background wake (a Windows task, elsewhere a timer of "
-                  "your own)",
-                  _autostart),
+    "autostart": (
+        "plan, enable, pause or remove a bounded background wake (a Windows task, elsewhere a timer of your own)",
+        _autostart,
+    ),
     "init-shared": ("create a shared store, the one store every agent attaches to", _shared),
     "attach": ("make a host's home an entry of a shared store, with the grants it had", _shared),
     "detach": ("stop a home being an entry of a shared store; its memories stay", _shared),
@@ -173,17 +175,32 @@ def _add_unindex_arguments(parser: argparse.ArgumentParser) -> None:
 
 def _unindex_withheld(args: argparse.Namespace) -> int:
     def pages(core, config) -> dict:
-        total = {"dry_run": not args.apply, "pages": 0, "sources": 0, "postings": 0,
-                 "next_after_id": args.after_id, "more": True}
+        total = {
+            "dry_run": not args.apply,
+            "pages": 0,
+            "sources": 0,
+            "postings": 0,
+            "next_after_id": args.after_id,
+            "more": True,
+        }
         while total["more"]:
             if total["pages"]:
                 # Each page holds the store's writer lease; captures waiting for it get it between pages.
                 time.sleep(_UNINDEX_PAGE_PAUSE)
-            page = core.unindex_withheld_outputs(config.context(), after_id=total["next_after_id"], limit=args.limit,
-                                                 dry_run=not args.apply, remaining_seconds=config.request_seconds)
-            total.update(pages=total["pages"] + 1, sources=total["sources"] + page["sources"],
-                         postings=total["postings"] + page["postings"], next_after_id=page["next_after_id"],
-                         more=page["more"])
+            page = core.unindex_withheld_outputs(
+                config.context(),
+                after_id=total["next_after_id"],
+                limit=args.limit,
+                dry_run=not args.apply,
+                remaining_seconds=config.request_seconds,
+            )
+            total.update(
+                pages=total["pages"] + 1,
+                sources=total["sources"] + page["sources"],
+                postings=total["postings"] + page["postings"],
+                next_after_id=page["next_after_id"],
+                more=page["more"],
+            )
             if not args.until_done:
                 break
         return total
@@ -218,9 +235,12 @@ def _retry_failures(args: argparse.Namespace) -> int:
 def _add_respace_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--config", required=True)
     action = parser.add_mutually_exclusive_group()
-    action.add_argument("--start", action="store_true",
-                        help="start re-embedding everything embedded so far into the config's space (paid: every "
-                        "source and claim is embedded again)")
+    action.add_argument(
+        "--start",
+        action="store_true",
+        help="start re-embedding everything embedded so far into the config's space (paid: every "
+        "source and claim is embedded again)",
+    )
     action.add_argument("--restart", action="store_true", help="start again from the top, replacing a running run")
     action.add_argument("--cancel", action="store_true", help="stop the run; what it reopened is still embedded")
     parser.add_argument("--apply", action="store_true", help="write the change; without it nothing is changed")
@@ -276,15 +296,20 @@ def _rollback(args: argparse.Namespace) -> int:
 
 def _add_install_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--host", required=True, choices=("hermes", "codex", "claude-code", "workbuddy", "dsh"))
-    parser.add_argument("--target-plugin-dir", default=None,
-                        help="the plugin directory the installer writes; for workbuddy, WorkBuddy's own home, whose "
-                        "settings.json and mcp.json it merges its entries into (default: WORKBUDDY_CONFIG_DIR, else "
-                        "~/.workbuddy); for dsh, dsh's home, whose cordis.patch.yml it adds its rows to (default: "
-                        "DSH_HOME, else ~/.dsh)")
+    parser.add_argument(
+        "--target-plugin-dir",
+        default=None,
+        help="the plugin directory the installer writes; for workbuddy, WorkBuddy's own home, whose "
+        "settings.json and mcp.json it merges its entries into (default: WORKBUDDY_CONFIG_DIR, else "
+        "~/.workbuddy); for dsh, dsh's home, whose cordis.patch.yml it adds its rows to (default: "
+        "DSH_HOME, else ~/.dsh)",
+    )
     parser.add_argument("--instance-root", required=True)
-    parser.add_argument("--project-root", default=None,
-                        help="the workspace a Codex installation of its own maps; a client attached to a shared "
-                        "store has none")
+    parser.add_argument(
+        "--project-root",
+        default=None,
+        help="the workspace a Codex installation of its own maps; a client attached to a shared store has none",
+    )
     parser.add_argument("--agent-id", required=True)
     parser.add_argument(
         "--agent-workspace",
@@ -390,8 +415,9 @@ def _restamp_header(database: Path, recorded: int, *, timeout: float) -> bool:
     from scope_recall.core.schema import stale_header_schema
 
     # mode=rw: a store that disappeared meanwhile is an error, never a new empty file.
-    with closing(sqlite3.connect(f"{database.as_uri()}?mode=rw", uri=True, timeout=timeout,
-                                 isolation_level=None)) as db:
+    with closing(
+        sqlite3.connect(f"{database.as_uri()}?mode=rw", uri=True, timeout=timeout, isolation_level=None)
+    ) as db:
         db.execute("BEGIN IMMEDIATE")
         if stale_header_schema(db) != recorded:
             db.execute("ROLLBACK")
@@ -419,18 +445,26 @@ def _tables_not_in_schema(database: Path) -> dict[str, int]:
             scratch.execute(statement)
         known = {row[0] for row in scratch.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     with closing(sqlite3.connect(f"{database.as_uri()}?mode=ro", uri=True)) as db:
-        names = [row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
-                 if row[0] not in known and not row[0].startswith("sqlite_")]
-        return {name: db.execute('SELECT count(*) FROM "' + name.replace('"', '""') + '"').fetchone()[0]
-                for name in names}
+        names = [
+            row[0]
+            for row in db.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+            if row[0] not in known and not row[0].startswith("sqlite_")
+        ]
+        return {
+            name: db.execute('SELECT count(*) FROM "' + name.replace('"', '""') + '"').fetchone()[0] for name in names
+        }
 
 
 def _add_upgrade_store_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--host", required=True, choices=("hermes", "codex"))
     parser.add_argument("--instance-root", required=True)
     parser.add_argument("--backup-dir", help="take a verified snapshot of memory.sqlite3 here before touching it")
-    parser.add_argument("--wait-seconds", type=float, default=30.0,
-                        help="how long to wait for a running worker to release the store (at most 30)")
+    parser.add_argument(
+        "--wait-seconds",
+        type=float,
+        default=30.0,
+        help="how long to wait for a running worker to release the store (at most 30)",
+    )
 
 
 def _upgrade_store(args: argparse.Namespace) -> int:
@@ -470,8 +504,11 @@ def _upgrade_store(args: argparse.Namespace) -> int:
         _emit(result)
         return 2
     if not args.backup_dir:
-        result.update(status="not_upgraded", error="backup_required",
-                      hint="provide --backup-dir for the verified pre-upgrade snapshot")
+        result.update(
+            status="not_upgraded",
+            error="backup_required",
+            hint="provide --backup-dir for the verified pre-upgrade snapshot",
+        )
         _emit(result)
         return 2
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -485,17 +522,27 @@ def _upgrade_store(args: argparse.Namespace) -> int:
         try:
             restamped = _restamp_header(database, recorded, timeout=wait)
         except sqlite3.OperationalError as exc:
-            result.update(status="not_upgraded", error="store_busy", detail=type(exc).__name__,
-                          hint="stop every process holding the store, including any 2.0 one, and run again")
+            result.update(
+                status="not_upgraded",
+                error="store_busy",
+                detail=type(exc).__name__,
+                hint="stop every process holding the store, including any 2.0 one, and run again",
+            )
             _emit(result)
             return 2
         if not restamped:
-            result.update(status="not_upgraded", error="store_changed",
-                          hint="the header or the recorded schema changed while this ran; run again")
+            result.update(
+                status="not_upgraded",
+                error="store_changed",
+                hint="the header or the recorded schema changed while this ran; run again",
+            )
             _emit(result)
             return 2
-        result["header_restamped"] = {"from": before, "to": recorded,
-                                      "cause": "a 2.0 process opened this store after its migration; make sure none runs"}
+        result["header_restamped"] = {
+            "from": before,
+            "to": recorded,
+            "cause": "a 2.0 process opened this store after its migration; make sure none runs",
+        }
         if recorded == SCHEMA_VERSION:
             result.update(status="restamped", schema_after=SCHEMA_VERSION, journal_mode=_journal_mode(database))
             _report_other_tables(result, database)
@@ -515,21 +562,33 @@ def _upgrade_store(args: argparse.Namespace) -> int:
             if remaining > 0:
                 time.sleep(min(0.1, remaining))
                 continue
-            result.update(status="not_upgraded", error="store_busy", detail=type(exc).__name__,
-                          hint="stop the worker (autostart pause) and run again")
+            result.update(
+                status="not_upgraded",
+                error="store_busy",
+                detail=type(exc).__name__,
+                hint="stop the worker (autostart pause) and run again",
+            )
             _emit(result)
             return 2
         except sqlite3.OperationalError as exc:
-            result.update(status="not_upgraded", error="store_busy", detail=type(exc).__name__,
-                          hint="stop the worker (autostart pause) and run again")
+            result.update(
+                status="not_upgraded",
+                error="store_busy",
+                detail=type(exc).__name__,
+                hint="stop the worker (autostart pause) and run again",
+            )
             _emit(result)
             return 2
         except ContractError as exc:
             result.update(status="not_upgraded", error=exc.code, detail=exc.field)
             _emit(result)
             return 2
-    result.update(status="upgraded", schema_after=status.schema_version,
-                  seconds=round(time.monotonic() - started, 1), journal_mode=_journal_mode(database))
+    result.update(
+        status="upgraded",
+        schema_after=status.schema_version,
+        seconds=round(time.monotonic() - started, 1),
+        journal_mode=_journal_mode(database),
+    )
     if recorded is not None:
         _report_other_tables(result, database)
     _emit(result)
@@ -553,9 +612,11 @@ def _report_other_tables(result: dict[str, Any], database: Path) -> None:
     if others:
         result["tables_not_in_schema"] = others
         if any(others.values()):
-            result["warning"] = ("these tables are another program's, likely the 2.0 plugin that stamped the "
-                                 "header, and anything it captured is in them, not in this store; they are kept "
-                                 "in the file and in the snapshot")
+            result["warning"] = (
+                "these tables are another program's, likely the 2.0 plugin that stamped the "
+                "header, and anything it captured is in them, not in this store; they are kept "
+                "in the file and in the snapshot"
+            )
 
 
 def _add_uninstall_arguments(parser: argparse.ArgumentParser) -> None:
@@ -584,20 +645,56 @@ def _apply_uninstall(args: argparse.Namespace) -> int:
 
 
 # name, help, argument builder, handler
-_COMMANDS: tuple[tuple[str, str | None, Callable[[argparse.ArgumentParser], None], Callable[[argparse.Namespace], int]], ...] = (
-    ("repair-claim-frames", "revalidate a bounded page of legacy claim frames without model calls", _add_repair_arguments, _repair_claim_frames),
+_COMMANDS: tuple[
+    tuple[str, str | None, Callable[[argparse.ArgumentParser], None], Callable[[argparse.Namespace], int]], ...
+] = (
+    (
+        "repair-claim-frames",
+        "revalidate a bounded page of legacy claim frames without model calls",
+        _add_repair_arguments,
+        _repair_claim_frames,
+    ),
     ("requalify", "re-judge a bounded page of stored claims after a gate change", _add_requalify_arguments, _requalify),
-    ("retire-rootless-claims", "retire a bounded page of proposed claims no derivation root supports (tool output alone)", _add_requalify_arguments, _retire_rootless),
-    ("unindex-withheld-outputs", "drop the lexical postings of withheld tool outputs' placeholders, a bounded page at a time", _add_unindex_arguments, _unindex_withheld),
-    ("retry-failures", "grant one bounded re-look to failed work after a fix has shipped", _add_retry_arguments, _retry_failures),
-    ("respace-embeddings", "re-embed what was embedded so far into a new embedding space, a worker page at a time",
-     _add_respace_arguments, _respace_embeddings),
+    (
+        "retire-rootless-claims",
+        "retire a bounded page of proposed claims no derivation root supports (tool output alone)",
+        _add_requalify_arguments,
+        _retire_rootless,
+    ),
+    (
+        "unindex-withheld-outputs",
+        "drop the lexical postings of withheld tool outputs' placeholders, a bounded page at a time",
+        _add_unindex_arguments,
+        _unindex_withheld,
+    ),
+    (
+        "retry-failures",
+        "grant one bounded re-look to failed work after a fix has shipped",
+        _add_retry_arguments,
+        _retry_failures,
+    ),
+    (
+        "respace-embeddings",
+        "re-embed what was embedded so far into a new embedding space, a worker page at a time",
+        _add_respace_arguments,
+        _respace_embeddings,
+    ),
     ("backup", "create a new consistent SQLite snapshot and manifest", _add_backup_arguments, _backup),
-    ("rollback", "inspect rollback; --apply may stop writes when new data must be reconciled", _add_rollback_arguments, _rollback),
+    (
+        "rollback",
+        "inspect rollback; --apply may stop writes when new data must be reconciled",
+        _add_rollback_arguments,
+        _rollback,
+    ),
     ("plan-install", None, _add_install_arguments, _plan_install),
     ("apply-install", None, _add_install_arguments, _apply_install),
     ("doctor", None, _add_doctor_arguments, _doctor),
-    ("upgrade-store", "bring one store forward to this release's schema now, with a snapshot first", _add_upgrade_store_arguments, _upgrade_store),
+    (
+        "upgrade-store",
+        "bring one store forward to this release's schema now, with a snapshot first",
+        _add_upgrade_store_arguments,
+        _upgrade_store,
+    ),
     ("plan-uninstall", None, _add_uninstall_arguments, _plan_uninstall),
     ("apply-uninstall", None, _add_uninstall_arguments, _apply_uninstall),
 )

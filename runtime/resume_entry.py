@@ -1,4 +1,5 @@
 """One external scheduler wake. No recursion, model call, or unlimited drain."""
+
 from __future__ import annotations
 
 import argparse
@@ -27,7 +28,7 @@ def read_control(config):
     control = json.loads(path.read_text(encoding="utf-8"))
     if control.get("installation_id") != config.binding.installation_id or type(control.get("enabled")) is not bool:
         raise ValueError("autostart_binding_invalid")
-    expected = "ScopeRecall-"+hashlib.sha256(config.binding.installation_id.encode()).hexdigest()[:20]
+    expected = "ScopeRecall-" + hashlib.sha256(config.binding.installation_id.encode()).hexdigest()[:20]
     if control.get("task_name") != expected:
         raise ValueError("autostart_task_identity_invalid")
     return control
@@ -35,8 +36,11 @@ def read_control(config):
 
 def credential_environment(config, env_file):
     """Read only the configured credential keys; never execute/interpolate dotenv."""
-    names = {route.credential_env for route in (getattr(config.auxiliary, "embedding", None),
-              getattr(config.auxiliary, "consolidation", None)) if route is not None}
+    names = {
+        route.credential_env
+        for route in (getattr(config.auxiliary, "embedding", None), getattr(config.auxiliary, "consolidation", None))
+        if route is not None
+    }
     if not env_file or not names:
         return {}
     path = Path(env_file)
@@ -97,8 +101,10 @@ def resume_once(config_path, *, launcher=launch_worker, now=None):
         return dict(status="running", launched=False)
     environment = credential_environment(config, control.get("env_file"))
     worker = launcher(path, python_executable=control["python_executable"], detach_output=True, environment=environment)
-    _atomic_metadata(config.binding.data_directory / "runtime-autostart-status.json",
-                     dict(installation_id=config.binding.installation_id, last_wake_at=now.isoformat(), last_worker_pid=worker.pid))
+    _atomic_metadata(
+        config.binding.data_directory / "runtime-autostart-status.json",
+        dict(installation_id=config.binding.installation_id, last_wake_at=now.isoformat(), last_worker_pid=worker.pid),
+    )
     return dict(status="launched", launched=True, worker_pid=worker.pid)
 
 

@@ -8,6 +8,7 @@ Lance rows are only an index projection.  Search returns ``CandidateRef``
 metadata; the pipeline hydrates and authorizes the object from SQLite before
 any content can be used.
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -94,7 +95,7 @@ def _embedding_method(port: Any, name: str) -> Callable[..., Sequence[float]]:
         return method
     if callable(port):
         return port
-    raise TypeError(f"{name[len('embed_'):]}_embedding must be callable or expose {name}")
+    raise TypeError(f"{name[len('embed_') :]}_embedding must be callable or expose {name}")
 
 
 def _embed(method: Callable[..., Sequence[float]], subject: Any, remaining_seconds: float) -> Sequence[float]:
@@ -163,8 +164,9 @@ class LanceEmbedPort:
     def prepare_source(self, source: StoredSource, *, remaining_seconds: float = 1.0) -> PreparedSourceEmbedding:
         return self._prepare(source, lambda budget: _embed(self._embed_source, source, budget), remaining_seconds)
 
-    def prepare_sources(self, sources: Sequence[StoredSource], *,
-                        remaining_seconds: float = 1.0) -> tuple[PreparedSourceEmbedding, ...]:
+    def prepare_sources(
+        self, sources: Sequence[StoredSource], *, remaining_seconds: float = 1.0
+    ) -> tuple[PreparedSourceEmbedding, ...]:
         """Prepare many sources with one embedding request, in order.
 
         Each prepared vector is published on its own fence exactly as a single
@@ -185,8 +187,9 @@ class LanceEmbedPort:
             raise ContractError("DERIVATION_INVALID", "embedding_batch_shape")
         return tuple(self._prepared(source, vector) for source, vector in zip(subjects, vectors))
 
-    def prepare_claims(self, claims: Sequence[Any], *,
-                       remaining_seconds: float = 1.0) -> tuple[PreparedSourceEmbedding, ...]:
+    def prepare_claims(
+        self, claims: Sequence[Any], *, remaining_seconds: float = 1.0
+    ) -> tuple[PreparedSourceEmbedding, ...]:
         """Prepare many claim versions in as few requests as sources take, in order.
 
         A claim was one request each, asked one after another: about two seconds a claim, so a
@@ -215,6 +218,7 @@ class LanceEmbedPort:
         The embedded text is the rendered assertion rather than the stored
         JSON payload, so the vector carries meaning, not field names.
         """
+
         def embed(budget: float) -> Sequence[float]:
             embed_text = getattr(self._source_embedding, "embed_text", None)
             if embed_text is None:
@@ -224,7 +228,10 @@ class LanceEmbedPort:
         return self._prepare(claim, embed, remaining_seconds)
 
     def _prepare(
-        self, subject: Any, embed: Callable[[float], Sequence[float]], remaining_seconds: float,
+        self,
+        subject: Any,
+        embed: Callable[[float], Sequence[float]],
+        remaining_seconds: float,
     ) -> PreparedSourceEmbedding:
         if remaining_seconds <= 0:
             raise ContractError("DEADLINE_EXCEEDED")
@@ -253,7 +260,9 @@ class LanceEmbedPort:
         lease_guard: Callable[[], bool],
         remaining_seconds: float = 1.0,
     ) -> None:
-        self._publish("event", prepared, source, "prepared_source", lease_token, lease_owner, lease_guard, remaining_seconds)
+        self._publish(
+            "event", prepared, source, "prepared_source", lease_token, lease_owner, lease_guard, remaining_seconds
+        )
 
     def publish_sources(
         self,
@@ -273,8 +282,9 @@ class LanceEmbedPort:
         answers for every member of the group while the helper holds the lock, and a group it
         refuses writes nothing, leaving each member to publish on its own fence.
         """
-        self._publish_group("event", "prepared_source", prepared, sources, lease_tokens, lease_owner,
-                            lease_guard, remaining_seconds)
+        self._publish_group(
+            "event", "prepared_source", prepared, sources, lease_tokens, lease_owner, lease_guard, remaining_seconds
+        )
 
     def publish_claims(
         self,
@@ -287,11 +297,21 @@ class LanceEmbedPort:
         remaining_seconds: float = 1.0,
     ) -> None:
         """Publish a group of claim vectors in one fenced commit, on the terms ``publish_sources`` sets."""
-        self._publish_group("claim", "prepared_claim", prepared, claims, lease_tokens, lease_owner,
-                            lease_guard, remaining_seconds)
+        self._publish_group(
+            "claim", "prepared_claim", prepared, claims, lease_tokens, lease_owner, lease_guard, remaining_seconds
+        )
 
-    def _publish_group(self, object_kind: str, subject_detail: str, prepared, subjects, lease_tokens,
-                       lease_owner: str, lease_guard: Callable[[], bool], remaining_seconds: float) -> None:
+    def _publish_group(
+        self,
+        object_kind: str,
+        subject_detail: str,
+        prepared,
+        subjects,
+        lease_tokens,
+        lease_owner: str,
+        lease_guard: Callable[[], bool],
+        remaining_seconds: float,
+    ) -> None:
         items, members, tokens = tuple(prepared), tuple(subjects), tuple(lease_tokens)
         if not items or len(items) != len(members) or len(items) != len(tokens):
             raise ContractError("INPUT_INVALID", "prepared_group")
@@ -314,7 +334,9 @@ class LanceEmbedPort:
         lease_guard: Callable[[], bool],
         remaining_seconds: float = 1.0,
     ) -> None:
-        self._publish("claim", prepared, claim, "prepared_claim", lease_token, lease_owner, lease_guard, remaining_seconds)
+        self._publish(
+            "claim", prepared, claim, "prepared_claim", lease_token, lease_owner, lease_guard, remaining_seconds
+        )
 
     def _record(
         self,
@@ -330,7 +352,10 @@ class LanceEmbedPort:
             raise ContractError("INPUT_INVALID", "prepared_embedding")
         if (prepared.source_ref, prepared.source_revision) != (subject.ref, subject.revision):
             raise ContractError("VERSION_CONFLICT", subject_detail)
-        if prepared.scope_id != subject.scope_id or (prepared.project_id, prepared.branch_id) != (subject.project_id, subject.branch_id):
+        if prepared.scope_id != subject.scope_id or (prepared.project_id, prepared.branch_id) != (
+            subject.project_id,
+            subject.branch_id,
+        ):
             raise ContractError("ACCESS_DENIED", "prepared_scope")
         if type(lease_token) is not int or lease_token < 1 or type(lease_owner) is not str or not lease_owner:
             raise ContractError("INPUT_INVALID", "lease")
@@ -466,8 +491,9 @@ class LanceIndexWriter:
     def upsert_fenced(self, record: LanceVectorRecord, *, guard: Callable[[], bool], remaining_seconds: float) -> bool:
         return self.upsert_fenced_many((record,), guard=guard, remaining_seconds=remaining_seconds)
 
-    def upsert_fenced_many(self, records: Sequence[LanceVectorRecord], *,
-                           guard: Callable[[], bool], remaining_seconds: float) -> bool:
+    def upsert_fenced_many(
+        self, records: Sequence[LanceVectorRecord], *, guard: Callable[[], bool], remaining_seconds: float
+    ) -> bool:
         """One lock-held commit for every record, guarded once for all of them."""
         method = getattr(self._store, "fenced_upsert_records", None)
         if not callable(method):
@@ -495,7 +521,11 @@ class LancePurgePort:
     def purge_active(self, operation_id: str, *, receipt: dict, remaining_seconds: float) -> bool:
         if type(operation_id) is not str or not operation_id:
             raise ContractError("INPUT_INVALID", "operation_id")
-        if type(remaining_seconds) not in (int, float) or not math.isfinite(float(remaining_seconds)) or remaining_seconds <= 0:
+        if (
+            type(remaining_seconds) not in (int, float)
+            or not math.isfinite(float(remaining_seconds))
+            or remaining_seconds <= 0
+        ):
             raise ContractError("DEADLINE_EXCEEDED")
         if not isinstance(receipt, Mapping):
             return False
@@ -513,18 +543,29 @@ class LancePurgePort:
                     "scope_id": scope,
                     "embedding_space": space,
                     "physical_scope_id": physical_partition_scope_id(
-                        agent_id=self._agent_id, installation_id=self._installation_id,
-                        embedding_space=space, logical_scope_id=scope,
-                        project_id=project_id, branch_id=branch_id,
+                        agent_id=self._agent_id,
+                        installation_id=self._installation_id,
+                        embedding_space=space,
+                        logical_scope_id=scope,
+                        project_id=project_id,
+                        branch_id=branch_id,
                     ),
                 }
-                for scope in scopes for space in sorted(self._embedding_spaces)
+                for scope in scopes
+                for space in sorted(self._embedding_spaces)
             ]
-            return purge(
-                members=[{"kind": entry["kind"], "ref": entry["ref"]} for entry in members],
-                agent_id=self._agent_id, installation_id=self._installation_id, partitions=partitions,
-                project_id=project_id, branch_id=branch_id, remaining_seconds=remaining_seconds,
-            ) is True
+            return (
+                purge(
+                    members=[{"kind": entry["kind"], "ref": entry["ref"]} for entry in members],
+                    agent_id=self._agent_id,
+                    installation_id=self._installation_id,
+                    partitions=partitions,
+                    project_id=project_id,
+                    branch_id=branch_id,
+                    remaining_seconds=remaining_seconds,
+                )
+                is True
+            )
         except Exception:
             # A malformed inventory or an uncertain native outcome leaves the
             # durable purge work recoverable.
@@ -549,8 +590,14 @@ class LanceVectorPort:
         self._expected_embedding_space = expected_embedding_space
         self._clock = clock if clock is not None else time.monotonic
 
-    def search(self, context: SearchContext, *, limit: int, remaining_seconds: float,
-               _prepared_query: tuple[str, Sequence[float]] | None = None) -> tuple[CandidateRef, ...]:
+    def search(
+        self,
+        context: SearchContext,
+        *,
+        limit: int,
+        remaining_seconds: float,
+        _prepared_query: tuple[str, Sequence[float]] | None = None,
+    ) -> tuple[CandidateRef, ...]:
         """Search each trusted physical partition and return only validated metadata.
 
         The store receives only deterministic ``p08-v1-*`` partition literals
@@ -579,7 +626,10 @@ class LanceVectorPort:
         return _embed(self._embed_query_method, query, remaining_seconds)
 
     def _query_vector(
-        self, context: SearchContext, deadline: float, prepared: tuple[str, Sequence[float]] | None,
+        self,
+        context: SearchContext,
+        deadline: float,
+        prepared: tuple[str, Sequence[float]] | None,
     ) -> list[float]:
         if prepared is None:
             remaining = deadline - self._clock()
@@ -600,7 +650,11 @@ class LanceVectorPort:
         return [float(value) for value in vector]
 
     def _partition_hits(
-        self, context: SearchContext, query_vector: list[float], limit: int, deadline: float,
+        self,
+        context: SearchContext,
+        query_vector: list[float],
+        limit: int,
+        deadline: float,
     ) -> list[CandidateRef]:
         """Query every trusted (scope, project, branch) partition, in one request where the store allows.
 
@@ -648,7 +702,11 @@ class LanceVectorPort:
         return hits
 
     def _candidate_from_row(
-        self, row: Any, trusted: TrustedContext, requested_scope: str, logical_scope_id: str,
+        self,
+        row: Any,
+        trusted: TrustedContext,
+        requested_scope: str,
+        logical_scope_id: str,
     ) -> CandidateRef | None:
         if not isinstance(row, Mapping):
             return None
@@ -686,8 +744,13 @@ class LanceVectorPort:
             return None
         try:
             return CandidateRef(
-                kind, ref, revision, "vector",
-                vector_score=score, vector_id=vector_id, embedding_space=self._expected_embedding_space,
+                kind,
+                ref,
+                revision,
+                "vector",
+                vector_score=score,
+                vector_id=vector_id,
+                embedding_space=self._expected_embedding_space,
             )
         except Exception:
             return None

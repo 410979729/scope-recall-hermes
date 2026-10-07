@@ -3,6 +3,7 @@
 Diagnostic records never store raw query text or item content.  They exist only
 for correlating capture, retrieval, and delivery phases within one installation.
 """
+
 from __future__ import annotations
 
 from collections import deque

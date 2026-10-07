@@ -1,4 +1,5 @@
 """Public trivial-prompt gate: only blank or slash-command input is skipped."""
+
 from __future__ import annotations
 
 from typing import Optional

@@ -4,6 +4,7 @@ Only an authenticated adapter may create an ingress row. Replay retains its
 original actor and occurrence and narrows authority against the current host.
 The inbox removal and all source effects commit in the same transaction.
 """
+
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
@@ -64,8 +65,10 @@ DEFER_MAX_SECONDS = 3600.0
 #: About nineteen hours of tries.
 DEFER_ATTEMPTS = 24
 #: What a query takes for the rows ``replay_inbox`` may store: never tried, a code in ``_RETRIED``, or put off.
-REPLAY_CANDIDATES = (f"(last_error_code IS NULL OR last_error_code IN ({','.join('?' for _ in _RETRIED)})"
-                     " OR last_error_code LIKE 'DEFERRED|%')")
+REPLAY_CANDIDATES = (
+    f"(last_error_code IS NULL OR last_error_code IN ({','.join('?' for _ in _RETRIED)})"
+    " OR last_error_code LIKE 'DEFERRED|%')"
+)
 
 
 def _kind(exc: BaseException) -> str:
@@ -196,9 +199,15 @@ def deleted_forms(text: object) -> frozenset[str]:
     return frozenset(forms)
 
 
-def holds(payload_json: object, digests: frozenset[str], groups: frozenset[str],
-          texts: frozenset[tuple[str, str]] = frozenset(), *, rekeyed: bool = False,
-          versions: frozenset[tuple[str, int]] = frozenset()) -> bool:
+def holds(
+    payload_json: object,
+    digests: frozenset[str],
+    groups: frozenset[str],
+    texts: frozenset[tuple[str, str]] = frozenset(),
+    *,
+    rekeyed: bool = False,
+    versions: frozenset[tuple[str, int]] = frozenset(),
+) -> bool:
     """Whether an inbox row's capture holds a deleted message.  A row that cannot be read is taken to (a delete then
     cancels it, as it cancels every row it cannot look into).  It holds one when:
 
@@ -218,15 +227,22 @@ def holds(payload_json: object, digests: frozenset[str], groups: frozenset[str],
     delete; compared more loosely, deleting a short message cancelled unrelated rows, and a character-by-character
     normalisation of every waiting row held the writer lease for seconds (reviews of rc10)."""
     try:
-        return holds_events(json.loads(payload_json)["events"], digests, groups, texts, rekeyed=rekeyed,
-                            versions=versions)
+        return holds_events(
+            json.loads(payload_json)["events"], digests, groups, texts, rekeyed=rekeyed, versions=versions
+        )
     except (ValueError, KeyError, TypeError, AttributeError):
         return True
 
 
-def holds_events(events, digests: frozenset[str], groups: frozenset[str],
-                 texts: frozenset[tuple[str, str]] = frozenset(), *, rekeyed: bool = False,
-                 versions: frozenset[tuple[str, int]] = frozenset()) -> bool:
+def holds_events(
+    events,
+    digests: frozenset[str],
+    groups: frozenset[str],
+    texts: frozenset[tuple[str, str]] = frozenset(),
+    *,
+    rekeyed: bool = False,
+    versions: frozenset[tuple[str, int]] = frozenset(),
+) -> bool:
     """``holds`` for a capture's events already read: the parts of one message, or one of them.  Storage asks it of a
     message under a deleted message's key (``storage.put_source``)."""
     from .events import stored_content_digest
@@ -235,8 +251,9 @@ def holds_events(events, digests: frozenset[str], groups: frozenset[str],
     for event in events:
         segment = event.get("segment")
         group = segment.get("group_key") if isinstance(segment, dict) else event.get("source_event_key")
-        of_group = group in groups and ((group, event.get("source_revision")) not in versions
-                                        or bool(indexes and 0 not in indexes))
+        of_group = group in groups and (
+            (group, event.get("source_revision")) not in versions or bool(indexes and 0 not in indexes)
+        )
         if (not rekeyed and of_group) or stored_content_digest(event["content"]) in digests:
             return True
     texts = [text for text in texts if text[0]]
@@ -246,7 +263,7 @@ def holds_events(events, digests: frozenset[str], groups: frozenset[str],
     bare = without_whitespace("".join(event["content"] for event in ordered))
     letters = None
     for text, text_letters in texts:
-        if ((len(text) >= DISTINCT_TEXT or len(bare) - len(text) <= len(bare) // 10) and text in bare):
+        if (len(text) >= DISTINCT_TEXT or len(bare) - len(text) <= len(bare) // 10) and text in bare:
             return True
         if len(text_letters) >= NEAR_COPY:
             letters = letters_and_digits(bare) if letters is None else letters
@@ -269,13 +286,17 @@ def _json(value):
 def _context_payload(context):
     if context.import_provenance is not None or context.actor_origin == "imported":
         raise ContractError("ACCESS_DENIED", "ingress_import_attestation")
-    payload = dict(session_id=context.session_id, actor_origin=context.actor_origin,
-                   allowed_scope_ids=sorted(context.allowed_scope_ids), project_id=context.project_id,
-                   branch_id=context.branch_id, task_anchor=context.task_anchor,
-                   environment_revision=context.environment_revision,
-                   source_principal=(context.source_principal.to_payload()
-                                     if context.source_principal is not None else None),
-                   display_snapshot=context.display_snapshot.to_payload() if context.display_snapshot else None)
+    payload = dict(
+        session_id=context.session_id,
+        actor_origin=context.actor_origin,
+        allowed_scope_ids=sorted(context.allowed_scope_ids),
+        project_id=context.project_id,
+        branch_id=context.branch_id,
+        task_anchor=context.task_anchor,
+        environment_revision=context.environment_revision,
+        source_principal=(context.source_principal.to_payload() if context.source_principal is not None else None),
+        display_snapshot=context.display_snapshot.to_payload() if context.display_snapshot else None,
+    )
     # The entry is part of the original actor a replay keeps.  Whoever replays --
     # the shared worker, or another entry's provider -- otherwise files the
     # capture under its own name, and a busy shared store sends more captures
@@ -303,16 +324,31 @@ def enqueue(storage, clock, context, value, *, scope_id, host_scope, remaining_s
     # a second such message came under the key of the first while the first still waited for its new key
     # (``resolve_conflicted_ingress``), found that row and was refused as changed evidence: the work computer lost two
     # of its owner's messages that way on 2026-09-30 alone.  A retried hook sends the same words and finds its own row.
-    token = hashlib.sha256(_json([context.binding.installation_id, scope_id, context.session_id,
-                                context.project_id, context.branch_id,
-                                [(e["source_event_key"], e["source_revision"],
-                                  hashlib.sha256(e["content"].encode("utf-8")).hexdigest())
-                                 for e in prepared.events]]).encode()).hexdigest()
+    token = hashlib.sha256(
+        _json(
+            [
+                context.binding.installation_id,
+                scope_id,
+                context.session_id,
+                context.project_id,
+                context.branch_id,
+                [
+                    (
+                        e["source_event_key"],
+                        e["source_revision"],
+                        hashlib.sha256(e["content"].encode("utf-8")).hexdigest(),
+                    )
+                    for e in prepared.events
+                ],
+            ]
+        ).encode()
+    ).hexdigest()
     with storage.write(context, remaining_seconds=remaining_seconds) as tx:
         conn = tx._check(write=True)
         prior = conn.execute("SELECT payload_json FROM capture_inbox WHERE token=?", (token,)).fetchone()
         if prior:
             previous = json.loads(prior[0])
+
             # Retried host hooks may report a new receipt timestamp, but never
             # replace the first occurrence or quietly change its evidence.
             def normalize(events):
@@ -325,36 +361,57 @@ def enqueue(storage, clock, context, value, *, scope_id, host_scope, remaining_s
                     for event in events
                 ]
 
-            if normalize(previous["events"]) != normalize(body["events"]) or previous["context"] != body["context"] or previous["host_scope"] != host_scope:
+            if (
+                normalize(previous["events"]) != normalize(body["events"])
+                or previous["context"] != body["context"]
+                or previous["host_scope"] != host_scope
+            ):
                 raise ContractError("VERSION_CONFLICT", "ingress_identity")
             return token, PreparedCapture(tuple(previous["events"]), tuple(previous["gaps"]))
-        count, size = conn.execute("SELECT count(*),coalesce(sum(length(CAST(payload_json AS BLOB))),0) FROM capture_inbox").fetchone()
+        count, size = conn.execute(
+            "SELECT count(*),coalesce(sum(length(CAST(payload_json AS BLOB))),0) FROM capture_inbox"
+        ).fetchone()
         if count >= 256 or size + len(encoded.encode("utf-8")) > 67108864:
             raise ContractError("STORAGE_UNAVAILABLE", "ingress_capacity")
-        conn.execute("INSERT INTO capture_inbox(token,scope_id,project_id,branch_id,created_at,payload_json) VALUES (?,?,?,?,?,?)",
-                     (token, scope_id, context.project_id, context.branch_id, clock.utc_now(), encoded))
+        conn.execute(
+            "INSERT INTO capture_inbox(token,scope_id,project_id,branch_id,created_at,payload_json) VALUES (?,?,?,?,?,?)",
+            (token, scope_id, context.project_id, context.branch_id, clock.utc_now(), encoded),
+        )
     return token, prepared
 
 
-def durable_record_event(storage, clock, context, value, *, scope_id, host_scope, admission_policy=None, remaining_seconds=1.0):
+def durable_record_event(
+    storage, clock, context, value, *, scope_id, host_scope, admission_policy=None, remaining_seconds=1.0
+):
     deadline = time.monotonic() + remaining_seconds
-    token, prepared = enqueue(storage, clock, context, value, scope_id=scope_id, host_scope=host_scope,
-                              remaining_seconds=remaining_seconds)
+    token, prepared = enqueue(
+        storage, clock, context, value, scope_id=scope_id, host_scope=host_scope, remaining_seconds=remaining_seconds
+    )
     if token is None:
-        return CaptureReceipt("rejected", (), "not_persisted", "not_indexed", "not_scheduled", prepared.gaps, prepared.rejection)
+        return CaptureReceipt(
+            "rejected", (), "not_persisted", "not_indexed", "not_scheduled", prepared.gaps, prepared.rejection
+        )
     return _commit(storage, clock, context, token, prepared, scope_id, admission_policy, deadline)
 
 
 def _commit(storage, clock, context, token, prepared, scope_id, policy, deadline, *, rekeyed=False):
     try:
-        receipt = record_event(storage, clock, context, {}, scope_id=scope_id,
-                               admission_policy=policy, remaining_seconds=max(.001, deadline-time.monotonic()),
-                               _prepared=prepared, _inbox_token=token)
+        receipt = record_event(
+            storage,
+            clock,
+            context,
+            {},
+            scope_id=scope_id,
+            admission_policy=policy,
+            remaining_seconds=max(0.001, deadline - time.monotonic()),
+            _prepared=prepared,
+            _inbox_token=token,
+        )
         if receipt.disposition in {"conflict", "cancelled"}:
             # A capture that conflicts under the key it was given for its content stays final: written back as a
             # bare conflict, it was given the same key and refused again on every pass.
             code = _REKEYED_CONFLICT if rekeyed and receipt.disposition == "conflict" else receipt.error_code
-            with storage.write(context, remaining_seconds=max(.001, deadline-time.monotonic())) as tx:
+            with storage.write(context, remaining_seconds=max(0.001, deadline - time.monotonic())) as tx:
                 tx._check(write=True).execute("UPDATE capture_inbox SET last_error_code=? WHERE token=?", (code, token))
             return receipt
         if receipt.durability == "persisted":
@@ -369,9 +426,10 @@ def _commit(storage, clock, context, token, prepared, scope_id, policy, deadline
         # and its place across a delete (review of rc10).
         if code not in _PASSING:
             try:
-                with storage.write(context, remaining_seconds=max(.001, deadline-time.monotonic())) as tx:
-                    tx._check(write=True).execute("UPDATE capture_inbox SET last_error_code=? WHERE token=?",
-                                                  (_terminal_code(exc), token))
+                with storage.write(context, remaining_seconds=max(0.001, deadline - time.monotonic())) as tx:
+                    tx._check(write=True).execute(
+                        "UPDATE capture_inbox SET last_error_code=? WHERE token=?", (_terminal_code(exc), token)
+                    )
             except (*_TRANSIENT, ContractError):
                 pass
     except _TRANSIENT:
@@ -394,13 +452,20 @@ def _refused_for_a_delete(storage, context, token, prepared, deadline) -> Captur
     inbox with its code, the copy kept the doctor's ``capture_ingress_blocked`` and the patrol's line up until someone
     removed it by hand (rc13); it leaves the inbox, and the pass counts it among the rows it cancelled."""
     try:
-        with storage.write(context, remaining_seconds=max(.001, deadline-time.monotonic())) as tx:
+        with storage.write(context, remaining_seconds=max(0.001, deadline - time.monotonic())) as tx:
             tx._check(write=True).execute("DELETE FROM capture_inbox WHERE token=?", (token,))
     except (*_TRANSIENT, ContractError):
         # Not removed: the next pass meets the same refusal and removes it then.
         pass
-    return CaptureReceipt("cancelled", (), "not_persisted", "unchanged", "unchanged",
-                          (*prepared.gaps, SOURCE_DELETED_GAP), "ACCESS_DENIED")
+    return CaptureReceipt(
+        "cancelled",
+        (),
+        "not_persisted",
+        "unchanged",
+        "unchanged",
+        (*prepared.gaps, SOURCE_DELETED_GAP),
+        "ACCESS_DENIED",
+    )
 
 
 #: Marker spliced into a re-keyed capture's source_event_key. Self-documenting on
@@ -412,9 +477,20 @@ REKEY_MARKER = "#rekey:"
 
 def _capture_fingerprint(events) -> str:
     """One fingerprint of a whole capture, which every segment of a long message shares."""
-    return hashlib.sha256(_json([[event["source_event_key"], event.get("content"), event.get("origin"),
-                                  event.get("role"), event.get("occurred_at")] for event in events]).encode("utf-8")
-                          ).hexdigest()[:16]
+    return hashlib.sha256(
+        _json(
+            [
+                [
+                    event["source_event_key"],
+                    event.get("content"),
+                    event.get("origin"),
+                    event.get("role"),
+                    event.get("occurred_at"),
+                ]
+                for event in events
+            ]
+        ).encode("utf-8")
+    ).hexdigest()[:16]
 
 
 def _rekeyed_event(event: dict, capture: str = "") -> dict:
@@ -442,14 +518,18 @@ def _rekeyed_event(event: dict, capture: str = "") -> dict:
         if REKEY_MARKER in group:
             return dict(event)
         group = _rekey(group, capture)
-        return {**event, "source_event_key": segment_key(group, segment["index"]),
-                "segment": {**segment, "group_key": group}}
+        return {
+            **event,
+            "source_event_key": segment_key(group, segment["index"]),
+            "segment": {**segment, "group_key": group},
+        }
     original = str(event["source_event_key"])
     if REKEY_MARKER in original:
         return dict(event)
     fingerprint = hashlib.sha256(
-        _json([original, event.get("content"), event.get("origin"), event.get("role"),
-               event.get("occurred_at")]).encode("utf-8")
+        _json(
+            [original, event.get("content"), event.get("origin"), event.get("role"), event.get("occurred_at")]
+        ).encode("utf-8")
     ).hexdigest()[:16]
     return {**event, "source_event_key": _rekey(original, fingerprint)}
 
@@ -463,11 +543,12 @@ def _rekey(key: str, fingerprint: str) -> str:
     or more went past it and was refused on every pass.  The fingerprint covers the whole original key, so the cut
     one stays unique."""
     suffix = f"{REKEY_MARKER}{fingerprint}"
-    return key[:_KEY_LIMIT - len(suffix)] + suffix
+    return key[: _KEY_LIMIT - len(suffix)] + suffix
 
 
-def resolve_conflicted_ingress(storage, clock, context, *, authorize, admission_policy=None,
-                               limit=8, remaining_seconds=1.0):
+def resolve_conflicted_ingress(
+    storage, clock, context, *, authorize, admission_policy=None, limit=8, remaining_seconds=1.0
+):
     """Store captures whose host key collided, one bounded page at a time.
 
     ``replay_inbox`` retries only failures that could plausibly clear on their
@@ -489,14 +570,22 @@ def resolve_conflicted_ingress(storage, clock, context, *, authorize, admission_
     now = _utc(clock)
     with storage.read(context, remaining_seconds=remaining_seconds) as tx:
         conn = tx._check()
-        tokens = [token for token, code in conn.execute(
-            f"""SELECT token,last_error_code FROM capture_inbox WHERE scope_id IN ({','.join('?' for _ in scopes)})
+        tokens = [
+            token
+            for token, code in conn.execute(
+                f"""SELECT token,last_error_code FROM capture_inbox WHERE scope_id IN ({",".join("?" for _ in scopes)})
             AND project_id IS ? AND branch_id IS ?
             AND (last_error_code='VERSION_CONFLICT' OR last_error_code LIKE 'DEFERRED|%')
-            ORDER BY created_at,token""", (*scopes, context.project_id, context.branch_id))
-            if code == "VERSION_CONFLICT" or (deferred_path(code) == "rekey" and replayable(code, now))][:limit]
-        rows = [row for token in tokens
-                if (row := conn.execute("SELECT * FROM capture_inbox WHERE token=?", (token,)).fetchone()) is not None]
+            ORDER BY created_at,token""",
+                (*scopes, context.project_id, context.branch_id),
+            )
+            if code == "VERSION_CONFLICT" or (deferred_path(code) == "rekey" and replayable(code, now))
+        ][:limit]
+        rows = [
+            row
+            for token in tokens
+            if (row := conn.execute("SELECT * FROM capture_inbox WHERE token=?", (token,)).fetchone()) is not None
+        ]
     return _replay_rows(storage, clock, context, rows, authorize, admission_policy, deadline, rekey=True)
 
 
@@ -510,19 +599,35 @@ def _replay_rows(storage, clock, context, rows, authorize, admission_policy, dea
         except _TRANSIENT:
             # The store itself: the rest of the page waits for the next pass.  Raised, it lost what this replay had
             # done, and the rekey replay after it did not run (review of rc10).
-            receipts.append(CaptureReceipt("queued", (), "queued", "pending", "pending", (INGRESS_PENDING_GAP,),
-                                           "STORAGE_UNAVAILABLE"))
+            receipts.append(
+                CaptureReceipt(
+                    "queued", (), "queued", "pending", "pending", (INGRESS_PENDING_GAP,), "STORAGE_UNAVAILABLE"
+                )
+            )
             break
         except (ContractError, KeyError, TypeError, ValueError, RuntimeError, OSError) as exc:
             # A host's check that raises (Hermes' identity errors are RuntimeErrors) put off this row only.
             receipts.append(_defer(storage, clock, context, row, exc, deadline, path="rekey" if rekey else "replay"))
             continue
         if revalidated is None:
-            receipts.append(CaptureReceipt("cancelled", (), "not_persisted", "unchanged", "unchanged", error_code="ACCESS_DENIED"))
+            receipts.append(
+                CaptureReceipt("cancelled", (), "not_persisted", "unchanged", "unchanged", error_code="ACCESS_DENIED")
+            )
             continue
         original, prepared = revalidated
-        receipts.append(_commit(storage, clock, original, row["token"], prepared, row["scope_id"], admission_policy,
-                                deadline, rekeyed=rekey))
+        receipts.append(
+            _commit(
+                storage,
+                clock,
+                original,
+                row["token"],
+                prepared,
+                row["scope_id"],
+                admission_policy,
+                deadline,
+                rekeyed=rekey,
+            )
+        )
     return tuple(receipts)
 
 
@@ -537,16 +642,21 @@ def _revalidated(storage, context, row, authorize, deadline, *, rekey):
         raise ContractError("INPUT_INVALID", "ingress_context") from exc
     allowed = stored & context.allowed_scope_ids & frozenset(authorize(body["host_scope"]))
     if row["scope_id"] not in allowed:
-        with storage.write(context, remaining_seconds=max(.001, deadline-time.monotonic())) as tx:
+        with storage.write(context, remaining_seconds=max(0.001, deadline - time.monotonic())) as tx:
             tx._check(write=True).execute("DELETE FROM capture_inbox WHERE token=?", (row["token"],))
         return None
     try:
         snapshot = raw.pop("display_snapshot")
         principal = raw.pop("source_principal", None)
-        original = TrustedContext(context.binding, allowed_scope_ids=allowed,
-            display_snapshot=DisplaySnapshot(snapshot["order"], tuple(ArtifactVersion(**i) for i in snapshot["items"])) if snapshot else None,
+        original = TrustedContext(
+            context.binding,
+            allowed_scope_ids=allowed,
+            display_snapshot=DisplaySnapshot(snapshot["order"], tuple(ArtifactVersion(**i) for i in snapshot["items"]))
+            if snapshot
+            else None,
             source_principal=TrustedSourcePrincipal(**principal) if principal is not None else None,
-            **raw)
+            **raw,
+        )
     except ContractError:
         raise
     except (KeyError, TypeError, ValueError) as exc:
@@ -577,15 +687,19 @@ def _defer(storage, clock, context, row, exc, deadline, *, path) -> CaptureRecei
     """Put off a row whose stored capture a replay could not check again (``_DEFERRED``), or give it up."""
     code = _deferral(row["last_error_code"], exc, _utc(clock), path=path)
     try:
-        with storage.write(context, remaining_seconds=max(.001, deadline-time.monotonic())) as tx:
-            tx._check(write=True).execute("UPDATE capture_inbox SET last_error_code=? WHERE token=?", (code, row["token"]))
+        with storage.write(context, remaining_seconds=max(0.001, deadline - time.monotonic())) as tx:
+            tx._check(write=True).execute(
+                "UPDATE capture_inbox SET last_error_code=? WHERE token=?", (code, row["token"])
+            )
     except (*_TRANSIENT, ContractError):
         # Not written: the row keeps its code and a later pass takes it again.  Said as put off or given up, a pass
         # reported a give-up the store never saw, and the next reported it again (review of rc10).
-        return CaptureReceipt("queued", (), "queued", "pending", "pending", (INGRESS_PENDING_GAP,),
-                              "STORAGE_UNAVAILABLE")
-    return CaptureReceipt("queued", (), "queued", "pending", "pending",
-                          error_code="GAVE_UP" if code.startswith(_GAVE_UP) else "DEFERRED")
+        return CaptureReceipt(
+            "queued", (), "queued", "pending", "pending", (INGRESS_PENDING_GAP,), "STORAGE_UNAVAILABLE"
+        )
+    return CaptureReceipt(
+        "queued", (), "queued", "pending", "pending", error_code="GAVE_UP" if code.startswith(_GAVE_UP) else "DEFERRED"
+    )
 
 
 def replay_inbox(storage, clock, context, *, authorize, admission_policy=None, limit=8, remaining_seconds=1.0):
@@ -601,12 +715,19 @@ def replay_inbox(storage, clock, context, *, authorize, admission_policy=None, l
     now = _utc(clock)
     with storage.read(context, remaining_seconds=remaining_seconds) as tx:
         conn = tx._check()
-        tokens = [token for token, code in conn.execute(
-            f"""SELECT token,last_error_code FROM capture_inbox WHERE scope_id IN ({','.join('?' for _ in scopes)})
+        tokens = [
+            token
+            for token, code in conn.execute(
+                f"""SELECT token,last_error_code FROM capture_inbox WHERE scope_id IN ({",".join("?" for _ in scopes)})
             AND project_id IS ? AND branch_id IS ? AND {REPLAY_CANDIDATES}
             ORDER BY created_at,token""",
-            (*scopes, context.project_id, context.branch_id, *_RETRIED))
-            if replayable(code, now) and deferred_path(code) != "rekey"][:limit]
-        rows = [row for token in tokens
-                if (row := conn.execute("SELECT * FROM capture_inbox WHERE token=?", (token,)).fetchone()) is not None]
+                (*scopes, context.project_id, context.branch_id, *_RETRIED),
+            )
+            if replayable(code, now) and deferred_path(code) != "rekey"
+        ][:limit]
+        rows = [
+            row
+            for token in tokens
+            if (row := conn.execute("SELECT * FROM capture_inbox WHERE token=?", (token,)).fetchone()) is not None
+        ]
     return _replay_rows(storage, clock, context, rows, authorize, admission_policy, deadline, rekey=False)

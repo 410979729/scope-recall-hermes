@@ -286,9 +286,7 @@ def truth_writer_process_snapshot(storage_dir: Path) -> dict[str, int]:
             return {"same_process_holder_count": 0, "connection_pin_count": 0}
         return {
             "same_process_holder_count": max(0, int(getattr(state, "holders", 0) or 0)),
-            "connection_pin_count": max(
-                0, int(getattr(state, "connection_pins", 0) or 0)
-            ),
+            "connection_pin_count": max(0, int(getattr(state, "connection_pins", 0) or 0)),
         }
 
 
@@ -313,10 +311,7 @@ class TruthWriterBusyError(RuntimeError):
         self.role = _canonical_lease_role(role)
         self.scope = str(scope or "")
         self.owner = sanitized_truth_writer_owner(owner)
-        super().__init__(
-            "truth_writer_busy: another Scope Recall process holds the "
-            "truth-database writer lease"
-        )
+        super().__init__("truth_writer_busy: another Scope Recall process holds the truth-database writer lease")
 
 
 def _lease_paths(storage_dir: Path) -> tuple[Path, Path]:
@@ -408,9 +403,7 @@ def _try_lock_exclusive_nonblocking(handle: IO[bytes]) -> bool:
             return True
         except OSError:
             return False
-    windows_locking = (
-        getattr(_msvcrt, "locking", None) if _msvcrt is not None else None
-    )
+    windows_locking = getattr(_msvcrt, "locking", None) if _msvcrt is not None else None
     if callable(windows_locking):
         handle.seek(0, 2)
         if handle.tell() == 0:
@@ -456,8 +449,7 @@ class TruthWriterLease:
         with handoff.lock:
             if bool(getattr(handoff, "handoff_fenced", False)):
                 if (
-                    int(getattr(handoff, "handoff_thread_id", 0) or 0)
-                    != threading.get_ident()
+                    int(getattr(handoff, "handoff_thread_id", 0) or 0) != threading.get_ident()
                     or self._role != "truth_connection"
                 ):
                     return _busy("process_handoff")
@@ -585,10 +577,7 @@ class TruthWriterLease:
         with handoff.lock:
             self._release_under_handoff()
             snapshot = truth_writer_process_snapshot(self._storage_dir)
-            if (
-                snapshot["same_process_holder_count"] == 0
-                and snapshot["connection_pin_count"] == 0
-            ):
+            if snapshot["same_process_holder_count"] == 0 and snapshot["connection_pin_count"] == 0:
                 handoff.state = "READER"
 
     def _release_under_handoff(self) -> None:
@@ -617,14 +606,10 @@ class TruthWriterLease:
                 return
             state = registry.get(key)
             if state is None:
-                raise RuntimeError(
-                    "truth writer lease registry entry missing during release"
-                )
+                raise RuntimeError("truth writer lease registry entry missing during release")
             if self._pin_only:
                 if state.connection_pins < 1:
-                    raise RuntimeError(
-                        "truth writer connection pin count is invalid during release"
-                    )
+                    raise RuntimeError("truth writer connection pin count is invalid during release")
                 if state.holders > 0 or state.connection_pins > 1:
                     state.connection_pins -= 1
                     self._acquired = False
@@ -637,9 +622,7 @@ class TruthWriterLease:
                 # last named holder below. A failed close must be retryable by
                 # the connection that still owns this pin.
             elif state.holders < 1:
-                raise RuntimeError(
-                    "truth writer lease holder count is invalid during release"
-                )
+                raise RuntimeError("truth writer lease holder count is invalid during release")
             elif state.holders > 1:
                 state.holders -= 1
                 self._acquired = False
@@ -664,9 +647,7 @@ class TruthWriterLease:
             if close_error is not None and not closed:
                 raise close_error
             if not closed:
-                raise RuntimeError(
-                    "truth writer lease handle close did not release OS authority"
-                )
+                raise RuntimeError("truth writer lease handle close did not release OS authority")
             del registry[key]
             self._acquired = False
             self._acquired_pid = None
@@ -685,9 +666,7 @@ class TruthWriterLease:
 
 
 @contextmanager
-def holding_truth_writer_lease(
-    storage_dir: Path, *, role: str = "provider"
-) -> Iterator[TruthWriterLease]:
+def holding_truth_writer_lease(storage_dir: Path, *, role: str = "provider") -> Iterator[TruthWriterLease]:
     """Acquire the canonical writer lease or fail closed; always release."""
 
     lease = TruthWriterLease(storage_dir, role=role)
@@ -705,4 +684,15 @@ def holding_truth_writer_lease(
         lease.release()
 
 
-__all__ = ['ALLOWED_TRUTH_WRITER_ROLES', 'TRUTH_WRITER_LEASE_FILENAME', 'TRUTH_WRITER_LEASE_INFO_FILENAME', 'TruthWriterBusyError', 'TruthWriterLease', 'holding_truth_writer_lease', 'process_writer_handoff_state', 'read_truth_writer_owner', 'sanitized_truth_writer_owner', 'truth_writer_process_snapshot']
+__all__ = [
+    "ALLOWED_TRUTH_WRITER_ROLES",
+    "TRUTH_WRITER_LEASE_FILENAME",
+    "TRUTH_WRITER_LEASE_INFO_FILENAME",
+    "TruthWriterBusyError",
+    "TruthWriterLease",
+    "holding_truth_writer_lease",
+    "process_writer_handoff_state",
+    "read_truth_writer_owner",
+    "sanitized_truth_writer_owner",
+    "truth_writer_process_snapshot",
+]

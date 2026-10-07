@@ -28,6 +28,7 @@ enumerate -- which is the very reason ``error_type`` is preferred over a message
 three lines below.  An unrecognised message contributes nothing, and the label
 falls back to the bare class rather than inventing a category.
 """
+
 from __future__ import annotations
 
 #: Marker -> token, most specific first.  Markers are fragments of the messages

@@ -29,6 +29,7 @@ Not responsible for: deciding *whether* to embed (``core/worker.py``), or for
 chunking a long source into several vectors -- that is a feature, and the
 corpus does not yet justify it.
 """
+
 from __future__ import annotations
 
 #: Estimated tokens of a single object handed to the embedding model.

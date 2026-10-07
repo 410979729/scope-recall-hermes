@@ -1,4 +1,5 @@
 """Bounded outcome tracking for success, failure, cancel, and truncation gaps."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field

@@ -1,4 +1,5 @@
 """P13 trusted recall and hook budget boundaries."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -115,9 +116,7 @@ def test_omitted_auto_and_hook_budgets_default_to_five_and_six(tmp_path):
 
     project = tmp_path / "project"
     project.mkdir()
-    _, codex_core = install_codex_scope_recall(
-        tmp_path / "install", project_root=project, test_mode=True
-    )
+    _, codex_core = install_codex_scope_recall(tmp_path / "install", project_root=project, test_mode=True)
     assert codex_core.config.auto_recall_seconds == 5.0
     assert TrustedHostRuntime(core=codex_core).hook_processing_seconds == 6.0
     _, hermes_core = install_hermes_scope_recall(
@@ -199,17 +198,13 @@ def test_runtime_budget_fields_reject_non_finite_bool_and_out_of_range(tmp_path,
 def test_runtime_rejects_hook_budget_shorter_than_auto(tmp_path):
     binding = _binding(tmp_path)
     with pytest.raises(ValueError, match="must_cover"):
-        RuntimeInstanceConfig.from_mapping(
-            _runtime_raw(binding, auto_recall_seconds=4.0, hook_processing_seconds=3.0)
-        )
+        RuntimeInstanceConfig.from_mapping(_runtime_raw(binding, auto_recall_seconds=4.0, hook_processing_seconds=3.0))
 
 
 def test_codex_hook_reads_verified_runtime_budget_and_ignores_payload(tmp_path):
     project = tmp_path / "project"
     project.mkdir()
-    config, core = install_codex_scope_recall(
-        tmp_path / "install", project_root=project, test_mode=True
-    )
+    config, core = install_codex_scope_recall(tmp_path / "install", project_root=project, test_mode=True)
     host = TrustedHostRuntime(core=core, _hook_processing_seconds=5.0)
     handler = CodexHookHandler(config, host_runtime=host, clock=FixedClock())
     assert handler._hook_budget() == 5.0
@@ -218,8 +213,8 @@ def test_codex_hook_reads_verified_runtime_budget_and_ignores_payload(tmp_path):
 
     deadlines = {}
     handler._session_start = lambda session_id, audience, deadline: deadlines.setdefault("start", deadline) or {}
-    handler._user_prompt_submit = (
-        lambda session_id, audience, payload, deadline: deadlines.setdefault("prompt", deadline) or {}
+    handler._user_prompt_submit = lambda session_id, audience, payload, deadline: (
+        deadlines.setdefault("prompt", deadline) or {}
     )
     base = {"session_id": "TEST-budget-session", "cwd": str(project)}
     handler.handle_payload({**base, "hook_event_name": "SessionStart"})
@@ -233,12 +228,10 @@ def test_codex_hook_reads_verified_runtime_budget_and_ignores_payload(tmp_path):
         clock=FixedClock(),
         hook_started_at=101.0,
     )
-    started_handler._user_prompt_submit = (
-        lambda session_id, audience, payload, deadline: deadlines.setdefault("started", deadline) or {}
+    started_handler._user_prompt_submit = lambda session_id, audience, payload, deadline: (
+        deadlines.setdefault("started", deadline) or {}
     )
-    started_handler.handle_payload(
-        {**base, "hook_event_name": "UserPromptSubmit", "turn_id": "turn-2", "prompt": "x"}
-    )
+    started_handler.handle_payload({**base, "hook_event_name": "UserPromptSubmit", "turn_id": "turn-2", "prompt": "x"})
     assert deadlines["started"] == 106.0
     started_handler.close()
 
@@ -246,9 +239,7 @@ def test_codex_hook_reads_verified_runtime_budget_and_ignores_payload(tmp_path):
 def test_codex_explicit_mcp_tool_uses_five_second_ceiling(tmp_path):
     project = tmp_path / "project"
     project.mkdir()
-    config, real_core = install_codex_scope_recall(
-        tmp_path / "install", project_root=project, test_mode=True
-    )
+    config, real_core = install_codex_scope_recall(tmp_path / "install", project_root=project, test_mode=True)
     calls = []
 
     class ProbeCore:

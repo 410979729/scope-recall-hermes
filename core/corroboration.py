@@ -36,6 +36,7 @@ Five conditions, and all of them are narrow on purpose:
 Not responsible for: judging either statement (``core/claims.qualify`` does
 that), or writing anything (``core/mutate.apply_claim`` owns the version).
 """
+
 from __future__ import annotations
 
 #: Independent first-hand statements required before a refusal is overturned.
@@ -52,11 +53,13 @@ CORROBORATION_THRESHOLD = 2
 #: standing said it".  Every other refusal in ``qualify`` is about what kind of
 #: statement this is, or about faithfulness to the quote, and repetition cannot
 #: change either.
-CORROBORATION_ELIGIBLE_REASONS = frozenset({
-    "fact_entailment_unproved",
-    "no_independent_authority",
-    "requires_human_source",
-})
+CORROBORATION_ELIGIBLE_REASONS = frozenset(
+    {
+        "fact_entailment_unproved",
+        "no_independent_authority",
+        "requires_human_source",
+    }
+)
 
 #: Reason recorded on the version that corroboration promotes, so a reader can
 #: tell an assertion that was proved by its own text from one that was accepted
@@ -82,10 +85,9 @@ def _first_hand(roots):
     from .claims import effective_origin
 
     return [
-        root for root in roots
-        if effective_origin(root) == "human_direct"
-        and root.capture_state == "complete"
-        and not root.capture_gaps
+        root
+        for root in roots
+        if effective_origin(root) == "human_direct" and root.capture_state == "complete" and not root.capture_gaps
     ]
 
 

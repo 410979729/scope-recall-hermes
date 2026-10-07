@@ -67,7 +67,8 @@ def _run_check(monkeypatch, tmp_path: Path, *, fail_cleanup: bool) -> tuple[int,
     # The nested runner must keep its owned directory inside this pytest
     # fixture; its normal Windows temp parent is outside the outer guard.
     monkeypatch.setattr(
-        check, "TestDirectory",
+        check,
+        "TestDirectory",
         lambda *, prefix, dir: ControlledDirectory(prefix=prefix, dir=tmp_path),
     )
     monkeypatch.setattr(check.subprocess, "run", fake_run)
@@ -76,8 +77,7 @@ def _run_check(monkeypatch, tmp_path: Path, *, fail_cleanup: bool) -> tuple[int,
 
     exit_code = check.main()
     receipts = sorted(
-        path for path in (tmp_path / "verification" / "P07").glob("*.json")
-        if not path.name.endswith("-inputs.json")
+        path for path in (tmp_path / "verification" / "P07").glob("*.json") if not path.name.endswith("-inputs.json")
     )
     assert len(receipts) == 1
     receipt = json.loads(receipts[0].read_text(encoding="utf-8"))
@@ -142,9 +142,12 @@ def test_release_wrapper_records_actual_600s_watchdog(monkeypatch, tmp_path: Pat
         return "TEST-HEAD\n"
 
     monkeypatch.setattr(check, "ROOT", tmp_path)
-    monkeypatch.setattr(check, "select_tests", lambda tier, changed=None: (["tests/unit/pass_test.py"], {"mode": "fixture"}))
     monkeypatch.setattr(
-        check, "TestDirectory",
+        check, "select_tests", lambda tier, changed=None: (["tests/unit/pass_test.py"], {"mode": "fixture"})
+    )
+    monkeypatch.setattr(
+        check,
+        "TestDirectory",
         lambda *, prefix, dir: ControlledDirectory(prefix=prefix, dir=tmp_path),
     )
     monkeypatch.setattr(check.subprocess, "run", fake_run)
@@ -153,8 +156,7 @@ def test_release_wrapper_records_actual_600s_watchdog(monkeypatch, tmp_path: Pat
 
     exit_code = check.main()
     receipts = sorted(
-        path for path in (tmp_path / "verification" / "P07").glob("*.json")
-        if not path.name.endswith("-inputs.json")
+        path for path in (tmp_path / "verification" / "P07").glob("*.json") if not path.name.endswith("-inputs.json")
     )
     assert len(receipts) == 1
     receipt = json.loads(receipts[0].read_text(encoding="utf-8"))

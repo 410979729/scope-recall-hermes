@@ -7,6 +7,7 @@ legacy import re-delivered the same bodies under fresh identities, one document
 took four of six delivered slots and the document that answered the question
 was never delivered at all.
 """
+
 from __future__ import annotations
 
 import pytest
@@ -36,6 +37,7 @@ class _Obj:
 # The vocabulary
 # --------------------------------------------------------------------------
 
+
 def test_nothing_collapsed_means_no_gap():
     assert duplicate_gap(0) is None
     assert duplicate_gap(-3) is None
@@ -51,8 +53,9 @@ def test_a_collapse_carries_its_count():
     assert parse_duplicate_gap(duplicate_gap(7)) == 7
 
 
-@pytest.mark.parametrize("value", [None, 7, "", "coverage_truncated:s:1of2",
-                                   "duplicates_collapsed:", "duplicates_collapsed:x"])
+@pytest.mark.parametrize(
+    "value", [None, 7, "", "coverage_truncated:s:1of2", "duplicates_collapsed:", "duplicates_collapsed:x"]
+)
 def test_anything_else_reads_back_as_none(value):
     assert parse_duplicate_gap(value) is None
 
@@ -75,6 +78,7 @@ def test_the_count_survives_into_the_public_packet():
 # --------------------------------------------------------------------------
 # What counts as the same thing
 # --------------------------------------------------------------------------
+
 
 def test_the_same_body_is_the_same_thing_whatever_row_carried_it():
     assert content_key(_Obj("同一段话")) == content_key(_Obj("同一段话"))
@@ -101,6 +105,7 @@ def test_a_non_string_body_does_not_raise():
 # --------------------------------------------------------------------------
 # The filter
 # --------------------------------------------------------------------------
+
 
 def test_the_first_copy_is_kept_and_the_rest_are_counted():
     distinct = DistinctContent()
@@ -134,6 +139,7 @@ def test_one_filter_spans_both_passes():
 # --------------------------------------------------------------------------
 # Against the real pipeline
 # --------------------------------------------------------------------------
+
 
 def _recall(core, ctx, query, **changes):
     return core.recall(ctx, recall_request(query=query, **changes))
@@ -179,13 +185,15 @@ def test_copies_cannot_crowd_out_a_different_answer(app):
         capture(core, ctx, "TEST-project 配色 蓝色。", key=f"TEST-dup/{index}")
     capture(core, ctx, "TEST-project 配色 改走审批流程。", key="TEST-other")
     result = _recall(core, ctx, "TEST-project 配色", max_items=3)
-    assert any("审批流程" in body for body in _bodies(result)), \
+    assert any("审批流程" in body for body in _bodies(result)), (
         f"the distinct document was crowded out: {_bodies(result)}"
+    )
 
 
 # --------------------------------------------------------------------------
 # A version is not a copy
 # --------------------------------------------------------------------------
+
 
 class _Versioned(_Obj):
     def __init__(self, content, ref, kind="episode"):

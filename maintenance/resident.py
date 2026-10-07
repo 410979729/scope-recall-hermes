@@ -12,6 +12,7 @@ known.  One whose identity cannot be proven, where a process's start time cannot
 minutes are 0 (``adapters/codex/resident_entry``).  A ``stop`` after which one still holds the lock says
 ``still_running`` and exits 1, so that an upgrade script does not go on.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -41,11 +42,18 @@ def main(argv: list[str] | None = None) -> int:
     deadline = time.monotonic() + STOP_WAIT_SECONDS
     while stopped and resident_running(home, args.host) and time.monotonic() < deadline:
         time.sleep(0.1)
-    servers = [{"pid": int(info["pid"]), "version": info.get("version"), "verified": proven}
-               for _paths, info, proven in _residents(home, args.host, any_version=True)]
+    servers = [
+        {"pid": int(info["pid"]), "version": info.get("version"), "verified": proven}
+        for _paths, info, proven in _residents(home, args.host, any_version=True)
+    ]
     running = resident_running(home, args.host)
-    said = {"status": "ok", "action": args.action, "resident_recall_minutes": resident_minutes(home, args.host),
-            "running": running, "servers": servers}
+    said = {
+        "status": "ok",
+        "action": args.action,
+        "resident_recall_minutes": resident_minutes(home, args.host),
+        "running": running,
+        "servers": servers,
+    }
     if args.action == "stop":
         said["stopped"] = stopped
         if running:

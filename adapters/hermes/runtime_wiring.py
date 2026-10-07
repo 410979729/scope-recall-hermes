@@ -1,4 +1,5 @@
 """Hermes lifecycle view over the shared trusted runtime glue."""
+
 from __future__ import annotations
 
 from scope_recall.adapters.runtime_wiring import (
@@ -26,12 +27,21 @@ class HermesHostRuntime(TrustedHostRuntime):
     """
 
     def maybe_launch_bounded_worker(
-        self, *, session_id: str, allowed_scope_ids: frozenset[str],
-        project_id: str | None = None, branch_id: str | None = None,
+        self,
+        *,
+        session_id: str,
+        allowed_scope_ids: frozenset[str],
+        project_id: str | None = None,
+        branch_id: str | None = None,
     ) -> tuple[str, ...]:
-        return launch_audience_worker(self, session_id=session_id,
-                                      allowed_scope_ids=allowed_scope_ids, launcher=launch_worker,
-                                      project_id=project_id, branch_id=branch_id)
+        return launch_audience_worker(
+            self,
+            session_id=session_id,
+            allowed_scope_ids=allowed_scope_ids,
+            launcher=launch_worker,
+            project_id=project_id,
+            branch_id=branch_id,
+        )
 
     def close(self, *, detach_worker: bool = True) -> None:
         # Lifecycle shutdown never waits for/kills the helper: the existing

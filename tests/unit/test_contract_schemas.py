@@ -6,6 +6,7 @@ every tool travels with every request, one untyped property failed all chat
 after the upgrade that added the trace tool (#89).  The rule is checked for
 every contract, not only the ones that reach a provider today.
 """
+
 import json
 from pathlib import Path
 
@@ -20,7 +21,11 @@ def untyped_properties(schema, trail=()):
     if not isinstance(schema, dict):
         return found
     for name, spec in (schema.get("properties") or {}).items():
-        if isinstance(spec, dict) and "type" not in spec and not any(key in spec for key in ("anyOf", "oneOf", "allOf", "$ref")):
+        if (
+            isinstance(spec, dict)
+            and "type" not in spec
+            and not any(key in spec for key in ("anyOf", "oneOf", "allOf", "$ref"))
+        ):
             found.append("/".join((*trail, name)))
         found.extend(untyped_properties(spec, (*trail, name)))
     for key in ("items", "additionalProperties"):

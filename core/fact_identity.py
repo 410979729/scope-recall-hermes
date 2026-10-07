@@ -40,9 +40,7 @@ def normalize_fact_component(
     if not normalized and not allow_empty:
         raise FactIdentityError(f"{field_name} is required")
     if len(normalized) > max_chars:
-        raise FactIdentityError(
-            f"{field_name} exceeds {max_chars} characters"
-        )
+        raise FactIdentityError(f"{field_name} exceeds {max_chars} characters")
     return normalized
 
 

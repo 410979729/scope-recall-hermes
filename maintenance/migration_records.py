@@ -2,6 +2,7 @@
 
 No host activation, target writes or background work.
 """
+
 from __future__ import annotations
 from datetime import datetime, timezone
 import hashlib
@@ -125,9 +126,7 @@ def _digest(value: object) -> str:
 
 
 def _stable(kind: str, value: object) -> str:
-    return (
-        f"{kind}-legacy-{hashlib.sha256(f'{kind}:{value}'.encode()).hexdigest()[:32]}"
-    )
+    return f"{kind}-legacy-{hashlib.sha256(f'{kind}:{value}'.encode()).hexdigest()[:32]}"
 
 
 def _safe(value: object) -> object:
@@ -159,10 +158,7 @@ def _open_immutable(path: Path) -> sqlite3.Connection:
 
 
 def _tables(conn: sqlite3.Connection) -> set[str]:
-    return {
-        str(row[0])
-        for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
-    }
+    return {str(row[0]) for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
 
 
 def _columns(conn: sqlite3.Connection, table: str) -> list[str]:
@@ -172,10 +168,7 @@ def _columns(conn: sqlite3.Connection, table: str) -> list[str]:
 def _rows(conn: sqlite3.Connection, table: str) -> list[dict[str, Any]]:
     if table not in _tables(conn):
         return []
-    return [
-        {str(k): row[k] for k in row.keys()}
-        for row in conn.execute(f"SELECT * FROM [{table}]")
-    ]
+    return [{str(k): row[k] for k in row.keys()} for row in conn.execute(f"SELECT * FROM [{table}]")]
 
 
 def _time(value: object) -> tuple[str | None, str]:
@@ -184,9 +177,7 @@ def _time(value: object) -> tuple[str | None, str]:
         return None, "unknown"
     try:
         stamp = datetime.fromisoformat(text.replace("Z", "+00:00"))
-        return stamp.astimezone(timezone.utc).isoformat(
-            timespec="microseconds"
-        ).replace("+00:00", "Z"), "instant"
+        return stamp.astimezone(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z"), "instant"
     except ValueError:
         return None, "unknown"
 

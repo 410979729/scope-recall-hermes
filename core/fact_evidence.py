@@ -37,9 +37,7 @@ CORROBORATING_EVIDENCE_SOURCE_TYPES = frozenset(
         "verified_profile",
     }
 )
-AUTHORITATIVE_EVIDENCE_SOURCE_TYPES = (
-    DIRECT_EVIDENCE_SOURCE_TYPES | CORROBORATING_EVIDENCE_SOURCE_TYPES
-)
+AUTHORITATIVE_EVIDENCE_SOURCE_TYPES = DIRECT_EVIDENCE_SOURCE_TYPES | CORROBORATING_EVIDENCE_SOURCE_TYPES
 _WORD_RE = re.compile(r"[^\W_]+(?:[-'][^\W_]+)*", re.UNICODE)
 # A "." with an ASCII letter or digit on both sides sits inside one token
 # (3.1.0rc28, 3.5, example.com) and ends no clause; splitting there left a
@@ -55,12 +53,8 @@ _MONTH_ABBREVIATION_PERIOD_RE = re.compile(
     r"\b(jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec)\.(?=\s|$|[-–—])",
     re.IGNORECASE,
 )
-_DOTTED_NUMERIC_DATE_RE = re.compile(
-    r"(?<![a-z0-9]\.)\b(\d{1,4})\.(\d{1,2})\.(\d{1,4})\b(?!\.[a-z0-9])"
-)
-_TWO_COMPONENT_DOTTED_DATE_RE = re.compile(
-    r"(?<![a-z0-9]\.)\b(\d{1,2})\.(\d{1,2})(?=\s|$|[-–—])"
-)
+_DOTTED_NUMERIC_DATE_RE = re.compile(r"(?<![a-z0-9]\.)\b(\d{1,4})\.(\d{1,2})\.(\d{1,4})\b(?!\.[a-z0-9])")
+_TWO_COMPONENT_DOTTED_DATE_RE = re.compile(r"(?<![a-z0-9]\.)\b(\d{1,2})\.(\d{1,2})(?=\s|$|[-–—])")
 _FIRST_PERSON_RE = re.compile(
     r"(?:\b(?:i|i'm|im|me|my|mine|myself)\b|我|我的|本人)",
     re.IGNORECASE,
@@ -112,9 +106,7 @@ _CJK_TRANSITION_GAP_RE = re.compile(
     r"(?:更正|修正|调整|变更|修改|更新|改)(?:为|成)\s*"
 )
 _CJK_FINAL_ASSERTIVE_PARTICLE_RE = re.compile(r"(?:呀|啊)")
-_CJK_GAP_IGNORABLE_RE = re.compile(
-    r"[\s,，:：、()（）\[\]【】《》〈〉「」『』“”‘’]*"
-)
+_CJK_GAP_IGNORABLE_RE = re.compile(r"[\s,，:：、()（）\[\]【】《》〈〉「」『』“”‘’]*")
 
 
 @dataclass(frozen=True, slots=True)
@@ -186,11 +178,7 @@ def _phrase_spans(text: str, phrase: str) -> tuple[_Span, ...]:
     # identifier boundaries so ``blue`` still cannot match ``blue.txt``.
     identifier = r"[a-z0-9_.-]"
     left = rf"(?<!{identifier})" if re.match(identifier, normalized_phrase[0]) else ""
-    right = (
-        r"(?![a-z0-9_-]|\.(?=[a-z0-9_.-]))"
-        if re.match(identifier, normalized_phrase[-1])
-        else ""
-    )
+    right = r"(?![a-z0-9_-]|\.(?=[a-z0-9_.-]))" if re.match(identifier, normalized_phrase[-1]) else ""
     pattern = re.compile(left + re.escape(normalized_phrase) + right, re.UNICODE)
     return tuple(_Span(match.start(), match.end()) for match in pattern.finditer(normalized_text))
 
@@ -209,9 +197,7 @@ def _value_clauses(quote: str, display_value: str) -> list[str]:
         normalized_quote,
     )
     return [
-        clause.strip()
-        for clause in _CLAUSE_SPLIT_RE.split(normalized_quote)
-        if _phrase_spans(clause, display_value)
+        clause.strip() for clause in _CLAUSE_SPLIT_RE.split(normalized_quote) if _phrase_spans(clause, display_value)
     ]
 
 
@@ -248,10 +234,7 @@ def _subject_spans(
         and _ATTRIBUTION_RE.search(normalized_quote) is None
     ):
         return ()
-    return tuple(
-        _Span(match.start(), match.end())
-        for match in _FIRST_PERSON_RE.finditer(normalized_quote)
-    )
+    return tuple(_Span(match.start(), match.end()) for match in _FIRST_PERSON_RE.finditer(normalized_quote))
 
 
 def _relation_spans(quote: str, claim: ClaimDraft) -> tuple[_Span, ...]:
@@ -303,9 +286,8 @@ def _latin_predicate_looks_present(
     first = tokens[0]
     if first.endswith("s") and not first.endswith("ss"):
         return True
-    if (
-        (_FIRST_PERSON_SUBJECT_RE.fullmatch(_normalized(subject)) or explicit_current_marker)
-        and not first.endswith(("ed", "ing"))
+    if (_FIRST_PERSON_SUBJECT_RE.fullmatch(_normalized(subject)) or explicit_current_marker) and not first.endswith(
+        ("ed", "ing")
     ):
         return True
     return False
@@ -333,18 +315,10 @@ def _relation_frame_supports_current_state(clause: str, claim: ClaimDraft) -> bo
         return any(
             subject.end <= relation.start
             and relation.end <= value.start
-            and _cjk_prefix_gap_is_ignorable(
-                normalized_clause[: subject.start]
-            )
-            and _cjk_subject_relation_gap_is_ignorable(
-                normalized_clause[subject.end : relation.start]
-            )
-            and _cjk_relation_value_gap_is_ignorable(
-                normalized_clause[relation.end : value.start]
-            )
-            and _cjk_suffix_gap_is_ignorable(
-                normalized_clause[value.end :]
-            )
+            and _cjk_prefix_gap_is_ignorable(normalized_clause[: subject.start])
+            and _cjk_subject_relation_gap_is_ignorable(normalized_clause[subject.end : relation.start])
+            and _cjk_relation_value_gap_is_ignorable(normalized_clause[relation.end : value.start])
+            and _cjk_suffix_gap_is_ignorable(normalized_clause[value.end :])
             for subject in subjects
             for relation in relation_spans
             for value in values
@@ -362,10 +336,7 @@ def _relation_frame_supports_current_state(clause: str, claim: ClaimDraft) -> bo
         prefix = normalized_clause[max(0, span.start - 32) : span.start]
         if _PROGRESSIVE_CURRENT_PREFIX_RE.search(prefix):
             return True
-        surface_tokens = [
-            match.group(0)
-            for match in _WORD_RE.finditer(normalized_clause[span.start : span.end])
-        ]
+        surface_tokens = [match.group(0) for match in _WORD_RE.finditer(normalized_clause[span.start : span.end])]
         if (
             surface_tokens
             and _FIRST_PERSON_CURRENT_PREFIX_RE.search(prefix)
@@ -397,8 +368,10 @@ def _cjk_subject_relation_gap_is_ignorable(gap: str) -> bool:
 def _cjk_relation_value_gap_is_ignorable(gap: str) -> bool:
     # The old value belongs to the transition, not to the new assertion.
     # Subject/relation ordering and sentence polarity are still checked.
-    return (_cjk_gap_is_ignorable(gap, _CJK_CURRENT_MODIFIER_RE, _CJK_COPULA_RE)
-            or _CJK_TRANSITION_GAP_RE.fullmatch(_normalized(gap)) is not None)
+    return (
+        _cjk_gap_is_ignorable(gap, _CJK_CURRENT_MODIFIER_RE, _CJK_COPULA_RE)
+        or _CJK_TRANSITION_GAP_RE.fullmatch(_normalized(gap)) is not None
+    )
 
 
 def _cjk_suffix_gap_is_ignorable(gap: str) -> bool:
@@ -429,12 +402,8 @@ def _arguments_aligned(
         return any(
             subject.end <= relation.start
             and relation.end <= value.start
-            and _cjk_subject_relation_gap_is_ignorable(
-                normalized_quote[subject.end : relation.start]
-            )
-            and _cjk_relation_value_gap_is_ignorable(
-                normalized_quote[relation.end : value.start]
-            )
+            and _cjk_subject_relation_gap_is_ignorable(normalized_quote[subject.end : relation.start])
+            and _cjk_relation_value_gap_is_ignorable(normalized_quote[relation.end : value.start])
             for subject in subjects
             for relation in relations
             for value in values
@@ -462,10 +431,7 @@ def _relation_supported(quote: str, claim: ClaimDraft) -> bool:
 
 def _clause_polarity(clause: str, claim: ClaimDraft) -> str:
     frame_context = _claim_frame_context(clause, claim)
-    if (
-        _LATIN_NEGATION_RE.search(frame_context) is not None
-        or _CJK_NEGATION_RE.search(frame_context) is not None
-    ):
+    if _LATIN_NEGATION_RE.search(frame_context) is not None or _CJK_NEGATION_RE.search(frame_context) is not None:
         return "negative_or_ambiguous"
     temporal_class = classify_durable_state_clause(frame_context)
     if (
@@ -563,4 +529,10 @@ def evidence_supports_relation(
     )
 
 
-__all__ = ['AUTHORITATIVE_EVIDENCE_SOURCE_TYPES', 'CORROBORATING_EVIDENCE_SOURCE_TYPES', 'DIRECT_EVIDENCE_SOURCE_TYPES', 'evidence_supports_claim', 'evidence_supports_relation']
+__all__ = [
+    "AUTHORITATIVE_EVIDENCE_SOURCE_TYPES",
+    "CORROBORATING_EVIDENCE_SOURCE_TYPES",
+    "DIRECT_EVIDENCE_SOURCE_TYPES",
+    "evidence_supports_claim",
+    "evidence_supports_relation",
+]

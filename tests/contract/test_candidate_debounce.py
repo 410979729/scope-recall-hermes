@@ -5,6 +5,7 @@ scheduling.  The property that matters is the one measured on alpha: 7,802 of
 11,158 evaluations were retired before anyone judged them, because each new
 piece of evidence minted a fresh evaluation and superseded the ones waiting.
 """
+
 from __future__ import annotations
 
 import sqlite3
@@ -31,9 +32,12 @@ def _at(seconds_ago: float) -> str:
 # The policy, on its own
 # --------------------------------------------------------------------------
 
+
 def test_evidence_still_arriving_is_left_to_settle():
-    assert settle_reason(now=NOW.isoformat(), last_evidence_at=_at(QUIET_SECONDS - 1),
-                         created_at=_at(QUIET_SECONDS)) is None
+    assert (
+        settle_reason(now=NOW.isoformat(), last_evidence_at=_at(QUIET_SECONDS - 1), created_at=_at(QUIET_SECONDS))
+        is None
+    )
 
 
 def test_a_quiet_candidate_is_ready():
@@ -51,19 +55,27 @@ def test_a_candidate_that_never_settles_is_judged_anyway():
 
 
 def test_the_deferral_limit_counts_from_the_last_verdict_then_creation():
-    within = settle_reason(now=NOW.isoformat(), last_evidence_at=_at(1),
-                           last_evaluated_at=_at(MAX_DEFERRAL_SECONDS - 1),
-                           created_at=_at(MAX_DEFERRAL_SECONDS * 10))
+    within = settle_reason(
+        now=NOW.isoformat(),
+        last_evidence_at=_at(1),
+        last_evaluated_at=_at(MAX_DEFERRAL_SECONDS - 1),
+        created_at=_at(MAX_DEFERRAL_SECONDS * 10),
+    )
     assert within is None, "a recent verdict resets the clock"
-    never = settle_reason(now=NOW.isoformat(), last_evidence_at=_at(1),
-                          created_at=_at(MAX_DEFERRAL_SECONDS))
+    never = settle_reason(now=NOW.isoformat(), last_evidence_at=_at(1), created_at=_at(MAX_DEFERRAL_SECONDS))
     assert never == "deferral_limit", "a candidate never judged falls back to creation"
 
 
 def test_a_queued_evaluation_outranks_every_other_rule():
-    assert settle_reason(now=NOW.isoformat(), last_evidence_at=_at(10 * MAX_DEFERRAL_SECONDS),
-                         created_at=_at(10 * MAX_DEFERRAL_SECONDS),
-                         has_queued_evaluation=True) is None
+    assert (
+        settle_reason(
+            now=NOW.isoformat(),
+            last_evidence_at=_at(10 * MAX_DEFERRAL_SECONDS),
+            created_at=_at(10 * MAX_DEFERRAL_SECONDS),
+            has_queued_evaluation=True,
+        )
+        is None
+    )
 
 
 def test_no_evidence_timestamp_leaves_the_decision_to_the_caller():
@@ -86,15 +98,18 @@ def test_a_naive_timestamp_is_read_as_utc_rather_than_rejected():
 # The sweep, against real storage
 # --------------------------------------------------------------------------
 
+
 def _register(core, ctx, index):
     subject, predicate = f"entity{index}", f"property{index}"
-    source = capture(core, ctx, f"{subject} {predicate} sharedtoken 值{index}。",
-                     key=f"TEST-debounce/{index}")
+    source = capture(core, ctx, f"{subject} {predicate} sharedtoken 值{index}。", key=f"TEST-debounce/{index}")
     proposal = draft(source, f"值{index}", subject=subject, predicate=predicate)
     with core.storage.write(ctx) as tx:
-        saved = tx.claims.append("TEST-scope", proposal,
-                                 Qualification("proposed", "inferred_suggestion", "TEST_candidate"),
-                                 recorded_at=core.clock.utc_now())
+        saved = tx.claims.append(
+            "TEST-scope",
+            proposal,
+            Qualification("proposed", "inferred_suggestion", "TEST_candidate"),
+            recorded_at=core.clock.utc_now(),
+        )
         tx.candidates.register(saved.ref, saved.revision, observed_at=core.clock.utc_now())
     return saved
 
@@ -104,8 +119,9 @@ def _retire_live_evaluations(core):
     with sqlite3.connect(core.storage.path) as conn:
         conn.execute("UPDATE candidate_evaluations SET state='failed' WHERE state='queued'")
         conn.execute("UPDATE work_items SET state='done' WHERE work_type='evaluate_candidate'")
-        conn.execute("UPDATE candidate_lifecycle SET processing_state='waiting_evidence',"
-                     "reason='insufficient_evidence'")
+        conn.execute(
+            "UPDATE candidate_lifecycle SET processing_state='waiting_evidence',reason='insufficient_evidence'"
+        )
         conn.commit()
 
 
@@ -113,8 +129,9 @@ def _settle(core, *, seconds=None):
     elapsed = QUIET_SECONDS + 60 if seconds is None else seconds
     frozen = datetime.fromisoformat(core.clock.utc_now().replace("Z", "+00:00"))
     with sqlite3.connect(core.storage.path) as conn:
-        conn.execute("UPDATE candidate_lifecycle SET last_evidence_at=?",
-                     ((frozen - timedelta(seconds=elapsed)).isoformat(),))
+        conn.execute(
+            "UPDATE candidate_lifecycle SET last_evidence_at=?", ((frozen - timedelta(seconds=elapsed)).isoformat(),)
+        )
         conn.commit()
 
 
@@ -249,6 +266,7 @@ def test_the_sweep_refuses_an_unbounded_page(app, limit):
 # The store's own recalled output is not evidence about the store
 # --------------------------------------------------------------------------
 
+
 def _evidence_rows(core, candidate_ref=None):
     with sqlite3.connect(core.storage.path) as conn:
         conn.row_factory = sqlite3.Row
@@ -266,12 +284,10 @@ def test_reinjected_memory_is_refused_as_candidate_evidence(app):
     Alpha it was 594 of 3,669 evidence rows behind the re-judgement churn."""
     core, ctx = app
     _register(core, ctx, 1)
-    echo = capture(core, ctx, "entity1 property1 sharedtoken 值1。",
-                   origin="memory_reinjection", key="TEST-echo/1")
+    echo = capture(core, ctx, "entity1 property1 sharedtoken 值1。", origin="memory_reinjection", key="TEST-echo/1")
     before = set(_evidence_rows(core))
     with core.storage.write(ctx, remaining_seconds=10) as tx:
-        tx.candidates.observe_source(echo.ref, echo.revision,
-                                     observed_at=core.clock.utc_now())
+        tx.candidates.observe_source(echo.ref, echo.revision, observed_at=core.clock.utc_now())
     assert echo.ref not in set(_evidence_rows(core)), "the echo was admitted as evidence"
     assert set(_evidence_rows(core)) == before
 
@@ -283,8 +299,7 @@ def test_an_ordinary_source_matching_the_same_candidate_is_still_admitted(app):
     _register(core, ctx, 1)
     more = capture(core, ctx, "entity1 property1 sharedtoken 值1。", key="TEST-more/1")
     with core.storage.write(ctx, remaining_seconds=10) as tx:
-        tx.candidates.observe_source(more.ref, more.revision,
-                                     observed_at=core.clock.utc_now())
+        tx.candidates.observe_source(more.ref, more.revision, observed_at=core.clock.utc_now())
     assert more.ref in set(_evidence_rows(core)), "an ordinary source stopped being evidence"
 
 
@@ -301,7 +316,12 @@ def test_a_settled_candidate_with_nothing_new_to_ask_is_counted_as_waiting_not_a
         tx._check(write=True).execute("UPDATE candidate_evaluations SET state='failed'")
         summary = tx.candidates.settling_summary(now=core.clock.utc_now())
         assert tx.candidates.schedule_settled_candidates(now=core.clock.utc_now(), limit=64) == 0
-    assert (summary["queued"], summary["collecting"], summary["settled_waiting_sweep"], summary["settled_nothing_to_ask"]) == (0, 0, 0, 1)
+    assert (
+        summary["queued"],
+        summary["collecting"],
+        summary["settled_waiting_sweep"],
+        summary["settled_nothing_to_ask"],
+    ) == (0, 0, 0, 1)
 
     report = DoctorReport(host="hermes", status="ok")
     report.candidate_pending_evaluation, report.candidate_settling = 1, summary
@@ -310,7 +330,9 @@ def test_a_settled_candidate_with_nothing_new_to_ask_is_counted_as_waiting_not_a
     assert (line["result"], line["detail"]) == ("pending", "due=0,nothing_new_to_ask=1,pending_evaluation=1")
 
 
-@pytest.mark.parametrize("excluded", ["unchanged", "revoked", "blocked", "suppressed", "old_revision", "no_evidence", "blocked_evidence"])
+@pytest.mark.parametrize(
+    "excluded", ["unchanged", "revoked", "blocked", "suppressed", "old_revision", "no_evidence", "blocked_evidence"]
+)
 def test_doctor_sweep_share_exact_eligibility(app, excluded):
     core, ctx = app
     candidate = _register(core, ctx, 0)

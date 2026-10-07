@@ -19,6 +19,7 @@ more exist is the part that changes behaviour.
 
 Not responsible for: deciding the bounds, or what a host does with the finding.
 """
+
 from __future__ import annotations
 
 from typing import Any
@@ -38,8 +39,9 @@ def truncation_gap(stage: str, *, considered: int, available: int, at_least: boo
     return f"{COVERAGE_GAP_PREFIX}:{stage}:{considered}of{available}{'+' if at_least else ''}"
 
 
-def note_truncation(gaps: list[str] | None, stage: str, *, considered: int, available: int,
-                    at_least: bool = False) -> None:
+def note_truncation(
+    gaps: list[str] | None, stage: str, *, considered: int, available: int, at_least: bool = False
+) -> None:
     """Append a truncation gap when there is one.  Accepts ``None`` for callers
     that have no gap list, so a read path never has to branch around this."""
     if gaps is None:

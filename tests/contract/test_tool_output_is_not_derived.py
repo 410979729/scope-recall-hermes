@@ -7,6 +7,7 @@ admission queues an embedding only, consolidation shows the model no tool output
 queued before the change finishes without a model call.  ``test_retire_rootless_claims.py``
 covers the claims derived before it.
 """
+
 from __future__ import annotations
 
 import sqlite3
@@ -28,8 +29,10 @@ def worker_app(app):
 
 def _queued(core, ref):
     with sqlite3.connect(core.storage.path) as conn:
-        return [row[0] for row in conn.execute(
-            "SELECT work_type FROM work_items WHERE subject_ref=? ORDER BY work_id", (ref,))]
+        return [
+            row[0]
+            for row in conn.execute("SELECT work_type FROM work_items WHERE subject_ref=? ORDER BY work_id", (ref,))
+        ]
 
 
 def test_a_tool_output_is_embedded_and_never_shown_to_the_consolidation_model(worker_app):
@@ -56,12 +59,14 @@ def test_a_consolidation_queued_before_the_change_finishes_without_a_model_call(
     read = capture(core, ctx, "TEST 目录里有 42 个文件。", origin="tool_observation")
     with core.storage.write(ctx, remaining_seconds=10) as tx:
         tx.enqueue_source(read.ref, read.revision, work_type="consolidate", available_at=core.clock.utc_now())
-    model = FakeConsolidation(lambda sources, episode_ref=None: consolidation_payload(
-        *sources, claims=[procedure_proposal(sources[0])]))
+    model = FakeConsolidation(
+        lambda sources, episode_ref=None: consolidation_payload(*sources, claims=[procedure_proposal(sources[0])])
+    )
     core.drain_worker(ctx, consolidation=model, max_items=8, remaining_seconds=10)
     with sqlite3.connect(core.storage.path) as conn:
-        state = conn.execute("SELECT state FROM work_items WHERE subject_ref=? AND work_type='consolidate'",
-                             (read.ref,)).fetchone()[0]
+        state = conn.execute(
+            "SELECT state FROM work_items WHERE subject_ref=? AND work_type='consolidate'", (read.ref,)
+        ).fetchone()[0]
     assert (state, model.calls) == ("done", 0)
     with core.storage.read(ctx) as tx:
         assert not tx.claims.list_refs(predicate="导出方法")
@@ -90,12 +95,16 @@ def _proposal_from(core, ctx, *sources, value="42GB"):
     from scope_recall.core.claims import Qualification
 
     proposal = draft(sources[0], value, **DISK)
-    proposal["evidence_spans"] = [dict(source_ref=s.ref, source_revision=s.revision, quote=s.event["content"])
-                                  for s in sources]
+    proposal["evidence_spans"] = [
+        dict(source_ref=s.ref, source_revision=s.revision, quote=s.event["content"]) for s in sources
+    ]
     with core.storage.write(ctx) as tx:
-        saved = tx.claims.append("TEST-scope", proposal,
-                                 Qualification("proposed", "inferred_suggestion", "TEST_candidate"),
-                                 recorded_at=core.clock.utc_now())
+        saved = tx.claims.append(
+            "TEST-scope",
+            proposal,
+            Qualification("proposed", "inferred_suggestion", "TEST_candidate"),
+            recorded_at=core.clock.utc_now(),
+        )
         registration = tx.candidates.register(saved.ref, saved.revision, observed_at=core.clock.utc_now())
     _finish_source_work(core)
     return saved, registration
@@ -164,7 +173,9 @@ def test_a_verdict_on_a_persons_own_words_still_promotes(app):
     said = capture(core, ctx, "entity-disk property-disk 42GB。")
     read = capture(core, ctx, "entity-disk property-disk 42GB。", origin="tool_observation")
     saved, _registration = _proposal_from(core, ctx, said, read)
-    evaluator = Evaluator(proposal=dict(draft(said, "42GB", **DISK), evidence_spans=[_span(said, said.event["content"])]))
+    evaluator = Evaluator(
+        proposal=dict(draft(said, "42GB", **DISK), evidence_spans=[_span(said, said.event["content"])])
+    )
     core.drain_worker(ctx, max_items=8, remaining_seconds=10, consolidation=evaluator)
     assert evaluator.calls == 1
     assert core.claim_history(ctx, saved.ref)[-1].state == "active"

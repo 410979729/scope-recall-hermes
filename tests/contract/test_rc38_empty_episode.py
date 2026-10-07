@@ -5,6 +5,7 @@ summarises it.  Until then the body is ``{"state": "unknown"}``, which reached r
 item of its own: a slot spent saying nothing.  Asked for by name it is still delivered,
 because then the caller wanted that object.
 """
+
 from __future__ import annotations
 
 from tests.contract.test_rc33_recall_accuracy import _packet  # noqa: F401  (helper)
@@ -23,7 +24,12 @@ def test_an_episode_with_no_summary_does_not_take_a_packet_slot(app):
     with core.storage.read(ctx) as tx:
         episode = tx.episodes.source_episode(source.ref, source.revision)
     assert episode is not None, "the turn did open one"
-    asked = core.recall_packet(ctx, recall_request(query="TEST-project 发布窗口", mode="current", max_items=6,
-                                                   focus_refs=[f"{episode.ref}@{episode.revision}"]),
-                               deadline_seconds=30, background_without_evidence=False)
+    asked = core.recall_packet(
+        ctx,
+        recall_request(
+            query="TEST-project 发布窗口", mode="current", max_items=6, focus_refs=[f"{episode.ref}@{episode.revision}"]
+        ),
+        deadline_seconds=30,
+        background_without_evidence=False,
+    )
     assert any(item["ref"] == episode.ref for item in asked["items"])

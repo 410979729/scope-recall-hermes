@@ -5,6 +5,7 @@ Any shared term used to be enough. On alpha that had attached 116,000 sources to
 candidate, each owing pages of trigger work and crowding the evidence an evaluation is shown. First-hand
 testimony keeps the old rule, because a person can confirm a value without repeating it.
 """
+
 from __future__ import annotations
 
 import sqlite3
@@ -16,17 +17,25 @@ from tests.contract.test_v11_claims import app, capture, draft  # noqa: F401  (f
 def _candidate(core, ctx, *, subject, predicate, value, key):
     source = capture(core, ctx, f"{subject} {predicate} {value}。", key=key)
     with core.storage.write(ctx) as tx:
-        saved = tx.claims.append("TEST-scope", draft(source, value, subject=subject, predicate=predicate),
-                                 Qualification("proposed", "inferred_suggestion", "TEST_candidate"),
-                                 recorded_at=core.clock.utc_now())
+        saved = tx.claims.append(
+            "TEST-scope",
+            draft(source, value, subject=subject, predicate=predicate),
+            Qualification("proposed", "inferred_suggestion", "TEST_candidate"),
+            recorded_at=core.clock.utc_now(),
+        )
         tx.candidates.register(saved.ref, saved.revision, observed_at=core.clock.utc_now())
     return saved.ref
 
 
 def _holds(core, candidate_ref, source_ref):
     with sqlite3.connect(core.storage.path) as db:
-        return db.execute("SELECT count(*) FROM candidate_evidence WHERE candidate_ref=? AND source_ref=?",
-                          (candidate_ref, source_ref)).fetchone()[0] == 1
+        return (
+            db.execute(
+                "SELECT count(*) FROM candidate_evidence WHERE candidate_ref=? AND source_ref=?",
+                (candidate_ref, source_ref),
+            ).fetchone()[0]
+            == 1
+        )
 
 
 def test_a_tool_transcript_sharing_only_a_word_is_not_evidence(app):

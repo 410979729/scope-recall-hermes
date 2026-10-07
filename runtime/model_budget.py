@@ -1,4 +1,5 @@
 """Operational auxiliary-model budget ledger; accounting only, not a work queue."""
+
 from __future__ import annotations
 
 from collections import Counter
@@ -65,7 +66,9 @@ class ModelPricing:
     def charge_micro_usd(self, input_tokens: int, output_tokens: int) -> int:
         if any(type(value) is not int or value < 0 for value in (input_tokens, output_tokens)):
             raise ValueError("invalid_meter")
-        amount = self.input_usd_per_million * Decimal(input_tokens) + self.output_usd_per_million * Decimal(output_tokens)
+        amount = self.input_usd_per_million * Decimal(input_tokens) + self.output_usd_per_million * Decimal(
+            output_tokens
+        )
         return int(amount.to_integral_value(rounding=ROUND_CEILING))
 
 
@@ -106,9 +109,7 @@ class BudgetPolicy:
             str(model): positive_int("model_reserve_output", tokens)
             for model, tokens in dict(self.model_reserve_output).items()
         }
-        model_caps = {
-            str(model): _model_cap_pair(caps) for model, caps in dict(self.model_token_caps).items()
-        }
+        model_caps = {str(model): _model_cap_pair(caps) for model, caps in dict(self.model_token_caps).items()}
         pricing = dict(self.pricing)
         approved = frozenset(self.approved_models)
         if not approved <= pricing.keys():
@@ -273,8 +274,17 @@ class AuxiliaryBudgetLedger:
             request_id = db.execute(
                 "INSERT INTO requests(batch,model,body_sha256,request_bytes,reserved_input,"
                 "reserved_output,charge_micro_usd,status,started_ns) VALUES (?,?,?,?,?,?,?,?,?)",
-                (self.policy.batch, model, hashlib.sha256(body).hexdigest(), len(body),
-                 reserved_input, reserved_output, amount, _RESERVED, time.time_ns()),
+                (
+                    self.policy.batch,
+                    model,
+                    hashlib.sha256(body).hexdigest(),
+                    len(body),
+                    reserved_input,
+                    reserved_output,
+                    amount,
+                    _RESERVED,
+                    time.time_ns(),
+                ),
             ).lastrowid
             if request_id is None:
                 raise RuntimeError("ledger_request_id_unavailable")
@@ -292,8 +302,9 @@ class AuxiliaryBudgetLedger:
             raise ValueError("unsupported_model")
         return pricing
 
-    def _assert_headroom(self, db: sqlite3.Connection, model: str, amount: int,
-                         reserved_input: int, reserved_output: int) -> None:
+    def _assert_headroom(
+        self, db: sqlite3.Connection, model: str, amount: int, reserved_input: int, reserved_output: int
+    ) -> None:
         """Every comparison is against a lifetime total; a cap of ``None`` is not enforced."""
         for breach in db.execute("SELECT * FROM requests WHERE status='meter_breach'"):
             if not _historical_breach_row_authorized(breach, self.covered_historical_breaches):
@@ -343,8 +354,14 @@ class AuxiliaryBudgetLedger:
                 extra = usage.get("unreported_output_tokens")
                 if type(extra) is int and extra > 0:
                     unreported = extra
-        return self._settle(request_id, status, counts, timeout_seconds=timeout_seconds, cached_input=cached,
-                            unreported_output=unreported)
+        return self._settle(
+            request_id,
+            status,
+            counts,
+            timeout_seconds=timeout_seconds,
+            cached_input=cached,
+            unreported_output=unreported,
+        )
 
     def finish_embedding(
         self,
@@ -361,9 +378,16 @@ class AuxiliaryBudgetLedger:
                 counts = (prompt, 0)
         return self._settle(request_id, status, counts, timeout_seconds=timeout_seconds)
 
-    def _settle(self, request_id: int, status: str, counts: tuple[int, int] | None, *,
-                timeout_seconds: float | None, cached_input: int | None = None,
-                unreported_output: int | None = None) -> str:
+    def _settle(
+        self,
+        request_id: int,
+        status: str,
+        counts: tuple[int, int] | None,
+        *,
+        timeout_seconds: float | None,
+        cached_input: int | None = None,
+        unreported_output: int | None = None,
+    ) -> str:
         """Close the reservation once.  Unknown usage keeps the reserved charge."""
         deadline = None if timeout_seconds is None else time.monotonic() + float(timeout_seconds)
         retained = f"{status}_usage_unknown_reserved_charge_retained"
@@ -456,12 +480,19 @@ def embedding_calls(auxiliary, *, hours: float = 24, now: float | None = None) -
             return None
         since = ((time.time() if now is None else now) - hours * 3600) * 1_000_000_000
         with closing(sqlite3.connect(_readonly_uri(path), uri=True, timeout=5)) as db:
-            rows = db.execute("SELECT status FROM requests WHERE model=? AND started_ns >= ?", (model, since)).fetchall()
+            rows = db.execute(
+                "SELECT status FROM requests WHERE model=? AND started_ns >= ?", (model, since)
+            ).fetchall()
     except (sqlite3.Error, OSError, ValueError):
         return None
     refused = Counter(code for (status,) in rows if (code := _refusal_code(str(status or ""))) is not None)
-    return {"model": model[:64], "hours": hours, "calls": len(rows),
-            "answered": sum("http_2" in str(status or "") for (status,) in rows), "refused": dict(refused.most_common())}
+    return {
+        "model": model[:64],
+        "hours": hours,
+        "calls": len(rows),
+        "answered": sum("http_2" in str(status or "") for (status,) in rows),
+        "refused": dict(refused.most_common()),
+    }
 
 
 def provider_refusals(ledger_path, *, now: float | None = None) -> list[str]:
@@ -479,8 +510,7 @@ def provider_refusals(ledger_path, *, now: float | None = None) -> list[str]:
             return []
         since = ((time.time() if now is None else now) - REFUSAL_WINDOW_SECONDS) * 1_000_000_000
         with closing(sqlite3.connect(_readonly_uri(path), uri=True, timeout=5)) as db:
-            rows = db.execute("SELECT model, status FROM requests WHERE started_ns >= ?",
-                              (since,)).fetchall()
+            rows = db.execute("SELECT model, status FROM requests WHERE started_ns >= ?", (since,)).fetchall()
     except (sqlite3.Error, OSError, ValueError):
         return []
     totals: dict[str, int] = {}
@@ -543,8 +573,10 @@ def provider_hold_until(ledger_path, model: object, *, now: float | None = None)
         if not path.is_file():
             return None
         with closing(sqlite3.connect(_readonly_uri(path), uri=True, timeout=5)) as db:
-            rows = db.execute("SELECT status,started_ns FROM requests WHERE model=? ORDER BY id DESC LIMIT ?",
-                              (model, _HOLD_LOOKBACK_ROWS)).fetchall()
+            rows = db.execute(
+                "SELECT status,started_ns FROM requests WHERE model=? ORDER BY id DESC LIMIT ?",
+                (model, _HOLD_LOOKBACK_ROWS),
+            ).fetchall()
     except (sqlite3.Error, OSError, ValueError):
         return None
     streak, latest, counted = 0, None, None
@@ -618,8 +650,9 @@ def pre_request_refusals(auxiliary) -> list[str]:
     """
     if auxiliary is None:
         return []
-    uses_models = bool(getattr(auxiliary, "external_consolidation", False)
-                       or getattr(auxiliary, "external_embedding", False))
+    uses_models = bool(
+        getattr(auxiliary, "external_consolidation", False) or getattr(auxiliary, "external_embedding", False)
+    )
     ledger_path = getattr(auxiliary, "ledger_path", None)
     if uses_models and ledger_path is not None and not Path(ledger_path).is_file():
         # The name only, never the directory: the doctor already states where the

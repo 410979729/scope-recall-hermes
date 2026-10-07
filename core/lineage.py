@@ -14,6 +14,7 @@ larger ranking query rather than read it: the preference match in
 ``core/background_context.py`` and the cited-origin lookup in
 ``core/candidate_tables.py``.
 """
+
 from __future__ import annotations
 
 import json
@@ -28,8 +29,10 @@ _REVISION_BOUND = {"episode": "<="}
 #: The revision a lineage row names, as relation expansion delivers it: an
 #: episode at its head (the only revision the live modes hydrate), anything
 #: else at the revision the row carries.
-_HEAD_REVISION = ("CASE WHEN object_kind='episode' THEN COALESCE((SELECT current_revision FROM episodes "
-                  "WHERE episode_id=object_ref),object_revision) ELSE object_revision END")
+_HEAD_REVISION = (
+    "CASE WHEN object_kind='episode' THEN COALESCE((SELECT current_revision FROM episodes "
+    "WHERE episode_id=object_ref),object_revision) ELSE object_revision END"
+)
 
 
 def revision_bound(kind: str) -> str:
@@ -38,8 +41,20 @@ def revision_bound(kind: str) -> str:
 
 # -- evidence links ------------------------------------------------------------
 
-def link(conn, kind: str, ref: str, revision: int, source_ref: str, source_revision: int, *,
-         relation: str = "derived_from", quote: str = "", location: str | None = None, once: bool = True) -> None:
+
+def link(
+    conn,
+    kind: str,
+    ref: str,
+    revision: int,
+    source_ref: str,
+    source_revision: int,
+    *,
+    relation: str = "derived_from",
+    quote: str = "",
+    location: str | None = None,
+    once: bool = True,
+) -> None:
     """Record that ``ref@revision`` derives from ``source_ref@source_revision``.
 
     ``once`` lets a repeated link pass silently; without it a duplicate is the
@@ -52,8 +67,17 @@ def link(conn, kind: str, ref: str, revision: int, source_ref: str, source_revis
     )
 
 
-def link_unless_carried(conn, kind: str, ref: str, revision: int, source_ref: str, source_revision: int, *,
-                        relation: str = "derived_from", quote: str = "") -> None:
+def link_unless_carried(
+    conn,
+    kind: str,
+    ref: str,
+    revision: int,
+    source_ref: str,
+    source_revision: int,
+    *,
+    relation: str = "derived_from",
+    quote: str = "",
+) -> None:
     """Record the link unless the same source already backs this or an earlier revision.
 
     For a kind whose lineage is read at or below a revision (episodes), a
@@ -63,8 +87,22 @@ def link_unless_carried(conn, kind: str, ref: str, revision: int, source_ref: st
         f"""INSERT INTO evidence_links({_EVIDENCE_COLUMNS}) SELECT ?,?,?,?,?,?,? WHERE NOT EXISTS (
             SELECT 1 FROM evidence_links WHERE object_kind=? AND object_ref=? AND object_revision<=?
             AND source_ref=? AND source_revision=? AND relation=? AND quote=?)""",
-        (kind, ref, revision, source_ref, source_revision, relation, quote,
-         kind, ref, revision, source_ref, source_revision, relation, quote),
+        (
+            kind,
+            ref,
+            revision,
+            source_ref,
+            source_revision,
+            relation,
+            quote,
+            kind,
+            ref,
+            revision,
+            source_ref,
+            source_revision,
+            relation,
+            quote,
+        ),
     )
 
 
@@ -84,14 +122,22 @@ def evidence(conn, kind: str, ref: str, revision: int) -> list[tuple[str, int]]:
 
 def sources_of(conn, kind: str, ref: str) -> list[str]:
     """Every source ref any revision of ``ref`` derives from."""
-    return [row[0] for row in conn.execute(
-        "SELECT DISTINCT source_ref FROM evidence_links WHERE object_kind=? AND object_ref=?", (kind, ref))]
+    return [
+        row[0]
+        for row in conn.execute(
+            "SELECT DISTINCT source_ref FROM evidence_links WHERE object_kind=? AND object_ref=?", (kind, ref)
+        )
+    ]
 
 
 def dependents(conn, source_ref: str) -> list[tuple[str, str]]:
     """Every (kind, ref) that derives from any version of ``source_ref``."""
-    return [(row[0], row[1]) for row in conn.execute(
-        "SELECT DISTINCT object_kind,object_ref FROM evidence_links WHERE source_ref=?", (source_ref,))]
+    return [
+        (row[0], row[1])
+        for row in conn.execute(
+            "SELECT DISTINCT object_kind,object_ref FROM evidence_links WHERE source_ref=?", (source_ref,)
+        )
+    ]
 
 
 def purge_quotes(conn, kind: str, ref: str) -> None:
@@ -103,7 +149,9 @@ def purge_quotes(conn, kind: str, ref: str) -> None:
     """
     edges = conn.execute(
         """SELECT DISTINCT object_kind,object_ref,object_revision,source_ref,source_revision,relation
-           FROM evidence_links WHERE (object_kind=? AND object_ref=?) OR source_ref=?""", (kind, ref, ref)).fetchall()
+           FROM evidence_links WHERE (object_kind=? AND object_ref=?) OR source_ref=?""",
+        (kind, ref, ref),
+    ).fetchall()
     conn.execute("DELETE FROM evidence_links WHERE (object_kind=? AND object_ref=?) OR source_ref=?", (kind, ref, ref))
     conn.executemany(
         f"INSERT INTO evidence_links({_EVIDENCE_COLUMNS}) VALUES (?,?,?,?,?,?,'') ON CONFLICT DO NOTHING",
@@ -113,32 +161,55 @@ def purge_quotes(conn, kind: str, ref: str) -> None:
 
 # -- object dependencies ---------------------------------------------------------
 
-def depend(conn, kind: str, ref: str, revision: int, dependency_kind: str, dependency_ref: str, dependency_revision: int) -> None:
+
+def depend(
+    conn, kind: str, ref: str, revision: int, dependency_kind: str, dependency_ref: str, dependency_revision: int
+) -> None:
     """Record that ``ref@revision`` depends on another object's version."""
-    conn.execute("INSERT INTO object_dependencies VALUES (?,?,?,?,?,?)",
-                 (kind, ref, revision, dependency_kind, dependency_ref, dependency_revision))
+    conn.execute(
+        "INSERT INTO object_dependencies VALUES (?,?,?,?,?,?)",
+        (kind, ref, revision, dependency_kind, dependency_ref, dependency_revision),
+    )
 
 
-def depend_unless_carried(conn, kind: str, ref: str, revision: int, dependency_kind: str, dependency_ref: str,
-                          dependency_revision: int) -> None:
+def depend_unless_carried(
+    conn, kind: str, ref: str, revision: int, dependency_kind: str, dependency_ref: str, dependency_revision: int
+) -> None:
     """Record the dependency unless this or an earlier revision already carries it (episodes)."""
     conn.execute(
         """INSERT INTO object_dependencies SELECT ?,?,?,?,?,? WHERE NOT EXISTS (
             SELECT 1 FROM object_dependencies WHERE object_kind=? AND object_ref=? AND object_revision<=?
             AND dependency_kind=? AND dependency_ref=? AND dependency_revision=?)""",
-        (kind, ref, revision, dependency_kind, dependency_ref, dependency_revision,
-         kind, ref, revision, dependency_kind, dependency_ref, dependency_revision),
+        (
+            kind,
+            ref,
+            revision,
+            dependency_kind,
+            dependency_ref,
+            dependency_revision,
+            kind,
+            ref,
+            revision,
+            dependency_kind,
+            dependency_ref,
+            dependency_revision,
+        ),
     )
 
 
 def dependents_on(conn, dependency_kind: str, dependency_ref: str) -> list[tuple[str, str]]:
     """Every (kind, ref) that depends on any version of the given object."""
-    return [(row[0], row[1]) for row in conn.execute(
-        "SELECT DISTINCT object_kind,object_ref FROM object_dependencies WHERE dependency_kind=? AND dependency_ref=?",
-        (dependency_kind, dependency_ref))]
+    return [
+        (row[0], row[1])
+        for row in conn.execute(
+            "SELECT DISTINCT object_kind,object_ref FROM object_dependencies WHERE dependency_kind=? AND dependency_ref=?",
+            (dependency_kind, dependency_ref),
+        )
+    ]
 
 
 # -- relation expansion ------------------------------------------------------------
+
 
 def related(conn, kind: str, ref: str, *, limit: int):
     """Objects one lineage step from ``ref``, in key order, as (object_kind, object_ref, object_revision) rows.
@@ -160,5 +231,16 @@ def related(conn, kind: str, ref: str, *, limit: int):
     ).fetchall()
 
 
-__all__ = ["depend", "depend_unless_carried", "dependents", "dependents_on", "evidence", "link",
-           "link_unless_carried", "purge_quotes", "related", "revision_bound", "sources_of"]
+__all__ = [
+    "depend",
+    "depend_unless_carried",
+    "dependents",
+    "dependents_on",
+    "evidence",
+    "link",
+    "link_unless_carried",
+    "purge_quotes",
+    "related",
+    "revision_bound",
+    "sources_of",
+]

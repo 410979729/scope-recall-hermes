@@ -1,20 +1,37 @@
 """Synthetic authorization and restore races; no host or model calls."""
+
 from concurrent.futures import ThreadPoolExecutor
 import threading
 
 import pytest
 
 from scope_recall.contracts import ContractError
-from scope_recall.core.restore import InstallationMaintenance, begin_restore, export_deletion_ledger, ledger_digest, replay_deletion_ledger
+from scope_recall.core.restore import (
+    InstallationMaintenance,
+    begin_restore,
+    export_deletion_ledger,
+    ledger_digest,
+    replay_deletion_ledger,
+)
 from test_v11_deletion import app, capture, initial, request, authorize, sqlite_backup
 from v11_support import source_event
 
 
-@pytest.mark.parametrize("prefix", [
-    "不要忘记 ", "别忘记 ", "不能删除 ", "不必忘掉 ",
-    "客户原文：删除 ", "如果成功就删除 ", "举例：清除 ",
-    "never forget ", "must not delete ", "don't forget ",
-])
+@pytest.mark.parametrize(
+    "prefix",
+    [
+        "不要忘记 ",
+        "别忘记 ",
+        "不能删除 ",
+        "不必忘掉 ",
+        "客户原文：删除 ",
+        "如果成功就删除 ",
+        "举例：清除 ",
+        "never forget ",
+        "must not delete ",
+        "don't forget ",
+    ],
+)
 def test_negated_reported_or_conditional_text_cannot_authorize_forget(app, prefix):
     core, ctx = app
     item, source = initial(core, ctx)
@@ -77,8 +94,13 @@ def test_writer_preopened_before_restore_cannot_cross_the_new_fence(app, monkeyp
 
     monkeypatch.setattr(core.storage, "_open", paused_open)
     with ThreadPoolExecutor(max_workers=1, thread_name_prefix="TEST-preopened") as pool:
-        future = pool.submit(core.record_event, ctx, source_event(content="TEST must remain uncaptured"),
-                             scope_id="TEST-scope", remaining_seconds=10)
+        future = pool.submit(
+            core.record_event,
+            ctx,
+            source_event(content="TEST must remain uncaptured"),
+            scope_id="TEST-scope",
+            remaining_seconds=10,
+        )
         try:
             assert opened.wait(2)
             begin_restore(core.storage, authority, expected_ledger_sha256=digest)
@@ -123,6 +145,11 @@ def test_restored_attachments_and_vectors_require_fresh_physical_purge(app, tmp_
         assert not receipt["active_content_removed"]
         assert receipt["layers"]["vector_active"] == "inventory_pending"
         assert receipt["layers"]["attachments"] == "inventory_pending"
-        assert tx._check().execute("SELECT count(*) FROM work_items WHERE work_type='purge' AND state='pending'").fetchone()[0] == 1
+        assert (
+            tx._check()
+            .execute("SELECT count(*) FROM work_items WHERE work_type='purge' AND state='pending'")
+            .fetchone()[0]
+            == 1
+        )
     result = core.drain_worker(ctx, purge=port, remaining_seconds=10)
     assert result.completed >= 1 and port.calls == 2 and not blob_path.exists()

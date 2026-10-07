@@ -66,9 +66,7 @@ def test_a_release_plan_names_its_gates_without_claiming_them() -> None:
 
 
 def test_changed_contract_file_is_always_selected() -> None:
-    selected, details = check.select_tests(
-        "unit", changed=["tests/contract/test_p09_recall_packet.py"]
-    )
+    selected, details = check.select_tests("unit", changed=["tests/contract/test_p09_recall_packet.py"])
 
     assert "tests/contract/test_p09_recall_packet.py" in selected
     assert details["unknown_files"] == []
@@ -84,9 +82,7 @@ def test_claim_change_adds_current_history_time_and_migration_closure() -> None:
 
 
 def test_host_change_targets_only_changed_host_and_core_baseline() -> None:
-    selected, details = check.select_tests(
-        "unit", changed=["adapters/codex/mcp_server.py"]
-    )
+    selected, details = check.select_tests("unit", changed=["adapters/codex/mcp_server.py"])
 
     assert set(check.CODEX_HOST_TESTS) <= set(selected)
     assert not set(check.HERMES_HOST_TESTS) & set(selected)
@@ -95,9 +91,7 @@ def test_host_change_targets_only_changed_host_and_core_baseline() -> None:
 
 
 def test_hermes_identity_change_selects_direct_identity_contract() -> None:
-    selected, details = check.select_tests(
-        "unit", changed=["adapters/hermes/identity.py"]
-    )
+    selected, details = check.select_tests("unit", changed=["adapters/hermes/identity.py"])
 
     assert "tests/host/hermes/test_identity.py" in selected
     assert "tests/host/hermes/test_audience_isolation.py" in selected
@@ -170,6 +164,7 @@ def test_eval_without_authorization_is_nonzero_and_model_free(monkeypatch, capsy
 # The suite watchdog bounds a hang, not a growing suite
 # --------------------------------------------------------------------------
 
+
 def test_release_keeps_its_own_fixed_budget() -> None:
     assert check.pytest_watchdog_seconds("release", 1) == check.RELEASE_WATCHDOG_SECONDS
     assert check.pytest_watchdog_seconds("release", 999) == check.RELEASE_WATCHDOG_SECONDS
@@ -212,13 +207,13 @@ def test_no_run_can_wait_longer_than_the_release_budget() -> None:
 def test_a_nonsense_count_falls_back_to_the_floor() -> None:
     for bad in (None, -1, "12", 1.5, True):
         assert check.pytest_watchdog_seconds("contract", bad) == check.DEFAULT_WATCHDOG_SECONDS
-        assert check.pytest_watchdog_seconds("integration", bad) == (
-            check.INTEGRATION_WATCHDOG_SECONDS)
+        assert check.pytest_watchdog_seconds("integration", bad) == (check.INTEGRATION_WATCHDOG_SECONDS)
 
 
 # --------------------------------------------------------------------------
 # Release states the precondition it depends on
 # --------------------------------------------------------------------------
+
 
 def test_this_interpreter_reports_its_own_installation_state() -> None:
     """Importable is not installed: the gate puts the source tree on
@@ -277,17 +272,15 @@ def test_every_contract_file_is_selected_by_some_tier():
     from check import SUITES, select_tests
 
     root = pathlib.Path(__file__).resolve().parents[2]
-    on_disk = {
-        "tests/contract/" + path.name
-        for path in (root / "tests" / "contract").glob("test_*.py")
-    }
+    on_disk = {"tests/contract/" + path.name for path in (root / "tests" / "contract").glob("test_*.py")}
     selected = set()
     for tier in SUITES:
         selected.update(select_tests(tier)[0])
     unselected = sorted(on_disk - selected - UNGATED_CONTRACTS_BY_DESIGN)
     assert unselected == [], (
         "these contract files are run by no tier; add them to CORE_RELEASE_CONTRACTS "
-        "or name them in UNGATED_CONTRACTS_BY_DESIGN with the reason: %r" % unselected)
+        "or name them in UNGATED_CONTRACTS_BY_DESIGN with the reason: %r" % unselected
+    )
 
 
 def test_the_exclusions_are_real_files():
@@ -308,6 +301,5 @@ def test_release_selects_everything_integration_selects():
 
     integration = set(select_tests("integration")[0])
     release = set(select_tests("release")[0])
-    contract_only_in_ci = sorted(
-        path for path in integration - release if path.startswith("tests/contract/"))
+    contract_only_in_ci = sorted(path for path in integration - release if path.startswith("tests/contract/"))
     assert contract_only_in_ci == [], contract_only_in_ci

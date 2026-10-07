@@ -7,6 +7,7 @@ The pipeline is ``migrate_legacy`` -> ``_prepare`` -> ``_convert``; each stage
 below reads and extends one ``Conversion``. Any pre-write stage may raise
 ``Blocked`` with its report instead of writing.
 """
+
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -22,28 +23,57 @@ from scope_recall.core.schema import SCHEMA_VERSION, normalize_scope_authorizati
 from scope_recall.core.storage import SQLiteStorage
 from scope_recall.maintenance.legacy_episode_membership import plan_legacy_episode_memberships
 from scope_recall.maintenance.legacy_v2_compat import (
-    BRIDGE_TABLE, IMPORT_LEDGER_TABLE, LegacyCompatibilityError,
-    prepare_memory_storage_authority, verify_completed_bridge_archive, verify_import_ledger_archive,
+    BRIDGE_TABLE,
+    IMPORT_LEDGER_TABLE,
+    LegacyCompatibilityError,
+    prepare_memory_storage_authority,
+    verify_completed_bridge_archive,
+    verify_import_ledger_archive,
 )
 
 from .backup import _safe_path
 from .legacy_catalog import (
-    _COMPAT, _DERIVED_NAMES, _DIGEST_TABLES, _HISTORY, _KNOWN, _REQUIRED,
-    _is_derived_index, _offline_source_path, build_legacy_catalog,
+    _COMPAT,
+    _DERIVED_NAMES,
+    _DIGEST_TABLES,
+    _HISTORY,
+    _KNOWN,
+    _REQUIRED,
+    _is_derived_index,
+    _offline_source_path,
+    build_legacy_catalog,
 )
 from .legacy_claims import link_history_records, versions_by_playbook, write_fact_claims, write_procedures
 from .legacy_deletions import plan_deletions, write_deletions
 from .legacy_lifecycle import apply_lifecycle_suppression
 from .legacy_plan import Blocked, Conversion, Row
 from .legacy_sources import (
-    SOURCE_EVENT_FIELDS, _json_list, _map_scope_rows, _safe, _safe_text, _scope, _scope_value,
-    _text_or_none, archive_sources,
+    SOURCE_EVENT_FIELDS,
+    _json_list,
+    _map_scope_rows,
+    _safe,
+    _safe_text,
+    _scope,
+    _scope_value,
+    _text_or_none,
+    archive_sources,
 )
 from .migration_activation import _existing_target_scopes, _load_installation_handoff, _resolve_scope_mapping
 from .migration_records import (
-    LEGACY_BASELINE, REPORT_FORMAT, MigrationError, _blocked_prewrite_report, _blocked_report,
-    _canon, _columns, _digest, _materialize_explicit_scope_selection, _open_immutable,
-    _recorded, _rows, _tables, _write_report,
+    LEGACY_BASELINE,
+    REPORT_FORMAT,
+    MigrationError,
+    _blocked_prewrite_report,
+    _blocked_report,
+    _canon,
+    _columns,
+    _digest,
+    _materialize_explicit_scope_selection,
+    _open_immutable,
+    _recorded,
+    _rows,
+    _tables,
+    _write_report,
 )
 
 # Tables whose rows own a scope (an empty one means the legacy default), and
@@ -59,7 +89,11 @@ _SCOPE_INHERITING = (
 )
 _LEGACY_TABLES = ("memory_journal_sources", *_SCOPE_OWNING, *_SCOPE_INHERITING, *sorted(_DIGEST_TABLES))
 _ARCHIVE_MANIFEST_KEYS = (
-    "archive_snapshot_hash", "archive_catalog_hash", "archive_source_map", "archive_retention_scopes", "archive_scopes",
+    "archive_snapshot_hash",
+    "archive_catalog_hash",
+    "archive_source_map",
+    "archive_retention_scopes",
+    "archive_scopes",
 )
 _CONVERSION_DERIVED_NAMES = _DERIVED_NAMES | {"governance_audit_events"}
 _COMPAT_REASONS = {
@@ -71,32 +105,41 @@ _COMPAT_REASONS = {
 }
 _EPISODE_STATES = {"open", "completed", "failed", "cancelled", "interrupted", "unknown"}
 _EPISODE_LEGACY_FIELDS = (
-    "shared_scope_id", "user_intent", "message_ids", "journal_entry_ids", "tool_names",
-    "evidence", "verification", "environment", "metadata",
+    "shared_scope_id",
+    "user_intent",
+    "message_ids",
+    "journal_entry_ids",
+    "tool_names",
+    "evidence",
+    "verification",
+    "environment",
+    "metadata",
 )
 _DIGEST_RETENTION_REASON = "digest_table_requires_distinct_registered_archive_retention_scopes"
 # Report reasons that block cutover; everything else is an audited gap.
-_BLOCKING_REASONS = frozenset({
-    "unknown_legacy_table_blocks_cutover",
-    "legacy_schema_column_missing_blocks_cutover",
-    "source_missing_unknown_blocks_cutover",
-    "non_completed_tombstone_not_replayed_blocks_cutover",
-    "unmapped_target_tombstone_blocks_cutover",
-    "history_scope_unresolved_blocks_cutover",
-    "explicit_local_scope_mismatch",
-    "explicit_shared_scope_mismatch",
-    "explicit_shared_pool_scope_mismatch",
-    "unsupported_scope_mode",
-    "legacy_metadata_not_json_object",
-    "legacy_memory_scope_not_bound",
-    "promoted_procedure_without_live_exact_evidence",
-    "multi_value_fact_not_losslessly_mapped_to_core_slot",
-    "single_slot_collision_not_losslessly_mapped",
-    "fact_slot_conflict_different_legacy_fact_key",
-    "fact_current_not_latest_recorded_blocks_cutover",
-    "procedure_version_slot_changed_blocks_cutover",
-    "procedure_slot_conflict_different_legacy_playbook",
-})
+_BLOCKING_REASONS = frozenset(
+    {
+        "unknown_legacy_table_blocks_cutover",
+        "legacy_schema_column_missing_blocks_cutover",
+        "source_missing_unknown_blocks_cutover",
+        "non_completed_tombstone_not_replayed_blocks_cutover",
+        "unmapped_target_tombstone_blocks_cutover",
+        "history_scope_unresolved_blocks_cutover",
+        "explicit_local_scope_mismatch",
+        "explicit_shared_scope_mismatch",
+        "explicit_shared_pool_scope_mismatch",
+        "unsupported_scope_mode",
+        "legacy_metadata_not_json_object",
+        "legacy_memory_scope_not_bound",
+        "promoted_procedure_without_live_exact_evidence",
+        "multi_value_fact_not_losslessly_mapped_to_core_slot",
+        "single_slot_collision_not_losslessly_mapped",
+        "fact_slot_conflict_different_legacy_fact_key",
+        "fact_current_not_latest_recorded_blocks_cutover",
+        "procedure_version_slot_changed_blocks_cutover",
+        "procedure_slot_conflict_different_legacy_playbook",
+    }
+)
 
 
 def migrate_legacy(
@@ -126,10 +169,18 @@ def migrate_legacy(
     """
     try:
         conversion = _prepare(
-            source, target_directory, agent_id=agent_id, installation_id=installation_id,
-            scope_ids=scope_ids, batch_key=batch_key, report_path=report_path,
-            installation_manifest=installation_manifest, host=host, source_scope_map=source_scope_map,
-            single_scope_to=single_scope_to, legacy_memory_reader_contract=legacy_memory_reader_contract,
+            source,
+            target_directory,
+            agent_id=agent_id,
+            installation_id=installation_id,
+            scope_ids=scope_ids,
+            batch_key=batch_key,
+            report_path=report_path,
+            installation_manifest=installation_manifest,
+            host=host,
+            source_scope_map=source_scope_map,
+            single_scope_to=single_scope_to,
+            legacy_memory_reader_contract=legacy_memory_reader_contract,
             completed_bridge_archive_path=completed_bridge_archive_path,
             import_ledger_archive_path=import_ledger_archive_path,
             project_legacy_memberships=project_legacy_memberships,
@@ -142,6 +193,7 @@ def migrate_legacy(
 
 
 # --- preflight -------------------------------------------------------------
+
 
 def _prepare(
     source: str | Path,
@@ -187,7 +239,9 @@ def _prepare(
     catalog = build_legacy_catalog(source_path)
     malformed = _catalog_issues(catalog, "malformed_non_string_identity")
     if malformed:
-        raise Blocked(_blocked_prewrite_report(batch_key=batch_key, unmapped=malformed, reasons=["malformed_non_string_identity"]))
+        raise Blocked(
+            _blocked_prewrite_report(batch_key=batch_key, unmapped=malformed, reasons=["malformed_non_string_identity"])
+        )
     source_scope_map = _check_archive_manifest(handoff, catalog, source_scope_map, single_scope_to, explicit_scopes)
     return Conversion(
         batch_key=batch_key,
@@ -212,7 +266,9 @@ def _trusted_handoff(
     installation_manifest: str | Path, host: str | None, target_directory: str | Path | None
 ) -> tuple[dict[str, Any], dict[str, str], Path]:
     """The host-owned identity and target; the manifest's archive fields ride along."""
-    binding, manifest_target, manifest_file, audience_scopes, resolved_host = _load_installation_handoff(installation_manifest, host)
+    binding, manifest_target, manifest_file, audience_scopes, resolved_host = _load_installation_handoff(
+        installation_manifest, host
+    )
     target_dir = _safe_path(manifest_target, error_type=MigrationError)
     if target_directory is not None and _safe_path(target_directory, error_type=MigrationError) != target_dir:
         raise MigrationError("target directory differs from trusted installation manifest")
@@ -236,7 +292,11 @@ def _catalog_issues(catalog: dict[str, Any], reason: str) -> list[Row]:
 
 
 def _catalog_scopes(catalog: dict[str, Any]) -> frozenset[str]:
-    return frozenset(catalog["content_scopes"]) | frozenset(catalog["shared_only_scopes"]) | frozenset(catalog["audit_only_scopes"])
+    return (
+        frozenset(catalog["content_scopes"])
+        | frozenset(catalog["shared_only_scopes"])
+        | frozenset(catalog["audit_only_scopes"])
+    )
 
 
 def _check_archive_manifest(
@@ -272,6 +332,7 @@ def _check_archive_manifest(
 
 # --- the pipeline ----------------------------------------------------------
 
+
 def _convert(cv: Conversion) -> dict[str, Any]:
     conn = _open_immutable(cv.source_path)
     try:
@@ -290,16 +351,29 @@ def _convert(cv: Conversion) -> dict[str, Any]:
 
 def _read_legacy(conn: sqlite3.Connection, cv: Conversion) -> None:
     cv.tables = _tables(conn)
-    cv.import_ledger_receipt = _verify_sidecar(conn, cv.tables, IMPORT_LEDGER_TABLE, cv.import_ledger_archive_path, "import ledger", verify_import_ledger_archive)
-    cv.bridge_receipt = _verify_sidecar(conn, cv.tables, BRIDGE_TABLE, cv.bridge_archive_path, "completed bridge", verify_completed_bridge_archive)
+    cv.import_ledger_receipt = _verify_sidecar(
+        conn,
+        cv.tables,
+        IMPORT_LEDGER_TABLE,
+        cv.import_ledger_archive_path,
+        "import ledger",
+        verify_import_ledger_archive,
+    )
+    cv.bridge_receipt = _verify_sidecar(
+        conn, cv.tables, BRIDGE_TABLE, cv.bridge_archive_path, "completed bridge", verify_completed_bridge_archive
+    )
     unsupported = _catalog_issues(cv.catalog, "unknown_legacy_columns_blocks_cutover")
     if unsupported:
         # Do not copy even a sanitized row: an unknown column can restrict
         # the row and every derived copy. Leave an existing target intact.
-        raise Blocked(_blocked_prewrite_report(
-            batch_key=cv.batch_key, unmapped=unsupported, reasons=["unknown_legacy_columns_blocks_cutover"],
-            extra={"schema_inventory": {"tables": sorted(cv.tables), "schema_gaps": unsupported}},
-        ))
+        raise Blocked(
+            _blocked_prewrite_report(
+                batch_key=cv.batch_key,
+                unmapped=unsupported,
+                reasons=["unknown_legacy_columns_blocks_cutover"],
+                extra={"schema_inventory": {"tables": sorted(cv.tables), "schema_gaps": unsupported}},
+            )
+        )
     cv.rows = {table: _rows(conn, table) for table in _LEGACY_TABLES}
 
 
@@ -357,11 +431,14 @@ def _plan_scopes(conn: sqlite3.Connection, cv: Conversion) -> None:
     else:
         issues = _map_handoff_scopes(cv)
         if issues:
-            raise Blocked(_blocked_report(
-                batch_key=cv.batch_key, unmapped=issues,
-                reasons=sorted({str(item["reason"]) for item in issues}),
-                installation_handoff=cv.installation_handoff(),
-            ))
+            raise Blocked(
+                _blocked_report(
+                    batch_key=cv.batch_key,
+                    unmapped=issues,
+                    reasons=sorted({str(item["reason"]) for item in issues}),
+                    installation_handoff=cv.installation_handoff(),
+                )
+            )
         _apply_scope_mapping(cv.rows, cv.scope_mapping)
         cv.requested = frozenset(cv.scope_mapping.values())
     if cv.memory_reader_contract is not None:
@@ -383,11 +460,18 @@ def _map_handoff_scopes(cv: Conversion) -> list[Row]:
         if len(cv.requested_source) != 1:
             cv.applied_scope_map = {}
             return [
-                {"key": scope, "target": target, "reason": "single_scope_to_requires_single_legacy_scope", "auto_promoted": False}
+                {
+                    "key": scope,
+                    "target": target,
+                    "reason": "single_scope_to_requires_single_legacy_scope",
+                    "auto_promoted": False,
+                }
                 for scope in sorted(cv.requested_source)
             ]
         cv.applied_scope_map = {next(iter(cv.requested_source)): target}
-    cv.scope_mapping, issues = _resolve_scope_mapping(cv.requested_source, targets, cv.audience_scopes, cv.applied_scope_map)
+    cv.scope_mapping, issues = _resolve_scope_mapping(
+        cv.requested_source, targets, cv.audience_scopes, cv.applied_scope_map
+    )
     return issues
 
 
@@ -415,12 +499,16 @@ def _plan_digest_retention(cv: Conversion) -> None:
         and cv.digest_audit_scope in archive_scopes
     ):
         return
-    raise Blocked(_blocked_prewrite_report(
-        batch_key=cv.batch_key,
-        unmapped=[{"table": table, "reason": _DIGEST_RETENTION_REASON, "auto_promoted": False} for table in populated],
-        reasons=[_DIGEST_RETENTION_REASON],
-        extra={"installation_handoff": cv.installation_handoff()},
-    ))
+    raise Blocked(
+        _blocked_prewrite_report(
+            batch_key=cv.batch_key,
+            unmapped=[
+                {"table": table, "reason": _DIGEST_RETENTION_REASON, "auto_promoted": False} for table in populated
+            ],
+            reasons=[_DIGEST_RETENTION_REASON],
+            extra={"installation_handoff": cv.installation_handoff()},
+        )
+    )
 
 
 def _bind_target(cv: Conversion) -> None:
@@ -438,7 +526,9 @@ def _inventory_schema(conn: sqlite3.Connection, cv: Conversion) -> None:
     for table in sorted(cv.tables - {"sqlite_sequence"}):
         missing = sorted(_REQUIRED.get(table, frozenset()) - set(_columns(conn, table)))
         if missing:
-            cv.schema_gaps.append(cv.unmapped(table, "<schema>", "legacy_schema_column_missing_blocks_cutover", missing_columns=missing))
+            cv.schema_gaps.append(
+                cv.unmapped(table, "<schema>", "legacy_schema_column_missing_blocks_cutover", missing_columns=missing)
+            )
         if table in _KNOWN:
             continue
         if _is_derived_index(table, _CONVERSION_DERIVED_NAMES):
@@ -447,23 +537,38 @@ def _inventory_schema(conn: sqlite3.Connection, cv: Conversion) -> None:
         cv.unknown_tables.append(table)
         values = _rows(conn, table)
         cv.unmapped(
-            table, "<table>", "unknown_legacy_table_blocks_cutover",
-            columns=_columns(conn, table), row_count=len(values),
-            redacted_rows=[_safe(row) for row in values[:200]], truncated=len(values) > 200,
+            table,
+            "<table>",
+            "unknown_legacy_table_blocks_cutover",
+            columns=_columns(conn, table),
+            row_count=len(values),
+            redacted_rows=[_safe(row) for row in values[:200]],
+            truncated=len(values) > 200,
         )
     for table in sorted(_COMPAT & cv.tables):
         for row in _rows(conn, table):
             cv.unmapped(
-                table, str(row.get("id") or row.get("claim_id") or "unknown"), _COMPAT_REASONS[table],
-                row_digest=_digest(_safe(row)), redacted_row=_safe(row), status=str(row.get("status") or "unknown"),
+                table,
+                str(row.get("id") or row.get("claim_id") or "unknown"),
+                _COMPAT_REASONS[table],
+                row_digest=_digest(_safe(row)),
+                redacted_row=_safe(row),
+                status=str(row.get("status") or "unknown"),
             )
 
 
 # --- the write transaction -------------------------------------------------
 
+
 def _open_target(cv: Conversion) -> tuple[SQLiteStorage, TrustedContext]:
     if cv.handoff is not None:
-        binding = InstanceBinding(cv.agent_id, cv.installation_id, cv.target_dir, frozenset(cv.handoff["target_scope_ids"]), bool(cv.handoff["test_mode"]))
+        binding = InstanceBinding(
+            cv.agent_id,
+            cv.installation_id,
+            cv.target_dir,
+            frozenset(cv.handoff["target_scope_ids"]),
+            bool(cv.handoff["test_mode"]),
+        )
     else:
         binding = InstanceBinding(cv.agent_id, cv.installation_id, cv.target_dir, cv.requested, True)
     storage = SQLiteStorage(binding, timeout_seconds=3.0)
@@ -506,7 +611,9 @@ def _insert_sources(cv: Conversion, conn: sqlite3.Connection) -> None:
         ).fetchone()
         if current is None or str(current[2]) != str(item["scope_id"]):
             raise MigrationError(f"idempotence conflict: source scope {item['event_id']}")
-        if tuple(current[:2]) != (item["source_event_key"], item["content_sha256"]) and not str(current[0]).startswith("removed-"):
+        if tuple(current[:2]) != (item["source_event_key"], item["content_sha256"]) and not str(current[0]).startswith(
+            "removed-"
+        ):
             raise MigrationError(f"idempotence conflict: source {item['event_id']}")
         cv.inserted["source_events"] += 1
 
@@ -523,7 +630,9 @@ def _insert_memory_links(cv: Conversion, conn: sqlite3.Connection) -> None:
             cv.inserted["evidence_links"] += 1
 
 
-def _episode_resume(cv: Conversion, row: Row, episode_ref: str, refs: list[str], missing: list[str], scope: dict[str, Any]) -> dict[str, Any]:
+def _episode_resume(
+    cv: Conversion, row: Row, episode_ref: str, refs: list[str], missing: list[str], scope: dict[str, Any]
+) -> dict[str, Any]:
     goal, _ = _safe_text(row.get("task_goal"))
     return {
         "episode_ref": episode_ref,
@@ -546,12 +655,16 @@ def _insert_episodes(cv: Conversion, conn: sqlite3.Connection) -> None:
     episodes = cv.rows["task_episodes"]
     plan = None
     if cv.project_memberships:
-        plan = plan_legacy_episode_memberships({
-            cv.episode_refs[str(row.get("id"))]: [
-                cv.journal_refs[str(ref)] for ref in _json_list(row.get("journal_entry_ids")) if str(ref) in cv.journal_refs
-            ]
-            for row in episodes
-        })
+        plan = plan_legacy_episode_memberships(
+            {
+                cv.episode_refs[str(row.get("id"))]: [
+                    cv.journal_refs[str(ref)]
+                    for ref in _json_list(row.get("journal_entry_ids"))
+                    if str(ref) in cv.journal_refs
+                ]
+                for row in episodes
+            }
+        )
     sequence = int(conn.execute("SELECT COALESCE(max(sequence),0) FROM episode_events").fetchone()[0])
     for row in episodes:
         episode_ref, scope = cv.episode_refs[str(row.get("id"))], _scope(row)
@@ -563,18 +676,41 @@ def _insert_episodes(cv: Conversion, conn: sqlite3.Connection) -> None:
         conn.execute(
             "INSERT INTO episodes(episode_id,scope_id,project_id,branch_id,anchor_key,anchor_kind,series_key,segment_index,current_revision,read_blocked,suppressed) VALUES (?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(episode_id) DO NOTHING",
             (
-                episode_ref, scope["row_scope_id"], _text_or_none(row.get("project_id")), _text_or_none(row.get("branch_id")),
-                f"legacy-task:{row.get('id')}", "task", f"legacy-series:{row.get('id')}", 0, 1, 0, 0,
+                episode_ref,
+                scope["row_scope_id"],
+                _text_or_none(row.get("project_id")),
+                _text_or_none(row.get("branch_id")),
+                f"legacy-task:{row.get('id')}",
+                "task",
+                f"legacy-series:{row.get('id')}",
+                0,
+                1,
+                0,
+                0,
             ),
         )
         conn.execute(
             "INSERT INTO episode_versions(episode_id,revision,state,resume_json,source_watermark,processed_sequence,recorded_at,environment_revision) VALUES (?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING",
-            (episode_ref, 1, state if state in _EPISODE_STATES else "unknown", _canon(resume), resume["source_watermark"], 0, _recorded(row.get("started_at")), None),
+            (
+                episode_ref,
+                1,
+                state if state in _EPISODE_STATES else "unknown",
+                _canon(resume),
+                resume["source_watermark"],
+                0,
+                _recorded(row.get("started_at")),
+                None,
+            ),
         )
         for ref in refs:
             if plan is not None:
                 plan.apply(conn, episode_ref, ref)
-            elif conn.execute("SELECT 1 FROM episode_events WHERE episode_id=? AND source_ref=?", (episode_ref, ref)).fetchone() is None:
+            elif (
+                conn.execute(
+                    "SELECT 1 FROM episode_events WHERE episode_id=? AND source_ref=?", (episode_ref, ref)
+                ).fetchone()
+                is None
+            ):
                 sequence += 1
                 conn.execute(
                     "INSERT INTO episode_events(sequence,episode_id,source_ref,source_revision,membership,environment_revision) VALUES (?,?,?,?,?,?)",
@@ -596,7 +732,9 @@ def _project_lexical_terms(cv: Conversion, conn: sqlite3.Connection) -> None:
     conn.execute("""UPDATE source_events SET source_id=rowid+(SELECT COALESCE(MAX(source_id),0) FROM source_events)
         WHERE source_id IS NULL""")
     for item in cv.sources:
-        row = conn.execute("SELECT read_blocked,source_id FROM source_events WHERE event_id=?", (item["event_id"],)).fetchone()
+        row = conn.execute(
+            "SELECT read_blocked,source_id FROM source_events WHERE event_id=?", (item["event_id"],)
+        ).fetchone()
         if row[0]:
             continue
         # A withheld tool output's placeholder is found by nothing (#206).
@@ -604,6 +742,7 @@ def _project_lexical_terms(cv: Conversion, conn: sqlite3.Connection) -> None:
 
 
 # --- the report ------------------------------------------------------------
+
 
 def _read_back(storage: SQLiteStorage, context: TrustedContext) -> dict[str, Any]:
     """Counts and receipts as the target now holds them, not as we meant to write."""
@@ -616,7 +755,9 @@ def _read_back(storage: SQLiteStorage, context: TrustedContext) -> dict[str, Any
         return {
             "source_status": [
                 {"read_blocked": int(x[0]), "capture_state": str(x[1]), "count": int(x[2])}
-                for x in conn.execute("SELECT read_blocked,capture_state,count(*) FROM source_events GROUP BY read_blocked,capture_state")
+                for x in conn.execute(
+                    "SELECT read_blocked,capture_state,count(*) FROM source_events GROUP BY read_blocked,capture_state"
+                )
             ],
             "deletion_receipts": [
                 {
@@ -632,7 +773,9 @@ def _read_back(storage: SQLiteStorage, context: TrustedContext) -> dict[str, Any
             ],
             "claims": count("SELECT count(*) FROM claims"),
             "claim_versions": count("SELECT count(*) FROM claim_versions"),
-            "procedure_versions": count("SELECT count(*) FROM claim_versions v JOIN claims c USING(claim_id) WHERE c.kind='procedure'"),
+            "procedure_versions": count(
+                "SELECT count(*) FROM claim_versions v JOIN claims c USING(claim_id) WHERE c.kind='procedure'"
+            ),
             "fact_authority": {
                 str(row[0]): int(row[1])
                 for row in conn.execute(
@@ -722,8 +865,14 @@ def _report(cv: Conversion, target: dict[str, Any]) -> dict[str, Any]:
             report["legacy_catalog_summary"] = {
                 key: cv.catalog[key]
                 for key in (
-                    "content_scopes", "shared_only_scopes", "audit_only_scopes", "audit_sentinels",
-                    "table_dispositions", "table_row_counts", "direct_scope_count", "total_nonempty_raw_values",
+                    "content_scopes",
+                    "shared_only_scopes",
+                    "audit_only_scopes",
+                    "audit_sentinels",
+                    "table_dispositions",
+                    "table_row_counts",
+                    "direct_scope_count",
+                    "total_nonempty_raw_values",
                 )
             }
     return report

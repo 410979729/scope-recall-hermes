@@ -24,6 +24,7 @@ Not responsible for: choosing which evidence the model sees.  The selection
 still sends the newest that fits; this only decides whether that selection is
 a question already answered.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -63,13 +64,8 @@ def question_digest(evidence: object) -> str:
     Equal digests mean "we already asked this and were told the answer"; a
     different digest means something changed that could change the verdict.
     """
-    first_hand = sorted(
-        f"{ref}@{int(revision)}"
-        for ref, revision, origin in (evidence or ())
-        if is_first_hand(origin)
-    )
-    payload = json.dumps({"first_hand": first_hand},
-                         ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    first_hand = sorted(f"{ref}@{int(revision)}" for ref, revision, origin in (evidence or ()) if is_first_hand(origin))
+    payload = json.dumps({"first_hand": first_hand}, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
@@ -153,6 +149,7 @@ def unanswerable_reason(payload: Mapping, evidence: Iterable[EvidenceText]) -> s
 # output authority and reads a value from any quote it cites, so a verdict quoting
 # a tool output's value beside any fragment of a person's message was written as
 # that person's report.
+
 
 def rootless(cited_origins: Iterable[str], evidence: Iterable[EvidenceText]) -> str | None:
     """``NO_DERIVATION_ROOT_REASON`` for a candidate nothing a claim may be derived from speaks to.
@@ -257,7 +254,22 @@ def restates(payload: Mapping, contents: Iterable[str]) -> bool:
     return any(needle in _letters_and_digits(content) for content in contents)
 
 
-__all__ = ["AUTOMATIC_VERDICTS", "DERIVATION_ROOT_ORIGINS", "FIRST_HAND_ORIGINS", "IMPERSONAL_ORIGINS",
-           "NO_DERIVATION_ROOT_REASON", "PERSON_ABSENT_REASON", "rooted_verdict", "rootless",
-           "REPEAT_WITHOUT_RESTATEMENT_REASON", "EvidenceText", "evidence_text", "is_first_hand",
-           "needs_absent_person", "question_digest", "restatement_needle", "restates", "unanswerable_reason"]
+__all__ = [
+    "AUTOMATIC_VERDICTS",
+    "DERIVATION_ROOT_ORIGINS",
+    "FIRST_HAND_ORIGINS",
+    "IMPERSONAL_ORIGINS",
+    "NO_DERIVATION_ROOT_REASON",
+    "PERSON_ABSENT_REASON",
+    "rooted_verdict",
+    "rootless",
+    "REPEAT_WITHOUT_RESTATEMENT_REASON",
+    "EvidenceText",
+    "evidence_text",
+    "is_first_hand",
+    "needs_absent_person",
+    "question_digest",
+    "restatement_needle",
+    "restates",
+    "unanswerable_reason",
+]

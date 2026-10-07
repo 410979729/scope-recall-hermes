@@ -132,4 +132,4 @@ def _bounded_optional_text(value: Any, *, max_chars: int) -> str:
     return cleaned[:max_chars]
 
 
-__all__ = ['ClaimDraft', 'EvidenceReference']
+__all__ = ["ClaimDraft", "EvidenceReference"]

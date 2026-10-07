@@ -1,4 +1,5 @@
 """Regression tests for episode-scoped consolidate batching across work items."""
+
 from __future__ import annotations
 
 import json
@@ -15,8 +16,9 @@ from test_v11_worker import Clock, FakeConsolidation, consolidation_payload, wor
 
 def _drain(core, ctx, tracker):
     for index in range(70):
-        result = core.drain_worker(ctx, consolidation=tracker, max_items=1,
-                                   remaining_seconds=30, owner_id=f"drain-{index}")
+        result = core.drain_worker(
+            ctx, consolidation=tracker, max_items=1, remaining_seconds=30, owner_id=f"drain-{index}"
+        )
         if result.idle:
             return
     raise AssertionError("queue did not drain")
@@ -32,7 +34,10 @@ def test_authority_obsolete_late_source_does_not_skip_earlier_pending(worker_app
     sources = [capture(core, ctx, f"TEST obsolete boundary {i}", key=f"obsolete/{i}") for i in range(45)]
     _mark_embed_done(core)
     with sqlite3.connect(core.storage.path) as conn:
-        conn.execute("UPDATE work_items SET state='obsolete',last_error_code='authority_revoked' WHERE subject_ref=? AND work_type='consolidate'", (sources[39].ref,))
+        conn.execute(
+            "UPDATE work_items SET state='obsolete',last_error_code='authority_revoked' WHERE subject_ref=? AND work_type='consolidate'",
+            (sources[39].ref,),
+        )
     tracker = BatchTracker()
     _drain(core, ctx, tracker)
     observed = {ref for batch in tracker.batches for ref in batch}
@@ -44,13 +49,17 @@ def test_late_leased_subject_is_in_its_actual_batch(worker_app):
     sources = [capture(core, ctx, f"TEST late lease {i}", key=f"late/{i}") for i in range(45)]
     _mark_embed_done(core)
     with sqlite3.connect(core.storage.path) as conn:
-        conn.execute("UPDATE work_items SET available_at='2099-01-01T00:00:00Z' WHERE work_type='consolidate' AND subject_ref<>?", (sources[39].ref,))
+        conn.execute(
+            "UPDATE work_items SET available_at='2099-01-01T00:00:00Z' WHERE work_type='consolidate' AND subject_ref<>?",
+            (sources[39].ref,),
+        )
     with core.storage.write(ctx) as tx:
         item = tx.work.claim_next("late-worker", clock.utc_now(), lease_seconds=60)[0]
     assert item.subject_ref == sources[39].ref
     with sqlite3.connect(core.storage.path) as conn:
         conn.execute("UPDATE work_items SET available_at=? WHERE state='pending'", (clock.utc_now(),))
     from scope_recall.core.worker import _process_consolidate
+
     tracker = BatchTracker()
     result = _process_consolidate(core.storage, clock, ctx, item, model=tracker, started=clock.monotonic(), budget=30)
     assert result == ("completed", None, "done")
@@ -71,6 +80,7 @@ def test_expired_no_root_worker_cannot_ack_siblings(worker_app):
         tx.work.claim_next("new-worker", clock.utc_now(), lease_seconds=60)
     before = _snapshot(core)
     from scope_recall.core.worker import _process_consolidate
+
     result = _process_consolidate(core.storage, clock, ctx, old, model=None, started=clock.monotonic(), budget=30)
     assert result[0] == "stale"
     assert _snapshot(core) == before
@@ -82,13 +92,20 @@ def test_other_failed_or_leased_source_is_not_automatic_batch_work(worker_app, s
     sources = [capture(core, ctx, f"TEST state exclusion {i}", key=f"state/{i}") for i in range(4)]
     _mark_embed_done(core)
     with sqlite3.connect(core.storage.path) as conn:
-        conn.execute("UPDATE work_items SET state=?,attempt=3,lease_owner='other',lease_token=9,lease_until='2099-01-01T00:00:00Z',last_error_code='held' WHERE work_type='consolidate' AND subject_ref=?", (state, sources[1].ref))
-        before = conn.execute("SELECT * FROM work_items WHERE work_type='consolidate' AND subject_ref=?", (sources[1].ref,)).fetchone()
+        conn.execute(
+            "UPDATE work_items SET state=?,attempt=3,lease_owner='other',lease_token=9,lease_until='2099-01-01T00:00:00Z',last_error_code='held' WHERE work_type='consolidate' AND subject_ref=?",
+            (state, sources[1].ref),
+        )
+        before = conn.execute(
+            "SELECT * FROM work_items WHERE work_type='consolidate' AND subject_ref=?", (sources[1].ref,)
+        ).fetchone()
     tracker = BatchTracker()
     _drain(core, ctx, tracker)
     assert f"{sources[1].ref}@1" not in {ref for batch in tracker.batches for ref in batch}
     with sqlite3.connect(core.storage.path) as conn:
-        after = conn.execute("SELECT * FROM work_items WHERE work_type='consolidate' AND subject_ref=?", (sources[1].ref,)).fetchone()
+        after = conn.execute(
+            "SELECT * FROM work_items WHERE work_type='consolidate' AND subject_ref=?", (sources[1].ref,)
+        ).fetchone()
     assert after == before
 
 
@@ -115,7 +132,11 @@ class BatchTracker:
         self.calls += 1
         refs = tuple(f"{source.ref}@{source.revision}" for source in sources)
         self.batches.append(refs)
-        claims = [draft(s, s.event["content"], predicate=s.ref, kind="fact", statement_kind="assertion") for s in sources] if self.with_claims else []
+        claims = (
+            [draft(s, s.event["content"], predicate=s.ref, kind="fact", statement_kind="assertion") for s in sources]
+            if self.with_claims
+            else []
+        )
         return json.dumps(consolidation_payload(*sources, claims=claims), ensure_ascii=False)
 
 
@@ -185,7 +206,9 @@ def test_unrelated_capture_during_embedding_still_publishes(worker_app, stage):
     assert result.completed == 1 and result.retried == 0 and result.obsolete == 0
     assert published == [original.ref]
     with closing(sqlite3.connect(core.storage.path)) as conn:
-        row = conn.execute("SELECT state,last_error_code FROM work_items WHERE work_type='embed' AND subject_ref=?", (original.ref,)).fetchone()
+        row = conn.execute(
+            "SELECT state,last_error_code FROM work_items WHERE work_type='embed' AND subject_ref=?", (original.ref,)
+        ).fetchone()
     assert row == ("done", None)
 
 
@@ -213,11 +236,13 @@ def test_unrelated_capture_before_no_root_completion_still_completes(worker_app,
             yield tx
 
     from scope_recall.core.worker import _process_consolidate
+
     with original_write(ctx) as tx:
         item = tx.work.claim_next("TEST-no-root", core.clock.utc_now(), lease_seconds=60)[0]
     monkeypatch.setattr(core.storage, "write", capture_before_write)
-    result = _process_consolidate(core.storage, core.clock, ctx, item, model=None,
-                                 started=core.clock.monotonic(), budget=30)
+    result = _process_consolidate(
+        core.storage, core.clock, ctx, item, model=None, started=core.clock.monotonic(), budget=30
+    )
     assert injected
     assert result == ("completed", None, "done")
     assert dict(_consolidate_states(core))[original.ref] == "done"
@@ -229,7 +254,8 @@ def test_unrelated_capture_before_no_root_completion_still_completes(worker_app,
 def _consolidate_row(core, ref):
     with closing(sqlite3.connect(core.storage.path)) as conn:
         return conn.execute(
-            "SELECT state,last_error_code FROM work_items WHERE work_type='consolidate' AND subject_ref=?", (ref,),
+            "SELECT state,last_error_code FROM work_items WHERE work_type='consolidate' AND subject_ref=?",
+            (ref,),
         ).fetchone()
 
 
@@ -262,8 +288,10 @@ def test_deleting_batch_source_during_extraction_discards_result(worker_app):
     _mark_embed_done(core)
     with closing(sqlite3.connect(core.storage.path)) as conn:
         # The subject is claimed first; the sibling is ready work in its batch.
-        conn.execute("UPDATE work_items SET available_at='2026-09-06T11:00:00Z' WHERE work_type='consolidate' AND subject_ref=?",
-                     (subject.ref,))
+        conn.execute(
+            "UPDATE work_items SET available_at='2026-09-06T11:00:00Z' WHERE work_type='consolidate' AND subject_ref=?",
+            (subject.ref,),
+        )
         conn.commit()
     batches = []
 
@@ -291,15 +319,19 @@ def test_correction_to_the_same_slot_during_extraction_discards_result(worker_ap
     item, _first = initial(core, ctx, value="H100", kind="fact", predicate="配色")
     later = capture(core, ctx, "TEST-project 配色 H150。", when="2026-09-02T12:00:00Z")
     with closing(sqlite3.connect(core.storage.path)) as conn:
-        conn.execute("UPDATE work_items SET state='done' WHERE NOT (work_type='consolidate' AND subject_ref=?)", (later.ref,))
+        conn.execute(
+            "UPDATE work_items SET state='done' WHERE NOT (work_type='consolidate' AND subject_ref=?)", (later.ref,)
+        )
         conn.commit()
 
     class CorrectedDuringModel:
         def propose(self, sources, *, episode_ref=None, remaining_seconds=1.0):
             capture(core, ctx, "刚才写错了，TEST-project 用H200。", when="2026-09-03T12:00:00Z")
             assert core.current_claim(ctx, item.ref).payload["value_text"] == "H200"
-            return json.dumps(consolidation_payload(
-                *sources, claims=[draft(later, "H150", kind="fact", predicate="配色")]), ensure_ascii=False)
+            return json.dumps(
+                consolidation_payload(*sources, claims=[draft(later, "H150", kind="fact", predicate="配色")]),
+                ensure_ascii=False,
+            )
 
     result = core.drain_worker(ctx, consolidation=CorrectedDuringModel(), max_items=1, remaining_seconds=30)
     assert result.retried == 1 and result.completed == 0
@@ -313,7 +345,9 @@ def test_rejected_result_with_a_claim_written_during_extraction_stays_a_conflict
     item, _first = initial(core, ctx, value="H100", kind="fact", predicate="配色")
     later = capture(core, ctx, "TEST-project 配色 H150。", when="2026-09-02T12:00:00Z")
     with closing(sqlite3.connect(core.storage.path)) as conn:
-        conn.execute("UPDATE work_items SET state='done' WHERE NOT (work_type='consolidate' AND subject_ref=?)", (later.ref,))
+        conn.execute(
+            "UPDATE work_items SET state='done' WHERE NOT (work_type='consolidate' AND subject_ref=?)", (later.ref,)
+        )
         conn.commit()
 
     class CorrectedDuringInvalidModel:
@@ -333,15 +367,20 @@ def test_correction_to_another_slot_during_extraction_keeps_result(worker_app):
     item, _first = initial(core, ctx, value="H100", kind="fact", predicate="配色")
     later = capture(core, ctx, "TEST-other 字体 宋体。", when="2026-09-02T12:00:00Z")
     with closing(sqlite3.connect(core.storage.path)) as conn:
-        conn.execute("UPDATE work_items SET state='done' WHERE NOT (work_type='consolidate' AND subject_ref=?)", (later.ref,))
+        conn.execute(
+            "UPDATE work_items SET state='done' WHERE NOT (work_type='consolidate' AND subject_ref=?)", (later.ref,)
+        )
         conn.commit()
 
     class CorrectedElsewhereModel:
         def propose(self, sources, *, episode_ref=None, remaining_seconds=1.0):
             capture(core, ctx, "刚才写错了，TEST-project 用H200。", when="2026-09-03T12:00:00Z")
-            return json.dumps(consolidation_payload(
-                *sources, claims=[draft(later, "宋体", subject="TEST-other", predicate="字体", kind="fact")]),
-                ensure_ascii=False)
+            return json.dumps(
+                consolidation_payload(
+                    *sources, claims=[draft(later, "宋体", subject="TEST-other", predicate="字体", kind="fact")]
+                ),
+                ensure_ascii=False,
+            )
 
     result = core.drain_worker(ctx, consolidation=CorrectedElsewhereModel(), max_items=1, remaining_seconds=30)
     assert result.completed == 1 and result.retried == 0
@@ -359,16 +398,27 @@ def test_resume_applied_to_the_episode_during_extraction_discards_result(worker_
     class ResumedDuringModel:
         def propose(self, sources, *, episode_ref=None, remaining_seconds=1.0):
             other = capture(core, ctx, "请帮我完成 TEST 报告第二部分。", key="TEST-fence/resume-other")
-            core.accept_consolidation(ctx, dict(
-                protocol_version="1.1", source_refs=[f"{other.ref}@{other.revision}"], claim_proposals=[],
-                resume_proposals=[resume(other)], reference_proposals=[]), scope_id="TEST-scope", remaining_seconds=10)
-            return json.dumps(consolidation_payload(
-                *sources, resume_proposals=[resume(goal, episode_ref=episode_ref)]), ensure_ascii=False)
+            core.accept_consolidation(
+                ctx,
+                dict(
+                    protocol_version="1.1",
+                    source_refs=[f"{other.ref}@{other.revision}"],
+                    claim_proposals=[],
+                    resume_proposals=[resume(other)],
+                    reference_proposals=[],
+                ),
+                scope_id="TEST-scope",
+                remaining_seconds=10,
+            )
+            return json.dumps(
+                consolidation_payload(*sources, resume_proposals=[resume(goal, episode_ref=episode_ref)]),
+                ensure_ascii=False,
+            )
 
     result = core.drain_worker(ctx, consolidation=ResumedDuringModel(), max_items=1, remaining_seconds=30)
     assert result.retried == 1 and result.completed == 0
     assert _consolidate_row(core, goal.ref) == ("pending", "memory_epoch_changed")
-    episode, = core.episodes(ctx)
+    (episode,) = core.episodes(ctx)
     assert episode.resume["goal"]["text"] == "请帮我完成 TEST 报告第二部分。"
 
 
@@ -381,13 +431,15 @@ def test_capture_attached_to_the_episode_during_extraction_keeps_resume(worker_a
     class AttachedDuringModel:
         def propose(self, sources, *, episode_ref=None, remaining_seconds=1.0):
             capture(core, ctx, "TEST 我先去喝杯水。", key="TEST-fence/attach-other")
-            return json.dumps(consolidation_payload(
-                *sources, resume_proposals=[resume(goal, episode_ref=episode_ref)]), ensure_ascii=False)
+            return json.dumps(
+                consolidation_payload(*sources, resume_proposals=[resume(goal, episode_ref=episode_ref)]),
+                ensure_ascii=False,
+            )
 
     result = core.drain_worker(ctx, consolidation=AttachedDuringModel(), max_items=1, remaining_seconds=30)
     assert result.completed == 1 and result.retried == 0
     assert _consolidate_row(core, goal.ref) == ("done", None)
-    episode, = core.episodes(ctx)
+    (episode,) = core.episodes(ctx)
     assert episode.resume["goal"]["text"] == "请帮我完成 TEST 报告第一部分。"
     assert "unprocessed_events" in episode.gaps
 
@@ -401,24 +453,44 @@ def test_reference_binding_revised_during_extraction_discards_result(worker_app,
     one, _, _ = artifact(core, ctx, tmp_path, label="TEST-v1")
     two, _, _ = artifact(core, ctx, tmp_path, version=2, label="TEST-v2")
     mention = capture(core, ctx, "TEST 那个颜色不行。", key="TEST-fence/reference-mention")
-    proposal = dict(mention="那个颜色", candidate_refs=[f"{one.ref}@1", f"{two.ref}@2"], resolved_ref=None,
-                    resolution="ambiguous", evidence_refs=[f"{mention.ref}@{mention.revision}"])
+    proposal = dict(
+        mention="那个颜色",
+        candidate_refs=[f"{one.ref}@1", f"{two.ref}@2"],
+        resolved_ref=None,
+        resolution="ambiguous",
+        evidence_refs=[f"{mention.ref}@{mention.revision}"],
+    )
 
     def accept_references(*references):
         refs = list(dict.fromkeys(ref for item in references for ref in item["evidence_refs"]))
-        return core.accept_consolidation(ctx, dict(
-            protocol_version="1.1", source_refs=refs, claim_proposals=[], resume_proposals=[],
-            reference_proposals=list(references)), scope_id="TEST-scope", remaining_seconds=10)
+        return core.accept_consolidation(
+            ctx,
+            dict(
+                protocol_version="1.1",
+                source_refs=refs,
+                claim_proposals=[],
+                resume_proposals=[],
+                reference_proposals=list(references),
+            ),
+            scope_id="TEST-scope",
+            remaining_seconds=10,
+        )
 
     binding = accept_references(proposal).items[0]
     with closing(sqlite3.connect(core.storage.path)) as conn:
-        conn.execute("UPDATE work_items SET state='done' WHERE NOT (work_type='consolidate' AND subject_ref=?)", (mention.ref,))
+        conn.execute(
+            "UPDATE work_items SET state='done' WHERE NOT (work_type='consolidate' AND subject_ref=?)", (mention.ref,)
+        )
         conn.commit()
 
     class ClarifiedDuringModel:
         def propose(self, sources, *, episode_ref=None, remaining_seconds=1.0):
-            clarification = capture(core, ctx, "刚才“那个颜色”说的是TEST-v2。", key="TEST-fence/reference-clarification")
-            clarified = accept_references(dict(proposal, evidence_refs=[f"{clarification.ref}@{clarification.revision}"]))
+            clarification = capture(
+                core, ctx, "刚才“那个颜色”说的是TEST-v2。", key="TEST-fence/reference-clarification"
+            )
+            clarified = accept_references(
+                dict(proposal, evidence_refs=[f"{clarification.ref}@{clarification.revision}"])
+            )
             assert clarified.items[0].ref == binding.ref
             return json.dumps(dict(consolidation_payload(*sources), reference_proposals=[proposal]), ensure_ascii=False)
 
@@ -450,9 +522,11 @@ def test_facts_only_consolidation_advances_batch_without_resume(worker_app, with
             owner_id=f"batch-worker-{processed}",
         )
         processed += receipt.processed
-        pending = sqlite3.connect(core.storage.path).execute(
-            "SELECT count(1) FROM work_items WHERE work_type='consolidate' AND state='pending'"
-        ).fetchone()[0]
+        pending = (
+            sqlite3.connect(core.storage.path)
+            .execute("SELECT count(1) FROM work_items WHERE work_type='consolidate' AND state='pending'")
+            .fetchone()[0]
+        )
         if receipt.idle and pending == 0:
             break
 
@@ -462,23 +536,25 @@ def test_facts_only_consolidation_advances_batch_without_resume(worker_app, with
     assert covered == [f"{source.ref}@1" for source in sources]
     by_ref = {f"{source.ref}@1": source for source in sources}
     from scope_recall.core.consolidate import consolidation_messages
+
     for batch in tracker.batches:
         consolidation_messages(tuple(by_ref[ref] for ref in batch), episode_ref=None)
-    assert all(
-        state in {"done", "obsolete"}
-        for _ref, state in _consolidate_states(core)
-    )
+    assert all(state in {"done", "obsolete"} for _ref, state in _consolidate_states(core))
     assert not any(state == "pending" for _ref, state in _consolidate_states(core))
     with sqlite3.connect(core.storage.path) as conn:
         assert conn.execute("SELECT count(*) FROM claims").fetchone()[0] == (45 if with_claims else 0)
-        assert conn.execute("SELECT count(*) FROM episode_versions WHERE resume_json IS NOT NULL OR processed_sequence<>0").fetchone()[0] == 0
+        assert (
+            conn.execute(
+                "SELECT count(*) FROM episode_versions WHERE resume_json IS NOT NULL OR processed_sequence<>0"
+            ).fetchone()[0]
+            == 0
+        )
 
 
 def test_failed_consolidate_keeps_later_events_retryable(worker_app):
     core, ctx, clock = worker_app
     sources = [
-        capture(core, ctx, f"TEST retry fact {index:02d}.", key=f"TEST-worker-retry/{index:02d}")
-        for index in range(42)
+        capture(core, ctx, f"TEST retry fact {index:02d}.", key=f"TEST-worker-retry/{index:02d}") for index in range(42)
     ]
     head_ref = sources[0].ref
     fail_ref = sources[20].ref
@@ -508,24 +584,36 @@ def test_failed_consolidate_keeps_later_events_retryable(worker_app):
         )
         clock.advance(seconds=60, iso=f"2026-09-06T12:0{index + 1}:00Z")
 
-    row = sqlite3.connect(core.storage.path).execute(
-        "SELECT state, attempt, last_error_code FROM work_items WHERE work_type='consolidate' AND subject_ref=?",
-        (head_ref,),
-    ).fetchone()
+    row = (
+        sqlite3.connect(core.storage.path)
+        .execute(
+            "SELECT state, attempt, last_error_code FROM work_items WHERE work_type='consolidate' AND subject_ref=?",
+            (head_ref,),
+        )
+        .fetchone()
+    )
     assert row[0] == "failed"
     assert row[1] == 3
     assert row[2] == "model_unavailable"
-    covered = sqlite3.connect(core.storage.path).execute(
-        "SELECT state FROM work_items WHERE work_type='consolidate' AND subject_ref=?",
-        (fail_ref,),
-    ).fetchone()[0]
+    covered = (
+        sqlite3.connect(core.storage.path)
+        .execute(
+            "SELECT state FROM work_items WHERE work_type='consolidate' AND subject_ref=?",
+            (fail_ref,),
+        )
+        .fetchone()[0]
+    )
     assert covered == "pending"
-    later_pending = sqlite3.connect(core.storage.path).execute(
-        """SELECT count(1) FROM work_items w
+    later_pending = (
+        sqlite3.connect(core.storage.path)
+        .execute(
+            """SELECT count(1) FROM work_items w
            JOIN episode_events ee ON ee.source_ref=w.subject_ref AND ee.source_revision=w.subject_revision
            WHERE w.work_type='consolidate' AND w.state='pending' AND ee.sequence>?""",
-        (21,),
-    ).fetchone()[0]
+            (21,),
+        )
+        .fetchone()[0]
+    )
     assert later_pending > 0
 
 
@@ -560,10 +648,14 @@ def test_stale_lease_cannot_complete_covered_sibling_work(worker_app):
     with core.storage.write(ctx) as tx:
         stale = tx.work.complete(first.work_id, first.lease_token, "worker-a", now=clock.utc_now())
     assert stale.disposition == "stale"
-    row = sqlite3.connect(core.storage.path).execute(
-        "SELECT state, lease_token FROM work_items WHERE work_id=?",
-        (first.work_id,),
-    ).fetchone()
+    row = (
+        sqlite3.connect(core.storage.path)
+        .execute(
+            "SELECT state, lease_token FROM work_items WHERE work_id=?",
+            (first.work_id,),
+        )
+        .fetchone()
+    )
     assert row[0] == "done" and row[1] == second.lease_token
 
 
@@ -603,17 +695,30 @@ def test_model_inflight_cannot_ack_changed_sibling_ownership_or_context(worker_a
             with sqlite3.connect(core.storage.path) as conn:
                 if transition in {"leased", "failed", "requeued"}:
                     state = "pending" if transition == "requeued" else transition
-                    conn.execute("UPDATE work_items SET state=?,lease_token=lease_token+1,attempt=attempt+1 WHERE work_type='consolidate' AND subject_ref=?", (state, sources[1].ref))
+                    conn.execute(
+                        "UPDATE work_items SET state=?,lease_token=lease_token+1,attempt=attempt+1 WHERE work_type='consolidate' AND subject_ref=?",
+                        (state, sources[1].ref),
+                    )
                 else:
                     column = {"project": "project_id", "branch": "branch_id", "scope": "scope_id"}[transition]
-                    conn.execute(f"UPDATE work_items SET {column}='TEST-other' WHERE work_type='consolidate' AND subject_ref=?", (sources[1].ref,))
-                observed["row"] = conn.execute("SELECT * FROM work_items WHERE work_type='consolidate' AND subject_ref=?", (sources[1].ref,)).fetchone()
+                    conn.execute(
+                        f"UPDATE work_items SET {column}='TEST-other' WHERE work_type='consolidate' AND subject_ref=?",
+                        (sources[1].ref,),
+                    )
+                observed["row"] = conn.execute(
+                    "SELECT * FROM work_items WHERE work_type='consolidate' AND subject_ref=?", (sources[1].ref,)
+                ).fetchone()
             return json.dumps(consolidation_payload(*batch))
 
     result = core.drain_worker(ctx, consolidation=ChangingModel(), max_items=1, remaining_seconds=30)
     assert result.completed == 1
     with sqlite3.connect(core.storage.path) as conn:
-        assert conn.execute("SELECT * FROM work_items WHERE work_type='consolidate' AND subject_ref=?", (sources[1].ref,)).fetchone() == observed["row"]
+        assert (
+            conn.execute(
+                "SELECT * FROM work_items WHERE work_type='consolidate' AND subject_ref=?", (sources[1].ref,)
+            ).fetchone()
+            == observed["row"]
+        )
     assert dict(_consolidate_states(core))[sources[2].ref] == "done"
 
 
@@ -631,8 +736,17 @@ def test_new_source_revision_during_model_keeps_new_work_pending(worker_app):
     result = core.drain_worker(ctx, consolidation=RevisingModel(), max_items=1, remaining_seconds=30)
     assert result.obsolete == 1
     with sqlite3.connect(core.storage.path) as conn:
-        assert conn.execute("SELECT state FROM work_items WHERE work_type='consolidate' AND subject_ref=? AND subject_revision=2", (sibling.ref,)).fetchone()[0] == "pending"
-        assert conn.execute("SELECT count(*) FROM work_items WHERE work_type='consolidate' AND state='done'").fetchone()[0] == 0
+        assert (
+            conn.execute(
+                "SELECT state FROM work_items WHERE work_type='consolidate' AND subject_ref=? AND subject_revision=2",
+                (sibling.ref,),
+            ).fetchone()[0]
+            == "pending"
+        )
+        assert (
+            conn.execute("SELECT count(*) FROM work_items WHERE work_type='consolidate' AND state='done'").fetchone()[0]
+            == 0
+        )
 
 
 def test_batch_ack_does_not_sweep_other_revision_of_same_ref(worker_app):
@@ -641,13 +755,18 @@ def test_batch_ack_does_not_sweep_other_revision_of_same_ref(worker_app):
     latest = capture(core, ctx, "TEST exact revision current", key="exact-revision", revision=2)
     _mark_embed_done(core)
     with sqlite3.connect(core.storage.path) as conn:
-        conn.execute("UPDATE work_items SET available_at='2099-01-01T00:00:00Z' WHERE work_type='consolidate' AND subject_revision=1")
+        conn.execute(
+            "UPDATE work_items SET available_at='2099-01-01T00:00:00Z' WHERE work_type='consolidate' AND subject_revision=1"
+        )
     tracker = BatchTracker()
     result = core.drain_worker(ctx, consolidation=tracker, max_items=1, remaining_seconds=30)
     assert result.completed == 1
     assert tracker.batches == [(f"{latest.ref}@2",)]
     with sqlite3.connect(core.storage.path) as conn:
-        rows = conn.execute("SELECT subject_revision,state,last_error_code FROM work_items WHERE work_type='consolidate' AND subject_ref=? ORDER BY subject_revision", (old.ref,)).fetchall()
+        rows = conn.execute(
+            "SELECT subject_revision,state,last_error_code FROM work_items WHERE work_type='consolidate' AND subject_ref=? ORDER BY subject_revision",
+            (old.ref,),
+        ).fetchall()
     assert rows == [(1, "pending", None), (2, "done", None)]
 
 
@@ -656,18 +775,31 @@ def test_batch_respects_pending_retry_backoff(worker_app):
     sources = [capture(core, ctx, f"TEST retry backoff {i}", key=f"backoff/{i}") for i in range(3)]
     _mark_embed_done(core)
     with sqlite3.connect(core.storage.path) as conn:
-        conn.execute("UPDATE work_items SET available_at='2099-01-01T00:00:00Z',attempt=2,last_error_code='model_unavailable' WHERE work_type='consolidate' AND subject_ref=?", (sources[1].ref,))
-        before = conn.execute("SELECT * FROM work_items WHERE work_type='consolidate' AND subject_ref=?", (sources[1].ref,)).fetchone()
+        conn.execute(
+            "UPDATE work_items SET available_at='2099-01-01T00:00:00Z',attempt=2,last_error_code='model_unavailable' WHERE work_type='consolidate' AND subject_ref=?",
+            (sources[1].ref,),
+        )
+        before = conn.execute(
+            "SELECT * FROM work_items WHERE work_type='consolidate' AND subject_ref=?", (sources[1].ref,)
+        ).fetchone()
     tracker = BatchTracker()
     _drain(core, ctx, tracker)
-    assert {ref for batch in tracker.batches for ref in batch} == {f"{s.ref}@1" for i, s in enumerate(sources) if i != 1}
+    assert {ref for batch in tracker.batches for ref in batch} == {
+        f"{s.ref}@1" for i, s in enumerate(sources) if i != 1
+    }
     with sqlite3.connect(core.storage.path) as conn:
-        assert conn.execute("SELECT * FROM work_items WHERE work_type='consolidate' AND subject_ref=?", (sources[1].ref,)).fetchone() == before
+        assert (
+            conn.execute(
+                "SELECT * FROM work_items WHERE work_type='consolidate' AND subject_ref=?", (sources[1].ref,)
+            ).fetchone()
+            == before
+        )
 
 
 def test_no_root_write_boundary_rechecks_the_lease(worker_app, monkeypatch):
     from contextlib import contextmanager
     from scope_recall.core.worker import _process_consolidate
+
     core, ctx, clock = worker_app
     for i in range(3):
         capture(core, ctx, f"TEST write fence {i}", key=f"write-fence/{i}", origin="assistant_visible")
@@ -690,6 +822,8 @@ def test_no_root_write_boundary_rechecks_the_lease(worker_app, monkeypatch):
     result = _process_consolidate(core.storage, clock, ctx, old, model=None, started=clock.monotonic(), budget=30)
     assert result[0] == "stale"
     assert _snapshot(core) == observed["rows"]
+
+
 class _BudgetEnforcingTracker:
     """Mimic the live adapter: build the exact serialized prompt first so an
     over-budget batch raises ContractError instead of silently passing."""
@@ -699,6 +833,7 @@ class _BudgetEnforcingTracker:
 
     def propose(self, sources, *, episode_ref=None, remaining_seconds=1.0):
         from scope_recall.core.consolidate import consolidation_messages
+
         consolidation_messages(tuple(sources), episode_ref=episode_ref)
         self.batches.append(tuple(f"{source.ref}@{source.revision}" for source in sources))
         return json.dumps(consolidation_payload(*sources), ensure_ascii=False)
@@ -739,10 +874,14 @@ class SequenceTracker:
                 ).fetchone()
                 sequences.append(int(row[0]))
         self.sequence_batches.append(tuple(sequences))
-        claims = [
-            draft(source, source.event["content"], predicate=source.ref, kind="fact", statement_kind="assertion")
-            for source in sources
-        ] if self.with_claims else []
+        claims = (
+            [
+                draft(source, source.event["content"], predicate=source.ref, kind="fact", statement_kind="assertion")
+                for source in sources
+            ]
+            if self.with_claims
+            else []
+        )
         return json.dumps(consolidation_payload(*sources, claims=claims), ensure_ascii=False)
 
 
@@ -768,13 +907,17 @@ def test_facts_only_model_sees_unique_sequences_1_32_then_33_45(worker_app):
     assert [ref for batch in tracker.ref_batches for ref in batch] == [f"{source.ref}@1" for source in sources]
     with sqlite3.connect(core.storage.path) as conn:
         assert conn.execute("SELECT count(*) FROM source_events").fetchone()[0] == 45
-        assert conn.execute(
-            "SELECT count(*) FROM work_items WHERE work_type='consolidate' AND state='done'"
-        ).fetchone()[0] == 45
+        assert (
+            conn.execute("SELECT count(*) FROM work_items WHERE work_type='consolidate' AND state='done'").fetchone()[0]
+            == 45
+        )
         assert conn.execute("SELECT count(*) FROM claims").fetchone()[0] == 0
-        assert conn.execute(
-            "SELECT count(*) FROM episode_versions WHERE resume_json IS NOT NULL OR processed_sequence<>0"
-        ).fetchone()[0] == 0
+        assert (
+            conn.execute(
+                "SELECT count(*) FROM episode_versions WHERE resume_json IS NOT NULL OR processed_sequence<>0"
+            ).fetchone()[0]
+            == 0
+        )
 
 
 def test_source_work_claim_evidence_new_session_recall(worker_app):
@@ -802,9 +945,7 @@ def test_source_work_claim_evidence_new_session_recall(worker_app):
             "SELECT count(*) FROM work_items WHERE work_type='consolidate' AND state='done'"
         ).fetchone()[0]
         claims = conn.execute("SELECT count(*) FROM claims").fetchone()[0]
-        evidence = conn.execute(
-            "SELECT count(*) FROM evidence_links WHERE object_kind='claim'"
-        ).fetchone()[0]
+        evidence = conn.execute("SELECT count(*) FROM evidence_links WHERE object_kind='claim'").fetchone()[0]
         claim_source = conn.execute(
             """SELECT count(*) FROM evidence_links e
                JOIN source_events s ON s.event_id=e.source_ref AND s.source_revision=e.source_revision

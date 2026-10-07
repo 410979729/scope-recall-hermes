@@ -5,6 +5,7 @@ the target, a resume needs a grounded open episode.  These are read off the
 query and the hydrated items; nothing here searches, and a need never
 manufactures evidence.
 """
+
 from __future__ import annotations
 
 import re
@@ -18,7 +19,9 @@ WHY_MARKERS = ("为什么", "为何", "原因", "why", "reason")
 RESUME_MARKERS = ("继续", "接着", "恢复", "resume", "continue")
 CHOICE_MARKERS = ("哪个", "哪一个", "which", "choose")
 _CAUSAL = re.compile(r"因为|由于|原因是|because|reason is|due to", re.I)
-_NEGATED = re.compile(r"未知|不明|不清楚|未(?:知|记录|说明)|没有证据|无证据|不能确定|无法确定|no evidence|unknown|unclear", re.I)
+_NEGATED = re.compile(
+    r"未知|不明|不清楚|未(?:知|记录|说明)|没有证据|无证据|不能确定|无法确定|no evidence|unknown|unclear", re.I
+)
 _CLAUSE_END = re.compile(r"[。！？!?;；\n]")
 _REASON_PREDICATES = frozenset({"原因", "理由", "reason", "why", "rationale"})
 _GROUNDED_NEXT_STEP_BASES = frozenset({"user_requested", "tool_observation", "observed", "direct_report", "evidence"})
@@ -50,6 +53,7 @@ def _claim_payload(item: object) -> dict | None:
 
 # -- comparison ---------------------------------------------------------------
 
+
 def _comparison_targets(query: str) -> frozenset[str]:
     """One identifier per compared object.
 
@@ -59,8 +63,11 @@ def _comparison_targets(query: str) -> frozenset[str]:
     the fuller identifier names the same object.
     """
     targets = hard_identifiers(query)
-    aliases = {suffix for suffix in version_suffixes(query)
-               if any(target != suffix and target.endswith(suffix) for target in targets)}
+    aliases = {
+        suffix
+        for suffix in version_suffixes(query)
+        if any(target != suffix and target.endswith(suffix) for target in targets)
+    }
     return targets - aliases
 
 
@@ -102,6 +109,7 @@ def _second_side_query(query: str, items: tuple[object, ...]) -> str | None:
 
 # -- why ----------------------------------------------------------------------
 
+
 def _reason_window_supported(content: str, targets: frozenset[str], marker: re.Match[str]) -> bool:
     """Accept a causal phrase only when its clause names the requested target.
 
@@ -111,7 +119,7 @@ def _reason_window_supported(content: str, targets: frozenset[str], marker: re.M
     """
     prior = [match.end() for match in _CLAUSE_END.finditer(content, 0, marker.start())]
     following = _CLAUSE_END.search(content, marker.end())
-    window = content[prior[-1] if prior else 0:following.start() if following else len(content)]
+    window = content[prior[-1] if prior else 0 : following.start() if following else len(content)]
     if _NEGATED.search(window):
         return False
     return not targets or bool(targets.intersection(hard_identifiers(window)))
@@ -146,6 +154,7 @@ def _reason_query(query: str, items: tuple[object, ...]) -> str | None:
 
 
 # -- resume -------------------------------------------------------------------
+
 
 def _grounded(entries: object) -> bool:
     return any(isinstance(entry, dict) and entry.get("text") and entry.get("evidence_refs") for entry in entries or ())

@@ -1,4 +1,5 @@
 """Strict allowlisted build_py for the v11 clean wheel."""
+
 from __future__ import annotations
 
 import json
@@ -18,10 +19,12 @@ def _load_allowlist() -> dict:
 def _source_version() -> str:
     tree = ast.parse((_REPO_ROOT / "_version.py").read_text(encoding="utf-8"))
     for node in tree.body:
-        if isinstance(node, ast.Assign) and any(
-            isinstance(target, ast.Name) and target.id == "__version__"
-            for target in node.targets
-        ) and isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
+        if (
+            isinstance(node, ast.Assign)
+            and any(isinstance(target, ast.Name) and target.id == "__version__" for target in node.targets)
+            and isinstance(node.value, ast.Constant)
+            and isinstance(node.value.value, str)
+        ):
             return node.value.value
     raise RuntimeError("_version.py does not define a literal __version__")
 
@@ -58,9 +61,7 @@ class AllowlistedBuildPy(build_py):
         expected = str(self.allowlist.get("package_version") or "")
         actual = _source_version()
         if expected != actual:
-            raise RuntimeError(
-                f"allowlist package_version {expected!r} disagrees with _version.py {actual!r}"
-            )
+            raise RuntimeError(f"allowlist package_version {expected!r} disagrees with _version.py {actual!r}")
         self.distribution.packages = list(self.allowlist["packages"])
         self.distribution.package_data = {
             "scope_recall": list(self.allowlist["package_data"]),

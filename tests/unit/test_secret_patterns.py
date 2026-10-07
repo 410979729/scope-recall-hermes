@@ -7,6 +7,7 @@ credential slot ("AppSecret:" and nothing after it) was clean as stored and
 refused as ``sensitive_request`` in every request that carried it: 369
 candidate evaluations on one instance, none of which held a secret.
 """
+
 import json
 
 from scope_recall.core.capture_filters import redact_secret_like_text
@@ -57,7 +58,7 @@ ORDINARY = [
     "password = settings.DB_PASSWORD",
     "api_key: <your-api-key>",
     "API_KEY=${API_KEY}",
-    'set API_KEY=%API_KEY% before the run',
+    "set API_KEY=%API_KEY% before the run",
     '{"password": null, "token": ""}',
     "password: ********",
     "token: xxxx",
@@ -73,7 +74,7 @@ ORDINARY = [
     "password: { type: String, required: true }",
     '"credentials": {',
     "the token is sent in the header",
-    "token" + chr(0x662F) + chr(0x4EC0) + chr(0x4E48) + chr(0x610F) + chr(0x601D),   # token + "is what meaning"
+    "token" + chr(0x662F) + chr(0x4EC0) + chr(0x4E48) + chr(0x610F) + chr(0x601D),  # token + "is what meaning"
 ]
 
 #: Values that are credentials, in the same shapes.
@@ -150,10 +151,15 @@ def test_a_digit_run_glued_to_an_id_is_not_a_telegram_token():
 
 def test_a_telegram_token_is_still_caught_where_one_appears():
     token = _token()
-    for text in (token, f"TELEGRAM_BOT_TOKEN={token}", f'{{"token": "{token}"}}', f"token: {token} in the log",
-                 f"https://api.telegram.org/bot{token}/getMe", f"https://api.telegram.org/BOT{token}/getMe"):
+    for text in (
+        token,
+        f"TELEGRAM_BOT_TOKEN={token}",
+        f'{{"token": "{token}"}}',
+        f"token: {token} in the log",
+        f"https://api.telegram.org/bot{token}/getMe",
+        f"https://api.telegram.org/BOT{token}/getMe",
+    ):
         assert contains_secret_like_text(text), text
-
 
 
 def test_a_long_hyphenated_line_scans_in_linear_time():
@@ -185,10 +191,12 @@ def test_a_run_of_punctuation_after_a_key_word_scans_in_linear_time():
     time, 2.9 s for 20 kB, and 7.5 s to scan with 64 key starts before it."""
     import time
 
-    for text in ("password: " + "." * 20000 + "a",
-                 "a-" * 63 + "token: " + "." * 4000 + "! " + "the quick brown fox. " * 800,
-                 "token: " + "*.-_x" * 4000 + "a",
-                 "secret = " + "!" * 20000 + "a"):
+    for text in (
+        "password: " + "." * 20000 + "a",
+        "a-" * 63 + "token: " + "." * 4000 + "! " + "the quick brown fox. " * 800,
+        "token: " + "*.-_x" * 4000 + "a",
+        "secret = " + "!" * 20000 + "a",
+    ):
         started = time.monotonic()
         contains_secret_like_text(text)
         redact_secret_like_text(text)

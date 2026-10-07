@@ -51,6 +51,7 @@ past the subject gate, 51 still do not, and 2 reach ``active``.  The other 39
 stop at the next gate -- 27 of them at ``fact_entailment_unproved``.  That is
 the real bottleneck, and it is a different repair.
 """
+
 from __future__ import annotations
 
 import re
@@ -69,15 +70,53 @@ _MAX_OCCURRENCES = 128
 #: the ordinary rules, while "the user" names whoever happens to be reading.
 #: First person is excluded on purpose -- ``claims.bind_self_subject`` already
 #: has a stricter, evidence-bound path for it.
-DEICTIC_SUBJECTS = frozenset({
-    "you", "your", "yours", "yourself",
-    "the agent", "this agent", "the assistant", "the model",
-    "user", "current_user", "the user", "a user", "this user",
-    "the caller", "the operator",
-    "he", "she", "they", "it", "we", "us", "one", "someone", "anyone",
-    "你", "您", "你们", "用户", "该用户", "这个用户", "助手", "该助手", "本助手",
-    "代理", "该代理", "对方", "他", "她", "它", "他们", "她们", "我们", "大家",
-})
+DEICTIC_SUBJECTS = frozenset(
+    {
+        "you",
+        "your",
+        "yours",
+        "yourself",
+        "the agent",
+        "this agent",
+        "the assistant",
+        "the model",
+        "user",
+        "current_user",
+        "the user",
+        "a user",
+        "this user",
+        "the caller",
+        "the operator",
+        "he",
+        "she",
+        "they",
+        "it",
+        "we",
+        "us",
+        "one",
+        "someone",
+        "anyone",
+        "你",
+        "您",
+        "你们",
+        "用户",
+        "该用户",
+        "这个用户",
+        "助手",
+        "该助手",
+        "本助手",
+        "代理",
+        "该代理",
+        "对方",
+        "他",
+        "她",
+        "它",
+        "他们",
+        "她们",
+        "我们",
+        "大家",
+    }
+)
 
 
 #: A subject that opens with a subordinator is a clause, not a thing.  The live

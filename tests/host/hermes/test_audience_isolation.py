@@ -1,4 +1,5 @@
 """Exact installer audience mappings never broaden across chats or workspaces."""
+
 from __future__ import annotations
 
 import pytest
@@ -50,7 +51,9 @@ def _owner_row(*, platform: str, user_id: str, workspace: str) -> dict[str, obje
 
 def test_explicit_audiences_are_isolated(hermes_home, initialize_kwargs):
     audiences = [
-        _owner_row(platform="telegram", user_id=initialize_kwargs["user_id"], workspace=initialize_kwargs["agent_workspace"]),
+        _owner_row(
+            platform="telegram", user_id=initialize_kwargs["user_id"], workspace=initialize_kwargs["agent_workspace"]
+        ),
         _row("group", "group-a", "scope:group-a"),
         _row("group", "group-b", "scope:group-b"),
         _row("project", "project-a", "scope:project-a"),
@@ -131,31 +134,39 @@ def test_explicit_unthreaded_chat_captures_without_widening_audience(hermes_home
         capture_scope_id="scope:thread-main",
     )
     _binding, core = install_hermes_scope_recall(
-        hermes_home, agent_id=initialize_kwargs["agent_identity"],
-        platform="a2a", user_id="TEST-owner",
+        hermes_home,
+        agent_id=initialize_kwargs["agent_identity"],
+        platform="a2a",
+        user_id="TEST-owner",
         agent_workspace=initialize_kwargs["agent_workspace"],
         audiences=[
             _owner_row(platform="a2a", user_id="TEST-owner", workspace=initialize_kwargs["agent_workspace"]),
             unthreaded,
             threaded,
-        ], test_mode=False,
+        ],
+        test_mode=False,
     )
     common = dict(
-        initialize_kwargs, platform="a2a", user_id="ip:127.0.0.1",
-        chat_type="dm", chat_id="TEST-context",
+        initialize_kwargs,
+        platform="a2a",
+        user_id="ip:127.0.0.1",
+        chat_type="dm",
+        chat_id="TEST-context",
     )
     # Actual Hermes Gateway shape: no thread_id is supplied for a plain chat.
     common.pop("thread_id", None)
     providers = []
     try:
-        for index, (overrides, expected) in enumerate([
-            ({}, {"scope:unthreaded"}),
-            ({"thread_id": "main"}, {"scope:thread-main"}),
-            ({"thread_id": "other"}, set()),
-            ({"chat_id": "other-chat"}, set()),
-            ({"chat_id": ""}, set()),
-            ({"agent_workspace": "other-workspace"}, set()),
-        ]):
+        for index, (overrides, expected) in enumerate(
+            [
+                ({}, {"scope:unthreaded"}),
+                ({"thread_id": "main"}, {"scope:thread-main"}),
+                ({"thread_id": "other"}, set()),
+                ({"chat_id": "other-chat"}, set()),
+                ({"chat_id": ""}, set()),
+                ({"agent_workspace": "other-workspace"}, set()),
+            ]
+        ):
             provider = ScopeRecallHermesAdapter(core=core)
             providers.append(provider)
             session = f"TEST-unthreaded-{index}"
@@ -176,25 +187,53 @@ def test_unthreaded_mapping_requires_explicit_string(hermes_home, initialize_kwa
     row = dict(_row("dm", "TEST-context", "scope:unthreaded"), thread_id=thread_value)
     with pytest.raises(HermesIdentityError):
         install_hermes_scope_recall(
-            hermes_home, agent_id=initialize_kwargs["agent_identity"],
-            platform="telegram", user_id="TEST-owner",
+            hermes_home,
+            agent_id=initialize_kwargs["agent_identity"],
+            platform="telegram",
+            user_id="TEST-owner",
             agent_workspace=initialize_kwargs["agent_workspace"],
-            audiences=[row], test_mode=False,
+            audiences=[row],
+            test_mode=False,
         )
 
 
 def _gateway_rows(user_id: str, workspace: str) -> list[dict[str, object]]:
     """Weixin DM rows as #124 found them: the host's real key nowhere, one row per kind of thread."""
-    dm = {"platform": "weixin", "user_id": user_id, "chat_type": "dm", "chat_id": "", "gateway_session_key": "",
-          "agent_workspace": workspace, "kind": "conversation"}
+    dm = {
+        "platform": "weixin",
+        "user_id": user_id,
+        "chat_type": "dm",
+        "chat_id": "",
+        "gateway_session_key": "",
+        "agent_workspace": workspace,
+        "kind": "conversation",
+    }
     return [
         _owner_row(platform="weixin", user_id=user_id, workspace=workspace),
-        dict(dm, thread_id="", allowed_scope_ids=["scope:plain"], writable_scope_ids=["scope:plain"],
-             capture_scope_id="scope:plain"),
-        dict(dm, chat_id="pinned-chat", thread_id="", gateway_session_key="agent:main:weixin:dm:pinned-chat",
-             allowed_scope_ids=["scope:pinned"], writable_scope_ids=["scope:pinned"], capture_scope_id="scope:pinned"),
-        dict(dm, chat_id="main-chat", thread_id="main", allowed_scope_ids=["scope:main-row"],
-             writable_scope_ids=["scope:main-row"], capture_scope_id="scope:main-row"),
+        dict(
+            dm,
+            thread_id="",
+            allowed_scope_ids=["scope:plain"],
+            writable_scope_ids=["scope:plain"],
+            capture_scope_id="scope:plain",
+        ),
+        dict(
+            dm,
+            chat_id="pinned-chat",
+            thread_id="",
+            gateway_session_key="agent:main:weixin:dm:pinned-chat",
+            allowed_scope_ids=["scope:pinned"],
+            writable_scope_ids=["scope:pinned"],
+            capture_scope_id="scope:pinned",
+        ),
+        dict(
+            dm,
+            chat_id="main-chat",
+            thread_id="main",
+            allowed_scope_ids=["scope:main-row"],
+            writable_scope_ids=["scope:main-row"],
+            capture_scope_id="scope:main-row",
+        ),
     ]
 
 
@@ -203,8 +242,14 @@ def test_a_row_naming_no_session_key_matches_the_key_a_gateway_sends(hermes_home
     every weixin, feishu and desktop route failed closed; the other six fields still decide."""
     workspace = initialize_kwargs["agent_workspace"]
     _binding, core = install_hermes_scope_recall(
-        hermes_home, agent_id=initialize_kwargs["agent_identity"], platform="weixin", user_id="TEST-wx",
-        agent_workspace=workspace, audiences=_gateway_rows("TEST-wx", workspace), test_mode=False)
+        hermes_home,
+        agent_id=initialize_kwargs["agent_identity"],
+        platform="weixin",
+        user_id="TEST-wx",
+        agent_workspace=workspace,
+        audiences=_gateway_rows("TEST-wx", workspace),
+        test_mode=False,
+    )
     session = dict(initialize_kwargs, platform="weixin", user_id="TEST-wx", chat_type="dm", chat_id="")
     session.pop("thread_id", None)
     cases = [
@@ -229,10 +274,22 @@ def test_a_row_that_differs_only_in_the_plain_thread_is_named_not_granted(hermes
     grants nothing there (the two are different routes), but the gap now says which field."""
     workspace = initialize_kwargs["agent_workspace"]
     _binding, core = install_hermes_scope_recall(
-        hermes_home, agent_id=initialize_kwargs["agent_identity"], platform="weixin", user_id="TEST-wx",
-        agent_workspace=workspace, audiences=_gateway_rows("TEST-wx", workspace), test_mode=False)
-    session = dict(initialize_kwargs, platform="weixin", user_id="TEST-wx", chat_type="dm", chat_id="main-chat",
-                   gateway_session_key="agent:main:weixin:dm:main-chat")
+        hermes_home,
+        agent_id=initialize_kwargs["agent_identity"],
+        platform="weixin",
+        user_id="TEST-wx",
+        agent_workspace=workspace,
+        audiences=_gateway_rows("TEST-wx", workspace),
+        test_mode=False,
+    )
+    session = dict(
+        initialize_kwargs,
+        platform="weixin",
+        user_id="TEST-wx",
+        chat_type="dm",
+        chat_id="main-chat",
+        gateway_session_key="agent:main:weixin:dm:main-chat",
+    )
     session.pop("thread_id", None)
     provider = ScopeRecallHermesAdapter(core=core)
     try:

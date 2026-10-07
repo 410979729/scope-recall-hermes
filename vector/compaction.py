@@ -23,6 +23,7 @@ from its other channels, so the worst case is one visibly degraded recall.
 Not responsible for performing the compaction (``store.LanceVectorStore
 .compact``) or scheduling it (``runtime/vector_upkeep.py``).
 """
+
 from __future__ import annotations
 
 import hashlib
@@ -162,18 +163,28 @@ def _backfill_report(space: Path, now: datetime) -> dict[str, Any]:
     store's outcome is a failed one's, else the latest.  A partition no worker has looked at for
     ``EMBED_BACKFILL_CURRENT`` (a retry lane, a workspace used once) is left out of it, or its last failure would
     stand for good."""
-    states = [state for state in (read_state(space, filename=path.name, schema=EMBED_BACKFILL_STATE_SCHEMA)
-                                  for path in sorted(space.glob("embed-backfill-*.json"))
-                                  if _BACKFILL_NAME.fullmatch(path.name)) if state]
-    current = [state for state in states
-               if (checked := _parse_time(state.get("checked_at"))) is not None and now - checked <= EMBED_BACKFILL_CURRENT]
+    states = [
+        state
+        for state in (
+            read_state(space, filename=path.name, schema=EMBED_BACKFILL_STATE_SCHEMA)
+            for path in sorted(space.glob("embed-backfill-*.json"))
+            if _BACKFILL_NAME.fullmatch(path.name)
+        )
+        if state
+    ]
+    current = [
+        state
+        for state in states
+        if (checked := _parse_time(state.get("checked_at"))) is not None and now - checked <= EMBED_BACKFILL_CURRENT
+    ]
     failed = [state for state in current if state.get("outcome") == "failed"]
     latest = max(current or states, key=lambda state: str(state.get("checked_at") or ""), default={})
     return {
         "last_embed_backfill_at": latest.get("checked_at"),
         "embed_backfill_outcome": "failed" if failed else latest.get("outcome"),
-        "embed_backfill_error": (failed[0] if failed else latest).get("error") if (
-            failed or latest.get("outcome") == "failed") else None,
+        "embed_backfill_error": (failed[0] if failed else latest).get("error")
+        if (failed or latest.get("outcome") == "failed")
+        else None,
         "embed_backfill_queued_total": sum(int(state.get("queued_total") or 0) for state in states) if states else None,
     }
 
@@ -189,8 +200,9 @@ def read_state(storage_dir: Path, *, filename: str = STATE_FILENAME, schema: str
     return raw
 
 
-def write_state(storage_dir: Path, payload: dict[str, Any], *, filename: str = STATE_FILENAME,
-                schema: str = STATE_SCHEMA) -> None:
+def write_state(
+    storage_dir: Path, payload: dict[str, Any], *, filename: str = STATE_FILENAME, schema: str = STATE_SCHEMA
+) -> None:
     """Record an outcome.  Never raises: this is a report, not a commitment."""
     directory = Path(storage_dir)
     record = {"schema": schema, **payload}

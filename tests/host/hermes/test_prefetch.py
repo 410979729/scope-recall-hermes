@@ -1,4 +1,5 @@
 """Single prefetch delivery path and render dedupe contracts."""
+
 from __future__ import annotations
 
 from datetime import timedelta, timezone
@@ -105,15 +106,30 @@ def test_explicit_resume_recall_still_returns_the_grounded_task(adapter):
     provider.observe_pre_llm(session_id="TEST-session-1", turn_id="TEST-turn-task", user_message=goal)
     refs = list(provider.diagnostics.current_source_refs)
     resume = {
-        "episode_ref": None, "goal": {"text": goal, "evidence_refs": refs}, "decisions": [],
-        "verified_progress": [], "open_items": [{"text": goal, "evidence_refs": refs}], "blockers": [],
-        "next_step": None, "next_step_basis": "unknown", "artifact_refs": [],
-        "source_watermark": source_watermark(refs), "evidence_refs": refs,
+        "episode_ref": None,
+        "goal": {"text": goal, "evidence_refs": refs},
+        "decisions": [],
+        "verified_progress": [],
+        "open_items": [{"text": goal, "evidence_refs": refs}],
+        "blockers": [],
+        "next_step": None,
+        "next_step_basis": "unknown",
+        "artifact_refs": [],
+        "source_watermark": source_watermark(refs),
+        "evidence_refs": refs,
     }
-    episode = core.accept_consolidation(identity.trusted_context(mutation=True), {
-        "protocol_version": "1.1", "source_refs": refs, "claim_proposals": [],
-        "resume_proposals": [resume], "reference_proposals": [],
-    }, scope_id=identity.local_scope_id, remaining_seconds=10).items[0]
+    episode = core.accept_consolidation(
+        identity.trusted_context(mutation=True),
+        {
+            "protocol_version": "1.1",
+            "source_refs": refs,
+            "claim_proposals": [],
+            "resume_proposals": [resume],
+            "reference_proposals": [],
+        },
+        scope_id=identity.local_scope_id,
+        remaining_seconds=10,
+    ).items[0]
 
     packet = _explicit_recall(provider, "继续")
     assert [item["ref"] for item in packet["items"] if item["kind"] == "episode"] == [episode.ref]
@@ -139,17 +155,24 @@ def test_memory_times_come_in_the_zone_hermes_names_to_its_model(adapter, monkey
 
 
 def test_a_day_the_message_names_is_that_day_in_the_zone_hermes_names(adapter, initialize_kwargs, monkeypatch):
-    """"9月6日" asked of a profile in Shanghai is Shanghai's 6th: a message told at 02:00 there, still the 5th in
+    """ "9月6日" asked of a profile in Shanghai is Shanghai's 6th: a message told at 02:00 there, still the 5th in
     UTC and in New York, is that day's, on the automatic path and through the tool (``recall_scope``)."""
     provider, _clock = adapter
     core = provider._core
     ctx = _bind_context(core, initialize_kwargs, session_id="TEST-session-1")
-    event = source_event(content="TEST 白鹭计划的代号是 BL-3。", source_event_key="TEST-zone-day/1",
-                         occurred_at="2026-09-05T18:00:00Z", recorded_at="2026-09-05T18:00:00Z")
-    told = core.record_event(ctx, event, scope_id=next(iter(ctx.allowed_scope_ids)),
-                             remaining_seconds=5).event_refs[0].ref
-    for session, zone, expected in (("TEST-session-2", timezone(timedelta(hours=8)), True),
-                                    ("TEST-session-3", timezone(timedelta(hours=-4)), False)):
+    event = source_event(
+        content="TEST 白鹭计划的代号是 BL-3。",
+        source_event_key="TEST-zone-day/1",
+        occurred_at="2026-09-05T18:00:00Z",
+        recorded_at="2026-09-05T18:00:00Z",
+    )
+    told = (
+        core.record_event(ctx, event, scope_id=next(iter(ctx.allowed_scope_ids)), remaining_seconds=5).event_refs[0].ref
+    )
+    for session, zone, expected in (
+        ("TEST-session-2", timezone(timedelta(hours=8)), True),
+        ("TEST-session-3", timezone(timedelta(hours=-4)), False),
+    ):
         monkeypatch.setitem(sys.modules, "hermes_time", types.SimpleNamespace(get_timezone=lambda zone=zone: zone))
         provider.on_session_switch(session)
         injected = provider.prefetch("9月6日聊了什么")
@@ -159,10 +182,19 @@ def test_a_day_the_message_names_is_that_day_in_the_zone_hermes_names(adapter, i
 
 
 def _explicit_recall(provider, query: str) -> dict:
-    reply = json.loads(provider.handle_tool_call("recall", {
-        "protocol_version": "1.1", "request_id": "TEST-explicit-recall", "query": query,
-        "mode": "auto", "max_items": 6, "budget_tokens": 4096,
-    }))
+    reply = json.loads(
+        provider.handle_tool_call(
+            "recall",
+            {
+                "protocol_version": "1.1",
+                "request_id": "TEST-explicit-recall",
+                "query": query,
+                "mode": "auto",
+                "max_items": 6,
+                "budget_tokens": 4096,
+            },
+        )
+    )
     return validate_payload("recall_packet", reply["result"])
 
 
@@ -174,13 +206,23 @@ def _active_preference(provider) -> str:
     event = source_event(content=text, source_event_key="TEST-preference/1")
     source = core.record_event(context, event, scope_id=identity.local_scope_id, remaining_seconds=5).event_refs[0]
     proposal = {
-        "protocol_version": "1.1", "source_refs": [f"{source.ref}@{source.revision}"],
-        "claim_proposals": [{
-            "kind": "preference", "subject": "TEST-project", "predicate": "表达偏好", "value_text": "简洁",
-            "conditions": [], "statement_kind": "assertion", "valid_from": None, "valid_to": None,
-            "evidence_spans": [{"source_ref": source.ref, "source_revision": source.revision, "quote": text}],
-        }],
-        "resume_proposals": [], "reference_proposals": [],
+        "protocol_version": "1.1",
+        "source_refs": [f"{source.ref}@{source.revision}"],
+        "claim_proposals": [
+            {
+                "kind": "preference",
+                "subject": "TEST-project",
+                "predicate": "表达偏好",
+                "value_text": "简洁",
+                "conditions": [],
+                "statement_kind": "assertion",
+                "valid_from": None,
+                "valid_to": None,
+                "evidence_spans": [{"source_ref": source.ref, "source_revision": source.revision, "quote": text}],
+            }
+        ],
+        "resume_proposals": [],
+        "reference_proposals": [],
     }
     receipt = core.accept_claim_proposals(context, proposal, scope_id=identity.local_scope_id, remaining_seconds=5)
     return receipt.items[0].ref

@@ -9,6 +9,7 @@ falls back to one request each rather than inventing a failure of its own; a gro
 provider refuses for capacity goes back whole and unspent, because asking once per member is
 the same refusal times the group's size.
 """
+
 from __future__ import annotations
 
 import sqlite3
@@ -35,8 +36,9 @@ def _sources(core, ctx, count, *, tag="batch"):
 
 def _embed_rows(core):
     with sqlite3.connect(core.storage.path) as conn:
-        return {row[0]: row[1] for row in conn.execute(
-            "SELECT subject_ref, state FROM work_items WHERE work_type='embed'")}
+        return {
+            row[0]: row[1] for row in conn.execute("SELECT subject_ref, state FROM work_items WHERE work_type='embed'")
+        }
 
 
 class Recording:
@@ -180,6 +182,7 @@ def test_a_source_that_dies_inside_a_group_stops_only_itself(app):
 
 
 # -- the request and the answer ------------------------------------------------
+
 
 def test_one_request_carries_every_text():
     import json

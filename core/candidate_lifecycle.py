@@ -3,6 +3,7 @@
 Candidate processing is metadata beside a claim version.  It never replaces
 the fact state and it never grants source, identity or write authority.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -213,7 +214,9 @@ def candidate_identity_restored(
     if candidate_subject_matches(candidate, sources, proposal.get("subject")):
         return proposal
     subject = candidate.payload.get("subject")
-    if subject in _verified_human_principal_refs(sources) or not candidate_name_matches(subject, proposal.get("subject")):
+    if subject in _verified_human_principal_refs(sources) or not candidate_name_matches(
+        subject, proposal.get("subject")
+    ):
         raise ContractError("DERIVATION_INVALID", "candidate_subject")
     return {**proposal, "subject": subject}
 
@@ -265,7 +268,10 @@ def evidence_window(source: StoredSource, needles, evidence_spans=()) -> StoredS
     start, end = 0, EVIDENCE_WINDOW_THRESHOLD
     anchor = None
     for span in evidence_spans:
-        if not isinstance(span, dict) or (span.get("source_ref"), span.get("source_revision")) != (source.ref, source.revision):
+        if not isinstance(span, dict) or (span.get("source_ref"), span.get("source_revision")) != (
+            source.ref,
+            source.revision,
+        ):
             continue
         quote = span.get("quote")
         if not isinstance(quote, str) or not quote:
@@ -284,8 +290,11 @@ def evidence_window(source: StoredSource, needles, evidence_spans=()) -> StoredS
     if anchor is not None:
         start = max(0, anchor[0] - EVIDENCE_WINDOW_RADIUS)
         end = min(total, anchor[1] + EVIDENCE_WINDOW_RADIUS)
-    return ChunkedSource(**dict(source.__dict__, event=dict(source.event, content=content[start:end])),
-                         consolidation_window=ConsolidationChunk(start, end, total), consolidation_seed=())
+    return ChunkedSource(
+        **dict(source.__dict__, event=dict(source.event, content=content[start:end])),
+        consolidation_window=ConsolidationChunk(start, end, total),
+        consolidation_seed=(),
+    )
 
 
 def candidate_evaluation_messages(
@@ -301,8 +310,7 @@ def candidate_evaluation_messages(
     needles = (candidate.payload.get("value_text"), candidate.payload.get("subject"))
     spans = candidate.payload.get("evidence_spans") or ()
     sources = tuple(evidence_window(source, needles, spans) for source in sources)
-    messages = consolidation_messages(sources, episode_ref=None, budget=budget,
-                                      validation_feedback=validation_feedback)
+    messages = consolidation_messages(sources, episode_ref=None, budget=budget, validation_feedback=validation_feedback)
     candidate_json = json.dumps(
         {
             "candidate_ref": candidate.ref,
@@ -320,17 +328,20 @@ def candidate_evaluation_messages(
     )
     if len(candidate_json.encode("utf-8")) > 32768:
         raise ContractError("INPUT_INVALID", "candidate_input_budget")
-    messages.insert(0, {
-        "role": "system",
-        "content": (
-            "Re-evaluate only the supplied candidate against the supplied authorized sources. "
-            "Return the existing consolidation_result JSON object. source_refs must list every supplied "
-            "source version exactly once. Return zero claim_proposals when evidence is insufficient; "
-            "otherwise return at most one proposal with the same kind, subject and predicate. "
-            "Use the model-safe candidate subject exactly; never output an internal principal_ref. "
-            "Do not choose a fact state: Core qualification owns that decision."
-        ),
-    })
+    messages.insert(
+        0,
+        {
+            "role": "system",
+            "content": (
+                "Re-evaluate only the supplied candidate against the supplied authorized sources. "
+                "Return the existing consolidation_result JSON object. source_refs must list every supplied "
+                "source version exactly once. Return zero claim_proposals when evidence is insufficient; "
+                "otherwise return at most one proposal with the same kind, subject and predicate. "
+                "Use the model-safe candidate subject exactly; never output an internal principal_ref. "
+                "Do not choose a fact state: Core qualification owns that decision."
+            ),
+        },
+    )
     messages.append({"role": "user", "content": "candidate=" + candidate_json})
     # The consolidation formatter bounded only its own two messages. The system
     # preamble and candidate block above are appended after that check, so
@@ -343,10 +354,19 @@ def candidate_evaluation_messages(
 
 
 __all__ = [
-    "RULE_VERSION", "SOURCE_MATCH_LIMIT", "PROCESS_BATCH_LIMIT", "DORMANCY_DAYS",
-    "CandidateSnapshot", "CandidateRegistration",
-    "CandidateSourceTrigger", "CandidateEvaluationSnapshot", "CandidateSummary",
-    "CandidateEvaluator", "candidate_evaluation_messages", "candidate_model_subject",
-    "candidate_identity_restored", "candidate_name_matches",
+    "RULE_VERSION",
+    "SOURCE_MATCH_LIMIT",
+    "PROCESS_BATCH_LIMIT",
+    "DORMANCY_DAYS",
+    "CandidateSnapshot",
+    "CandidateRegistration",
+    "CandidateSourceTrigger",
+    "CandidateEvaluationSnapshot",
+    "CandidateSummary",
+    "CandidateEvaluator",
+    "candidate_evaluation_messages",
+    "candidate_model_subject",
+    "candidate_identity_restored",
+    "candidate_name_matches",
     "candidate_subject_matches",
 ]

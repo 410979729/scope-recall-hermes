@@ -1,4 +1,5 @@
 """Finite retained-resource lock probes for P10 purge deadlines."""
+
 from __future__ import annotations
 
 import subprocess

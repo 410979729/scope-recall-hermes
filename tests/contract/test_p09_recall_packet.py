@@ -1,4 +1,5 @@
 """P09 RecallPacket compiler contracts over the isolated P08 retrieval pipeline."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
@@ -266,8 +267,15 @@ def test_oversized_first_hit_does_not_consume_only_slot(app):
     core, ctx = app
     huge = capture(core, ctx, "H100 " + "X" * 12000, key="TEST-first-oversized")
     useful = capture(core, ctx, "H100 first launch was at 09:15.", key="TEST-short-evidence")
-    packet = _packet(core, ctx, query="H100", mode="history", max_items=1,
-                     budget_tokens=1200, focus_refs=[f"{huge.ref}@{huge.revision}"])
+    packet = _packet(
+        core,
+        ctx,
+        query="H100",
+        mode="history",
+        max_items=1,
+        budget_tokens=1200,
+        focus_refs=[f"{huge.ref}@{huge.revision}"],
+    )
     assert [item["ref"] for item in packet["items"]] == [useful.ref]
     assert estimate_tokens(canonical_render_json(packet)) <= 1200
 
@@ -427,7 +435,9 @@ def test_p09_budget_never_slices_item_content(app):
     sources = []
     for index in range(4):
         sources.append(capture(core, ctx, f"{negation} #{index}", key=f"TEST-p09/budget/{index}"))
-    packet = _packet(core, ctx, query="H100", mode="current", max_items=2, budget_tokens=512, request_id="TEST-p09-budget")
+    packet = _packet(
+        core, ctx, query="H100", mode="current", max_items=2, budget_tokens=512, request_id="TEST-p09-budget"
+    )
     assert estimate_tokens(canonical_render_json(packet)) <= 512
     for item in packet["items"]:
         assert "不要删除" in item["content"]
@@ -691,7 +701,9 @@ def _epoch_fenced_packet(core, ctx, reader):
     # The query has to find something, or an emptied packet and an empty one look the same.
     capture(core, ctx, "P09 keeps H100 as an exact identifier.", key="TEST-p09/epoch-fence")
     query = "H100 exact identifier"
-    result = core.recall(ctx, recall_request(query=query, mode="current", request_id="TEST-p09-epoch-result"), deadline_seconds=5)
+    result = core.recall(
+        ctx, recall_request(query=query, mode="current", request_id="TEST-p09-epoch-result"), deadline_seconds=5
+    )
     assert result.items, "the fence has nothing to act on"
     search = SearchContext.from_request(
         recall_request(query=query, mode="current", request_id="TEST-p09-epoch-compile"),
@@ -724,14 +736,24 @@ def test_p09_auto_compiler_caps_delivery_to_six_items(app):
     core, ctx = app
     for index in range(8):
         capture(core, ctx, f"P09 H100 delivery record {index}.", key=f"TEST-p09/auto-budget/{index}")
-    result = core.recall(ctx, recall_request(query="H100 delivery record", mode="history", max_items=30), deadline_seconds=5)
+    result = core.recall(
+        ctx, recall_request(query="H100 delivery record", mode="history", max_items=30), deadline_seconds=5
+    )
     search = SearchContext.from_request(
-        recall_request(query="H100 delivery record", mode="auto", max_items=30, budget_tokens=8000, request_id="TEST-p09-auto-budget"),
+        recall_request(
+            query="H100 delivery record",
+            mode="auto",
+            max_items=30,
+            budget_tokens=8000,
+            request_id="TEST-p09-auto-budget",
+        ),
         ctx,
         now=FixedClock.now,
         deadline=200.0,
     )
-    packet = compile_recall_packet(search, result, core.storage, storage_reader=core.recall_pipeline.storage_reader, clock=FixedClock())
+    packet = compile_recall_packet(
+        search, result, core.storage, storage_reader=core.recall_pipeline.storage_reader, clock=FixedClock()
+    )
     assert len(packet["items"]) <= 6
 
 
@@ -780,8 +802,10 @@ def test_p09_a_packet_s_diagnostic_ref_can_be_inspected_by_the_session_that_reca
     assert (inspected.kind, inspected.ref, inspected.revision) == ("recall_diagnostic", packet["diagnostic_ref"], 1)
     assert inspected.value["items_delivered"] == len(packet["items"])
     assert "diagnostics inspected by their own session" not in str(inspected.value)
-    for other, ref in ((replace(ctx, session_id="TEST-p09-someone-else"), packet["diagnostic_ref"]),
-                       (ctx, "recall-diag:" + "f" * 16)):
+    for other, ref in (
+        (replace(ctx, session_id="TEST-p09-someone-else"), packet["diagnostic_ref"]),
+        (ctx, "recall-diag:" + "f" * 16),
+    ):
         with pytest.raises(ContractError) as refused:
             core.inspect_object(other, ref)
         assert (refused.value.code, refused.value.field) == ("SOURCE_MISSING", "recall_diagnostic")
@@ -925,10 +949,14 @@ def test_p09_deadline_expiry_does_not_reuse_cached_ok_packet(app):
     request = recall_request(query="deadline cache H100", mode="current", request_id="TEST-p09-deadline-cache")
     search = SearchContext.from_request(request, ctx, now=clock.now, deadline=clock.monotonic() + 0.5)
     result = core.recall_pipeline.search(search)
-    first = compile_recall_packet(search, result, core.storage, storage_reader=core.recall_pipeline.storage_reader, clock=clock)
+    first = compile_recall_packet(
+        search, result, core.storage, storage_reader=core.recall_pipeline.storage_reader, clock=clock
+    )
     assert first["items"]
     clock._mono = search.deadline + 1.0
-    second = compile_recall_packet(search, result, core.storage, storage_reader=core.recall_pipeline.storage_reader, clock=clock)
+    second = compile_recall_packet(
+        search, result, core.storage, storage_reader=core.recall_pipeline.storage_reader, clock=clock
+    )
     assert second["status"] == "unavailable"
     assert any("deadline_exceeded" in gap for gap in second["gaps"])
     assert second["items"] == []
@@ -1025,18 +1053,20 @@ def test_p09_renderer_state_is_bounded_across_requests():
         answerability="supported",
         coverage="partial",
         unmet_needs=[],
-        items=[{
-            "ref": "event-test",
-            "revision": 1,
-            "kind": "event",
-            "content": "bounded renderer data",
-            "temporal_status": "current",
-            "origin": "human_direct",
-            "applicability": "trusted scope",
-            "evidence_refs": ["event-test@1"],
-            "expandable": True,
-            "basis": "direct_report",
-        }],
+        items=[
+            {
+                "ref": "event-test",
+                "revision": 1,
+                "kind": "event",
+                "content": "bounded renderer data",
+                "temporal_status": "current",
+                "origin": "human_direct",
+                "applicability": "trusted scope",
+                "evidence_refs": ["event-test@1"],
+                "expandable": True,
+                "basis": "direct_report",
+            }
+        ],
     )
     for index in range(70):
         render_recall_packet_context(
@@ -1074,6 +1104,8 @@ class MixedOversizedStorage(RetrievalStorage):
             fresh.relation_refs,
             fresh.metadata,
         )
+
+
 def test_p09_budget_counts_rendered_metadata_and_drops_whole_unit(app):
     core, ctx = app
     capture(core, ctx, "P09 metadata budget H100 record.", key="TEST-p09/metadata-budget")
@@ -1108,11 +1140,15 @@ def test_p09_final_packet_budget_includes_rejection_gaps_and_render_text(app):
     ]
     result = core.recall(
         ctx,
-        recall_request(query="H100", mode="history", max_items=6, budget_tokens=8000, request_id="TEST-p09-mixed-budget"),
+        recall_request(
+            query="H100", mode="history", max_items=6, budget_tokens=8000, request_id="TEST-p09-mixed-budget"
+        ),
         deadline_seconds=5,
     )
     search = SearchContext.from_request(
-        recall_request(query="H100", mode="history", max_items=6, budget_tokens=1200, request_id="TEST-p09-mixed-budget"),
+        recall_request(
+            query="H100", mode="history", max_items=6, budget_tokens=1200, request_id="TEST-p09-mixed-budget"
+        ),
         ctx,
         now=FixedClock.now,
         deadline=200.0,
@@ -1148,17 +1184,41 @@ def test_p09_resume_correction_selects_complete_json_under_auto_budget(app):
     }
     original = json.dumps(resume, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     obj = RetrievedObject(
-        "episode-correction", 6, "episode", original, "derived_summary", "current", "trusted",
-        tuple(resume["evidence_refs"]), "derived_summary", True, ("episode",),
+        "episode-correction",
+        6,
+        "episode",
+        original,
+        "derived_summary",
+        "current",
+        "trusted",
+        tuple(resume["evidence_refs"]),
+        "derived_summary",
+        True,
+        ("episode",),
         metadata=(
-            ("source_order", json.dumps([
-                ["event-goal", 1, 1], ["event-correction", 1, 2], ["event-next", 1, 3],
-            ], separators=(",", ":"))),
-            ("source_texts", json.dumps({
-                "event-goal@1": "选择摘要位置",
-                "event-correction@1": correction,
-                "event-next@1": "继续执行修正路径",
-            }, ensure_ascii=False, separators=(",", ":"))),
+            (
+                "source_order",
+                json.dumps(
+                    [
+                        ["event-goal", 1, 1],
+                        ["event-correction", 1, 2],
+                        ["event-next", 1, 3],
+                    ],
+                    separators=(",", ":"),
+                ),
+            ),
+            (
+                "source_texts",
+                json.dumps(
+                    {
+                        "event-goal@1": "选择摘要位置",
+                        "event-correction@1": correction,
+                        "event-next@1": "继续执行修正路径",
+                    },
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ),
+            ),
         ),
     )
 
@@ -1226,19 +1286,43 @@ def test_p09_resume_compact_uses_source_sequence_and_keeps_cross_field_evidence(
     }
     original = json.dumps(resume, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     obj = RetrievedObject(
-        "episode-reversed", 4, "episode", original, "derived_summary", "current", "trusted",
-        tuple(resume["evidence_refs"]), "derived_summary", True, ("episode",),
+        "episode-reversed",
+        4,
+        "episode",
+        original,
+        "derived_summary",
+        "current",
+        "trusted",
+        tuple(resume["evidence_refs"]),
+        "derived_summary",
+        True,
+        ("episode",),
         metadata=(
-            ("source_order", json.dumps([
-                ["event-old", 1, 2], ["event-progress", 1, 9],
-                ["event-new", 1, 10], ["event-next", 1, 11],
-            ], separators=(",", ":"))),
-            ("source_texts", json.dumps({
-                "event-old@1": "采用已过时路径",
-                "event-progress@1": "已核验修正依赖",
-                "event-new@1": "采用最新修正路径",
-                "event-next@1": "继续执行修正路径",
-            }, ensure_ascii=False, separators=(",", ":"))),
+            (
+                "source_order",
+                json.dumps(
+                    [
+                        ["event-old", 1, 2],
+                        ["event-progress", 1, 9],
+                        ["event-new", 1, 10],
+                        ["event-next", 1, 11],
+                    ],
+                    separators=(",", ":"),
+                ),
+            ),
+            (
+                "source_texts",
+                json.dumps(
+                    {
+                        "event-old@1": "采用已过时路径",
+                        "event-progress@1": "已核验修正依赖",
+                        "event-new@1": "采用最新修正路径",
+                        "event-next@1": "继续执行修正路径",
+                    },
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                ),
+            ),
         ),
     )
 
@@ -1251,19 +1335,27 @@ def test_p09_resume_compact_uses_source_sequence_and_keeps_cross_field_evidence(
         (obj,),
         core.status(ctx).memory_epoch,
         ("vector_unavailable",),
-        "partial", "partial", 1, 1,
+        "partial",
+        "partial",
+        1,
+        1,
         request_id="TEST-p09-reversed-decisions",
         unmet_needs=("resume_state",),
     )
     request = recall_request(
         query="继续执行修正路径，当前进度是什么",
-        mode="auto", max_items=6, budget_tokens=1200,
+        mode="auto",
+        max_items=6,
+        budget_tokens=1200,
         request_id="TEST-p09-reversed-decisions",
     )
     search = SearchContext.from_request(request, ctx, now=FixedClock.now, deadline=200.0)
     packet = compile_recall_packet(
-        search, result, core.storage,
-        storage_reader=FixedEpisodeStorage(clock=FixedClock()), clock=FixedClock(),
+        search,
+        result,
+        core.storage,
+        storage_reader=FixedEpisodeStorage(clock=FixedClock()),
+        clock=FixedClock(),
     )
     assert packet["items"]
     selected = json.loads(packet["items"][0]["content"])
@@ -1271,7 +1363,9 @@ def test_p09_resume_compact_uses_source_sequence_and_keeps_cross_field_evidence(
     assert selected["verified_progress"][0]["evidence_refs"] == ["event-progress@1"]
     assert selected["next_step_evidence_refs"] == ["event-next@1"]
     assert set(packet["items"][0]["evidence_refs"]) == {
-        "event-new@1", "event-progress@1", "event-next@1",
+        "event-new@1",
+        "event-progress@1",
+        "event-next@1",
     }
     prepared = core.prepare_recall_render(ctx, packet)
     assert prepared.canonical_text is not None
@@ -1284,10 +1378,7 @@ def test_p09_resume_uses_late_trusted_order_and_text_for_next_step_provenance(ap
     retained = [f"event-{index:02d}@1" for index in range(1, 31)]
     retained[1] = "event-next-old@1"
     retained[-1] = "event-late-correction@1"
-    source_order = [
-        [ref.split("@", 1)[0], 1, index]
-        for index, ref in enumerate(retained, 1)
-    ]
+    source_order = [[ref.split("@", 1)[0], 1, index] for index, ref in enumerate(retained, 1)]
     source_texts = {
         "event-next-old@1": "人类记录：继续执行晚修正，并等待确认。",
         "event-late-correction@1": "人类记录：晚更正已完成，但未提出下一步。",
@@ -1295,10 +1386,12 @@ def test_p09_resume_uses_late_trusted_order_and_text_for_next_step_provenance(ap
     resume = {
         "episode_ref": "episode-late-correction",
         "state": "open",
-        "decisions": [{
-            "text": "采用第30条晚更正",
-            "evidence_refs": ["event-late-correction@1"],
-        }],
+        "decisions": [
+            {
+                "text": "采用第30条晚更正",
+                "evidence_refs": ["event-late-correction@1"],
+            }
+        ],
         "verified_progress": [],
         "open_items": [],
         "next_step": "继续执行晚修正",
@@ -1307,8 +1400,17 @@ def test_p09_resume_uses_late_trusted_order_and_text_for_next_step_provenance(ap
     }
     original = json.dumps(resume, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     obj = RetrievedObject(
-        "episode-late-correction", 3, "episode", original, "derived_summary", "current", "trusted",
-        tuple(retained), "derived_summary", True, ("episode",),
+        "episode-late-correction",
+        3,
+        "episode",
+        original,
+        "derived_summary",
+        "current",
+        "trusted",
+        tuple(retained),
+        "derived_summary",
+        True,
+        ("episode",),
         metadata=(
             ("source_order", json.dumps(source_order, ensure_ascii=False, separators=(",", ":"))),
             ("source_texts", json.dumps(source_texts, ensure_ascii=False, separators=(",", ":"))),
@@ -1324,19 +1426,27 @@ def test_p09_resume_uses_late_trusted_order_and_text_for_next_step_provenance(ap
         (obj,),
         core.status(ctx).memory_epoch,
         ("vector_unavailable",),
-        "partial", "partial", 1, 1,
+        "partial",
+        "partial",
+        1,
+        1,
         request_id="TEST-p09-late-resume",
         unmet_needs=("resume_state",),
     )
     request = recall_request(
         query="继续执行晚修正，当前进度是什么",
-        mode="auto", max_items=6, budget_tokens=600,
+        mode="auto",
+        max_items=6,
+        budget_tokens=600,
         request_id="TEST-p09-late-resume",
     )
     search = SearchContext.from_request(request, ctx, now=FixedClock.now, deadline=200.0)
     packet = compile_recall_packet(
-        search, result, core.storage,
-        storage_reader=FixedEpisodeStorage(clock=FixedClock()), clock=FixedClock(),
+        search,
+        result,
+        core.storage,
+        storage_reader=FixedEpisodeStorage(clock=FixedClock()),
+        clock=FixedClock(),
     )
     assert packet["items"]
     selected = json.loads(packet["items"][0]["content"])
@@ -1393,9 +1503,13 @@ def test_p09_retrieval_hydrates_retained_late_event_after_relation_window(app):
                SET state=?,resume_json=?,processed_sequence=?
                WHERE episode_id=? AND revision=?""",
             (
-                "open", json.dumps(resume, ensure_ascii=False),
-                conn.execute("SELECT MAX(sequence) FROM episode_events WHERE episode_id=?", (episode_ref,)).fetchone()[0],
-                episode_ref, episode_revision,
+                "open",
+                json.dumps(resume, ensure_ascii=False),
+                conn.execute("SELECT MAX(sequence) FROM episode_events WHERE episode_id=?", (episode_ref,)).fetchone()[
+                    0
+                ],
+                episode_ref,
+                episode_revision,
             ),
         )
         for source in (sources[0], sources[-1]):
@@ -1405,10 +1519,13 @@ def test_p09_retrieval_hydrates_retained_late_event_after_relation_window(app):
                 ) VALUES ('episode',?,?,?,?,?,?)""",
                 (episode_ref, episode_revision, source.ref, source.revision, "derived_from", source.event["content"]),
             )
-        assert conn.execute(
-            "SELECT count(*) FROM evidence_links WHERE object_kind='episode' AND object_ref=? AND object_revision=?",
-            (episode_ref, episode_revision),
-        ).fetchone()[0] >= 2
+        assert (
+            conn.execute(
+                "SELECT count(*) FROM evidence_links WHERE object_kind='episode' AND object_ref=? AND object_revision=?",
+                (episode_ref, episode_revision),
+            ).fetchone()[0]
+            >= 2
+        )
         conn.commit()
 
     request = recall_request(
@@ -1472,9 +1589,10 @@ def test_p09_episode_hydration_binds_history_revision_pairs(app, monkeypatch):
         ).fetchone()
         assert episode_row is not None
         episode_ref, episode_revision = episode_row["episode_id"], episode_row["current_revision"]
-        sequence = conn.execute(
-            "SELECT MAX(sequence) FROM episode_events WHERE episode_id=?", (episode_ref,)
-        ).fetchone()[0] + 1
+        sequence = (
+            conn.execute("SELECT MAX(sequence) FROM episode_events WHERE episode_id=?", (episode_ref,)).fetchone()[0]
+            + 1
+        )
         conn.execute(
             """INSERT OR IGNORE INTO episode_events(sequence,episode_id,source_ref,source_revision,membership)
                VALUES (?,?,?,?,?)""",
@@ -1665,9 +1783,19 @@ def test_budget_density_keeps_773_byte_hit_over_3398_byte_repeat(app, budget, su
         return len(canonical_render_json(packet_item(obj)).encode("utf-8"))
 
     def object_of_size(ref, size, phrase):
-        obj = RetrievedObject(ref=ref, revision=1, kind="event", content="x",
-                              origin="imported", temporal_status="current", applicability="trusted scope",
-                              evidence_refs=(ref + "@1",), basis="observed", expandable=True, source_kinds=("event",))
+        obj = RetrievedObject(
+            ref=ref,
+            revision=1,
+            kind="event",
+            content="x",
+            origin="imported",
+            temporal_status="current",
+            applicability="trusted scope",
+            evidence_refs=(ref + "@1",),
+            basis="observed",
+            expandable=True,
+            source_kinds=("event",),
+        )
         remaining = size - rendered_bytes(obj) + 1
         count = remaining // len(phrase.encode("utf-8"))
         content = phrase * count
@@ -1678,11 +1806,16 @@ def test_budget_density_keeps_773_byte_hit_over_3398_byte_repeat(app, budget, su
 
     large = object_of_size("event-repeat-" + suffix, 3398, "预算重复导入事件。")
     target = object_of_size("event-answer-" + suffix, 773, "预算有效目标命中。")
-    pairs = [(CandidateRef("event", obj.ref, 1, "lexical", fusion_score=score), obj)
-             for obj, score in ((large, .032), (target, .030))]
-    search = SearchContext.from_request(recall_request(query="预算", mode="history", max_items=1,
-                                                      budget_tokens=budget, request_id="TEST-density"),
-                                        ctx, now=FixedClock.now, deadline=200.0)
+    pairs = [
+        (CandidateRef("event", obj.ref, 1, "lexical", fusion_score=score), obj)
+        for obj, score in ((large, 0.032), (target, 0.030))
+    ]
+    search = SearchContext.from_request(
+        recall_request(query="预算", mode="history", max_items=1, budget_tokens=budget, request_id="TEST-density"),
+        ctx,
+        now=FixedClock.now,
+        deadline=200.0,
+    )
     # Exercise the earlier retrieval admission as well as final compilation.
     pipeline = object.__new__(RetrievalPipeline)
     assert pipeline._apply_budget(pairs, search.limits)[0][1].ref == target.ref
@@ -1691,19 +1824,42 @@ def test_budget_density_keeps_773_byte_hit_over_3398_byte_repeat(app, budget, su
         def hydrate(self, tx, candidate, context):
             return next(obj for _, obj in pairs if obj.ref == candidate.ref)
 
-    result = RetrievalResult(tuple(c for c, _ in pairs), tuple(o for _, o in pairs),
-                             core.status(ctx).memory_epoch, (), "unknown", "supported", 2, 2,
-                             request_id="TEST-density")
-    packet = compile_recall_packet(search, result, core.storage, storage_reader=FixtureStorage(clock=FixedClock()),
-                                   diagnostics=core.recall_diagnostics, clock=FixedClock())
+    result = RetrievalResult(
+        tuple(c for c, _ in pairs),
+        tuple(o for _, o in pairs),
+        core.status(ctx).memory_epoch,
+        (),
+        "unknown",
+        "supported",
+        2,
+        2,
+        request_id="TEST-density",
+    )
+    packet = compile_recall_packet(
+        search,
+        result,
+        core.storage,
+        storage_reader=FixtureStorage(clock=FixedClock()),
+        diagnostics=core.recall_diagnostics,
+        clock=FixedClock(),
+    )
     assert [item["ref"] for item in packet["items"]] == [target.ref]
     rendered = canonical_render_json(packet)
     metrics = core.recall_diagnostics.get(packet["diagnostic_ref"])
     assert metrics.rendered_bytes == len(rendered.encode("utf-8"))
     assert metrics.estimated_tokens == estimate_tokens(rendered) <= budget
     assert metrics.budget_tokens == budget
-    print(json.dumps({"budget": budget, "item_bytes": [3398, 773], "target": target.ref,
-                      "delivered": [item["ref"] for item in packet["items"]], "metrics": metrics.to_public()}))
+    print(
+        json.dumps(
+            {
+                "budget": budget,
+                "item_bytes": [3398, 773],
+                "target": target.ref,
+                "delivered": [item["ref"] for item in packet["items"]],
+                "metrics": metrics.to_public(),
+            }
+        )
+    )
 
 
 @pytest.mark.parametrize("mode", ["auto", "current", "history"])
@@ -1715,13 +1871,27 @@ def test_budget_density_keeps_fusion_order_when_the_whole_run_fits(app, mode):
     """
     core, ctx = app
     query = "阿乙升级 rc29"
-    todo = capture(core, ctx, "阿乙 rc29 升级待办：self-cutover pending，等排空后再切换。",
-                   key="TEST-p09/density-fit/todo", when="2026-09-03T08:00:00Z", recorded_at="2026-09-03T08:00:00Z")
-    report = capture(core, ctx, "阿乙 rc29 升级收尾报告：排空超时，升级没有开始，现在还是 rc28，旧记忆和设置没动。"
-                     + "排空等待记录显示网关在超时前仍有写入者，自动重启器没有先停下，所以升级器按规则放弃。" * 8,
-                     key="TEST-p09/density-fit/report", when="2026-09-05T08:00:00Z", recorded_at="2026-09-05T08:00:00Z")
+    todo = capture(
+        core,
+        ctx,
+        "阿乙 rc29 升级待办：self-cutover pending，等排空后再切换。",
+        key="TEST-p09/density-fit/todo",
+        when="2026-09-03T08:00:00Z",
+        recorded_at="2026-09-03T08:00:00Z",
+    )
+    report = capture(
+        core,
+        ctx,
+        "阿乙 rc29 升级收尾报告：排空超时，升级没有开始，现在还是 rc28，旧记忆和设置没动。"
+        + "排空等待记录显示网关在超时前仍有写入者，自动重启器没有先停下，所以升级器按规则放弃。" * 8,
+        key="TEST-p09/density-fit/report",
+        when="2026-09-05T08:00:00Z",
+        recorded_at="2026-09-05T08:00:00Z",
+    )
     terms = set(meaningful_query_terms(query))
-    assert terms.intersection(lexical_terms(report.event["content"])) == terms.intersection(lexical_terms(todo.event["content"]))
+    assert terms.intersection(lexical_terms(report.event["content"])) == terms.intersection(
+        lexical_terms(todo.event["content"])
+    )
     assert estimate_tokens(todo.event["content"]) < 256 < estimate_tokens(report.event["content"])
     # Another session reads, so only the lexical channel ranks the two.
     reader = replace(ctx, session_id="TEST-p09-density-fit-reader")
@@ -1742,17 +1912,23 @@ def test_cjk_budget_uses_character_classes_and_reports_exact_units(app):
     assert estimate_tokens("abcd") == 1
     assert estimate_tokens("漢あ한") == 3
     assert estimate_tokens("汉字abcd") == 3
-    sources = [capture(core, ctx, "预算中文记录 " + "保留完整有效证据" * 50 + str(i), key=f"TEST-CJK/{i}")
-               for i in range(4)]
-    search = SearchContext.from_request(recall_request(query="预算中文记录", mode="history", max_items=4,
-                                                       budget_tokens=4096), ctx, now=FixedClock.now, deadline=200.0)
+    sources = [
+        capture(core, ctx, "预算中文记录 " + "保留完整有效证据" * 50 + str(i), key=f"TEST-CJK/{i}") for i in range(4)
+    ]
+    search = SearchContext.from_request(
+        recall_request(query="预算中文记录", mode="history", max_items=4, budget_tokens=4096),
+        ctx,
+        now=FixedClock.now,
+        deadline=200.0,
+    )
     candidates = tuple(CandidateRef("event", s.ref, 1, "lexical") for s in sources)
     reader = RetrievalStorage(clock=FixedClock())
     with core.storage.read(ctx) as tx:
         objects = tuple(reader.hydrate(tx, candidate, search) for candidate in candidates)
     result = RetrievalResult(candidates, objects, core.status(ctx).memory_epoch, (), "unknown", "supported", 4, 4)
-    packet = compile_recall_packet(search, result, core.storage, storage_reader=reader,
-                                   diagnostics=core.recall_diagnostics, clock=FixedClock())
+    packet = compile_recall_packet(
+        search, result, core.storage, storage_reader=reader, diagnostics=core.recall_diagnostics, clock=FixedClock()
+    )
     assert {item["ref"] for item in packet["items"]} == {source.ref for source in sources}
     rendered = canonical_render_json(packet)
     byte_count = len(rendered.encode("utf-8"))
@@ -1762,5 +1938,13 @@ def test_cjk_budget_uses_character_classes_and_reports_exact_units(app):
     assert diagnostic.rendered_bytes == byte_count
     assert diagnostic.estimated_tokens == token_count
     assert diagnostic.budget_tokens == 4096
-    print(json.dumps({"cjk_delivered": len(packet["items"]), "bytes": byte_count, "estimated_tokens": token_count,
-                      "budget_tokens": diagnostic.budget_tokens}))
+    print(
+        json.dumps(
+            {
+                "cjk_delivered": len(packet["items"]),
+                "bytes": byte_count,
+                "estimated_tokens": token_count,
+                "budget_tokens": diagnostic.budget_tokens,
+            }
+        )
+    )

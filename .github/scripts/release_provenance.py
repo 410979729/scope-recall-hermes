@@ -17,8 +17,7 @@ def _distribution_hashes(packages_dir: Path) -> dict[str, str]:
     packages = sorted(
         path
         for path in root.iterdir()
-        if path.is_file()
-        and (path.name.endswith(".whl") or path.name.endswith(".tar.gz"))
+        if path.is_file() and (path.name.endswith(".whl") or path.name.endswith(".tar.gz"))
     )
     if len(packages) != 2:
         raise ValueError("provenance requires exactly one wheel and one sdist")
@@ -26,10 +25,7 @@ def _distribution_hashes(packages_dir: Path) -> dict[str, str]:
         raise ValueError("provenance requires exactly one wheel")
     if sum(path.name.endswith(".tar.gz") for path in packages) != 1:
         raise ValueError("provenance requires exactly one sdist")
-    return {
-        path.name: hashlib.sha256(path.read_bytes()).hexdigest()
-        for path in packages
-    }
+    return {path.name: hashlib.sha256(path.read_bytes()).hexdigest() for path in packages}
 
 
 def write_provenance(

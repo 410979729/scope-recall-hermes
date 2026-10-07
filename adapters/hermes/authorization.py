@@ -1,4 +1,5 @@
 """Hermes-owned authorization for durable ingress replay."""
+
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
@@ -27,7 +28,9 @@ def _entry_grants(binding: InstanceBinding, entry_id: str) -> InstallationManife
         raise ContractError("IDENTITY_UNBOUND", "ingress_host_scope")
     manifest = shared_entry_manifest(binding.data_directory, entry_id)
     if (manifest.installation_id, manifest.agent_id, manifest.test_mode) != (
-        binding.installation_id, binding.agent_id, binding.test_mode,
+        binding.installation_id,
+        binding.agent_id,
+        binding.test_mode,
     ):
         raise HermesIdentityError("core binding does not match installation manifest")
     return manifest

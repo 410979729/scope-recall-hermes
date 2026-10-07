@@ -5,6 +5,7 @@ changed, and the new space never received it (#200, found and reproduced by @Viv
 that reproduction).  An operator starts a run; each drain of a worker in that space reopens a page of the store's
 done embeddings, newest first and only while the embed queue has room.
 """
+
 from __future__ import annotations
 
 from dataclasses import replace
@@ -51,16 +52,23 @@ def _page(core, ctx, space=SPACE_B, room=64) -> dict:
 def _queue_embeds(core, count: int, *, prefix: str = "event-TEST-waiting") -> None:
     with sqlite3.connect(core.storage.path) as conn:
         for index in range(count):
-            conn.execute("""INSERT INTO work_items(work_type,subject_ref,subject_revision,scope_id,available_at)
-                            VALUES ('embed',?,1,'TEST-scope','2026-09-28T00:00:00Z')""", (f"{prefix}-{index}",))
+            conn.execute(
+                """INSERT INTO work_items(work_type,subject_ref,subject_revision,scope_id,available_at)
+                            VALUES ('embed',?,1,'TEST-scope','2026-09-28T00:00:00Z')""",
+                (f"{prefix}-{index}",),
+            )
 
 
 def _space_instance(core, ctx, model, *, backend="sqlite-bruteforce", storage_dir=None):
     """A runtime instance embedding with ``model``: its own space, its own vector directory (``storage_dir`` keeps a
     native store's path short on Windows)."""
     from scope_recall.runtime.auxiliary import AuxiliaryRuntimeConfig
-    from scope_recall.runtime.instance import (RuntimeInstance, RuntimeInstanceConfig, VectorRuntimeConfig,
-                                               default_vector_factory)
+    from scope_recall.runtime.instance import (
+        RuntimeInstance,
+        RuntimeInstanceConfig,
+        VectorRuntimeConfig,
+        default_vector_factory,
+    )
 
     class Embedding:
         def embed_query(self, text, *, remaining_seconds):
@@ -72,18 +80,43 @@ def _space_instance(core, ctx, model, *, backend="sqlite-bruteforce", storage_di
         def embed_text(self, text, *, remaining_seconds):
             return (1.0,) + (0.0,) * 7
 
-    auxiliary = AuxiliaryRuntimeConfig.from_mapping({
-        "external_embedding": False, "external_consolidation": False,
-        "embedding": {"credential_env": "TEST_EMBED_KEY", "model": model,
-                      "endpoint": "https://test.invalid/embeddings", "dimensions": 8, "dialect": "openai"},
-    })
-    config = RuntimeInstanceConfig(binding=ctx.binding, session_id=ctx.session_id, allowed_scope_ids=ctx.allowed_scope_ids,
-                                   project_id=ctx.project_id, branch_id=ctx.branch_id, auxiliary=auxiliary)
-    config = replace(config, vector=VectorRuntimeConfig(
-        backend=backend, storage_dir=storage_dir or ctx.binding.data_directory / "vectors" / config.embedding_space_id(),
-        table_name="TEST-respace", dimensions=8, test_injection_override=storage_dir is not None))
-    return RuntimeInstance(config, core, SimpleNamespace(query_embedding=Embedding(), source_embedding=Embedding()),
-                           _vector_factory=default_vector_factory)
+    auxiliary = AuxiliaryRuntimeConfig.from_mapping(
+        {
+            "external_embedding": False,
+            "external_consolidation": False,
+            "embedding": {
+                "credential_env": "TEST_EMBED_KEY",
+                "model": model,
+                "endpoint": "https://test.invalid/embeddings",
+                "dimensions": 8,
+                "dialect": "openai",
+            },
+        }
+    )
+    config = RuntimeInstanceConfig(
+        binding=ctx.binding,
+        session_id=ctx.session_id,
+        allowed_scope_ids=ctx.allowed_scope_ids,
+        project_id=ctx.project_id,
+        branch_id=ctx.branch_id,
+        auxiliary=auxiliary,
+    )
+    config = replace(
+        config,
+        vector=VectorRuntimeConfig(
+            backend=backend,
+            storage_dir=storage_dir or ctx.binding.data_directory / "vectors" / config.embedding_space_id(),
+            table_name="TEST-respace",
+            dimensions=8,
+            test_injection_override=storage_dir is not None,
+        ),
+    )
+    return RuntimeInstance(
+        config,
+        core,
+        SimpleNamespace(query_embedding=Embedding(), source_embedding=Embedding()),
+        _vector_factory=default_vector_factory,
+    )
 
 
 def test_a_model_switch_re_embeds_what_was_embedded_once_an_operator_starts_a_run(app):
@@ -181,8 +214,9 @@ def test_one_run_at_a_time_and_one_per_space_unless_started_again_on_purpose(app
     assert _start(core, ctx, action="restart")["run"]["completed"] is False
     assert _page(core, ctx)["outcome"] == "complete"
     again = _start(core, ctx, space=SPACE_A)["run"]
-    assert (again["embedding_space"], again["completed"], again["reopened"]) == (SPACE_A, False, 0), \
+    assert (again["embedding_space"], again["completed"], again["reopened"]) == (SPACE_A, False, 0), (
         "a finished run into another space gives way: the model changed again"
+    )
 
 
 def test_newest_first_within_the_room_and_never_what_came_after_the_start(app):
@@ -203,8 +237,9 @@ def test_newest_first_within_the_room_and_never_what_came_after_the_start(app):
     assert (rest["outcome"], rest["reopened"]) == ("complete", 3)
     states = {row[0]: row[2] for row in _embeds(core)}
     assert [states[work_id] for work_id in started] == ["pending"] * 4
-    assert [state for work_id, state in states.items() if work_id not in started] == ["done", "done"], \
+    assert [state for work_id, state in states.items() if work_id not in started] == ["done", "done"], (
         "what was queued after the start is embedded in the new space already"
+    )
     run = core.respace_embeddings(ctx, space_id=SPACE_B)["run"]
     assert (run["completed"], run["reopened"]) == (True, 4)
 
@@ -214,8 +249,10 @@ def test_a_tool_output_whose_vector_expired_is_left_without_one(app):
     claim, source = edge(core, ctx, "TEST-A", "TEST-B")
     _finish_embeds(core)
     with sqlite3.connect(core.storage.path) as conn:
-        conn.execute("INSERT INTO expired_vectors(source_ref,source_revision,expired_at,reason) VALUES (?,1,?,'window')",
-                     (source.ref, "2026-10-01T00:00:00Z"))
+        conn.execute(
+            "INSERT INTO expired_vectors(source_ref,source_revision,expired_at,reason) VALUES (?,1,?,'window')",
+            (source.ref, "2026-10-01T00:00:00Z"),
+        )
     assert _start(core, ctx)["to_reopen"] == 1
     assert _page(core, ctx)["reopened"] == 1
     states = {row[1]: row[2] for row in _embeds(core)}
@@ -283,7 +320,9 @@ def test_what_waits_in_a_partition_this_worker_cannot_see_holds_the_run(app):
     _start(core, ctx)
     _queue_embeds(core, IMPORT_EMBED_QUEUE_CEILING, prefix="event-TEST-elsewhere")
     with sqlite3.connect(core.storage.path) as conn:
-        conn.execute("UPDATE work_items SET project_id='TEST-other-project' WHERE subject_ref LIKE 'event-TEST-elsewhere-%'")
+        conn.execute(
+            "UPDATE work_items SET project_id='TEST-other-project' WHERE subject_ref LIKE 'event-TEST-elsewhere-%'"
+        )
     storage = SQLiteStorage(ctx.binding)
     with storage.read(ctx) as tx:
         assert (tx.work.pending_depth("embed"), tx.work.embed_queue()["pending"]) == (0, IMPORT_EMBED_QUEUE_CEILING)
@@ -344,8 +383,10 @@ def test_a_failed_page_is_a_receipt_and_changes_nothing(app, monkeypatch):
         raise sqlite3.OperationalError("database is locked")
 
     monkeypatch.setattr(work_storage.WorkItems, "respace_page", refuse)
-    assert respace_if_due(SQLiteStorage(ctx.binding), ctx, SPACE_B) == {"outcome": "failed",
-                                                                         "error": "OperationalError"}
+    assert respace_if_due(SQLiteStorage(ctx.binding), ctx, SPACE_B) == {
+        "outcome": "failed",
+        "error": "OperationalError",
+    }
     assert _embeds(core) == before
     assert core.respace_embeddings(ctx, space_id=SPACE_B)["run"]["reopened"] == 0
 
@@ -376,10 +417,19 @@ def test_the_command_maps_its_flags_and_previews_unless_applied(app, monkeypatch
 def test_doctor_names_a_run_no_worker_will_go_on_with():
     from scope_recall.maintenance.doctor import DoctorReport, _check_embedding_respace
 
-    run = {"embedding_space": SPACE_A, "next_work_id": 7, "reopened": 3, "completed": False,
-           "updated_at": "2026-10-06T12:00:00Z"}
-    going = DoctorReport(host="hermes", status="degraded", embedding_respace=dict(run),
-                         embedding_health={"pending": 70, "failed": 0, "oldest_pending_at": None})
+    run = {
+        "embedding_space": SPACE_A,
+        "next_work_id": 7,
+        "reopened": 3,
+        "completed": False,
+        "updated_at": "2026-10-06T12:00:00Z",
+    }
+    going = DoctorReport(
+        host="hermes",
+        status="degraded",
+        embedding_respace=dict(run),
+        embedding_health={"pending": 70, "failed": 0, "oldest_pending_at": None},
+    )
     _check_embedding_respace(going, SimpleNamespace(embedding_space_id=lambda: SPACE_A))
     assert going.capability_gaps == [] and going.checks[-1]["result"] == "running"
     assert "70 embeddings wait in the store" in going.checks[-1]["detail"], "a held run says why it waits"
@@ -405,20 +455,35 @@ def test_doctor_names_an_embedding_backlog_that_aged_beside_a_refusing_provider(
     now_ns = time.time_ns()
     with sqlite3.connect(path) as db:
         db.execute(REQUESTS_TABLE)
-        db.executemany("INSERT INTO requests(model,status,started_ns) VALUES (?,?,?)", [
-            ("TEST-embed", "http_200", now_ns - 3 * 86400 * 10 ** 9),  # older than a day: not counted
-            ("TEST-embed", "http_200", now_ns - 7200 * 10 ** 9),
-            ("TEST-chat", "http_200", now_ns),
-            *(("TEST-embed", "http_429_usage_unknown_reserved_charge_retained", now_ns - step * 10 ** 9)
-              for step in (2, 1, 0)),
-        ])
-    auxiliary = SimpleNamespace(ledger_path=path, external_embedding=True, external_consolidation=False,
-                                embedding=SimpleNamespace(kind="openai", space=lambda: {"model": "TEST-embed"}))
+        db.executemany(
+            "INSERT INTO requests(model,status,started_ns) VALUES (?,?,?)",
+            [
+                ("TEST-embed", "http_200", now_ns - 3 * 86400 * 10**9),  # older than a day: not counted
+                ("TEST-embed", "http_200", now_ns - 7200 * 10**9),
+                ("TEST-chat", "http_200", now_ns),
+                *(
+                    ("TEST-embed", "http_429_usage_unknown_reserved_charge_retained", now_ns - step * 10**9)
+                    for step in (2, 1, 0)
+                ),
+            ],
+        )
+    auxiliary = SimpleNamespace(
+        ledger_path=path,
+        external_embedding=True,
+        external_consolidation=False,
+        embedding=SimpleNamespace(kind="openai", space=lambda: {"model": "TEST-embed"}),
+    )
     calls = embedding_calls(auxiliary)
-    assert (calls["model"], calls["calls"], calls["answered"], calls["refused"]) == ("TEST-embed", 4, 1, {"http_429": 3})
+    assert (calls["model"], calls["calls"], calls["answered"], calls["refused"]) == (
+        "TEST-embed",
+        4,
+        1,
+        {"http_429": 3},
+    )
     aged = (datetime.now(timezone.utc) - timedelta(hours=30)).isoformat()
-    report = DoctorReport(host="hermes", status="degraded",
-                          embedding_health={"pending": 12, "failed": 0, "oldest_pending_at": aged})
+    report = DoctorReport(
+        host="hermes", status="degraded", embedding_health={"pending": 12, "failed": 0, "oldest_pending_at": aged}
+    )
     _check_embedding_health(report, SimpleNamespace(auxiliary=auxiliary, vector=object()))
     assert report.capability_gaps == ["embedding_backlog_aged"]
     assert report.embedding_health["held_model"] == "TEST-embed"
@@ -426,12 +491,17 @@ def test_doctor_names_an_embedding_backlog_that_aged_beside_a_refusing_provider(
     detail = report.checks[-1]["detail"]
     assert "the oldest for 30 h" in detail and "held for TEST-embed" in detail
     assert "asked 4 times and answered 1, refusing http_429 x3" in detail
-    fresh = DoctorReport(host="hermes", status="degraded", embedding_health={
-        "pending": 12, "failed": 0, "oldest_pending_at": datetime.now(timezone.utc).isoformat()})
+    fresh = DoctorReport(
+        host="hermes",
+        status="degraded",
+        embedding_health={"pending": 12, "failed": 0, "oldest_pending_at": datetime.now(timezone.utc).isoformat()},
+    )
     _check_embedding_health(fresh, None)
     assert (fresh.capability_gaps, fresh.checks) == ([], [])
-    assert embedding_calls(SimpleNamespace(ledger_path=path, external_embedding=False,
-                                           embedding=auxiliary.embedding)) is None, "no external route, no calls"
+    assert (
+        embedding_calls(SimpleNamespace(ledger_path=path, external_embedding=False, embedding=auxiliary.embedding))
+        is None
+    ), "no external route, no calls"
 
 
 def test_doctor_says_nothing_of_a_backlog_where_nothing_embeds_and_names_a_worker_where_nothing_refused():
@@ -442,28 +512,38 @@ def test_doctor_says_nothing_of_a_backlog_where_nothing_embeds_and_names_a_worke
     from scope_recall.maintenance.doctor import DoctorReport, _check_embedding_health
 
     aged = (datetime.now(timezone.utc) - timedelta(hours=30)).isoformat()
-    route = SimpleNamespace(ledger_path=None, external_embedding=True, external_consolidation=False,
-                            embedding=SimpleNamespace(kind="openai", space=lambda: {"model": "TEST-embed"}))
-    for config in (SimpleNamespace(auxiliary=route, vector=None),
-                   SimpleNamespace(auxiliary=SimpleNamespace(**{**vars(route), "external_embedding": False}),
-                                   vector=object()),
-                   SimpleNamespace(auxiliary=SimpleNamespace(**{**vars(route), "embedding": None}), vector=object()),
-                   SimpleNamespace(auxiliary=None, vector=object())):
-        report = DoctorReport(host="hermes", status="degraded",
-                              embedding_health={"pending": 12, "failed": 0, "oldest_pending_at": aged})
+    route = SimpleNamespace(
+        ledger_path=None,
+        external_embedding=True,
+        external_consolidation=False,
+        embedding=SimpleNamespace(kind="openai", space=lambda: {"model": "TEST-embed"}),
+    )
+    for config in (
+        SimpleNamespace(auxiliary=route, vector=None),
+        SimpleNamespace(auxiliary=SimpleNamespace(**{**vars(route), "external_embedding": False}), vector=object()),
+        SimpleNamespace(auxiliary=SimpleNamespace(**{**vars(route), "embedding": None}), vector=object()),
+        SimpleNamespace(auxiliary=None, vector=object()),
+    ):
+        report = DoctorReport(
+            host="hermes", status="degraded", embedding_health={"pending": 12, "failed": 0, "oldest_pending_at": aged}
+        )
         _check_embedding_health(report, config)
         assert (report.capability_gaps, report.checks) == ([], []), config
-    report = DoctorReport(host="hermes", status="degraded",
-                          embedding_health={"pending": 12, "failed": 0, "oldest_pending_at": aged})
+    report = DoctorReport(
+        host="hermes", status="degraded", embedding_health={"pending": 12, "failed": 0, "oldest_pending_at": aged}
+    )
     _check_embedding_health(report, SimpleNamespace(auxiliary=route, vector=object()))
     assert report.capability_gaps == ["embedding_backlog_aged"]
     assert "provider" not in report.checks[-1]["detail"], "no ledger: nothing to say of the provider"
 
 
-@pytest.mark.parametrize("statuses, said", [
-    ((), "nothing asked the provider in the last day, so no worker has reached them"),
-    (("network_error_usage_unknown_reserved_charge_retained",) * 3, "asked 3 times and answered 0"),
-])
+@pytest.mark.parametrize(
+    "statuses, said",
+    [
+        ((), "nothing asked the provider in the last day, so no worker has reached them"),
+        (("network_error_usage_unknown_reserved_charge_retained",) * 3, "asked 3 times and answered 0"),
+    ],
+)
 def test_doctor_blames_the_worker_only_when_nothing_asked_the_provider(tmp_path, statuses, said):
     """A proxy outage ends calls in network errors, which are no refusals: "refused nothing, so no worker has reached
     them" was wrong there (review of 3.8.0)."""
@@ -476,14 +556,20 @@ def test_doctor_blames_the_worker_only_when_nothing_asked_the_provider(tmp_path,
     path = tmp_path / "auxiliary-budget.sqlite3"
     with sqlite3.connect(path) as db:
         db.execute(REQUESTS_TABLE)
-        db.executemany("INSERT INTO requests(model,status,started_ns) VALUES (?,?,?)",
-                       [("TEST-embed", status, time.time_ns() - (3600 + step) * 10 ** 9)
-                        for step, status in enumerate(statuses)])
-    route = SimpleNamespace(ledger_path=path, external_embedding=True, external_consolidation=False,
-                            embedding=SimpleNamespace(kind="openai", space=lambda: {"model": "TEST-embed"}))
+        db.executemany(
+            "INSERT INTO requests(model,status,started_ns) VALUES (?,?,?)",
+            [("TEST-embed", status, time.time_ns() - (3600 + step) * 10**9) for step, status in enumerate(statuses)],
+        )
+    route = SimpleNamespace(
+        ledger_path=path,
+        external_embedding=True,
+        external_consolidation=False,
+        embedding=SimpleNamespace(kind="openai", space=lambda: {"model": "TEST-embed"}),
+    )
     aged = (datetime.now(timezone.utc) - timedelta(hours=30)).isoformat()
-    report = DoctorReport(host="hermes", status="degraded",
-                          embedding_health={"pending": 12, "failed": 0, "oldest_pending_at": aged})
+    report = DoctorReport(
+        host="hermes", status="degraded", embedding_health={"pending": 12, "failed": 0, "oldest_pending_at": aged}
+    )
     _check_embedding_health(report, SimpleNamespace(auxiliary=route, vector=object()))
     detail = report.checks[-1]["detail"]
     assert said in detail and ("no worker" in detail) is (not statuses), detail
@@ -494,13 +580,21 @@ def test_the_embed_queue_is_the_store_s_and_read_by_state(app):
     edge(core, ctx, "TEST-A", "TEST-B")
     _queue_embeds(core, 2, prefix="event-TEST-elsewhere")
     with sqlite3.connect(core.storage.path) as conn:
-        conn.execute("UPDATE work_items SET project_id='TEST-other-project',state='failed' "
-                     "WHERE subject_ref='event-TEST-elsewhere-0'")
-        conn.execute("UPDATE work_items SET project_id='TEST-other-project',available_at='2026-01-01T00:00:00Z' "
-                     "WHERE subject_ref='event-TEST-elsewhere-1'")
-        plan = " ".join(row[3] for row in conn.execute(
-            """EXPLAIN QUERY PLAN SELECT count(*) FROM work_items
-               WHERE state IN ('pending','failed') AND +work_type='embed'"""))
+        conn.execute(
+            "UPDATE work_items SET project_id='TEST-other-project',state='failed' "
+            "WHERE subject_ref='event-TEST-elsewhere-0'"
+        )
+        conn.execute(
+            "UPDATE work_items SET project_id='TEST-other-project',available_at='2026-01-01T00:00:00Z' "
+            "WHERE subject_ref='event-TEST-elsewhere-1'"
+        )
+        plan = " ".join(
+            row[3]
+            for row in conn.execute(
+                """EXPLAIN QUERY PLAN SELECT count(*) FROM work_items
+               WHERE state IN ('pending','failed') AND +work_type='embed'"""
+            )
+        )
     with core.storage.read(ctx) as tx:
         queue = tx.work.embed_queue()
     assert queue == {"pending": 3, "failed": 1, "oldest_pending_at": "2026-01-01T00:00:00Z"}

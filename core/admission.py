@@ -5,6 +5,7 @@ Recall's own reinjected output are cheap terminal cases. Unrecognized text
 remains eligible. Queue pressure postpones derived work, never source
 persistence or lexical search.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
@@ -67,9 +68,44 @@ class SourceScheduleReceipt:
 _REINJECTION = AdmissionDecision("source_only", "memory_reinjection")
 
 
-_ACKS = frozenset({"好", "好的", "嗯", "嗯嗯", "哦", "噢", "收到", "明白", "了解", "谢谢", "谢谢你", "你好", "早上好", "晚上好", "晚安", "哈哈", "ok", "okay", "yes", "thanks", "thankyou", "hello", "hi", "goodnight", "ack", "acknowledged", "gotit"})
-_IMPORTANT = re.compile(r"更正|纠正|改为|改成|换成|调整为|取消|作废|不再|停止使用|停止采用|弃用|不要|必须|记住|偏好|喜欢|决定|采用|截止|完成|修复|失败|错误|\b(?:correct(?:ion)?|instead|cancel(?:led)?|no longer|switch to|discontinue|remember|prefer|decid\w*|deadline|must|error|fail\w*)\b", re.I)
-_TOOL_OK = re.compile(r"(?:success|successful|done|completed|ok|process exited with (?:code|exit code) 0|exit code:? 0)[.!\s]*", re.I)
+_ACKS = frozenset(
+    {
+        "好",
+        "好的",
+        "嗯",
+        "嗯嗯",
+        "哦",
+        "噢",
+        "收到",
+        "明白",
+        "了解",
+        "谢谢",
+        "谢谢你",
+        "你好",
+        "早上好",
+        "晚上好",
+        "晚安",
+        "哈哈",
+        "ok",
+        "okay",
+        "yes",
+        "thanks",
+        "thankyou",
+        "hello",
+        "hi",
+        "goodnight",
+        "ack",
+        "acknowledged",
+        "gotit",
+    }
+)
+_IMPORTANT = re.compile(
+    r"更正|纠正|改为|改成|换成|调整为|取消|作废|不再|停止使用|停止采用|弃用|不要|必须|记住|偏好|喜欢|决定|采用|截止|完成|修复|失败|错误|\b(?:correct(?:ion)?|instead|cancel(?:led)?|no longer|switch to|discontinue|remember|prefer|decid\w*|deadline|must|error|fail\w*)\b",
+    re.I,
+)
+_TOOL_OK = re.compile(
+    r"(?:success|successful|done|completed|ok|process exited with (?:code|exit code) 0|exit code:? 0)[.!\s]*", re.I
+)
 
 
 def _ack(text):
@@ -92,7 +128,9 @@ def classify(event, policy=None):
     if withheld_tool_output(event):
         # Nothing in it to search for by meaning, to derive from or to find by its words (``core/events.py``).
         return AdmissionDecision("source_only", "tool_output_omitted")
-    important = bool(event.get("artifact_refs") or event.get("evidence_refs") or event.get("segment") or _IMPORTANT.search(text))
+    important = bool(
+        event.get("artifact_refs") or event.get("evidence_refs") or event.get("segment") or _IMPORTANT.search(text)
+    )
     if important:
         return AdmissionDecision("schedule", "important_source", True)
     if event.get("capture_state") == "gap" and not text.strip():
@@ -106,13 +144,40 @@ def classify(event, policy=None):
             body = json.loads(text)
         except (ValueError, TypeError):
             body = None
-        allowed = {"status", "success", "ok", "exit_code", "returncode", "duration_ms", "elapsed_ms", "stdout", "stderr", "output", "message"}
+        allowed = {
+            "status",
+            "success",
+            "ok",
+            "exit_code",
+            "returncode",
+            "duration_ms",
+            "elapsed_ms",
+            "stdout",
+            "stderr",
+            "output",
+            "message",
+        }
         if isinstance(body, dict) and body and set(body) <= allowed:
-            success = body.get("success") is True or body.get("ok") is True or body.get("status") in ("ok", "success", "completed") or type(body.get("exit_code")) is int and body["exit_code"] == 0 or type(body.get("returncode")) is int and body["returncode"] == 0
-            no_failure = body.get("success") is not False and body.get("ok") is not False and body.get("exit_code", 0) == 0 and body.get("returncode", 0) == 0
+            success = (
+                body.get("success") is True
+                or body.get("ok") is True
+                or body.get("status") in ("ok", "success", "completed")
+                or type(body.get("exit_code")) is int
+                and body["exit_code"] == 0
+                or type(body.get("returncode")) is int
+                and body["returncode"] == 0
+            )
+            no_failure = (
+                body.get("success") is not False
+                and body.get("ok") is not False
+                and body.get("exit_code", 0) == 0
+                and body.get("returncode", 0) == 0
+            )
             empty_output = all(body.get(key) in (None, "", [], {}) for key in ("stdout", "stderr", "output"))
             message = body.get("message", "")
-            empty_message = type(message) is str and (not message.strip() or _ack(message) or bool(_TOOL_OK.fullmatch(message.strip())))
+            empty_message = type(message) is str and (
+                not message.strip() or _ack(message) or bool(_TOOL_OK.fullmatch(message.strip()))
+            )
             if success and no_failure and empty_output and empty_message:
                 return AdmissionDecision("source_only", "successful_tool_wrapper")
     return AdmissionDecision("schedule", "content_not_classified_low_value")
@@ -123,11 +188,17 @@ def pending_count(tx, scope_id, *, ceiling, work_type):
     tx._scope(scope_id)
     # Completed work dominates old stores; the planner otherwise scans it by work_type
     # for every capture instead of starting from the small pending/leased set.
-    return int(tx._check().execute("""SELECT count(*) FROM (
+    return int(
+        tx._check()
+        .execute(
+            """SELECT count(*) FROM (
         SELECT 1 FROM work_items INDEXED BY work_ready WHERE work_type=?
         AND state IN ('pending','leased') AND scope_id=?
         AND project_id IS ? AND branch_id IS ? LIMIT ?)""",
-        (work_type, scope_id, tx.context.project_id, tx.context.branch_id, ceiling)).fetchone()[0])
+            (work_type, scope_id, tx.context.project_id, tx.context.branch_id, ceiling),
+        )
+        .fetchone()[0]
+    )
 
 
 def _capacity(policy, important):
@@ -138,8 +209,9 @@ def _available_types(tx, scope_id, policy, important, candidates=WORK_TYPES):
     if not policy.enabled:
         return frozenset(candidates)
     ceiling = _capacity(policy, important)
-    return frozenset(kind for kind in candidates
-                     if pending_count(tx, scope_id, ceiling=ceiling, work_type=kind) < ceiling)
+    return frozenset(
+        kind for kind in candidates if pending_count(tx, scope_id, ceiling=ceiling, work_type=kind) < ceiling
+    )
 
 
 def _repeated_tool_output(tx, scope_id, text) -> bool:
@@ -153,11 +225,16 @@ def _repeated_tool_output(tx, scope_id, text) -> bool:
     Text from a person is never a repeat: saying it again is new.
     """
     digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
-    return tx._check().execute(
-        """SELECT 1 FROM source_events WHERE scope_id=? AND role='tool' AND content_sha256=? AND read_blocked=0
+    return (
+        tx._check()
+        .execute(
+            """SELECT 1 FROM source_events WHERE scope_id=? AND role='tool' AND content_sha256=? AND read_blocked=0
            AND COALESCE(json_extract(extra_json,'$._scope_recall_admission.disposition'),'')!='source_only' LIMIT 1""",
-        (scope_id, digest),
-    ).fetchone() is not None
+            (scope_id, digest),
+        )
+        .fetchone()
+        is not None
+    )
 
 
 #: What a tool output earns: an embedding, so it is found by meaning.  It is not consolidated;
@@ -193,19 +270,31 @@ def store_decision(tx, ref, revision, decision):
     """
     if decision.gap is None:
         return
-    payload = json.dumps({"disposition": decision.disposition, "reason": decision.reason,
-                          "important": decision.important}, separators=(",", ":"))
-    tx._check(write=True).execute("""UPDATE source_events
+    payload = json.dumps(
+        {"disposition": decision.disposition, "reason": decision.reason, "important": decision.important},
+        separators=(",", ":"),
+    )
+    tx._check(write=True).execute(
+        """UPDATE source_events
         SET extra_json=json_set(extra_json,'$._scope_recall_admission',json(?))
-        WHERE event_id=? AND source_revision=?""", (payload, ref, revision))
+        WHERE event_id=? AND source_revision=?""",
+        (payload, ref, revision),
+    )
 
 
 def decision_marker(tx, ref, revision):
     if tx.source(ref, revision) is None:
         return None
-    row = tx._check().execute("""SELECT json_extract(extra_json,'$._scope_recall_admission.disposition'),
+    row = (
+        tx._check()
+        .execute(
+            """SELECT json_extract(extra_json,'$._scope_recall_admission.disposition'),
         json_extract(extra_json,'$._scope_recall_admission.reason') FROM source_events
-        WHERE event_id=? AND source_revision=?""", (ref, revision)).fetchone()
+        WHERE event_id=? AND source_revision=?""",
+            (ref, revision),
+        )
+        .fetchone()
+    )
     if row is None or row[0] not in {"source_only", "deferred"}:
         return None
     return f"admission_{row[0]}:{row[1]}"
@@ -215,20 +304,33 @@ def _schedule(tx, clock, ref, revision, policy, *, on_demand=True, fresh=False):
     source = tx.source(ref, revision)
     current = tx.source_current(ref)
     from .visibility import allowed
-    if source is None or current is None or current.revision != revision or source.suppressed or not allowed(tx, "event", ref, automatic=True):
+
+    if (
+        source is None
+        or current is None
+        or current.revision != revision
+        or source.suppressed
+        or not allowed(tx, "event", ref, automatic=True)
+    ):
         raise ContractError("SOURCE_MISSING")
     if source.project_id != tx.context.project_id or source.branch_id != tx.context.branch_id:
         raise ContractError("SOURCE_MISSING")
     conn = tx._check(write=True)
-    existing = conn.execute("SELECT work_type FROM work_items WHERE subject_ref=? AND subject_revision=? AND work_type IN ('consolidate','embed')", (ref, revision)).fetchall()
+    existing = conn.execute(
+        "SELECT work_type FROM work_items WHERE subject_ref=? AND subject_revision=? AND work_type IN ('consolidate','embed')",
+        (ref, revision),
+    ).fetchall()
     present = {row[0] for row in existing}
     missing = wanted_work_types(source.event) - present
     if not missing:
         # A tool output deferred before it stopped being owed a consolidation may already hold its
         # embedding; settle its marker, or the refill would select it on every pass.
         if decision_marker(tx, ref, revision) == "admission_deferred:queue_capacity":
-            conn.execute("""UPDATE source_events SET extra_json=json_remove(extra_json,'$._scope_recall_admission')
-                WHERE event_id=? AND source_revision=?""", (ref, revision))
+            conn.execute(
+                """UPDATE source_events SET extra_json=json_remove(extra_json,'$._scope_recall_admission')
+                WHERE event_id=? AND source_revision=?""",
+                (ref, revision),
+            )
         return SourceScheduleReceipt(ref, revision, "unchanged", "already_scheduled")
     decision = classify(source.event, policy)
     if decision == _REINJECTION:
@@ -238,8 +340,11 @@ def _schedule(tx, clock, ref, revision, policy, *, on_demand=True, fresh=False):
         if decision_marker(tx, ref, revision) != decision.gap:
             store_decision(tx, ref, revision, decision)
         return SourceScheduleReceipt(ref, revision, decision.disposition, decision.reason)
-    prior_priority = conn.execute("""SELECT json_extract(extra_json,'$._scope_recall_admission.important')
-        FROM source_events WHERE event_id=? AND source_revision=?""", (ref, revision)).fetchone()[0]
+    prior_priority = conn.execute(
+        """SELECT json_extract(extra_json,'$._scope_recall_admission.important')
+        FROM source_events WHERE event_id=? AND source_revision=?""",
+        (ref, revision),
+    ).fetchone()[0]
     priority = on_demand or prior_priority == 1 or decision.important
     # Freshness lends the reserve only while it lasts; it is never stored as importance.
     ready = _available_types(tx, source.scope_id, policy, priority or fresh, missing)
@@ -250,9 +355,14 @@ def _schedule(tx, clock, ref, revision, policy, *, on_demand=True, fresh=False):
     if ready != missing:
         store_decision(tx, ref, revision, AdmissionDecision("deferred", "queue_capacity", priority))
         return SourceScheduleReceipt(ref, revision, "partial", "queue_capacity", len(ready))
-    conn.execute("""UPDATE source_events SET extra_json=json_remove(extra_json,'$._scope_recall_admission')
-        WHERE event_id=? AND source_revision=?""", (ref, revision))
-    return SourceScheduleReceipt(ref, revision, "scheduled", "on_demand" if on_demand else "queue_capacity_available", len(ready))
+    conn.execute(
+        """UPDATE source_events SET extra_json=json_remove(extra_json,'$._scope_recall_admission')
+        WHERE event_id=? AND source_revision=?""",
+        (ref, revision),
+    )
+    return SourceScheduleReceipt(
+        ref, revision, "scheduled", "on_demand" if on_demand else "queue_capacity_available", len(ready)
+    )
 
 
 def schedule_source(storage, clock, context, ref, revision, *, policy=None, remaining_seconds=1.0):
@@ -287,15 +397,20 @@ def resume_deferred(storage, clock, context, policy=None, *, limit=16, remaining
     # for the newest revision as the page does: nothing clears an older revision's marker, so one was
     # enough to start the page's scan on every pass, forever.
     with storage.read(context, remaining_seconds=remaining_seconds) as tx:
-        waiting = tx._check().execute(
-            f"""SELECT 1 FROM source_events e
+        waiting = (
+            tx._check()
+            .execute(
+                f"""SELECT 1 FROM source_events e
                 WHERE e.scope_id IN ({marks}) AND e.project_id IS ? AND e.branch_id IS ?
                 AND e.read_blocked=0 AND e.suppressed=0
                 AND json_extract(e.extra_json,'$._scope_recall_admission.disposition')='deferred'
                 AND json_extract(e.extra_json,'$._scope_recall_admission.reason')='queue_capacity'
                 AND NOT EXISTS(SELECT 1 FROM source_events n WHERE n.source_group_key=e.source_group_key
                                AND n.source_revision>e.source_revision) LIMIT 1""",
-            (*scopes, context.project_id, context.branch_id)).fetchone()
+                (*scopes, context.project_id, context.branch_id),
+            )
+            .fetchone()
+        )
         rows = () if waiting is None else _deferred_page(tx, clock, context, policy, scopes, marks, limit)
     if not rows:
         return ()
@@ -324,11 +439,15 @@ def _deferred_page(tx, clock, context, policy, scopes, marks, limit) -> list[tup
     # queued after an import the 442 separate counts took 90 s of a 120 s
     # pass, so the watchdog ended every pass before it embedded anything.
     kinds = sorted(WORK_TYPES)
-    queued = {(scope, kind): count for scope, kind, count in tx._check().execute(
-        f"""SELECT scope_id,work_type,count(*) FROM work_items
+    queued = {
+        (scope, kind): count
+        for scope, kind, count in tx._check().execute(
+            f"""SELECT scope_id,work_type,count(*) FROM work_items
             WHERE state IN ('pending','leased') AND scope_id IN ({marks}) AND project_id IS ? AND branch_id IS ?
-            AND work_type IN ({','.join('?' for _ in kinds)}) GROUP BY scope_id,work_type""",
-        (*scopes, context.project_id, context.branch_id, *kinds))}
+            AND work_type IN ({",".join("?" for _ in kinds)}) GROUP BY scope_id,work_type""",
+            (*scopes, context.project_id, context.branch_id, *kinds),
+        )
+    }
     for scope in scopes:
         tx._scope(scope)
         for kind in kinds:
@@ -341,9 +460,13 @@ def _deferred_page(tx, clock, context, policy, scopes, marks, limit) -> list[tup
             # a consolidation.  It is picked for one only once its embedding is queued, to settle
             # a marker written before that rule; picked while its embedding waited for room, it
             # came first on every pass and held the page.
-            owed = "" if kind in TOOL_OUTPUT_WORK_TYPES else """AND (e.role<>'tool' OR EXISTS(
+            owed = (
+                ""
+                if kind in TOOL_OUTPUT_WORK_TYPES
+                else """AND (e.role<>'tool' OR EXISTS(
                 SELECT 1 FROM work_items o WHERE o.subject_ref=e.event_id
                 AND o.subject_revision=e.source_revision AND o.work_type='embed'))"""
+            )
             priority_filter, priority_params = "", ()
             if not ordinary:
                 priority_filter = f"AND (json_extract(e.extra_json,'$._scope_recall_admission.important')=1 OR {fresh})"
@@ -354,12 +477,18 @@ def _deferred_page(tx, clock, context, policy, scopes, marks, limit) -> list[tup
             eligibility_params.extend((scope, *priority_params, kind))
     if not eligible:
         return []
-    return tx._check().execute(f"""SELECT e.event_id,e.source_revision,{fresh} AS fresh FROM source_events e
+    return (
+        tx._check()
+        .execute(
+            f"""SELECT e.event_id,e.source_revision,{fresh} AS fresh FROM source_events e
         WHERE e.scope_id IN ({marks}) AND e.project_id IS ? AND e.branch_id IS ?
         AND e.read_blocked=0 AND e.suppressed=0
         AND json_extract(e.extra_json,'$._scope_recall_admission.disposition')='deferred'
         AND json_extract(e.extra_json,'$._scope_recall_admission.reason')='queue_capacity'
-        AND ({' OR '.join(eligible)})
+        AND ({" OR ".join(eligible)})
         AND NOT EXISTS(SELECT 1 FROM source_events n WHERE n.source_group_key=e.source_group_key AND n.source_revision>e.source_revision)
         ORDER BY fresh DESC,e.persisted_at,e.event_id LIMIT ?""",
-        (*fresh_params, *scopes, context.project_id, context.branch_id, *eligibility_params, limit)).fetchall()
+            (*fresh_params, *scopes, context.project_id, context.branch_id, *eligibility_params, limit),
+        )
+        .fetchall()
+    )

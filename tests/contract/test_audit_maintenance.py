@@ -1,4 +1,5 @@
 """New synthetic backup/rollback roots, including actual Windows junctions."""
+
 import os
 from pathlib import Path
 import sqlite3
@@ -22,6 +23,7 @@ def junction(tmp_path):
     if os.name != "nt":
         pytest.skip("actual Windows junction")
     import _winapi
+
     outside = tmp_path / "TEST-outside"
     outside.mkdir()
     link = tmp_path / "TEST-alias"
@@ -64,6 +66,7 @@ def test_backup_refuses_manifest_junction_before_creating_output(tmp_path, junct
 
 def test_backup_output_creation_race_never_overwrites_an_existing_file(tmp_path, monkeypatch):
     import maintenance.backup as backup
+
     source = database(tmp_path / "TEST-source.sqlite3")
     output = tmp_path / "TEST-raced.sqlite3"
     actual_open = backup.os.open

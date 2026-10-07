@@ -8,6 +8,7 @@ folder the upgrade was about to replace.  The package step refused, correctly, a
 ``{"state": "blocked", "error_type": "PackageUpgradeError"}``: no reason, for a refusal whose remedy is
 to wait a moment and run it again.
 """
+
 from __future__ import annotations
 
 import json
@@ -68,9 +69,14 @@ def _run(tmp_path, monkeypatch, *, delay_seconds, enabled_at):
         drains.append(sum(slept))
         return 0, {"completed": 0}
 
-    code = supervise(tmp_path / "config.json", drain_once, delay_seconds=delay_seconds,
-                     clock=lambda: sum(slept), sleep=slept.append,
-                     planner=lambda cfg, *, now, unavailable_until: WakePlan(None, "idle", 0, 0, 0))
+    code = supervise(
+        tmp_path / "config.json",
+        drain_once,
+        delay_seconds=delay_seconds,
+        clock=lambda: sum(slept),
+        sleep=slept.append,
+        planner=lambda cfg, *, now, unavailable_until: WakePlan(None, "idle", 0, 0, 0),
+    )
     return code, writes, slept, drains
 
 
@@ -103,6 +109,7 @@ def test_no_delay_means_no_sleep_before_the_first_pass(tmp_path, monkeypatch):
 
 # -- the package step says why it refused -------------------------------------
 
+
 def _blocked(monkeypatch, capsys, error) -> dict:
     def refuse(*args, **kwargs):
         raise error
@@ -131,10 +138,13 @@ def test_every_reason_the_step_raises_is_a_code_it_will_print():
         assert package_upgrade._REASON_CODE.fullmatch(code), code
 
 
-@pytest.mark.parametrize("error", [
-    package_upgrade.PackageUpgradeError("C:\\somewhere\\python.exe must reference an existing file"),
-    FileExistsError(17, "File exists", "C:\\somewhere\\backup"),
-])
+@pytest.mark.parametrize(
+    "error",
+    [
+        package_upgrade.PackageUpgradeError("C:\\somewhere\\python.exe must reference an existing file"),
+        FileExistsError(17, "File exists", "C:\\somewhere\\backup"),
+    ],
+)
 def test_a_message_that_may_carry_a_path_is_not_printed(monkeypatch, capsys, error):
     out = _blocked(monkeypatch, capsys, error)
     assert out == {"state": "blocked", "error_type": type(error).__name__, "host_restart_allowed": False}

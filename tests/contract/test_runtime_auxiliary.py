@@ -1,4 +1,5 @@
 """Contract tests for the production auxiliary-model runtime boundary."""
+
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
@@ -122,7 +123,9 @@ class FakeTransport:
 
     def post(self, url, *, body, headers, timeout_seconds, max_response_bytes):
         self.calls += 1
-        return self.handler(url=url, body=body, headers=headers, timeout_seconds=timeout_seconds, max_response_bytes=max_response_bytes)
+        return self.handler(
+            url=url, body=body, headers=headers, timeout_seconds=timeout_seconds, max_response_bytes=max_response_bytes
+        )
 
 
 def _vector(count: int = 3072, *, nan_at: int | None = None, length: int | None = None) -> list[float]:
@@ -219,7 +222,9 @@ def test_malformed_and_invalid_vectors(tmp_path, monkeypatch):
     transport = FakeTransport(
         lambda **kwargs: (
             200,
-            json.dumps({"embeddings": [{"values": _vector(nan_at=0)}], "usageMetadata": {"promptTokenCount": 10}}).encode(),
+            json.dumps(
+                {"embeddings": [{"values": _vector(nan_at=0)}], "usageMetadata": {"promptTokenCount": 10}}
+            ).encode(),
         )
     )
     runtime = build_auxiliary_runtime(config, transport=transport)
@@ -228,7 +233,9 @@ def test_malformed_and_invalid_vectors(tmp_path, monkeypatch):
     assert exc.value.error_type == "vector_nonfinite"
     transport.handler = lambda **kwargs: (
         200,
-        json.dumps({"embeddings": [{"values": _vector(length=10)}], "usageMetadata": {"promptTokenCount": 10}}).encode(),
+        json.dumps(
+            {"embeddings": [{"values": _vector(length=10)}], "usageMetadata": {"promptTokenCount": 10}}
+        ).encode(),
     )
     with pytest.raises(AuxiliaryModelError) as exc2:
         runtime.query_embedding.embed_query("hello", remaining_seconds=2.0)
@@ -246,7 +253,9 @@ def test_consolidation_returns_raw_content_without_json_repair(tmp_path, monkeyp
             json.dumps(
                 {
                     "usage": {"prompt_tokens": 10, "completion_tokens": 5},
-                    "choices": [{"message": {"role": "assistant", "content": "{not valid json"}, "finish_reason": "stop"}],
+                    "choices": [
+                        {"message": {"role": "assistant", "content": "{not valid json"}, "finish_reason": "stop"}
+                    ],
                 }
             ).encode(),
         )
@@ -260,10 +269,17 @@ def test_consolidation_returns_raw_content_without_json_repair(tmp_path, monkeyp
 
 
 def _cached_reply(usage):
-    return FakeTransport(lambda **kwargs: (200, json.dumps({
-        "usage": usage,
-        "choices": [{"message": {"role": "assistant", "content": "{}"}, "finish_reason": "stop"}],
-    }).encode()))
+    return FakeTransport(
+        lambda **kwargs: (
+            200,
+            json.dumps(
+                {
+                    "usage": usage,
+                    "choices": [{"message": {"role": "assistant", "content": "{}"}, "finish_reason": "stop"}],
+                }
+            ).encode(),
+        )
+    )
 
 
 def _ledger_rows(ledger):
@@ -272,11 +288,22 @@ def _ledger_rows(ledger):
         return [dict(row) for row in db.execute("SELECT * FROM requests ORDER BY id")]
 
 
-@pytest.mark.parametrize("usage,cached", [
-    ({"prompt_tokens": 1000, "completion_tokens": 5, "prompt_cache_hit_tokens": 640, "prompt_cache_miss_tokens": 360}, 640),
-    ({"prompt_tokens": 1000, "completion_tokens": 5, "prompt_tokens_details": {"cached_tokens": 512}}, 512),
-    ({"prompt_tokens": 1000, "completion_tokens": 5}, None),
-])
+@pytest.mark.parametrize(
+    "usage,cached",
+    [
+        (
+            {
+                "prompt_tokens": 1000,
+                "completion_tokens": 5,
+                "prompt_cache_hit_tokens": 640,
+                "prompt_cache_miss_tokens": 360,
+            },
+            640,
+        ),
+        ({"prompt_tokens": 1000, "completion_tokens": 5, "prompt_tokens_details": {"cached_tokens": 512}}, 512),
+        ({"prompt_tokens": 1000, "completion_tokens": 5}, None),
+    ],
+)
 def test_cached_prompt_tokens_are_recorded_beside_an_unchanged_charge(tmp_path, monkeypatch, usage, cached):
     """Whether a prompt layout reuses its prefix is invisible unless the ledger
     keeps what the provider reported; the charge still prices every token."""
@@ -299,12 +326,15 @@ def test_a_cache_count_that_cannot_be_true_is_not_recorded(tmp_path, monkeypatch
     assert _ledger_rows(ledger)[0]["cached_input"] is None
 
 
-@pytest.mark.parametrize("usage,unreported", [
-    ({"prompt_tokens": 1000, "completion_tokens": 5, "total_tokens": 9005}, 8000),
-    ({"prompt_tokens": 1000, "completion_tokens": 5, "total_tokens": 1005}, None),
-    ({"prompt_tokens": 1000, "completion_tokens": 5, "total_tokens": 900}, None),
-    ({"prompt_tokens": 1000, "completion_tokens": 5}, None),
-])
+@pytest.mark.parametrize(
+    "usage,unreported",
+    [
+        ({"prompt_tokens": 1000, "completion_tokens": 5, "total_tokens": 9005}, 8000),
+        ({"prompt_tokens": 1000, "completion_tokens": 5, "total_tokens": 1005}, None),
+        ({"prompt_tokens": 1000, "completion_tokens": 5, "total_tokens": 900}, None),
+        ({"prompt_tokens": 1000, "completion_tokens": 5}, None),
+    ],
+)
 def test_output_billed_outside_completion_tokens_is_recorded_and_charged(tmp_path, monkeypatch, usage, unreported):
     """beta's Gemini route recorded 325 completion tokens a call while the
     provider billed thousands of thinking tokens nobody could see."""
@@ -322,22 +352,29 @@ def test_a_ledger_from_before_the_cache_column_gains_it_on_first_use(tmp_path, m
     config, ledger, _ = _runtime_config(tmp_path)
     ledger.unlink()
     with sqlite3.connect(ledger) as db:
-        db.execute("CREATE TABLE requests (id INTEGER PRIMARY KEY, batch TEXT, model TEXT, body_sha256 TEXT, "
-                   "request_bytes INTEGER, reserved_input INTEGER, reserved_output INTEGER, actual_input INTEGER, "
-                   "actual_output INTEGER, charge_micro_usd INTEGER, status TEXT, started_ns INTEGER)")
+        db.execute(
+            "CREATE TABLE requests (id INTEGER PRIMARY KEY, batch TEXT, model TEXT, body_sha256 TEXT, "
+            "request_bytes INTEGER, reserved_input INTEGER, reserved_output INTEGER, actual_input INTEGER, "
+            "actual_output INTEGER, charge_micro_usd INTEGER, status TEXT, started_ns INTEGER)"
+        )
     monkeypatch.setenv("SCOPE_RECALL_TEST_CHAT_KEY", "test-key")
     usage = {"prompt_tokens": 1000, "completion_tokens": 5, "prompt_cache_hit_tokens": 640, "total_tokens": 2005}
     for _ in range(2):
         runtime = build_auxiliary_runtime(config, transport=_cached_reply(usage))
         runtime.consolidation.propose([{"role": "user", "content": "bounded input"}], remaining_seconds=2.0)
-    assert [(row["cached_input"], row["unreported_output"]) for row in _ledger_rows(ledger)] == [(640, 1000), (640, 1000)]
+    assert [(row["cached_input"], row["unreported_output"]) for row in _ledger_rows(ledger)] == [
+        (640, 1000),
+        (640, 1000),
+    ]
 
 
 def _chat_reply(message, finish_reason):
-    return json.dumps({
-        "usage": {"prompt_tokens": 10, "completion_tokens": 512},
-        "choices": [{"message": message, "finish_reason": finish_reason}],
-    }).encode()
+    return json.dumps(
+        {
+            "usage": {"prompt_tokens": 10, "completion_tokens": 512},
+            "choices": [{"message": message, "finish_reason": finish_reason}],
+        }
+    ).encode()
 
 
 def test_consolidation_reply_cut_off_at_output_limit_is_a_named_derivation_failure(tmp_path, monkeypatch):
@@ -364,7 +401,9 @@ def test_consolidation_reply_cut_off_at_output_limit_is_a_named_derivation_failu
 def test_truncated_reply_without_answer_text_keeps_its_shape_error(tmp_path, monkeypatch, message):
     config, _, _ = _runtime_config(tmp_path)
     monkeypatch.setenv("SCOPE_RECALL_TEST_CHAT_KEY", "test-key")
-    runtime = build_auxiliary_runtime(config, transport=FakeTransport(lambda **kwargs: (200, _chat_reply(message, "length"))))
+    runtime = build_auxiliary_runtime(
+        config, transport=FakeTransport(lambda **kwargs: (200, _chat_reply(message, "length")))
+    )
     with pytest.raises(AuxiliaryModelError) as exc:
         runtime.consolidation.propose([{"role": "user", "content": "bounded input"}], remaining_seconds=2.0)
     assert exc.value.error_type == "unsupported_response_shape"
@@ -432,32 +471,52 @@ def test_consolidation_route_includes_reasoning_effort_when_configured(tmp_path,
 
 
 def test_reasoning_none_is_allowed_only_for_opencode_go_route():
-    base = dict(model="deepseek-v4-flash", credential_env="SCOPE_RECALL_TEST_CHAT_KEY",
-                output_limit_field="max_tokens", max_output_tokens=512)
-    route = ConsolidationRouteConfig(**base, endpoint="https://opencode.ai/zen/go/v1/chat/completions",
-                                     reasoning_effort="none")
+    base = dict(
+        model="deepseek-v4-flash",
+        credential_env="SCOPE_RECALL_TEST_CHAT_KEY",
+        output_limit_field="max_tokens",
+        max_output_tokens=512,
+    )
+    route = ConsolidationRouteConfig(
+        **base, endpoint="https://opencode.ai/zen/go/v1/chat/completions", reasoning_effort="none"
+    )
     assert route.reasoning_effort == "none"
-    for endpoint in ("https://api.deepseek.com/chat/completions",
-                     "https://opencode.ai/zen/v1/chat/completions",
-                     "https://example.test/v1/chat/completions"):
+    for endpoint in (
+        "https://api.deepseek.com/chat/completions",
+        "https://opencode.ai/zen/v1/chat/completions",
+        "https://example.test/v1/chat/completions",
+    ):
         with pytest.raises(ValueError, match="reasoning_effort"):
             ConsolidationRouteConfig(**base, endpoint=endpoint, reasoning_effort="none")
         assert ConsolidationRouteConfig(**base, endpoint=endpoint, reasoning_effort="high").reasoning_effort == "high"
 
 
 def test_opencode_go_serializes_reasoning_none_with_original_bounds(tmp_path, monkeypatch):
-    config, _, _ = _runtime_config(tmp_path, consolidation={
-        "model": "deepseek-v4-flash", "endpoint": "https://opencode.ai/zen/go/v1/chat/completions",
-        "credential_env": "SCOPE_RECALL_TEST_CHAT_KEY", "output_limit_field": "max_tokens",
-        "max_output_tokens": 512, "thinking": {"type": "disabled"}, "reasoning_effort": "none",
-        "response_format": {"type": "json_object"},
-    })
+    config, _, _ = _runtime_config(
+        tmp_path,
+        consolidation={
+            "model": "deepseek-v4-flash",
+            "endpoint": "https://opencode.ai/zen/go/v1/chat/completions",
+            "credential_env": "SCOPE_RECALL_TEST_CHAT_KEY",
+            "output_limit_field": "max_tokens",
+            "max_output_tokens": 512,
+            "thinking": {"type": "disabled"},
+            "reasoning_effort": "none",
+            "response_format": {"type": "json_object"},
+        },
+    )
     monkeypatch.setenv("SCOPE_RECALL_TEST_CHAT_KEY", "test-key")
     bodies = []
+
     def handler(**kwargs):
         bodies.append(json.loads(kwargs["body"].decode()))
-        return 200, json.dumps({"usage": {"prompt_tokens": 10, "completion_tokens": 5},
-            "choices": [{"message": {"role": "assistant", "content": "{}"}, "finish_reason": "stop"}]}).encode()
+        return 200, json.dumps(
+            {
+                "usage": {"prompt_tokens": 10, "completion_tokens": 5},
+                "choices": [{"message": {"role": "assistant", "content": "{}"}, "finish_reason": "stop"}],
+            }
+        ).encode()
+
     runtime = build_auxiliary_runtime(config, transport=FakeTransport(handler))
     assert runtime.consolidation.propose([{"role": "user", "content": "bounded input"}], remaining_seconds=2.0) == "{}"
     assert len(bodies) == 1
@@ -861,8 +920,7 @@ def test_import_modules_in_either_order():
             "assert auxiliary.build_auxiliary_runtime is not None; "
             "assert runtime_pkg.AuxiliaryRuntimeConfig is auxiliary.AuxiliaryRuntimeConfig"
         )
-        result = subprocess.run([sys.executable, "-I", "-B", "-c", program],
-                                capture_output=True, text=True, timeout=15)
+        result = subprocess.run([sys.executable, "-I", "-B", "-c", program], capture_output=True, text=True, timeout=15)
         assert result.returncode == 0, result.stderr
 
 
@@ -897,7 +955,9 @@ def test_primary_error_not_suppressed_on_malformed_success_body(tmp_path, monkey
     transport = FakeTransport(
         lambda **kwargs: (
             200,
-            json.dumps({"embeddings": [{"values": _vector(nan_at=0)}], "usageMetadata": {"promptTokenCount": 10}}).encode(),
+            json.dumps(
+                {"embeddings": [{"values": _vector(nan_at=0)}], "usageMetadata": {"promptTokenCount": 10}}
+            ).encode(),
         )
     )
     runtime = build_auxiliary_runtime(config, transport=transport)
@@ -1138,9 +1198,7 @@ def test_response_metadata_does_not_hide_assistant_content(tmp_path, monkeypatch
         )
     )
     runtime = build_auxiliary_runtime(config, transport=transport)
-    assert runtime.consolidation.propose(
-        [{"role": "user", "content": "bounded input"}], remaining_seconds=2.0
-    ) == "ok"
+    assert runtime.consolidation.propose([{"role": "user", "content": "bounded input"}], remaining_seconds=2.0) == "ok"
 
 
 @pytest.mark.parametrize(
@@ -1175,7 +1233,10 @@ def test_nonassistant_response_is_rejected(tmp_path, monkeypatch):
         lambda **kwargs: (
             200,
             json.dumps(
-                {"usage": {"prompt_tokens": 1, "completion_tokens": 1}, "choices": [{"message": {"role": "user", "content": "ok"}}]}
+                {
+                    "usage": {"prompt_tokens": 1, "completion_tokens": 1},
+                    "choices": [{"message": {"role": "user", "content": "ok"}}],
+                }
             ).encode(),
         )
     )
@@ -1218,7 +1279,10 @@ def test_transport_timeout_is_reduced_after_local_setup(tmp_path, monkeypatch):
 
 def _reserve(ledger_path: Path, policy: BudgetPolicy, model: str, *, body: bytes = b"x") -> int:
     return AuxiliaryBudgetLedger(ledger_path, policy).reserve(
-        model=model, body=body, reserved_input=1_000, reserved_output=100,
+        model=model,
+        body=body,
+        reserved_input=1_000,
+        reserved_output=100,
     )
 
 
@@ -1231,14 +1295,20 @@ def test_cumulative_caps_are_optional_and_zero_still_denies(tmp_path):
     everything", which would flip a fail-closed install to fail-open.
     """
     pricing = {"deepseek-v4-flash": ModelPricing(Decimal("0.44"), Decimal("1.32"))}
+
     def policy(**caps):
-        base = dict(cap_micro_usd=None, total_input_cap=None,
-                    total_output_cap=None, total_call_cap=None)
+        base = dict(cap_micro_usd=None, total_input_cap=None, total_output_cap=None, total_call_cap=None)
         base.update(caps)
         return BudgetPolicy(
-            batch="TEST-CAPS", max_request_bytes=32_000, default_reserve_input=32_768,
-            default_reserve_output=4_096, model_reserve_output={}, model_token_caps={},
-            pricing=pricing, approved_models=frozenset(pricing), **base,
+            batch="TEST-CAPS",
+            max_request_bytes=32_000,
+            default_reserve_input=32_768,
+            default_reserve_output=4_096,
+            model_reserve_output={},
+            model_token_caps={},
+            pricing=pricing,
+            approved_models=frozenset(pricing),
+            **base,
         )
 
     uncapped = policy()
@@ -1275,10 +1345,17 @@ def test_uncapped_policy_still_refuses_a_metered_breach(tmp_path):
     """
     pricing = {"deepseek-v4-flash": ModelPricing(Decimal("0.44"), Decimal("1.32"))}
     uncapped = BudgetPolicy(
-        batch="TEST-BREACH", cap_micro_usd=None, total_input_cap=None,
-        total_output_cap=None, total_call_cap=None, max_request_bytes=32_000,
-        default_reserve_input=32_768, default_reserve_output=4_096,
-        model_reserve_output={}, model_token_caps={}, pricing=pricing,
+        batch="TEST-BREACH",
+        cap_micro_usd=None,
+        total_input_cap=None,
+        total_output_cap=None,
+        total_call_cap=None,
+        max_request_bytes=32_000,
+        default_reserve_input=32_768,
+        default_reserve_output=4_096,
+        model_reserve_output={},
+        model_token_caps={},
+        pricing=pricing,
         approved_models=frozenset(pricing),
     )
     ledger = tmp_path / "breach.sqlite3"

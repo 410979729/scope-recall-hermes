@@ -6,6 +6,7 @@ counted as recoverable and the worker never recovers; delta every ~7.5 seconds,
 each pass parking one of 2,548 embed items for want of a credential and the next
 pass starting at once for the item after it.
 """
+
 from __future__ import annotations
 
 from datetime import timedelta
@@ -25,12 +26,26 @@ EVERY_TYPE = {"purge", "rebuild_projection", "consolidate", "embed", "evaluate_c
 def test_the_planner_wakes_only_for_failures_the_worker_recovers(tmp_path, monkeypatch):
     core, cfg, _path = fixture(tmp_path)
     monkeypatch.setattr(scheduling, "_capable_work_types", lambda config: set(EVERY_TYPE))
-    queue(core, cfg, ref="TEST-candidate", kind="evaluate_candidate", state="failed",
-          error="lease_exhausted", due=NOW - timedelta(hours=10))
+    queue(
+        core,
+        cfg,
+        ref="TEST-candidate",
+        kind="evaluate_candidate",
+        state="failed",
+        error="lease_exhausted",
+        due=NOW - timedelta(hours=10),
+    )
     plan = next_wake(cfg, now=NOW)
     assert plan.due_at is None and plan.reason == "failed_terminal" and plan.failed == 1
-    queue(core, cfg, ref="TEST-source", kind="consolidate", state="failed",
-          error="lease_exhausted", due=NOW - timedelta(hours=10))
+    queue(
+        core,
+        cfg,
+        ref="TEST-source",
+        kind="consolidate",
+        state="failed",
+        error="lease_exhausted",
+        due=NOW - timedelta(hours=10),
+    )
     assert next_wake(cfg, now=NOW).reason == "failure_cooldown"
     assert "evaluate_candidate" not in AUTO_RECOVERABLE_WORK_TYPES
     assert {"consolidate", "embed"} <= AUTO_RECOVERABLE_WORK_TYPES
@@ -56,12 +71,15 @@ def test_a_type_its_port_refused_before_any_attempt_is_reported_unavailable(work
         def publish_source(self, prepared, **kwargs):
             raise AssertionError("nothing to publish")
 
-    receipt = drain_worker(core.storage, clock, ctx, embed=MissingCredential(), remaining_seconds=5,
-                           config=WorkerConfig("TEST-paused"))
+    receipt = drain_worker(
+        core.storage, clock, ctx, embed=MissingCredential(), remaining_seconds=5, config=WorkerConfig("TEST-paused")
+    )
     assert MissingCredential.calls == 1, "the type stands down after the first refusal"
     assert receipt.deferred == 1 and receipt.unavailable_work_types == ("embed",)
     with sqlite3.connect(core.storage.path) as conn:
-        states = conn.execute("SELECT state,attempt FROM work_items WHERE work_type='embed' ORDER BY work_id").fetchall()
+        states = conn.execute(
+            "SELECT state,attempt FROM work_items WHERE work_type='embed' ORDER BY work_id"
+        ).fetchall()
     assert states == [("pending", 0), ("pending", 0)]
 
 

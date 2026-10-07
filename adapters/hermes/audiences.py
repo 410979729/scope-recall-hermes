@@ -3,6 +3,7 @@
 Empty route fields match only empty route fields. Scope IDs are opaque: validate
 without rewriting their bytes or interpreting legacy length-prefixed tokens.
 """
+
 from __future__ import annotations
 
 from typing import Any, Sequence
@@ -74,11 +75,17 @@ def normalize_owner_logins(values: object) -> tuple[tuple[str, str], ...]:
     result: list[tuple[str, str]] = []
     for value in values:
         platform, _sep, login = value.partition("=") if type(value) is str else ("", "", "")
-        if (platform not in LOCAL_PLATFORMS or not login or login != login.strip() or len(login) > 240
-                or login.casefold() in {LOCAL_USER_ID, "*", "unknown"}):
+        if (
+            platform not in LOCAL_PLATFORMS
+            or not login
+            or login != login.strip()
+            or len(login) > 240
+            or login.casefold() in {LOCAL_USER_ID, "*", "unknown"}
+        ):
             raise HermesIdentityError(
                 f"an owner login is <platform>=<login>, the platform one of {sorted(LOCAL_PLATFORMS)} and the "
-                "login exactly as the host sends it, such as desktop=basic:alice")
+                "login exactly as the host sends it, such as desktop=basic:alice"
+            )
         if (platform, login) not in result:
             result.append((platform, login))
     return tuple(result)
@@ -91,13 +98,21 @@ def approved_local_platforms(owner_principals: Sequence[dict[str, str]]) -> froz
     shape the CLI's has, so a manifest needs no new field and an older package
     still reads it.
     """
-    return frozenset(item["platform"] for item in owner_principals
-                     if item["user_id"] == LOCAL_USER_ID and item["platform"] in LOCAL_PLATFORMS)
+    return frozenset(
+        item["platform"]
+        for item in owner_principals
+        if item["user_id"] == LOCAL_USER_ID and item["platform"] in LOCAL_PLATFORMS
+    )
 
 
 EXACT_FIELDS = (
-    "platform", "user_id", "chat_type", "chat_id", "thread_id",
-    "gateway_session_key", "agent_workspace",
+    "platform",
+    "user_id",
+    "chat_type",
+    "chat_id",
+    "thread_id",
+    "gateway_session_key",
+    "agent_workspace",
 )
 _EMPTY_ROUTE_FIELDS = frozenset({"chat_type", "chat_id", "thread_id", "gateway_session_key"})
 
@@ -126,19 +141,36 @@ def normalize_retained_scope_ids(values: object) -> frozenset[str]:
 
 
 def _audience_entry(
-    *, platform: str, user_id: str, chat_type: str, chat_id: str,
-    thread_id: str, gateway_session_key: str, agent_workspace: str,
-    allowed_scope_ids: Sequence[str], writable_scope_ids: Sequence[str],
-    capture_scope_id: str, kind: str,
+    *,
+    platform: str,
+    user_id: str,
+    chat_type: str,
+    chat_id: str,
+    thread_id: str,
+    gateway_session_key: str,
+    agent_workspace: str,
+    allowed_scope_ids: Sequence[str],
+    writable_scope_ids: Sequence[str],
+    capture_scope_id: str,
+    kind: str,
 ) -> dict[str, Any]:
     """Build an exact declaration; capture must belong to its writable subset."""
-    fields = dict(platform=platform, user_id=user_id, chat_type=chat_type,
-                  chat_id=chat_id, thread_id=thread_id,
-                  gateway_session_key=gateway_session_key, agent_workspace=agent_workspace)
+    fields = dict(
+        platform=platform,
+        user_id=user_id,
+        chat_type=chat_type,
+        chat_id=chat_id,
+        thread_id=thread_id,
+        gateway_session_key=gateway_session_key,
+        agent_workspace=agent_workspace,
+    )
     for key, value in fields.items():
-        if (type(value) is not str or len(value) > 240
-                or (key not in _EMPTY_ROUTE_FIELDS and not value.strip())
-                or value.strip().lower() == "unknown"):
+        if (
+            type(value) is not str
+            or len(value) > 240
+            or (key not in _EMPTY_ROUTE_FIELDS and not value.strip())
+            or value.strip().lower() == "unknown"
+        ):
             raise HermesIdentityError(f"audiences.{key} must be an explicit exact string")
     fields = {key: value.strip() for key, value in fields.items()}
     if type(kind) is not str or not kind.strip() or len(kind) > 240:
@@ -151,8 +183,13 @@ def _audience_entry(
         raise HermesIdentityError("writable_scope_ids must be a subset of nonempty allowed_scope_ids")
     if type(capture_scope_id) is not str or (capture_scope_id not in writable if writable else capture_scope_id != ""):
         raise HermesIdentityError("capture_scope_id must be writable, or empty for a read-only audience")
-    return {**fields, "allowed_scope_ids": list(allowed), "writable_scope_ids": list(writable),
-            "capture_scope_id": capture_scope_id, "kind": kind.strip()}
+    return {
+        **fields,
+        "allowed_scope_ids": list(allowed),
+        "writable_scope_ids": list(writable),
+        "capture_scope_id": capture_scope_id,
+        "kind": kind.strip(),
+    }
 
 
 def _normalize_audience_entry(value: object) -> dict[str, Any]:

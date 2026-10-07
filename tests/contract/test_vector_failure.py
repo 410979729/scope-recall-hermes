@@ -1,27 +1,33 @@
 """An optional channel that fails must say which fault, not which family."""
+
 import ast
 import pathlib
 
 import pytest
 
 from scope_recall.core.vector_failure import (
-    NATIVE_VECTOR_FAULTS, native_vector_fault, vector_failure_label,
+    NATIVE_VECTOR_FAULTS,
+    native_vector_fault,
+    vector_failure_label,
 )
 
 # The native helper's own vocabulary. Every one of these reached the operator as
 # the single word "RuntimeError" before this module existed.
 NATIVE_FAULTS = [
-    ("native vector helper lock timeout; SQLite truth is intact and the active helper was not interrupted",
-     "RuntimeError:helper_lock_timeout"),
+    (
+        "native vector helper lock timeout; SQLite truth is intact and the active helper was not interrupted",
+        "RuntimeError:helper_lock_timeout",
+    ),
     ("native vector helper request deadline exhausted", "RuntimeError:helper_request_deadline"),
     ("native vector helper teardown failed; SQLite truth is intact", "RuntimeError:helper_teardown_failed"),
-    ("native vector helper teardown is still pending; SQLite truth is intact",
-     "RuntimeError:helper_teardown_pending"),
+    ("native vector helper teardown is still pending; SQLite truth is intact", "RuntimeError:helper_teardown_pending"),
     ("native vector worker exited or returned an invalid frame", "RuntimeError:worker_exited_mid_frame"),
     ("native vector worker is closed; reopen the vector runtime explicitly", "RuntimeError:worker_closed"),
     ("native vector worker is not running", "RuntimeError:worker_not_running"),
-    ("native vector worker unresponsive; SQLite truth is intact and unacknowledged outbox work remains pending",
-     "RuntimeError:worker_unresponsive"),
+    (
+        "native vector worker unresponsive; SQLite truth is intact and unacknowledged outbox work remains pending",
+        "RuntimeError:worker_unresponsive",
+    ),
     ("native vector worker failed; SQLite truth is intact", "RuntimeError:worker_failed"),
     ("native vector fence handshake send failed", "RuntimeError:fence_send_failed"),
     ("native vector fence final response mismatch", "RuntimeError:fence_mismatch"),
@@ -67,8 +73,7 @@ def test_an_unrecognised_message_invents_no_category():
     """The first version derived the token from the text, and a test's own
     wording promptly became a category: a gap is grouped on, so its values must
     be enumerable."""
-    assert vector_failure_label(TimeoutError("synthetic embedding request used its entire allowance")) \
-        == "TimeoutError"
+    assert vector_failure_label(TimeoutError("synthetic embedding request used its entire allowance")) == "TimeoutError"
     assert vector_failure_label(TypeError("internal vector implementation failure")) == "TypeError"
     assert vector_failure_label(RuntimeError("boom")) == "RuntimeError"
     assert vector_failure_label(RuntimeError()) == "RuntimeError"
@@ -112,8 +117,7 @@ def test_the_vocabulary_cannot_silently_fall_behind_the_code(module_name):
     """A new RuntimeError in the vector path that nothing here names would arrive
     as a bare class again, which is the fault this module exists to remove."""
     unnamed = [m for m in _runtime_error_messages(module_name) if not native_vector_fault(m)]
-    assert unnamed == [], (
-        "these vector RuntimeErrors have no token in NATIVE_VECTOR_FAULTS: %r" % unnamed)
+    assert unnamed == [], "these vector RuntimeErrors have no token in NATIVE_VECTOR_FAULTS: %r" % unnamed
 
 
 def test_recall_uses_this_and_not_its_own_copy():
@@ -129,6 +133,7 @@ def test_recall_uses_this_and_not_its_own_copy():
 
 # --- the other half: a remote failure already knows its own name --------------
 
+
 def test_a_remote_failure_keeps_the_name_the_helper_gave_it():
     """``_lance_worker`` reports ``error_type``; the parent read it, handled two
     classes, and dropped the rest -- so every other subprocess failure arrived as
@@ -136,8 +141,7 @@ def test_a_remote_failure_keeps_the_name_the_helper_gave_it():
     message."""
     from scope_recall.vector.process_store import _remote_failure
 
-    assert vector_failure_label(_remote_failure("ValueError", "table missing")) \
-        == "RuntimeError:ValueError"
+    assert vector_failure_label(_remote_failure("ValueError", "table missing")) == "RuntimeError:ValueError"
     assert vector_failure_label(_remote_failure("OSError", "pipe closed")) == "RuntimeError:OSError"
 
 
@@ -167,10 +171,12 @@ def test_a_refused_call_says_which_answer_the_provider_gave():
     from scope_recall.adapters.models import AuxiliaryModelError
     from scope_recall.core.vector_failure import vector_failure_label
 
-    assert vector_failure_label(AuxiliaryModelError("http_status", detail="429")) == \
-        "AuxiliaryModelError:http_status:429"
-    assert vector_failure_label(AuxiliaryModelError("http_status", detail="400")) == \
-        "AuxiliaryModelError:http_status:400"
+    assert (
+        vector_failure_label(AuxiliaryModelError("http_status", detail="429")) == "AuxiliaryModelError:http_status:429"
+    )
+    assert (
+        vector_failure_label(AuxiliaryModelError("http_status", detail="400")) == "AuxiliaryModelError:http_status:400"
+    )
     # Anything that is not one provider answer keeps the name it had.
     assert vector_failure_label(AuxiliaryModelError("http_status")) == "AuxiliaryModelError:http_status"
     assert vector_failure_label(AuxiliaryModelError("http_status", detail="4x9")) == "AuxiliaryModelError:http_status"

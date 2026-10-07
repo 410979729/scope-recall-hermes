@@ -4,6 +4,7 @@ Pipe I/O runs off the caller thread so the deadline also bounds blocked writes.
 Timeout/cancellation/protocol failure discards the helper, never replays a POST.
 Only the next caller may start a replacement. Stderr is never retained or logged.
 """
+
 from __future__ import annotations
 
 import atexit
@@ -67,9 +68,12 @@ class HttpWorkerSession:
             if self._process is None or self._process.poll() is not None:
                 self.discard()
                 self._process = subprocess.Popen(
-                    [*command, "--persistent"], stdin=subprocess.PIPE,
-                    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                    startupinfo=startupinfo, creationflags=creationflags,
+                    [*command, "--persistent"],
+                    stdin=subprocess.PIPE,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL,
+                    startupinfo=startupinfo,
+                    creationflags=creationflags,
                 )
             process = self._process
             if self._closed:  # close may race with process creation

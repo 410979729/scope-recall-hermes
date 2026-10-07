@@ -1,4 +1,5 @@
 """R1 semantic acceptance cases over synthetic, offline source text."""
+
 from dataclasses import replace
 import itertools
 import sqlite3
@@ -49,9 +50,7 @@ def qualification(
         statement_kind=statement_kind,
         valid_from=root.occurred_at,
         valid_to=None,
-        evidence_spans=[
-            dict(source_ref=root.ref, source_revision=root.revision, quote=text)
-        ],
+        evidence_spans=[dict(source_ref=root.ref, source_revision=root.revision, quote=text)],
     )
     return qualify(proposal, (root,))
 
@@ -243,15 +242,11 @@ def test_verified_speakers_get_distinct_internal_subjects_in_a_shared_scope(app)
     core, ctx = app
     alice = replace(
         ctx,
-        source_principal=TrustedSourcePrincipal(
-            "human", "verified", principal_ref="principal:TEST-alice"
-        ),
+        source_principal=TrustedSourcePrincipal("human", "verified", principal_ref="principal:TEST-alice"),
     )
     bob = replace(
         ctx,
-        source_principal=TrustedSourcePrincipal(
-            "human", "verified", principal_ref="principal:TEST-bob"
-        ),
+        source_principal=TrustedSourcePrincipal("human", "verified", principal_ref="principal:TEST-bob"),
     )
     alice_source = capture(core, alice, "我喜欢蓝色。")
     alice_item = accept(core, alice, _self_preference(alice_source, "蓝色")).items[0]
@@ -268,15 +263,11 @@ def test_multiple_verified_speakers_cannot_jointly_authorize_one_self_claim(app)
     core, ctx = app
     alice = replace(
         ctx,
-        source_principal=TrustedSourcePrincipal(
-            "human", "verified", principal_ref="principal:TEST-alice"
-        ),
+        source_principal=TrustedSourcePrincipal("human", "verified", principal_ref="principal:TEST-alice"),
     )
     bob = replace(
         ctx,
-        source_principal=TrustedSourcePrincipal(
-            "human", "verified", principal_ref="principal:TEST-bob"
-        ),
+        source_principal=TrustedSourcePrincipal("human", "verified", principal_ref="principal:TEST-bob"),
     )
     alice_source = capture(core, alice, "我喜欢蓝色。")
     bob_source = capture(core, bob, "我喜欢蓝色。")
@@ -300,9 +291,7 @@ def test_default_conditional_and_one_turn_preferences_use_distinct_slots(app):
     core, ctx = app
     alice = replace(
         ctx,
-        source_principal=TrustedSourcePrincipal(
-            "human", "verified", principal_ref="principal:TEST-alice"
-        ),
+        source_principal=TrustedSourcePrincipal("human", "verified", principal_ref="principal:TEST-alice"),
     )
     sources = (
         capture(core, alice, "我平时喜欢简短回复。"),
@@ -316,10 +305,7 @@ def test_default_conditional_and_one_turn_preferences_use_distinct_slots(app):
     )
     items = [accept(core, alice, proposal).items[0] for proposal in proposals]
 
-    states = [
-        (item.state, core.claim_history(ctx, item.ref)[0].reason)
-        for item in items
-    ]
+    states = [(item.state, core.claim_history(ctx, item.ref)[0].reason) for item in items]
     assert states == [
         ("active", "explicit_scoped_source"),
         ("active", "explicit_scoped_source"),
@@ -400,15 +386,11 @@ def test_verified_first_person_correction_cannot_cross_speakers(app):
     core, ctx = app
     alice = replace(
         ctx,
-        source_principal=TrustedSourcePrincipal(
-            "human", "verified", principal_ref="principal:TEST-alice"
-        ),
+        source_principal=TrustedSourcePrincipal("human", "verified", principal_ref="principal:TEST-alice"),
     )
     bob = replace(
         ctx,
-        source_principal=TrustedSourcePrincipal(
-            "human", "verified", principal_ref="principal:TEST-bob"
-        ),
+        source_principal=TrustedSourcePrincipal("human", "verified", principal_ref="principal:TEST-bob"),
     )
     source = capture(core, alice, "我喜欢蓝色。")
     item = accept(core, alice, _self_preference(source, "蓝色")).items[0]

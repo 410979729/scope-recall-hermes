@@ -8,6 +8,7 @@ wrote schema 1108, one copied lineage row per episode revision, its work queue;
 Every fixture the older upgrade tests used was a fresh store downgraded by
 hand, which is how a wrong version stamp in the 1107 step went unnoticed.
 """
+
 from __future__ import annotations
 
 import subprocess
@@ -21,12 +22,13 @@ LATEST_RELEASE = "v3.1.2"
 LATEST_SCHEMA = 1109
 
 
-def build_previous_release_store(directory: str | Path, *, repo_root: str | Path, sources: int = 12,
-                                 release: str = PREVIOUS_RELEASE) -> Path:
+def build_previous_release_store(
+    directory: str | Path, *, repo_root: str | Path, sources: int = 12, release: str = PREVIOUS_RELEASE
+) -> Path:
     """Return the ``memory.sqlite3`` that ``release`` wrote into ``directory``."""
     target = Path(directory).resolve()
     root = Path(repo_root).resolve()
-    script = r'''
+    script = r"""
 import io, pathlib, subprocess, sys, tarfile, tempfile
 from dataclasses import replace
 
@@ -75,11 +77,15 @@ with tempfile.TemporaryDirectory(prefix="scope-recall-release-") as td:
         actor = replace(context, actor_origin=event["origin"])  # capture checks the actor against the event
         receipt = core.record_event(actor, event, scope_id="TEST-scope", remaining_seconds=10)
         assert receipt.disposition == "inserted", receipt
-'''
+"""
     target.parent.mkdir(parents=True, exist_ok=True)
     try:
-        subprocess.run([sys.executable, "-c", script, str(target), str(root), release, str(sources)],
-                       check=True, capture_output=True, text=True)
+        subprocess.run(
+            [sys.executable, "-c", script, str(target), str(root), release, str(sources)],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
     except subprocess.CalledProcessError as exc:
         raise RuntimeError(exc.stderr or exc.stdout or "previous release fixture subprocess failed") from exc
     return target / "memory.sqlite3"

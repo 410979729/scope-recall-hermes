@@ -3,6 +3,7 @@
 The provider owns session/capture lifecycle. This mixin consumes that trusted
 identity and Core port; it never constructs identity from tool arguments.
 """
+
 from __future__ import annotations
 from datetime import tzinfo
 import json
@@ -39,15 +40,22 @@ _TOOL_SCHEMAS: tuple[dict[str, Any], ...] = (
                 "protocol_version": {"type": "string", "const": "1.1"},
                 "request_id": {"type": "string", "minLength": 1, "maxLength": 100},
                 "query": {"type": "string", "minLength": 1, "maxLength": MAX_CONTENT},
-                "mode": {"type": "string", "enum": ["auto", "current", "history", "as_of", "method"],
-                         "description": "current: what holds now. history: what was believed before, with what "
-                                        "replaced it. as_of: what held at one instant, which requires as_of. "
-                                        "method: how something is done. auto: background context."},
-                "as_of": {"type": "string", "minLength": 1, "maxLength": 240,
-                          "description": "Required by mode as_of, and ignored otherwise. One instant with its offset, "
-                                         "as memory times are written: 2026-09-17T08:00:00-04:00 or "
-                                         "2026-09-17T12:00:00Z. A date alone, a space instead of the T, or a time "
-                                         "without an offset is refused."},
+                "mode": {
+                    "type": "string",
+                    "enum": ["auto", "current", "history", "as_of", "method"],
+                    "description": "current: what holds now. history: what was believed before, with what "
+                    "replaced it. as_of: what held at one instant, which requires as_of. "
+                    "method: how something is done. auto: background context.",
+                },
+                "as_of": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 240,
+                    "description": "Required by mode as_of, and ignored otherwise. One instant with its offset, "
+                    "as memory times are written: 2026-09-17T08:00:00-04:00 or "
+                    "2026-09-17T12:00:00Z. A date alone, a space instead of the T, or a time "
+                    "without an offset is refused.",
+                },
                 "max_items": {"type": "integer"},
                 "budget_tokens": {"type": "integer"},
                 "focus_refs": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 240}},
@@ -95,8 +103,7 @@ _TOOL_SCHEMAS: tuple[dict[str, Any], ...] = (
         "description": (
             "Read-only exact one-hop entity view. action=probe returns current facts about the subject; "
             "action=related returns direct recorded statements. Incoming matches full scalar value_text only. "
-            "No multi-hop traversal or inferred identity merge. Protocol version 1.1. "
-            + READ_VIEW_BUDGET_GUIDANCE
+            "No multi-hop traversal or inferred identity merge. Protocol version 1.1. " + READ_VIEW_BUDGET_GUIDANCE
         ),
         "parameters": {
             "type": "object",
@@ -130,10 +137,22 @@ _TOOL_SCHEMAS: tuple[dict[str, Any], ...] = (
                 # ``properties`` beside a type list, which Hermes turns into ``anyOf`` before Gemini reads it.
                 "new_value": {"type": ["string", "object", "null"]},
                 "conditions": {"type": "array", "items": {"type": "string", "maxLength": MAX_CONTENT}},
-                "source_evidence_refs": {"type": "array", "maxItems": MAX_REFS, "items": {"type": "string", "minLength": 1, "maxLength": 240}},
+                "source_evidence_refs": {
+                    "type": "array",
+                    "maxItems": MAX_REFS,
+                    "items": {"type": "string", "minLength": 1, "maxLength": 240},
+                },
                 "valid_from": {"type": ["string", "null"]},
             },
-            "required": ["protocol_version", "target_ref", "expected_revision", "new_value", "conditions", "source_evidence_refs", "valid_from"],
+            "required": [
+                "protocol_version",
+                "target_ref",
+                "expected_revision",
+                "new_value",
+                "conditions",
+                "source_evidence_refs",
+                "valid_from",
+            ],
         },
     },
     {
@@ -145,7 +164,12 @@ _TOOL_SCHEMAS: tuple[dict[str, Any], ...] = (
             "properties": {
                 "protocol_version": {"type": "string", "const": "1.1"},
                 "request_id": {"type": "string", "minLength": 1, "maxLength": 100},
-                "target_refs": {"type": "array", "minItems": 1, "maxItems": MAX_REFS, "items": {"type": "string", "minLength": 1, "maxLength": 240}},
+                "target_refs": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": MAX_REFS,
+                    "items": {"type": "string", "minLength": 1, "maxLength": 240},
+                },
                 "mode": {"type": "string", "enum": ["suppress", "delete"]},
                 "expected_revisions": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 1}},
                 "reason": {"type": "string", "maxLength": 1024},
@@ -214,13 +238,15 @@ def _unfenced_turn_packet(request_id: str) -> dict[str, Any]:
 def _error_output(code: str, field: str, *, request_id: str, origin: str, capability_gaps: tuple[str, ...] = ()) -> str:
     # Error output deliberately carries only the public contract code/field;
     # exception text could disclose a private ref, scope, or filesystem path.
-    return _dumps({
-        "protocol_version": PROTOCOL_VERSION,
-        "request_id": request_id,
-        "origin": origin,
-        "capability_gaps": list(capability_gaps),
-        "error": {"code": code, "field": field},
-    })
+    return _dumps(
+        {
+            "protocol_version": PROTOCOL_VERSION,
+            "request_id": request_id,
+            "origin": origin,
+            "capability_gaps": list(capability_gaps),
+            "error": {"code": code, "field": field},
+        }
+    )
 
 
 class HermesToolSurface:
@@ -232,9 +258,7 @@ class HermesToolSurface:
         identity = self._require_identity()
         context = identity.trusted_context(mutation=mutation)
         if mutation and (
-            identity.scope.platform != "cli"
-            or context.actor_origin != "human_direct"
-            or identity.read_only
+            identity.scope.platform != "cli" or context.actor_origin != "human_direct" or identity.read_only
         ):
             # A2A is authenticated as an audience, not attested as an operator.
             # Do this check before decoding target refs so a remote caller gets
@@ -305,8 +329,12 @@ class HermesToolSurface:
             # A lookup that finds nothing says so; prefetch keeps background.
             background_without_evidence=False,
         )
-        packet = fence_epoch(packet, core.memory_epoch(context), FENCED_RECALL,
-                             retracted=lambda since: core.memory_retracted_since(context, since))
+        packet = fence_epoch(
+            packet,
+            core.memory_epoch(context),
+            FENCED_RECALL,
+            retracted=lambda since: core.memory_retracted_since(context, since),
+        )
         return self._reply(body["request_id"], packet)
 
     def _handle_inspect(self, args: object) -> str:
@@ -333,8 +361,12 @@ class HermesToolSurface:
         context = self._tool_context()
         core = self._require_core()
         view = core.profile(context, body)
-        view = fence_epoch(view, core.status(context).memory_epoch, FENCED_PROFILE,
-                           retracted=lambda since: core.memory_retracted_since(context, since))
+        view = fence_epoch(
+            view,
+            core.status(context).memory_epoch,
+            FENCED_PROFILE,
+            retracted=lambda since: core.memory_retracted_since(context, since),
+        )
         return self._reply(body["request_id"], view)
 
     def _handle_entity(self, args: object) -> str:
@@ -344,8 +376,12 @@ class HermesToolSurface:
         context = self._tool_context()
         core = self._require_core()
         view = core.entity(context, body)
-        view = fence_epoch(view, core.status(context).memory_epoch, FENCED_ENTITY,
-                           retracted=lambda since: core.memory_retracted_since(context, since))
+        view = fence_epoch(
+            view,
+            core.status(context).memory_epoch,
+            FENCED_ENTITY,
+            retracted=lambda since: core.memory_retracted_since(context, since),
+        )
         return self._reply(body["request_id"], view)
 
     def _handle_trace(self, args: object) -> str:
@@ -353,8 +389,9 @@ class HermesToolSurface:
         context = self._tool_context()
         core = self._require_core()
         view = core.trace(context, body)
-        view = fence_trace_epoch(view, core.status(context).memory_epoch,
-                                 retracted=lambda since: core.memory_retracted_since(context, since))
+        view = fence_trace_epoch(
+            view, core.status(context).memory_epoch, retracted=lambda since: core.memory_retracted_since(context, since)
+        )
         return self._reply(body["request_id"], view)
 
     def _handle_revise(self, args: object) -> str:

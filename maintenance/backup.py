@@ -5,6 +5,7 @@ The backup uses sqlite3.Connection.backup instead of copying a live main file,
 never overwrites a public backup, and emits only structural metadata (no row
 content or credentials).
 """
+
 from __future__ import annotations
 
 import hashlib

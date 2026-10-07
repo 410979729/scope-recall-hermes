@@ -9,18 +9,21 @@ turns a degraded packet into a late one.  Paid consolidation calls have their
 own durable recovery in ``AUTO_RECOVERABLE_ERRORS``; this is the read path's
 only retry.
 """
+
 from __future__ import annotations
 
 from typing import Any, Callable, Sequence
 
 #: ``AuxiliaryModelError.error_type`` values that mean "the call never reached
 #: a provider that could answer it". Everything else is the provider's answer.
-TRANSIENT_EMBEDDING_ERRORS = frozenset({
-    "transport_unavailable",
-    "transport_worker",
-    "transport_worker_protocol",
-    "network_error",
-})
+TRANSIENT_EMBEDDING_ERRORS = frozenset(
+    {
+        "transport_unavailable",
+        "transport_worker",
+        "transport_worker_protocol",
+        "network_error",
+    }
+)
 
 #: A retry must be able to use at least this share of the original budget.
 MINIMUM_RETRY_FRACTION = 0.5
@@ -45,8 +48,9 @@ def retry_budget(budget_seconds: float, remaining_seconds: float) -> float:
     return min(budget, remaining)
 
 
-def embed_with_one_retry(embed: Callable[[float], Sequence[float]], *, budget_seconds: float,
-                         remaining: Callable[[], float]) -> Any:
+def embed_with_one_retry(
+    embed: Callable[[float], Sequence[float]], *, budget_seconds: float, remaining: Callable[[], float]
+) -> Any:
     """Run ``embed(seconds)``, retrying once if the connection was what failed.
 
     ``remaining`` is read again after the failure rather than passed in, so the

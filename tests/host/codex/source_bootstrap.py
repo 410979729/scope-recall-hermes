@@ -3,6 +3,7 @@
 Clean-wheel ``python -I -m scope_recall.adapters.codex.hook_entry`` coverage is a
 separate P14 obligation. This module only wires the checkout source tree.
 """
+
 from __future__ import annotations
 
 import os

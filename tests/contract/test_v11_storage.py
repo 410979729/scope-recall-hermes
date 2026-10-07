@@ -2,6 +2,7 @@
 
 Sources are synthetic. These tests do not claim semantic model/host acceptance.
 """
+
 from contextlib import closing
 from dataclasses import replace
 import hashlib
@@ -51,6 +52,7 @@ class InjectedFailure(RuntimeError):
 
 class FaultConnection:
     """Test-only proxy around a real production-factory SQLite connection."""
+
     def __init__(self, conn, *, operation=None, occurrence=1, rollback_fail=False, close_fail=False):
         self.conn = conn
         self.operation = operation
@@ -98,18 +100,22 @@ class FaultConnection:
 def inject(monkeypatch, **faults):
     actual = storage_module.connect_truth_database
     opened = []
+
     def factory(*args, **kwargs):
         conn = FaultConnection(actual(*args, **kwargs), **faults)
         opened.append(conn)
         return conn
+
     monkeypatch.setattr(storage_module, "connect_truth_database", factory)
     return actual, opened
 
 
 def test_import_and_composition_have_no_storage_host_or_model_side_effects(tmp_path, monkeypatch):
     ctx = context(tmp_path / "TEST-not-created")
+
     def forbidden(*args, **kwargs):
         raise AssertionError("constructor/import opened storage")
+
     monkeypatch.setattr(storage_module, "connect_truth_database", forbidden)
     before = set(sys.modules)
     importlib.reload(importlib.import_module("scope_recall.core.composition"))
@@ -117,7 +123,10 @@ def test_import_and_composition_have_no_storage_host_or_model_side_effects(tmp_p
     assert core.config.binding == ctx.binding
     assert not ctx.binding.data_directory.exists()
     loaded = set(sys.modules) - before
-    assert not any(name.startswith(("hermes", "gateway", "run_agent", "lancedb", "torch", "scope_recall.provider")) for name in loaded)
+    assert not any(
+        name.startswith(("hermes", "gateway", "run_agent", "lancedb", "torch", "scope_recall.provider"))
+        for name in loaded
+    )
 
 
 def test_independent_initialize_and_exact_restricted_roundtrip(store):
@@ -140,7 +149,9 @@ def test_independent_initialize_and_exact_restricted_roundtrip(store):
 
 
 def test_scopes_filtered_and_foreign_binding_refused(tmp_path):
-    binding = InstanceBinding("TEST-agent", "TEST-install", tmp_path / "TEST-scopes", frozenset({"TEST-private", "TEST-group"}), True)
+    binding = InstanceBinding(
+        "TEST-agent", "TEST-install", tmp_path / "TEST-scopes", frozenset({"TEST-private", "TEST-group"}), True
+    )
     storage = SQLiteStorage(binding)
     storage.initialize()
     private = TrustedContext(binding, "TEST-session", frozenset({"TEST-private"}), "human_direct")
@@ -193,8 +204,12 @@ def test_global_sources_remain_readable_without_exposing_project_sources(store):
 @pytest.mark.parametrize("change", ["agent", "installation", "test_mode", "scopes", "copy"])
 def test_identity_drift_and_directory_copy_do_not_inherit_authority(store, tmp_path, change):
     storage, ctx = store
-    values = {"agent": {"agent_id": "TEST-other"}, "installation": {"installation_id": "TEST-other"},
-              "test_mode": {"test_mode": False}, "scopes": {"scope_ids": frozenset({"TEST-new-scope"})}}
+    values = {
+        "agent": {"agent_id": "TEST-other"},
+        "installation": {"installation_id": "TEST-other"},
+        "test_mode": {"test_mode": False},
+        "scopes": {"scope_ids": frozenset({"TEST-new-scope"})},
+    }
     if change == "copy":
         destination = tmp_path / "TEST-copied"
         shutil.copytree(storage.binding.data_directory, destination)
@@ -228,7 +243,10 @@ def test_read_only_and_foreign_key_guard_are_real_sqlite(store, monkeypatch):
     assert snapshot(storage, ctx).memory_epoch == 0
     with storage.write(ctx):
         with pytest.raises(sqlite3.IntegrityError, match="FOREIGN KEY"):
-            opened[-1].conn.execute("INSERT INTO work_items(work_type,subject_ref,subject_revision,scope_id,available_at) VALUES ('embed','TEST',1,'UNAUTHORIZED',?)", (NOW,))
+            opened[-1].conn.execute(
+                "INSERT INTO work_items(work_type,subject_ref,subject_revision,scope_id,available_at) VALUES ('embed','TEST',1,'UNAUTHORIZED',?)",
+                (NOW,),
+            )
 
 
 def test_unknown_schema_and_old_store_never_auto_upgrade(store, tmp_path):
@@ -246,7 +264,8 @@ def test_unknown_schema_and_old_store_never_auto_upgrade(store, tmp_path):
     old = sqlite3.connect(target / "memory.sqlite3")
     old.execute("CREATE TABLE memories(id TEXT PRIMARY KEY,content TEXT)")
     old.execute("INSERT INTO memories VALUES ('TEST-old','TEST keep unchanged')")
-    old.commit(); old.close()
+    old.commit()
+    old.close()
     legacy = SQLiteStorage(replace(ctx.binding, data_directory=target))
     before = legacy.path.read_bytes()
     with pytest.raises(ContractError, match="SCHEMA_UNSUPPORTED"):
@@ -459,8 +478,9 @@ def test_a_failed_pragma_whose_close_fails_keeps_the_connection_for_the_next_ope
     assert snapshot(storage, ctx).sources == 1
 
 
-@pytest.mark.parametrize("statement,writable", [("PRAGMA user_version", True), ("PRAGMA user_version", False),
-                                                 ("PRAGMA journal_mode", True)])
+@pytest.mark.parametrize(
+    "statement,writable", [("PRAGMA user_version", True), ("PRAGMA user_version", False), ("PRAGMA journal_mode", True)]
+)
 def test_a_failure_right_after_open_closes_the_connection_and_its_writer_lease(store, monkeypatch, statement, writable):
     """A transaction read the store's version, and switched a writer to WAL, before the block that closes its
     connection.  A failure there left the connection open, and a writer's lease held until the process ended: every
@@ -483,7 +503,14 @@ def test_source_query_uses_authorized_identity_index(store, monkeypatch):
     storage, ctx = store
     actual, opened = inject(monkeypatch)
     with storage.read(ctx):
-        plan = opened[-1].conn.execute("EXPLAIN QUERY PLAN SELECT * FROM source_events WHERE event_id=? AND source_revision=? AND scope_id=? AND read_blocked=0", ("TEST",1,"TEST-scope")).fetchall()
+        plan = (
+            opened[-1]
+            .conn.execute(
+                "EXPLAIN QUERY PLAN SELECT * FROM source_events WHERE event_id=? AND source_revision=? AND scope_id=? AND read_blocked=0",
+                ("TEST", 1, "TEST-scope"),
+            )
+            .fetchall()
+        )
         assert any("USING INDEX" in row[3] for row in plan)
 
 
@@ -545,6 +572,7 @@ def test_a_heavy_upgrade_waits_for_a_caller_with_the_budget():
     1.4 GB store.  A hook's few seconds cannot carry that; the worker's pass
     and the installer can, and a small store is brought forward by anyone."""
     from scope_recall.core.storage import HEAVY_UPGRADE_BYTES, HEAVY_UPGRADE_SECONDS, upgrade_fits
+
     assert upgrade_fits(HEAVY_UPGRADE_BYTES * 10, None)
     assert upgrade_fits(HEAVY_UPGRADE_BYTES * 10, HEAVY_UPGRADE_SECONDS)
     assert not upgrade_fits(HEAVY_UPGRADE_BYTES * 10, 6.0)
@@ -563,8 +591,11 @@ def test_source_versions_carry_an_integer_identity_and_the_lexical_index_names_t
         assert ids == [1, 2]
         shared = conn.execute(
             """SELECT count(*) FROM lexical_terms t JOIN lexical_postings p ON p.term_id=t.term_id
-               WHERE t.term=(SELECT term FROM lexical_terms WHERE term LIKE '%蓝色%' LIMIT 1)""").fetchone()[0]
+               WHERE t.term=(SELECT term FROM lexical_terms WHERE term LIKE '%蓝色%' LIMIT 1)"""
+        ).fetchone()[0]
         assert shared == 2, "one term row, one posting per source"
     with storage.read(ctx) as tx:
         assert tx.source_projection_status(first.ref, first.revision)[0] == "ready"
-        assert [s.ref for s in tx.search_sources("identity")] == [second.ref, first.ref] or len(tx.search_sources("identity")) == 2
+        assert [s.ref for s in tx.search_sources("identity")] == [second.ref, first.ref] or len(
+            tx.search_sources("identity")
+        ) == 2

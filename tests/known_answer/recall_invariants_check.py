@@ -29,6 +29,7 @@ does not match.
 
 Exit code 0 when every observed answer matches expected_answers.json, 1 otherwise.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -48,6 +49,7 @@ from scope_recall.adapters.lance import LanceEmbedPort, LancePurgePort, LanceVec
 from scope_recall.contracts import ContractError, InstanceBinding, TrustedContext
 from scope_recall.core import CoreConfig, MemoryCore
 from scope_recall.core.recall_policy import RecallPolicy
+
 try:  # 3.8.0 and later: a whole-store re-embed into a new space (respace-embeddings)
     from scope_recall.runtime.vector_upkeep import respace_if_due
 except ImportError:  # 3.7.x has no whole-store re-embed (#200), so the rebuild checks are skipped there
@@ -64,6 +66,7 @@ VECTOR_THRESHOLD = 0.30
 
 
 # ---------------------------------------------------------------- deterministic model seams
+
 
 def _vector(text: str) -> list[float]:
     """Hashed bag of words, L2 normalised.  Same text, same vector, on every machine."""
@@ -108,16 +111,32 @@ class StubConsolidation:
             text = s.event.get("content") or ""
             if text in KNOWN_SENTENCES:
                 subject, predicate, value = KNOWN_SENTENCES[text]
-                claims.append(dict(kind="fact", subject=subject, predicate=predicate, value_text=value,
-                                   conditions=[], statement_kind="assertion",
-                                   valid_from=s.event["occurred_at"], valid_to=None,
-                                   evidence_spans=[dict(source_ref=s.ref, source_revision=s.revision, quote=text)]))
-        return json.dumps(dict(protocol_version="1.1",
-                               source_refs=[f"{s.ref}@{s.revision}" for s in sources],
-                               claim_proposals=claims, resume_proposals=[], reference_proposals=[]))
+                claims.append(
+                    dict(
+                        kind="fact",
+                        subject=subject,
+                        predicate=predicate,
+                        value_text=value,
+                        conditions=[],
+                        statement_kind="assertion",
+                        valid_from=s.event["occurred_at"],
+                        valid_to=None,
+                        evidence_spans=[dict(source_ref=s.ref, source_revision=s.revision, quote=text)],
+                    )
+                )
+        return json.dumps(
+            dict(
+                protocol_version="1.1",
+                source_refs=[f"{s.ref}@{s.revision}" for s in sources],
+                claim_proposals=claims,
+                resume_proposals=[],
+                reference_proposals=[],
+            )
+        )
 
 
 # ---------------------------------------------------------------- harness
+
 
 class Harness:
     def __init__(self, root: Path):
@@ -135,36 +154,60 @@ class Harness:
         if self.store is not None:
             self.store.close()
         self.space = space
-        self.store = build_vector_store("sqlite-bruteforce", storage_dir=self.root / "vectors" / space,
-                                        table_name="repro_vectors", dimensions=DIMS, metric="cosine")
+        self.store = build_vector_store(
+            "sqlite-bruteforce",
+            storage_dir=self.root / "vectors" / space,
+            table_name="repro_vectors",
+            dimensions=DIMS,
+            metric="cosine",
+        )
         self.store.open()
-        self.embed_port = LanceEmbedPort(self.store, self.embedder, agent_id="repro-agent",
-                                         installation_id="repro-install", embedding_space=space)
-        self.purge_port = LancePurgePort(self.store, embedding_spaces=(space,), agent_id="repro-agent",
-                                         installation_id="repro-install")
+        self.embed_port = LanceEmbedPort(
+            self.store, self.embedder, agent_id="repro-agent", installation_id="repro-install", embedding_space=space
+        )
+        self.purge_port = LancePurgePort(
+            self.store, embedding_spaces=(space,), agent_id="repro-agent", installation_id="repro-install"
+        )
         vectors = LanceVectorPort(self.store, self.embedder, expected_embedding_space=space)
-        self.core = MemoryCore(CoreConfig(self.binding), vectors=vectors,
-                               retrieval_policy=RecallPolicy(vector_threshold=VECTOR_THRESHOLD,
-                                                             embedding_space_id=space))
+        self.core = MemoryCore(
+            CoreConfig(self.binding),
+            vectors=vectors,
+            retrieval_policy=RecallPolicy(vector_threshold=VECTOR_THRESHOLD, embedding_space_id=space),
+        )
 
     def ctx(self, session: str, origin: str = "human_direct") -> TrustedContext:
-        return TrustedContext(self.binding, session, frozenset({SCOPE}), origin,
-                              project_id="orchard", branch_id="main")
+        return TrustedContext(self.binding, session, frozenset({SCOPE}), origin, project_id="orchard", branch_id="main")
 
     def say(self, session: str, text: str, origin: str = "human_direct", when: str = "2026-10-01T09:00:00Z"):
         self.n += 1
         role = {"human_direct": "user", "assistant_visible": "assistant", "tool_observation": "tool"}[origin]
-        event = dict(protocol_version="1.1", source_event_key=f"repro/{self.n}", source_revision=1,
-                     origin=origin, role=role, content=text, occurred_at=when, recorded_at=when,
-                     time_precision="instant", capture_state="complete", evidence_refs=[])
+        event = dict(
+            protocol_version="1.1",
+            source_event_key=f"repro/{self.n}",
+            source_revision=1,
+            origin=origin,
+            role=role,
+            content=text,
+            occurred_at=when,
+            recorded_at=when,
+            time_precision="instant",
+            capture_state="complete",
+            evidence_refs=[],
+        )
         receipt = self.core.record_event(self.ctx(session, origin), event, scope_id=SCOPE, remaining_seconds=10)
         return self.core.source(self.ctx(session), receipt.event_refs[0].ref, 1)
 
     def drain(self, ctx, rounds: int = 8) -> int:
         total = 0
         for _ in range(rounds):
-            r = self.core.drain_worker(ctx, consolidation=self.model, embed=self.embed_port,
-                                       purge=self.purge_port, max_items=32, remaining_seconds=20)
+            r = self.core.drain_worker(
+                ctx,
+                consolidation=self.model,
+                embed=self.embed_port,
+                purge=self.purge_port,
+                max_items=32,
+                remaining_seconds=20,
+            )
             total += r.processed
             if r.processed == 0:
                 break
@@ -188,15 +231,24 @@ class Harness:
             run = self.core.respace_embeddings(ctx, space_id=SPACE_2)["run"]
             if run and run.get("completed") and processed == 0:
                 break
-        return dict(start=report.get("run"), pages=[p.get("outcome") if isinstance(p, dict) else p for p in pages],
-                    final=self.core.respace_embeddings(ctx, space_id=SPACE_2))
+        return dict(
+            start=report.get("run"),
+            pages=[p.get("outcome") if isinstance(p, dict) else p for p in pages],
+            final=self.core.respace_embeddings(ctx, space_id=SPACE_2),
+        )
 
     # reads ----------------------------------------------------------------
     def recall(self, ctx, query: str) -> dict:
         """An explicit lookup, as the recall tool makes it: no ambient background stands in for evidence."""
         self.n += 1
-        request = dict(protocol_version="1.1", request_id=f"q{self.n}", query=query, mode="current",
-                       max_items=8, budget_tokens=4000)
+        request = dict(
+            protocol_version="1.1",
+            request_id=f"q{self.n}",
+            query=query,
+            mode="current",
+            max_items=8,
+            budget_tokens=4000,
+        )
         return dict(self.core.recall_packet(ctx, request, deadline_seconds=10, background_without_evidence=False))
 
     def companion_dump(self) -> str:
@@ -216,11 +268,14 @@ def outcome(fn):
 
 
 def active_claim_with(packet, value: str) -> bool:
-    return any(i.get("kind") == "claim" and i.get("claim_state") == "active" and value in (i.get("content") or "")
-               for i in packet.get("items", []))
+    return any(
+        i.get("kind") == "claim" and i.get("claim_state") == "active" and value in (i.get("content") or "")
+        for i in packet.get("items", [])
+    )
 
 
 # ---------------------------------------------------------------- the run
+
 
 def run() -> tuple[dict, dict]:
     obs: dict = {}
@@ -237,28 +292,39 @@ def run() -> tuple[dict, dict]:
         h.say("session-A", "df -h /srv/orchard: 81% used, mount point is /dev/vdb1", origin="tool_observation")
 
         obs["A1_port_served_as_active_fact_before_worker_pass"] = active_claim_with(
-            h.recall(A, "What is the Orchard staging database port?"), "6543")
+            h.recall(A, "What is the Orchard staging database port?"), "6543"
+        )
         obs["A2_port_words_findable_before_worker_pass"] = any(
-            s.ref == port_src.ref for s in h.core.search_sources(A, "6543"))
+            s.ref == port_src.ref for s in h.core.search_sources(A, "6543")
+        )
 
         h.drain(A)
         obs["A3_port_served_as_active_fact_after_worker_pass"] = active_claim_with(
-            h.recall(A, "What is the Orchard staging database port?"), "6543")
+            h.recall(A, "What is the Orchard staging database port?"), "6543"
+        )
         obs["A4_release_manager_served_as_active_fact_after_worker_pass"] = active_claim_with(
-            h.recall(A, "Who is the Orchard release manager?"), "Dana Whitfield")
+            h.recall(A, "Who is the Orchard release manager?"), "Dana Whitfield"
+        )
         bucket = h.recall(A, "What is the Orchard backup bucket?")
         obs["A5_assistant_only_bucket_served_as_active_fact"] = active_claim_with(bucket, "cold-archive-7")
-        diag["A5_bucket_items"] = [f"{i.get('kind')}:{i.get('claim_state') or '-'}:{i.get('qualification_reason') or '-'}"
-                                   for i in bucket["items"] if "cold-archive-7" in (i.get("content") or "")]
+        diag["A5_bucket_items"] = [
+            f"{i.get('kind')}:{i.get('claim_state') or '-'}:{i.get('qualification_reason') or '-'}"
+            for i in bucket["items"]
+            if "cold-archive-7" in (i.get("content") or "")
+        ]
         disk = h.recall(A, "How full is /srv/orchard?")
-        obs["A6_tool_output_served_as_fact"] = any(i.get("kind") == "claim" and "81%" in (i.get("content") or "")
-                                                   for i in disk["items"])
+        obs["A6_tool_output_served_as_fact"] = any(
+            i.get("kind") == "claim" and "81%" in (i.get("content") or "") for i in disk["items"]
+        )
         obs["A7_stub_model_was_called"] = h.model.calls > 0
 
         packet = h.recall(A, "What is the Orchard staging database port?")
-        port_claim = next((i for i in packet["items"] if i.get("kind") == "claim" and "6543" in (i.get("content") or "")), None)
-        manager_claim = next((i for i in h.recall(A, "Who is the Orchard release manager?")["items"]
-                              if i.get("kind") == "claim"), None)
+        port_claim = next(
+            (i for i in packet["items"] if i.get("kind") == "claim" and "6543" in (i.get("content") or "")), None
+        )
+        manager_claim = next(
+            (i for i in h.recall(A, "Who is the Orchard release manager?")["items"] if i.get("kind") == "claim"), None
+        )
         if port_claim is None:
             obs["SETUP_port_claim_visible"] = False
             return obs, diag
@@ -266,27 +332,40 @@ def run() -> tuple[dict, dict]:
         diag["port_claim"] = dict(ref=ref, revision=rev)
 
         def revise_req(source, value, expected):
-            return dict(protocol_version="1.1", target_ref=ref, expected_revision=expected, new_value=value,
-                        conditions=[], source_evidence_refs=[f"{source.ref}@{source.revision}"],
-                        valid_from=source.event["occurred_at"])
+            return dict(
+                protocol_version="1.1",
+                target_ref=ref,
+                expected_revision=expected,
+                new_value=value,
+                conditions=[],
+                source_evidence_refs=[f"{source.ref}@{source.revision}"],
+                valid_from=source.event["occurred_at"],
+            )
 
         # ---------------- B. revise: the person's own request, same session, exact version
         T1 = "2026-10-02T09:00:00Z"
         obs["B1_revise_citing_only_the_original_statement"], _ = outcome(
-            lambda: h.core.revise(A, revise_req(port_src, "6544", rev), remaining_seconds=10))
-        asst = h.say("session-A", "Please correct Orchard staging database port: 6544.", origin="assistant_visible", when=T1)
+            lambda: h.core.revise(A, revise_req(port_src, "6544", rev), remaining_seconds=10)
+        )
+        asst = h.say(
+            "session-A", "Please correct Orchard staging database port: 6544.", origin="assistant_visible", when=T1
+        )
         obs["B2_revise_citing_an_assistant_message"], _ = outcome(
-            lambda: h.core.revise(A, revise_req(asst, "6544", rev), remaining_seconds=10))
+            lambda: h.core.revise(A, revise_req(asst, "6544", rev), remaining_seconds=10)
+        )
         other = h.say("session-B", "Please correct Orchard staging database port: 6544.", when=T1)
         obs["B3_revise_in_session_A_citing_a_request_made_in_session_B"], _ = outcome(
-            lambda: h.core.revise(A, revise_req(other, "6544", rev), remaining_seconds=10))
+            lambda: h.core.revise(A, revise_req(other, "6544", rev), remaining_seconds=10)
+        )
         mine = h.say("session-A", "Please correct Orchard staging database port: 6544.", when=T1)
         head = h.core.current_claim(A, ref).revision
         obs["B4_capture_alone_changed_the_fact"] = head != rev
         obs["B5_revise_with_own_request_but_wrong_version"], _ = outcome(
-            lambda: h.core.revise(A, revise_req(mine, "6544", head + 1), remaining_seconds=10))
+            lambda: h.core.revise(A, revise_req(mine, "6544", head + 1), remaining_seconds=10)
+        )
         obs["B6_revise_with_own_request_and_exact_version"], _ = outcome(
-            lambda: h.core.revise(A, revise_req(mine, "6544", head), remaining_seconds=10))
+            lambda: h.core.revise(A, revise_req(mine, "6544", head), remaining_seconds=10)
+        )
         current = h.core.current_claim(A, ref)
         obs["B7_current_value_after_revise"] = current.payload["value_text"] if current else None
         obs["B8_history_values_after_revise"] = [v.payload["value_text"] for v in h.core.claim_history(A, ref)]
@@ -300,16 +379,26 @@ def run() -> tuple[dict, dict]:
             return dict(protocol_version="1.1", mode="delete", target_refs=[ref], expected_revisions={ref: expected})
 
         obs["B9_forget_in_a_session_with_no_request"], _ = outcome(
-            lambda: h.core.forget(F, forget_req(rev2), remaining_seconds=10))
-        negated = h.say("session-F", "Never forget the Orchard staging database port 6544.", when="2026-10-03T09:00:00Z")
+            lambda: h.core.forget(F, forget_req(rev2), remaining_seconds=10)
+        )
+        negated = h.say(
+            "session-F", "Never forget the Orchard staging database port 6544.", when="2026-10-03T09:00:00Z"
+        )
         obs["B10_forget_after_negated_wording"], _ = outcome(
-            lambda: h.core.forget(F, forget_req(rev2), remaining_seconds=10))
-        elsewhere = h.say("session-A", "Please delete the Orchard staging database port 6544.", when="2026-10-03T09:01:00Z")
+            lambda: h.core.forget(F, forget_req(rev2), remaining_seconds=10)
+        )
+        elsewhere = h.say(
+            "session-A", "Please delete the Orchard staging database port 6544.", when="2026-10-03T09:01:00Z"
+        )
         obs["B11_forget_in_session_F_when_the_request_was_made_in_session_A"], _ = outcome(
-            lambda: h.core.forget(F, forget_req(rev2), remaining_seconds=10))
-        authorizing = h.say("session-F", "Please delete the Orchard staging database port 6544.", when="2026-10-03T09:02:00Z")
+            lambda: h.core.forget(F, forget_req(rev2), remaining_seconds=10)
+        )
+        authorizing = h.say(
+            "session-F", "Please delete the Orchard staging database port 6544.", when="2026-10-03T09:02:00Z"
+        )
         obs["B12_forget_with_own_request_but_superseded_version"], _ = outcome(
-            lambda: h.core.forget(F, forget_req(rev), remaining_seconds=10))
+            lambda: h.core.forget(F, forget_req(rev), remaining_seconds=10)
+        )
 
         dump = h.companion_dump()
         obs["C0_companion_held_the_fact_before_forget"] = ref in dump and port_src.ref in dump
@@ -320,11 +409,19 @@ def run() -> tuple[dict, dict]:
         h.drain(F)  # the worker pass that runs the purge against the companion
 
         # What must be gone: the claim, the sources it stands on, and the authorizing command.
-        gone = {"claim": ref, "original_statement": port_src.ref, "correction_request": mine.ref,
-                "authorizing_delete": authorizing.ref}
+        gone = {
+            "claim": ref,
+            "original_statement": port_src.ref,
+            "correction_request": mine.ref,
+            "authorizing_delete": authorizing.ref,
+        }
         # What the deletion contract does not cover: other messages that merely repeat the value.
-        bystanders = {"assistant_correction": asst.ref, "session_B_correction": other.ref,
-                      "negated_request": negated.ref, "session_A_delete_request": elsewhere.ref}
+        bystanders = {
+            "assistant_correction": asst.ref,
+            "session_B_correction": other.ref,
+            "negated_request": negated.ref,
+            "session_A_delete_request": elsewhere.ref,
+        }
         diag["refs_that_must_be_gone"] = gone
         diag["bystander_refs"] = bystanders
         control_refs = {manager_src.ref} | ({manager_claim["ref"]} if manager_claim else set())
@@ -340,8 +437,11 @@ def run() -> tuple[dict, dict]:
             hits = json.dumps(h.vector_hits("What is the Orchard staging database port 6543 6544?"), default=str)
             obs[f"{tag}_vector_search_returns_forgotten"] = sorted(k for k, v in gone.items() if v in hits)
             recalled = set()
-            for q in ("What is the Orchard staging database port?", "Orchard staging database port 6543",
-                      "Orchard staging database port 6544"):
+            for q in (
+                "What is the Orchard staging database port?",
+                "Orchard staging database port 6543",
+                "Orchard staging database port 6544",
+            ):
                 for item in h.recall(F, q)["items"]:
                     recalled.add(item.get("ref"))
                     recalled.update(r.split("@")[0] for r in item.get("evidence_refs") or [])
@@ -349,13 +449,16 @@ def run() -> tuple[dict, dict]:
             obs[f"{tag}_current_claim_exists"] = h.core.current_claim(F, ref) is not None
             obs[f"{tag}_history_versions"] = len(h.core.claim_history(F, ref))
             obs[f"{tag}_control_fact_recalled"] = active_claim_with(
-                h.recall(F, "Who is the Orchard release manager?"), "Dana Whitfield")
+                h.recall(F, "Who is the Orchard release manager?"), "Dana Whitfield"
+            )
             control_hits = json.dumps(h.vector_hits("Orchard release manager Dana Whitfield"), default=str)
             obs[f"{tag}_control_fact_in_vector_search"] = any(r in control_hits for r in control_refs)
 
         after_forget("C1")
         if respace_if_due is None or not hasattr(h.core, "respace_embeddings"):
-            diag["skipped"] = "C2 and C3: this release has no whole-store re-embed (respace-embeddings arrived in 3.8.0)"
+            diag["skipped"] = (
+                "C2 and C3: this release has no whole-store re-embed (respace-embeddings arrived in 3.8.0)"
+            )
             h.open(SPACE_1)
             after_forget("C4")
             h.store.close()
@@ -393,16 +496,29 @@ def main() -> int:
             want = checks[key]["expected"]
             ok = got == want
             failures += not ok
-            print(f"{'ok  ' if ok else 'FAIL'} {key}: {json.dumps(got)}" + ("" if ok else f"  (expected {json.dumps(want)})"))
+            print(
+                f"{'ok  ' if ok else 'FAIL'} {key}: {json.dumps(got)}"
+                + ("" if ok else f"  (expected {json.dumps(want)})")
+            )
         else:
             print(f"info {key}: {json.dumps(got, default=str)}")
     if "skipped" in diag:
         print(f"\nskipped {diag['skipped']}")
     print(f"\n{len(checks) - failures - skipped} of {len(checks) - skipped} expected answers matched")
     if args.json:
-        Path(args.json).write_text(json.dumps(dict(version=version, python=platform.python_version(),
-                                                   sqlite=sqlite3.sqlite_version, observed=observed,
-                                                   diagnostics=diag), indent=2, default=str))
+        Path(args.json).write_text(
+            json.dumps(
+                dict(
+                    version=version,
+                    python=platform.python_version(),
+                    sqlite=sqlite3.sqlite_version,
+                    observed=observed,
+                    diagnostics=diag,
+                ),
+                indent=2,
+                default=str,
+            )
+        )
     return 1 if failures else 0
 
 

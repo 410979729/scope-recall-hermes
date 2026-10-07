@@ -1,4 +1,5 @@
 """R1 thread-3 host identity, replay, and automatic-context contracts."""
+
 from __future__ import annotations
 
 from dataclasses import replace
@@ -259,13 +260,17 @@ def test_c2_current_subject_is_bound_only_from_verified_c1_principal(tmp_path):
     alice = replace(
         base,
         source_principal=TrustedSourcePrincipal(
-            "human", "verified", principal_ref="principal:TEST-alice",
+            "human",
+            "verified",
+            principal_ref="principal:TEST-alice",
         ),
     )
     bob = replace(
         base,
         source_principal=TrustedSourcePrincipal(
-            "human", "verified", principal_ref="principal:TEST-bob",
+            "human",
+            "verified",
+            principal_ref="principal:TEST-bob",
         ),
     )
     unresolved = replace(base, source_principal=TrustedSourcePrincipal("human", "unresolved"))
@@ -298,7 +303,9 @@ def test_entity_current_subject_reads_only_the_verified_principal(tmp_path):
     alice = replace(
         base,
         source_principal=TrustedSourcePrincipal(
-            "human", "verified", principal_ref="principal:TEST-alice",
+            "human",
+            "verified",
+            principal_ref="principal:TEST-alice",
         ),
     )
     core = MemoryCore(CoreConfig(base.binding), clock=Clock())
@@ -318,15 +325,18 @@ def test_entity_current_subject_reads_only_the_verified_principal(tmp_path):
         ),
     ).items[0]
 
-    result = core.entity(alice, {
-        "protocol_version": "1.1",
-        "request_id": "TEST-current-principal-entity",
-        "subject": "我",
-        "action": "related",
-        "direction": "outgoing",
-        "max_items": 8,
-        "budget_tokens": 2048,
-    })
+    result = core.entity(
+        alice,
+        {
+            "protocol_version": "1.1",
+            "request_id": "TEST-current-principal-entity",
+            "subject": "我",
+            "action": "related",
+            "direction": "outgoing",
+            "max_items": 8,
+            "budget_tokens": 2048,
+        },
+    )
 
     assert result["subject"] == "我"
     assert result["resolved_subject"] == "principal:TEST-alice"

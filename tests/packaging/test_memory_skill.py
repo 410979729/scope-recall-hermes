@@ -6,6 +6,7 @@ the words it says the user's message must contain are the core's own patterns, q
 changes, or the page is edited, an agent would coach the user into a request the core refuses, so
 every quoted word is checked against the pattern it is quoted from.
 """
+
 from __future__ import annotations
 
 import re
@@ -23,8 +24,14 @@ SKILL = SKILLS["scope-recall-memory"]
 
 #: action in the skill -> (the core's pattern, the words the skill quotes for it)
 QUOTED = {
-    "correct": (mutate._CORRECTION, ("改为", "改成", "换成", "更正", "纠正", "correct", "replace", "change to", "switch to")),
-    "withdraw": (mutate._RETRACT, ("撤回", "撤销", "作废", "不再使用", "停止使用", "retract", "withdraw", "stop using")),
+    "correct": (
+        mutate._CORRECTION,
+        ("改为", "改成", "换成", "更正", "纠正", "correct", "replace", "change to", "switch to"),
+    ),
+    "withdraw": (
+        mutate._RETRACT,
+        ("撤回", "撤销", "作废", "不再使用", "停止使用", "retract", "withdraw", "stop using"),
+    ),
     "mute": (deletion._SUPPRESS, ("不要主动提", "别再主动", "不再主动提", "do not mention")),
     "delete": (deletion._DELETE, ("删除", "删掉", "忘掉", "清除", "delete", "erase", "forget")),
 }
@@ -63,7 +70,11 @@ def test_the_skill_and_both_tool_descriptions_say_what_a_deletion_takes_with_it(
 
 
 def _paths(tmp_path: Path):
-    instance, plugin, project = (tmp_path / "instance").resolve(), (tmp_path / "plugins" / "scope-recall").resolve(), (tmp_path / "workspace").resolve()
+    instance, plugin, project = (
+        (tmp_path / "instance").resolve(),
+        (tmp_path / "plugins" / "scope-recall").resolve(),
+        (tmp_path / "workspace").resolve(),
+    )
     plugin.mkdir(parents=True)
     project.mkdir()
     return instance, plugin, project
@@ -72,8 +83,15 @@ def _paths(tmp_path: Path):
 @pytest.mark.parametrize("host", ["hermes", "codex"])
 def test_both_hosts_install_the_skill_own_it_and_remove_it(tmp_path, host):
     instance, plugin, project = _paths(tmp_path)
-    plan = plan_install(host=host, target_plugin_dir=plugin, instance_root=instance, project_root=project,
-                        agent_id="main", python_executable=Path(sys.executable), test_mode=True)
+    plan = plan_install(
+        host=host,
+        target_plugin_dir=plugin,
+        instance_root=instance,
+        project_root=project,
+        agent_id="main",
+        python_executable=Path(sys.executable),
+        test_mode=True,
+    )
     assert not plan.conflicts, plan.conflicts
     result = apply_install(plan)
 
@@ -81,12 +99,14 @@ def test_both_hosts_install_the_skill_own_it_and_remove_it(tmp_path, host):
     for name, source in SKILLS.items():
         installed = skills / name / "SKILL.md"
         assert installed.read_text(encoding="utf-8") == source.read_text(encoding="utf-8")
-        assert str(installed) in {str(Path(item)) for item in result.files_written} or \
-            installed.resolve() in {Path(item).resolve() for item in result.files_written}
+        assert str(installed) in {str(Path(item)) for item in result.files_written} or installed.resolve() in {
+            Path(item).resolve() for item in result.files_written
+        }
     removal = plan_uninstall(instance_root=instance)
     # Receipt paths are normalised, which lowers their case on Windows.
-    assert any(Path(item).name.lower() == "skill.md" and "scope-recall-memory" in item for item in removal.files_to_remove), \
-        "an uninstall takes the skill the install wrote"
+    assert any(
+        Path(item).name.lower() == "skill.md" and "scope-recall-memory" in item for item in removal.files_to_remove
+    ), "an uninstall takes the skill the install wrote"
 
 
 def test_an_existing_installation_gains_the_skill_on_its_next_apply(tmp_path, monkeypatch):
@@ -94,8 +114,15 @@ def test_an_existing_installation_gains_the_skill_on_its_next_apply(tmp_path, mo
     from scope_recall.maintenance import install_common, install_hermes
 
     instance, plugin, project = _paths(tmp_path)
-    arguments = dict(host="hermes", target_plugin_dir=plugin, instance_root=instance, project_root=project,
-                     agent_id="main", python_executable=Path(sys.executable), test_mode=True)
+    arguments = dict(
+        host="hermes",
+        target_plugin_dir=plugin,
+        instance_root=instance,
+        project_root=project,
+        agent_id="main",
+        python_executable=Path(sys.executable),
+        test_mode=True,
+    )
     setup_only = {"scope-recall-setup": SKILLS["scope-recall-setup"]}
     monkeypatch.setattr(install_common, "SKILLS", setup_only)
     monkeypatch.setattr(install_hermes, "SKILLS", setup_only)
@@ -120,8 +147,15 @@ def test_an_agent_s_edit_of_a_skill_stays_when_the_package_did_not_change_it(tmp
     from scope_recall.maintenance import install_common, install_hermes
 
     instance, plugin, project = _paths(tmp_path)
-    arguments = dict(host="hermes", target_plugin_dir=plugin, instance_root=instance, project_root=project,
-                     agent_id="main", python_executable=Path(sys.executable), test_mode=True)
+    arguments = dict(
+        host="hermes",
+        target_plugin_dir=plugin,
+        instance_root=instance,
+        project_root=project,
+        agent_id="main",
+        python_executable=Path(sys.executable),
+        test_mode=True,
+    )
     apply_install(plan_install(**arguments))
     skill = instance / "skills" / "scope-recall-memory" / "SKILL.md"
     packaged = skill.read_bytes()
@@ -133,22 +167,28 @@ def test_an_agent_s_edit_of_a_skill_stays_when_the_package_did_not_change_it(tmp
     assert [change.action for change in plan.changes if change.path == str(skill)] == ["keep"]
     result = apply_install(plan)
     assert skill.read_text(encoding="utf-8") == edited
-    assert all(Path(item).name.lower() != "skill.md" or "scope-recall-memory" not in item for item in result.files_written)
+    assert all(
+        Path(item).name.lower() != "skill.md" or "scope-recall-memory" not in item for item in result.files_written
+    )
     receipt = json.loads((instance / ".scope-recall-install-receipt.json").read_text(encoding="utf-8"))
     recorded = {entry["path"]: entry["sha256"] for entry in receipt["files"]}
     import hashlib
+
     assert recorded[install_common._norm(skill)] == hashlib.sha256(packaged).hexdigest(), "the package's digest"
     again = plan_install(**arguments)
     assert not again.conflicts and [c.action for c in again.changes if c.path == str(skill)] == ["keep"]
 
     changed = tmp_path / "TEST-changed-SKILL.md"
-    changed.write_text(install_common.SKILLS["scope-recall-memory"].read_text(encoding="utf-8") + "\nTEST new\n",
-                       encoding="utf-8")
+    changed.write_text(
+        install_common.SKILLS["scope-recall-memory"].read_text(encoding="utf-8") + "\nTEST new\n", encoding="utf-8"
+    )
     skills = {**install_common.SKILLS, "scope-recall-memory": changed}
     monkeypatch.setattr(install_common, "SKILLS", skills)
     monkeypatch.setattr(install_hermes, "SKILLS", skills)
-    assert any("edited prior file" in item and "scope-recall-memory" in item.lower()
-               for item in plan_install(**arguments).conflicts), "a skill the package changed is a conflict"
+    assert any(
+        "edited prior file" in item and "scope-recall-memory" in item.lower()
+        for item in plan_install(**arguments).conflicts
+    ), "a skill the package changed is a conflict"
     monkeypatch.undo()
     wrapper = plugin / "plugin.yaml"
     wrapper.write_text(wrapper.read_text(encoding="utf-8") + "# TEST edited wrapper\n", encoding="utf-8")

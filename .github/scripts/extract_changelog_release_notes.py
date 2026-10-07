@@ -51,8 +51,9 @@ def _version_headings(changelog: str) -> list[_Heading]:
         if fence_char is None:
             heading = _VERSION_HEADING_RE.fullmatch(line)
             if heading is not None:
-                headings.append(_Heading(label=heading.group("label").strip(), start=offset,
-                                         body_start=offset + len(line)))
+                headings.append(
+                    _Heading(label=heading.group("label").strip(), start=offset, body_start=offset + len(line))
+                )
         offset += len(line)
 
     return headings
@@ -75,7 +76,7 @@ def extract_version_section(changelog: str, version: str) -> str:
 
     index, heading = matches[0]
     end = headings[index + 1].start if index + 1 < len(headings) else len(changelog)
-    body = changelog[heading.body_start:end].strip()
+    body = changelog[heading.body_start : end].strip()
     if not body:
         raise ValueError(f"changelog section for {version} is empty")
     return body + "\n"

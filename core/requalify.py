@@ -21,6 +21,7 @@ gate change is look at the diff, not apply it.
 Not responsible for: judging (``core/claims.qualify``), or persisting the page
 cursor (the caller does, exactly as ``repair_frames`` does it).
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -75,8 +76,7 @@ class RequalifyReport:
         }
 
 
-def requalify_claims(tx, *, now: str, after_ref: str = "", limit: int = 16,
-                     dry_run: bool = True) -> RequalifyReport:
+def requalify_claims(tx, *, now: str, after_ref: str = "", limit: int = 16, dry_run: bool = True) -> RequalifyReport:
     """Re-judge one bounded page of stored claims.  Returns what moved."""
     from .claims import Qualification, bind_claim_subject, qualify, same_assertion
     from .mutate import evidence_refs
@@ -89,13 +89,17 @@ def requalify_claims(tx, *, now: str, after_ref: str = "", limit: int = 16,
     # Authorization filters before pagination, so a visited prefix or another
     # audience cannot starve the records behind it.
     scopes = sorted(tx.context.allowed_scope_ids)
-    rows = tx._check().execute(
-        f"""SELECT claim_id FROM claims WHERE claim_id>? AND read_blocked=0 AND suppressed=0
-            AND scope_id IN ({','.join('?' for _ in scopes)})
+    rows = (
+        tx._check()
+        .execute(
+            f"""SELECT claim_id FROM claims WHERE claim_id>? AND read_blocked=0 AND suppressed=0
+            AND scope_id IN ({",".join("?" for _ in scopes)})
             AND project_id IS ? AND branch_id IS ?
             ORDER BY claim_id LIMIT ?""",
-        (after_ref, *scopes, tx.context.project_id, tx.context.branch_id, limit),
-    ).fetchall()
+            (after_ref, *scopes, tx.context.project_id, tx.context.branch_id, limit),
+        )
+        .fetchall()
+    )
 
     preserved = _preserved_reasons()
     report = RequalifyReport(applied=not dry_run)
@@ -115,8 +119,7 @@ def requalify_claims(tx, *, now: str, after_ref: str = "", limit: int = 16,
             verdict = (
                 Qualification("proposed", "inferred_suggestion", binding_issue)
                 if binding_issue is not None
-                else qualify(proposal, roots, project_id=tx.context.project_id,
-                             _subject_bound=subject_bound)
+                else qualify(proposal, roots, project_id=tx.context.project_id, _subject_bound=subject_bound)
             )
         except ContractError as exc:
             report.skipped.append({"ref": ref, "why": f"qualification_failed:{exc.code}"})
@@ -137,8 +140,9 @@ def requalify_claims(tx, *, now: str, after_ref: str = "", limit: int = 16,
             "value": head.payload.get("value_text"),
         }
         if not dry_run:
-            saved = tx.claims.append(head.scope_id, proposal, verdict, recorded_at=now,
-                                     previous=head, advance_head=True)
+            saved = tx.claims.append(
+                head.scope_id, proposal, verdict, recorded_at=now, previous=head, advance_head=True
+            )
             entry["revision"] = saved.revision
         report.changed.append(entry)
     return report
@@ -148,8 +152,9 @@ def requalify_claims(tx, *, now: str, after_ref: str = "", limit: int = 16,
 ROOTLESS_REASON = NO_DERIVATION_ROOT_REASON
 
 
-def retire_rootless_proposals(tx, *, now: str, after_ref: str = "", limit: int = 16,
-                              dry_run: bool = True) -> RequalifyReport:
+def retire_rootless_proposals(
+    tx, *, now: str, after_ref: str = "", limit: int = 16, dry_run: bool = True
+) -> RequalifyReport:
     """Retire one bounded page of proposed claims that no derivation root supports.
 
     Consolidation derives claims only from ``DERIVATION_ROOT_ORIGINS``; tool output left that set in
@@ -174,13 +179,17 @@ def retire_rootless_proposals(tx, *, now: str, after_ref: str = "", limit: int =
     if type(after_ref) is not str:
         raise ContractError("INPUT_INVALID", "requalify_cursor")
     scopes = sorted(tx.context.allowed_scope_ids)
-    rows = tx._check().execute(
-        f"""SELECT claim_id FROM claims WHERE claim_id>? AND read_blocked=0 AND suppressed=0
-            AND scope_id IN ({','.join('?' for _ in scopes)})
+    rows = (
+        tx._check()
+        .execute(
+            f"""SELECT claim_id FROM claims WHERE claim_id>? AND read_blocked=0 AND suppressed=0
+            AND scope_id IN ({",".join("?" for _ in scopes)})
             AND project_id IS ? AND branch_id IS ?
             ORDER BY claim_id LIMIT ?""",
-        (after_ref, *scopes, tx.context.project_id, tx.context.branch_id, limit),
-    ).fetchall()
+            (after_ref, *scopes, tx.context.project_id, tx.context.branch_id, limit),
+        )
+        .fetchall()
+    )
     report = RequalifyReport(applied=not dry_run)
     for row in rows:
         ref = row[0]
@@ -203,17 +212,31 @@ def retire_rootless_proposals(tx, *, now: str, after_ref: str = "", limit: int =
             # A person (or a document) has said it since; the verdict on their words decides.
             report.skipped.append({"ref": ref, "why": "restated_in_evaluation"})
             continue
-        entry = {"ref": ref, "was": f"{head.state}:{head.reason}", "now": f"retracted:{ROOTLESS_REASON}",
-                 "origins": sorted(origins)}
+        entry = {
+            "ref": ref,
+            "was": f"{head.state}:{head.reason}",
+            "now": f"retracted:{ROOTLESS_REASON}",
+            "origins": sorted(origins),
+        }
         if not dry_run:
-            retired = tx.claims.append(head.scope_id, head.payload,
-                                       Qualification("retracted", head.basis, ROOTLESS_REASON),
-                                       recorded_at=now, previous=head)
+            retired = tx.claims.append(
+                head.scope_id,
+                head.payload,
+                Qualification("retracted", head.basis, ROOTLESS_REASON),
+                recorded_at=now,
+                previous=head,
+            )
             tx.candidates.register(retired.ref, retired.revision, observed_at=now, schedule_initial=False)
             entry["revision"] = retired.revision
         report.changed.append(entry)
     return report
 
 
-__all__ = ["MAX_PAGE", "REQUALIFIABLE_STATES", "ROOTLESS_REASON", "RequalifyReport", "requalify_claims",
-           "retire_rootless_proposals"]
+__all__ = [
+    "MAX_PAGE",
+    "REQUALIFIABLE_STATES",
+    "ROOTLESS_REASON",
+    "RequalifyReport",
+    "requalify_claims",
+    "retire_rootless_proposals",
+]

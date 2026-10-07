@@ -8,6 +8,7 @@ audience filter, the joined "is this candidate still judgeable" row, the bounded
 evidence selection and the single-row moves -- so ``candidate_intake``,
 ``candidate_evaluations`` and ``candidate_sweeps`` each read as one job.
 """
+
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -96,8 +97,10 @@ def parse_refs(text: str) -> tuple[tuple[str, int], ...]:
 
 def reachable_sql(prefix: str = "") -> str:
     """Rows new evidence can still reach: live, or asleep only for lack of evidence."""
-    return (f"({prefix}processing_state IN ('pending_evaluation','waiting_evidence') OR "
-            f"({prefix}processing_state='archived' AND {prefix}reason='dormant_no_evidence'))")
+    return (
+        f"({prefix}processing_state IN ('pending_evaluation','waiting_evidence') OR "
+        f"({prefix}processing_state='archived' AND {prefix}reason='dormant_no_evidence'))"
+    )
 
 
 def is_reachable(processing_state: str, reason: str) -> bool:
@@ -108,25 +111,38 @@ def is_reachable(processing_state: str, reason: str) -> bool:
 
 def is_live_head(row) -> bool:
     """The joined row still describes a current, readable, judgeable candidate."""
-    return (not row["read_blocked"] and not row["suppressed"]
-            and row["current_revision"] == row["candidate_revision"]
-            and row["fact_state"] in JUDGEABLE_STATES)
+    return (
+        not row["read_blocked"]
+        and not row["suppressed"]
+        and row["current_revision"] == row["candidate_revision"]
+        and row["fact_state"] in JUDGEABLE_STATES
+    )
 
 
 def snapshot(row, *, processing_state: str | None = None) -> CandidateSnapshot:
     """Build the model-facing snapshot from a ``HEAD_COLUMNS`` row."""
     return CandidateSnapshot(
-        row["candidate_ref"], row["candidate_revision"], row["scope_id"], row["project_id"], row["branch_id"],
-        row["fact_state"], json.loads(row["payload_json"]), processing_state or row["processing_state"],
-        row["lifecycle_reason"], row["lifecycle_rule"],
+        row["candidate_ref"],
+        row["candidate_revision"],
+        row["scope_id"],
+        row["project_id"],
+        row["branch_id"],
+        row["fact_state"],
+        json.loads(row["payload_json"]),
+        processing_state or row["processing_state"],
+        row["lifecycle_reason"],
+        row["lifecycle_rule"],
     )
 
 
 def settled_reason(row, now: str, *, has_queued_evaluation: bool = False) -> str | None:
     """Apply the debounce rule to a lifecycle row's own timestamps."""
     return settle_reason(
-        now=now, last_evidence_at=row["last_evidence_at"], last_evaluated_at=row["last_evaluated_at"],
-        created_at=row["created_at"], has_queued_evaluation=has_queued_evaluation,
+        now=now,
+        last_evidence_at=row["last_evidence_at"],
+        last_evaluated_at=row["last_evaluated_at"],
+        created_at=row["created_at"],
+        has_queued_evaluation=has_queued_evaluation,
     )
 
 
@@ -148,27 +164,37 @@ class CandidateTables:
         clause = f"{prefix}scope_id IN ({','.join('?' for _ in scopes)})"
         if all_projects:
             return clause, tuple(scopes)
-        clause += (f" AND ({prefix}project_id IS NULL OR {prefix}project_id=?)"
-                   f" AND ({prefix}branch_id IS NULL OR {prefix}branch_id=?)")
+        clause += (
+            f" AND ({prefix}project_id IS NULL OR {prefix}project_id=?)"
+            f" AND ({prefix}branch_id IS NULL OR {prefix}branch_id=?)"
+        )
         return clause, (*scopes, self._tx.context.project_id, self._tx.context.branch_id)
 
     def _lifecycle_row(self, ref: str, revision: int):
-        return self._read().execute(
-            """SELECT processing_state,reason,rule_version,updated_at,last_evidence_at,last_evaluated_at,created_at
+        return (
+            self._read()
+            .execute(
+                """SELECT processing_state,reason,rule_version,updated_at,last_evidence_at,last_evaluated_at,created_at
                FROM candidate_lifecycle WHERE candidate_ref=? AND candidate_revision=?""",
-            (ref, revision),
-        ).fetchone()
+                (ref, revision),
+            )
+            .fetchone()
+        )
 
     def _cited_origins(self, ref: str, revision: int) -> frozenset[str]:
         """Effective origins of the sources this claim version cites, imports resolved."""
         origins = set()
-        for row in self._read().execute(
-            """SELECT s.origin,s.source_original_origin,s.import_provenance_sha256
+        for row in (
+            self._read()
+            .execute(
+                """SELECT s.origin,s.source_original_origin,s.import_provenance_sha256
                FROM evidence_links l JOIN source_events s
                  ON s.event_id=l.source_ref AND s.source_revision=l.source_revision
                WHERE l.object_kind='claim' AND l.object_ref=? AND l.object_revision=?""",
-            (ref, revision),
-        ).fetchall():
+                (ref, revision),
+            )
+            .fetchall()
+        ):
             origin = row["origin"]
             if origin == "imported":
                 verified = row["import_provenance_sha256"] is not None
@@ -185,30 +211,38 @@ class CandidateTables:
         it -- on the pilot, 1,525 of 2,785 tool-derived proposals had one -- restates nothing.
         """
         origins = sorted(DERIVATION_ROOT_ORIGINS)
-        contents = [row[0] for row in self._read().execute(
-            f"""SELECT s.content FROM candidate_evidence e JOIN source_events s
+        contents = [
+            row[0]
+            for row in self._read().execute(
+                f"""SELECT s.content FROM candidate_evidence e JOIN source_events s
                   ON s.event_id=e.source_ref AND s.source_revision=e.source_revision
                 WHERE e.candidate_ref=? AND e.candidate_revision=? AND s.read_blocked=0 AND s.suppressed=0
                   AND NOT EXISTS(SELECT 1 FROM object_blocks b WHERE b.object_kind='event'
                       AND b.object_ref=e.source_ref AND (b.read_blocked=1 OR b.suppressed=1))
-                  AND {EFFECTIVE_ORIGIN_SQL} IN ({','.join('?' for _ in origins)})""",
-            (ref, revision, *origins),
-        )]
+                  AND {EFFECTIVE_ORIGIN_SQL} IN ({",".join("?" for _ in origins)})""",
+                (ref, revision, *origins),
+            )
+        ]
         return bool(contents) and restates(payload, contents)
 
-    def _model_verdicts(self, ref: str, revision: int, *,
-                        excluding: int | None = None) -> tuple[int, frozenset[tuple[str, int]]]:
+    def _model_verdicts(
+        self, ref: str, revision: int, *, excluding: int | None = None
+    ) -> tuple[int, frozenset[tuple[str, int]]]:
         """Model verdicts this candidate already had, and every source they judged.
 
         An attempt handed back without a verdict (a refused account, a capacity
         refusal) clears ``model_attempted_at`` and is not counted.
         """
-        rows = self._read().execute(
-            """SELECT evidence_refs_json FROM candidate_evaluations
+        rows = (
+            self._read()
+            .execute(
+                """SELECT evidence_refs_json FROM candidate_evaluations
                WHERE candidate_ref=? AND candidate_revision=? AND model_attempted_at IS NOT NULL
                  AND evaluation_id<>?""",
-            (ref, revision, -1 if excluding is None else excluding),
-        ).fetchall()
+                (ref, revision, -1 if excluding is None else excluding),
+            )
+            .fetchall()
+        )
         judged: set[tuple[str, int]] = set()
         for row in rows:
             try:
@@ -223,45 +257,83 @@ class CandidateTables:
         for ref, revision in refs:
             if (ref, revision) in judged:
                 continue
-            row = self._read().execute(
-                "SELECT content FROM source_events WHERE event_id=? AND source_revision=?", (ref, revision),
-            ).fetchone()
+            row = (
+                self._read()
+                .execute(
+                    "SELECT content FROM source_events WHERE event_id=? AND source_revision=?",
+                    (ref, revision),
+                )
+                .fetchone()
+            )
             if row is not None:
                 unjudged.append(row["content"])
         return bool(unjudged) and restates(payload, unjudged)
 
     def _candidate_of(self, evaluation_id: int) -> tuple[str, int] | None:
-        row = self._read().execute(
-            "SELECT candidate_ref,candidate_revision FROM candidate_evaluations WHERE evaluation_id=?",
-            (evaluation_id,),
-        ).fetchone()
+        row = (
+            self._read()
+            .execute(
+                "SELECT candidate_ref,candidate_revision FROM candidate_evaluations WHERE evaluation_id=?",
+                (evaluation_id,),
+            )
+            .fetchone()
+        )
         return None if row is None else (row[0], row[1])
 
-    def _move(self, ref: str, revision: int, state: str, reason: str, *,
-              now: str | None = None, evaluated_at: str | None = None, dormant_at: str | None = None) -> int:
+    def _move(
+        self,
+        ref: str,
+        revision: int,
+        state: str,
+        reason: str,
+        *,
+        now: str | None = None,
+        evaluated_at: str | None = None,
+        dormant_at: str | None = None,
+    ) -> int:
         """Move one candidate to ``state``/``reason`` unless it is fenced ``blocked``.
 
         A column left ``None`` keeps its stored value, so a caller names only
         what its transition touches.
         """
-        return self._write().execute(
-            """UPDATE candidate_lifecycle SET processing_state=?,reason=?,
+        return (
+            self._write()
+            .execute(
+                """UPDATE candidate_lifecycle SET processing_state=?,reason=?,
                updated_at=COALESCE(?,updated_at),last_evaluated_at=COALESCE(?,last_evaluated_at),
                dormant_at=COALESCE(?,dormant_at)
                WHERE candidate_ref=? AND candidate_revision=? AND processing_state<>'blocked'""",
-            (state, reason, now, evaluated_at, dormant_at, ref, revision),
-        ).rowcount
+                (state, reason, now, evaluated_at, dormant_at, ref, revision),
+            )
+            .rowcount
+        )
 
-    def _move_for(self, evaluation_id: int, state: str, reason: str, *,
-                  now: str | None = None, evaluated_at: str | None = None, dormant_at: str | None = None) -> int:
+    def _move_for(
+        self,
+        evaluation_id: int,
+        state: str,
+        reason: str,
+        *,
+        now: str | None = None,
+        evaluated_at: str | None = None,
+        dormant_at: str | None = None,
+    ) -> int:
         """``_move`` addressed by the evaluation the worker is holding."""
         key = self._candidate_of(evaluation_id)
         if key is None:
             return 0
         return self._move(*key, state, reason, now=now, evaluated_at=evaluated_at, dormant_at=dormant_at)
 
-    def _close_evaluation(self, evaluation_id: int, state: str, reason: str, now: str, *,
-                          failure_code: str | None = None, result_digest: str | None = None) -> None:
+    def _close_evaluation(
+        self,
+        evaluation_id: int,
+        state: str,
+        reason: str,
+        now: str,
+        *,
+        failure_code: str | None = None,
+        result_digest: str | None = None,
+    ) -> None:
         """Finish a queued evaluation as ``failed``, ``obsolete`` or a verdict state."""
         self._write().execute(
             """UPDATE candidate_evaluations SET state=?,reason=?,completed_at=?,result_digest=?,failure_code=?
@@ -279,12 +351,16 @@ class CandidateTables:
 
     def _requeue_failed(self, evaluation_id: int, reason: str) -> int:
         """Put a failed evaluation back where ``begin_model_attempt`` will accept it."""
-        return self._write().execute(
-            """UPDATE candidate_evaluations SET state='queued',reason=?,
+        return (
+            self._write()
+            .execute(
+                """UPDATE candidate_evaluations SET state='queued',reason=?,
                completed_at=NULL,model_attempted_at=NULL,failure_code=NULL
                WHERE evaluation_id=? AND state='failed'""",
-            (reason, evaluation_id),
-        ).rowcount
+                (reason, evaluation_id),
+            )
+            .rowcount
+        )
 
     def _retire_evaluations(self, ref: str, revision: int, code: str, now: str, *, others: bool = False) -> None:
         """Obsolete a candidate's queued evaluations and fence their unfinished work.
@@ -315,8 +391,10 @@ class CandidateTables:
         it (the 3.2.0 audit).  The origin handed on is the effective one as well, so the
         question it poses (``question_digest``) counts that message as testimony.
         """
-        evidence = self._read().execute(
-            f"""SELECT e.source_ref,e.source_revision,e.observed_at,{EFFECTIVE_ORIGIN_SQL} AS origin,
+        evidence = (
+            self._read()
+            .execute(
+                f"""SELECT e.source_ref,e.source_revision,e.observed_at,{EFFECTIVE_ORIGIN_SQL} AS origin,
                       LENGTH(s.content) AS content_length
                FROM candidate_evidence e JOIN source_events s
                  ON s.event_id=e.source_ref AND s.source_revision=e.source_revision
@@ -326,8 +404,10 @@ class CandidateTables:
                      AND b.object_ref=e.source_ref AND (b.read_blocked=1 OR b.suppressed=1))
                ORDER BY ({EFFECTIVE_ORIGIN_SQL}='human_direct') DESC,
                         e.observed_at DESC,e.source_ref,e.source_revision DESC LIMIT 16""",
-            (ref, revision),
-        ).fetchall()
+                (ref, revision),
+            )
+            .fetchall()
+        )
         # Bound the bytes here, where the set is chosen, so what the evaluation
         # declares is what the prompt can carry; trimming later would leave the
         # model returning fewer source_refs than the evaluation committed to.
@@ -362,7 +442,22 @@ class CandidateTables:
 
 
 __all__ = [
-    "CANDIDATE_EVIDENCE_BUDGET_CHARS", "ECHO_ORIGINS", "EMPTY_FINGERPRINT", "HEAD_COLUMNS", "HEAD_JOINS",
-    "JUDGEABLE_STATES", "CandidateTables", "encode_refs", "is_live_head", "is_reachable",
-    "parse_refs", "parse_time", "reachable_sql", "rule", "settled_reason", "snapshot", "stamp", "utc",
+    "CANDIDATE_EVIDENCE_BUDGET_CHARS",
+    "ECHO_ORIGINS",
+    "EMPTY_FINGERPRINT",
+    "HEAD_COLUMNS",
+    "HEAD_JOINS",
+    "JUDGEABLE_STATES",
+    "CandidateTables",
+    "encode_refs",
+    "is_live_head",
+    "is_reachable",
+    "parse_refs",
+    "parse_time",
+    "reachable_sql",
+    "rule",
+    "settled_reason",
+    "snapshot",
+    "stamp",
+    "utc",
 ]

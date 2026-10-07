@@ -22,6 +22,7 @@ past the time its hook gave it answers every hook that it is busy until that rec
 itself in time (a program on its port, a process that no longer runs its threads, or one too busy) loses its name,
 and names itself again once it answers its own check in time and none of its recalls is stuck.
 """
+
 from __future__ import annotations
 
 import atexit
@@ -159,8 +160,9 @@ class _Handler(BaseHTTPRequestHandler):
         if self.path == "/hello":
             self._answer(b"{}", endpoint.token, "hello", nonce)
             return
-        if self.path != "/recall" or not _proven(self.headers.get(_PROOF), endpoint.token, "recall", nonce,
-                                                 hashlib.sha256(body).hexdigest()):
+        if self.path != "/recall" or not _proven(
+            self.headers.get(_PROOF), endpoint.token, "recall", nonce, hashlib.sha256(body).hexdigest()
+        ):
             self._refuse(401)
             return
         try:
@@ -184,8 +186,10 @@ class _Handler(BaseHTTPRequestHandler):
                 sys.stderr.write(f"SCOPE_RECALL_ENDPOINT:recall_failed\n{traceback.format_exc(limit=-8)}")
                 code = getattr(exc, "code", None)
                 detail = f"{type(exc).__name__}:{code}" if isinstance(code, str) else type(exc).__name__
-                answer_body = {"result": {}, "diagnostics": {"last_reason": "recall_exception",
-                                                             "recall_error_detail": detail[:64]}}
+                answer_body = {
+                    "result": {},
+                    "diagnostics": {"last_reason": "recall_exception", "recall_error_detail": detail[:64]},
+                }
             data = json.dumps(answer_body, ensure_ascii=True).encode("ascii")
             self._answer(data, endpoint.token, "answer", nonce, hashlib.sha256(data).hexdigest())
         finally:
@@ -215,10 +219,17 @@ class _Handler(BaseHTTPRequestHandler):
 def _request(body: bytes) -> dict[str, Any]:
     request = json.loads(body.decode("utf-8"))
     payload, refs, gaps, remaining = request["payload"], request["current_refs"], request["gaps"], request["remaining"]
-    if (type(payload) is not dict or type(refs) is not list or len(refs) > 64
-            or not all(type(ref) is str and len(ref) <= 200 for ref in refs)
-            or type(gaps) is not list or len(gaps) > 64 or not all(type(gap) is str and len(gap) <= 200 for gap in gaps)
-            or type(remaining) not in (int, float) or not 0.0 <= remaining <= 10.0):
+    if (
+        type(payload) is not dict
+        or type(refs) is not list
+        or len(refs) > 64
+        or not all(type(ref) is str and len(ref) <= 200 for ref in refs)
+        or type(gaps) is not list
+        or len(gaps) > 64
+        or not all(type(gap) is str and len(gap) <= 200 for gap in gaps)
+        or type(remaining) not in (int, float)
+        or not 0.0 <= remaining <= 10.0
+    ):
         raise ValueError("request")
     return {"payload": payload, "current_refs": tuple(refs), "gaps": tuple(gaps), "remaining": float(remaining)}
 
@@ -278,8 +289,9 @@ class Recaller:
         self.host = host
         self.outcome: str | None = None
 
-    def __call__(self, payload: dict[str, Any], current_refs: tuple[str, ...], gaps: tuple[str, ...],
-                 budget: float) -> tuple[dict[str, Any], dict[str, Any]] | None:
+    def __call__(
+        self, payload: dict[str, Any], current_refs: tuple[str, ...], gaps: tuple[str, ...], budget: float
+    ) -> tuple[dict[str, Any], dict[str, Any]] | None:
         from ..._version import __version__
         from ...runtime.process_probe import probe_process
 
@@ -339,13 +351,17 @@ class Recaller:
             wait = until - time.monotonic()
             if wait - ANSWER_MARGIN_SECONDS < 0.5:
                 return "none", None  # never sent: the server did nothing wrong
-            body = json.dumps({**request, "remaining": min(10.0, wait - ANSWER_MARGIN_SECONDS)},
-                              ensure_ascii=True).encode("ascii")
+            body = json.dumps(
+                {**request, "remaining": min(10.0, wait - ANSWER_MARGIN_SECONDS)}, ensure_ascii=True
+            ).encode("ascii")
             if len(body) > MAX_REQUEST_BYTES:
                 return "none", None
             nonce = secrets.token_hex(16)
-            headers = {_NONCE: nonce, "Content-Type": "application/json",
-                       _PROOF: _proof(token, "recall", nonce, hashlib.sha256(body).hexdigest())}
+            headers = {
+                _NONCE: nonce,
+                "Content-Type": "application/json",
+                _PROOF: _proof(token, "recall", nonce, hashlib.sha256(body).hexdigest()),
+            }
             try:
                 connection.sock.settimeout(wait)
                 connection.request("POST", "/recall", body=body, headers=headers)
@@ -359,8 +375,9 @@ class Recaller:
                 return "busy", None
             if response.status == 400:
                 return "refused", None  # this request, not the server: its name stays
-            if response.status != 200 or not _proven(response.getheader(_PROOF), token, "answer", nonce,
-                                                     hashlib.sha256(data).hexdigest()):
+            if response.status != 200 or not _proven(
+                response.getheader(_PROOF), token, "answer", nonce, hashlib.sha256(data).hexdigest()
+            ):
                 return "unproven", None
             answer = json.loads(data.decode("ascii"))
             return "answered", (answer["result"], answer["diagnostics"])
@@ -406,6 +423,7 @@ def _nothing() -> None:
 
 def _close_later(handler: Any) -> None:
     """Close a handler off the request's time: its vector helper can take seconds to stop."""
+
     def close() -> None:
         try:
             handler.close()
@@ -522,8 +540,15 @@ class KeptRecaller:
                     self._discard(later=True)
                 self._lock.release()
 
-    def __call__(self, payload: dict[str, Any], current_refs: tuple[str, ...], gaps: tuple[str, ...], budget: float,
-                 *, received: float | None = None) -> tuple[dict[str, Any], dict[str, Any]] | None:
+    def __call__(
+        self,
+        payload: dict[str, Any],
+        current_refs: tuple[str, ...],
+        gaps: tuple[str, ...],
+        budget: float,
+        *,
+        received: float | None = None,
+    ) -> tuple[dict[str, Any], dict[str, Any]] | None:
         """This prompt's (result, diagnostics), in ``budget`` seconds from ``received``; None when another recall
         holds the handler or the recaller is closed."""
         received = time.monotonic() if received is None else received
@@ -543,8 +568,9 @@ class KeptRecaller:
                 self._handler, self._made_with = self._build(), stamp
             handler = self._handler
             try:
-                result = handler.resident_recall_for(payload, current_refs, gaps,
-                                                     max(0.0, budget - (time.monotonic() - received)))
+                result = handler.resident_recall_for(
+                    payload, current_refs, gaps, max(0.0, budget - (time.monotonic() - received))
+                )
             except BaseException:
                 self._discard(later=True)
                 raise
@@ -592,9 +618,16 @@ class KeptRecaller:
 class HookEndpoint:
     """The MCP server's side: a 127.0.0.1 HTTP server in a daemon thread, and the file that names it."""
 
-    def __init__(self, home: Path | str, host: str, *, env_file: Path | None = None,
-                 runtime_config: Path | None = None,
-                 credentials: Callable[[], dict[str, str]] | None = None, resident: bool = False) -> None:
+    def __init__(
+        self,
+        home: Path | str,
+        host: str,
+        *,
+        env_file: Path | None = None,
+        runtime_config: Path | None = None,
+        credentials: Callable[[], dict[str, str]] | None = None,
+        resident: bool = False,
+    ) -> None:
         self.home = Path(home)
         self.host = host
         #: Said in the server's name: a resident server (``resident_entry``) runs apart from the MCP server of a
@@ -656,8 +689,9 @@ class HookEndpoint:
             os.environ.update(loaded)
             self._env_loaded = loaded
 
-    def recall(self, request: dict[str, Any], *, received: float | None = None
-               ) -> tuple[dict[str, Any], Callable[[], None]]:
+    def recall(
+        self, request: dict[str, Any], *, received: float | None = None
+    ) -> tuple[dict[str, Any], Callable[[], None]]:
         """One prompt's recall, as its hook would have recalled it, by the kept handler (``KeptRecaller``) or, while
         another recall holds that, by one of its own that the caller closes once the answer is out.  Its time counts
         from the request's arrival, loading the handler included."""
@@ -665,16 +699,18 @@ class HookEndpoint:
         # Of two recalls at once, the one received first may come here last.
         self.last_used = max(self.last_used, received)
         self._refresh_credentials()
-        kept = self.kept(request["payload"], request["current_refs"], request["gaps"], request["remaining"],
-                         received=received)
+        kept = self.kept(
+            request["payload"], request["current_refs"], request["gaps"], request["remaining"], received=received
+        )
         if kept is not None:
             result, diagnostics = kept
             return {"result": result, "diagnostics": diagnostics}, _nothing
         handler = self._handler()
         try:
             remaining = max(0.0, request["remaining"] - (time.monotonic() - received))
-            result = handler.resident_recall_for(request["payload"], request["current_refs"], request["gaps"],
-                                                 remaining)
+            result = handler.resident_recall_for(
+                request["payload"], request["current_refs"], request["gaps"], remaining
+            )
         except BaseException:
             handler.close()
             raise
@@ -701,8 +737,15 @@ class HookEndpoint:
         if os.name != "nt":
             for part in (folder, folder.parent, folder.parent.parent):
                 part.chmod(0o700)
-        record = {"host": self.host, "port": self.port, "token": self.token, "pid": os.getpid(),
-                  "start": probe_process(os.getpid()).start_token, "version": __version__, "resident": self.resident}
+        record = {
+            "host": self.host,
+            "port": self.port,
+            "token": self.token,
+            "pid": os.getpid(),
+            "start": probe_process(os.getpid()).start_token,
+            "version": __version__,
+            "resident": self.resident,
+        }
         pending = self.path.with_suffix(".tmp")
         handle = os.open(pending, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(handle, "w", encoding="utf-8") as stream:
@@ -735,6 +778,7 @@ class HookEndpoint:
     def start(self) -> None:
         if sys.platform == "win32":
             from ...vector.process_store import share
+
             # Before anything is served: the kept handler, a handler made for a prompt that comes meanwhile and the
             # tools search one store through one helper.
             share()
@@ -748,6 +792,7 @@ class HookEndpoint:
         atexit.register(self.stop)
         if sys.platform == "win32":
             from ...vector.process_store import prestart
+
             try:
                 prestart()  # for the shared store's helper, its import under way while the server starts
             except OSError:
@@ -765,14 +810,22 @@ class HookEndpoint:
         self.kept.close()
 
 
-def serve(home: Path | str, host: str, *, env_file: Path | None = None, runtime_config: Path | None = None,
-          credentials: Callable[[], dict[str, str]] | None = None, warm: bool = True,
-          resident: bool = False) -> HookEndpoint | None:
+def serve(
+    home: Path | str,
+    host: str,
+    *,
+    env_file: Path | None = None,
+    runtime_config: Path | None = None,
+    credentials: Callable[[], dict[str, str]] | None = None,
+    warm: bool = True,
+    resident: bool = False,
+) -> HookEndpoint | None:
     """Answer this entry's prompt recalls from this process until it exits; None when that cannot start.  ``warm``
     readies the kept handler's vector store now (``KeptRecaller.warm``); ``resident`` names it a resident server."""
     try:
-        endpoint = HookEndpoint(home, host, env_file=env_file, runtime_config=runtime_config, credentials=credentials,
-                                resident=resident)
+        endpoint = HookEndpoint(
+            home, host, env_file=env_file, runtime_config=runtime_config, credentials=credentials, resident=resident
+        )
     except Exception:  # noqa: BLE001 - the MCP server starts whatever this does; its hooks recall themselves
         return None
     try:
@@ -843,8 +896,9 @@ def resident_alive(home: Path | str, host: str) -> Path:
     return endpoints(home) / f"resident-{host}.alive"
 
 
-def _residents(home: Path | str, host: str, *, any_version: bool = False
-               ) -> list[tuple[list[Path], dict[str, Any], bool]]:
+def _residents(
+    home: Path | str, host: str, *, any_version: bool = False
+) -> list[tuple[list[Path], dict[str, Any], bool]]:
     """This entry's live resident servers for ``host``, of this package's version unless ``any_version``: the files
     that say each (its record and its name), what they say, and whether its identity is proven.
 
@@ -899,8 +953,9 @@ def resident_running(home: Path | str, host: str) -> bool:
         return False
 
 
-def ensure_resident(home: Path | str, host: str, *, minutes: int, env_file: Path | None = None,
-                    replace: bool = False) -> str:
+def ensure_resident(
+    home: Path | str, host: str, *, minutes: int, env_file: Path | None = None, replace: bool = False
+) -> str:
     """Start the entry's resident recall server (``resident_entry``) when none runs; what it did: ``off`` (``minutes``
     is 0), ``running`` (the client is then marked in use: ``resident_alive``), ``running:<version>`` (one of another
     version runs, left unmarked to its own end), ``unstoppable:<version>`` (the same, though the caller would have
@@ -927,8 +982,11 @@ def ensure_resident(home: Path | str, host: str, *, minutes: int, env_file: Path
     folder = endpoints(home)
     other = None
     if resident_running(home, host):
-        others = [(info, proven) for _paths, info, proven in _residents(home, host, any_version=True)
-                  if info.get("version") != __version__]
+        others = [
+            (info, proven)
+            for _paths, info, proven in _residents(home, host, any_version=True)
+            if info.get("version") != __version__
+        ]
         if not others:
             try:
                 resident_alive(home, host).touch()
@@ -969,8 +1027,18 @@ def ensure_resident(home: Path | str, host: str, *, minutes: int, env_file: Path
         return "failed"
     # Through a process that starts the server and ends at once (``--detach``): the server then has no living parent
     # in the client's process tree, which the client may end as a whole (``resident_entry``).
-    command = [sys.executable, "-I", "-B", "-m", "scope_recall.adapters.codex.resident_entry",
-               "--home", str(Path(home)), "--host", host, "--detach"]
+    command = [
+        sys.executable,
+        "-I",
+        "-B",
+        "-m",
+        "scope_recall.adapters.codex.resident_entry",
+        "--home",
+        str(Path(home)),
+        "--host",
+        host,
+        "--detach",
+    ]
     if env_file is not None:
         command += ["--env-file", str(env_file)]
     if not _start_apart(command, cwd=folder):
@@ -1008,8 +1076,9 @@ def _upgrading() -> bool:
         return False
 
 
-def keep_resident(home: Path | str, host: str, *, env_file: Path | None = None,
-                  every: float | None = None) -> threading.Event:
+def keep_resident(
+    home: Path | str, host: str, *, env_file: Path | None = None, every: float | None = None
+) -> threading.Event:
     """For a client's MCP server, for as long as it runs: ``ensure_resident`` now and after every ``every`` seconds
     (``RESIDENT_KEEP_SECONDS``), in a daemon thread; set the event returned to stop.  The resident server then ends
     ``resident_recall_minutes`` after the client's last process, not its last prompt: WorkBuddy keeps a conversation's
@@ -1040,8 +1109,13 @@ def _start_apart(command: list[str], *, cwd: Path) -> bool:
 
     from ...runtime.worker_launch import detached_creationflags
 
-    quiet = {"stdin": subprocess.DEVNULL, "stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL,
-             "cwd": str(cwd), "close_fds": True}
+    quiet = {
+        "stdin": subprocess.DEVNULL,
+        "stdout": subprocess.DEVNULL,
+        "stderr": subprocess.DEVNULL,
+        "cwd": str(cwd),
+        "close_fds": True,
+    }
     if os.name != "nt":
         try:
             subprocess.Popen(command, start_new_session=True, **quiet)

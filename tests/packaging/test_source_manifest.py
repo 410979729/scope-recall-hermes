@@ -32,7 +32,9 @@ def _repo(tmp_path: Path) -> Path:
     return tmp_path
 
 
-def test_text_line_endings_are_canonical_but_binary_and_edits_are_sensitive(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_text_line_endings_are_canonical_but_binary_and_edits_are_sensitive(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     root = _repo(tmp_path)
     text_path = root / "notes with spaces.txt"
     binary_path = root / "payload.bin"
@@ -77,8 +79,10 @@ def test_untracked_addition_and_deleted_path_change_manifest(tmp_path: Path, mon
 def test_newline_path_fails_closed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     root = _repo(tmp_path)
     monkeypatch.setattr(check, "ROOT", root)
+
     def fake_git(*args: object, **kwargs: object) -> subprocess.CompletedProcess[bytes]:
         return subprocess.CompletedProcess(args, 0, b"bad\nname.txt\0", b"")
+
     monkeypatch.setattr(check.subprocess, "run", fake_git)
 
     with pytest.raises(RuntimeError, match="newline"):

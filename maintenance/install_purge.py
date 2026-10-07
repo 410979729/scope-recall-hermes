@@ -1,4 +1,5 @@
 """Purge inventory and guard: exactly which receipt-bound files an explicit purge may delete."""
+
 from __future__ import annotations
 
 from contextlib import contextmanager, suppress

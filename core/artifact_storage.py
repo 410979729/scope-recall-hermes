@@ -16,11 +16,7 @@ from .visibility import allowed
 
 
 def artifact_identity(context, scope_id, key):
-    if (
-        scope_id not in context.allowed_scope_ids
-        or type(key) is not str
-        or not 1 <= len(key) <= 240
-    ):
+    if scope_id not in context.allowed_scope_ids or type(key) is not str or not 1 <= len(key) <= 240:
         raise ContractError("ACCESS_DENIED")
     return (
         "artifact-"
@@ -74,13 +70,13 @@ class Artifacts:
         ).fetchone()
         if row is None:
             return None
-        refs = tuple(f"{source_ref}@{source_revision}"
-                     for source_ref, source_revision in lineage.evidence(conn, "artifact", ref, row["revision"]))
+        refs = tuple(
+            f"{source_ref}@{source_revision}"
+            for source_ref, source_revision in lineage.evidence(conn, "artifact", ref, row["revision"])
+        )
         if any(self.tx.source(*parse_source_ref(r)) is None for r in refs):
             return None
-        blob = (
-            RetainedBlob(**json.loads(row["blob_json"])) if row["blob_json"] else None
-        )
+        blob = RetainedBlob(**json.loads(row["blob_json"])) if row["blob_json"] else None
         return Artifact(
             ref,
             row["revision"],
@@ -134,14 +130,9 @@ class Artifacts:
         if ref not in source.event.get("artifact_refs", []):
             raise ContractError("ACCESS_DENIED", "artifact_not_attached")
         snapshot = source.event.get("display_snapshot", {})
-        if (
-            snapshot
-            and dict(artifact_ref=ref, revision=revision) not in snapshot["items"]
-        ):
+        if snapshot and dict(artifact_ref=ref, revision=revision) not in snapshot["items"]:
             raise ContractError("VERSION_CONFLICT", "artifact_display_version")
-        if grant is not None and (
-            not isinstance(grant, ArtifactGrant) or grant.media_type != media_type
-        ):
+        if grant is not None and (not isinstance(grant, ArtifactGrant) or grant.media_type != media_type):
             raise ContractError("INPUT_INVALID", "artifact_grant")
         if description is not None and (
             type(description) is not str
@@ -158,9 +149,7 @@ class Artifacts:
             ):
                 raise ContractError("VERSION_CONFLICT", "artifact_version")
             return existing
-        head = conn.execute(
-            "SELECT current_revision FROM artifacts WHERE artifact_id=?", (ref,)
-        ).fetchone()
+        head = conn.execute("SELECT current_revision FROM artifacts WHERE artifact_id=?", (ref,)).fetchone()
         if revision != (head[0] + 1 if head else 1):
             raise ContractError("VERSION_CONFLICT", "artifact_sequence")
         # Bounded local file capture occurs while the single writer owns the
@@ -205,11 +194,7 @@ class Artifacts:
                 media_type,
                 blob.sha256 if blob else None,
                 blob.size_bytes if blob else None,
-                "retained_artifact"
-                if blob
-                else "described_artifact"
-                if description
-                else "reference_only",
+                "retained_artifact" if blob else "described_artifact" if description else "reference_only",
                 blob.relative_path if blob else None,
                 canonical(asdict(blob)) if blob else None,
                 canonical(descriptions),
@@ -217,9 +202,7 @@ class Artifacts:
             ),
         )
         lineage.link(conn, "artifact", ref, revision, source.ref, source.revision, quote=description or "", once=False)
-        conn.execute(
-            "UPDATE instance_meta SET memory_epoch=memory_epoch+1 WHERE singleton=1"
-        )
+        conn.execute("UPDATE instance_meta SET memory_epoch=memory_epoch+1 WHERE singleton=1")
         return self.get(ref, revision)
 
     def open(self, ref, revision):

@@ -1,4 +1,5 @@
 """SQLite work_items lease and lifecycle inside the owning transaction."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -32,12 +33,28 @@ _AUTO_TOKEN = re.compile(r"(?:^|\|(?:prior:)?)auto_retry:([0-9]+)(?=\||$)")
 # ``network_error`` is: it says nothing about the payload.  Missing here, consolidation and embedding work failing
 # with it was never recovered, and no work failing with it was clearable by ``retry-failures``: candidate evaluations
 # against a model served over plain HTTP left failed rows only a hand edit could clear (#201).
-AUTO_RECOVERABLE_ERRORS = frozenset({
-    "model_unavailable", "model_timeout", "timeout", "network_error", "http_protocol", "http_429",
-    "http_500", "http_502", "http_503", "http_504", "http_529", "rate_limited",
-    "storage_unavailable", "STORAGE_UNAVAILABLE", "DEADLINE_EXCEEDED",
-    "memory_epoch_changed", "lease_exhausted", "embedding_unavailable",
-})
+AUTO_RECOVERABLE_ERRORS = frozenset(
+    {
+        "model_unavailable",
+        "model_timeout",
+        "timeout",
+        "network_error",
+        "http_protocol",
+        "http_429",
+        "http_500",
+        "http_502",
+        "http_503",
+        "http_504",
+        "http_529",
+        "rate_limited",
+        "storage_unavailable",
+        "STORAGE_UNAVAILABLE",
+        "DEADLINE_EXCEEDED",
+        "memory_epoch_changed",
+        "lease_exhausted",
+        "embedding_unavailable",
+    }
+)
 
 #: Failures that are never about the work item.  A provider declining to serve
 #: anyone says nothing about this payload -- unlike a timeout, which a large
@@ -169,8 +186,14 @@ def _failure_kind(error: str) -> str:
 
 
 def _preserve_retry_history(error) -> bool:
-    return bool(error and (str(error).startswith(("operator_retry:", "chunk_upgrade:1106|"))
-                           or _auto_count(str(error)) or "derivation_retry:1" in str(error)))
+    return bool(
+        error
+        and (
+            str(error).startswith(("operator_retry:", "chunk_upgrade:1106|"))
+            or _auto_count(str(error))
+            or "derivation_retry:1" in str(error)
+        )
+    )
 
 
 def _auto_retry_stamp(error: str) -> str:
@@ -191,8 +214,7 @@ def _capacity_backoff_seconds(refusals: int) -> float:
     """Wait before asking a provider that just refused for capacity again."""
     if type(refusals) is not int or refusals <= 1:
         return CAPACITY_BACKOFF_FLOOR_SECONDS
-    return min(CAPACITY_BACKOFF_CEILING_SECONDS,
-               CAPACITY_BACKOFF_FLOOR_SECONDS * (2.0 ** min(refusals - 1, 16)))
+    return min(CAPACITY_BACKOFF_CEILING_SECONDS, CAPACITY_BACKOFF_FLOOR_SECONDS * (2.0 ** min(refusals - 1, 16)))
 
 
 def _operator_retry_ids(value: str) -> tuple[str, ...]:
@@ -301,12 +323,16 @@ def _purge_context(tx, ref: str, revision: int) -> tuple[str, str | None, str | 
 
 
 def _candidate_context(tx, ref: str, revision: int) -> tuple[str, str | None, str | None]:
-    row = tx._check().execute(
-        """SELECT candidate_ref,scope_id,project_id,branch_id,state FROM candidate_evaluations e
+    row = (
+        tx._check()
+        .execute(
+            """SELECT candidate_ref,scope_id,project_id,branch_id,state FROM candidate_evaluations e
            JOIN candidate_lifecycle l USING(candidate_ref,candidate_revision)
            WHERE evaluation_id=?""",
-        (revision,),
-    ).fetchone()
+            (revision,),
+        )
+        .fetchone()
+    )
     if row is None or "candidate:" + row["candidate_ref"] != ref or row["state"] != "queued":
         raise ContractError("SOURCE_MISSING", "candidate_evaluation")
     tx._scope(row["scope_id"])
@@ -417,7 +443,8 @@ class WorkItems:
         detail = conn.execute(
             """SELECT error_code,error_field FROM work_error_details WHERE work_id=?
                AND lower(error_code) IN ('derivation_invalid','input_invalid')
-               ORDER BY detail_id DESC LIMIT 1""", (work_id,),
+               ORDER BY detail_id DESC LIMIT 1""",
+            (work_id,),
         ).fetchone()
         return validation_feedback(*(detail if detail is not None else (None, None)))
 
@@ -433,10 +460,14 @@ class WorkItems:
     def pending_depth(self, work_type: str) -> int:
         """How many rows of one type are pending, whether or not they are ready yet."""
         visible, params = self._visible_filter()
-        return int(self._tx._check().execute(
-            f"SELECT count(*) FROM work_items WHERE state='pending' AND work_type=? AND {visible}",
-            (work_type, *params),
-        ).fetchone()[0])
+        return int(
+            self._tx._check()
+            .execute(
+                f"SELECT count(*) FROM work_items WHERE state='pending' AND work_type=? AND {visible}",
+                (work_type, *params),
+            )
+            .fetchone()[0]
+        )
 
     def other_work_ready(self, *, now: str, kinds: frozenset[str]) -> bool:
         """Whether any of these work types has a row ready to claim now.
@@ -449,11 +480,16 @@ class WorkItems:
             return False
         visible, params = self._visible_filter()
         marks = _marks(sorted(kinds))
-        return self._tx._check().execute(
-            f"""SELECT 1 FROM work_items WHERE state='pending' AND work_type IN ({marks})
+        return (
+            self._tx._check()
+            .execute(
+                f"""SELECT 1 FROM work_items WHERE state='pending' AND work_type IN ({marks})
                 AND available_at<=? AND {visible} LIMIT 1""",
-            (*sorted(kinds), now, *params),
-        ).fetchone() is not None
+                (*sorted(kinds), now, *params),
+            )
+            .fetchone()
+            is not None
+        )
 
     def _context_denial(self, row) -> str | None:
         """Why this context may not act on the row, or None when it may."""
@@ -468,7 +504,8 @@ class WorkItems:
 
     def _retry_subject_reason(self, row, *, current_epoch: int | None = None) -> str | None:
         return _RETRY_SUBJECT_REASON[row["work_type"]](
-            self._tx, row["subject_ref"], row["subject_revision"], current_epoch=current_epoch)
+            self._tx, row["subject_ref"], row["subject_revision"], current_epoch=current_epoch
+        )
 
     def enqueue(self, work_type: str, subject_ref: str, subject_revision: int, *, available_at: str) -> bool:
         conn = self._tx._check(write=True)
@@ -504,9 +541,16 @@ class WorkItems:
         ).rowcount
         return failed + released
 
-    def claim_next(self, owner: str, now: str, *, lease_seconds: float, limit: int = 1,
-                   allowed_work_types: frozenset[str] = ALLOWED_WORK_TYPES,
-                   fresh_lane: bool = False) -> tuple[LeasedWork, ...]:
+    def claim_next(
+        self,
+        owner: str,
+        now: str,
+        *,
+        lease_seconds: float,
+        limit: int = 1,
+        allowed_work_types: frozenset[str] = ALLOWED_WORK_TYPES,
+        fresh_lane: bool = False,
+    ) -> tuple[LeasedWork, ...]:
         """Lease ready work: purge first, candidate evaluation last, FIFO by availability within each.
 
         ``fresh_lane`` places ready fresh conversation work (see
@@ -551,10 +595,20 @@ class WorkItems:
                 (owner, until, row["work_id"]),
             )
             item = conn.execute("SELECT * FROM work_items WHERE work_id=?", (row["work_id"],)).fetchone()
-            claimed.append(LeasedWork(
-                item["work_id"], item["work_type"], item["subject_ref"], item["subject_revision"],
-                item["scope_id"], item["project_id"], item["branch_id"], item["lease_token"], item["attempt"], owner,
-            ))
+            claimed.append(
+                LeasedWork(
+                    item["work_id"],
+                    item["work_type"],
+                    item["subject_ref"],
+                    item["subject_revision"],
+                    item["scope_id"],
+                    item["project_id"],
+                    item["branch_id"],
+                    item["lease_token"],
+                    item["attempt"],
+                    owner,
+                )
+            )
         return tuple(claimed)
 
     def _fresh_first(self, fifo, *, now: str, limit: int, kinds: frozenset[str]) -> list:
@@ -569,8 +623,10 @@ class WorkItems:
         origin_params = tuple(value for kind in lane for value in (kind, *sorted(FRESH_LANE_ORIGINS[kind])))
         # Work never becomes available before its source was persisted, so the
         # window bounds the index range as well as the source it joins.
-        fresh = self._tx._check().execute(
-            f"""SELECT w.work_id,w.work_type FROM (
+        fresh = (
+            self._tx._check()
+            .execute(
+                f"""SELECT w.work_id,w.work_type FROM (
                     SELECT work_id,work_type,subject_ref,subject_revision,available_at FROM work_items
                     WHERE state='pending' AND available_at>=? AND available_at<=? AND {visible}
                       AND work_type IN ({_marks(lane)})
@@ -578,14 +634,22 @@ class WorkItems:
                 JOIN source_events e ON e.event_id=w.subject_ref AND e.source_revision=w.subject_revision
                 WHERE e.persisted_at>=? AND ({origins})
                 ORDER BY w.available_at,w.work_id LIMIT ?""",
-            (since, now, *params, *lane, FRESH_LANE_SCAN_ROWS, since, *origin_params, limit - len(purges)),
-        ).fetchall()
+                (since, now, *params, *lane, FRESH_LANE_SCAN_ROWS, since, *origin_params, limit - len(purges)),
+            )
+            .fetchall()
+        )
         chosen = {row["work_id"] for row in (*purges, *fresh)}
         return [*purges, *fresh, *(row for row in fifo if row["work_id"] not in chosen)][:limit]
 
-    def recover_transient_failures(self, *, now: str, allowed_work_types: frozenset[str],
-                                   cooldown_seconds: float = 3600, max_recoveries: int = 2,
-                                   limit: int = 32) -> int:
+    def recover_transient_failures(
+        self,
+        *,
+        now: str,
+        allowed_work_types: frozenset[str],
+        cooldown_seconds: float = 3600,
+        max_recoveries: int = 2,
+        limit: int = 32,
+    ) -> int:
         """Grant bounded, cooled-down attempts without resetting lifetime attempts.
 
         Scope/project/branch and source/delete authority are rechecked in this
@@ -595,7 +659,11 @@ class WorkItems:
         conn = self._tx._check(write=True)
         if not allowed_work_types <= ALLOWED_WORK_TYPES or not 0 <= max_recoveries <= 4:
             raise ContractError("INPUT_INVALID", "auto_recovery")
-        if not math.isfinite(cooldown_seconds) or not 60 <= cooldown_seconds <= 86400 or not 1 <= limit <= MAX_RECOVERY_PAGE:
+        if (
+            not math.isfinite(cooldown_seconds)
+            or not 60 <= cooldown_seconds <= 86400
+            or not 1 <= limit <= MAX_RECOVERY_PAGE
+        ):
             raise ContractError("INPUT_INVALID", "auto_recovery_budget")
         cutoff = _after(now, -cooldown_seconds)
         kinds = sorted(allowed_work_types & frozenset(_RETRY_SUBJECT_REASON))
@@ -625,7 +693,10 @@ class WorkItems:
             except ContractError:
                 revoked = True
             if revoked:
-                conn.execute("UPDATE work_items SET state='obsolete',last_error_code='authority_revoked' WHERE work_id=? AND state='failed'", (row["work_id"],))
+                conn.execute(
+                    "UPDATE work_items SET state='obsolete',last_error_code='authority_revoked' WHERE work_id=? AND state='failed'",
+                    (row["work_id"],),
+                )
                 continue
             recovered += conn.execute(
                 """UPDATE work_items SET state='pending',available_at=?,last_error_code=?,
@@ -670,15 +741,19 @@ class WorkItems:
                 # Keep the failure and its attempt count, but do not let a
                 # non-budget failure repeatedly occupy this bounded repair
                 # page. No original content or claim is changed.
-                conn.execute("""UPDATE work_items SET last_error_code='chunk_checked:1106|INPUT_INVALID'
+                conn.execute(
+                    """UPDATE work_items SET last_error_code='chunk_checked:1106|INPUT_INVALID'
                     WHERE work_id=? AND state='failed' AND last_error_code='INPUT_INVALID'
-                    AND consolidation_offset=0""", (row["work_id"],))
+                    AND consolidation_offset=0""",
+                    (row["work_id"],),
+                )
                 continue
             recovered += conn.execute(
                 """UPDATE work_items SET state='pending',available_at=?,lease_owner=NULL,lease_until=NULL,
                    last_error_code='chunk_upgrade:1106|INPUT_INVALID'
                    WHERE work_id=? AND state='failed' AND last_error_code='INPUT_INVALID'
-                   AND consolidation_offset=0""", (now, row["work_id"]),
+                   AND consolidation_offset=0""",
+                (now, row["work_id"]),
             ).rowcount
         return recovered
 
@@ -703,8 +778,12 @@ class WorkItems:
             """UPDATE work_items SET state=?,available_at=COALESCE(?,available_at),
                lease_owner=NULL,lease_until=NULL,last_error_code=?
                WHERE work_id=? AND state='failed' AND UPPER(last_error_code)='INPUT_INVALID'""",
-            ("pending" if fits else "failed", now if fits else None,
-             f"{marker}:{SCHEMA_VERSION}|input_invalid", work_id),
+            (
+                "pending" if fits else "failed",
+                now if fits else None,
+                f"{marker}:{SCHEMA_VERSION}|input_invalid",
+                work_id,
+            ),
         ).rowcount
 
     def recover_interrupted_attempts(self, *, now: str, allowed_work_types: frozenset[str], limit: int = 8) -> int:
@@ -771,11 +850,12 @@ class WorkItems:
                 AND last_error_code NOT LIKE ? ORDER BY work_id LIMIT ?""",
             (*params, *kinds, f"%{DERIVATION_RETRY_MARKER}|%", limit),
         ).fetchall()
-        return sum(self._reopen_failed(row["work_id"], row["work_type"], row["last_error_code"],
-                                       now=now, automatic=True) for row in rows)
+        return sum(
+            self._reopen_failed(row["work_id"], row["work_type"], row["last_error_code"], now=now, automatic=True)
+            for row in rows
+        )
 
-    def retry_failed(self, *, now: str, include_terminal: bool = False,
-                     limit: int = 64, dry_run: bool = True) -> dict:
+    def retry_failed(self, *, now: str, include_terminal: bool = False, limit: int = 64, dry_run: bool = True) -> dict:
         """Grant one bounded re-look to failures a shipped fix may have cured.
 
         Distinct from ``recover_transient_failures``, which is automatic and
@@ -834,9 +914,11 @@ class WorkItems:
                 if work_id is None:
                     self.enqueue("embed", ref, revision, available_at=now)
                 else:
-                    conn.execute("""UPDATE work_items SET state='pending',available_at=?,lease_owner=NULL,
+                    conn.execute(
+                        """UPDATE work_items SET state='pending',available_at=?,lease_owner=NULL,
                                     lease_until=NULL,last_error_code=? WHERE work_id=? AND state='obsolete'""",
-                                 (now, marked("authority_revoked", generation=SCHEMA_VERSION), work_id))
+                        (now, marked("authority_revoked", generation=SCHEMA_VERSION), work_id),
+                    )
         # Captures a replay gave up after its tries (``capture_inbox._GAVE_UP``) go back to it, their tries counted
         # anew: whatever kept them out has been fixed, or they are given up again, visibly.  Only the partition this
         # config's replay takes (``replay_inbox``): returned by what the config could see, a row of another went back
@@ -846,7 +928,8 @@ class WorkItems:
         abandoned = conn.execute(
             f"""SELECT token,last_error_code FROM capture_inbox WHERE last_error_code LIKE 'GAVE_UP|%'
                 AND scope_id IN ({_marks(scopes)}) AND project_id IS ? AND branch_id IS ?""",
-            (*scopes, context.project_id, context.branch_id)).fetchall()
+            (*scopes, context.project_id, context.branch_id),
+        ).fetchall()
         report["inbox_given_up"] = len(abandoned)
         report["inbox_by_kind"] = {}
         for _token, code in abandoned:
@@ -859,15 +942,19 @@ class WorkItems:
         refused = conn.execute(
             f"""SELECT token FROM capture_inbox WHERE last_error_code='ACCESS_DENIED'
                 AND scope_id IN ({_marks(scopes)}) AND project_id IS ? AND branch_id IS ?""",
-            (*scopes, context.project_id, context.branch_id)).fetchall()
+            (*scopes, context.project_id, context.branch_id),
+        ).fetchall()
         report["inbox_refused"] = len(refused)
         if not dry_run:
             # One the rekey path gave up goes back to it: returned as never tried, the plain replay met the old
             # collision, and a row it put off was matched by a delete through the key it had taken (review of rc10).
-            conn.executemany("UPDATE capture_inbox SET last_error_code=? WHERE token=?",
-                             [("VERSION_CONFLICT" if deferred_path(code) == "rekey" else None, token)
-                              for token, code in abandoned])
-            conn.executemany("UPDATE capture_inbox SET last_error_code=NULL WHERE token=?", [(row[0],) for row in refused])
+            conn.executemany(
+                "UPDATE capture_inbox SET last_error_code=? WHERE token=?",
+                [("VERSION_CONFLICT" if deferred_path(code) == "rekey" else None, token) for token, code in abandoned],
+            )
+            conn.executemany(
+                "UPDATE capture_inbox SET last_error_code=NULL WHERE token=?", [(row[0],) for row in refused]
+            )
         return report
 
     def _claim_heads_without_vectors(self, *, limit: int) -> list[tuple[int | None, str, int]]:
@@ -891,7 +978,8 @@ class WorkItems:
                                   AND (b.read_blocked<>0 OR b.scope_id NOT IN ({_marks(scopes)})))
                   AND (w.work_id IS NULL OR (w.state='obsolete' AND w.last_error_code='authority_revoked'))
                 ORDER BY c.claim_id LIMIT ?""",
-            (*scopes, context.project_id, context.branch_id, *scopes, limit * 8)).fetchall()
+            (*scopes, context.project_id, context.branch_id, *scopes, limit * 8),
+        ).fetchall()
         heads: list[tuple[int | None, str, int]] = []
         for work_id, ref, revision in rows:
             if len(heads) >= limit:
@@ -904,44 +992,80 @@ class WorkItems:
 
     def respace_run(self) -> dict | None:
         """The store's re-embed run (``RESPACE_CURSOR``), or None when none was started."""
-        row = self._tx._check().execute(
-            """SELECT position_ref,position_revision,processed_count,completed,updated_at FROM candidate_scan_cursors
-               WHERE cursor_name=?""", (RESPACE_CURSOR,)).fetchone()
+        row = (
+            self._tx._check()
+            .execute(
+                """SELECT position_ref,position_revision,processed_count,completed,updated_at FROM candidate_scan_cursors
+               WHERE cursor_name=?""",
+                (RESPACE_CURSOR,),
+            )
+            .fetchone()
+        )
         if row is None:
             return None
-        return {"embedding_space": row[0], "next_work_id": int(row[1] or 0), "reopened": int(row[2]),
-                "completed": bool(row[3]), "updated_at": row[4]}
+        return {
+            "embedding_space": row[0],
+            "next_work_id": int(row[1] or 0),
+            "reopened": int(row[2]),
+            "completed": bool(row[3]),
+            "updated_at": row[4],
+        }
 
     def embed_queue(self) -> dict:
         """The store's embed queue, every partition: pending and failed rows, and the oldest pending one's time.
 
         A re-embed run reopens rows of every partition, so it is held by what waits anywhere; and the doctor reports
         the store.  Read through ``work_ready`` (state first): by ``work_type`` SQLite walked every embed row."""
-        pending, failed, oldest = self._tx._check().execute(
-            """SELECT sum(state='pending'),sum(state='failed'),min(CASE WHEN state='pending' THEN available_at END)
-               FROM work_items WHERE state IN ('pending','failed') AND +work_type='embed'""").fetchone()
+        pending, failed, oldest = (
+            self._tx._check()
+            .execute(
+                """SELECT sum(state='pending'),sum(state='failed'),min(CASE WHEN state='pending' THEN available_at END)
+               FROM work_items WHERE state IN ('pending','failed') AND +work_type='embed'"""
+            )
+            .fetchone()
+        )
         return {"pending": int(pending or 0), "failed": int(failed or 0), "oldest_pending_at": oldest}
 
     def due_unreached(self, *, before: str) -> list[dict]:
         """Work of every partition due since before ``before`` and still waiting, by partition and type: pending, or
         leased by a worker whose lease ran out then (only a pass of the same partition releases it).  For the doctor;
         counts and times only, read through ``work_ready``."""
-        rows = self._tx._check().execute(
-            """SELECT scope_id,project_id,branch_id,work_type,count(*) AS n,
+        rows = (
+            self._tx._check()
+            .execute(
+                """SELECT scope_id,project_id,branch_id,work_type,count(*) AS n,
                       min(CASE WHEN state='leased' THEN lease_until ELSE available_at END) AS oldest FROM work_items
                WHERE (state='pending' AND available_at<?) OR (state='leased' AND lease_until<?)
                GROUP BY scope_id,project_id,branch_id,work_type""",
-            (before, before)).fetchall()
-        return [{"scope_id": row["scope_id"], "project_id": row["project_id"], "branch_id": row["branch_id"],
-                 "work_type": row["work_type"], "work": int(row["n"]), "oldest": row["oldest"]} for row in rows]
+                (before, before),
+            )
+            .fetchall()
+        )
+        return [
+            {
+                "scope_id": row["scope_id"],
+                "project_id": row["project_id"],
+                "branch_id": row["branch_id"],
+                "work_type": row["work_type"],
+                "work": int(row["n"]),
+                "oldest": row["oldest"],
+            }
+            for row in rows
+        ]
 
     def respace_remaining(self, *, at_most: int | None = None) -> int:
         """Embeddings done so far that a run would reopen: at or below work id ``at_most`` (all when None), except a
         tool output whose vector the retention window expired, which stays without one."""
-        bound = (2 ** 63 - 1) if at_most is None else int(at_most)
-        return int(self._tx._check().execute(
-            f"""SELECT count(*) FROM work_items w WHERE w.work_type='embed' AND w.state='done' AND w.work_id<=?
-                AND {_NOT_EXPIRED}""", (bound,)).fetchone()[0])
+        bound = (2**63 - 1) if at_most is None else int(at_most)
+        return int(
+            self._tx._check()
+            .execute(
+                f"""SELECT count(*) FROM work_items w WHERE w.work_type='embed' AND w.state='done' AND w.work_id<=?
+                AND {_NOT_EXPIRED}""",
+                (bound,),
+            )
+            .fetchone()[0]
+        )
 
     def start_respace(self, space_id: str, *, now: str, restart: bool = False) -> dict:
         """Start a run into ``space_id`` over every embedding done so far, from the newest down (``respace_refusal``
@@ -961,13 +1085,18 @@ class WorkItems:
                ON CONFLICT(cursor_name) DO UPDATE SET position_ref=excluded.position_ref,
                    position_revision=excluded.position_revision,processed_count=0,completed=excluded.completed,
                    updated_at=excluded.updated_at""",
-            (RESPACE_CURSOR, space_id, top, int(top == 0), now))
+            (RESPACE_CURSOR, space_id, top, int(top == 0), now),
+        )
         return self.respace_run()
 
     def cancel_respace(self) -> bool:
         """Forget the run, if there is one.  What it reopened already stays queued and is embedded."""
-        return self._tx._check(write=True).execute(
-            "DELETE FROM candidate_scan_cursors WHERE cursor_name=?", (RESPACE_CURSOR,)).rowcount == 1
+        return (
+            self._tx._check(write=True)
+            .execute("DELETE FROM candidate_scan_cursors WHERE cursor_name=?", (RESPACE_CURSOR,))
+            .rowcount
+            == 1
+        )
 
     def respace_page(self, space_id: str, *, now: str, room: int) -> dict:
         """Reopen the run's next page of done embeddings, newest first and at most ``room``, for a worker in
@@ -991,21 +1120,28 @@ class WorkItems:
         conn = self._tx._check(write=True)
         bottom = max(1, top - RESPACE_SCAN + 1)
         page = min(room, RESPACE_PAGE)
-        ids = [row[0] for row in conn.execute(
-            f"""SELECT w.work_id FROM work_items AS w NOT INDEXED
+        ids = [
+            row[0]
+            for row in conn.execute(
+                f"""SELECT w.work_id FROM work_items AS w NOT INDEXED
                 WHERE w.work_id BETWEEN ? AND ? AND w.work_type='embed' AND w.state='done' AND {_NOT_EXPIRED}
-                ORDER BY w.work_id DESC LIMIT ?""", (bottom, top, page))]
+                ORDER BY w.work_id DESC LIMIT ?""",
+                (bottom, top, page),
+            )
+        ]
         if ids:
             conn.execute(
                 f"""UPDATE work_items SET state='pending',attempt=0,available_at=?,lease_token=lease_token+1,
                     lease_owner=NULL,lease_until=NULL,last_error_code=? WHERE work_id IN ({_marks(ids)}) AND state='done'""",
-                (now, RESPACE_MARKER, *ids))
+                (now, RESPACE_MARKER, *ids),
+            )
         # A full page stops below its last row; a short one has looked through the whole window.
         below = (ids[-1] if len(ids) == page else bottom) - 1
         conn.execute(
             """UPDATE candidate_scan_cursors SET position_revision=?,processed_count=processed_count+?,completed=?,
                updated_at=? WHERE cursor_name=?""",
-            (below, len(ids), int(below < 1), now, RESPACE_CURSOR))
+            (below, len(ids), int(below < 1), now, RESPACE_CURSOR),
+        )
         return {"outcome": "complete" if below < 1 else "progress", "reopened": len(ids), "next_work_id": below}
 
     def _reopen_failed(self, work_id: int, work_type: str, code: object, *, now: str, automatic: bool = False) -> bool:
@@ -1014,16 +1150,26 @@ class WorkItems:
 
         conn = self._tx._check(write=True)
         reason = "derivation_retry" if automatic else "operator_retry"
-        if work_type == "evaluate_candidate" and not self._tx.candidates.reopen_evaluation(work_id, now=now, reason=reason):
+        if work_type == "evaluate_candidate" and not self._tx.candidates.reopen_evaluation(
+            work_id, now=now, reason=reason
+        ):
             return False
-        return conn.execute(
-            """UPDATE work_items SET state='pending',available_at=?,lease_owner=NULL,
+        return (
+            conn.execute(
+                """UPDATE work_items SET state='pending',available_at=?,lease_owner=NULL,
                lease_until=NULL,last_error_code=? WHERE work_id=? AND state='failed'""",
-            (now, f"{DERIVATION_RETRY_MARKER}|{code}" if automatic else marked(code, generation=SCHEMA_VERSION), work_id),
-        ).rowcount == 1
+                (
+                    now,
+                    f"{DERIVATION_RETRY_MARKER}|{code}" if automatic else marked(code, generation=SCHEMA_VERSION),
+                    work_id,
+                ),
+            ).rowcount
+            == 1
+        )
 
-    def defer_without_attempt(self, work_id: int, lease_token: int, owner: str, *,
-                              now: str, error_code: str, seconds: float = 3600) -> WorkMutation:
+    def defer_without_attempt(
+        self, work_id: int, lease_token: int, owner: str, *, now: str, error_code: str, seconds: float = 3600
+    ) -> WorkMutation:
         """A pre-network capability/budget refusal is not a model attempt."""
         conn = self._tx._check(write=True)
         if not self._verify_lease(work_id, lease_token, owner, now=now):
@@ -1031,10 +1177,12 @@ class WorkItems:
         prior = conn.execute("SELECT last_error_code FROM work_items WHERE work_id=?", (work_id,)).fetchone()[0]
         if _preserve_retry_history(prior):
             error_code = f"{prior}|{error_code}"[:1024]
-        conn.execute(f"""UPDATE work_items SET state='pending',attempt=MAX(0,attempt-1),
+        conn.execute(
+            f"""UPDATE work_items SET state='pending',attempt=MAX(0,attempt-1),
                        lease_owner=NULL,lease_until=NULL,last_error_code=?,available_at=?
                        WHERE {_LEASED_ROW}""",
-                     (error_code, _after(now, seconds), work_id, lease_token, owner))
+            (error_code, _after(now, seconds), work_id, lease_token, owner),
+        )
         return WorkMutation(work_id, "deferred", "pending", lease_token)
 
     def read_state(self, work_id: int) -> str | None:
@@ -1144,11 +1292,15 @@ class WorkItems:
         # Verification is a read operation.  Mutations call it from a write
         # transaction, while staged vector publication uses the same fence
         # from a read-only guard immediately before external commit.
-        row = self._tx._check().execute(
-            """SELECT state,lease_token,lease_owner,lease_until,scope_id,project_id,branch_id
+        row = (
+            self._tx._check()
+            .execute(
+                """SELECT state,lease_token,lease_owner,lease_until,scope_id,project_id,branch_id
                FROM work_items WHERE work_id=?""",
-            (work_id,),
-        ).fetchone()
+                (work_id,),
+            )
+            .fetchone()
+        )
         if row is None or row["state"] != "leased" or row["lease_token"] != lease_token or row["lease_owner"] != owner:
             return False
         if self._context_denial(row) is not None:
@@ -1172,14 +1324,23 @@ class WorkItems:
         return WorkMutation(work_id, "completed", "done", lease_token)
 
     def complete_consolidation(
-        self, work_id: int, lease_token: int, owner: str, *, now: str,
-        covered_source_refs: frozenset[str], pending_sources: tuple[tuple[str, int, int], ...] = (),
+        self,
+        work_id: int,
+        lease_token: int,
+        owner: str,
+        *,
+        now: str,
+        covered_source_refs: frozenset[str],
+        pending_sources: tuple[tuple[str, int, int], ...] = (),
     ) -> WorkMutation:
         conn = self._tx._check(write=True)
         if not self._verify_lease(work_id, lease_token, owner, now=now):
             return self.complete(work_id, lease_token, owner, now=now)
         current = conn.execute("SELECT * FROM work_items WHERE work_id=?", (work_id,)).fetchone()
-        if current["work_type"] != "consolidate" or f"{current['subject_ref']}@{current['subject_revision']}" not in covered_source_refs:
+        if (
+            current["work_type"] != "consolidate"
+            or f"{current['subject_ref']}@{current['subject_revision']}" not in covered_source_refs
+        ):
             raise ContractError("DERIVATION_INVALID", "consolidation_subject_uncovered")
         result = self.complete(work_id, lease_token, owner, now=now)
         for ref, revision, token in pending_sources:
@@ -1197,16 +1358,29 @@ class WorkItems:
     def consolidation_offset(self, work_id: int, lease_token: int, owner: str, *, now: str) -> int:
         if not self._verify_lease(work_id, lease_token, owner, now=now):
             raise ContractError("ACCESS_DENIED", "lease_stale")
-        row = self._tx._check().execute(
-            "SELECT work_type,consolidation_offset FROM work_items WHERE work_id=?", (work_id,),
-        ).fetchone()
+        row = (
+            self._tx._check()
+            .execute(
+                "SELECT work_type,consolidation_offset FROM work_items WHERE work_id=?",
+                (work_id,),
+            )
+            .fetchone()
+        )
         if row["work_type"] != "consolidate":
             raise ContractError("INPUT_INVALID", "work_type")
         return row["consolidation_offset"]
 
-    def advance_consolidation(self, work_id: int, lease_token: int, owner: str, *,
-                              now: str, expected_offset: int, next_offset: int,
-                              final: bool) -> WorkMutation:
+    def advance_consolidation(
+        self,
+        work_id: int,
+        lease_token: int,
+        owner: str,
+        *,
+        now: str,
+        expected_offset: int,
+        next_offset: int,
+        final: bool,
+    ) -> WorkMutation:
         """Commit accepted claims and their exact window checkpoint together.
 
         This method is called in the same transaction as claim application.
@@ -1219,19 +1393,26 @@ class WorkItems:
         conn.execute("UPDATE work_items SET consolidation_offset=? WHERE work_id=?", (next_offset, work_id))
         if final:
             return self.complete(work_id, lease_token, owner, now=now)
-        return self.defer_without_attempt(work_id, lease_token, owner, now=now,
-                                          error_code="consolidation_chunk_pending", seconds=0)
+        return self.defer_without_attempt(
+            work_id, lease_token, owner, now=now, error_code="consolidation_chunk_pending", seconds=0
+        )
 
-    def fail(self, work_id: int, lease_token: int, owner: str, *, error_code: str, now: str, recoverable: bool) -> WorkMutation:
+    def fail(
+        self, work_id: int, lease_token: int, owner: str, *, error_code: str, now: str, recoverable: bool
+    ) -> WorkMutation:
         conn = self._tx._check(write=True)
         if not self._verify_lease(work_id, lease_token, owner, now=now):
             return self._stale_mutation(conn, work_id)
-        row = conn.execute("SELECT attempt,last_error_code,work_type FROM work_items WHERE work_id=?", (work_id,)).fetchone()
+        row = conn.execute(
+            "SELECT attempt,last_error_code,work_type FROM work_items WHERE work_id=?", (work_id,)
+        ).fetchone()
         attempt, prior = row["attempt"], row["last_error_code"]
         # Invalid output gets exactly one extra execution, even when earlier
         # infrastructure failures have consumed the ordinary attempt counter.
-        invalid = (_failure_kind(error_code).lower() == "derivation_invalid"
-                   and row["work_type"] in {"consolidate", "evaluate_candidate"})
+        invalid = _failure_kind(error_code).lower() == "derivation_invalid" and row["work_type"] in {
+            "consolidate",
+            "evaluate_candidate",
+        }
         if invalid:
             recoverable = f"{DERIVATION_RETRY_MARKER}|" not in str(prior or "")
             if recoverable:

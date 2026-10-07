@@ -1,4 +1,5 @@
 """Private stdlib HTTPS worker for the bounded auxiliary transport."""
+
 from __future__ import annotations
 
 import base64
@@ -100,13 +101,19 @@ def _parse_request(raw: bytes) -> tuple[urllib.parse.ParseResult, bytes, dict[st
     timeout_seconds, max_response_bytes = request["timeout_seconds"], request["max_response_bytes"]
     if type(body_b64) is not str or not isinstance(headers, dict):
         raise _Failure("http_protocol")
-    if type(timeout_seconds) not in (int, float) or not math.isfinite(float(timeout_seconds)) or float(timeout_seconds) <= 0:
+    if (
+        type(timeout_seconds) not in (int, float)
+        or not math.isfinite(float(timeout_seconds))
+        or float(timeout_seconds) <= 0
+    ):
         raise _Failure("timeout")
     if type(max_response_bytes) is not int or max_response_bytes <= 0:
         raise _Failure("response_limit")
     # Proxy credentials come only from the proxy URL, never from the caller.
-    if any(type(key) is not str or type(value) is not str or key.lower() == "proxy-authorization"
-           for key, value in headers.items()):
+    if any(
+        type(key) is not str or type(value) is not str or key.lower() == "proxy-authorization"
+        for key, value in headers.items()
+    ):
         raise _Failure("http_protocol")
     try:
         body = base64.b64decode(body_b64.encode("ascii"), validate=True)

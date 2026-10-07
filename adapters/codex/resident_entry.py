@@ -17,6 +17,7 @@ store.
 
     python -I -B -m scope_recall.adapters.codex.resident_entry --home <entry home> --host workbuddy [--env-file <file>]
 """
+
 from __future__ import annotations
 
 import argparse
@@ -69,8 +70,12 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Scope Recall resident prompt recall server")
     parser.add_argument("--home", type=Path, required=True, help="Absolute home of a client attached to a shared store")
     parser.add_argument("--host", choices=("codex", "claude-code", "workbuddy", "dsh"), required=True)
-    parser.add_argument("--env-file", type=Path, default=None,
-                        help="Absolute file holding the credential names the runtime config declares")
+    parser.add_argument(
+        "--env-file",
+        type=Path,
+        default=None,
+        help="Absolute file holding the credential names the runtime config declares",
+    )
     # For tests: an idle end in seconds instead of the configured minutes.
     parser.add_argument("--idle-seconds", type=float, default=None, help=argparse.SUPPRESS)
     # Start the server from this process and end at once (``local_endpoint.ensure_resident``).
@@ -85,8 +90,17 @@ def main(argv: list[str] | None = None) -> int:
         # ``taskkill /T`` does).  Started from this process, which ends now, it has no living parent in that tree.
         from .local_endpoint import _start_apart
 
-        command = [sys.executable, "-I", "-B", "-m", "scope_recall.adapters.codex.resident_entry",
-                   "--home", str(home), "--host", args.host]
+        command = [
+            sys.executable,
+            "-I",
+            "-B",
+            "-m",
+            "scope_recall.adapters.codex.resident_entry",
+            "--home",
+            str(home),
+            "--host",
+            args.host,
+        ]
         if args.env_file is not None:
             command += ["--env-file", str(args.env_file)]
         return 0 if _start_apart(command, cwd=endpoints(home)) else 1
@@ -98,8 +112,9 @@ def main(argv: list[str] | None = None) -> int:
     # prompt hook stops one that holds the lock before it starts this one; one that took the lock meanwhile ends here.
     stopped = stop_residents(home, args.host, other_versions=True)
     try:
-        with advisory_file_lock(resident_lock(home, args.host),
-                                timeout_seconds=STOPPED_WAIT_SECONDS if stopped else LOCK_WAIT_SECONDS):
+        with advisory_file_lock(
+            resident_lock(home, args.host), timeout_seconds=STOPPED_WAIT_SECONDS if stopped else LOCK_WAIT_SECONDS
+        ):
             return _serve_until_idle(home, args.host, args.env_file, idle, configured=configured)
     except TimeoutError:
         return 0  # another resident server of this entry and client runs
@@ -109,10 +124,19 @@ def _serve_until_idle(home: Path, host: str, env_file: Path | None, idle: float,
     config = load_shared_client(home, host)
     credentials = None
     if env_file is not None:
+
         def credentials() -> dict[str, str]:
             return host_process_credential_environment(config.runtime_config_path, env_file)
-    endpoint = serve(home, host, env_file=env_file, runtime_config=config.runtime_config_path,
-                     credentials=credentials, warm=True, resident=True)
+
+    endpoint = serve(
+        home,
+        host,
+        env_file=env_file,
+        runtime_config=config.runtime_config_path,
+        credentials=credentials,
+        warm=True,
+        resident=True,
+    )
     if endpoint is None:
         return 1
     record = resident_record(home, host)
@@ -129,9 +153,13 @@ def _serve_until_idle(home: Path, host: str, env_file: Path | None, idle: float,
                 # and every prompt put its end off (review of 3.6.0rc1).
                 idle = minutes * 60.0
             unsure = unsure + 1 if package == "unknown" or (configured and minutes is None) else 0
-            if (idle <= 0 or package == "replaced" or unsure >= UNSURE_CHECKS
-                    or endpoint.stuck_for() >= STUCK_END_SECONDS
-                    or _idle_seconds(endpoint.last_used, alive) >= idle):
+            if (
+                idle <= 0
+                or package == "replaced"
+                or unsure >= UNSURE_CHECKS
+                or endpoint.stuck_for() >= STUCK_END_SECONDS
+                or _idle_seconds(endpoint.last_used, alive) >= idle
+            ):
                 break
     finally:
         # The record goes last: ``stop`` can wait for a stuck recall, and ``resident stop`` finds the server by it.
@@ -145,8 +173,7 @@ def _keep_record(path: Path, host: str) -> None:
     from ..._version import __version__
     from ...runtime.process_probe import probe_process
 
-    record = {"host": host, "pid": os.getpid(), "start": probe_process(os.getpid()).start_token,
-              "version": __version__}
+    record = {"host": host, "pid": os.getpid(), "start": probe_process(os.getpid()).start_token, "version": __version__}
     pending = path.with_name(path.name + ".tmp")
     try:
         pending.write_text(json.dumps(record), encoding="utf-8")

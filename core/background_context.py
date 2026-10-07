@@ -4,6 +4,7 @@ This module never constructs a user identity or copies profile files.  It select
 current claims and one unambiguous open episode from the already bound audience.
 The regular SQLite hydration and packet release checks still own publication.
 """
+
 from __future__ import annotations
 
 from dataclasses import replace
@@ -119,21 +120,26 @@ def _profile_rows(tx, context: SearchContext, gaps: list[str] | None = None):
               AND l.object_revision=c.current_revision
             CROSS JOIN source_events e ON e.event_id=l.source_ref AND e.source_revision=l.source_revision
             CROSS JOIN lexical_postings p ON p.source_id=e.source_id AND p.term_id IN (
-              SELECT term_id FROM lexical_terms WHERE term IN ({','.join('?' for _ in terms)}))
+              SELECT term_id FROM lexical_terms WHERE term IN ({",".join("?" for _ in terms)}))
             CROSS JOIN lexical_terms t ON t.term_id=p.term_id
             WHERE {where} AND c.kind IN ('preference','constraint')
               AND v.state IN ('active','disputed','retracted') AND l.relation='supports'
-              AND e.scope_id IN ({','.join('?' for _ in scopes)}) AND e.read_blocked=0 AND e.suppressed=0
+              AND e.scope_id IN ({",".join("?" for _ in scopes)}) AND e.read_blocked=0 AND e.suppressed=0
               AND NOT EXISTS(SELECT 1 FROM object_blocks b WHERE b.object_kind='event'
                              AND b.object_ref=e.event_id AND (b.read_blocked=1 OR b.suppressed=1))
               AND (e.project_id IS NULL OR e.project_id=?) AND (e.branch_id IS NULL OR e.branch_id=?)
             GROUP BY c.claim_id,c.current_revision
             ORDER BY hits DESC,v.recorded_from DESC,c.claim_id LIMIT ?""",
-            (*terms, *params, *scopes, context.trusted_context.project_id,
-             context.trusted_context.branch_id, PROFILE_WINDOW + 1),
+            (
+                *terms,
+                *params,
+                *scopes,
+                context.trusted_context.project_id,
+                context.trusted_context.branch_id,
+                PROFILE_WINDOW + 1,
+            ),
         ).fetchall()
-        note_truncation(gaps, "profile_terms", considered=PROFILE_WINDOW,
-                        available=len(matched), at_least=True)
+        note_truncation(gaps, "profile_terms", considered=PROFILE_WINDOW, available=len(matched), at_least=True)
         rows.extend(matched[:PROFILE_WINDOW])
     # Global stable preferences should not disappear just because a busy
     # project has filled the recent-candidate window.
@@ -141,10 +147,10 @@ def _profile_rows(tx, context: SearchContext, gaps: list[str] | None = None):
         f"""SELECT c.claim_id,c.current_revision {common}
         AND c.project_id IS NULL AND json_array_length(v.payload_json,'$.conditions')=0
         ORDER BY CASE c.kind WHEN 'constraint' THEN 0 ELSE 1 END,
-                 v.recorded_from DESC,c.claim_id LIMIT ?""", (*params, PROFILE_WINDOW + 1),
+                 v.recorded_from DESC,c.claim_id LIMIT ?""",
+        (*params, PROFILE_WINDOW + 1),
     ).fetchall()
-    note_truncation(gaps, "profile_stable", considered=PROFILE_WINDOW,
-                    available=len(stable), at_least=True)
+    note_truncation(gaps, "profile_stable", considered=PROFILE_WINDOW, available=len(stable), at_least=True)
     stable = stable[:PROFILE_WINDOW]
     seen = {row[0] for row in rows}
     for row in stable:
@@ -160,14 +166,13 @@ def _profile_rows(tx, context: SearchContext, gaps: list[str] | None = None):
                  v.recorded_from DESC,c.claim_id LIMIT ?""",
         (*params, *sorted(seen), window + 1),
     ).fetchall()
-    note_truncation(gaps, "profile_recent", considered=window,
-                    available=len(recent), at_least=True)
+    note_truncation(gaps, "profile_recent", considered=window, available=len(recent), at_least=True)
     return [*rows, *recent[:window]]
 
 
-def background_candidates(tx, context: SearchContext, reader, clock,
-                          gaps: list[str] | None = None, *,
-                          query_evidence: bool = False) -> tuple[tuple[CandidateRef, RetrievedObject], ...]:
+def background_candidates(
+    tx, context: SearchContext, reader, clock, gaps: list[str] | None = None, *, query_evidence: bool = False
+) -> tuple[tuple[CandidateRef, RetrievedObject], ...]:
     """Select at most two preferences/constraints and one current task.
 
     Ambiguous task sets are never resolved by recency.  Conditions remain data:
@@ -219,12 +224,23 @@ def background_candidates(tx, context: SearchContext, reader, clock,
             continue
         text = " ".join(str(payload.get(key, "")) for key in ("subject", "predicate", "value_text", "conditions"))
         hits = len(terms.intersection(lexical_terms(text)))
-        attribute = (effective.scope_id, effective.project_id, effective.branch_id,
-                     payload.get("kind"), payload.get("subject"), payload.get("predicate"))
+        attribute = (
+            effective.scope_id,
+            effective.project_id,
+            effective.branch_id,
+            payload.get("kind"),
+            payload.get("subject"),
+            payload.get("predicate"),
+        )
         # A matching conditional exception comes before the general value for
         # that same attributed property. Different people are never merged.
-        priority = (bool(conditions), hits, effective.project_id is not None,
-                    payload.get("kind") == "constraint", effective.recorded_from)
+        priority = (
+            bool(conditions),
+            hits,
+            effective.project_id is not None,
+            payload.get("kind") == "constraint",
+            effective.recorded_from,
+        )
         choices.append((priority, attribute, candidate, obj))
     grouped = {}
     for choice in choices:
@@ -233,8 +249,7 @@ def background_candidates(tx, context: SearchContext, reader, clock,
     for group in grouped.values():
         conditional = [choice for choice in group if choice[0][0]]
         if len(conditional) > 1:
-            values = {json.loads(dict(choice[3].metadata)["payload_json"]).get("value_text")
-                      for choice in conditional}
+            values = {json.loads(dict(choice[3].metadata)["payload_json"]).get("value_text") for choice in conditional}
             if len(values) > 1:
                 # Two applicable exceptions have no proven precedence. Do not
                 # silently turn recency or lexical overlap into a decision.
@@ -255,26 +270,45 @@ def background_candidates(tx, context: SearchContext, reader, clock,
 
 def current_task_candidate(tx, context: SearchContext, reader, clock) -> tuple[CandidateRef, RetrievedObject] | None:
     """Return one source-grounded active task, refusing ambiguous candidates."""
-    if context.mode not in {"auto", "current"} or not context.trusted_context.allowed_scope_ids or clock.monotonic() >= context.deadline:
+    if (
+        context.mode not in {"auto", "current"}
+        or not context.trusted_context.allowed_scope_ids
+        or clock.monotonic() >= context.deadline
+    ):
         return None
     where, params = _audience(context, "e")
     trusted = context.trusted_context
     if trusted.task_anchor:
         from .delete_storage import canonical
 
-        series = tuple(hashlib.sha256(canonical([
-            trusted.binding.installation_id, scope, trusted.project_id,
-            trusted.branch_id, "task", trusted.task_anchor,
-        ]).encode()).hexdigest() for scope in sorted(trusted.allowed_scope_ids))
+        series = tuple(
+            hashlib.sha256(
+                canonical(
+                    [
+                        trusted.binding.installation_id,
+                        scope,
+                        trusted.project_id,
+                        trusted.branch_id,
+                        "task",
+                        trusted.task_anchor,
+                    ]
+                ).encode()
+            ).hexdigest()
+            for scope in sorted(trusted.allowed_scope_ids)
+        )
         where += f" AND e.series_key IN ({','.join('?' for _ in series)})"
         params = (*params, *series)
-    rows = tx._check().execute(
-        f"""SELECT e.episode_id,e.current_revision FROM episodes e
+    rows = (
+        tx._check()
+        .execute(
+            f"""SELECT e.episode_id,e.current_revision FROM episodes e
         JOIN episode_versions v ON v.episode_id=e.episode_id AND v.revision=e.current_revision
         WHERE {where} AND v.state IN ('open','interrupted') AND v.resume_json IS NOT NULL
         ORDER BY v.recorded_at DESC,e.episode_id LIMIT ?""",
-        (*params, MAX_BACKGROUND_CANDIDATES + 1),
-    ).fetchall()
+            (*params, MAX_BACKGROUND_CANDIDATES + 1),
+        )
+        .fetchall()
+    )
     # A truncated enumeration cannot establish a unique current task.
     if len(rows) > MAX_BACKGROUND_CANDIDATES:
         return None

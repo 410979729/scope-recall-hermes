@@ -5,6 +5,7 @@ the model named as the user's goal something the user had not asked for. A paged
 dropped such a summary and kept its claims; a single page rolled the whole result back, paid for a second
 model call and, when that answer failed too, lost every claim in the page.
 """
+
 from __future__ import annotations
 
 import json
@@ -25,14 +26,26 @@ from tests.contract.test_v11_worker import (  # noqa: F401  (fixture)
 
 def _goal_from(source):
     refs = [f"{source.ref}@{source.revision}"]
-    return dict(episode_ref=None, goal=dict(text=source.event["content"], evidence_refs=refs),
-                decisions=[], verified_progress=[], open_items=[], blockers=[], next_step=None,
-                next_step_basis="unknown", artifact_refs=[], source_watermark=source_watermark(refs), evidence_refs=refs)
+    return dict(
+        episode_ref=None,
+        goal=dict(text=source.event["content"], evidence_refs=refs),
+        decisions=[],
+        verified_progress=[],
+        open_items=[],
+        blockers=[],
+        next_step=None,
+        next_step_basis="unknown",
+        artifact_refs=[],
+        source_watermark=source_watermark(refs),
+        evidence_refs=refs,
+    )
 
 
 def _stored_values(core):
     with sqlite3.connect(core.storage.path) as db:
-        return {json.loads(payload)["value_text"] for (payload,) in db.execute("SELECT payload_json FROM claim_versions")}
+        return {
+            json.loads(payload)["value_text"] for (payload,) in db.execute("SELECT payload_json FROM claim_versions")
+        }
 
 
 def test_an_unqualified_goal_is_dropped_and_the_claims_beside_it_are_kept(worker_app):
@@ -44,8 +57,9 @@ def test_an_unqualified_goal_is_dropped_and_the_claims_beside_it_are_kept(worker
 
     def builder(sources, episode_ref=None):
         by_ref = {source.ref: source for source in sources}
-        return consolidation_payload(*sources, claims=[draft(by_ref[said.ref], "蓝色")],
-                                     resume_proposals=[_goal_from(by_ref[asked.ref])])
+        return consolidation_payload(
+            *sources, claims=[draft(by_ref[said.ref], "蓝色")], resume_proposals=[_goal_from(by_ref[asked.ref])]
+        )
 
     model = FakeConsolidation(builder)
     receipt = core.drain_worker(ctx, consolidation=model, max_items=1, remaining_seconds=10)

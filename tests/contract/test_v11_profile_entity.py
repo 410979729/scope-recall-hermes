@@ -1,4 +1,5 @@
 """Focused Core profile/entity read-view contracts over synthetic TEST claims."""
+
 from __future__ import annotations
 
 from dataclasses import replace
@@ -49,32 +50,68 @@ def test_profile_groups_admitted_current_claims_and_entity_one_hop(app):
     _assert_candidate_origin()
     core, ctx = app
     fact, _ = _accept(core, ctx, "TEST-project 配色 蓝色。", value="蓝色", kind="fact", predicate="配色")
-    pref, _ = _accept(core, ctx, "TEST-project 偏好 简洁。", value="简洁", kind="preference", predicate="偏好", statement_kind="assertion")
-    constraint, _ = _accept(
-        core, ctx, "TEST-project 未授权不改网站，只限写文案任务。",
-        value="不改网站", kind="constraint", predicate="网站修改", conditions=["未授权", "写文案任务"],
+    pref, _ = _accept(
+        core,
+        ctx,
+        "TEST-project 偏好 简洁。",
+        value="简洁",
+        kind="preference",
+        predicate="偏好",
+        statement_kind="assertion",
     )
-    decision, _ = _accept(core, ctx, "TEST-project 发布窗口 周二。", value="周二", kind="decision", predicate="发布窗口")
+    constraint, _ = _accept(
+        core,
+        ctx,
+        "TEST-project 未授权不改网站，只限写文案任务。",
+        value="不改网站",
+        kind="constraint",
+        predicate="网站修改",
+        conditions=["未授权", "写文案任务"],
+    )
+    decision, _ = _accept(
+        core, ctx, "TEST-project 发布窗口 周二。", value="周二", kind="decision", predicate="发布窗口"
+    )
     intent_source = capture(core, ctx, "TEST-project 验收前提醒检查散热。")
     pending = accept(core, ctx, intention(intent_source)).items[0]
     incoming, _ = _accept(
-        core, ctx, "TEST-alice 负责 TEST-project。",
-        value="TEST-project", kind="fact", predicate="负责", subject="TEST-alice",
+        core,
+        ctx,
+        "TEST-alice 负责 TEST-project。",
+        value="TEST-project",
+        kind="fact",
+        predicate="负责",
+        subject="TEST-alice",
     )
     conditional, _ = _accept(
-        core, ctx, "未授权时 TEST-bob 依赖 TEST-project。",
-        value="TEST-project", kind="fact", predicate="依赖", subject="TEST-bob",
+        core,
+        ctx,
+        "未授权时 TEST-bob 依赖 TEST-project。",
+        value="TEST-project",
+        kind="fact",
+        predicate="依赖",
+        subject="TEST-bob",
         conditions=["未授权"],
     )
     cooccur, _ = _accept(
-        core, ctx, "TEST-alice 合作伙伴是 Bob, Carol。",
-        value="Bob, Carol", kind="fact", predicate="合作伙伴", subject="TEST-alice",
+        core,
+        ctx,
+        "TEST-alice 合作伙伴是 Bob, Carol。",
+        value="Bob, Carol",
+        kind="fact",
+        predicate="合作伙伴",
+        subject="TEST-alice",
     )
 
-    profile = core.profile(ctx, {
-        "protocol_version": "1.1", "request_id": "TEST-profile", "subject": "TEST-project",
-        "max_items": 16, "budget_tokens": 4096,
-    })
+    profile = core.profile(
+        ctx,
+        {
+            "protocol_version": "1.1",
+            "request_id": "TEST-profile",
+            "subject": "TEST-project",
+            "max_items": 16,
+            "budget_tokens": 4096,
+        },
+    )
     assert profile["status"] == "ok"
     assert profile["alias_resolution"] == "literal"
     assert profile["resolved_subject"] == "TEST-project"
@@ -92,17 +129,33 @@ def test_profile_groups_admitted_current_claims_and_entity_one_hop(app):
     assert fact_item["conditions"] == []
     assert constraint.ref in {item["ref"] for item in profile["sections"]["constraints"]}
 
-    probe = core.entity(ctx, {
-        "protocol_version": "1.1", "request_id": "TEST-probe", "subject": "TEST-project",
-        "action": "probe", "direction": "outgoing", "max_items": 16, "budget_tokens": 4096,
-    })
+    probe = core.entity(
+        ctx,
+        {
+            "protocol_version": "1.1",
+            "request_id": "TEST-probe",
+            "subject": "TEST-project",
+            "action": "probe",
+            "direction": "outgoing",
+            "max_items": 16,
+            "budget_tokens": 4096,
+        },
+    )
     assert [item["value_text"] for item in probe["statements"]] == ["蓝色"]
     assert all(item["direction"] == "outgoing" for item in probe["statements"])
 
-    related = core.entity(ctx, {
-        "protocol_version": "1.1", "request_id": "TEST-related", "subject": "TEST-project",
-        "action": "related", "direction": "both", "max_items": 16, "budget_tokens": 4096,
-    })
+    related = core.entity(
+        ctx,
+        {
+            "protocol_version": "1.1",
+            "request_id": "TEST-related",
+            "subject": "TEST-project",
+            "action": "related",
+            "direction": "both",
+            "max_items": 16,
+            "budget_tokens": 4096,
+        },
+    )
     outgoing_values = {item["value_text"] for item in related["statements"] if item["direction"] == "outgoing"}
     incoming_refs = {item["ref"] for item in related["statements"] if item["direction"] == "incoming"}
     assert "蓝色" in outgoing_values
@@ -115,18 +168,34 @@ def test_profile_groups_admitted_current_claims_and_entity_one_hop(app):
     assert conditional_item["valid_to"] is None
     assert conditional_item["claim_state"] == "active"
     assert conditional_item["basis"] == "direct_report"
-    bob = core.entity(ctx, {
-        "protocol_version": "1.1", "request_id": "TEST-bob", "subject": "Bob",
-        "action": "related", "direction": "incoming", "max_items": 16, "budget_tokens": 4096,
-    })
+    bob = core.entity(
+        ctx,
+        {
+            "protocol_version": "1.1",
+            "request_id": "TEST-bob",
+            "subject": "Bob",
+            "action": "related",
+            "direction": "incoming",
+            "max_items": 16,
+            "budget_tokens": 4096,
+        },
+    )
     assert bob["status"] == "no_match"
     assert bob["statements"] == []
     assert bob["coverage"] != "complete_for_query"
-    alice = core.entity(ctx, {
-        "protocol_version": "1.1", "request_id": "TEST-alice", "subject": "TEST-alice",
-        "action": "related", "direction": "outgoing", "predicate": "合作伙伴",
-        "max_items": 16, "budget_tokens": 4096,
-    })
+    alice = core.entity(
+        ctx,
+        {
+            "protocol_version": "1.1",
+            "request_id": "TEST-alice",
+            "subject": "TEST-alice",
+            "action": "related",
+            "direction": "outgoing",
+            "predicate": "合作伙伴",
+            "max_items": 16,
+            "budget_tokens": 4096,
+        },
+    )
     assert alice["statements"] == [
         item for item in alice["statements"] if item["value_text"] == "Bob, Carol" and item["ref"] == cooccur.ref
     ]
@@ -137,46 +206,89 @@ def test_correction_suppress_scope_and_empty_chat_are_honest(app):
     core, ctx = app
     item, _ = initial(core, ctx, value="H100", kind="fact", predicate="配色")
     capture(core, ctx, "刚才写错了，TEST-project 用H200。", when="2026-09-03T12:00:00Z")
-    profile = core.profile(ctx, {
-        "protocol_version": "1.1", "request_id": "TEST-correct", "subject": "TEST-project",
-        "max_items": 16, "budget_tokens": 4096,
-    })
+    profile = core.profile(
+        ctx,
+        {
+            "protocol_version": "1.1",
+            "request_id": "TEST-correct",
+            "subject": "TEST-project",
+            "max_items": 16,
+            "budget_tokens": 4096,
+        },
+    )
     assert [item["value_text"] for item in profile["sections"]["facts"]] == ["H200"]
     assert profile["sections"]["facts"][0]["revision"] == 2
 
     current = core.current_claim(ctx, item.ref)
     incoming, _ = _accept(
-        core, ctx, "TEST-owner 拥有 TEST-project。",
-        value="TEST-project", kind="fact", predicate="拥有", subject="TEST-owner",
+        core,
+        ctx,
+        "TEST-owner 拥有 TEST-project。",
+        value="TEST-project",
+        kind="fact",
+        predicate="拥有",
+        subject="TEST-owner",
     )
     capture(core, ctx, f"删除 {item.ref}。TEST-project 配色 H200。", when="2026-09-04T12:00:00Z")
-    core.forget(ctx, {
-        "protocol_version": "1.1", "target_refs": [item.ref], "mode": "delete",
-        "expected_revisions": {item.ref: current.revision},
-    }, remaining_seconds=10)
-    after_delete = core.profile(ctx, {
-        "protocol_version": "1.1", "request_id": "TEST-deleted", "subject": "TEST-project",
-        "max_items": 16, "budget_tokens": 4096,
-    })
+    core.forget(
+        ctx,
+        {
+            "protocol_version": "1.1",
+            "target_refs": [item.ref],
+            "mode": "delete",
+            "expected_revisions": {item.ref: current.revision},
+        },
+        remaining_seconds=10,
+    )
+    after_delete = core.profile(
+        ctx,
+        {
+            "protocol_version": "1.1",
+            "request_id": "TEST-deleted",
+            "subject": "TEST-project",
+            "max_items": 16,
+            "budget_tokens": 4096,
+        },
+    )
     assert item.ref not in {entry["ref"] for entry in after_delete["sections"]["facts"]}
     capture(core, ctx, f"删除 {incoming.ref}。TEST-owner 拥有 TEST-project。", when="2026-09-05T12:00:00Z")
-    core.forget(ctx, {
-        "protocol_version": "1.1", "target_refs": [incoming.ref], "mode": "delete",
-        "expected_revisions": {incoming.ref: 1},
-    }, remaining_seconds=10)
-    reverse = core.entity(ctx, {
-        "protocol_version": "1.1", "request_id": "TEST-reverse-gone", "subject": "TEST-project",
-        "action": "related", "direction": "incoming", "max_items": 16, "budget_tokens": 4096,
-    })
+    core.forget(
+        ctx,
+        {
+            "protocol_version": "1.1",
+            "target_refs": [incoming.ref],
+            "mode": "delete",
+            "expected_revisions": {incoming.ref: 1},
+        },
+        remaining_seconds=10,
+    )
+    reverse = core.entity(
+        ctx,
+        {
+            "protocol_version": "1.1",
+            "request_id": "TEST-reverse-gone",
+            "subject": "TEST-project",
+            "action": "related",
+            "direction": "incoming",
+            "max_items": 16,
+            "budget_tokens": 4096,
+        },
+    )
     assert incoming.ref not in {entry["ref"] for entry in reverse["statements"]}
 
     other = replace(ctx, project_id="TEST-other")
     branch = replace(ctx, branch_id="TEST-exp")
     for denied in (other, branch):
-        hidden = core.profile(denied, {
-            "protocol_version": "1.1", "request_id": "TEST-scope", "subject": "TEST-project",
-            "max_items": 16, "budget_tokens": 4096,
-        })
+        hidden = core.profile(
+            denied,
+            {
+                "protocol_version": "1.1",
+                "request_id": "TEST-scope",
+                "subject": "TEST-project",
+                "max_items": 16,
+                "budget_tokens": 4096,
+            },
+        )
         assert hidden["status"] == "no_match"
         assert hidden["sections"]["facts"] == []
 
@@ -185,10 +297,16 @@ def test_correction_suppress_scope_and_empty_chat_are_honest(app):
     raw_core.initialize()
     raw_core.test_sequence = itertools.count(1)
     capture(raw_core, raw_only, "随便聊了 TEST-project 配色，但没有整理。")
-    empty = raw_core.profile(raw_only, {
-        "protocol_version": "1.1", "request_id": "TEST-empty", "subject": "TEST-project",
-        "max_items": 16, "budget_tokens": 4096,
-    })
+    empty = raw_core.profile(
+        raw_only,
+        {
+            "protocol_version": "1.1",
+            "request_id": "TEST-empty",
+            "subject": "TEST-project",
+            "max_items": 16,
+            "budget_tokens": 4096,
+        },
+    )
     assert empty["status"] == "no_match"
     assert empty["coverage"] == "unknown"
     assert "consolidation_required" in empty["gaps"]
@@ -208,10 +326,16 @@ def test_alias_ambiguity_and_person_alias_stay_unmerged(app):
     alias_b = accept(core, ctx, _alias(rename_b, beta, "共用别名") | {"subject": "Beta"}).items[0]
     assert alias_a.state == "active" and alias_b.state == "active"
 
-    ambiguous = core.profile(ctx, {
-        "protocol_version": "1.1", "request_id": "TEST-amb", "subject": "共用别名",
-        "max_items": 16, "budget_tokens": 4096,
-    })
+    ambiguous = core.profile(
+        ctx,
+        {
+            "protocol_version": "1.1",
+            "request_id": "TEST-amb",
+            "subject": "共用别名",
+            "max_items": 16,
+            "budget_tokens": 4096,
+        },
+    )
     assert ambiguous["alias_resolution"] == "ambiguous"
     assert ambiguous["resolved_subject"] is None
     assert ambiguous["sections"]["facts"] == []
@@ -219,14 +343,22 @@ def test_alias_ambiguity_and_person_alias_stay_unmerged(app):
     assert "alias_ambiguous" in ambiguous["gaps"]
 
     person = capture(core, ctx, "张三 喜欢茶。")
-    person_claim = accept(core, ctx, draft(person, "茶", kind="preference", predicate="喜欢", subject="张三", statement_kind="assertion")).items[0]
+    person_claim = accept(
+        core, ctx, draft(person, "茶", kind="preference", predicate="喜欢", subject="张三", statement_kind="assertion")
+    ).items[0]
     invented = capture(core, ctx, "张三 项目以后改名为 李四，内容不变。")
     person_alias = accept(core, ctx, _alias(invented, person_claim, "李四") | {"subject": "张三"}).items[0]
     assert person_alias.state == "proposed"
-    unresolved = core.profile(ctx, {
-        "protocol_version": "1.1", "request_id": "TEST-person", "subject": "李四",
-        "max_items": 16, "budget_tokens": 4096,
-    })
+    unresolved = core.profile(
+        ctx,
+        {
+            "protocol_version": "1.1",
+            "request_id": "TEST-person",
+            "subject": "李四",
+            "max_items": 16,
+            "budget_tokens": 4096,
+        },
+    )
     assert unresolved["alias_resolution"] == "literal"
     assert unresolved["status"] == "no_match"
     assert unresolved["resolved_subject"] == "李四"
@@ -241,23 +373,27 @@ def test_explicit_project_alias_resolves_and_provenance_is_stored(app):
     assert alias.state == "active"
     _accept(core, mist, "TEST-mist 配色 白色。", value="白色", kind="fact", predicate="配色", subject="TEST-mist")
     captured = capture(
-        core, mist, "TEST-mist 发布窗口 周五。",
+        core,
+        mist,
+        "TEST-mist 发布窗口 周五。",
         source_context={"platform": "telegram", "chat_type": "private"},
     )
     accept(core, mist, draft(captured, "周五", kind="fact", predicate="发布窗口", subject="TEST-mist"))
-    profile = core.profile(mist, {
-        "protocol_version": "1.1", "request_id": "TEST-alias", "subject": "TEST暮光",
-        "max_items": 16, "budget_tokens": 4096,
-    })
+    profile = core.profile(
+        mist,
+        {
+            "protocol_version": "1.1",
+            "request_id": "TEST-alias",
+            "subject": "TEST暮光",
+            "max_items": 16,
+            "budget_tokens": 4096,
+        },
+    )
     assert profile["alias_resolution"] == "resolved"
     assert profile["resolved_subject"] == "TEST-mist"
     values = {item["value_text"] for item in profile["sections"]["facts"]}
     assert {"白色", "周五"} <= values
-    contexts = [
-        entry
-        for item in profile["sections"]["facts"]
-        for entry in item.get("source_contexts", [])
-    ]
+    contexts = [entry for item in profile["sections"]["facts"] for entry in item.get("source_contexts", [])]
     assert {"platform": "telegram", "chat_type": "private"} in contexts
     for entry in contexts:
         assert entry["platform"] != "discord"
@@ -292,14 +428,28 @@ def test_proposed_disputed_completed_and_reads_do_not_write(app):
 
     core.storage.write = guarded
     epoch = core.status(ctx).memory_epoch
-    profile = core.profile(ctx, {
-        "protocol_version": "1.1", "request_id": "TEST-states", "subject": "TEST-project",
-        "max_items": 16, "budget_tokens": 4096,
-    })
-    entity = core.entity(ctx, {
-        "protocol_version": "1.1", "request_id": "TEST-states-e", "subject": "TEST-project",
-        "action": "probe", "direction": "outgoing", "max_items": 16, "budget_tokens": 4096,
-    })
+    profile = core.profile(
+        ctx,
+        {
+            "protocol_version": "1.1",
+            "request_id": "TEST-states",
+            "subject": "TEST-project",
+            "max_items": 16,
+            "budget_tokens": 4096,
+        },
+    )
+    entity = core.entity(
+        ctx,
+        {
+            "protocol_version": "1.1",
+            "request_id": "TEST-states-e",
+            "subject": "TEST-project",
+            "action": "probe",
+            "direction": "outgoing",
+            "max_items": 16,
+            "budget_tokens": 4096,
+        },
+    )
     assert writes == []
     assert core.status(ctx).memory_epoch == epoch
     fact_values = {item["value_text"] for item in profile["sections"]["facts"]}
@@ -316,19 +466,31 @@ def test_invalid_bounds_and_budget_honesty(app):
     core, ctx = app
     for index, value in enumerate(("红", "绿", "蓝", "白"), start=1):
         _accept(core, ctx, f"TEST-project 色板{index} {value}。", value=value, kind="fact", predicate=f"色板{index}")
-    clipped = core.profile(ctx, {
-        "protocol_version": "1.1", "request_id": "TEST-clip", "subject": "TEST-project",
-        "max_items": 2, "budget_tokens": 4096,
-    })
+    clipped = core.profile(
+        ctx,
+        {
+            "protocol_version": "1.1",
+            "request_id": "TEST-clip",
+            "subject": "TEST-project",
+            "max_items": 2,
+            "budget_tokens": 4096,
+        },
+    )
     assert clipped["truncated"] is True
     assert clipped["coverage"] == "partial"
     assert clipped["coverage"] != "complete_for_query"
     assert sum(len(clipped["sections"][name]) for name in clipped["sections"]) + len(clipped["disputed"]) == 2
     try:
-        tight = core.profile(ctx, {
-            "protocol_version": "1.1", "request_id": "TEST-budget", "subject": "TEST-project",
-            "max_items": 16, "budget_tokens": 220,
-        })
+        tight = core.profile(
+            ctx,
+            {
+                "protocol_version": "1.1",
+                "request_id": "TEST-budget",
+                "subject": "TEST-project",
+                "max_items": 16,
+                "budget_tokens": 220,
+            },
+        )
     except ContractError as exc:
         assert exc.code == "INPUT_INVALID" and exc.field == "budget_tokens"
     else:
@@ -336,34 +498,74 @@ def test_invalid_bounds_and_budget_honesty(app):
         assert tight["coverage"] != "complete_for_query"
         assert tight["truncated"] or "budget_token_cap" in tight["gaps"]
     with pytest.raises(ContractError, match="INPUT_INVALID"):
-        core.profile(ctx, {
-            "protocol_version": "1.1", "request_id": "TEST-bool", "subject": "TEST-project",
-            "max_items": True, "budget_tokens": 4096,
-        })
+        core.profile(
+            ctx,
+            {
+                "protocol_version": "1.1",
+                "request_id": "TEST-bool",
+                "subject": "TEST-project",
+                "max_items": True,
+                "budget_tokens": 4096,
+            },
+        )
     with pytest.raises(ContractError, match="INPUT_INVALID"):
-        core.entity(ctx, {
-            "protocol_version": "1.1", "request_id": "TEST-enum", "subject": "TEST-project",
-            "action": "graph", "direction": "outgoing", "max_items": 16, "budget_tokens": 4096,
-        })
+        core.entity(
+            ctx,
+            {
+                "protocol_version": "1.1",
+                "request_id": "TEST-enum",
+                "subject": "TEST-project",
+                "action": "graph",
+                "direction": "outgoing",
+                "max_items": 16,
+                "budget_tokens": 4096,
+            },
+        )
     with pytest.raises(ContractError, match="INPUT_INVALID"):
-        core.profile(ctx, {
-            "protocol_version": "1.0", "request_id": "TEST-proto", "subject": "TEST-project",
-            "max_items": 16, "budget_tokens": 4096,
-        })
+        core.profile(
+            ctx,
+            {
+                "protocol_version": "1.0",
+                "request_id": "TEST-proto",
+                "subject": "TEST-project",
+                "max_items": 16,
+                "budget_tokens": 4096,
+            },
+        )
     with pytest.raises(ContractError, match="INPUT_INVALID"):
-        core.profile(ctx, {
-            "protocol_version": "1.1", "request_id": "TEST-scope", "subject": "TEST-project",
-            "max_items": 16, "budget_tokens": 4096, "scope_id": "TEST-scope",
-        })
+        core.profile(
+            ctx,
+            {
+                "protocol_version": "1.1",
+                "request_id": "TEST-scope",
+                "subject": "TEST-project",
+                "max_items": 16,
+                "budget_tokens": 4096,
+                "scope_id": "TEST-scope",
+            },
+        )
     with pytest.raises(ContractError, match="INPUT_INVALID"):
-        core.entity(ctx, {
-            "protocol_version": "1.1", "request_id": "TEST-path", "subject": "TEST-project",
-            "action": "probe", "direction": "outgoing", "max_items": 16, "budget_tokens": 4096,
-            "data_directory": "C:/secret",
-        })
-    omitted = core.profile(ctx, {
-        "protocol_version": "1.1", "request_id": "TEST-defaults", "subject": "TEST-project",
-    })
+        core.entity(
+            ctx,
+            {
+                "protocol_version": "1.1",
+                "request_id": "TEST-path",
+                "subject": "TEST-project",
+                "action": "probe",
+                "direction": "outgoing",
+                "max_items": 16,
+                "budget_tokens": 4096,
+                "data_directory": "C:/secret",
+            },
+        )
+    omitted = core.profile(
+        ctx,
+        {
+            "protocol_version": "1.1",
+            "request_id": "TEST-defaults",
+            "subject": "TEST-project",
+        },
+    )
     assert omitted["status"] in {"ok", "partial"}
     assert DEFAULT_MAX_ITEMS == 16 and DEFAULT_BUDGET_TOKENS == 4096
 
@@ -404,8 +606,11 @@ def test_final_serialized_budget_boundary_empty_nonempty_unavailable(app, monkey
     core, ctx = app
     subject, request_id = _long_ids()
     empty_req = {
-        "protocol_version": "1.1", "request_id": request_id, "subject": subject,
-        "max_items": 16, "budget_tokens": 4096,
+        "protocol_version": "1.1",
+        "request_id": request_id,
+        "subject": subject,
+        "max_items": 16,
+        "budget_tokens": 4096,
     }
     empty = _assert_exact_envelope_fit(core, ctx, empty_req, just_under_must_reject=True)
     assert empty["status"] == "no_match"
@@ -420,10 +625,18 @@ def test_final_serialized_budget_boundary_empty_nonempty_unavailable(app, monkey
     _accept(core, ctx, f"{subject} 配色 蓝色。", value="蓝色", kind="fact", predicate="配色", subject=subject)
     nonempty = _assert_exact_envelope_fit(core, ctx, empty_req)
     assert nonempty["sections"]["facts"]
-    entity_empty = _assert_exact_envelope_fit(core, ctx, {
-        **empty_req, "subject": "不存在的中文主体",
-        "action": "related", "direction": "incoming",
-    }, entity=True, just_under_must_reject=True)
+    entity_empty = _assert_exact_envelope_fit(
+        core,
+        ctx,
+        {
+            **empty_req,
+            "subject": "不存在的中文主体",
+            "action": "related",
+            "direction": "incoming",
+        },
+        entity=True,
+        just_under_must_reject=True,
+    )
     assert entity_empty["status"] == "no_match"
 
     def boom(*_args, **_kwargs):
@@ -450,12 +663,36 @@ def test_candidate_union_and_alias_scan_cap_use_local_seam(app, monkeypatch):
     monkeypatch.setattr(read_views, "release_objects", spy)
     for index, value in enumerate(("红", "绿", "蓝"), start=1):
         _accept(core, ctx, f"TEST-project 色板{index} {value}。", value=value, kind="fact", predicate=f"色板{index}")
-    _accept(core, ctx, "TEST-alice 负责 TEST-project。", value="TEST-project", kind="fact", predicate="负责", subject="TEST-alice")
-    _accept(core, ctx, "TEST-bob 依赖 TEST-project。", value="TEST-project", kind="fact", predicate="依赖", subject="TEST-bob")
-    related = core.entity(ctx, {
-        "protocol_version": "1.1", "request_id": "TEST-union", "subject": "TEST-project",
-        "action": "related", "direction": "both", "max_items": 16, "budget_tokens": 4096,
-    })
+    _accept(
+        core,
+        ctx,
+        "TEST-alice 负责 TEST-project。",
+        value="TEST-project",
+        kind="fact",
+        predicate="负责",
+        subject="TEST-alice",
+    )
+    _accept(
+        core,
+        ctx,
+        "TEST-bob 依赖 TEST-project。",
+        value="TEST-project",
+        kind="fact",
+        predicate="依赖",
+        subject="TEST-bob",
+    )
+    related = core.entity(
+        ctx,
+        {
+            "protocol_version": "1.1",
+            "request_id": "TEST-union",
+            "subject": "TEST-project",
+            "action": "related",
+            "direction": "both",
+            "max_items": 16,
+            "budget_tokens": 4096,
+        },
+    )
     assert released_sizes and max(released_sizes) <= 2
     assert related["scan_capped"] is True
     assert related["coverage"] == "partial"
@@ -469,10 +706,16 @@ def test_candidate_union_and_alias_scan_cap_use_local_seam(app, monkeypatch):
     assert alias.state == "active"
     monkeypatch.setattr(read_views, "CANDIDATE_CAP", 1)
     released_sizes.clear()
-    unresolved = core.profile(mist, {
-        "protocol_version": "1.1", "request_id": "TEST-alias-cap", "subject": "TEST暮光",
-        "max_items": 16, "budget_tokens": 4096,
-    })
+    unresolved = core.profile(
+        mist,
+        {
+            "protocol_version": "1.1",
+            "request_id": "TEST-alias-cap",
+            "subject": "TEST暮光",
+            "max_items": 16,
+            "budget_tokens": 4096,
+        },
+    )
     assert unresolved["alias_resolution"] == "ambiguous"
     assert unresolved["resolved_subject"] is None
     assert unresolved["scan_capped"] is True
@@ -483,10 +726,16 @@ def test_candidate_union_and_alias_scan_cap_use_local_seam(app, monkeypatch):
 
     monkeypatch.setattr(read_views, "CANDIDATE_CAP", 200)
     released_sizes.clear()
-    resolved = core.profile(mist, {
-        "protocol_version": "1.1", "request_id": "TEST-alias-min-fence", "subject": "TEST暮光",
-        "max_items": 16, "budget_tokens": 4096,
-    })
+    resolved = core.profile(
+        mist,
+        {
+            "protocol_version": "1.1",
+            "request_id": "TEST-alias-min-fence",
+            "subject": "TEST暮光",
+            "max_items": 16,
+            "budget_tokens": 4096,
+        },
+    )
     assert resolved["alias_resolution"] == "resolved"
     assert resolved["resolved_subject"] == "TEST-mist"
     assert released_sizes and max(released_sizes) <= 2
@@ -496,54 +745,123 @@ def test_inverse_lookup_uses_effective_not_head_revision(app):
     _assert_candidate_origin()
     core, ctx = app
     owner, _ = _accept(
-        core, ctx, "TEST-owner 拥有 TEST-project。",
-        value="TEST-project", kind="fact", predicate="拥有", subject="TEST-owner",
+        core,
+        ctx,
+        "TEST-owner 拥有 TEST-project。",
+        value="TEST-project",
+        kind="fact",
+        predicate="拥有",
+        subject="TEST-owner",
     )
     future_source = capture(core, ctx, "从2026年9月10日起，TEST-owner 拥有 TEST-other。", when="2026-09-06T12:00:00Z")
-    future = accept(core, ctx, draft(
-        future_source, "TEST-other", kind="fact", predicate="拥有", subject="TEST-owner",
-        valid_from="2026-09-10T00:00:00Z",
-    )).items[0]
+    future = accept(
+        core,
+        ctx,
+        draft(
+            future_source,
+            "TEST-other",
+            kind="fact",
+            predicate="拥有",
+            subject="TEST-owner",
+            valid_from="2026-09-10T00:00:00Z",
+        ),
+    ).items[0]
     assert future.ref == owner.ref and future.revision == 2
     assert core.current_claim(ctx, owner.ref).payload["value_text"] == "TEST-project"
-    current_in = core.entity(ctx, {
-        "protocol_version": "1.1", "request_id": "TEST-future-in", "subject": "TEST-project",
-        "action": "related", "direction": "incoming", "max_items": 16, "budget_tokens": 4096,
-    })
+    current_in = core.entity(
+        ctx,
+        {
+            "protocol_version": "1.1",
+            "request_id": "TEST-future-in",
+            "subject": "TEST-project",
+            "action": "related",
+            "direction": "incoming",
+            "max_items": 16,
+            "budget_tokens": 4096,
+        },
+    )
     assert owner.ref in {item["ref"] for item in current_in["statements"]}
     assert {item["value_text"] for item in current_in["statements"]} == {"TEST-project"}
-    future_in = core.entity(ctx, {
-        "protocol_version": "1.1", "request_id": "TEST-future-hidden", "subject": "TEST-other",
-        "action": "related", "direction": "incoming", "max_items": 16, "budget_tokens": 4096,
-    })
+    future_in = core.entity(
+        ctx,
+        {
+            "protocol_version": "1.1",
+            "request_id": "TEST-future-hidden",
+            "subject": "TEST-other",
+            "action": "related",
+            "direction": "incoming",
+            "max_items": 16,
+            "budget_tokens": 4096,
+        },
+    )
     assert future_in["status"] == "no_match"
     assert future.ref not in {item["ref"] for item in future_in["statements"]}
 
     proposed_source = capture(core, ctx, "假设TEST-owner 拥有 TEST-ghost。")
-    proposed = accept(core, ctx, draft(
-        proposed_source, "TEST-ghost", kind="fact", predicate="拥有", subject="TEST-owner",
-    )).items[0]
+    proposed = accept(
+        core,
+        ctx,
+        draft(
+            proposed_source,
+            "TEST-ghost",
+            kind="fact",
+            predicate="拥有",
+            subject="TEST-owner",
+        ),
+    ).items[0]
     assert proposed.state == "proposed"
-    ghost = core.entity(ctx, {
-        "protocol_version": "1.1", "request_id": "TEST-proposed-in", "subject": "TEST-ghost",
-        "action": "related", "direction": "incoming", "max_items": 16, "budget_tokens": 4096,
-    })
+    ghost = core.entity(
+        ctx,
+        {
+            "protocol_version": "1.1",
+            "request_id": "TEST-proposed-in",
+            "subject": "TEST-ghost",
+            "action": "related",
+            "direction": "incoming",
+            "max_items": 16,
+            "budget_tokens": 4096,
+        },
+    )
     assert ghost["status"] == "no_match"
-    still_current = core.entity(ctx, {
-        "protocol_version": "1.1", "request_id": "TEST-still-current", "subject": "TEST-project",
-        "action": "related", "direction": "incoming", "max_items": 16, "budget_tokens": 4096,
-    })
+    still_current = core.entity(
+        ctx,
+        {
+            "protocol_version": "1.1",
+            "request_id": "TEST-still-current",
+            "subject": "TEST-project",
+            "action": "related",
+            "direction": "incoming",
+            "max_items": 16,
+            "budget_tokens": 4096,
+        },
+    )
     assert owner.ref in {item["ref"] for item in still_current["statements"]}
 
     core.clock.now = "2026-09-10T00:00:00Z"
-    after = core.entity(ctx, {
-        "protocol_version": "1.1", "request_id": "TEST-effective-later", "subject": "TEST-other",
-        "action": "related", "direction": "incoming", "max_items": 16, "budget_tokens": 4096,
-    })
+    after = core.entity(
+        ctx,
+        {
+            "protocol_version": "1.1",
+            "request_id": "TEST-effective-later",
+            "subject": "TEST-other",
+            "action": "related",
+            "direction": "incoming",
+            "max_items": 16,
+            "budget_tokens": 4096,
+        },
+    )
     assert {item["value_text"] for item in after["statements"]} == {"TEST-other"}
-    expired = core.entity(ctx, {
-        "protocol_version": "1.1", "request_id": "TEST-superseded", "subject": "TEST-project",
-        "action": "related", "direction": "incoming", "max_items": 16, "budget_tokens": 4096,
-    })
+    expired = core.entity(
+        ctx,
+        {
+            "protocol_version": "1.1",
+            "request_id": "TEST-superseded",
+            "subject": "TEST-project",
+            "action": "related",
+            "direction": "incoming",
+            "max_items": 16,
+            "budget_tokens": 4096,
+        },
+    )
     assert expired["status"] == "no_match"
     assert expired["statements"] == []

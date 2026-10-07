@@ -97,4 +97,3 @@ def remaining_seconds(now: float | None = None) -> float | None:
     if deadline is None:
         return None
     return deadline.remaining(now)
-

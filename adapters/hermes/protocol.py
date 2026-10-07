@@ -1,4 +1,5 @@
 """Public MemoryProvider signatures for offline host tests without importing Hermes."""
+
 from __future__ import annotations
 
 from abc import ABC, abstractmethod

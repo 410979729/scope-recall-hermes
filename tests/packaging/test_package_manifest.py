@@ -5,6 +5,7 @@ a hand-copied allowlist, plus three version strings that had drifted apart.
 These tests make both conditions loud and tell the reader the one command that
 fixes them.
 """
+
 from __future__ import annotations
 
 import json
@@ -90,6 +91,7 @@ def test_stamping_a_manifest_preserves_everything_else(tmp_path):
 # The documents a reader checks the version against
 # --------------------------------------------------------------------------
 
+
 def _read(name: str) -> str:
     return (REPO_ROOT / name).read_text(encoding="utf-8")
 
@@ -99,25 +101,24 @@ def test_the_readme_names_the_version_being_shipped() -> None:
     checks was the one thing nothing verified."""
     version = inventory.source_version(REPO_ROOT)
     readme = _read("README.md")
-    assert f"`{version}`" in readme, (
-        f"README.md does not mention {version}; update it when bumping _version.py")
+    assert f"`{version}`" in readme, f"README.md does not mention {version}; update it when bumping _version.py"
 
 
 def test_the_readme_does_not_still_advertise_an_older_candidate() -> None:
     version = inventory.source_version(REPO_ROOT)
-    stale = [line.strip() for line in _read("README.md").splitlines()
-             if "3.1.0rc" in line and version not in line]
+    stale = [line.strip() for line in _read("README.md").splitlines() if "3.1.0rc" in line and version not in line]
     assert not stale, f"README.md still names an older candidate: {stale}"
 
 
 def test_the_changelog_has_an_entry_for_this_version() -> None:
     version = inventory.source_version(REPO_ROOT)
     assert version in _read("CHANGELOG.md"), (
-        f"CHANGELOG.md has no entry for {version}; a shipped version with no "
-        "notes is a version nobody can review")
+        f"CHANGELOG.md has no entry for {version}; a shipped version with no notes is a version nobody can review"
+    )
 
 
 # --- one version string, one tree --------------------------------------------
+
 
 def _git(*args):
     import subprocess
@@ -147,5 +148,5 @@ def test_a_tagged_version_is_not_reused_for_a_different_tree():
         return  # This version has never been tagged; nothing to contradict.
     _, head_tree = _git("rev-parse", "HEAD^{tree}")
     assert tagged == head_tree, (
-        "%s already names a different tree. Bump the version, or move the tag if "
-        "it was never published." % tag)
+        "%s already names a different tree. Bump the version, or move the tag if it was never published." % tag
+    )

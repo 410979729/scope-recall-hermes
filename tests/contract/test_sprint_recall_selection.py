@@ -1,4 +1,5 @@
 """Focused regressions for bounded selection; no model or host calls."""
+
 import json
 import sqlite3
 from dataclasses import replace
@@ -11,8 +12,9 @@ from tests.v11_support import recall_request
 
 
 def _search(core, ctx, query):
-    return SearchContext.from_request(recall_request(query=query), ctx,
-        now=core.clock.utc_now(), deadline=core.clock.monotonic() + 5)
+    return SearchContext.from_request(
+        recall_request(query=query), ctx, now=core.clock.utc_now(), deadline=core.clock.monotonic() + 5
+    )
 
 
 def test_old_relevant_preference_survives_busy_recent_window(app):
@@ -40,8 +42,9 @@ def test_the_profile_term_query_starts_from_the_claims(app):
     with core.storage.read(ctx) as tx:
         connection = tx._check()
         connection.set_trace_callback(statements.append)
-        selected = background_candidates(tx, _search(core, ctx, "输出格式如何选择"),
-                                         core.recall_pipeline.storage_reader, core.clock)
+        selected = background_candidates(
+            tx, _search(core, ctx, "输出格式如何选择"), core.recall_pipeline.storage_reader, core.clock
+        )
         connection.set_trace_callback(None)
     assert selected
     term_queries = [sql for sql in statements if "COUNT(DISTINCT t.term) AS hits" in sql and "claims c" in sql]
@@ -56,19 +59,24 @@ def test_matching_condition_selects_exception_instead_of_general_value(app):
     source = capture(core, ctx, "TEST-project 表达偏好 简洁。")
     general = accept(core, ctx, draft(source, "简洁", kind="preference", predicate="表达偏好")).items[0]
     source = capture(core, ctx, "只在写文案时 TEST-project 表达偏好 详细。")
-    exception = accept(core, ctx, draft(source, "详细", kind="preference", predicate="表达偏好", conditions=["写文案时"])).items[0]
+    exception = accept(
+        core, ctx, draft(source, "详细", kind="preference", predicate="表达偏好", conditions=["写文案时"])
+    ).items[0]
     search = _search(core, ctx, "现在帮我写文案")
     with core.storage.read(ctx) as tx:
         selected = background_candidates(tx, search, core.recall_pipeline.storage_reader, core.clock)
-        ordinary = background_candidates(tx, replace(search, query="现在不是写文案，只核对报价"), core.recall_pipeline.storage_reader, core.clock)
+        ordinary = background_candidates(
+            tx, replace(search, query="现在不是写文案，只核对报价"), core.recall_pipeline.storage_reader, core.clock
+        )
     assert [candidate.ref for candidate, _ in selected] == [exception.ref]
     assert [candidate.ref for candidate, _ in ordinary] == [general.ref]
 
 
-def _pair(ref, text, root, score=.016):
+def _pair(ref, text, root, score=0.016):
     content = json.dumps(dict(subject="TEST-project", predicate="state", value_text=text, conditions=[]))
-    obj = RetrievedObject(ref, 1, "claim", content, "human_direct", "current", "trusted scope",
-                          (root,), "direct_report", True)
+    obj = RetrievedObject(
+        ref, 1, "claim", content, "human_direct", "current", "trusted scope", (root,), "direct_report", True
+    )
     return CandidateRef("claim", ref, 1, "lexical", fusion_score=score), obj
 
 
@@ -77,8 +85,11 @@ def test_conflicting_matching_conditions_do_not_get_arbitrary_precedence(app):
     items = []
     for condition, value in (("写文案时", "详细"), ("用中文时", "简洁")):
         source = capture(core, ctx, f"只在{condition} TEST-project 表达偏好 {value}。")
-        items.append(accept(core, ctx, draft(source, value, kind="preference", predicate="表达偏好",
-                                             conditions=[condition])).items[0])
+        items.append(
+            accept(
+                core, ctx, draft(source, value, kind="preference", predicate="表达偏好", conditions=[condition])
+            ).items[0]
+        )
     search = _search(core, ctx, "现在用中文写文案")
     with core.storage.read(ctx) as tx:
         selected = background_candidates(tx, search, core.recall_pipeline.storage_reader, core.clock)
@@ -89,7 +100,7 @@ def test_ranking_covers_another_part_of_question_before_duplicate_evidence(app):
     core, ctx = app
     first = _pair("claim-a", "deployment ready", "event-a@1")
     repeat = _pair("claim-b", "deployment ready", "event-a@1")
-    other = _pair("claim-c", "rollback ready", "event-c@1", score=.015)
+    other = _pair("claim-c", "rollback ready", "event-c@1", score=0.015)
     search = _search(core, ctx, "deployment rollback")
     selected = core.recall_pipeline._rank_hydrated([first, repeat, other], search)
     assert [candidate.ref for candidate, _ in selected[:2]] == ["claim-a", "claim-c"]

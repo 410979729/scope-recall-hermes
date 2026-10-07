@@ -23,6 +23,7 @@ No source, evidence, resume, schema, or existing owner is rewritten. The caller
 owns the transaction and must roll back on ANY failure; no commit, savepoint,
 DDL, source-file access, or implicit retry is performed here.
 """
+
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping
@@ -72,8 +73,12 @@ class LegacyMembershipPlan:
             "automatic_recall_suppressed_episodes": secondary,
             "processing_projection_changed": bool(secondary),
             "owners": [
-                {"source_ref": ref, "source_revision": 1,
-                 "primary_episode_ref": eps[0], "evidence_episode_refs": list(eps)}
+                {
+                    "source_ref": ref,
+                    "source_revision": 1,
+                    "primary_episode_ref": eps[0],
+                    "evidence_episode_refs": list(eps),
+                }
                 for ref, eps in self.memberships.items()
             ],
         }
@@ -122,9 +127,14 @@ class LegacyMembershipPlan:
             )
             disposition, sequence = "primary_inserted", cursor.lastrowid
         return {
-            "episode_ref": episode_ref, "source_ref": source_ref, "source_revision": 1,
-            "primary_episode_ref": owner, "disposition": disposition, "sequence": sequence,
-            "evidence_link_required": True, "auto_promoted": False,
+            "episode_ref": episode_ref,
+            "source_ref": source_ref,
+            "source_revision": 1,
+            "primary_episode_ref": owner,
+            "disposition": disposition,
+            "sequence": sequence,
+            "evidence_link_required": True,
+            "auto_promoted": False,
         }
 
     def verify(self, conn: sqlite3.Connection) -> dict[str, Any]:
@@ -137,10 +147,13 @@ class LegacyMembershipPlan:
         """
         _transaction(conn)
         for episode_ref in self.episode_refs:
-            if conn.execute(
-                "SELECT 1 FROM episodes e JOIN episode_versions v ON v.episode_id=e.episode_id WHERE e.episode_id=? AND v.revision=1",
-                (episode_ref,),
-            ).fetchone() is None:
+            if (
+                conn.execute(
+                    "SELECT 1 FROM episodes e JOIN episode_versions v ON v.episode_id=e.episode_id WHERE e.episode_id=? AND v.revision=1",
+                    (episode_ref,),
+                ).fetchone()
+                is None
+            ):
                 raise MembershipProjectionError("planned legacy episode/version missing")
         for ref, episodes in self.memberships.items():
             prior = conn.execute(
@@ -150,14 +163,22 @@ class LegacyMembershipPlan:
             if prior is None or tuple(prior) != (episodes[0], "anchored", None):
                 raise MembershipProjectionError("planned primary membership missing or changed")
             for episode_ref in episodes:
-                if conn.execute(
-                    "SELECT 1 FROM evidence_links WHERE object_kind='episode' AND object_ref=? AND object_revision=1 AND source_ref=? AND source_revision=1 AND relation='derived_from' AND quote=''",
-                    (episode_ref, ref),
-                ).fetchone() is None:
+                if (
+                    conn.execute(
+                        "SELECT 1 FROM evidence_links WHERE object_kind='episode' AND object_ref=? AND object_revision=1 AND source_ref=? AND source_revision=1 AND relation='derived_from' AND quote=''",
+                        (episode_ref, ref),
+                    ).fetchone()
+                    is None
+                ):
                     raise MembershipProjectionError("legacy M:N evidence link missing")
-                if episode_ref != episodes[0] and conn.execute(
-                    "SELECT 1 FROM episodes WHERE episode_id=? AND suppressed=1", (episode_ref,),
-                ).fetchone() is None:
+                if (
+                    episode_ref != episodes[0]
+                    and conn.execute(
+                        "SELECT 1 FROM episodes WHERE episode_id=? AND suppressed=1",
+                        (episode_ref,),
+                    ).fetchone()
+                    is None
+                ):
                     raise MembershipProjectionError("secondary episode automatic-recall fence missing")
         return dict(self.audit(), verified=True)
 
@@ -184,5 +205,6 @@ def plan_legacy_episode_memberships(
             memberships.setdefault(ref, set()).add(episode_ref)
     return LegacyMembershipPlan(
         MappingProxyType({ref: tuple(sorted(eps)) for ref, eps in sorted(memberships.items())}),
-        tuple(sorted(episode_sources)), count,
+        tuple(sorted(episode_sources)),
+        count,
     )

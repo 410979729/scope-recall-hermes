@@ -3,6 +3,7 @@
 Storage-level only.  What an adapter puts in a source key, and what recall shows
 a reader, are tested where they are built.  Sources are synthetic.
 """
+
 from dataclasses import replace
 import os
 import shutil
@@ -70,6 +71,7 @@ def meta(storage, column):
 
 # --- a local store is what it was -------------------------------------------------------
 
+
 def test_a_local_store_marks_every_row_local(tmp_path):
     ctx = context(tmp_path / "TEST-local")
     storage = SQLiteStorage(ctx.binding)
@@ -108,8 +110,10 @@ def test_a_local_store_is_never_adopted_and_takes_no_entries(tmp_path):
         storage.adopt()
     assert (exc.value.code, exc.value.field) == ("ACCESS_DENIED", "local_store")
     with storage.write(ctx) as tx:
-        for call in (lambda: tx.register_entry("tianshu", "天枢", "hermes", now=NOW),
-                     lambda: tx.register_scopes({"TEST-other"})):
+        for call in (
+            lambda: tx.register_entry("tianshu", "天枢", "hermes", now=NOW),
+            lambda: tx.register_scopes({"TEST-other"}),
+        ):
             with pytest.raises(ContractError) as exc:
                 call()
             assert (exc.value.code, exc.value.field) == ("ACCESS_DENIED", "local_store")
@@ -134,12 +138,15 @@ def test_the_two_kinds_do_not_open_each_other(tmp_path, shared):
 
 # --- entries -------------------------------------------------------------------------------
 
+
 def test_each_source_names_the_entry_it_came_in_through(shared):
     storage, binding = shared
     put(storage, shared_context(binding, "tianshu"), "hermes:shared:tianshu:TEST-session:m:1@1")
     put(storage, shared_context(binding, "tianxuan"), "hermes:shared:tianxuan:TEST-session:m:1@1")
-    assert rows(storage) == [("hermes:shared:tianshu:TEST-session:m:1@1", "tianshu"),
-                             ("hermes:shared:tianxuan:TEST-session:m:1@1", "tianxuan")]
+    assert rows(storage) == [
+        ("hermes:shared:tianshu:TEST-session:m:1@1", "tianshu"),
+        ("hermes:shared:tianxuan:TEST-session:m:1@1", "tianxuan"),
+    ]
 
 
 def test_a_capture_records_when_its_entry_was_last_seen(shared):
@@ -187,6 +194,7 @@ def test_an_entry_id_is_short_lowercase_ascii(entry_id, shared):
 
 # --- scopes --------------------------------------------------------------------------------
 
+
 def test_an_entry_binds_a_subset_of_the_store_scopes(shared):
     storage, binding = shared
     narrow = replace(binding, scope_ids=frozenset({"TEST-scope"}))
@@ -231,6 +239,7 @@ def test_a_shared_binding_carries_every_entry_s_scopes_and_a_local_one_what_it_d
 
 # --- moving --------------------------------------------------------------------------------
 
+
 def test_a_copied_shared_store_opens_only_after_adopt(tmp_path, shared):
     storage, binding = shared
     put(storage, shared_context(binding, "tianshu"), "TEST-before-move/1")
@@ -258,13 +267,20 @@ def test_adopt_refuses_a_store_with_another_id(tmp_path, shared):
 
 # --- a capture that waited in the inbox ----------------------------------------------------
 
+
 def test_a_replayed_capture_keeps_the_entry_that_captured_it(shared):
     """The shared worker replays with its own context, which names no entry.  The
     capture is still filed under the entry that made it, not under the replayer."""
     storage, binding = shared
     capturer = shared_context(binding, "tianxuan")
-    capture_inbox.enqueue(storage, Clock(), capturer, source_event(source_event_key="TEST-waited/1"),
-                          scope_id="TEST-scope", host_scope=None)
+    capture_inbox.enqueue(
+        storage,
+        Clock(),
+        capturer,
+        source_event(source_event_key="TEST-waited/1"),
+        scope_id="TEST-scope",
+        host_scope=None,
+    )
     worker = shared_context(binding)
     receipts = capture_inbox.replay_inbox(storage, Clock(), worker, authorize=lambda _: binding.scope_ids)
     assert [r.durability for r in receipts] == ["persisted"]
@@ -279,6 +295,7 @@ def test_a_local_inbox_row_is_byte_for_byte_what_it_was(tmp_path):
 
 
 # --- upgrade -------------------------------------------------------------------------------
+
 
 def test_a_1109_store_upgrades_with_every_row_local(tmp_path):
     ctx = context(tmp_path / "TEST-local")
@@ -298,16 +315,19 @@ def test_a_1109_store_upgrades_with_every_row_local(tmp_path):
 
 # --- what a reader is shown ----------------------------------------------------------------
 
+
 def _core(binding):
     from scope_recall.core import CoreConfig, MemoryCore
+
     core = MemoryCore(CoreConfig(binding), clock=Clock())
     core.initialize()
     return core
 
 
 def _record(core, ctx, text, key):
-    saved = core.record_event(ctx, source_event(source_event_key=key, content=text), scope_id="TEST-scope",
-                              remaining_seconds=10)
+    saved = core.record_event(
+        ctx, source_event(source_event_key=key, content=text), scope_id="TEST-scope", remaining_seconds=10
+    )
     assert saved.durability == "persisted"
     return saved.event_refs[0]
 
@@ -315,14 +335,18 @@ def _record(core, ctx, text, key):
 def test_a_shared_recall_says_which_entry_each_item_came_in_through(tmp_path):
     from scope_recall.contracts import validate_payload
     from v11_support import recall_request
+
     binding = shared_binding(tmp_path / "TEST-shared")
     core = _core(binding)
     with core.storage.write(shared_context(binding)) as tx:
         tx.register_entry("tianshu", "天枢", "hermes", now=NOW)
         tx.register_entry("tianxuan", "天璇", "hermes", now=NOW)
     _record(core, shared_context(binding, "tianxuan"), "天璇记下的 TEST 部署口令是 H100-ZEBRA。", "TEST-recall/1")
-    packet = core.recall_packet(shared_context(binding, "tianshu"),
-                                recall_request(query="H100-ZEBRA 部署口令", mode="current"), deadline_seconds=5)
+    packet = core.recall_packet(
+        shared_context(binding, "tianshu"),
+        recall_request(query="H100-ZEBRA 部署口令", mode="current"),
+        deadline_seconds=5,
+    )
     assert packet["items"], packet
     assert packet["items"][0]["entries"] == [{"id": "tianxuan", "name": "天璇"}]
     validate_payload("recall_packet", packet)
@@ -330,6 +354,7 @@ def test_a_shared_recall_says_which_entry_each_item_came_in_through(tmp_path):
 
 def test_a_local_recall_packet_carries_no_entries(tmp_path):
     from v11_support import recall_request
+
     ctx = context(tmp_path / "TEST-local")
     core = _core(ctx.binding)
     _record(core, ctx, "本地库的 TEST 部署口令是 H100-ZEBRA。", "TEST-recall/1")
@@ -340,6 +365,7 @@ def test_a_local_recall_packet_carries_no_entries(tmp_path):
 def test_an_item_with_evidence_from_several_entries_names_each_once(tmp_path):
     """A claim or episode lists every entry behind its evidence: once each, ordered."""
     from scope_recall.core.retrieval_storage import evidence_entries
+
     binding = shared_binding(tmp_path / "TEST-shared")
     core = _core(binding)
     with core.storage.write(shared_context(binding)) as tx:
@@ -360,10 +386,12 @@ def test_an_item_with_evidence_from_several_entries_names_each_once(tmp_path):
 
 # --- writers in separate processes take turns ----------------------------------------------
 
+
 def _busy_for(monkeypatch, attempts):
     """Another process holds the writer lease for the next ``attempts`` writable opens."""
     from scope_recall.core import storage as module
     from scope_recall.core.writer_lease import TruthWriterBusyError
+
     real, calls = module.connect_truth_database, []
 
     def connect(path, *, mode, **kwargs):
@@ -390,6 +418,7 @@ def test_a_writer_waits_for_another_process_s_turn_to_end(monkeypatch, shared):
 
 def test_a_writer_gives_up_when_the_turn_outlasts_its_deadline(monkeypatch, shared):
     from scope_recall.core.writer_lease import TruthWriterBusyError
+
     storage, binding = shared
     _busy_for(monkeypatch, None)
     started = time.monotonic()

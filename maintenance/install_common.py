@@ -8,6 +8,7 @@ entry picks a host module instead of branching on the host.  ``install_receipt.p
 the receipt; ``install_purge.py`` inventories what an explicit purge may
 delete.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field

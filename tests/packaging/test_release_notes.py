@@ -4,6 +4,7 @@
 2.x tooling, so the release workflow's final step raised ``ModuleNotFoundError`` at import
 time.  No gate ran the script, so nothing noticed for the whole 3.1.0 candidate series.
 """
+
 from __future__ import annotations
 
 import importlib.util
@@ -60,7 +61,8 @@ def test_a_release_version_has_a_section_to_publish():
     version = _version()
     if "rc" in version:
         assert f"### Scope Recall {version} " in CHANGELOG.read_text(encoding="utf-8"), (
-            f"{version} has no changelog entry")
+            f"{version} has no changelog entry"
+        )
         pytest.skip(f"{version} is a candidate; the release section is written when the final is cut")
     notes = _module().extract_version_section(CHANGELOG.read_text(encoding="utf-8"), version)
     assert notes.strip()
@@ -68,8 +70,11 @@ def test_a_release_version_has_a_section_to_publish():
 
 def test_the_script_runs_as_the_workflow_runs_it(tmp_path):
     output = tmp_path / "notes.md"
-    done = subprocess.run([sys.executable, str(SCRIPT), "--version", "2.0.1",
-                           "--changelog", str(CHANGELOG), "--output", str(output)],
-                          capture_output=True, text=True, timeout=120)
+    done = subprocess.run(
+        [sys.executable, str(SCRIPT), "--version", "2.0.1", "--changelog", str(CHANGELOG), "--output", str(output)],
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )
     assert done.returncode == 0, done.stderr
     assert output.read_text(encoding="utf-8").strip()

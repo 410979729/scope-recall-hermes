@@ -4,6 +4,7 @@ The test is intentionally outside the normal contract suite: its interpreter
 must provide the approved isolated LanceDB installation.  No model or HTTP
 route is used; both embedding ports are deterministic TEST dependencies.
 """
+
 from __future__ import annotations
 
 from dataclasses import replace
@@ -66,10 +67,14 @@ def test_a_model_switch_re_embeds_in_lance_once_an_operator_starts_a_run(tmp_pat
     from tests.contract import test_embedding_respace, test_trace
 
     instance = test_embedding_respace._space_instance
-    monkeypatch.setattr(test_embedding_respace, "_space_instance", lambda core, ctx, model: instance(
-        core, ctx, model, backend="lancedb", storage_dir=tmp_path / model[-1]))
+    monkeypatch.setattr(
+        test_embedding_respace,
+        "_space_instance",
+        lambda core, ctx, model: instance(core, ctx, model, backend="lancedb", storage_dir=tmp_path / model[-1]),
+    )
     test_embedding_respace.test_a_model_switch_re_embeds_what_was_embedded_once_an_operator_starts_a_run(
-        test_trace.app.__wrapped__(tmp_path))
+        test_trace.app.__wrapped__(tmp_path)
+    )
 
 
 def test_a_drain_queues_and_embeds_an_import_s_history(tmp_path: Path):
@@ -77,26 +82,46 @@ def test_a_drain_queues_and_embeds_an_import_s_history(tmp_path: Path):
     queued by a pass and embedded, and the pass says so."""
     from scope_recall.contracts import ImportProvenance, import_source_fingerprint
 
-    binding = InstanceBinding("TEST-backfill-agent", "TEST-backfill-installation", tmp_path / "truth",
-                              frozenset({"TEST-scope"}), True)
+    binding = InstanceBinding(
+        "TEST-backfill-agent", "TEST-backfill-installation", tmp_path / "truth", frozenset({"TEST-scope"}), True
+    )
     config = RuntimeInstanceConfig(
-        binding=binding, session_id="worker-session-B", allowed_scope_ids=binding.scope_ids,
-        request_seconds=45.0, drain_seconds=120.0, max_items=32, lease_seconds=60.0,
+        binding=binding,
+        session_id="worker-session-B",
+        allowed_scope_ids=binding.scope_ids,
+        request_seconds=45.0,
+        drain_seconds=120.0,
+        max_items=32,
+        lease_seconds=60.0,
         auxiliary=AuxiliaryRuntimeConfig.from_mapping({"external_embedding": False, "external_consolidation": False}),
-        vector=VectorRuntimeConfig(backend="lancedb", storage_dir=tmp_path / "vectors",
-                                   table_name="TEST-backfill-vectors", dimensions=2, test_injection_override=True),
+        vector=VectorRuntimeConfig(
+            backend="lancedb",
+            storage_dir=tmp_path / "vectors",
+            table_name="TEST-backfill-vectors",
+            dimensions=2,
+            test_injection_override=True,
+        ),
     )
     instance = build_runtime_instance(config, vector_factory=default_vector_factory)
     try:
         instance.core.initialize()
-        instance.auxiliary = replace(instance.auxiliary, query_embedding=DeterministicEmbedding(),
-                                     source_embedding=DeterministicEmbedding())
-        event = source_event(source_event_key="TEST-backfill/said", source_revision=1, origin="imported",
-                             role="user", content="TEST 家里的猫叫小橘。", occurred_at="2026-07-01T12:00:00Z",
-                             time_precision="instant", source_original_origin="human_direct")
+        instance.auxiliary = replace(
+            instance.auxiliary, query_embedding=DeterministicEmbedding(), source_embedding=DeterministicEmbedding()
+        )
+        event = source_event(
+            source_event_key="TEST-backfill/said",
+            source_revision=1,
+            origin="imported",
+            role="user",
+            content="TEST 家里的猫叫小橘。",
+            occurred_at="2026-07-01T12:00:00Z",
+            time_precision="instant",
+            source_original_origin="human_direct",
+        )
         importer = ImportProvenance("human_direct", "a" * 64, frozenset({import_source_fingerprint(event)}))
-        context = TrustedContext(binding, "TEST-import-session", binding.scope_ids, "imported",
-                                 import_provenance=importer)
+        context = TrustedContext(
+            binding, "TEST-import-session", binding.scope_ids, "imported", import_provenance=importer
+        )
         ref = instance.core.record_event(context, event, scope_id="TEST-scope", remaining_seconds=10).event_refs[0].ref
         with sqlite3.connect(instance.core.storage.path) as conn:
             # As a store that never had an embedding left it.
@@ -119,19 +144,32 @@ def test_a_drain_s_backfill_makes_room_only_for_evaluations_the_pass_would_take(
     from scope_recall.runtime import instance as instance_module
     from scope_recall.runtime import model_budget
 
-    binding = InstanceBinding("TEST-yield-agent", "TEST-yield-installation", tmp_path / "truth",
-                              frozenset({"TEST-scope"}), True)
+    binding = InstanceBinding(
+        "TEST-yield-agent", "TEST-yield-installation", tmp_path / "truth", frozenset({"TEST-scope"}), True
+    )
     config = RuntimeInstanceConfig(
-        binding=binding, session_id="worker-session-B", allowed_scope_ids=binding.scope_ids,
-        request_seconds=45.0, drain_seconds=120.0, max_items=32, lease_seconds=60.0,
+        binding=binding,
+        session_id="worker-session-B",
+        allowed_scope_ids=binding.scope_ids,
+        request_seconds=45.0,
+        drain_seconds=120.0,
+        max_items=32,
+        lease_seconds=60.0,
         auxiliary=AuxiliaryRuntimeConfig.from_mapping({"external_embedding": False, "external_consolidation": False}),
-        vector=VectorRuntimeConfig(backend="lancedb", storage_dir=tmp_path / "vectors",
-                                   table_name="TEST-yield-vectors", dimensions=2, test_injection_override=True),
+        vector=VectorRuntimeConfig(
+            backend="lancedb",
+            storage_dir=tmp_path / "vectors",
+            table_name="TEST-yield-vectors",
+            dimensions=2,
+            test_injection_override=True,
+        ),
     )
     asked = []
-    monkeypatch.setattr(instance_module, "backfill_if_due",
-                        lambda storage, context, vectors, **kwargs: asked.append(
-                            (kwargs.get("yield_to"), kwargs.get("yield_ceiling"))))
+    monkeypatch.setattr(
+        instance_module,
+        "backfill_if_due",
+        lambda storage, context, vectors, **kwargs: asked.append((kwargs.get("yield_to"), kwargs.get("yield_ceiling"))),
+    )
 
     class Evaluator:
         def consolidate(self, *args, **kwargs):
@@ -143,13 +181,17 @@ def test_a_drain_s_backfill_makes_room_only_for_evaluations_the_pass_would_take(
     instance = build_runtime_instance(config, vector_factory=default_vector_factory)
     try:
         instance.core.initialize()
-        instance.auxiliary = replace(instance.auxiliary, query_embedding=DeterministicEmbedding(),
-                                     source_embedding=DeterministicEmbedding())
+        instance.auxiliary = replace(
+            instance.auxiliary, query_embedding=DeterministicEmbedding(), source_embedding=DeterministicEmbedding()
+        )
         instance.drain()
         instance.drain(consolidation=Evaluator())
         instance.drain(consolidation=Evaluator(), purge_only=True, max_items=8)
-        monkeypatch.setattr(model_budget, "provider_holds",
-                            lambda auxiliary: {"evaluate_candidate": ("TEST-model", "2999-01-01T00:00:00Z")})
+        monkeypatch.setattr(
+            model_budget,
+            "provider_holds",
+            lambda auxiliary: {"evaluate_candidate": ("TEST-model", "2999-01-01T00:00:00Z")},
+        )
         instance.drain(consolidation=Evaluator())
     finally:
         instance.close()
@@ -172,9 +214,7 @@ def test_runtime_instance_native_source_query_delete_purge(tmp_path: Path):
         drain_seconds=120.0,
         max_items=32,
         lease_seconds=60.0,
-        auxiliary=AuxiliaryRuntimeConfig.from_mapping(
-            {"external_embedding": False, "external_consolidation": False}
-        ),
+        auxiliary=AuxiliaryRuntimeConfig.from_mapping({"external_embedding": False, "external_consolidation": False}),
         vector=VectorRuntimeConfig(
             backend="lancedb",
             storage_dir=tmp_path / "vectors",

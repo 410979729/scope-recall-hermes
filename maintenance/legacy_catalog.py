@@ -2,6 +2,7 @@
 
 Supported legacy tables and their dispositions have one owner here.
 """
+
 from __future__ import annotations
 import hashlib
 
@@ -10,7 +11,10 @@ from pathlib import Path
 from typing import Any
 from .backup import _safe_path
 from .legacy_v2_compat import (
-    BRIDGE_TABLE, BRIDGE_COLUMNS, IMPORT_LEDGER_TABLE, IMPORT_LEDGER_COLUMNS,
+    BRIDGE_TABLE,
+    BRIDGE_COLUMNS,
+    IMPORT_LEDGER_TABLE,
+    IMPORT_LEDGER_COLUMNS,
 )
 from .migration_records import MigrationError, _canon, _columns, _open_immutable, _tables
 
@@ -156,9 +160,14 @@ _DISPOSITIONS = {
 # Rebuildable indexes and bookkeeping never block a cutover. Matched on the
 # lower-cased name because SQLite table names are case-insensitive.
 _DERIVED_PREFIXES = ("vector_", "embedding_", "relation_", "lexical_")
-_DERIVED_NAMES = frozenset({
-    "memory_entities", "memory_relations", "memory_feedback", "operator_operations",
-})
+_DERIVED_NAMES = frozenset(
+    {
+        "memory_entities",
+        "memory_relations",
+        "memory_feedback",
+        "operator_operations",
+    }
+)
 _CATALOG_DERIVED_NAMES = _DERIVED_NAMES | {
     "schema_migrations",
     "journal_digest_runs",
@@ -171,12 +180,7 @@ _CATALOG_DERIVED_NAMES = _DERIVED_NAMES | {
 
 def _is_derived_index(table: str, names: frozenset[str] = _DERIVED_NAMES) -> bool:
     lower = table.lower()
-    return (
-        lower.endswith("_fts")
-        or "_fts_" in lower
-        or lower.startswith(_DERIVED_PREFIXES)
-        or lower in names
-    )
+    return lower.endswith("_fts") or "_fts_" in lower or lower.startswith(_DERIVED_PREFIXES) or lower in names
 
 
 def _classify_table_disposition(table: str) -> str:
@@ -227,13 +231,15 @@ def _tally_scopes(
                     sentinels["<null>"][key] = count
                     continue
                 if type(raw) is not str:
-                    unsupported.append({
-                        "table": table,
-                        "key": "<data>",
-                        "reason": "malformed_non_string_identity",
-                        "column": column,
-                        "auto_promoted": False,
-                    })
+                    unsupported.append(
+                        {
+                            "table": table,
+                            "key": "<data>",
+                            "reason": "malformed_non_string_identity",
+                            "column": column,
+                            "auto_promoted": False,
+                        }
+                    )
                     continue
                 if column == "scope_id":
                     direct.add(raw)
@@ -250,10 +256,7 @@ def _tally_scopes(
                     bucket = audit_only
                 bucket[raw] = bucket.get(raw, 0) + count
     audit_only = {scope: n for scope, n in audit_only.items() if scope not in content}
-    shared_only = {
-        scope: n for scope, n in shared.items()
-        if scope not in content and scope not in audit_only
-    }
+    shared_only = {scope: n for scope, n in shared.items() if scope not in content and scope not in audit_only}
     return {
         "content": content,
         "audit_only": audit_only,
@@ -273,41 +276,44 @@ def _schema_issues(
         present = set(columns[table])
         missing = sorted(_REQUIRED.get(table, frozenset()) - present)
         if missing:
-            issues.append({
-                "table": table,
-                "key": "<schema>",
-                "reason": "legacy_schema_column_missing_blocks_cutover",
-                "missing_columns": missing,
-                "auto_promoted": False,
-            })
+            issues.append(
+                {
+                    "table": table,
+                    "key": "<schema>",
+                    "reason": "legacy_schema_column_missing_blocks_cutover",
+                    "missing_columns": missing,
+                    "auto_promoted": False,
+                }
+            )
         if table in _SUPPORTED_COLUMNS:
             extra = sorted(present - _SUPPORTED_COLUMNS[table])
             if extra:
-                issues.append({
-                    "table": table,
-                    "key": "<schema>",
-                    "reason": "unknown_legacy_columns_blocks_cutover",
-                    "columns": extra,
-                    "auto_promoted": False,
-                })
+                issues.append(
+                    {
+                        "table": table,
+                        "key": "<schema>",
+                        "reason": "unknown_legacy_columns_blocks_cutover",
+                        "columns": extra,
+                        "auto_promoted": False,
+                    }
+                )
         if dispositions[table] == "unknown":
-            issues.append({
-                "table": table,
-                "key": "<table>",
-                "reason": "unknown_legacy_table_blocks_cutover",
-                "columns": columns[table],
-                "auto_promoted": False,
-            })
+            issues.append(
+                {
+                    "table": table,
+                    "key": "<table>",
+                    "reason": "unknown_legacy_table_blocks_cutover",
+                    "columns": columns[table],
+                    "auto_promoted": False,
+                }
+            )
     return issues
 
 
 def _catalog(conn: sqlite3.Connection) -> dict[str, Any]:
     tables = _tables(conn)
     dispositions = {t: _classify_table_disposition(t) for t in sorted(tables)}
-    row_counts = {
-        t: int(conn.execute(f"SELECT count(*) FROM [{t}]").fetchone()[0])
-        for t in sorted(tables)
-    }
+    row_counts = {t: int(conn.execute(f"SELECT count(*) FROM [{t}]").fetchone()[0]) for t in sorted(tables)}
     columns = {t: _columns(conn, t) for t in sorted(tables)}
     tally = _tally_scopes(conn, tables, columns, dispositions)
     unsupported = tally["unsupported"] + _schema_issues(tables, columns, dispositions)
@@ -332,8 +338,7 @@ def _catalog(conn: sqlite3.Connection) -> dict[str, Any]:
         "shared_only_scopes": sorted(tally["shared_only"]),
         "audit_only_scopes": sorted(tally["audit_only"]),
         "audit_sentinels": {
-            marker: {"total": sum(found.values()), "occurrences": found}
-            for marker, found in sentinels.items()
+            marker: {"total": sum(found.values()), "occurrences": found} for marker, found in sentinels.items()
         },
         "sentinel_rules": {
             "empty_string_is_audit_sentinel": True,

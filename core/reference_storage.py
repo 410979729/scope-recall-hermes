@@ -32,9 +32,7 @@ def ordinal(mention, count):
     match = re.search(r"第([一二三四五六七八九十]|\d{1,2})(?:张|个|版)", mention)
     if match:
         value = match[1]
-        index = (
-            int(value) if value.isdigit() else "一二三四五六七八九十".index(value) + 1
-        )
+        index = int(value) if value.isdigit() else "一二三四五六七八九十".index(value) + 1
         return index - 1 if 1 <= index <= count else None
     if "中间" in mention and count % 2 == 1:
         return count // 2
@@ -61,10 +59,7 @@ class References:
         if row is None:
             return None
         payload = json.loads(row["payload_json"])
-        if any(
-            self.tx.source(*parse_source_ref(s)) is None
-            for s in payload["evidence_refs"]
-        ):
+        if any(self.tx.source(*parse_source_ref(s)) is None for s in payload["evidence_refs"]):
             return None
         if revision is None:
             for source in payload["evidence_refs"]:
@@ -101,11 +96,7 @@ class References:
             )
             .fetchone()
         )
-        return (
-            (int(row["current_revision"]), json.loads(row["payload_json"]))
-            if row
-            else None
-        )
+        return (int(row["current_revision"]), json.loads(row["payload_json"])) if row else None
 
     def _visible_artifact_identity_count(self, label, revision):
         """Count every visible artifact identity in the trusted context."""
@@ -139,10 +130,7 @@ class References:
 
         def linked(piece, start, end):
             for occurrence in re.finditer(re.escape(mention), piece):
-                if (
-                    start <= occurrence.start() < end
-                    or occurrence.start() <= start < occurrence.end()
-                ):
+                if start <= occurrence.start() < end or occurrence.start() <= start < occurrence.end():
                     return True
                 if occurrence.end() <= start and re.fullmatch(
                     r"[\s“”‘’\"\']*(?:说的是|指的是|就是|是|为)[\s“”‘’\"\']*",
@@ -164,28 +152,20 @@ class References:
                 continue
             if marker.search(piece):
                 if re.search(
-                    r"(?:不是|并非|非|不是所说的|not|never)\s*(?:[^，,;；。.!?！？]*?)"
-                    + re.escape(label),
+                    r"(?:不是|并非|非|不是所说的|not|never)\s*(?:[^，,;；。.!?！？]*?)" + re.escape(label),
                     piece,
                     re.I,
                 ):
                     continue
-                if any(
-                    linked(piece, match.start(), match.end())
-                    for match in marker.finditer(piece)
-                ):
+                if any(linked(piece, match.start(), match.end()) for match in marker.finditer(piece)):
                     return True
         return False
 
     def apply(self, proposal, scope_id, now):
         conn, ctx = self.tx._check(write=True), self.tx.context
-        sources = [
-            self.tx.source(*parse_source_ref(r)) for r in proposal["evidence_refs"]
-        ]
+        sources = [self.tx.source(*parse_source_ref(r)) for r in proposal["evidence_refs"]]
         if any(
-            s is None
-            or (s.scope_id, s.project_id, s.branch_id)
-            != (scope_id, ctx.project_id, ctx.branch_id)
+            s is None or (s.scope_id, s.project_id, s.branch_id) != (scope_id, ctx.project_id, ctx.branch_id)
             for s in sources
         ):
             raise ContractError("SOURCE_MISSING")
@@ -194,9 +174,7 @@ class References:
         mentioned = [s for s in sources if proposal["mention"] in s.event["content"]]
         if not mentioned:
             raise ContractError("DERIVATION_INVALID", "reference_mention")
-        episodes = {
-            self.tx.episodes.source_episode(s.ref, s.revision).ref for s in mentioned
-        }
+        episodes = {self.tx.episodes.source_episode(s.ref, s.revision).ref for s in mentioned}
         if len(episodes) != 1:
             raise ContractError("DERIVATION_INVALID", "reference_episode")
         episode = next(iter(episodes))
@@ -214,9 +192,7 @@ class References:
                 continue
             snapshot = source.event.get("display_snapshot", {})
             raw = source.event["content"]
-            ordinal_safe = not UNSETTLED.search(raw) and not AUTHORITY_QUESTION.search(
-                raw
-            )
+            ordinal_safe = not UNSETTLED.search(raw) and not AUTHORITY_QUESTION.search(raw)
             if ordinal_safe and re.search(
                 r"(?:不是|并非|非|not|never)\s*" + re.escape(proposal["mention"]),
                 raw,
@@ -235,9 +211,7 @@ class References:
                 # The proposal list is not the universe of visible artifacts:
                 # omitted same-label versions must prevent false uniqueness.
                 unique_visible = (
-                    candidate in raw
-                    or self._visible_artifact_identity_count(item.label, item.revision)
-                    == 1
+                    candidate in raw or self._visible_artifact_identity_count(item.label, item.revision) == 1
                 )
                 exact = unique_visible and self._explicit_candidate_mention(
                     raw, item.label, item.revision, candidate, proposal["mention"]
@@ -249,11 +223,7 @@ class References:
         payload = dict(
             proposal,
             resolved_ref=choice,
-            resolution="resolved"
-            if choice
-            else "ambiguous"
-            if len(candidates) > 1
-            else "unresolved",
+            resolution="resolved" if choice else "ambiguous" if len(candidates) > 1 else "unresolved",
         )
         primary = mentioned[-1]
         ref = (
@@ -273,10 +243,7 @@ class References:
         )
         # An explicit later clarification updates the one matching earlier
         # mention within this episode; ordinary repeated words create occurrences.
-        if any(
-            re.search(r"刚才|说的是|指的是|I meant|clarif", s.event["content"], re.I)
-            for s in mentioned
-        ):
+        if any(re.search(r"刚才|说的是|指的是|I meant|clarif", s.event["content"], re.I) for s in mentioned):
             matches = conn.execute(
                 """SELECT r.reference_id FROM reference_bindings r JOIN reference_versions v
                 ON v.reference_id=r.reference_id AND v.revision=r.current_revision WHERE r.episode_id=? AND r.read_blocked=0
@@ -332,7 +299,5 @@ class References:
             lineage.link(conn, "reference", ref, revision, source.ref, source.revision, once=False)
         for item in candidates:
             lineage.depend(conn, "reference", ref, revision, "artifact", item.ref, item.revision)
-        conn.execute(
-            "UPDATE instance_meta SET memory_epoch=memory_epoch+1 WHERE singleton=1"
-        )
+        conn.execute("UPDATE instance_meta SET memory_epoch=memory_epoch+1 WHERE singleton=1")
         return self.get(ref)

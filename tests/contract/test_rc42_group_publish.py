@@ -8,6 +8,7 @@ The fence is what must not move.  A grouped commit is guarded once for the whole
 guard answers for every member while the helper holds the lock, and a group it refuses writes
 nothing and leaves each member to publish on its own fence exactly as before.
 """
+
 from __future__ import annotations
 
 import sqlite3
@@ -52,15 +53,24 @@ def _sources(core, ctx, count, *, tag):
 
 
 def _port(store, ctx):
-    return LanceEmbedPort(store, FixedEmbedding(), agent_id=ctx.binding.agent_id,
-                          installation_id=ctx.binding.installation_id, embedding_space="TEST-rc42-space")
+    return LanceEmbedPort(
+        store,
+        FixedEmbedding(),
+        agent_id=ctx.binding.agent_id,
+        installation_id=ctx.binding.installation_id,
+        embedding_space="TEST-rc42-space",
+    )
 
 
 def _embed_states(core):
     """One row per (ref, revision): two revisions of one ref are two pieces of work."""
     with sqlite3.connect(core.storage.path) as conn:
-        return {(row[0], row[1]): row[2] for row in conn.execute(
-            "SELECT subject_ref, subject_revision, state FROM work_items WHERE work_type='embed'")}
+        return {
+            (row[0], row[1]): row[2]
+            for row in conn.execute(
+                "SELECT subject_ref, subject_revision, state FROM work_items WHERE work_type='embed'"
+            )
+        }
 
 
 @pytest.fixture
@@ -132,11 +142,11 @@ def test_the_runtime_boundary_offers_the_group_commit_it_bounds():
     from scope_recall.runtime.instance import _BoundedEmbed
 
     class Port:
-        def publish_sources(self, prepared, *, sources, lease_tokens, lease_owner, lease_guard,
-                            remaining_seconds=1.0):
+        def publish_sources(self, prepared, *, sources, lease_tokens, lease_owner, lease_guard, remaining_seconds=1.0):
             return ("published", remaining_seconds)
 
     bounded = _BoundedEmbed(Port(), 45.0)
     assert callable(getattr(bounded, "publish_sources", None))
-    assert bounded.publish_sources((), sources=(), lease_tokens=(), lease_owner="TEST-owner",
-                                   lease_guard=lambda: True, remaining_seconds=120.0) == ("published", 45.0)
+    assert bounded.publish_sources(
+        (), sources=(), lease_tokens=(), lease_owner="TEST-owner", lease_guard=lambda: True, remaining_seconds=120.0
+    ) == ("published", 45.0)

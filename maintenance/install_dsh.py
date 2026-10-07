@@ -24,6 +24,7 @@ one of this install's rows without inserting it (``- id: scope-recall`` with ``d
 stays after the block, which a re-install writes where it stood and a fresh install before that operation; and the
 upload counts as off only as the operations leave it, the install's own switch going after every other.
 """
+
 from __future__ import annotations
 
 import codecs
@@ -52,9 +53,11 @@ START = "# SCOPE_RECALL_DSH_START"
 END = "# SCOPE_RECALL_DSH_END"
 PRIVACY_START = "# SCOPE_RECALL_DSH_PRIVACY_START"
 PRIVACY_END = "# SCOPE_RECALL_DSH_PRIVACY_END"
-RESTART_NOTE = ("quit every running dsh (web, headless, tui, Desktop) before apply-install and start it again after; "
-                "check with dsh --profile headless --dump-config that the rows scope-recall and mcp-scope-recall are "
-                "there and session-log-deepseek has enabled: false")
+RESTART_NOTE = (
+    "quit every running dsh (web, headless, tui, Desktop) before apply-install and start it again after; "
+    "check with dsh --profile headless --dump-config that the rows scope-recall and mcp-scope-recall are "
+    "there and session-log-deepseek has enabled: false"
+)
 _SERVER_MODULE = "scope_recall.adapters.codex.mcp_entry"
 _MARKER = re.compile(re.escape(START) + r" \(scope-recall \S+ for (.+); apply-uninstall takes this block out\)$")
 
@@ -138,6 +141,7 @@ def planned_files(plan: InstallPlan) -> dict[Path, str | bytes]:
 
 # -- the rows ---------------------------------------------------------------------------------------------------
 
+
 def _scalar(value: str) -> str:
     """``value`` as a double-quoted YAML scalar (JSON's quoting is YAML's)."""
     return json.dumps(value, ensure_ascii=False)
@@ -188,6 +192,7 @@ def _privacy_rows() -> list[str]:
 
 # -- reading and writing the patch ------------------------------------------------------------------------------
 
+
 class _Loader(yaml.SafeLoader):
     """PyYAML's safe loader that reads dsh's ``!!js`` expressions as text instead of refusing the file."""
 
@@ -234,8 +239,9 @@ def _parse(text: str, path: Path) -> list[Any]:
 _PLACE = object()
 
 
-def _without_block(lines: list, start: str, end: str, *, home: Path | None = None,
-                   mark: bool = False) -> tuple[list, bool]:
+def _without_block(
+    lines: list, start: str, end: str, *, home: Path | None = None, mark: bool = False
+) -> tuple[list, bool]:
     """``lines`` without the marked block (only this entry's when ``home`` is given), with ``_PLACE`` where it stood
     when ``mark``, and whether one was there."""
     result: list = []
@@ -262,14 +268,20 @@ def _without_block(lines: list, start: str, end: str, *, home: Path | None = Non
 def _names_home(marker: str, home: Path) -> bool:
     """Whether a block's start line (``_rows``) names ``home``, a path that may hold spaces or semicolons."""
     found = _MARKER.match(marker)
-    return found is not None and (os.path.normcase(os.path.normpath(found.group(1)))
-                                  == os.path.normcase(os.path.normpath(home.as_posix())))
+    return found is not None and (
+        os.path.normcase(os.path.normpath(found.group(1))) == os.path.normcase(os.path.normpath(home.as_posix()))
+    )
 
 
 def _inserted(operations: list[Any]) -> list[dict[str, Any]]:
     """The rows the operations insert."""
-    return [row for operation in operations if isinstance(operation, dict) and isinstance(operation.get("insert"), list)
-            for row in operation["insert"] if isinstance(row, dict)]
+    return [
+        row
+        for operation in operations
+        if isinstance(operation, dict) and isinstance(operation.get("insert"), list)
+        for row in operation["insert"]
+        if isinstance(row, dict)
+    ]
 
 
 def _ids(operations: list[Any]) -> list[str]:
@@ -280,10 +292,16 @@ def _ids(operations: list[Any]) -> list[str]:
 def _server_names(operations: list[Any]) -> list[str]:
     """The MCP server names the operations give: an inserted row's, or an operation's that replaces another row's config
     (one that replaces this install's MCP row's config keeps that row's server)."""
-    rows = _inserted(operations) + [operation for operation in operations if isinstance(operation, dict)
-                                    and "insert" not in operation and operation.get("id") != MCP_ROW]
-    return [row["config"]["serverName"] for row in rows
-            if isinstance(row.get("config"), dict) and isinstance(row["config"].get("serverName"), str)]
+    rows = _inserted(operations) + [
+        operation
+        for operation in operations
+        if isinstance(operation, dict) and "insert" not in operation and operation.get("id") != MCP_ROW
+    ]
+    return [
+        row["config"]["serverName"]
+        for row in rows
+        if isinstance(row.get("config"), dict) and isinstance(row["config"].get("serverName"), str)
+    ]
 
 
 def upload_off(operations: list[Any]) -> bool:
@@ -293,8 +311,11 @@ def upload_off(operations: list[Any]) -> bool:
     disabled: Any = None
     enabled: Any = None
     for operation in operations:
-        rows = operation["insert"] if isinstance(operation, dict) and isinstance(operation.get("insert"), list) \
+        rows = (
+            operation["insert"]
+            if isinstance(operation, dict) and isinstance(operation.get("insert"), list)
             else [operation]
+        )
         for row in rows:
             if not isinstance(row, dict) or row.get("id") != PRIVACY_ROW:
                 continue
@@ -332,8 +353,10 @@ def _block_style(lines: list[str], path: Path) -> None:
         if _empty_list(line):
             continue
         if not line.startswith("- "):
-            raise InstallError(f"{path} is not a block list at column 0; add this entry's rows by hand "
-                               f"(see docs/install.md, section 13)")
+            raise InstallError(
+                f"{path} is not a block list at column 0; add this entry's rows by hand "
+                f"(see docs/install.md, section 13)"
+            )
         return
 
 
@@ -409,6 +432,7 @@ def unmerged_file(instance_root: Path, path: Path) -> bytes | None:
 
 # -- the entry --------------------------------------------------------------------------------------------------
 
+
 def foreign_instance_entries(instance_root: Path) -> list[str]:
     """A home this installer is asked to create: dsh's is only ever an attached one."""
     return [f"{instance_root} is not attached to a shared store; run scope-recall attach --host dsh first"]
@@ -434,8 +458,9 @@ def validate_reuse(plan: InstallPlan) -> None:
     if config.agent_id != plan.agent_id:
         raise InstallError("existing dsh entry agent_id mismatch: the store's is " + config.agent_id)
     if config.test_mode != plan.test_mode:
-        raise InstallError(f"existing dsh entry test_mode mismatch: stored={config.test_mode}, "
-                           f"requested={plan.test_mode}")
+        raise InstallError(
+            f"existing dsh entry test_mode mismatch: stored={config.test_mode}, requested={plan.test_mode}"
+        )
 
 
 def purge_identity(instance_root: Path) -> tuple[Path, str, str, Path]:

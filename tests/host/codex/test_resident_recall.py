@@ -4,6 +4,7 @@ WorkBuddy starts the entry's MCP server with each conversation's agent process, 
 server still opening its vector store: a cold server answered with its vector search 12.7 s after its start, past the
 prompt hook's 6 s.  A resident server outlives those processes, and hooks ask it first.  Sources are synthetic.
 """
+
 from __future__ import annotations
 
 import json
@@ -41,11 +42,13 @@ NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 NEEDS_START_TIME = pytest.mark.skipif(_own_start_time() is None, reason="no process start time here: a stop ends none")
 #: A resident server as ``ensure_resident`` starts one, bound to this checkout (``tests/sitecustomize.py``, so no
 #: ``-I``) and with no LanceDB helper prestarted: the TEST store has no vectors.
-RESIDENT = ("import sys\n"
-            "from scope_recall.vector import process_store\n"
-            "process_store.prestart = lambda **kwargs: None\n"
-            "from scope_recall.adapters.codex import resident_entry\n"
-            "raise SystemExit(resident_entry.main(sys.argv[1:]))\n")
+RESIDENT = (
+    "import sys\n"
+    "from scope_recall.vector import process_store\n"
+    "process_store.prestart = lambda **kwargs: None\n"
+    "from scope_recall.adapters.codex import resident_entry\n"
+    "raise SystemExit(resident_entry.main(sys.argv[1:]))\n"
+)
 
 
 @pytest.fixture
@@ -60,15 +63,29 @@ def entry(tmp_path, monkeypatch):
     write_shared_payload(root, new_shared_payload(root, agent_id=AGENT))
     hermes = tmp_path / "TEST-tianshu-home"
     hermes.mkdir()
-    attach_shared_entry(root, build_installation_manifest(hermes, agent_id=AGENT, user_id="TEST-owner",
-                                                          agent_workspace="TEST-workspace"),
-                        entry_id="tianshu", display_name="天枢", now=NOW)
+    attach_shared_entry(
+        root,
+        build_installation_manifest(hermes, agent_id=AGENT, user_id="TEST-owner", agent_workspace="TEST-workspace"),
+        entry_id="tianshu",
+        display_name="天枢",
+        now=NOW,
+    )
     owner = next(row for row in read_shared_payload(root)["entries"][0]["audiences"] if row["kind"] == "owner_private")
     home = tmp_path / "TEST-workbuddy-home"
-    attach_shared_record(root, client_entry_record(
-        host="workbuddy", home=home, entry_id="workbuddy", display_name="WorkBuddy", attached_at=NOW,
-        allowed_scope_ids=owner["allowed_scope_ids"], writable_scope_ids=owner["writable_scope_ids"],
-        capture_scope_id=owner["capture_scope_id"]), now=NOW)
+    attach_shared_record(
+        root,
+        client_entry_record(
+            host="workbuddy",
+            home=home,
+            entry_id="workbuddy",
+            display_name="WorkBuddy",
+            attached_at=NOW,
+            allowed_scope_ids=owner["allowed_scope_ids"],
+            writable_scope_ids=owner["writable_scope_ids"],
+            capture_scope_id=owner["capture_scope_id"],
+        ),
+        now=NOW,
+    )
     return home
 
 
@@ -85,8 +102,20 @@ def _name(home, *, pid, port, resident, host="workbuddy", start="TEST-start", ve
     folder = local_endpoint.endpoints(home)
     folder.mkdir(parents=True, exist_ok=True)
     path = folder / f"{pid}.json"
-    path.write_text(json.dumps({"host": host, "port": port, "token": "TEST-token", "pid": pid, "start": start,
-                                "version": version or __version__, "resident": resident}), encoding="utf-8")
+    path.write_text(
+        json.dumps(
+            {
+                "host": host,
+                "port": port,
+                "token": "TEST-token",
+                "pid": pid,
+                "start": start,
+                "version": version or __version__,
+                "resident": resident,
+            }
+        ),
+        encoding="utf-8",
+    )
     stamp = time.time() - age
     os.utime(path, (stamp, stamp))
     return path
@@ -135,17 +164,25 @@ def _lock_holder(home, said, seconds=60.0, release=None):
     """A process of its own that holds the entry's lock and says its id, as another server holds it: for ``seconds``, or
     until ``release`` exists."""
     process = subprocess.Popen(
-        [sys.executable, "-B", "-c",
-         "import os, sys, time\n"
-         "from pathlib import Path\n"
-         "from scope_recall.core.file_lock import advisory_file_lock\n"
-         "with advisory_file_lock(Path(sys.argv[1]), timeout_seconds=0):\n"
-         "    Path(sys.argv[2]).write_text(str(os.getpid()))\n"
-         "    until = time.monotonic() + float(sys.argv[3])\n"
-         "    while time.monotonic() < until and not (sys.argv[4] and Path(sys.argv[4]).exists()):\n"
-         "        time.sleep(0.05)\n",
-         str(local_endpoint.resident_lock(home, "workbuddy")), str(said), str(seconds), str(release or "")],
-        creationflags=NO_WINDOW)
+        [
+            sys.executable,
+            "-B",
+            "-c",
+            "import os, sys, time\n"
+            "from pathlib import Path\n"
+            "from scope_recall.core.file_lock import advisory_file_lock\n"
+            "with advisory_file_lock(Path(sys.argv[1]), timeout_seconds=0):\n"
+            "    Path(sys.argv[2]).write_text(str(os.getpid()))\n"
+            "    until = time.monotonic() + float(sys.argv[3])\n"
+            "    while time.monotonic() < until and not (sys.argv[4] and Path(sys.argv[4]).exists()):\n"
+            "        time.sleep(0.05)\n",
+            str(local_endpoint.resident_lock(home, "workbuddy")),
+            str(said),
+            str(seconds),
+            str(release or ""),
+        ],
+        creationflags=NO_WINDOW,
+    )
     local_endpoint.endpoints(home).mkdir(parents=True, exist_ok=True)
     assert _wait(lambda: said.exists() and said.read_text(), 15)
     return process, int(said.read_text())
@@ -153,8 +190,15 @@ def _lock_holder(home, said, seconds=60.0, release=None):
 
 def _sleeper(said):
     """A process of its own that says its id and sleeps, as a resident server's interpreter."""
-    process = subprocess.Popen([sys.executable, "-c", "import os, sys, time; open(sys.argv[1], 'w').write(str("
-                                "os.getpid())); time.sleep(60)", str(said)], creationflags=NO_WINDOW)
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            "import os, sys, time; open(sys.argv[1], 'w').write(str(os.getpid())); time.sleep(60)",
+            str(said),
+        ],
+        creationflags=NO_WINDOW,
+    )
     assert _wait(lambda: said.exists() and said.read_text(), 10)
     return process, int(said.read_text())
 
@@ -224,8 +268,11 @@ def test_a_hook_asks_the_resident_server_before_a_newer_one_the_client_started(e
     _name(entry, pid=42, port=4102, resident=False, age=1)
     monkeypatch.setattr(process_probe, "probe_process", lambda pid: _Running())
     asked = []
-    monkeypatch.setattr(local_endpoint.Recaller, "_exchange",
-                        lambda self, port, token, request, until: (asked.append(port), ("busy", None))[1])
+    monkeypatch.setattr(
+        local_endpoint.Recaller,
+        "_exchange",
+        lambda self, port, token, request, until: (asked.append(port), ("busy", None))[1],
+    )
     recaller = local_endpoint.Recaller(entry, "workbuddy")
     assert recaller({"hook_event_name": "UserPromptSubmit"}, (), (), 5.0) is None
     assert asked == [4101, 4102]
@@ -260,8 +307,22 @@ def test_a_client_starts_a_resident_server_once_and_not_while_one_runs(entry, mo
     env_file = tmp_path / "TEST.env"
     assert local_endpoint.ensure_resident(entry, "workbuddy", minutes=0) == "off"
     assert local_endpoint.ensure_resident(entry, "workbuddy", minutes=120, env_file=env_file) == "started"
-    assert started == [[sys.executable, "-I", "-B", "-m", "scope_recall.adapters.codex.resident_entry",
-                        "--home", str(entry), "--host", "workbuddy", "--detach", "--env-file", str(env_file)]]
+    assert started == [
+        [
+            sys.executable,
+            "-I",
+            "-B",
+            "-m",
+            "scope_recall.adapters.codex.resident_entry",
+            "--home",
+            str(entry),
+            "--host",
+            "workbuddy",
+            "--detach",
+            "--env-file",
+            str(env_file),
+        ]
+    ]
     # The next prompt's hook, while that one still starts: no second start.
     assert local_endpoint.ensure_resident(entry, "workbuddy", minutes=120) == "recent"
     assert len(started) == 1
@@ -315,8 +376,10 @@ def test_a_resident_server_of_another_version_or_client_is_not_this_one(entry, m
     _name(entry, pid=45, port=4105, resident=True, host="codex")
     _name(entry, pid=46, port=4106, resident=False)
     assert local_endpoint._residents(entry, "workbuddy") == []
-    assert [(int(info["pid"]), proven) for _paths, info, proven
-            in local_endpoint._residents(entry, "workbuddy", any_version=True)] == [(44, True)]
+    assert [
+        (int(info["pid"]), proven)
+        for _paths, info, proven in local_endpoint._residents(entry, "workbuddy", any_version=True)
+    ] == [(44, True)]
     killed = []
     monkeypatch.setattr(os, "kill", lambda pid, sig: killed.append(pid))
     assert local_endpoint.stop_residents(entry, "workbuddy", other_versions=True) == [44]
@@ -357,8 +420,9 @@ def test_a_resident_server_whose_identity_cannot_be_proven_is_never_stopped(entr
     assert local_endpoint.stop_residents(entry, "workbuddy") == [] and killed == []
     assert resident.main(["stop", "--home", str(entry), "--host", "workbuddy"]) == 0
     said = json.loads(capsys.readouterr().out)
-    assert said["stopped"] == [] and [(server["pid"], server["verified"]) for server in said["servers"]] == \
-        [(4242, False)]
+    assert said["stopped"] == [] and [(server["pid"], server["verified"]) for server in said["servers"]] == [
+        (4242, False)
+    ]
     assert killed == []
 
 
@@ -405,11 +469,27 @@ def test_a_detached_start_starts_the_server_from_a_process_that_ends_at_once(ent
     started = []
     monkeypatch.setattr(local_endpoint, "_start_apart", lambda command, cwd: (started.append((command, cwd)), True)[1])
     env_file = tmp_path / "TEST.env"
-    assert resident_entry.main(["--home", str(entry), "--host", "workbuddy", "--detach",
-                                "--env-file", str(env_file)]) == 0
-    assert started == [([sys.executable, "-I", "-B", "-m", "scope_recall.adapters.codex.resident_entry",
-                         "--home", str(entry), "--host", "workbuddy", "--env-file", str(env_file)],
-                        local_endpoint.endpoints(entry))]
+    assert (
+        resident_entry.main(["--home", str(entry), "--host", "workbuddy", "--detach", "--env-file", str(env_file)]) == 0
+    )
+    assert started == [
+        (
+            [
+                sys.executable,
+                "-I",
+                "-B",
+                "-m",
+                "scope_recall.adapters.codex.resident_entry",
+                "--home",
+                str(entry),
+                "--host",
+                "workbuddy",
+                "--env-file",
+                str(env_file),
+            ],
+            local_endpoint.endpoints(entry),
+        )
+    ]
     assert not (local_endpoint.endpoints(entry) / f"{os.getpid()}.json").exists(), "the detaching process served"
 
 
@@ -490,8 +570,9 @@ def test_one_unsure_check_does_not_end_a_resident_server_and_two_in_a_row_do(ent
     assert states == ["same", "same"], "it ended at the second unsure check in a row, not at the first"
 
     minutes = [120, None, 120, None, None, 120]
-    monkeypatch.setattr(resident_entry, "configured_minutes",
-                        lambda home, host, **kwargs: minutes.pop(0) if minutes else 120)
+    monkeypatch.setattr(
+        resident_entry, "configured_minutes", lambda home, host, **kwargs: minutes.pop(0) if minutes else 120
+    )
     worker, box = _in_thread(["--home", str(entry), "--host", "workbuddy"])
     worker.join(20)
     assert not worker.is_alive() and box["code"] == 0 and minutes == [120]
@@ -523,8 +604,9 @@ def test_a_starting_resident_server_stops_one_of_another_version(entry, tmp_path
         worker, box = _in_thread(["--home", str(entry), "--host", "workbuddy", "--idle-seconds", "60"])
         assert holder.wait(10) is not None, "the older server was stopped"
         record = local_endpoint.resident_record(entry, "workbuddy")
-        assert _wait(lambda: record.exists() and json.loads(record.read_text(encoding="utf-8"))["pid"] == os.getpid(),
-                     10), "and this version's serves"
+        assert _wait(
+            lambda: record.exists() and json.loads(record.read_text(encoding="utf-8"))["pid"] == os.getpid(), 10
+        ), "and this version's serves"
         end.set()
         worker.join(20)
         assert not worker.is_alive() and box["code"] == 0
@@ -535,8 +617,9 @@ def test_a_starting_resident_server_stops_one_of_another_version(entry, tmp_path
 
 
 @NEEDS_START_TIME
-def test_a_prompt_hook_replaces_a_resident_server_of_another_version_and_an_mcp_server_leaves_it(entry, tmp_path,
-                                                                                                 monkeypatch):
+def test_a_prompt_hook_replaces_a_resident_server_of_another_version_and_an_mcp_server_leaves_it(
+    entry, tmp_path, monkeypatch
+):
     """One of another version that held the entry's lock (an installation in another venv, a canary) was never
     replaced: hooks and MCP servers said it ran, marked it in use, and asked it nothing (review 2 of 3.6.0rc1).  An MCP
     server leaves it unmarked; the prompt hook stops it and starts its own, the start stamp notwithstanding."""
@@ -583,8 +666,9 @@ def test_a_recall_puts_off_a_resident_server_s_idle_end(entry):
 
         def recall(**kwargs):
             try:
-                endpoint.recall({"payload": {"hook_event_name": "Stop"}, "current_refs": [], "gaps": [],
-                                 "remaining": 1.0}, **kwargs)
+                endpoint.recall(
+                    {"payload": {"hook_event_name": "Stop"}, "current_refs": [], "gaps": [], "remaining": 1.0}, **kwargs
+                )
             except Exception:  # noqa: BLE001 - what the recall answers does not matter here
                 pass
 
@@ -619,8 +703,12 @@ def test_stopping_an_entry_s_resident_servers_ends_them_and_takes_their_names(en
     sleeper, pid = _sleeper(tmp_path / "TEST-recorded-pid")
     try:
         record = local_endpoint.resident_record(entry, "workbuddy")
-        record.write_text(json.dumps({"host": "workbuddy", "pid": pid, "start": probe_process(pid).start_token,
-                                      "version": __version__}), encoding="utf-8")
+        record.write_text(
+            json.dumps(
+                {"host": "workbuddy", "pid": pid, "start": probe_process(pid).start_token, "version": __version__}
+            ),
+            encoding="utf-8",
+        )
         assert local_endpoint.stop_residents(entry, "workbuddy") == [pid]
         assert sleeper.wait(10) is not None and not record.exists()
     finally:
@@ -661,8 +749,9 @@ def test_the_mcp_server_of_a_client_that_keeps_a_resident_server_keeps_one_and_a
 
     monkeypatch.setattr(local_endpoint, "ensure_resident", ensure)
     real_keep, kept = local_endpoint.keep_resident, {}
-    monkeypatch.setattr(local_endpoint, "keep_resident",
-                        lambda *args, **kwargs: kept.setdefault("stop", real_keep(*args, **kwargs)))
+    monkeypatch.setattr(
+        local_endpoint, "keep_resident", lambda *args, **kwargs: kept.setdefault("stop", real_keep(*args, **kwargs))
+    )
 
     class _Server:
         class server:
@@ -714,8 +803,15 @@ def test_a_client_s_live_mcp_server_keeps_a_resident_server_and_nothing_it_meets
 
 
 def _hook(monkeypatch, payload):
-    monkeypatch.setattr(sys, "stdin", type("In", (), {"buffer": type("B", (), {
-        "read": staticmethod(lambda size: json.dumps(payload).encode("utf-8"))})()})())
+    monkeypatch.setattr(
+        sys,
+        "stdin",
+        type(
+            "In",
+            (),
+            {"buffer": type("B", (), {"read": staticmethod(lambda size: json.dumps(payload).encode("utf-8"))})()},
+        )(),
+    )
 
 
 def test_a_prompt_hook_starts_a_resident_server_after_its_answer(entry, monkeypatch, capsys, tmp_path):
@@ -725,16 +821,28 @@ def test_a_prompt_hook_starts_a_resident_server_after_its_answer(entry, monkeypa
     env_file = tmp_path / "TEST.env"
     env_file.write_text("", encoding="utf-8")
     order, said = [], ["started", "running", "replaced:3.6.0rc0"]
-    monkeypatch.setattr(local_endpoint, "ensure_resident",
-                        lambda home, host, *, minutes, env_file=None, replace=False: (
-                            order.append(("resident", host, minutes, env_file, replace)), said.pop(0))[1])
+    monkeypatch.setattr(
+        local_endpoint,
+        "ensure_resident",
+        lambda home, host, *, minutes, env_file=None, replace=False: (
+            order.append(("resident", host, minutes, env_file, replace)),
+            said.pop(0),
+        )[1],
+    )
     real_emit = hook_entry.emit_result
-    monkeypatch.setattr(hook_entry, "emit_result", lambda *args, **kwargs: (order.append("answer"),
-                                                                            real_emit(*args, **kwargs))[1])
-    payload = {"hook_event_name": "UserPromptSubmit", "session_id": "TEST-wb", "prompt": "TEST 你好",
-               "cwd": "C:/TEST/work", "transcript_path": "C:/TEST/projects/c--TEST-work/TEST-wb.jsonl"}
-    for index, expected in enumerate(("CODEX_RECALL_RESIDENT_START:started\n", None,
-                                      "CODEX_RECALL_RESIDENT_START:replaced:3.6.0rc0\n")):
+    monkeypatch.setattr(
+        hook_entry, "emit_result", lambda *args, **kwargs: (order.append("answer"), real_emit(*args, **kwargs))[1]
+    )
+    payload = {
+        "hook_event_name": "UserPromptSubmit",
+        "session_id": "TEST-wb",
+        "prompt": "TEST 你好",
+        "cwd": "C:/TEST/work",
+        "transcript_path": "C:/TEST/projects/c--TEST-work/TEST-wb.jsonl",
+    }
+    for index, expected in enumerate(
+        ("CODEX_RECALL_RESIDENT_START:started\n", None, "CODEX_RECALL_RESIDENT_START:replaced:3.6.0rc0\n")
+    ):
         _hook(monkeypatch, {**payload, "prompt": f"TEST 你好 {index}"})
         assert hook_entry.main(["--home", str(entry), "--host", "workbuddy", "--env-file", str(env_file)]) == 0
         err = capsys.readouterr().err
@@ -748,11 +856,20 @@ def test_a_hook_other_than_a_prompt_s_starts_no_resident_server(entry, monkeypat
 
     _runtime_config(entry)
     started = []
-    monkeypatch.setattr(local_endpoint, "ensure_resident",
-                        lambda home, host, *, minutes, env_file=None, replace=False: (started.append(host),
-                                                                                      "started")[1])
-    _hook(monkeypatch, {"hook_event_name": "Stop", "session_id": "TEST-wb", "cwd": "C:/TEST/work",
-                        "transcript_path": "C:/TEST/projects/c--TEST-work/TEST-wb.jsonl"})
+    monkeypatch.setattr(
+        local_endpoint,
+        "ensure_resident",
+        lambda home, host, *, minutes, env_file=None, replace=False: (started.append(host), "started")[1],
+    )
+    _hook(
+        monkeypatch,
+        {
+            "hook_event_name": "Stop",
+            "session_id": "TEST-wb",
+            "cwd": "C:/TEST/work",
+            "transcript_path": "C:/TEST/projects/c--TEST-work/TEST-wb.jsonl",
+        },
+    )
     assert hook_entry.main(["--home", str(entry), "--host", "workbuddy"]) == 0
     assert started == []
     assert "CODEX_RECALL_RESIDENT_START" not in capsys.readouterr().err
@@ -795,8 +912,15 @@ def test_a_handler_s_embedding_warming_asks_its_runtime():
     asked = []
     handler = CodexHookHandler.__new__(CodexHookHandler)
     handler._ensure_host_runtime = lambda: None
-    handler._host_runtime = type("Host", (), {"_runtime": type("Runtime", (), {
-        "warm_query_embedding": staticmethod(lambda seconds: asked.append(seconds))})()})()
+    handler._host_runtime = type(
+        "Host",
+        (),
+        {
+            "_runtime": type(
+                "Runtime", (), {"warm_query_embedding": staticmethod(lambda seconds: asked.append(seconds))}
+            )()
+        },
+    )()
     handler.warm_embedding(3.0)
     assert asked == [3.0]
 
@@ -813,12 +937,26 @@ def test_two_real_resident_servers_settle_on_one_across_processes_and_a_stop_end
     folder.mkdir(parents=True, exist_ok=True)
     try:
         for _ in range(2):
-            assert local_endpoint._start_apart([sys.executable, "-B", "-c", RESIDENT, "--home", str(entry), "--host",
-                                                "workbuddy", "--idle-seconds", "60"], cwd=folder)
+            assert local_endpoint._start_apart(
+                [
+                    sys.executable,
+                    "-B",
+                    "-c",
+                    RESIDENT,
+                    "--home",
+                    str(entry),
+                    "--host",
+                    "workbuddy",
+                    "--idle-seconds",
+                    "60",
+                ],
+                cwd=folder,
+            )
         assert _wait(lambda: len(_resident_names(entry)) >= 1, 30)
         children.pids.update(int(info["pid"]) for info in _resident_names(entry))
-        assert _wait(lambda: sum(process.poll() is None for process in children.started) == 1, 15), \
+        assert _wait(lambda: sum(process.poll() is None for process in children.started) == 1, 15), (
             "the second gave way and ended"
+        )
         assert [process.returncode for process in children.started if process.poll() is not None] == [0]
         names = _resident_names(entry)
         assert len(names) == 1 and local_endpoint.resident_running(entry, "workbuddy")
@@ -837,15 +975,22 @@ def test_a_hook_that_starts_a_resident_server_closes_its_output_at_once(entry, t
     from scope_recall.runtime.process_probe import probe_process
 
     said = tmp_path / "TEST-sleeper-pid"
-    hook = ("import sys\n"
-            "from pathlib import Path\n"
-            "from scope_recall.adapters.codex import local_endpoint\n"
-            "sleeper = ('import os, sys, time; open(sys.argv[1], \"w\").write(str(os.getpid())); time.sleep(30)')\n"
-            "local_endpoint._start_apart([sys.executable, '-c', sleeper, sys.argv[2]], cwd=Path(sys.argv[1]))\n"
-            "sys.stdout.write('{}')\n")
+    hook = (
+        "import sys\n"
+        "from pathlib import Path\n"
+        "from scope_recall.adapters.codex import local_endpoint\n"
+        "sleeper = ('import os, sys, time; open(sys.argv[1], \"w\").write(str(os.getpid())); time.sleep(30)')\n"
+        "local_endpoint._start_apart([sys.executable, '-c', sleeper, sys.argv[2]], cwd=Path(sys.argv[1]))\n"
+        "sys.stdout.write('{}')\n"
+    )
     started = time.monotonic()
-    process = subprocess.Popen([sys.executable, "-B", "-c", hook, str(tmp_path), str(said)], stdin=subprocess.DEVNULL,
-                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, creationflags=NO_WINDOW)
+    process = subprocess.Popen(
+        [sys.executable, "-B", "-c", hook, str(tmp_path), str(said)],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        creationflags=NO_WINDOW,
+    )
     try:
         out, _err = process.communicate(timeout=20)
         elapsed = time.monotonic() - started
@@ -868,8 +1013,11 @@ def test_a_resident_server_ends_once_a_recall_has_been_stuck_for_minutes(entry, 
     monkeypatch.setattr(resident_entry, "IDLE_CHECK_SECONDS", 0.05)
     _runtime_config(entry)
     stuck = threading.Event()
-    monkeypatch.setattr(local_endpoint.HookEndpoint, "stuck_for",
-                        lambda self: resident_entry.STUCK_END_SECONDS if stuck.is_set() else 0.0)
+    monkeypatch.setattr(
+        local_endpoint.HookEndpoint,
+        "stuck_for",
+        lambda self: resident_entry.STUCK_END_SECONDS if stuck.is_set() else 0.0,
+    )
     name = local_endpoint.endpoints(entry) / f"{os.getpid()}.json"
     worker, box = _in_thread(["--home", str(entry), "--host", "workbuddy", "--idle-seconds", "60"])
     assert _wait(name.exists, 10)
@@ -1005,8 +1153,9 @@ def test_a_record_whose_process_cannot_be_opened_is_another_s_and_removed(entry,
     monkeypatch.setattr(process_probe, "probe_process", lambda pid: _Closed())
     record = local_endpoint.resident_record(entry, "workbuddy")
     record.parent.mkdir(parents=True, exist_ok=True)
-    record.write_text(json.dumps({"host": "workbuddy", "pid": 4343, "start": "TEST-start", "version": __version__}),
-                      encoding="utf-8")
+    record.write_text(
+        json.dumps({"host": "workbuddy", "pid": 4343, "start": "TEST-start", "version": __version__}), encoding="utf-8"
+    )
     assert local_endpoint._residents(entry, "workbuddy", any_version=True) == []
     assert not record.exists()
 
@@ -1037,8 +1186,9 @@ def test_a_stop_waits_for_the_stopped_server_to_let_go_of_the_lock(entry, monkey
 
 
 @NEEDS_START_TIME
-def test_a_server_of_another_version_the_hook_cannot_end_is_said_unstoppable_and_nothing_starts(entry, tmp_path,
-                                                                                               monkeypatch):
+def test_a_server_of_another_version_the_hook_cannot_end_is_said_unstoppable_and_nothing_starts(
+    entry, tmp_path, monkeypatch
+):
     """A stop that failed (a server this account may not end, as one an elevated client started) said ``replaced``
     at every prompt and started one that gave way each time (review 3 of 3.6.0rc1)."""
     from scope_recall.runtime.process_probe import probe_process
@@ -1054,8 +1204,9 @@ def test_a_server_of_another_version_the_hook_cannot_end_is_said_unstoppable_and
 
         monkeypatch.setattr(os, "kill", refused)
         for _ in range(2):
-            assert local_endpoint.ensure_resident(entry, "workbuddy", minutes=120,
-                                                  replace=True) == "unstoppable:3.6.0rc0"
+            assert (
+                local_endpoint.ensure_resident(entry, "workbuddy", minutes=120, replace=True) == "unstoppable:3.6.0rc0"
+            )
         assert started == [] and holder.poll() is None
         folder = local_endpoint.endpoints(entry)
         assert not (folder / "resident-workbuddy.start").exists(), "no start stamp: nothing was started"
@@ -1066,8 +1217,9 @@ def test_a_server_of_another_version_the_hook_cannot_end_is_said_unstoppable_and
         holder.wait(10)
 
 
-def test_a_server_of_another_version_whose_identity_cannot_be_proven_is_neither_marked_nor_stopped(entry, tmp_path,
-                                                                                                    monkeypatch):
+def test_a_server_of_another_version_whose_identity_cannot_be_proven_is_neither_marked_nor_stopped(
+    entry, tmp_path, monkeypatch
+):
     """Where no start time can be read (macOS) the hook may not stop one of another version; marked in use, it kept
     the entry cold for as long as the client ran (review 3 of 3.6.0rc1).  Unmarked, it ends at its idle end."""
     from scope_recall.runtime import process_probe

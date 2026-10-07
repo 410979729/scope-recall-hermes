@@ -57,9 +57,7 @@ class TruthDatabaseCleanupError(TruthDatabaseConnectionError):
     """
 
     def __init__(self, *, cleanup: Callable[[], None]) -> None:
-        super().__init__(
-            "truth database cleanup is pending after a connection setup failure"
-        )
+        super().__init__("truth database cleanup is pending after a connection setup failure")
         self._cleanup: Callable[[], None] | None = cleanup
         self._cleanup_lock = threading.Lock()
         self._cleanup_pending = True
@@ -176,18 +174,14 @@ def _posix_hardening_state() -> types.ModuleType:
     if _posix_hardening_holder_usable(holder) and isinstance(holder, types.ModuleType):
         return holder
     if _POSIX_HARDENING_STATE_NAME not in sys.modules:
-        holder = sys.modules.setdefault(
-            _POSIX_HARDENING_STATE_NAME, _new_posix_hardening_holder()
-        )
+        holder = sys.modules.setdefault(_POSIX_HARDENING_STATE_NAME, _new_posix_hardening_holder())
     else:
         # Re-read after a missed first get so a racing alias that published a
         # valid holder is reused instead of being treated as incompatible.
         holder = sys.modules.get(_POSIX_HARDENING_STATE_NAME)
     if _posix_hardening_holder_usable(holder) and isinstance(holder, types.ModuleType):
         return holder
-    raise TruthDatabaseConnectionError(
-        "SQLite truth storage hardening state is incompatible; restart the process"
-    )
+    raise TruthDatabaseConnectionError("SQLite truth storage hardening state is incompatible; restart the process")
 
 
 def _reset_posix_hardening_cache_for_tests() -> None:
@@ -260,15 +254,11 @@ def _lstat_hardening_record(path: Path) -> tuple[int, int, int] | None:
     except FileNotFoundError:
         return None
     if stat.S_ISLNK(st.st_mode):
-        raise TruthDatabaseConnectionError(
-            "SQLite truth storage cannot use symlink paths"
-        )
+        raise TruthDatabaseConnectionError("SQLite truth storage cannot use symlink paths")
     return (int(st.st_dev), int(st.st_ino), int(stat.S_IMODE(st.st_mode)))
 
 
-def _harden_truth_directory_descriptor(
-    parent: Path, directory_flags: int, fchmod: Callable[[int, int], None]
-) -> None:
+def _harden_truth_directory_descriptor(parent: Path, directory_flags: int, fchmod: Callable[[int, int], None]) -> None:
     """Re-apply owner-only directory mode through a no-follow descriptor.
 
     A directory descriptor is a different inode than the live SQLite file, so
@@ -279,9 +269,7 @@ def _harden_truth_directory_descriptor(
     directory_fd = os.open(parent, directory_flags)
     try:
         if not stat.S_ISDIR(os.fstat(directory_fd).st_mode):
-            raise TruthDatabaseConnectionError(
-                "SQLite truth storage parent is not a directory"
-            )
+            raise TruthDatabaseConnectionError("SQLite truth storage parent is not a directory")
         fchmod(directory_fd, TRUTH_DIRECTORY_MODE)
     finally:
         os.close(directory_fd)
@@ -300,9 +288,7 @@ def _apply_database_descriptor_hardening(
     try:
         st = os.fstat(database_fd)
         if not stat.S_ISREG(st.st_mode):
-            raise TruthDatabaseConnectionError(
-                "SQLite truth storage is not a regular file"
-            )
+            raise TruthDatabaseConnectionError("SQLite truth storage is not a regular file")
         fchmod(database_fd, TRUTH_DATABASE_MODE)
         st = os.fstat(database_fd)
         record = (
@@ -316,9 +302,7 @@ def _apply_database_descriptor_hardening(
         os.close(database_fd)
 
 
-def _harden_truth_database_descriptor_once(
-    path: Path, file_flags: int, fchmod: Callable[[int, int], None]
-) -> None:
+def _harden_truth_database_descriptor_once(path: Path, file_flags: int, fchmod: Callable[[int, int], None]) -> None:
     """Harden the live DB at most once per process identity, or fail closed."""
 
     path_key = _path_hardening_key(path)
@@ -343,9 +327,7 @@ def _harden_truth_database_descriptor_once(
                     )
                 state.by_path[path_key] = cached_identity
                 return
-        _apply_database_descriptor_hardening(
-            path, file_flags, fchmod, state, path_key
-        )
+        _apply_database_descriptor_hardening(path, file_flags, fchmod, state, path_key)
 
 
 _register_at_fork = getattr(os, "register_at_fork", None)
@@ -372,30 +354,19 @@ def _harden_mutable_truth_path(path: Path, *, create: bool) -> None:
 
     parent = path.parent
     if path.is_symlink() or parent.is_symlink():
-        raise TruthDatabaseConnectionError(
-            "SQLite truth storage cannot use symlink paths"
-        )
+        raise TruthDatabaseConnectionError("SQLite truth storage cannot use symlink paths")
     if create:
         parent.mkdir(parents=True, exist_ok=True, mode=TRUTH_DIRECTORY_MODE)
     if path.is_symlink() or parent.is_symlink():
-        raise TruthDatabaseConnectionError(
-            "SQLite truth storage cannot use symlink paths"
-        )
+        raise TruthDatabaseConnectionError("SQLite truth storage cannot use symlink paths")
     if not _descriptor_permissions_supported():
         return
 
     fchmod = getattr(os, "fchmod")
     directory_flags = (
-        os.O_RDONLY
-        | getattr(os, "O_DIRECTORY", 0)
-        | getattr(os, "O_NOFOLLOW", 0)
-        | getattr(os, "O_CLOEXEC", 0)
+        os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
     )
-    file_flags = (
-        os.O_RDWR
-        | getattr(os, "O_NOFOLLOW", 0)
-        | getattr(os, "O_CLOEXEC", 0)
-    )
+    file_flags = os.O_RDWR | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0)
     if create:
         file_flags |= os.O_CREAT
 
@@ -405,9 +376,7 @@ def _harden_mutable_truth_path(path: Path, *, create: bool) -> None:
     except TruthDatabaseConnectionError:
         raise
     except OSError as exc:
-        raise TruthDatabaseConnectionError(
-            "SQLite truth storage is unsafe or inaccessible"
-        ) from exc
+        raise TruthDatabaseConnectionError("SQLite truth storage is unsafe or inaccessible") from exc
 
 
 def require_foreign_keys(conn: sqlite3.Connection) -> None:
@@ -418,32 +387,24 @@ def require_foreign_keys(conn: sqlite3.Connection) -> None:
     """
 
     if conn.in_transaction:
-        raise TruthDatabaseConnectionError(
-            "foreign-key enforcement must be configured before any transaction"
-        )
+        raise TruthDatabaseConnectionError("foreign-key enforcement must be configured before any transaction")
     conn.execute("PRAGMA foreign_keys=ON")
     row = conn.execute("PRAGMA foreign_keys").fetchone()
     enabled = int(row[0]) if row is not None else 0
     if enabled != 1:
-        raise TruthDatabaseConnectionError(
-            f"SQLite truth connection refused foreign-key enforcement: {enabled}"
-        )
+        raise TruthDatabaseConnectionError(f"SQLite truth connection refused foreign-key enforcement: {enabled}")
 
 
 def require_query_only(conn: sqlite3.Connection) -> None:
     """Enable and verify SQLite's defence-in-depth read-only guard."""
 
     if conn.in_transaction:
-        raise TruthDatabaseConnectionError(
-            "query-only mode must be configured before any transaction"
-        )
+        raise TruthDatabaseConnectionError("query-only mode must be configured before any transaction")
     conn.execute("PRAGMA query_only=ON")
     row = conn.execute("PRAGMA query_only").fetchone()
     enabled = int(row[0]) if row is not None else 0
     if enabled != 1:
-        raise TruthDatabaseConnectionError(
-            f"SQLite truth connection refused query-only enforcement: {enabled}"
-        )
+        raise TruthDatabaseConnectionError(f"SQLite truth connection refused query-only enforcement: {enabled}")
 
 
 class _LeasedTruthConnection(sqlite3.Connection):
@@ -522,7 +483,9 @@ def _truth_database_target(path: str | Path, mode: str) -> tuple[str | Path, boo
     return database, uri, lease
 
 
-def _release_failed_open(conn: sqlite3.Connection | None, lease: TruthWriterLease | None, original: BaseException) -> None:
+def _release_failed_open(
+    conn: sqlite3.Connection | None, lease: TruthWriterLease | None, original: BaseException
+) -> None:
     """Undo a half-open connection.  A close or release that itself fails is
     surfaced as a retryable cleanup error; a failed close never counts as a
     released lease."""
@@ -581,4 +544,15 @@ def connect_truth_database(
         raise
 
 
-__all__ = ['CANONICAL_LIVE_TRUTH_FILENAME', 'TRUTH_DATABASE_MODE', 'TRUTH_DIRECTORY_MODE', 'TruthDatabaseCleanupError', 'TruthDatabaseConnectionError', 'TruthDatabaseMode', 'connect_truth_database', 'is_live_truth_database_path', 'require_foreign_keys', 'require_query_only']
+__all__ = [
+    "CANONICAL_LIVE_TRUTH_FILENAME",
+    "TRUTH_DATABASE_MODE",
+    "TRUTH_DIRECTORY_MODE",
+    "TruthDatabaseCleanupError",
+    "TruthDatabaseConnectionError",
+    "TruthDatabaseMode",
+    "connect_truth_database",
+    "is_live_truth_database_path",
+    "require_foreign_keys",
+    "require_query_only",
+]

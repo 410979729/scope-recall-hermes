@@ -7,8 +7,11 @@ import pytest
 
 from scope_recall.contracts import ContractError
 from scope_recall.core.retained_artifacts import (
-    ArtifactGrant, RetainedBlob,
-    erase_retained, read_retained, retain,
+    ArtifactGrant,
+    RetainedBlob,
+    erase_retained,
+    read_retained,
+    retain,
 )
 from v11_support import context
 
@@ -60,10 +63,12 @@ def test_mime_size_hash_and_svg_policy(tmp_path):
     with pytest.raises(ContractError):
         retain(ctx.binding, _grant(source, "text/plain", limit=1))
     svg = tmp_path / "bad.svg"
-    svg.write_text('<svg><script>alert(1)</script></svg>', encoding="utf-8")
+    svg.write_text("<svg><script>alert(1)</script></svg>", encoding="utf-8")
     with pytest.raises(ContractError):
         retain(ctx.binding, _grant(svg, "image/svg+xml"))
-    svg.write_text('<svg xmlns="http://www.w3.org/2000/svg"><rect width="1" height="1" fill="#fff"/></svg>', encoding="utf-8")
+    svg.write_text(
+        '<svg xmlns="http://www.w3.org/2000/svg"><rect width="1" height="1" fill="#fff"/></svg>', encoding="utf-8"
+    )
     valid = retain(ctx.binding, _grant(svg, "image/svg+xml"))
     assert read_retained(ctx.binding, valid).startswith(b"<svg")
     svg.write_text('<svg><style>@import "https://example.invalid/a.css";</style></svg>', encoding="utf-8")
@@ -106,6 +111,7 @@ def test_links_and_out_of_root_blob_are_rejected(tmp_path):
         if os.name != "nt":
             pytest.skip("symlinks unavailable")
         import _winapi
+
         junction = tmp_path / "TEST-link-parent"
         _winapi.CreateJunction(str(outside_dir), str(junction))
         link = junction / outside.name
@@ -137,6 +143,7 @@ def test_hardlink_mutation_is_detected_and_fsync_failure_leaves_no_partial(monke
 
     source.write_bytes(PNG_V2)
     import scope_recall.core.retained_artifacts as artifacts
+
     monkeypatch.setattr(artifacts.os, "fsync", lambda _fd: (_ for _ in ()).throw(OSError("fsync")))
     new_blob = _grant(source)
     with pytest.raises(OSError, match="fsync"):
@@ -148,6 +155,7 @@ def test_windows_junction_ancestor_is_rejected(tmp_path):
     if os.name != "nt":
         pytest.skip("Windows junction test")
     import _winapi
+
     target = tmp_path / "real"
     target.mkdir()
     alias = tmp_path / "junction"

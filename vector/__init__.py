@@ -4,6 +4,7 @@ SQLite is the sole authority for facts; every store here is a derived index
 that can be rebuilt from it.  ``VectorStore`` states once what the runtime asks
 of a companion, and ``store.build_vector_store`` picks the implementation.
 """
+
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
@@ -86,7 +87,9 @@ class VectorStore(ABC):
         This default asks one partition at a time; a store that can filter by a list overrides it
         with one request, which is what keeps an entry holding a hundred scopes inside its budget.
         """
-        rows = [row for scope_id in dict.fromkeys(scope_ids) for row in self.search(vector, scope_id=scope_id, limit=limit)]
+        rows = [
+            row for scope_id in dict.fromkeys(scope_ids) for row in self.search(vector, scope_id=scope_id, limit=limit)
+        ]
         rows.sort(key=lambda row: float(row.get("_distance") or 0.0))
         return rows[: max(0, int(limit))]
 

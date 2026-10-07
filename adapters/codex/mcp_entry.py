@@ -4,6 +4,7 @@
 project; ``--home`` with ``--host`` serves a client attached to a shared store,
 Codex or Claude Code, whose audience does not depend on a workspace.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -37,8 +38,11 @@ def apply_credential_environment(
     on stderr and the server still starts: a memory tool without its semantic channel
     is worth more than no memory tool.
     """
-    default = (config.runtime_config_path if isinstance(config, SharedClientConfig)
-               else config.data_directory / "runtime-config.json")
+    default = (
+        config.runtime_config_path
+        if isinstance(config, SharedClientConfig)
+        else config.data_directory / "runtime-config.json"
+    )
     runtime_path = runtime_config or default
     try:
         loaded = host_process_credential_environment(runtime_path, env_file)
@@ -56,8 +60,12 @@ def main(argv: list[str] | None = None) -> int:
     where = parser.add_mutually_exclusive_group(required=True)
     where.add_argument("--config", help="absolute trusted installation config")
     where.add_argument("--home", help="absolute home of a client attached to a shared store")
-    parser.add_argument("--host", choices=("codex", "claude-code", "workbuddy", "dsh"), default="codex",
-                        help="the client that starts this server, for --home")
+    parser.add_argument(
+        "--host",
+        choices=("codex", "claude-code", "workbuddy", "dsh"),
+        default="codex",
+        help="the client that starts this server, for --home",
+    )
     parser.add_argument("--workspace", default=None, help="absolute mapped Codex project workspace, for --config")
     parser.add_argument("--runtime-config", default=None, help="absolute trusted local runtime worker config")
     parser.add_argument(
@@ -94,15 +102,20 @@ def main(argv: list[str] | None = None) -> int:
         endpoint = keeping = None
         if isinstance(config, SharedClientConfig) and runtime_config is None:
             from .local_endpoint import keep_resident, resident_minutes, serve
+
             env_file = _absolute(args.env_file, "env-file") if args.env_file else None
             if resident_minutes(config.home, config.host) > 0:
                 keeping = keep_resident(config.home, config.host, env_file=env_file)
             else:
-                endpoint = serve(config.home, config.host, env_file=env_file,
-                                 runtime_config=config.runtime_config_path,
-                                 credentials=(lambda: host_process_credential_environment(config.runtime_config_path,
-                                                                                          env_file))
-                                 if env_file is not None else None)
+                endpoint = serve(
+                    config.home,
+                    config.host,
+                    env_file=env_file,
+                    runtime_config=config.runtime_config_path,
+                    credentials=(lambda: host_process_credential_environment(config.runtime_config_path, env_file))
+                    if env_file is not None
+                    else None,
+                )
         try:
             server.server.run(transport="stdio")
         finally:

@@ -9,6 +9,7 @@ fit -> finalize.  Everything the public packet is computed from lives in one
 :class:`_Draft`; :func:`assemble_packet` is the one place that knows the
 status, answerability and coverage vocabulary.
 """
+
 from __future__ import annotations
 
 from collections import OrderedDict
@@ -25,8 +26,21 @@ from .background_context import is_background, mark_background
 from .recall_budget import canonical_render_json, estimate_tokens, event_admission_order
 from .recall_diagnostics import RECALL_DIAGNOSTIC_PREFIX, RecallDiagnostics
 from .recall_needs import RESUME_MARKERS, mentions, unmet_needs
-from .resume_compaction import compact_episode_variants, next_step_provenance_supported, resume_evidence_refs, resume_fields
-from .retrieval import CandidateRef, RetrievalResult, RetrievedObject, SearchContext, SearchLimits, effective_limits, optional_json
+from .resume_compaction import (
+    compact_episode_variants,
+    next_step_provenance_supported,
+    resume_evidence_refs,
+    resume_fields,
+)
+from .retrieval import (
+    CandidateRef,
+    RetrievalResult,
+    RetrievedObject,
+    SearchContext,
+    SearchLimits,
+    effective_limits,
+    optional_json,
+)
 from .retrieval_storage import RetrievalStorage
 
 _BASIS = frozenset({"direct_report", "observed", "derived_summary", "inferred_suggestion", "unknown"})
@@ -35,10 +49,17 @@ _AUTHORITY_GAP_PREFIXES = ("sqlite_unavailable",)
 _INCOMPLETE_GAP_PREFIXES = ("deadline_exceeded", "sqlite_unavailable", "sqlite_candidate_error")
 #: Markers published as their bare prefix, so diagnostics stay useful without
 #: refs consuming the packet budget.  Everything else passes through intact.
-_BARE_MARKER_PREFIXES = frozenset({
-    "budget_token_cap", "budget_packet_cap", "budget_oversized", "expandable",
-    "stale_candidate", "revision_changed", "resume_state_unverified",
-})
+_BARE_MARKER_PREFIXES = frozenset(
+    {
+        "budget_token_cap",
+        "budget_packet_cap",
+        "budget_oversized",
+        "expandable",
+        "stale_candidate",
+        "revision_changed",
+        "resume_state_unverified",
+    }
+)
 _MAX_PACKET_ITEM_CHARS = 12000
 _MAX_APPLICABILITY_CHARS = 2048
 _MAX_ORIGIN_CHARS = 80
@@ -66,6 +87,7 @@ def isolate_recall_packet(packet: RecallPacket) -> RecallPacket:
 
 
 # -- public vocabulary --------------------------------------------------------
+
 
 def public_marker(value: object) -> str:
     if type(value) is not str:
@@ -147,6 +169,7 @@ def fits_packet_schema(obj: RetrievedObject) -> bool:
 
 # -- ordering -----------------------------------------------------------------
 
+
 def prioritize_resume_evidence(context: SearchContext, verified: list[Pair]) -> list[Pair]:
     """Keep a complete current episode ahead of incidental relation hits."""
     if not mentions(context.query, RESUME_MARKERS):
@@ -196,8 +219,9 @@ def prioritize_current_claims(context: SearchContext, verified: list[Pair]) -> l
 
     def flush_run() -> None:
         event_refs = {f"{obj.ref}@{obj.revision}" for _candidate, obj in run if obj.kind == "event"}
-        promoted = [pair for pair in run
-                    if is_active_direct_claim(pair[1]) and event_refs.intersection(pair[1].evidence_refs)]
+        promoted = [
+            pair for pair in run if is_active_direct_claim(pair[1]) and event_refs.intersection(pair[1].evidence_refs)
+        ]
         promoted_keys = {pair[0].key for pair in promoted}
         prioritized.extend(promoted)
         prioritized.extend(pair for pair in run if pair[0].key not in promoted_keys)
@@ -214,6 +238,7 @@ def prioritize_current_claims(context: SearchContext, verified: list[Pair]) -> l
 
 
 # -- the packet ---------------------------------------------------------------
+
 
 @dataclass
 class _Draft:
@@ -331,9 +356,17 @@ def bounded_packet(packet: RecallPacket, budget: int) -> RecallPacket:
         return isolate_recall_packet(packet)
     if envelope_tokens(packet, include_diagnostic_ref=False) <= budget:
         return isolate_recall_packet(cast(RecallPacket, dict(packet, diagnostic_ref=None)))
-    minimal = dict(packet, status="unavailable", memory_epoch=None, items=[],
-                   gaps=["budget_packet_cap"], diagnostic_ref=None,
-                   answerability="unknown", coverage="unknown", unmet_needs=[])
+    minimal = dict(
+        packet,
+        status="unavailable",
+        memory_epoch=None,
+        items=[],
+        gaps=["budget_packet_cap"],
+        diagnostic_ref=None,
+        answerability="unknown",
+        coverage="unknown",
+        unmet_needs=[],
+    )
     if estimate_tokens(canonical_render_json(minimal)) > budget:
         raise ContractError("INPUT_INVALID", "budget_tokens")
     return isolate_recall_packet(cast(RecallPacket, minimal))
@@ -360,7 +393,9 @@ class RecallPacketCompiler:
             raise ContractError("INPUT_INVALID", "compile_input")
         started = self.clock.monotonic()
         limits = effective_limits(context)
-        draft = _Draft(context, result, result.memory_epoch, gaps=list(result.gaps), unmet_needs=list(result.unmet_needs))
+        draft = _Draft(
+            context, result, result.memory_epoch, gaps=list(result.gaps), unmet_needs=list(result.unmet_needs)
+        )
         if self._remaining_ms(context) == 0:
             draft.gaps.append("deadline_exceeded_compile")
             return self._finalize(draft, limits, started)
@@ -381,9 +416,13 @@ class RecallPacketCompiler:
         return max(0, int((context.deadline - self.clock.monotonic()) * 1000))
 
     def _read(self, storage, context: SearchContext):
-        return storage.read(context.trusted_context, remaining_seconds=max(context.deadline - self.clock.monotonic(), 0.001))
+        return storage.read(
+            context.trusted_context, remaining_seconds=max(context.deadline - self.clock.monotonic(), 0.001)
+        )
 
-    def _recheck(self, tx, context: SearchContext, candidate: CandidateRef, obj: RetrievedObject, gaps: list[str]) -> RetrievedObject | None:
+    def _recheck(
+        self, tx, context: SearchContext, candidate: CandidateRef, obj: RetrievedObject, gaps: list[str]
+    ) -> RetrievedObject | None:
         if self._remaining_ms(context) == 0:
             gaps.append("deadline_exceeded_release")
             return None
@@ -464,7 +503,16 @@ class RecallPacketCompiler:
         verified.sort(key=lambda pair: pair[0].source == "background")
         return verified
 
-    def _fits(self, draft: _Draft, limits: SearchLimits, *, items=None, objects=None, extra_needs=(), diagnostic_ref: bool = True) -> bool:
+    def _fits(
+        self,
+        draft: _Draft,
+        limits: SearchLimits,
+        *,
+        items=None,
+        objects=None,
+        extra_needs=(),
+        diagnostic_ref: bool = True,
+    ) -> bool:
         """Measure the exact packet that would be returned with these items."""
         packet, _raw_gaps = assemble_packet(draft, items=items, objects=objects, extra_needs=extra_needs)
         return envelope_tokens(packet, include_diagnostic_ref=diagnostic_ref) <= limits.budget_tokens
@@ -502,7 +550,9 @@ class RecallPacketCompiler:
                 contents, needs = (None, *variants), []
             for content in contents:
                 item = packet_item(obj, content=content)
-                if self._fits(draft, limits, items=[*draft.items, item], objects=[*draft.objects, obj], extra_needs=needs):
+                if self._fits(
+                    draft, limits, items=[*draft.items, item], objects=[*draft.objects, obj], extra_needs=needs
+                ):
                     draft.deliver(item, obj, needs)
                     if content is not None:
                         draft.unmet_needs.extend(_compaction_needs(resume_fields(obj) or {}, content))
@@ -554,7 +604,9 @@ class RecallPacketCompiler:
                     return True
         return False
 
-    def _finalize(self, draft: _Draft, limits: SearchLimits, started: float, *, include_diagnostic_ref: bool = True) -> RecallPacket:
+    def _finalize(
+        self, draft: _Draft, limits: SearchLimits, started: float, *, include_diagnostic_ref: bool = True
+    ) -> RecallPacket:
         packet, raw_gaps = assemble_packet(draft)
         packet["diagnostic_ref"] = _DIAGNOSTIC_REF_PLACEHOLDER if include_diagnostic_ref and self.diagnostics else None
         packet = bounded_packet(packet, limits.budget_tokens)
@@ -596,6 +648,7 @@ def _compaction_needs(resume: dict, compact: dict) -> list[str]:
 
 # -- rendering ----------------------------------------------------------------
 
+
 @dataclass(frozen=True)
 class RecallRenderPreparation:
     """Prepared render context for host injection; receipt is not host adoption."""
@@ -614,7 +667,9 @@ class RecallPacketRenderer:
         self._prepared: OrderedDict[tuple[str, str, str, int | None], RecallRenderPreparation] = OrderedDict()
         self._counter = 0
 
-    def prepare(self, packet: RecallPacket, *, installation_id: str, session_id: str, request_id: str) -> RecallRenderPreparation:
+    def prepare(
+        self, packet: RecallPacket, *, installation_id: str, session_id: str, request_id: str
+    ) -> RecallRenderPreparation:
         key = (installation_id, session_id, request_id, packet.get("memory_epoch"))
         with self._lock:
             if key in self._prepared:
@@ -625,13 +680,23 @@ class RecallPacketRenderer:
             render_ref = None
             if context is not None:
                 self._counter += 1
-                digest = hashlib.sha256(json.dumps(
-                    {"installation_id": installation_id, "session_id": session_id,
-                     "request_id": request_id[:100], "counter": self._counter},
-                    ensure_ascii=False, sort_keys=True, separators=(",", ":"),
-                ).encode("utf-8")).hexdigest()[:16]
+                digest = hashlib.sha256(
+                    json.dumps(
+                        {
+                            "installation_id": installation_id,
+                            "session_id": session_id,
+                            "request_id": request_id[:100],
+                            "counter": self._counter,
+                        },
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ).encode("utf-8")
+                ).hexdigest()[:16]
                 render_ref = f"recall-render:{digest}"
-            prepared = RecallRenderPreparation(render_ref, context, canonical_render_json(context) if context is not None else None)
+            prepared = RecallRenderPreparation(
+                render_ref, context, canonical_render_json(context) if context is not None else None
+            )
             self._prepared[key] = prepared
             while len(self._prepared) > self._max_prepared:
                 self._prepared.popitem(last=False)
@@ -658,8 +723,11 @@ class RecallPacketRenderer:
                     "evidence_refs": list(item["evidence_refs"]),
                     "basis": item["basis"],
                     "expandable": item["expandable"],
-                    **({"source_contexts": [dict(context) for context in item["source_contexts"]]}
-                       if "source_contexts" in item else {}),
+                    **(
+                        {"source_contexts": [dict(context) for context in item["source_contexts"]]}
+                        if "source_contexts" in item
+                        else {}
+                    ),
                     **({"occurred_at": item["occurred_at"]} if "occurred_at" in item else {}),
                     **({"entries": [dict(label) for label in item["entries"]]} if "entries" in item else {}),
                 }
@@ -700,4 +768,6 @@ def render_recall_packet_context(
 ) -> RecallRenderPreparation:
     """Prepare an injection-ready memory context without instruction authority."""
     active = renderer if renderer is not None else RecallPacketRenderer()
-    return active.prepare(packet, installation_id=installation_id, session_id=session_id, request_id=packet["request_id"])
+    return active.prepare(
+        packet, installation_id=installation_id, session_id=session_id, request_id=packet["request_id"]
+    )

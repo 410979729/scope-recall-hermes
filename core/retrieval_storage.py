@@ -5,6 +5,7 @@ which remains the only authority for source visibility and versioned objects.
 No function here writes, schedules work, increments counters, or releases text
 outside the trusted context.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -15,8 +16,14 @@ import re
 import time
 from typing import Iterable, cast
 
-from ..contracts import (ENTRY_LABELS_MAX_ITEMS, SOURCE_CONTEXTS_MAX_ITEMS, ContractError, EntryLabel, SourceContext,
-                         bounded_source_context)
+from ..contracts import (
+    ENTRY_LABELS_MAX_ITEMS,
+    SOURCE_CONTEXTS_MAX_ITEMS,
+    ContractError,
+    EntryLabel,
+    SourceContext,
+    bounded_source_context,
+)
 from .claim_storage import parse_source_ref
 from .claims import canonical_time, select_effective, select_proposal
 from .delete_storage import canonical, retraction_after
@@ -35,7 +42,15 @@ from .recall_policy import (
     synonym_expansions,
 )
 from .resume_compaction import resume_evidence_refs
-from .retrieval import STALE_RESUME_GAPS, CandidateRef, CollectionQuery, ObjectKind, PageCursor, RetrievedObject, SearchContext
+from .retrieval import (
+    STALE_RESUME_GAPS,
+    CandidateRef,
+    CollectionQuery,
+    ObjectKind,
+    PageCursor,
+    RetrievedObject,
+    SearchContext,
+)
 from .visibility import CLOSED_INTENTION_STATES, OBJECT_KINDS, allowed, allowed_refs
 
 #: Modes in which a delivered source must still be live, not merely visible.
@@ -139,8 +154,7 @@ def _discriminating_terms(tx, terms: tuple[str, ...], keep: tuple[str, ...] = ()
     return _searched_terms(tx, terms, keep)[0]
 
 
-def _searched_terms(tx, terms: tuple[str, ...],
-                    keep: tuple[str, ...] = ()) -> tuple[tuple[str, ...], tuple[str, ...]]:
+def _searched_terms(tx, terms: tuple[str, ...], keep: tuple[str, ...] = ()) -> tuple[tuple[str, ...], tuple[str, ...]]:
     """(the terms the lexical statement searches, those the posting budget left out of it).
 
     Drop query terms too common to separate anything.
@@ -168,14 +182,17 @@ def _searched_terms(tx, terms: tuple[str, ...],
     return tuple(term for term in terms if frequencies.get(term, 0) == rarest) or terms, ()
 
 
-def _within_posting_budget(terms: tuple[str, ...], frequencies: dict[str, int],
-                           keep: tuple[str, ...]) -> tuple[str, ...]:
+def _within_posting_budget(
+    terms: tuple[str, ...], frequencies: dict[str, int], keep: tuple[str, ...]
+) -> tuple[str, ...]:
     """The rarest ``_LEXICAL_MIN_TERMS`` of the terms more than one source holds, and more of them while their
     postings stay within ``_LEXICAL_POSTING_BUDGET``.  ``keep`` stays whatever it costs.  A term one source at most
     holds costs a posting at most and stays, but takes none of the rarest places: the prompt is stored before its own
     recall, and the words only it holds would have taken them all (review of 3.4.2).  The query's own order is kept."""
-    held = sorted((term for term in terms if term not in keep and frequencies.get(term, 0) > 1),
-                  key=lambda term: (frequencies[term], term))
+    held = sorted(
+        (term for term in terms if term not in keep and frequencies.get(term, 0) > 1),
+        key=lambda term: (frequencies[term], term),
+    )
     if len(held) <= _LEXICAL_MIN_TERMS:
         return terms
     spent = sum(frequencies.get(term, 0) for term in set(keep).intersection(terms))
@@ -190,11 +207,15 @@ def _within_posting_budget(terms: tuple[str, ...], frequencies: dict[str, int],
 
 def _held_terms(tx, source_ids: list[int], terms: tuple[str, ...]) -> dict[int, set[str]]:
     """Which of ``terms`` each of these sources holds, in one look-up of the ``(source_id, term_id)`` index."""
-    rows = tx._check().execute(
-        f"SELECT p.source_id,t.term FROM lexical_postings p JOIN lexical_terms t ON t.term_id=p.term_id "
-        f"WHERE p.source_id IN ({_marks(tuple(source_ids))}) AND t.term IN ({_marks(terms)})",
-        (*source_ids, *terms),
-    ).fetchall()
+    rows = (
+        tx._check()
+        .execute(
+            f"SELECT p.source_id,t.term FROM lexical_postings p JOIN lexical_terms t ON t.term_id=p.term_id "
+            f"WHERE p.source_id IN ({_marks(tuple(source_ids))}) AND t.term IN ({_marks(terms)})",
+            (*source_ids, *terms),
+        )
+        .fetchall()
+    )
     held: dict[int, set[str]] = {}
     for source_id, term in rows:
         held.setdefault(source_id, set()).add(term)
@@ -322,8 +343,9 @@ _TURN_LOOKBACK = timedelta(hours=2)
 RECALL_ECHO_MIN_LOOKUPS = 3
 #: What a lookup that returned memory looks like: recall items, entity
 #: statements, profile sections.  A status lookup returns none of them.
-_MEMORY_RESULT = ("instr(content,'\"items\":')>0 OR instr(content,'\"statements\":')>0"
-                  " OR instr(content,'\"sections\":')>0")
+_MEMORY_RESULT = (
+    "instr(content,'\"items\":')>0 OR instr(content,'\"statements\":')>0 OR instr(content,'\"sections\":')>0"
+)
 
 
 def _second_precision(moment) -> str:
@@ -356,11 +378,13 @@ def recall_echo(tx, source) -> bool:
     started = conn.execute(
         """SELECT max(occurred_at) FROM source_events WHERE scope_id=? AND occurred_at>=? AND occurred_at<?
            AND session_id=? AND role='user' AND origin!='memory_reinjection'""",
-        (source.scope_id, lower, upper, source.session_id)).fetchone()[0]
+        (source.scope_id, lower, upper, source.session_id),
+    ).fetchone()[0]
     lookups = conn.execute(
         f"""SELECT count(*) FROM (SELECT 1 FROM source_events WHERE scope_id=? AND occurred_at>=? AND occurred_at<?
             AND session_id=? AND origin='memory_reinjection' AND ({_MEMORY_RESULT}) LIMIT ?)""",
-        (source.scope_id, started or lower, upper, source.session_id, RECALL_ECHO_MIN_LOOKUPS)).fetchone()[0]
+        (source.scope_id, started or lower, upper, source.session_id, RECALL_ECHO_MIN_LOOKUPS),
+    ).fetchone()[0]
     return lookups >= RECALL_ECHO_MIN_LOOKUPS
 
 
@@ -406,8 +430,11 @@ def _claim_statement_content(version) -> str:
     source, the full payload stays in metadata, and nothing on the read path
     matches against the quotes.
     """
-    return json.dumps({key: value for key, value in version.payload.items() if key != "evidence_spans"},
-                      ensure_ascii=False, sort_keys=True)
+    return json.dumps(
+        {key: value for key, value in version.payload.items() if key != "evidence_spans"},
+        ensure_ascii=False,
+        sort_keys=True,
+    )
 
 
 def _claim_status(version, current_effective: bool) -> str:
@@ -423,7 +450,11 @@ def _claim_status(version, current_effective: bool) -> str:
 def _versioned_body(kind: str, obj) -> tuple[str, str, bool]:
     """Content, basis/origin, and whether the object's status is unknowable."""
     if kind == "episode":
-        return json.dumps(obj.resume or {"state": obj.state}, ensure_ascii=False, sort_keys=True), "derived_summary", False
+        return (
+            json.dumps(obj.resume or {"state": obj.state}, ensure_ascii=False, sort_keys=True),
+            "derived_summary",
+            False,
+        )
     if kind == "artifact":
         return obj.label, "observed", obj.retention_state not in _RETAINED_ARTIFACT_STATES
     payload = json.dumps(obj.payload, ensure_ascii=False, sort_keys=True)
@@ -523,9 +554,19 @@ class RetrievalStorage:
         scopes = tuple(sorted(context.trusted_context.allowed_scope_ids))
         term_marks, scope_marks = _marks((*terms, *synonyms)), _marks(scopes)
         identified = f"MAX(t.term IN ({_marks(identifiers)})) DESC," if identifiers else ""
-        current = "" if context.mode in {"history", "as_of"} else "AND NOT EXISTS (SELECT 1 FROM source_events newer WHERE newer.source_group_key=e.source_group_key AND newer.source_revision>e.source_revision)"
+        current = (
+            ""
+            if context.mode in {"history", "as_of"}
+            else "AND NOT EXISTS (SELECT 1 FROM source_events newer WHERE newer.source_group_key=e.source_group_key AND newer.source_revision>e.source_revision)"
+        )
         as_of = ""
-        params: list[object] = [*terms, *synonyms, *scopes, context.trusted_context.project_id, context.trusted_context.branch_id]
+        params: list[object] = [
+            *terms,
+            *synonyms,
+            *scopes,
+            context.trusted_context.project_id,
+            context.trusted_context.branch_id,
+        ]
         if context.as_of is not None:
             as_of = " AND (e.occurred_at IS NULL OR e.occurred_at<=?)"
             params.append(context.as_of)
@@ -533,8 +574,10 @@ class RetrievalStorage:
         # against the scopes by rule of thumb, and with a long enough query it started from the scope index instead:
         # every event of the audience read one by one, 21 s for a Telegram message of 72 characters on the shared
         # store, and the recall empty at its deadline.  ``+`` keeps the scope filter from choosing the index.
-        rows = tx._check().execute(
-            f"""SELECT e.event_id,e.source_revision,e.source_id,COUNT(DISTINCT {credit}) AS hits,
+        rows = (
+            tx._check()
+            .execute(
+                f"""SELECT e.event_id,e.source_revision,e.source_id,COUNT(DISTINCT {credit}) AS hits,
                        GROUP_CONCAT(DISTINCT hex({credit})) AS matched_term_hexes
                 FROM {lexical_index.JOIN}
                 WHERE t.term IN ({term_marks}) AND +e.scope_id IN ({scope_marks})
@@ -552,8 +595,10 @@ class RetrievalStorage:
                 END,
                 {identified}hits DESC,e.occurred_at DESC,e.event_id,e.source_revision DESC
                 LIMIT ?""",
-            (*credits, *credits, *params, *identifiers, limit),
-        ).fetchall()
+                (*credits, *credits, *params, *identifiers, limit),
+            )
+            .fetchall()
+        )
         # The posting budget chose which rows the statement found; what a found row holds of the terms it left out
         # still counts, as before: admission weighs a row's matches against the whole query (review of 3.4.2).
         held = _held_terms(tx, [row["source_id"] for row in rows], cut) if cut and rows else {}
@@ -561,15 +606,17 @@ class RetrievalStorage:
         for index, row in enumerate(rows, 1):
             matched = {bytes.fromhex(encoded).decode("utf-8") for encoded in row["matched_term_hexes"].split(",")}
             matched.update(held.get(row["source_id"], ()))
-            candidates.append(CandidateRef(
-                "event",
-                row["event_id"],
-                row["source_revision"],
-                "lexical",
-                rank=index,
-                lexical_score=float(len(matched)),
-                matched_query_terms=tuple(sorted(matched)),
-            ))
+            candidates.append(
+                CandidateRef(
+                    "event",
+                    row["event_id"],
+                    row["source_revision"],
+                    "lexical",
+                    rank=index,
+                    lexical_score=float(len(matched)),
+                    matched_query_terms=tuple(sorted(matched)),
+                )
+            )
         return tuple(candidates)
 
     def claims(self, tx, context: SearchContext, *, limit: int) -> tuple[CandidateRef, ...]:
@@ -594,8 +641,10 @@ class RetrievalStorage:
         scopes = tuple(sorted(trusted.allowed_scope_ids))
         needles = tuple(sorted(terms, key=lambda term: (-len(term), term))[:_CLAIM_PREFILTER_TERMS])
         matched = " + ".join("(instr(statement,?)>0)" for _ in needles)
-        rows = tx._check().execute(
-            f"""WITH heads AS MATERIALIZED (
+        rows = (
+            tx._check()
+            .execute(
+                f"""WITH heads AS MATERIALIZED (
                     SELECT c.claim_id AS claim_id,
                            lower(c.subject || ' ' || c.predicate || ' ' ||
                                  coalesce(json_extract(v.payload_json,'$.value_text'),'')) AS statement
@@ -606,8 +655,10 @@ class RetrievalStorage:
                           AND b.object_ref=c.claim_id AND b.read_blocked=1))
                 SELECT claim_id FROM (SELECT claim_id, {matched} AS hits FROM heads)
                 WHERE hits>0 ORDER BY hits DESC, claim_id LIMIT ?""",
-            (*scopes, trusted.project_id, trusted.branch_id, *needles, _CLAIM_SCAN_LIMIT),
-        ).fetchall()
+                (*scopes, trusted.project_id, trusted.branch_id, *needles, _CLAIM_SCAN_LIMIT),
+            )
+            .fetchall()
+        )
         instant = context.as_of or context.now
         scored = []
         prefetch = getattr(tx.claims, "prefetch_versions", None)
@@ -631,8 +682,15 @@ class RetrievalStorage:
             scored.append((rank_key, chosen, hits))
         scored.sort(key=lambda entry: entry[0], reverse=True)
         return tuple(
-            CandidateRef("claim", chosen.ref, chosen.revision, "claim_lexical", rank=index,
-                         lexical_score=float(len(hits)), matched_query_terms=tuple(sorted(hits)))
+            CandidateRef(
+                "claim",
+                chosen.ref,
+                chosen.revision,
+                "claim_lexical",
+                rank=index,
+                lexical_score=float(len(hits)),
+                matched_query_terms=tuple(sorted(hits)),
+            )
             for index, (_key, chosen, hits) in enumerate(scored[:limit], 1)
         )
 
@@ -649,7 +707,9 @@ class RetrievalStorage:
             if kind is None or revision < 1 or (kind, identity, revision) in seen:
                 continue
             seen.add((kind, identity, revision))
-            candidates.append(CandidateRef(cast(ObjectKind, kind), identity, revision, "exact_ref", rank=len(candidates) + 1))
+            candidates.append(
+                CandidateRef(cast(ObjectKind, kind), identity, revision, "exact_ref", rank=len(candidates) + 1)
+            )
             if len(candidates) >= limit:
                 break
         return tuple(candidates)
@@ -671,14 +731,20 @@ class RetrievalStorage:
         trusted = context.trusted_context
         scopes = tuple(sorted(trusted.allowed_scope_ids))
         entries = f"AND e.entry_id IN ({_marks(scope.entry_ids)})" if scope.entry_ids else ""
-        current = "" if context.mode in {"history", "as_of"} else "AND NOT EXISTS (SELECT 1 FROM source_events newer WHERE newer.source_group_key=e.source_group_key AND newer.source_revision>e.source_revision)"
+        current = (
+            ""
+            if context.mode in {"history", "as_of"}
+            else "AND NOT EXISTS (SELECT 1 FROM source_events newer WHERE newer.source_group_key=e.source_group_key AND newer.source_revision>e.source_revision)"
+        )
         as_of = "AND e.occurred_at<=?" if context.as_of is not None else ""
         excluded = set(context.current_source_refs)
         days = []
         # One statement a day, so each reads the (scope, time) index for its own window.
         for start, end in scope.windows:
-            rows = tx._check().execute(
-                f"""SELECT e.event_id,e.source_revision,e.role,length(e.content) AS size,
+            rows = (
+                tx._check()
+                .execute(
+                    f"""SELECT e.event_id,e.source_revision,e.role,length(e.content) AS size,
                            CASE WHEN length(e.content)<=? THEN e.content END AS short FROM source_events e
                     WHERE e.scope_id IN ({_marks(scopes)}) AND e.occurred_at>=? AND e.occurred_at<? {entries}
                       AND e.role IN ('user','assistant')
@@ -691,17 +757,36 @@ class RetrievalStorage:
                           AND b.object_ref=e.event_id AND (b.read_blocked=1 OR b.suppressed=1))
                       {current} {as_of}
                     ORDER BY e.occurred_at,e.rowid LIMIT ?""",
-                (_SCOPED_SHORT_CHARS, *scopes, start, end, *scope.entry_ids, trusted.project_id, trusted.branch_id,
-                 *((context.as_of,) if as_of else ()), _SCOPED_SCAN_ROWS),
-            ).fetchall()
-            rows = [row for row in rows if _source_key(row["event_id"], row["source_revision"]) not in excluded
-                    and (row["short"] is None or says_something(row["short"]))]
+                    (
+                        _SCOPED_SHORT_CHARS,
+                        *scopes,
+                        start,
+                        end,
+                        *scope.entry_ids,
+                        trusted.project_id,
+                        trusted.branch_id,
+                        *((context.as_of,) if as_of else ()),
+                        _SCOPED_SCAN_ROWS,
+                    ),
+                )
+                .fetchall()
+            )
+            rows = [
+                row
+                for row in rows
+                if _source_key(row["event_id"], row["source_revision"]) not in excluded
+                and (row["short"] is None or says_something(row["short"]))
+            ]
             # A message longer than an automatic packet can hold beside others is left out of it whole (the compiler
             # never slices content), and on the coding clients' days most messages are: offered first, they were
             # dropped and other days' short items delivered instead.
-            days.append([[row for row in rows if row["role"] == "user" and row["size"] <= _SCOPED_ITEM_CHARS],
-                         [row for row in rows if row["role"] == "user" and row["size"] > _SCOPED_ITEM_CHARS],
-                         [row for row in rows if row["role"] == "assistant" and row["size"] <= _SCOPED_ITEM_CHARS]])
+            days.append(
+                [
+                    [row for row in rows if row["role"] == "user" and row["size"] <= _SCOPED_ITEM_CHARS],
+                    [row for row in rows if row["role"] == "user" and row["size"] > _SCOPED_ITEM_CHARS],
+                    [row for row in rows if row["role"] == "assistant" and row["size"] <= _SCOPED_ITEM_CHARS],
+                ]
+            )
         picks = []
         for tiers, share in zip(days, _shares([sum(map(len, tiers)) for tiers in days], limit)):
             day: list = []
@@ -713,8 +798,10 @@ class RetrievalStorage:
                 day.extend(_coarse_to_fine([tier[int(position * step)] for position in range(min(room, len(tier)))]))
             picks.append(day)
         chosen = [day[turn] for turn in range(max(map(len, picks), default=0)) for day in picks if turn < len(day)]
-        return tuple(CandidateRef("event", row["event_id"], row["source_revision"], "scoped", rank=index)
-                     for index, row in enumerate(chosen[:limit], 1))
+        return tuple(
+            CandidateRef("event", row["event_id"], row["source_revision"], "scoped", rank=index)
+            for index, row in enumerate(chosen[:limit], 1)
+        )
 
     def recent(self, tx, context: SearchContext, *, limit: int) -> tuple[CandidateRef, ...]:
         trusted = context.trusted_context
@@ -724,8 +811,10 @@ class RetrievalStorage:
         # kept, and with no planner statistics SQLite read all of them by their work type (3,070 on the shared store,
         # growing with every consolidation) or, with one scope, every event of it.  ``+`` keeps those filters from
         # choosing an index; the rows are the same.
-        rows = tx._check().execute(
-            f"""SELECT e.event_id,e.source_revision,e.content,e.recorded_at
+        rows = (
+            tx._check()
+            .execute(
+                f"""SELECT e.event_id,e.source_revision,e.content,e.recorded_at
                 FROM source_events e JOIN work_items w
                 ON w.subject_ref=e.event_id AND w.subject_revision=e.source_revision
                 WHERE +w.work_type='consolidate' AND w.state IN ('pending','leased')
@@ -736,14 +825,25 @@ class RetrievalStorage:
                   AND NOT EXISTS(SELECT 1 FROM object_blocks b WHERE b.object_kind='event'
                       AND b.object_ref=e.event_id AND (b.read_blocked=1 OR b.suppressed=1))
                 ORDER BY e.recorded_at DESC,e.event_id,e.source_revision DESC LIMIT ?""",
-            (trusted.session_id, *scopes, trusted.project_id, trusted.branch_id, limit * 4),
-        ).fetchall()
+                (trusted.session_id, *scopes, trusted.project_id, trusted.branch_id, limit * 4),
+            )
+            .fetchall()
+        )
         result = []
         for row in rows:
             key = _source_key(row["event_id"], row["source_revision"])
             if key in excluded or not query_is_relevant(context.query, row["content"]):
                 continue
-            result.append(CandidateRef("event", row["event_id"], row["source_revision"], "recent_raw", rank=len(result) + 1, lexical_score=1.0))
+            result.append(
+                CandidateRef(
+                    "event",
+                    row["event_id"],
+                    row["source_revision"],
+                    "recent_raw",
+                    rank=len(result) + 1,
+                    lexical_score=1.0,
+                )
+            )
             if len(result) >= limit:
                 break
         return tuple(result)
@@ -779,15 +879,20 @@ class RetrievalStorage:
                WHERE event_id=? AND source_revision=?""",
             (candidate.ref, candidate.revision),
         ).fetchone()
-        if (row is None or row["role"] != "user" or row["origin"] not in ("human_direct", "host_generated")
-                or not row["occurred_at"]):
+        if (
+            row is None
+            or row["role"] != "user"
+            or row["origin"] not in ("human_direct", "host_generated")
+            or not row["occurred_at"]
+        ):
             return None
         opened = canonical_time(row["occurred_at"])
         return (row, opened) if opened is not None else None
 
     @staticmethod
-    def _turn(conn, row, opened: str, *, limit: int | None = None, now: str | None = None,
-              join: bool = False) -> tuple[tuple[CandidateRef, ...], bool]:
+    def _turn(
+        conn, row, opened: str, *, limit: int | None = None, now: str | None = None, join: bool = False
+    ) -> tuple[tuple[CandidateRef, ...], bool]:
         """A turn's replies, at most ``limit`` of them, and whether they were read to its end by ``now`` (never, when
         cut at ``limit``, or with no reply or no ``now`` to judge by).
 
@@ -822,10 +927,14 @@ class RetrievalStorage:
         (a finished background process) ends a turn as the person's does: the
         rows do not say which turn its job began in.
         """
-        window_end = (datetime.fromisoformat(opened) + timedelta(seconds=TURN_REPLY_SECONDS)).isoformat(
-            timespec="microseconds").replace("+00:00", "Z")
+        window_end = (
+            (datetime.fromisoformat(opened) + timedelta(seconds=TURN_REPLY_SECONDS))
+            .isoformat(timespec="microseconds")
+            .replace("+00:00", "Z")
+        )
         followup_end = (datetime.fromisoformat(opened) + timedelta(seconds=TURN_FOLLOWUP_SECONDS)).isoformat(
-            timespec="microseconds")
+            timespec="microseconds"
+        )
         rows = conn.execute(
             """SELECT event_id,source_revision,role,origin,content_sha256,occurred_at FROM source_events
                WHERE scope_id=? AND occurred_at>=? AND occurred_at<=? AND session_id=?
@@ -838,20 +947,40 @@ class RetrievalStorage:
             if reply["role"] == "user":
                 if reply["origin"] == "human_direct" and reply["content_sha256"] == row["content_sha256"]:
                     continue
-                if (join and not replies and reply["origin"] == "human_direct"
-                        and _said_by(reply["occurred_at"], followup_end)):
+                if (
+                    join
+                    and not replies
+                    and reply["origin"] == "human_direct"
+                    and _said_by(reply["occurred_at"], followup_end)
+                ):
                     continue
                 return tuple(replies), True
             if reply["role"] == "assistant" and reply["origin"] == "assistant_visible":
-                replies.append(CandidateRef("event", reply["event_id"], int(reply["source_revision"]), "relation",
-                                            rank=len(replies) + 1, lexical_score=1.0))
+                replies.append(
+                    CandidateRef(
+                        "event",
+                        reply["event_id"],
+                        int(reply["source_revision"]),
+                        "relation",
+                        rank=len(replies) + 1,
+                        lexical_score=1.0,
+                    )
+                )
                 if limit is not None and len(replies) >= limit:
                     return tuple(replies), False
-        if limit is not None or len(rows) >= 64 or not replies or now is None or canonical_time(now) < canonical_time(
-                window_end):
+        if (
+            limit is not None
+            or len(rows) >= 64
+            or not replies
+            or now is None
+            or canonical_time(now) < canonical_time(window_end)
+        ):
             return tuple(replies), False
-        following = (datetime.fromisoformat(opened) + timedelta(seconds=2 * TURN_REPLY_SECONDS)).isoformat(
-            timespec="microseconds").replace("+00:00", "Z")
+        following = (
+            (datetime.fromisoformat(opened) + timedelta(seconds=2 * TURN_REPLY_SECONDS))
+            .isoformat(timespec="microseconds")
+            .replace("+00:00", "Z")
+        )
         after = conn.execute(
             """SELECT role FROM source_events WHERE scope_id=? AND occurred_at>? AND occurred_at<=? AND session_id=?
                  AND read_blocked=0 AND suppressed=0 ORDER BY occurred_at LIMIT 1""",
@@ -944,10 +1073,12 @@ class RetrievalStorage:
             "direct_report" if event["origin"] == "human_direct" else "observed",
             True,
             ("event",),
-            metadata=(*_source_contexts_metadata([context_meta] if context_meta is not None else []),
-                      *_entries_metadata([label] if (label := tx.entry_label(source.entry_id)) is not None else []),
-                      *_occurred_metadata(tx.witnessed_at(source)),
-                      *((("recall_echo", "true"),) if context.mode in LIVE_MODES and recall_echo(tx, source) else ())),
+            metadata=(
+                *_source_contexts_metadata([context_meta] if context_meta is not None else []),
+                *_entries_metadata([label] if (label := tx.entry_label(source.entry_id)) is not None else []),
+                *_occurred_metadata(tx.witnessed_at(source)),
+                *((("recall_echo", "true"),) if context.mode in LIVE_MODES and recall_echo(tx, source) else ()),
+            ),
         )
 
     def _hydrate_claim(self, tx, candidate: CandidateRef, context: SearchContext) -> RetrievedObject | None:
@@ -985,7 +1116,9 @@ class RetrievalStorage:
             # Derived only from the system's own echo and never promoted:
             # recalling it would let the assistant's output become memory.
             return None
-        current_effective = context.mode in LIVE_MODES and effective is not None and effective.revision == version.revision
+        current_effective = (
+            context.mode in LIVE_MODES and effective is not None and effective.revision == version.revision
+        )
         origins = []
         witnessed = []
         for ref in evidence:
@@ -1025,7 +1158,9 @@ class RetrievalStorage:
     def _hydrate_versioned(self, tx, candidate: CandidateRef, context: SearchContext) -> RetrievedObject | None:
         """Episodes, artifacts and references: head-revision objects with evidence links."""
         repositories = {"episode": tx.episodes, "artifact": tx.artifacts, "reference": tx.references}
-        obj = repositories[candidate.kind].get(candidate.ref, candidate.revision if context.mode in {"history", "as_of"} else None)
+        obj = repositories[candidate.kind].get(
+            candidate.ref, candidate.revision if context.mode in {"history", "as_of"} else None
+        )
         if obj is None or (context.mode == "auto" and obj.suppressed) or obj.revision != candidate.revision:
             return None
         table, key = _HEAD_TABLES[candidate.kind]
@@ -1040,7 +1175,11 @@ class RetrievalStorage:
             # context, not its evidence, and a 200-member list is not a packet
             # item (fits_packet_schema): the cited versions are what is checked
             # for delivery and what the packet carries.
-            refs = tuple(dict.fromkeys(ref for ref in resume_evidence_refs(obj.resume) if type(ref) is str and _is_source_ref(ref)))
+            refs = tuple(
+                dict.fromkeys(
+                    ref for ref in resume_evidence_refs(obj.resume) if type(ref) is str and _is_source_ref(ref)
+                )
+            )
             evidence = self._deliverable(tx, tuple(parse_source_ref(ref) for ref in refs), context)
         else:
             evidence = self._evidence(tx, candidate.kind, candidate.ref, candidate.revision, context)
@@ -1060,8 +1199,20 @@ class RetrievalStorage:
         if "environment_needs_revalidation" in object_gaps:
             status = "historical"
             applies += "; environment_needs_revalidation"
-        return RetrievedObject(candidate.ref, candidate.revision, candidate.kind, content, basis, status, applies,
-                               evidence, basis, True, (candidate.kind,), metadata=tuple(metadata))
+        return RetrievedObject(
+            candidate.ref,
+            candidate.revision,
+            candidate.kind,
+            content,
+            basis,
+            status,
+            applies,
+            evidence,
+            basis,
+            True,
+            (candidate.kind,),
+            metadata=tuple(metadata),
+        )
 
     @staticmethod
     def _episode_source_metadata(tx, episode_id: str, obj) -> list[tuple[str, str]]:
@@ -1072,27 +1223,39 @@ class RetrievalStorage:
         consumed a LIMIT.  Only the schema's 32 retained refs are queried, by
         *versioned* pair, so no other revision of a source is ever read.
         """
-        retained = [ref for ref in dict.fromkeys((*obj.evidence_refs, *resume_evidence_refs(obj.resume)))
-                    if type(ref) is str and _is_source_ref(ref)][:32]
+        retained = [
+            ref
+            for ref in dict.fromkeys((*obj.evidence_refs, *resume_evidence_refs(obj.resume)))
+            if type(ref) is str and _is_source_ref(ref)
+        ][:32]
         rows = []
         texts: dict[str, str] = {}
         if retained:
             pairs = [parse_source_ref(ref) for ref in retained]
             pair_marks = ",".join("(?, ?)" for _ in pairs)
             # One row, ordered here: each row read on its own waited for the GIL in a busy gateway (3.7.7).
-            rows = sorted(json.loads(tx._check().execute(
-                f"""SELECT json_group_array(json_object('sequence',sequence,'source_ref',source_ref,
+            rows = sorted(
+                json.loads(
+                    tx._check()
+                    .execute(
+                        f"""SELECT json_group_array(json_object('sequence',sequence,'source_ref',source_ref,
                        'source_revision',source_revision)) FROM (
                    SELECT sequence,source_ref,source_revision
                    FROM episode_events
                    WHERE episode_id=? AND (source_ref,source_revision) IN ({pair_marks}))""",
-                (episode_id, *(value for pair in pairs for value in pair)),
-            ).fetchone()[0]), key=lambda row: row["sequence"])
+                        (episode_id, *(value for pair in pairs for value in pair)),
+                    )
+                    .fetchone()[0]
+                ),
+                key=lambda row: row["sequence"],
+            )
             _prefetch(tx, ((row["source_ref"], row["source_revision"]) for row in rows))
             for row in rows:
                 source = tx.source(row["source_ref"], row["source_revision"])
                 if source is not None:
-                    texts[_source_key(str(row["source_ref"]), int(row["source_revision"]))] = str(source.event.get("content", ""))
+                    texts[_source_key(str(row["source_ref"]), int(row["source_revision"]))] = str(
+                        source.event.get("content", "")
+                    )
         order = [[str(row["source_ref"]), int(row["source_revision"]), int(row["sequence"])] for row in rows]
         return [
             ("source_order", json.dumps(order, ensure_ascii=False, separators=(",", ":"))),
@@ -1101,7 +1264,9 @@ class RetrievalStorage:
 
     # -- collection paging ----------------------------------------------------
 
-    def collection(self, tx, context: SearchContext, query: CollectionQuery, cursor: PageCursor | None = None) -> CollectionPage:
+    def collection(
+        self, tx, context: SearchContext, query: CollectionQuery, cursor: PageCursor | None = None
+    ) -> CollectionPage:
         epoch = self.epoch(tx)
         expected_digest = scope_digest(context.trusted_context)
         if query.scope_digest != expected_digest or query.memory_epoch != epoch:
@@ -1117,9 +1282,30 @@ class RetrievalStorage:
         if any(key not in allowed_fields for key, _ in query.where):
             raise ContractError("INPUT_INVALID", "collection_where")
         trusted = context.trusted_context
-        identity = (epoch, expected_digest, trusted.project_id, trusted.branch_id, context.mode, context.as_of, query.where, query.object_kind)
-        if cursor is not None and (cursor.memory_epoch, cursor.scope_digest, cursor.project_id, cursor.branch_id,
-                                   cursor.mode, cursor.as_of, cursor.filters, cursor.object_kind) != identity:
+        identity = (
+            epoch,
+            expected_digest,
+            trusted.project_id,
+            trusted.branch_id,
+            context.mode,
+            context.as_of,
+            query.where,
+            query.object_kind,
+        )
+        if (
+            cursor is not None
+            and (
+                cursor.memory_epoch,
+                cursor.scope_digest,
+                cursor.project_id,
+                cursor.branch_id,
+                cursor.mode,
+                cursor.as_of,
+                cursor.filters,
+                cursor.object_kind,
+            )
+            != identity
+        ):
             raise ContractError("VERSION_CONFLICT", "cursor")
         hydrated: list[RetrievedObject] = []
         scan_cursor = cursor
@@ -1139,7 +1325,7 @@ class RetrievalStorage:
                 break
             scanned += len(batch)
             has_more = len(batch) > query.page_size or (fetch_limit <= query.page_size and len(batch) >= fetch_limit)
-            for candidate in batch[:query.page_size]:
+            for candidate in batch[: query.page_size]:
                 if self._remaining(context) <= 0:
                     cut_short = True
                     break
@@ -1165,7 +1351,9 @@ class RetrievalStorage:
             coverage = "complete_for_query"
         return CollectionPage(tuple(hydrated), next_cursor, coverage, epoch)
 
-    def _collection_candidates(self, tx, context: SearchContext, query: CollectionQuery, cursor: PageCursor | None, *, limit: int | None = None) -> tuple[CandidateRef, ...]:
+    def _collection_candidates(
+        self, tx, context: SearchContext, query: CollectionQuery, cursor: PageCursor | None, *, limit: int | None = None
+    ) -> tuple[CandidateRef, ...]:
         scopes = tuple(sorted(context.trusted_context.allowed_scope_ids))
         # Versioned objects are enumerated from their version tables: the parent
         # tables carry only the live head, so using them for history would omit
@@ -1173,9 +1361,27 @@ class RetrievalStorage:
         table, ref_col, rev_col, parent_alias, version_alias = {
             "event": ("source_events e", "e.event_id", "e.source_revision", "e", "e"),
             "claim": ("claims c JOIN claim_versions v ON v.claim_id=c.claim_id", "c.claim_id", "v.revision", "c", "v"),
-            "episode": ("episodes e JOIN episode_versions v ON v.episode_id=e.episode_id", "e.episode_id", "v.revision", "e", "v"),
-            "artifact": ("artifacts a JOIN artifact_versions v ON v.artifact_id=a.artifact_id", "a.artifact_id", "v.revision", "a", "v"),
-            "reference": ("reference_bindings b JOIN reference_versions v ON v.reference_id=b.reference_id", "b.reference_id", "v.revision", "b", "v"),
+            "episode": (
+                "episodes e JOIN episode_versions v ON v.episode_id=e.episode_id",
+                "e.episode_id",
+                "v.revision",
+                "e",
+                "v",
+            ),
+            "artifact": (
+                "artifacts a JOIN artifact_versions v ON v.artifact_id=a.artifact_id",
+                "a.artifact_id",
+                "v.revision",
+                "a",
+                "v",
+            ),
+            "reference": (
+                "reference_bindings b JOIN reference_versions v ON v.reference_id=b.reference_id",
+                "b.reference_id",
+                "v.revision",
+                "b",
+                "v",
+            ),
         }[query.object_kind]
         filters = [
             f"{parent_alias}.scope_id IN ({_marks(scopes)})",
@@ -1184,7 +1390,12 @@ class RetrievalStorage:
             f"({parent_alias}.branch_id IS NULL OR {parent_alias}.branch_id=?)",
             f"NOT EXISTS (SELECT 1 FROM object_blocks ob WHERE ob.object_kind=? AND ob.object_ref={ref_col} AND ob.read_blocked=1)",
         ]
-        params: list[object] = [*scopes, context.trusted_context.project_id, context.trusted_context.branch_id, query.object_kind]
+        params: list[object] = [
+            *scopes,
+            context.trusted_context.project_id,
+            context.trusted_context.branch_id,
+            query.object_kind,
+        ]
         for key, value in query.where:
             if key == "ref":
                 column = ref_col
@@ -1220,8 +1431,15 @@ class RetrievalStorage:
             filters.append(f"({ref_col} > ? OR ({ref_col} = ? AND {rev_col} > ?))")
             params.extend((last[1], last[1], last[2]))
         fetch_limit = limit if limit is not None else query.page_size + 1
-        rows = tx._check().execute(
-            f"SELECT {ref_col} AS ref_sort,{rev_col} AS revision_sort FROM {table} WHERE {' AND '.join(filters)} ORDER BY {ref_col}, {rev_col} LIMIT ?",
-            (*params, fetch_limit),
-        ).fetchall()
-        return tuple(CandidateRef(query.object_kind, row["ref_sort"], int(row["revision_sort"]), "exact_ref", rank=index) for index, row in enumerate(rows, 1))
+        rows = (
+            tx._check()
+            .execute(
+                f"SELECT {ref_col} AS ref_sort,{rev_col} AS revision_sort FROM {table} WHERE {' AND '.join(filters)} ORDER BY {ref_col}, {rev_col} LIMIT ?",
+                (*params, fetch_limit),
+            )
+            .fetchall()
+        )
+        return tuple(
+            CandidateRef(query.object_kind, row["ref_sort"], int(row["revision_sort"]), "exact_ref", rank=index)
+            for index, row in enumerate(rows, 1)
+        )

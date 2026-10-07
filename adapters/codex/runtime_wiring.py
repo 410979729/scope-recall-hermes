@@ -1,4 +1,5 @@
 """Codex lifecycle wakeup over the shared trusted runtime glue."""
+
 from __future__ import annotations
 
 from functools import partial
@@ -29,9 +30,14 @@ class CodexHostRuntime(TrustedHostRuntime):
         project_id: str | None = None,
         branch_id: str | None = None,
     ) -> tuple[str, ...]:
-        return launch_audience_worker(self, session_id=session_id,
-                                      allowed_scope_ids=allowed_scope_ids, launcher=launch_worker,
-                                      project_id=project_id, branch_id=branch_id)
+        return launch_audience_worker(
+            self,
+            session_id=session_id,
+            allowed_scope_ids=allowed_scope_ids,
+            launcher=launch_worker,
+            project_id=project_id,
+            branch_id=branch_id,
+        )
 
     def close(self, *, detach_worker: bool = False) -> None:
         # Detached helpers retain their ephemeral config until they exit; the

@@ -33,6 +33,7 @@ candidate rows: the first store imported keeps the slot, and the receipt names
 what was left out.  Its sources are imported like every other.  Work history is not copied; pending
 work is, as new work.  A store already imported for the entry is refused.
 """
+
 from __future__ import annotations
 
 from datetime import datetime, timezone
@@ -128,13 +129,21 @@ def _insert(conn: sqlite3.Connection, table: str, rows: list[dict[str, Any]], *,
         return 0
     columns = list(rows[0])
     marks = ",".join("?" for _ in columns)
-    conn.executemany(f"{verb} INTO {table}({','.join(columns)}) VALUES ({marks})",
-                     [tuple(row[c] for c in columns) for row in rows])
+    conn.executemany(
+        f"{verb} INTO {table}({','.join(columns)}) VALUES ({marks})", [tuple(row[c] for c in columns) for row in rows]
+    )
     return len(rows)
 
 
-def _copy(conn, src, table: str, change: Callable[[dict[str, Any]], dict[str, Any] | None], *, verb: str = "INSERT",
-          order: str = "") -> int:
+def _copy(
+    conn,
+    src,
+    table: str,
+    change: Callable[[dict[str, Any]], dict[str, Any] | None],
+    *,
+    verb: str = "INSERT",
+    order: str = "",
+) -> int:
     """Stream ``table`` from the source store through ``change`` (``None`` leaves a row out)."""
     written, batch = 0, []
     for row in _rows(src, f"SELECT * FROM {table} {order}"):
@@ -157,8 +166,12 @@ def _open_source(database: Path, home: str) -> sqlite3.Connection:
     kind = meta["installation_kind"] if "installation_kind" in meta.keys() else "local"
     if kind != "local":
         raise SourceRefused("the source is itself a shared store")
-    if os.path.normcase(os.path.normpath(os.path.dirname(meta["data_directory"]))) != os.path.normcase(os.path.normpath(home)):
-        raise SourceRefused(f"the source was the store of {os.path.dirname(meta['data_directory'])}, not of this entry's home {home}")
+    if os.path.normcase(os.path.normpath(os.path.dirname(meta["data_directory"]))) != os.path.normcase(
+        os.path.normpath(home)
+    ):
+        raise SourceRefused(
+            f"the source was the store of {os.path.dirname(meta['data_directory'])}, not of this entry's home {home}"
+        )
     if src.execute("SELECT count(*) FROM capture_inbox").fetchone()[0]:
         raise SourceRefused("the source has captures waiting in its inbox; open it once with its own host first")
     return src
@@ -177,7 +190,9 @@ def _import_rows(conn, src, names: _Names, *, store_installation: str, store_sco
     auth: dict[int, int] = {}
     for old_id, payload in src.execute("SELECT authorization_id, payload FROM authorization_payloads"):
         conn.execute("INSERT OR IGNORE INTO authorization_payloads(payload) VALUES (?)", (payload,))
-        auth[old_id] = conn.execute("SELECT authorization_id FROM authorization_payloads WHERE payload=?", (payload,)).fetchone()[0]
+        auth[old_id] = conn.execute(
+            "SELECT authorization_id FROM authorization_payloads WHERE payload=?", (payload,)
+        ).fetchone()[0]
 
     source_offset = conn.execute("SELECT coalesce(max(source_id),0) FROM source_events").fetchone()[0]
     groups: dict[str, str] = {}
@@ -189,28 +204,44 @@ def _import_rows(conn, src, names: _Names, *, store_installation: str, store_sco
             segment["group_key"] = names.key(segment["group_key"])
         old = row["source_group_key"], row["scope_id"], row["project_id"], row["branch_id"]
         new_group = names.key(row["source_group_key"])
-        groups[group_digest(old_binding, old[1], old[2], old[3], old[0])] = group_digest(new_binding, old[1], old[2], old[3], new_group)
-        row.update(event_id=names.event(row["event_id"]), source_event_key=names.key(row["source_event_key"]),
-                   source_group_key=new_group, session_id=names.session(row["session_id"]),
-                   extra_json=names.text(_canonical(extra)), entry_id=names.entry_id,
-                   source_id=None if row["source_id"] is None else row["source_id"] + source_offset)
+        groups[group_digest(old_binding, old[1], old[2], old[3], old[0])] = group_digest(
+            new_binding, old[1], old[2], old[3], new_group
+        )
+        row.update(
+            event_id=names.event(row["event_id"]),
+            source_event_key=names.key(row["source_event_key"]),
+            source_group_key=new_group,
+            session_id=names.session(row["session_id"]),
+            extra_json=names.text(_canonical(extra)),
+            entry_id=names.entry_id,
+            source_id=None if row["source_id"] is None else row["source_id"] + source_offset,
+        )
         return row
 
     counts["sources"] = _copy(conn, src, "source_events", source)
-    counts["source_authorizations"] = _copy(conn, src, "source_authorizations", lambda r: {
-        **r, "event_id": names.event(r["event_id"]), "authorization_id": auth[r["authorization_id"]]})
+    counts["source_authorizations"] = _copy(
+        conn,
+        src,
+        "source_authorizations",
+        lambda r: {**r, "event_id": names.event(r["event_id"]), "authorization_id": auth[r["authorization_id"]]},
+    )
 
     skipped: list[dict[str, str]] = []
     left_out: set[str] = set()
     for claim in _rows(src, "SELECT * FROM claims"):
-        held = conn.execute("SELECT claim_id FROM claims WHERE slot_key=? OR claim_id=?",
-                            (claim["slot_key"], claim["claim_id"])).fetchone()
+        held = conn.execute(
+            "SELECT claim_id FROM claims WHERE slot_key=? OR claim_id=?", (claim["slot_key"], claim["claim_id"])
+        ).fetchone()
         if held is not None:
             left_out.add(claim["claim_id"])
             skipped.append({"claim_id": claim["claim_id"], "kept": held[0], "kind": claim["kind"]})
     counts["claims"] = _copy(conn, src, "claims", lambda r: None if r["claim_id"] in left_out else r)
-    counts["claim_versions"] = _copy(conn, src, "claim_versions", lambda r: None if r["claim_id"] in left_out else {
-        **r, "payload_json": names.text(r["payload_json"])})
+    counts["claim_versions"] = _copy(
+        conn,
+        src,
+        "claim_versions",
+        lambda r: None if r["claim_id"] in left_out else {**r, "payload_json": names.text(r["payload_json"])},
+    )
     counts["claims_left_out"] = len(left_out)
 
     sequence_offset = conn.execute("SELECT coalesce(max(sequence),0) FROM episode_events").fetchone()[0]
@@ -218,8 +249,10 @@ def _import_rows(conn, src, names: _Names, *, store_installation: str, store_sco
 
     def episode(row):
         nonlocal renamed_episodes
-        taken = conn.execute("SELECT 1 FROM episodes WHERE anchor_key=? OR (series_key=? AND segment_index=?)",
-                             (row["anchor_key"], row["series_key"], row["segment_index"])).fetchone()
+        taken = conn.execute(
+            "SELECT 1 FROM episodes WHERE anchor_key=? OR (series_key=? AND segment_index=?)",
+            (row["anchor_key"], row["series_key"], row["segment_index"]),
+        ).fetchone()
         if taken is not None:
             renamed_episodes += 1
             row.update(anchor_key=names.key(row["anchor_key"]), series_key=names.key(row["series_key"]))
@@ -227,43 +260,97 @@ def _import_rows(conn, src, names: _Names, *, store_installation: str, store_sco
 
     counts["episodes"] = _copy(conn, src, "episodes", episode)
     counts["episodes_rekeyed"] = renamed_episodes
-    counts["episode_versions"] = _copy(conn, src, "episode_versions", lambda r: {
-        **r, "resume_json": names.text(r["resume_json"]),
-        "processed_sequence": r["processed_sequence"] + sequence_offset if r["processed_sequence"] else 0})
-    counts["episode_events"] = _copy(conn, src, "episode_events", lambda r: {
-        **r, "sequence": r["sequence"] + sequence_offset, "source_ref": names.event(r["source_ref"])})
+    counts["episode_versions"] = _copy(
+        conn,
+        src,
+        "episode_versions",
+        lambda r: {
+            **r,
+            "resume_json": names.text(r["resume_json"]),
+            "processed_sequence": r["processed_sequence"] + sequence_offset if r["processed_sequence"] else 0,
+        },
+    )
+    counts["episode_events"] = _copy(
+        conn,
+        src,
+        "episode_events",
+        lambda r: {**r, "sequence": r["sequence"] + sequence_offset, "source_ref": names.event(r["source_ref"])},
+    )
 
     counts["artifacts"] = _copy(conn, src, "artifacts", lambda r: r)
-    counts["artifact_versions"] = _copy(conn, src, "artifact_versions", lambda r: {
-        **r, "blob_json": names.text(r["blob_json"]), "description_json": names.text(r["description_json"])})
+    counts["artifact_versions"] = _copy(
+        conn,
+        src,
+        "artifact_versions",
+        lambda r: {**r, "blob_json": names.text(r["blob_json"]), "description_json": names.text(r["description_json"])},
+    )
     counts["reference_bindings"] = _copy(conn, src, "reference_bindings", lambda r: r)
-    counts["reference_versions"] = _copy(conn, src, "reference_versions", lambda r: {
-        **r, "payload_json": names.text(r["payload_json"])})
+    counts["reference_versions"] = _copy(
+        conn, src, "reference_versions", lambda r: {**r, "payload_json": names.text(r["payload_json"])}
+    )
 
     def linked(row):
         if row["object_kind"] == "claim" and row["object_ref"] in left_out:
             return None
-        return {**row, "object_ref": names.ref(row["object_kind"], row["object_ref"]),
-                "source_ref": names.event(row["source_ref"])}
+        return {
+            **row,
+            "object_ref": names.ref(row["object_kind"], row["object_ref"]),
+            "source_ref": names.event(row["source_ref"]),
+        }
 
     counts["evidence_links"] = _copy(conn, src, "evidence_links", linked)
-    counts["object_dependencies"] = _copy(conn, src, "object_dependencies", lambda r: {
-        **r, "object_ref": names.ref(r["object_kind"], r["object_ref"]),
-        "dependency_ref": names.ref(r["dependency_kind"], r["dependency_ref"])})
-    counts["unresolved_updates"] = _copy(conn, src, "unresolved_updates", lambda r: {
-        **r, "source_ref": names.event(r["source_ref"]), "candidate_refs_json": names.text(r["candidate_refs_json"])})
+    counts["object_dependencies"] = _copy(
+        conn,
+        src,
+        "object_dependencies",
+        lambda r: {
+            **r,
+            "object_ref": names.ref(r["object_kind"], r["object_ref"]),
+            "dependency_ref": names.ref(r["dependency_kind"], r["dependency_ref"]),
+        },
+    )
+    counts["unresolved_updates"] = _copy(
+        conn,
+        src,
+        "unresolved_updates",
+        lambda r: {
+            **r,
+            "source_ref": names.event(r["source_ref"]),
+            "candidate_refs_json": names.text(r["candidate_refs_json"]),
+        },
+    )
 
     # A candidate is a claim version under review: one left out takes its candidate rows with it.
-    counts["candidate_lifecycle"] = _copy(conn, src, "candidate_lifecycle", lambda r: None if r["candidate_ref"] in left_out else r)
-    counts["candidate_trigger_terms"] = _copy(conn, src, "candidate_trigger_terms",
-                                              lambda r: None if r["candidate_ref"] in left_out else r)
-    counts["candidate_evidence"] = _copy(conn, src, "candidate_evidence", lambda r: None if r["candidate_ref"] in left_out else {
-        **r, "source_ref": names.event(r["source_ref"])})
-    counts["candidate_source_triggers"] = _copy(conn, src, "candidate_source_triggers", lambda r: {
-        **r, "source_ref": names.event(r["source_ref"])})
-    counts["candidate_evaluations"] = _copy(conn, src, "candidate_evaluations", lambda r: None if r["candidate_ref"] in left_out else {
-        **{k: v for k, v in r.items() if k != "evaluation_id"},
-        "evidence_refs_json": names.text(r["evidence_refs_json"]), "work_id": None}, order="ORDER BY evaluation_id")
+    counts["candidate_lifecycle"] = _copy(
+        conn, src, "candidate_lifecycle", lambda r: None if r["candidate_ref"] in left_out else r
+    )
+    counts["candidate_trigger_terms"] = _copy(
+        conn, src, "candidate_trigger_terms", lambda r: None if r["candidate_ref"] in left_out else r
+    )
+    counts["candidate_evidence"] = _copy(
+        conn,
+        src,
+        "candidate_evidence",
+        lambda r: None if r["candidate_ref"] in left_out else {**r, "source_ref": names.event(r["source_ref"])},
+    )
+    counts["candidate_source_triggers"] = _copy(
+        conn, src, "candidate_source_triggers", lambda r: {**r, "source_ref": names.event(r["source_ref"])}
+    )
+    counts["candidate_evaluations"] = _copy(
+        conn,
+        src,
+        "candidate_evaluations",
+        lambda r: (
+            None
+            if r["candidate_ref"] in left_out
+            else {
+                **{k: v for k, v in r.items() if k != "evaluation_id"},
+                "evidence_refs_json": names.text(r["evidence_refs_json"]),
+                "work_id": None,
+            }
+        ),
+        order="ORDER BY evaluation_id",
+    )
 
     # A deletion is recorded at the epoch it moved its store to, and ``retraction_after`` compares that
     # with the epoch a read was made at.  The old store's numbers mean nothing here: one above this
@@ -271,17 +358,41 @@ def _import_rows(conn, src, names: _Names, *, store_installation: str, store_sco
     # with memory_epoch_changed -- until this store's own epoch passed it.  Here they happen at the
     # import, so they carry the epoch the import moves the store to.
     imported_epoch = conn.execute("SELECT memory_epoch FROM instance_meta WHERE singleton=1").fetchone()[0] + 1
-    counts["deletion_operations"] = _copy(conn, src, "deletion_operations", lambda r: {
-        **r, "memory_epoch": imported_epoch, "requested_refs_json": names.text(r["requested_refs_json"]),
-        "expected_revisions_json": names.text(r["expected_revisions_json"]), "layers_json": names.text(r["layers_json"])})
-    counts["deletion_members"] = _copy(conn, src, "deletion_members", lambda r: None
-                                       if r["object_kind"] == "claim" and r["object_ref"] in left_out
-                                       else {**r, "object_ref": names.ref(r["object_kind"], r["object_ref"])})
-    counts["object_blocks"] = _copy(conn, src, "object_blocks", lambda r: None
-                                    if r["object_kind"] == "claim" and r["object_ref"] in left_out
-                                    else {**r, "object_ref": names.ref(r["object_kind"], r["object_ref"])})
-    counts["restored_absence_blocks"] = _copy(conn, src, "restored_absence_blocks",
-                                              lambda r: None if r["object_ref"] in left_out else r)
+    counts["deletion_operations"] = _copy(
+        conn,
+        src,
+        "deletion_operations",
+        lambda r: {
+            **r,
+            "memory_epoch": imported_epoch,
+            "requested_refs_json": names.text(r["requested_refs_json"]),
+            "expected_revisions_json": names.text(r["expected_revisions_json"]),
+            "layers_json": names.text(r["layers_json"]),
+        },
+    )
+    counts["deletion_members"] = _copy(
+        conn,
+        src,
+        "deletion_members",
+        lambda r: (
+            None
+            if r["object_kind"] == "claim" and r["object_ref"] in left_out
+            else {**r, "object_ref": names.ref(r["object_kind"], r["object_ref"])}
+        ),
+    )
+    counts["object_blocks"] = _copy(
+        conn,
+        src,
+        "object_blocks",
+        lambda r: (
+            None
+            if r["object_kind"] == "claim" and r["object_ref"] in left_out
+            else {**r, "object_ref": names.ref(r["object_kind"], r["object_ref"])}
+        ),
+    )
+    counts["restored_absence_blocks"] = _copy(
+        conn, src, "restored_absence_blocks", lambda r: None if r["object_ref"] in left_out else r
+    )
     orphans = 0
 
     def group_block(row):
@@ -294,32 +405,46 @@ def _import_rows(conn, src, names: _Names, *, store_installation: str, store_sco
 
     counts["source_group_blocks"] = _copy(conn, src, "source_group_blocks", group_block)
     counts["group_blocks_without_sources"] = orphans
-    counts["expired_vectors"] = _copy(conn, src, "expired_vectors", lambda r: {
-        **r, "source_ref": names.event(r["source_ref"])})
+    counts["expired_vectors"] = _copy(
+        conn, src, "expired_vectors", lambda r: {**r, "source_ref": names.event(r["source_ref"])}
+    )
 
     conn.execute("CREATE TEMP TABLE import_terms(old_id INTEGER PRIMARY KEY, term TEXT NOT NULL)")
     cursor = src.execute("SELECT term_id, term FROM lexical_terms")
     while batch := cursor.fetchmany(_CHUNK):
         conn.executemany("INSERT INTO temp.import_terms(old_id, term) VALUES (?,?)", batch)
     conn.execute("INSERT OR IGNORE INTO lexical_terms(term) SELECT term FROM temp.import_terms")
-    terms = dict(conn.execute("SELECT i.old_id, t.term_id FROM temp.import_terms i JOIN lexical_terms t ON t.term=i.term"))
+    terms = dict(
+        conn.execute("SELECT i.old_id, t.term_id FROM temp.import_terms i JOIN lexical_terms t ON t.term=i.term")
+    )
     conn.execute("DROP TABLE temp.import_terms")
     # A withheld tool output's placeholder is found by its error text alone, when it carries one; the rest of the
     # postings an older release gave it stay behind (#206).
     withheld: dict[int, tuple[str, ...]] = {}
     for source_id, role, content in src.execute(
-            f"SELECT e.source_id, e.role, e.content FROM source_events e WHERE e.role='tool' AND {OMITTED_TOOL_OUTPUT}"):
+        f"SELECT e.source_id, e.role, e.content FROM source_events e WHERE e.role='tool' AND {OMITTED_TOOL_OUTPUT}"
+    ):
         event = {"role": role, "content": content}
         if withheld_tool_output(event):
             withheld[source_id] = indexed_terms(event)
-    counts["lexical_postings"] = _copy(conn, src, "lexical_postings", lambda r: None
-                                       if r["term_id"] not in terms or r["source_id"] in withheld else {
-        "term_id": terms[r["term_id"]], "source_id": r["source_id"] + source_offset}, verb="INSERT OR IGNORE")
+    counts["lexical_postings"] = _copy(
+        conn,
+        src,
+        "lexical_postings",
+        lambda r: (
+            None
+            if r["term_id"] not in terms or r["source_id"] in withheld
+            else {"term_id": terms[r["term_id"]], "source_id": r["source_id"] + source_offset}
+        ),
+        verb="INSERT OR IGNORE",
+    )
     for source_id, keep in withheld.items():
         counts["lexical_postings"] += lexical_index.index_terms(conn, source_id + source_offset, keep)
     counts["withheld_outputs"] = len(withheld)
 
-    expired = {(ref, revision) for ref, revision in src.execute("SELECT source_ref, source_revision FROM expired_vectors")}
+    expired = {
+        (ref, revision) for ref, revision in src.execute("SELECT source_ref, source_revision FROM expired_vectors")
+    }
 
     def pending(row):
         """Pending work, as new work; and a source's embedding again wherever the source store had one.
@@ -330,21 +455,36 @@ def _import_rows(conn, src, names: _Names, *, store_installation: str, store_sco
         source = subject.startswith("event-")
         if row["scope_id"] not in store_scopes or subject in left_out or (source and subject not in names.known):
             return None
-        embedded = (row["work_type"] == "embed" and source and row["state"] != "obsolete"
-                    and (subject, row["subject_revision"]) not in expired)
+        embedded = (
+            row["work_type"] == "embed"
+            and source
+            and row["state"] != "obsolete"
+            and (subject, row["subject_revision"]) not in expired
+        )
         if not embedded and row["state"] not in ("pending", "leased"):
             return None
-        return {"work_type": row["work_type"], "subject_ref": names.event(subject) if source else subject,
-                "subject_revision": row["subject_revision"], "scope_id": row["scope_id"], "project_id": row["project_id"],
-                "branch_id": row["branch_id"], "available_at": now}
+        return {
+            "work_type": row["work_type"],
+            "subject_ref": names.event(subject) if source else subject,
+            "subject_revision": row["subject_revision"],
+            "scope_id": row["scope_id"],
+            "project_id": row["project_id"],
+            "branch_id": row["branch_id"],
+            "available_at": now,
+        }
 
     counts["work_queued"] = _copy(conn, src, "work_items", pending, verb="INSERT OR IGNORE")
     # Every claim head is queued for the vector index, as accepting it would have (claim_storage).
-    heads = [(c["claim_id"], c["current_revision"], c["scope_id"], c["project_id"], c["branch_id"], now)
-             for c in _rows(src, "SELECT claim_id,current_revision,scope_id,project_id,branch_id FROM claims")
-             if c["claim_id"] not in left_out and c["scope_id"] in store_scopes]
-    conn.executemany("""INSERT INTO work_items(work_type,subject_ref,subject_revision,scope_id,project_id,branch_id,available_at)
-                        VALUES ('embed',?,?,?,?,?,?) ON CONFLICT(work_type,subject_ref,subject_revision) DO NOTHING""", heads)
+    heads = [
+        (c["claim_id"], c["current_revision"], c["scope_id"], c["project_id"], c["branch_id"], now)
+        for c in _rows(src, "SELECT claim_id,current_revision,scope_id,project_id,branch_id FROM claims")
+        if c["claim_id"] not in left_out and c["scope_id"] in store_scopes
+    ]
+    conn.executemany(
+        """INSERT INTO work_items(work_type,subject_ref,subject_revision,scope_id,project_id,branch_id,available_at)
+                        VALUES ('embed',?,?,?,?,?,?) ON CONFLICT(work_type,subject_ref,subject_revision) DO NOTHING""",
+        heads,
+    )
     counts["claim_embeddings_queued"] = len(heads)
     counts["embeddings_retention_would_expire"] = _drop_expirable_embeddings(conn, names, now=now)
     conn.execute("UPDATE instance_meta SET memory_epoch=max(memory_epoch+1,?) WHERE singleton=1", (imported_epoch,))
@@ -368,15 +508,19 @@ def _drop_expirable_embeddings(conn, names: _Names, *, now: str) -> int:
             WHERE w.work_type='embed' AND w.state='pending' AND e.role='tool'
               AND e.source_event_key>=? AND e.source_event_key<?
               AND (({OMITTED_TOOL_OUTPUT}) OR {REPEATED_TOOL_OUTPUT})""",
-        (names.prefix, names.prefix[:-1] + ";")).fetchall()
+        (names.prefix, names.prefix[:-1] + ";"),
+    ).fetchall()
     conn.executemany("DELETE FROM work_items WHERE work_id=?", [(row[0],) for row in rows])
-    conn.executemany("INSERT OR IGNORE INTO expired_vectors(source_ref,source_revision,expired_at,reason) VALUES (?,?,?,?)",
-                     [(row[1], row[2], now, row[3]) for row in rows])
+    conn.executemany(
+        "INSERT OR IGNORE INTO expired_vectors(source_ref,source_revision,expired_at,reason) VALUES (?,?,?,?)",
+        [(row[1], row[2], now, row[3]) for row in rows],
+    )
     return len(rows)
 
 
-def import_entry(*, root: Path, entry_id: str, source: Path, dry_run: bool = False,
-                 now: str | None = None) -> dict[str, Any]:
+def import_entry(
+    *, root: Path, entry_id: str, source: Path, dry_run: bool = False, now: str | None = None
+) -> dict[str, Any]:
     from .shared import SharedStoreError, _Run
 
     now = now or _now()
@@ -403,23 +547,38 @@ def import_entry(*, root: Path, entry_id: str, source: Path, dry_run: bool = Fal
         try:
             conn = connect_truth_database(target, mode="rw", timeout=30.0, isolation_level=None)
         except TruthWriterBusyError:
-            raise SharedStoreError("the shared store is being written; stop every entry's host and the worker first") from None
+            raise SharedStoreError(
+                "the shared store is being written; stop every entry's host and the worker first"
+            ) from None
         try:
             meta = conn.execute("SELECT * FROM instance_meta WHERE singleton=1").fetchone()
-            if (conn.execute("PRAGMA user_version").fetchone()[0] != SCHEMA_VERSION or meta["installation_kind"] != "shared"
-                    or meta["installation_id"] != payload["installation_id"]):
+            if (
+                conn.execute("PRAGMA user_version").fetchone()[0] != SCHEMA_VERSION
+                or meta["installation_kind"] != "shared"
+                or meta["installation_id"] != payload["installation_id"]
+            ):
                 raise SharedStoreError("the store at --root is not the shared store its manifest names")
             conn.execute("BEGIN IMMEDIATE")
-            done = conn.execute("SELECT 1 FROM source_events WHERE source_event_key>=? AND source_event_key<? LIMIT 1",
-                                (names.prefix, names.prefix[:-1] + ";")).fetchone()
+            done = conn.execute(
+                "SELECT 1 FROM source_events WHERE source_event_key>=? AND source_event_key<? LIMIT 1",
+                (names.prefix, names.prefix[:-1] + ";"),
+            ).fetchone()
             if done is None:
                 # One transaction holds the writer lease for as long as the import takes: a host
                 # writing meanwhile would wait past its capture bound.
                 if live_records(root):
                     raise SharedStoreError("a host or the worker still has the shared store open; stop them first")
                 try:
-                    result.update(_import_rows(conn, src, names, store_installation=payload["installation_id"],
-                                               store_scopes=frozenset(payload["scope_ids"]), now=now))
+                    result.update(
+                        _import_rows(
+                            conn,
+                            src,
+                            names,
+                            store_installation=payload["installation_id"],
+                            store_scopes=frozenset(payload["scope_ids"]),
+                            now=now,
+                        )
+                    )
                 except sqlite3.IntegrityError as exc:
                     # Only sources are renamed; any other id the store already holds is refused, not guessed at.
                     raise SharedStoreError(f"the source cannot be imported as it is: {exc}") from None

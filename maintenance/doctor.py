@@ -4,6 +4,7 @@
 ``checks`` row and capability gaps on the report; the driver only decides how
 far into the instance the checks can get. Nothing here writes to the instance.
 """
+
 from __future__ import annotations
 
 from contextlib import closing, suppress
@@ -189,8 +190,9 @@ def _seconds_since(stamp: Any) -> float | None:
 def _probe_python_package(python: Path) -> dict[str, Any]:
     """What the target interpreter imports; empty when it cannot answer cleanly."""
     try:
-        result = subprocess.run([str(python), "-I", "-B", str(_PACKAGE_PROBE)],
-                                capture_output=True, text=True, timeout=30, check=False)
+        result = subprocess.run(
+            [str(python), "-I", "-B", str(_PACKAGE_PROBE)], capture_output=True, text=True, timeout=30, check=False
+        )
         found = json.loads(result.stdout) if result.returncode == 0 and len(result.stdout) <= 65536 else None
     except (OSError, subprocess.TimeoutExpired, ValueError):
         return {}
@@ -212,7 +214,6 @@ def _load_binding(host: HostChoice, instance_root: Path):
     path = _codex_config_path(instance_root)
     config = load_shared_client(instance_root, host) if path.name == "attachment.json" else load_codex_config(path)
     return config.to_binding(), config.data_directory
-
 
 
 def _journal_mode(db_path: Path) -> str | None:
@@ -242,9 +243,10 @@ def _embedded_objects(db_path: Path) -> int | None:
     """Finished embed work, read through a separate read-only connection."""
     with suppress(sqlite3.Error, OSError, ValueError):
         with closing(sqlite3.connect(f"file:{db_path.as_posix()}?mode=ro", uri=True, timeout=5)) as db:
-            return int(db.execute(
-                "SELECT COUNT(*) FROM work_items WHERE work_type='embed' AND state='done'"
-            ).fetchone()[0] or 0)
+            return int(
+                db.execute("SELECT COUNT(*) FROM work_items WHERE work_type='embed' AND state='done'").fetchone()[0]
+                or 0
+            )
     return None
 
 
@@ -252,8 +254,12 @@ def _expired_vectors(db_path: Path) -> dict[str, int] | None:
     """Tool-output vectors the retention pass expired, by reason (``runtime/vector_retention.py``)."""
     with suppress(sqlite3.Error, OSError, ValueError):
         with closing(sqlite3.connect(f"file:{db_path.as_posix()}?mode=ro", uri=True, timeout=5)) as db:
-            return {str(reason): int(count) for reason, count in
-                    db.execute("SELECT reason,COUNT(*) FROM expired_vectors GROUP BY reason ORDER BY reason")}
+            return {
+                str(reason): int(count)
+                for reason, count in db.execute(
+                    "SELECT reason,COUNT(*) FROM expired_vectors GROUP BY reason ORDER BY reason"
+                )
+            }
     return None
 
 
@@ -372,14 +378,16 @@ TERMINAL_FAILURE_COUNT = """
 #: ``audience_owner_unverified`` is an owner grant whose user is no owner
 #: principal: it grants nothing until the owner approves that user, and only
 #: the owner knows whether to.
-_NON_ACTIONABLE_GAPS = frozenset({
-    "audience_owner_unverified",
-    "due_work_unreached",
-    "vector_threshold_unconfigured",
-    "work_failed_terminal_only",
-    "work_needs_review",
-    "worker_capability_unavailable",
-})
+_NON_ACTIONABLE_GAPS = frozenset(
+    {
+        "audience_owner_unverified",
+        "due_work_unreached",
+        "vector_threshold_unconfigured",
+        "work_failed_terminal_only",
+        "work_needs_review",
+        "worker_capability_unavailable",
+    }
+)
 
 #: Default supervisor wake interval (``RuntimeInstanceConfig.supervisor_seconds``),
 #: used when the runtime config cannot be read. A quiet instance legitimately
@@ -391,13 +399,31 @@ _STALL_WAKE_MULTIPLE = 2
 
 #: The receipt fields the report carries. Anything else in the file (stderr,
 #: model output) is arbitrary text and must not reach the doctor's JSON.
-_WORKER_STATUS_KEYS = frozenset({
-    "status", "installation_id", "started_at", "finished_at", "exit_code", "worker_pid",
-    "last_success_at", "completed", "failed", "retried", "deferred", "recovered",
-    "daily_queue_used", "capability_gaps", "unavailable_work_types",
-    "pending_work", "failed_work", "oldest_pending_at", "worker_error",
-    "ingress_deferred", "ingress_given_up",
-})
+_WORKER_STATUS_KEYS = frozenset(
+    {
+        "status",
+        "installation_id",
+        "started_at",
+        "finished_at",
+        "exit_code",
+        "worker_pid",
+        "last_success_at",
+        "completed",
+        "failed",
+        "retried",
+        "deferred",
+        "recovered",
+        "daily_queue_used",
+        "capability_gaps",
+        "unavailable_work_types",
+        "pending_work",
+        "failed_work",
+        "oldest_pending_at",
+        "worker_error",
+        "ingress_deferred",
+        "ingress_given_up",
+    }
+)
 
 
 def _backlog_is_stalled(worker_status: dict[str, Any], *, wake_seconds: float | None) -> bool:
@@ -453,8 +479,12 @@ def _check_running_code(report: DoctorReport, data_directory: Path) -> None:
     report.running_code = {
         "reference_version": reference,
         "live_processes": [
-            {"pid": record.pid, "version": record.version,
-             "host_adapter": record.host_adapter, "first_record_at": record.first_record_at}
+            {
+                "pid": record.pid,
+                "version": record.version,
+                "host_adapter": record.host_adapter,
+                "first_record_at": record.first_record_at,
+            }
             for record in records
         ],
         "stale_processes": stale,
@@ -481,8 +511,13 @@ def _host_registration_status(host: str, instance: Path, python_executable: Path
     if python_executable is not None:
         script = "import importlib.metadata as m,json; print(json.dumps(any(e.name=='scope-recall' for e in m.entry_points(group='hermes_agent.memory_providers'))))"
         try:
-            probe = subprocess.run([str(python_executable), "-I", "-B", "-c", script],
-                                   capture_output=True, text=True, timeout=15, check=False)
+            probe = subprocess.run(
+                [str(python_executable), "-I", "-B", "-c", script],
+                capture_output=True,
+                text=True,
+                timeout=15,
+                check=False,
+            )
             if probe.returncode or json.loads(probe.stdout) is not True:
                 return "entry_point_missing"
         except (OSError, ValueError, subprocess.TimeoutExpired):
@@ -499,6 +534,7 @@ def _host_registration_status(host: str, instance: Path, python_executable: Path
         return "host_config_missing"
     try:
         import yaml
+
         value = yaml.safe_load(config.read_text(encoding="utf-8"))
         memory = value.get("memory", {}) if isinstance(value, dict) else {}
         selected = memory.get("provider") if isinstance(memory, dict) else None
@@ -581,8 +617,11 @@ def _check_binding(report: DoctorReport, instance: Path):
 
         attachment = read_attachment(instance)
         if attachment is not None:
-            report.shared_store = {"root": str(attachment.root), "entry_id": attachment.entry_id,
-                                   "entry_name": attachment.display_name}
+            report.shared_store = {
+                "root": str(attachment.root),
+                "entry_id": attachment.entry_id,
+                "entry_name": attachment.display_name,
+            }
     return binding, data_directory
 
 
@@ -607,10 +646,14 @@ def _check_audiences(report: DoctorReport, instance: Path) -> None:
             unverified[row["platform"]] = unverified.get(row["platform"], 0) + 1
     if unverified:
         report.capability_gaps.append("audience_owner_unverified")
-        _record(report, "audiences", "owner_unverified",
-                ",".join(f"{platform}={count}" for platform, count in sorted(unverified.items()))
-                + ": owner_private rows whose user is no owner principal grant nothing; approve the owner's own "
-                "desktop or tui login (apply-install --owner-login) or remove the rows")
+        _record(
+            report,
+            "audiences",
+            "owner_unverified",
+            ",".join(f"{platform}={count}" for platform, count in sorted(unverified.items()))
+            + ": owner_private rows whose user is no owner principal grant nothing; approve the owner's own "
+            "desktop or tui login (apply-install --owner-login) or remove the rows",
+        )
 
 
 def _serves(worker, binding) -> bool:
@@ -621,10 +664,19 @@ def _serves(worker, binding) -> bool:
     """
     if binding.installation_kind != "shared":
         return worker == binding
-    return ((worker.installation_kind, worker.installation_id, worker.agent_id, worker.test_mode,
-             worker.data_directory.resolve()) == (binding.installation_kind, binding.installation_id,
-             binding.agent_id, binding.test_mode, binding.data_directory.resolve())
-            and binding.scope_ids <= worker.scope_ids)
+    return (
+        worker.installation_kind,
+        worker.installation_id,
+        worker.agent_id,
+        worker.test_mode,
+        worker.data_directory.resolve(),
+    ) == (
+        binding.installation_kind,
+        binding.installation_id,
+        binding.agent_id,
+        binding.test_mode,
+        binding.data_directory.resolve(),
+    ) and binding.scope_ids <= worker.scope_ids
 
 
 def _check_storage(report: DoctorReport, binding, data_directory: Path) -> bool:
@@ -645,19 +697,27 @@ def _check_storage(report: DoctorReport, binding, data_directory: Path) -> bool:
         # Reported, never applied here: the doctor is read-only.
         report.schema_version = found
         report.capability_gaps.append("schema_upgrade_pending")
-        _record(report, "schema", "upgrade_pending",
-                f"{found} -> {SCHEMA_VERSION}; the next capture, recall or worker pass applies it in one transaction "
-                "(on a store above 100 MB, a caller with a minute of budget: the worker pass, apply-install, "
-                "upgrade-store or a Hermes session start)")
+        _record(
+            report,
+            "schema",
+            "upgrade_pending",
+            f"{found} -> {SCHEMA_VERSION}; the next capture, recall or worker pass applies it in one transaction "
+            "(on a store above 100 MB, a caller with a minute of budget: the worker pass, apply-install, "
+            "upgrade-store or a Hermes session start)",
+        )
         return False
     recorded = _recorded_schema_under_stale_header(data_directory / "memory.sqlite3")
     if recorded is not None:
         # Every open fails closed on the header, so say why and what repairs it (#117).
         report.schema_version = found
         report.capability_gaps.append("schema_header_stale")
-        _record(report, "schema", "header_stale",
-                f"header {found}, store records {recorded}: another process (a 2.0 one, after the migration) "
-                "stamped the header; stop it, then run upgrade-store with --backup-dir")
+        _record(
+            report,
+            "schema",
+            "header_stale",
+            f"header {found}, store records {recorded}: another process (a 2.0 one, after the migration) "
+            "stamped the header; stop it, then run upgrade-store with --backup-dir",
+        )
         return False
     context = TrustedContext(binding, "doctor-readonly", binding.scope_ids, "origin_unknown")
     try:
@@ -670,16 +730,25 @@ def _check_storage(report: DoctorReport, binding, data_directory: Path) -> bool:
             codes = [code for (code,) in conn.execute("SELECT last_error_code FROM capture_inbox")]
             report.capture_inbox_blocked = sum(not replayable(code, moment) for code in codes)
             report.capture_inbox_given_up = sum(given_up(code) for code in codes)
-            report.recent_work_errors = [dict(r) for r in conn.execute("SELECT work_id,lease_token,stage,error_code,error_field,recorded_at FROM work_error_details ORDER BY detail_id DESC LIMIT 16")]
+            report.recent_work_errors = [
+                dict(r)
+                for r in conn.execute(
+                    "SELECT work_id,lease_token,stage,error_code,error_field,recorded_at FROM work_error_details ORDER BY detail_id DESC LIMIT 16"
+                )
+            ]
             moment = datetime.now(timezone.utc)
             hour_ago = (moment - timedelta(hours=1)).isoformat()
             growth = conn.execute(
                 "SELECT sum(persisted_at>=?),sum(persisted_at>=?) FROM source_events",
-                ((moment - timedelta(days=1)).isoformat(), (moment - timedelta(days=7)).isoformat())).fetchone()
+                ((moment - timedelta(days=1)).isoformat(), (moment - timedelta(days=7)).isoformat()),
+            ).fetchone()
             report.recent_output_truncations = conn.execute(
                 "SELECT count(*) FROM work_error_details WHERE error_field='model_output_truncated' AND recorded_at>=?",
-                (hour_ago,)).fetchone()[0]
-            report.extraction_outcomes = dict(conn.execute("SELECT disposition,count(*) FROM consolidation_outcomes GROUP BY disposition").fetchall())
+                (hour_ago,),
+            ).fetchone()[0]
+            report.extraction_outcomes = dict(
+                conn.execute("SELECT disposition,count(*) FROM consolidation_outcomes GROUP BY disposition").fetchall()
+            )
             terminal_failures = conn.execute(TERMINAL_FAILURE_COUNT).fetchone()[0]
             report.needs_review_work = conn.execute(NEEDS_REVIEW_COUNT).fetchone()[0]
             candidates = transaction.candidates.summary(include_all_projects=True)
@@ -687,12 +756,15 @@ def _check_storage(report: DoctorReport, binding, data_directory: Path) -> bool:
             # number: waiting inside the quiet window is health, waiting past it
             # with no sweep having run is not.
             report.candidate_settling = transaction.candidates.settling_summary(
-                now=datetime.now(timezone.utc).isoformat())
+                now=datetime.now(timezone.utc).isoformat()
+            )
             report.embedding_respace = transaction.work.respace_run()
             report.embedding_health = transaction.work.embed_queue()
             cutoff = (datetime.now(timezone.utc) - timedelta(hours=UNREACHED_HOURS)).isoformat()
-            report.unreached = [*transaction.work.due_unreached(before=cutoff),
-                                *transaction.candidates.settled_unreached(before=cutoff)]
+            report.unreached = [
+                *transaction.work.due_unreached(before=cutoff),
+                *transaction.candidates.settled_unreached(before=cutoff),
+            ]
     except Exception as exc:  # noqa: BLE001 - an unreadable store is a finding, not a crash.
         report.capability_gaps.append(f"storage_read:{type(exc).__name__}")
         _record(report, "storage_status", "unavailable", type(exc).__name__)
@@ -769,7 +841,7 @@ def _check_supervisor(report: DoctorReport, data_directory: Path) -> None:
         for path in sorted(data_directory.glob("runtime-supervisor-*.json")):
             control = _read_control_file(path)
             if control is None or control.get("finished_at") is not None and control.get("state") == "paused":
-                continue                      # An operator pause is not a failure.
+                continue  # An operator pause is not a failure.
             if newest is None or str(control.get("started_at") or "") > str(newest.get("started_at") or ""):
                 newest = control
     except (OSError, ValueError):
@@ -780,8 +852,7 @@ def _check_supervisor(report: DoctorReport, data_directory: Path) -> None:
     state = str(newest.get("state") or "")
     exit_code = newest.get("exit_code")
     failures = newest.get("worker_failures") or 0
-    _record(report, "supervisor", state or "unknown",
-            f"drains={newest.get('drains')} failures={failures}")
+    _record(report, "supervisor", state or "unknown", f"drains={newest.get('drains')} failures={failures}")
     if state == "failed":
         report.capability_gaps.append(f"supervisor_stood_down:{exit_code if exit_code is not None else 'unknown'}")
     elif failures:
@@ -821,8 +892,9 @@ def _check_autostart(report: DoctorReport, binding, data_directory: Path) -> flo
         elif os.name != "nt":
             report.autostart_status = "unsupported_platform"
         else:
-            query = subprocess.run(["schtasks.exe", "/Query", "/TN", control["task_name"], "/XML"],
-                                   capture_output=True, timeout=15)
+            query = subprocess.run(
+                ["schtasks.exe", "/Query", "/TN", control["task_name"], "/XML"], capture_output=True, timeout=15
+            )
             report.autostart_status = "registered" if query.returncode == 0 else "registration_missing"
             if query.returncode:
                 report.capability_gaps.append("autostart_registration_missing")
@@ -885,8 +957,12 @@ def _finished_derived_work(db_path: Path) -> int:
     """Embeddings and consolidations the worker finished, read through a separate read-only connection."""
     with suppress(sqlite3.Error, OSError, ValueError):
         with closing(sqlite3.connect(f"file:{db_path.as_posix()}?mode=ro", uri=True, timeout=5)) as db:
-            return int(db.execute("SELECT count(*) FROM work_items WHERE state='done'"
-                                  " AND work_type IN ('embed','consolidate')").fetchone()[0] or 0)
+            return int(
+                db.execute(
+                    "SELECT count(*) FROM work_items WHERE state='done' AND work_type IN ('embed','consolidate')"
+                ).fetchone()[0]
+                or 0
+            )
     return 0
 
 
@@ -903,9 +979,13 @@ def _check_runtime_config_present(report: DoctorReport, data_directory: Path) ->
     finished = _finished_derived_work(data_directory / "memory.sqlite3")
     if finished:
         report.capability_gaps.append("runtime_config_missing")
-        _record(report, "runtime_config", "missing",
-                f"{finished} finished embeddings and consolidations came from routes a runtime-config.json "
-                "named; without it hosts run in basic mode and no worker runs")
+        _record(
+            report,
+            "runtime_config",
+            "missing",
+            f"{finished} finished embeddings and consolidations came from routes a runtime-config.json "
+            "named; without it hosts run in basic mode and no worker runs",
+        )
 
 
 def _check_vector_threshold(report: DoctorReport, binding, data_directory: Path) -> None:
@@ -925,18 +1005,28 @@ def _check_vector_threshold(report: DoctorReport, binding, data_directory: Path)
         _record(report, "vector_threshold", "invalid", type(exc).__name__)
         return
     auxiliary = getattr(config, "auxiliary", None)
-    if (config is None or config.binding != binding or config.vector is None or auxiliary is None
-            or auxiliary.external_embedding is not True or auxiliary.embedding is None):
+    if (
+        config is None
+        or config.binding != binding
+        or config.vector is None
+        or auxiliary is None
+        or auxiliary.external_embedding is not True
+        or auxiliary.embedding is None
+    ):
         return
     if config.vector_threshold is not None:
         _record(report, "vector_threshold", "configured", str(config.vector_threshold))
         return
     model = str(config.embedding_space()["model"])[:64]
     report.capability_gaps.append("vector_threshold_unconfigured")
-    _record(report, "vector_threshold", "unconfigured",
-            f"runtime-config.json configures vector recall with embedding model {model} but no "
-            "vector_threshold; every vector hit is refused as vector_threshold_unconfigured and recall "
-            "is lexical only until a threshold calibrated for this model is set")
+    _record(
+        report,
+        "vector_threshold",
+        "unconfigured",
+        f"runtime-config.json configures vector recall with embedding model {model} but no "
+        "vector_threshold; every vector hit is refused as vector_threshold_unconfigured and recall "
+        "is lexical only until a threshold calibrated for this model is set",
+    )
 
 
 #: Hours the oldest waiting embedding may wait before the doctor says so.
@@ -953,8 +1043,12 @@ def _check_embedding_health(report: DoctorReport, config) -> None:
     and the queue only grows: that is no finding (review of 3.8.0)."""
     health = report.embedding_health
     auxiliary = getattr(config, "auxiliary", None) if config is not None else None
-    if (getattr(config, "vector", None) is None or auxiliary is None
-            or getattr(auxiliary, "external_embedding", False) is not True or getattr(auxiliary, "embedding", None) is None):
+    if (
+        getattr(config, "vector", None) is None
+        or auxiliary is None
+        or getattr(auxiliary, "external_embedding", False) is not True
+        or getattr(auxiliary, "embedding", None) is None
+    ):
         return
     hold = provider_holds(auxiliary).get("embed")
     if hold is not None:
@@ -968,8 +1062,10 @@ def _check_embedding_health(report: DoctorReport, config) -> None:
     if age is None or age <= EMBEDDING_BACKLOG_HOURS * 3600:
         return
     report.capability_gaps.append("embedding_backlog_aged")
-    detail = (f"{health['pending']} embeddings wait, the oldest for {int(age // 3600)} h; recall finds what came in "
-              "since then by its words alone")
+    detail = (
+        f"{health['pending']} embeddings wait, the oldest for {int(age // 3600)} h; recall finds what came in "
+        "since then by its words alone"
+    )
     if "held_until" in health:
         detail += f"; the provider is held for {health['held_model']} until {health['held_until']}"
     calls = health.get("last_day")
@@ -979,8 +1075,10 @@ def _check_embedding_health(report: DoctorReport, config) -> None:
             detail += f", refusing {', '.join(f'{code} x{count}' for code, count in calls['refused'].items())}"
     elif calls is not None and "held_until" not in health:
         # Asked nothing for a day while embeddings waited: the provider is not what holds them.
-        detail += ("; nothing asked the provider in the last day, so no worker has reached them: see worker_status, "
-                   "and on an installation with a worker per project, whether each one runs")
+        detail += (
+            "; nothing asked the provider in the last day, so no worker has reached them: see worker_status, "
+            "and on an installation with a worker per project, whether each one runs"
+        )
     _record(report, "embedding_backlog", "aged", detail)
 
 
@@ -1010,8 +1108,17 @@ def _check_unreached(report: DoctorReport, config) -> None:
         if "candidates" in row and "evaluate_candidate" not in capable:
             continue
         key = (row["scope_id"], row["project_id"], row["branch_id"])
-        found = partitions.setdefault(key, {"scope_id": key[0], "project_id": key[1], "branch_id": key[2],
-                                            "work": 0, "candidates": 0, "oldest": row["oldest"]})
+        found = partitions.setdefault(
+            key,
+            {
+                "scope_id": key[0],
+                "project_id": key[1],
+                "branch_id": key[2],
+                "work": 0,
+                "candidates": 0,
+                "oldest": row["oldest"],
+            },
+        )
         found["work"] += row.get("work", 0)
         found["candidates"] += row.get("candidates", 0)
         found["oldest"] = min(str(found["oldest"] or row["oldest"]), str(row["oldest"] or found["oldest"]))
@@ -1021,11 +1128,15 @@ def _check_unreached(report: DoctorReport, config) -> None:
     report.capability_gaps.append("due_work_unreached")
     work = sum(found["work"] for found in report.unreached)
     candidates = sum(found["candidates"] for found in report.unreached)
-    _record(report, "due_work_unreached", "present",
-            f"{work} work items and {candidates} candidates with new evidence have waited more than "
-            f"{UNREACHED_HOURS} h, the oldest since {report.unreached[0]['oldest']}, in "
-            f"{len(report.unreached)} partition(s) listed in unreached: no worker of that audience has run, or the "
-            "queue is longer than its passes reach (docs/install.md, section 7)")
+    _record(
+        report,
+        "due_work_unreached",
+        "present",
+        f"{work} work items and {candidates} candidates with new evidence have waited more than "
+        f"{UNREACHED_HOURS} h, the oldest since {report.unreached[0]['oldest']}, in "
+        f"{len(report.unreached)} partition(s) listed in unreached: no worker of that audience has run, or the "
+        "queue is longer than its passes reach (docs/install.md, section 7)",
+    )
 
 
 def _check_embedding_respace(report: DoctorReport, config) -> None:
@@ -1042,16 +1153,28 @@ def _check_embedding_respace(report: DoctorReport, config) -> None:
     space = config.embedding_space_id() if config is not None else None
     if space is not None and space != run["embedding_space"]:
         report.capability_gaps.append("embedding_respace_space_mismatch")
-        _record(report, "embedding_respace", "space_mismatch",
-                f"the run embeds into {run['embedding_space'][:12]} but runtime-config.json into {space[:12]}; "
-                "run respace-embeddings --restart --apply for the new space, or --cancel --apply")
+        _record(
+            report,
+            "embedding_respace",
+            "space_mismatch",
+            f"the run embeds into {run['embedding_space'][:12]} but runtime-config.json into {space[:12]}; "
+            "run respace-embeddings --restart --apply for the new space, or --cancel --apply",
+        )
         return
     # A held pass writes nothing, so the run's time alone does not say it waits (review of 3.8.0).
     waiting = report.embedding_health.get("pending")
-    _record(report, "embedding_respace", "running",
-            f"{run['reopened']} reopened, next work id {run['next_work_id']}, last page at {run['updated_at']}"
-            + (f"; {waiting} embeddings wait in the store, and the run goes on while fewer than "
-               f"{IMPORT_EMBED_QUEUE_CEILING} do" if waiting is not None else ""))
+    _record(
+        report,
+        "embedding_respace",
+        "running",
+        f"{run['reopened']} reopened, next work id {run['next_work_id']}, last page at {run['updated_at']}"
+        + (
+            f"; {waiting} embeddings wait in the store, and the run goes on while fewer than "
+            f"{IMPORT_EMBED_QUEUE_CEILING} do"
+            if waiting is not None
+            else ""
+        ),
+    )
 
 
 def _check_schema(report: DoctorReport) -> None:
@@ -1105,12 +1228,20 @@ def _check_candidates(report: DoctorReport) -> None:
         # line; the settling figures are this context's and may cover less.
         settling = report.candidate_settling
         due = sum(int(settling.get(key, 0)) for key in ("queued", "collecting", "settled_waiting_sweep"))
-        _record(report, "candidate_processing", "pending",
-                f"due={due},nothing_new_to_ask={int(settling.get('settled_nothing_to_ask', 0))},"
-                f"pending_evaluation={report.candidate_pending_evaluation}")
+        _record(
+            report,
+            "candidate_processing",
+            "pending",
+            f"due={due},nothing_new_to_ask={int(settling.get('settled_nothing_to_ask', 0))},"
+            f"pending_evaluation={report.candidate_pending_evaluation}",
+        )
     elif report.candidate_waiting_evidence or report.candidate_dormant:
-        _record(report, "candidate_processing", "waiting_evidence",
-                f"waiting={report.candidate_waiting_evidence},dormant={report.candidate_dormant}")
+        _record(
+            report,
+            "candidate_processing",
+            "waiting_evidence",
+            f"waiting={report.candidate_waiting_evidence},dormant={report.candidate_dormant}",
+        )
     else:
         _record(report, "candidate_processing", "idle")
     if report.candidate_failed:
@@ -1128,11 +1259,15 @@ def _check_model_output(report: DoctorReport) -> None:
     if report.recent_output_truncations < OUTPUT_TRUNCATION_ALERT:
         return
     report.capability_gaps.append("model_output_truncated")
-    _record(report, "model_output", "truncated",
-            f"{report.recent_output_truncations} model answers were cut off at the output limit in the last "
-            "hour and failed as model_output_truncated; raise the route's max_output_tokens, or turn the "
-            "provider's thinking off when its reasoning counts against that limit "
-            "(DeepSeek: \"thinking\": {\"type\": \"disabled\"})")
+    _record(
+        report,
+        "model_output",
+        "truncated",
+        f"{report.recent_output_truncations} model answers were cut off at the output limit in the last "
+        "hour and failed as model_output_truncated; raise the route's max_output_tokens, or turn the "
+        "provider's thinking off when its reasoning counts against that limit "
+        '(DeepSeek: "thinking": {"type": "disabled"})',
+    )
 
 
 def _check_ledger(report: DoctorReport) -> None:
@@ -1149,9 +1284,12 @@ def _classify_status(report: DoctorReport) -> None:
     if report.capture_inbox_blocked:
         report.capability_gaps.append("capture_ingress_blocked")
     actionable = [gap for gap in report.capability_gaps if gap not in _NON_ACTIONABLE_GAPS]
-    attention = (report.failed_work or report.capture_inbox
-                 or any(report.extraction_outcomes.get(k) for k in ("partial", "source_only"))
-                 or any(gap in _NON_ACTIONABLE_GAPS for gap in report.capability_gaps))
+    attention = (
+        report.failed_work
+        or report.capture_inbox
+        or any(report.extraction_outcomes.get(k) for k in ("partial", "source_only"))
+        or any(gap in _NON_ACTIONABLE_GAPS for gap in report.capability_gaps)
+    )
     report.status = "degraded" if actionable else ("attention" if attention else "ok")
 
 

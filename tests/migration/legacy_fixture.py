@@ -4,6 +4,7 @@ The child process imports the frozen 578b package from ``git archive`` before
 the current package is imported.  This prevents two revisions from sharing
 ``sys.modules`` and keeps the production migrator independent of Git.
 """
+
 from __future__ import annotations
 
 import subprocess
@@ -17,7 +18,7 @@ LEGACY_COMMIT = "578b955802df753f2e2208e26eab6f71971285a0"
 def build_official_578b_fixture(path: str | Path, *, repo_root: str | Path, include_multivalue: bool = False) -> Path:
     target = Path(path).resolve()
     root = Path(repo_root).resolve()
-    script = r'''
+    script = r"""
 import io, pathlib, sqlite3, subprocess, sys, tarfile, tempfile
 
 target = pathlib.Path(sys.argv[1]).resolve()
@@ -89,10 +90,15 @@ with tempfile.TemporaryDirectory(prefix="scope-recall-578b-") as td:
         conn.commit()
     finally:
         conn.close()
-'''
+"""
     target.parent.mkdir(parents=True, exist_ok=True)
     try:
-        subprocess.run([sys.executable, "-c", script, str(target), str(root), LEGACY_COMMIT, "1" if include_multivalue else "0"], check=True, capture_output=True, text=True)
+        subprocess.run(
+            [sys.executable, "-c", script, str(target), str(root), LEGACY_COMMIT, "1" if include_multivalue else "0"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
     except subprocess.CalledProcessError as exc:
         raise RuntimeError(exc.stderr or exc.stdout or "official 578b fixture subprocess failed") from exc
     return target

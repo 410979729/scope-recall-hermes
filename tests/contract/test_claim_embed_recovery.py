@@ -5,6 +5,7 @@ claim embed a provider failed was made obsolete instead of reopened.  On the sha
 obsolete embed and no vector, and one head an earlier conversion never queued had none either: recall reached those
 claims by their words alone (review of 3.7.4).
 """
+
 from __future__ import annotations
 
 from dataclasses import replace
@@ -20,15 +21,21 @@ from test_v11_deletion import authorize, request
 
 def _embed(core, ref: str, revision: int):
     with sqlite3.connect(core.storage.path) as conn:
-        return conn.execute("""SELECT state,last_error_code FROM work_items WHERE work_type='embed'
-                               AND subject_ref=? AND subject_revision=?""", (ref, revision)).fetchone()
+        return conn.execute(
+            """SELECT state,last_error_code FROM work_items WHERE work_type='embed'
+                               AND subject_ref=? AND subject_revision=?""",
+            (ref, revision),
+        ).fetchone()
 
 
 def _fail_embed(core, ref: str, revision: int, code: str = "network_error", state: str = "failed") -> None:
     """The shape the recovery met: three attempts, each under a lease of its own."""
     with sqlite3.connect(core.storage.path) as conn:
-        conn.execute("""UPDATE work_items SET state=?,attempt=3,lease_token=3,last_error_code=? WHERE work_type='embed'
-                        AND subject_ref=? AND subject_revision=?""", (state, code, ref, revision))
+        conn.execute(
+            """UPDATE work_items SET state=?,attempt=3,lease_token=3,last_error_code=? WHERE work_type='embed'
+                        AND subject_ref=? AND subject_revision=?""",
+            (state, code, ref, revision),
+        )
 
 
 def _counts(report) -> tuple[int, int]:
@@ -37,8 +44,11 @@ def _counts(report) -> tuple[int, int]:
 
 def _rows(core, ref: str):
     with sqlite3.connect(core.storage.path) as conn:
-        return conn.execute("""SELECT subject_revision,state,last_error_code,attempt FROM work_items
-                               WHERE work_type='embed' AND subject_ref=? ORDER BY subject_revision""", (ref,)).fetchall()
+        return conn.execute(
+            """SELECT subject_revision,state,last_error_code,attempt FROM work_items
+                               WHERE work_type='embed' AND subject_ref=? ORDER BY subject_revision""",
+            (ref,),
+        ).fetchall()
 
 
 class Port:
@@ -142,7 +152,6 @@ def test_retry_failures_leaves_a_head_refused_on_purpose(app):
     assert _embed(core, item.ref, item.revision)[0] == "failed"
 
 
-
 def test_a_deleted_head_gets_no_vector_work_back(app):
     core, ctx = app
     item, _source = initial(core, ctx)
@@ -197,9 +206,13 @@ def _clone_claim(core, ref: str, new_ref: str, *, project_id) -> None:
         claim.update(claim_id=new_ref, slot_key="TEST-slot-" + new_ref, project_id=project_id, branch_id=project_id)
         for version in versions:
             version["claim_id"] = new_ref
-            conn.execute(f"INSERT INTO claim_versions({','.join(version)}) VALUES ({','.join('?' * len(version))})",
-                         tuple(version.values()))
-        conn.execute(f"INSERT INTO claims({','.join(claim)}) VALUES ({','.join('?' * len(claim))})", tuple(claim.values()))
+            conn.execute(
+                f"INSERT INTO claim_versions({','.join(version)}) VALUES ({','.join('?' * len(version))})",
+                tuple(version.values()),
+            )
+        conn.execute(
+            f"INSERT INTO claims({','.join(claim)}) VALUES ({','.join('?' * len(claim))})", tuple(claim.values())
+        )
 
 
 def test_heads_another_context_owns_never_hide_one_this_context_takes(app):
@@ -227,8 +240,10 @@ def test_a_reopened_head_corrected_before_the_worker_reaches_it_is_embedded_at_b
     port = Port()
     core.drain_worker(ctx, max_items=64, remaining_seconds=30, owner_id="TEST-w", embed=port)
     assert [row[1] for row in _rows(core, item.ref)] == ["done", "done"]
-    assert sorted(entry for entry in port.written if entry[0] == "claim") == [("claim", item.ref, 1),
-                                                                               ("claim", item.ref, 2)]
+    assert sorted(entry for entry in port.written if entry[0] == "claim") == [
+        ("claim", item.ref, 1),
+        ("claim", item.ref, 2),
+    ]
 
 
 def test_a_reopened_head_that_keeps_failing_stops_and_is_never_made_obsolete(app):
@@ -242,8 +257,9 @@ def test_a_reopened_head_that_keeps_failing_stops_and_is_never_made_obsolete(app
         core.clock.now = (start + timedelta(hours=2 * step)).isoformat().replace("+00:00", "Z")
         if step >= 8:
             core.retry_failed_work(ctx, limit=64, dry_run=False)
-        core.drain_worker(ctx, max_items=64, remaining_seconds=30, owner_id=f"TEST-f{step}",
-                          embed=Port(fail="network_error"))
+        core.drain_worker(
+            ctx, max_items=64, remaining_seconds=30, owner_id=f"TEST-f{step}", embed=Port(fail="network_error")
+        )
         history.append(_rows(core, item.ref)[0][1:4])
     assert all(state != "obsolete" for state, _code, _attempt in history), history
     assert history[-1][0] == "failed" and history[-1][2] <= 8, history

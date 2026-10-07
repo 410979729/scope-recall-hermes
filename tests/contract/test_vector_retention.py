@@ -5,6 +5,7 @@ carrying a 12 KB vector -- the bulk of daily growth -- while a few hundred of
 170,000 sources ever became claim evidence.  The window lets that bulk go
 without touching the text, the lexical index, or anything derived from it.
 """
+
 from datetime import datetime, timedelta, timezone
 import sqlite3
 
@@ -38,8 +39,14 @@ class Config:
 
 
 def _vector(tmp_path, days):
-    return VectorRuntimeConfig(backend="sqlite-bruteforce", storage_dir=tmp_path / "vectors", table_name="TEST-vectors",
-                               dimensions=1, test_injection_override=True, tool_output_retention_days=days)
+    return VectorRuntimeConfig(
+        backend="sqlite-bruteforce",
+        storage_dir=tmp_path / "vectors",
+        table_name="TEST-vectors",
+        dimensions=1,
+        test_injection_override=True,
+        tool_output_retention_days=days,
+    )
 
 
 def _embedded(core, *, aged, persisted_at="2026-01-01T12:00:00Z"):
@@ -48,7 +55,9 @@ def _embedded(core, *, aged, persisted_at="2026-01-01T12:00:00Z"):
         conn.execute("""INSERT OR IGNORE INTO work_items(work_type,subject_ref,subject_revision,scope_id,project_id,branch_id,state,available_at)
                         SELECT 'embed',event_id,source_revision,scope_id,project_id,branch_id,'done',persisted_at FROM source_events""")
         conn.execute("UPDATE work_items SET state='done' WHERE work_type='embed'")
-        conn.executemany("UPDATE source_events SET persisted_at=? WHERE event_id=?", [(persisted_at, s.ref) for s in aged])
+        conn.executemany(
+            "UPDATE source_events SET persisted_at=? WHERE event_id=?", [(persisted_at, s.ref) for s in aged]
+        )
         conn.commit()
 
 
@@ -58,8 +67,9 @@ def _count(core, sql, *args):
 
 
 def _pass(core, ctx, store, tmp_path, *, days=180, now=NOW, seconds=30.0):
-    return vector_retention.expire_if_due(store, Config(_vector(tmp_path, days)), core.storage, ctx,
-                                          available_seconds=seconds, now=now)
+    return vector_retention.expire_if_due(
+        store, Config(_vector(tmp_path, days)), core.storage, ctx, available_seconds=seconds, now=now
+    )
 
 
 def test_a_tool_output_older_than_the_window_loses_its_vector_and_nothing_else(app, tmp_path):
@@ -75,7 +85,14 @@ def test_a_tool_output_older_than_the_window_loses_its_vector_and_nothing_else(a
     assert _count(core, "SELECT count(*) FROM expired_vectors") == 3
     # The source, its lexical index and its finished work item are untouched...
     assert _count(core, "SELECT count(*) FROM source_events") == 5
-    assert _count(core, "SELECT count(*) FROM lexical_postings WHERE source_id IN (SELECT source_id FROM source_events WHERE event_id=?)", old_tools[0].ref) > 0
+    assert (
+        _count(
+            core,
+            "SELECT count(*) FROM lexical_postings WHERE source_id IN (SELECT source_id FROM source_events WHERE event_id=?)",
+            old_tools[0].ref,
+        )
+        > 0
+    )
     assert core.source(ctx, old_tools[0].ref, 1) is not None
     assert _count(core, "SELECT count(*) FROM work_items WHERE work_type='embed' AND state='done'") == 5
     # ...so nothing refills an embed for an expired source.
@@ -128,8 +145,13 @@ def test_a_failed_delete_records_nothing_and_is_retried(app, tmp_path):
 
 
 def test_the_window_is_a_vector_setting_with_a_180_day_default(tmp_path):
-    raw = {"backend": "sqlite-bruteforce", "storage_dir": str(tmp_path / "vectors"), "table_name": "TEST",
-           "dimensions": 1, "test_injection_override": True}
+    raw = {
+        "backend": "sqlite-bruteforce",
+        "storage_dir": str(tmp_path / "vectors"),
+        "table_name": "TEST",
+        "dimensions": 1,
+        "test_injection_override": True,
+    }
     assert VectorRuntimeConfig.from_mapping(raw).tool_output_retention_days == 180
     assert VectorRuntimeConfig.from_mapping({**raw, "tool_output_retention_days": 0}).tool_output_retention_days == 0
     for bad in (-1, True, "180", 1.5, 36501):

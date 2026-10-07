@@ -10,6 +10,7 @@ owner returning 124 after 125.4 s.  Every background pass burned its whole 120-s
 so the queue moved at a sixth of the rate the pass itself was capable of, and the receipt that
 would have said so was the thing being swallowed.
 """
+
 from __future__ import annotations
 
 import json
@@ -35,9 +36,15 @@ CHATTY = textwrap.dedent("""
 
 
 def _child(items: int) -> subprocess.Popen:
-    return subprocess.Popen([sys.executable, "-I", "-X", "utf8", "-c", CHATTY % items],
-                            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                            text=True, encoding="utf-8", errors="replace")
+    return subprocess.Popen(
+        [sys.executable, "-I", "-X", "utf8", "-c", CHATTY % items],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
 
 
 @pytest.mark.parametrize("items", [1, 200, 2000])
@@ -70,7 +77,8 @@ def test_without_reading_the_same_child_cannot_exit():
     try:
         assert not _wait_for_exit(child, time.monotonic() + 3), (
             "a child whose output nobody reads exited anyway; this host's pipe is large enough "
-            "to hide the deadlock, so the fix is untested here")
+            "to hide the deadlock, so the fix is untested here"
+        )
         assert child.poll() is None, "it is blocked in write, with its work already done"
     finally:
         child.kill()
@@ -80,12 +88,23 @@ def test_without_reading_the_same_child_cannot_exit():
 def test_the_tail_is_bounded_and_keeps_the_receipt():
     """A runaway child cannot grow the owner's memory, and the receipt is the last line."""
     child = subprocess.Popen(
-        [sys.executable, "-I", "-X", "utf8", "-c",
-         'import sys\n'
-         'for index in range(5000): sys.stdout.write("TEST noise %d\\n" % index)\n'
-         'sys.stdout.write(\'{"status":"completed","processed":7}\\n\')\n'],
-        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        text=True, encoding="utf-8", errors="replace")
+        [
+            sys.executable,
+            "-I",
+            "-X",
+            "utf8",
+            "-c",
+            "import sys\n"
+            'for index in range(5000): sys.stdout.write("TEST noise %d\\n" % index)\n'
+            'sys.stdout.write(\'{"status":"completed","processed":7}\\n\')\n',
+        ],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+    )
     output = _ChildOutput(child)
     try:
         assert _wait_for_exit(child, time.monotonic() + 30)

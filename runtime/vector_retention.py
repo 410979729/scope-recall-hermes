@@ -18,6 +18,7 @@ Not responsible for: deciding what a tool output is (the source's ``role``),
 the native delete (the store's ``delete_by_ids``), or reclaiming the space
 (``vector_upkeep.compact_if_due``, which the drain runs next).
 """
+
 from __future__ import annotations
 
 from collections import Counter
@@ -43,8 +44,9 @@ STATE_FILENAME = "retention-state.json"
 STATE_SCHEMA = "scope-recall.vector-retention.v1"
 
 
-def expire_if_due(store: Any, config: Any, storage: Any, context: Any, *,
-                  available_seconds: float, now: datetime | None = None) -> dict[str, Any] | None:
+def expire_if_due(
+    store: Any, config: Any, storage: Any, context: Any, *, available_seconds: float, now: datetime | None = None
+) -> dict[str, Any] | None:
     """Expire one batch when a window is set and a pass is due.  Returns the receipt, or ``None``.
 
     Never raises.  A pass that cannot run leaves the store and the ledger as
@@ -65,15 +67,24 @@ def expire_if_due(store: Any, config: Any, storage: Any, context: Any, *,
     receipt: dict[str, Any] = {"started_at": _stamp(moment), "retention_days": days, "cutoff": cutoff}
     try:
         by_reason = expire_tool_vectors(
-            storage, context, delete, embedding_space=config.embedding_space_id(),
-            cutoff=cutoff, limit=BATCH_LIMIT, remaining_seconds=available_seconds,
+            storage,
+            context,
+            delete,
+            embedding_space=config.embedding_space_id(),
+            cutoff=cutoff,
+            limit=BATCH_LIMIT,
+            remaining_seconds=available_seconds,
         )
     except Exception as exc:  # noqa: BLE001 - see docstring; upkeep never fails a drain.
         receipt.update(outcome="failed", error=type(exc).__name__, expired=0, backlog=False)
     else:
         expired = sum(by_reason.values())
-        receipt.update(outcome="expired" if expired else "nothing_due", expired=expired,
-                       by_reason=dict(sorted(by_reason.items())), backlog=expired >= BATCH_LIMIT)
+        receipt.update(
+            outcome="expired" if expired else "nothing_due",
+            expired=expired,
+            by_reason=dict(sorted(by_reason.items())),
+            backlog=expired >= BATCH_LIMIT,
+        )
     elapsed = time.monotonic() - started
     receipt.update(finished_at=_stamp(moment + timedelta(seconds=elapsed)), seconds=round(elapsed, 3))
     write_state(storage_dir, receipt)
@@ -100,8 +111,16 @@ REPEATED_TOOL_OUTPUT = """EXISTS (SELECT 1 FROM source_events f WHERE f.scope_id
     AND (f.persisted_at<e.persisted_at OR (f.persisted_at=e.persisted_at AND f.event_id<e.event_id)))"""
 
 
-def expire_tool_vectors(storage: Any, context: Any, delete: Callable[[list[str]], Any], *,
-                        embedding_space: str, cutoff: str, limit: int, remaining_seconds: float) -> Counter:
+def expire_tool_vectors(
+    storage: Any,
+    context: Any,
+    delete: Callable[[list[str]], Any],
+    *,
+    embedding_space: str,
+    cutoff: str,
+    limit: int,
+    remaining_seconds: float,
+) -> Counter:
     """Delete the vectors of the oldest expired tool outputs, then record them by reason.
 
     A tool output is expired when it entered the store (``persisted_at``)
@@ -121,8 +140,10 @@ def expire_tool_vectors(storage: Any, context: Any, delete: Callable[[list[str]]
     scopes = sorted(context.allowed_scope_ids)
     marks = ",".join("?" for _ in scopes)
     with storage.read(context, remaining_seconds=remaining_seconds) as tx:
-        rows = tx._check().execute(
-            f"""SELECT e.event_id,e.source_revision,
+        rows = (
+            tx._check()
+            .execute(
+                f"""SELECT e.event_id,e.source_revision,
                    CASE WHEN {OMITTED_TOOL_OUTPUT} THEN 'omitted' WHEN e.persisted_at<? THEN 'window' ELSE 'repeat' END AS reason
             FROM source_events e
             WHERE e.role='tool' AND e.scope_id IN ({marks})
@@ -132,8 +153,10 @@ def expire_tool_vectors(storage: Any, context: Any, delete: Callable[[list[str]]
               AND NOT EXISTS (SELECT 1 FROM expired_vectors x WHERE x.source_ref=e.event_id
                               AND x.source_revision=e.source_revision)
             ORDER BY e.persisted_at,e.event_id LIMIT ?""",
-            (cutoff, *scopes, cutoff, limit),
-        ).fetchall()
+                (cutoff, *scopes, cutoff, limit),
+            )
+            .fetchall()
+        )
     if not rows:
         return Counter()
     delete([f"p10:{ref}@{revision}:{embedding_space}" for ref, revision, _reason in rows])

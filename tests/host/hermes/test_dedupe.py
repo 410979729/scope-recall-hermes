@@ -1,4 +1,5 @@
 """Cross-hook source dedupe and outcome gap contracts."""
+
 from __future__ import annotations
 
 import sqlite3
@@ -115,33 +116,58 @@ def test_what_the_assistant_showed_between_tool_calls_is_recorded_with_the_answe
         {"role": "user", "content": "TEST 查一下 QX-17"},
         {"role": "assistant", "content": "TEST 我先看记录。", "tool_calls": [{"id": "T1"}], "timestamp": 1790000000.25},
         {"role": "tool", "tool_call_id": "T1", "content": "TEST 工具输出"},
-        {"role": "assistant", "content": "", "tool_calls": [{"id": "T2"}], "codex_message_items": [
-            {"type": "reasoning", "summary": [{"type": "summary_text", "text": "TEST unseen"}]},
-            {"type": "message", "phase": "commentary", "content": [{"type": "output_text", "text": "TEST 再看第二份。"}]}]},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{"id": "T2"}],
+            "codex_message_items": [
+                {"type": "reasoning", "summary": [{"type": "summary_text", "text": "TEST unseen"}]},
+                {
+                    "type": "message",
+                    "phase": "commentary",
+                    "content": [{"type": "output_text", "text": "TEST 再看第二份。"}],
+                },
+            ],
+        },
         {"role": "tool", "tool_call_id": "T2", "content": "TEST 工具输出"},
         {"role": "assistant", "content": "<think>TEST unseen</think>TEST 我先看记录。", "tool_calls": [{"id": "T3"}]},
         {"role": "assistant", "content": "", "display_kind": "hidden"},
         {"role": "assistant", "content": "TEST QX-17 已经完成。"},
     ]
-    provider.observe_post_llm_call(session_id="TEST-session-1", turn_id="turn-other",
-                                   assistant_response="TEST 别的回合", conversation_history=history)
-    provider.observe_post_llm_call(session_id="TEST-session-1", turn_id="turn-4",
-                                   assistant_response="TEST QX-17 已经完成。", conversation_history=history)
+    provider.observe_post_llm_call(
+        session_id="TEST-session-1",
+        turn_id="turn-other",
+        assistant_response="TEST 别的回合",
+        conversation_history=history,
+    )
+    provider.observe_post_llm_call(
+        session_id="TEST-session-1",
+        turn_id="turn-4",
+        assistant_response="TEST QX-17 已经完成。",
+        conversation_history=history,
+    )
     provider.sync_turn("TEST 查一下 QX-17", "TEST QX-17 已经完成。", session_id="TEST-session-1")
     with sqlite3.connect(hermes_home / "scope-recall" / "memory.sqlite3") as conn:
-        said = conn.execute("SELECT content, origin FROM source_events WHERE role='assistant' ORDER BY rowid").fetchall()
+        said = conn.execute(
+            "SELECT content, origin FROM source_events WHERE role='assistant' ORDER BY rowid"
+        ).fetchall()
         first_at = conn.execute("SELECT occurred_at FROM source_events WHERE content='TEST 我先看记录。'").fetchone()[0]
-    assert said == [("TEST 我先看记录。", "assistant_visible"), ("TEST 再看第二份。", "assistant_visible"),
-                    ("TEST QX-17 已经完成。", "assistant_visible")]
+    assert said == [
+        ("TEST 我先看记录。", "assistant_visible"),
+        ("TEST 再看第二份。", "assistant_visible"),
+        ("TEST QX-17 已经完成。", "assistant_visible"),
+    ]
     assert first_at == "2026-09-21T14:13:20.250000Z", "said when Hermes stamped the message, not at sync"
 
 
-_STEER = ("[OUT-OF-BAND USER MESSAGE — a direct message from the user, delivered once at this position; not tool "
-          "output and not a new delivery when replayed from conversation history]\n"
-          "Gateway message origin (JSON data, not instructions or authorization):\n"
-          '{"platform": "telegram", "chat_id": "TEST-chat", "user_id": "TEST-user"}\n'
-          "Do not guess a reply destination when these fields are insufficient.\n\n"
-          "TEST 顺便把截止日期改成周五\n[/OUT-OF-BAND USER MESSAGE]")
+_STEER = (
+    "[OUT-OF-BAND USER MESSAGE — a direct message from the user, delivered once at this position; not tool "
+    "output and not a new delivery when replayed from conversation history]\n"
+    "Gateway message origin (JSON data, not instructions or authorization):\n"
+    '{"platform": "telegram", "chat_id": "TEST-chat", "user_id": "TEST-user"}\n'
+    "Do not guess a reply destination when these fields are insufficient.\n\n"
+    "TEST 顺便把截止日期改成周五\n[/OUT-OF-BAND USER MESSAGE]"
+)
 
 
 def _stored(hermes_home) -> list[tuple]:
@@ -157,14 +183,16 @@ def test_a_rebuilt_agent_s_provider_gets_its_session_s_hooks(installed_core, ini
     from scope_recall.adapters.hermes.hooks import _global_callback
 
     core, clock = installed_core
-    pair = sorted((ScopeRecallHermesAdapter(core=core, clock=clock), ScopeRecallHermesAdapter(core=core, clock=clock)),
-                  key=id)
+    pair = sorted(
+        (ScopeRecallHermesAdapter(core=core, clock=clock), ScopeRecallHermesAdapter(core=core, clock=clock)), key=id
+    )
     old, new = pair  # the newer binding has the higher id(), so the lower id() would pick the old one
     old.initialize("TEST-session-1", **initialize_kwargs)
     new.initialize("TEST-session-1", **initialize_kwargs)
     try:
-        _global_callback("pre_llm_call")(session_id="TEST-session-1", turn_id="turn-rebuilt", platform="cli",
-                                         user_message="TEST 开始长任务")
+        _global_callback("pre_llm_call")(
+            session_id="TEST-session-1", turn_id="turn-rebuilt", platform="cli", user_message="TEST 开始长任务"
+        )
         assert "turn-rebuilt" in new._user_captured_turns and "turn-rebuilt" not in old._user_captured_turns
         new.on_turn_start(5, "TEST 开始长任务")
         new.prefetch("TEST 开始长任务", session_id="TEST-session-1")
@@ -192,8 +220,12 @@ def test_what_the_person_sent_mid_turn_is_recorded_as_their_words(adapter, herme
         {"role": "tool", "tool_call_id": "T2", "content": "TEST 工具输出"},
         {"role": "assistant", "content": "TEST QX-18 已整理，截止周五。"},
     ]
-    provider.observe_post_llm_call(session_id="TEST-session-1", turn_id="turn-5",
-                                   assistant_response="TEST QX-18 已整理，截止周五。", conversation_history=history)
+    provider.observe_post_llm_call(
+        session_id="TEST-session-1",
+        turn_id="turn-5",
+        assistant_response="TEST QX-18 已整理，截止周五。",
+        conversation_history=history,
+    )
     provider.sync_turn("TEST 整理 QX-18", "TEST QX-18 已整理，截止周五。", session_id="TEST-session-1")
     rows = _stored(hermes_home)
     said = [(role, content) for role, content, _origin, _at in rows]
@@ -219,16 +251,33 @@ def test_a_message_hermes_writes_itself_is_stored_as_the_host_s(adapter, hermes_
     asked = {"role": "user", "content": "TEST 跑一下构建"}
     started = {"role": "assistant", "content": "TEST 已在后台运行。"}
     notice = {"role": "user", "content": _NOTICE, "display_kind": "internal_notification"}
-    _global_callback("pre_llm_call")(session_id="TEST-session-1", turn_id="turn-asked", platform="cli",
-                                     user_message=asked["content"], conversation_history=[asked])
+    _global_callback("pre_llm_call")(
+        session_id="TEST-session-1",
+        turn_id="turn-asked",
+        platform="cli",
+        user_message=asked["content"],
+        conversation_history=[asked],
+    )
     provider.sync_turn(asked["content"], started["content"], session_id="TEST-session-1")
-    _global_callback("pre_llm_call")(session_id="TEST-session-1", turn_id="turn-notice", platform="cli",
-                                     user_message=_NOTICE, conversation_history=[asked, started, notice])
-    provider.observe_post_llm_call(session_id="TEST-session-1", turn_id="turn-notice",
-                                   assistant_response="TEST 构建通过了。", conversation_history=[
-                                       asked, started, notice,
-                                       {"role": "user", "content": _STEER, "display_kind": "steer"},
-                                       {"role": "assistant", "content": "TEST 构建通过了。"}])
+    _global_callback("pre_llm_call")(
+        session_id="TEST-session-1",
+        turn_id="turn-notice",
+        platform="cli",
+        user_message=_NOTICE,
+        conversation_history=[asked, started, notice],
+    )
+    provider.observe_post_llm_call(
+        session_id="TEST-session-1",
+        turn_id="turn-notice",
+        assistant_response="TEST 构建通过了。",
+        conversation_history=[
+            asked,
+            started,
+            notice,
+            {"role": "user", "content": _STEER, "display_kind": "steer"},
+            {"role": "assistant", "content": "TEST 构建通过了。"},
+        ],
+    )
     provider.sync_turn(_NOTICE, "TEST 构建通过了。", session_id="TEST-session-1")
     rows = [(role, content, origin) for role, content, origin, _at in _stored(hermes_home)]
     assert ("user", "TEST 跑一下构建", "human_direct") in rows
@@ -241,8 +290,14 @@ def test_a_message_hermes_writes_itself_is_stored_as_the_host_s(adapter, hermes_
 def test_a_notice_whose_pre_llm_call_was_not_taken_is_still_the_host_s(adapter, hermes_home):
     """A busy session leaves pre_llm_call untaken, and sync_turn stores the turn's opening message instead."""
     provider, _clock = adapter
-    provider._session_busy("pre_llm_call", {"turn_id": "turn-busy", "user_message": _NOTICE, "conversation_history": [
-        {"role": "user", "content": _NOTICE, "display_kind": "internal_notification"}]})
+    provider._session_busy(
+        "pre_llm_call",
+        {
+            "turn_id": "turn-busy",
+            "user_message": _NOTICE,
+            "conversation_history": [{"role": "user", "content": _NOTICE, "display_kind": "internal_notification"}],
+        },
+    )
     provider.on_turn_start(7, _NOTICE)
     provider.sync_turn(_NOTICE, "TEST 构建通过了。", session_id="TEST-session-1")
     rows = [(role, content, origin) for role, content, origin, _at in _stored(hermes_home)]
@@ -256,12 +311,23 @@ def test_a_late_sync_of_the_person_s_turn_keeps_their_words_theirs(adapter, herm
     person's message written then is still theirs (review of 3.7.2)."""
     provider, _clock = adapter
     said = "TEST 帮我看一下日志"
-    provider._session_busy("pre_llm_call", {"turn_id": "turn-person", "user_message": said,
-                                            "conversation_history": [{"role": "user", "content": said}]})
+    provider._session_busy(
+        "pre_llm_call",
+        {"turn_id": "turn-person", "user_message": said, "conversation_history": [{"role": "user", "content": said}]},
+    )
     provider.on_turn_start(8, said)
-    provider._session_busy("pre_llm_call", {"turn_id": "turn-host", "user_message": _NOTICE, "conversation_history": [
-        {"role": "user", "content": said}, {"role": "assistant", "content": "TEST 日志正常。"},
-        {"role": "user", "content": _NOTICE, "display_kind": "internal_notification"}]})
+    provider._session_busy(
+        "pre_llm_call",
+        {
+            "turn_id": "turn-host",
+            "user_message": _NOTICE,
+            "conversation_history": [
+                {"role": "user", "content": said},
+                {"role": "assistant", "content": "TEST 日志正常。"},
+                {"role": "user", "content": _NOTICE, "display_kind": "internal_notification"},
+            ],
+        },
+    )
     provider.on_turn_start(9, _NOTICE)
     provider.sync_turn(said, "TEST 日志正常。", session_id="TEST-session-1")
     rows = [(role, content, origin) for role, content, origin, _at in _stored(hermes_home)]
@@ -275,8 +341,10 @@ _PRIOR = "[PRIOR CONTEXT \u2014 for reference only; not a new message]"
 _DELIMITER = "[END OF PRIOR CONTEXT \u2014 COMPACTION SUMMARY BELOW]"
 _END = "--- END OF CONTEXT SUMMARY \u2014 respond to the message below, not the summary above ---"
 _TODO = "[Your active task list was preserved across context compression]\n- TEST 整理清单"
-_RESTATED = ("[STILL IN PROGRESS — this is the active request, restated after the compaction boundary because it "
-             "was not finished yet. Continue it; do not start over.]")
+_RESTATED = (
+    "[STILL IN PROGRESS — this is the active request, restated after the compaction boundary because it "
+    "was not finished yet. Continue it; do not start over.]"
+)
 #: A delegation's result: the kind of notice Hermes appends a to-do list to (``_fold_todo_snapshot`` passes over a
 #: background process's notice, which it counts as its own scaffolding).
 _DELEGATED = "[ASYNC DELEGATION COMPLETE] TEST 子任务已完成：构建产物已上传，日志在 logs/TEST-build.txt。"
@@ -286,8 +354,11 @@ _ASKED_LONG = "TEST 请把 QX-17 的发布说明整理成三段，并核对每�
 def _folded(own, summary="TEST 摘要：之前在后台跑构建。", *, leading=False, **marks):
     """A user message Hermes folded a compression summary into (``ContextCompressor._merge_summary_into_tail_row``):
     the message, its summary after it and the end line, or (``leading``) the summary first and the message after."""
-    content = (summary + "\n\n" + _END + "\n\n" + own if leading
-               else _PRIOR + "\n" + own + "\n\n" + _DELIMITER + "\n\n" + summary + "\n\n" + _END)
+    content = (
+        summary + "\n\n" + _END + "\n\n" + own
+        if leading
+        else _PRIOR + "\n" + own + "\n\n" + _DELIMITER + "\n\n" + summary + "\n\n" + _END
+    )
     return {"role": "user", "content": content, "_compressed_summary": True, **marks}
 
 
@@ -300,12 +371,20 @@ def test_a_notice_hermes_folded_a_summary_into_is_the_host_s(adapter, hermes_hom
     provider, _clock = adapter
     # As Hermes leaves it: the folded notice, the reply it folded away put back after it (``_reply_insertion_index``),
     # and the open to-do list as a message of its own.
-    history = [{"role": "user", "content": "TEST 第一句"}, {"role": "assistant", "content": "TEST 好。"},
-               _folded(_NOTICE, display_kind="internal_notification"),
-               {"role": "assistant", "content": "TEST 构建已在后台运行。"},
-               {"role": "user", "content": _TODO, "_todo_snapshot_synthetic": True}]
-    _global_callback("pre_llm_call")(session_id="TEST-session-1", turn_id="turn-folded", platform="cli",
-                                     user_message=_NOTICE, conversation_history=history)
+    history = [
+        {"role": "user", "content": "TEST 第一句"},
+        {"role": "assistant", "content": "TEST 好。"},
+        _folded(_NOTICE, display_kind="internal_notification"),
+        {"role": "assistant", "content": "TEST 构建已在后台运行。"},
+        {"role": "user", "content": _TODO, "_todo_snapshot_synthetic": True},
+    ]
+    _global_callback("pre_llm_call")(
+        session_id="TEST-session-1",
+        turn_id="turn-folded",
+        platform="cli",
+        user_message=_NOTICE,
+        conversation_history=history,
+    )
     rows = [(role, content, origin) for role, content, origin, _at in _stored(hermes_home)]
     assert ("user", _NOTICE, "host_generated") in rows
 
@@ -323,8 +402,9 @@ def test_only_a_folded_message_s_own_words_make_it_the_turn_s():
     assert not host_notice([quoting, *tail], _ASKED_LONG), "the person's words quoted in a summary"
     holding = _folded("TEST 委派结果，原任务：" + _ASKED_LONG, display_kind="internal_notification")
     assert not host_notice([holding, *tail], _ASKED_LONG), "its own words are the turn's text, not merely hold it"
-    assert not host_notice([quoting, *tail, {"role": "user", "content": _ASKED_LONG + "\n\n" + _TODO}], _ASKED_LONG), \
+    assert not host_notice([quoting, *tail, {"role": "user", "content": _ASKED_LONG + "\n\n" + _TODO}], _ASKED_LONG), (
         "the person's own message, a to-do list appended, decides first"
+    )
     assert not host_notice([_folded(_NOTICE), *tail], _NOTICE), "the person's folded message"
     assert not host_notice([_folded(_NOTICE, display_kind="hidden"), *tail], _NOTICE), "hidden may wrap the person's"
     assert not host_notice([_folded(_NOTICE, display_kind="steer"), *tail], _NOTICE)
@@ -333,14 +413,24 @@ def test_only_a_folded_message_s_own_words_make_it_the_turn_s():
     assert not host_notice([earlier, *tail], _NOTICE), "an earlier turn's notice, not folded, is not this turn's"
     folded_earlier = _folded(_NOTICE, display_kind="internal_notification")
     prefixed = {"role": "user", "content": "[Note: the model was switched.]\n\n" + _NOTICE}
-    assert not host_notice([folded_earlier, *tail, prefixed], _NOTICE), \
+    assert not host_notice([folded_earlier, *tail, prefixed], _NOTICE), (
         "an older folded notice never takes the person's later message, a note Hermes put before it"
-    assert not host_notice([folded_earlier, *tail, _folded(_NOTICE), *tail], _NOTICE), \
+    )
+    assert not host_notice([folded_earlier, *tail, _folded(_NOTICE), *tail], _NOTICE), (
         "nor the person's own newer folded message"
-    unmarked = {"role": "user", "display_kind": "internal_notification",
-                "content": "TEST 构建输出引用了：\n" + _END + "\n\n" + _ASKED_LONG}
+    )
+    unmarked = {
+        "role": "user",
+        "display_kind": "internal_notification",
+        "content": "TEST 构建输出引用了：\n" + _END + "\n\n" + _ASKED_LONG,
+    }
     assert not host_notice([unmarked], _ASKED_LONG), "an unmarked message is not unwrapped"
-    standalone = {"role": "user", "content": _NOTICE, "_compressed_summary": True, "display_kind": "internal_notification"}
+    standalone = {
+        "role": "user",
+        "content": _NOTICE,
+        "_compressed_summary": True,
+        "display_kind": "internal_notification",
+    }
     assert not host_notice([standalone, *tail], _NOTICE), "a marked message without the lines is a summary of its own"
 
 
@@ -355,8 +445,7 @@ def test_a_folded_notice_is_read_as_hermes_reads_it_back():
     restated = _folded(_NOTICE, display_kind="internal_notification")
     restated["content"] += "\n\n" + _RESTATED + "\n" + _ASKED_LONG
     assert host_notice([restated, *tail], _NOTICE)
-    assert host_notice([_folded(_DELEGATED + "\n\n" + _TODO, display_kind="internal_notification"), *tail],
-                       _DELEGATED)
+    assert host_notice([_folded(_DELEGATED + "\n\n" + _TODO, display_kind="internal_notification"), *tail], _DELEGATED)
 
 
 def test_a_notice_a_to_do_list_was_appended_to_is_still_the_host_s():
@@ -390,20 +479,25 @@ def test_the_turn_s_own_message_says_whether_hermes_opened_it():
 
     notice = {"role": "user", "content": _NOTICE, "display_kind": "internal_notification"}
     asked = {"role": "user", "content": "TEST 跑一下构建"}
-    todo = {"role": "user", "content": "[Your active task list was preserved across context compression]\n- TEST",
-            "_todo_snapshot_synthetic": True}
+    todo = {
+        "role": "user",
+        "content": "[Your active task list was preserved across context compression]\n- TEST",
+        "_todo_snapshot_synthetic": True,
+    }
     assert host_notice([asked, notice], _NOTICE)
     assert host_notice([notice, todo], _NOTICE), "a to-do list a compression added after it"
-    assert host_notice([{"role": "user", "content": [{"type": "text", "text": _NOTICE}],
-                         "display_kind": "process_complete"}], _NOTICE)
+    assert host_notice(
+        [{"role": "user", "content": [{"type": "text", "text": _NOTICE}], "display_kind": "process_complete"}], _NOTICE
+    )
     assert host_notice([{"role": "user", "content": _NOTICE}, notice], _NOTICE), "the last holding its text"
     assert not host_notice([notice, {"role": "user", "content": _NOTICE}], _NOTICE)
     assert not host_notice([notice, asked], asked["content"]), "an earlier notice is not this turn"
     assert not host_notice([asked, notice], asked["content"]), "nor one a compression restored after it"
     assert not host_notice([{**asked, "display_kind": "steer"}], asked["content"]), "a steer is the person's"
     assert not host_notice([{"role": "user", "content": _NOTICE}], _NOTICE), "no kind: the text proves nothing"
-    assert not host_notice([notice, {"role": "assistant", "content": "TEST 好"}, {**asked, "content": "[09:00] " + _NOTICE}],
-                           _NOTICE), "a message of an earlier turn, before its reply, is never this turn's"
+    assert not host_notice(
+        [notice, {"role": "assistant", "content": "TEST 好"}, {**asked, "content": "[09:00] " + _NOTICE}], _NOTICE
+    ), "a message of an earlier turn, before its reply, is never this turn's"
     assert host_notice([{**notice, "content": _NOTICE + "\n\n" + todo["content"]}], _NOTICE), "a to-do list appended"
     assert not host_notice([], _NOTICE) and not host_notice(None, _NOTICE) and not host_notice([notice], "")
 
@@ -422,8 +516,12 @@ def test_a_compression_mid_turn_keeps_the_turn(adapter, hermes_home):
         {"role": "tool", "tool_call_id": "T1", "content": "TEST 工具输出"},
         {"role": "assistant", "content": "TEST 长任务完成。"},
     ]
-    provider.observe_post_llm_call(session_id="TEST-session-2", turn_id="turn-6",
-                                   assistant_response="TEST 长任务完成。", conversation_history=history)
+    provider.observe_post_llm_call(
+        session_id="TEST-session-2",
+        turn_id="turn-6",
+        assistant_response="TEST 长任务完成。",
+        conversation_history=history,
+    )
     provider.sync_turn("TEST 开始长任务", "TEST 长任务完成。", session_id="TEST-session-2")
     said = [(role, content) for role, content, _origin, _at in _stored(hermes_home)]
     assert said.count(("user", "TEST 开始长任务")) == 1
@@ -440,7 +538,9 @@ def test_a_queued_capture_leaves_no_slot_taken(adapter, monkeypatch):
     queued = SimpleNamespace(durability="queued", disposition="queued", error_code=None, event_refs=(), gaps=())
     monkeypatch.setattr(provider._core, "record_host_event", lambda *args, **kwargs: calls.append(1) or queued)
     for turn in range(70):
-        provider.observe_pre_llm(session_id="TEST-session-1", turn_id=f"turn-q{turn}", user_message=f"TEST 第 {turn} 句")
+        provider.observe_pre_llm(
+            session_id="TEST-session-1", turn_id=f"turn-q{turn}", user_message=f"TEST 第 {turn} 句"
+        )
     assert len(calls) == 70
     assert provider._ledger.pending_identities() == ()
 
@@ -462,8 +562,13 @@ def test_a_capture_the_busy_store_refused_is_written_at_the_next_turn(adapter, h
 
     monkeypatch.setattr(provider._core, "record_host_event", busy_once)
     provider.on_turn_start(8, "TEST 跑工具", turn_id="turn-8")
-    provider.observe_post_tool_call(session_id="TEST-session-1", turn_id="turn-8", tool_call_id="T8", tool_name="Bash",
-                                    result="TEST 工具的输出 QX-19")
+    provider.observe_post_tool_call(
+        session_id="TEST-session-1",
+        turn_id="turn-8",
+        tool_call_id="T8",
+        tool_name="Bash",
+        result="TEST 工具的输出 QX-19",
+    )
     assert refused and [row for row in _stored(hermes_home) if row[0] == "tool"] == []
     provider.sync_turn("TEST 跑工具", "TEST 跑完了。", session_id="TEST-session-1")
     assert [row[1] for row in _stored(hermes_home) if row[0] == "tool"] == ["TEST 工具的输出 QX-19"]
@@ -500,7 +605,8 @@ def _sync_after_restart(core, clock, initialize_kwargs, *, at: str, turn: int, u
         provider.sync_turn(user, assistant, session_id="TEST-session-1")
         context = provider._require_identity().trusted_context(session_id="TEST-session-1", mutation=True)
         capture_inbox.resolve_conflicted_ingress(
-            core.storage, clock, context, authorize=lambda _scope: context.allowed_scope_ids, remaining_seconds=5)
+            core.storage, clock, context, authorize=lambda _scope: context.allowed_scope_ids, remaining_seconds=5
+        )
     finally:
         provider.shutdown()
 
@@ -520,10 +626,24 @@ def test_reused_turn_number_keeps_its_own_witnessed_time(installed_core, initial
     them, so the newest report in memory claimed to be a day old.
     """
     core, clock = installed_core
-    _sync_after_restart(core, clock, initialize_kwargs, at="2026-09-06T13:15:04Z", turn=8,
-                        user="TEST 整理整个文件夹", assistant="TEST 整理好了。")
-    _sync_after_restart(core, clock, initialize_kwargs, at="2026-09-07T11:06:21Z", turn=8,
-                        user="TEST 你测试下召回", assistant="TEST 测完一轮。")
+    _sync_after_restart(
+        core,
+        clock,
+        initialize_kwargs,
+        at="2026-09-06T13:15:04Z",
+        turn=8,
+        user="TEST 整理整个文件夹",
+        assistant="TEST 整理好了。",
+    )
+    _sync_after_restart(
+        core,
+        clock,
+        initialize_kwargs,
+        at="2026-09-07T11:06:21Z",
+        turn=8,
+        user="TEST 你测试下召回",
+        assistant="TEST 测完一轮。",
+    )
     times = _stored_times(core)
     assert times["TEST 整理整个文件夹"] == ("2026-09-06T13:15:04Z", "2026-09-06T13:15:04Z")
     assert times["TEST 你测试下召回"] == ("2026-09-07T11:06:21Z", "2026-09-07T11:06:21Z")
@@ -533,10 +653,24 @@ def test_reused_turn_number_keeps_its_own_witnessed_time(installed_core, initial
 def test_replayed_turn_keeps_its_first_witnessed_time(installed_core, initialize_kwargs):
     """The same message under the same key is a replay: one row, first time kept."""
     core, clock = installed_core
-    _sync_after_restart(core, clock, initialize_kwargs, at="2026-09-06T13:15:04Z", turn=8,
-                        user="TEST 整理整个文件夹", assistant="TEST 整理好了。")
-    _sync_after_restart(core, clock, initialize_kwargs, at="2026-09-07T11:06:21Z", turn=8,
-                        user="TEST 整理整个文件夹", assistant="TEST 整理好了。")
+    _sync_after_restart(
+        core,
+        clock,
+        initialize_kwargs,
+        at="2026-09-06T13:15:04Z",
+        turn=8,
+        user="TEST 整理整个文件夹",
+        assistant="TEST 整理好了。",
+    )
+    _sync_after_restart(
+        core,
+        clock,
+        initialize_kwargs,
+        at="2026-09-07T11:06:21Z",
+        turn=8,
+        user="TEST 整理整个文件夹",
+        assistant="TEST 整理好了。",
+    )
     with sqlite3.connect(core.storage.path) as conn:
         assert conn.execute("SELECT count(*) FROM source_events").fetchone()[0] == 2
     times = _stored_times(core)
@@ -557,9 +691,14 @@ def test_a_busy_store_met_by_a_session_s_capture_retry_says_pending(adapter, ins
     provider, clock = adapter
     core, _clock = installed_core
     identity = provider._require_identity()
-    capture_inbox.enqueue(core.storage, clock, identity.trusted_context(mutation=True), source_event(
-        source_event_key="TEST-start-busy", content="TEST 会话开始时忙。"), scope_id=identity.local_scope_id,
-        host_scope=host_scope_payload(identity.scope))
+    capture_inbox.enqueue(
+        core.storage,
+        clock,
+        identity.trusted_context(mutation=True),
+        source_event(source_event_key="TEST-start-busy", content="TEST 会话开始时忙。"),
+        scope_id=identity.local_scope_id,
+        host_scope=host_scope_payload(identity.scope),
+    )
 
     def busy(*args, **kwargs):
         raise TruthWriterBusyError()

@@ -1,4 +1,5 @@
 """Meaningful isolated Codex hook adapter tests over production handler paths."""
+
 from __future__ import annotations
 
 import io
@@ -121,7 +122,9 @@ def test_same_turn_replay_is_idempotent_but_distinct_turns_persist(handler, inst
     with sqlite3.connect(config.data_directory / "memory.sqlite3") as db:
         keys = [
             row[0]
-            for row in db.execute("SELECT source_event_key FROM source_events WHERE role='user' ORDER BY source_event_key")
+            for row in db.execute(
+                "SELECT source_event_key FROM source_events WHERE role='user' ORDER BY source_event_key"
+            )
         ]
     assert len(keys) == 2
     assert keys[0] != keys[1]
@@ -154,7 +157,9 @@ def test_current_source_exclusion_uses_capture_receipt(handler, installed):
             return getattr(core, name)
 
         def record_host_event(self, context, value, *, scope_id, host_scope, remaining_seconds=None):
-            receipt = core.record_host_event(context, value, scope_id=scope_id, host_scope=host_scope, remaining_seconds=remaining_seconds)
+            receipt = core.record_host_event(
+                context, value, scope_id=scope_id, host_scope=host_scope, remaining_seconds=remaining_seconds
+            )
             captured_refs.extend(f"{write.ref}@{write.revision}" for write in receipt.event_refs)
             return receipt
 
@@ -239,9 +244,7 @@ def test_path_traversal_cwd_does_not_bind_foreign_root(handler, installed, tmp_p
 
 def test_stop_never_loops_and_records_only_present_assistant_text(handler, installed):
     hook, project_root, config = handler
-    assert hook.handle_payload(
-        _payload(project_root, "Stop", last_assistant_message="final answer")
-    ) == {}
+    assert hook.handle_payload(_payload(project_root, "Stop", last_assistant_message="final answer")) == {}
     assert hook.handle_payload(_payload(project_root, "Stop", turn="turn-blank", last_assistant_message="")) == {}
     with sqlite3.connect(config.data_directory / "memory.sqlite3") as db:
         rows = db.execute("SELECT content FROM source_events WHERE role='assistant'").fetchall()
@@ -273,7 +276,9 @@ def test_post_tool_use_provenance_for_own_tools(handler, installed):
         )
     )
     with sqlite3.connect(config.data_directory / "memory.sqlite3") as db:
-        origins = [row[0] for row in db.execute("SELECT origin FROM source_events WHERE role='tool' ORDER BY source_event_key")]
+        origins = [
+            row[0] for row in db.execute("SELECT origin FROM source_events WHERE role='tool' ORDER BY source_event_key")
+        ]
     assert origins == ["memory_reinjection", "tool_observation"]
     assert is_scope_recall_tool("mcp__scope_recall__recall")
     assert not is_scope_recall_tool("Bash")
@@ -312,15 +317,22 @@ def test_a_recall_that_found_the_store_unreadable_says_so(handler, installed):
             return getattr(core, name)
 
         def recall_packet(self, context, request, *, current_source_refs=(), deadline_seconds=2.0):
-            packet = core.recall_packet(context, request, current_source_refs=current_source_refs,
-                                        deadline_seconds=deadline_seconds)
-            return {**packet, "status": "unavailable", "items": [],
-                    "gaps": [*packet.get("gaps", ()), "sqlite_unavailable:DatabaseError"]}
+            packet = core.recall_packet(
+                context, request, current_source_refs=current_source_refs, deadline_seconds=deadline_seconds
+            )
+            return {
+                **packet,
+                "status": "unavailable",
+                "items": [],
+                "gaps": [*packet.get("gaps", ()), "sqlite_unavailable:DatabaseError"],
+            }
 
     guarded = CodexHookHandler(config, core=Unreadable(), clock=clock)
     guarded.handle_payload(_payload(project_root, "UserPromptSubmit", prompt="TEST 读不到的库。"))
     assert (guarded.diagnostics.last_reason, guarded.diagnostics.recall_error_detail) == (
-        "recall_incomplete", "sqlite_unavailable:DatabaseError")
+        "recall_incomplete",
+        "sqlite_unavailable:DatabaseError",
+    )
 
 
 def test_a_recall_whose_read_did_not_finish_ranks_as_without_its_vector_search(handler, installed):
@@ -335,8 +347,9 @@ def test_a_recall_whose_read_did_not_finish_ranks_as_without_its_vector_search(h
             return getattr(core, name)
 
         def recall_packet(self, context, request, *, current_source_refs=(), deadline_seconds=2.0):
-            packet = core.recall_packet(context, request, current_source_refs=current_source_refs,
-                                        deadline_seconds=deadline_seconds)
+            packet = core.recall_packet(
+                context, request, current_source_refs=current_source_refs, deadline_seconds=deadline_seconds
+            )
             return {**packet, "status": "unavailable", "items": [], "gaps": ["deadline_exceeded_release_fence"]}
 
     guarded = CodexHookHandler(config, core=Released(), clock=clock)
@@ -355,8 +368,9 @@ def test_a_recall_whose_time_ran_out_after_its_packet_ranks_as_without_its_vecto
             return getattr(core, name)
 
         def recall_packet(self, context, request, *, current_source_refs=(), deadline_seconds=2.0):
-            packet = core.recall_packet(context, request, current_source_refs=current_source_refs,
-                                        deadline_seconds=deadline_seconds)
+            packet = core.recall_packet(
+                context, request, current_source_refs=current_source_refs, deadline_seconds=deadline_seconds
+            )
             clock._mono += 100.0  # the hook's time is up once the packet is back
             return {**packet, "gaps": []}  # whole, its vector search run
 
@@ -387,10 +401,13 @@ def test_missing_turn_id_records_capability_gap_not_default_turn(handler, instal
         assert db.execute("SELECT count(*) FROM source_events").fetchone()[0] == 0
 
 
-@pytest.mark.parametrize("receipt", [
-    ("unavailable", "unknown", "STORAGE_UNAVAILABLE"),   # the write failed
-    ("queued", "queued", None),                          # the writer was busy: the message waits in the inbox
-])
+@pytest.mark.parametrize(
+    "receipt",
+    [
+        ("unavailable", "unknown", "STORAGE_UNAVAILABLE"),  # the write failed
+        ("queued", "queued", None),  # the writer was busy: the message waits in the inbox
+    ],
+)
 def test_a_turn_whose_capture_did_not_commit_is_still_recalled(handler, installed, receipt):
     hook, project_root, config = handler
     _, core, clock, _ = installed
@@ -398,8 +415,12 @@ def test_a_turn_whose_capture_did_not_commit_is_still_recalled(handler, installe
     from scope_recall.core.capture import CaptureReceipt
 
     trusted = TrustedContext(core.config.binding, "TEST-session-1", config.scope_ids, "human_direct")
-    core.record_event(trusted, source_event(content="TEST 白色偏好", source_event_key="busy-seed/1"),
-                      scope_id=config.audience_scopes["project"], remaining_seconds=5)
+    core.record_event(
+        trusted,
+        source_event(content="TEST 白色偏好", source_event_key="busy-seed/1"),
+        scope_id=config.audience_scopes["project"],
+        remaining_seconds=5,
+    )
     disposition, durability, code = receipt
     fences: list[tuple[str, ...]] = []
 
@@ -413,9 +434,16 @@ def test_a_turn_whose_capture_did_not_commit_is_still_recalled(handler, installe
         def recall_packet(self, context, request, *, current_source_refs=(), deadline_seconds=2.0):
             fences.append(current_source_refs)
             return {
-                "protocol_version": "1.1", "request_id": request["request_id"], "status": "ok", "memory_epoch": 1,
-                "items": [recall_item(content="TEST 白色偏好")], "gaps": [], "diagnostic_ref": None,
-                "answerability": "supported", "coverage": "partial", "unmet_needs": [],
+                "protocol_version": "1.1",
+                "request_id": request["request_id"],
+                "status": "ok",
+                "memory_epoch": 1,
+                "items": [recall_item(content="TEST 白色偏好")],
+                "gaps": [],
+                "diagnostic_ref": None,
+                "answerability": "supported",
+                "coverage": "partial",
+                "unmet_needs": [],
             }
 
     busy = CodexHookHandler(config, core=BusyCore(), clock=clock)
@@ -549,28 +577,42 @@ def test_live_hook_events_carry_witnessed_occurrence_time():
     """Live Codex hook/MCP events are witnessed by the host: occurred_at
     grounds to the event time so current-mode recall can serve them."""
     from scope_recall.adapters.codex.boundary import (
-        assistant_stop_source_event, lifecycle_source_event, tool_use_source_event, user_prompt_source_event,
+        assistant_stop_source_event,
+        lifecycle_source_event,
+        tool_use_source_event,
+        user_prompt_source_event,
     )
 
     user_event = user_prompt_source_event(
-        installation_id="TEST-install", session_id="TEST-session", turn_id="turn-1",
-        prompt="请记住我的靛蓝档案目录名称是 TEST-X。", recorded_at="2026-09-06T12:00:00Z",
+        installation_id="TEST-install",
+        session_id="TEST-session",
+        turn_id="turn-1",
+        prompt="请记住我的靛蓝档案目录名称是 TEST-X。",
+        recorded_at="2026-09-06T12:00:00Z",
     )
     assert user_event is not None
     assert user_event["occurred_at"] == "2026-09-06T12:00:00Z"
     assert user_event["time_precision"] == "instant"
 
     assistant_event, _ = assistant_stop_source_event(
-        installation_id="TEST-install", session_id="TEST-session", turn_id="turn-1",
-        message="好的。", recorded_at="2026-09-06T12:00:01Z",
+        installation_id="TEST-install",
+        session_id="TEST-session",
+        turn_id="turn-1",
+        message="好的。",
+        recorded_at="2026-09-06T12:00:01Z",
     )
     assert assistant_event is not None
     assert assistant_event["occurred_at"] == "2026-09-06T12:00:01Z"
     assert assistant_event["time_precision"] == "instant"
 
     tool_event, _gaps, _origin = tool_use_source_event(
-        installation_id="TEST-install", session_id="TEST-session", turn_id="turn-1",
-        tool_use_id="tool-1", tool_name="shell", tool_input={"cmd": "ls"}, tool_response={"out": "ok"},
+        installation_id="TEST-install",
+        session_id="TEST-session",
+        turn_id="turn-1",
+        tool_use_id="tool-1",
+        tool_name="shell",
+        tool_input={"cmd": "ls"},
+        tool_response={"out": "ok"},
         recorded_at="2026-09-06T12:00:02Z",
     )
     assert tool_event is not None
@@ -578,8 +620,12 @@ def test_live_hook_events_carry_witnessed_occurrence_time():
     assert tool_event["time_precision"] == "instant"
 
     lifecycle_event = lifecycle_source_event(
-        installation_id="TEST-install", session_id="TEST-session", event_kind="session_start",
-        event_id="start-1", content="session started", recorded_at="2026-09-06T12:00:03Z",
+        installation_id="TEST-install",
+        session_id="TEST-session",
+        event_kind="session_start",
+        event_id="start-1",
+        content="session started",
+        recorded_at="2026-09-06T12:00:03Z",
     )
     assert lifecycle_event["occurred_at"] == "2026-09-06T12:00:03Z"
     assert lifecycle_event["time_precision"] == "instant"

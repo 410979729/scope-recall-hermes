@@ -1,4 +1,5 @@
 """P10 worker lease, consolidation, and bounded drain contracts."""
+
 from __future__ import annotations
 
 import json
@@ -206,6 +207,7 @@ def test_bad_json_records_derivation_invalid_without_hiding_source(worker_app, m
 
     from scope_recall.core.worker import build_consolidation_model
     from scope_recall.runtime.instance import _BoundedConsolidation
+
     payloads = []
 
     class BadPort:
@@ -227,12 +229,14 @@ def test_bad_json_records_derivation_invalid_without_hiding_source(worker_app, m
     assert row[6].startswith("derivation_retry:1|")
     with sqlite3.connect(core.storage.path) as db:
         from scope_recall.core.failure_retry import NEEDS_REVIEW_COUNT
+
         assert db.execute(NEEDS_REVIEW_COUNT).fetchone()[0] == 1
         assert db.execute("SELECT count(*) FROM consolidation_outcomes").fetchone()[0] == 0
         assert db.execute("SELECT count(*) FROM work_error_details").fetchone()[0] == 2
         assert db.execute("SELECT count(*) FROM claims").fetchone()[0] == 0
     assert core.source(ctx, source.ref, 1).event["content"] == "TEST 精确代码 XAS-A_19.2-beta。"
     from scope_recall.maintenance import doctor
+
     (ctx.binding.data_directory / "installation.json").write_text("{}", encoding="utf-8")
     monkeypatch.setattr(doctor, "_load_binding", lambda *args: (ctx.binding, ctx.binding.data_directory))
     monkeypatch.setattr(doctor, "_hermes_data_dir", lambda root: ctx.binding.data_directory)
@@ -248,6 +252,7 @@ def test_flaky_model_derivation_recovers_on_bounded_retry(worker_app):
     _mark_embed_done(core)
     from scope_recall.core.worker import build_consolidation_model
     from scope_recall.runtime.instance import _BoundedConsolidation
+
     payloads = []
     # The field names the property the model left out, not the schema keyword
     # that caught it: "required" told the model nothing it could act on.
@@ -291,7 +296,9 @@ def test_reply_cut_off_at_output_limit_is_named_in_the_guided_retry(worker_app, 
 
     def cut_off(**kwargs):
         prompts.append(json.loads(kwargs["body"])["messages"][0]["content"])
-        return 200, _chat_reply({"role": "assistant", "content": '{"protocol_version":"1.1","source_refs":["'}, "length")
+        return 200, _chat_reply(
+            {"role": "assistant", "content": '{"protocol_version":"1.1","source_refs":["'}, "length"
+        )
 
     runtime = build_auxiliary_runtime(config, transport=FakeTransport(cut_off))
     model = _BoundedConsolidation(build_consolidation_model(runtime.consolidation), 3)
@@ -302,8 +309,10 @@ def test_reply_cut_off_at_output_limit_is_named_in_the_guided_retry(worker_app, 
     assert "validation_error=" not in prompts[0]
     assert 'validation_error={"code":"DERIVATION_INVALID","field":"model_output_truncated"}' in prompts[1]
     with sqlite3.connect(core.storage.path) as db:
-        assert db.execute("SELECT error_code,error_field FROM work_error_details").fetchall() == [
-            ("DERIVATION_INVALID", "model_output_truncated")] * 2
+        assert (
+            db.execute("SELECT error_code,error_field FROM work_error_details").fetchall()
+            == [("DERIVATION_INVALID", "model_output_truncated")] * 2
+        )
         assert db.execute(NEEDS_REVIEW_COUNT).fetchone()[0] == 1
     row = next(row for row in work_rows(core) if row[1] == source.ref and row[0] == "consolidate")
     assert row[3] == "failed" and row[6].startswith("derivation_retry:1|")
@@ -317,12 +326,22 @@ def test_consolidation_accepts_only_transport_fence_and_null_optional_location(w
     class FencedModel:
         def propose(self, sources, *, episode_ref=None, remaining_seconds=1.0):
             claim = dict(
-                kind="fact", subject="TEST-project", predicate="公开代号",
-                value_text="TEST-ARCHIVE-V12-FLARE", conditions=[],
-                statement_kind="assertion", valid_from=sources[0].event["occurred_at"],
+                kind="fact",
+                subject="TEST-project",
+                predicate="公开代号",
+                value_text="TEST-ARCHIVE-V12-FLARE",
+                conditions=[],
+                statement_kind="assertion",
+                valid_from=sources[0].event["occurred_at"],
                 valid_to=None,
-                evidence_spans=[dict(source_ref=sources[0].ref, source_revision=sources[0].revision,
-                                     quote=sources[0].event["content"], location=None)],
+                evidence_spans=[
+                    dict(
+                        source_ref=sources[0].ref,
+                        source_revision=sources[0].revision,
+                        quote=sources[0].event["content"],
+                        location=None,
+                    )
+                ],
             )
             payload = consolidation_payload(sources[0], claims=[claim])
             return "```json\n" + json.dumps(payload, ensure_ascii=False) + "\n```"
@@ -340,7 +359,7 @@ def test_consolidation_accepts_only_transport_fence_and_null_optional_location(w
         '{"protocol_version":"1.1","source_refs":[],"claim_proposals":[],"resume_proposals":[],"reference_proposals":[]} trailing',
         'prefix\n{"protocol_version":"1.1","source_refs":[],"claim_proposals":[],"resume_proposals":[],"reference_proposals":[]}',
         '{"protocol_version":"1.1","source_refs":[],"claim_proposals":[],"resume_proposals":[],"reference_proposals":[],"extra":true}',
-        '[]',
+        "[]",
     ],
 )
 def test_consolidation_decoder_rejects_unsafe_envelopes(raw):
@@ -349,20 +368,39 @@ def test_consolidation_decoder_rejects_unsafe_envelopes(raw):
 
 
 def _timed_claim_result(valid_from, valid_to=None):
-    claim = dict(kind="fact", subject="TEST-project", predicate="配色", value_text="蓝色", conditions=[],
-                 statement_kind="assertion", valid_from=valid_from, valid_to=valid_to,
-                 evidence_spans=[dict(source_ref="TEST-event", source_revision=1, quote="TEST-project 配色 蓝色")])
-    return json.dumps(dict(protocol_version="1.1", source_refs=["TEST-event@1"], claim_proposals=[claim],
-                           resume_proposals=[], reference_proposals=[]))
+    claim = dict(
+        kind="fact",
+        subject="TEST-project",
+        predicate="配色",
+        value_text="蓝色",
+        conditions=[],
+        statement_kind="assertion",
+        valid_from=valid_from,
+        valid_to=valid_to,
+        evidence_spans=[dict(source_ref="TEST-event", source_revision=1, quote="TEST-project 配色 蓝色")],
+    )
+    return json.dumps(
+        dict(
+            protocol_version="1.1",
+            source_refs=["TEST-event@1"],
+            claim_proposals=[claim],
+            resume_proposals=[],
+            reference_proposals=[],
+        )
+    )
 
 
 def test_consolidation_decoder_writes_numeric_offsets_as_the_same_utc_instant():
-    value = _decode_consolidation_result(_timed_claim_result("2026-09-16T10:00:00+08:00", "2026-09-16T01:30:00.25-05:30"))
+    value = _decode_consolidation_result(
+        _timed_claim_result("2026-09-16T10:00:00+08:00", "2026-09-16T01:30:00.25-05:30")
+    )
     claim = value["claim_proposals"][0]
     assert (claim["valid_from"], claim["valid_to"]) == ("2026-09-16T02:00:00Z", "2026-09-16T07:00:00.25Z")
     unchanged = _decode_consolidation_result(_timed_claim_result("2026-09-16T02:00:00+00:00", "2026-09-17T00:00:00Z"))
     assert (unchanged["claim_proposals"][0]["valid_from"], unchanged["claim_proposals"][0]["valid_to"]) == (
-        "2026-09-16T02:00:00+00:00", "2026-09-17T00:00:00Z")
+        "2026-09-16T02:00:00+00:00",
+        "2026-09-17T00:00:00Z",
+    )
 
 
 @pytest.mark.parametrize(
@@ -389,17 +427,27 @@ def test_offset_timestamp_does_not_discard_the_batch_and_is_stored_in_utc(worker
 
     def builder(sources, episode_ref=None):
         page = sources[0]
-        return consolidation_payload(page, claims=[
-            draft(page, "蓝色", quote_override="TEST-project 配色 蓝色。", valid_from="2026-09-16T02:00:00Z"),
-            draft(page, "深色", predicate="主题", quote_override="TEST-project 主题 深色。",
-                  valid_from="2026-09-16T10:00:00+08:00"),
-        ])
+        return consolidation_payload(
+            page,
+            claims=[
+                draft(page, "蓝色", quote_override="TEST-project 配色 蓝色。", valid_from="2026-09-16T02:00:00Z"),
+                draft(
+                    page,
+                    "深色",
+                    predicate="主题",
+                    quote_override="TEST-project 主题 深色。",
+                    valid_from="2026-09-16T10:00:00+08:00",
+                ),
+            ],
+        )
 
     receipt = core.drain_worker(ctx, consolidation=FakeConsolidation(builder), max_items=1, remaining_seconds=5)
     assert receipt.completed == 1
     with sqlite3.connect(core.storage.path) as db:
-        stored = {json.loads(payload)["value_text"]: (json.loads(payload)["valid_from"], column)
-                  for payload, column in db.execute("SELECT payload_json,valid_from FROM claim_versions")}
+        stored = {
+            json.loads(payload)["value_text"]: (json.loads(payload)["valid_from"], column)
+            for payload, column in db.execute("SELECT payload_json,valid_from FROM claim_versions")
+        }
     assert set(stored) == {"蓝色", "深色"}
     assert stored["深色"] == stored["蓝色"] == ("2026-09-16T02:00:00Z", "2026-09-16T02:00:00.000000+00:00")
     assert next(row for row in work_rows(core) if row[1] == source.ref and row[0] == "consolidate")[3] == "done"
@@ -432,7 +480,15 @@ def test_M41_precise_anchor_survives_failed_derivation(worker_app):
 
     class BadSchema:
         def propose(self, sources, *, episode_ref=None, remaining_seconds=1.0):
-            return json.dumps({"protocol_version": "1.1", "source_refs": [], "claim_proposals": [], "resume_proposals": [], "reference_proposals": []})
+            return json.dumps(
+                {
+                    "protocol_version": "1.1",
+                    "source_refs": [],
+                    "claim_proposals": [],
+                    "resume_proposals": [],
+                    "reference_proposals": [],
+                }
+            )
 
     core.drain_worker(ctx, consolidation=BadSchema(), max_items=2, remaining_seconds=5)
     assert core.search_sources(ctx, "XAS-A_19.2-beta", history=True)
@@ -461,8 +517,9 @@ def test_fake_model_procedure_passes_source_validation(worker_app):
 def test_M31_procedure_reuse_requires_accepted_method(worker_app):
     core, ctx, clock = worker_app
     source = capture(core, ctx, "做TEST导出时，先检查透明背景；这是我认可的此类任务步骤。")
-    model = FakeConsolidation(lambda sources, episode_ref=None: consolidation_payload(
-        sources[0], claims=[procedure_proposal(sources[0])]))
+    model = FakeConsolidation(
+        lambda sources, episode_ref=None: consolidation_payload(sources[0], claims=[procedure_proposal(sources[0])])
+    )
     core.drain_worker(ctx, consolidation=model, max_items=2, remaining_seconds=10)
     with core.storage.read(ctx) as tx:
         claim_ref = tx.claims.list_refs(predicate="导出方法")[0]
@@ -475,8 +532,11 @@ def test_M32_single_success_does_not_generalize_without_acceptance(worker_app):
     # proposed as a method, and the model is never asked about it.
     core, ctx, clock = worker_app
     observed = capture(core, ctx, "TEST 导出成功，exit.code=0。", origin="tool_observation")
-    model = FakeConsolidation(lambda sources, episode_ref=None: consolidation_payload(
-        sources[0], claims=[procedure_proposal(sources[0], verification="observed_once")]))
+    model = FakeConsolidation(
+        lambda sources, episode_ref=None: consolidation_payload(
+            sources[0], claims=[procedure_proposal(sources[0], verification="observed_once")]
+        )
+    )
     core.drain_worker(ctx, consolidation=model, max_items=2, remaining_seconds=10)
     with core.storage.read(ctx) as tx:
         refs = tx.claims.list_refs(predicate="导出方法")
@@ -581,7 +641,13 @@ def test_C09_deleted_source_obsoletes_late_worker_result(worker_app):
             return json.dumps(consolidation_payload(sources[0]), ensure_ascii=False)
 
     disposition, code, state = _process_consolidate(
-        core.storage, clock, ctx, leased, model=ValidModel(), started=clock.monotonic(), budget=10,
+        core.storage,
+        clock,
+        ctx,
+        leased,
+        model=ValidModel(),
+        started=clock.monotonic(),
+        budget=10,
     )
     # forget fences and obsoletes outstanding work before this late worker
     # observes the deleted source; the stale disposition is the lease guard,
@@ -606,17 +672,25 @@ def test_C35_stale_lease_cannot_overwrite_newer_completion(worker_app):
         second = tx.work.claim_next("worker-b", clock.utc_now(), lease_seconds=60, limit=1)[0]
     assert second.lease_token > first.lease_token
     from scope_recall.core.worker import _process_consolidate
+
     disposition, code, state = _process_consolidate(
-        core.storage, clock, ctx, second, model=model,
-        started=clock.monotonic(), budget=5,
+        core.storage,
+        clock,
+        ctx,
+        second,
+        model=model,
+        started=clock.monotonic(),
+        budget=5,
     )
     assert disposition == "completed" and code is None and state == "done"
     with core.storage.write(ctx) as tx:
         stale = tx.work.complete(first.work_id, first.lease_token, "worker-a", now=clock.utc_now())
     assert stale.disposition == "stale"
-    row = sqlite3.connect(core.storage.path).execute(
-        "SELECT state,lease_token FROM work_items WHERE work_id=?", (first.work_id,)
-    ).fetchone()
+    row = (
+        sqlite3.connect(core.storage.path)
+        .execute("SELECT state,lease_token FROM work_items WHERE work_id=?", (first.work_id,))
+        .fetchone()
+    )
     assert row[0] == "done" and row[1] == second.lease_token
 
 
@@ -636,7 +710,11 @@ def test_fair_claim_orders_by_available_at(worker_app):
 def _iso(value: str, seconds: float) -> str:
     from datetime import datetime, timedelta
 
-    return (datetime.fromisoformat(value.replace("Z", "+00:00")) + timedelta(seconds=seconds)).isoformat().replace("+00:00", "Z")
+    return (
+        (datetime.fromisoformat(value.replace("Z", "+00:00")) + timedelta(seconds=seconds))
+        .isoformat()
+        .replace("+00:00", "Z")
+    )
 
 
 def test_fresh_conversation_is_claimed_in_the_first_pass_beside_the_backlog(worker_app):
@@ -644,8 +722,10 @@ def test_fresh_conversation_is_claimed_in_the_first_pass_beside_the_backlog(work
 
     core, ctx, clock = worker_app
     clock.advance(iso="2026-09-05T12:00:00Z")
-    backlog = [capture(core, replace(ctx, session_id=f"TEST-old/{index}"), f"TEST 昨天积压的事实 {index}。")
-               for index in range(40)]
+    backlog = [
+        capture(core, replace(ctx, session_id=f"TEST-old/{index}"), f"TEST 昨天积压的事实 {index}。")
+        for index in range(40)
+    ]
     clock.advance(iso="2026-09-06T12:00:00Z")
     first = capture(core, ctx, "TEST 刚刚说的第一句。")
     second = capture(core, ctx, "TEST 刚刚说的第二句。")
@@ -662,8 +742,14 @@ def test_fresh_conversation_is_claimed_in_the_first_pass_beside_the_backlog(work
     # item, whose episode batch still carries the rest of that conversation;
     # once no fresh work is left its turn falls back to the backlog.
     assert receipt.completed == 6
-    assert batches == [[backlog[0].ref], [first.ref, second.ref], [backlog[1].ref], [other.ref],
-                       [backlog[2].ref], [backlog[3].ref]]
+    assert batches == [
+        [backlog[0].ref],
+        [first.ref, second.ref],
+        [backlog[1].ref],
+        [other.ref],
+        [backlog[2].ref],
+        [backlog[3].ref],
+    ]
     states = {row[1]: row[3] for row in consolidate_rows(core)}
     assert states[first.ref] == states[second.ref] == states[other.ref] == "done"
     assert [states[source.ref] for source in backlog].count("pending") == 36
@@ -685,8 +771,10 @@ def test_fresh_lane_keeps_purge_first_window_origins_and_fifo(worker_app):
     clock.advance(iso=now)
     with core.storage.write(ctx) as tx:
         assert tx.work.enqueue("purge", "delete-test:TEST-scope", 1, available_at=now)
-        order = [(item.subject_ref, item.work_type)
-                 for item in tx.work.claim_next("TEST-lane", now, lease_seconds=60, limit=3, fresh_lane=True)]
+        order = [
+            (item.subject_ref, item.work_type)
+            for item in tx.work.claim_next("TEST-lane", now, lease_seconds=60, limit=3, fresh_lane=True)
+        ]
         while claimed := tx.work.claim_next("TEST-lane", now, lease_seconds=60, fresh_lane=True):
             order.append((claimed[0].subject_ref, claimed[0].work_type))
     # Purge first; then fresh conversation oldest first -- an assistant reply is
@@ -694,9 +782,14 @@ def test_fresh_lane_keeps_purge_first_window_origins_and_fifo(worker_app):
     # ingestion, not conversation; then plain FIFO once the lane is empty.
     assert order == [
         ("delete-test:TEST-scope", "purge"),
-        (edge.ref, "consolidate"), (edge.ref, "embed"), (reply.ref, "embed"),
-        (outside.ref, "consolidate"), (outside.ref, "embed"), (reply.ref, "consolidate"),
-        (document.ref, "consolidate"), (document.ref, "embed"),
+        (edge.ref, "consolidate"),
+        (edge.ref, "embed"),
+        (reply.ref, "embed"),
+        (outside.ref, "consolidate"),
+        (outside.ref, "embed"),
+        (reply.ref, "consolidate"),
+        (document.ref, "consolidate"),
+        (document.ref, "embed"),
     ]
 
 
@@ -715,7 +808,8 @@ def test_fresh_lane_examines_a_bounded_page_of_recent_work(worker_app, monkeypat
         conn.executemany(
             """INSERT INTO work_items(work_type,subject_ref,subject_revision,scope_id,project_id,branch_id,available_at)
                VALUES ('consolidate',?,1,'TEST-scope',?,?,?)""",
-            [(f"TEST-refilled/{index}", ctx.project_id, ctx.branch_id, clock.utc_now()) for index in range(2)])
+            [(f"TEST-refilled/{index}", ctx.project_id, ctx.branch_id, clock.utc_now()) for index in range(2)],
+        )
     monkeypatch.setattr(work_storage, "FRESH_LANE_SCAN_ROWS", 2)
     with core.storage.write(ctx) as tx:
         blind = tx.work.claim_next("TEST-bounded", clock.utc_now(), lease_seconds=60, fresh_lane=True)
@@ -750,8 +844,14 @@ def test_rebuild_projection_is_the_existing_queue_type(worker_app):
     core, ctx, clock = worker_app
     source = capture(core, ctx, "TEST projection rebuild anchor。")
     with sqlite3.connect(core.storage.path) as conn:
-        conn.execute("DELETE FROM lexical_postings WHERE source_id=(SELECT source_id FROM source_events WHERE event_id=? AND source_revision=?)", (source.ref, source.revision))
-        conn.execute("UPDATE work_items SET state='done' WHERE work_type IN ('consolidate','embed') AND subject_ref=?", (source.ref,))
+        conn.execute(
+            "DELETE FROM lexical_postings WHERE source_id=(SELECT source_id FROM source_events WHERE event_id=? AND source_revision=?)",
+            (source.ref, source.revision),
+        )
+        conn.execute(
+            "UPDATE work_items SET state='done' WHERE work_type IN ('consolidate','embed') AND subject_ref=?",
+            (source.ref,),
+        )
         conn.commit()
     with core.storage.write(ctx) as tx:
         assert tx.work.enqueue("rebuild_projection", source.ref, source.revision, available_at=clock.utc_now())
@@ -844,7 +944,9 @@ def test_embed_prepare_new_revision_blocks_publish(worker_app):
         def publish_source(self, *args, **kwargs):
             published["called"] = True
 
-    receipt = core.drain_worker(ctx, max_items=1, remaining_seconds=5, owner_id="embed-revision-fence", embed=RevisionEmbed())
+    receipt = core.drain_worker(
+        ctx, max_items=1, remaining_seconds=5, owner_id="embed-revision-fence", embed=RevisionEmbed()
+    )
     row = [r for r in work_rows(core) if r[0] == "embed" and r[1] == source.ref and r[2] == 1][0]
     assert published["called"] is False
     assert row[3] != "done"
@@ -876,7 +978,9 @@ def test_embed_prepare_suppression_blocks_publish(worker_app):
         def publish_source(self, *args, **kwargs):
             published["called"] = True
 
-    receipt = core.drain_worker(ctx, max_items=1, remaining_seconds=5, owner_id="embed-epoch-fence", embed=SuppressingEmbed())
+    receipt = core.drain_worker(
+        ctx, max_items=1, remaining_seconds=5, owner_id="embed-epoch-fence", embed=SuppressingEmbed()
+    )
     row = [r for r in work_rows(core) if r[0] == "embed" and r[1] == source.ref][0]
     assert published["called"] is False
     assert row[3] == "pending" and row[6] == "memory_epoch_changed"
@@ -900,7 +1004,9 @@ def test_embed_prepare_delete_blocks_publish(worker_app):
         def publish_source(self, *args, **kwargs):
             published["called"] = True
 
-    receipt = core.drain_worker(ctx, max_items=1, remaining_seconds=5, owner_id="embed-delete-fence", embed=DeletingEmbed())
+    receipt = core.drain_worker(
+        ctx, max_items=1, remaining_seconds=5, owner_id="embed-delete-fence", embed=DeletingEmbed()
+    )
     row = [r for r in work_rows(core) if r[0] == "embed" and r[1] == source.ref][0]
     assert published["called"] is False
     assert row[3] == "obsolete"
@@ -923,7 +1029,9 @@ def test_embed_prepare_deadline_does_not_open_guard_or_publish(worker_app):
         def publish_source(self, *args, **kwargs):
             published["called"] = True
 
-    receipt = core.drain_worker(ctx, max_items=1, remaining_seconds=5, owner_id="embed-deadline-fence", embed=SlowPrepare())
+    receipt = core.drain_worker(
+        ctx, max_items=1, remaining_seconds=5, owner_id="embed-deadline-fence", embed=SlowPrepare()
+    )
     row = [r for r in work_rows(core) if r[0] == "embed"][0]
     assert published["called"] is False
     assert receipt.skipped == 1
@@ -1042,7 +1150,11 @@ def test_consolidation_barrier_old_worker_cannot_mutate_after_lease_stolen(worke
 def _restore(core, ctx, backup):
     """The operator restore sequence: checkpoint, close admission, copy back, replay."""
     from scope_recall.core.restore import (
-        InstallationMaintenance, begin_restore, export_deletion_ledger, ledger_digest, replay_deletion_ledger,
+        InstallationMaintenance,
+        begin_restore,
+        export_deletion_ledger,
+        ledger_digest,
+        replay_deletion_ledger,
     )
     from test_v11_deletion import sqlite_backup
 
@@ -1137,8 +1249,9 @@ def test_restore_of_an_older_backup_during_extraction_fences_late_consolidation(
 
     from scope_recall.core.worker import _process_consolidate
 
-    result = _process_consolidate(core.storage, clock, ctx, leased, model=RestoringModel(),
-                                  started=clock.monotonic(), budget=30)
+    result = _process_consolidate(
+        core.storage, clock, ctx, leased, model=RestoringModel(), started=clock.monotonic(), budget=30
+    )
     assert result == ("retry", "memory_epoch_changed", "pending")
     assert claim_count(core, ctx) == 0
 
@@ -1159,7 +1272,9 @@ def test_restore_that_reuses_claim_version_rowids_fences_late_consolidation(work
     unrelated = capture(core, ctx, "TEST-other 字体 宋体。")
     newer = capture(core, ctx, "TEST-project 配色 绿色。", when="2026-09-03T12:00:00Z")
     with sqlite3.connect(core.storage.path) as conn:
-        conn.execute("UPDATE work_items SET state='done' WHERE NOT (work_type='consolidate' AND subject_ref=?)", (subject.ref,))
+        conn.execute(
+            "UPDATE work_items SET state='done' WHERE NOT (work_type='consolidate' AND subject_ref=?)", (subject.ref,)
+        )
         conn.commit()
     with core.storage.write(ctx) as tx:
         leased = tx.work.claim_next("worker-a", clock.utc_now(), lease_seconds=60, limit=1)[0]
@@ -1177,8 +1292,9 @@ def test_restore_that_reuses_claim_version_rowids_fences_late_consolidation(work
 
     from scope_recall.core.worker import _process_consolidate
 
-    result = _process_consolidate(core.storage, clock, ctx, leased, model=RestoringModel(),
-                                  started=clock.monotonic(), budget=30)
+    result = _process_consolidate(
+        core.storage, clock, ctx, leased, model=RestoringModel(), started=clock.monotonic(), budget=30
+    )
     assert result == ("retry", "memory_epoch_changed", "pending")
     assert [version.payload["value_text"] for version in core.claim_history(ctx, slot["ref"])] == ["绿色"]
 
@@ -1299,7 +1415,9 @@ def test_build_consolidation_model_passes_bounded_messages(worker_app):
             captured["messages"] = messages
             body = json.loads(messages[1]["content"])
             return json.dumps(
-                consolidation_payload(core.source(ctx, body["sources"][0]["source_ref"], body["sources"][0]["source_revision"])),
+                consolidation_payload(
+                    core.source(ctx, body["sources"][0]["source_ref"], body["sources"][0]["source_revision"])
+                ),
                 ensure_ascii=False,
             )
 
@@ -1316,7 +1434,11 @@ def test_build_consolidation_model_passes_bounded_messages(worker_app):
     assert record["source_ref"] == source.ref and record["source_revision"] == source.revision
     assert record["origin"] == "human_direct" and record["content"] == source.event["content"]
     assert "source_watermark" in body
-    assert len(captured["messages"][0]["content"].encode("utf-8")) + len(captured["messages"][1]["content"].encode("utf-8")) <= 16000
+    assert (
+        len(captured["messages"][0]["content"].encode("utf-8"))
+        + len(captured["messages"][1]["content"].encode("utf-8"))
+        <= 16000
+    )
 
 
 def test_worker_receipt_reports_persisted_state(worker_app):
@@ -1325,9 +1447,11 @@ def test_worker_receipt_reports_persisted_state(worker_app):
     with sqlite3.connect(core.storage.path) as conn:
         conn.execute("UPDATE work_items SET state='done' WHERE work_type='embed'")
         conn.commit()
+
     class Offline:
         def propose(self, *args, **kwargs):
             raise ConnectionError("TEST offline")
+
     receipt = core.drain_worker(ctx, consolidation=Offline(), max_items=1, remaining_seconds=5)
     assert receipt.retried == 1 and receipt.items[0].disposition == "retry" and receipt.items[0].state == "pending"
 
@@ -1351,7 +1475,10 @@ def test_deadline_expiry_returns_partial_receipt(worker_app):
     receipt = core.drain_worker(ctx, consolidation=SlowModel(), max_items=4, remaining_seconds=5)
     assert 1 <= receipt.processed < 4
     assert receipt.processed == len(receipt.items)
-    assert receipt.completed + receipt.failed + receipt.retried + receipt.skipped + receipt.obsolete + receipt.stale == receipt.processed
+    assert (
+        receipt.completed + receipt.failed + receipt.retried + receipt.skipped + receipt.obsolete + receipt.stale
+        == receipt.processed
+    )
 
 
 def test_a_purge_marked_obsolete_before_it_removed_anything_is_given_once_more(worker_app):
@@ -1363,7 +1490,9 @@ def test_a_purge_marked_obsolete_before_it_removed_anything_is_given_once_more(w
     authorize(core, ctx, doomed)
     operation = core.forget(ctx, request(doomed), remaining_seconds=10)["operation_id"]
     with core.storage.write(ctx) as tx:
-        tx._check(write=True).execute("""UPDATE work_items SET state='obsolete',attempt=1,last_error_code='authority_revoked'
+        tx._check(
+            write=True
+        ).execute("""UPDATE work_items SET state='obsolete',attempt=1,last_error_code='authority_revoked'
                                          WHERE work_type='purge'""")
 
     class Purge:
@@ -1381,7 +1510,9 @@ def test_a_purge_marked_obsolete_before_it_removed_anything_is_given_once_more(w
         # Nothing is left to requeue once the layers are removed, whatever the row says.
         tx._check().execute("SELECT 1").fetchone()
     with core.storage.write(ctx) as tx:
-        tx._check(write=True).execute("""UPDATE work_items SET state='obsolete',attempt=2,last_error_code='authority_revoked'
+        tx._check(
+            write=True
+        ).execute("""UPDATE work_items SET state='obsolete',attempt=2,last_error_code='authority_revoked'
                                          WHERE work_type='purge'""")
         assert tx.deletions.requeue_unfinished_purges(now=clock.utc_now()) == 0
 
@@ -1417,8 +1548,16 @@ def test_model_work_is_claimed_only_while_the_pass_covers_one_bounded_request(wo
     reserve = 45.0 + FINALIZE_MARGIN_SECONDS
 
     def drain(remaining_seconds):
-        receipt = drain_worker(core.storage, clock, ctx, config=WorkerConfig("TEST-reserve", request_seconds=45.0),
-                               consolidation=model, embed=embed, purge=Purge(), remaining_seconds=remaining_seconds)
+        receipt = drain_worker(
+            core.storage,
+            clock,
+            ctx,
+            config=WorkerConfig("TEST-reserve", request_seconds=45.0),
+            consolidation=model,
+            embed=embed,
+            purge=Purge(),
+            remaining_seconds=remaining_seconds,
+        )
         return [(item.work_type, item.disposition) for item in receipt.items]
 
     def kept_work():
@@ -1448,9 +1587,14 @@ def test_runtime_drain_reserves_its_own_request_bound(worker_app):
     capture(core, ctx, "TEST 运行时请求上限。")
     _mark_embed_done(core)
     model = FakeConsolidation(lambda sources, **_: consolidation_payload(*sources))
-    config = RuntimeInstanceConfig(binding=ctx.binding, session_id=ctx.session_id,
-                                   allowed_scope_ids=ctx.allowed_scope_ids,
-                                   project_id=ctx.project_id, branch_id=ctx.branch_id, request_seconds=20.0)
+    config = RuntimeInstanceConfig(
+        binding=ctx.binding,
+        session_id=ctx.session_id,
+        allowed_scope_ids=ctx.allowed_scope_ids,
+        project_id=ctx.project_id,
+        branch_id=ctx.branch_id,
+        request_seconds=20.0,
+    )
     runtime = RuntimeInstance(config=config, core=core, auxiliary=None)
     short = runtime.drain(consolidation=model, remaining_seconds=20.0 + FINALIZE_MARGIN_SECONDS - 1)
     assert short.idle and model.calls == 0
@@ -1475,15 +1619,23 @@ def test_M36_worker_intention_with_unproved_cue_stays_proposed(worker_app):
 def test_M37_worker_negative_cancellation_request_stays_proposed(worker_app):
     core, ctx, clock = worker_app
     source = capture(core, ctx, "TEST-project 验收前提醒检查散热。")
-    model = FakeConsolidation(lambda sources, episode_ref=None: consolidation_payload(
-        sources[0], claims=[intention_proposal(sources[0])]))
+    model = FakeConsolidation(
+        lambda sources, episode_ref=None: consolidation_payload(sources[0], claims=[intention_proposal(sources[0])])
+    )
     core.drain_worker(ctx, consolidation=model, max_items=2, remaining_seconds=10)
     with core.storage.read(ctx) as tx:
         ref = tx.claims.list_refs(predicate="散热检查")[0]
     negative = capture(core, ctx, "TEST-project 不要取消验收前检查散热的约定。")
     cancel = intention_proposal(negative, state="cancelled")
-    core.drain_worker(ctx, consolidation=FakeConsolidation(lambda sources, episode_ref=None: consolidation_payload(
-        negative, claims=[cancel])), max_items=2, remaining_seconds=10, owner_id="cancel-pass")
+    core.drain_worker(
+        ctx,
+        consolidation=FakeConsolidation(
+            lambda sources, episode_ref=None: consolidation_payload(negative, claims=[cancel])
+        ),
+        max_items=2,
+        remaining_seconds=10,
+        owner_id="cancel-pass",
+    )
     history = core.claim_history(ctx, ref)
     assert core.current_claim(ctx, ref) is None
     assert history[0].state == history[-1].state == "proposed"
@@ -1493,30 +1645,66 @@ def test_M37_worker_negative_cancellation_request_stays_proposed(worker_app):
 def test_M38_worker_intention_cancellation_request_stays_proposed(worker_app):
     core, ctx, clock = worker_app
     source = capture(core, ctx, "TEST-project 验收前提醒检查散热。")
-    core.drain_worker(ctx, consolidation=FakeConsolidation(lambda sources, episode_ref=None: consolidation_payload(
-        sources[0], claims=[intention_proposal(sources[0])])), max_items=2, remaining_seconds=10)
+    core.drain_worker(
+        ctx,
+        consolidation=FakeConsolidation(
+            lambda sources, episode_ref=None: consolidation_payload(sources[0], claims=[intention_proposal(sources[0])])
+        ),
+        max_items=2,
+        remaining_seconds=10,
+    )
     with core.storage.read(ctx) as tx:
         ref = tx.claims.list_refs(predicate="散热检查")[0]
     cancel = capture(core, ctx, "TEST-project 散热检查约定取消了。", when="2026-09-03T12:00:00Z")
-    core.drain_worker(ctx, consolidation=FakeConsolidation(lambda sources, episode_ref=None: consolidation_payload(
-        cancel, claims=[intention_proposal(cancel, state="cancelled")])), max_items=2, remaining_seconds=10, owner_id="cancel")
+    core.drain_worker(
+        ctx,
+        consolidation=FakeConsolidation(
+            lambda sources, episode_ref=None: consolidation_payload(
+                cancel, claims=[intention_proposal(cancel, state="cancelled")]
+            )
+        ),
+        max_items=2,
+        remaining_seconds=10,
+        owner_id="cancel",
+    )
     history = core.claim_history(ctx, ref)
     assert core.current_claim(ctx, ref) is None
     assert history[0].state == history[-1].state == "proposed"
     assert history[0].payload["intention"]["state"] == "pending"
 
 
-@pytest.mark.parametrize("origin,text", [("assistant_visible", "TEST-project 提醒你检查散热。"), ("human_direct", "TEST-project 已提醒，但尚未完成散热检查。")])
+@pytest.mark.parametrize(
+    "origin,text",
+    [
+        ("assistant_visible", "TEST-project 提醒你检查散热。"),
+        ("human_direct", "TEST-project 已提醒，但尚未完成散热检查。"),
+    ],
+)
 def test_M40_worker_reminder_does_not_promote_request_intention(worker_app, origin, text):
     core, ctx, clock = worker_app
     source = capture(core, ctx, "TEST-project 验收前提醒检查散热。")
-    core.drain_worker(ctx, consolidation=FakeConsolidation(lambda sources, episode_ref=None: consolidation_payload(
-        sources[0], claims=[intention_proposal(sources[0])])), max_items=2, remaining_seconds=10)
+    core.drain_worker(
+        ctx,
+        consolidation=FakeConsolidation(
+            lambda sources, episode_ref=None: consolidation_payload(sources[0], claims=[intention_proposal(sources[0])])
+        ),
+        max_items=2,
+        remaining_seconds=10,
+    )
     with core.storage.read(ctx) as tx:
         ref = tx.claims.list_refs(predicate="散热检查")[0]
     reminder = capture(core, ctx, text, origin=origin, when="2026-09-03T12:00:00Z")
-    core.drain_worker(ctx, consolidation=FakeConsolidation(lambda sources, episode_ref=None: consolidation_payload(
-        reminder, claims=[intention_proposal(reminder, state="completed")])), max_items=2, remaining_seconds=10, owner_id="reminder")
+    core.drain_worker(
+        ctx,
+        consolidation=FakeConsolidation(
+            lambda sources, episode_ref=None: consolidation_payload(
+                reminder, claims=[intention_proposal(reminder, state="completed")]
+            )
+        ),
+        max_items=2,
+        remaining_seconds=10,
+        owner_id="reminder",
+    )
     history = core.claim_history(ctx, ref)
     assert core.current_claim(ctx, ref) is None
     assert history[0].state == history[-1].state == "proposed"
@@ -1527,8 +1715,14 @@ def test_M39_worker_expired_intention_without_valid_to_stays_proposed(worker_app
     core, ctx, clock = worker_app
     source = capture(core, ctx, "TEST-project 验收前提醒检查散热。")
     claim = intention_proposal(source, state="expired")
-    core.drain_worker(ctx, consolidation=FakeConsolidation(lambda sources, episode_ref=None: consolidation_payload(
-        sources[0], claims=[claim])), max_items=2, remaining_seconds=10)
+    core.drain_worker(
+        ctx,
+        consolidation=FakeConsolidation(
+            lambda sources, episode_ref=None: consolidation_payload(sources[0], claims=[claim])
+        ),
+        max_items=2,
+        remaining_seconds=10,
+    )
     with core.storage.read(ctx) as tx:
         refs = tx.claims.list_refs(predicate="散热检查")
     assert refs

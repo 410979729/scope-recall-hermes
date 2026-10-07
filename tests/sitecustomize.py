@@ -8,6 +8,7 @@ that was an editable install of an older, retired checkout -- and a test that
 drives a subprocess quietly exercises code that is not under test.  ``-I``
 children are unaffected on purpose: they exist to probe the installed wheel.
 """
+
 import sys
 import types
 from pathlib import Path
