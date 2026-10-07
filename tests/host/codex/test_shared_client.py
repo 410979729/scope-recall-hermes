@@ -1057,7 +1057,7 @@ def test_a_failed_recall_says_what_stopped_it(store, ample_budget, monkeypatch, 
     """The work computer's server logged recall_exception three times with nothing else: the cause had to be found
     by reading the store.  The hook needs time enough to reach the recall: on the 2 s default a slow CI runner spent
     it attaching the runtime, and the hook said deadline_exceeded instead (windows-latest, 2026-10-05)."""
-    from scope_recall.adapters.clients.handler import emit_result
+    from scope_recall.adapters.clients.hook_answer import emit_result
     from scope_recall.core import MemoryCore
 
     _root, _homes, client, _capture = store
@@ -1151,7 +1151,7 @@ def test_a_prompt_blank_for_its_first_8192_characters_is_recalled_by_what_follow
 
 def test_what_counts_as_a_recall_without_its_vector_search():
     """Only a search that did not run or did not finish; one that ran and had candidates refused did run."""
-    from scope_recall.adapters.clients.handler import recall_without_vectors
+    from scope_recall.adapters.clients.hook_answer import recall_without_vectors
 
     assert recall_without_vectors(["vector_old_or_mismatched_space", "vector_rejected:space"]) is None
     assert recall_without_vectors(["sqlite_candidate_error:OperationalError"]) is None
@@ -2120,7 +2120,7 @@ def test_which_vector_faults_are_the_server_s_own():
     """A server's own fault makes the hook recall a second time; one the hook meets as well only cost the prompt its
     time and a second metered call.  The lists missed faults both ways (reviews of rc11).  Since the server keeps its
     embedding connection and worker between prompts, their failures are its own (review of rc12)."""
-    from scope_recall.adapters.clients.handler import _server_own_vector_fault
+    from scope_recall.adapters.clients.hook_answer import server_own_vector_fault
 
     for gap in (
         "vector_unavailable",
@@ -2137,7 +2137,7 @@ def test_which_vector_faults_are_the_server_s_own():
         "vector_error:RuntimeError",
         "vector_error:MemoryError",
     ):
-        assert _server_own_vector_fault(gap), gap
+        assert server_own_vector_fault(gap), gap
     shared = (
         "http_status:429",
         "timeout",
@@ -2172,14 +2172,14 @@ def test_which_vector_faults_are_the_server_s_own():
         None,
         "",
     ):
-        assert not _server_own_vector_fault(gap), gap
+        assert not server_own_vector_fault(gap), gap
 
 
 def test_a_packet_emptied_because_its_read_did_not_finish_is_incomplete():
     """Only a packet whose store was unreadable or whose time was gone before the read was taken for incomplete; one
     whose time ran out later (collecting, compiling, releasing) came back empty as if nothing were found, and a server's
     such answer was taken over the hook's own (review of rc11)."""
-    from scope_recall.adapters.clients.handler import recall_incomplete
+    from scope_recall.adapters.clients.hook_answer import recall_incomplete
 
     assert (
         recall_incomplete({"status": "unavailable", "gaps": ["vector_unavailable", "deadline_exceeded_release_fence"]})
@@ -2345,7 +2345,7 @@ class _KeptFake:
     made: list = []
 
     def __init__(self, *, fail=False, attach_failed=False):
-        from scope_recall.adapters.clients.handler import HookDiagnostics
+        from scope_recall.adapters.clients.hook_answer import HookDiagnostics
 
         self.diagnostics = HookDiagnostics(capability_gaps=("TEST-gap",))
         self.fail, self.runtime_ready, self.closed, self.calls = fail, not attach_failed, False, []

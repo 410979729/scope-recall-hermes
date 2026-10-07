@@ -13,9 +13,12 @@
   "adapters/clients/handler.py": {
    "reportArgumentType": 5,
    "reportAssignmentType": 1,
-   "reportAttributeAccessIssue": 2,
+   "reportAttributeAccessIssue": 1,
    "reportOptionalCall": 1,
    "reportOptionalMemberAccess": 1
+  },
+  "adapters/clients/hook_answer.py": {
+   "reportAttributeAccessIssue": 1
   },
   "adapters/clients/identity.py": {
    "reportArgumentType": 1

@@ -8,7 +8,6 @@ import json
 import math
 from pathlib import Path
 import sqlite3
-import sys
 import threading
 import time
 from typing import Any, Callable, Protocol, cast
@@ -40,6 +39,13 @@ from .boundary import (
     workbuddy_person_text,
 )
 from .config import CodexConfigError, CodexInstallationConfig, SharedClientConfig, load_codex_config, load_shared_client
+from .hook_answer import (
+    HookDiagnostics,
+    error_detail,
+    recall_incomplete,
+    recall_without_vectors,
+    server_own_vector_fault,
+)
 from .identity import resolve_runtime_audience, trusted_context
 from .session_marks import (
     TURN_FIELD as WORKBUDDY_TURN_FIELD,
@@ -81,26 +87,8 @@ _RUNTIME_ATTACH_MIN_S = 0.3
 _LOCAL_RECALL_RESERVE_S = 1.5
 #: The least a server is asked with: in less it could not be found, prove itself and answer.
 _RESIDENT_MIN_S = 1.0
-#: An embedding call's failures that its connection or its worker made, not the provider (``_server_own_vector_fault``).
-_CONNECTION_FAULTS = frozenset({"network_error", "http_protocol"})
 #: What a server's recall may report of how it ended, besides its vector gap and its error.
 _RESIDENT_REASONS = frozenset({"deadline_exceeded", "recall_exception", "recall_incomplete"})
-#: Capture refusals a second attempt meets again.
-_SETTLED_CAPTURE_CODES = frozenset({"SECRET_DETECTED", "INPUT_INVALID", "VERSION_CONFLICT"})
-#: How a capture says it refused a message as holding a credential: as a code, or as the rejection it returns.
-_SECRET_REFUSALS = frozenset({"SECRET_DETECTED", "plaintext_secret_rejected"})
-_CAPTURE_ERROR_CODES = frozenset(
-    {
-        "ACCESS_DENIED",
-        "IDENTITY_UNBOUND",
-        "INPUT_INVALID",
-        "VERSION_CONFLICT",
-        "DEADLINE_EXCEEDED",
-        "STORAGE_UNAVAILABLE",
-        "SOURCE_MISSING",
-        "SECRET_DETECTED",
-    }
-)
 _SUPPORTED_EVENTS = frozenset({"SessionStart", "UserPromptSubmit", "Stop", "PostToolUse", "Interrupt", "SessionEnd"})
 #: Where each client's hooks differ.  Claude Code's were the model for Codex's and send the
 #: same fields, except that a turn is named by ``prompt_id``.  Its tool output is not recorded:
@@ -147,51 +135,6 @@ class SystemHookClock:
 
     def monotonic(self) -> float:
         return time.monotonic()
-
-
-@dataclass
-class HookDiagnostics:
-    last_event: str | None = None
-    last_reason: str | None = None
-    capability_gaps: tuple[str, ...] = ()
-    capture_stage: str | None = None
-    capture_disposition: str | None = None
-    capture_durability: str | None = None
-    capture_error_type: str | None = None
-    capture_error_code: str | None = None
-    #: The code before the frozen allowlist collapsed it to CAPTURE_ERROR.
-    #: ``capture_error_code`` is a contract the host reads and may only carry
-    #: one of ``_CAPTURE_ERROR_CODES``; this keeps the original for the local
-    #: stderr diagnostic line so a collapsed code is still diagnosable.  It
-    #: never reaches the host.
-    capture_error_detail: str | None = None
-    capture_elapsed_ms: int | None = None
-    #: What stopped an automatic recall (``recall_exception``): the exception's class and, for a contract error,
-    #: its code.  Without it the server's log said only that a recall had failed.
-    recall_error_detail: str | None = None
-    #: Why the recall ran without its vector search (``recall_without_vectors``), when it did.  The packet carried
-    #: that to the model and nowhere else: Claude Code and Codex recalled without their vector search for as long as
-    #: anyone could tell, and no log showed it.
-    recall_vector_gap: str | None = None
-    #: Whether the recall ran its vector search: what a hook asks of its server's answer (``_resident_answer``).
-    recall_vectors: bool | None = None
-    #: How long attaching the runtime (vector store, embedding worker) took, when this hook attached it.
-    runtime_attach_ms: int | None = None
-    #: How long all of this hook's captures took: a Stop writes each session-record line (``capture_elapsed_ms`` is
-    #: the last one's).
-    capture_total_ms: int | None = None
-
-    @property
-    def capture_settled(self) -> bool:
-        """No capture, or one stored, queued, or refused in a way no retry changes (a secret, an invalid message,
-        its id already taken, its id's message deleted, or taken from the inbox by a pass that stored it).
-        Otherwise the store was busy or away, and the same hook sent again may store it."""
-        return (
-            self.capture_stage is None
-            or self.capture_durability in ("persisted", "queued")
-            or self.capture_disposition in ("rejected", "conflict", "cancelled")
-            or self.capture_error_code in _SETTLED_CAPTURE_CODES
-        )
 
 
 @dataclass
@@ -330,10 +273,6 @@ class CodexHookHandler:
         if gaps:
             self._merge_runtime_gaps(gaps)
 
-    def _note_capture_error(self, code: object) -> None:
-        self.diagnostics.capture_error_code = code if code in _CAPTURE_ERROR_CODES else "CAPTURE_ERROR"
-        self.diagnostics.capture_error_detail = _error_detail(code)
-
     def _remaining(self, deadline: float) -> float:
         return max(0.0, deadline - self.clock.monotonic())
 
@@ -352,11 +291,6 @@ class CodexHookHandler:
 
     def _captured_this_call(self) -> bool:
         return self._persisted_this_call or self._queued_this_call
-
-    def _refused_this_call(self) -> bool:
-        """The capture refused its message (a credential, or nothing left to store), rather than failing to write it."""
-        diagnostics = self.diagnostics
-        return diagnostics.capture_disposition == "rejected" or diagnostics.capture_error_detail in _SECRET_REFUSALS
 
     # -- trusted runtime -------------------------------------------------
 
@@ -616,7 +550,7 @@ class CodexHookHandler:
             self.diagnostics.capture_durability = "unknown"
             self.diagnostics.capture_error_type = type(exc).__name__
             if isinstance(exc, ContractError):
-                self._note_capture_error(exc.code)
+                self.diagnostics.note_capture_error(exc.code)
                 if (exc.code, exc.field) == DELETED_KEY:
                     # A copy of a deleted message under its key, written straight from the session record: refused for
                     # good, as the inbox cancels one.  Taken as unsettled, every later Stop stopped at that line
@@ -632,7 +566,7 @@ class CodexHookHandler:
         self.diagnostics.capture_disposition = receipt.disposition
         self.diagnostics.capture_durability = receipt.durability
         if receipt.error_code:
-            self._note_capture_error(receipt.error_code)
+            self.diagnostics.note_capture_error(receipt.error_code)
         if receipt.durability == "queued":
             self._queued_this_call = True
             self.diagnostics.capture_stage = "durable_inbox"
@@ -872,7 +806,7 @@ class CodexHookHandler:
         # nothing of it reaches an embedding provider.
         vectors = (
             self._captured_this_call()
-            or (event is not None and not self._refused_this_call() and not contains_secret_like_text(prompt))
+            or (event is not None and not self.diagnostics.capture_refused and not contains_secret_like_text(prompt))
         ) and self._remaining(deadline) >= _RUNTIME_ATTACH_MIN_S
         if vectors:
             self._ensure_host_runtime(audience)
@@ -911,7 +845,7 @@ class CodexHookHandler:
         or neither did; one whose own went without it waits for the server until its own time is up.  An answer that
         failed, ran out of time or came back empty because its read did not finish (``_RESIDENT_REASONS``), or none,
         leaves the hook's own.  One without its vector search is used as it is unless what failed was the server's
-        own (``_server_own_vector_fault``) and this hook has a vector search: the hook then recalls as well (a server
+        own (``server_own_vector_fault``) and this hook has a vector search: the hook then recalls as well (a server
         that lost its key recalled every prompt by words alone).  The server writes nothing: the prompt was stored
         here, so an answer that comes after the hook is done costs the turn nothing but its warm vectors."""
         remaining = self._remaining(deadline)
@@ -935,7 +869,7 @@ class CodexHookHandler:
         if server is not None and (
             server[1].get("recall_vectors") is True
             or not self._vector_route()
-            or not _server_own_vector_fault(server[1].get("recall_vector_gap"))
+            or not server_own_vector_fault(server[1].get("recall_vector_gap"))
         ):
             return self._resident_used(server)
         reason = self.diagnostics.last_reason
@@ -950,7 +884,7 @@ class CodexHookHandler:
             self.diagnostics.last_reason = reason  # what the hook's own recall said is not what answered
             return self._resident_used(server)
         if server is not None:
-            gap = _error_detail(server[1].get("recall_vector_gap"))
+            gap = error_detail(server[1].get("recall_vector_gap"))
             self.resident_outcome = "without_vectors" + (f":{gap}" if gap else "")
         elif not read:
             self.resident_outcome = "slow" if own_vectors else "late"
@@ -967,7 +901,7 @@ class CodexHookHandler:
         reason = fields.get("last_reason")
         if reason in _RESIDENT_REASONS:
             # Said on the hook's stderr: a server whose recalls kept failing looked healthy there (review of rc11).
-            detail = _error_detail(fields.get("recall_error_detail"))
+            detail = error_detail(fields.get("recall_error_detail"))
             self.resident_outcome = f"failed:{reason}" + (f":{detail}" if detail else "")
             return None
         return answered
@@ -978,7 +912,7 @@ class CodexHookHandler:
         for name in ("recall_vector_gap", "recall_error_detail"):
             value = fields.get(name)
             if value is None or type(value) is str:
-                setattr(self.diagnostics, name, _error_detail(value) if value else None)
+                setattr(self.diagnostics, name, error_detail(value) if value else None)
         return result if isinstance(result, dict) else {}
 
     def _vector_route(self) -> bool:
@@ -1059,7 +993,7 @@ class CodexHookHandler:
             preparation = self.core.prepare_recall_render(context, packet)
         except (ContractError, OSError, RuntimeError, sqlite3.Error) as exc:
             code = getattr(exc, "code", None)
-            self.diagnostics.recall_error_detail = _error_detail(
+            self.diagnostics.recall_error_detail = error_detail(
                 f"{type(exc).__name__}:{code}" if isinstance(code, str) else type(exc).__name__
             )
             self._diag("recall_exception", gaps=gaps)
@@ -1067,13 +1001,13 @@ class CodexHookHandler:
         without = recall_without_vectors(packet.get("gaps") or ())
         self.diagnostics.recall_vectors = without is None
         if without is not None:
-            self.diagnostics.recall_vector_gap = _error_detail(without)
+            self.diagnostics.recall_vector_gap = error_detail(without)
         incomplete = recall_incomplete(packet)
         if incomplete is not None:
             # Its vector search may have run, but nothing of it reached the answer: ranked as without it, a hook's own
             # empty answer beat the entry's server's finished one (review of rc11).
             self.diagnostics.recall_vectors = False
-            self.diagnostics.recall_error_detail = _error_detail(incomplete)
+            self.diagnostics.recall_error_detail = error_detail(incomplete)
             self._diag("recall_incomplete", gaps=gaps)
         if self._remaining(deadline) <= 0:
             # Nothing of its vector search reached an answer: ranked as with it, this empty answer beat a server's
@@ -1201,98 +1135,3 @@ def _configured_budget(runtime_config_path: str | None) -> float | None:
         return _strict_hook_budget(raw["hook_processing_seconds"])
     except (OSError, UnicodeError, ValueError):
         return None
-
-
-def _error_detail(code: object) -> str | None:
-    """Keep an error code verbatim, bounded and free of anything but a code.
-
-    Codes are enum-like by construction, so the guard is cheap insurance
-    rather than sanitisation: whatever ends up on the diagnostic line must be
-    recognisable as a code and cannot become a channel for payload text.
-    """
-    text = str(code or "").strip()
-    if not text or len(text) > 64:
-        return None
-    return text if all(char.isalnum() or char in "_.:-" for char in text) else None
-
-
-#: Gaps by which a recall packet says its vector search did not run or did not finish, in the order one is named:
-#: the search failed, was unavailable, or had no time, or the whole search failed before it.  A search that ran and
-#: had candidates refused (``vector_rejected:*``, ``vector_old_or_mismatched_space``) is not among them.
-_WITHOUT_VECTORS = (
-    lambda gap: gap.startswith("vector_error:"),
-    lambda gap: gap == "vector_unavailable",
-    lambda gap: gap in ("deadline_exceeded", "deadline_exceeded_collect", "deadline_exceeded_vector"),
-    lambda gap: gap.startswith("sqlite_unavailable"),
-)
-
-
-def recall_incomplete(packet) -> str | None:
-    """What says a recall came back empty because its read did not finish (the store could not be read, or its time
-    ran out at any step: ``status: unavailable``), or None.  Such a packet reads like one that found nothing, and a
-    server's was taken over the hook's own (reviews of rc11)."""
-    if not isinstance(packet, dict) or packet.get("status") != "unavailable":
-        return None
-    gaps = [gap for gap in packet.get("gaps") or () if isinstance(gap, str)]
-    cause = next((gap for gap in gaps if gap.startswith(("deadline_exceeded", "sqlite_unavailable"))), None)
-    return cause or (gaps[0] if gaps else "unavailable")
-
-
-def _server_own_vector_fault(gap: object) -> bool:
-    """Whether a server's recall went without its vector search for a reason of its own, which the hook's own recall
-    may not share: no vector search at all, its key (``credential_*``), its LanceDB helper or another fault of its own
-    process that is not an embedding call's (``core.vector_failure``), or its embedding connection and worker
-    (``network_error``, ``http_protocol``, ``transport_*``), which the server keeps between prompts (rc12) while the
-    hook's are new.  Otherwise an embedding call's failure (what the provider answered, the time it took, a spent
-    budget) the hook meets as well: a second recall only cost the prompt its time and a second metered call (reviews
-    of rc11).  The spend ledger's lock held by another writer is not one (an ``OperationalError``), and costs one
-    recall more.  Nor is the search running out of time here."""
-    if gap == "vector_unavailable":
-        return True
-    if type(gap) is not str or not gap.startswith("vector_error:"):
-        return False
-    parts = gap.split(":")
-    if len(parts) < 2 or not parts[1]:
-        return False
-    if parts[1] != "AuxiliaryModelError":
-        return True
-    return len(parts) >= 3 and (parts[2].startswith(("credential_", "transport_")) or parts[2] in _CONNECTION_FAULTS)
-
-
-def recall_without_vectors(gaps) -> str | None:
-    """The gap that says a recall ran without its vector search, or None when the search ran."""
-    listed = [gap for gap in gaps if isinstance(gap, str)]
-    for matches in _WITHOUT_VECTORS:
-        found = next((gap for gap in listed if matches(gap)), None)
-        if found is not None:
-            return found
-    return None
-
-
-def emit_result(result: dict[str, Any], *, diagnostics: HookDiagnostics | None = None, empty: str = "{}") -> None:
-    # Codex decodes hook stdout as UTF-8, while a Windows child process may
-    # inherit a legacy code-page TextIOWrapper.  ASCII JSON is safe on both
-    # sides and json.loads restores the original Unicode values.  An empty
-    # answer is written as ``empty`` (``boundary.EMPTY_ANSWER``).
-    sys.stdout.write(json.dumps(result, ensure_ascii=True) if result else empty)
-    if diagnostics is not None and diagnostics.last_reason:
-        sys.stderr.write(f"CODEX_HOOK:{diagnostics.last_reason}\n")
-    if diagnostics is not None and diagnostics.capture_stage:
-        detail = {
-            "stage": diagnostics.capture_stage,
-            "disposition": diagnostics.capture_disposition,
-            "durability": diagnostics.capture_durability,
-            "error_type": diagnostics.capture_error_type,
-            "error_code": diagnostics.capture_error_code,
-            "elapsed_ms": diagnostics.capture_elapsed_ms,
-        }
-        # Local operator channel only.  stdout carries the host contract; this
-        # line is what a person reads when the contract code is not specific
-        # enough to act on.
-        if diagnostics.capture_error_detail and diagnostics.capture_error_detail != diagnostics.capture_error_code:
-            detail["error_detail"] = diagnostics.capture_error_detail
-        sys.stderr.write("CODEX_CAPTURE:" + json.dumps(detail, ensure_ascii=True, separators=(",", ":")) + "\n")
-    if diagnostics is not None and diagnostics.recall_error_detail:
-        sys.stderr.write(f"CODEX_RECALL:{diagnostics.recall_error_detail}\n")
-    if diagnostics is not None and diagnostics.recall_vector_gap:
-        sys.stderr.write(f"CODEX_RECALL_VECTOR:{diagnostics.recall_vector_gap}\n")

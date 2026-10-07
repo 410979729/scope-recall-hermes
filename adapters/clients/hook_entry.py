@@ -16,7 +16,8 @@ from pathlib import Path
 from ...runtime.resume_entry import host_process_credential_environment
 from .config import load_codex_config, load_shared_client
 from .boundary import EMPTY_ANSWER
-from .handler import CodexHookHandler, emit_result
+from .handler import CodexHookHandler
+from .hook_answer import emit_result
 
 
 def main(argv: list[str] | None = None) -> int:

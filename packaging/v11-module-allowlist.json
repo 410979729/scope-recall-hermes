@@ -23,6 +23,7 @@
     "adapters/clients/boundary.py",
     "adapters/clients/config.py",
     "adapters/clients/handler.py",
+    "adapters/clients/hook_answer.py",
     "adapters/clients/hook_entry.py",
     "adapters/clients/identity.py",
     "adapters/clients/local_endpoint.py",
