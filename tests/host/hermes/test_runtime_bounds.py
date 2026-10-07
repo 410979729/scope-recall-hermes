@@ -1109,12 +1109,21 @@ def test_a_capture_being_written_is_not_given_up_under_its_writer(adapter, monke
         assert provider._retry.give_up_expired(tuple(provider._retry.captures.items())) == [key]
 
 
+def test_the_adapter_s_parts_log_under_its_name():
+    """Hermes writes the logger's name into each line, and a logging configuration may name it: the lines of the
+    adapter's parts (capture, its retry, a turn, the session binding) kept the adapter's name when they moved."""
+    from scope_recall.adapters.hermes import session_binding, turn_capture
+
+    for module in (capture, capture_retry, session_binding, turn_capture):
+        assert module._log.name == provider_module._log.name == "scope_recall.adapters.hermes.provider", module
+
+
 def test_a_capture_kept_to_retry_is_said_once_until_it_is_stored(adapter, hermes_home, monkeypatch, caplog):
     """Each failed retry said its line again: driven by the thread, a line per capture every 30 s, idle or not
     (review of 3.6.1).  It is said once when it is kept, and once when it is stored."""
     import logging
 
-    caplog.set_level(logging.INFO, logger="scope_recall.adapters.hermes")
+    caplog.set_level(logging.INFO, logger="scope_recall.adapters.hermes.provider")
     provider, _clock = adapter
     monkeypatch.setattr(capture_retry, "_RETRY_EVERY_S", 3600.0)
     _busy_store(provider, monkeypatch, 6)
@@ -1184,7 +1193,7 @@ def test_a_shutdown_leaves_a_replay_still_in_flight_to_its_thread_and_says_its_e
     it came, was never said (reviews of 3.6.1)."""
     import logging
 
-    caplog.set_level(logging.INFO, logger="scope_recall.adapters.hermes")
+    caplog.set_level(logging.INFO, logger="scope_recall.adapters.hermes.provider")
     provider, _clock = adapter
     monkeypatch.setattr(capture_retry, "_RETRY_EVERY_S", 3600.0)
     monkeypatch.setattr(provider_module, "_CAPTURE_DRAIN_WAIT_S", 0.3)

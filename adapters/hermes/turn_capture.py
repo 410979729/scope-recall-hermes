@@ -24,7 +24,9 @@ from .tool_surface import _TOOL_NAMES
 if TYPE_CHECKING:
     from .provider import ScopeRecallHermesAdapter
 
-_log = logging.getLogger(__name__)
+#: The adapter's log name, which these lines carried before the adapter was split: a host writes it into each line,
+#: and a logging configuration may name it.
+_log = logging.getLogger("scope_recall.adapters.hermes.provider")
 
 #: Turns whose opening message ``pre_llm_call`` stored, remembered across a compression's session switch.
 _USER_CAPTURED_TURNS = 64
