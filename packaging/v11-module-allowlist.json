@@ -25,6 +25,7 @@
     "adapters/clients/handler.py",
     "adapters/clients/hook_answer.py",
     "adapters/clients/hook_entry.py",
+    "adapters/clients/hook_events.py",
     "adapters/clients/identity.py",
     "adapters/clients/local_endpoint.py",
     "adapters/clients/mcp_entry.py",

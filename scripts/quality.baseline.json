@@ -343,7 +343,6 @@
    "C901": {
     "CodexHookHandler.handle_payload": 17
    },
-   "E501": 1,
    "I001": 1,
    "PLR0911": {
     "CodexHookHandler.handle_payload": 11
@@ -361,6 +360,9 @@
    "PLR0912": {
     "main": 16
    }
+  },
+  "adapters/clients/hook_events.py": {
+   "E501": 1
   },
   "adapters/clients/identity.py": {
    "I001": 1,

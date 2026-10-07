@@ -212,8 +212,8 @@ def test_codex_hook_reads_verified_runtime_budget_and_ignores_payload(tmp_path):
     assert handler._hook_budget() == 5.0
 
     deadlines = {}
-    handler._session_start = lambda session_id, audience, deadline: deadlines.setdefault("start", deadline) or {}
-    handler._user_prompt_submit = lambda session_id, audience, payload, deadline: (
+    handler.events.session_start = lambda session_id, audience, deadline: deadlines.setdefault("start", deadline) or {}
+    handler.events.prompt = lambda session_id, audience, payload, deadline: (
         deadlines.setdefault("prompt", deadline) or {}
     )
     base = {"session_id": "TEST-budget-session", "cwd": str(project)}
@@ -228,7 +228,7 @@ def test_codex_hook_reads_verified_runtime_budget_and_ignores_payload(tmp_path):
         clock=FixedClock(),
         hook_started_at=101.0,
     )
-    started_handler._user_prompt_submit = lambda session_id, audience, payload, deadline: (
+    started_handler.events.prompt = lambda session_id, audience, payload, deadline: (
         deadlines.setdefault("started", deadline) or {}
     )
     started_handler.handle_payload({**base, "hook_event_name": "UserPromptSubmit", "turn_id": "turn-2", "prompt": "x"})
