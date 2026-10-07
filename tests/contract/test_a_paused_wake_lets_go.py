@@ -128,11 +128,20 @@ def test_a_held_package_folder_is_named_and_so_is_what_to_do(monkeypatch, capsys
 
 
 def test_every_reason_the_step_raises_is_a_code_it_will_print():
+    import ast
     import inspect
-    import re
 
-    source = inspect.getsource(package_upgrade)
-    codes = set(re.findall(r"PackageUpgradeError\('([^']+)'\)", source)) | {package_upgrade._LOCKED}
+    raised = {
+        node.args[0].value
+        for node in ast.walk(ast.parse(inspect.getsource(package_upgrade)))
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "PackageUpgradeError"
+        and len(node.args) == 1
+        and isinstance(node.args[0], ast.Constant)
+        and isinstance(node.args[0].value, str)
+    }
+    codes = raised | {package_upgrade._LOCKED}
     assert len(codes) >= 12, codes
     for code in codes:
         assert package_upgrade._REASON_CODE.fullmatch(code), code
