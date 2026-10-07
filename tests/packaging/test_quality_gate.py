@@ -99,6 +99,31 @@ def test_a_definition_repeated_under_one_name_is_held_to_its_own_size():
     assert over == ["ruff a.py PLR0913 f#2: 9, recorded 0"]
 
 
+def _twins(first: int, second: int | None) -> tuple[list, dict]:
+    """Two conditional definitions of ``f`` with ``first`` and ``second`` arguments (None: the second is gone)."""
+    source = "if X:\n    def f(a):\n        return a\n" + ("else:\n    def f(a):\n        return a\n" if second else "")
+    message = "Too many arguments in function definition ({} > 8)"
+    findings = [("ruff", "a.py", 2, "PLR0913", message.format(first))]
+    if second:
+        findings.append(("ruff", "a.py", 5, "PLR0913", message.format(second)))
+    return findings, {"a.py": source}
+
+
+def test_removing_or_reordering_one_of_twins_is_not_taken_for_growth():
+    recorded = quality.tally(*_twins(9, 10))
+    assert recorded["ruff"] == {"a.py": {"PLR0913": {"f": 10, "f#2": 9}}}
+    for current in (quality.tally(*_twins(10, None)), quality.tally(*_twins(9, None))):
+        assert quality.grown(recorded, current) == []
+        assert quality.compare(recorded, current)[0] == []
+    assert quality.tally(*_twins(10, 9)) == recorded
+    # Either twin growing is still growth, also beneath the other.
+    over, _under, _flagged = quality.compare(recorded, quality.tally(*_twins(9, 11)))
+    assert over == ["ruff a.py PLR0913 f: 11, recorded 10"]
+    assert quality.grown(recorded, quality.tally(*_twins(10, 10))) == ["ruff a.py PLR0913 f#2: 10, recorded 9"]
+    # A function nested in one of twins is numbered with those nested in the other.
+    assert quality.by_size({"f.g": 16, "f#2.g": 20, "f#2": 30}) == {"f.g": 20, "f.g#2": 16, "f": 30}
+
+
 def test_the_installed_package_must_hold_exactly_what_this_tree_ships(tmp_path):
     root, installed = tmp_path / "tree", tmp_path / "site" / "scope_recall"
     for folder in (root / "packaging", root / "core", installed / "core"):

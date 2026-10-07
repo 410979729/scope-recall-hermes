@@ -94,7 +94,7 @@ def check_environment() -> None:
 def functions(source: str) -> list[tuple[int, int, str]]:
     """(first line, last line, name) of every function in a module, decorators included.  The name is the qualified
     one, and a definition that repeats one (a conditional ``def``, a property's setter) adds ``#2``, ``#3`` in source
-    order, so that each is held to its own size."""
+    order, so that each keeps a size of its own (``tally`` then numbers them by size)."""
     found: list[tuple[int, int, str]] = []
     seen: dict[str, int] = {}
 
@@ -122,6 +122,20 @@ def function_at(defined: list[tuple[int, int, str]], row: int) -> str:
     return min(around)[1] if around else "<module>"
 
 
+def by_size(sizes: dict[str, int]) -> dict[str, int]:
+    """Definitions that share a name (``f``, ``f#2``, and those nested in them) numbered by size, largest first.  So
+    compared, a group's sizes meet largest to largest: removing or reordering one of them is not taken for another's
+    growth, and any of them growing still is."""
+    groups: dict[str, list[int]] = {}
+    for name, size in sizes.items():
+        groups.setdefault(re.sub(r"#\d+", "", name), []).append(size)
+    return {
+        name if rank == 1 else f"{name}#{rank}": size
+        for name, values in groups.items()
+        for rank, size in enumerate(sorted(values, reverse=True), start=1)
+    }
+
+
 def tally(findings: list[Finding], sources: dict[str, str]) -> dict:
     """Findings as the baseline records them: a count per file and rule, and for a size rule each function's size."""
     record: dict = {tool: {} for tool in TOOLS}
@@ -137,6 +151,11 @@ def tally(findings: list[Finding], sources: dict[str, str]) -> dict:
         name = function_at(defined[path], row)
         sizes = rules.setdefault(rule, {})
         sizes[name] = max(sizes.get(name, 0), int(size.group(1)))
+    for files in record.values():
+        for rules in files.values():
+            for rule, value in rules.items():
+                if isinstance(value, dict):
+                    rules[rule] = by_size(value)
     return record
 
 
