@@ -62,6 +62,7 @@
     "adapters/hermes/register.py",
     "adapters/hermes/runtime_wiring.py",
     "adapters/hermes/tool_surface.py",
+    "adapters/hermes/turn_capture.py",
     "adapters/hermes/worker.py",
     "adapters/lance.py",
     "adapters/models.py",
