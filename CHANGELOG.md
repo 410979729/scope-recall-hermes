@@ -9,7 +9,7 @@ All notable changes to `scope-recall` will be documented in this file.
 The first step of a clean-up that changes no behaviour: the tree has one format and a quality check.
 
 - `ruff format` (line length 120) formats the tree, tests included; `git blame --ignore-revs-file .git-blame-ignore-revs` skips that commit.
-- CI's `lint` job runs `scripts/quality.py`: formatting, and no ruff or pyright finding beyond those recorded in `scripts/quality.baseline.json`; a function over a size limit may not grow. The rule set is wider (import order, likely bugs, newer syntax, catching every exception, function size), and ruff and pyright are pinned in the `dev` extra and `uv.lock`. See CONTRIBUTING.md.
+- CI's `lint` job runs `scripts/quality.py`: formatting, and no more ruff or pyright findings per file and rule than `scripts/quality.baseline.json` records; a function over a size limit may not grow. The rule set is wider (import order, likely bugs, newer syntax, catching every exception, function size), and ruff and pyright are pinned in the `dev` extra and `uv.lock`. See CONTRIBUTING.md.
 
 ## [3.8.2] - 2026-10-07
 

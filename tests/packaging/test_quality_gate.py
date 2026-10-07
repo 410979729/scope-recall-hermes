@@ -70,6 +70,54 @@ def test_the_baseline_records_no_more_findings_unless_asked():
     ]
 
 
+def test_a_renamed_or_moved_function_may_not_grow_on_its_way():
+    recorded = _ruff({"core/a.py": {"C901": {"old": 16, "other": 30}}})
+    renamed = _ruff({"core/a.py": {"C901": {"renamed": 100, "other": 30}}})
+    assert quality.grown(recorded, renamed) == [
+        "ruff core/a.py C901 renamed: 100, bigger than the 16 it may have been before a rename or move"
+    ]
+    moved = _ruff({"core/a.py": {"C901": {"other": 30}}, "core/b.py": {"C901": {"old": 100}}})
+    assert quality.grown(recorded, moved) == [
+        "ruff core/b.py C901 old: 100, bigger than the 16 it may have been before a rename or move"
+    ]
+    # Two renamed at once, each no bigger than one that went: matched largest to largest.
+    both = _ruff({"core/b.py": {"C901": {"first": 29, "second": 16}}})
+    assert quality.grown(recorded, both) == []
+
+
+def test_a_definition_repeated_under_one_name_is_held_to_its_own_size():
+    source = "if X:\n    def f(a):\n        return a\nelse:\n    def f(a):\n        return a\n"
+    defined = quality.functions(source)
+    assert [name for *_, name in defined] == ["f", "f#2"]
+    findings = [
+        ("ruff", "a.py", 2, "PLR0913", "Too many arguments in function definition (9 > 8)"),
+        ("ruff", "a.py", 5, "PLR0913", "Too many arguments in function definition (9 > 8)"),
+    ]
+    assert quality.tally(findings, {"a.py": source})["ruff"] == {"a.py": {"PLR0913": {"f": 9, "f#2": 9}}}
+    recorded = _ruff({"a.py": {"PLR0913": {"f": 9}}})
+    over, _under, _flagged = quality.compare(recorded, quality.tally(findings, {"a.py": source}))
+    assert over == ["ruff a.py PLR0913 f#2: 9, recorded 0"]
+
+
+def test_the_installed_package_must_hold_exactly_what_this_tree_ships(tmp_path):
+    root, installed = tmp_path / "tree", tmp_path / "site" / "scope_recall"
+    for folder in (root / "packaging", root / "core", installed / "core"):
+        folder.mkdir(parents=True)
+    allowlist = {"python_modules": ["__init__.py", "core/a.py"], "package_data": ["_worker.py", "data.json"]}
+    (root / "packaging" / "v11-module-allowlist.json").write_text(json.dumps(allowlist), encoding="utf-8")
+    for name in ("__init__.py", "core/a.py", "_worker.py"):
+        (root / name).write_text(f"# {name}\n", encoding="utf-8")
+        (installed / name).write_text(f"# {name}\n", encoding="utf-8")
+    assert quality.install_problem(installed, root) is None
+    (installed / "core" / "a.pyi").write_text("x: int\n", encoding="utf-8")
+    assert quality.install_problem(installed, root) == "core/a.pyi is in it but not shipped"
+    (installed / "core" / "a.pyi").unlink()
+    (installed / "core" / "a.py").unlink()
+    assert quality.install_problem(installed, root) == "core/a.py is missing from it"
+    (installed / "core" / "a.py").write_text("# changed\n", encoding="utf-8")
+    assert quality.install_problem(installed, root) == "core/a.py differs"
+
+
 def test_a_size_finding_names_the_function_on_its_line():
     defined = quality.functions(SOURCE)
     assert [name for *_, name in defined] == ["plain", "Store.size", "Store.put", "Store.put.check"]

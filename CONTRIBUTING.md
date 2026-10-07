@@ -25,9 +25,10 @@ in `scripts/check.py`.
 1. Run the tiers that own the files you changed, then `unit` + `contract` + `packaging`:
    `python -X utf8 scripts/check.py --tier contract`
 2. Run the quality check, which CI's `lint` job runs: `ruff format` leaves every
-   file as it is, and ruff and pyright find nothing that
-   `scripts/quality.baseline.json` does not record (new code meets the rules in
-   `pyproject.toml`; older findings are recorded until they are fixed). Make the
+   file as it is, no file has more ruff or pyright findings of a rule than
+   `scripts/quality.baseline.json` records, and no function is bigger than
+   recorded (new code meets the rules in `pyproject.toml`; older findings are
+   recorded until they are fixed). Make the
    environment from the lock, so the tool versions and packages are CI's:
    `uv sync --locked --no-editable --reinstall-package hermes-scope-recall --extra lancedb --extra codex --extra dev`
    then `uv run --no-sync python scripts/quality.py`. When you fixed findings it
