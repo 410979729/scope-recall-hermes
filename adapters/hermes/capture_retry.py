@@ -11,19 +11,18 @@ import logging
 import sqlite3
 import threading
 import time
-from dataclasses import dataclass, replace
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
-from scope_recall.contracts import ContractError, TrustedContext
+from scope_recall.contracts import ContractError
 from scope_recall.core import MemoryCore
 
 from .authorization import build_ingress_authorizer
 from .boundary import SourceIdentity
-from .capture import CAPTURE_TIMEOUT_S, label
+from .capture import CAPTURE_TIMEOUT_S, RetryCapture, label
 from .identity import (
     HermesIdentity,
     HermesIdentityError,
-    HermesRuntimeScope,
     resolve_runtime_audience,
 )
 from .installation import assert_binding_matches_manifest, load_binding_for_home
@@ -51,17 +50,6 @@ _RETRY_GIVE_UP_S = 1800.0
 #: a shutdown, so nothing wrote the buffer again until a gateway restart dropped it.  tianji lost 10 tool results so on
 #: 2026-10-04 (``capture_failure`` logged once, never in the store).
 _RETRY_EVERY_S = 30.0
-
-
-@dataclass(frozen=True)
-class RetryCapture:
-    context: TrustedContext
-    event: dict
-    gaps: tuple[str, ...]
-    scope_id: str
-    host_scope: HermesRuntimeScope
-    #: When it was kept (the monotonic clock), for ``_RETRY_GIVE_UP_S``.
-    kept_at: float
 
 
 class CaptureRetry:
@@ -184,7 +172,7 @@ class CaptureRetry:
                 context = replace(pending.context, allowed_scope_ids=frozenset(allowed_scopes))
                 self.in_flight.add(key)
                 try:
-                    self._adapter._capture_event(
+                    self._adapter._writer.write(
                         context,
                         pending.event,
                         identity=key,

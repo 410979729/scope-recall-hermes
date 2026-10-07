@@ -60,15 +60,14 @@
    "reportArgumentType": 2,
    "reportOptionalOperand": 1
   },
+  "adapters/hermes/capture.py": {
+   "reportArgumentType": 1
+  },
   "adapters/hermes/identity.py": {
    "reportArgumentType": 1
   },
   "adapters/hermes/installation.py": {
    "reportArgumentType": 3
-  },
-  "adapters/hermes/provider.py": {
-   "reportArgumentType": 4,
-   "reportCallIssue": 3
   },
   "adapters/hermes/tool_surface.py": {
    "reportAttributeAccessIssue": 15
@@ -436,6 +435,11 @@
    },
    "UP017": 1
   },
+  "adapters/hermes/capture.py": {
+   "PLR0913": {
+    "CaptureWriter.write": 9
+   }
+  },
   "adapters/hermes/capture_retry.py": {
    "E501": 1
   },
@@ -471,20 +475,8 @@
   },
   "adapters/hermes/provider.py": {
    "BLE001": 2,
-   "C901": {
-    "ScopeRecallHermesAdapter._capture_event": 37
-   },
    "E501": 1,
    "I001": 1,
-   "PLR0912": {
-    "ScopeRecallHermesAdapter._capture_event": 39
-   },
-   "PLR0913": {
-    "ScopeRecallHermesAdapter._capture_event": 9
-   },
-   "PLR0915": {
-    "ScopeRecallHermesAdapter._capture_event": 99
-   },
    "UP006": 10,
    "UP017": 1,
    "UP031": 1,

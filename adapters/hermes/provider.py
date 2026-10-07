@@ -4,9 +4,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from dataclasses import dataclass
-import copy
 import inspect
-import json
 from functools import wraps
 import logging
 import sqlite3
@@ -17,8 +15,7 @@ from typing import Any, Dict, List, Optional
 
 from scope_recall.contracts import ContractError, RecallRequest
 from scope_recall.core import CoreConfig, MemoryCore
-from scope_recall.core.capture_filters import sanitize_source_capture_text
-from scope_recall.core.retrieval import AUTOMATIC_PACKET_BUDGET_UNITS, MAX_CURRENT_SOURCE_REFS
+from scope_recall.core.retrieval import AUTOMATIC_PACKET_BUDGET_UNITS
 from ..runtime_wiring import render_host_recall_context
 
 from .boundary import (
@@ -40,9 +37,7 @@ from .identity import (
     HermesIdentityError,
     assert_same_installation,
     bind_hermes_identity,
-    host_scope_payload,
     switch_hermes_identity,
-    trusted_source_context,
     unbound_session_hint,
 )
 from .audiences import LOCAL_PLATFORMS
@@ -51,8 +46,8 @@ from .outcomes import TurnOutcomeTracker
 from .protocol import PublicMemoryProvider
 from .runtime_wiring import GAP_WORKER_LAUNCH_FAILED, HermesHostRuntime, TrustedHostRuntime, attach_trusted_host_runtime
 from .worker import AdapterWorker
-from .capture import CAPTURE_TIMEOUT_S, label
-from .capture_retry import SHUTDOWN_RETRY_SECONDS, CaptureRetry, RetryCapture
+from .capture import CAPTURE_TIMEOUT_S, GAP_CURRENT_SOURCE_REFS_LIMIT, CaptureWriter, label
+from .capture_retry import SHUTDOWN_RETRY_SECONDS, CaptureRetry
 from .tool_surface import HermesToolSurface, _TOOL_NAMES, display_zone
 
 _log = logging.getLogger(__name__)
@@ -67,7 +62,6 @@ _USER_CAPTURED_TURNS = 64
 #: kept, the answer is always written, and a turn past this says so (``capture_gap:interim_limit``).  With no
 #: bound a turn of three hundred tool steps held the adapter lock for minutes while each waited for the store.
 _INTERIM_PER_TURN = 64
-GAP_CURRENT_SOURCE_REFS_LIMIT = "degraded:current_source_refs_limit"
 #: How long a prefetch waits for its session's state.  Hermes gives the whole prefetch 8 s and goes on without it,
 #: and an automatic recall takes up to 5.
 _PREFETCH_STATE_WAIT_S = 2.0
@@ -123,24 +117,6 @@ def _start_vector_helper(host_runtime) -> None:
     except OSError as exc:
         # The first search starts its own helper, as before: slower, never a reason not to bind.
         _log.warning("could not start a vector helper ahead: %s", type(exc).__name__)
-
-
-def _same_stored_content(stored_event: dict, content: object) -> bool:
-    """Whether a capture repeats what is already stored under its key.
-
-    Storage keeps the admitted text, not the host's raw text, and splits a long
-    one into segments whose first holds the prefix, so the comparison runs on
-    the same admitted form.
-    """
-    if type(content) is not str:
-        return False
-    admitted = sanitize_source_capture_text(content)
-    stored = stored_event.get("content")
-    if type(stored) is not str:
-        return False
-    if "segment" in stored_event:
-        return admitted[: len(stored)] == stored
-    return admitted == stored
 
 
 def _memory_provider_base():
@@ -218,6 +194,7 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
         self._current_source_refs_overflow = False
         self._current_task_message = ""
         self._retry = CaptureRetry(self)
+        self._writer = CaptureWriter(self)
         self._diagnostics = AdapterDiagnostics()
         #: What the last worker launch attempt added to capability_gaps.
         self._worker_launch_gaps: tuple[str, ...] = ()
@@ -232,7 +209,7 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
         #: Held by ``sync_turn`` for the whole turn, which takes ``_lock`` only around each capture: a shutdown waits
         #: for it (``shutdown``).
         self._sync_lock = threading.RLock()
-        #: Captures whose store I/O runs without ``_lock`` (``_capture_event(release=True)``), and the condition a
+        #: Captures whose store I/O runs without ``_lock`` (``CaptureWriter.write(release=True)``), and the condition a
         #: shutdown waits on until none is left: a tool hook's capture is not covered by ``_sync_lock``.
         self._captures_in_flight = 0
         self._captures_done = threading.Condition(self._lock)
@@ -510,202 +487,6 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
             )
         )
 
-    def _record_capture_failure(self, identity: SourceIdentity | None, reason: str, *, replay: bool = False) -> None:
-        if identity is not None:
-            self._ledger.rollback(identity)
-            label = f"{identity[0]}@{identity[1]}"
-        else:
-            label = "unknown"
-        self._diagnostics.capture_failures = tuple(
-            dict.fromkeys((*self._diagnostics.capture_failures, f"capture_failure:{label}:{reason}"))
-        )[-64:]
-        retried = identity in self._retry.captures
-        if retried:
-            self._merge_gaps(("capture_gap:retry_memory_only", "capability_gap:durable_capture_ingress_unavailable"))
-        # The source's key and the failure's code only, never its content: a capture that failed used to leave
-        # no trace outside this process's memory.  A retry that fails again, and is still kept, is not said again:
-        # driven by the retry thread, that was a line per capture every 30 s; its end is said (stored, dropped, lost).
-        (_log.debug if replay and retried else _log.warning)(
-            "scope-recall: not stored (%s)%s: %s", reason, ", kept to retry" if retried else "", label[:200]
-        )
-
-    def _capture_event(
-        self,
-        context,
-        event,
-        *,
-        identity: SourceIdentity | None,
-        gaps: tuple[str, ...],
-        scope_id: str | None,
-        remaining_seconds: float = CAPTURE_TIMEOUT_S,
-        replay: bool = False,
-        bound: HermesIdentity | None = None,
-        release: bool = False,
-    ):
-        if event is None:
-            if gaps:
-                self._merge_gaps(gaps)
-            return None
-        event = dict(event)
-        # The binding the capture was said under: a turn written after its reply keeps it whatever session switch
-        # came in meanwhile (``sync_turn`` passes it).
-        bound = self._require_identity() if bound is None else bound
-        if not replay:
-            source_context = trusted_source_context(bound.scope)
-            if source_context is not None:
-                event["source_context"] = source_context
-            else:
-                event.pop("source_context", None)
-        if not scope_id:
-            self._record_capture_failure(identity, "capability_gap")
-            self._merge_gaps(gaps, ("capability_gap:no_capture_scope",))
-            return None
-        started = time.monotonic()
-        # What a failed write would keep to try again, made now and kept only once a write failed for a reason that
-        # may pass.  Kept before the write, a capture whose store I/O runs without the lock sat in the buffer while it
-        # wrote, and a retry pass of the same session wrote it a second time (review of 3.5.1).
-        retry: RetryCapture | None = None
-        if identity is not None and identity not in self._retry.captures:
-            if len(json.dumps(event, ensure_ascii=False).encode("utf-8")) <= 262144:
-                retry = RetryCapture(context, copy.deepcopy(event), gaps, scope_id, bound.scope, time.monotonic())
-
-        def keep_to_retry() -> None:
-            if identity is None or identity in self._retry.captures:
-                return
-            if retry is not None and len(self._retry.captures) < 16:
-                self._retry.captures[identity] = retry
-                self._retry.start()
-            else:
-                self._merge_gaps(("capture_gap:retry_buffer_full",))
-
-        host_scope = (
-            self._retry.captures[identity].host_scope if replay and identity in self._retry.captures else bound.scope
-        )
-        failure, holder = None, self._holder
-        if release:
-            # The store I/O without the lock, which the caller (``sync_turn``, a tool hook) holds exactly once.  Held
-            # across the write, it was taken straight back by this thread as it released it: the next turn's start
-            # got in after 2 of 14 such captures (measured on 3.4.9).  Only the store is touched until it is taken
-            # again.
-            self._captures_in_flight += 1
-            self._holder = None
-            self._lock.release()
-        try:
-            # The bounded host cache is only an optimization. SQLite retains
-            # first-witnessed time after an old identity leaves that cache.
-            # Only a replay of the same message inherits it: a restarted gateway
-            # numbers turns from 1 again, so a different message can arrive under
-            # an old key.  Storage re-keys that one, and it must keep its own time.
-            if identity is not None:
-                previous = self._require_core().source_by_event_key(
-                    context,
-                    identity[0],
-                    identity[1],
-                    remaining_seconds=max(0.001, remaining_seconds - (time.monotonic() - started)),
-                )
-                if (
-                    previous is not None
-                    and previous.scope_id == scope_id
-                    and previous.session_id == context.session_id
-                    and previous.project_id == context.project_id
-                    and previous.branch_id == context.branch_id
-                    and _same_stored_content(previous.event, event.get("content"))
-                ):
-                    for field in ("occurred_at", "recorded_at", "time_precision"):
-                        if field in previous.event:
-                            event[field] = previous.event[field]
-            core = self._require_core()
-            if isinstance(core, MemoryCore):
-                receipt = core.record_host_event(
-                    context,
-                    event,
-                    scope_id=scope_id,
-                    host_scope=host_scope_payload(host_scope),
-                    remaining_seconds=max(0.001, remaining_seconds - (time.monotonic() - started)),
-                )
-            else:
-                receipt = core.record_event(
-                    context,
-                    event,
-                    scope_id=scope_id,
-                    remaining_seconds=max(0.001, remaining_seconds - (time.monotonic() - started)),
-                )
-        except (ContractError, OSError, RuntimeError, sqlite3.Error) as exc:
-            failure = exc
-        finally:
-            if release:
-                self._lock.acquire()
-                self._holder = holder and (holder[0], time.monotonic(), holder[2])
-                self._captures_in_flight -= 1
-                self._captures_done.notify_all()
-        if release and not self._initialized:
-            # A shutdown stopped waiting for this write and closed the session meanwhile.  The write itself may well
-            # have landed (the store is not closed with the session); its bookkeeping belongs to a closed session,
-            # and raised into the host's hook runner (review of 3.5.1).
-            if failure is None and identity is not None and receipt.durability in ("persisted", "queued"):
-                self._ledger.confirm(identity)
-                self._retry.captures.pop(identity, None)
-            if replay and identity is not None:
-                # Said "still being written" at shutdown: its end is said here (review of 3.6.1).
-                if failure is None and receipt.durability in ("persisted", "queued"):
-                    _log.info(
-                        "scope-recall: %s on retry: %s",
-                        "stored" if receipt.durability == "persisted" else "queued",
-                        label(identity),
-                    )
-                else:
-                    _log.warning("scope-recall: not stored (still failing at shutdown), lost: %s", label(identity))
-            return None if failure is not None else receipt
-        if failure is not None:
-            if isinstance(failure, ContractError) and failure.code not in {"DEADLINE_EXCEEDED", "STORAGE_UNAVAILABLE"}:
-                self._retry.captures.pop(identity, None)
-            else:
-                keep_to_retry()
-            self._record_capture_failure(identity, "exception", replay=replay)
-            self._merge_gaps(gaps, ("capture_gap:write_exception",))
-            return None
-        if receipt.durability != "persisted":
-            if receipt.durability == "queued":
-                self._retry.captures.pop(identity, None)
-                if identity is not None:
-                    # Durably queued: the worker stores it from the inbox.  Left pending, it held one of the
-                    # ledger's 64 slots until the session ended, and a full ledger refused every capture.
-                    self._ledger.confirm(identity)
-                    if replay:
-                        _log.info("scope-recall: queued on retry: %s", label(identity))
-                self._merge_gaps(gaps, ("capture_gap:durable_ingress_pending",))
-                self._wake_background_worker(context=context)
-                return receipt
-            if receipt.disposition in {"rejected", "conflict", "cancelled"}:
-                self._retry.captures.pop(identity, None)
-            else:
-                keep_to_retry()
-            self._record_capture_failure(identity, receipt.error_code or receipt.disposition, replay=replay)
-            self._merge_gaps(gaps, (f"capture_gap:{receipt.disposition}",))
-            return receipt
-        if identity is not None:
-            self._ledger.confirm(identity)
-            self._retry.captures.pop(identity, None)
-            if replay:
-                # Said once, as the capture's being kept was: the pair shows what the retries saved.
-                _log.info("scope-recall: stored on retry: %s", label(identity))
-        for write in receipt.event_refs if context.session_id == self._require_identity().stored_session_id() else ():
-            ref = f"{write.ref}@{write.revision}"
-            if ref in self._current_source_refs:
-                continue
-            if len(self._current_source_refs) < MAX_CURRENT_SOURCE_REFS:
-                self._current_source_refs.append(ref)
-            elif not self._current_source_refs_overflow:
-                # A ref the fence cannot hold would let this turn's own source
-                # come back as memory, so recall stays off until the refs
-                # reset.  The gap goes where tool replies read it.
-                self._current_source_refs_overflow = True
-                self._diagnostics.capability_gaps = (*self._diagnostics.capability_gaps, GAP_CURRENT_SOURCE_REFS_LIMIT)
-        if gaps:
-            self._merge_gaps(gaps)
-        self._wake_background_worker(context=context)
-        return receipt
-
     def _wake_background_worker(self, *, context=None) -> None:
         """Use the host runtime's coalesced launcher, never drain in a hook."""
         identity = self._require_identity()
@@ -833,7 +614,7 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
         )
         if event is None and not gaps:
             return
-        receipt = self._capture_event(
+        receipt = self._writer.write(
             context,
             event,
             identity=ledger_identity,
@@ -899,7 +680,7 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
             outcome=outcome,
             origin=captured_origin,
         )
-        self._capture_event(
+        self._writer.write(
             context,
             event,
             identity=ledger_identity,
@@ -1015,7 +796,7 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
                         occurred_at=occurred_at,
                     )
                     if event is not None or gaps:
-                        self._capture_event(
+                        self._writer.write(
                             shown,
                             event,
                             identity=ledger_identity,
@@ -1038,7 +819,7 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
                         occurred_at=occurred_at,
                     )
                     if event is not None or gaps:
-                        self._capture_event(
+                        self._writer.write(
                             context,
                             event,
                             identity=ledger_identity,
@@ -1068,7 +849,7 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
         for event, ledger_identity in event_pairs:
             event_context = shown if event["role"] == "assistant" else opened
             with self._lock, self._holding("sync_turn"):
-                self._capture_event(
+                self._writer.write(
                     event_context,
                     event,
                     identity=ledger_identity,
