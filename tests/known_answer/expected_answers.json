@@ -1,0 +1,242 @@
+{
+  "about": "Expected answers for recall_invariants_check.py. Each one follows from the invariants as stated by the maintainer for 3.7.x on issue #179, and from docs/deletion-contract.md and docs/claim-mutation-contract.md. They were written from the invariants, then the script was run; they were not copied from a run.",
+  "fixture": {
+    "session-A, person": [
+      "For project Orchard the staging database port is 6543.",
+      "For project Orchard the release manager is Dana Whitfield.",
+      "Please correct Orchard staging database port: 6544.",
+      "Please delete the Orchard staging database port 6544."
+    ],
+    "session-A, assistant": [
+      "For project Orchard the backup bucket is cold-archive-7.",
+      "Please correct Orchard staging database port: 6544."
+    ],
+    "session-A, tool output": [
+      "df -h /srv/orchard: 81% used, mount point is /dev/vdb1"
+    ],
+    "session-B, person": [
+      "Please correct Orchard staging database port: 6544."
+    ],
+    "session-F, person": [
+      "Never forget the Orchard staging database port 6544.",
+      "Please delete the Orchard staging database port 6544."
+    ],
+    "stub model": "proposes one fact claim for each of the three 'For project Orchard ...' sentences, including the assistant's"
+  },
+  "checks": {
+    "A1_port_served_as_active_fact_before_worker_pass": {
+      "expected": false,
+      "means": "A person's statement is stored, but no fact exists until a worker pass has run."
+    },
+    "A2_port_words_findable_before_worker_pass": {
+      "expected": true,
+      "means": "The raw words are findable at once by word search; they are a source, not a fact."
+    },
+    "A3_port_served_as_active_fact_after_worker_pass": {
+      "expected": true,
+      "means": "Human source plus worker pass: the port 6543 is served as an active fact."
+    },
+    "A4_release_manager_served_as_active_fact_after_worker_pass": {
+      "expected": true,
+      "means": "Same for the control fact, which stays untouched for the rest of the run."
+    },
+    "A5_assistant_only_bucket_served_as_active_fact": {
+      "expected": false,
+      "means": "The model proposed the bucket claim, but its only source is the assistant, so it must not become an active fact."
+    },
+    "A6_tool_output_served_as_fact": {
+      "expected": false,
+      "means": "Tool output is kept and searchable but is never turned into a fact (since 3.2.0)."
+    },
+    "A7_stub_model_was_called": {
+      "expected": true,
+      "means": "Sanity check: the worker pass really reached the consolidation seam."
+    },
+    "B1_revise_citing_only_the_original_statement": {
+      "expected": "ACCESS_DENIED:current_human_evidence",
+      "means": "revise with no correction request from the person is refused."
+    },
+    "B2_revise_citing_an_assistant_message": {
+      "expected": "ACCESS_DENIED:current_human_evidence",
+      "means": "An assistant saying 'please correct' is not the person's request."
+    },
+    "B3_revise_in_session_A_citing_a_request_made_in_session_B": {
+      "expected": "ACCESS_DENIED:current_human_evidence",
+      "means": "The person did ask, but in another session; revise in session A is refused."
+    },
+    "B4_capture_alone_changed_the_fact": {
+      "expected": false,
+      "means": "Capturing 'Please correct ...: 6544.' does not change the fact by itself in this wording; the explicit revise call does."
+    },
+    "B5_revise_with_own_request_but_wrong_version": {
+      "expected": "VERSION_CONFLICT:payload",
+      "means": "The person's own in-session request, but the call names a version that is not the current one."
+    },
+    "B6_revise_with_own_request_and_exact_version": {
+      "expected": "accepted",
+      "means": "The person's own request, same session, exact current version: accepted."
+    },
+    "B7_current_value_after_revise": {
+      "expected": "6544",
+      "means": "The current value is the corrected one."
+    },
+    "B8_history_values_after_revise": {
+      "expected": [
+        "6543",
+        "6544"
+      ],
+      "means": "The old value is kept as history, not overwritten."
+    },
+    "B9_forget_in_a_session_with_no_request": {
+      "expected": "ACCESS_DENIED:forget_not_authorized",
+      "means": "forget with no request from the person in this session is refused."
+    },
+    "B10_forget_after_negated_wording": {
+      "expected": "ACCESS_DENIED:forget_not_authorized",
+      "means": "'Never forget ...' is not a delete request."
+    },
+    "B11_forget_in_session_F_when_the_request_was_made_in_session_A": {
+      "expected": "ACCESS_DENIED:forget_not_authorized",
+      "means": "A delete request made in another session does not authorize forget here."
+    },
+    "B12_forget_with_own_request_but_superseded_version": {
+      "expected": "VERSION_CONFLICT:payload",
+      "means": "The person's own in-session request, but the call names revision 1, which the revise already replaced."
+    },
+    "B13_forget_with_own_request_and_exact_version": {
+      "expected": "accepted",
+      "means": "The person's own request, same session, exact current version: accepted."
+    },
+    "C0_companion_held_the_fact_before_forget": {
+      "expected": true,
+      "means": "Non-vacuity: before forget, the vector companion really held rows for the claim and its source."
+    },
+    "C1_word_search_returns_forgotten": {
+      "expected": [],
+      "means": "After forget and one worker pass, word search (history included) returns none of: the claim, the original statement, the correction request, the authorizing delete."
+    },
+    "C1_companion_rows_for_forgotten": {
+      "expected": [],
+      "means": "The vector companion holds no row for any of them."
+    },
+    "C1_vector_search_returns_forgotten": {
+      "expected": [],
+      "means": "A nearest-neighbour search of the companion returns none of them."
+    },
+    "C1_recall_returns_forgotten": {
+      "expected": [],
+      "means": "Recall (word plus vector) returns none of them, as an item or as evidence."
+    },
+    "C1_current_claim_exists": {
+      "expected": false,
+      "means": "No current version of the fact."
+    },
+    "C1_history_versions": {
+      "expected": 0,
+      "means": "No historical version either."
+    },
+    "C1_control_fact_recalled": {
+      "expected": true,
+      "means": "Non-vacuity: the untouched control fact is still recalled."
+    },
+    "C1_control_fact_in_vector_search": {
+      "expected": true,
+      "means": "Non-vacuity: the companion still answers for the control fact."
+    },
+    "C1_word_search_bystanders_still_found": {
+      "expected": [
+        "assistant_correction",
+        "negated_request",
+        "session_A_delete_request",
+        "session_B_correction"
+      ],
+      "means": "By design per docs/deletion-contract.md: the deleted unit is the source group behind the fact plus the authorizing command. Other messages that only repeat the value stay findable. Listed so the boundary is explicit; please say if this is not the intended scope."
+    },
+    "C3_word_search_returns_forgotten": {
+      "expected": [],
+      "means": "Same as C1, after the rebuild."
+    },
+    "C3_companion_rows_for_forgotten": {
+      "expected": [],
+      "means": "Same as C1, after the rebuild: the re-embed did not bring any of them back."
+    },
+    "C3_vector_search_returns_forgotten": {
+      "expected": [],
+      "means": "Same as C1, after the rebuild."
+    },
+    "C3_recall_returns_forgotten": {
+      "expected": [],
+      "means": "Same as C1, after the rebuild."
+    },
+    "C3_current_claim_exists": {
+      "expected": false,
+      "means": "Same as C1, after the rebuild."
+    },
+    "C3_history_versions": {
+      "expected": 0,
+      "means": "Same as C1, after the rebuild."
+    },
+    "C3_control_fact_recalled": {
+      "expected": true,
+      "means": "Same as C1, after the rebuild."
+    },
+    "C3_control_fact_in_vector_search": {
+      "expected": true,
+      "means": "The rebuilt companion answers for the control fact."
+    },
+    "C3_word_search_bystanders_still_found": {
+      "expected": [
+        "assistant_correction",
+        "negated_request",
+        "session_A_delete_request",
+        "session_B_correction"
+      ],
+      "means": "Same as C1."
+    },
+    "C4_word_search_returns_forgotten": {
+      "expected": [],
+      "means": "Same as C1, with a fresh MemoryCore on the same files (a restart)."
+    },
+    "C4_companion_rows_for_forgotten": {
+      "expected": [],
+      "means": "Same as C1, after a restart."
+    },
+    "C4_vector_search_returns_forgotten": {
+      "expected": [],
+      "means": "Same as C1, after a restart."
+    },
+    "C4_recall_returns_forgotten": {
+      "expected": [],
+      "means": "Same as C1, after a restart."
+    },
+    "C4_current_claim_exists": {
+      "expected": false,
+      "means": "Same as C1, after a restart."
+    },
+    "C4_history_versions": {
+      "expected": 0,
+      "means": "Same as C1, after a restart."
+    },
+    "C4_control_fact_recalled": {
+      "expected": true,
+      "means": "Same as C1, after a restart."
+    },
+    "C4_control_fact_in_vector_search": {
+      "expected": true,
+      "means": "Same as C1, after a restart."
+    },
+    "C4_word_search_bystanders_still_found": {
+      "expected": [
+        "assistant_correction",
+        "negated_request",
+        "session_A_delete_request",
+        "session_B_correction"
+      ],
+      "means": "Same as C1."
+    },
+    "C2_rebuilt_companion_has_rows": {
+      "expected": true,
+      "means": "Non-vacuity: after wiping the companion and re-embedding the whole store into a new space, the companion holds rows again (the control fact, its source and the other surviving messages)."
+    }
+  }
+}
