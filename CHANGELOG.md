@@ -4,6 +4,18 @@ All notable changes to `scope-recall` will be documented in this file.
 
 ## [Unreleased]
 
+## [3.8.2] - 2026-10-07
+
+3.8.2 lets a Hermes agent on Gemini use its memory tools (#216, reported by @momolee-deep).
+
+### Fixes
+
+- **Gemini accepts Hermes's memory tools.** `revise` declared its new value as any type, an array among them without `items`, and Gemini refuses a request when any tool it carries does: through Hermes's own Gemini client every request with the tools failed with HTTP 400. The new value is now declared as what the core takes: the new value's text, an object of the fact's fields, or null to withdraw it. The core refused a number, true or false and a list anyway.
+
+### Upgrading from 3.8.1
+
+Install the package, run `plan-install` and `apply-install` where you upgrade, then restart the Hermes gateways. The schema is unchanged (1110).
+
 ## [3.8.1] - 2026-10-07
 
 3.8.1 keeps a worker up until the candidates of a conversation's last messages settle (#214, reported and measured by @849506054).

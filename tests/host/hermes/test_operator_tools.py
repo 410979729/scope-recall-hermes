@@ -328,3 +328,33 @@ def test_every_tool_parameter_declares_a_type_for_a_strict_provider(adapter):
     provider, _clock = adapter
     for schema in provider.get_tool_schemas():
         assert _untyped_properties(schema["parameters"]) == [], schema["name"]
+
+
+def _arrays_without_items(schema, trail=()):
+    found = []
+    if not isinstance(schema, dict):
+        return found
+    declared = schema.get("type")
+    if (declared == "array" or (isinstance(declared, list) and "array" in declared)) and "items" not in schema:
+        found.append("/".join(trail) or "<root>")
+    for name, spec in (schema.get("properties") or {}).items():
+        found.extend(_arrays_without_items(spec, (*trail, name)))
+    for key in ("items", "additionalProperties"):
+        found.extend(_arrays_without_items(schema.get(key), (*trail, key)))
+    for key in ("anyOf", "oneOf", "allOf"):
+        for index, branch in enumerate(schema.get(key) or ()):
+            found.extend(_arrays_without_items(branch, (*trail, f"{key}[{index}]")))
+    return found
+
+
+def test_every_array_a_tool_takes_declares_its_items_for_gemini(adapter):
+    """Gemini refuses a request when any of its tools takes an array without ``items``, a type list's array included,
+    and every tool travels with every request.  ``new_value`` declares what the core takes: the new value's text, some
+    of the fact's fields, or null to withdraw it."""
+    provider, _clock = adapter
+    schemas = {schema["name"]: schema for schema in provider.get_tool_schemas()}
+    for name, schema in schemas.items():
+        assert _arrays_without_items(schema["parameters"]) == [], name
+    new_value = schemas["revise"]["parameters"]["properties"]["new_value"]
+    assert sorted(new_value["type"]) == ["null", "object", "string"]
+    assert set(new_value["properties"]) == {"value_text", "valid_to"}
