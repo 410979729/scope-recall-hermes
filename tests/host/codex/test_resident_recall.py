@@ -1,4 +1,4 @@
-"""A client's resident prompt recall server (``adapters/codex/resident_entry``, ``local_endpoint.ensure_resident``).
+"""A client's resident prompt recall server (``adapters/clients/resident_entry``, ``local_endpoint.ensure_resident``).
 
 WorkBuddy starts the entry's MCP server with each conversation's agent process, and a prompt that started one met a
 server still opening its vector store: a cold server answered with its vector search 12.7 s after its start, past the
@@ -18,7 +18,7 @@ from pathlib import Path
 
 import pytest
 
-from scope_recall.adapters.codex import local_endpoint, resident_entry
+from scope_recall.adapters.clients import local_endpoint, resident_entry
 from scope_recall.adapters.hermes.installation import (
     attach_shared_entry,
     attach_shared_record,
@@ -46,7 +46,7 @@ RESIDENT = (
     "import sys\n"
     "from scope_recall.vector import process_store\n"
     "process_store.prestart = lambda **kwargs: None\n"
-    "from scope_recall.adapters.codex import resident_entry\n"
+    "from scope_recall.adapters.clients import resident_entry\n"
     "raise SystemExit(resident_entry.main(sys.argv[1:]))\n"
 )
 
@@ -735,7 +735,7 @@ def test_the_resident_command_says_and_stops(entry, capsys):
 
 def test_the_mcp_server_of_a_client_that_keeps_a_resident_server_keeps_one_and_answers_no_hook(entry, monkeypatch):
     """Warmed with every conversation, each MCP server held a vector helper of its own beside the resident one."""
-    from scope_recall.adapters.codex import mcp_entry
+    from scope_recall.adapters.clients import mcp_entry
 
     _runtime_config(entry)
     calls = []
@@ -815,7 +815,7 @@ def _hook(monkeypatch, payload):
 
 
 def test_a_prompt_hook_starts_a_resident_server_after_its_answer(entry, monkeypatch, capsys, tmp_path):
-    from scope_recall.adapters.codex import hook_entry
+    from scope_recall.adapters.clients import hook_entry
 
     _runtime_config(entry)
     env_file = tmp_path / "TEST.env"
@@ -852,7 +852,7 @@ def test_a_prompt_hook_starts_a_resident_server_after_its_answer(entry, monkeypa
 
 
 def test_a_hook_other_than_a_prompt_s_starts_no_resident_server(entry, monkeypatch, capsys):
-    from scope_recall.adapters.codex import hook_entry
+    from scope_recall.adapters.clients import hook_entry
 
     _runtime_config(entry)
     started = []
@@ -907,7 +907,7 @@ def test_a_server_s_start_warms_its_query_embedding_once_and_its_keep_warm_does_
 
 def test_a_handler_s_embedding_warming_asks_its_runtime():
     """The kept handler's warming looks the method up by name: a handler without it warmed no embedding at all."""
-    from scope_recall.adapters.codex.handler import CodexHookHandler
+    from scope_recall.adapters.clients.handler import CodexHookHandler
 
     asked = []
     handler = CodexHookHandler.__new__(CodexHookHandler)
@@ -978,7 +978,7 @@ def test_a_hook_that_starts_a_resident_server_closes_its_output_at_once(entry, t
     hook = (
         "import sys\n"
         "from pathlib import Path\n"
-        "from scope_recall.adapters.codex import local_endpoint\n"
+        "from scope_recall.adapters.clients import local_endpoint\n"
         "sleeper = ('import os, sys, time; open(sys.argv[1], \"w\").write(str(os.getpid())); time.sleep(30)')\n"
         "local_endpoint._start_apart([sys.executable, '-c', sleeper, sys.argv[2]], cwd=Path(sys.argv[1]))\n"
         "sys.stdout.write('{}')\n"

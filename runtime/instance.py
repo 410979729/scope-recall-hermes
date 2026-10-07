@@ -46,7 +46,7 @@ from .vector_upkeep import backfill_if_due, compact_if_due, index_if_due, respac
 
 
 _RUNTIME_ORIGINS: frozenset[Origin] = frozenset({"human_direct", "tool_observation", "external_document", "imported"})
-#: Claude Code runs the Codex adapter as an entry of a shared store (``adapters/codex/config.py``).
+#: Claude Code runs the Codex adapter as an entry of a shared store (``adapters/clients/config.py``).
 _HOST_ADAPTERS = frozenset({"hermes", "codex", "claude-code", "workbuddy", "dsh"})
 _VECTOR_BACKENDS = frozenset({"lancedb", "sqlite-bruteforce"})
 
@@ -158,8 +158,8 @@ class RuntimeInstanceConfig:
     #: ``storage_budget_exceeded``; 0 sets no budget.  Nothing is deleted for it.
     storage_budget_bytes: int = 0
     #: Minutes the resident prompt recall server of a client attached to a shared store stays up without a recall
-    #: (``adapters/codex/resident_entry``); 0 keeps none.  Unset, the client's default applies
-    #: (``adapters/codex/local_endpoint.RESIDENT_DEFAULT_MINUTES``).
+    #: (``adapters/clients/resident_entry``); 0 keeps none.  Unset, the client's default applies
+    #: (``adapters/clients/local_endpoint.RESIDENT_DEFAULT_MINUTES``).
     resident_recall_minutes: int | None = None
 
     def __post_init__(self) -> None:
@@ -549,7 +549,7 @@ class RuntimeInstance:
     def warm_vector_store(self, seconds: float) -> bool:
         """Open the existing companion store and search it once, off any prompt's time.
 
-        A recall handler kept across prompts (adapters/codex/local_endpoint.KeptRecaller) was made at its first
+        A recall handler kept across prompts (adapters/clients/local_endpoint.KeptRecaller) was made at its first
         prompt: that prompt's recall started the helper, opened the table and read the index, and it recalled by
         words alone (``helper_request_deadline``) after every start of its server, which for Claude Code is every
         session.  Warmed when the server starts, the first prompt finds them ready.  It writes nothing.
@@ -1011,7 +1011,7 @@ def build_runtime_instance(
 
         ingress_authorizer = build_ingress_authorizer(config.binding)
     elif config.host_adapter == "codex":
-        from ..adapters.codex.authorization import build_ingress_authorizer
+        from ..adapters.clients.authorization import build_ingress_authorizer
 
         ingress_authorizer = build_ingress_authorizer(config.binding)
     instance = RuntimeInstance(

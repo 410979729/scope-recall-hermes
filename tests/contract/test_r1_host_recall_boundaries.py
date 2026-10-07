@@ -9,9 +9,9 @@ import json
 
 import pytest
 
-from scope_recall.adapters.codex import install_codex_scope_recall
-from scope_recall.adapters.codex.identity import resolve_runtime_audience as codex_audience
-from scope_recall.adapters.codex.identity import trusted_context as codex_context
+from scope_recall.adapters.clients import install_codex_scope_recall
+from scope_recall.adapters.clients.identity import resolve_runtime_audience as codex_audience
+from scope_recall.adapters.clients.identity import trusted_context as codex_context
 from scope_recall.adapters.hermes import bind_hermes_identity, install_hermes_scope_recall
 from scope_recall.adapters.runtime_wiring import write_ephemeral_worker_config
 from scope_recall.contracts import ContractError, TrustedSourcePrincipal
@@ -120,7 +120,8 @@ def test_replay_preserves_original_principal_and_rechecks_current_rights(tmp_pat
 def test_core_has_no_hermes_authorizer_and_runtime_selects_explicit_adapter(tmp_path):
     assert "hermes_authorizer" not in inspect.getsource(capture_inbox)
     binding = context(tmp_path / "TEST-runtime").binding
-    for adapter in ("hermes", "codex"):
+    # The host adapter named "codex" is the one every hook client uses (adapters/clients).
+    for adapter, package in (("hermes", "hermes"), ("codex", "clients")):
         config = RuntimeInstanceConfig(
             binding=binding,
             session_id="TEST-session",
@@ -135,7 +136,7 @@ def test_core_has_no_hermes_authorizer_and_runtime_selects_explicit_adapter(tmp_
         runtime = build_runtime_instance(config)
         try:
             assert runtime._ingress_authorizer is not None
-            assert runtime._ingress_authorizer.__module__.endswith(f".{adapter}.authorization")
+            assert runtime._ingress_authorizer.__module__.endswith(f".{package}.authorization")
         finally:
             runtime.close()
 

@@ -582,7 +582,7 @@ def _impact(changed: list[str]) -> tuple[set[str], list[str]]:
             if path.startswith("adapters/hermes/"):
                 impacts.add("hermes_host")
                 path_impacts.add("hermes_host")
-            elif path.startswith("adapters/codex/"):
+            elif path.startswith(("adapters/clients/", "adapters/codex/")):
                 impacts.add("codex_host")
                 path_impacts.add("codex_host")
             else:

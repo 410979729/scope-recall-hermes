@@ -209,7 +209,7 @@ def _load_binding(host: HostChoice, instance_root: Path):
 
         manifest = load_binding_for_home(instance_root)
         return manifest.to_binding(), manifest.data_directory
-    from scope_recall.adapters.codex.config import load_codex_config, load_shared_client
+    from scope_recall.adapters.clients.config import load_codex_config, load_shared_client
 
     path = _codex_config_path(instance_root)
     config = load_shared_client(instance_root, host) if path.name == "attachment.json" else load_codex_config(path)

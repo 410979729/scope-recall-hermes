@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from scope_recall.adapters.codex import CodexHookHandler, install_codex_scope_recall
+from scope_recall.adapters.clients import CodexHookHandler, install_codex_scope_recall
 
 
 @pytest.fixture(scope="session")

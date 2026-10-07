@@ -1,30 +1,8 @@
-"""Bounded Codex public Hook adapter over the host-independent core."""
+"""The entry modules installed clients run, under the names their configurations hold.
 
-from .config import CodexConfigError, install_codex_scope_recall, load_codex_config
-from .handler import CodexHookHandler
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    # Keep MCP optional at runtime while making the lazy public exports
-    # visible to static analyzers.
-    from .mcp_server import CodexMCPServer, build_server
-
-
-def __getattr__(name):
-    # Hook capture, installation and readonly diagnostics do not require MCP.
-    # Import the optional transport only when its public entry is requested.
-    if name in {"CodexMCPServer", "build_server"}:
-        from . import mcp_server
-
-        return getattr(mcp_server, name)
-    raise AttributeError(name)
-
-
-__all__ = [
-    "CodexConfigError",
-    "CodexHookHandler",
-    "install_codex_scope_recall",
-    "load_codex_config",
-    "CodexMCPServer",
-    "build_server",
-]
+Installers write ``python -m scope_recall.adapters.codex.<entry>`` into Codex's, Claude Code's, WorkBuddy's and
+dsh's configurations and into scheduled tasks, and Codex trusts a hook, as WorkBuddy approves an MCP server, by its
+command: a new module name would leave every hook skipped until the owner approved it again.  So these names stay,
+and each module here only runs its namesake in ``adapters/clients``, where the code for all of those clients lives.
+This package imports nothing of its own, so a hook's start pays for nothing more.
+"""

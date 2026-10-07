@@ -1,4 +1,4 @@
-"""See or stop an entry's resident prompt recall server (``adapters/codex/resident_entry``).
+"""See or stop an entry's resident prompt recall server (``adapters/clients/resident_entry``).
 
     scope-recall resident status --home <entry home> --host workbuddy
     scope-recall resident stop   --home <entry home> --host workbuddy
@@ -9,7 +9,7 @@ last start is a minute old).  It writes nothing, so stopping it loses nothing; t
 the client keeps one.  ``running`` says whether one holds the entry's lock; ``servers`` lists those whose process is
 known.  One whose identity cannot be proven, where a process's start time cannot be read (macOS), is listed
 ``verified: false`` and never stopped: it ends itself within ``IDLE_CHECK_SECONDS`` once its package is replaced or its
-minutes are 0 (``adapters/codex/resident_entry``).  A ``stop`` after which one still holds the lock says
+minutes are 0 (``adapters/clients/resident_entry``).  A ``stop`` after which one still holds the lock says
 ``still_running`` and exits 1, so that an upgrade script does not go on.
 """
 
@@ -34,7 +34,7 @@ def main(argv: list[str] | None = None) -> int:
     if not home.is_absolute():
         print(json.dumps({"status": "error", "code": "home_not_absolute"}))
         return 2
-    from ..adapters.codex.local_endpoint import _residents, resident_minutes, resident_running, stop_residents
+    from ..adapters.clients.local_endpoint import _residents, resident_minutes, resident_running, stop_residents
 
     stopped = stop_residents(home, args.host) if args.action == "stop" else []
     # A stopped process lets go of the entry's lock as it ends: what is said after, and an upgrade after that, waits

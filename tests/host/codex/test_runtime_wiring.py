@@ -11,17 +11,17 @@ import uuid
 
 import pytest
 
-from scope_recall.adapters.codex import CodexHookHandler, install_codex_scope_recall
-from scope_recall.adapters.codex.mcp_server import build_server
-from scope_recall.adapters.codex.runtime_wiring import GAP_UNCONFIGURED, attach_trusted_host_runtime
+from scope_recall.adapters.clients import CodexHookHandler, install_codex_scope_recall
+from scope_recall.adapters.clients.mcp_server import build_server
+from scope_recall.adapters.clients.runtime_wiring import GAP_UNCONFIGURED, attach_trusted_host_runtime
 from scope_recall.contracts import ContractError
 
 
 def test_runtime_wiring_uses_this_source_checkout(record_property):
-    from scope_recall.adapters.codex import runtime_wiring
+    from scope_recall.adapters.clients import runtime_wiring
 
     actual = Path(runtime_wiring.__file__).resolve()
-    expected = Path(__file__).resolve().parents[3] / "adapters" / "codex" / "runtime_wiring.py"
+    expected = Path(__file__).resolve().parents[3] / "adapters" / "clients" / "runtime_wiring.py"
     record_property("runtime_wiring_file", str(actual))
     assert actual == expected
 
@@ -118,7 +118,7 @@ def test_session_end_launches_owned_worker_without_foreground_model(codex_instal
         str(config.config_path),
         trusted_runtime_config_path=str(runtime_path),
     )
-    with patch("scope_recall.adapters.codex.runtime_wiring.launch_worker") as launch_worker:
+    with patch("scope_recall.adapters.clients.runtime_wiring.launch_worker") as launch_worker:
         worker = Mock()
         worker.poll.return_value = None
         launch_worker.return_value = worker
@@ -140,7 +140,7 @@ def test_session_end_launches_owned_worker_without_foreground_model(codex_instal
 def test_session_end_without_runtime_config_does_not_launch_worker(codex_install):
     config, core, project, _runtime_path = codex_install
     handler = CodexHookHandler(config, core=core)
-    with patch("scope_recall.adapters.codex.runtime_wiring.launch_worker") as launch_worker:
+    with patch("scope_recall.adapters.clients.runtime_wiring.launch_worker") as launch_worker:
         handler.handle_payload(
             {
                 "hook_event_name": "SessionEnd",

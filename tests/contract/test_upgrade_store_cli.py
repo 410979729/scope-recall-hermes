@@ -5,7 +5,7 @@ import json
 import sqlite3
 import time
 
-from scope_recall.adapters.codex.config import install_codex_scope_recall
+from scope_recall.adapters.clients.config import install_codex_scope_recall
 from scope_recall.core.schema import SCHEMA_VERSION
 from scope_recall.core.writer_lease import TruthWriterLease
 from scope_recall.maintenance import cli

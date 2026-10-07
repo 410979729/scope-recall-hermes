@@ -6,7 +6,7 @@ with ``time`` in milliseconds.  Nothing here is a person's conversation.
 
 from __future__ import annotations
 
-from scope_recall.adapters.codex import transcript
+from scope_recall.adapters.clients import transcript
 
 AT_MS = 1759320000123
 AT = "2025-10-01T12:00:00.123000Z"

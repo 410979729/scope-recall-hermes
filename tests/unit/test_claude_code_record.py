@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import json
 
-from scope_recall.adapters.codex import transcript
+from scope_recall.adapters.clients import transcript
 
 AT = "2026-09-25T11:16:54.627Z"
 

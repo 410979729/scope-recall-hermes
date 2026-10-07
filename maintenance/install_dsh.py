@@ -3,7 +3,7 @@ shared store.
 
 dsh has no store of its own here: ``scope-recall attach --host dsh`` makes its home an entry first, and this installer
 tells dsh to run, for that entry, the plugin ``distribution/dsh/scope-recall/index.mjs`` (recall before a turn's first
-step and capture of each turn, through the hook client of ``adapters/codex``) and the MCP stdio server (the explicit
+step and capture of each turn, through the hook client of ``adapters/clients``) and the MCP stdio server (the explicit
 tools).  dsh's hooks cannot capture (no turn, no reply, a compressed session log), so the plugin is the way.
 
 dsh composes every profile from patch layers; the home layer ``$DSH_HOME/cordis.patch.yml`` (``~/.dsh`` by default)
@@ -37,7 +37,7 @@ from typing import Any
 import yaml
 
 from scope_recall._version import __version__ as PACKAGE_VERSION
-from scope_recall.adapters.codex.config import CodexConfigError, load_shared_client
+from scope_recall.adapters.clients.config import CodexConfigError, load_shared_client
 from scope_recall.adapters.hermes.installation import attachment_path
 
 from .install_common import RUNTIME_CONFIG_LIMIT, InstallError, InstallPlan, _reject_symlink_chain, _require_file

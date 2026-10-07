@@ -17,8 +17,8 @@ import sys
 
 import pytest
 
-from scope_recall.adapters.codex import remote_client
-from scope_recall.adapters.codex.config import load_shared_client
+from scope_recall.adapters.clients import remote_client
+from scope_recall.adapters.clients.config import load_shared_client
 from scope_recall.adapters.hermes import HermesIdentityError, bind_hermes_identity
 from scope_recall.adapters.hermes.installation import read_attachment, read_shared_payload
 from scope_recall.maintenance import cli, install_dsh, install_workbuddy
@@ -509,7 +509,7 @@ def test_a_workbuddy_entry_installs_into_workbuddy_s_own_files_and_uninstalls_on
 
     # A resident recall server runs the package it was started from: one of the installation an install replaces
     # (another venv, an older version) held the entry's lock against the new one's (review 2 of 3.6.0rc1).
-    from scope_recall.adapters.codex import local_endpoint
+    from scope_recall.adapters.clients import local_endpoint
 
     stopped = []
     monkeypatch.setattr(local_endpoint, "stop_residents", lambda home, host: stopped.append((home, host)) or [])
@@ -874,7 +874,7 @@ def test_a_dsh_entry_installs_its_plugin_and_rows_and_uninstalls_only_its_own(tm
         "dsh-background",
         "dsh-scope-recall",
     )
-    from scope_recall.adapters.codex import local_endpoint
+    from scope_recall.adapters.clients import local_endpoint
 
     assert local_endpoint.resident_minutes(entry, "dsh") == 120, (
         "dsh's hooks are processes of their own, as WorkBuddy's"

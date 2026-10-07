@@ -14,8 +14,8 @@ from uuid import uuid4
 from mcp import ClientSession
 from mcp.client.stdio import StdioServerParameters, stdio_client
 
-from scope_recall.adapters.codex import CodexHookHandler, install_codex_scope_recall
-from scope_recall.adapters.codex.identity import resolve_runtime_audience, trusted_context
+from scope_recall.adapters.clients import CodexHookHandler, install_codex_scope_recall
+from scope_recall.adapters.clients.identity import resolve_runtime_audience, trusted_context
 from scope_recall.contracts import SourceEvent
 
 
@@ -268,7 +268,7 @@ def test_mcp_revise_with_a_null_value_withdraws_the_fact(tmp_path: Path) -> None
     project.mkdir()
     config, core = install_codex_scope_recall(tmp_path / "install", project_root=project)
 
-    from scope_recall.adapters.codex.mcp_server import build_server
+    from scope_recall.adapters.clients.mcp_server import build_server
 
     adapter = build_server(config, workspace=project, core=core)
     thread = str(uuid4())  # the conversation Codex names in each call's metadata, as its hooks name it
@@ -347,7 +347,7 @@ def test_recall_epoch_race_scrubs_compiled_payload_surface(tmp_path: Path) -> No
     project.mkdir()
     config, real_core = install_codex_scope_recall(tmp_path / "install", project_root=project)
 
-    from scope_recall.adapters.codex.mcp_server import build_server
+    from scope_recall.adapters.clients.mcp_server import build_server
 
     class RaceCore:
         class Clock:
@@ -467,7 +467,7 @@ def test_recall_epoch_race_scrubs_compiled_payload_surface(tmp_path: Path) -> No
 
 def test_mcp_recall_without_evidence_is_no_match_while_prompt_hook_keeps_background(installed) -> None:
     """An explicit lookup that finds nothing says so; automatic prompt recall is unchanged."""
-    from scope_recall.adapters.codex.mcp_server import build_server
+    from scope_recall.adapters.clients.mcp_server import build_server
 
     config, core, clock, project = installed
     audience = resolve_runtime_audience(config, str(project))
@@ -605,17 +605,17 @@ def test_mcp_inspect_resolves_old_episode_by_explicit_ref(tmp_path: Path) -> Non
     asyncio.run(run())
 
 
-#: Registration order in ``adapters/codex/mcp_server.py``; ``trace`` registers
+#: Registration order in ``adapters/clients/mcp_server.py``; ``trace`` registers
 #: between ``profile`` and ``entity`` and is hardened with the rest at the
 #: ``extra="forbid"`` pass, so it belongs to the frozen public surface.
 _MCP_PUBLIC_TOOLS = ("recall", "inspect", "profile", "trace", "entity", "propose_memory", "revise", "forget", "status")
 
 
 def _assert_candidate_mcp_server_import() -> None:
-    from scope_recall.adapters.codex import mcp_server as mcp_server_mod
+    from scope_recall.adapters.clients import mcp_server as mcp_server_mod
 
     imported = Path(mcp_server_mod.__file__).resolve()
-    expected = Path(__file__).resolve().parents[3] / "adapters" / "codex" / "mcp_server.py"
+    expected = Path(__file__).resolve().parents[3] / "adapters" / "clients" / "mcp_server.py"
     assert imported == expected, (imported, expected)
 
 
@@ -642,7 +642,7 @@ def _advertised_protocol_values(field: object) -> set[object]:
 
 
 def _assert_unique_discoverable_protocol(schema: dict, *, name: str) -> None:
-    from scope_recall.adapters.codex.mcp_server import PROTOCOL_VERSION
+    from scope_recall.adapters.clients.mcp_server import PROTOCOL_VERSION
 
     props = schema.get("properties")
     assert isinstance(props, dict), (name, schema)
@@ -661,7 +661,7 @@ def _assert_unique_discoverable_protocol(schema: dict, *, name: str) -> None:
 def test_mcp_public_schema_advertises_only_protocol_1_1(tmp_path: Path) -> None:
     """Host-visible schema must publish the only legal protocol, not a free string."""
     _assert_candidate_mcp_server_import()
-    from scope_recall.adapters.codex.mcp_server import build_server
+    from scope_recall.adapters.clients.mcp_server import build_server
 
     project = tmp_path / "project"
     project.mkdir()
@@ -733,7 +733,7 @@ def _assert_recall_budget_discoverable(schema: dict, *, description: str) -> Non
 def test_mcp_recall_budget_schema_default_and_description(tmp_path: Path) -> None:
     """list_tools must publish UTF-8 byte units, metadata cost, and default 4096."""
     _assert_candidate_mcp_server_import()
-    from scope_recall.adapters.codex.mcp_server import build_server
+    from scope_recall.adapters.clients.mcp_server import build_server
 
     project = tmp_path / "project"
     project.mkdir()
@@ -775,7 +775,7 @@ def test_mcp_recall_budget_schema_default_and_description(tmp_path: Path) -> Non
 def test_mcp_recall_budget_default_tiny_clip_and_invalid_types(tmp_path: Path) -> None:
     """Omitted budget uses 4096; explicit 768 still clips; bool/string stay rejected."""
     _assert_candidate_mcp_server_import()
-    from scope_recall.adapters.codex.mcp_server import BUDGET_RETRY_HINT, build_server
+    from scope_recall.adapters.clients.mcp_server import BUDGET_RETRY_HINT, build_server
 
     project = tmp_path / "project"
     project.mkdir()

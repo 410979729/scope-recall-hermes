@@ -82,7 +82,7 @@ def test_claim_change_adds_current_history_time_and_migration_closure() -> None:
 
 
 def test_host_change_targets_only_changed_host_and_core_baseline() -> None:
-    selected, details = check.select_tests("unit", changed=["adapters/codex/mcp_server.py"])
+    selected, details = check.select_tests("unit", changed=["adapters/clients/mcp_server.py"])
 
     assert set(check.CODEX_HOST_TESTS) <= set(selected)
     assert not set(check.HERMES_HOST_TESTS) & set(selected)

@@ -252,14 +252,14 @@ def _plan_merges(adapter: ModuleType, plan: InstallPlan, host_files: tuple[Path,
 
 
 def _stop_residents(host: str, instance_root: Path) -> None:
-    """Stop the entry's resident recall servers, for a client that may keep one (``adapters/codex/resident_entry``).
+    """Stop the entry's resident recall servers, for a client that may keep one (``adapters/clients/resident_entry``).
     They write nothing.  One that cannot be stopped (its identity not proven, as on macOS, or this account may not end
     it) is said on stderr and left to its own end; nothing here fails the install."""
     if host not in ("codex", "claude-code", "workbuddy", "dsh"):
         return
     import sys
 
-    from ..adapters.codex.local_endpoint import _residents, stop_residents
+    from ..adapters.clients.local_endpoint import _residents, stop_residents
 
     try:
         stop_residents(instance_root, host)
@@ -460,7 +460,7 @@ def apply_uninstall(plan: UninstallPlan, *, purge: bool = False) -> UninstallRes
     adapter = _HOSTS[plan.host]
     data_dir = adapter.data_dir(plan.instance_root)
     _disable_autostart(data_dir)
-    # A resident recall server of this entry runs from the package (``adapters/codex/resident_entry``): with the hooks
+    # A resident recall server of this entry runs from the package (``adapters/clients/resident_entry``): with the hooks
     # taken out nothing would ask it, and it would hold the package until its idle end.
     _stop_residents(plan.host, plan.instance_root)
     # This entry's entries come out of the host's own files, each copied to the backups first; the rest stays.

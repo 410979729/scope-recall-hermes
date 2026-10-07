@@ -4,38 +4,38 @@
    "reportArgumentType": 2,
    "reportOptionalMemberAccess": 2
   },
-  "adapters/codex/boundary.py": {
+  "adapters/clients/boundary.py": {
    "reportReturnType": 1
   },
-  "adapters/codex/config.py": {
+  "adapters/clients/config.py": {
    "reportPrivateImportUsage": 1
   },
-  "adapters/codex/handler.py": {
+  "adapters/clients/handler.py": {
    "reportArgumentType": 5,
    "reportAssignmentType": 1,
    "reportAttributeAccessIssue": 2,
    "reportOptionalCall": 1,
    "reportOptionalMemberAccess": 1
   },
-  "adapters/codex/identity.py": {
+  "adapters/clients/identity.py": {
    "reportArgumentType": 1
   },
-  "adapters/codex/mcp_server.py": {
+  "adapters/clients/mcp_server.py": {
    "reportArgumentType": 1,
    "reportOptionalMemberAccess": 3
   },
-  "adapters/codex/remote_client.py": {
+  "adapters/clients/remote_client.py": {
    "reportArgumentType": 5,
    "reportAttributeAccessIssue": 2
   },
-  "adapters/codex/remote_server.py": {
+  "adapters/clients/remote_server.py": {
    "reportAttributeAccessIssue": 2,
    "reportOptionalMemberAccess": 1
   },
-  "adapters/codex/resident_entry.py": {
+  "adapters/clients/resident_entry.py": {
    "reportAssignmentType": 1
   },
-  "adapters/codex/transcript.py": {
+  "adapters/clients/transcript.py": {
    "reportArgumentType": 8,
    "reportOperatorIssue": 2,
    "reportOptionalMemberAccess": 11
@@ -317,19 +317,19 @@
     "main": 71
    }
   },
-  "adapters/codex/__init__.py": {
+  "adapters/clients/__init__.py": {
    "I001": 1
   },
-  "adapters/codex/boundary.py": {
+  "adapters/clients/boundary.py": {
    "PLR0913": {
     "tool_use_source_event": 9
    }
   },
-  "adapters/codex/config.py": {
+  "adapters/clients/config.py": {
    "I001": 1,
    "UP035": 1
   },
-  "adapters/codex/handler.py": {
+  "adapters/clients/handler.py": {
    "B905": 1,
    "BLE001": 2,
    "C901": {
@@ -347,18 +347,18 @@
    "UP035": 1,
    "UP037": 6
   },
-  "adapters/codex/hook_entry.py": {
+  "adapters/clients/hook_entry.py": {
    "BLE001": 2,
    "I001": 1,
    "PLR0912": {
     "main": 16
    }
   },
-  "adapters/codex/identity.py": {
+  "adapters/clients/identity.py": {
    "I001": 1,
    "UP035": 1
   },
-  "adapters/codex/local_endpoint.py": {
+  "adapters/clients/local_endpoint.py": {
    "C901": {
     "ensure_resident": 16
    },
@@ -370,7 +370,7 @@
    "UP035": 1,
    "UP041": 2
   },
-  "adapters/codex/mcp_server.py": {
+  "adapters/clients/mcp_server.py": {
    "E501": 3,
    "I001": 1,
    "PLR0913": {
@@ -380,20 +380,20 @@
     "CodexMCPServer.trace": 10
    }
   },
-  "adapters/codex/remote_client.py": {
+  "adapters/clients/remote_client.py": {
    "I001": 1,
    "UP017": 2,
    "UP037": 1
   },
-  "adapters/codex/remote_server.py": {
+  "adapters/clients/remote_server.py": {
    "I001": 1,
    "UP017": 3,
    "UP035": 1
   },
-  "adapters/codex/runtime_wiring.py": {
+  "adapters/clients/runtime_wiring.py": {
    "I001": 1
   },
-  "adapters/codex/transcript.py": {
+  "adapters/clients/transcript.py": {
    "E501": 1,
    "I001": 1,
    "PLR0911": {

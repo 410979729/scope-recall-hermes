@@ -81,6 +81,7 @@ include-package-data = true
 packages = [
   "scope_recall",
   "scope_recall.adapters",
+  "scope_recall.adapters.clients",
   "scope_recall.adapters.codex",
   "scope_recall.adapters.hermes",
   "scope_recall.core",

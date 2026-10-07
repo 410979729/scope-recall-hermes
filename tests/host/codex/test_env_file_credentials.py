@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from scope_recall.adapters.codex import hook_entry, mcp_entry
+from scope_recall.adapters.clients import hook_entry, mcp_entry
 from scope_recall.runtime import resume_entry
 
 KEY = "SCOPE_RECALL_TEST_EMBED_KEY"
@@ -51,7 +51,7 @@ def test_host_process_credential_environment_reads_only_declared_names(tmp_path:
 
 
 def _install(tmp_path: Path):
-    from scope_recall.adapters.codex import install_codex_scope_recall
+    from scope_recall.adapters.clients import install_codex_scope_recall
 
     project_root = tmp_path / "TEST-project"
     project_root.mkdir()

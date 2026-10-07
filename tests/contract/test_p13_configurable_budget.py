@@ -9,9 +9,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from scope_recall.adapters.codex.config import install_codex_scope_recall
-from scope_recall.adapters.codex.handler import CodexHookHandler
-from scope_recall.adapters.codex.mcp_server import build_server
+from scope_recall.adapters.clients.config import install_codex_scope_recall
+from scope_recall.adapters.clients.handler import CodexHookHandler
+from scope_recall.adapters.clients.mcp_server import build_server
 from scope_recall.adapters.hermes import ScopeRecallHermesAdapter, install_hermes_scope_recall
 from scope_recall.adapters.runtime_wiring import TrustedHostRuntime
 from scope_recall.contracts import InstanceBinding, TrustedContext

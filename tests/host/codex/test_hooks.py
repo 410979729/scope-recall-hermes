@@ -11,11 +11,11 @@ from pathlib import Path
 
 import pytest
 
-from scope_recall.adapters.codex import CodexHookHandler
-from scope_recall.adapters.codex.boundary import host_source_key, is_scope_recall_tool
-from scope_recall.adapters.codex.config import CodexConfigError, install_codex_scope_recall, load_codex_config
-from scope_recall.adapters.codex.handler import emit_result
-from scope_recall.adapters.codex.identity import resolve_runtime_audience
+from scope_recall.adapters.clients import CodexHookHandler
+from scope_recall.adapters.clients.boundary import host_source_key, is_scope_recall_tool
+from scope_recall.adapters.clients.config import CodexConfigError, install_codex_scope_recall, load_codex_config
+from scope_recall.adapters.clients.handler import emit_result
+from scope_recall.adapters.clients.identity import resolve_runtime_audience
 from scope_recall.core.retrieval import RetrievalResult
 from tests.host.codex.source_bootstrap import HOOK_ENTRY_BOOTSTRAP, subprocess_env
 from tests.v11_support import recall_item, source_event
@@ -576,7 +576,7 @@ def test_audience_resolution_matches_normalized_ancestor(handler, installed, pro
 def test_live_hook_events_carry_witnessed_occurrence_time():
     """Live Codex hook/MCP events are witnessed by the host: occurred_at
     grounds to the event time so current-mode recall can serve them."""
-    from scope_recall.adapters.codex.boundary import (
+    from scope_recall.adapters.clients.boundary import (
         assistant_stop_source_event,
         lifecycle_source_event,
         tool_use_source_event,

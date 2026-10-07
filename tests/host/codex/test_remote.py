@@ -22,7 +22,7 @@ import urllib.request
 
 import pytest
 
-from scope_recall.adapters.codex import remote_client, remote_server, transcript
+from scope_recall.adapters.clients import remote_client, remote_server, transcript
 from scope_recall.adapters.hermes.installation import (
     attach_shared_entry,
     attach_shared_record,
@@ -735,7 +735,7 @@ def test_the_server_warms_its_kept_handler_when_it_starts(store, monkeypatch):
     import sys as system
     import types
 
-    from scope_recall.adapters.codex import local_endpoint
+    from scope_recall.adapters.clients import local_endpoint
     from scope_recall.vector import process_store
 
     root, homes = store
@@ -768,7 +768,7 @@ def test_the_server_shares_one_vector_store_among_its_handlers(store, monkeypatc
     import sys as system
     import types
 
-    from scope_recall.adapters.codex import local_endpoint
+    from scope_recall.adapters.clients import local_endpoint
     from scope_recall.vector import process_store
 
     root, homes = store
@@ -1287,7 +1287,7 @@ def test_a_remote_prompt_s_recall_is_the_server_s_kept_recaller_s(store, tmp_pat
     prompt, and recalls itself only while the kept one is busy.  This store has no runtime config, so a hook gets
     the 2 s default, and a slow CI runner's capture left less than the second a kept recall is asked with: the
     entries' own configs give 6 s."""
-    from scope_recall.adapters.codex import handler as handler_module
+    from scope_recall.adapters.clients import handler as handler_module
 
     monkeypatch.setattr(handler_module, "_TOTAL_BUDGET_S", 10.0)
     _root, homes = store
@@ -1385,7 +1385,7 @@ def test_a_kept_recall_that_raised_is_named_and_the_request_recalls_itself(store
     rc12)."""
     import logging
 
-    from scope_recall.adapters.codex import handler as handler_module
+    from scope_recall.adapters.clients import handler as handler_module
 
     monkeypatch.setattr(handler_module, "_TOTAL_BUDGET_S", 10.0)
     _root, homes = store

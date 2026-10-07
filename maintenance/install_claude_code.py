@@ -16,7 +16,7 @@ from pathlib import Path
 import re
 from typing import Any
 
-from scope_recall.adapters.codex.config import CodexConfigError, load_shared_client
+from scope_recall.adapters.clients.config import CodexConfigError, load_shared_client
 from scope_recall.adapters.hermes.installation import attachment_path
 
 from .install_common import SKILLS, InstallError, InstallPlan, _json_dump, _manifest_version, _require_file

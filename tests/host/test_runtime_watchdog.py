@@ -11,7 +11,7 @@ import time
 
 import pytest
 
-from scope_recall.adapters.codex import install_codex_scope_recall
+from scope_recall.adapters.clients import install_codex_scope_recall
 from scope_recall.adapters.runtime_wiring import write_ephemeral_worker_config
 from scope_recall.runtime.worker_entry import FINALIZE_MARGIN_SECONDS
 from scope_recall.runtime.worker_launch import launch_worker

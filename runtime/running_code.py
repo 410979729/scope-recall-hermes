@@ -231,7 +231,7 @@ _VERSION_LINE = re.compile(r"""^__version__\s*=\s*["']([^"']+)["']""", re.MULTIL
 
 def version_on_disk(package_path: Path) -> str | None:
     """The version a restart would load from ``package_path``; ``None`` when it cannot be read.  A resident recall
-    server ends once it differs from its own (``adapters/codex/resident_entry``)."""
+    server ends once it differs from its own (``adapters/clients/resident_entry``)."""
     try:
         match = _VERSION_LINE.search((package_path / "_version.py").read_text(encoding="utf-8"))
     except OSError:

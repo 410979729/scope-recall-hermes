@@ -8,8 +8,8 @@ from __future__ import annotations
 
 import json
 
-from scope_recall.adapters.codex import transcript
-from scope_recall.adapters.codex.boundary import is_workbuddy_agent_run, workbuddy_person_text
+from scope_recall.adapters.clients import transcript
+from scope_recall.adapters.clients.boundary import is_workbuddy_agent_run, workbuddy_person_text
 
 AT_MS = 1759320000123
 AT = "2025-10-01T12:00:00.123000Z"

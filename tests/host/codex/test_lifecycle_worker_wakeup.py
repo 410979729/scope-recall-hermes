@@ -8,8 +8,8 @@ from unittest.mock import Mock, patch
 
 import pytest
 
-from scope_recall.adapters.codex import CodexHookHandler
-from scope_recall.adapters.codex import install_codex_scope_recall
+from scope_recall.adapters.clients import CodexHookHandler
+from scope_recall.adapters.clients import install_codex_scope_recall
 from scope_recall.contracts import ContractError
 
 
@@ -74,7 +74,7 @@ def test_session_start_wakes_existing_pending_work_without_new_capture(codex_ins
         )
     worker = Mock()
     worker.poll.return_value = None
-    with patch("scope_recall.adapters.codex.runtime_wiring.launch_worker", return_value=worker) as launch:
+    with patch("scope_recall.adapters.clients.runtime_wiring.launch_worker", return_value=worker) as launch:
         assert handler.handle_payload(_payload(project, "SessionStart")) == {}
         launch.assert_called_once()
     handler.close()
@@ -99,7 +99,7 @@ def test_stop_persists_assistant_before_waking_worker(codex_install):
         return worker
 
     with patch(
-        "scope_recall.adapters.codex.runtime_wiring.launch_worker",
+        "scope_recall.adapters.clients.runtime_wiring.launch_worker",
         side_effect=launch_after_capture,
     ) as launch:
         assert (
@@ -118,7 +118,7 @@ def test_denied_session_start_does_not_wake_worker(codex_install, tmp_path):
         str(config.config_path),
         trusted_runtime_config_path=str(runtime_path),
     )
-    with patch("scope_recall.adapters.codex.runtime_wiring.launch_worker") as launch:
+    with patch("scope_recall.adapters.clients.runtime_wiring.launch_worker") as launch:
         assert handler.handle_payload(_payload(foreign, "SessionStart")) == {}
         launch.assert_not_called()
         assert handler.handle_payload(_payload(project, "SessionStart")) == {}
@@ -135,7 +135,7 @@ def test_failed_status_and_failed_stop_capture_do_not_wake_worker(codex_install)
     )
     with (
         patch.object(failed_status.core, "status", side_effect=ContractError("status_failed")),
-        patch("scope_recall.adapters.codex.runtime_wiring.launch_worker") as launch,
+        patch("scope_recall.adapters.clients.runtime_wiring.launch_worker") as launch,
     ):
         assert failed_status.handle_payload(_payload(project, "SessionStart")) == {}
         launch.assert_not_called()
@@ -151,7 +151,7 @@ def test_failed_status_and_failed_stop_capture_do_not_wake_worker(codex_install)
             "_capture",
             return_value=((), ("capture_gap:write_exception",)),
         ),
-        patch("scope_recall.adapters.codex.runtime_wiring.launch_worker") as launch,
+        patch("scope_recall.adapters.clients.runtime_wiring.launch_worker") as launch,
     ):
         assert (
             failed_capture.handle_payload(_payload(project, "Stop", last_assistant_message="TEST not persisted")) == {}

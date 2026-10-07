@@ -13,7 +13,7 @@ import threading
 import pytest
 
 from scope_recall.adapters.hermes.runtime_wiring import HermesHostRuntime
-from scope_recall.adapters.codex.runtime_wiring import CodexHostRuntime
+from scope_recall.adapters.clients.runtime_wiring import CodexHostRuntime
 from scope_recall.adapters.runtime_wiring import launch_audience_worker
 from scope_recall.core import CoreConfig, MemoryCore
 from scope_recall.runtime.instance import RuntimeInstanceConfig, build_runtime_instance

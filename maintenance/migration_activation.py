@@ -47,7 +47,7 @@ def _load_installation_handoff(
             )
         if choice == "hermes":
             raise MigrationError("Hermes installation manifest is required")
-    from scope_recall.adapters.codex.config import load_codex_config
+    from scope_recall.adapters.clients.config import load_codex_config
 
     config_path = supplied
     if config_path.is_dir():

@@ -2,7 +2,7 @@
 WorkBuddy attached to a shared store.
 
 WorkBuddy has no store of its own here: ``scope-recall attach --host workbuddy`` makes its home an entry first, and
-this installer only tells WorkBuddy to run the hook client of ``adapters/codex`` for it.  WorkBuddy's agent reads
+this installer only tells WorkBuddy to run the hook client of ``adapters/clients`` for it.  WorkBuddy's agent reads
 command hooks from ``hooks`` in ``settings.json`` in its own home (``~/.workbuddy``).  It reads no MCP server of its
 own: the desktop app starts it with ``--strict-mcp-config`` and only its connector proxy, which serves the user's
 servers listed in ``mcp.json`` there, each once the user has approved it in WorkBuddy.  (``.mcp.json`` beside it is
@@ -13,7 +13,7 @@ it; uninstall takes out its own entries only.
 
 On Windows WorkBuddy runs a hook command through Git Bash (``bash -c``; elsewhere through ``$SHELL -c``), so every
 path in the command is a double-quoted forward-slash path.  A hook's ``timeout`` is in seconds, and a prompt hook that
-runs past it blocks the prompt.  The remote client (``adapters/codex/remote_client.py``) merges its own hooks and
+runs past it blocks the prompt.  The remote client (``adapters/clients/remote_client.py``) merges its own hooks and
 server into the same files with the functions here.
 """
 
@@ -27,7 +27,7 @@ from pathlib import Path
 import shlex
 from typing import Any, Callable, Mapping
 
-from scope_recall.adapters.codex.config import CodexConfigError, load_shared_client
+from scope_recall.adapters.clients.config import CodexConfigError, load_shared_client
 from scope_recall.adapters.hermes.installation import attachment_path
 
 from .install_common import RUNTIME_CONFIG_LIMIT, InstallError, InstallPlan, _reject_symlink_chain, _require_file

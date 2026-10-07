@@ -11,7 +11,7 @@ from pathlib import Path
 import shlex
 from typing import Any
 
-from scope_recall.adapters.codex.config import (
+from scope_recall.adapters.clients.config import (
     CONFIG_FILENAME,
     CodexConfigError,
     install_codex_scope_recall,

@@ -32,7 +32,7 @@ import tempfile
 import time
 from typing import Any
 
-from ..adapters.codex.config import CONFIG_FILENAME as CODEX_CONFIG_FILENAME
+from ..adapters.clients.config import CONFIG_FILENAME as CODEX_CONFIG_FILENAME
 from ..adapters.hermes.installation import (
     CLIENT_HOSTS,
     ENTRY_HOSTS,

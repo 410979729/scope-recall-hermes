@@ -1,0 +1,32 @@
+"""The clients that reach the memory through hooks and an MCP server: Codex, Claude Code, WorkBuddy and dsh, on this
+machine or on another (``remote_client``, ``remote_server``).  Installed configurations run the entry modules by the
+names they were first given, in ``adapters/codex``."""
+
+from .config import CodexConfigError, install_codex_scope_recall, load_codex_config
+from .handler import CodexHookHandler
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    # Keep MCP optional at runtime while making the lazy public exports
+    # visible to static analyzers.
+    from .mcp_server import CodexMCPServer, build_server
+
+
+def __getattr__(name):
+    # Hook capture, installation and readonly diagnostics do not require MCP.
+    # Import the optional transport only when its public entry is requested.
+    if name in {"CodexMCPServer", "build_server"}:
+        from . import mcp_server
+
+        return getattr(mcp_server, name)
+    raise AttributeError(name)
+
+
+__all__ = [
+    "CodexConfigError",
+    "CodexHookHandler",
+    "install_codex_scope_recall",
+    "load_codex_config",
+    "CodexMCPServer",
+    "build_server",
+]
