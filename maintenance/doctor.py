@@ -992,7 +992,7 @@ def _check_unreached(report: DoctorReport, config) -> None:
     """Work and candidates of any partition, this audience's or another's, that have waited more than a day.
 
     A partition's queue is drained only by a worker of its own audience, started by a session of that audience or by
-    a scheduled wake, and the queue figures above cover this binding's audience only.  Work this installation's
+    a scheduled wake, and the work-queue figures above cover this binding's audience only.  Work this installation's
     routes cannot do, and work a provider holds (reported by ``embedding_backlog_aged`` and ``model_refused``), is
     left out.  The store records no time a pass looked at an item, so a queue longer than its passes reach in a day
     is named too, and the finding asks for attention rather than degrading the report.  The detail line counts; the

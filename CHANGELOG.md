@@ -10,13 +10,13 @@ All notable changes to `scope-recall` will be documented in this file.
 
 ### Fixes
 
-- **A worker waits for a settling candidate.** A candidate inside its 15-minute quiet window is in no queue, so the pass after a channel's last message found nothing due and its supervisor stood down before the window closed; the candidate waited for the channel's next session. The wake plan now names the moment it becomes ready (`candidate_settle_window`). The supervisor records the last pass whose sweep saw every ready candidate (`last_pass_at`), so a candidate with nothing new to ask, or one evaluated since it became ready, does not wake the worker again; a pass that could not sweep holds that wake for 15 minutes.
-- **The doctor names work that has waited a day in any partition of the store** (`due_work_unreached`, attention). Its queue figures cover its own binding only.
+- **A worker waits for a settling candidate.** A candidate inside its 15-minute quiet window is in no queue, so the pass after a channel's last message found nothing due and its supervisor stood down before the window closed; the candidate waited for the channel's next session. The wake plan now names the moment it becomes ready (`candidate_settle_window`), also for evidence that came while an earlier question about it waited. The supervisor records the last pass whose sweep saw every ready candidate (`last_pass_at`), so a candidate with nothing new to ask, or whose last question held all its evidence, does not wake the worker again; a pass that could not sweep holds that wake for 15 minutes.
+- **The doctor names work, and candidates still marked with new evidence, that have waited a day in any partition of the store** (`due_work_unreached`, attention). Its other work-queue figures still cover its own audience only.
 - **Outside Windows, `autostart plan` prints the wake as a systemd user timer and a cron line**, and `enable` writes the control file the wake reads (`docs/install.md`, section 7).
 
 ### Upgrading from 3.8.0
 
-Install the package, run `plan-install` and `apply-install` where you upgrade, then restart the Hermes gateways and the clients' MCP servers. The schema is unchanged (1110).
+Install the package, run `plan-install` and `apply-install` where you upgrade, then restart the Hermes gateways and the clients' MCP servers. The schema is unchanged (1110). On Linux and macOS a wake needs the timer of `docs/install.md` section 7. Right after the upgrade the doctor may name work that has long waited (`due_work_unreached`, attention).
 
 ## [3.8.0] - 2026-10-06
 

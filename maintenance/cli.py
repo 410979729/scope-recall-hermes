@@ -71,7 +71,8 @@ _DELEGATED: dict[str, tuple[str, Callable[[list[str]], int]]] = {
     "setup": ("agent-operated fresh install/update/migration routing", _upgrade_cli),
     "migrate": ("prepare, resume, verify and index a legacy migration job", _upgrade_cli),
     "package-upgrade": ("offline wheel replacement after stopping all target writers", _package_upgrade),
-    "autostart": ("plan, enable, pause or remove a bounded background wake (a Windows task, elsewhere a timer)",
+    "autostart": ("plan, enable, pause or remove a bounded background wake (a Windows task, elsewhere a timer of "
+                  "your own)",
                   _autostart),
     "init-shared": ("create a shared store, the one store every agent attaches to", _shared),
     "attach": ("make a host's home an entry of a shared store, with the grants it had", _shared),

@@ -565,7 +565,7 @@ Things that look wrong in a healthy report and are not:
 | `worker_capability_unavailable` | Work is pending and the last pass reported work types it could not do. `attention`. | Usually a missing model route, credential or budget. |
 | `capture_ingress_blocked` | Inbox rows carry a real error code, or wait for their next try. Always `degraded`. | Read `capture_inbox_blocked` and the recent work errors. A row whose stored capture a replay could not check again is tried after a minute, doubling to an hour; when its 24th try again fails it is given up and counted in `capture_inbox_given_up`. `retry-failures` without `--apply` counts them by what gave them up (`inbox_by_kind`); fix that, then `retry-failures --apply` returns them to the replay. |
 | `embedding_backlog_aged` | An external embedding route is configured, and embeddings have waited more than 24 hours. Recall goes on answering, but finds what came in since then by its words alone. The check's detail names the provider's hold and its refusals over the last day when there are any (`embedding_health`). Without a route nothing embeds, by choice, and the gap is not raised. | With a hold or refusals: a quota, a spend cap or a credential at the provider; fix it there and the queue drains by itself. Without them no worker has reached the embeddings: read `worker_status`, and where each project has a worker of its own, check that it runs. |
-| `due_work_unreached` | Work, or a candidate with new first-hand evidence, has waited more than 24 hours in some partition of the store, including work whose worker's lease ran out. A partition is worked only by a worker of its own audience. Work no configured route can do, and work a provider holds, is left out; a queue longer than its passes reach in a day is named too. `unreached` names each partition (scope ids carry chat and account ids, so share it with care). `attention`. | Give that audience a wake: on Windows `autostart enable`, elsewhere a timer (section 7). On a shared store the shared worker's wake works every scope its config lists. A channel no one uses any more is drained when a session of it opens; a long queue drains by itself. |
+| `due_work_unreached` | Work, or a candidate still marked with new first-hand evidence, has waited more than 24 hours in some partition of the store, including work whose worker's lease ran out. A partition is worked only by a worker of its own audience. Work no configured route can do, and work a provider holds, is left out; a queue longer than its passes reach in a day is named too. `unreached` names each partition (scope ids carry chat and account ids, so share it with care). `attention`. | Give that audience a wake: on Windows `autostart enable`, elsewhere a timer (section 7). On a shared store the shared worker's wake works every scope its config lists. A channel no one uses any more is drained when a session of it opens; a long queue drains by itself. |
 | `embedding_respace_space_mismatch` | A re-embed run (`respace-embeddings`) embeds into one space while `runtime-config.json` embeds into another, after a second change of model, so no worker goes on with it. | `respace-embeddings --config <file> --restart --apply` to start again into the new space, or `--cancel --apply`. |
 | `embedding_respace_failed:<Error>` | A worker pass could not reopen the run's next page; the worker status carries it. The run is unchanged and the next pass tries again. | Read the error; a held writer lease passes by itself. |
 | `autostart_registration_missing` | The control file says enabled, but the scheduled task is gone. | Re-run `autostart enable`. |
@@ -653,7 +653,7 @@ scope-recall autostart enable --config /path/to/instance-root/scope-recall/runti
 - The wake works the audience of `runtime-config.json` (its scopes, project and
   branch): a channel whose scope it lists is drained by it, any other only by its
   own sessions. Its first run with no pass on record (after an upgrade, or when
-  only session workers ran) launches one pass for the candidates ready by then.
+  only session workers ran) launches a worker for the candidates ready by then.
 - Every 5 minutes the wake does what the Windows task does: `resume_entry`
   launches a detached worker only when work is due and no worker runs, with the
   credentials from `--env-file`. `pause` disables it in the control file (the
@@ -681,8 +681,9 @@ another worker or the truth writer held the lock, and `1` on an unexpected error
 It is a single pass with no supervisor loop: run it again, or from your own
 scheduler, wherever autostart is unavailable.
 
-This command has no `--env-file`. If an external route is configured, export the
-credential variable named by `credential_env` into your shell before running it.
+If an external route is configured, pass its credentials file with `--env-file`
+(absolute), as the wake does, or export the variable named by `credential_env`
+into your shell before running it.
 
 To re-open failures after shipping a fix:
 

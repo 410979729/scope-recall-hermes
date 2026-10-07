@@ -163,7 +163,7 @@ class WorkerReceipt:
     unavailable_work_types: tuple[str, ...] = ()
     #: Whether the pass's settle sweep saw every candidate ready (``_recover_failed_work``).
     settle_swept: bool = False
-    #: Whether it stopped at its page with more ready behind it.
+    #: Whether it filled its page, so that more may be ready behind it.
     settle_partial: bool = False
 
 
@@ -265,8 +265,8 @@ def _other_work_ready(storage, clock, context, started: float, budget: float, ki
 def _recover_failed_work(storage, clock, context, config: WorkerConfig, allowed: frozenset[str],
                          started: float, budget: float) -> tuple[int, str | None]:
     """Grant bounded fresh attempts to failures a later fix or budget may have cured.  Also says how far the settle
-    sweep looked, for the wake plan (``runtime/scheduling``): ``"complete"``, ``"partial"`` when it stopped at its
-    page with more ready behind it, or ``None`` when it did not look (a provider hold, no evaluator, a purge-only
+    sweep looked, for the wake plan (``runtime/scheduling``): ``"complete"``, ``"partial"`` when it filled its page
+    (more may be ready behind it), or ``None`` when it did not look (a provider hold, no evaluator, a purge-only
     pass, the evaluation queue full)."""
     settled: tuple = ()
     stale: tuple = ()

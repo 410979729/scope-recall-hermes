@@ -26,27 +26,28 @@ def _windows() -> bool:
     return os.name == "nt"
 
 
-def _posix_wake(name: str, config_path: Path, python: Path, data_directory: Path) -> dict:
-    """The wake as a command, and as a systemd user timer and a crontab line running it every 5 minutes."""
+def _posix_wake(name: str, config_path: Path, python: Path) -> dict:
+    """The wake as a command, and as a systemd user timer and a crontab line running it every 5 minutes.  It needs
+    no working directory: its paths are absolute, and the worker it launches sets its own."""
     # A line break ends a unit's line and a crontab's, and cron reads a backslash before ``%`` as its own escape: no
     # path holding either can be written so that both read it back.
-    if any(character in str(path) or "\\%" in str(path) for path in (config_path, python, data_directory)
+    if any(character in str(path) or "\\%" in str(path) for path in (config_path, python)
            for character in "\r\n\x00"):
         raise ValueError("autostart_path_unsupported")
     command = [str(python), "-I", "-B", "-m", "scope_recall.runtime.resume_entry", "--config", str(config_path)]
     line = shlex.join(command)
     # The wake launches a detached worker and exits at once.  With the default ``KillMode=control-group`` systemd
     # would end the worker with the unit, and a oneshot has no start timeout of its own (the Windows task allows a
-    # minute).  In ``ExecStart`` a backslash is an escape, ``%`` a specifier and ``$`` a variable; ``%`` is a line
-    # break in a crontab.
-    executed = line.replace("\\", "\\\\").replace("%", "%%").replace("$", "$$")
+    # minute).  In ``ExecStart`` a backslash is an escape and ``%`` a specifier, and ``$`` a variable in the arguments
+    # but not in the program's path; ``%`` is a line break in a crontab.
+    program, *arguments = (shlex.quote(word).replace("\\", "\\\\").replace("%", "%%") for word in command)
+    executed = " ".join([program, *(word.replace("$", "$$") for word in arguments)])
     service = (f"[Unit]\nDescription=Scope Recall wake ({name})\n\n[Service]\nType=oneshot\nKillMode=process\n"
-               f"TimeoutStartSec=120\nWorkingDirectory={str(data_directory).replace('%', '%%')}\n"
-               f"ExecStart={executed}\n")
+               f"TimeoutStartSec=120\nExecStart={executed}\n")
     timer = (f"[Unit]\nDescription=Scope Recall wake every 5 minutes ({name})\n\n[Timer]\nOnBootSec=1min\n"
              "OnUnitActiveSec=5min\n\n[Install]\nWantedBy=timers.target\n")
     # The wake prints a line each run; from cron it would be mailed every 5 minutes.
-    cron = f"*/5 * * * * cd {shlex.quote(str(data_directory))} && {line} >/dev/null 2>&1".replace("%", "\\%")
+    cron = f"*/5 * * * * {line} >/dev/null 2>&1".replace("%", "\\%")
     return dict(wake_command=command, systemd_service=service, systemd_timer=timer, cron=cron)
 
 
@@ -69,7 +70,7 @@ def plan(config_path, python_executable, *, user_id, env_file=None):
                     config_path=str(config_path.resolve()), python_executable=str(python),
                     env_file=str(Path(env_file).resolve()) if env_file else None,
                     trigger="every_5_minutes_from_the_operator_timer", registration=OPERATOR_TIMER,
-                    **_posix_wake(name, config_path.resolve(), python, config.binding.data_directory))
+                    **_posix_wake(name, config_path.resolve(), python))
     if not user_id or any(c in user_id for c in '\r\n\x00'):
         raise ValueError("autostart_user_required")
     namespace = "http://schemas.microsoft.com/windows/2004/02/mit/task"
@@ -177,9 +178,10 @@ def main(argv=None):
     parser.add_argument("command", choices=("plan", "enable", "pause", "remove"))
     parser.add_argument("--config", required=True)
     parser.add_argument("--python", default=sys.executable,
-                        help="interpreter the task runs; defaults to the one running this command")
+                        help="interpreter the wake runs; defaults to the one running this command")
     parser.add_argument("--user-id", default=_current_user(),
-                        help="task principal; defaults to the current account")
+                        help="the Windows task's principal; defaults to the current account (a timer elsewhere runs "
+                             "as the user who installs it)")
     parser.add_argument("--env-file")
     args = parser.parse_args(argv)
     try:

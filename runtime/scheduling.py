@@ -171,8 +171,8 @@ def next_wake(config, *, now: datetime | None = None, unavailable_until=None) ->
                 blocked += source_pages
         if 'evaluate_candidate' in capable:
             # A candidate still collecting evidence is in no queue: wake when it becomes ready.  The last pass
-            # whose sweep saw every ready candidate leaves only those ready since it began; with none on record,
-            # every ready candidate counts.  A later pass that could not sweep holds the wake for a while.
+            # whose sweep saw every ready candidate leaves only those ready or changed since it began; with none on
+            # record, every ready candidate counts.  A later pass that could not sweep holds the wake for a while.
             swept = _control_stamp(config, 'last_pass_at')
             ready = tx.candidates.next_settle_at(after=_stamp(swept) if swept else None, now=_stamp(now))
             if ready is not None:

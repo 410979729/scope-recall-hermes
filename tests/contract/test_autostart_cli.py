@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import sys
 
 import pytest
@@ -70,9 +71,8 @@ def test_no_account_in_environment_means_no_default_principal(monkeypatch):
 
 def test_outside_windows_the_plan_is_a_timer_for_the_operator_and_enable_writes_only_its_control(tmp_path,
                                                                                                     monkeypatch):
-    """Outside Windows ``enable`` refused and ``plan`` printed task XML, so nothing woke a quiet installation (#214).
-    The plan now gives the same wake as a systemd user timer and a cron line, and ``enable`` writes the control file
-    the wake reads, credentials file included; the timer is the operator's to install."""
+    """Outside Windows the plan gives the wake as a systemd user timer and a cron line, and ``enable`` writes the
+    control file the wake reads, credentials file included; the timer is the operator's to install."""
     from datetime import timedelta
     from pathlib import Path
     from types import SimpleNamespace
@@ -95,7 +95,7 @@ def test_outside_windows_the_plan_is_a_timer_for_the_operator_and_enable_writes_
     assert "\nKillMode=process\n" in planned["systemd_service"]
     # ``systemctl --user enable --now`` needs the timer to name its target.
     assert "[Install]\nWantedBy=timers.target" in planned["systemd_timer"]
-    assert planned["cron"].startswith("*/5 * * * * cd ")
+    assert planned["cron"].startswith(f"*/5 * * * * {shlex.quote(sys.executable)} -I -B -m ")
     assert read_control(config) is None, "a plan changes nothing"
 
     env = tmp_path / "TEST-embedding.env"
@@ -126,37 +126,57 @@ def test_a_percent_sign_in_a_path_is_escaped_for_systemd_and_cron():
     """``%`` starts a specifier in a unit file and a new line of input in a crontab."""
     from pathlib import Path
 
-    wake = autostart._posix_wake("ScopeRecall-TEST", Path("/srv/50%/runtime-config.json"), Path("/usr/bin/python3"),
-                                 Path("/srv/50%"))
+    wake = autostart._posix_wake("ScopeRecall-TEST", Path("/srv/50%/runtime-config.json"), Path("/usr/bin/python3"))
     assert "50%%" in wake["systemd_service"] and "50%" not in wake["systemd_service"].replace("50%%", "")
     assert "50\\%" in wake["cron"] and "50%" not in wake["cron"].replace("50\\%", "")
     assert wake["wake_command"][-1].endswith("runtime-config.json") and "%%" not in wake["wake_command"][-1]
 
 
 def test_a_dollar_or_a_backslash_in_a_path_reaches_systemd_as_written_and_a_line_break_is_refused():
-    """In ``ExecStart`` a backslash is an escape and ``$`` a variable; no line break can be written into a unit or a
-    crontab.  A oneshot without a start timeout would hold its timer for good."""
+    """In ``ExecStart`` a backslash is an escape everywhere and ``$`` a variable in the arguments, not in the program's
+    path; no line break can be written into a unit or a crontab.  A oneshot without a start timeout would hold its
+    timer for good."""
     from pathlib import PurePosixPath
 
-    wake = autostart._posix_wake("ScopeRecall-TEST", PurePosixPath("/srv/a$b\\c/runtime-config.json"),
-                                 PurePosixPath("/usr/bin/python3"), PurePosixPath("/srv/a$b\\c"))
+    wake = autostart._posix_wake("ScopeRecall-TEST", PurePosixPath("/srv/a$b\\c\\/runtime-config.json"),
+                                 PurePosixPath("/opt/v$1\\x/bin/python3"))
     executed = next(line for line in wake["systemd_service"].splitlines() if line.startswith("ExecStart="))
-    assert "a$$b" in executed and "a$b" not in executed.replace("a$$b", "")
-    assert "$$b\\\\c/runtime-config.json" in executed
-    # The working directory takes no variables.
-    assert "\nWorkingDirectory=/srv/a$b\\c\n" in wake["systemd_service"]
+    assert executed.startswith("ExecStart='/opt/v$1\\\\x/bin/python3' -I -B -m ")
+    assert executed.endswith(" --config '/srv/a$$b\\\\c\\\\/runtime-config.json'")
+    assert "'/opt/v$1\\x/bin/python3'" in wake["cron"] and "'/srv/a$b\\c\\/runtime-config.json'" in wake["cron"]
     assert "\nTimeoutStartSec=120\n" in wake["systemd_service"]
-    with pytest.raises(ValueError, match="autostart_path_unsupported"):
-        autostart._posix_wake("ScopeRecall-TEST", PurePosixPath("/srv/a\nb/runtime-config.json"),
-                              PurePosixPath("/usr/bin/python3"), PurePosixPath("/srv/a\nb"))
+    for character in "\n\r\x00":
+        with pytest.raises(ValueError, match="autostart_path_unsupported"):
+            autostart._posix_wake("ScopeRecall-TEST", PurePosixPath(f"/srv/a{character}b/runtime-config.json"),
+                                  PurePosixPath("/usr/bin/python3"))
+
+
+def test_the_wake_runs_in_no_working_directory():
+    """Its paths are absolute and the worker it launches sets its own, so no data directory is written as a unit's
+    ``WorkingDirectory``, where a backslash ending it would continue the line into ``ExecStart`` and a space ending it
+    would be lost.  A oneshot started at boot and every 5 minutes after; the wake is quoted as a shell and systemd
+    both read it."""
+    from pathlib import PurePosixPath
+
+    wake = autostart._posix_wake("ScopeRecall-TEST", PurePosixPath("/srv/TEST /runtime-config.json"),
+                                 PurePosixPath("/usr/bin/python3"))
+    assert wake["systemd_service"] == (
+        "[Unit]\nDescription=Scope Recall wake (ScopeRecall-TEST)\n\n[Service]\nType=oneshot\nKillMode=process\n"
+        "TimeoutStartSec=120\nExecStart=/usr/bin/python3 -I -B -m scope_recall.runtime.resume_entry "
+        "--config '/srv/TEST /runtime-config.json'\n")
+    assert wake["systemd_timer"] == (
+        "[Unit]\nDescription=Scope Recall wake every 5 minutes (ScopeRecall-TEST)\n\n[Timer]\nOnBootSec=1min\n"
+        "OnUnitActiveSec=5min\n\n[Install]\nWantedBy=timers.target\n")
+    assert wake["cron"] == ("*/5 * * * * /usr/bin/python3 -I -B -m scope_recall.runtime.resume_entry "
+                            "--config '/srv/TEST /runtime-config.json' >/dev/null 2>&1")
 
 
 def test_cron_mails_nothing_and_a_backslash_before_a_percent_sign_is_refused():
     from pathlib import PurePosixPath
 
     wake = autostart._posix_wake("ScopeRecall-TEST", PurePosixPath("/srv/runtime-config.json"),
-                                 PurePosixPath("/usr/bin/python3"), PurePosixPath("/srv"))
+                                 PurePosixPath("/usr/bin/python3"))
     assert wake["cron"].endswith(" >/dev/null 2>&1")
     with pytest.raises(ValueError, match="autostart_path_unsupported"):
         autostart._posix_wake("ScopeRecall-TEST", PurePosixPath("/srv/a\\%b/runtime-config.json"),
-                              PurePosixPath("/usr/bin/python3"), PurePosixPath("/srv/a\\%b"))
+                              PurePosixPath("/usr/bin/python3"))

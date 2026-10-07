@@ -11,7 +11,7 @@ from __future__ import annotations
 from datetime import timedelta
 
 from ..contracts import ContractError
-from .candidate_debounce import MAX_DEFERRAL_SECONDS, QUIET_SECONDS, evaluated_since, settles_at
+from .candidate_debounce import MAX_DEFERRAL_SECONDS, QUIET_SECONDS, parse_stamp, settles_at
 from .candidate_intake import CandidateIntake
 from .candidate_lifecycle import DORMANCY_DAYS, RULE_VERSION, CandidateSummary
 from .candidate_tables import (
@@ -252,27 +252,39 @@ class CandidateSweeps(CandidateIntake):
         """When the first candidate of this partition to become ready after ``after`` does, for a worker's wake plan
         (``runtime/scheduling.next_wake``); ``None`` when none will.
 
-        A candidate is ready when it has settled (``settles_at``).  ``after`` is when the last pass that swept began
-        (``None``: no such pass, every candidate counts); that pass saw what was ready before it.  A candidate with an
-        evaluation queued, or evaluated since it became ready, has been looked at.  Readiness comes at most
-        ``QUIET_SECONDS`` after the last evidence, which stamped ``updated_at``, so the state index reads only the
-        candidates touched since; the first one ready by ``now`` ends the read.
+        A candidate is ready when it has settled (``settles_at``) holding first-hand evidence that came after its
+        last question was put: an evaluation holds the evidence there was when it was queued, however late it is
+        answered, and one put in the write that linked the evidence holds it.  One with an evaluation queued is
+        waiting for it.  ``after`` is when the last pass that swept began (``None``: no such pass, every candidate
+        counts); that pass saw every candidate that was ready, and had last changed, before it began.  One that counts
+        became ready after it, so its evidence came at most ``QUIET_SECONDS`` before it, or changed since; both stamp
+        ``updated_at``, so the state index reads only the candidates touched since then; the first one ready by
+        ``now`` ends the read.
         """
         moment, current = (parse_time(after) if after is not None else None), parse_time(now)
-        # Stamps are compared as text; a second's margin covers one written without its fraction.
+        # Stamps are compared as text here, a second's margin covering one written without its fraction; the newest
+        # question (by id, as the index holds it without reading the rows) and the evidence are compared as times, as
+        # the store holds both ``Z`` and ``+00:00`` stamps.
         floor = stamp(moment - timedelta(seconds=QUIET_SECONDS + 1)) if moment is not None else ""
+        changed_floor = stamp(moment - timedelta(seconds=1)) if moment is not None else ""
         context, params = self._context("l.")
         conn = self._read()
         queued = {(row[0], row[1]) for row in conn.execute(
             "SELECT candidate_ref,candidate_revision FROM candidate_evaluations WHERE state='queued'")}
         rows = conn.execute(
-            f"""SELECT l.candidate_ref,l.candidate_revision,l.last_evidence_at,l.last_evaluated_at,l.created_at
+            f"""SELECT l.candidate_ref,l.candidate_revision,l.last_evidence_at,l.last_evaluated_at,l.created_at,
+                       l.updated_at
                 FROM candidate_lifecycle l {HEAD_JOINS}
                 WHERE l.processing_state IN ('pending_evaluation','waiting_evidence') AND l.updated_at>?
-                  AND l.last_evidence_at>? AND l.reason<>'authority_revoked' AND {context}
+                  AND (l.last_evidence_at>? OR l.updated_at>?)
+                  AND l.reason<>'authority_revoked' AND {context}
                   AND c.current_revision=l.candidate_revision AND c.read_blocked=0 AND c.suppressed=0
-                  AND v.state IN ('proposed','disputed')""",
-            (floor, floor, *params),
+                  AND v.state IN ('proposed','disputed')
+                  AND NOT EXISTS(SELECT 1 FROM candidate_evaluations e WHERE e.evaluation_id=(
+                          SELECT max(q.evaluation_id) FROM candidate_evaluations q
+                          WHERE q.candidate_ref=l.candidate_ref AND q.candidate_revision=l.candidate_revision)
+                      AND julianday(e.created_at)>=julianday(l.last_evidence_at))""",
+            (floor, floor, changed_floor, *params),
         )
         earliest = None
         try:
@@ -281,9 +293,10 @@ class CandidateSweeps(CandidateIntake):
                     continue
                 when = settles_at(last_evidence_at=row["last_evidence_at"], last_evaluated_at=row["last_evaluated_at"],
                                   created_at=row["created_at"])
-                if when is None or (moment is not None and when <= moment):
+                if when is None:
                     continue
-                if evaluated_since(when, row["last_evaluated_at"]):
+                changed = parse_stamp(row["updated_at"])
+                if moment is not None and when <= moment and (changed is None or changed < moment):
                     continue
                 if when <= current:
                     return stamp(when)

@@ -47,7 +47,8 @@ QUIET_SECONDS = 900
 #: Longest a candidate may keep accumulating before being judged anyway.
 MAX_DEFERRAL_SECONDS = 3600
 
-def _parse(value: object) -> datetime | None:
+def parse_stamp(value: object) -> datetime | None:
+    """A stored time; one written without a zone is UTC, and anything that is not a time is ``None``."""
     if not isinstance(value, str) or not value.strip():
         return None
     try:
@@ -75,10 +76,10 @@ def settle_reason(
     """
     if has_queued_evaluation:
         return None
-    moment = _parse(now)
+    moment = parse_stamp(now)
     if moment is None:
         return None
-    settled = _parse(last_evidence_at)
+    settled = parse_stamp(last_evidence_at)
     if settled is None:
         # No evidence timestamp at all: nothing has arrived to wait for, so the
         # caller's own state decides.  Treating this as "settled" keeps paths
@@ -86,7 +87,7 @@ def settle_reason(
         return "no_pending_evidence"
     if (moment - settled).total_seconds() >= quiet_seconds:
         return "evidence_settled"
-    waiting_since = _parse(last_evaluated_at) or _parse(created_at)
+    waiting_since = parse_stamp(last_evaluated_at) or parse_stamp(created_at)
     if waiting_since is not None and (moment - waiting_since).total_seconds() >= max_deferral_seconds:
         return "deferral_limit"
     return None
@@ -105,19 +106,14 @@ def settles_at(
     is no evidence timestamp, which is settled already.  A worker's wake plan waits for it
     (``runtime/scheduling.next_wake``).
     """
-    evidence = _parse(last_evidence_at)
+    evidence = parse_stamp(last_evidence_at)
     if evidence is None:
         return None
     moment = evidence + timedelta(seconds=quiet_seconds)
-    waiting_since = _parse(last_evaluated_at) or _parse(created_at)
+    waiting_since = parse_stamp(last_evaluated_at) or parse_stamp(created_at)
     if waiting_since is not None:
         moment = min(moment, waiting_since + timedelta(seconds=max_deferral_seconds))
     return max(moment, evidence)
-
-def evaluated_since(moment: datetime, last_evaluated_at: object) -> bool:
-    """Whether the candidate was evaluated at or after ``moment``."""
-    evaluated = _parse(last_evaluated_at)
-    return evaluated is not None and evaluated >= moment
 
 
 # The timer says *when it is worth looking*; it does not decide whether there
@@ -126,4 +122,4 @@ def evaluated_since(moment: datetime, last_evaluated_at: object) -> bool:
 # clock while it holds evidence nobody has judged.
 
 
-__all__ = ["MAX_DEFERRAL_SECONDS", "QUIET_SECONDS", "evaluated_since", "settle_reason", "settles_at"]
+__all__ = ["MAX_DEFERRAL_SECONDS", "QUIET_SECONDS", "parse_stamp", "settle_reason", "settles_at"]

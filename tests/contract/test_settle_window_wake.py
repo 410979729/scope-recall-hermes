@@ -1,11 +1,11 @@
-"""A candidate still collecting evidence when a pass ends wakes its worker when it settles (#214).
+"""A candidate still collecting evidence when a pass ends wakes its worker when it settles.
 
-A candidate inside its quiet window is in no queue.  When the last pass of a quiet conversation found nothing else,
-the wake plan had nothing due and the supervisor stood down, here two minutes before the window closed; the
-candidate then waited for the channel's next session, the next day on the installation that reported it and
-without bound on a channel used now and then.  The plan now names the moment it becomes ready.  A candidate
-ready before the last pass began was seen by that pass's sweep and is never waited for again, so a candidate the
-sweep has nothing to ask about cannot wake the worker after every pass.
+A candidate inside its quiet window is in no queue, so the wake plan names the moment it becomes ready; without it
+the supervisor of a quiet conversation stands down before the window closes, and the candidate waits for the
+channel's next session.  A question holds the evidence there was when it was queued, and evidence that came later
+is asked about once it settles.  A candidate ready, and last changed, before the last pass that swept began was
+seen by that sweep and is not waited for again, so a candidate the sweep has nothing to ask about cannot wake the
+worker after every pass.
 """
 from __future__ import annotations
 
@@ -22,7 +22,10 @@ from scope_recall.maintenance import doctor
 from scope_recall.runtime import scheduling
 from scope_recall.runtime.instance import RuntimeInstanceConfig
 from scope_recall.runtime.scheduling import SupervisorControl, next_wake, supervise
-from test_r1_candidate_lifecycle import Evaluator, _candidate, _finish_source_work
+from scope_recall.runtime.worker_entry import _receipt_payload
+from scope_recall.core import worker as worker_module
+from scope_recall.core.claims import Qualification
+from test_r1_candidate_lifecycle import Evaluator, ModelRefusal, _candidate, _finish_source_work
 from test_v11_claims import app, capture  # noqa: F401  (app is a fixture)
 
 EVIDENCE = datetime(2026, 9, 6, 12, 0, tzinfo=timezone.utc)  # the claims fixture's clock
@@ -51,11 +54,13 @@ def test_settles_at_is_when_the_debounce_rule_first_gives_a_reason(evaluated):
 
 
 def _collecting(core, ctx):
-    """A judged candidate that the person's last message brought new first-hand evidence for at ``EVIDENCE``, with no
-    evaluation queued: what the last pass of a conversation leaves behind."""
+    """A candidate judged half an hour before the person's last message brought it new first-hand evidence at
+    ``EVIDENCE``, with no evaluation queued: what the last pass of a conversation leaves behind."""
+    core.clock.now = _stamp(EVIDENCE - timedelta(minutes=30))
     _candidate(core, ctx)
     _finish_source_work(core)
     core.drain_worker(ctx, max_items=8, remaining_seconds=10, consolidation=Evaluator())
+    core.clock.now = _stamp(EVIDENCE)
     capture(core, ctx, "又发现 entity-blue property-blue 的相关证据。", key="TEST-214/new-evidence")
     _finish_source_work(core)
     with sqlite3.connect(core.storage.path) as conn:
@@ -101,15 +106,63 @@ def test_the_plan_waits_for_a_collecting_candidate_and_never_again_once_a_pass_h
     assert next_wake(config, now=ready + timedelta(seconds=60)).reason == "idle"
     # A provider cooling down and a spent day's budget push the wake as they push any candidate work.
     _passed(config, EVIDENCE)
-    cooled = next_wake(config, now=EVIDENCE + timedelta(seconds=60),
-                       unavailable_until={"evaluate_candidate": ready + timedelta(minutes=5)})
-    assert (cooled.due_at, cooled.reason) == (_stamp(ready + timedelta(minutes=5)), "capability_cooldown")
+    for work_type in ("evaluate_candidate", "consolidate"):
+        cooled = next_wake(config, now=EVIDENCE + timedelta(seconds=60),
+                           unavailable_until={work_type: ready + timedelta(minutes=5)})
+        assert (cooled.due_at, cooled.reason) == (_stamp(ready + timedelta(minutes=5)), "capability_cooldown")
+    capped = replace(config, daily_work_limit=256)
+    day = capped.binding.data_directory / "runtime-worker-day.json"
+    day.write_text(json.dumps({"installation_id": capped.binding.installation_id, "day": "2026-09-06",
+                               "used": capped.daily_work_limit}), encoding="utf-8")
+    spent = next_wake(capped, now=EVIDENCE + timedelta(seconds=60))
+    assert (spent.due_at, spent.reason) == ("2026-09-07T00:00:00Z", "daily_queue_budget")
+    day.unlink()
     # A queued evaluation is a look already taken.
     with sqlite3.connect(core.storage.path) as conn:
         conn.execute("UPDATE candidate_evaluations SET state='queued' WHERE evaluation_id=(SELECT max(evaluation_id) "
                      "FROM candidate_evaluations)")
         conn.commit()
     assert next_wake(config, now=EVIDENCE + timedelta(seconds=60)).reason != "candidate_settle_window"
+
+
+@pytest.mark.parametrize("change", [
+    "UPDATE candidate_lifecycle SET reason='authority_revoked'",
+    "UPDATE claims SET read_blocked=1",
+    "UPDATE claims SET suppressed=1",
+    "UPDATE claim_versions SET state='active'",
+])
+def test_a_candidate_no_sweep_would_ask_about_wakes_no_worker(app, monkeypatch, change):
+    """Revoked authority, a blocked or muted claim, and a claim no longer proposed or disputed: the sweep leaves
+    each alone, and so does the plan."""
+    core, ctx = app
+    _collecting(core, ctx)
+    config, _path = _config(ctx)
+    monkeypatch.setattr(scheduling, "_capable_work_types", lambda config: set(EVERY_TYPE))
+    assert next_wake(config, now=EVIDENCE + timedelta(seconds=60)).reason == "candidate_settle_window"
+    with sqlite3.connect(core.storage.path) as conn:
+        conn.execute(change)
+        conn.commit()
+    assert next_wake(config, now=EVIDENCE + timedelta(seconds=60)).reason == "idle"
+
+
+def test_a_pass_on_record_without_a_fraction_still_sees_a_later_readiness(app, monkeypatch):
+    """The read compares stamps as text, where ``12:00:00Z`` sorts after ``12:00:00.500000Z``: a second's margin keeps
+    evidence from just inside the window before the last pass in it."""
+    core, ctx = app
+    core.clock.now = _stamp(EVIDENCE - timedelta(minutes=30))
+    _candidate(core, ctx)
+    _finish_source_work(core)
+    core.drain_worker(ctx, max_items=8, remaining_seconds=10, consolidation=Evaluator())
+    evidence = EVIDENCE + timedelta(microseconds=500000)
+    core.clock.now = _stamp(evidence)
+    capture(core, ctx, "又发现 entity-blue property-blue 的相关证据。", key="TEST-214/fraction")
+    _finish_source_work(core)
+    config, _path = _config(ctx)
+    monkeypatch.setattr(scheduling, "_capable_work_types", lambda config: set(EVERY_TYPE))
+    ready = evidence + timedelta(seconds=QUIET_SECONDS)
+    _passed(config, ready - timedelta(microseconds=500000))  # written as 12:15:00Z
+    plan = next_wake(config, now=ready + timedelta(seconds=30))
+    assert (plan.due_at, plan.reason) == (_stamp(ready + timedelta(seconds=30)), "candidate_settle_window")
 
 
 def test_another_partition_s_candidate_wakes_no_worker_here(app, monkeypatch):
@@ -121,7 +174,7 @@ def test_another_partition_s_candidate_wakes_no_worker_here(app, monkeypatch):
 
 
 def test_the_supervisor_waits_for_the_window_and_drains_when_it_closes(app, monkeypatch):
-    """The reported case: the pass after the person's last message finds nothing due."""
+    """The pass after the person's last message finds nothing due; the supervisor waits for the window."""
     core, ctx = app
     _collecting(core, ctx)
     config, path = _config(ctx)
@@ -150,7 +203,7 @@ def test_the_supervisor_waits_for_the_window_and_drains_when_it_closes(app, monk
 @pytest.mark.parametrize("passes,recorded", [
     # A busy pass (75) never ran, a failed one (1) may have stopped before its sweep, and one that finished without
     # looking at the candidates (a provider hold, no evaluator, a purge-only pass, a full evaluation queue) saw none
-    # of them ready: none of them is the last pass (review of 3.8.1).
+    # of them ready: none of them is the last pass.
     ([(75, {}), (1, {}), (0, {"settle_swept": False})], False),
     ([(124, {"settle_swept": True})], False),
     ([(0, {"settle_swept": False}), (0, {"settle_swept": True})], True),
@@ -171,11 +224,23 @@ def test_only_a_pass_that_swept_the_candidates_is_recorded(app, passes, recorded
     assert state["drains"] == len(passes) and ("last_pass_at" in state) == recorded
 
 
-def test_a_pass_says_whether_it_swept_the_candidates(app):
+def _line(ctx, receipt):
+    """What the worker prints for the supervisor to read."""
+    config, _path = _config(ctx)
+    payload = _receipt_payload(config, receipt, [])
+    return payload["settle_swept"], payload["settle_partial"]
+
+
+def test_a_pass_says_whether_it_swept_the_candidates(app, monkeypatch):
     core, ctx = app
     _collecting(core, ctx)
-    assert core.drain_worker(ctx, max_items=8, remaining_seconds=10, consolidation=Evaluator()).settle_swept is True
-    assert core.drain_worker(ctx, max_items=8, remaining_seconds=10).settle_swept is False, "no evaluator"
+    receipt = core.drain_worker(ctx, max_items=8, remaining_seconds=10, consolidation=Evaluator())
+    assert (receipt.settle_swept, receipt.settle_partial) == _line(ctx, receipt) == (True, False)
+    receipt = core.drain_worker(ctx, max_items=8, remaining_seconds=10)
+    assert (receipt.settle_swept, receipt.settle_partial) == _line(ctx, receipt) == (False, False), "no evaluator"
+    monkeypatch.setattr(worker_module, "CANDIDATE_QUEUE_CEILING", 0)
+    receipt = core.drain_worker(ctx, max_items=8, remaining_seconds=10, consolidation=Evaluator())
+    assert (receipt.settle_swept, receipt.settle_partial) == (False, False), "a full evaluation queue"
 
 
 def test_the_doctor_names_work_and_candidates_that_waited_a_day(app, monkeypatch):
@@ -250,9 +315,69 @@ def test_the_doctor_names_work_and_candidates_that_waited_a_day(app, monkeypatch
     assert "due_work_unreached" not in result.capability_gaps and result.unreached == []
 
 
+def _doctor(core, ctx, monkeypatch):
+    (ctx.binding.data_directory / "installation.json").write_text("{}", encoding="utf-8")
+    monkeypatch.setattr(doctor, "_load_binding", lambda *args: (ctx.binding, ctx.binding.data_directory))
+    monkeypatch.setattr(doctor, "_hermes_data_dir", lambda root: ctx.binding.data_directory)
+    return doctor.run_doctor(host="hermes", instance_root=ctx.binding.data_directory)
+
+
+def _days_ago(*days):
+    """Whole-second stamps that many days before now, all from one reading of the clock."""
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    return [_stamp(now - timedelta(days=count)) for count in days]
+
+
+@pytest.mark.parametrize("change", [
+    "UPDATE candidate_evaluations SET state='queued' WHERE evaluation_id=(SELECT max(evaluation_id) "
+    "FROM candidate_evaluations)",
+    "UPDATE claims SET read_blocked=1",
+    "UPDATE claims SET suppressed=1",
+])
+def test_the_doctor_leaves_out_a_candidate_queued_blocked_or_muted(app, monkeypatch, change):
+    core, ctx = app
+    _collecting(core, ctx)
+    _config(ctx)
+    monkeypatch.setattr(scheduling, "_capable_work_types", lambda config: set(EVERY_TYPE))
+    [old] = _days_ago(2)
+    with sqlite3.connect(core.storage.path) as conn:
+        conn.execute("UPDATE candidate_lifecycle SET updated_at=?,last_evidence_at=?", (old, old))
+        conn.commit()
+    assert [row["candidates"] for row in _doctor(core, ctx, monkeypatch).unreached] == [1]
+    with sqlite3.connect(core.storage.path) as conn:
+        conn.execute(change)
+        conn.commit()
+    assert _doctor(core, ctx, monkeypatch).unreached == []
+
+
+def test_the_doctor_names_each_partition_from_its_oldest_wait(app, monkeypatch):
+    """A partition's oldest wait is the earliest of its work and candidates; the longest-waiting partition comes
+    first.  Without a runtime config only the work every installation can do counts."""
+    core, ctx = app
+    _collecting(core, ctx)
+    _config(ctx)
+    monkeypatch.setattr(scheduling, "_capable_work_types", lambda config: set(EVERY_TYPE))
+    two, three, four = _days_ago(2, 3, 4)
+    with sqlite3.connect(core.storage.path) as conn:
+        conn.execute("UPDATE candidate_lifecycle SET updated_at=?,last_evidence_at=?", (two, two))
+        # The store lists partitions by name, so the longer wait goes to the partition named last.
+        for project, since in (("TEST-project", four), ("TEST-other-project", three)):
+            conn.execute("""INSERT INTO work_items(work_type,subject_ref,subject_revision,scope_id,project_id,
+                            branch_id,state,available_at) VALUES ('rebuild_projection',?,1,'TEST-scope',?,'TEST-main',
+                            'pending',?)""", (f"TEST-{project}", project, since))
+        conn.commit()
+    found = [(row["project_id"], row["work"], row["candidates"], row["oldest"])
+             for row in _doctor(core, ctx, monkeypatch).unreached]
+    assert found == [("TEST-project", 1, 1, four), ("TEST-other-project", 1, 0, three)]
+    (ctx.binding.data_directory / "runtime-config.json").unlink()
+    found = [(row["project_id"], row["work"], row["candidates"])
+             for row in _doctor(core, ctx, monkeypatch).unreached]
+    assert found == [("TEST-project", 1, 0), ("TEST-other-project", 1, 0)]
+
+
 def test_without_a_pass_on_record_a_ready_candidate_wakes_the_worker_once(app, monkeypatch):
-    """Every control file lacks the record after the upgrade, and a session's worker records into its own audience's
-    file: taking ``now`` for the last pass, a candidate ready before it never came due (review of 3.8.1)."""
+    """No control file has the record right after an upgrade, and a session's worker records into its own audience's
+    file: with no pass on record, every ready candidate counts, once."""
     core, ctx = app
     _collecting(core, ctx)
     config, _path = _config(ctx)
@@ -269,8 +394,8 @@ def _unswept(config, moment):
 
 
 def test_a_pass_that_did_not_sweep_is_not_repeated_for_the_candidates_at_once(app, monkeypatch):
-    """A full evaluation queue, a pass kept out or cut short: woken at once, each pass found the same, 256 passes 33 s
-    apart (review of 3.8.1)."""
+    """A full evaluation queue, a pass kept out or cut short: the next pass would find the same, so the settle wake
+    waits ``SETTLE_RETRY_SECONDS``."""
     core, ctx = app
     _collecting(core, ctx)
     config, _path = _config(ctx)
@@ -316,15 +441,15 @@ def test_the_supervisor_does_not_spin_on_passes_that_cannot_sweep(app, monkeypat
 
 
 def test_a_sweep_that_stopped_at_its_page_goes_on_with_the_rest(app, monkeypatch):
-    """One sweep takes a page of candidates.  Recorded as the last pass, it left the rest of a burst as seen, and
-    a candidate answerable at once waited for the channel's next session (review of 3.8.1)."""
+    """One sweep takes a page of candidates.  One that filled its page is not the last pass, so the next pass
+    sweeps the rest of a burst."""
     core, ctx = app
     _collecting(core, ctx)
     config, path = _config(ctx)
     monkeypatch.setattr(scheduling, "_capable_work_types", lambda config: set(EVERY_TYPE))
     _passed(config, EVIDENCE - timedelta(minutes=1))
-    drains = _run(path, iter([(0, {"completed": 0, "settle_partial": True}), (0, {"completed": 0, "settle_swept": True})]),
-                  start=QUIET_SECONDS + 60)
+    passes = [(0, {"completed": 0, "settle_partial": True}), (0, {"completed": 0, "settle_swept": True})]
+    drains = _run(path, iter(passes), start=QUIET_SECONDS + 60)
     assert len(drains) == 2 and drains[1] - drains[0] < 60, drains
     assert SupervisorControl(config).read()["last_pass_at"] == _stamp(EVIDENCE + timedelta(seconds=drains[1]))
 
@@ -337,18 +462,23 @@ def test_a_pass_says_when_its_sweep_stopped_at_its_page(app, monkeypatch):
     monkeypatch.setattr(CandidateSweeps, "settled_to_schedule",
                         lambda self, *, now, limit=16, rule_version=None: tuple(("TEST-ref", 1) for _ in range(limit)))
     receipt = core.drain_worker(ctx, max_items=2, remaining_seconds=10, consolidation=Evaluator())
-    assert (receipt.settle_swept, receipt.settle_partial) == (False, True)
+    assert (receipt.settle_swept, receipt.settle_partial) == _line(ctx, receipt) == (False, True)
 
 
-def test_a_supervisor_whose_audience_changes_stands_down(app):
-    """Its control file is the old audience's: planning from the new one, it kept writing the old file."""
+@pytest.mark.parametrize("field,value", [("project_id", "TEST-other-project"),
+                                         ("allowed_scope_ids", ["TEST-scope", "TEST-scope-2"])])
+def test_a_supervisor_whose_audience_changes_stands_down(app, field, value):
+    """Its control file is the old audience's: planning from the new one, it would keep writing the old file."""
     _core, ctx = app
-    config, path = _config(ctx, supervisor_max_drains=4)
+    binding = dict(agent_id=ctx.binding.agent_id, installation_id=ctx.binding.installation_id,
+                   data_directory=str(ctx.binding.data_directory), scope_ids=["TEST-scope", "TEST-scope-2"],
+                   test_mode=True)
+    config, path = _config(ctx, supervisor_max_drains=4, binding=binding)
 
     def outcomes():
         while True:
             raw = json.loads(path.read_text(encoding="utf-8"))
-            raw["project_id"] = "TEST-other-project"
+            raw[field] = value
             path.write_text(json.dumps(raw), encoding="utf-8")
             yield 0, {"completed": 0, "settle_swept": True}
 
@@ -372,8 +502,8 @@ def test_a_route_without_a_budget_ledger_is_not_planned_for():
 
 
 def test_the_scheduled_wake_launches_for_a_candidate_ready_with_no_pass_on_record(app, monkeypatch):
-    """Right after the upgrade no control file has the record: the wake read 'now' for it and never launched for a
-    candidate that had become ready (review of 3.8.1)."""
+    """Right after an upgrade no control file has the record: the scheduled wake launches a worker, once, for a
+    candidate that became ready meanwhile."""
     from pathlib import Path
     import sys
     from types import SimpleNamespace
@@ -401,9 +531,9 @@ def test_the_scheduled_wake_launches_for_a_candidate_ready_with_no_pass_on_recor
     assert resume_once(path, launcher=launcher, now=ready + timedelta(minutes=8))["status"] == "idle"
 
 
-def test_a_candidate_evaluated_since_it_became_ready_wakes_no_worker(app, monkeypatch):
-    """Another audience's worker (a session's) evaluated it: the scheduled wake reads only its own record, and
-    repeated every such pass (review of 3.8.1)."""
+def test_a_candidate_another_worker_put_its_question_to_wakes_no_worker(app, monkeypatch):
+    """Another audience's worker (a session's) put the question: the scheduled wake, which reads only its own record,
+    does not repeat that pass."""
     core, ctx = app
     _collecting(core, ctx)
     config, _path = _config(ctx)
@@ -411,10 +541,86 @@ def test_a_candidate_evaluated_since_it_became_ready_wakes_no_worker(app, monkey
     ready = EVIDENCE + timedelta(seconds=QUIET_SECONDS)
     later = ready + timedelta(hours=1)
     assert next_wake(config, now=later).reason == "candidate_settle_window", "no pass on record: it counts"
-    with sqlite3.connect(core.storage.path) as conn:
-        conn.execute("UPDATE candidate_lifecycle SET last_evaluated_at=?", (_stamp(ready + timedelta(minutes=1)),))
-        conn.commit()
+    core.clock.now = _stamp(ready + timedelta(minutes=1))
+    core.drain_worker(ctx, max_items=8, remaining_seconds=10, consolidation=Evaluator())
     assert next_wake(config, now=later).reason == "idle"
+
+
+def test_a_candidate_asked_about_as_its_evidence_came_wakes_no_worker(app, monkeypatch):
+    """Last judged over an hour before, a candidate is asked about in the write that links its new evidence (the
+    deferral limit), so the question holds that evidence, and nothing wakes at its readiness a window later, where a
+    pass would ask nothing.  Most candidates of a live store are asked this way."""
+    core, ctx = app
+    core.clock.now = _stamp(EVIDENCE - timedelta(hours=2))
+    _candidate(core, ctx)
+    _finish_source_work(core)
+    core.drain_worker(ctx, max_items=8, remaining_seconds=10, consolidation=Evaluator())
+    core.clock.now = _stamp(EVIDENCE)
+    capture(core, ctx, "又发现 entity-blue property-blue 的相关证据。", key="TEST-214/asked-at-once")
+    _finish_source_work(core)
+    with sqlite3.connect(core.storage.path) as conn:
+        assert conn.execute("SELECT last_evidence_at FROM candidate_lifecycle").fetchone()[0] == _stamp(EVIDENCE)
+        assert conn.execute("SELECT state,created_at FROM candidate_evaluations ORDER BY evaluation_id DESC"
+                            ).fetchone() == ("queued", _stamp(EVIDENCE))
+    core.drain_worker(ctx, max_items=8, remaining_seconds=10, consolidation=Evaluator())
+    config, _path = _config(ctx)
+    monkeypatch.setattr(scheduling, "_capable_work_types", lambda config: set(EVERY_TYPE))
+    assert next_wake(config, now=EVIDENCE + timedelta(seconds=60)).reason == "idle"
+    assert next_wake(config, now=EVIDENCE + timedelta(seconds=QUIET_SECONDS + 60)).reason == "idle"
+
+
+def _questions(core):
+    with sqlite3.connect(core.storage.path) as conn:
+        return [row[0] for row in conn.execute("SELECT state FROM candidate_evaluations ORDER BY evaluation_id")]
+
+
+class _Failing:
+    def evaluate_candidate(self, candidate, sources, *, remaining_seconds):
+        raise ModelRefusal("network_error")
+
+
+@pytest.mark.parametrize("closed", ["answered", "failed", "obsolete"])
+def test_evidence_that_came_while_a_question_waited_wakes_the_worker_once_it_settles(app, monkeypatch, closed):
+    """An evaluation holds the evidence there was when it was queued.  However it ends (answered, failed or
+    retired), evidence that came while it waited is asked about once it settles, also when the pass that ended it
+    is on record as having swept."""
+    core, ctx = app
+    saved, _source, proposal, _registration = _candidate(core, ctx)  # its question is queued at EVIDENCE
+    _finish_source_work(core)
+    core.clock.now = _stamp(EVIDENCE + timedelta(minutes=1))
+    capture(core, ctx, "又发现 entity-blue property-blue 的相关证据。", key="TEST-214/while-queued")
+    _finish_source_work(core)
+
+    def write_history():
+        with core.storage.write(ctx) as tx:
+            head = tx.claims.version(saved.ref, saved.revision)
+            tx.claims.append("TEST-scope", proposal, Qualification("proposed", "inferred_suggestion", "TEST_history"),
+                             recorded_at=core.clock.utc_now(), previous=head, advance_head=False)
+
+    closer = {"answered": Evaluator(), "failed": _Failing(),
+              "obsolete": Evaluator(proposal, callback=write_history)}[closed]
+    answered = EVIDENCE + timedelta(minutes=20)  # the new evidence settled at +16 min
+    core.clock.now = _stamp(answered)
+    core.drain_worker(ctx, max_items=8, remaining_seconds=10, consolidation=closer)
+    assert _questions(core) == [{"answered": "waiting_evidence", "failed": "failed", "obsolete": "obsolete"}[closed]]
+    with core.storage.read(ctx) as tx:
+        assert tx.candidates.settled_to_schedule(now=core.clock.now) == ((saved.ref, saved.revision),)
+    config, _path = _config(ctx)
+    monkeypatch.setattr(scheduling, "_capable_work_types", lambda config: set(EVERY_TYPE))
+    # With no pass on record, and with the pass that closed it on record: it began before it closed, here a second
+    # before or at the same moment on this clock.
+    for record in (None, answered - timedelta(seconds=1), answered):
+        if record is not None:
+            _passed(config, record)
+        plan = next_wake(config, now=answered + timedelta(seconds=30))
+        assert (plan.due_at, plan.reason) == (_stamp(answered + timedelta(seconds=30)), "candidate_settle_window")
+    # The next pass puts the new question, and once it is answered nothing is left to wake for.
+    core.clock.now = _stamp(answered + timedelta(minutes=1))
+    core.drain_worker(ctx, max_items=8, remaining_seconds=10, consolidation=Evaluator())
+    assert _questions(core)[1:] == ["waiting_evidence"]
+    # The failed question's work stays failed for good, which the plan reports without waking for it.
+    plan = next_wake(config, now=answered + timedelta(minutes=2))
+    assert (plan.due_at, plan.reason) == (None, "failed_terminal" if closed == "failed" else "idle")
 
 
 def _state_after(path, config, outcomes, **stamps):
@@ -434,8 +640,9 @@ def _state_after(path, config, outcomes, **stamps):
 
 @pytest.mark.parametrize("failures", [1, 3])
 def test_a_failing_pass_holds_the_settle_wake(app, failures):
-    """With nothing recorded, a worker that kept failing was launched again for the candidates at every scheduled
-    wake (review of 3.8.1).  The hold counts from the last failing pass, also the one that stops the supervisor."""
+    """A failing pass holds the settle wake as a pass that could not sweep does, so a worker that keeps failing is
+    not launched for the candidates at every scheduled wake.  The hold counts from the last failing pass, also the one
+    that stops the supervisor."""
     _core, ctx = app
     config, path = _config(ctx, supervisor_max_drains=failures)
     elapsed = [0.0]
