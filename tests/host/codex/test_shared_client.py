@@ -1831,7 +1831,7 @@ def test_a_server_answer_without_its_vector_search_gives_way_to_the_hook_s_own(
 
     _root, client, endpoint = resident
     own_fault = "vector_error:AuxiliaryModelError:credential_missing"
-    monkeypatch.setattr(handler_module.CodexHookHandler, "_vector_route", lambda self: True)
+    monkeypatch.setattr(handler_module.CodexHookHandler, "has_vectors", property(lambda self: True))
     for index, (gap, own_vectors, expected, said) in enumerate(
         (
             (own_fault, True, "TEST-own-marker", f"without_vectors:{own_fault}"),
@@ -1861,7 +1861,7 @@ def test_a_server_answer_without_its_vector_search_gives_way_to_the_hook_s_own(
 
         monkeypatch.setattr(handler_module.CodexHookHandler, "_auto_recall", recall)
         monkeypatch.setattr(
-            handler_module.CodexHookHandler, "_vector_route", lambda self, route=own_vectors is not None: route
+            handler_module.CodexHookHandler, "has_vectors", property(lambda self, route=own_vectors is not None: route)
         )
         raw = json.dumps(_prompt(f"TEST 服务器没有向量 {index}。", prompt_id=f"TEST-prompt-v-{index}")).encode()
         assert _hook_entry(monkeypatch, raw, client) == 0
@@ -1894,7 +1894,7 @@ def test_a_hook_whose_own_recall_went_without_vectors_waits_for_its_server(resid
         def recall(self, *args, own_vectors=own_vectors, **kwargs):
             self.diagnostics.recall_vectors = own_vectors
             if not own_vectors:
-                self._diag("deadline_exceeded")  # what the hook's own said, which is not what answered
+                self.note("deadline_exceeded")  # what the hook's own said, which is not what answered
             return _marker("TEST-own-marker")
 
         monkeypatch.setattr(handler_module.CodexHookHandler, "_auto_recall", recall)
@@ -2017,7 +2017,7 @@ def test_a_hook_knows_whether_its_own_runtime_has_a_vector_search(store):
             (SimpleNamespace(runtime=SimpleNamespace(config=SimpleNamespace(vector=object()))), True),
         ):
             hook._host_runtime = runtime
-            assert hook._vector_route() is expected
+            assert hook.has_vectors is expected
     finally:
         hook._host_runtime = None
         hook.close()

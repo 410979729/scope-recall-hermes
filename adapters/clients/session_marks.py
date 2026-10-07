@@ -12,12 +12,8 @@ from pathlib import Path
 from typing import Any
 
 from . import transcript
-from .boundary import turn_id_from_payload
+from .boundary import TURN_FIELD, turn_id_from_payload
 from .config import SharedClientConfig
-
-#: The field of WorkBuddy's hooks that names a turn (its latest model request).
-TURN_FIELD = "generation_id"
-
 
 #: How long a thread that asked for suggestions stays marked.  Its tool calls, answer and end follow within minutes;
 #: an older mark is removed the next time a thread is marked.
@@ -148,7 +144,7 @@ def forget_turns(config, session_id: str) -> None:
 def open_turn(config, session_id: str, payload: dict[str, Any], words: str | None, moment: str) -> str:
     """The turn a WorkBuddy prompt opens, kept for its Stop; ``words`` are the person's, None for a notice."""
     kept = _kept(config, session_id)
-    given, _gaps = turn_id_from_payload(payload, required=False, field=TURN_FIELD)
+    given, _gaps = turn_id_from_payload(payload, required=False, field=TURN_FIELD["workbuddy"])
     turn = (
         given
         if given is not None and all(given != known for known, _words_of in kept["turns"])
@@ -166,7 +162,7 @@ def close_turn(config, session_id: str, payload: dict[str, Any], reply: str, mom
     if kept["turns"]:
         turn = kept["turns"][-1][0]
     else:
-        given, _gaps = turn_id_from_payload(payload, required=False, field=TURN_FIELD)
+        given, _gaps = turn_id_from_payload(payload, required=False, field=TURN_FIELD["workbuddy"])
         turn = given or derived_turn(session_id, reply, moment)
     words = words_of(reply) if reply.strip() else None
     # The last reply, or the error WorkBuddy showed in place of one since: a stopped turn hands either.

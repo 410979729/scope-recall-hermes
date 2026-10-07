@@ -911,7 +911,7 @@ def test_a_handler_s_embedding_warming_asks_its_runtime():
 
     asked = []
     handler = CodexHookHandler.__new__(CodexHookHandler)
-    handler._ensure_host_runtime = lambda: None
+    handler.ensure_runtime = lambda: None
     handler._host_runtime = type(
         "Host",
         (),

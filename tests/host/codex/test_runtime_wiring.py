@@ -199,7 +199,7 @@ def test_generated_hook_and_mcp_attach_binding_directory_default(codex_install):
     default_path.write_text(runtime_path.read_text(encoding="utf-8"), encoding="utf-8")
     handler = CodexHookHandler.from_config_path(str(config.config_path))
     assert handler._host_runtime is None
-    handler._ensure_host_runtime()
+    handler.ensure_runtime()
     server = build_server(config, workspace=project)
     assert handler._host_runtime is not None and handler._host_runtime.configured
     assert server._host_runtime is not None and server._host_runtime.configured
