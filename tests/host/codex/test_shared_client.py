@@ -1254,8 +1254,8 @@ def small_reserve(monkeypatch):
     the hook's own recall, so the server answers before the hook recalls alongside."""
     from scope_recall.adapters.clients import handler as handler_module
 
-    monkeypatch.setattr(handler_module, "_LOCAL_RECALL_RESERVE_S", 0.3)
-    monkeypatch.setattr(handler_module, "_RESIDENT_MIN_S", 0.5)
+    monkeypatch.setattr("scope_recall.adapters.clients.prompt_recall._LOCAL_RECALL_RESERVE_S", 0.3)
+    monkeypatch.setattr("scope_recall.adapters.clients.prompt_recall._RESIDENT_MIN_S", 0.5)
 
 
 @pytest.fixture
@@ -1644,8 +1644,10 @@ def test_a_slow_server_s_answer_is_taken_while_the_hook_recalls_alongside(reside
     from scope_recall.adapters.clients import handler as handler_module
 
     _root, client, endpoint = resident
-    monkeypatch.setattr(handler_module, "_LOCAL_RECALL_RESERVE_S", 5.0)  # alongside from the start
-    monkeypatch.setattr(handler_module, "_RESIDENT_MIN_S", 0.5)
+    monkeypatch.setattr(
+        "scope_recall.adapters.clients.prompt_recall._LOCAL_RECALL_RESERVE_S", 5.0
+    )  # alongside from the start
+    monkeypatch.setattr("scope_recall.adapters.clients.prompt_recall._RESIDENT_MIN_S", 0.5)
     marker = {"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": "TEST-server-marker"}}
 
     def slow(request, **kwargs):
@@ -1657,7 +1659,7 @@ def test_a_slow_server_s_answer_is_taken_while_the_hook_recalls_alongside(reside
         return {"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": "TEST-own-marker"}}
 
     monkeypatch.setattr(endpoint, "recall", slow)
-    monkeypatch.setattr(handler_module.CodexHookHandler, "_auto_recall", own)
+    monkeypatch.setattr("scope_recall.adapters.clients.prompt_recall.PromptRecall.own", own)
     raw = json.dumps(_prompt("TEST 慢的服务器也算数。", prompt_id="TEST-prompt-slow")).encode()
     assert _hook_entry(monkeypatch, raw, client) == 0
     captured = capsys.readouterr()
@@ -1856,10 +1858,10 @@ def test_a_server_answer_without_its_vector_search_gives_way_to_the_hook_s_own(
 
         def recall(self, *args, own_vectors=own_vectors, own_calls=own_calls, **kwargs):
             own_calls.append(1)
-            self.diagnostics.recall_vectors = own_vectors
+            self._hook.diagnostics.recall_vectors = own_vectors
             return _marker("TEST-own-marker")
 
-        monkeypatch.setattr(handler_module.CodexHookHandler, "_auto_recall", recall)
+        monkeypatch.setattr("scope_recall.adapters.clients.prompt_recall.PromptRecall.own", recall)
         monkeypatch.setattr(
             handler_module.CodexHookHandler, "has_vectors", property(lambda self, route=own_vectors is not None: route)
         )
@@ -1881,8 +1883,10 @@ def test_a_hook_whose_own_recall_went_without_vectors_waits_for_its_server(resid
     from scope_recall.adapters.clients import handler as handler_module
 
     _root, client, endpoint = resident
-    monkeypatch.setattr(handler_module, "_LOCAL_RECALL_RESERVE_S", 5.0)  # alongside from the start
-    monkeypatch.setattr(handler_module, "_RESIDENT_MIN_S", 0.5)
+    monkeypatch.setattr(
+        "scope_recall.adapters.clients.prompt_recall._LOCAL_RECALL_RESERVE_S", 5.0
+    )  # alongside from the start
+    monkeypatch.setattr("scope_recall.adapters.clients.prompt_recall._RESIDENT_MIN_S", 0.5)
 
     def slow(request, **kwargs):
         time.sleep(0.8)
@@ -1892,12 +1896,12 @@ def test_a_hook_whose_own_recall_went_without_vectors_waits_for_its_server(resid
     for own_vectors, expected, said in ((False, "TEST-server-marker", "answered"), (True, "TEST-own-marker", "slow")):
 
         def recall(self, *args, own_vectors=own_vectors, **kwargs):
-            self.diagnostics.recall_vectors = own_vectors
+            self._hook.diagnostics.recall_vectors = own_vectors
             if not own_vectors:
-                self.note("deadline_exceeded")  # what the hook's own said, which is not what answered
+                self._hook.note("deadline_exceeded")  # what the hook's own said, which is not what answered
             return _marker("TEST-own-marker")
 
-        monkeypatch.setattr(handler_module.CodexHookHandler, "_auto_recall", recall)
+        monkeypatch.setattr("scope_recall.adapters.clients.prompt_recall.PromptRecall.own", recall)
         raw = json.dumps(
             _prompt(f"TEST 等一等服务器 {own_vectors}。", prompt_id=f"TEST-prompt-w-{own_vectors}")
         ).encode()
@@ -1994,7 +1998,8 @@ def test_a_server_answer_from_an_unreadable_store_gives_way_to_the_hook_s_own(
         ),
     )
     monkeypatch.setattr(
-        handler_module.CodexHookHandler, "_auto_recall", lambda self, *args, **kwargs: _marker("TEST-own-marker")
+        "scope_recall.adapters.clients.prompt_recall.PromptRecall.own",
+        lambda self, *args, **kwargs: _marker("TEST-own-marker"),
     )
     raw = json.dumps(_prompt("TEST 库读不到。", prompt_id="TEST-prompt-unreadable")).encode()
     assert _hook_entry(monkeypatch, raw, client) == 0
@@ -3362,8 +3367,7 @@ def test_the_entry_s_server_recalls_a_workbuddy_prompt_for_the_person_s_words_un
     _wb(home, prompt)
     asked = []
     monkeypatch.setattr(
-        CodexHookHandler,
-        "_auto_recall",
+        "scope_recall.adapters.clients.prompt_recall.PromptRecall.own",
         lambda self, context, text, request_id, *rest: asked.append((text, request_id)) or {},
     )
     server = CodexHookHandler.from_home(str(home), "workbuddy")

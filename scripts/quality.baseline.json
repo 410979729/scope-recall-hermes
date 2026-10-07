@@ -11,10 +11,9 @@
    "reportPrivateImportUsage": 1
   },
   "adapters/clients/handler.py": {
-   "reportArgumentType": 5,
+   "reportArgumentType": 2,
    "reportAssignmentType": 1,
    "reportAttributeAccessIssue": 1,
-   "reportOptionalCall": 1,
    "reportOptionalMemberAccess": 1
   },
   "adapters/clients/hook_answer.py": {
@@ -26,6 +25,10 @@
   "adapters/clients/mcp_server.py": {
    "reportArgumentType": 1,
    "reportOptionalMemberAccess": 3
+  },
+  "adapters/clients/prompt_recall.py": {
+   "reportArgumentType": 3,
+   "reportOptionalCall": 1
   },
   "adapters/clients/remote_client.py": {
    "reportArgumentType": 5,

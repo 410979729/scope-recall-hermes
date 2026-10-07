@@ -29,6 +29,7 @@
     "adapters/clients/local_endpoint.py",
     "adapters/clients/mcp_entry.py",
     "adapters/clients/mcp_server.py",
+    "adapters/clients/prompt_recall.py",
     "adapters/clients/remote_client.py",
     "adapters/clients/remote_server.py",
     "adapters/clients/resident_entry.py",
