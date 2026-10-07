@@ -16,9 +16,9 @@ size.  The check fails when ``ruff format`` would change a file, when a file has
 recorded, or when a function is over a size limit it was not over, or by more than recorded.  A count says how many,
 not which: one finding fixed and another of the same rule added in the same file passes.  It also fails when a file
 has fewer findings than recorded, so that the baseline only goes down: ``--update`` records them.  ``--update``
-refuses, unless ``--allow-more`` is given, to record more findings of a rule, a function grown under its name, or
-renamed and moved functions bigger than those that went.  pyright runs as Linux and as Windows, and a finding either
-reports counts once.
+refuses, unless ``--allow-more`` is given, to record more findings of a rule, a function grown under its name (where
+it is the one definition of that name in its file), or renamed, moved or same-named functions bigger than those that
+went (``grown``).  pyright runs as Linux and as Windows, and a finding either reports counts once.
 """
 
 from __future__ import annotations
@@ -122,13 +122,18 @@ def function_at(defined: list[tuple[int, int, str]], row: int) -> str:
     return min(around)[1] if around else "<module>"
 
 
+def base_name(name: str) -> str:
+    """A function's name without the ``#n`` that tells definitions sharing it apart."""
+    return re.sub(r"#\d+", "", name)
+
+
 def by_size(sizes: dict[str, int]) -> dict[str, int]:
-    """Definitions that share a name (``f``, ``f#2``, and those nested in them) numbered by size, largest first.  So
-    compared, a group's sizes meet largest to largest: removing or reordering one of them is not taken for another's
-    growth, and any of them growing still is."""
+    """Definitions that share a name (``f``, ``f#2``, and those nested in them) numbered by size, largest first, so
+    that removing or reordering one of them changes no other's entry.  Such a group is compared as a whole, like a
+    count: one of them growing while another shrinks as much is not seen."""
     groups: dict[str, list[int]] = {}
     for name, size in sizes.items():
-        groups.setdefault(re.sub(r"#\d+", "", name), []).append(size)
+        groups.setdefault(base_name(name), []).append(size)
     return {
         name if rank == 1 else f"{name}#{rank}": size
         for name, values in groups.items()
@@ -234,11 +239,20 @@ def _sizes(record: dict, tool: str) -> dict[str, dict[tuple[str, str], int]]:
     return found
 
 
+def _alone(sizes: dict[tuple[str, str], int]) -> set[tuple[str, str]]:
+    """The functions that are the only definition of their name in their file."""
+    groups: dict[tuple[str, str], int] = {}
+    for path, name in sizes:
+        groups[(path, base_name(name))] = groups.get((path, base_name(name)), 0) + 1
+    return {(path, name) for path, name in sizes if groups[(path, base_name(name))] == 1}
+
+
 def grown(recorded: dict, current: dict) -> list[str]:
     """What ``--update`` would record above the baseline: more findings of a rule, a function bigger under its name,
-    or functions under new names (renamed or moved) bigger than those whose names went.  Those are matched largest to
-    largest, which allows any renaming in which none grew; like a count, it cannot tell a renamed function from a new
-    one that takes the place of one brought under the limit."""
+    or the rest bigger than before.  A name is a function's identity only where it is the one definition of that name
+    in its file, before and after.  The rest (renamed, moved, definitions sharing a name) are matched largest to
+    largest, which allows any renaming or reordering in which none grew; like a count, that cannot tell a renamed
+    function from a new one taking the place of one brought under the limit."""
     lines: list[str] = []
     for tool in TOOLS:
         was, now = _totals(recorded, tool), _totals(current, tool)
@@ -250,15 +264,16 @@ def grown(recorded: dict, current: dict) -> list[str]:
         before_sizes, after_sizes = _sizes(recorded, tool), _sizes(current, tool)
         for rule, after in sorted(after_sizes.items()):
             before = before_sizes.get(rule, {})
+            known = _alone(before) & _alone(after)
             lines += [
-                f"{tool} {path} {rule} {name}: {size}, recorded {before[(path, name)]}"
-                for (path, name), size in sorted(after.items())
-                if (path, name) in before and size > before[(path, name)]
+                f"{tool} {path} {rule} {name}: {after[(path, name)]}, recorded {before[(path, name)]}"
+                for path, name in sorted(known)
+                if after[(path, name)] > before[(path, name)]
             ]
-            gone = sorted((size for key, size in before.items() if key not in after), reverse=True)
-            came = sorted(((size, key) for key, size in after.items() if key not in before), reverse=True)
+            gone = sorted((size for key, size in before.items() if key not in known), reverse=True)
+            came = sorted(((size, key) for key, size in after.items() if key not in known), reverse=True)
             lines += [
-                f"{tool} {path} {rule} {name}: {size}, bigger than the {left} it may have been before a rename or move"
+                f"{tool} {path} {rule} {name}: {size}, above the {left} it may have been (renamed, moved or shared)"
                 for (size, (path, name)), left in zip(came, gone, strict=False)
                 if size > left
             ]

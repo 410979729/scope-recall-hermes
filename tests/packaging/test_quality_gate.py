@@ -74,11 +74,11 @@ def test_a_renamed_or_moved_function_may_not_grow_on_its_way():
     recorded = _ruff({"core/a.py": {"C901": {"old": 16, "other": 30}}})
     renamed = _ruff({"core/a.py": {"C901": {"renamed": 100, "other": 30}}})
     assert quality.grown(recorded, renamed) == [
-        "ruff core/a.py C901 renamed: 100, bigger than the 16 it may have been before a rename or move"
+        "ruff core/a.py C901 renamed: 100, above the 16 it may have been (renamed, moved or shared)"
     ]
     moved = _ruff({"core/a.py": {"C901": {"other": 30}}, "core/b.py": {"C901": {"old": 100}}})
     assert quality.grown(recorded, moved) == [
-        "ruff core/b.py C901 old: 100, bigger than the 16 it may have been before a rename or move"
+        "ruff core/b.py C901 old: 100, above the 16 it may have been (renamed, moved or shared)"
     ]
     # Two renamed at once, each no bigger than one that went: matched largest to largest.
     both = _ruff({"core/b.py": {"C901": {"first": 29, "second": 16}}})
@@ -119,7 +119,18 @@ def test_removing_or_reordering_one_of_twins_is_not_taken_for_growth():
     # Either twin growing is still growth, also beneath the other.
     over, _under, _flagged = quality.compare(recorded, quality.tally(*_twins(9, 11)))
     assert over == ["ruff a.py PLR0913 f: 11, recorded 10"]
-    assert quality.grown(recorded, quality.tally(*_twins(10, 10))) == ["ruff a.py PLR0913 f#2: 10, recorded 9"]
+    assert quality.grown(recorded, quality.tally(*_twins(10, 10))) == [
+        "ruff a.py PLR0913 f: 10, above the 9 it may have been (renamed, moved or shared)"
+    ]
+    # Only the larger twin renamed or moved: neither grew.
+    twins = _ruff({"a.py": {"PLR0913": {"f": 12, "f#2": 9}}})
+    assert quality.grown(twins, _ruff({"a.py": {"PLR0913": {"f": 9, "g": 12}}})) == []
+    assert quality.grown(twins, _ruff({"a.py": {"PLR0913": {"f": 9}}, "b.py": {"PLR0913": {"f": 12}}})) == []
+    # A function alone under its name stays held to its own size, whatever another does.
+    alone = _ruff({"a.py": {"PLR0913": {"f": 12, "g": 9}}})
+    assert quality.grown(alone, _ruff({"a.py": {"PLR0913": {"f": 9, "g": 12}}})) == [
+        "ruff a.py PLR0913 g: 12, recorded 9"
+    ]
     # A function nested in one of twins is numbered with those nested in the other.
     assert quality.by_size({"f.g": 16, "f#2.g": 20, "f#2": 30}) == {"f.g": 20, "f.g#2": 16, "f": 30}
 
