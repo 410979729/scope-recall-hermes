@@ -148,7 +148,7 @@ def test_failed_status_and_failed_stop_capture_do_not_wake_worker(codex_install)
     with (
         patch.object(
             failed_capture,
-            "_capture",
+            "capture",
             return_value=((), ("capture_gap:write_exception",)),
         ),
         patch("scope_recall.adapters.clients.runtime_wiring.launch_worker") as launch,

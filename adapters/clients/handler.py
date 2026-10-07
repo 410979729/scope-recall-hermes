@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
 import math
@@ -24,14 +23,12 @@ from .boundary import (
     without_lone_surrogates,
     assistant_stop_source_event,
     authorized_attachment_refs,
-    host_source_key,
     is_codex_suggestions_prompt,
     is_codex_suggestions_reply,
     is_task_notification,
     is_workbuddy_agent_run,
     is_workbuddy_notice,
     lifecycle_source_event,
-    recorded_source_event,
     tool_use_source_event,
     turn_id_from_payload,
     user_prompt_source_event,
@@ -43,6 +40,7 @@ from .hook_answer import (
 )
 from .identity import resolve_runtime_audience, trusted_context
 from .prompt_recall import PromptRecall
+from .record_reader import RecordLines, RecordReader
 from .session_marks import (
     close_turn,
     forget_turns,
@@ -50,8 +48,6 @@ from .session_marks import (
     mark_suggestions_thread,
     note_error_reply,
     open_turn,
-    record_turns,
-    replied_entry,
     words_of,
 )
 from .runtime_wiring import (
@@ -80,18 +76,6 @@ _SUPPORTED_EVENTS = frozenset({"SessionStart", "UserPromptSubmit", "Stop", "Post
 #: answers as soon as it is done.  WorkBuddy waits 60 s unless its hook says otherwise, and a prompt hook
 #: that runs past its wait blocks the prompt: the budget is what keeps it inside.
 _CONFIGURED_PROMPT_BUDGET = frozenset({"claude-code", "codex", "workbuddy", "dsh"})
-#: Clients whose Stop and SessionEnd also read the session record (``transcript``): what the person said,
-#: whatever the prompt hook could not write, and what the model said while it worked.  Claude Code waits
-#: 10 s for these hooks; a turn's lines take well under a second, and a long backlog is read over several
-#: turns, at most ``_RECORD_READ_S`` each, so the end of a turn is not held up.
-#: dsh has no record a hook can read (its session log is compressed); its plugin sends the turn's messages with the Stop
-#: as the lines a remote client sends (``transcript.dsh_lines``).
-_READS_RECORD = frozenset({"claude-code", "workbuddy", "dsh"})
-_RECORD_READ_S = 3.0
-#: A capture is started only with this much of the reading time left.
-_RECORD_CAPTURE_MIN_S = 0.5
-#: A hook's copy of a message and the record's are the same message when the words match and the moments are this close.
-_RECORD_SAME_MESSAGE_S = 120.0
 _HOST_EVENTS = {
     "codex": _SUPPORTED_EVENTS,
     "claude-code": frozenset({"UserPromptSubmit", "Stop", "SessionEnd"}),
@@ -113,20 +97,6 @@ class SystemHookClock:
 
     def monotonic(self) -> float:
         return time.monotonic()
-
-
-@dataclass
-class RecordLines:
-    """Lines a client on another machine read from its own session record, from ``start``.
-
-    Each is the offset just past the line and what it shows being said (``transcript.said``); a line that
-    shows nothing may be left out, as long as the last offset the client read is present.  The handler sets
-    ``through`` to the offset every stored line reaches, which is where that client's cursor may move.
-    """
-
-    start: int
-    lines: list[tuple[int, "transcript.Said | None"]]
-    through: int | None = None
 
 
 class CodexHookHandler:
@@ -182,6 +152,7 @@ class CodexHookHandler:
         #: A client on another machine's word that its Stop's reply is an error its record marks (``handle_payload``).
         self._client_error_reply = False
         self._recall = PromptRecall(self)
+        self._record = RecordReader(self)
 
     @classmethod
     def from_config_path(
@@ -421,7 +392,7 @@ class CodexHookHandler:
             self._merge_runtime_gaps()
         # The extended trusted budget is for the auto recall path and for a client's
         # read of its session record.  The other hooks keep their short processing cap.
-        budget = self._hook_budget() if event == "UserPromptSubmit" or self._reads_record(event) else _TOTAL_BUDGET_S
+        budget = self._hook_budget() if event == "UserPromptSubmit" or self._record.reads(event) else _TOTAL_BUDGET_S
         deadline = self._hook_deadline(budget)
         if event == "SessionStart":
             if isinstance(self.config, SharedClientConfig):
@@ -457,8 +428,8 @@ class CodexHookHandler:
         # A server for a client on another machine reads only the lines that client sent (``local_record``
         # False): the payload's transcript_path names a file over there, and a path from a request is never
         # opened here.
-        if self._reads_record(event) and (record is not None or local_record):
-            self._read_record(session_id, audience, payload, deadline, remote=record)
+        if self._record.reads(event) and (record is not None or local_record):
+            self._record.read(session_id, audience, payload, deadline, remote=record, closed_reply=self._closed_reply)
         if self.host == "workbuddy" and event == "SessionEnd":
             forget_turns(self.config, session_id)
         self._wake_after_capture(session_id, audience, deadline)
@@ -483,7 +454,7 @@ class CodexHookHandler:
 
     # -- capture ---------------------------------------------------------
 
-    def _capture(
+    def capture(
         self,
         context,
         audience,
@@ -561,120 +532,6 @@ class CodexHookHandler:
         refs = tuple(f"{write.ref}@{write.revision}" for write in receipt.event_refs)
         return refs, (*gaps, *receipt.gaps)
 
-    def _reads_record(self, event: object) -> bool:
-        return (
-            event in ("Stop", "SessionEnd")
-            and self.host in _READS_RECORD
-            and isinstance(self.config, SharedClientConfig)
-        )
-
-    def _read_record(
-        self, session_id: str, audience, payload: dict[str, Any], deadline: float, *, remote: RecordLines | None = None
-    ) -> None:
-        """Record what the session record shows was said since the last read (see ``transcript``).
-
-        What a hook already stored is recognised by its words and moment and skipped.  A capture that
-        cannot be written now ends the read there; the next Stop starts again from that message.  A client
-        on another machine reads its record there and sends the lines (``remote``); the offset reached goes
-        back in ``remote.through`` for that client's own cursor.
-        """
-        cursor = None
-        workbuddy = self.host == "workbuddy"
-        if remote is not None:
-            start, lines = remote.start, remote.lines
-        else:
-            record = (
-                transcript.workbuddy_record_path(
-                    payload.get("transcript_path"), session_id, record_id=payload.get("agent_id")
-                )
-                if workbuddy
-                else transcript.record_path(payload.get("transcript_path"), session_id)
-            )
-            if record is None:
-                self.note("session_record_unavailable", gaps=("capture_gap:session_record_unavailable",))
-                return
-            cursor = transcript.Cursor(self.config.home, session_id, record)
-            start = cursor.load()
-            try:
-                lines = transcript.read(record, start, rows=transcript.workbuddy_said if workbuddy else transcript.said)
-            except OSError:
-                self.note("session_record_unavailable", gaps=("capture_gap:session_record_unavailable",))
-                return
-        said = [entry for _end, entry in lines if entry is not None]
-        # WorkBuddy's record names no turn: a person's message there is the turn its prompt hook kept for the same words,
-        # and the model's message after it with the words of the Stop's reply is that Stop's turn: held when the Stop
-        # stored it, stored from here when the Stop took it for the previous reply repeated (``close_turn``).
-        turns = record_turns(self.config, session_id, said) if workbuddy else {}
-        replied = replied_entry(said, self._closed_reply) if workbuddy else None
-        held: tuple[bool, ...] = ()
-        if said:
-            try:
-                held = self.core.said_in_session(
-                    self.context(audience, session_id, "host_generated"),
-                    audience.capture_scope_id,
-                    [
-                        (entry.role, entry.text, entry.occurred_at, self._record_key(session_id, entry, turns, replied))
-                        for entry in said
-                    ],
-                    window_seconds=_RECORD_SAME_MESSAGE_S,
-                    remaining_seconds=max(0.0, self.remaining(deadline)),
-                )
-            except (ContractError, OSError, RuntimeError, sqlite3.Error) as exc:
-                # Named, so that a store that fails otherwise than busy says what failed (review of rc13).
-                self.diagnostics.capture_error_type = type(exc).__name__
-                self.note("session_record_check_failed")
-                return
-        known = {entry.entry_id for entry, stored in zip(said, held) if stored}
-        until = min(deadline, self.clock.monotonic() + _RECORD_READ_S)
-        position = start
-        for end, entry in lines:
-            if entry is not None and entry.entry_id not in known:
-                if self.remaining(until) < _RECORD_CAPTURE_MIN_S:
-                    break
-                event = recorded_source_event(
-                    installation_id=self.config.installation_id,
-                    host=self.host,
-                    session_id=session_id,
-                    entry_id=entry.entry_id,
-                    role=entry.role,
-                    text=entry.text,
-                    occurred_at=entry.occurred_at,
-                    recorded_at=self.clock.utc_now(),
-                )
-                origin = "human_direct" if entry.role == "user" else "assistant_visible"
-                if not self._captured_for_good(self.context(audience, session_id, origin), audience, event, until):
-                    break
-            position = end
-        if remote is not None:
-            remote.through = position
-        elif position != start:
-            cursor.save(position)
-
-    def _record_key(
-        self, session_id: str, entry: "transcript.Said", turns: dict[str, str], replied: tuple[str, str] | None
-    ) -> str | None:
-        """The key a hook stored a record message under, when the record or a kept turn names it."""
-        if entry.role == "user" and (turns.get(entry.entry_id) or entry.prompt_id):
-            kind, event_id = "user", turns.get(entry.entry_id) or entry.prompt_id
-        elif replied is not None and entry.entry_id == replied[0]:
-            kind, event_id = "assistant", replied[1]
-        else:
-            return None
-        return host_source_key(
-            host=self.host,
-            installation_id=self.config.installation_id,
-            session_id=session_id,
-            event_kind=kind,
-            event_id=event_id,
-        )
-
-    def _captured_for_good(self, context, audience, event, deadline: float) -> bool:
-        """Capture one record message; False when it may succeed later and the read must stop here."""
-        diagnostics = self.diagnostics
-        diagnostics.capture_disposition = diagnostics.capture_error_code = diagnostics.capture_error_type = None
-        self._capture(context, audience, event, deadline=deadline, via_inbox=False)
-        return diagnostics.capture_settled
-
     def _session_start(self, session_id: str, audience, deadline: float) -> bool:
         context = self.context(audience, session_id, "host_generated")
         try:
@@ -696,7 +553,7 @@ class CodexHookHandler:
             content=f"session_end:{label}",
             recorded_at=self.clock.utc_now(),
         )
-        self._capture(self.context(audience, session_id, "host_generated"), audience, event, deadline=deadline)
+        self.capture(self.context(audience, session_id, "host_generated"), audience, event, deadline=deadline)
         return {}
 
     def _interrupt(self, session_id: str, audience, payload: dict[str, Any], deadline: float) -> dict[str, Any]:
@@ -713,7 +570,7 @@ class CodexHookHandler:
             recorded_at=self.clock.utc_now(),
             gaps=gaps,
         )
-        self._capture(
+        self.capture(
             self.context(audience, session_id, "host_generated"), audience, event, deadline=deadline, gaps=gaps
         )
         return {}
@@ -778,7 +635,7 @@ class CodexHookHandler:
             event["artifact_refs"] = attachment_refs
         context = self.context(audience, session_id, "human_direct")
         wait = min(_PROMPT_CAPTURE_TIMEOUT_S, max(_CAPTURE_TIMEOUT_S, self.remaining(deadline) / 2))
-        current_refs, capture_gaps = self._capture(context, audience, event, deadline=deadline, gaps=gaps, wait=wait)
+        current_refs, capture_gaps = self.capture(context, audience, event, deadline=deadline, gaps=gaps, wait=wait)
         # The vector search comes with the runtime.  A prompt the store was too busy to take is recalled by
         # meaning as well: six on the work computer's two entries in one night were recalled by words alone.  One
         # the capture refused, or that holds a credential however the capture ended, goes without it, so that
@@ -864,7 +721,7 @@ class CodexHookHandler:
             recorded_at=self.clock.utc_now(),
         )
         context = self.context(audience, session_id, "assistant_visible")
-        self._capture(context, audience, event, deadline=deadline, gaps=(*gaps, *outcome_gaps))
+        self.capture(context, audience, event, deadline=deadline, gaps=(*gaps, *outcome_gaps))
         return {}
 
     def _workbuddy_error_reply(self, session_id: str, payload: dict[str, Any], reply: str) -> bool:
@@ -908,7 +765,7 @@ class CodexHookHandler:
         if tool_gaps:
             self.note("tool_payload_gap", gaps=tool_gaps)
         context = self.context(audience, session_id, cast(Origin, origin))
-        self._capture(context, audience, event, deadline=deadline, gaps=(*gaps, *tool_gaps))
+        self.capture(context, audience, event, deadline=deadline, gaps=(*gaps, *tool_gaps))
         return {}
 
 

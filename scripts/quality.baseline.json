@@ -11,10 +11,8 @@
    "reportPrivateImportUsage": 1
   },
   "adapters/clients/handler.py": {
-   "reportArgumentType": 2,
-   "reportAssignmentType": 1,
-   "reportAttributeAccessIssue": 1,
-   "reportOptionalMemberAccess": 1
+   "reportArgumentType": 1,
+   "reportAssignmentType": 1
   },
   "adapters/clients/hook_answer.py": {
    "reportAttributeAccessIssue": 1
@@ -29,6 +27,11 @@
   "adapters/clients/prompt_recall.py": {
    "reportArgumentType": 3,
    "reportOptionalCall": 1
+  },
+  "adapters/clients/record_reader.py": {
+   "reportArgumentType": 1,
+   "reportAttributeAccessIssue": 1,
+   "reportOptionalMemberAccess": 1
   },
   "adapters/clients/remote_client.py": {
    "reportArgumentType": 5,
@@ -336,12 +339,11 @@
    "UP035": 1
   },
   "adapters/clients/handler.py": {
-   "B905": 1,
    "BLE001": 2,
    "C901": {
     "CodexHookHandler.handle_payload": 17
    },
-   "E501": 2,
+   "E501": 1,
    "I001": 1,
    "PLR0911": {
     "CodexHookHandler.handle_payload": 11
@@ -351,7 +353,7 @@
    },
    "UP017": 1,
    "UP035": 1,
-   "UP037": 4
+   "UP037": 2
   },
   "adapters/clients/hook_entry.py": {
    "BLE001": 2,
@@ -385,6 +387,11 @@
     "CodexMCPServer.revise": 9,
     "CodexMCPServer.trace": 10
    }
+  },
+  "adapters/clients/record_reader.py": {
+   "B905": 1,
+   "E501": 1,
+   "UP037": 2
   },
   "adapters/clients/remote_client.py": {
    "I001": 1,

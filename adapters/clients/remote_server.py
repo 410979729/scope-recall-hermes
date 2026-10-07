@@ -40,7 +40,8 @@ from ...runtime.resume_entry import host_process_credential_environment
 from . import transcript
 from .boundary import without_lone_surrogates
 from .config import CodexConfigError, load_shared_client
-from .handler import CodexHookHandler, RecordLines, SystemHookClock
+from .handler import CodexHookHandler, SystemHookClock
+from .record_reader import RecordLines
 from .local_endpoint import KeptRecaller, entry_files, file_stamp
 
 CONFIG_NAME = "remote-server.json"
