@@ -345,7 +345,7 @@
    },
    "UP017": 1,
    "UP035": 1,
-   "UP037": 6
+   "UP037": 4
   },
   "adapters/clients/hook_entry.py": {
    "BLE001": 2,
@@ -392,6 +392,9 @@
   },
   "adapters/clients/runtime_wiring.py": {
    "I001": 1
+  },
+  "adapters/clients/session_marks.py": {
+   "UP037": 2
   },
   "adapters/clients/transcript.py": {
    "E501": 1,

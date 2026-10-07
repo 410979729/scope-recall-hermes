@@ -32,6 +32,7 @@
     "adapters/clients/remote_server.py",
     "adapters/clients/resident_entry.py",
     "adapters/clients/runtime_wiring.py",
+    "adapters/clients/session_marks.py",
     "adapters/clients/transcript.py",
     "adapters/codex/__init__.py",
     "adapters/codex/hook_entry.py",

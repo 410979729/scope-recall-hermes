@@ -4,10 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
-import hashlib
 import json
 import math
-import os
 from pathlib import Path
 import sqlite3
 import sys
@@ -43,6 +41,20 @@ from .boundary import (
 )
 from .config import CodexConfigError, CodexInstallationConfig, SharedClientConfig, load_codex_config, load_shared_client
 from .identity import resolve_runtime_audience, trusted_context
+from .session_marks import (
+    TURN_FIELD as WORKBUDDY_TURN_FIELD,
+    close_turn,
+    derived_turn,
+    forget_turns,
+    in_suggestions_thread,
+    kept_turn,
+    mark_suggestions_thread,
+    note_error_reply,
+    open_turn,
+    record_turns,
+    replied_entry,
+    words_of,
+)
 from .runtime_wiring import (
     GAP_UNCONFIGURED,
     GAP_WORKER_LAUNCH_FAILED,
@@ -94,7 +106,7 @@ _SUPPORTED_EVENTS = frozenset({"SessionStart", "UserPromptSubmit", "Stop", "Post
 #: same fields, except that a turn is named by ``prompt_id``.  Its tool output is not recorded:
 #: a tool result never becomes a memory, and a coding session's tool traffic would be most of
 #: the store for an embedding each.
-_TURN_FIELD = {"codex": "turn_id", "claude-code": "prompt_id", "workbuddy": "generation_id", "dsh": "turn_id"}
+_TURN_FIELD = {"codex": "turn_id", "claude-code": "prompt_id", "workbuddy": WORKBUDDY_TURN_FIELD, "dsh": "turn_id"}
 #: Clients whose prompt hook may run the entry's ``hook_processing_seconds`` (at most 6 s) from the
 #: start.  Both wait 15 s for a prompt's hook (``maintenance/install_claude_code.py``,
 #: ``maintenance/install_codex.py``), and recall on the pilot's shared store took 2.7-5.7 s: with 2 s most
@@ -513,7 +525,7 @@ class CodexHookHandler:
             return {}
         if event == "UserPromptSubmit":
             return self._user_prompt_submit(session_id, audience, payload, deadline)
-        if self.host == "codex" and _suggestions_thread(self.config, session_id, ended=event == "SessionEnd"):
+        if self.host == "codex" and in_suggestions_thread(self.config, session_id, ended=event == "SessionEnd"):
             # The rest of a thread Codex opened to ask the model for suggestions: its tool calls, its answer and its
             # end are Codex's own activity.  On the pilot one thread left four tool outputs of 2-11 kB and an end
             # marker after its request and answer had been kept out.
@@ -535,7 +547,7 @@ class CodexHookHandler:
         if self._reads_record(event) and (record is not None or local_record):
             self._read_record(session_id, audience, payload, deadline, remote=record)
         if self.host == "workbuddy" and event == "SessionEnd":
-            _forget_turns(self.config, session_id)
+            forget_turns(self.config, session_id)
         self._wake_after_capture(session_id, audience, deadline)
         if self.host == "dsh" and record is not None:
             result = {**result, "through": record.through or 0}
@@ -678,9 +690,9 @@ class CodexHookHandler:
         said = [entry for _end, entry in lines if entry is not None]
         # WorkBuddy's record names no turn: a person's message there is the turn its prompt hook kept for the same words,
         # and the model's message after it with the words of the Stop's reply is that Stop's turn: held when the Stop
-        # stored it, stored from here when the Stop took it for the previous reply repeated (``_close_turn``).
-        turns = _record_turns(self.config, session_id, said) if workbuddy else {}
-        replied = _replied_entry(said, self._closed_reply) if workbuddy else None
+        # stored it, stored from here when the Stop took it for the previous reply repeated (``close_turn``).
+        turns = record_turns(self.config, session_id, said) if workbuddy else {}
+        replied = replied_entry(said, self._closed_reply) if workbuddy else None
         held: tuple[bool, ...] = ()
         if said:
             try:
@@ -806,7 +818,7 @@ class CodexHookHandler:
             notice = is_workbuddy_notice(prompt)
             # A turn is kept for a notice too, so that the reply to it is stored under a turn of its own.
             turn_id, gaps = (
-                _open_turn(self.config, session_id, payload, None if notice else prompt, self.clock.utc_now()),
+                open_turn(self.config, session_id, payload, None if notice else prompt, self.clock.utc_now()),
                 (),
             )
         else:
@@ -830,12 +842,12 @@ class CodexHookHandler:
             # Codex asking the model what the owner might do next, through the hook a message comes by: not their
             # words, and nothing for a recall to answer.  The thread is marked, so that its later hooks, each a
             # process of its own, keep the rest of it out too.
-            _mark_suggestions_thread(self.config, session_id)
+            mark_suggestions_thread(self.config, session_id)
             self._diag("host_generated_prompt")
             return {}
         if self.host == "codex":
             # The owner speaking in a marked thread makes the rest of it theirs.
-            _suggestions_thread(self.config, session_id, ended=True)
+            in_suggestions_thread(self.config, session_id, ended=True)
         attachment_refs, attachment_gaps = authorized_attachment_refs(payload)
         gaps = (*gaps, *attachment_gaps)
         if attachment_gaps:
@@ -993,9 +1005,9 @@ class CodexHookHandler:
         if self.host == "workbuddy":
             if type(prompt) is not str or is_workbuddy_agent_run(payload):
                 return {}
-            # The turn the hook kept for these words moments ago (``_open_turn``), or one of this recall's own.
+            # The turn the hook kept for these words moments ago (``open_turn``), or one of this recall's own.
             prompt = workbuddy_person_text(prompt)
-            turn_id = _kept_turn(self.config, session_id, prompt) or _derived_turn(
+            turn_id = kept_turn(self.config, session_id, prompt) or derived_turn(
                 session_id, prompt, self.clock.utc_now()
             )
         # What the hook would have recalled nothing for, or recalled without the vector channel, is not asked here;
@@ -1087,13 +1099,13 @@ class CodexHookHandler:
             if type(reply) is str and self._workbuddy_error_reply(session_id, payload, reply):
                 # WorkBuddy hands the Stop the error it showed in place of a reply (not signed in, a model or network
                 # failure) as the reply; the model said nothing, and the record marks that message with the error.
-                _note_error_reply(self.config, session_id, reply)
+                note_error_reply(self.config, session_id, reply)
                 self._diag("client_error_reply")
                 return {}
-            turn_id, repeated = _close_turn(
+            turn_id, repeated = close_turn(
                 self.config, session_id, payload, reply if type(reply) is str else "", self.clock.utc_now()
             )
-            self._closed_reply = (turn_id, _words(reply)) if type(reply) is str and reply.strip() else None
+            self._closed_reply = (turn_id, words_of(reply)) if type(reply) is str and reply.strip() else None
             gaps = ()
             if repeated:
                 # A turn that failed or was stopped before it said anything hands the Stop the reply before it.
@@ -1167,205 +1179,6 @@ class CodexHookHandler:
         context = self._context(audience, session_id, cast(Origin, origin))
         self._capture(context, audience, event, deadline=deadline, gaps=(*gaps, *tool_gaps))
         return {}
-
-
-#: How long a thread that asked for suggestions stays marked.  Its tool calls, answer and end follow within minutes;
-#: an older mark is removed the next time a thread is marked.
-_SUGGESTIONS_THREAD_SECONDS = 24 * 3600
-
-
-def _session_marks(config, kind: str, session_id: str) -> Path:
-    """One session's mark of ``kind``: beside the pointer for an entry of a shared store, in its data for a store of
-    its own."""
-    folder = (
-        Path(config.home) / "scope-recall" if isinstance(config, SharedClientConfig) else Path(config.data_directory)
-    ) / kind
-    return folder / hashlib.sha256(session_id.encode("utf-8")).hexdigest()[:32]
-
-
-def _suggestions_mark(config, session_id: str) -> Path:
-    """One thread's mark (``_session_marks``)."""
-    return _session_marks(config, "host-threads", session_id)
-
-
-def _mark_suggestions_thread(config, session_id: str) -> None:
-    """Remember a thread Codex opened to ask for suggestions; a mark that cannot be written lets only its rest in."""
-    mark = _suggestions_mark(config, session_id)
-    try:
-        mark.parent.mkdir(parents=True, exist_ok=True)
-        mark.touch()
-        cutoff = time.time() - _SUGGESTIONS_THREAD_SECONDS
-        for count, old in enumerate(mark.parent.iterdir()):
-            if count >= 256:
-                break
-            if old.stat().st_mtime < cutoff:
-                old.unlink(missing_ok=True)
-    except OSError:
-        pass
-
-
-def _suggestions_thread(config, session_id: str, *, ended: bool = False) -> bool:
-    """Whether a hook belongs to a thread ``_mark_suggestions_thread`` marked; the thread's end removes the mark."""
-    mark = _suggestions_mark(config, session_id)
-    try:
-        marked = time.time() - mark.stat().st_mtime < _SUGGESTIONS_THREAD_SECONDS
-    except OSError:
-        return False
-    if ended or not marked:
-        try:
-            mark.unlink(missing_ok=True)
-        except OSError:
-            pass
-    return marked
-
-
-# -- WorkBuddy's turns ---------------------------------------------------------
-# WorkBuddy's hooks name no turn they share.  Its ``generation_id`` is the id of the session's latest model request,
-# made anew for each request: a prompt carries the previous turn's last one (none on a session's first prompt) and its
-# Stop carries this turn's.  So a prompt opens a turn, under that id when no turn of the session has it yet and else
-# under one made from the session, the person's words and the moment; the turn is kept in a small file per session for
-# the Stop that closes it and the read of the session record after, and the session's end removes it.  The file is
-# disposable: without it a Stop makes a turn of its own, and the record is matched by words and moment as before.
-
-#: How long a session's turns are kept; older ones are removed when a turn is kept.
-_TURNS_SECONDS = 24 * 3600
-#: Turns kept per session: a Stop's read of the record covers its own turn and any before it that fired no Stop.
-_TURNS_KEPT = 16
-
-
-def _words(text: str) -> str:
-    """What two copies of one message share whatever their line breaks: WorkBuddy's prompt hook takes the newlines
-    out of the person's words, and its record keeps them."""
-    return hashlib.sha256("".join(text.split()).encode("utf-8")).hexdigest()
-
-
-def _derived_turn(session_id: str, text: str, moment: str) -> str:
-    return "turn-" + hashlib.sha256("\x00".join((session_id, text, moment)).encode("utf-8")).hexdigest()[:32]
-
-
-def _turns(config, session_id: str) -> dict[str, Any]:
-    """A session's kept turns, oldest first, each ``[turn id, words or None]``, and the words of its last reply."""
-    path = _session_marks(config, "turns", session_id)
-    try:
-        if time.time() - path.stat().st_mtime >= _TURNS_SECONDS:
-            return {"turns": [], "reply": None, "error": None}
-        kept = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, ValueError):
-        return {"turns": [], "reply": None, "error": None}
-    if not isinstance(kept, dict):
-        return {"turns": [], "reply": None, "error": None}
-    turns = [
-        list(item)
-        for item in kept.get("turns") or ()
-        if isinstance(item, list)
-        and len(item) == 2
-        and type(item[0]) is str
-        and (item[1] is None or type(item[1]) is str)
-    ]
-    reply, error = kept.get("reply"), kept.get("error")
-    return {
-        "turns": turns[-_TURNS_KEPT:],
-        "reply": reply if type(reply) is str else None,
-        "error": error if type(error) is str else None,
-    }
-
-
-def _keep_turns(config, session_id: str, kept: dict[str, Any]) -> None:
-    """Write a session's turns; one that cannot be written leaves the next Stop to make its own."""
-    path = _session_marks(config, "turns", session_id)
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        pending = path.with_name(f"{path.name}.{os.getpid()}.tmp")
-        pending.write_text(json.dumps(kept), encoding="utf-8")
-        os.replace(pending, path)
-        cutoff = time.time() - _TURNS_SECONDS
-        for count, old in enumerate(path.parent.iterdir()):
-            if count >= 256:
-                break
-            if old.stat().st_mtime < cutoff:
-                old.unlink(missing_ok=True)
-    except OSError:
-        pass
-
-
-def _forget_turns(config, session_id: str) -> None:
-    try:
-        _session_marks(config, "turns", session_id).unlink(missing_ok=True)
-    except OSError:
-        pass
-
-
-def _open_turn(config, session_id: str, payload: dict[str, Any], words: str | None, moment: str) -> str:
-    """The turn a WorkBuddy prompt opens, kept for its Stop; ``words`` are the person's, None for a notice."""
-    kept = _turns(config, session_id)
-    given, _gaps = turn_id_from_payload(payload, required=False, field=_TURN_FIELD["workbuddy"])
-    turn = (
-        given
-        if given is not None and all(given != known for known, _words_of in kept["turns"])
-        else _derived_turn(session_id, words or "", moment)
-    )
-    kept["turns"] = [*kept["turns"], [turn, _words(words) if words and words.strip() else None]][-_TURNS_KEPT:]
-    _keep_turns(config, session_id, kept)
-    return turn
-
-
-def _close_turn(config, session_id: str, payload: dict[str, Any], reply: str, moment: str) -> tuple[str, bool]:
-    """The turn a WorkBuddy Stop closes: the last one a prompt opened, else its own (its ``generation_id``, or one
-    made from the reply); and whether the reply is the one the session's last Stop had."""
-    kept = _turns(config, session_id)
-    if kept["turns"]:
-        turn = kept["turns"][-1][0]
-    else:
-        given, _gaps = turn_id_from_payload(payload, required=False, field=_TURN_FIELD["workbuddy"])
-        turn = given or _derived_turn(session_id, reply, moment)
-    words = _words(reply) if reply.strip() else None
-    # The last reply, or the error WorkBuddy showed in place of one since: a stopped turn hands either.
-    repeated = words is not None and words in (kept["reply"], kept["error"])
-    if words is not None and not repeated:
-        kept["reply"], kept["error"] = words, None
-        _keep_turns(config, session_id, kept)
-    return turn, repeated
-
-
-def _note_error_reply(config, session_id: str, reply: str) -> None:
-    """Keep the words of an error WorkBuddy showed in place of a reply, which a later stopped turn may hand its Stop."""
-    kept = _turns(config, session_id)
-    kept["error"] = _words(reply)
-    _keep_turns(config, session_id, kept)
-
-
-def _kept_turn(config, session_id: str, text: str) -> str | None:
-    """The latest kept turn of the session opened for these words."""
-    words = _words(text)
-    return next((turn for turn, kept in reversed(_turns(config, session_id)["turns"]) if kept == words), None)
-
-
-def _replied_entry(said: list["transcript.Said"], closed: tuple[str, str] | None) -> tuple[str, str] | None:
-    """The record id of the model's message with the words of the reply a Stop closed its turn with, among those after
-    the person's last message of the read, and that turn."""
-    if closed is not None:
-        turn, words = closed
-        for entry in reversed(said):
-            if entry.role == "user":
-                break
-            if _words(entry.text) == words:
-                return entry.entry_id, turn
-    return None
-
-
-def _record_turns(config, session_id: str, said: list["transcript.Said"]) -> dict[str, str]:
-    """The kept turn of each of the person's record messages that has one, by record id: the latest messages take the
-    latest turns of the same words, each turn one message."""
-    open_turns = list(reversed(_turns(config, session_id)["turns"]))
-    found: dict[str, str] = {}
-    for entry in reversed(said):
-        if entry.role != "user":
-            continue
-        words = _words(entry.text)
-        match = next((index for index, (_turn, kept) in enumerate(open_turns) if kept == words), None)
-        if match is not None:
-            found[entry.entry_id] = open_turns.pop(match)[0]
-    return found
 
 
 #: What a runtime config that does not name ``hook_processing_seconds`` runs: the worker's default.  No
