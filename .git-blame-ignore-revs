@@ -1,0 +1,5 @@
+# Commits that only reformat; `git blame` skips them with
+# `git config blame.ignoreRevsFile .git-blame-ignore-revs` (GitHub reads this file on its own).
+
+# ruff format, line length 120
+6ab28b03f1e544660143689b5710736f21da9408
