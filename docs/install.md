@@ -527,7 +527,10 @@ Things that look wrong in a healthy report and are not:
   this instance yet. A host registers when it binds an identity for a session.
 - `worker_status: {}` means the worker has never written a receipt.
 - `autostart_status: "not_registered"` and `ledger_headroom: {}` mean you have
-  not configured those things, which is not a fault.
+  not configured those things, which is not a fault. `"operator_timer"` is an
+  enabled wake outside Windows, run by a timer you installed (section 7).
+- `unreached: []` means no partition's work has waited more than a day, apart from
+  work no configured route can do or a provider holds.
 - `terminal_failed_work: null` on a clean queue.
 - `embedding_respace: null` means no re-embed run was ever started (see
   section 7). `embedding_health` always counts the embedding queue; its
@@ -562,6 +565,7 @@ Things that look wrong in a healthy report and are not:
 | `worker_capability_unavailable` | Work is pending and the last pass reported work types it could not do. `attention`. | Usually a missing model route, credential or budget. |
 | `capture_ingress_blocked` | Inbox rows carry a real error code, or wait for their next try. Always `degraded`. | Read `capture_inbox_blocked` and the recent work errors. A row whose stored capture a replay could not check again is tried after a minute, doubling to an hour; when its 24th try again fails it is given up and counted in `capture_inbox_given_up`. `retry-failures` without `--apply` counts them by what gave them up (`inbox_by_kind`); fix that, then `retry-failures --apply` returns them to the replay. |
 | `embedding_backlog_aged` | An external embedding route is configured, and embeddings have waited more than 24 hours. Recall goes on answering, but finds what came in since then by its words alone. The check's detail names the provider's hold and its refusals over the last day when there are any (`embedding_health`). Without a route nothing embeds, by choice, and the gap is not raised. | With a hold or refusals: a quota, a spend cap or a credential at the provider; fix it there and the queue drains by itself. Without them no worker has reached the embeddings: read `worker_status`, and where each project has a worker of its own, check that it runs. |
+| `due_work_unreached` | Work, or a candidate with new first-hand evidence, has waited more than 24 hours in some partition of the store, including work whose worker's lease ran out. A partition is worked only by a worker of its own audience. Work no configured route can do, and work a provider holds, is left out; a queue longer than its passes reach in a day is named too. `unreached` names each partition (scope ids carry chat and account ids, so share it with care). `attention`. | Give that audience a wake: on Windows `autostart enable`, elsewhere a timer (section 7). On a shared store the shared worker's wake works every scope its config lists. A channel no one uses any more is drained when a session of it opens; a long queue drains by itself. |
 | `embedding_respace_space_mismatch` | A re-embed run (`respace-embeddings`) embeds into one space while `runtime-config.json` embeds into another, after a second change of model, so no worker goes on with it. | `respace-embeddings --config <file> --restart --apply` to start again into the new space, or `--cancel --apply`. |
 | `embedding_respace_failed:<Error>` | A worker pass could not reopen the run's next page; the worker status carries it. The run is unchanged and the next pass tries again. | Read the error; a held writer lease passes by itself. |
 | `autostart_registration_missing` | The control file says enabled, but the scheduled task is gone. | Re-run `autostart enable`. |
@@ -578,13 +582,18 @@ own top-level `status`.
 ## 7. Enable background work
 
 Consolidation and embedding happen in a bounded worker, not a resident service.
-Hosts wake it as they capture; a scheduled wake covers the idle case.
+Hosts wake it as they capture; a scheduled wake covers the idle case. A worker
+stays up while a candidate is inside its quiet window and drains when the window
+closes (its supervisor waits with `reason: "candidate_settle_window"`), so the
+pass that ends a conversation no longer leaves the last messages' candidates for
+the next session. A pass that could not look at them (a provider hold, the
+evaluation queue full, a pass kept out, cut short or failed) holds that wake for
+15 minutes. A worker that has stood down, or never started, needs the wake.
 
 ### Windows: the scheduled task
 
-Autostart is **Windows Task Scheduler only**. `maintenance/autostart.py` drives
-`schtasks.exe`, and `apply` refuses anything else with `autostart_windows_only`.
-There is no cron, systemd or launchd integration anywhere in this distribution.
+On Windows `maintenance/autostart.py` registers a task through `schtasks.exe`.
+Elsewhere it prints the same wake for a timer of your own (next section).
 
 ```powershell
 scope-recall autostart plan --config C:\path\to\instance-root\scope-recall\runtime-config.json --python C:\path\to\python.exe
@@ -610,10 +619,48 @@ hidden at least privilege with a 1-minute execution limit, and invokes
 and launches a detached worker if so. `supervisor_enabled: false` in
 `runtime-config.json` makes every wake a no-op without unregistering the task.
 
-Two caveats on non-Windows: `autostart plan` still succeeds there, because it only
-builds XML — a successful `plan` is not a registration. And `pause` / `remove`
-call `schtasks.exe` unconditionally, so on Linux or macOS they raise rather than
-printing the usual error object.
+### Linux and macOS: a timer of your own
+
+Nothing outside Windows registers a wake: without one, a partition's queue drains
+only while a host session of it runs. Run the same wake from a timer:
+
+```bash
+scope-recall autostart plan   --config /path/to/instance-root/scope-recall/runtime-config.json --python /path/to/venv/bin/python
+scope-recall autostart enable --config /path/to/instance-root/scope-recall/runtime-config.json --python /path/to/venv/bin/python --env-file /path/to/instance-root/scope-recall/embedding.env
+```
+
+- `plan` validates as on Windows and prints, as one JSON object, the wake as
+  `wake_command`, as a systemd user service and timer (`systemd_service`,
+  `systemd_timer`) and as a crontab line (`cron`). It changes nothing. No
+  `--user-id` is needed: the timer runs as the user who installs it. A path that
+  holds a line break, or a backslash before `%`, is refused
+  (`autostart_path_unsupported`); `%`, `$` and other backslashes are escaped.
+- `enable` writes only `runtime-autostart.json`, the control file the wake reads,
+  and registers nothing. Install the timer yourself, taking the texts out of the
+  JSON as they are:
+
+  ```bash
+  scope-recall autostart plan --config <config> --python <python> > plan.json
+  name=$(jq -r .task_name plan.json)
+  mkdir -p ~/.config/systemd/user
+  jq -r .systemd_service plan.json > ~/.config/systemd/user/$name.service
+  jq -r .systemd_timer plan.json > ~/.config/systemd/user/$name.timer
+  systemctl --user daemon-reload && systemctl --user enable --now $name.timer
+  ```
+
+  (`loginctl enable-linger <user>` keeps user timers running while you are logged
+  out.) Or add the line `jq -r .cron plan.json` prints with `crontab -e`.
+- The wake works the audience of `runtime-config.json` (its scopes, project and
+  branch): a channel whose scope it lists is drained by it, any other only by its
+  own sessions. Its first run with no pass on record (after an upgrade, or when
+  only session workers ran) launches one pass for the candidates ready by then.
+- Every 5 minutes the wake does what the Windows task does: `resume_entry`
+  launches a detached worker only when work is due and no worker runs, with the
+  credentials from `--env-file`. `pause` disables it in the control file (the
+  timer goes on firing and does nothing); `remove` marks it removed. Remove the
+  timer yourself.
+- The doctor reports `autostart_status: "operator_timer"`. It cannot see the
+  timer, but work that has waited a day is named by `due_work_unreached`.
 
 ### Everywhere: run a pass by hand
 

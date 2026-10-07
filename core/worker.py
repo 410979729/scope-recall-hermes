@@ -161,6 +161,10 @@ class WorkerReceipt:
     deferred: int = 0
     recovered: int = 0
     unavailable_work_types: tuple[str, ...] = ()
+    #: Whether the pass's settle sweep saw every candidate ready (``_recover_failed_work``).
+    settle_swept: bool = False
+    #: Whether it stopped at its page with more ready behind it.
+    settle_partial: bool = False
 
 
 def _resume_admission(storage, clock, context, config: WorkerConfig, started: float, budget: float,
@@ -259,17 +263,22 @@ def _other_work_ready(storage, clock, context, started: float, budget: float, ki
 
 
 def _recover_failed_work(storage, clock, context, config: WorkerConfig, allowed: frozenset[str],
-                         started: float, budget: float) -> int:
-    """Grant bounded fresh attempts to failures a later fix or budget may have cured."""
+                         started: float, budget: float) -> tuple[int, str | None]:
+    """Grant bounded fresh attempts to failures a later fix or budget may have cured.  Also says how far the settle
+    sweep looked, for the wake plan (``runtime/scheduling``): ``"complete"``, ``"partial"`` when it stopped at its
+    page with more ready behind it, or ``None`` when it did not look (a provider hold, no evaluator, a purge-only
+    pass, the evaluation queue full)."""
     settled: tuple = ()
     stale: tuple = ()
+    sweep = None
     if "evaluate_candidate" in allowed:
         # Which settled candidates to queue is read before the write: finding them walks every candidate still
         # settling, and under the writer lease that was 7.6 s of each pass on the shared store (2026-09-27).
         with storage.read(context, remaining_seconds=_remaining(started, clock, budget)) as tx:
             if tx.work.pending_depth("evaluate_candidate") < CANDIDATE_QUEUE_CEILING:
-                settled = tx.candidates.settled_to_schedule(
-                    now=clock.utc_now(), limit=min(config.candidate_batch_limit, config.max_items))
+                page = min(config.candidate_batch_limit, config.max_items)
+                settled = tx.candidates.settled_to_schedule(now=clock.utc_now(), limit=page)
+                sweep = "complete" if len(settled) < page else "partial"
             stale = tx.candidates.stale_pending(now=clock.utc_now(), limit=STALE_PENDING_PAGE)
     with storage.write(context, remaining_seconds=_remaining(started, clock, budget)) as tx:
         recovery_page = min(MAX_RECOVERY_PAGE, config.max_items)
@@ -311,7 +320,7 @@ def _recover_failed_work(storage, clock, context, config: WorkerConfig, allowed:
             max_recoveries=config.max_auto_recoveries, limit=recovery_page)
         if "purge" in allowed:
             recovered += tx.deletions.requeue_unfinished_purges(now=clock.utc_now(), limit=min(8, config.max_items))
-    return recovered
+    return recovered, sweep
 
 
 def drain_worker(
@@ -345,7 +354,7 @@ def drain_worker(
         _resume_admission(storage, clock, context, config, started, budget, candidate_available=candidate is not None)
         unavailable = _queued_work_types(storage, clock, context, started, budget,
                                          [kind for kind, port in ports.items() if port is None])
-    recovered = _recover_failed_work(storage, clock, context, config, allowed, started, budget)
+    recovered, sweep = _recover_failed_work(storage, clock, context, config, allowed, started, budget)
     processors = {
         "consolidate": partial(_process_consolidate, model=consolidation),
         "embed": partial(_process_embed, embed=embed),
@@ -500,4 +509,6 @@ def drain_worker(
         deferred=dispositions["deferred"],
         recovered=recovered,
         unavailable_work_types=tuple(dict.fromkeys((*unavailable, *paused))),
+        settle_swept=sweep == "complete",
+        settle_partial=sweep == "partial",
     )

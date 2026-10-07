@@ -1,4 +1,5 @@
-"""Reviewable Windows logon/periodic wake registration for one bound runtime."""
+"""Reviewable periodic wake for one bound runtime: a Windows logon/5-minute task, or elsewhere the same wake for the
+operator's own timer (systemd or cron) to run."""
 from __future__ import annotations
 
 import argparse
@@ -7,6 +8,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -14,6 +16,38 @@ import xml.etree.ElementTree as ET
 
 from ..runtime.resume_entry import control_path, read_control
 from ..runtime.worker_entry import _atomic_metadata, load_config
+
+#: How the wake runs outside Windows: from the operator's timer.  Nothing here registers one.
+OPERATOR_TIMER = "operator_timer"
+_TIMER_FIELDS = ("wake_command", "systemd_service", "systemd_timer", "cron")
+
+
+def _windows() -> bool:
+    return os.name == "nt"
+
+
+def _posix_wake(name: str, config_path: Path, python: Path, data_directory: Path) -> dict:
+    """The wake as a command, and as a systemd user timer and a crontab line running it every 5 minutes."""
+    # A line break ends a unit's line and a crontab's, and cron reads a backslash before ``%`` as its own escape: no
+    # path holding either can be written so that both read it back.
+    if any(character in str(path) or "\\%" in str(path) for path in (config_path, python, data_directory)
+           for character in "\r\n\x00"):
+        raise ValueError("autostart_path_unsupported")
+    command = [str(python), "-I", "-B", "-m", "scope_recall.runtime.resume_entry", "--config", str(config_path)]
+    line = shlex.join(command)
+    # The wake launches a detached worker and exits at once.  With the default ``KillMode=control-group`` systemd
+    # would end the worker with the unit, and a oneshot has no start timeout of its own (the Windows task allows a
+    # minute).  In ``ExecStart`` a backslash is an escape, ``%`` a specifier and ``$`` a variable; ``%`` is a line
+    # break in a crontab.
+    executed = line.replace("\\", "\\\\").replace("%", "%%").replace("$", "$$")
+    service = (f"[Unit]\nDescription=Scope Recall wake ({name})\n\n[Service]\nType=oneshot\nKillMode=process\n"
+               f"TimeoutStartSec=120\nWorkingDirectory={str(data_directory).replace('%', '%%')}\n"
+               f"ExecStart={executed}\n")
+    timer = (f"[Unit]\nDescription=Scope Recall wake every 5 minutes ({name})\n\n[Timer]\nOnBootSec=1min\n"
+             "OnUnitActiveSec=5min\n\n[Install]\nWantedBy=timers.target\n")
+    # The wake prints a line each run; from cron it would be mailed every 5 minutes.
+    cron = f"*/5 * * * * cd {shlex.quote(str(data_directory))} && {line} >/dev/null 2>&1".replace("%", "\\%")
+    return dict(wake_command=command, systemd_service=service, systemd_timer=timer, cron=cron)
 
 
 def plan(config_path, python_executable, *, user_id, env_file=None):
@@ -28,9 +62,16 @@ def plan(config_path, python_executable, *, user_id, env_file=None):
         tx.status()
     if env_file and (not Path(env_file).is_absolute() or not Path(env_file).is_file()):
         raise ValueError("autostart_environment_missing")
+    name = "ScopeRecall-" + hashlib.sha256(config.binding.installation_id.encode()).hexdigest()[:20]
+    if not _windows():
+        # No task to register and no principal to run it as: the operator's timer runs the wake as its own user.
+        return dict(installation_id=config.binding.installation_id, enabled=True, task_name=name,
+                    config_path=str(config_path.resolve()), python_executable=str(python),
+                    env_file=str(Path(env_file).resolve()) if env_file else None,
+                    trigger="every_5_minutes_from_the_operator_timer", registration=OPERATOR_TIMER,
+                    **_posix_wake(name, config_path.resolve(), python, config.binding.data_directory))
     if not user_id or any(c in user_id for c in '\r\n\x00'):
         raise ValueError("autostart_user_required")
-    name = "ScopeRecall-" + hashlib.sha256(config.binding.installation_id.encode()).hexdigest()[:20]
     namespace = "http://schemas.microsoft.com/windows/2004/02/mit/task"
     ET.register_namespace("", namespace)
     def node(parent, tag, text=None, **attrs):
@@ -73,9 +114,14 @@ def plan(config_path, python_executable, *, user_id, env_file=None):
 
 
 def apply(prepared):
-    if os.name != "nt":
-        raise ValueError("autostart_windows_only")
     config = load_config(prepared["config_path"])
+    if not _windows():
+        # The control file is what the wake reads (``resume_entry``); the operator installs the timer that runs it.
+        control = {key: value for key, value in prepared.items() if key not in _TIMER_FIELDS}
+        _atomic_metadata(control_path(config), control)
+        return dict(control, **{key: prepared[key] for key in _TIMER_FIELDS},
+                    next_step="install systemd_service and systemd_timer as user units (or the cron line), then "
+                              "enable the timer; this command registers nothing")
     previous = read_control(config)
     found = subprocess.run(["schtasks.exe", "/Query", "/TN", prepared["task_name"], "/XML"], capture_output=True, timeout=15)
     if found.returncode == 0 and (previous is None or previous.get("task_name") != prepared["task_name"]):
@@ -104,6 +150,13 @@ def disable(config_path, *, remove=False):
         return dict(status="removed", task_name=control["task_name"])
     control["enabled"] = False
     _atomic_metadata(control_path(config), control)
+    if control.get("registration") == OPERATOR_TIMER:
+        # The wake reads the control file and does nothing while it is disabled; the timer is the operator's.
+        if remove:
+            control["registration_state"] = "removed"
+            _atomic_metadata(control_path(config), control)
+        return dict(status="removed" if remove else "paused", task_name=control["task_name"],
+                    next_step="disable or remove the timer that runs the wake")
     args = ["/Delete", "/TN", control["task_name"], "/F"] if remove else ["/Change", "/TN", control["task_name"], "/DISABLE"]
     result = subprocess.run(["schtasks.exe", *args], capture_output=True, timeout=15)
     if result.returncode:

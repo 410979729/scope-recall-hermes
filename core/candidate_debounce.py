@@ -39,7 +39,7 @@ for choosing the evidence set.
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 #: Seconds of no new evidence after which a candidate is judged settled.
 QUIET_SECONDS = 900
@@ -91,10 +91,39 @@ def settle_reason(
         return "deferral_limit"
     return None
 
+
+def settles_at(
+    *,
+    last_evidence_at: object,
+    last_evaluated_at: object = None,
+    created_at: object = None,
+    quiet_seconds: int = QUIET_SECONDS,
+    max_deferral_seconds: int = MAX_DEFERRAL_SECONDS,
+) -> datetime | None:
+    """The moment, once its latest evidence has come, from which ``settle_reason`` gives a reason: the end of the
+    quiet window or the deferral limit, whichever comes first, and never before that evidence.  ``None`` when there
+    is no evidence timestamp, which is settled already.  A worker's wake plan waits for it
+    (``runtime/scheduling.next_wake``).
+    """
+    evidence = _parse(last_evidence_at)
+    if evidence is None:
+        return None
+    moment = evidence + timedelta(seconds=quiet_seconds)
+    waiting_since = _parse(last_evaluated_at) or _parse(created_at)
+    if waiting_since is not None:
+        moment = min(moment, waiting_since + timedelta(seconds=max_deferral_seconds))
+    return max(moment, evidence)
+
+def evaluated_since(moment: datetime, last_evaluated_at: object) -> bool:
+    """Whether the candidate was evaluated at or after ``moment``."""
+    evaluated = _parse(last_evaluated_at)
+    return evaluated is not None and evaluated >= moment
+
+
 # The timer says *when it is worth looking*; it does not decide whether there
 # is anything to ask. That is ``core/evidence_question.py``, and it is a
 # content test, not a rate limit -- a candidate is never made to wait out a
 # clock while it holds evidence nobody has judged.
 
 
-__all__ = ["MAX_DEFERRAL_SECONDS", "QUIET_SECONDS", "settle_reason"]
+__all__ = ["MAX_DEFERRAL_SECONDS", "QUIET_SECONDS", "evaluated_since", "settle_reason", "settles_at"]

@@ -11,7 +11,7 @@ from __future__ import annotations
 from datetime import timedelta
 
 from ..contracts import ContractError
-from .candidate_debounce import MAX_DEFERRAL_SECONDS, QUIET_SECONDS
+from .candidate_debounce import MAX_DEFERRAL_SECONDS, QUIET_SECONDS, evaluated_since, settles_at
 from .candidate_intake import CandidateIntake
 from .candidate_lifecycle import DORMANCY_DAYS, RULE_VERSION, CandidateSummary
 from .candidate_tables import (
@@ -247,6 +247,70 @@ class CandidateSweeps(CandidateIntake):
                 self._move(row["candidate_ref"], row["candidate_revision"], "pending_evaluation", reason, now=now)
                 scheduled += 1
         return scheduled
+
+    def next_settle_at(self, *, after: str | None, now: str) -> str | None:
+        """When the first candidate of this partition to become ready after ``after`` does, for a worker's wake plan
+        (``runtime/scheduling.next_wake``); ``None`` when none will.
+
+        A candidate is ready when it has settled (``settles_at``).  ``after`` is when the last pass that swept began
+        (``None``: no such pass, every candidate counts); that pass saw what was ready before it.  A candidate with an
+        evaluation queued, or evaluated since it became ready, has been looked at.  Readiness comes at most
+        ``QUIET_SECONDS`` after the last evidence, which stamped ``updated_at``, so the state index reads only the
+        candidates touched since; the first one ready by ``now`` ends the read.
+        """
+        moment, current = (parse_time(after) if after is not None else None), parse_time(now)
+        # Stamps are compared as text; a second's margin covers one written without its fraction.
+        floor = stamp(moment - timedelta(seconds=QUIET_SECONDS + 1)) if moment is not None else ""
+        context, params = self._context("l.")
+        conn = self._read()
+        queued = {(row[0], row[1]) for row in conn.execute(
+            "SELECT candidate_ref,candidate_revision FROM candidate_evaluations WHERE state='queued'")}
+        rows = conn.execute(
+            f"""SELECT l.candidate_ref,l.candidate_revision,l.last_evidence_at,l.last_evaluated_at,l.created_at
+                FROM candidate_lifecycle l {HEAD_JOINS}
+                WHERE l.processing_state IN ('pending_evaluation','waiting_evidence') AND l.updated_at>?
+                  AND l.last_evidence_at>? AND l.reason<>'authority_revoked' AND {context}
+                  AND c.current_revision=l.candidate_revision AND c.read_blocked=0 AND c.suppressed=0
+                  AND v.state IN ('proposed','disputed')""",
+            (floor, floor, *params),
+        )
+        earliest = None
+        try:
+            for row in rows:
+                if (row["candidate_ref"], row["candidate_revision"]) in queued:
+                    continue
+                when = settles_at(last_evidence_at=row["last_evidence_at"], last_evaluated_at=row["last_evaluated_at"],
+                                  created_at=row["created_at"])
+                if when is None or (moment is not None and when <= moment):
+                    continue
+                if evaluated_since(when, row["last_evaluated_at"]):
+                    continue
+                if when <= current:
+                    return stamp(when)
+                earliest = when if earliest is None else min(earliest, when)
+        finally:
+            rows.close()
+        return stamp(earliest) if earliest is not None else None
+
+    def settled_unreached(self, *, before: str) -> list[dict]:
+        """Candidates of every partition with first-hand evidence from before ``before`` that no pass has taken up, by
+        partition, for the doctor.  New first-hand evidence makes a candidate ``pending_evaluation`` /
+        ``new_evidence`` until a pass of its partition queues an evaluation or returns it to waiting.  Counts and
+        times only.
+        """
+        rows = self._read().execute(
+            f"""SELECT l.scope_id,l.project_id,l.branch_id,count(*) AS n,min(l.last_evidence_at) AS oldest
+                FROM candidate_lifecycle l {HEAD_JOINS}
+                WHERE l.processing_state='pending_evaluation' AND l.updated_at<? AND l.reason='new_evidence'
+                  AND c.current_revision=l.candidate_revision AND c.read_blocked=0 AND c.suppressed=0
+                  AND v.state IN ('proposed','disputed')
+                  AND NOT EXISTS(SELECT 1 FROM candidate_evaluations e WHERE e.candidate_ref=l.candidate_ref
+                      AND e.candidate_revision=l.candidate_revision AND e.state='queued')
+                GROUP BY l.scope_id,l.project_id,l.branch_id""",
+            (before,),
+        ).fetchall()
+        return [{"scope_id": row["scope_id"], "project_id": row["project_id"], "branch_id": row["branch_id"],
+                 "candidates": int(row["n"]), "oldest": row["oldest"]} for row in rows]
 
     def settling_summary(self, *, now: str) -> dict[str, int]:
         """Candidates waiting inside their window versus waiting for the sweep.

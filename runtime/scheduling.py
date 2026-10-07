@@ -35,6 +35,9 @@ BUSY_BACKOFF_SECONDS = 30.0
 MAX_CONSECUTIVE_WORKER_FAILURES = 3
 #: Seconds between two reads of the operator pause while a supervisor sleeps its start delay.
 PAUSE_POLL_SECONDS = 5.0
+#: Seconds before a worker is woken for settled candidates again after a pass that did not sweep them: a provider
+#: hold, the evaluation queue full, or a pass kept out, cut short or failed.
+SETTLE_RETRY_SECONDS = 900
 
 
 def _daily_budget_spent(config, used: int) -> bool:
@@ -68,9 +71,11 @@ class WakePlan:
 def _capable_work_types(config) -> set[str]:
     aux = config.auxiliary
     capable = {"purge", "rebuild_projection"}
-    if aux is not None and aux.external_consolidation and aux.consolidation is not None:
+    # A pass uses a route only with its budget ledger (``runtime/auxiliary``).
+    ledger = aux is not None and aux.ledger_path is not None
+    if ledger and aux.external_consolidation and aux.consolidation is not None:
         capable.update(("consolidate", "evaluate_candidate"))
-    if aux is not None and aux.external_embedding and aux.embedding is not None and config.vector is not None:
+    if ledger and aux.external_embedding and aux.embedding is not None and config.vector is not None:
         capable.add("embed")
     return capable
 
@@ -95,6 +100,22 @@ def _auto_recovery_rows(conn, base: str, params: tuple, config) -> list:
     return conn.execute(f"""SELECT work_type,min(available_at) AS due FROM work_items
         WHERE {base} AND state='failed' AND ({error_filter}) AND {exhausted}
         GROUP BY work_type""", (*params, *error_params, *exhausted_params)).fetchall()
+
+
+def _partition(config) -> tuple:
+    """The audience a supervisor's control file belongs to (``SupervisorControl``)."""
+    return config.project_id, config.branch_id, frozenset(config.allowed_scope_ids)
+
+
+def _control_stamp(config, field: str) -> datetime | None:
+    """A time this partition's supervisor recorded in its control file (``supervise``), or ``None`` when it recorded
+    none: ``last_pass_at``, when the last pass whose settle sweep saw every ready candidate began, and
+    ``unswept_pass_at``, when a later pass that did not sweep them began."""
+    try:
+        value = SupervisorControl(config).read().get(field)
+        return _utc(value) if isinstance(value, str) else None
+    except (OSError, ValueError):
+        return None
 
 
 def next_wake(config, *, now: datetime | None = None, unavailable_until=None) -> WakePlan:
@@ -148,6 +169,19 @@ def next_wake(config, *, now: datetime | None = None, unavailable_until=None) ->
                 candidates.append(cooled(*budgeted(now, 'candidate_evidence_remainder'), cooldown))
             else:
                 blocked += source_pages
+        if 'evaluate_candidate' in capable:
+            # A candidate still collecting evidence is in no queue: wake when it becomes ready.  The last pass
+            # whose sweep saw every ready candidate leaves only those ready since it began; with none on record,
+            # every ready candidate counts.  A later pass that could not sweep holds the wake for a while.
+            swept = _control_stamp(config, 'last_pass_at')
+            ready = tx.candidates.next_settle_at(after=_stamp(swept) if swept else None, now=_stamp(now))
+            if ready is not None:
+                due = max(_utc(ready), now)
+                unswept = _control_stamp(config, 'unswept_pass_at')
+                if unswept is not None and (swept is None or unswept > swept):
+                    due = max(due, unswept + timedelta(seconds=SETTLE_RETRY_SECONDS))
+                cooldown = unavailable_until.get('evaluate_candidate', unavailable_until.get('consolidate'))
+                candidates.append(cooled(*budgeted(due, 'candidate_settle_window'), cooldown))
         inbox = 0
         # The partition a pass replays (``replay_inbox``): a row of another woke a pass that never took it.  A key
         # collision is the pass's too (``resolve_conflicted_ingress``).
@@ -333,9 +367,9 @@ def supervise(config_path: Path, drain_once, *, delay_seconds=0.0, clock=time.mo
                 return last_code
             fresh = load_config(config_path)
             if fresh != config:
-                if fresh.binding != config.binding:
-                    # Another store: this owner's control files are the old store's.  It closes
-                    # cleanly and the next wake starts the new store's own supervisor.
+                if fresh.binding != config.binding or _partition(fresh) != _partition(config):
+                    # Another store or another audience: this owner's control files are the old one's.  It closes
+                    # cleanly and the next wake starts the new one's own supervisor.
                     control.update(accepting=False, state='suspended', reason='config_changed', drains=count,
                                    next_wake_at=_stamp(utc_now()), finished_at=_stamp(utc_now()))
                     return last_code
@@ -369,6 +403,7 @@ def supervise(config_path: Path, drain_once, *, delay_seconds=0.0, clock=time.mo
                 sleep(min(delay, 60.0, max(0, deadline - clock())))
                 continue  # Read fresh work, budget and wake generation after sleep.
             control.update(state='running', reason=plan.reason, next_wake_at=None, drains=count)
+            began = _stamp(utc_now())
             code, payload = drain_once(max(.001, min(config.drain_seconds, deadline - clock())))
             last_code = code
             count += 1
@@ -384,18 +419,27 @@ def supervise(config_path: Path, drain_once, *, delay_seconds=0.0, clock=time.mo
                 failures += 1
                 if failures >= MAX_CONSECUTIVE_WORKER_FAILURES:
                     control.update(accepting=False, state='failed', reason='worker_failed', exit_code=code,
-                                   drains=count, worker_failures=failures, finished_at=_stamp(utc_now()))
+                                   drains=count, worker_failures=failures, finished_at=_stamp(utc_now()),
+                                   unswept_pass_at=began)
                     return code
                 # Not a broken worker yet: wait as long as a busy pass waits and
                 # try again, leaving the failure in the control file so the
                 # doctor reports a loop that is limping rather than a silent one.
                 busy_until = clock() + BUSY_BACKOFF_SECONDS
                 control.update(state='degraded', reason='worker_failed', last_exit_code=code,
-                               drains=count, worker_failures=failures)
+                               drains=count, worker_failures=failures, unswept_pass_at=began)
                 continue
             # Busy/timeout is bounded by the same supervisor limit. Work and
-            # cost reservations remain authoritative in their own ledgers.
-            control.update(drains=count, last_exit_code=code, worker_failures=0)
+            # cost reservations remain authoritative in their own ledgers.  A pass whose sweep saw every ready
+            # candidate is recorded; one that stopped at its page leaves the rest for the next pass; any other holds
+            # the settle wake for ``SETTLE_RETRY_SECONDS``.
+            if code == 0 and payload.get('settle_swept') is True:
+                stamps = {'last_pass_at': began, 'unswept_pass_at': None}
+            elif payload.get('settle_partial') is True:
+                stamps = {'unswept_pass_at': None}
+            else:
+                stamps = {'unswept_pass_at': began}
+            control.update(drains=count, last_exit_code=code, worker_failures=0, **stamps)
     except BaseException:
         control.update(accepting=False, state='failed', reason='supervisor_failed', drains=count,
                        finished_at=_stamp(utc_now()))

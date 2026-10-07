@@ -111,6 +111,9 @@ class DoctorReport:
     #: The embedding queue (pending, failed, the oldest pending), and with an external route the provider's hold
     #: and its answers over the last day (``_check_embedding_health``).
     embedding_health: dict[str, Any] = field(default_factory=dict)
+    #: Work and candidates of any partition that have waited more than ``UNREACHED_HOURS``, by partition
+    #: (``_check_unreached``).
+    unreached: list[dict[str, Any]] = field(default_factory=list)
     #: For a home attached to a shared store: the store's root, and this home's
     #: entry.  Everything else in the report is then the shared store's.
     shared_store: dict[str, str] = field(default_factory=dict)
@@ -371,6 +374,7 @@ TERMINAL_FAILURE_COUNT = """
 #: the owner knows whether to.
 _NON_ACTIONABLE_GAPS = frozenset({
     "audience_owner_unverified",
+    "due_work_unreached",
     "vector_threshold_unconfigured",
     "work_failed_terminal_only",
     "work_needs_review",
@@ -686,6 +690,9 @@ def _check_storage(report: DoctorReport, binding, data_directory: Path) -> bool:
                 now=datetime.now(timezone.utc).isoformat())
             report.embedding_respace = transaction.work.respace_run()
             report.embedding_health = transaction.work.embed_queue()
+            cutoff = (datetime.now(timezone.utc) - timedelta(hours=UNREACHED_HOURS)).isoformat()
+            report.unreached = [*transaction.work.due_unreached(before=cutoff),
+                                *transaction.candidates.settled_unreached(before=cutoff)]
     except Exception as exc:  # noqa: BLE001 - an unreadable store is a finding, not a crash.
         report.capability_gaps.append(f"storage_read:{type(exc).__name__}")
         _record(report, "storage_status", "unavailable", type(exc).__name__)
@@ -808,6 +815,9 @@ def _check_autostart(report: DoctorReport, binding, data_directory: Path) -> flo
         control = read_control(runtime_config)
         if not control["enabled"]:
             report.autostart_status = "paused"
+        elif control.get("registration") == "operator_timer":
+            # The operator's own timer runs the wake; nothing here can see it.
+            report.autostart_status = "operator_timer"
         elif os.name != "nt":
             report.autostart_status = "unsupported_platform"
         else:
@@ -972,6 +982,50 @@ def _check_embedding_health(report: DoctorReport, config) -> None:
         detail += ("; nothing asked the provider in the last day, so no worker has reached them: see worker_status, "
                    "and on an installation with a worker per project, whether each one runs")
     _record(report, "embedding_backlog", "aged", detail)
+
+
+#: Hours due work or a candidate with new evidence may wait for a pass before the doctor says so.
+UNREACHED_HOURS = 24
+
+
+def _check_unreached(report: DoctorReport, config) -> None:
+    """Work and candidates of any partition, this audience's or another's, that have waited more than a day.
+
+    A partition's queue is drained only by a worker of its own audience, started by a session of that audience or by
+    a scheduled wake, and the queue figures above cover this binding's audience only.  Work this installation's
+    routes cannot do, and work a provider holds (reported by ``embedding_backlog_aged`` and ``model_refused``), is
+    left out.  The store records no time a pass looked at an item, so a queue longer than its passes reach in a day
+    is named too, and the finding asks for attention rather than degrading the report.  The detail line counts; the
+    scope ids, which carry chat and account ids, are only in ``unreached``.
+    """
+    from ..runtime.scheduling import _capable_work_types
+
+    capable = _capable_work_types(config) if config is not None else {"purge", "rebuild_projection"}
+    if config is not None:
+        capable -= set(provider_holds(config.auxiliary, now=datetime.now(timezone.utc).timestamp()))
+    partitions: dict[tuple, dict[str, Any]] = {}
+    for row in report.unreached:
+        if "work_type" in row and row["work_type"] not in capable:
+            continue
+        if "candidates" in row and "evaluate_candidate" not in capable:
+            continue
+        key = (row["scope_id"], row["project_id"], row["branch_id"])
+        found = partitions.setdefault(key, {"scope_id": key[0], "project_id": key[1], "branch_id": key[2],
+                                            "work": 0, "candidates": 0, "oldest": row["oldest"]})
+        found["work"] += row.get("work", 0)
+        found["candidates"] += row.get("candidates", 0)
+        found["oldest"] = min(str(found["oldest"] or row["oldest"]), str(row["oldest"] or found["oldest"]))
+    report.unreached = sorted(partitions.values(), key=lambda found: str(found["oldest"]))
+    if not report.unreached:
+        return
+    report.capability_gaps.append("due_work_unreached")
+    work = sum(found["work"] for found in report.unreached)
+    candidates = sum(found["candidates"] for found in report.unreached)
+    _record(report, "due_work_unreached", "present",
+            f"{work} work items and {candidates} candidates with new evidence have waited more than "
+            f"{UNREACHED_HOURS} h, the oldest since {report.unreached[0]['oldest']}, in "
+            f"{len(report.unreached)} partition(s) listed in unreached: no worker of that audience has run, or the "
+            "queue is longer than its passes reach (docs/install.md, section 7)")
 
 
 def _check_embedding_respace(report: DoctorReport, config) -> None:
@@ -1139,6 +1193,7 @@ def run_doctor(
         _check_backlog(report, wake_seconds)
         _check_embedding_health(report, config)
         _check_embedding_respace(report, config)
+        _check_unreached(report, config)
         _check_candidates(report)
         _check_model_output(report)
         _check_ledger(report)

@@ -922,6 +922,19 @@ class WorkItems:
                FROM work_items WHERE state IN ('pending','failed') AND +work_type='embed'""").fetchone()
         return {"pending": int(pending or 0), "failed": int(failed or 0), "oldest_pending_at": oldest}
 
+    def due_unreached(self, *, before: str) -> list[dict]:
+        """Work of every partition due since before ``before`` and still waiting, by partition and type: pending, or
+        leased by a worker whose lease ran out then (only a pass of the same partition releases it).  For the doctor;
+        counts and times only, read through ``work_ready``."""
+        rows = self._tx._check().execute(
+            """SELECT scope_id,project_id,branch_id,work_type,count(*) AS n,
+                      min(CASE WHEN state='leased' THEN lease_until ELSE available_at END) AS oldest FROM work_items
+               WHERE (state='pending' AND available_at<?) OR (state='leased' AND lease_until<?)
+               GROUP BY scope_id,project_id,branch_id,work_type""",
+            (before, before)).fetchall()
+        return [{"scope_id": row["scope_id"], "project_id": row["project_id"], "branch_id": row["branch_id"],
+                 "work_type": row["work_type"], "work": int(row["n"]), "oldest": row["oldest"]} for row in rows]
+
     def respace_remaining(self, *, at_most: int | None = None) -> int:
         """Embeddings done so far that a run would reopen: at or below work id ``at_most`` (all when None), except a
         tool output whose vector the retention window expired, which stays without one."""

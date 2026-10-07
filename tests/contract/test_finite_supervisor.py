@@ -214,7 +214,8 @@ def test_recovery_progress_continues_once_and_budget_waits_legacy_repair(tmp_pat
     queue(core,cfg,kind='consolidate',state='failed',error='INPUT_INVALID')
     # An explicit cap: the default is 0, which means uncapped and never defers.
     configured=replace(cfg,daily_work_limit=256,
-                       auxiliary=replace(cfg.auxiliary,external_consolidation=True,consolidation=object()))
+                       auxiliary=replace(cfg.auxiliary,external_consolidation=True,consolidation=object(),
+                                         ledger_path=tmp_path/'TEST-ledger.sqlite3'))
     assert next_wake(configured,now=NOW).reason == 'legacy_source_repair'
     budget=cfg.binding.data_directory/'runtime-worker-day.json'
     budget.write_text(json.dumps(dict(installation_id=cfg.binding.installation_id,day='2026-09-12',used=configured.daily_work_limit)))

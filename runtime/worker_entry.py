@@ -119,6 +119,8 @@ def _receipt_payload(config: RuntimeInstanceConfig, receipt: Any, capability_gap
         "deferred": int(getattr(receipt, "deferred", 0)),
         "recovered": int(getattr(receipt, "recovered", 0)),
         "unavailable_work_types": list(unavailable),
+        "settle_swept": bool(getattr(receipt, "settle_swept", False)),
+        "settle_partial": bool(getattr(receipt, "settle_partial", False)),
     }
 
 
