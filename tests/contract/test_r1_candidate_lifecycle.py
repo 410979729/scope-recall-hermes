@@ -606,7 +606,10 @@ def test_r1_candidate_scheduler_distinguishes_missing_capability_and_daily_budge
         # daily_work_limit defaults to 0, meaning uncapped; a daily pause can only
         # be observed against a cap that was actually asked for.
         daily_work_limit=256,
-        auxiliary=replace(config.auxiliary, external_consolidation=True, consolidation=object()),
+        auxiliary=replace(
+            config.auxiliary, external_consolidation=True, consolidation=object(),
+            ledger_path=tmp_path / "TEST-ledger.sqlite3",
+        ),
     )
     ready = next_wake(capable, now=NOW)
     assert ready.due_at == "2026-09-12T00:00:00Z" and ready.reason == "work_available"
