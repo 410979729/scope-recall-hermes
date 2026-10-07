@@ -262,18 +262,22 @@ class CandidateSweeps(CandidateIntake):
         ``now`` ends the read.
         """
         moment, current = (parse_time(after) if after is not None else None), parse_time(now)
-        # Stamps are compared as text here, a second's margin covering one written without its fraction; the newest
-        # question (by id, as the index holds it without reading the rows) and the evidence are compared as times, as
-        # the store holds both ``Z`` and ``+00:00`` stamps.
+        # Stamps are compared as text here, a second's margin covering one written without its fraction.  The newest
+        # question is found by id, which the index holds without reading the rows.  The query leaves out only those
+        # that certainly held the evidence, stamped alike or a millisecond later (``julianday`` keeps milliseconds, and
+        # the store holds both ``Z`` and ``+00:00`` stamps); the rest are compared here to the microsecond.
         floor = stamp(moment - timedelta(seconds=QUIET_SECONDS + 1)) if moment is not None else ""
         changed_floor = stamp(moment - timedelta(seconds=1)) if moment is not None else ""
         context, params = self._context("l.")
         conn = self._read()
         queued = {(row[0], row[1]) for row in conn.execute(
             "SELECT candidate_ref,candidate_revision FROM candidate_evaluations WHERE state='queued'")}
+        newest = """(SELECT e.created_at FROM candidate_evaluations e WHERE e.evaluation_id=(
+                         SELECT max(q.evaluation_id) FROM candidate_evaluations q
+                         WHERE q.candidate_ref=l.candidate_ref AND q.candidate_revision=l.candidate_revision))"""
         rows = conn.execute(
             f"""SELECT l.candidate_ref,l.candidate_revision,l.last_evidence_at,l.last_evaluated_at,l.created_at,
-                       l.updated_at
+                       l.updated_at,{newest} AS asked_at
                 FROM candidate_lifecycle l {HEAD_JOINS}
                 WHERE l.processing_state IN ('pending_evaluation','waiting_evidence') AND l.updated_at>?
                   AND (l.last_evidence_at>? OR l.updated_at>?)
@@ -283,7 +287,8 @@ class CandidateSweeps(CandidateIntake):
                   AND NOT EXISTS(SELECT 1 FROM candidate_evaluations e WHERE e.evaluation_id=(
                           SELECT max(q.evaluation_id) FROM candidate_evaluations q
                           WHERE q.candidate_ref=l.candidate_ref AND q.candidate_revision=l.candidate_revision)
-                      AND julianday(e.created_at)>=julianday(l.last_evidence_at))""",
+                      AND (e.created_at=l.last_evidence_at
+                           OR julianday(e.created_at)>julianday(l.last_evidence_at)))""",
             (floor, floor, changed_floor, *params),
         )
         earliest = None
@@ -294,6 +299,9 @@ class CandidateSweeps(CandidateIntake):
                 when = settles_at(last_evidence_at=row["last_evidence_at"], last_evaluated_at=row["last_evaluated_at"],
                                   created_at=row["created_at"])
                 if when is None:
+                    continue
+                asked = parse_stamp(row["asked_at"])
+                if asked is not None and asked >= parse_stamp(row["last_evidence_at"]):
                     continue
                 changed = parse_stamp(row["updated_at"])
                 if moment is not None and when <= moment and (changed is None or changed < moment):

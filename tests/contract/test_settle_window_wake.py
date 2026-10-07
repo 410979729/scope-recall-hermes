@@ -567,6 +567,12 @@ def test_a_candidate_asked_about_as_its_evidence_came_wakes_no_worker(app, monke
     monkeypatch.setattr(scheduling, "_capable_work_types", lambda config: set(EVERY_TYPE))
     assert next_wake(config, now=EVIDENCE + timedelta(seconds=60)).reason == "idle"
     assert next_wake(config, now=EVIDENCE + timedelta(seconds=QUIET_SECONDS + 60)).reason == "idle"
+    # Stores written by earlier releases hold ``+00:00`` stamps too: the same moment, written otherwise.
+    with sqlite3.connect(core.storage.path) as conn:
+        conn.execute("UPDATE candidate_evaluations SET created_at='2026-09-06T12:00:00.000000+00:00' "
+                     "WHERE evaluation_id=(SELECT max(evaluation_id) FROM candidate_evaluations)")
+        conn.commit()
+    assert next_wake(config, now=EVIDENCE + timedelta(seconds=QUIET_SECONDS + 60)).reason == "idle"
 
 
 def _questions(core):
@@ -579,15 +585,17 @@ class _Failing:
         raise ModelRefusal("network_error")
 
 
-@pytest.mark.parametrize("closed", ["answered", "failed", "obsolete"])
-def test_evidence_that_came_while_a_question_waited_wakes_the_worker_once_it_settles(app, monkeypatch, closed):
+@pytest.mark.parametrize("closed,later", [("answered", timedelta(minutes=1)), ("failed", timedelta(minutes=1)),
+                                          ("obsolete", timedelta(minutes=1)),
+                                          ("answered", timedelta(microseconds=100))])
+def test_evidence_that_came_while_a_question_waited_wakes_the_worker_once_it_settles(app, monkeypatch, closed, later):
     """An evaluation holds the evidence there was when it was queued.  However it ends (answered, failed or
     retired), evidence that came while it waited is asked about once it settles, also when the pass that ended it
-    is on record as having swept."""
+    is on record as having swept, and also when it came within the question's millisecond."""
     core, ctx = app
     saved, _source, proposal, _registration = _candidate(core, ctx)  # its question is queued at EVIDENCE
     _finish_source_work(core)
-    core.clock.now = _stamp(EVIDENCE + timedelta(minutes=1))
+    core.clock.now = _stamp(EVIDENCE + later)
     capture(core, ctx, "又发现 entity-blue property-blue 的相关证据。", key="TEST-214/while-queued")
     _finish_source_work(core)
 
