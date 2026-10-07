@@ -421,7 +421,9 @@ class CodexMCPServer:
             expected_revision=expected_revision, new_value=new_value, conditions=conditions,
             source_evidence_refs=source_evidence_refs,
         )
-        body["valid_from"] = valid_from  # required by the DTO; None is a legitimate value, not "unset"
+        # Required by the DTO, where None is a value and not "unset": a null new value withdraws the fact.
+        body["new_value"] = new_value
+        body["valid_from"] = valid_from
         body.pop("request_id")
         # The stdio server has no attested Codex user turn.  Core still
         # requires its own human evidence and expected revision before

@@ -11,6 +11,7 @@ All notable changes to `scope-recall` will be documented in this file.
 ### Fixes
 
 - **Gemini accepts Hermes's memory tools.** `revise` declared its new value as any type, an array among them without `items`, and Gemini refuses a request when any tool it carries does: through Hermes's own Gemini client every request with the tools failed with HTTP 400. The new value is now declared as what the core takes: the new value's text, an object of the fact's fields, or null to withdraw it. The core refused a number, true or false and a list anyway.
+- **`revise` with a null value withdraws a fact through the MCP server too** (Codex, Claude Code, WorkBuddy, dsh). The server dropped every argument left empty, a null new value included, and the core refused the call; the person's request was kept, but nothing was withdrawn. A capture still withdraws on its own a fact the person's request names alone; the tool is for a request that fits more than one.
 
 ### Tests
 

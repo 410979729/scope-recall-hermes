@@ -126,11 +126,9 @@ _TOOL_SCHEMAS: tuple[dict[str, Any], ...] = (
                 "target_ref": {"type": "string", "minLength": 1, "maxLength": 240},
                 "expected_revision": {"type": "integer", "minimum": 1},
                 # What the core takes (``core/mutate.py``): the new value's text, some of the fact's fields, or null
-                # to withdraw it.  Gemini refuses a request whose declarations hold an array without ``items``.
-                "new_value": {
-                    "type": ["string", "object", "null"],
-                    "properties": {"value_text": {"type": "string"}, "valid_to": {"type": ["string", "null"]}},
-                },
+                # to withdraw it.  Gemini refuses a request whose declarations hold an array without ``items``, or
+                # ``properties`` beside a type list, which Hermes turns into ``anyOf`` before Gemini reads it.
+                "new_value": {"type": ["string", "object", "null"]},
                 "conditions": {"type": "array", "items": {"type": "string", "maxLength": MAX_CONTENT}},
                 "source_evidence_refs": {"type": "array", "maxItems": MAX_REFS, "items": {"type": "string", "minLength": 1, "maxLength": 240}},
                 "valid_from": {"type": ["string", "null"]},

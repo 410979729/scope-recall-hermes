@@ -330,31 +330,35 @@ def test_every_tool_parameter_declares_a_type_for_a_strict_provider(adapter):
         assert _untyped_properties(schema["parameters"]) == [], schema["name"]
 
 
-def _arrays_without_items(schema, trail=()):
+def _refused_by_gemini(schema, trail=()):
+    """Declarations Gemini refuses: an array without ``items``, a type list's array included, and structure beside a
+    type list of several types, which Hermes turns into an ``anyOf`` of bare branches with the structure left on the
+    parent before Gemini reads it."""
     found = []
     if not isinstance(schema, dict):
         return found
     declared = schema.get("type")
+    union = isinstance(declared, list) and len([kind for kind in declared if kind != "null"]) > 1
     if (declared == "array" or (isinstance(declared, list) and "array" in declared)) and "items" not in schema:
-        found.append("/".join(trail) or "<root>")
+        found.append(("/".join(trail) or "<root>") + ": array without items")
+    if union and any(key in schema for key in ("properties", "items", "required")):
+        found.append(("/".join(trail) or "<root>") + ": structure beside a type list")
     for name, spec in (schema.get("properties") or {}).items():
-        found.extend(_arrays_without_items(spec, (*trail, name)))
+        found.extend(_refused_by_gemini(spec, (*trail, name)))
     for key in ("items", "additionalProperties"):
-        found.extend(_arrays_without_items(schema.get(key), (*trail, key)))
+        found.extend(_refused_by_gemini(schema.get(key), (*trail, key)))
     for key in ("anyOf", "oneOf", "allOf"):
         for index, branch in enumerate(schema.get(key) or ()):
-            found.extend(_arrays_without_items(branch, (*trail, f"{key}[{index}]")))
+            found.extend(_refused_by_gemini(branch, (*trail, f"{key}[{index}]")))
     return found
 
 
-def test_every_array_a_tool_takes_declares_its_items_for_gemini(adapter):
-    """Gemini refuses a request when any of its tools takes an array without ``items``, a type list's array included,
-    and every tool travels with every request.  ``new_value`` declares what the core takes: the new value's text, some
-    of the fact's fields, or null to withdraw it."""
+def test_every_tool_declaration_is_one_gemini_accepts(adapter):
+    """Every tool travels with every request, and Gemini refuses the request for one declaration it cannot read.
+    ``new_value`` declares what the core takes: the new value's text, some of the fact's fields, or null to withdraw
+    it."""
     provider, _clock = adapter
     schemas = {schema["name"]: schema for schema in provider.get_tool_schemas()}
     for name, schema in schemas.items():
-        assert _arrays_without_items(schema["parameters"]) == [], name
-    new_value = schemas["revise"]["parameters"]["properties"]["new_value"]
-    assert sorted(new_value["type"]) == ["null", "object", "string"]
-    assert set(new_value["properties"]) == {"value_text", "valid_to"}
+        assert _refused_by_gemini(schema["parameters"]) == [], name
+    assert schemas["revise"]["parameters"]["properties"]["new_value"] == {"type": ["string", "object", "null"]}

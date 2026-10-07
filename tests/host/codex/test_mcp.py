@@ -174,6 +174,54 @@ def test_mcp_stdio_all_tools_and_host_thread_bound_mutations(tmp_path: Path) -> 
     asyncio.run(run())
 
 
+def test_mcp_revise_with_a_null_value_withdraws_the_fact(tmp_path: Path) -> None:
+    """``new_value`` null withdraws a fact, as the tool's description says.  The server drops the arguments a caller
+    left unset; a null new value is set, and reaches the core as one."""
+    project = tmp_path / "project"
+    project.mkdir()
+    config, core = install_codex_scope_recall(tmp_path / "install", project_root=project)
+
+    from scope_recall.adapters.codex.mcp_server import build_server
+
+    adapter = build_server(config, workspace=project, core=core)
+    thread = str(uuid4())  # the conversation Codex names in each call's metadata, as its hooks name it
+    human = trusted_context(config, resolve_runtime_audience(config, str(project)), session_id=thread,
+                            actor_origin="human_direct")
+    scope_id = config.audience_scopes["project"]
+
+    def said(key: str, text: str) -> str:
+        event: SourceEvent = {
+            "protocol_version": "1.1", "source_event_key": key, "source_revision": 1, "origin": "human_direct",
+            "role": "user", "content": text, "occurred_at": None, "recorded_at": core.clock.utc_now(),
+            "time_precision": "unknown", "capture_state": "complete", "evidence_refs": [],
+        }
+        return core.record_event(human, event, scope_id=scope_id).event_refs[0].ref
+
+    def fact(key: str, predicate: str, value: str):
+        text = f"TEST-project {predicate} {value}。"
+        stated = said(key, text)
+        return core.accept_claim_proposals(human, {
+            "protocol_version": "1.1", "source_refs": [f"{stated}@1"],
+            "claim_proposals": [{"kind": "fact", "subject": "TEST-project", "predicate": predicate, "value_text": value,
+                                 "conditions": [], "statement_kind": "assertion", "valid_from": None,
+                                 "valid_to": None,
+                                 "evidence_spans": [{"source_ref": stated, "source_revision": 1, "quote": text}]}],
+            "resume_proposals": [], "reference_proposals": [],
+        }, scope_id=scope_id).items[0]
+
+    claim = fact("TEST-withdraw-1", "配色", "蓝色")
+    fact("TEST-withdraw-2", "字体", "宋体")
+    # Two facts of TEST-project match the request, so a capture leaves it to the tool and its named target.
+    asked = said("TEST-withdraw-3", "撤回 TEST-project 的蓝色。")
+    assert core.current_claim(human, claim.ref).revision == claim.revision
+    revise = adapter.server._tool_manager.get_tool("revise")
+    result = revise.fn(SimpleNamespace(request_context=SimpleNamespace(meta={"threadId": thread})), "1.1", claim.ref,
+                       claim.revision, None, [], [f"{asked}@1"], None)
+    assert "error" not in result, result
+    assert core.current_claim(human, claim.ref) is None
+    assert core.claim_history(human, claim.ref)[-1].state == "retracted"
+
+
 def test_recall_epoch_race_scrubs_compiled_payload_surface(tmp_path: Path) -> None:
     """A deletion/epoch race cannot leave rendered text beside empty items."""
     project = tmp_path / "project"
