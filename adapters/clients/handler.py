@@ -355,24 +355,10 @@ class CodexHookHandler:
         self.diagnostics = HookDiagnostics(capability_gaps=self.diagnostics.capability_gaps)
         event = payload.get("hook_event_name")
         self.diagnostics.last_event = str(event) if event is not None else None
-        if event not in _HOST_EVENTS[self.host]:
-            self.note("unsupported_event")
+        admitted = self._admit(event, payload)
+        if admitted is None:
             return {}
-        if self.host == "workbuddy" and is_workbuddy_agent_run(payload):
-            # A subagent's prompt is the agent that started it speaking, and its end is not the session's: like a
-            # task notification, none of it is the person's.  WorkBuddy 5.3.14 sends these hooks for the main session
-            # only; this keeps a later version that sends them from storing a subagent under the person's session.
-            self.note("agent_run")
-            return {}
-        session_id = self.session_of(payload)
-        if session_id is None:
-            return {}
-        audience = self.audience_of(payload)
-        if audience is None:
-            return {}
-        if self._host_runtime is not None:
-            self._host_runtime.rebind_session(session_id, audience.allowed_scope_ids)
-            self._merge_runtime_gaps()
+        session_id, audience = admitted
         # The extended trusted budget is for the auto recall path and for a client's
         # read of its session record.  The other hooks keep their short processing cap.
         budget = (
@@ -380,18 +366,7 @@ class CodexHookHandler:
         )
         deadline = self._hook_deadline(budget)
         if event == "SessionStart":
-            if isinstance(self.config, SharedClientConfig):
-                # An entry starts no worker, and its binding was checked when the config loaded.  The
-                # status a local installation reads here counts the whole store: 7-8 s on the pilot's
-                # shared store of 277,000 sources, past Codex's 2 s hook timeout at every session start.
-                return {}
-            if (
-                self.events.session_start(session_id, audience, deadline)
-                and self.remaining(deadline) >= RUNTIME_ATTACH_MIN_S
-            ):
-                self.ensure_runtime(audience)
-                self.launch_worker(session_id, audience, require_persisted=False)
-            return {}
+            return self._session_started(session_id, audience, deadline)
         if event == "UserPromptSubmit":
             return self.events.prompt(session_id, audience, payload, deadline)
         if self.host == "codex" and in_suggestions_thread(self.config, session_id, ended=event == "SessionEnd"):
@@ -404,6 +379,58 @@ class CodexHookHandler:
             return self.events.interrupt(session_id, audience, payload, deadline)
         if event == "PostToolUse":
             return self.events.post_tool_use(session_id, audience, payload, deadline)
+        return self._turn_ended(
+            event, session_id, audience, payload, deadline, record=record, local_record=local_record
+        )
+
+    def _admit(self, event: object, payload: dict[str, Any]) -> tuple[str, Any] | None:
+        """The session and audience of a hook this client sends and this handler takes, or None, said why."""
+        if event not in _HOST_EVENTS[self.host]:
+            self.note("unsupported_event")
+            return None
+        if self.host == "workbuddy" and is_workbuddy_agent_run(payload):
+            # A subagent's prompt is the agent that started it speaking, and its end is not the session's: like a
+            # task notification, none of it is the person's.  WorkBuddy 5.3.14 sends these hooks for the main session
+            # only; this keeps a later version that sends them from storing a subagent under the person's session.
+            self.note("agent_run")
+            return None
+        session_id = self.session_of(payload)
+        if session_id is None:
+            return None
+        audience = self.audience_of(payload)
+        if audience is None:
+            return None
+        if self._host_runtime is not None:
+            self._host_runtime.rebind_session(session_id, audience.allowed_scope_ids)
+            self._merge_runtime_gaps()
+        return session_id, audience
+
+    def _session_started(self, session_id: str, audience, deadline: float) -> dict[str, Any]:
+        if isinstance(self.config, SharedClientConfig):
+            # An entry starts no worker, and its binding was checked when the config loaded.  The
+            # status a local installation reads here counts the whole store: 7-8 s on the pilot's
+            # shared store of 277,000 sources, past Codex's 2 s hook timeout at every session start.
+            return {}
+        if (
+            self.events.session_start(session_id, audience, deadline)
+            and self.remaining(deadline) >= RUNTIME_ATTACH_MIN_S
+        ):
+            self.ensure_runtime(audience)
+            self.launch_worker(session_id, audience, require_persisted=False)
+        return {}
+
+    def _turn_ended(
+        self,
+        event: object,
+        session_id: str,
+        audience,
+        payload: dict[str, Any],
+        deadline: float,
+        *,
+        record: RecordLines | None,
+        local_record: bool,
+    ) -> dict[str, Any]:
+        """A Stop or a SessionEnd: its message stored, what the session record shows was said, the worker woken."""
         if self.host == "dsh" and record is None:
             # The turn's messages as dsh's plugin kept them (it has no record a hook could open), read as a remote
             # client's lines; the answer says how many are stored, so the plugin drops those and sends the rest again.

@@ -100,48 +100,10 @@ class HookEvents:
         return {}
 
     def prompt(self, session_id: str, audience, payload: dict[str, Any], deadline: float) -> dict[str, Any]:
-        if self._hook.host == "workbuddy":
-            prompt = payload.get("prompt")
-            if type(prompt) is not str:
-                self._hook.note("missing_prompt", gaps=("capability_gap:missing_prompt",))
-                return {}
-            # Only the person's words are stored and recalled for, never what WorkBuddy wraps around them.
-            prompt = workbuddy_person_text(prompt)
-            notice = is_workbuddy_notice(prompt)
-            # A turn is kept for a notice too, so that the reply to it is stored under a turn of its own.
-            turn_id, gaps = (
-                open_turn(
-                    self._hook.config, session_id, payload, None if notice else prompt, self._hook.clock.utc_now()
-                ),
-                (),
-            )
-        else:
-            turn_id, gaps = turn_id_from_payload(payload, required=True, field=TURN_FIELD[self._hook.host])
-            if turn_id is None:
-                self._hook.note("missing_turn_id", gaps=gaps)
-                return {}
-            prompt = payload.get("prompt")
-            if type(prompt) is not str:
-                self._hook.note("missing_prompt", gaps=(*gaps, "capability_gap:missing_prompt"))
-                return {}
-            notice = self._hook.host == "claude-code" and is_task_notification(prompt)
-        if notice:
-            # Claude Code's own notice that a background task finished: recorded as the owner's words it
-            # became a message they never wrote, and a recall on it answers nothing they asked.  WorkBuddy
-            # hands its model the same notice (its ``BackgroundTaskNotifier``), and a Stop hook's or a goal's
-            # request to go on.
-            self._hook.note("task_notification")
+        taken = self._prompt_turn(session_id, payload)
+        if taken is None:
             return {}
-        if self._hook.host == "codex" and is_codex_suggestions_prompt(prompt):
-            # Codex asking the model what the owner might do next, through the hook a message comes by: not their
-            # words, and nothing for a recall to answer.  The thread is marked, so that its later hooks, each a
-            # process of its own, keep the rest of it out too.
-            mark_suggestions_thread(self._hook.config, session_id)
-            self._hook.note("host_generated_prompt")
-            return {}
-        if self._hook.host == "codex":
-            # The owner speaking in a marked thread makes the rest of it theirs.
-            in_suggestions_thread(self._hook.config, session_id, ended=True)
+        turn_id, prompt, gaps = taken
         attachment_refs, attachment_gaps = authorized_attachment_refs(payload)
         gaps = (*gaps, *attachment_gaps)
         if attachment_gaps:
@@ -193,6 +155,53 @@ class HookEvents:
                 payload, context, prompt, request_id, current_refs, deadline, capture_gaps
             )
         return self._hook.prompt_recall.own(context, prompt, request_id, current_refs, deadline, capture_gaps)
+
+    def _prompt_turn(self, session_id: str, payload: dict[str, Any]) -> tuple[str, str, tuple[str, ...]] | None:
+        """The turn and the words of a prompt this hook stores and recalls for, with its gaps; or None, said why: a
+        prompt without its turn or words, a client's own notice, or Codex asking the model for suggestions."""
+        if self._hook.host == "workbuddy":
+            prompt = payload.get("prompt")
+            if type(prompt) is not str:
+                self._hook.note("missing_prompt", gaps=("capability_gap:missing_prompt",))
+                return None
+            # Only the person's words are stored and recalled for, never what WorkBuddy wraps around them.
+            prompt = workbuddy_person_text(prompt)
+            notice = is_workbuddy_notice(prompt)
+            # A turn is kept for a notice too, so that the reply to it is stored under a turn of its own.
+            turn_id, gaps = (
+                open_turn(
+                    self._hook.config, session_id, payload, None if notice else prompt, self._hook.clock.utc_now()
+                ),
+                (),
+            )
+        else:
+            turn_id, gaps = turn_id_from_payload(payload, required=True, field=TURN_FIELD[self._hook.host])
+            if turn_id is None:
+                self._hook.note("missing_turn_id", gaps=gaps)
+                return None
+            prompt = payload.get("prompt")
+            if type(prompt) is not str:
+                self._hook.note("missing_prompt", gaps=(*gaps, "capability_gap:missing_prompt"))
+                return None
+            notice = self._hook.host == "claude-code" and is_task_notification(prompt)
+        if notice:
+            # Claude Code's own notice that a background task finished: recorded as the owner's words it
+            # became a message they never wrote, and a recall on it answers nothing they asked.  WorkBuddy
+            # hands its model the same notice (its ``BackgroundTaskNotifier``), and a Stop hook's or a goal's
+            # request to go on.
+            self._hook.note("task_notification")
+            return None
+        if self._hook.host == "codex" and is_codex_suggestions_prompt(prompt):
+            # Codex asking the model what the owner might do next, through the hook a message comes by: not their
+            # words, and nothing for a recall to answer.  The thread is marked, so that its later hooks, each a
+            # process of its own, keep the rest of it out too.
+            mark_suggestions_thread(self._hook.config, session_id)
+            self._hook.note("host_generated_prompt")
+            return None
+        if self._hook.host == "codex":
+            # The owner speaking in a marked thread makes the rest of it theirs.
+            in_suggestions_thread(self._hook.config, session_id, ended=True)
+        return turn_id, prompt, gaps
 
     def stop(self, session_id: str, audience, payload: dict[str, Any], deadline: float) -> dict[str, Any]:
         if self._hook.host == "dsh" and type(payload.get("last_assistant_message")) is not str:

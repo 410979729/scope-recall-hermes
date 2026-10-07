@@ -340,16 +340,7 @@
   },
   "adapters/clients/handler.py": {
    "BLE001": 2,
-   "C901": {
-    "CodexHookHandler.handle_payload": 17
-   },
    "I001": 1,
-   "PLR0911": {
-    "CodexHookHandler.handle_payload": 11
-   },
-   "PLR0912": {
-    "CodexHookHandler.handle_payload": 16
-   },
    "UP017": 1,
    "UP035": 1,
    "UP037": 2
