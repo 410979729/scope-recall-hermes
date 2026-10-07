@@ -108,15 +108,17 @@ build_py = "packaging_hooks.v11_build.AllowlistedBuildPy"
 ]
 
 [tool.ruff]
-# tests/ keeps pytest's fixture-import pattern (an imported fixture reads as
-# unused, then as redefined) and probes/ is one-statement-per-semicolon
-# operator scratch; neither ships.  A file named on the command line is still
-# linted, which is how a new test file is kept clean.
-extend-exclude = [".hermes-agent-src", "tests", "probes"]
+line-length = 120
+# probes/ is one-statement-per-semicolon operator scratch and does not ship.
+extend-exclude = [".hermes-agent-src", "probes"]
 
 [tool.ruff.lint]
 # Preserve Ruff <=0.15's explicit default contract across the 0.16 default-rule expansion.
 select = ["E4", "E7", "E9", "F"]
+# tests/ keeps pytest's fixture-import pattern (an imported fixture reads as
+# unused, then as redefined).  A file named on the command line is still
+# linted, which is how a new test file is kept clean.
+exclude = ["tests/**"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]
