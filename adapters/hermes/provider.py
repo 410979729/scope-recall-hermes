@@ -13,16 +13,13 @@ import threading
 import time
 from typing import Any, Dict, List, Optional
 
-from scope_recall.contracts import ContractError, RecallRequest
+from scope_recall.contracts import ContractError
 from scope_recall.core import CoreConfig, MemoryCore
-from scope_recall.core.retrieval import AUTOMATIC_PACKET_BUDGET_UNITS
-from ..runtime_wiring import render_host_recall_context
 
 from .boundary import (
     SourceIdentity,
     SourceObservationLedger,
 )
-from .gating import is_trivial_prompt
 from .identity import (
     HermesIdentity,
     HermesIdentityError,
@@ -39,8 +36,9 @@ from .runtime_wiring import GAP_WORKER_LAUNCH_FAILED, HermesHostRuntime, Trusted
 from .worker import AdapterWorker
 from .capture import CAPTURE_TIMEOUT_S, GAP_CURRENT_SOURCE_REFS_LIMIT, CaptureWriter, label
 from .capture_retry import SHUTDOWN_RETRY_SECONDS, CaptureRetry
+from .prefetch import Prefetch
 from .turn_capture import TurnCapture
-from .tool_surface import HermesToolSurface, display_zone
+from .tool_surface import HermesToolSurface
 
 _log = logging.getLogger(__name__)
 
@@ -48,9 +46,6 @@ _log = logging.getLogger(__name__)
 #: 1.4-4.4 s on the shared store (2026-10-03), past its own ``CAPTURE_TIMEOUT_S`` budget; 10 s covers that.
 _CAPTURE_DRAIN_WAIT_S = 10.0
 _BOUNDED_MESSAGE_SCAN = 8
-#: How long a prefetch waits for its session's state.  Hermes gives the whole prefetch 8 s and goes on without it,
-#: and an automatic recall takes up to 5.
-_PREFETCH_STATE_WAIT_S = 2.0
 
 
 def _serialized_host_event(method):
@@ -157,6 +152,7 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
         self._retry = CaptureRetry(self)
         self._writer = CaptureWriter(self)
         self._turns = TurnCapture(self)
+        self._prefetch = Prefetch(self)
         self._diagnostics = AdapterDiagnostics()
         #: What the last worker launch attempt added to capability_gaps.
         self._worker_launch_gaps: tuple[str, ...] = ()
@@ -386,19 +382,6 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
         identity = self._require_identity()
         return session_id or identity.session_id
 
-    def _recall_request(self, query: str, session_id: str) -> RecallRequest:
-        self._require_identity()
-        request_id = f"hermes-prefetch:{session_id}:{self._turn_counter}"
-        payload: RecallRequest = {
-            "protocol_version": "1.1",
-            "request_id": request_id[:100],
-            "query": query,
-            "mode": "auto",
-            "max_items": 6,
-            "budget_tokens": AUTOMATIC_PACKET_BUDGET_UNITS,
-        }
-        return payload
-
     def _merge_gaps(self, *groups: tuple[str, ...]) -> None:
         values = list(self._diagnostics.pending_outcome_gaps)
         for group in groups:
@@ -451,56 +434,8 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
             self._replace_worker_launch_gaps(gaps)
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
-        """Read the turn's state under the lock, recall without it.
-
-        Hermes gives a prefetch 8 s and goes on with the turn while the call keeps running.  Held through the recall,
-        the lock kept the turn's tool hooks waiting behind it past Hermes' 30 s hook timeout (tianji 2026-09-26,
-        tianxuan 2026-09-30: the same session's prefetch timed out 48 s and 33 s before).  Nothing of the turn is
-        written meanwhile: its message was stored before, its tools run after.
-        """
-        if not self._lock.acquire(timeout=_PREFETCH_STATE_WAIT_S):
-            self._session_busy("prefetch")
-            return ""
-        try:
-            identity = self._require_identity()
-            effective_session = self._effective_session_id(session_id)
-            if is_trivial_prompt(query):
-                return ""
-            if not identity.runtime_audience.allowed_scope_ids:
-                self._diagnostics.capability_gaps = identity.runtime_audience.capability_gaps
-                return ""
-            if self._current_source_refs_overflow:
-                # The overflow already reported its gap; an unfenced recall could
-                # inject this turn's own sources back as memory.
-                return ""
-            recent = (self._current_task_message,) if self._current_task_message else ()
-            context = identity.trusted_context(session_id=effective_session, recent_messages=recent)
-            current_refs = tuple(self._current_source_refs)
-            request = self._recall_request(query, effective_session)
-            core = self._require_core()
-            turn = self._active_turn_id
-        finally:
-            self._lock.release()
-        packet = core.recall_packet(
-            context,
-            request,
-            current_source_refs=current_refs,
-            # A day the message names is read in the zone this profile tells its model, as its memories' times are.
-            zone=display_zone(),
-        )
-        preparation = core.prepare_recall_render(context, packet)
-        with self._lock:
-            if self._active_turn_id == turn:
-                # A turn begun meanwhile, after Hermes gave up on this call, keeps its own state.
-                self._diagnostics.last_prefetch_request_id = packet["request_id"]
-                self._diagnostics.last_render_ref = preparation.render_ref
-                self._pre_llm_pending = False
-        return render_host_recall_context(
-            preparation.canonical_text,
-            context=preparation.context,
-            entry=(identity.entry_id, identity.manifest.entry_name) if identity.entry_id is not None else None,
-            zone=display_zone(),
-        )
+        """The turn's automatic recall (``Prefetch.recall``)."""
+        return self._prefetch.recall(query, session_id=session_id)
 
     def queue_prefetch(self, query: str, *, session_id: str = "") -> None:
         return None

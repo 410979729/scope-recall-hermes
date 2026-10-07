@@ -57,6 +57,7 @@
     "adapters/hermes/identity.py",
     "adapters/hermes/installation.py",
     "adapters/hermes/outcomes.py",
+    "adapters/hermes/prefetch.py",
     "adapters/hermes/protocol.py",
     "adapters/hermes/provider.py",
     "adapters/hermes/register.py",

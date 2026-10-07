@@ -12,6 +12,7 @@ import pytest
 
 from scope_recall.adapters.hermes import ScopeRecallHermesAdapter, install_hermes_scope_recall
 from scope_recall.adapters.hermes import hooks, provider as provider_module
+from scope_recall.adapters.hermes import prefetch as prefetch_module
 from scope_recall.adapters.hermes import capture_retry
 from scope_recall.adapters.hermes import capture
 from scope_recall.adapters.hermes.hooks import (
@@ -647,7 +648,7 @@ def test_a_switch_during_a_tool_results_write_keeps_its_session_and_audience(ada
 
 def test_prefetch_does_not_wait_out_its_busy_session(adapter, monkeypatch):
     provider, _clock = adapter
-    monkeypatch.setattr(provider_module, "_PREFETCH_STATE_WAIT_S", 0.05, raising=False)
+    monkeypatch.setattr(prefetch_module, "_PREFETCH_STATE_WAIT_S", 0.05)
     entered, release, first, first_thread = _held_message(provider, monkeypatch)
     _register_adapter_instance(provider)
     try:
