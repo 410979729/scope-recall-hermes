@@ -12,6 +12,10 @@ All notable changes to `scope-recall` will be documented in this file.
 
 - **Gemini accepts Hermes's memory tools.** `revise` declared its new value as any type, an array among them without `items`, and Gemini refuses a request when any tool it carries does: through Hermes's own Gemini client every request with the tools failed with HTTP 400. The new value is now declared as what the core takes: the new value's text, an object of the fact's fields, or null to withdraw it. The core refused a number, true or false and a list anyway.
 
+### Tests
+
+- The storage tier runs a known-answer check of three memory invariants on a fresh synthetic store: a fact needs a person's source and a worker pass, revise and forget need the person's own request in the same session naming the exact version, and nothing forgotten comes back, also after the vector companion is rebuilt. It also runs on its own against an installed release (`tests/known_answer/`, #213, by @Adam13y).
+
 ### Upgrading from 3.8.1
 
 Install the package, run `plan-install` and `apply-install` where you upgrade, then restart the Hermes gateways. The schema is unchanged (1110).
