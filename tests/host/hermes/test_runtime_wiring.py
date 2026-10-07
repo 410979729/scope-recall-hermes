@@ -163,7 +163,7 @@ def test_a_gateway_starts_its_vector_helper_when_it_first_binds(hermes_home, ini
 
 @pytest.mark.skipif(sys.platform != "win32", reason="LanceDB runs in a helper process on Windows only")
 def test_the_vector_helper_is_started_only_for_a_runtime_with_vectors(monkeypatch):
-    from scope_recall.adapters.hermes import provider as provider_module
+    from scope_recall.adapters.hermes import session_binding
     from scope_recall.vector import process_store
 
     started = []
@@ -172,9 +172,9 @@ def test_the_vector_helper_is_started_only_for_a_runtime_with_vectors(monkeypatc
     def host(vector):
         return SimpleNamespace(runtime=SimpleNamespace(config=SimpleNamespace(vector=vector)))
 
-    provider_module._start_vector_helper(host(object()))
-    provider_module._start_vector_helper(host(None))
-    provider_module._start_vector_helper(SimpleNamespace(runtime=None))
+    session_binding._start_vector_helper(host(object()))
+    session_binding._start_vector_helper(host(None))
+    session_binding._start_vector_helper(SimpleNamespace(runtime=None))
     assert started == [True]
 
 

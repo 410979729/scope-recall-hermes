@@ -149,8 +149,8 @@ def prestart() -> None:
     starts, the import runs while the message is stored and the words are searched.  A server that runs on starts
     one for the store all its runtimes share (``share``); it kept a spare as well, replaced each time one was taken,
     about 0.55 GB of committed memory idle once the shared store holds its helper (3.4.9).  A Hermes gateway asks for
-    one each time it binds an agent (adapters/hermes/provider.py ``_start_vector_helper``); once the store its runtimes
-    share holds its helper, that spare would never be taken, and none is started.
+    one each time it binds an agent (adapters/hermes/session_binding.py ``_start_vector_helper``); once the store its
+    runtimes share holds its helper, that spare would never be taken, and none is started.
     """
     global _spare
     if _sharing and _a_shared_store_holds_a_helper():

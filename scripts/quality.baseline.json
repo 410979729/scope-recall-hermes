@@ -479,12 +479,14 @@
    "I001": 1,
    "UP006": 10,
    "UP017": 1,
-   "UP031": 1,
    "UP035": 2,
    "UP045": 1
   },
   "adapters/hermes/runtime_wiring.py": {
    "I001": 1
+  },
+  "adapters/hermes/session_binding.py": {
+   "UP031": 1
   },
   "adapters/hermes/tool_surface.py": {
    "E501": 1,

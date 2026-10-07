@@ -8,35 +8,26 @@ import inspect
 from functools import wraps
 import logging
 import sqlite3
-import sys
 import threading
 import time
 from typing import Any, Dict, List, Optional
 
 from scope_recall.contracts import ContractError
-from scope_recall.core import CoreConfig, MemoryCore
+from scope_recall.core import MemoryCore
 
 from .boundary import (
     SourceIdentity,
     SourceObservationLedger,
 )
-from .identity import (
-    HermesIdentity,
-    HermesIdentityError,
-    assert_same_installation,
-    bind_hermes_identity,
-    switch_hermes_identity,
-    unbound_session_hint,
-)
-from .audiences import LOCAL_PLATFORMS
-from .installation import assert_core_binding_matches
+from .identity import HermesIdentity, HermesIdentityError
 from .outcomes import TurnOutcomeTracker
 from .protocol import PublicMemoryProvider
-from .runtime_wiring import GAP_WORKER_LAUNCH_FAILED, HermesHostRuntime, TrustedHostRuntime, attach_trusted_host_runtime
+from .runtime_wiring import GAP_WORKER_LAUNCH_FAILED, HermesHostRuntime, TrustedHostRuntime
 from .worker import AdapterWorker
 from .capture import CAPTURE_TIMEOUT_S, GAP_CURRENT_SOURCE_REFS_LIMIT, CaptureWriter, label
 from .capture_retry import SHUTDOWN_RETRY_SECONDS, CaptureRetry
 from .prefetch import Prefetch
+from .session_binding import SessionBinding
 from .turn_capture import TurnCapture
 from .tool_surface import HermesToolSurface
 
@@ -55,24 +46,6 @@ def _serialized_host_event(method):
             return method(self, *args, **kwargs)
 
     return guarded
-
-
-def _start_vector_helper(host_runtime) -> None:
-    """Start the vector search's helper when a gateway first binds (``vector.process_store.prestart``).
-
-    The first search opened it then, and its LanceDB import (about 2 s) could outrun that recall's budget: a probe
-    run as a gateway's first turn after a start came back without its vector search (``helper_open_deadline``).
-    """
-    runtime = getattr(host_runtime, "runtime", None)
-    if sys.platform != "win32" or runtime is None or runtime.config.vector is None:
-        return
-    try:
-        from ...vector.process_store import prestart
-
-        prestart()
-    except OSError as exc:
-        # The first search starts its own helper, as before: slower, never a reason not to bind.
-        _log.warning("could not start a vector helper ahead: %s", type(exc).__name__)
 
 
 def _memory_provider_base():
@@ -153,11 +126,10 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
         self._writer = CaptureWriter(self)
         self._turns = TurnCapture(self)
         self._prefetch = Prefetch(self)
+        self._binding = SessionBinding(self)
         self._diagnostics = AdapterDiagnostics()
         #: What the last worker launch attempt added to capability_gaps.
         self._worker_launch_gaps: tuple[str, ...] = ()
-        #: The route this session last reported as bound to no scope; a session switch on it is not reported again.
-        self._unbound_route: tuple[str, ...] | None = None
         self._initialized = False
         #: Which call holds ``_lock``, since when, on which thread: read without the lock, to say what a call that
         #: could not wait was waiting for.
@@ -273,93 +245,8 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
         return "scope-recall installation manifest or database is unavailable"
 
     def initialize(self, session_id: str, **kwargs) -> None:
-        fresh = bind_hermes_identity(session_id, **kwargs)
-        with self._lock:
-            assert_same_installation(self._identity, fresh)
-            runtime_path = kwargs.get("trusted_runtime_config_path") or fresh.runtime_config_path
-            if self._host_runtime is None:
-                self._host_runtime = attach_trusted_host_runtime(
-                    config_path=runtime_path,
-                    expected_binding=fresh.binding,
-                    session_id=fresh.session_id,
-                    allowed_scope_ids=fresh.writable_scope_ids,
-                    core=self._core,
-                    clock=self._clock,
-                )
-                _start_vector_helper(self._host_runtime)
-            else:
-                self._host_runtime.rebind_session(
-                    fresh.session_id,
-                    fresh.writable_scope_ids,
-                )
-            self._core = self._host_runtime.core
-            if self._core is None:
-                self._core = MemoryCore(CoreConfig(fresh.binding), clock=self._clock)
-            else:
-                assert_core_binding_matches(self._core, fresh.binding)
-            # An unknown or unconfigured audience is a valid fail-closed
-            # capability state: initialize succeeds so the host can report
-            # the gap, while no Core read/write is attempted.
-            if fresh.runtime_audience.allowed_scope_ids:
-                self._core.status(fresh.trusted_context())
-            self._identity = fresh
-            self._ledger.reset()
-            self._turn_counter = 0
-            self._active_turn_id = ""
-            self._pre_llm_pending = False
-            with self._said_lock:
-                self._interim_said.clear()
-                self._steer_said.clear()
-                self._notice_turns.clear()
-            self._user_captured_turns.clear()
-            self._session_watermark = 0
-            self._reset_current_source_refs()
-            self._current_task_message = ""
-            # The buffer stays: each capture keeps the session, actor and scope it was said in, and is written under
-            # its own scope's grant (``_retry_pass``).  Cleared here, a session started again in this adapter dropped
-            # tool results that had only met a busy store.
-            self._diagnostics.capability_gaps = tuple(
-                dict.fromkeys((*fresh.runtime_audience.capability_gaps, *self._host_runtime.capability_gaps))
-            )
-            self._worker_launch_gaps = ()
-            self._initialized = True
-            self._unbound_route = None
-            self._say_if_unbound(fresh)
-            from .hooks import update_adapter_binding
-
-            update_adapter_binding(self)
-
-    def _say_if_unbound(self, identity: HermesIdentity) -> None:
-        """Say once per session, in the host's log, that a desktop or tui session binds no scope (#175).
-
-        Such a session fails closed: nothing in it is captured or recalled.  Hermes reads none of this
-        adapter's diagnostics, so without this line a Desktop login's sessions wrote nothing for days and
-        nothing said so.  A gateway chat left unmapped is the owner's choice and says nothing, as before: a line
-        for each would name its users, some by phone number (review of 3.4.10).  The platform, the login and the
-        gap codes only, never what was said, and nothing a login could make into a line of its own.
-        """
-        scope = identity.scope
-        if (
-            scope.platform not in LOCAL_PLATFORMS
-            or scope.agent_context != "primary"
-            or identity.runtime_audience.allowed_scope_ids
-        ):
-            self._unbound_route = None
-            return
-        route = (scope.platform, scope.user_id, scope.chat_type, scope.chat_id, scope.thread_id, scope.agent_workspace)
-        if route == self._unbound_route:
-            return
-        self._unbound_route = route
-        said = (
-            "scope-recall: session bound to no memory scope: a %s session for %s (%s); nothing in it is "
-            "captured or recalled; %s"
-        ) % (
-            scope.platform,
-            scope.user_id[:120],
-            ", ".join(identity.runtime_audience.capability_gaps),
-            unbound_session_hint(scope),
-        )
-        _log.warning("%s", "".join(character for character in said if character.isprintable()))
+        """Bind the session Hermes opens (``SessionBinding.bind``)."""
+        self._binding.bind(session_id, **kwargs)
 
     def _require_identity(self) -> HermesIdentity:
         if self._identity is None or not self._initialized:
@@ -530,42 +417,10 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
         rewound: bool = False,
         **kwargs,
     ) -> None:
-        identity = self._require_identity()
-        fresh = switch_hermes_identity(identity, new_session_id, parent_session_id=parent_session_id, **kwargs)
-        self._outcomes.reset_session(identity.session_id)
-        self._ledger.reset()
-        self._reset_current_source_refs()
-        # A compression gives the conversation a new session id in the middle of a turn, and the turn goes on:
-        # its id and what it said on the way stay, or its post_llm_call no longer matched the turn and what it
-        # said between tool calls, and what the person sent meanwhile, was never recorded.
-        if reset or kwargs.get("reason") != "compression":
-            self._current_task_message = ""
-            self._pre_llm_pending = False
-            with self._said_lock:
-                # With the turn id cleared under the same lock, a post_llm_call of the old session that arrives
-                # late finds no turn to keep its copy for.
-                self._active_turn_id = ""
-                self._interim_said.clear()
-                self._steer_said.clear()
-                self._notice_turns.clear()
-            self._user_captured_turns.clear()
-        self._identity = fresh
-        runtime_audience = fresh.runtime_audience
-        self._diagnostics.capability_gaps = tuple(
-            dict.fromkeys(
-                (*runtime_audience.capability_gaps, *(self._host_runtime.capability_gaps if self._host_runtime else ()))
-            )
+        """Speak for the session Hermes switched to (``SessionBinding.switch``)."""
+        self._binding.switch(
+            new_session_id, parent_session_id=parent_session_id, reset=reset, rewound=rewound, **kwargs
         )
-        self._worker_launch_gaps = ()
-        self._say_if_unbound(fresh)
-        if self._host_runtime is not None:
-            self._host_runtime.rebind_session(new_session_id, fresh.writable_scope_ids)
-        from .hooks import update_adapter_binding
-
-        update_adapter_binding(self)
-        if reset:
-            self._turn_counter = 0
-        self._session_watermark += 1
 
     @_serialized_host_event
     def on_pre_compress(self, messages: List[Dict[str, Any]], **kwargs) -> str:
