@@ -10,7 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from ..contracts import ContractError, TrustedContext
 from .delete_storage import OBJECT_TABLES, DeleteTarget, canonical, purge_work_ref
@@ -120,10 +120,9 @@ def begin_restore(storage, authority: InstallationMaintenance, *, expected_ledge
             os.fsync(stream.fileno())
 
 
-def replay_deletion_ledger(
-    storage, authority: InstallationMaintenance, ledger, *, remaining_seconds: float = 10.0
-) -> dict:
-    context = _maintenance_context(storage, authority)
+def _restore_checkpoint(storage, context, ledger):
+    """The pending restore's marker and the ledger's checkpoint epoch, once the marker, the ledger and this
+    installation agree."""
     marker = storage.binding.data_directory / "restore-required.json"
     if marker.is_symlink() or not marker.is_file() or marker.stat().st_size > 4096:
         raise ContractError("RESTORE_UNVERIFIED", "checkpoint_missing")
@@ -153,6 +152,221 @@ def replay_deletion_ledger(
     checkpoint_epoch = ledger.get("memory_epoch")
     if type(checkpoint_epoch) is not int or not 0 <= checkpoint_epoch < 9223372036854775807:
         raise ContractError("RESTORE_UNVERIFIED", "ledger_epoch")
+    return marker, checkpoint_epoch
+
+
+def _replay_operation(tx, conn, context, entry, checkpoint_epoch) -> int:
+    """Replay one deletion operation of the ledger: the operation, its members' tombstones and, for a delete, the
+    purge.  Returns how many objects it names."""
+    row = entry["operation"]
+    fields = tuple(row)
+    allowed_fields = {
+        "operation_id",
+        "request_sha256",
+        "mode",
+        "scope_ids_json",
+        "project_id",
+        "branch_id",
+        "requested_refs_json",
+        "expected_revisions_json",
+        "created_at",
+        "memory_epoch",
+        "layers_json",
+        "active_content_removed",
+    }
+    if (
+        set(fields) != allowed_fields
+        or row["mode"] not in {"delete", "suppress"}
+        or not set(json.loads(row["scope_ids_json"])) <= context.allowed_scope_ids
+    ):
+        raise ContractError("RESTORE_UNVERIFIED", "operation_shape")
+    if type(row["memory_epoch"]) is not int or not 0 <= row["memory_epoch"] <= checkpoint_epoch:
+        raise ContractError("RESTORE_UNVERIFIED", "operation_epoch")
+    # The latest ledger's physical-erasure status is not evidence about
+    # this older file. Replayed deletion starts physical cleanup again.
+    row = dict(row)
+    layers = json.loads(row["layers_json"])
+    if row["mode"] == "delete":
+        layers.update(
+            sqlite_active="pending",
+            sqlite_history="maintenance_pending",
+            vector_active="inventory_pending",
+            vector_history="inventory_pending",
+            attachments="inventory_pending",
+        )
+    row.update(active_content_removed=0, layers_json=canonical(layers))
+    conn.execute(
+        f"INSERT INTO deletion_operations({','.join(fields)}) VALUES ({','.join('?' for _ in fields)}) ON CONFLICT(operation_id) DO NOTHING",
+        tuple(row[f] for f in fields),
+    )
+    if row["mode"] == "delete":
+        conn.execute(
+            "UPDATE deletion_operations SET active_content_removed=0,layers_json=? WHERE operation_id=?",
+            (row["layers_json"], row["operation_id"]),
+        )
+    targets = []
+    for member in entry["members"]:
+        if member["scope_id"] not in context.allowed_scope_ids or member["object_kind"] not in OBJECT_TABLES:
+            raise ContractError("RESTORE_UNVERIFIED", "member_scope")
+        targets.append(
+            DeleteTarget(
+                member["object_kind"],
+                member["object_ref"],
+                1,
+                member["scope_id"],
+                member["project_id"],
+                member["branch_id"],
+            )
+        )
+    # Tombstones are applied even to objects not yet present in the old
+    # snapshot, so a later replay cannot resurrect them.
+    tx.deletions.apply_blocks(row["operation_id"], targets, delete=row["mode"] == "delete")
+    if row["mode"] == "delete":
+        _replay_purge(tx, conn, context, row)
+    return len(targets)
+
+
+def _replay_purge(tx, conn, context, row) -> None:
+    """Purge a replayed delete's rows and queue its physical cleanup again, in each of its scopes."""
+    # Purge method checks the operation's owning project; use a
+    # context restricted to that actual project during replay.
+    previous_context = tx.context
+    try:
+        tx.context = replace(context, project_id=row["project_id"], branch_id=row["branch_id"])
+        tx.deletions.purge_sqlite(row["operation_id"])
+        # An older snapshot may predate the purge work itself or
+        # contain a completed lease. Explicit restore creates a new
+        # physical cleanup obligation and fences old workers.
+        for scope in sorted(json.loads(row["scope_ids_json"])):
+            conn.execute(
+                """INSERT INTO work_items(
+                work_type,subject_ref,subject_revision,scope_id,project_id,branch_id,available_at)
+                VALUES ('purge',?,1,?,?,?,?)
+                ON CONFLICT(work_type,subject_ref,subject_revision) DO UPDATE SET
+                state='pending',attempt=0,available_at=excluded.available_at,
+                lease_token=work_items.lease_token+1,lease_owner=NULL,lease_until=NULL,last_error_code=NULL""",
+                (
+                    purge_work_ref(row["operation_id"], scope),
+                    scope,
+                    row["project_id"],
+                    row["branch_id"],
+                    row["created_at"],
+                ),
+            )
+    finally:
+        tx.context = previous_context
+
+
+def _replay_source_group(conn, context, group) -> None:
+    """Replay one source group's read and suppression blocks; a block only ever grows."""
+    if (
+        set(group)
+        != {"group_sha256", "scope_id", "project_id", "branch_id", "read_blocked", "suppressed", "operation_id"}
+        or group["scope_id"] not in context.allowed_scope_ids
+    ):
+        raise ContractError("RESTORE_UNVERIFIED", "source_group")
+    conn.execute(
+        """INSERT INTO source_group_blocks(group_sha256,scope_id,project_id,branch_id,read_blocked,suppressed,operation_id)
+        VALUES (?,?,?,?,?,?,?) ON CONFLICT(group_sha256) DO UPDATE SET
+        read_blocked=max(source_group_blocks.read_blocked,excluded.read_blocked),suppressed=max(source_group_blocks.suppressed,excluded.suppressed)""",
+        tuple(
+            group[k]
+            for k in (
+                "group_sha256",
+                "scope_id",
+                "project_id",
+                "branch_id",
+                "read_blocked",
+                "suppressed",
+                "operation_id",
+            )
+        ),
+    )
+
+
+def _replay_withdrawal(conn, context, ledger, withdrawal) -> None:
+    """Replay one withdrawn claim: its later revision when the restored file holds an older one, else a block on the
+    claim the file does not hold."""
+    if withdrawal["scope_id"] not in context.allowed_scope_ids:
+        raise ContractError("RESTORE_UNVERIFIED", "withdrawal_scope")
+    old = conn.execute(
+        """SELECT c.current_revision,v.payload_json FROM claims c JOIN claim_versions v
+        ON v.claim_id=c.claim_id AND v.revision=c.current_revision WHERE c.claim_id=? AND c.read_blocked=0""",
+        (withdrawal["claim_id"],),
+    ).fetchone()
+    if old is not None and old["current_revision"] < withdrawal["current_revision"]:
+        payload = json.loads(old["payload_json"])
+        if withdrawal["intention_state"] in {"cancelled", "completed", "expired"}:
+            if "intention" not in payload:
+                raise ContractError("RESTORE_UNVERIFIED", "intention_shape")
+            payload["intention"]["state"] = withdrawal["intention_state"]
+        conn.execute(
+            """INSERT INTO claim_versions(claim_id,revision,payload_json,state,basis,qualification_reason,
+            valid_from,valid_to,recorded_from,replaces_revision) VALUES (?,?,?,?,'unknown','restored_governance_ledger',?,?,?,?)""",
+            (
+                withdrawal["claim_id"],
+                withdrawal["current_revision"],
+                canonical(payload),
+                withdrawal["state"],
+                withdrawal["valid_from"],
+                withdrawal["valid_to"],
+                withdrawal["recorded_from"],
+                old["current_revision"],
+            ),
+        )
+        conn.execute(
+            "UPDATE claim_versions SET recorded_to=? WHERE claim_id=? AND revision=?",
+            (withdrawal["recorded_from"], withdrawal["claim_id"], old["current_revision"]),
+        )
+        conn.execute(
+            "UPDATE claims SET current_revision=? WHERE claim_id=?",
+            (withdrawal["current_revision"], withdrawal["claim_id"]),
+        )
+        conn.execute(
+            "UPDATE work_items SET state='obsolete',lease_token=lease_token+1 WHERE subject_ref=? AND state IN ('pending','leased')",
+            (withdrawal["claim_id"],),
+        )
+    elif old is None:
+        conn.execute(
+            """INSERT INTO restored_absence_blocks(object_kind,object_ref,scope_id,project_id,branch_id,checkpoint_sha256,reason)
+            VALUES ('claim',?,?,?,?,?,'governance_body_missing_from_snapshot') ON CONFLICT DO NOTHING""",
+            (
+                withdrawal["claim_id"],
+                withdrawal["scope_id"],
+                withdrawal["project_id"],
+                withdrawal["branch_id"],
+                ledger_digest(ledger),
+            ),
+        )
+
+
+def _replay_absence(conn, context, absent) -> None:
+    """Replay one block on an object the checkpoint says is absent."""
+    if absent["scope_id"] not in context.allowed_scope_ids or absent["object_kind"] != "claim":
+        raise ContractError("RESTORE_UNVERIFIED", "absent_scope")
+    conn.execute(
+        """INSERT INTO restored_absence_blocks(object_kind,object_ref,scope_id,project_id,branch_id,checkpoint_sha256,reason)
+        VALUES (?,?,?,?,?,?,?) ON CONFLICT DO NOTHING""",
+        tuple(
+            absent[k]
+            for k in (
+                "object_kind",
+                "object_ref",
+                "scope_id",
+                "project_id",
+                "branch_id",
+                "checkpoint_sha256",
+                "reason",
+            )
+        ),
+    )
+
+
+def replay_deletion_ledger(
+    storage, authority: InstallationMaintenance, ledger, *, remaining_seconds: float = 10.0
+) -> dict:
+    context = _maintenance_context(storage, authority)
+    marker, checkpoint_epoch = _restore_checkpoint(storage, context, ledger)
     count = 0
     with storage._transaction(context, writable=True, remaining_seconds=remaining_seconds, restoring=True) as tx:
         conn = tx._check(write=True)
@@ -165,195 +379,13 @@ def replay_deletion_ledger(
             "UPDATE work_items SET consolidation_offset=0 WHERE state IN ('pending','leased') AND work_type='consolidate'"
         )
         for entry in ledger["operations"]:
-            row = entry["operation"]
-            fields = tuple(row)
-            allowed_fields = {
-                "operation_id",
-                "request_sha256",
-                "mode",
-                "scope_ids_json",
-                "project_id",
-                "branch_id",
-                "requested_refs_json",
-                "expected_revisions_json",
-                "created_at",
-                "memory_epoch",
-                "layers_json",
-                "active_content_removed",
-            }
-            if (
-                set(fields) != allowed_fields
-                or row["mode"] not in {"delete", "suppress"}
-                or not set(json.loads(row["scope_ids_json"])) <= context.allowed_scope_ids
-            ):
-                raise ContractError("RESTORE_UNVERIFIED", "operation_shape")
-            if type(row["memory_epoch"]) is not int or not 0 <= row["memory_epoch"] <= checkpoint_epoch:
-                raise ContractError("RESTORE_UNVERIFIED", "operation_epoch")
-            # The latest ledger's physical-erasure status is not evidence about
-            # this older file. Replayed deletion starts physical cleanup again.
-            row = dict(row)
-            layers = json.loads(row["layers_json"])
-            if row["mode"] == "delete":
-                layers.update(
-                    sqlite_active="pending",
-                    sqlite_history="maintenance_pending",
-                    vector_active="inventory_pending",
-                    vector_history="inventory_pending",
-                    attachments="inventory_pending",
-                )
-            row.update(active_content_removed=0, layers_json=canonical(layers))
-            conn.execute(
-                f"INSERT INTO deletion_operations({','.join(fields)}) VALUES ({','.join('?' for _ in fields)}) ON CONFLICT(operation_id) DO NOTHING",
-                tuple(row[f] for f in fields),
-            )
-            if row["mode"] == "delete":
-                conn.execute(
-                    "UPDATE deletion_operations SET active_content_removed=0,layers_json=? WHERE operation_id=?",
-                    (row["layers_json"], row["operation_id"]),
-                )
-            targets = []
-            for member in entry["members"]:
-                if member["scope_id"] not in context.allowed_scope_ids or member["object_kind"] not in OBJECT_TABLES:
-                    raise ContractError("RESTORE_UNVERIFIED", "member_scope")
-                targets.append(
-                    DeleteTarget(
-                        member["object_kind"],
-                        member["object_ref"],
-                        1,
-                        member["scope_id"],
-                        member["project_id"],
-                        member["branch_id"],
-                    )
-                )
-            # Tombstones are applied even to objects not yet present in the old
-            # snapshot, so a later replay cannot resurrect them.
-            tx.deletions.apply_blocks(row["operation_id"], targets, delete=row["mode"] == "delete")
-            if row["mode"] == "delete":
-                # Purge method checks the operation's owning project; use a
-                # context restricted to that actual project during replay.
-                from dataclasses import replace
-
-                previous_context = tx.context
-                try:
-                    tx.context = replace(context, project_id=row["project_id"], branch_id=row["branch_id"])
-                    tx.deletions.purge_sqlite(row["operation_id"])
-                    # An older snapshot may predate the purge work itself or
-                    # contain a completed lease. Explicit restore creates a new
-                    # physical cleanup obligation and fences old workers.
-                    for scope in sorted(json.loads(row["scope_ids_json"])):
-                        conn.execute(
-                            """INSERT INTO work_items(
-                            work_type,subject_ref,subject_revision,scope_id,project_id,branch_id,available_at)
-                            VALUES ('purge',?,1,?,?,?,?)
-                            ON CONFLICT(work_type,subject_ref,subject_revision) DO UPDATE SET
-                            state='pending',attempt=0,available_at=excluded.available_at,
-                            lease_token=work_items.lease_token+1,lease_owner=NULL,lease_until=NULL,last_error_code=NULL""",
-                            (
-                                purge_work_ref(row["operation_id"], scope),
-                                scope,
-                                row["project_id"],
-                                row["branch_id"],
-                                row["created_at"],
-                            ),
-                        )
-                finally:
-                    tx.context = previous_context
-            count += len(targets)
+            count += _replay_operation(tx, conn, context, entry, checkpoint_epoch)
         for group in ledger["source_groups"]:
-            if (
-                set(group)
-                != {"group_sha256", "scope_id", "project_id", "branch_id", "read_blocked", "suppressed", "operation_id"}
-                or group["scope_id"] not in context.allowed_scope_ids
-            ):
-                raise ContractError("RESTORE_UNVERIFIED", "source_group")
-            conn.execute(
-                """INSERT INTO source_group_blocks(group_sha256,scope_id,project_id,branch_id,read_blocked,suppressed,operation_id)
-                VALUES (?,?,?,?,?,?,?) ON CONFLICT(group_sha256) DO UPDATE SET
-                read_blocked=max(source_group_blocks.read_blocked,excluded.read_blocked),suppressed=max(source_group_blocks.suppressed,excluded.suppressed)""",
-                tuple(
-                    group[k]
-                    for k in (
-                        "group_sha256",
-                        "scope_id",
-                        "project_id",
-                        "branch_id",
-                        "read_blocked",
-                        "suppressed",
-                        "operation_id",
-                    )
-                ),
-            )
+            _replay_source_group(conn, context, group)
         for withdrawal in ledger["withdrawals"]:
-            if withdrawal["scope_id"] not in context.allowed_scope_ids:
-                raise ContractError("RESTORE_UNVERIFIED", "withdrawal_scope")
-            old = conn.execute(
-                """SELECT c.current_revision,v.payload_json FROM claims c JOIN claim_versions v
-                ON v.claim_id=c.claim_id AND v.revision=c.current_revision WHERE c.claim_id=? AND c.read_blocked=0""",
-                (withdrawal["claim_id"],),
-            ).fetchone()
-            if old is not None and old["current_revision"] < withdrawal["current_revision"]:
-                payload = json.loads(old["payload_json"])
-                if withdrawal["intention_state"] in {"cancelled", "completed", "expired"}:
-                    if "intention" not in payload:
-                        raise ContractError("RESTORE_UNVERIFIED", "intention_shape")
-                    payload["intention"]["state"] = withdrawal["intention_state"]
-                conn.execute(
-                    """INSERT INTO claim_versions(claim_id,revision,payload_json,state,basis,qualification_reason,
-                    valid_from,valid_to,recorded_from,replaces_revision) VALUES (?,?,?,?,'unknown','restored_governance_ledger',?,?,?,?)""",
-                    (
-                        withdrawal["claim_id"],
-                        withdrawal["current_revision"],
-                        canonical(payload),
-                        withdrawal["state"],
-                        withdrawal["valid_from"],
-                        withdrawal["valid_to"],
-                        withdrawal["recorded_from"],
-                        old["current_revision"],
-                    ),
-                )
-                conn.execute(
-                    "UPDATE claim_versions SET recorded_to=? WHERE claim_id=? AND revision=?",
-                    (withdrawal["recorded_from"], withdrawal["claim_id"], old["current_revision"]),
-                )
-                conn.execute(
-                    "UPDATE claims SET current_revision=? WHERE claim_id=?",
-                    (withdrawal["current_revision"], withdrawal["claim_id"]),
-                )
-                conn.execute(
-                    "UPDATE work_items SET state='obsolete',lease_token=lease_token+1 WHERE subject_ref=? AND state IN ('pending','leased')",
-                    (withdrawal["claim_id"],),
-                )
-            elif old is None:
-                conn.execute(
-                    """INSERT INTO restored_absence_blocks(object_kind,object_ref,scope_id,project_id,branch_id,checkpoint_sha256,reason)
-                    VALUES ('claim',?,?,?,?,?,'governance_body_missing_from_snapshot') ON CONFLICT DO NOTHING""",
-                    (
-                        withdrawal["claim_id"],
-                        withdrawal["scope_id"],
-                        withdrawal["project_id"],
-                        withdrawal["branch_id"],
-                        ledger_digest(ledger),
-                    ),
-                )
+            _replay_withdrawal(conn, context, ledger, withdrawal)
         for absent in ledger["absent_objects"]:
-            if absent["scope_id"] not in context.allowed_scope_ids or absent["object_kind"] != "claim":
-                raise ContractError("RESTORE_UNVERIFIED", "absent_scope")
-            conn.execute(
-                """INSERT INTO restored_absence_blocks(object_kind,object_ref,scope_id,project_id,branch_id,checkpoint_sha256,reason)
-                VALUES (?,?,?,?,?,?,?) ON CONFLICT DO NOTHING""",
-                tuple(
-                    absent[k]
-                    for k in (
-                        "object_kind",
-                        "object_ref",
-                        "scope_id",
-                        "project_id",
-                        "branch_id",
-                        "checkpoint_sha256",
-                        "reason",
-                    )
-                ),
-            )
+            _replay_absence(conn, context, absent)
         # Restoring an older file must never reuse a previously released cache
         # epoch. The independently obtained latest checkpoint is the floor.
         conn.execute(
