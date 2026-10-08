@@ -22,7 +22,8 @@ from typing import Any, Mapping
 from scope_recall.contracts import InstanceBinding
 from scope_recall.core import CoreConfig, MemoryCore
 from scope_recall.core.recall_budget import canonical_render_json
-from scope_recall.runtime.instance import RuntimeInstance, RuntimeInstanceConfig, build_runtime_instance
+from scope_recall.runtime.instance import RuntimeInstance, build_runtime_instance
+from scope_recall.runtime.instance_config import RuntimeInstanceConfig
 from scope_recall.runtime.worker_entry import load_config
 from scope_recall.runtime.worker_launch import EPHEMERAL_CONFIG_INFIX, RUNTIME_CONFIG_FILENAME
 

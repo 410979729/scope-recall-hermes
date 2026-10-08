@@ -1580,7 +1580,8 @@ def test_model_work_is_claimed_only_while_the_pass_covers_one_bounded_request(wo
 
 def test_runtime_drain_reserves_its_own_request_bound(worker_app):
     from scope_recall.core.worker import FINALIZE_MARGIN_SECONDS
-    from scope_recall.runtime.instance import RuntimeInstance, RuntimeInstanceConfig
+    from scope_recall.runtime.instance import RuntimeInstance
+    from scope_recall.runtime.instance_config import RuntimeInstanceConfig
 
     core, ctx, _clock = worker_app
     capture(core, ctx, "TEST 运行时请求上限。")

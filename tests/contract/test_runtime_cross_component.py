@@ -8,7 +8,8 @@ from datetime import datetime, timedelta
 
 import pytest
 from scope_recall.core.claims import Qualification
-from scope_recall.runtime.instance import RuntimeInstance, RuntimeInstanceConfig
+from scope_recall.runtime.instance import RuntimeInstance
+from scope_recall.runtime.instance_config import RuntimeInstanceConfig
 from test_candidate_lifecycle import Evaluator, _candidate, _candidate_rows, _finish_source_work
 from test_claims import accept, capture, draft
 from test_claims import app as app

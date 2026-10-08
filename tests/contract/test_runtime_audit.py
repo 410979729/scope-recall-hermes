@@ -19,7 +19,8 @@ from scope_recall.core.file_lock import advisory_file_lock
 from scope_recall.core.worker_outcomes import model_exception_outcome
 from scope_recall.runtime import worker_entry
 from scope_recall.runtime.auxiliary import build_auxiliary_runtime
-from scope_recall.runtime.instance import RuntimeInstanceConfig, build_runtime_instance
+from scope_recall.runtime.instance import build_runtime_instance
+from scope_recall.runtime.instance_config import RuntimeInstanceConfig
 from scope_recall.runtime.models import AuxiliaryModelError
 from test_runtime_auxiliary import FakeTransport, _runtime_config
 from test_runtime_worker_entry import _binding, _config_payload, _write_config

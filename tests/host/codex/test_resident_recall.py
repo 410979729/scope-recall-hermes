@@ -291,7 +291,7 @@ def test_the_entry_s_runtime_config_names_its_resident_minutes_else_the_client_s
 
 
 def test_the_runtime_config_bounds_resident_minutes():
-    from scope_recall.runtime.instance import RESIDENT_RECALL_MINUTES_BOUNDS
+    from scope_recall.runtime.instance_config import RESIDENT_RECALL_MINUTES_BOUNDS
 
     assert RESIDENT_RECALL_MINUTES_BOUNDS == (0, 1440)
     assert local_endpoint.RESIDENT_DEFAULT_MINUTES == {"workbuddy": 120, "dsh": 120}

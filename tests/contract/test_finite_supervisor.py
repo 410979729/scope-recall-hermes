@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 from scope_recall.contracts import InstanceBinding, TrustedContext
 from scope_recall.core import CoreConfig, MemoryCore
-from scope_recall.runtime.instance import RuntimeInstanceConfig
+from scope_recall.runtime.instance_config import RuntimeInstanceConfig
 from scope_recall.runtime.scheduling import SupervisorControl, next_wake, supervise
 from scope_recall.runtime.worker_entry import DAILY_COUNTER_MAX, _reserve_daily_work
 from v11_support import source_event

@@ -16,12 +16,8 @@ import pytest
 from scope_recall.contracts import InstanceBinding, TrustedContext
 from scope_recall.core.recall_policy import RecallPolicy
 from scope_recall.runtime.auxiliary import AuxiliaryRuntimeConfig
-from scope_recall.runtime.instance import (
-    RuntimeInstanceConfig,
-    VectorRuntimeConfig,
-    build_runtime_instance,
-    default_vector_factory,
-)
+from scope_recall.runtime.instance import build_runtime_instance, default_vector_factory
+from scope_recall.runtime.instance_config import RuntimeInstanceConfig, VectorRuntimeConfig
 from v11_support import source_event
 
 pytestmark = pytest.mark.skipif(

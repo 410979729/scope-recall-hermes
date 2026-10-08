@@ -201,12 +201,8 @@ def test_a_recall_never_runs_the_helper_s_start_up(tmp_path, monkeypatch) -> Non
     from scope_recall.contracts import InstanceBinding
     from scope_recall.runtime import instance as instance_module
     from scope_recall.runtime.auxiliary import AuxiliaryRuntimeConfig
-    from scope_recall.runtime.instance import (
-        RuntimeInstanceConfig,
-        VectorRuntimeConfig,
-        build_runtime_instance,
-        default_vector_factory,
-    )
+    from scope_recall.runtime.instance import build_runtime_instance, default_vector_factory
+    from scope_recall.runtime.instance_config import RuntimeInstanceConfig, VectorRuntimeConfig
 
     replays: list[float] = []
     monkeypatch.setattr(lance_native, "helper_start_failure", lambda timeout: replays.append(timeout))

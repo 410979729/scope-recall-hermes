@@ -208,6 +208,7 @@
     "runtime/embedding_retry.py",
     "runtime/http_session.py",
     "runtime/instance.py",
+    "runtime/instance_config.py",
     "runtime/lance_port.py",
     "runtime/model_budget.py",
     "runtime/models.py",

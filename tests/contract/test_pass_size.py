@@ -20,7 +20,7 @@ import pytest
 from scope_recall.core.work_storage import MAX_CLAIM_PAGE, MAX_RECOVERY_PAGE
 from scope_recall.core.worker import EMBED_BATCH_LIMIT, WorkerConfig
 from scope_recall.runtime.embedding_models import EMBED_REQUEST_CONCURRENCY, MAX_EMBED_BATCH, build_gemini_embed_body
-from scope_recall.runtime.instance import _COUNT_BOUNDS
+from scope_recall.runtime.instance_config import _COUNT_BOUNDS
 from scope_recall.runtime.models import AuxiliaryModelError
 from test_claims import app, capture  # noqa: F401  (fixtures)
 

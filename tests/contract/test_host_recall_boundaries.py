@@ -18,7 +18,8 @@ from scope_recall.core import CoreConfig, MemoryCore, capture_inbox
 from scope_recall.core.background_context import _subject_visible_to_current_principal
 from scope_recall.core.read_views import _profile_subject
 from scope_recall.core.retrieval import SearchContext
-from scope_recall.runtime.instance import RuntimeInstanceConfig, build_runtime_instance
+from scope_recall.runtime.instance import build_runtime_instance
+from scope_recall.runtime.instance_config import RuntimeInstanceConfig
 
 from tests.contract.test_claims import Clock, accept, capture, draft
 from tests.v11_support import context, recall_request, source_event

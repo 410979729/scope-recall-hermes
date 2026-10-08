@@ -53,7 +53,7 @@ from ..adapters.hermes.shared_entries import (
 from ..contracts import ContractError, InstanceBinding, TrustedContext
 from ..core.storage import SQLiteStorage
 from ..runtime.auxiliary import DEFAULT_LEDGER_NAME
-from ..runtime.instance import RuntimeInstanceConfig
+from ..runtime.instance_config import RuntimeInstanceConfig
 from ..runtime.model_budget import initialize_auxiliary_budget_ledger
 from ..runtime.worker_launch import RUNTIME_CONFIG_FILENAME
 from .install_common import RUNTIME_CONFIG_LIMIT

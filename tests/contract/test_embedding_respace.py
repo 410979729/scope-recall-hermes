@@ -62,12 +62,8 @@ def _space_instance(core, ctx, model, *, backend="sqlite-bruteforce", storage_di
     """A runtime instance embedding with ``model``: its own space, its own vector directory (``storage_dir`` keeps a
     native store's path short on Windows)."""
     from scope_recall.runtime.auxiliary import AuxiliaryRuntimeConfig
-    from scope_recall.runtime.instance import (
-        RuntimeInstance,
-        RuntimeInstanceConfig,
-        VectorRuntimeConfig,
-        default_vector_factory,
-    )
+    from scope_recall.runtime.instance import RuntimeInstance, default_vector_factory
+    from scope_recall.runtime.instance_config import RuntimeInstanceConfig, VectorRuntimeConfig
 
     class Embedding:
         def embed_query(self, text, *, remaining_seconds):

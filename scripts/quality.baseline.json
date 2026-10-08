@@ -232,8 +232,11 @@
    "reportOptionalMemberAccess": 7
   },
   "runtime/instance.py": {
-   "reportArgumentType": 10,
+   "reportArgumentType": 6,
    "reportOptionalSubscript": 1
+  },
+  "runtime/instance_config.py": {
+   "reportArgumentType": 4
   },
   "runtime/lance_port.py": {
    "reportArgumentType": 8,
@@ -958,7 +961,10 @@
     "_LazyVectorPort.search": 17
    },
    "UP035": 1,
-   "UP037": 3
+   "UP037": 1
+  },
+  "runtime/instance_config.py": {
+   "UP037": 2
   },
   "runtime/lance_port.py": {
    "B905": 3,

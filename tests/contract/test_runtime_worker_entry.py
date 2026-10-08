@@ -14,12 +14,8 @@ from scope_recall.contracts import ContractError, InstanceBinding, TrustedContex
 from scope_recall.core import CoreConfig, MemoryCore
 from scope_recall.core.retrieval import SearchContext, SearchLimits
 from scope_recall.runtime.auxiliary import AuxiliaryRuntimeConfig
-from scope_recall.runtime.instance import (
-    RuntimeInstanceConfig,
-    VectorRuntimeConfig,
-    build_runtime_instance,
-    default_vector_factory,
-)
+from scope_recall.runtime.instance import build_runtime_instance, default_vector_factory
+from scope_recall.runtime.instance_config import RuntimeInstanceConfig, VectorRuntimeConfig
 from scope_recall.runtime.worker_launch import launch_worker
 from v11_support import source_event
 

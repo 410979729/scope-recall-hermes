@@ -20,7 +20,7 @@ import scope_recall
 from scope_recall._version import __version__
 from scope_recall.adapters.clients.config import load_codex_config, load_shared_client
 from scope_recall.adapters.hermes.shared_entries import read_attachment
-from scope_recall.runtime.instance import RuntimeInstanceConfig
+from scope_recall.runtime.instance_config import RuntimeInstanceConfig
 from scope_recall.runtime.model_budget import pre_request_refusals, provider_refusals
 from scope_recall.runtime.running_code import live_records, stale_records
 

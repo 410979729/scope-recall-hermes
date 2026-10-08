@@ -2769,7 +2769,7 @@ def _embedding_entry(base, monkeypatch, *, delay=0.0):
     )
     from scope_recall.maintenance.shared import attach
     from scope_recall.runtime import models
-    from scope_recall.runtime.instance import RuntimeInstanceConfig
+    from scope_recall.runtime.instance_config import RuntimeInstanceConfig
     from scope_recall.runtime.worker_entry import load_config
     from scope_recall.vector.store import build_vector_store
 

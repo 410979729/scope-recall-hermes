@@ -26,7 +26,7 @@ from scope_recall.maintenance.install import apply_install, apply_uninstall, pla
 from scope_recall.maintenance.install_common import InstallError, InstallPlan
 from scope_recall.maintenance.shared import main
 from scope_recall.runtime import instance as runtime_instance
-from scope_recall.runtime.instance import RuntimeInstanceConfig
+from scope_recall.runtime.instance_config import RuntimeInstanceConfig
 from scope_recall.runtime.model_budget import read_auxiliary_budget_status
 from scope_recall.runtime.worker_entry import load_config
 

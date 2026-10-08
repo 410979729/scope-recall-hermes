@@ -14,7 +14,7 @@ from typing import Any, Callable, Protocol, cast
 from scope_recall.contracts import ContractError, Origin, TrustedContext
 from scope_recall.core import CoreConfig, MemoryCore
 from scope_recall.core.capture_inbox import DELETED_KEY
-from scope_recall.runtime.instance import RuntimeInstanceConfig
+from scope_recall.runtime.instance_config import RuntimeInstanceConfig
 
 from ..runtime_wiring import strict_hook_budget
 from . import transcript

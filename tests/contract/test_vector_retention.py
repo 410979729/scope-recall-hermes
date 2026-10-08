@@ -12,7 +12,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from scope_recall.maintenance import doctor, doctor_store
 from scope_recall.runtime import vector_retention
-from scope_recall.runtime.instance import VectorRuntimeConfig
+from scope_recall.runtime.instance_config import VectorRuntimeConfig
 from test_claims import app, capture
 
 SPACE = "TEST-space"

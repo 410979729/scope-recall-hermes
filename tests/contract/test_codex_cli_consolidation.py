@@ -18,7 +18,8 @@ import pytest
 from scope_recall.contracts import InstanceBinding
 from scope_recall.runtime import codex_cli as cli
 from scope_recall.runtime.auxiliary import AuxiliaryRuntimeConfig, build_auxiliary_runtime
-from scope_recall.runtime.instance import RuntimeInstanceConfig, build_runtime_instance
+from scope_recall.runtime.instance import build_runtime_instance
+from scope_recall.runtime.instance_config import RuntimeInstanceConfig
 from scope_recall.runtime.model_budget import (
     default_budget_policy,
     initialize_auxiliary_budget_ledger,

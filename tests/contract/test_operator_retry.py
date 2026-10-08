@@ -10,7 +10,8 @@ from pathlib import Path
 import pytest
 from scope_recall.contracts import ContractError, InstanceBinding, TrustedContext
 from scope_recall.core import CoreConfig, MemoryCore
-from scope_recall.runtime.instance import RuntimeInstanceConfig, build_runtime_instance
+from scope_recall.runtime.instance import build_runtime_instance
+from scope_recall.runtime.instance_config import RuntimeInstanceConfig
 from scope_recall.runtime.worker_entry import run_retry_failed
 from v11_support import source_event
 

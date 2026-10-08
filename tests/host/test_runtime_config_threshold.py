@@ -7,7 +7,8 @@ import pytest
 from scope_recall.adapters.runtime_wiring import attach_trusted_host_runtime
 from scope_recall.contracts import InstanceBinding
 from scope_recall.core.recall_policy import EMBEDDING_SPACE, SPACE_ID
-from scope_recall.runtime.instance import RuntimeInstanceConfig, build_runtime_instance, default_vector_factory
+from scope_recall.runtime.instance import build_runtime_instance, default_vector_factory
+from scope_recall.runtime.instance_config import RuntimeInstanceConfig
 from scope_recall.runtime.lance_port import LanceIndexWriter, LanceVectorRecord
 from v11_support import source_event
 

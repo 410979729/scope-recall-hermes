@@ -22,7 +22,7 @@ from scope_recall.core.candidate_debounce import MAX_DEFERRAL_SECONDS, QUIET_SEC
 from scope_recall.core.claims import Qualification
 from scope_recall.maintenance import doctor, doctor_store
 from scope_recall.runtime import scheduling
-from scope_recall.runtime.instance import RuntimeInstanceConfig
+from scope_recall.runtime.instance_config import RuntimeInstanceConfig
 from scope_recall.runtime.scheduling import SupervisorControl, next_wake, supervise
 from scope_recall.runtime.worker_entry import _receipt_payload
 from test_candidate_lifecycle import Evaluator, ModelRefusal, _candidate, _finish_source_work

@@ -15,7 +15,8 @@ from scope_recall.adapters.hermes import ScopeRecallHermesAdapter, install_herme
 from scope_recall.adapters.runtime_wiring import TrustedHostRuntime
 from scope_recall.contracts import InstanceBinding, TrustedContext
 from scope_recall.core.composition import CoreConfig, MemoryCore
-from scope_recall.runtime.instance import RuntimeInstanceConfig, build_runtime_instance
+from scope_recall.runtime.instance import build_runtime_instance
+from scope_recall.runtime.instance_config import RuntimeInstanceConfig
 from v11_support import recall_request
 
 

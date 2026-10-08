@@ -43,7 +43,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from ..._version import __version__
-from ...runtime.instance import RESIDENT_RECALL_MINUTES_BOUNDS
+from ...runtime.instance_config import RESIDENT_RECALL_MINUTES_BOUNDS
 from ...runtime.validation import strict_int
 from ...runtime.worker_launch import detached_creationflags
 from ...vector.process_store import share

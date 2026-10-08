@@ -26,7 +26,8 @@ from ..core.failure_retry import retry_class
 from ..core.file_lock import advisory_file_lock
 from ..core.writer_lease import TruthWriterBusyError
 from ..vector.process_store import NativeVectorPathError, ProcessLanceVectorStore
-from .instance import RuntimeInstanceConfig, build_runtime_instance
+from .instance import build_runtime_instance
+from .instance_config import RuntimeInstanceConfig
 from .model_budget import pre_request_refusals, provider_refusals
 from .validation import strict_float, utc_now
 
