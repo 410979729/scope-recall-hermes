@@ -95,10 +95,6 @@
   "core/candidate_sweeps.py": {
    "reportOperatorIssue": 1
   },
-  "core/capture_inbox.py": {
-   "reportArgumentType": 1,
-   "reportAssignmentType": 1
-  },
   "core/claim_normalization.py": {
    "reportArgumentType": 3
   },
@@ -125,6 +121,10 @@
   },
   "core/evidence_question.py": {
    "reportGeneralTypeIssues": 1
+  },
+  "core/inbox_rules.py": {
+   "reportArgumentType": 1,
+   "reportAssignmentType": 1
   },
   "core/mutate.py": {
    "reportArgumentType": 2,
@@ -595,7 +595,7 @@
    "I001": 1
   },
   "core/capture_inbox.py": {
-   "E501": 2,
+   "E501": 1,
    "I001": 1,
    "PLR0913": {
     "_commit": 9
@@ -722,6 +722,9 @@
    "UP035": 1
   },
   "core/gating.py": {
+   "E501": 1
+  },
+  "core/inbox_rules.py": {
    "E501": 1
   },
   "core/index_rebuild.py": {

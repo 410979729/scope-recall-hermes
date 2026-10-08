@@ -115,8 +115,8 @@ def _is_actionable(error_code: object) -> bool:
 
 
 def _ingress_report(ingress) -> tuple[dict[str, int], list[str]]:
-    """What a pass says of the capture inbox rows it replayed.  A row put off (``capture_inbox._DEFERRED``) is not
-    stored yet, and one given up (``capture_inbox._GAVE_UP``) waits for ``retry-failures --apply``: each is a gap."""
+    """What a pass says of the capture inbox rows it replayed.  A row put off (``inbox_rules.DEFERRED``) is not
+    stored yet, and one given up (``inbox_rules.GAVE_UP``) waits for ``retry-failures --apply``: each is a gap."""
     counts = {
         "ingress_deferred": sum(r.error_code == "DEFERRED" for r in ingress),
         "ingress_given_up": sum(r.error_code == "GAVE_UP" for r in ingress),

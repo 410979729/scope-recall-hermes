@@ -14,7 +14,7 @@ import os
 from pathlib import Path
 import time
 
-from ..core.capture_inbox import _RETRIED, REPLAY_CANDIDATES, deferred_until, replayable
+from ..core.inbox_rules import REPLAY_CANDIDATES, RETRIED, deferred_until, replayable
 from ..core.storage import SQLiteStorage
 from ..core.work_storage import AUTO_RECOVERABLE_ERRORS, AUTO_RECOVERABLE_WORK_TYPES
 from ..core.file_lock import advisory_file_lock
@@ -194,7 +194,7 @@ def next_wake(config, *, now: datetime | None = None, unavailable_until=None) ->
             f"""SELECT last_error_code FROM capture_inbox WHERE scope_id IN ({marks})
                     AND project_id IS ? AND branch_id IS ?
                     AND ({REPLAY_CANDIDATES} OR last_error_code='VERSION_CONFLICT')""",
-            (*scopes, config.project_id, config.branch_id, *_RETRIED),
+            (*scopes, config.project_id, config.branch_id, *RETRIED),
         ):
             if replayable(code, now):
                 inbox += 1

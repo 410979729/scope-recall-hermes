@@ -21,7 +21,7 @@ from typing import Any, Literal
 import scope_recall
 from scope_recall.contracts import TrustedContext
 from scope_recall.core import CoreConfig, MemoryCore
-from scope_recall.core.capture_inbox import given_up, replayable
+from scope_recall.core.inbox_rules import given_up, replayable
 from scope_recall.core.schema import SCHEMA_VERSION, UPGRADE_CHAIN, stale_header_schema
 from scope_recall.core.storage import SQLiteStorage
 from scope_recall.core.failure_retry import NEEDS_REVIEW_COUNT

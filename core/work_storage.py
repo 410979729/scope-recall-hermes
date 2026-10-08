@@ -872,8 +872,8 @@ class WorkItems:
         Idempotent: every row is stamped with the schema generation that granted
         it, and a row already carrying this generation's stamp is skipped.
         """
-        from .capture_inbox import deferred_path
         from .failure_retry import selects, validate_page  # imports this module
+        from .inbox_rules import deferred_path
 
         validate_page(limit)
         if type(include_terminal) is not bool or type(dry_run) is not bool:
@@ -919,7 +919,7 @@ class WorkItems:
                                     lease_until=NULL,last_error_code=? WHERE work_id=? AND state='obsolete'""",
                         (now, marked("authority_revoked", generation=SCHEMA_VERSION), work_id),
                     )
-        # Captures a replay gave up after its tries (``capture_inbox._GAVE_UP``) go back to it, their tries counted
+        # Captures a replay gave up after its tries (``inbox_rules.GAVE_UP``) go back to it, their tries counted
         # anew: whatever kept them out has been fixed, or they are given up again, visibly.  Only the partition this
         # config's replay takes (``replay_inbox``): returned by what the config could see, a row of another went back
         # to a replay that never takes it (review of rc10).

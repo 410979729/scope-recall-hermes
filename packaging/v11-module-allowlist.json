@@ -113,6 +113,7 @@
     "core/failure_retry.py",
     "core/file_lock.py",
     "core/gating.py",
+    "core/inbox_rules.py",
     "core/index_rebuild.py",
     "core/inspect_service.py",
     "core/lexical_index.py",

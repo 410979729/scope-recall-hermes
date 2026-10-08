@@ -339,7 +339,7 @@ class Deletions:
                 raise ContractError("SOURCE_MISSING", "deletion_operation")
             now = row["created_at"]
         # Pending captures have no public source ref yet: a row of the affected
-        # partition that holds a deleted message (``capture_inbox.holds``; the
+        # partition that holds a deleted message (``inbox_rules.holds``; the
         # targets are the whole closure, a deleted claim's sources included) is
         # cancelled, so that a delayed capture cannot undo the delete.  Every
         # other row is kept, whichever client sent it: cancelling the whole
@@ -350,7 +350,7 @@ class Deletions:
         # a suppressed claim, is suppressed as it is stored, and cancelling what
         # merely held its words lost captures the contract keeps
         # (``docs/deletion-contract.md``, reviews of rc10).
-        from .capture_inbox import deleted_text, holds, taking_a_new_key
+        from .inbox_rules import deleted_text, holds, taking_a_new_key
 
         digests, groups, versions = set(), set(), set()
         for target in targets:
@@ -464,7 +464,7 @@ class Deletions:
         # words are gone: digests of them spaced otherwise and of their letters and digits (``capture_inbox.
         # deleted_forms``, compared by ``Transaction.refuse_under_a_deleted_key``).  Read before any group key below
         # is replaced (review of rc13).
-        from .capture_inbox import deleted_forms
+        from .inbox_rules import deleted_forms
 
         forms, versions, groups = {}, {}, set()
         for kind, ref in members:

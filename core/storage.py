@@ -429,7 +429,7 @@ class Transaction:
         time on different content -- and the write time is the best one left.
         Stored rows are never rewritten; their fingerprints cover that time.
         """
-        from .capture_inbox import REKEY_MARKER
+        from .inbox_rules import REKEY_MARKER
 
         stamp = source.event.get("occurred_at")
         stamp = stamp if type(stamp) is str and stamp else None
@@ -682,15 +682,15 @@ class Transaction:
         )
 
     def _copies_a_suppressed_source(self, conn, scope_id: str, group_key: str, event) -> bool:
-        """A capture given a new key because another message held its key (``capture_inbox.REKEY_MARKER``) that is a
+        """A capture given a new key because another message held its key (``inbox_rules.REKEY_MARKER``) that is a
         copy of a suppressed or deleted message is suppressed with it.  Its new key is a group of its own, which the
         first message's suppression does not reach: a suppressed message sent again under a colliding key came back to
         automatic recall (rc13).  A copy has the same role and words as a suppressed part in the same scope, project
         and branch (a digest outlasts a purge), or holds the words of the message whose key it took, compared as a
-        delete compares them (``capture_inbox.holds``: whitespace aside, and so on).  A source group is suppressed
+        delete compares them (``inbox_rules.holds``: whitespace aside, and so on).  A source group is suppressed
         whole: a part that is a copy suppresses the parts of its group stored before it and after it (review of
         rc13)."""
-        from .capture_inbox import REKEY_MARKER, deleted_text, holds_events
+        from .inbox_rules import REKEY_MARKER, deleted_text, holds_events
 
         if REKEY_MARKER not in group_key:
             return False
@@ -746,15 +746,15 @@ class Transaction:
         the deleted group never stored, and a part sent without the message's first, are refused.  A whole message is
         compared with the deleted one, all its parts together (a first part changed by one character had let the
         second through, word for word): a part with a deleted part's digest; while the deleted words are kept, all of
-        them held or a near copy, as a delete compares waiting captures (``capture_inbox.holds_events``); after the
-        purge, the same words spaced, cased or punctuated otherwise (``capture_inbox.deleted_forms``).  A copy is
+        them held or a near copy, as a delete compares waiting captures (``inbox_rules.holds_events``); after the
+        purge, the same words spaced, cased or punctuated otherwise (``inbox_rules.deleted_forms``).  A copy is
         refused (``source_unavailable``).  Anything else is a key collision (``VERSION_CONFLICT``), which the capture
         inbox stores under a key of its own: a restarted Hermes gateway numbers its turns from 1 again, and a delete
         removes its own command's key, so the next message at that turn had been refused (reviews of rc13).  After the
         purge, a copy with words added is not known by anything kept, and is stored as another message.  A key with
         nothing stored left to compare with (a restored absence) refuses whatever comes."""
-        from .capture_inbox import deleted_forms, deleted_text, holds_events
         from .delete_storage import group_digest, purged_group_key
+        from .inbox_rules import deleted_forms, deleted_text, holds_events
         from .visibility import allowed
 
         if not events:
@@ -1149,7 +1149,7 @@ class Transaction:
 
     def _waiting_in_inbox(self, scope_id: str) -> dict[tuple[str, str], list[tuple[object, str]]]:
         """This session's captures a replay of the inbox will still store, by (role, content digest)."""
-        from .capture_inbox import waiting as replays
+        from .inbox_rules import waiting as replays
 
         waiting: dict[tuple[str, str], list[tuple[object, str]]] = {}
         for payload, code in self._check().execute(
