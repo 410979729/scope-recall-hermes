@@ -20,6 +20,7 @@ from ..core.failure_retry import AUTO_RECOVERABLE_ERRORS
 from ..core.work_storage import AUTO_RECOVERABLE_WORK_TYPES
 from ..core.file_lock import advisory_file_lock
 from .worker_entry import DAILY_COUNTER_MAX, _atomic_metadata, _metadata_path, _read_metadata, load_config
+from .model_budget import provider_holds
 
 
 #: Seconds a supervisor waits after a busy pass, when the worker lock or the
@@ -133,7 +134,6 @@ def next_wake(config, *, now: datetime | None = None, unavailable_until=None) ->
     unavailable_until = dict(unavailable_until or {})
     # A provider on hold keeps its work types asleep until the hold ends, so a
     # refusing provider is asked once per hold instead of once per wake.
-    from .model_budget import provider_holds
 
     for work_type, (_model, until) in provider_holds(config.auxiliary, now=now.timestamp()).items():
         held = datetime.fromtimestamp(until, timezone.utc)

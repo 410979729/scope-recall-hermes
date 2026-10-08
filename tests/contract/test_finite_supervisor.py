@@ -370,6 +370,7 @@ def controlled(path,drain,**kwargs):
     return original(path,drain,**kwargs,clock=lambda:elapsed[0],sleep=sleep,
                     utc_now=lambda:base+timedelta(seconds=elapsed[0]))
 scheduling.supervise=controlled
+worker_watchdog.supervise=controlled
 raise SystemExit(worker_watchdog.main(['--config',config,'--python',sys.executable]))
 """,
         encoding="utf-8",

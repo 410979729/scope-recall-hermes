@@ -206,10 +206,15 @@ def test_the_planner_sleeps_held_work_until_its_hold_ends(tmp_path, monkeypatch)
         "scope_recall.runtime.model_budget.provider_holds",
         lambda auxiliary, *, now=None: {"rebuild_projection": ("TEST-model", ends.timestamp())},
     )
+    monkeypatch.setattr(
+        "scope_recall.runtime.scheduling.provider_holds",
+        lambda auxiliary, *, now=None: {"rebuild_projection": ("TEST-model", ends.timestamp())},
+    )
     from scope_recall.runtime.scheduling import next_wake
 
     plan = next_wake(cfg, now=NOW)
     assert plan.due_at == ends.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
     assert plan.reason == "capability_cooldown"
     monkeypatch.setattr("scope_recall.runtime.model_budget.provider_holds", lambda auxiliary, *, now=None: {})
+    monkeypatch.setattr("scope_recall.runtime.scheduling.provider_holds", lambda auxiliary, *, now=None: {})
     assert next_wake(cfg, now=NOW).due_at == "2026-09-12T00:00:00Z"

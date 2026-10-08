@@ -25,6 +25,7 @@ from .worker_launch import (
     taskkill_tree,
     validate_wake_arguments,
 )
+from .scheduling import supervise
 
 #: Seconds an owned child may outlive the deadline it was handed.  A child that
 #: honours that deadline has already written its receipt and exited; one still
@@ -431,7 +432,6 @@ def run(
                 config_path, python_executable, cleanup_config=False, after_pid=after_pid, delay_seconds=delay_seconds
             )
         validate_wake_arguments(after_pid, delay_seconds)
-        from .scheduling import supervise
 
         predecessor = after_pid
         latest = {}

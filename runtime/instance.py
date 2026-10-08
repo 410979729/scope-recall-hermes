@@ -44,6 +44,15 @@ from .validation import (
 from .vector_retention import expire_if_due
 from .worker_launch import failure_reason
 from .vector_upkeep import backfill_if_due, compact_if_due, index_if_due, respace_if_due
+from ..adapters.codex_cli import CodexCliConsolidationAdapter
+from ..adapters.lance import LanceEmbedPort, LancePurgePort, LanceVectorPort, search_partitions
+from ..adapters.models import AuxiliaryModelError
+from ..core.capture_filters import redact_private_paths
+from ..core.recall_policy import EMBEDDING_SPACE, RecallPolicy, embedding_space_id
+from ..vector.lance_native import helper_start_failure
+from ..vector.process_store import NativeVectorPathError
+from ..vector.store import build_vector_store
+from .model_budget import provider_holds
 
 
 _RUNTIME_ORIGINS: frozenset[Origin] = frozenset({"human_direct", "tool_observation", "external_document", "imported"})
@@ -212,8 +221,6 @@ class RuntimeInstanceConfig:
 
     def embedding_space(self) -> dict:
         """The embedding space this instance uses; the shipped default when no route names one."""
-        from ..core.recall_policy import EMBEDDING_SPACE
-
         route = getattr(self.auxiliary, "embedding", None) if self.auxiliary is not None else None
         return route.space() if route is not None else dict(EMBEDDING_SPACE)
 
@@ -223,8 +230,6 @@ class RuntimeInstanceConfig:
         Naming a different model changes this, which moves the store and refuses
         the old vectors rather than comparing across incompatible geometries.
         """
-        from ..core.recall_policy import embedding_space_id
-
         return embedding_space_id(self.embedding_space())
 
     def recall_policy(self):
@@ -234,8 +239,6 @@ class RuntimeInstanceConfig:
         ``embedding_space_id()``.  Admission has to compare against that same
         digest; against the shipped default every hit of a named route is refused.
         """
-        from ..core.recall_policy import RecallPolicy
-
         return RecallPolicy(vector_threshold=self.vector_threshold, embedding_space_id=self.embedding_space_id())
 
     @classmethod
@@ -320,8 +323,6 @@ class _QueryEmbedding:
     def result(self, deadline: float) -> Any:
         """The vector; the embedding's own failure; a timeout if it is still out at ``deadline``."""
         if not self._done.wait(max(0.0, deadline - time.monotonic())):
-            from ..adapters.models import AuxiliaryModelError
-
             raise AuxiliaryModelError("timeout")
         if self._error is not None:
             raise self._error
@@ -342,8 +343,6 @@ class _LazyVectorPort:
         self._instance = instance
 
     def _query_embedder(self) -> Callable[[str, float], Any] | None:
-        from ..adapters.lance import LanceVectorPort
-
         embedding = getattr(self._instance.auxiliary, "query_embedding", None)
         if embedding is None:
             return None
@@ -475,8 +474,6 @@ def _helper_start_failure(deadline: float) -> str | None:
     timeout = (deadline - time.monotonic()) / 4
     if timeout < 1.0:
         return None
-    from ..core.capture_filters import redact_private_paths
-    from ..vector.lance_native import helper_start_failure
 
     stderr = helper_start_failure(timeout)
     line = failure_reason(stderr) if stderr else None
@@ -566,7 +563,6 @@ class RuntimeInstance:
             trusted = self.config.context()
             if not callable(search_scopes) or not trusted.allowed_scope_ids:
                 return True
-            from ..adapters.lance import search_partitions
 
             # Every partition a recall of this runtime filters on (adapters/lance.py ``_partition_hits``).  The first
             # search of an index reads all of it into the helper's cache whatever the filter; after that a search
@@ -609,8 +605,6 @@ class RuntimeInstance:
         partitioned native queries; the raw store is never exposed as one.
         Purge is a local native operation and stays available even when both
         embedding routes are disabled."""
-        from ..adapters.lance import LanceEmbedPort, LancePurgePort, LanceVectorPort
-
         binding = self.config.binding
         space_id = self.config.embedding_space_id()
         port = None
@@ -706,8 +700,7 @@ class RuntimeInstance:
                 available_seconds=max(0.0, deadline - time.monotonic()),
             )
         )
-        from ..core.worker import WorkerConfig, drain_worker
-        from .model_budget import provider_holds
+        from ..core.worker import WorkerConfig, drain_worker  # only a process that drains loads the worker
 
         model, candidate = self._consolidation_ports(consolidation)
         self.provider_holds = {} if purge_only else provider_holds(self.config.auxiliary)
@@ -781,6 +774,7 @@ class RuntimeInstance:
 
     def _replay_ingress(self, budget: float) -> tuple[str, ...]:
         """Persist captured inbox payloads.  Ingress never spends the model-work budget."""
+        # On first use: the worker and the wake start without the inbox's replay.
         from ..core.capture_inbox import INGRESS_PENDING_GAP, replay_inbox, resolve_conflicted_ingress
 
         self.ingress_receipts = ()
@@ -838,8 +832,7 @@ class RuntimeInstance:
         try:
             self._ensure_vector_port(allow_create=True, deadline=vector_deadline)
         except Exception as exc:
-            from ..core.vector_failure import vector_failure_label
-            from ..vector.process_store import NativeVectorPathError
+            from ..core.vector_failure import vector_failure_label  # only when the vector store fails to open
 
             if isinstance(exc, NativeVectorPathError):
                 return (NativeVectorPathError.code,)
@@ -855,8 +848,7 @@ class RuntimeInstance:
         """The pass's bounded consolidation model and, when it offers one, candidate evaluator."""
         model = consolidation
         if model is None:
-            from ..adapters.codex_cli import CodexCliConsolidationAdapter
-            from ..core.worker import build_consolidation_model
+            from ..core.worker import build_consolidation_model  # only a process that drains loads the worker
 
             port = self.core.consolidation
             # One CLI allowance is shared by consolidation and candidate
@@ -913,8 +905,6 @@ class RuntimeInstance:
 
 def default_vector_factory(config: VectorRuntimeConfig) -> Any:
     """Build an existing-companion store without opening or creating it."""
-    from ..vector.store import build_vector_store
-
     return build_vector_store(
         config.backend,
         storage_dir=config.storage_dir,
@@ -1007,6 +997,9 @@ def build_runtime_instance(
     # A shared store's inbox holds its Hermes entries' captures, whichever
     # process replays them; each is checked against the entry that made it.
     if config.host_adapter == "hermes" or config.binding.installation_kind == "shared":
+        # The worker checks a replayed capture against the host's current installation map, which is the host
+        # adapters' identity code: the one import from runtime up into adapters, kept to the call (it would add
+        # about twenty modules to every worker start).
         from ..adapters.hermes.authorization import build_ingress_authorizer
 
         ingress_authorizer = build_ingress_authorizer(config.binding)

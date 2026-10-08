@@ -192,6 +192,12 @@ def test_a_drain_s_backfill_makes_room_only_for_evaluations_the_pass_would_take(
             "provider_holds",
             lambda auxiliary: {"evaluate_candidate": ("TEST-model", "2999-01-01T00:00:00Z")},
         )
+        # runtime.instance takes provider_holds at import.
+        monkeypatch.setattr(
+            instance_module,
+            "provider_holds",
+            lambda auxiliary: {"evaluate_candidate": ("TEST-model", "2999-01-01T00:00:00Z")},
+        )
         instance.drain(consolidation=Evaluator())
     finally:
         instance.close()

@@ -23,11 +23,12 @@ from typing import Any, TextIO
 
 from ..core.file_lock import advisory_file_lock
 from ..core.writer_lease import TruthWriterBusyError
-from ..vector.process_store import NativeVectorPathError
+from ..vector.process_store import NativeVectorPathError, ProcessLanceVectorStore
 from ..contracts import ContractError, TrustedContext
 from .instance import RuntimeInstanceConfig, build_runtime_instance
 from .model_budget import pre_request_refusals, provider_refusals
 from .validation import strict_float, utc_now
+from ..core.failure_retry import retry_class
 
 #: Worker metadata files are small JSON documents; anything larger is not one.
 METADATA_LIMIT_BYTES = 65536
@@ -109,7 +110,6 @@ def _is_actionable(error_code: object) -> bool:
     """
     if not error_code:
         return False
-    from ..core.failure_retry import retry_class
 
     return retry_class(error_code) != "terminal"
 
@@ -432,7 +432,6 @@ def _vector_preflight_gap(config: RuntimeInstanceConfig) -> str | None:
     """A native path Lance cannot open is reported by name, whatever fails later."""
     if config.vector is None or config.vector.backend != "lancedb":
         return None
-    from ..vector.process_store import ProcessLanceVectorStore
 
     vector = config.vector
     check = ProcessLanceVectorStore(
