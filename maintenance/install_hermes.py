@@ -17,9 +17,7 @@ from scope_recall.adapters.hermes.installation import (
     approve_local_platforms as _approve_local_platforms,
 )
 from scope_recall.adapters.hermes.installation import (
-    attachment_path,
     install_hermes_scope_recall,
-    load_binding_for_home,
     load_installation_manifest,
     write_installation_manifest,
 )
@@ -29,6 +27,7 @@ from scope_recall.adapters.hermes.installation import (
 from scope_recall.adapters.hermes.installation import (
     unapproved_owner_logins as _unapproved_owner_logins,
 )
+from scope_recall.adapters.hermes.shared_entries import attachment_path, load_binding_for_home
 
 from .install_common import (
     REPO_ROOT,

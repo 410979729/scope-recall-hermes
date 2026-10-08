@@ -47,7 +47,8 @@ from ...runtime.instance import RESIDENT_RECALL_MINUTES_BOUNDS
 from ...runtime.validation import strict_int
 from ...runtime.worker_launch import detached_creationflags
 from ...vector.process_store import share
-from ..hermes.installation import MANIFEST_FILENAME, attachment_path, read_attachment
+from ..hermes.installation import MANIFEST_FILENAME
+from ..hermes.shared_entries import attachment_path, read_attachment
 from .config import load_shared_client
 from .handler import CodexHookHandler
 

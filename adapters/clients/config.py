@@ -18,12 +18,10 @@ from typing import Any, Mapping
 
 from scope_recall.adapters.hermes.audiences import LOCAL_USER_ID
 from scope_recall.adapters.hermes.identity import HermesRuntimeScope, RuntimeAudience, resolve_runtime_audience
-from scope_recall.adapters.hermes.installation import (
+from scope_recall.adapters.hermes.installation import HermesIdentityError, InstallationManifest, bounded_text
+from scope_recall.adapters.hermes.shared_entries import (
     CLIENT_HOSTS,
-    HermesIdentityError,
-    InstallationManifest,
     attachment_path,
-    bounded_text,
     read_attachment,
     shared_entry_manifest,
 )

@@ -26,8 +26,8 @@ from .installation import (
     InstallationManifest,
     assert_binding_matches_manifest,
     is_archive_scope,
-    load_binding_for_home,
 )
+from .shared_entries import load_binding_for_home
 
 _NON_PRIMARY_CONTEXTS = frozenset({"subagent", "cron", "flush"})
 _UNATTESTED_HUMAN_PLATFORMS = frozenset({"a2a"})

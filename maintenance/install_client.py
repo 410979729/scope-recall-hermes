@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from scope_recall.adapters.clients.config import CodexConfigError, load_shared_client
-from scope_recall.adapters.hermes.installation import attachment_path
+from scope_recall.adapters.hermes.shared_entries import attachment_path
 
 from .install_common import InstallError, InstallPlan, require_file
 

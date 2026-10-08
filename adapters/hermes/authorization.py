@@ -12,8 +12,8 @@ from .installation import (
     InstallationManifest,
     assert_binding_matches_manifest,
     load_installation_manifest,
-    shared_entry_manifest,
 )
+from .shared_entries import shared_entry_manifest
 
 
 def _entry_grants(binding: InstanceBinding, entry_id: str) -> InstallationManifest:

@@ -24,10 +24,10 @@ from scope_recall.adapters.clients.mcp_server import build_server
 from scope_recall.adapters.hermes import ScopeRecallHermesAdapter
 from scope_recall.adapters.hermes.authorization import build_ingress_authorizer
 from scope_recall.adapters.hermes.identity import host_scope_payload, principal_ref
-from scope_recall.adapters.hermes.installation import (
+from scope_recall.adapters.hermes.installation import build_installation_manifest
+from scope_recall.adapters.hermes.shared_entries import (
     attach_shared_entry,
     attach_shared_record,
-    build_installation_manifest,
     client_entry_record,
     load_binding_for_home,
     new_shared_payload,
@@ -2760,9 +2760,9 @@ def _embedding_entry(base, monkeypatch, *, delay=0.0):
     import time
     from pathlib import Path
 
-    from scope_recall.adapters.hermes.installation import (
+    from scope_recall.adapters.hermes.installation import build_installation_manifest
+    from scope_recall.adapters.hermes.shared_entries import (
         attach_shared_entry,
-        build_installation_manifest,
         new_shared_payload,
         read_shared_payload,
         write_shared_payload,

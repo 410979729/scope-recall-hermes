@@ -48,7 +48,7 @@ from types import SimpleNamespace
 from typing import Any, Callable, Iterator
 from urllib.request import pathname2url
 
-from ..adapters.hermes.installation import read_shared_payload
+from ..adapters.hermes.shared_entries import read_shared_payload
 from ..core import lexical_index
 from ..core.delete_storage import group_digest
 from ..core.events import indexed_terms, withheld_tool_output

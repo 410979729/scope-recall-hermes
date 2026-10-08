@@ -23,10 +23,10 @@ from pathlib import Path
 import pytest
 from scope_recall.adapters.clients import remote_client, remote_server, transcript
 from scope_recall.adapters.codex import remote_client as remote_entry
-from scope_recall.adapters.hermes.installation import (
+from scope_recall.adapters.hermes.installation import build_installation_manifest
+from scope_recall.adapters.hermes.shared_entries import (
     attach_shared_entry,
     attach_shared_record,
-    build_installation_manifest,
     client_entry_record,
     new_shared_payload,
     read_shared_payload,

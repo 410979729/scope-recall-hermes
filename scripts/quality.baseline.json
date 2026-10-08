@@ -62,7 +62,7 @@
   "adapters/hermes/identity.py": {
    "reportArgumentType": 1
   },
-  "adapters/hermes/installation.py": {
+  "adapters/hermes/shared_entries.py": {
    "reportArgumentType": 1
   },
   "adapters/hermes/tool_surface.py": {
@@ -430,7 +430,6 @@
   "adapters/hermes/installation.py": {
    "PLR0913": {
     "build_installation_manifest": 18,
-    "client_entry_record": 9,
     "install_hermes_scope_recall": 16
    },
    "UP035": 1
@@ -450,6 +449,11 @@
   },
   "adapters/hermes/session_binding.py": {
    "UP031": 1
+  },
+  "adapters/hermes/shared_entries.py": {
+   "PLR0913": {
+    "client_entry_record": 9
+   }
   },
   "adapters/hermes/tool_surface.py": {
    "E501": 1,

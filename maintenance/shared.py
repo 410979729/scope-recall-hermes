@@ -32,16 +32,18 @@ from typing import Any
 
 from ..adapters.clients.config import CONFIG_FILENAME as CODEX_CONFIG_FILENAME
 from ..adapters.hermes.installation import (
-    CLIENT_HOSTS,
-    ENTRY_HOSTS,
     MANIFEST_FILENAME,
     HermesIdentityError,
+    build_installation_manifest,
+    load_archived_installation,
+)
+from ..adapters.hermes.shared_entries import (
+    CLIENT_HOSTS,
+    ENTRY_HOSTS,
     attach_shared_entry,
     attach_shared_record,
     attachment_path,
-    build_installation_manifest,
     client_entry_record,
-    load_archived_installation,
     new_shared_payload,
     read_attachment,
     read_shared_payload,

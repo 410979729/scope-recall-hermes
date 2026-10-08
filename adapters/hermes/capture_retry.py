@@ -25,7 +25,8 @@ from .identity import (
     HermesIdentityError,
     resolve_runtime_audience,
 )
-from .installation import assert_binding_matches_manifest, load_binding_for_home
+from .installation import assert_binding_matches_manifest
+from .shared_entries import load_binding_for_home
 
 if TYPE_CHECKING:
     from .provider import ScopeRecallHermesAdapter

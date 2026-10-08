@@ -18,7 +18,7 @@ from scope_recall.adapters.clients.config import (
     load_codex_config,
     load_shared_client,
 )
-from scope_recall.adapters.hermes.installation import ATTACHMENT_FILENAME, attachment_path
+from scope_recall.adapters.hermes.shared_entries import ATTACHMENT_FILENAME, attachment_path
 
 from . import install_client
 from .install_client import (  # noqa: F401 -- install.py calls these on every host's module

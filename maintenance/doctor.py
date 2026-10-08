@@ -19,7 +19,7 @@ from typing import Any
 import scope_recall
 from scope_recall._version import __version__
 from scope_recall.adapters.clients.config import load_codex_config, load_shared_client
-from scope_recall.adapters.hermes.installation import read_attachment
+from scope_recall.adapters.hermes.shared_entries import read_attachment
 from scope_recall.runtime.instance import RuntimeInstanceConfig
 from scope_recall.runtime.model_budget import pre_request_refusals, provider_refusals
 from scope_recall.runtime.running_code import live_records, stale_records
@@ -112,7 +112,7 @@ def _probe_python_package(python: Path) -> dict[str, Any]:
 
 def load_binding(host: HostChoice, instance_root: Path):
     if host == "hermes":
-        from scope_recall.adapters.hermes.installation import load_binding_for_home
+        from scope_recall.adapters.hermes.shared_entries import load_binding_for_home
 
         manifest = load_binding_for_home(instance_root)
         return manifest.to_binding(), manifest.data_directory
@@ -408,7 +408,7 @@ def _check_audiences(report: DoctorReport, instance: Path) -> None:
     """
     if report.host != "hermes":
         return
-    from scope_recall.adapters.hermes.installation import load_binding_for_home
+    from scope_recall.adapters.hermes.shared_entries import load_binding_for_home
 
     try:
         manifest = load_binding_for_home(instance)
