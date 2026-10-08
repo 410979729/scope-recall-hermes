@@ -133,6 +133,64 @@ def state_from_sources(sources, *, has_goal=False, previous="unknown") -> str:
     return "open" if state == "unknown" and has_goal else state
 
 
+def _quoted_sources(by_ref, refs, text: str, missing: str, omitted: str) -> list:
+    """The cited sources that quote ``text`` with its qualifiers: ``missing`` when none quotes it, ``omitted`` when
+    every quote drops a qualifier."""
+    candidates = [by_ref[ref] for ref in refs if ref in by_ref and text in by_ref[ref].event["content"]]
+    if not candidates:
+        raise ContractError("DERIVATION_INVALID", missing)
+    candidates = [s for s in candidates if preserves_qualifiers(s.event["content"], text)]
+    if not candidates:
+        raise ContractError("DERIVATION_INVALID", omitted)
+    return candidates
+
+
+def _states_goal(source) -> bool:
+    """Whether a source can state a work goal: the person's own complete message, neither asked nor unsettled.
+
+    A consolidation proposal may only restate a user's own stated goal.  Assistant narration, tool output, quotations,
+    and hypotheses cannot create a work obligation or turn an ordinary conversation into a completed episode.
+    """
+    return (
+        source_origin(source) == "human_direct"
+        and source.event["capture_state"] == "complete"
+        and not AUTHORITY_QUESTION.search(source.event["content"])
+        and not UNSETTLED.search(source.event["content"])
+    )
+
+
+def _authorizes_entry(field: str, text: str, source) -> bool:
+    """Whether a source can authorize a decision (the person's own message) or verified progress (also a tool's
+    observation): complete, neither asked nor unsettled, and for progress only where every clause quoting it says it
+    is finished."""
+    origin = source_origin(source)
+    if (
+        origin not in ({"human_direct"} if field == "decisions" else {"human_direct", "tool_observation"})
+        or source.capture_gaps
+        or source.event["capture_state"] != "complete"
+    ):
+        return False
+    # Include local comma clause to catch trimmed negation while
+    # permitting one sentence's separate finished/open clauses.
+    clauses = [c for c in re.split(r"[，,;；。.!?！？\n]", source.event["content"]) if text.rstrip("。.!") in c]
+    contexts = clauses or [source.event["content"]]
+    if UNSETTLED.search(source.event["content"]) or AUTHORITY_QUESTION.search(source.event["content"]):
+        return False
+    return not (field == "verified_progress" and any(UNFINISHED.search(c) or not FINISHED.search(c) for c in contexts))
+
+
+def _asks_step(source) -> bool:
+    """Whether a source can ask for a next step: the person's own complete message without gaps, neither unsettled
+    nor asked."""
+    return (
+        source_origin(source) == "human_direct"
+        and source.event["capture_state"] == "complete"
+        and not source.capture_gaps
+        and not UNSETTLED.search(source.event["content"])
+        and not AUTHORITY_QUESTION.search(source.event["content"])
+    )
+
+
 def qualify_resume(proposal, sources) -> None:
     """Require extractive support and preserve report/observation distinctions.
 
@@ -146,72 +204,18 @@ def qualify_resume(proposal, sources) -> None:
     for field in ("goal", "decisions", "verified_progress", "open_items", "blockers"):
         values = [proposal[field]] if field == "goal" else proposal[field]
         for item in values:
-            candidates = [
-                by_ref[ref]
-                for ref in item["evidence_refs"]
-                if ref in by_ref and item["text"] in by_ref[ref].event["content"]
-            ]
-            if not candidates:
-                raise ContractError("DERIVATION_INVALID", "resume_text_support")
-            candidates = [s for s in candidates if preserves_qualifiers(s.event["content"], item["text"])]
-            if not candidates:
-                raise ContractError("DERIVATION_INVALID", "resume_qualifier_omitted")
-            if field == "goal":
-                # A consolidation proposal may only restate a user's own
-                # stated goal.  Assistant narration, tool output, quotations,
-                # and hypotheses cannot create a work obligation or turn an
-                # ordinary conversation into a completed episode.
-                if not any(
-                    source_origin(source) == "human_direct"
-                    and source.event["capture_state"] == "complete"
-                    and not AUTHORITY_QUESTION.search(source.event["content"])
-                    and not UNSETTLED.search(source.event["content"])
-                    for source in candidates
-                ):
-                    raise ContractError("DERIVATION_INVALID", "goal_authority")
-            if field in {"decisions", "verified_progress"}:
-                supporting = []
-                for source in candidates:
-                    origin = source_origin(source)
-                    if (
-                        origin
-                        not in ({"human_direct"} if field == "decisions" else {"human_direct", "tool_observation"})
-                        or source.capture_gaps
-                        or source.event["capture_state"] != "complete"
-                    ):
-                        continue
-                    # Include local comma clause to catch trimmed negation while
-                    # permitting one sentence's separate finished/open clauses.
-                    clauses = [
-                        c
-                        for c in re.split(r"[，,;；。.!?！？\n]", source.event["content"])
-                        if item["text"].rstrip("。.!") in c
-                    ]
-                    contexts = clauses or [source.event["content"]]
-                    if UNSETTLED.search(source.event["content"]) or AUTHORITY_QUESTION.search(source.event["content"]):
-                        continue
-                    if field == "verified_progress" and any(
-                        UNFINISHED.search(c) or not FINISHED.search(c) for c in contexts
-                    ):
-                        continue
-                    supporting.append(source)
-                if not supporting:
-                    raise ContractError("DERIVATION_INVALID", "resume_authority")
+            candidates = _quoted_sources(
+                by_ref, item["evidence_refs"], item["text"], "resume_text_support", "resume_qualifier_omitted"
+            )
+            if field == "goal" and not any(_states_goal(source) for source in candidates):
+                raise ContractError("DERIVATION_INVALID", "goal_authority")
+            if field in {"decisions", "verified_progress"} and not [
+                source for source in candidates if _authorizes_entry(field, item["text"], source)
+            ]:
+                raise ContractError("DERIVATION_INVALID", "resume_authority")
     step = proposal["next_step"]
     if step is not None:
-        supporting = [by_ref[ref] for ref in refs if ref in by_ref and step in by_ref[ref].event["content"]]
-        if not supporting:
-            raise ContractError("DERIVATION_INVALID", "next_step_support")
-        supporting = [s for s in supporting if preserves_qualifiers(s.event["content"], step)]
-        if not supporting:
-            raise ContractError("DERIVATION_INVALID", "next_step_qualifier_omitted")
+        supporting = _quoted_sources(by_ref, refs, step, "next_step_support", "next_step_qualifier_omitted")
         basis = proposal["next_step_basis"]
-        if basis in {"user_requested", "existing_plan"} and not any(
-            source_origin(s) == "human_direct"
-            and s.event["capture_state"] == "complete"
-            and not s.capture_gaps
-            and not UNSETTLED.search(s.event["content"])
-            and not AUTHORITY_QUESTION.search(s.event["content"])
-            for s in supporting
-        ):
+        if basis in {"user_requested", "existing_plan"} and not any(_asks_step(s) for s in supporting):
             raise ContractError("DERIVATION_INVALID", "next_step_authority")
