@@ -211,6 +211,7 @@
     "vector/compaction.py",
     "vector/lance_native.py",
     "vector/process_store.py",
+    "vector/purge.py",
     "vector/sqlite_store.py",
     "vector/store.py"
   ],

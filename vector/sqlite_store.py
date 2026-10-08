@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable
 
 from . import VectorStore, VectorStoreCompatibilityError
+from .purge import governed_row_ids, purge_request
 
 _ROW_COLUMNS = "id, scope_id, source, target, content, summary, updated_at, vector_json"
 
@@ -327,8 +328,6 @@ class SQLiteBruteForceVectorStore(VectorStore):
         row that cannot be classified makes the inventory unknown, and an
         unknown inventory is never acknowledged.
         """
-        from .store import governed_row_ids, purge_request
-
         if (
             type(remaining_seconds) not in (int, float)
             or not math.isfinite(float(remaining_seconds))
