@@ -119,7 +119,7 @@ def test_explicit_resume_recall_still_returns_the_grounded_task(adapter):
         "source_watermark": source_watermark(refs),
         "evidence_refs": refs,
     }
-    episode = core.accept_consolidation(
+    episode = core.records.accept_consolidation(
         identity.trusted_context(mutation=True),
         {
             "protocol_version": "1.1",
@@ -225,7 +225,9 @@ def _active_preference(provider) -> str:
         "resume_proposals": [],
         "reference_proposals": [],
     }
-    receipt = core.accept_claim_proposals(context, proposal, scope_id=identity.local_scope_id, remaining_seconds=5)
+    receipt = core.records.accept_claim_proposals(
+        context, proposal, scope_id=identity.local_scope_id, remaining_seconds=5
+    )
     return receipt.items[0].ref
 
 

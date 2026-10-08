@@ -23,7 +23,7 @@ def versions(app, tmp_path):
         evidence_refs=[ref(source)],
     )
     initial = apply(core, ctx, references=[proposal]).items[0]
-    assert core.reference(ctx, initial.ref, 1).payload["resolution"] == "resolved"
+    assert core.records.reference(ctx, initial.ref, 1).payload["resolution"] == "resolved"
     clarification = capture(core, ctx, "刚才“那个颜色”说的是TEST-v2。")
     final = apply(core, ctx, references=[dict(proposal, evidence_refs=[ref(clarification)])]).items[0]
     assert initial.ref == final.ref and final.revision == 2

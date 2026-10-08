@@ -117,7 +117,7 @@ def test_empty_result_uses_live_batch_refs_and_accepts_without_invented_state(ap
     assert all(fallback[name] == [] for name in ("claim_proposals", "resume_proposals", "reference_proposals"))
     validate_payload("consolidation_result", fallback)
     before = core.status(ctx).memory_epoch
-    receipt = core.accept_consolidation(ctx, fallback, scope_id="TEST-scope")
+    receipt = core.records.accept_consolidation(ctx, fallback, scope_id="TEST-scope")
     assert not receipt.items
     assert receipt.memory_epoch == before
     assert "TEST 修订原始记录。" not in messages[0]["content"]
@@ -131,4 +131,4 @@ def test_empty_result_does_not_relax_required_fields_or_reference_validation(app
     with pytest.raises(ContractError):
         validate_payload("consolidation_result", missing)
     with pytest.raises(ContractError):
-        core.accept_consolidation(ctx, {**fallback, "source_refs": ["ref@revision"]}, scope_id="TEST-scope")
+        core.records.accept_consolidation(ctx, {**fallback, "source_refs": ["ref@revision"]}, scope_id="TEST-scope")

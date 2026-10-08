@@ -91,9 +91,9 @@ def test_cli_operator_tools_use_core_revision_and_exact_delete_receipt(adapter):
         "resume_proposals": [],
         "reference_proposals": [],
     }
-    claim = core.accept_claim_proposals(context, proposal, scope_id=identity.local_scope_id, remaining_seconds=5).items[
-        0
-    ]
+    claim = core.records.accept_claim_proposals(
+        context, proposal, scope_id=identity.local_scope_id, remaining_seconds=5
+    ).items[0]
 
     provider.observe_pre_llm(
         session_id="TEST-session-1",

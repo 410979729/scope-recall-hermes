@@ -400,7 +400,7 @@ def test_purge_waits_for_granted_native_write_and_removes_active_vector(worker_a
             assert granted.wait(15)
             authorize(core, ctx, source)
             deleted = core.forget(ctx, request(source), remaining_seconds=10)
-            purged = core.purge_sqlite(ctx, deleted["operation_id"], remaining_seconds=10)
+            purged = core.operations.purge_sqlite(ctx, deleted["operation_id"], remaining_seconds=10)
             assert purged["active_content_removed"] is False
             assert purged["layers"]["sqlite_active"] == "removed"
             assert purged["layers"]["vector_active"] == "inventory_pending"

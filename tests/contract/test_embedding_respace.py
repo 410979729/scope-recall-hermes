@@ -40,7 +40,7 @@ def _finish_embeds(core) -> None:
 
 
 def _start(core, ctx, space=SPACE_B, action="start") -> dict:
-    return core.respace_embeddings(ctx, space_id=space, action=action, dry_run=False)
+    return core.operations.respace_embeddings(ctx, space_id=space, action=action, dry_run=False)
 
 
 def _page(core, ctx, space=SPACE_B, room=64) -> dict:
@@ -170,9 +170,9 @@ def test_a_preview_counts_what_a_run_would_reopen_and_changes_nothing(app):
     edge(core, ctx, "TEST-A", "TEST-B")
     _finish_embeds(core)
     before = _embeds(core)
-    report = core.respace_embeddings(ctx, space_id=SPACE_B, action="start", dry_run=True)
+    report = core.operations.respace_embeddings(ctx, space_id=SPACE_B, action="start", dry_run=True)
     assert (report["applied"], report["run"], report["to_reopen"], report["waiting"]) == (False, None, 2, 0)
-    assert core.respace_embeddings(ctx, space_id=SPACE_B)["run"] is None
+    assert core.operations.respace_embeddings(ctx, space_id=SPACE_B)["run"] is None
     assert _embeds(core) == before
 
 
@@ -183,10 +183,10 @@ def test_the_preview_counts_what_still_waits_which_a_run_started_now_would_pay_f
     edge(core, ctx, "TEST-A", "TEST-B")
     _finish_embeds(core)
     _queue_embeds(core, 3)
-    assert core.respace_embeddings(ctx, space_id=SPACE_B, action="start", dry_run=True)["waiting"] == 3
+    assert core.operations.respace_embeddings(ctx, space_id=SPACE_B, action="start", dry_run=True)["waiting"] == 3
     _start(core, ctx)
     _finish_embeds(core)
-    assert core.respace_embeddings(ctx, space_id=SPACE_B)["to_reopen"] == 5, "the three are reopened too"
+    assert core.operations.respace_embeddings(ctx, space_id=SPACE_B)["to_reopen"] == 5, "the three are reopened too"
 
 
 def test_one_run_at_a_time_and_one_per_space_unless_started_again_on_purpose(app):
@@ -200,12 +200,12 @@ def test_one_run_at_a_time_and_one_per_space_unless_started_again_on_purpose(app
     def refused_start(space, field):
         for dry_run in (False, True):
             with pytest.raises(ContractError) as refused:
-                core.respace_embeddings(ctx, space_id=space, action="start", dry_run=dry_run)
+                core.operations.respace_embeddings(ctx, space_id=space, action="start", dry_run=dry_run)
             assert (refused.value.code, refused.value.field) == ("VERSION_CONFLICT", field)
 
     refused_start(SPACE_B, "respace_running")
     refused_start(SPACE_A, "respace_running")
-    preview = core.respace_embeddings(ctx, space_id=SPACE_B, action="restart", dry_run=True)
+    preview = core.operations.respace_embeddings(ctx, space_id=SPACE_B, action="restart", dry_run=True)
     assert preview["run"] == run, "a preview shows the run as it stands"
     assert _start(core, ctx, action="restart")["run"]["next_work_id"] == run["next_work_id"]
     assert _page(core, ctx)["outcome"] == "complete"
@@ -231,7 +231,7 @@ def test_newest_first_within_the_room_and_never_what_came_after_the_start(app):
     assert (first["outcome"], first["reopened"]) == ("progress", 1)
     states = {row[0]: row[2] for row in _embeds(core)}
     assert [states[work_id] for work_id in started] == ["done", "done", "done", "pending"]
-    assert core.respace_embeddings(ctx, space_id=SPACE_B)["to_reopen"] == 3
+    assert core.operations.respace_embeddings(ctx, space_id=SPACE_B)["to_reopen"] == 3
     rest = _page(core, ctx)
     assert (rest["outcome"], rest["reopened"]) == ("complete", 3)
     states = {row[0]: row[2] for row in _embeds(core)}
@@ -239,7 +239,7 @@ def test_newest_first_within_the_room_and_never_what_came_after_the_start(app):
     assert [state for work_id, state in states.items() if work_id not in started] == ["done", "done"], (
         "what was queued after the start is embedded in the new space already"
     )
-    run = core.respace_embeddings(ctx, space_id=SPACE_B)["run"]
+    run = core.operations.respace_embeddings(ctx, space_id=SPACE_B)["run"]
     assert (run["completed"], run["reopened"]) == (True, 4)
 
 
@@ -266,7 +266,7 @@ def test_a_worker_in_another_space_leaves_the_run_alone(app):
     _start(core, ctx, space=SPACE_A)
     assert _page(core, ctx, space=SPACE_B) == {"outcome": "space_mismatch", "embedding_space": SPACE_A}
     assert respace_if_due(SQLiteStorage(ctx.binding), ctx, SPACE_B)["outcome"] == "space_mismatch"
-    assert core.respace_embeddings(ctx, space_id=SPACE_B)["space_matches"] is False
+    assert core.operations.respace_embeddings(ctx, space_id=SPACE_B)["space_matches"] is False
     assert _embeds(core) == before
 
 
@@ -277,9 +277,9 @@ def test_cancel_forgets_the_run_and_what_it_reopened_is_still_embedded(app):
     _finish_embeds(core)
     _start(core, ctx)
     _page(core, ctx, room=1)
-    preview = core.respace_embeddings(ctx, space_id=SPACE_B, action="cancel", dry_run=True)
+    preview = core.operations.respace_embeddings(ctx, space_id=SPACE_B, action="cancel", dry_run=True)
     assert "cancelled" not in preview and preview["run"] is not None, "a preview names the run it would forget"
-    report = core.respace_embeddings(ctx, space_id=SPACE_B, action="cancel", dry_run=False)
+    report = core.operations.respace_embeddings(ctx, space_id=SPACE_B, action="cancel", dry_run=False)
     assert report["cancelled"] and report["run"] is None
     assert sorted(row[2] for row in _embeds(core)) == ["done", "done", "done", "pending"]
     assert _page(core, ctx)["outcome"] == "none"
@@ -387,7 +387,7 @@ def test_a_failed_page_is_a_receipt_and_changes_nothing(app, monkeypatch):
         "error": "OperationalError",
     }
     assert _embeds(core) == before
-    assert core.respace_embeddings(ctx, space_id=SPACE_B)["run"]["reopened"] == 0
+    assert core.operations.respace_embeddings(ctx, space_id=SPACE_B)["run"]["reopened"] == 0
 
 
 def test_the_command_maps_its_flags_and_previews_unless_applied(app, monkeypatch, capsys):
@@ -404,7 +404,7 @@ def test_the_command_maps_its_flags_and_previews_unless_applied(app, monkeypatch
         return json.loads(capsys.readouterr().out)
 
     assert (run()["action"], run("--start")["applied"]) == ("status", False)
-    assert core.respace_embeddings(ctx, space_id=SPACE_B)["run"] is None
+    assert core.operations.respace_embeddings(ctx, space_id=SPACE_B)["run"] is None
     started = run("--start", "--apply")
     assert (started["action"], started["applied"], started["run"]["embedding_space"]) == ("start", True, SPACE_B)
     assert run("--restart", "--apply")["action"] == "restart"

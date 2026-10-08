@@ -83,9 +83,6 @@
   "core/claims.py": {
    "reportGeneralTypeIssues": 1
   },
-  "core/composition.py": {
-   "reportOptionalSubscript": 1
-  },
   "core/consolidate.py": {
    "reportArgumentType": 2,
    "reportGeneralTypeIssues": 2
@@ -112,6 +109,9 @@
    "reportArgumentType": 2,
    "reportAssignmentType": 1,
    "reportOptionalOperand": 2
+  },
+  "core/operations.py": {
+   "reportOptionalSubscript": 1
   },
   "core/recall.py": {
    "reportArgumentType": 2,

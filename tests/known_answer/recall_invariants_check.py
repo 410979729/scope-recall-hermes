@@ -223,18 +223,18 @@ class Harness:
         self.store = None
         shutil.rmtree(self.root / "vectors")
         self.open(SPACE_2)
-        report = self.core.respace_embeddings(ctx, space_id=SPACE_2, action="start", dry_run=False)
+        report = self.core.operations.respace_embeddings(ctx, space_id=SPACE_2, action="start", dry_run=False)
         pages = []
         for _ in range(40):
             pages.append(respace_if_due(self.core.storage, ctx, SPACE_2))
             processed = self.drain(ctx, rounds=1)
-            run = self.core.respace_embeddings(ctx, space_id=SPACE_2)["run"]
+            run = self.core.operations.respace_embeddings(ctx, space_id=SPACE_2)["run"]
             if run and run.get("completed") and processed == 0:
                 break
         return dict(
             start=report.get("run"),
             pages=[p.get("outcome") if isinstance(p, dict) else p for p in pages],
-            final=self.core.respace_embeddings(ctx, space_id=SPACE_2),
+            final=self.core.operations.respace_embeddings(ctx, space_id=SPACE_2),
         )
 
     # reads ----------------------------------------------------------------
@@ -455,7 +455,7 @@ def run() -> tuple[dict, dict]:
             obs[f"{tag}_control_fact_in_vector_search"] = any(r in control_hits for r in control_refs)
 
         after_forget("C1")
-        if respace_if_due is None or not hasattr(h.core, "respace_embeddings"):
+        if respace_if_due is None or not hasattr(h.core.operations, "respace_embeddings"):
             diag["skipped"] = (
                 "C2 and C3: this release has no whole-store re-embed (respace-embeddings arrived in 3.8.0)"
             )

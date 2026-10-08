@@ -80,6 +80,6 @@ def test_a_result_submitted_outside_the_worker_is_still_rejected_whole(app):
     value = consolidation_payload(said, asked, claims=[draft(said, "蓝色")], resume_proposals=[_goal_from(asked)])
 
     with pytest.raises(ContractError, match="goal_authority"):
-        core.accept_consolidation(ctx, value, scope_id="TEST-scope", remaining_seconds=10)
+        core.records.accept_consolidation(ctx, value, scope_id="TEST-scope", remaining_seconds=10)
 
     assert "蓝色" not in _stored_values(core)

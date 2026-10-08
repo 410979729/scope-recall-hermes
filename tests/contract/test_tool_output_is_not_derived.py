@@ -76,11 +76,11 @@ def test_a_deferred_tool_output_settles_on_refill_without_a_consolidation(worker
     read = capture(core, ctx, "TEST 构建日志第 42 行。", origin="tool_observation")
     with core.storage.write(ctx, remaining_seconds=10) as tx:
         store_decision(tx, read.ref, read.revision, AdmissionDecision("deferred", "queue_capacity", False))
-    resumed = core.resume_deferred(ctx, remaining_seconds=10)
+    resumed = core.records.resume_deferred(ctx, remaining_seconds=10)
     assert [(item.ref, item.disposition) for item in resumed] == [(read.ref, "unchanged")]
-    assert core.resume_deferred(ctx, remaining_seconds=10) == ()
+    assert core.records.resume_deferred(ctx, remaining_seconds=10) == ()
     assert _queued(core, read.ref) == ["embed"]
-    receipt = core.schedule_source(ctx, read.ref, read.revision, remaining_seconds=10)
+    receipt = core.records.schedule_source(ctx, read.ref, read.revision, remaining_seconds=10)
     assert receipt.queued_work == 0 and _queued(core, read.ref) == ["embed"]
 
 

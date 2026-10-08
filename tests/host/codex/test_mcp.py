@@ -144,7 +144,7 @@ def test_mcp_stdio_all_tools_and_host_thread_bound_mutations(tmp_path: Path) -> 
         "resume_proposals": [],
         "reference_proposals": [],
     }
-    claim_receipt = core.accept_claim_proposals(human, proposal, scope_id=audience.capture_scope_id)
+    claim_receipt = core.records.accept_claim_proposals(human, proposal, scope_id=audience.capture_scope_id)
     claim_ref = claim_receipt.items[0].ref
     correction = hook_capture(f"请把{claim_ref} 饮品改为咖啡。", "turn-2")
 
@@ -295,7 +295,7 @@ def test_mcp_revise_with_a_null_value_withdraws_the_fact(tmp_path: Path) -> None
     def fact(key: str, predicate: str, value: str):
         text = f"TEST-project {predicate} {value}。"
         stated = said(key, text)
-        return core.accept_claim_proposals(
+        return core.records.accept_claim_proposals(
             human,
             {
                 "protocol_version": "1.1",
@@ -415,7 +415,7 @@ def test_recall_epoch_race_scrubs_compiled_payload_surface(tmp_path: Path) -> No
         "evidence_refs": [],
     }
     source_ref = real_core.record_event(human_context, source_event, scope_id=scope_id).event_refs[0].ref
-    claim = real_core.accept_claim_proposals(
+    claim = real_core.records.accept_claim_proposals(
         human_context,
         {
             "protocol_version": "1.1",
@@ -487,7 +487,7 @@ def test_mcp_recall_without_evidence_is_no_match_while_prompt_hook_keeps_backgro
     }
     source = core.record_event(human, event, scope_id=audience.capture_scope_id).event_refs[0]
     claim_ref = (
-        core.accept_claim_proposals(
+        core.records.accept_claim_proposals(
             human,
             {
                 "protocol_version": "1.1",

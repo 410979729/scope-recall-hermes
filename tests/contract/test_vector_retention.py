@@ -95,7 +95,7 @@ def test_a_tool_output_older_than_the_window_loses_its_vector_and_nothing_else(a
     assert core.source(ctx, old_tools[0].ref, 1) is not None
     assert _count(core, "SELECT count(*) FROM work_items WHERE work_type='embed' AND state='done'") == 5
     # ...so nothing refills an embed for an expired source.
-    core.resume_deferred(ctx, limit=16, remaining_seconds=1)
+    core.records.resume_deferred(ctx, limit=16, remaining_seconds=1)
     assert _count(core, "SELECT count(*) FROM work_items WHERE work_type='embed'") == 5
     # Within the hour the drain leaves it alone; an hour later a pass finds nothing due.
     assert _pass(core, ctx, store, tmp_path, now=NOW + timedelta(minutes=30)) is None

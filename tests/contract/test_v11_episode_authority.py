@@ -242,7 +242,7 @@ def test_non_confirmation_does_not_resolve_observed_artifact(app, tmp_path, raw,
             )
         ],
     ).items[0]
-    assert core.reference(ctx, mutation.ref).payload["resolved_ref"] is None
+    assert core.records.reference(ctx, mutation.ref).payload["resolved_ref"] is None
 
 
 def test_exact_artifact_identity_disambiguates_same_label(app, tmp_path):
@@ -263,7 +263,7 @@ def test_exact_artifact_identity_disambiguates_same_label(app, tmp_path):
             )
         ],
     ).items[0]
-    assert core.reference(ctx, mutation.ref).payload["resolved_ref"] == f"{two.ref}@1"
+    assert core.records.reference(ctx, mutation.ref).payload["resolved_ref"] == f"{two.ref}@1"
 
 
 def test_stale_reference_head_can_be_clarified_as_new_version(app, tmp_path):
@@ -298,8 +298,8 @@ def test_stale_reference_head_can_be_clarified_as_new_version(app, tmp_path):
     )
     latest = apply(core, ctx, references=[dict(proposal, evidence_refs=[ref(clarification)])]).items[0]
     assert latest.ref == original.ref and latest.revision == 2
-    assert core.reference(ctx, original.ref, 1).payload["resolution"] == "ambiguous"
-    assert core.reference(ctx, original.ref).payload["resolution"] == "resolved"
+    assert core.records.reference(ctx, original.ref, 1).payload["resolution"] == "ambiguous"
+    assert core.records.reference(ctx, original.ref).payload["resolution"] == "resolved"
 
 
 def test_hypothesis_and_negative_reference_texts_stay_unresolved(app, tmp_path):

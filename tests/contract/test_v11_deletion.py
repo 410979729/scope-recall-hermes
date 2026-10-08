@@ -42,7 +42,7 @@ def test_C08_delete_blocks_every_existing_content_exit_before_physical_purge(app
     echo = capture(core, ctx, "TEST-project 配色 蓝色。", origin="assistant_visible", evidence_refs=[f"{source.ref}@1"])
     authorization = authorize(core, ctx, source)
     epoch = core.status(ctx).memory_epoch
-    cached = core.release_objects(ctx, (ObjectRef("claim", item.ref, 1),), expected_epoch=epoch)
+    cached = core.records.release_objects(ctx, (ObjectRef("claim", item.ref, 1),), expected_epoch=epoch)
     assert cached[0].payload["value_text"] == "蓝色"
     result = core.forget(ctx, request(source), remaining_seconds=10)
     assert result["read_blocked"] and not result["active_content_removed"] and not result["declared_scope_complete"]
@@ -52,11 +52,11 @@ def test_C08_delete_blocks_every_existing_content_exit_before_physical_purge(app
     assert not core.search_sources(ctx, "蓝色", history=True)
     for automatic in (False, True):
         with pytest.raises(ContractError, match="VERSION_CONFLICT"):
-            core.release_objects(
+            core.records.release_objects(
                 ctx, (ObjectRef("claim", item.ref, 1),), expected_epoch=epoch, automatic=automatic, history=True
             )
     with pytest.raises(ContractError, match="SOURCE_MISSING"):
-        core.release_objects(
+        core.records.release_objects(
             ctx,
             (ObjectRef("event", source.ref, 1),),
             expected_epoch=result["memory_epoch"],
@@ -98,8 +98,8 @@ def test_C30_suppress_blocks_auto_preserves_explicit_read_and_no_implicit_unsupp
     assert not core.search_sources(ctx, "蓝色", automatic=True)
     assert core.search_sources(ctx, "蓝色", history=True)
     with pytest.raises(ContractError, match="SOURCE_MISSING"):
-        core.release_objects(ctx, (ObjectRef("claim", item.ref, 1),), expected_epoch=result["memory_epoch"])
-    assert core.release_objects(
+        core.records.release_objects(ctx, (ObjectRef("claim", item.ref, 1),), expected_epoch=result["memory_epoch"])
+    assert core.records.release_objects(
         ctx, (ObjectRef("claim", item.ref, 1),), expected_epoch=result["memory_epoch"], automatic=False
     )
     assert core.current_claim(ctx, item.ref).suppressed
@@ -176,7 +176,7 @@ def test_C11_epoch_change_rejects_old_claim_release_without_vector_body_fallback
     capture(core, ctx, "刚才写错了，TEST-project 用H200。", when="2026-09-03T12:00:00Z")
     # The correction supersedes revision 1: the release refuses it by its own revision, whatever the epoch did.
     with pytest.raises(ContractError, match="VERSION_CONFLICT"):
-        core.release_objects(ctx, (ObjectRef("claim", item.ref, 1),), expected_epoch=epoch)
+        core.records.release_objects(ctx, (ObjectRef("claim", item.ref, 1),), expected_epoch=epoch)
     assert core.current_claim(ctx, item.ref).payload["value_text"] == "H200"
 
 
@@ -190,7 +190,7 @@ def test_C20_authority_failure_prevents_release(app, monkeypatch):
 
     monkeypatch.setattr(core.storage, "_open", unavailable)
     with pytest.raises(sqlite3.OperationalError):
-        core.release_objects(ctx, (ObjectRef("event", source.ref, 1),), expected_epoch=epoch)
+        core.records.release_objects(ctx, (ObjectRef("event", source.ref, 1),), expected_epoch=epoch)
 
 
 def test_purge_removes_source_claim_quote_and_lexical_payloads_and_reports_remaining_layers(app):
@@ -198,7 +198,7 @@ def test_purge_removes_source_claim_quote_and_lexical_payloads_and_reports_remai
     item, source = initial(core, ctx, value="TEST_ERASE_PAYLOAD_937591")
     authorize(core, ctx, source)
     deleted = core.forget(ctx, request(source), remaining_seconds=10)
-    result = core.purge_sqlite(ctx, deleted["operation_id"], remaining_seconds=10)
+    result = core.operations.purge_sqlite(ctx, deleted["operation_id"], remaining_seconds=10)
     assert not result["active_content_removed"] and result["layers"]["sqlite_active"] == "removed"
     assert (
         result["layers"]["sqlite_history"] == "maintenance_pending"
@@ -221,7 +221,7 @@ def test_purge_removes_source_claim_quote_and_lexical_payloads_and_reports_remai
         ).fetchone()
         assert conn.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
     before = core.storage.path.read_bytes()
-    assert core.purge_sqlite(ctx, deleted["operation_id"], remaining_seconds=10) == result
+    assert core.operations.purge_sqlite(ctx, deleted["operation_id"], remaining_seconds=10) == result
     assert core.storage.path.read_bytes() == before
 
 
@@ -299,7 +299,7 @@ def test_intention_dependency_and_duplicate_quote_edges_are_erased_together(app)
     item = accept(core, ctx, intention(source)).items[0]
     authorize(core, ctx, source)
     operation = core.forget(ctx, request(source), remaining_seconds=10)
-    result = core.purge_sqlite(ctx, operation["operation_id"], remaining_seconds=10)
+    result = core.operations.purge_sqlite(ctx, operation["operation_id"], remaining_seconds=10)
     assert not result["active_content_removed"] and core.current_claim(ctx, item.ref) is None
     with sqlite3.connect(core.storage.path) as conn:
         assert not any(r[0] for r in conn.execute("SELECT quote FROM evidence_links WHERE source_ref=?", (source.ref,)))
@@ -316,7 +316,7 @@ def test_missing_future_segment_is_still_denied_after_group_key_payload_purge(ap
     )
     authorize(core, ctx, part)
     deleted = core.forget(ctx, request(part), remaining_seconds=10)
-    core.purge_sqlite(ctx, deleted["operation_id"], remaining_seconds=10)
+    core.operations.purge_sqlite(ctx, deleted["operation_id"], remaining_seconds=10)
     with pytest.raises(ContractError, match="source_unavailable"):
         capture(
             core,
@@ -374,7 +374,7 @@ def test_cancelled_intention_does_not_return_to_pending_after_restore(app, tmp_p
     restored = core.current_claim(ctx, item.ref)
     assert restored.payload["intention"]["state"] == "cancelled"
     with pytest.raises(ContractError, match="SOURCE_MISSING"):
-        core.release_objects(
+        core.records.release_objects(
             ctx, (ObjectRef("claim", item.ref, restored.revision),), expected_epoch=core.status(ctx).memory_epoch
         )
 
@@ -411,7 +411,7 @@ def test_restore_epoch_never_reuses_any_pre_restore_packet_epoch(app, tmp_path):
     replay_deletion_ledger(core.storage, InstallationMaintenance(ctx), ledger)
     assert core.status(ctx).memory_epoch > last_epoch
     with pytest.raises(ContractError, match="memory_epoch"):
-        core.release_objects(ctx, (ObjectRef("claim", item.ref, 1),), expected_epoch=last_epoch)
+        core.records.release_objects(ctx, (ObjectRef("claim", item.ref, 1),), expected_epoch=last_epoch)
 
 
 def test_ordinary_context_with_all_scopes_has_no_installation_maintenance_authority(app):
@@ -438,11 +438,11 @@ def test_purge_failure_keeps_content_blocked_and_can_retry(app, monkeypatch):
     before = core.storage.path.read_bytes()
     actual, _ = inject(monkeypatch, operation="UPDATE claim_versions SET payload_json")
     with pytest.raises(InjectedFailure):
-        core.purge_sqlite(ctx, op["operation_id"], remaining_seconds=10)
+        core.operations.purge_sqlite(ctx, op["operation_id"], remaining_seconds=10)
     monkeypatch.setattr(storage_module, "connect_truth_database", actual)
     assert core.storage.path.read_bytes() == before
     assert core.source(ctx, source.ref, 1) is None and core.current_claim(ctx, item.ref) is None
-    assert not core.purge_sqlite(ctx, op["operation_id"], remaining_seconds=10)["active_content_removed"]
+    assert not core.operations.purge_sqlite(ctx, op["operation_id"], remaining_seconds=10)["active_content_removed"]
 
 
 def test_question_word_without_punctuation_cannot_authorize_delete(app):
@@ -487,10 +487,10 @@ def test_a_capture_between_a_read_and_its_release_withdraws_nothing(app):
     capture(core, ctx, "TEST 另一个入口刚记下的一句无关的话。")
     assert core.status(ctx).memory_epoch > epoch
     assert not core.memory_retracted_since(ctx, epoch)
-    released = core.release_objects(ctx, (ObjectRef("claim", item.ref, item.revision),), expected_epoch=epoch)
+    released = core.records.release_objects(ctx, (ObjectRef("claim", item.ref, item.revision),), expected_epoch=epoch)
     assert [one.revision for one in released] == [item.revision]
     authorize(core, ctx, item)
     core.forget(ctx, request(item), remaining_seconds=10)
     assert core.memory_retracted_since(ctx, epoch)
     with pytest.raises(ContractError, match="memory_epoch"):
-        core.release_objects(ctx, (ObjectRef("event", source.ref, source.revision),), expected_epoch=epoch)
+        core.records.release_objects(ctx, (ObjectRef("event", source.ref, source.revision),), expected_epoch=epoch)

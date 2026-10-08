@@ -305,7 +305,7 @@ def test_a_naming_alias_an_earlier_release_stored_is_repaired_into_the_fact(app,
         earlier_release.setattr(mutate, "name_frame", lambda proposal, roots: proposal)
         assert accept(core, owner, stored).items[0].state == "proposed"
 
-    report = core.repair_claim_frames(owner, limit=16)
+    report = core.operations.repair_claim_frames(owner, limit=16)
     active = [item for item in report["items"] if item["state"] == "active"]
     assert len(active) == 1 and not report["errors"], report
     fact = core.current_claim(owner, active[0]["ref"])

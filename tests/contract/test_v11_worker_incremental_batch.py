@@ -397,7 +397,7 @@ def test_resume_applied_to_the_episode_during_extraction_discards_result(worker_
     class ResumedDuringModel:
         def propose(self, sources, *, episode_ref=None, remaining_seconds=1.0):
             other = capture(core, ctx, "请帮我完成 TEST 报告第二部分。", key="TEST-fence/resume-other")
-            core.accept_consolidation(
+            core.records.accept_consolidation(
                 ctx,
                 dict(
                     protocol_version="1.1",
@@ -462,7 +462,7 @@ def test_reference_binding_revised_during_extraction_discards_result(worker_app,
 
     def accept_references(*references):
         refs = list(dict.fromkeys(ref for item in references for ref in item["evidence_refs"]))
-        return core.accept_consolidation(
+        return core.records.accept_consolidation(
             ctx,
             dict(
                 protocol_version="1.1",
@@ -496,7 +496,7 @@ def test_reference_binding_revised_during_extraction_discards_result(worker_app,
     result = core.drain_worker(ctx, consolidation=ClarifiedDuringModel(), max_items=1, remaining_seconds=30)
     assert result.retried == 1 and result.completed == 0
     assert _consolidate_row(core, mention.ref) == ("pending", "memory_epoch_changed")
-    current = core.reference(ctx, binding.ref)
+    current = core.records.reference(ctx, binding.ref)
     assert (current.revision, current.payload["resolved_ref"]) == (2, f"{two.ref}@2")
 
 

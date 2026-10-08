@@ -123,7 +123,7 @@ def test_a_fault_is_cleared_and_its_three_tables_move_together(app):
     _fail_one(core, ctx, "timeout")
     assert _states(core)[0].get("failed")
 
-    report = core.retry_failed_work(ctx, limit=64, dry_run=False)
+    report = core.operations.retry_failed_work(ctx, limit=64, dry_run=False)
     assert report["retried"] >= 1 and report["by_kind"].get("timeout")
     work, evaluations = _states(core)
     assert not work.get("failed")
@@ -138,15 +138,15 @@ def test_a_fault_is_cleared_and_its_three_tables_move_together(app):
 def test_a_second_pass_does_nothing(app):
     core, ctx = app
     _fail_one(core, ctx, "timeout")
-    assert core.retry_failed_work(ctx, limit=64, dry_run=False)["retried"] >= 1
-    assert core.retry_failed_work(ctx, limit=64, dry_run=False)["retried"] == 0
+    assert core.operations.retry_failed_work(ctx, limit=64, dry_run=False)["retried"] >= 1
+    assert core.operations.retry_failed_work(ctx, limit=64, dry_run=False)["retried"] == 0
 
 
 def test_the_preview_writes_nothing(app):
     core, ctx = app
     _fail_one(core, ctx, "timeout")
     before = _states(core)
-    report = core.retry_failed_work(ctx, limit=64, dry_run=True)
+    report = core.operations.retry_failed_work(ctx, limit=64, dry_run=True)
     assert report["retried"] >= 1 and report["applied"] is False
     assert _states(core) == before
 
@@ -154,9 +154,9 @@ def test_the_preview_writes_nothing(app):
 def test_a_terminal_failure_is_left_alone_without_the_flag(app):
     core, ctx = app
     _fail_one(core, ctx, "derivation_invalid")
-    assert core.retry_failed_work(ctx, limit=64, dry_run=False)["retried"] == 0
+    assert core.operations.retry_failed_work(ctx, limit=64, dry_run=False)["retried"] == 0
     assert _states(core)[0].get("failed")
-    assert core.retry_failed_work(ctx, limit=64, include_terminal=True, dry_run=False)["retried"] >= 1
+    assert core.operations.retry_failed_work(ctx, limit=64, include_terminal=True, dry_run=False)["retried"] >= 1
     assert not _states(core)[0].get("failed")
 
 
@@ -164,7 +164,7 @@ def test_a_terminal_failure_is_left_alone_without_the_flag(app):
 def test_the_page_is_bounded(app, limit):
     core, ctx = app
     with pytest.raises(ContractError):
-        core.retry_failed_work(ctx, limit=limit, dry_run=True)
+        core.operations.retry_failed_work(ctx, limit=limit, dry_run=True)
 
 
 # --------------------------------------------------------------------------
@@ -302,7 +302,7 @@ def test_an_account_refusal_row_reopens_through_real_storage(app):
         conn.execute("UPDATE work_items SET last_error_code='http_402' WHERE state='failed'")
         conn.execute("UPDATE candidate_evaluations SET failure_code='http_402' WHERE state='failed'")
         conn.commit()
-    report = core.retry_failed_work(ctx, limit=64, dry_run=False)
+    report = core.operations.retry_failed_work(ctx, limit=64, dry_run=False)
     assert report["by_kind"].get("http_402") == 1
     work, evaluations = _states(core)
     assert not work.get("failed") and not evaluations.get("failed")
@@ -326,7 +326,7 @@ def test_a_transient_failure_clears_through_real_storage(app):
     core, ctx = app
     _fail_one(core, ctx, "model_unavailable")
     assert _states(core)[0].get("failed")
-    report = core.retry_failed_work(ctx, limit=64, dry_run=False)
+    report = core.operations.retry_failed_work(ctx, limit=64, dry_run=False)
     assert report["retried"] >= 1 and report["by_kind"].get("model_unavailable")
     assert not _states(core)[0].get("failed")
 
@@ -335,7 +335,7 @@ def test_a_refused_evaluation_clears_through_real_storage(app):
     """``http_422`` failed a candidate evaluation on the shared store, and no command could re-open it."""
     core, ctx = app
     _fail_one(core, ctx, "http_422")
-    report = core.retry_failed_work(ctx, limit=64, dry_run=False)
+    report = core.operations.retry_failed_work(ctx, limit=64, dry_run=False)
     assert report["retried"] >= 1 and report["by_kind"].get("http_422")
     assert not _states(core)[0].get("failed")
 
@@ -346,7 +346,7 @@ def test_a_transport_failure_mid_reply_clears_through_real_storage(app):
     core, ctx = app
     _fail_one(core, ctx, "http_protocol")
     assert _states(core)[0].get("failed")
-    report = core.retry_failed_work(ctx, limit=64, dry_run=False)
+    report = core.operations.retry_failed_work(ctx, limit=64, dry_run=False)
     assert report["retried"] >= 1 and report["by_kind"].get("http_protocol")
     assert not _states(core)[0].get("failed")
 
@@ -616,9 +616,9 @@ def test_invalid_candidate_gets_one_extra_attempt_repair_or_visible_review(app, 
     with sqlite3.connect(core.storage.path) as db:
         assert db.execute(NEEDS_REVIEW_COUNT).fetchone()[0] == 1
         assert db.execute("SELECT count(*) FROM work_items WHERE state='failed'").fetchone()[0] == 1
-    assert core.retry_failed_work(ctx, limit=64, dry_run=False)["retried"] == 0
+    assert core.operations.retry_failed_work(ctx, limit=64, dry_run=False)["retried"] == 0
     # Explicit operator action does not grant another automatic retry budget.
-    assert core.retry_failed_work(ctx, limit=64, include_terminal=True, dry_run=False)["retried"] == 1
+    assert core.operations.retry_failed_work(ctx, limit=64, include_terminal=True, dry_run=False)["retried"] == 1
     core.drain_worker(ctx, max_items=8, remaining_seconds=10, consolidation=model)
     assert len(calls) == (2 if legacy else 3)
     with sqlite3.connect(core.storage.path) as db:

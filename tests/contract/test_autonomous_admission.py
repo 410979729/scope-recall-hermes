@@ -54,7 +54,7 @@ def test_nothing_deferred_takes_no_writer_lease(tmp_path, monkeypatch):
     monkeypatch.setattr(
         storage_type, "write", lambda self, *args, **kwargs: writes.append(1) or real_write(self, *args, **kwargs)
     )
-    assert app.resume_deferred(ctx, remaining_seconds=10) == ()
+    assert app.records.resume_deferred(ctx, remaining_seconds=10) == ()
     assert writes == []
 
 
@@ -77,7 +77,7 @@ def test_a_deferred_source_with_no_room_takes_no_writer_lease(tmp_path, monkeypa
     capture(app, ctx, "TEST-priority", "记住：TEST 选择蓝色")
     assert deferred.admission == ("admission_deferred:queue_capacity",)
     writes = _count_writes(app, monkeypatch)
-    assert app.resume_deferred(ctx, remaining_seconds=10) == ()
+    assert app.records.resume_deferred(ctx, remaining_seconds=10) == ()
     assert writes == []
 
 
@@ -93,7 +93,7 @@ def test_an_older_revision_s_deferred_marker_starts_no_page_scan(tmp_path, monke
         store_decision(tx, first.event_refs[0].ref, 1, AdmissionDecision("deferred", "queue_capacity", False))
     pages, real_page = [], admission._deferred_page
     monkeypatch.setattr(admission, "_deferred_page", lambda *args: pages.append(1) or real_page(*args))
-    assert app.resume_deferred(ctx, remaining_seconds=10) == ()
+    assert app.records.resume_deferred(ctx, remaining_seconds=10) == ()
     assert pages == [], "a superseded marker started the page scan"
 
 
@@ -105,7 +105,7 @@ def test_an_older_revision_s_deferred_marker_takes_no_writer_lease(tmp_path, mon
     with app.storage.write(ctx, remaining_seconds=10) as tx:
         store_decision(tx, first.event_refs[0].ref, 1, AdmissionDecision("deferred", "queue_capacity", False))
     writes = _count_writes(app, monkeypatch)
-    assert app.resume_deferred(ctx, remaining_seconds=10) == ()
+    assert app.records.resume_deferred(ctx, remaining_seconds=10) == ()
     assert writes == []
 
 
@@ -199,16 +199,16 @@ def test_backpressure_reserves_capacity_then_automatically_refills_after_drain(t
     assert b.gaps == ()
     assert counts(app)["work_items"] == 4
     assert app.search_sources(ctx, "second")[0].ref == b.event_refs[0].ref
-    assert app.resume_deferred(ctx, remaining_seconds=10) == ()
+    assert app.records.resume_deferred(ctx, remaining_seconds=10) == ()
     # Complete queued work through the real lease state machine (no models).
     with app.storage.write(ctx, remaining_seconds=10) as tx:
         while batch := tx.work.claim_next(owner="TEST-worker", now=app.clock.utc_now(), lease_seconds=10):
             for work in batch:
                 tx.work.complete(work.work_id, work.lease_token, work.lease_owner, now=app.clock.utc_now())
-    resumed = app.resume_deferred(ctx, remaining_seconds=10)
+    resumed = app.records.resume_deferred(ctx, remaining_seconds=10)
     assert len(resumed) == 1 and resumed[0].queued_work == 2
     assert app.source(ctx, b.event_refs[0].ref, 1).capture_gaps == ()
-    assert app.resume_deferred(ctx, remaining_seconds=10) == ()
+    assert app.records.resume_deferred(ctx, remaining_seconds=10) == ()
 
 
 def test_memory_reinjection_is_source_only_at_capture_refill_and_on_demand(tmp_path):
@@ -245,15 +245,15 @@ def test_memory_reinjection_is_source_only_at_capture_refill_and_on_demand(tmp_p
     assert ref in {source.ref for source in app.search_sources(ctx, "TEST-ECHO-ANCHOR")}
     # An explicit request creates no work either, and writes nothing.
     before = app.storage.path.read_bytes()
-    receipt = app.schedule_source(ctx, ref, 1, remaining_seconds=10)
+    receipt = app.records.schedule_source(ctx, ref, 1, remaining_seconds=10)
     assert (receipt.disposition, receipt.reason, receipt.queued_work) == ("source_only", "memory_reinjection", 0)
     assert app.storage.path.read_bytes() == before
     # A row deferred for capacity before this rule settles on its first refill.
     with app.storage.write(ctx, remaining_seconds=10) as tx:
         store_decision(tx, ref, 1, AdmissionDecision("deferred", "queue_capacity", True))
-    resumed = app.resume_deferred(ctx, remaining_seconds=10)
+    resumed = app.records.resume_deferred(ctx, remaining_seconds=10)
     assert [(item.ref, item.disposition, item.queued_work) for item in resumed] == [(ref, "source_only", 0)]
-    assert app.resume_deferred(ctx, remaining_seconds=10) == ()
+    assert app.records.resume_deferred(ctx, remaining_seconds=10) == ()
     assert counts(app)["work_items"] == 1
     status = app.status(ctx)
     assert status.source_only_sources == 1 and status.deferred_sources == 0
@@ -263,15 +263,15 @@ def test_on_demand_activation_is_idempotent_and_does_not_bypass_visibility(tmp_p
     app, ctx = app_at(tmp_path)
     saved = capture(app, ctx, "TEST-reusable", "好的")
     ref = saved.event_refs[0].ref
-    first = app.schedule_source(ctx, ref, 1, remaining_seconds=10)
+    first = app.records.schedule_source(ctx, ref, 1, remaining_seconds=10)
     assert first.queued_work == 2 and first.disposition == "scheduled"
     before = app.storage.path.read_bytes()
-    assert app.schedule_source(ctx, ref, 1, remaining_seconds=10).disposition == "unchanged"
+    assert app.records.schedule_source(ctx, ref, 1, remaining_seconds=10).disposition == "unchanged"
     assert app.storage.path.read_bytes() == before
     with pytest.raises(ContractError, match="ACCESS_DENIED"):
-        app.schedule_source(replace(ctx, actor_origin="memory_reinjection"), ref, 1)
+        app.records.schedule_source(replace(ctx, actor_origin="memory_reinjection"), ref, 1)
     with pytest.raises(ContractError, match="ACCESS_DENIED"):
-        app.schedule_source(replace(ctx, allowed_scope_ids=frozenset()), ref, 1)
+        app.records.schedule_source(replace(ctx, allowed_scope_ids=frozenset()), ref, 1)
 
 
 @pytest.mark.parametrize(
@@ -303,11 +303,11 @@ def test_backpressure_and_scheduling_stay_in_original_project_and_branch(tmp_pat
     deferred = capture(app, other, "TEST-project-deferred", "TEST more project content")
     assert first.semantic_state == saved.semantic_state == "pending"
     assert deferred.gaps == () and deferred.admission == ("admission_deferred:queue_capacity",)
-    assert app.resume_deferred(ctx) == ()
+    assert app.records.resume_deferred(ctx) == ()
     with pytest.raises(ContractError, match="SOURCE_MISSING"):
-        app.schedule_source(other, first.event_refs[0].ref, 1)
+        app.records.schedule_source(other, first.event_refs[0].ref, 1)
     with pytest.raises(ContractError, match="SOURCE_MISSING"):
-        app.schedule_source(ctx, deferred.event_refs[0].ref, 1)
+        app.records.schedule_source(ctx, deferred.event_refs[0].ref, 1)
 
 
 def test_schedule_does_not_resurrect_deleted_suppressed_or_old_revisions(tmp_path):
@@ -315,14 +315,14 @@ def test_schedule_does_not_resurrect_deleted_suppressed_or_old_revisions(tmp_pat
     saved = capture(app, ctx, "TEST-old", "好")
     capture(app, ctx, "TEST-old", "收到", source_revision=2)
     with pytest.raises(ContractError, match="SOURCE_MISSING"):
-        app.schedule_source(ctx, saved.event_refs[0].ref, 1)
+        app.records.schedule_source(ctx, saved.event_refs[0].ref, 1)
     with app.storage.write(ctx) as tx:
         tx._check(write=True).execute(
             "UPDATE source_events SET read_blocked=1 WHERE event_id=?", (saved.event_refs[0].ref,)
         )
     before = app.storage.path.read_bytes()
     with pytest.raises(ContractError, match="SOURCE_MISSING"):
-        app.schedule_source(ctx, saved.event_refs[0].ref, 2)
+        app.records.schedule_source(ctx, saved.event_refs[0].ref, 2)
     assert app.storage.path.read_bytes() == before
 
 
@@ -374,7 +374,7 @@ def test_core_worker_uses_capture_policy_for_deferred_refill(tmp_path):
     assert saved.admission == ("admission_deferred:queue_capacity",)
     app.drain_worker(ctx, owner_id="TEST-worker", remaining_seconds=10)
     assert counts(app)["work_items"] == 2
-    assert app.resume_deferred(ctx, remaining_seconds=10) == ()
+    assert app.records.resume_deferred(ctx, remaining_seconds=10) == ()
 
 
 def clocked_app(tmp_path, policy):
@@ -414,7 +414,7 @@ def test_refill_gives_a_freed_slot_to_fresh_conversation_before_older_deferred_s
     fresh = capture(app, ctx, "TEST-fresh", "TEST the message typed just now")
     assert {receipt.admission for receipt in (*older, fresh)} == {("admission_deferred:queue_capacity",)}
     complete_work(app, ctx, clock)
-    resumed = app.resume_deferred(ctx, remaining_seconds=10)
+    resumed = app.records.resume_deferred(ctx, remaining_seconds=10)
     assert [(item.ref, item.disposition, item.queued_work) for item in resumed] == [
         (fresh.event_refs[0].ref, "scheduled", 2),
         (older[0].event_refs[0].ref, "deferred", 0),
@@ -456,13 +456,13 @@ def test_freshness_lends_the_reserve_without_becoming_importance(tmp_path):
     for index in range(2):
         capture(app, yesterday, f"TEST-backlog/{index}", f"TEST yesterday backlog source {index}")
     requested = capture(app, yesterday, "TEST-backlog/requested", "TEST yesterday requested source")
-    assert app.schedule_source(ctx, requested.event_refs[0].ref, 1, remaining_seconds=10).queued_work == 2
+    assert app.records.schedule_source(ctx, requested.event_refs[0].ref, 1, remaining_seconds=10).queued_work == 2
     complete_work(app, ctx, clock, count=1, allowed_work_types=frozenset({"consolidate"}))
     clock.advance(iso="2026-09-06T12:00:00Z")
     fresh = capture(app, ctx, "TEST-fresh", "TEST the message typed just now")
     ref = fresh.event_refs[0].ref
     # Consolidation has a reserve slot left, embedding does not.
-    [partial] = app.resume_deferred(ctx, remaining_seconds=10)
+    [partial] = app.records.resume_deferred(ctx, remaining_seconds=10)
     assert (partial.ref, partial.disposition, partial.queued_work) == (ref, "partial", 1)
     conn = sqlite3.connect(f"{app.storage.path.as_uri()}?mode=ro", uri=True)
     try:
@@ -475,7 +475,7 @@ def test_freshness_lends_the_reserve_without_becoming_importance(tmp_path):
     # Once it is no longer fresh it waits for the ordinary ceiling like any other source.
     complete_work(app, ctx, clock, count=1, allowed_work_types=frozenset({"embed"}))
     clock.advance(iso="2026-09-06T14:00:01Z")
-    assert app.resume_deferred(ctx, remaining_seconds=10) == ()
+    assert app.records.resume_deferred(ctx, remaining_seconds=10) == ()
 
 
 def test_unavailable_embedding_never_starves_consolidation_or_its_deferred_refill(tmp_path):
@@ -495,7 +495,7 @@ def test_unavailable_embedding_never_starves_consolidation_or_its_deferred_refil
     later = capture(app, ctx, "TEST-later-cons", "TEST pending healthy consolidation")
     assert later.admission == ("admission_deferred:queue_capacity",)
     app.drain_worker(ctx, consolidation=model, max_items=1, remaining_seconds=10)
-    resumed = app.resume_deferred(ctx, limit=1, remaining_seconds=10)
+    resumed = app.records.resume_deferred(ctx, limit=1, remaining_seconds=10)
     assert len(resumed) == 1 and resumed[0].ref == later.event_refs[0].ref
     assert resumed[0].queued_work == 1 and resumed[0].disposition == "partial"
     # Simulate capability restoration by completing the existing embed via
@@ -511,9 +511,9 @@ def test_unavailable_embedding_never_starves_consolidation_or_its_deferred_refil
             "TEST-embed", app.clock.utc_now(), lease_seconds=10, allowed_work_types=frozenset({"embed"})
         )[0]
         tx.work.complete(work.work_id, work.lease_token, work.lease_owner, now=app.clock.utc_now())
-    catchup = app.resume_deferred(ctx, limit=16, remaining_seconds=10)
+    catchup = app.records.resume_deferred(ctx, limit=16, remaining_seconds=10)
     assert sum(item.queued_work for item in catchup) == 1
-    assert app.resume_deferred(ctx, limit=16, remaining_seconds=10) == ()
+    assert app.records.resume_deferred(ctx, limit=16, remaining_seconds=10) == ()
 
 
 def test_a_repeated_tool_output_is_kept_as_a_source_only(tmp_path):
@@ -569,7 +569,7 @@ def test_a_tool_output_waiting_for_an_embedding_slot_never_holds_the_refill_page
     # The consolidation slot frees; the embedding queue stays full.
     complete_work(app, ctx, clock, allowed_work_types=frozenset({"consolidate"}))
     for _ in range(2):
-        resumed = app.resume_deferred(ctx, limit=1, remaining_seconds=10)
+        resumed = app.records.resume_deferred(ctx, limit=1, remaining_seconds=10)
         assert [(item.ref, item.disposition, item.queued_work) for item in resumed] in (
             [(said.event_refs[0].ref, "partial", 1)],
             [],
@@ -592,5 +592,5 @@ def test_refill_counts_the_queue_once_however_many_scopes_the_worker_binds(tmp_p
     worker = TrustedContext(binding, "TEST-worker", scopes, "host_generated")
     counted = []
     monkeypatch.setattr(admission, "pending_count", lambda *args, **kwargs: counted.append(args[1]) or 0)
-    assert app.resume_deferred(worker, remaining_seconds=10) == ()
+    assert app.records.resume_deferred(worker, remaining_seconds=10) == ()
     assert counted == []

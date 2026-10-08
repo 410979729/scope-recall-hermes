@@ -44,14 +44,14 @@ def test_retire_rootless_retires_only_proposals_resting_on_tool_output(app):
     assert person.state == "proposed" and mixed.state in {"proposed", "active"}
     before = sqlite3.connect(core.storage.path).execute("SELECT count(*) FROM claim_versions").fetchone()[0]
 
-    preview = core.retire_rootless_proposals(ctx, limit=32, dry_run=True)
+    preview = core.operations.retire_rootless_proposals(ctx, limit=32, dry_run=True)
     assert [entry["ref"] for entry in preview["changed"]] == [rootless.ref]
     assert preview["changed"][0]["origins"] == ["tool_observation"] and not preview["applied"]
     assert sqlite3.connect(core.storage.path).execute("SELECT count(*) FROM claim_versions").fetchone()[0] == before
     # Refs and verdicts only: a report is printed by an operator command and never carries claim text.
     assert all(set(entry) <= {"ref", "was", "now", "origins", "revision"} for entry in preview["changed"])
 
-    applied = core.retire_rootless_proposals(ctx, limit=32, dry_run=False)
+    applied = core.operations.retire_rootless_proposals(ctx, limit=32, dry_run=False)
     assert [entry["ref"] for entry in applied["changed"]] == [rootless.ref] and applied["applied"]
     head = core.claim_history(ctx, rootless.ref)[-1]
     assert (head.state, head.reason) == ("retracted", ROOTLESS_REASON)
@@ -68,7 +68,7 @@ def test_retire_rootless_retires_only_proposals_resting_on_tool_output(app):
             "SELECT count(*) FROM candidate_evaluations WHERE candidate_ref=? AND state='queued'", (rootless.ref,)
         ).fetchone()[0]
     assert (waiting, queued) == (0, 0), "a retired proposal no longer waits for an evaluation"
-    assert core.retire_rootless_proposals(ctx, limit=32, dry_run=False)["changed"] == []
+    assert core.operations.retire_rootless_proposals(ctx, limit=32, dry_run=False)["changed"] == []
 
 
 def test_a_proposal_a_person_has_since_said_is_left_to_its_evaluation(app):
@@ -92,8 +92,8 @@ def test_a_proposal_a_person_has_since_said_is_left_to_its_evaluation(app):
             "SELECT count(*) FROM candidate_evidence WHERE candidate_ref=? AND source_ref=?", (saved.ref, said.ref)
         ).fetchone()[0]
     assert heard == 1
-    preview = core.retire_rootless_proposals(ctx, limit=32, dry_run=True)
+    preview = core.operations.retire_rootless_proposals(ctx, limit=32, dry_run=True)
     assert preview["changed"] == []
     assert preview["skipped"] == [{"ref": saved.ref, "why": "restated_in_evaluation"}]
-    assert core.retire_rootless_proposals(ctx, limit=32, dry_run=False)["changed"] == []
+    assert core.operations.retire_rootless_proposals(ctx, limit=32, dry_run=False)["changed"] == []
     assert core.claim_history(ctx, saved.ref)[-1].state == "proposed"

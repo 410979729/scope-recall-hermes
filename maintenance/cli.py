@@ -123,7 +123,7 @@ def _add_repair_arguments(parser: argparse.ArgumentParser) -> None:
 def _repair_claim_frames(args: argparse.Namespace) -> int:
     return _run_core(
         args,
-        lambda core, config: core.repair_claim_frames(
+        lambda core, config: core.operations.repair_claim_frames(
             config.context(), after_ref=args.after_ref, limit=args.limit, remaining_seconds=config.request_seconds
         ),
         failed=lambda receipt: bool(receipt["errors"]),
@@ -138,7 +138,7 @@ def _add_requalify_arguments(parser: argparse.ArgumentParser) -> None:
 def _requalify(args: argparse.Namespace) -> int:
     return _run_core(
         args,
-        lambda core, config: core.requalify_claims(
+        lambda core, config: core.operations.requalify_claims(
             config.context(),
             after_ref=args.after_ref,
             limit=args.limit,
@@ -151,7 +151,7 @@ def _requalify(args: argparse.Namespace) -> int:
 def _retire_rootless(args: argparse.Namespace) -> int:
     return _run_core(
         args,
-        lambda core, config: core.retire_rootless_proposals(
+        lambda core, config: core.operations.retire_rootless_proposals(
             config.context(),
             after_ref=args.after_ref,
             limit=args.limit,
@@ -187,7 +187,7 @@ def _unindex_withheld(args: argparse.Namespace) -> int:
             if total["pages"]:
                 # Each page holds the store's writer lease; captures waiting for it get it between pages.
                 time.sleep(_UNINDEX_PAGE_PAUSE)
-            page = core.unindex_withheld_outputs(
+            page = core.operations.unindex_withheld_outputs(
                 config.context(),
                 after_id=total["next_after_id"],
                 limit=args.limit,
@@ -222,7 +222,7 @@ def _add_retry_arguments(parser: argparse.ArgumentParser) -> None:
 def _retry_failures(args: argparse.Namespace) -> int:
     return _run_core(
         args,
-        lambda core, config: core.retry_failed_work(
+        lambda core, config: core.operations.retry_failed_work(
             config.context(),
             limit=args.limit,
             include_terminal=args.include_terminal,
@@ -250,7 +250,7 @@ def _respace_embeddings(args: argparse.Namespace) -> int:
     action = "start" if args.start else "restart" if args.restart else "cancel" if args.cancel else "status"
     return _run_core(
         args,
-        lambda core, config: core.respace_embeddings(
+        lambda core, config: core.operations.respace_embeddings(
             config.context(),
             space_id=config.embedding_space_id(),
             action=action,

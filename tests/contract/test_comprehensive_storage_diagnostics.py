@@ -43,7 +43,7 @@ def test_admission_counts_show_current_visible_sources_and_clear_after_activatio
         while work := tx.work.claim_next("TEST-worker", app.clock.utc_now(), lease_seconds=10):
             for item in work:
                 tx.work.complete(item.work_id, item.lease_token, item.lease_owner, now=app.clock.utc_now())
-    assert len(app.resume_deferred(ctx)) == 1
+    assert len(app.records.resume_deferred(ctx)) == 1
     assert app.status(ctx).deferred_sources == 0
     assert app.status(ctx).oldest_deferred_at is None
 

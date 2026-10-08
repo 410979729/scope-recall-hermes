@@ -48,7 +48,7 @@ def edge(core, ctx, subject, target, **kwargs):
         kind="fact",
         **kwargs,
     )
-    result = core.accept_claim_proposals(
+    result = core.records.accept_claim_proposals(
         ctx,
         dict(
             protocol_version="1.1",

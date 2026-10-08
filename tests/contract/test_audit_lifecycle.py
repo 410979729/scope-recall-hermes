@@ -138,7 +138,7 @@ def test_restored_attachments_and_vectors_require_fresh_physical_purge(app, tmp_
     sqlite_backup(snapshot, core.storage.path)
     blob_path.write_bytes(original_bytes)  # Simulate restoring the old retained backup.
     replay_deletion_ledger(core.storage, authority, ledger)
-    assert core.source(ctx, source.ref, 1) is None and core.artifact(ctx, item.ref, 1) is None
+    assert core.source(ctx, source.ref, 1) is None and core.records.artifact(ctx, item.ref, 1) is None
     with core.storage.read(ctx) as tx:
         receipt = tx.deletions.receipt(deleted["operation_id"])
         assert not receipt["active_content_removed"]

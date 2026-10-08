@@ -17,17 +17,15 @@ from ..contracts import (
     validate_model_request,
     validate_payload,
 )
-from . import lexical_index
-from .admission import AdmissionPolicy, resume_deferred, schedule_source
+from .admission import AdmissionPolicy
 from .capture import CaptureReceipt, record_event
 from .delete_storage import retraction_after
-from .file_lock import advisory_file_lock
+from .operations import Operations
 from .recall_diagnostics import RECALL_DIAGNOSTIC_PREFIX, RecallDiagnostics
+from .records import Records
 from .retrieval import CandidateRef, SearchContext, SearchLimits
 from .source_records import StoredSource
 from .storage import SQLiteStorage, StoreStatus
-from .visibility import release_objects
-from .work_storage import respace_refusal
 
 
 class Clock(Protocol):
@@ -121,6 +119,8 @@ class MemoryCore:
             diagnostics=self.recall_diagnostics,
             clock=self.clock,
         )
+        self.operations = Operations(self)
+        self.records = Records(self)
 
     def initialize(self) -> StoreStatus:
         """Explicit initialization or an identity-checked supported schema upgrade."""
@@ -222,17 +222,6 @@ class MemoryCore:
             remaining_seconds=self.config.write_timeout_seconds if remaining_seconds is None else remaining_seconds,
         )
 
-    def schedule_source(self, context, ref, revision, *, remaining_seconds=None):
-        return schedule_source(
-            self.storage,
-            self.clock,
-            context,
-            ref,
-            revision,
-            policy=self.config.admission_policy,
-            remaining_seconds=self.config.write_timeout_seconds if remaining_seconds is None else remaining_seconds,
-        )
-
     def record_host_event(self, context, value, *, scope_id, host_scope, remaining_seconds=1.0):
         """Authenticated host ingress with durable recovery before derivation."""
         from .capture_inbox import durable_record_event
@@ -246,16 +235,6 @@ class MemoryCore:
             host_scope=host_scope,
             admission_policy=self.config.admission_policy,
             remaining_seconds=remaining_seconds,
-        )
-
-    def resume_deferred(self, context, *, limit=16, remaining_seconds=None):
-        return resume_deferred(
-            self.storage,
-            self.clock,
-            context,
-            self.config.admission_policy,
-            limit=limit,
-            remaining_seconds=self.config.write_timeout_seconds if remaining_seconds is None else remaining_seconds,
         )
 
     def search_sources(
@@ -419,20 +398,6 @@ class MemoryCore:
         )
         return self.recall_pipeline.collection(search_context, query, cursor)
 
-    def accept_claim_proposals(
-        self, context: TrustedContext, value, *, scope_id: str, remaining_seconds: float | None = None
-    ):
-        from .mutate import accept_claim_proposals
-
-        return accept_claim_proposals(
-            self.storage,
-            self.clock,
-            context,
-            value,
-            scope_id=scope_id,
-            remaining_seconds=self.config.write_timeout_seconds if remaining_seconds is None else remaining_seconds,
-        )
-
     def revise(self, context: TrustedContext, value, *, remaining_seconds: float | None = None):
         from .mutate import revise
 
@@ -455,143 +420,6 @@ class MemoryCore:
         with self.storage.read(context) as tx:
             return tx.claims.versions(ref)
 
-    def unresolved_updates(self, context: TrustedContext):
-        with self.storage.read(context) as tx:
-            return tx.claims.unresolved_updates()
-
-    def repair_claim_frames(
-        self, context: TrustedContext, *, after_ref: str = "", limit: int = 16, remaining_seconds: float | None = None
-    ):
-        """Revalidate one bounded page of legacy frames without model calls."""
-        from .requalify import repair_frames
-
-        with self.storage.write(
-            context,
-            remaining_seconds=self.config.write_timeout_seconds if remaining_seconds is None else remaining_seconds,
-        ) as tx:
-            return repair_frames(tx, now=self.clock.utc_now(), after_ref=after_ref, limit=limit)
-
-    def requalify_claims(
-        self,
-        context: TrustedContext,
-        *,
-        after_ref: str = "",
-        limit: int = 16,
-        dry_run: bool = True,
-        remaining_seconds: float | None = None,
-    ):
-        """Re-judge one bounded page of stored claims after a rule change.
-
-        The preview runs in a read transaction, so it cannot write even by
-        mistake; only ``dry_run=False`` opens the write path.
-        """
-        from .requalify import requalify_claims as _requalify
-
-        seconds = self.config.write_timeout_seconds if remaining_seconds is None else remaining_seconds
-        opener = self.storage.read if dry_run else self.storage.write
-        with opener(context, remaining_seconds=seconds) as tx:
-            return _requalify(tx, now=self.clock.utc_now(), after_ref=after_ref, limit=limit, dry_run=dry_run).to_dict()
-
-    def retire_rootless_proposals(
-        self,
-        context: TrustedContext,
-        *,
-        after_ref: str = "",
-        limit: int = 16,
-        dry_run: bool = True,
-        remaining_seconds: float | None = None,
-    ):
-        """Retire one bounded page of proposals no derivation root supports; a preview unless ``dry_run=False``."""
-        from .requalify import retire_rootless_proposals as _retire
-
-        seconds = self.config.write_timeout_seconds if remaining_seconds is None else remaining_seconds
-        opener = self.storage.read if dry_run else self.storage.write
-        with opener(context, remaining_seconds=seconds) as tx:
-            return _retire(tx, now=self.clock.utc_now(), after_ref=after_ref, limit=limit, dry_run=dry_run).to_dict()
-
-    def unindex_withheld_outputs(
-        self,
-        context: TrustedContext,
-        *,
-        after_id: int = 0,
-        limit: int = 500,
-        dry_run: bool = True,
-        remaining_seconds: float | None = None,
-    ):
-        """Drop the postings of one bounded page of withheld tool outputs' placeholders beyond their error text; a
-        preview unless ``dry_run=False`` (#206).  The sources stay; only the lexical index loses what it never
-        needed."""
-        seconds = self.config.write_timeout_seconds if remaining_seconds is None else remaining_seconds
-        opener = self.storage.read if dry_run else self.storage.write
-        with opener(context, remaining_seconds=seconds) as tx:
-            return lexical_index.unindex_withheld(
-                tx._check(write=not dry_run), context.allowed_scope_ids, after_id=after_id, limit=limit, dry_run=dry_run
-            )
-
-    def retry_failed_work(
-        self,
-        context: TrustedContext,
-        *,
-        include_terminal: bool = False,
-        limit: int = 64,
-        dry_run: bool = True,
-        remaining_seconds: float | None = None,
-    ):
-        """Grant one bounded re-look to failures a shipped fix may have cured.
-
-        The preview runs in a read transaction, so it cannot write even by
-        mistake; only ``dry_run=False`` opens the write path.
-        """
-        seconds = self.config.write_timeout_seconds if remaining_seconds is None else remaining_seconds
-        opener = self.storage.read if dry_run else self.storage.write
-        with opener(context, remaining_seconds=seconds) as tx:
-            return tx.work.retry_failed(
-                now=self.clock.utc_now(), include_terminal=include_terminal, limit=limit, dry_run=dry_run
-            )
-
-    def respace_embeddings(
-        self,
-        context: TrustedContext,
-        *,
-        space_id: str,
-        action: str = "status",
-        dry_run: bool = True,
-        remaining_seconds: float | None = None,
-    ) -> dict:
-        """Report, start or cancel the store's re-embed run into ``space_id`` (``core/work_storage.py``).
-
-        ``run`` is the run as it stands after the action (before it, in a preview).  ``to_reopen`` is what a run that
-        is going still has to look at, or else what a new one would reopen; ``waiting`` the embeddings still waiting
-        anywhere, which a run started now reopens once they are done: paid twice, as is whatever the new space
-        embedded before the start.  The run covers the whole store:
-        each worker in the space reopens pages of it while fewer than the queue's ceiling wait anywhere, and claims
-        its own share.  A preview only reads; a start it would refuse is refused in the preview too.
-        """
-        if action not in ("status", "start", "restart", "cancel") or type(dry_run) is not bool:
-            raise ContractError("INPUT_INVALID", "respace_action")
-        writes = action != "status" and not dry_run
-        seconds = self.config.write_timeout_seconds if remaining_seconds is None else remaining_seconds
-        report: dict = {"embedding_space": space_id, "action": action, "applied": writes}
-        if writes:
-            with self.storage.write(context, remaining_seconds=seconds) as tx:
-                if action == "cancel":
-                    report["cancelled"] = tx.work.cancel_respace()
-                else:
-                    tx.work.start_respace(space_id, now=self.clock.utc_now(), restart=action == "restart")
-        # Counting walks the queue: kept out of the write, and so off the writer lease.
-        with self.storage.read(context, remaining_seconds=seconds) as tx:
-            run = tx.work.respace_run()
-            if not writes and action in ("start", "restart"):
-                refusal = respace_refusal(run, space_id, restart=action == "restart")
-                if refusal is not None:
-                    raise ContractError("VERSION_CONFLICT", refusal)
-            going = run is not None and not run["completed"] and (writes or action == "status")
-            report["run"] = run
-            report["space_matches"] = run is None or run["embedding_space"] == space_id
-            report["to_reopen"] = tx.work.respace_remaining(at_most=run["next_work_id"] if going else None)
-            report["waiting"] = tx.work.embed_queue()["pending"]
-        return report
-
     def forget(self, context: TrustedContext, value, *, remaining_seconds: float | None = None):
         from .deletion import forget
 
@@ -603,101 +431,9 @@ class MemoryCore:
             remaining_seconds=self.config.write_timeout_seconds if remaining_seconds is None else remaining_seconds,
         )
 
-    def purge_sqlite(self, context: TrustedContext, operation_id: str, *, remaining_seconds: float | None = None):
-        from .deletion import purge_sqlite
-
-        return purge_sqlite(
-            self.storage,
-            context,
-            operation_id,
-            remaining_seconds=self.config.write_timeout_seconds if remaining_seconds is None else remaining_seconds,
-        )
-
-    def release_objects(
-        self, context: TrustedContext, refs, *, expected_epoch: int, automatic: bool = True, history: bool = False
-    ):
-        return release_objects(
-            self.storage, self.clock, context, refs, expected_epoch=expected_epoch, automatic=automatic, history=history
-        )
-
     def episodes(self, context, *, limit=200):
         with self.storage.read(context) as tx:
             return tx.episodes.list(limit=limit)
-
-    def episode_sources(self, context, ref, *, after_sequence=0, limit=32):
-        with self.storage.read(context) as tx:
-            return tx.episodes.sources(ref, after_sequence=after_sequence, limit=limit)
-
-    def accept_consolidation(self, context, value, *, scope_id, remaining_seconds=None):
-        from .consolidate import accept_consolidation
-
-        return accept_consolidation(
-            self.storage,
-            self.clock,
-            context,
-            value,
-            scope_id=scope_id,
-            remaining_seconds=self.config.write_timeout_seconds if remaining_seconds is None else remaining_seconds,
-        )
-
-    def register_artifact(self, context, *, remaining_seconds=None, **registration):
-        budget = self.config.write_timeout_seconds if remaining_seconds is None else remaining_seconds
-        deadline = time.monotonic() + float(budget)
-
-        def remaining() -> float:
-            return max(0.0, deadline - time.monotonic())
-
-        try:
-            with advisory_file_lock(
-                context.binding.data_directory / "scope-recall-retained.lock", timeout_seconds=remaining()
-            ):
-                with self.storage.write(context, remaining_seconds=remaining()) as tx:
-                    return tx.artifacts.register(**registration, now=self.clock.utc_now())
-        except TimeoutError as exc:
-            raise ContractError("DEADLINE_EXCEEDED", "retained_lock") from exc
-
-    def artifact(self, context, ref, revision):
-        with self.storage.read(context) as tx:
-            return tx.artifacts.get(ref, revision)
-
-    def open_artifact(self, context, ref, revision):
-        with self.storage.read(context) as tx:
-            return tx.artifacts.open(ref, revision)
-
-    def purge_attachments(self, context, operation_id, *, remaining_seconds=None):
-        from .retained_artifacts import RetainedBlob, erase_retained
-
-        budget = self.config.write_timeout_seconds if remaining_seconds is None else remaining_seconds
-        deadline = time.monotonic() + float(budget)
-
-        def remaining() -> float:
-            return max(0.0, deadline - time.monotonic())
-
-        try:
-            with advisory_file_lock(
-                context.binding.data_directory / "scope-recall-retained.lock", timeout_seconds=remaining()
-            ):
-                with self.storage.read(context, remaining_seconds=remaining()) as tx:
-                    plan = tx.deletions.attachment_plan(operation_id)
-                if plan.get("already_done"):
-                    with self.storage.read(context, remaining_seconds=remaining()) as tx:
-                        return tx.deletions.receipt(operation_id)
-                for entry in plan["entries"]:
-                    if remaining() <= 0:
-                        raise ContractError("DEADLINE_EXCEEDED")
-                    if entry.get("shared"):
-                        continue
-                    erase_retained(context.binding, RetainedBlob(**entry["blob"]))
-                if remaining() <= 0:
-                    raise ContractError("DEADLINE_EXCEEDED")
-                with self.storage.write(context, remaining_seconds=remaining()) as tx:
-                    return tx.deletions.finalize_attachments(operation_id, plan, erased=True)
-        except TimeoutError as exc:
-            raise ContractError("DEADLINE_EXCEEDED", "retained_lock") from exc
-
-    def reference(self, context, ref, revision=None):
-        with self.storage.read(context) as tx:
-            return tx.references.get(ref, revision)
 
     def drain_worker(
         self,

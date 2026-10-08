@@ -91,7 +91,7 @@ def accept(core, ctx, *claims):
     for c in claims:
         refs.extend(r for r in c.get("intention", {}).get("state_evidence_refs", []) if r not in refs)
         refs.extend(r for r in c.get("procedure", {}).get("counterexample_refs", []) if r not in refs)
-    return core.accept_claim_proposals(
+    return core.records.accept_claim_proposals(
         ctx,
         dict(
             protocol_version="1.1",
@@ -365,7 +365,7 @@ def test_C36_ambiguous_correction_preserves_both_currents_and_raw_update(app):
     two_source = capture(core, ctx, "TEST-project 字号 16。")
     two = accept(core, ctx, draft(two_source, "16", predicate="字号")).items[0]
     correction = capture(core, ctx, "那个不对，改一下。", when="2026-09-03T12:00:00Z")
-    pending = core.unresolved_updates(ctx)
+    pending = core.records.unresolved_updates(ctx)
     assert len(pending) == 1 and set(pending[0]["candidate_refs"]) == {one.ref, two.ref}
     assert pending[0]["source_ref"] == correction.ref
     assert core.current_claim(ctx, one.ref).revision == core.current_claim(ctx, two.ref).revision == 1
@@ -377,13 +377,13 @@ def test_ambiguous_update_closes_once_the_user_settles_it_on_one_candidate(app):
     two_source = capture(core, ctx, "TEST-project 字号 16。")
     two = accept(core, ctx, draft(two_source, "16", predicate="字号")).items[0]
     capture(core, ctx, "那个不对，改一下。", when="2026-09-03T12:00:00Z")
-    assert len(core.unresolved_updates(ctx)) == 1
+    assert len(core.records.unresolved_updates(ctx)) == 1
     # The user names which one they meant.  ``resolved`` had no writer at all
     # before this, so the row stayed open forever and kept being handed to the
     # host on every read.
     settle = capture(core, ctx, "TEST-project 配色改为银色。", when="2026-09-04T12:00:00Z")
     assert core.current_claim(ctx, one.ref).payload["value_text"] == "银色"
-    assert core.unresolved_updates(ctx) == ()
+    assert core.records.unresolved_updates(ctx) == ()
     with sqlite3.connect(core.storage.path) as conn:
         state, resolved_at = conn.execute("SELECT state,resolved_at FROM unresolved_updates").fetchone()
     assert state == "resolved" and resolved_at
@@ -397,7 +397,7 @@ def test_a_correction_with_no_claim_to_place_it_against_keeps_no_open_row(app):
     pilot were handed to every read for good.  The message itself is stored like any other."""
     core, ctx = app
     said = capture(core, ctx, "那个不对，改一下。", when="2026-09-03T12:00:00Z")
-    assert core.unresolved_updates(ctx) == ()
+    assert core.records.unresolved_updates(ctx) == ()
     assert core.source(ctx, said.ref, 1) is not None
     # What an older release left: such a row, closed by the worker's pass.
     with sqlite3.connect(core.storage.path) as conn:
@@ -407,9 +407,9 @@ def test_a_correction_with_no_claim_to_place_it_against_keeps_no_open_row(app):
             (said.ref, ctx.project_id, ctx.branch_id),
         )
         conn.commit()
-    assert len(core.unresolved_updates(ctx)) == 1
+    assert len(core.records.unresolved_updates(ctx)) == 1
     core.drain_worker(ctx, max_items=8, remaining_seconds=10)
-    assert core.unresolved_updates(ctx) == ()
+    assert core.records.unresolved_updates(ctx) == ()
     with core.storage.write(ctx) as tx:
         assert tx.claims.close_unplaceable_updates() == 0, "closed once"
 
@@ -419,13 +419,13 @@ def test_ambiguity_the_user_never_settled_is_still_reported(app):
     initial(core, ctx)
     capture(core, ctx, "TEST-project 字号 16。")
     capture(core, ctx, "那个不对，改一下。", when="2026-09-03T12:00:00Z")
-    open_before = {row["ref"] for row in core.unresolved_updates(ctx)}
+    open_before = {row["ref"] for row in core.records.unresolved_updates(ctx)}
     assert open_before
     # An unrelated later capture settles nothing, so the question the host still
     # has to ask stays on the list.  Closing rows is tied to an authorized
     # revision of a named candidate, not to time passing.
     capture(core, ctx, "今天天气不错。", when="2026-09-04T12:00:00Z")
-    assert open_before <= {row["ref"] for row in core.unresolved_updates(ctx)}
+    assert open_before <= {row["ref"] for row in core.records.unresolved_updates(ctx)}
 
 
 def test_explicit_revision_compare_and_swap_and_no_silent_retries(app):
@@ -649,7 +649,7 @@ def test_late_direct_event_cannot_use_capture_fastpath_to_replace_newer_current(
     item, _ = initial(core, ctx, value="银色", when="2026-09-03T12:00:00Z")
     old = capture(core, ctx, "TEST-project 配色改为蓝色。", when="2026-09-01T12:00:00Z")
     assert core.current_claim(ctx, item.ref).payload["value_text"] == "银色"
-    assert core.unresolved_updates(ctx)[0]["source_ref"] == old.ref
+    assert core.records.unresolved_updates(ctx)[0]["source_ref"] == old.ref
 
 
 def test_invented_method_steps_and_intention_targets_cannot_gain_active(app):

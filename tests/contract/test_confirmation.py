@@ -236,7 +236,7 @@ def test_the_confirmation_is_kept_as_evidence(app):
 def test_requalify_changes_nothing_when_the_rules_have_not_moved(app):
     core, ctx = app
     _claim(core, ctx)
-    report = core.requalify_claims(ctx, limit=32, dry_run=True)
+    report = core.operations.requalify_claims(ctx, limit=32, dry_run=True)
     assert report["changed"] == [] and report["examined"] >= 1
 
 
@@ -252,7 +252,7 @@ def test_requalify_previews_without_writing(app, monkeypatch):
     monkeypatch.setattr(
         requalify_module, "qualify", lambda *a, **k: Qualification("active", "direct_report", "TEST-rule")
     )
-    report = core.requalify_claims(ctx, limit=32, dry_run=True)
+    report = core.operations.requalify_claims(ctx, limit=32, dry_run=True)
     assert [item["now"] for item in report["changed"]] == ["active:TEST-rule"]
     assert report["applied"] is False
     assert _head(core, ctx, ref)[0] == "proposed", "the preview wrote nothing"
@@ -269,11 +269,11 @@ def test_requalify_applies_the_new_verdict(app, monkeypatch):
     monkeypatch.setattr(
         requalify_module, "qualify", lambda *a, **k: Qualification("active", "direct_report", "TEST-rule")
     )
-    report = core.requalify_claims(ctx, limit=32, dry_run=False)
+    report = core.operations.requalify_claims(ctx, limit=32, dry_run=False)
     assert report["applied"] is True and len(report["changed"]) == 1
     assert _head(core, ctx, ref) == ("active", "TEST-rule")
     # Idempotent: the second pass has nothing left to move.
-    assert core.requalify_claims(ctx, limit=32, dry_run=False)["changed"] == []
+    assert core.operations.requalify_claims(ctx, limit=32, dry_run=False)["changed"] == []
 
 
 def test_requalify_can_also_withdraw_support(app, monkeypatch):
@@ -308,7 +308,7 @@ def test_requalify_can_also_withdraw_support(app, monkeypatch):
     monkeypatch.setattr(
         requalify_module, "qualify", lambda *a, **k: Qualification("proposed", "inferred_suggestion", "TEST-tightened")
     )
-    core.requalify_claims(ctx, limit=32, dry_run=False)
+    core.operations.requalify_claims(ctx, limit=32, dry_run=False)
     assert _head(core, ctx, ref) == ("proposed", "TEST-tightened")
 
 
@@ -316,7 +316,7 @@ def test_requalify_can_also_withdraw_support(app, monkeypatch):
 def test_requalify_refuses_an_unbounded_page(app, limit):
     core, ctx = app
     with pytest.raises(ContractError):
-        core.requalify_claims(ctx, limit=limit, dry_run=True)
+        core.operations.requalify_claims(ctx, limit=limit, dry_run=True)
 
 
 def test_requalify_never_undoes_a_confirmation(app, monkeypatch):
@@ -332,7 +332,7 @@ def test_requalify_never_undoes_a_confirmation(app, monkeypatch):
     capture(core, ctx, "记住 TEST-instrument 的序列号。", key="TEST-confirm/requal")
     assert _head(core, ctx, ref) == ("active", CONFIRMED_REASON)
 
-    report = core.requalify_claims(ctx, limit=32, dry_run=False)
+    report = core.operations.requalify_claims(ctx, limit=32, dry_run=False)
     assert _head(core, ctx, ref) == ("active", CONFIRMED_REASON)
     assert any(item["ref"] == ref and item["why"].startswith("not_text_derived") for item in report["skipped"])
 
@@ -355,5 +355,5 @@ def test_requalify_never_undoes_corroboration(app):
     )
     assert _head(core, ctx, ref) == ("active", CORROBORATED_REASON)
 
-    core.requalify_claims(ctx, limit=32, dry_run=False)
+    core.operations.requalify_claims(ctx, limit=32, dry_run=False)
     assert _head(core, ctx, ref) == ("active", CORROBORATED_REASON)

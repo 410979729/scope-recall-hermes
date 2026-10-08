@@ -983,7 +983,7 @@ def test_worker_session_b_can_apply_evidence_backed_correction(tmp_path):
     )
     old_row = core_a.source(context_a, old.event_refs[0].ref, 1)
     assert old_row is not None
-    old_claim = core_a.accept_claim_proposals(
+    old_claim = core_a.records.accept_claim_proposals(
         context_a,
         {
             "protocol_version": "1.1",
@@ -1109,7 +1109,7 @@ def test_worker_session_b_cannot_promote_stale_proposal_past_newer_human_evidenc
     )
     old_row = core_a.source(context_a, old.event_refs[0].ref, 1)
     assert old_row is not None
-    old_claim = core_a.accept_claim_proposals(
+    old_claim = core_a.records.accept_claim_proposals(
         context_a,
         {
             "protocol_version": "1.1",

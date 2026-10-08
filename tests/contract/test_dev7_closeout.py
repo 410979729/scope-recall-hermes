@@ -810,7 +810,7 @@ def test_another_message_under_a_deleted_message_s_key_is_stored_under_its_own(w
         assert store(key, content).disposition == "conflict"
     assert [receipt.durability for receipt in resolve()] == ["persisted", "persisted"] and _inbox_rows(core) == 0
     assert _keys_like(core, turn + inbox_rules.REKEY_MARKER) == [("TEST 重启后同一回合的新消息。",)]
-    core.purge_sqlite(ctx, operation["operation_id"], remaining_seconds=10)
+    core.operations.purge_sqlite(ctx, operation["operation_id"], remaining_seconds=10)
     assert store("TEST-deleted-key", "TEST 再换一件事。").disposition == "conflict"
     assert [receipt.durability for receipt in resolve()] == ["persisted"]
     assert _keys_like(core, "TEST-deleted-key" + inbox_rules.REKEY_MARKER) == [
@@ -920,14 +920,14 @@ def test_retry_failures_returns_a_given_up_capture_to_the_replay(worker_app):
         return capture_inbox.replay_inbox(core.storage, clock, ctx, authorize=lambda _: ctx.allowed_scope_ids)
 
     assert replay() == ()
-    preview = core.retry_failed_work(ctx, limit=64, dry_run=True)
+    preview = core.operations.retry_failed_work(ctx, limit=64, dry_run=True)
     assert (preview["inbox_given_up"], preview["applied"]) == (1, False)
     with sqlite3.connect(core.storage.path) as conn:
         assert conn.execute("SELECT last_error_code FROM capture_inbox").fetchall() == [(given_up,)]
     assert preview["inbox_by_kind"] == {"IDENTITY_UNBOUND:TEST-host": 1}
-    assert core.retry_failed_work(ctx, limit=64, dry_run=False)["inbox_given_up"] == 1
+    assert core.operations.retry_failed_work(ctx, limit=64, dry_run=False)["inbox_given_up"] == 1
     assert [receipt.durability for receipt in replay()] == ["persisted"]
-    assert core.retry_failed_work(ctx, limit=64, dry_run=True)["inbox_given_up"] == 0
+    assert core.operations.retry_failed_work(ctx, limit=64, dry_run=True)["inbox_given_up"] == 0
 
 
 def test_a_message_under_a_deleted_key_is_compared_whole_and_its_versions_refused(worker_app):
@@ -958,7 +958,7 @@ def test_a_message_under_a_deleted_key_is_compared_whole_and_its_versions_refuse
     assert store("TEST-long", "[10:02] " + long_text) == "cancelled"
     # A later version is refused, as the deletion contract says.
     assert store("TEST-short", "TEST 改过的一句。", source_revision=2) == "cancelled"
-    core.purge_sqlite(ctx, operation["operation_id"], remaining_seconds=10)
+    core.operations.purge_sqlite(ctx, operation["operation_id"], remaining_seconds=10)
     from scope_recall.core.delete_storage import purged_group_key
 
     # A long message's group key is replaced once, where it had been hashed once for each of its parts.
@@ -996,7 +996,7 @@ def test_a_message_purged_before_rc13_still_refuses_what_comes_under_its_key(wor
     ]
     authorize(core, ctx, *stored)
     operation = core.forget(ctx, request(*stored), remaining_seconds=5)
-    core.purge_sqlite(ctx, operation["operation_id"], remaining_seconds=10)
+    core.operations.purge_sqlite(ctx, operation["operation_id"], remaining_seconds=10)
     with sqlite3.connect(core.storage.path) as conn:
         conn.execute("""UPDATE source_events SET extra_json='{"evidence_refs":[]}'
                         WHERE source_event_key='removed-'||event_id""")
@@ -1060,7 +1060,7 @@ def test_a_purge_run_again_keeps_the_forms_the_first_one_kept_and_reads_a_versio
     original = inbox_rules.deleted_forms
     # The purge reads the rule through delete_storage, which takes it at import.
     monkeypatch.setattr(delete_storage, "deleted_forms", lambda text: counted.append(len(text)) or original(text))
-    core.purge_sqlite(ctx, operation["operation_id"], remaining_seconds=10)
+    core.operations.purge_sqlite(ctx, operation["operation_id"], remaining_seconds=10)
     assert len(counted) == 3, "the short message, the long one and the command: once each"
     with sqlite3.connect(core.storage.path) as conn:
         kept = sorted(conn.execute("SELECT extra_json FROM source_events WHERE source_event_key='removed-'||event_id"))
@@ -1074,7 +1074,7 @@ def test_a_purge_run_again_keeps_the_forms_the_first_one_kept_and_reads_a_versio
             (json.dumps({**layers, "sqlite_active": "pending"}), operation["operation_id"]),
         )
         conn.commit()
-    core.purge_sqlite(ctx, operation["operation_id"], remaining_seconds=10)
+    core.operations.purge_sqlite(ctx, operation["operation_id"], remaining_seconds=10)
     with sqlite3.connect(core.storage.path) as conn:
         assert (
             sorted(conn.execute("SELECT extra_json FROM source_events WHERE source_event_key='removed-'||event_id"))
@@ -1115,10 +1115,10 @@ def test_retry_failures_returns_a_capture_an_earlier_release_refused_to_the_repl
         return capture_inbox.replay_inbox(core.storage, clock, ctx, authorize=lambda _: ctx.allowed_scope_ids)
 
     assert replay() == ()
-    assert core.retry_failed_work(ctx, limit=64, dry_run=True)["inbox_refused"] == 1
+    assert core.operations.retry_failed_work(ctx, limit=64, dry_run=True)["inbox_refused"] == 1
     with sqlite3.connect(core.storage.path) as conn:
         assert conn.execute("SELECT last_error_code FROM capture_inbox").fetchall() == [("ACCESS_DENIED",)]
-    assert core.retry_failed_work(ctx, limit=64, dry_run=False)["inbox_refused"] == 1
+    assert core.operations.retry_failed_work(ctx, limit=64, dry_run=False)["inbox_refused"] == 1
     assert [receipt.durability for receipt in replay()] == ["persisted"] and _inbox_rows(core) == 0
 
 
@@ -1582,10 +1582,10 @@ def test_retry_failures_returns_only_the_rows_its_replay_takes(tmp_path):
             conn.execute("UPDATE capture_inbox SET last_error_code=? WHERE token=?", (code, token))
             conn.commit()
         tokens[label] = token
-    preview = core.retry_failed_work(own, limit=64, dry_run=True)
+    preview = core.operations.retry_failed_work(own, limit=64, dry_run=True)
     assert (preview["inbox_given_up"], preview["inbox_by_kind"]) == (1, {"IDENTITY_UNBOUND:TEST-host": 1})
     assert preview["inbox_refused"] == 1
-    core.retry_failed_work(own, limit=64, dry_run=False)
+    core.operations.retry_failed_work(own, limit=64, dry_run=False)
     with sqlite3.connect(core.storage.path) as conn:
         codes = dict(conn.execute("SELECT token,last_error_code FROM capture_inbox").fetchall())
     assert {label: codes[token] for label, token in tokens.items()} == {
@@ -1763,7 +1763,7 @@ def test_a_given_up_row_of_the_rekey_path_goes_back_to_it(worker_app):
             (f"GAVE_UP|{inbox_rules.__version__}|25|rekey|IDENTITY_UNBOUND:TEST-host", token),
         )
         conn.commit()
-    assert core.retry_failed_work(ctx, limit=64, dry_run=False)["inbox_given_up"] == 1
+    assert core.operations.retry_failed_work(ctx, limit=64, dry_run=False)["inbox_given_up"] == 1
     with sqlite3.connect(core.storage.path) as conn:
         assert conn.execute("SELECT last_error_code FROM capture_inbox").fetchall() == [("VERSION_CONFLICT",)]
 
@@ -1899,7 +1899,7 @@ def test_a_named_message_that_was_deleted_still_counts_as_said(worker_app):
     source = capture(core, ctx, "TEST 要删掉的一句话。", key="TEST-named-deleted")
     authorize(core, ctx, source)
     deleted = core.forget(ctx, request(source), remaining_seconds=5)
-    core.purge_sqlite(ctx, deleted["operation_id"], remaining_seconds=10)
+    core.operations.purge_sqlite(ctx, deleted["operation_id"], remaining_seconds=10)
     said = core.said_in_session(
         ctx, "TEST-scope", [("user", "TEST 要删掉的一句话。", source.event["occurred_at"], "TEST-named-deleted")]
     )

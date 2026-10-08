@@ -110,13 +110,13 @@ def test_retry_failures_brings_back_the_vector_work_the_recovery_dropped(app):
     core, ctx = app
     item, _source = initial(core, ctx)
     _fail_embed(core, item.ref, item.revision, code="authority_revoked", state="obsolete")
-    preview = core.retry_failed_work(ctx, limit=64, dry_run=True)
+    preview = core.operations.retry_failed_work(ctx, limit=64, dry_run=True)
     assert (preview["claim_embeds_reopened"], preview["claim_embeds_queued"]) == (1, 0)
     assert _embed(core, item.ref, item.revision)[0] == "obsolete", "a preview changes nothing"
-    report = core.retry_failed_work(ctx, limit=64, dry_run=False)
+    report = core.operations.retry_failed_work(ctx, limit=64, dry_run=False)
     assert report["claim_embeds_reopened"] == 1
     assert _embed(core, item.ref, item.revision) == ("pending", f"retried:{SCHEMA_VERSION}|authority_revoked")
-    again = core.retry_failed_work(ctx, limit=64, dry_run=False)
+    again = core.operations.retry_failed_work(ctx, limit=64, dry_run=False)
     assert (again["claim_embeds_reopened"], again["claim_embeds_queued"]) == (0, 0)
 
 
@@ -125,7 +125,7 @@ def test_retry_failures_queues_a_head_that_never_had_vector_work(app):
     item, _source = initial(core, ctx)
     with sqlite3.connect(core.storage.path) as conn:
         conn.execute("DELETE FROM work_items WHERE work_type='embed' AND subject_ref=?", (item.ref,))
-    report = core.retry_failed_work(ctx, limit=64, dry_run=False)
+    report = core.operations.retry_failed_work(ctx, limit=64, dry_run=False)
     assert (report["claim_embeds_reopened"], report["claim_embeds_queued"]) == (0, 1)
     assert _embed(core, item.ref, item.revision)[0] == "pending"
 
@@ -135,7 +135,7 @@ def test_retry_failures_leaves_the_vector_work_of_an_old_revision(app):
     item, _source = initial(core, ctx, value="H100", kind="fact", predicate="配色")
     _correct(core, ctx)
     _fail_embed(core, item.ref, 1, code="authority_revoked", state="obsolete")
-    report = core.retry_failed_work(ctx, limit=64, dry_run=False)
+    report = core.operations.retry_failed_work(ctx, limit=64, dry_run=False)
     assert (report["claim_embeds_reopened"], report["claim_embeds_queued"]) == (0, 0)
     assert _embed(core, item.ref, 1)[0] == "obsolete"
     assert _embed(core, item.ref, 2)[0] == "pending", "the head's own is queued as ever"
@@ -146,7 +146,7 @@ def test_retry_failures_leaves_a_head_refused_on_purpose(app):
     core, ctx = app
     item, _source = initial(core, ctx)
     _fail_embed(core, item.ref, item.revision, code="sensitive_request")
-    report = core.retry_failed_work(ctx, limit=64, dry_run=False)
+    report = core.operations.retry_failed_work(ctx, limit=64, dry_run=False)
     assert (report["claim_embeds_reopened"], report["claim_embeds_queued"]) == (0, 0)
     assert _embed(core, item.ref, item.revision)[0] == "failed"
 
@@ -157,11 +157,11 @@ def test_a_deleted_head_gets_no_vector_work_back(app):
     _fail_embed(core, item.ref, item.revision, code="authority_revoked", state="obsolete")
     authorize(core, ctx, item)
     core.forget(ctx, request(item), remaining_seconds=10)
-    assert _counts(core.retry_failed_work(ctx, limit=64, dry_run=False)) == (0, 0)
+    assert _counts(core.operations.retry_failed_work(ctx, limit=64, dry_run=False)) == (0, 0)
     assert _embed(core, item.ref, item.revision)[0] == "obsolete"
     with sqlite3.connect(core.storage.path) as conn:
         conn.execute("DELETE FROM work_items WHERE work_type='embed' AND subject_ref=?", (item.ref,))
-    assert _counts(core.retry_failed_work(ctx, limit=64, dry_run=False)) == (0, 0), "nor is one queued"
+    assert _counts(core.operations.retry_failed_work(ctx, limit=64, dry_run=False)) == (0, 0), "nor is one queued"
 
 
 def test_a_deleted_claim_s_failed_embed_is_still_made_obsolete(app):
@@ -182,10 +182,10 @@ def test_a_muted_head_gets_its_vector_work_back_as_every_head_has_it(app):
     authorize(core, ctx, item, mode="suppress")
     core.forget(ctx, request(item, mode="suppress"), remaining_seconds=10)
     _fail_embed(core, item.ref, item.revision, code="authority_revoked", state="obsolete")
-    reopened = _counts(core.retry_failed_work(ctx, limit=64, dry_run=True))
+    reopened = _counts(core.operations.retry_failed_work(ctx, limit=64, dry_run=True))
     with sqlite3.connect(core.storage.path) as conn:
         conn.execute("DELETE FROM work_items WHERE work_type='embed' AND subject_ref=?", (item.ref,))
-    queued = _counts(core.retry_failed_work(ctx, limit=64, dry_run=True))
+    queued = _counts(core.operations.retry_failed_work(ctx, limit=64, dry_run=True))
     assert (reopened, queued) == ((1, 0), (0, 1))
 
 
@@ -193,7 +193,9 @@ def test_another_project_s_context_touches_nothing(app):
     core, ctx = app
     item, _source = initial(core, ctx)
     _fail_embed(core, item.ref, item.revision, code="authority_revoked", state="obsolete")
-    assert _counts(core.retry_failed_work(replace(ctx, project_id="TEST-other"), limit=64, dry_run=False)) == (0, 0)
+    assert _counts(
+        core.operations.retry_failed_work(replace(ctx, project_id="TEST-other"), limit=64, dry_run=False)
+    ) == (0, 0)
     assert _embed(core, item.ref, item.revision)[0] == "obsolete"
 
 
@@ -224,7 +226,7 @@ def test_heads_another_context_owns_never_hide_one_this_context_takes(app):
     assert all(clone < item.ref for clone in clones)
     for clone in clones:
         _clone_claim(core, item.ref, clone, project_id=None)
-    assert _counts(core.retry_failed_work(ctx, limit=1, dry_run=False)) == (1, 0)
+    assert _counts(core.operations.retry_failed_work(ctx, limit=1, dry_run=False)) == (1, 0)
     assert _embed(core, item.ref, item.revision)[0] == "pending"
 
 
@@ -233,7 +235,7 @@ def test_a_reopened_head_corrected_before_the_worker_reaches_it_is_embedded_at_b
     core, ctx = app
     item, _source = initial(core, ctx, value="H100", kind="fact", predicate="配色")
     _fail_embed(core, item.ref, item.revision, code="authority_revoked", state="obsolete")
-    assert _counts(core.retry_failed_work(ctx, limit=64, dry_run=False)) == (1, 0)
+    assert _counts(core.operations.retry_failed_work(ctx, limit=64, dry_run=False)) == (1, 0)
     _correct(core, ctx)
     assert [row[1] for row in _rows(core, item.ref)] == ["pending", "pending"]
     port = Port()
@@ -249,13 +251,13 @@ def test_a_reopened_head_that_keeps_failing_stops_and_is_never_made_obsolete(app
     core, ctx = app
     item, _source = initial(core, ctx)
     _fail_embed(core, item.ref, item.revision, code="authority_revoked", state="obsolete")
-    core.retry_failed_work(ctx, limit=64, dry_run=False)
+    core.operations.retry_failed_work(ctx, limit=64, dry_run=False)
     start = datetime(2026, 9, 7, 12, tzinfo=timezone.utc)
     history = []
     for step in range(11):
         core.clock.now = (start + timedelta(hours=2 * step)).isoformat().replace("+00:00", "Z")
         if step >= 8:
-            core.retry_failed_work(ctx, limit=64, dry_run=False)
+            core.operations.retry_failed_work(ctx, limit=64, dry_run=False)
         core.drain_worker(
             ctx, max_items=64, remaining_seconds=30, owner_id=f"TEST-f{step}", embed=Port(fail="network_error")
         )

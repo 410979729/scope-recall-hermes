@@ -210,7 +210,7 @@ def test_ambiguous_pronoun_correction_is_preserved_without_guessing(app):
         "把那个改掉。",
         when="2026-09-06T12:00:00Z",
     )
-    unresolved = core.unresolved_updates(ctx)
+    unresolved = core.records.unresolved_updates(ctx)
     assert len(unresolved) == 1
     assert unresolved[0]["source_ref"] == correction.ref
     assert set(unresolved[0]["candidate_refs"]) == {first.ref, second.ref}

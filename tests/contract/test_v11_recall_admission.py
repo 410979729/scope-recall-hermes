@@ -195,7 +195,7 @@ def _accept_claim(core: MemoryCore, ctx: TrustedContext, proposal: dict[str, Any
     refs = [f"{span['source_ref']}@{span['source_revision']}" for span in proposal["evidence_spans"]]
     procedure = proposal.get("procedure") or {}
     refs.extend(ref for ref in procedure.get("counterexample_refs", ()) if ref not in refs)
-    return core.accept_claim_proposals(
+    return core.records.accept_claim_proposals(
         ctx,
         {
             "protocol_version": "1.1",
@@ -226,7 +226,7 @@ def _accept_relation_claim(core: MemoryCore, ctx: TrustedContext, root: Any, pee
             {"source_ref": peer.ref, "source_revision": peer.revision, "quote": peer.event["content"]},
         ],
     }
-    return core.accept_claim_proposals(
+    return core.records.accept_claim_proposals(
         ctx,
         {
             "protocol_version": "1.1",

@@ -40,7 +40,7 @@ def resume(source, **changes):
 
 def apply(core, ctx, *, resumes=(), references=(), source_refs=None):
     refs = source_refs or list(dict.fromkeys(s for p in (*resumes, *references) for s in p["evidence_refs"]))
-    return core.accept_consolidation(
+    return core.records.accept_consolidation(
         ctx,
         dict(
             protocol_version="1.1",
@@ -68,7 +68,7 @@ def artifact(core, ctx, tmp_path, *, version=1, key="TEST-design", label="TEST-d
     body = body or f'<svg xmlns="http://www.w3.org/2000/svg"><rect width="{version}" height="2"/></svg>'
     path.write_text(body, encoding="utf-8")
     grant = ArtifactGrant(path, hashlib.sha256(path.read_bytes()).hexdigest(), "image/svg+xml", 4096)
-    item = core.register_artifact(
+    item = core.records.register_artifact(
         ctx,
         key=key,
         revision=version,
@@ -87,7 +87,7 @@ def test_C37_plain_chat_has_provisional_episode_without_manufactured_goal(app):
     source = capture(core, ctx, "TEST 今天看到晚霞，想起小时候。")
     (item,) = core.episodes(ctx)
     assert item.state == "unknown" and item.resume is None and item.unprocessed_events == 1
-    rows, cursor = core.episode_sources(ctx, item.ref)
+    rows, cursor = core.records.episode_sources(ctx, item.ref)
     assert rows[0][1].event["content"] == source.event["content"] and cursor is None
     with pytest.raises(ContractError, match="work_goal_unconfirmed"):
         apply(core, ctx, resumes=[resume(source)])
@@ -100,7 +100,7 @@ def test_C25_one_session_changes_topic_without_cancelling_previous(app):
     capture(core, ctx, "换个话题，转到TEST-B报价。")
     episodes = core.episodes(ctx)
     assert len(episodes) == 2 and all(e.state != "cancelled" for e in episodes)
-    assert sorted(len(core.episode_sources(ctx, e.ref)[0]) for e in episodes) == [1, 1]
+    assert sorted(len(core.records.episode_sources(ctx, e.ref)[0]) for e in episodes) == [1, 1]
 
 
 def test_C26_M06_same_trusted_task_continues_across_sessions_and_branches_do_not(app):
@@ -231,17 +231,17 @@ def test_C16_M47_same_path_overwrite_preserves_exact_prior_artifact(app, tmp_pat
     first = path.read_bytes()
     two, _, _ = artifact(core, ctx, tmp_path, version=2)
     assert one.ref == two.ref and one.sha256 != two.sha256
-    reopened, data = core.open_artifact(replace(ctx, session_id="TEST-fresh"), one.ref, 1)
+    reopened, data = core.records.open_artifact(replace(ctx, session_id="TEST-fresh"), one.ref, 1)
     assert data == first and reopened.sha256 == hashlib.sha256(first).hexdigest()
-    assert core.open_artifact(ctx, two.ref, 2)[1] == path.read_bytes()
-    assert core.artifact(replace(ctx, project_id="TEST-other"), one.ref, 1) is None
+    assert core.records.open_artifact(ctx, two.ref, 2)[1] == path.read_bytes()
+    assert core.records.artifact(replace(ctx, project_id="TEST-other"), one.ref, 1) is None
 
 
 def test_C17_M49_described_only_artifact_has_no_fabricated_bytes(app):
     core, ctx = app
     target = artifact_identity(ctx, "TEST-scope", "TEST-lost")
     source = capture(core, ctx, "TEST 当时左边是蓝色方块。", artifact_refs=[target])
-    item = core.register_artifact(
+    item = core.records.register_artifact(
         ctx,
         key="TEST-lost",
         revision=1,
@@ -254,7 +254,7 @@ def test_C17_M49_described_only_artifact_has_no_fabricated_bytes(app):
     )
     assert item.retention_state == "described_artifact" and item.sha256 is None
     with pytest.raises(ContractError, match="artifact_not_retained"):
-        core.open_artifact(ctx, target, 1)
+        core.records.open_artifact(ctx, target, 1)
 
 
 def test_M13_M14_display_order_binds_version_only_when_actually_observed(app, tmp_path):
@@ -278,7 +278,7 @@ def test_M13_M14_display_order_binds_version_only_when_actually_observed(app, tm
             evidence_refs=[ref(source)],
         )
         result = apply(core, ctx, references=[proposal])
-        saved = core.reference(ctx, result.items[0].ref)
+        saved = core.records.reference(ctx, result.items[0].ref)
         assert saved.payload["resolution"] == expected
         assert saved.payload["resolved_ref"] == (f"{one.ref}@1" if expected == "resolved" else None)
 
@@ -296,18 +296,18 @@ def test_M50_deleted_artifact_blocks_descriptions_references_resume_and_cached_r
     epoch = core.status(ctx).memory_epoch
     authorize(core, ctx, item)
     operation = core.forget(ctx, request(item), remaining_seconds=10)
-    assert core.artifact(ctx, item.ref, 1) is None and not core.episodes(ctx)
+    assert core.records.artifact(ctx, item.ref, 1) is None and not core.episodes(ctx)
     with pytest.raises(ContractError):
-        core.open_artifact(ctx, item.ref, 1)
+        core.records.open_artifact(ctx, item.ref, 1)
     with pytest.raises(ContractError):
-        core.release_objects(
+        core.records.release_objects(
             ctx,
             (ObjectRef("episode", episode.ref, episode.revision),),
             expected_epoch=epoch,
             automatic=False,
             history=True,
         )
-    result = core.purge_attachments(ctx, operation["operation_id"], remaining_seconds=10)
+    result = core.operations.purge_attachments(ctx, operation["operation_id"], remaining_seconds=10)
     assert result["layers"]["attachments"] == "removed" and not result["declared_scope_complete"]
     from scope_recall.core.retained_artifacts import read_retained
 
@@ -330,11 +330,11 @@ def test_a_task_goes_on_in_a_new_episode_after_its_episode_is_deleted(app):
     later = capture(core, ctx, "TEST 删完以后接着聊配色。")
     (episode,) = core.episodes(ctx)
     assert episode.ref != deleted.ref and episode.resume is None
-    rows, _ = core.episode_sources(ctx, episode.ref)
+    rows, _ = core.records.episode_sources(ctx, episode.ref)
     assert [source.ref for _, source in rows] == [later.ref]
     again = capture(core, ctx, "TEST 再说一句，还在同一个任务里。")
     assert [e.ref for e in core.episodes(ctx)] == [episode.ref]
-    assert [source.ref for _, source in core.episode_sources(ctx, episode.ref)[0]] == [later.ref, again.ref]
+    assert [source.ref for _, source in core.records.episode_sources(ctx, episode.ref)[0]] == [later.ref, again.ref]
 
 
 def test_resume_keeps_unprocessed_tail_and_source_paging_is_not_a_false_complete_count(app):
@@ -344,8 +344,8 @@ def test_resume_keeps_unprocessed_tail_and_source_paging_is_not_a_false_complete
     apply(core, ctx, resumes=[resume(one)])
     (episode,) = core.episodes(ctx)
     assert episode.unprocessed_events == 1 and "resume_requires_rebuild" in episode.gaps
-    first, cursor = core.episode_sources(ctx, episode.ref, limit=1)
-    second, end = core.episode_sources(ctx, episode.ref, after_sequence=cursor, limit=1)
+    first, cursor = core.records.episode_sources(ctx, episode.ref, limit=1)
+    second, end = core.records.episode_sources(ctx, episode.ref, after_sequence=cursor, limit=1)
     assert len(first) == len(second) == 1 and first[0][1].ref != second[0][1].ref and end is None
 
 
@@ -359,7 +359,7 @@ def test_long_episode_uses_bounded_segments_and_preserves_final_source(app):
     for episode in episodes:
         cursor = 0
         while True:
-            rows, next_page = core.episode_sources(ctx, episode.ref, after_sequence=cursor, limit=32)
+            rows, next_page = core.records.episode_sources(ctx, episode.ref, after_sequence=cursor, limit=32)
             restored.extend(s.ref for _, s in rows)
             if next_page is None:
                 break
@@ -394,5 +394,5 @@ def test_M15_explicit_clarification_updates_binding_and_preserves_old_version(ap
     updated = dict(proposal, evidence_refs=[ref(clarification)])
     latest = apply(core, ctx, references=[updated]).items[0]
     assert latest.ref == original.ref and latest.revision == 2
-    assert core.reference(ctx, latest.ref).payload["resolved_ref"] == f"{two.ref}@2"
-    assert core.reference(ctx, latest.ref, 1).payload["resolution"] == "ambiguous"
+    assert core.records.reference(ctx, latest.ref).payload["resolved_ref"] == f"{two.ref}@2"
+    assert core.records.reference(ctx, latest.ref, 1).payload["resolution"] == "ambiguous"
