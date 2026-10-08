@@ -3,11 +3,13 @@
 A line or two per release.  Each release's full notes are on its GitHub release page (tag ``v<version>``), and the
 longer text this file once held is in its history.
 
-## [Unreleased]
+## [3.9.3] - 2026-10-08
 
-### Scope Recall 3.9.3rc1 - 2026-10-08
+3.9.3 changes no behaviour. The clean-up's complexity pass: the functions hardest to follow are split into named steps (none is above a complexity of 40 any more, and 57 are above 20 where 77 were), the imports inside functions that loaded nothing new are at the top of their modules (126 between the package's own modules, from 176), and two definitions nothing used are gone.
 
-The clean-up's last measures, no behaviour change: the most complex functions split into named steps, argument groups that travel together held in one value, and the largest files split by what they do.
+### Upgrading from 3.9.2
+
+Install the package, run `plan-install` and `apply-install` where you upgrade, then restart the Hermes gateways and the clients' MCP servers. The schema is unchanged (1110), and so are the hook and MCP server commands the installers write.
 
 ## [3.9.2] - 2026-10-08
 
