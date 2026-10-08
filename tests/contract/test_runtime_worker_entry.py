@@ -1431,9 +1431,10 @@ def test_a_rate_limited_code_stands_its_work_type_down_for_the_pass():
 
     from scope_recall.core import worker
 
-    source = inspect.getsource(worker)
-    assert 'if str(error_code or "").lower() in _RATE_LIMITED_ERRORS:' in source
+    source = inspect.getsource(worker.drain_worker)
+    assert "if _rate_limited(error_code):" in source
     assert "allowed = allowed - {item.work_type}" in source
+    assert worker._rate_limited("HTTP_429") and not worker._rate_limited(None)
 
 
 def test_the_two_stop_loss_layers_stay_distinct():

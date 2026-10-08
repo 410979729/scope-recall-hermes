@@ -351,6 +351,77 @@ def _recover_failed_work(
     return recovered, sweep
 
 
+def _pass_work_types(
+    storage, clock, context, config: WorkerConfig, ports: dict, started: float, budget: float
+) -> tuple[frozenset[str], tuple[str, ...]]:
+    """The work types a pass may claim, and the queued ones it has no port for (after resuming admission)."""
+    if config.purge_only:
+        return frozenset({"purge"}), ()
+    allowed = (
+        frozenset({"purge", "rebuild_projection", *(kind for kind, port in ports.items() if port is not None)})
+        - config.held_work_types
+    )
+    _resume_admission(
+        storage, clock, context, config, started, budget, candidate_available=ports["evaluate_candidate"] is not None
+    )
+    unavailable = _queued_work_types(
+        storage, clock, context, started, budget, [kind for kind, port in ports.items() if port is None]
+    )
+    return allowed, unavailable
+
+
+def _embed_group(storage, clock, context, group: tuple, embed, started: float, budget: float):
+    """One request for a claimed embedding group's texts, one commit for its vectors, one record for the members it
+    wrote: the group as processed, its prepared and published vectors, and each recorded member's outcome."""
+    item = group[0]
+    try:
+        prepared_group = prepare_embed_group(
+            storage, clock, context, group, embed=embed, started=started, budget=budget
+        )
+    except EmbedGroupRefused as refusal:
+        # The provider refused the group's request: no member was tried,
+        # so the whole group goes back unspent, parked as long as one
+        # refused member would be, and this pass asks for no more.
+        _release_group(
+            storage,
+            clock,
+            context,
+            group,
+            refusal.error_code,
+            started,
+            budget,
+            seconds=3600 if refusal.error_code in BUDGET_PAUSE_ERRORS else 0,
+        )
+        return (item,), {}, {}, {item.work_id: ("deferred", refusal.error_code, "pending")}
+    # One commit for the group's vectors, for the same reason as one
+    # request for its texts: the per-item cost was the store's lock,
+    # not the work.  Then one record for the members it wrote.
+    published_group = publish_embed_group(
+        storage,
+        clock,
+        context,
+        group,
+        embed=embed,
+        prepared_group=prepared_group,
+        started=started,
+        budget=budget,
+    )
+    recorded = complete_embed_group(
+        storage, clock, context, group, published=published_group, started=started, budget=budget
+    )
+    return group, prepared_group, published_group, recorded
+
+
+def _port_refused(disposition: str, error_code) -> bool:
+    """Whether the port refused an item before any attempt (budget, credentials)."""
+    return disposition == "deferred" and error_code in BUDGET_PAUSE_ERRORS
+
+
+def _rate_limited(error_code) -> bool:
+    """Whether the provider answered an item with a rate limit or capacity refusal."""
+    return str(error_code or "").lower() in _RATE_LIMITED_ERRORS
+
+
 def drain_worker(
     storage: SQLiteStorage,
     clock,
@@ -373,18 +444,7 @@ def drain_worker(
     # Missing optional ports are a capability state, not attempted model work.
     # Their items remain pending and become eligible at the next configured wakeup.
     ports = {"consolidate": consolidation, "embed": embed, "evaluate_candidate": candidate}
-    if config.purge_only:
-        allowed = frozenset({"purge"})
-        unavailable: tuple[str, ...] = ()
-    else:
-        allowed = (
-            frozenset({"purge", "rebuild_projection", *(kind for kind, port in ports.items() if port is not None)})
-            - config.held_work_types
-        )
-        _resume_admission(storage, clock, context, config, started, budget, candidate_available=candidate is not None)
-        unavailable = _queued_work_types(
-            storage, clock, context, started, budget, [kind for kind, port in ports.items() if port is None]
-        )
+    allowed, unavailable = _pass_work_types(storage, clock, context, config, ports, started, budget)
     recovered, sweep = _recover_failed_work(storage, clock, context, config, allowed, started, budget)
     processors = {
         "consolidate": partial(process_consolidate, model=consolidation),
@@ -449,43 +509,9 @@ def drain_worker(
                         ),
                     )
                 claimed_at = clock.monotonic()
-                try:
-                    prepared_group = prepare_embed_group(
-                        storage, clock, context, group, embed=embed, started=started, budget=budget
-                    )
-                except EmbedGroupRefused as refusal:
-                    # The provider refused the group's request: no member was tried,
-                    # so the whole group goes back unspent, parked as long as one
-                    # refused member would be, and this pass asks for no more.
-                    _release_group(
-                        storage,
-                        clock,
-                        context,
-                        group,
-                        refusal.error_code,
-                        started,
-                        budget,
-                        seconds=3600 if refusal.error_code in BUDGET_PAUSE_ERRORS else 0,
-                    )
-                    recorded = {item.work_id: ("deferred", refusal.error_code, "pending")}
-                    group = (item,)
-                else:
-                    # One commit for the group's vectors, for the same reason as one
-                    # request for its texts: the per-item cost was the store's lock,
-                    # not the work.  Then one record for the members it wrote.
-                    published_group = publish_embed_group(
-                        storage,
-                        clock,
-                        context,
-                        group,
-                        embed=embed,
-                        prepared_group=prepared_group,
-                        started=started,
-                        budget=budget,
-                    )
-                    recorded = complete_embed_group(
-                        storage, clock, context, group, published=published_group, started=started, budget=budget
-                    )
+                group, prepared_group, published_group, recorded = _embed_group(
+                    storage, clock, context, group, embed, started, budget
+                )
         disposition, error_code = "skipped", None
         for member in group:
             if member.work_id not in recorded:
@@ -522,9 +548,7 @@ def drain_worker(
                 )
             )
             item = member
-            refused = (disposition == "deferred" and error_code in BUDGET_PAUSE_ERRORS) or (
-                str(error_code or "").lower() in _RATE_LIMITED_ERRORS
-            )
+            refused = _port_refused(disposition, error_code) or _rate_limited(error_code)
             if refused or budget_left(started, clock, budget) <= 0:
                 # The rest of this group was leased for a request that is not
                 # going to be made. Hand it back unspent rather than holding it
@@ -534,7 +558,7 @@ def drain_worker(
         # Standing a work type down for the rest of the pass.  The per-item
         # backoff still decides when each item returns; this only decides how
         # many of one type are tried in one pass.
-        if disposition == "deferred" and error_code in BUDGET_PAUSE_ERRORS:
+        if _port_refused(disposition, error_code):
             # The port refused before any attempt (budget, credentials) and
             # would refuse the next item the same way.  A long source that
             # checkpointed a page is deferred too, but without a refusal code:
@@ -545,7 +569,7 @@ def drain_worker(
             # without an embedding credential, a store would otherwise park one
             # waiting item every few seconds.
             paused.append(item.work_type)
-        if str(error_code or "").lower() in _RATE_LIMITED_ERRORS:
+        if _rate_limited(error_code):
             # A provider that just answered 429 will answer 429 to the next item
             # too.  Each item backing off on its own is no backoff at all.
             allowed = allowed - {item.work_type}
