@@ -499,7 +499,7 @@ def test_an_account_refusal_parks_candidates_instead_of_failing_them(app, status
     failed 100 evaluations outright on alpha.  The provider refused the
     account, not the question: park it, hand the attempt back, and stop asking
     for the rest of the pass."""
-    from scope_recall.adapters.models import AuxiliaryModelError
+    from scope_recall.runtime.models import AuxiliaryModelError
 
     core, ctx = app
     _candidate(core, ctx)

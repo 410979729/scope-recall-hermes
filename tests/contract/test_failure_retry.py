@@ -94,7 +94,7 @@ class _Failing:
         self.code = code
 
     def evaluate_candidate(self, candidate, sources, *, remaining_seconds):
-        from scope_recall.adapters.models import ModelRefusal
+        from scope_recall.runtime.models import ModelRefusal
 
         raise ModelRefusal(self.code)
 

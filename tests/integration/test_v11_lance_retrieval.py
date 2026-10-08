@@ -9,7 +9,7 @@ from typing import Any
 
 import pytest
 
-from scope_recall.adapters.lance import (
+from scope_recall.runtime.lance_port import (
     LanceIndexWriter,
     LanceVectorPort,
     LanceVectorRecord,

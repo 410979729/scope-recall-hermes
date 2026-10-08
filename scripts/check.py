@@ -591,7 +591,7 @@ def _impact(changed: list[str]) -> tuple[set[str], list[str]]:
             if path.startswith("runtime/") or path.endswith("runtime_wiring.py"):
                 impacts.add("runtime_boundary")
                 path_impacts.add("runtime_boundary")
-        if path in {"adapters/lance.py", "lance_process_store.py", "_lance_worker.py", "vector_store.py"}:
+        if path in {"runtime/lance_port.py", "lance_process_store.py", "_lance_worker.py", "vector_store.py"}:
             impacts.add("native")
             path_impacts.add("native")
         if not path_impacts.intersection(

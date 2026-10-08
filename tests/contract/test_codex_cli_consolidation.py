@@ -16,8 +16,8 @@ import time
 
 import pytest
 
-from scope_recall.adapters import codex_cli as cli
-from scope_recall.adapters.models import AuxiliaryModelError
+from scope_recall.runtime import codex_cli as cli
+from scope_recall.runtime.models import AuxiliaryModelError
 from scope_recall.contracts import InstanceBinding
 from scope_recall.runtime.auxiliary import AuxiliaryRuntimeConfig, build_auxiliary_runtime
 from scope_recall.runtime.instance import RuntimeInstanceConfig, build_runtime_instance

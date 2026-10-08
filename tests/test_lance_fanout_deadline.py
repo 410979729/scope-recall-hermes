@@ -2,18 +2,18 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
 import json
 import sys
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
-
 from scope_recall.core import deadline as request_deadline
-from scope_recall.adapters.lance import LanceVectorPort
 from scope_recall.core.recall_policy import SPACE_ID
 from scope_recall.core.retrieval import SearchContext, SearchLimits
+from scope_recall.runtime.lance_port import LanceVectorPort
 from scope_recall.vector.process_store import ProcessLanceVectorStore
+
 from tests.v11_support import context as trusted_context
 
 
@@ -176,8 +176,8 @@ def test_an_entry_holding_a_hundred_scopes_searches_them_all_in_one_request(
     the owner's own scope sorted 105th and was never searched, so what the owner had just told
     another agent was not found by meaning.  The whole trusted list is now one request.
     """
-    from scope_recall.adapters.lance import physical_partition_scope_id
     from scope_recall.contracts import InstanceBinding, TrustedContext
+    from scope_recall.runtime.lance_port import physical_partition_scope_id
 
     clock = ManualClock()
     monkeypatch.setattr(request_deadline, "time", SimpleNamespace(monotonic=clock.monotonic))

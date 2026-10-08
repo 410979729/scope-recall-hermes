@@ -14,7 +14,7 @@ import time
 
 import pytest
 
-from scope_recall.adapters.models import AuxiliaryModelError
+from scope_recall.runtime.models import AuxiliaryModelError
 from scope_recall.runtime.auxiliary import build_auxiliary_runtime
 from scope_recall.runtime.model_budget import (
     PROVIDER_HOLD_FIRST_SECONDS,

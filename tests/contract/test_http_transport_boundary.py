@@ -13,7 +13,7 @@ import time
 
 import pytest
 
-from scope_recall.adapters import models
+from scope_recall.runtime import models
 
 
 class _Socket:

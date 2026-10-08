@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import pytest
 
-from scope_recall.adapters.lance import LanceIndexWriter, LanceVectorRecord
+from scope_recall.runtime.lance_port import LanceIndexWriter, LanceVectorRecord
 from scope_recall.contracts import ContractError
 from scope_recall.vector.store import build_vector_store
 

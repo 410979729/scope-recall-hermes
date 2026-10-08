@@ -10,7 +10,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Mapping
 
-from ..adapters.models import (
+from .models import (
     RESPONSES_KIND,
     ConsolidationRouteConfig,
     EmbeddingRouteConfig,
@@ -20,7 +20,7 @@ from ..adapters.models import (
     ResponsesConsolidationAdapter,
     ResponsesRouteConfig,
 )
-from ..adapters.codex_cli import CodexCliConsolidationAdapter, CodexCliRouteConfig
+from .codex_cli import CodexCliConsolidationAdapter, CodexCliRouteConfig
 from .subscription_budget import SubscriptionBudgetLedger
 from .model_budget import (
     AuxiliaryBudgetLedger,

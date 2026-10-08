@@ -12,7 +12,7 @@ from __future__ import annotations
 from datetime import timedelta
 import sqlite3
 
-from scope_recall.adapters.models import AuxiliaryModelError
+from scope_recall.runtime.models import AuxiliaryModelError
 from scope_recall.core.work_storage import AUTO_RECOVERABLE_WORK_TYPES
 from scope_recall.runtime import scheduling
 from scope_recall.runtime.scheduling import next_wake, supervise

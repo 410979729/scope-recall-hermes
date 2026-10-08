@@ -12,7 +12,7 @@ from threading import Barrier
 
 import pytest
 
-from scope_recall.adapters.models import (
+from scope_recall.runtime.models import (
     AuxiliaryModelError,
     ConsolidationRouteConfig,
     EmbeddingRouteConfig,
@@ -910,10 +910,10 @@ def test_import_modules_in_either_order():
         "spec=importlib.util.spec_from_file_location('scope_recall',root+'/__init__.py',submodule_search_locations=[root]); "
         "package=importlib.util.module_from_spec(spec); sys.modules['scope_recall']=package; spec.loader.exec_module(package); "
     )
-    for order in (("adapters.models", "runtime.auxiliary"), ("runtime.auxiliary", "adapters.models")):
+    for order in (("runtime.models", "runtime.auxiliary"), ("runtime.auxiliary", "runtime.models")):
         program = bootstrap + (
             f"[importlib.import_module('scope_recall.'+name) for name in {order!r}]; "
-            "models=importlib.import_module('scope_recall.adapters.models'); "
+            "models=importlib.import_module('scope_recall.runtime.models'); "
             "auxiliary=importlib.import_module('scope_recall.runtime.auxiliary'); "
             "runtime_pkg=importlib.import_module('scope_recall.runtime'); "
             "assert models.AuxiliaryModelError is not None; "

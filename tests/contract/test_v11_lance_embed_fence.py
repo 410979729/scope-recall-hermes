@@ -15,7 +15,7 @@ import pytest
 from test_v11_claims import app, capture
 from test_v11_deletion import authorize, request
 
-from scope_recall.adapters.lance import LanceEmbedPort, LancePurgePort
+from scope_recall.runtime.lance_port import LanceEmbedPort, LancePurgePort
 from scope_recall.contracts import ContractError
 from scope_recall.vector.process_store import ProcessLanceVectorStore
 
@@ -34,7 +34,7 @@ def _physical_delete_receipt(core, ctx, source):
 
 
 def _native_row(source, ctx, *, revision=None, space="TEST-p10-space", installation_id=None):
-    from scope_recall.adapters.lance import LanceVectorRecord, _record_row
+    from scope_recall.runtime.lance_port import LanceVectorRecord, _record_row
 
     revision = revision or source.revision
     installation_id = installation_id or ctx.binding.installation_id

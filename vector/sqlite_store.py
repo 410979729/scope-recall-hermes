@@ -294,7 +294,7 @@ class SQLiteBruteForceVectorStore(VectorStore):
         """Write ``rows`` as one group, only if ``guard`` still approves under this store's lock.
 
         The worker publishes every embedding through this fenced form (see
-        ``adapters.lance.LanceIndexWriter``), so a companion without it cannot
+        ``runtime.lance_port.LanceIndexWriter``), so a companion without it cannot
         be written to at all.  The store's own lock is the fence boundary: the
         guard is evaluated with the write already serialized, a refusing guard
         writes nothing, and ``upsert_records`` commits the group once.

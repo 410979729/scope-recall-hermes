@@ -16,7 +16,7 @@ import sqlite3
 
 import pytest
 
-from scope_recall.adapters.lance import LanceEmbedPort
+from scope_recall.runtime.lance_port import LanceEmbedPort
 from scope_recall.core.recall_policy import claim_embedding_text, encode_embedding_text
 
 from test_v11_claims import accept, app, capture, draft, revise_request  # noqa: F401  (fixtures)

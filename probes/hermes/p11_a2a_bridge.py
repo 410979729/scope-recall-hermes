@@ -23,7 +23,7 @@ REPO_ROOT = SCRIPT_DIR.parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from scope_recall.adapters.models import AuxiliaryModelError, HttpsTransport
+from scope_recall.runtime.models import AuxiliaryModelError, HttpsTransport
 from scope_recall.runtime.model_budget import AuxiliaryBudgetLedger, load_hermes_attempt_authorization
 from probes.hermes.p11_a2a_testkit import (
     BATCH_NAME, LEDGER, LOCAL_BRIDGE_TOKEN_ENV, MAIN_BRIDGE_HOST, MAIN_MODEL, MAX_MODEL_POSTS,

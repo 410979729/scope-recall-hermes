@@ -37,7 +37,7 @@ from probes.hermes.p11_start_a2a_test import (
     _gateway_processing_ready,
     _resolve_upstream_key,
 )
-from scope_recall.adapters.models import AuxiliaryBudgetLedger, OpenAIConsolidationAdapter
+from scope_recall.runtime.models import AuxiliaryBudgetLedger, OpenAIConsolidationAdapter
 from scope_recall.runtime.auxiliary import AuxiliaryRuntimeConfig
 from scope_recall.runtime.model_budget import initialize_auxiliary_budget_ledger
 

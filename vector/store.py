@@ -24,7 +24,7 @@ from .purge import governed_row_ids, purge_request
 _COLUMNS = ("id", "scope_id", "source", "target", "content", "summary", "updated_at", "vector")
 #: Lance index types under which ``id = '...'`` is an indexed probe, not a scan.
 _SCALAR_INDEX_TYPES = frozenset({"bitmap", "btree", "label_list", "scalar"})
-#: What a nearest-neighbour search returns: the columns ``adapters.lance`` reads from a hit.  With every column the
+#: What a nearest-neighbour search returns: the columns ``runtime.lance_port`` reads from a hit.  With every column the
 #: 3,072 floats of each of 40 hits crossed the helper's pipe as JSON on every search, and nothing read them.
 _HIT_COLUMNS = ["id", "scope_id", "source", "target", "_distance"]
 #: A search through the index re-ranks this many times its limit by exact distance, and probes every partition
@@ -238,7 +238,7 @@ class LanceVectorStore(VectorStore):
         """Commit ``rows`` in one Lance transaction, only if ``guard`` still approves under the native lock.
 
         The worker publishes every embedding through this fenced form
-        (``adapters.lance.LanceIndexWriter``).  On Windows the store is the
+        (``runtime.lance_port.LanceIndexWriter``).  On Windows the store is the
         helper-process one, and the helper asks the guard with the native lock
         held (``_lance_worker.fenced_upsert``).  Everywhere else
         ``build_vector_store`` selects this in-process store, which did not
@@ -295,7 +295,7 @@ class LanceVectorStore(VectorStore):
 
         The budget has two names because this method has two callers.  The
         Windows helper process passes ``budget_seconds``, what is left of its
-        parent's deadline.  ``adapters.lance.LancePurgePort`` passes
+        parent's deadline.  ``runtime.lance_port.LancePurgePort`` passes
         ``remaining_seconds`` to whichever store it holds, and off Windows
         that is this one: the keyword was refused with a ``TypeError`` the port
         turns into "not purged", so a forget never finished there (#99).

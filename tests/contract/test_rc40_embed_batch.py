@@ -16,7 +16,7 @@ import sqlite3
 
 import pytest
 
-from scope_recall.adapters.models import (
+from scope_recall.runtime.models import (
     AuxiliaryModelError,
     MAX_EMBED_BATCH,
     _embedding_vectors,

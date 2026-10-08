@@ -179,7 +179,7 @@ def test_a_vector_failure_carries_the_auxiliary_error_type(app):
     """Every auxiliary failure is an ``AuxiliaryModelError``; whether it was
     the connection or the request decides both whether the read path retries
     and whether an operator should act."""
-    from scope_recall.adapters.models import AuxiliaryModelError
+    from scope_recall.runtime.models import AuxiliaryModelError
 
     core, ctx = app
 
@@ -227,7 +227,7 @@ def test_an_optional_channel_that_overruns_does_not_empty_the_packet(app):
     hydrate loop abandoned every one of them because the clock was gone."""
     import time
 
-    from scope_recall.adapters.models import AuxiliaryModelError
+    from scope_recall.runtime.models import AuxiliaryModelError
 
     core, ctx = app
     for index in range(8):

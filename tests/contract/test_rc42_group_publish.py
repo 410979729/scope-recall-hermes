@@ -15,7 +15,7 @@ import sqlite3
 
 import pytest
 
-from scope_recall.adapters.lance import LanceEmbedPort
+from scope_recall.runtime.lance_port import LanceEmbedPort
 from scope_recall.vector.process_store import ProcessLanceVectorStore
 
 from test_v11_claims import Clock, app, capture  # noqa: F401  (fixtures)

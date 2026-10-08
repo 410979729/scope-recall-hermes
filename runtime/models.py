@@ -21,14 +21,9 @@ from types import MappingProxyType
 from typing import Any, Protocol
 
 from ..contracts import ContractError
-from ..core.recall_policy import (
-    EMBEDDING_DIALECTS,
-    EMBEDDING_SPACE,
-    build_embedding_space,
-    encode_embedding_text,
-)
+from ..core.recall_policy import EMBEDDING_DIALECTS, EMBEDDING_SPACE, build_embedding_space, encode_embedding_text
 from ..core.storage import StoredSource
-from ..runtime.model_budget import AuxiliaryBudgetLedger, BudgetPolicy
+from .model_budget import AuxiliaryBudgetLedger, BudgetPolicy
 from ..core.secret_patterns import contains_secret_like_text
 
 
@@ -251,7 +246,7 @@ class HttpsTransport:
     """Bounded HTTPS POST; query callers may own a persistent stdlib worker."""
 
     def __init__(self, *, persistent: bool = False):
-        from ..runtime.http_session import HttpWorkerSession
+        from .http_session import HttpWorkerSession
 
         self._session = HttpWorkerSession() if persistent else None
         self._post_lock = threading.Lock()

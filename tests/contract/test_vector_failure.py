@@ -4,7 +4,6 @@ import ast
 import pathlib
 
 import pytest
-
 from scope_recall.core.vector_failure import (
     NATIVE_VECTOR_FAULTS,
     native_vector_fault,
@@ -168,8 +167,8 @@ def test_the_one_remote_fallback_carries_the_type():
 def test_a_refused_call_says_which_answer_the_provider_gave():
     """For seven hours on 2026-09-17 Google refused every embedding call, and the
     gap said only ``http_status`` -- what a malformed request would also say."""
-    from scope_recall.adapters.models import AuxiliaryModelError
     from scope_recall.core.vector_failure import vector_failure_label
+    from scope_recall.runtime.models import AuxiliaryModelError
 
     assert (
         vector_failure_label(AuxiliaryModelError("http_status", detail="429")) == "AuxiliaryModelError:http_status:429"

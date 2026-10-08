@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from scope_recall.adapters.models import AuxiliaryModelError
+from scope_recall.runtime.models import AuxiliaryModelError
 from scope_recall.runtime.embedding_retry import (
     MINIMUM_RETRY_FRACTION,
     TRANSIENT_EMBEDDING_ERRORS,
@@ -177,7 +177,7 @@ def test_the_refusal_type_is_kept_and_the_message_is_not():
     """The body is free text and may carry account identifiers; the type is a
     short symbol from the provider's vocabulary, and it is the difference
     between "the model is failing" and "the quota is exhausted until the 27th"."""
-    from scope_recall.adapters.models import provider_refusal_code
+    from scope_recall.runtime.models import provider_refusal_code
 
     real = (
         b'{"type":"error","error":{"type":"GoUsageLimitError","message":'
@@ -202,12 +202,12 @@ def test_the_refusal_type_is_kept_and_the_message_is_not():
     ],
 )
 def test_nothing_unbounded_escapes(raw):
-    from scope_recall.adapters.models import provider_refusal_code
+    from scope_recall.runtime.models import provider_refusal_code
 
     assert provider_refusal_code(raw) is None
 
 
 def test_a_code_field_is_accepted_when_there_is_no_type():
-    from scope_recall.adapters.models import provider_refusal_code
+    from scope_recall.runtime.models import provider_refusal_code
 
     assert provider_refusal_code(b'{"error":{"code":"insufficient_quota"}}') == "insufficient_quota"

@@ -80,7 +80,7 @@ PAGE_TURN_SECONDS = 0.02
 #: milliseconds and all sixteen still fit.
 SOURCE_PAGE_SECONDS = 5.0
 #: Source embeddings one group may carry.  The adapter sends them as consecutive
-#: full provider requests (``adapters/models.py``: a hundred each), so this is
+#: full provider requests (``runtime/models.py``: a hundred each), so this is
 #: how many items share one read, one group commit and one set of per-pass costs
 #: -- the numbers a drain is actually paying.  A pass still claims no more than
 #: its own ``max_items``.

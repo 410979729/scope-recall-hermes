@@ -26,7 +26,7 @@ import inspect
 
 import pytest
 
-from scope_recall.adapters.lance import LanceIndexWriter, LancePurgePort, LanceVectorRecord
+from scope_recall.runtime.lance_port import LanceIndexWriter, LancePurgePort, LanceVectorRecord
 from scope_recall.vector.process_store import ProcessLanceVectorStore
 from scope_recall.vector.sqlite_store import SQLiteBruteForceVectorStore
 from scope_recall.vector.store import LanceVectorStore, build_vector_store
@@ -149,7 +149,7 @@ def check_a_search_over_several_partitions_filters_before_it_ranks(store) -> Non
     Filtering after the nearest rows were chosen would return nothing here: thirty rows of another
     partition sit nearer the query than anything the listed partitions hold.
     """
-    from scope_recall.adapters.lance import physical_partition_scope_id
+    from scope_recall.runtime.lance_port import physical_partition_scope_id
 
     def partition(scope: str) -> str:
         return physical_partition_scope_id(

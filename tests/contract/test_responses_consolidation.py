@@ -21,7 +21,7 @@ from pathlib import Path
 
 import pytest
 
-from scope_recall.adapters.models import (
+from scope_recall.runtime.models import (
     RESPONSES_KIND,
     AuxiliaryModelError,
     ConsolidationRouteConfig,

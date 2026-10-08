@@ -103,7 +103,7 @@ _OPERATOR_ONLY_FAILURES = (
         {
             "http_400",
             "candidate_attempt_interrupted",
-            # The model client's own refusals of a route or a size (``runtime/_http_worker.py``, ``adapters/models.py``): a
+            # The model client's own refusals of a route or a size (``runtime/_http_worker.py``, ``runtime/models.py``): a
             # wrong or redirecting base URL, a request or an answer past its bound.  An operator fixes the route or the bound,
             # then re-opens.
             "endpoint_invalid",

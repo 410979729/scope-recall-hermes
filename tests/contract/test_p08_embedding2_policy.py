@@ -8,7 +8,6 @@ import json
 from pathlib import Path
 
 import pytest
-
 from scope_recall.contracts import ContractError
 from scope_recall.core.recall_policy import (
     EMBEDDING_SPACE,
@@ -134,8 +133,8 @@ def test_P08_embedding_model_is_configuration_not_a_constant():
     not choose its own provider. The digest-keyed vector directory already made
     swapping safe; only the hardcoded descriptor stopped anyone using it.
     """
-    from scope_recall.adapters.models import EmbeddingRouteConfig
     from scope_recall.core.recall_policy import build_embedding_space
+    from scope_recall.runtime.models import EmbeddingRouteConfig
 
     default = EmbeddingRouteConfig(credential_env="TEST_EMBED_KEY")
     assert default.space() == EMBEDDING_SPACE
@@ -224,10 +223,10 @@ def test_P08_admission_is_bound_to_the_configured_space_not_the_shipped_one():
 
 def test_P08_embedding_wire_dialects_round_trip_both_shapes():
     """Both request shapes are built, and both responses parse, at any width."""
-    from scope_recall.adapters.models import (
+    from scope_recall.runtime.models import (
         AuxiliaryModelError,
-        build_openai_embed_body,
         build_gemini_embed_body,
+        build_openai_embed_body,
         parse_embedding_response,
     )
 
@@ -260,8 +259,8 @@ def test_P08_an_openai_route_may_name_the_field_that_carries_the_width():
     output_dimension and refuses dimensions outright (#88); a request that
     omits the width silently gets the model's default geometry, so the field
     name is the only lever.  It is a wire detail: the digest does not move."""
-    from scope_recall.adapters.models import EmbeddingRouteConfig, build_openai_embed_body
     from scope_recall.runtime.auxiliary import _embedding_route_from_mapping
+    from scope_recall.runtime.models import EmbeddingRouteConfig, build_openai_embed_body
 
     body = json.loads(
         build_openai_embed_body("t", model="voyage-4-large", dimensions=2048, dimensions_field="output_dimension")

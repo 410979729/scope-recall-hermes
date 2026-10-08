@@ -131,7 +131,7 @@ def test_explicit_transition_preserves_new_value_and_rejects_unproven_frames(app
 @pytest.mark.parametrize("always_rejected", [False, True])
 def test_explicit_http_rejection_recovers_without_new_evidence_and_stops_at_limit(app, always_rejected, status):
     """529 is a provider saying it is overloaded: one failed a candidate evaluation for good on 2026-09-28."""
-    from scope_recall.adapters.models import AuxiliaryModelError
+    from scope_recall.runtime.models import AuxiliaryModelError
 
     core, ctx = app
     saved, _, proposal, _ = _candidate(core, ctx)

@@ -45,10 +45,10 @@ import sys
 import tempfile
 from pathlib import Path
 
-from scope_recall.adapters.lance import LanceEmbedPort, LancePurgePort, LanceVectorPort
 from scope_recall.contracts import ContractError, InstanceBinding, TrustedContext
 from scope_recall.core import CoreConfig, MemoryCore
 from scope_recall.core.recall_policy import RecallPolicy
+from scope_recall.runtime.lance_port import LanceEmbedPort, LancePurgePort, LanceVectorPort
 
 try:  # 3.8.0 and later: a whole-store re-embed into a new space (respace-embeddings)
     from scope_recall.runtime.vector_upkeep import respace_if_due

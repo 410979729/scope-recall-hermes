@@ -18,7 +18,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from scope_recall.adapters.models import (
+from scope_recall.runtime.models import (
     AuxiliaryModelError,
     EMBED_REQUEST_CONCURRENCY,
     MAX_EMBED_BATCH,
@@ -53,7 +53,7 @@ class Recording:
 
 
 def _adapter(**options):
-    from scope_recall.adapters.models import GeminiEmbeddingAdapter
+    from scope_recall.runtime.models import GeminiEmbeddingAdapter
 
     made = Recording(**options)
     made.embed_texts = GeminiEmbeddingAdapter.embed_texts.__get__(made, Recording)
@@ -193,7 +193,7 @@ def test_a_group_asks_its_requests_at_the_same_time():
                 with self._lock:
                     self.live -= 1
 
-    from scope_recall.adapters.models import GeminiEmbeddingAdapter
+    from scope_recall.runtime.models import GeminiEmbeddingAdapter
 
     adapter = Concurrent()
     adapter.embed_texts = GeminiEmbeddingAdapter.embed_texts.__get__(adapter, Concurrent)

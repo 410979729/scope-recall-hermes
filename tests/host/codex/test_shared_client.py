@@ -2749,7 +2749,7 @@ def _embedding_entry(base, monkeypatch, *, delay=0.0):
     import threading
     import time
 
-    from scope_recall.adapters import models
+    from scope_recall.runtime import models
     from scope_recall.adapters.hermes.installation import (
         attach_shared_entry,
         build_installation_manifest,

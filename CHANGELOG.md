@@ -9,6 +9,7 @@ All notable changes to `scope-recall` will be documented in this file.
 The clean-up's third step, no behaviour change: the import graph of the core and its hosts without cycles.
 
 - `install_hermes_archive_migration`, the test-only archive migration install, moves from `scope_recall.adapters.hermes` to `scope_recall.maintenance.migration_activation`.
+- The model transport, the Codex CLI consolidation adapter and the Lance ports move below the host adapters: `scope_recall.adapters.models`, `.codex_cli` and `.lance` are now `scope_recall.runtime.models`, `.codex_cli` and `.lance_port`, and `scope_recall.adapters` no longer re-exports the Lance names. Nothing installed names these modules.
 
 ## [3.9.0] - 2026-10-07
 

@@ -19,7 +19,7 @@ from scope_recall.core import CoreConfig, MemoryCore
 from scope_recall.runtime.instance import RuntimeInstanceConfig, build_runtime_instance
 from scope_recall.runtime import worker_entry
 from scope_recall.core.file_lock import advisory_file_lock
-from scope_recall.adapters.models import AuxiliaryModelError
+from scope_recall.runtime.models import AuxiliaryModelError
 from scope_recall.core.worker import _model_exception_outcome
 from test_runtime_worker_entry import _binding, _config_payload, _write_config
 from test_runtime_auxiliary import _runtime_config, FakeTransport
@@ -144,7 +144,7 @@ def test_worker_counts_only_actual_model_attempts(worker_app, code, detail, stat
 
 def test_expired_request_never_settles_with_unbounded_timeout(tmp_path, monkeypatch):
     from scope_recall import adapters
-    import scope_recall.adapters.models as models
+    import scope_recall.runtime.models as models
 
     config, _, _ = _runtime_config(tmp_path)
     monkeypatch.setenv("SCOPE_RECALL_TEST_CHAT_KEY", "test-key")

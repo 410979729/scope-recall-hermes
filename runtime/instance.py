@@ -44,9 +44,9 @@ from .validation import (
 from .vector_retention import expire_if_due
 from .worker_launch import failure_reason
 from .vector_upkeep import backfill_if_due, compact_if_due, index_if_due, respace_if_due
-from ..adapters.codex_cli import CodexCliConsolidationAdapter
-from ..adapters.lance import LanceEmbedPort, LancePurgePort, LanceVectorPort, search_partitions
-from ..adapters.models import AuxiliaryModelError
+from .codex_cli import CodexCliConsolidationAdapter
+from .lance_port import LanceEmbedPort, LancePurgePort, LanceVectorPort, search_partitions
+from .models import AuxiliaryModelError
 from ..core.capture_filters import redact_private_paths
 from ..core.recall_policy import EMBEDDING_SPACE, RecallPolicy, embedding_space_id
 from ..vector.lance_native import helper_start_failure
@@ -564,7 +564,7 @@ class RuntimeInstance:
             if not callable(search_scopes) or not trusted.allowed_scope_ids:
                 return True
 
-            # Every partition a recall of this runtime filters on (adapters/lance.py ``_partition_hits``).  The first
+            # Every partition a recall of this runtime filters on (``lance_port._partition_hits``).  The first
             # search of an index reads all of it into the helper's cache whatever the filter; after that a search
             # touches only the codes of the rows its filter keeps.  Filtered on the first scope's partition, which
             # held no rows for any entry of the shared store, the search touched 26 MB of the 306 MB the next recall

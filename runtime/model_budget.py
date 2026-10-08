@@ -639,7 +639,7 @@ def pre_request_refusals(auxiliary) -> list[str]:
 
     ``reserve`` raises before the request leaves the process, so a refused
     reservation writes no row and every ledger-based measurement, including
-    ``provider_refusals``, is blind to it.  ``adapters.models`` folds the
+    ``provider_refusals``, is blind to it.  ``runtime.models`` folds the
     refusal into ``budget_unavailable``, the worker defers the item for an hour
     without burning an attempt, and a deterministic fault (a model missing
     from ``approved_models``, a ledger file that was moved) therefore stalls
