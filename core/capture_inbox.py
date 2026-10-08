@@ -323,12 +323,36 @@ def resolve_conflicted_ingress(
     re-checked against the captured context, never trusted merely for having
     been in the inbox already.
     """
+    page = _page(
+        storage,
+        clock,
+        context,
+        limit,
+        remaining_seconds,
+        "(last_error_code='VERSION_CONFLICT' OR last_error_code LIKE 'DEFERRED|%')",
+        (),
+        lambda code, now: code == "VERSION_CONFLICT" or (deferred_path(code) == "rekey" and replayable(code, now)),
+    )
+    if page is None:
+        return ()
+    rows, deadline = page
+    return _replay_rows(storage, clock, context, rows, authorize, admission_policy, deadline, rekey=True)
+
+
+def _page(storage, clock, context, limit, remaining_seconds, condition, params, takes):
+    """The rows of one page of the caller's inbox partition that ``condition`` (with ``params``) selects and
+    ``takes(code, now)`` keeps, oldest first, and the deadline the page's replay has; None when the context reaches no
+    scope.
+
+    A row put off is passed over, not the head of the page.  Its code is read first and its payload only when it is
+    taken: the inbox holds up to 256 rows and 64 MB.
+    """
     if not 1 <= limit <= 32:
         raise ContractError("INPUT_INVALID", "ingress_limit")
     deadline = time.monotonic() + remaining_seconds
     scopes = tuple(sorted(context.allowed_scope_ids))
     if not scopes:
-        return ()
+        return None
     now = _utc(clock)
     with storage.read(context, remaining_seconds=remaining_seconds) as tx:
         conn = tx._check()
@@ -336,19 +360,18 @@ def resolve_conflicted_ingress(
             token
             for token, code in conn.execute(
                 f"""SELECT token,last_error_code FROM capture_inbox WHERE scope_id IN ({",".join("?" for _ in scopes)})
-            AND project_id IS ? AND branch_id IS ?
-            AND (last_error_code='VERSION_CONFLICT' OR last_error_code LIKE 'DEFERRED|%')
+            AND project_id IS ? AND branch_id IS ? AND {condition}
             ORDER BY created_at,token""",
-                (*scopes, context.project_id, context.branch_id),
+                (*scopes, context.project_id, context.branch_id, *params),
             )
-            if code == "VERSION_CONFLICT" or (deferred_path(code) == "rekey" and replayable(code, now))
+            if takes(code, now)
         ][:limit]
         rows = [
             row
             for token in tokens
             if (row := conn.execute("SELECT * FROM capture_inbox WHERE token=?", (token,)).fetchone()) is not None
         ]
-    return _replay_rows(storage, clock, context, rows, authorize, admission_policy, deadline, rekey=True)
+    return rows, deadline
 
 
 def _replay_rows(storage, clock, context, rows, authorize, admission_policy, deadline, *, rekey):
@@ -466,30 +489,17 @@ def _defer(storage, clock, context, row, exc, deadline, *, path) -> CaptureRecei
 
 def replay_inbox(storage, clock, context, *, authorize, admission_policy=None, limit=8, remaining_seconds=1.0):
     """Replay only the caller's partition; the callback verifies current host ACLs."""
-    if not 1 <= limit <= 32:
-        raise ContractError("INPUT_INVALID", "ingress_limit")
-    deadline = time.monotonic() + remaining_seconds
-    scopes = tuple(sorted(context.allowed_scope_ids))
-    if not scopes:
+    page = _page(
+        storage,
+        clock,
+        context,
+        limit,
+        remaining_seconds,
+        REPLAY_CANDIDATES,
+        RETRIED,
+        lambda code, now: replayable(code, now) and deferred_path(code) != "rekey",
+    )
+    if page is None:
         return ()
-    # A row put off is passed over, not the head of the page.  Its code is read first and its payload only when it
-    # is taken: the inbox holds up to 256 rows and 64 MB.
-    now = _utc(clock)
-    with storage.read(context, remaining_seconds=remaining_seconds) as tx:
-        conn = tx._check()
-        tokens = [
-            token
-            for token, code in conn.execute(
-                f"""SELECT token,last_error_code FROM capture_inbox WHERE scope_id IN ({",".join("?" for _ in scopes)})
-            AND project_id IS ? AND branch_id IS ? AND {REPLAY_CANDIDATES}
-            ORDER BY created_at,token""",
-                (*scopes, context.project_id, context.branch_id, *RETRIED),
-            )
-            if replayable(code, now) and deferred_path(code) != "rekey"
-        ][:limit]
-        rows = [
-            row
-            for token in tokens
-            if (row := conn.execute("SELECT * FROM capture_inbox WHERE token=?", (token,)).fetchone()) is not None
-        ]
+    rows, deadline = page
     return _replay_rows(storage, clock, context, rows, authorize, admission_policy, deadline, rekey=False)

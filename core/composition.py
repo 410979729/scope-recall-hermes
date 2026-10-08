@@ -256,21 +256,17 @@ class MemoryCore:
         with self.storage.read(context, remaining_seconds=remaining_seconds) as tx:
             return tx.sources.said_in_session(scope_id, tuple(items), window_seconds=window_seconds)
 
-    def recall(
+    def _search_context(
         self,
         context: TrustedContext,
         request,
-        *,
-        current_source_refs: tuple[str, ...] = (),
-        deadline_seconds: float | None = None,
-        background_without_evidence: bool = True,
-        zone: tzinfo | None = None,
-    ):
-        """Run the sole read-only P08 pipeline for auto and tool callers.
-
-        ``background_without_evidence`` is a trusted caller choice, never a
-        request field; see :class:`SearchContext`.
-        """
+        current_source_refs: tuple[str, ...],
+        deadline_seconds: float | None,
+        background_without_evidence: bool,
+        zone: tzinfo | None,
+    ) -> tuple[SearchContext, float]:
+        """A recall request's search context, and the seconds it was given: the caller's, else the core's for an
+        automatic recall and 2 for any other; an automatic recall never gets more than the core's."""
         payload = validate_model_request("recall_request", request, context)
         if deadline_seconds is None:
             effective_deadline = self.config.auto_recall_seconds if payload.get("mode") == "auto" else 2.0
@@ -293,6 +289,26 @@ class MemoryCore:
             background_without_evidence=background_without_evidence,
             zone=zone,
         )
+        return search_context, effective_deadline
+
+    def recall(
+        self,
+        context: TrustedContext,
+        request,
+        *,
+        current_source_refs: tuple[str, ...] = (),
+        deadline_seconds: float | None = None,
+        background_without_evidence: bool = True,
+        zone: tzinfo | None = None,
+    ):
+        """Run the sole read-only P08 pipeline for auto and tool callers.
+
+        ``background_without_evidence`` is a trusted caller choice, never a
+        request field; see :class:`SearchContext`.
+        """
+        search_context, _deadline = self._search_context(
+            context, request, current_source_refs, deadline_seconds, background_without_evidence, zone
+        )
         return self.recall_pipeline.search(search_context)
 
     def recall_packet(
@@ -311,27 +327,8 @@ class MemoryCore:
         query that finds nothing then compiles to ``no_match`` rather than to
         ambient preferences a caller could read as the answer.
         """
-        payload = validate_model_request("recall_request", request, context)
-        if deadline_seconds is None:
-            effective_deadline = self.config.auto_recall_seconds if payload.get("mode") == "auto" else 2.0
-        else:
-            if (
-                type(deadline_seconds) not in (int, float)
-                or not math.isfinite(deadline_seconds)
-                or deadline_seconds <= 0
-            ):
-                raise ContractError("INPUT_INVALID", "deadline_seconds")
-            effective_deadline = float(deadline_seconds)
-            if payload.get("mode") == "auto":
-                effective_deadline = min(effective_deadline, self.config.auto_recall_seconds)
-        search_context = SearchContext.from_request(
-            request,
-            context,
-            now=self.clock.utc_now(),
-            deadline=self.clock.monotonic() + effective_deadline,
-            current_source_refs=tuple(current_source_refs),
-            background_without_evidence=background_without_evidence,
-            zone=zone,
+        search_context, effective_deadline = self._search_context(
+            context, request, current_source_refs, deadline_seconds, background_without_evidence, zone
         )
         # Candidate collection is optional work. Reserve part of the original
         # deadline for the mandatory fresh SQLite release checks and rendering.

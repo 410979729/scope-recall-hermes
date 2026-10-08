@@ -16,22 +16,17 @@ _COMPOSITE_VALUE = re.compile(r"([^，,;；。!?！？\n]{1,120})[，,]\s*(?:不
 _RENDITION = re.compile(r"((?:对外|对内|内部|外部)版)((?:仍然|仍)?(?:是|使用|采用|选择))([^，,;；。!?！？\n]{1,120})")
 
 
-def normalize_frame(proposal, roots):
-    """Keep only uniquely sourced project/subject/verb components.
-
-    A bracketed project prefix is an explicit applicability condition. A
-    preference whose value repeats its verb contains an embedded literal
-    subject/verb/value frame. Only these syntactic forms are normalized.
-    """
-    if proposal["kind"] not in {"preference", "constraint", "decision"}:
-        return proposal
+def _first_hand_assertion(proposal, roots) -> str | None:
+    """The assertion around the proposal's one quote, when the quote comes once from one complete statement a verified
+    person made directly, and that statement asserts (no question of authority, no uncertainty, no reported speech);
+    None otherwise."""
     spans = proposal["evidence_spans"]
     if len(spans) != 1:
-        return proposal
+        return None
     span = spans[0]
     matching = [r for r in roots if (r.ref, r.revision) == (span["source_ref"], span["source_revision"])]
     if len(matching) != 1:
-        return proposal
+        return None
     root = matching[0]
     principal = root.source_principal or {}
     if (
@@ -41,16 +36,30 @@ def normalize_frame(proposal, roots):
         or principal.get("resolution") != "verified"
         or principal.get("kind") != "human"
     ):
-        return proposal
+        return None
     if not span["quote"] or root.content.count(span["quote"]) != 1:
-        return proposal
-
+        return None
     assertion = evidence_context(root.content, span["quote"])
     if (
         AUTHORITY_QUESTION.search(assertion)
         or UNASSERTED_UNCERTAINTY.search(assertion)
         or REPORTED_SPEECH.search(assertion)
     ):
+        return None
+    return assertion
+
+
+def normalize_frame(proposal, roots):
+    """Keep only uniquely sourced project/subject/verb components.
+
+    A bracketed project prefix is an explicit applicability condition. A
+    preference whose value repeats its verb contains an embedded literal
+    subject/verb/value frame. Only these syntactic forms are normalized.
+    """
+    if proposal["kind"] not in {"preference", "constraint", "decision"}:
+        return proposal
+    assertion = _first_hand_assertion(proposal, roots)
+    if assertion is None:
         return proposal
     projects = set(PROJECT_TAG.findall(assertion))
     if len(projects) != 1:
@@ -138,33 +147,8 @@ def name_frame(proposal, roots):
         or str(alias.get("target_ref") or "").startswith("claim-")
     ):
         return proposal
-    spans = proposal["evidence_spans"]
-    if len(spans) != 1:
-        return proposal
-    span = spans[0]
-    matching = [r for r in roots if (r.ref, r.revision) == (span["source_ref"], span["source_revision"])]
-    if len(matching) != 1:
-        return proposal
-    root = matching[0]
-    principal = root.source_principal or {}
-    if (
-        root.origin != "human_direct"
-        or root.capture_state != "complete"
-        or root.capture_gaps
-        or principal.get("resolution") != "verified"
-        or principal.get("kind") != "human"
-    ):
-        return proposal
-    if not span["quote"] or root.content.count(span["quote"]) != 1:
-        return proposal
-
-    assertion = evidence_context(root.content, span["quote"])
-    if (
-        AUTHORITY_QUESTION.search(assertion)
-        or UNASSERTED_UNCERTAINTY.search(assertion)
-        or REPORTED_SPEECH.search(assertion)
-        or _UNASSERTED_NAMING.search(assertion)
-    ):
+    assertion = _first_hand_assertion(proposal, roots)
+    if assertion is None or _UNASSERTED_NAMING.search(assertion):
         return proposal
     name = str(alias.get("name") or "").strip()
     for clause in re.split(r"[，,;；。!?！？\n]", assertion):

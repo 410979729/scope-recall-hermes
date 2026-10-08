@@ -152,25 +152,7 @@ class Claims:
         ).fetchone()
         if row is None:
             return None
-        return ClaimVersion(
-            row["claim_id"],
-            row["revision"],
-            row["current_revision"],
-            row["scope_id"],
-            row["project_id"],
-            row["branch_id"],
-            json.loads(row["payload_json"]),
-            row["state"],
-            row["basis"],
-            row["qualification_reason"],
-            row["valid_from"],
-            row["valid_to"],
-            row["recorded_from"],
-            row["recorded_to"],
-            row["replaces_revision"],
-            tuple(json.loads(row["conflict_revisions_json"])),
-            bool(row["suppressed"]),
-        )
+        return _claim_version(row)
 
     def current_revision(self, ref: str) -> int | None:
         """Resolve a visible claim head without loading its historical versions."""
@@ -616,6 +598,22 @@ class Claims:
         self._tx._scope(version.scope_id)
         if (version.project_id, version.branch_id) != (ctx.project_id, ctx.branch_id):
             raise ContractError("ACCESS_DENIED", "claim_context")
+
+    def live_sources(self, refs, scope_id: str) -> list:
+        """The sources ``refs`` cite, each in ``scope_id`` and this context's project and branch and the newest
+        version of its group; SOURCE_MISSING otherwise."""
+        ctx = self._tx.context
+        cited = [self._tx.source(*parse_source_ref(ref)) for ref in refs]
+        sources = [
+            s
+            for s in cited
+            if s is not None and (s.scope_id, s.project_id, s.branch_id) == (scope_id, ctx.project_id, ctx.branch_id)
+        ]
+        if len(sources) != len(cited):
+            raise ContractError("SOURCE_MISSING")
+        for source in sources:
+            self.require_live_source(source.ref, source.revision)
+        return sources
 
     def require_live_source(self, ref: str, revision: int) -> None:
         source = self._tx.source(ref, revision)

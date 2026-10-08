@@ -534,17 +534,6 @@
    },
    "UP017": 2
   },
-  "core/claim_normalization.py": {
-   "C901": {
-    "normalize_frame": 19
-   },
-   "PLR0911": {
-    "normalize_frame": 11
-   },
-   "PLR0912": {
-    "normalize_frame": 18
-   }
-  },
   "core/claim_storage.py": {
    "C901": {
     "Claims.append": 20
@@ -553,9 +542,6 @@
    "PLR0912": {
     "Claims.append": 20
    }
-  },
-  "core/claims.py": {
-   "UP017": 1
   },
   "core/composition.py": {
    "UP017": 1
@@ -572,11 +558,11 @@
   },
   "core/delete_storage.py": {
    "C901": {
-    "Deletions.purge_sqlite": 17
+    "Deletions.purge_sqlite": 16
    },
    "E501": 14,
    "PLR0912": {
-    "Deletions.purge_sqlite": 17
+    "Deletions.purge_sqlite": 16
    }
   },
   "core/deletion.py": {
@@ -614,14 +600,11 @@
   },
   "core/file_lock.py": {
    "B009": 3,
-   "C901": {
-    "advisory_file_lock": 18
-   },
    "PLR0912": {
-    "advisory_file_lock": 20
+    "advisory_file_lock": 16
    },
    "PLR0915": {
-    "advisory_file_lock": 79
+    "advisory_file_lock": 69
    },
    "UP035": 1
   },
@@ -710,14 +693,14 @@
    "B905": 1,
    "C901": {
     "References._explicit_candidate_mention": 16,
-    "References.apply": 24
+    "References.apply": 22
    },
    "E501": 3,
    "PLR0912": {
-    "References.apply": 24
+    "References.apply": 22
    },
    "PLR0915": {
-    "References.apply": 65
+    "References.apply": 62
    }
   },
   "core/requalify.py": {
@@ -742,7 +725,6 @@
    "PLR0912": {
     "SearchContext.__post_init__": 17
    },
-   "UP017": 1,
    "UP037": 2
   },
   "core/retrieval_storage.py": {
@@ -1097,7 +1079,7 @@
   },
   "runtime/vector_retention.py": {
    "E501": 1,
-   "UP017": 2,
+   "UP017": 1,
    "UP035": 1
   },
   "runtime/vector_upkeep.py": {

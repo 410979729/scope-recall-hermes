@@ -34,16 +34,30 @@ from ..tool_common import (
 )
 from .identity import HermesIdentityError
 
+
+def _parameters(properties: dict[str, Any], required: list[str], *, version_default: bool = False) -> dict[str, Any]:
+    """A tool's parameters: an object of exactly the protocol version, the request id and ``properties``."""
+    version: dict[str, Any] = {"type": "string", "const": PROTOCOL_VERSION}
+    if version_default:
+        version["default"] = PROTOCOL_VERSION
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "protocol_version": version,
+            "request_id": {"type": "string", "minLength": 1, "maxLength": 100},
+            **properties,
+        },
+        "required": required,
+    }
+
+
 _TOOL_SCHEMAS: tuple[dict[str, Any], ...] = (
     {
         "name": "recall",
         "description": "Run the shared bounded read-only recall pipeline.",
-        "parameters": {
-            "type": "object",
-            "additionalProperties": False,
-            "properties": {
-                "protocol_version": {"type": "string", "const": "1.1"},
-                "request_id": {"type": "string", "minLength": 1, "maxLength": 100},
+        "parameters": _parameters(
+            {
                 "query": {"type": "string", "minLength": 1, "maxLength": MAX_CONTENT},
                 "mode": {
                     "type": "string",
@@ -65,23 +79,19 @@ _TOOL_SCHEMAS: tuple[dict[str, Any], ...] = (
                 "budget_tokens": {"type": "integer"},
                 "focus_refs": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 240}},
             },
-            "required": ["protocol_version", "query", "mode", "max_items", "budget_tokens"],
-        },
+            ["protocol_version", "query", "mode", "max_items", "budget_tokens"],
+        ),
     },
     {
         "name": "inspect",
         "description": "Inspect one visible, versioned object or source, or a recall packet's diagnostic_ref from this session.",
-        "parameters": {
-            "type": "object",
-            "additionalProperties": False,
-            "properties": {
-                "protocol_version": {"type": "string", "const": "1.1"},
-                "request_id": {"type": "string", "minLength": 1, "maxLength": 100},
+        "parameters": _parameters(
+            {
                 "ref": {"type": "string", "minLength": 1, "maxLength": 240},
                 "limit": {"type": "integer", "minimum": 1, "maximum": 24, "default": 24},
             },
-            "required": ["protocol_version", "ref"],
-        },
+            ["protocol_version", "ref"],
+        ),
     },
     {
         "name": "profile",
@@ -90,18 +100,14 @@ _TOOL_SCHEMAS: tuple[dict[str, Any], ...] = (
             "Uses only admitted consolidated claims; does not dump raw chat or USER.md/MEMORY.md. "
             "Protocol version 1.1. " + READ_VIEW_BUDGET_GUIDANCE
         ),
-        "parameters": {
-            "type": "object",
-            "additionalProperties": False,
-            "properties": {
-                "protocol_version": {"type": "string", "const": "1.1"},
-                "request_id": {"type": "string", "minLength": 1, "maxLength": 100},
+        "parameters": _parameters(
+            {
                 "subject": {"type": "string", "minLength": 1, "maxLength": 240},
                 "max_items": {"type": "integer", "minimum": 1, "maximum": 30, "default": DEFAULT_MAX_ITEMS},
                 "budget_tokens": {"type": "integer", "minimum": 64, "maximum": 8000, "default": DEFAULT_BUDGET_TOKENS},
             },
-            "required": ["protocol_version", "subject"],
-        },
+            ["protocol_version", "subject"],
+        ),
     },
     {
         "name": "entity",
@@ -110,12 +116,8 @@ _TOOL_SCHEMAS: tuple[dict[str, Any], ...] = (
             "action=related returns direct recorded statements. Incoming matches full scalar value_text only. "
             "No multi-hop traversal or inferred identity merge. Protocol version 1.1. " + READ_VIEW_BUDGET_GUIDANCE
         ),
-        "parameters": {
-            "type": "object",
-            "additionalProperties": False,
-            "properties": {
-                "protocol_version": {"type": "string", "const": "1.1"},
-                "request_id": {"type": "string", "minLength": 1, "maxLength": 100},
+        "parameters": _parameters(
+            {
                 "subject": {"type": "string", "minLength": 1, "maxLength": 240},
                 "action": {"type": "string", "enum": ["probe", "related"]},
                 "direction": {"type": "string", "enum": ["outgoing", "incoming", "both"], "default": "both"},
@@ -123,18 +125,14 @@ _TOOL_SCHEMAS: tuple[dict[str, Any], ...] = (
                 "max_items": {"type": "integer", "minimum": 1, "maximum": 30, "default": DEFAULT_MAX_ITEMS},
                 "budget_tokens": {"type": "integer", "minimum": 64, "maximum": 8000, "default": DEFAULT_BUDGET_TOKENS},
             },
-            "required": ["protocol_version", "subject", "action"],
-        },
+            ["protocol_version", "subject", "action"],
+        ),
     },
     {
         "name": "revise",
         "description": REVISE_GUIDANCE,
-        "parameters": {
-            "type": "object",
-            "additionalProperties": False,
-            "properties": {
-                "protocol_version": {"type": "string", "const": "1.1"},
-                "request_id": {"type": "string", "minLength": 1, "maxLength": 100},
+        "parameters": _parameters(
+            {
                 "target_ref": {"type": "string", "minLength": 1, "maxLength": 240},
                 "expected_revision": {"type": "integer", "minimum": 1},
                 # What the core takes (``core/mutate.py``): the new value's text, some of the fact's fields, or null
@@ -149,7 +147,7 @@ _TOOL_SCHEMAS: tuple[dict[str, Any], ...] = (
                 },
                 "valid_from": {"type": ["string", "null"]},
             },
-            "required": [
+            [
                 "protocol_version",
                 "target_ref",
                 "expected_revision",
@@ -158,17 +156,13 @@ _TOOL_SCHEMAS: tuple[dict[str, Any], ...] = (
                 "source_evidence_refs",
                 "valid_from",
             ],
-        },
+        ),
     },
     {
         "name": "forget",
         "description": FORGET_GUIDANCE,
-        "parameters": {
-            "type": "object",
-            "additionalProperties": False,
-            "properties": {
-                "protocol_version": {"type": "string", "const": "1.1"},
-                "request_id": {"type": "string", "minLength": 1, "maxLength": 100},
+        "parameters": _parameters(
+            {
                 "target_refs": {
                     "type": "array",
                     "minItems": 1,
@@ -179,21 +173,13 @@ _TOOL_SCHEMAS: tuple[dict[str, Any], ...] = (
                 "expected_revisions": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 1}},
                 "reason": {"type": "string", "maxLength": 1024},
             },
-            "required": ["protocol_version", "target_refs", "mode", "expected_revisions"],
-        },
+            ["protocol_version", "target_refs", "mode", "expected_revisions"],
+        ),
     },
     {
         "name": "status",
         "description": "Read bounded Core status and adapter capability gaps.",
-        "parameters": {
-            "type": "object",
-            "additionalProperties": False,
-            "properties": {
-                "protocol_version": {"type": "string", "const": "1.1", "default": "1.1"},
-                "request_id": {"type": "string", "minLength": 1, "maxLength": 100},
-            },
-            "required": [],
-        },
+        "parameters": _parameters({}, [], version_default=True),
     },
 )
 #: Every schema by tool name; the strict boundary reads allowed/required from here.

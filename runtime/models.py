@@ -825,11 +825,7 @@ class ConsolidationRouteConfig:
     headers: Mapping[str, str] | None = None
 
     def __post_init__(self) -> None:
-        if type(self.model) is not str or not self.model:
-            raise ValueError("model")
-        if type(self.endpoint) is not str or not self.endpoint.startswith("https://"):
-            raise ValueError("endpoint")
-        _validate_credential_env_name(self.credential_env)
+        _validate_route_target(self.model, self.endpoint, self.credential_env)
         if self.output_limit_field not in {"max_tokens", "max_completion_tokens"}:
             raise ValueError("output_limit_field")
         if type(self.max_output_tokens) is not int or not 1 <= self.max_output_tokens <= 131_072:
@@ -849,6 +845,15 @@ class ConsolidationRouteConfig:
             ),
         )
         object.__setattr__(self, "headers", _validate_consolidation_headers(self.headers))
+
+
+def _validate_route_target(model: object, endpoint: object, credential_env: object) -> None:
+    """A consolidation route names a model, an https endpoint and the environment variable holding its key."""
+    if type(model) is not str or not model:
+        raise ValueError("model")
+    if type(endpoint) is not str or not endpoint.startswith("https://"):
+        raise ValueError("endpoint")
+    _validate_credential_env_name(credential_env)
 
 
 def _validate_responses_text_format(value: object) -> Mapping[str, str] | None:
@@ -889,11 +894,7 @@ class ResponsesRouteConfig:
     kind: str = RESPONSES_KIND
 
     def __post_init__(self) -> None:
-        if type(self.model) is not str or not self.model:
-            raise ValueError("model")
-        if type(self.endpoint) is not str or not self.endpoint.startswith("https://"):
-            raise ValueError("endpoint")
-        _validate_credential_env_name(self.credential_env)
+        _validate_route_target(self.model, self.endpoint, self.credential_env)
         if type(self.max_output_tokens) is not int or not 1 <= self.max_output_tokens <= 131_072:
             raise ValueError("max_output_tokens")
         if self.reasoning_effort is not None and (
@@ -1125,29 +1126,11 @@ class GeminiEmbeddingAdapter:
         deadline = time.monotonic() + validate_timeout_seconds(remaining_seconds)
         for text in texts:
             _reject_secrets(text)
-        body = self._request_body(texts)
-        if _remaining_seconds(deadline) <= 0:
-            raise AuxiliaryModelError("timeout")
-        if self._ledger.provider_hold_until(self._model) is not None:
-            raise AuxiliaryModelError("provider_hold")
-        key = _load_credential(self._route.credential_env)
-        auth = {"x-goog-api-key": key} if self._dialect == "gemini" else {"Authorization": f"Bearer {key}"}
-        return _metered_post(
-            ledger=self._ledger,
-            settle=self._ledger.finish_embedding,
-            model=self._model,
-            body=body,
-            reserved_input=conservative_embed_reserve(body),
-            reserved_output=0,
-            deadline=deadline,
-            transport=self._transport,
-            endpoint=self._endpoint,
-            headers={"Content-Type": "application/json", **auth, "User-Agent": "ScopeRecall-AuxiliaryEmbed/1.1"},
-            max_response_bytes=MAX_EMBED_RESPONSE_BYTES,
-            read_usage=partial(_embedding_usage, dialect=self._dialect),
-            read_result=partial(
-                _embedding_vectors, dialect=self._dialect, dimensions=self._dimensions, count=len(texts)
-            ),
+        return self._send(
+            self._request_body(texts),
+            deadline,
+            self._transport,
+            partial(_embedding_vectors, dialect=self._dialect, dimensions=self._dimensions, count=len(texts)),
         )
 
     def _embed(
@@ -1155,12 +1138,15 @@ class GeminiEmbeddingAdapter:
     ) -> Sequence[float]:
         deadline = time.monotonic() + validate_timeout_seconds(remaining_seconds)
         _reject_secrets(encoded_text)
-        if self._dialect == "gemini":
-            body = build_gemini_embed_body(encoded_text, model=self._model, dimensions=self._dimensions)
-        else:
-            body = build_openai_embed_body(
-                encoded_text, model=self._model, dimensions=self._dimensions, dimensions_field=self._dimensions_field
-            )
+        return self._send(
+            self._request_body(encoded_text),
+            deadline,
+            transport or self._transport,
+            partial(_embedding_vector, dialect=self._dialect, dimensions=self._dimensions),
+        )
+
+    def _send(self, body: bytes, deadline: float, transport: HttpTransport, read_result):
+        """One embedding request, metered; refused when its time is up or the provider is holding calls."""
         if _remaining_seconds(deadline) <= 0:
             raise AuxiliaryModelError("timeout")
         if self._ledger.provider_hold_until(self._model) is not None:
@@ -1179,19 +1165,21 @@ class GeminiEmbeddingAdapter:
             reserved_input=conservative_embed_reserve(body),
             reserved_output=0,
             deadline=deadline,
-            transport=transport or self._transport,
+            transport=transport,
             endpoint=self._endpoint,
             headers={"Content-Type": "application/json", **auth, "User-Agent": "ScopeRecall-AuxiliaryEmbed/1.1"},
             max_response_bytes=MAX_EMBED_RESPONSE_BYTES,
             read_usage=partial(_embedding_usage, dialect=self._dialect),
-            read_result=partial(_embedding_vector, dialect=self._dialect, dimensions=self._dimensions),
+            read_result=read_result,
         )
 
 
-class OpenAIConsolidationAdapter:
+class _ConsolidationAdapter:
+    """What both consolidation dialects share: the route, the ledger and the transport, and how a request is sent."""
+
     def __init__(
         self,
-        route: ConsolidationRouteConfig,
+        route: ConsolidationRouteConfig | ResponsesRouteConfig,
         *,
         ledger: AuxiliaryBudgetLedger,
         reserve_input: int,
@@ -1201,6 +1189,36 @@ class OpenAIConsolidationAdapter:
         self._ledger = ledger
         self._reserve_input = reserve_input
         self._transport = transport if transport is not None else HttpsTransport()
+
+    def _send(self, body: bytes, deadline: float, *, headers, read_usage, read_result) -> str:
+        """One proposal request, metered; refused when its time is up or the provider is holding calls.  ``headers``
+        makes the request's headers from the key."""
+        reserved_output = model_output_reserve(self._ledger.policy, self._route.model, self._route.max_output_tokens)
+        if _remaining_seconds(deadline) <= 0:
+            raise AuxiliaryModelError("timeout")
+        if self._ledger.provider_hold_until(self._route.model) is not None:
+            raise AuxiliaryModelError("provider_hold")
+        key = _load_credential(self._route.credential_env)
+        return _metered_post(
+            ledger=self._ledger,
+            settle=self._ledger.finish,
+            model=self._route.model,
+            body=body,
+            reserved_input=conservative_consolidation_input_reserve(body, self._reserve_input),
+            reserved_output=reserved_output,
+            deadline=deadline,
+            transport=self._transport,
+            endpoint=self._route.endpoint,
+            headers=headers(key),
+            # The consolidation answer cap, shared by both dialects.
+            max_response_bytes=MAX_CHAT_RESPONSE_BYTES,
+            read_usage=read_usage,
+            read_result=read_result,
+        )
+
+
+class OpenAIConsolidationAdapter(_ConsolidationAdapter):
+    _route: ConsolidationRouteConfig
 
     def _chat_body(self, messages: list[dict]) -> bytes:
         route = self._route
@@ -1224,24 +1242,10 @@ class OpenAIConsolidationAdapter:
         validate_chat_messages(messages)
         body = self._chat_body(messages)
         _reject_secrets_outside_contents(self._chat_body, messages)
-        reserved_output = model_output_reserve(self._ledger.policy, self._route.model, self._route.max_output_tokens)
-        if _remaining_seconds(deadline) <= 0:
-            raise AuxiliaryModelError("timeout")
-        if self._ledger.provider_hold_until(self._route.model) is not None:
-            raise AuxiliaryModelError("provider_hold")
-        key = _load_credential(self._route.credential_env)
-        return _metered_post(
-            ledger=self._ledger,
-            settle=self._ledger.finish,
-            model=self._route.model,
-            body=body,
-            reserved_input=conservative_consolidation_input_reserve(body, self._reserve_input),
-            reserved_output=reserved_output,
-            deadline=deadline,
-            transport=self._transport,
-            endpoint=self._route.endpoint,
-            headers=_consolidation_request_headers(self._route, key),
-            max_response_bytes=MAX_CHAT_RESPONSE_BYTES,
+        return self._send(
+            body,
+            deadline,
+            headers=partial(_consolidation_request_headers, self._route),
             read_usage=_chat_usage,
             read_result=_extract_chat_content,
         )
@@ -1323,7 +1327,7 @@ def _responses_output_text(payload: Mapping[str, Any]) -> str:
     return text
 
 
-class ResponsesConsolidationAdapter:
+class ResponsesConsolidationAdapter(_ConsolidationAdapter):
     """One non-streaming Responses route on the shared consolidation boundary.
 
     Reservation, transport, deadline, response cap, settlement and the raw
@@ -1331,18 +1335,7 @@ class ResponsesConsolidationAdapter:
     the request dialect and the answer extraction differ.
     """
 
-    def __init__(
-        self,
-        route: ResponsesRouteConfig,
-        *,
-        ledger: AuxiliaryBudgetLedger,
-        reserve_input: int,
-        transport: HttpTransport | None = None,
-    ) -> None:
-        self._route = route
-        self._ledger = ledger
-        self._reserve_input = reserve_input
-        self._transport = transport if transport is not None else HttpsTransport()
+    _route: ResponsesRouteConfig
 
     def _responses_body(self, messages: list[dict]) -> bytes:
         """Carry every message in ``input`` without moving system messages.
@@ -1386,29 +1379,14 @@ class ResponsesConsolidationAdapter:
         validate_chat_messages(messages, roles=_RESPONSES_ROLES)
         body = self._responses_body(messages)
         _reject_secrets_outside_contents(self._responses_body, messages)
-        reserved_output = model_output_reserve(self._ledger.policy, self._route.model, self._route.max_output_tokens)
-        if _remaining_seconds(deadline) <= 0:
-            raise AuxiliaryModelError("timeout")
-        if self._ledger.provider_hold_until(self._route.model) is not None:
-            raise AuxiliaryModelError("provider_hold")
-        key = _load_credential(self._route.credential_env)
-        return _metered_post(
-            ledger=self._ledger,
-            settle=self._ledger.finish,
-            model=self._route.model,
-            body=body,
-            reserved_input=conservative_consolidation_input_reserve(body, self._reserve_input),
-            reserved_output=reserved_output,
-            deadline=deadline,
-            transport=self._transport,
-            endpoint=self._route.endpoint,
-            headers={
+        return self._send(
+            body,
+            deadline,
+            headers=lambda key: {
                 "Authorization": f"Bearer {key}",
                 "Content-Type": "application/json",
                 "User-Agent": "ScopeRecall-AuxiliaryConsolidation/1.1",
             },
-            # The consolidation answer cap, shared with the chat dialect.
-            max_response_bytes=MAX_CHAT_RESPONSE_BYTES,
             read_usage=_responses_usage,
             read_result=_responses_output_text,
         )

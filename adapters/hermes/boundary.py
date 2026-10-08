@@ -109,6 +109,17 @@ def extract_user_text(value: object) -> str:
     return ""
 
 
+def _opening_key(context: TrustedContext, session_id: str, turn_id: str) -> str:
+    """The host key of a turn's opening message, the same whether ``pre_llm_call`` or the turn's sync stores it."""
+    return host_source_key(
+        installation_id=context.binding.installation_id,
+        entry_id=context.entry_id,
+        session_id=session_id,
+        event_kind="user",
+        event_id=turn_id or "turn",
+    )
+
+
 def pre_llm_source_event(
     ledger: SourceObservationLedger,
     context: TrustedContext,
@@ -132,13 +143,7 @@ def pre_llm_source_event(
     if not content.strip() and not artifact_refs:
         return None, tuple(gaps), None
     return ledger.observe(
-        source_event_key=host_source_key(
-            installation_id=context.binding.installation_id,
-            entry_id=context.entry_id,
-            session_id=session_id,
-            event_kind="user",
-            event_id=turn_id or "turn",
-        ),
+        source_event_key=_opening_key(context, session_id, turn_id),
         source_revision=1,
         role="user",
         content=content,
@@ -170,13 +175,7 @@ def sync_turn_source_events(
     events: list[tuple[SourceEvent, SourceIdentity | None]] = []
     if include_user:
         user_event, user_gaps, user_identity = ledger.observe(
-            source_event_key=host_source_key(
-                installation_id=context.binding.installation_id,
-                entry_id=context.entry_id,
-                session_id=session_id,
-                event_kind="user",
-                event_id=turn_id or "turn",
-            ),
+            source_event_key=_opening_key(context, session_id, turn_id),
             source_revision=1,
             role="user",
             content=user_content,

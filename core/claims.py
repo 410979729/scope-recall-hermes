@@ -7,9 +7,17 @@ import json
 import re
 from copy import deepcopy
 from dataclasses import dataclass, replace
-from datetime import datetime, timezone
+from datetime import datetime
 
-from ..contracts import Basis, ClaimProposal, ContractError, Origin, SourcePrincipal
+from ..contracts import (
+    Basis,
+    ClaimProposal,
+    ContractError,
+    Origin,
+    SourcePrincipal,
+    utc_timestamp,
+    verified_human_principal_ref,
+)
 from .candidate_lifecycle import SELF_SUBJECTS
 from .fact_actions import ClaimDraft, EvidenceReference
 from .fact_evidence import evidence_supports_claim, evidence_supports_relation
@@ -73,17 +81,7 @@ class ClaimVersion:
 
 
 def canonical_time(value: str | None) -> str | None:
-    if value is None:
-        return None
-    if type(value) is not str:
-        raise ContractError("INPUT_INVALID", "timestamp")
-    try:
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError as exc:
-        raise ContractError("INPUT_INVALID", "timestamp") from exc
-    if parsed.tzinfo is None or parsed.utcoffset() is None:
-        raise ContractError("INPUT_INVALID", "timestamp")
-    return parsed.astimezone(timezone.utc).isoformat(timespec="microseconds")
+    return None if value is None else utc_timestamp(value)
 
 
 def claim_slot(scope_id: str, project_id: str | None, branch_id: str | None, proposal: ClaimProposal) -> str:
@@ -145,13 +143,7 @@ def evidence_refs(proposal: ClaimProposal) -> tuple[str, ...]:
 
 
 def verified_human_ref(root: RootEvidence) -> str | None:
-    principal = root.source_principal
-    if not isinstance(principal, dict):
-        return None
-    if principal.get("kind") != "human" or principal.get("resolution") != "verified":
-        return None
-    value = principal.get("principal_ref")
-    return value if isinstance(value, str) and value else None
+    return verified_human_principal_ref(root.source_principal)
 
 
 def _unresolved_subject(proposal: ClaimProposal, roots: tuple[RootEvidence, ...]) -> str:

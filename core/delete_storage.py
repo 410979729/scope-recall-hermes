@@ -207,12 +207,34 @@ class Deletions:
             declared_scope_complete=False if row["mode"] == "delete" else True,
         )
 
-    def physical_members(self, operation_id: str) -> tuple[dict, ...]:
-        """Return opaque active object identities for an external purge port."""
-        conn = self._tx._check()
+    def _deletion(self, operation_id: str) -> dict:
+        """The receipt of a delete operation this context may see; anything else is refused."""
         receipt = self.receipt(operation_id)
         if receipt is None or receipt["mode"] != "delete":
             raise ContractError("ACCESS_DENIED", "operation_unavailable")
+        return receipt
+
+    def _record_layers(self, conn, operation_id: str, layers: dict) -> dict:
+        """Write a delete operation's layers, its active content counted removed once its SQLite rows, its active
+        vectors and its attachments all are; the receipt as it then reads."""
+        active_removed = (
+            layers.get("sqlite_active") == "removed"
+            and layers.get("vector_active") == "removed"
+            and layers.get("attachments") in {"removed", "shared_authorized_copy_retained"}
+        )
+        conn.execute(
+            "UPDATE deletion_operations SET active_content_removed=?,layers_json=? WHERE operation_id=?",
+            (int(active_removed), canonical(layers), operation_id),
+        )
+        updated = self.receipt(operation_id)
+        if updated is None:
+            raise ContractError("STORAGE_UNAVAILABLE", "deletion_receipt")
+        return updated
+
+    def physical_members(self, operation_id: str) -> tuple[dict, ...]:
+        """Return opaque active object identities for an external purge port."""
+        conn = self._tx._check()
+        self._deletion(operation_id)
         members: list[dict] = []
         for row in conn.execute(
             "SELECT object_kind,object_ref FROM deletion_members WHERE operation_id=? ORDER BY object_kind,object_ref",
@@ -444,9 +466,7 @@ class Deletions:
 
     def purge_sqlite(self, operation_id: str) -> dict:
         conn = self._tx._check(write=True)
-        receipt = self.receipt(operation_id)
-        if receipt is None or receipt["mode"] != "delete":
-            raise ContractError("ACCESS_DENIED", "operation_unavailable")
+        receipt = self._deletion(operation_id)
         # This is deliberately only the SQLite scrub phase.  The active vector
         # layer is owned by the native purge port and cannot be acknowledged by
         # a truth-database transaction.  A repeated call after the scrub is
@@ -549,33 +569,17 @@ class Deletions:
         vector storage and attachments remain separate layers.
         """
         conn = self._tx._check(write=True)
-        receipt = self.receipt(operation_id)
-        if receipt is None or receipt["mode"] != "delete":
-            raise ContractError("ACCESS_DENIED", "operation_unavailable")
+        receipt = self._deletion(operation_id)
         layers = receipt["layers"]
         if layers.get("sqlite_active") != "removed":
             raise ContractError("VERSION_CONFLICT", "sqlite_scrub_required")
         layers["vector_active"] = "removed"
-        active_removed = (
-            layers.get("sqlite_active") == "removed"
-            and layers.get("vector_active") == "removed"
-            and layers.get("attachments") in {"removed", "shared_authorized_copy_retained"}
-        )
-        conn.execute(
-            "UPDATE deletion_operations SET active_content_removed=?,layers_json=? WHERE operation_id=?",
-            (int(active_removed), canonical(layers), operation_id),
-        )
-        updated = self.receipt(operation_id)
-        if updated is None:
-            raise ContractError("STORAGE_UNAVAILABLE", "deletion_receipt")
-        return updated
+        return self._record_layers(conn, operation_id, layers)
 
     def attachment_plan(self, operation_id: str) -> dict:
         """Snapshot attachment cleanup candidates without deleting files."""
         conn = self._tx._check()
-        receipt = self.receipt(operation_id)
-        if receipt is None or receipt["mode"] != "delete":
-            raise ContractError("ACCESS_DENIED", "operation_unavailable")
+        receipt = self._deletion(operation_id)
         if receipt["layers"]["attachments"] in {"removed", "shared_authorized_copy_retained"}:
             return dict(operation_id=operation_id, entries=(), already_done=True)
         rows = conn.execute(
@@ -603,9 +607,7 @@ class Deletions:
     def finalize_attachments(self, operation_id: str, plan: dict, *, erased: bool) -> dict:
         """Commit attachment metadata only after the physical phase returns."""
         conn = self._tx._check(write=True)
-        receipt = self.receipt(operation_id)
-        if receipt is None or receipt["mode"] != "delete":
-            raise ContractError("ACCESS_DENIED", "operation_unavailable")
+        receipt = self._deletion(operation_id)
         if receipt["layers"]["attachments"] in {"removed", "shared_authorized_copy_retained"}:
             return receipt
         if not isinstance(plan, dict) or plan.get("operation_id") != operation_id:
@@ -620,19 +622,7 @@ class Deletions:
             )
         layers = receipt["layers"]
         layers["attachments"] = "shared_authorized_copy_retained" if shared else "removed"
-        active_removed = (
-            layers.get("sqlite_active") == "removed"
-            and layers.get("vector_active") == "removed"
-            and layers.get("attachments") in {"removed", "shared_authorized_copy_retained"}
-        )
-        conn.execute(
-            "UPDATE deletion_operations SET active_content_removed=?,layers_json=? WHERE operation_id=?",
-            (int(active_removed), canonical(layers), operation_id),
-        )
-        updated = self.receipt(operation_id)
-        if updated is None:
-            raise ContractError("STORAGE_UNAVAILABLE", "deletion_receipt")
-        return updated
+        return self._record_layers(conn, operation_id, layers)
 
     def purge_attachments(self, operation_id: str) -> dict:
         """Compatibility shim: planning is separate from physical deletion."""

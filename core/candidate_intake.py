@@ -550,6 +550,19 @@ class CandidateIntake(CandidateTables):
             .fetchone()[0]
         )
 
+    def _oldest_owed_page(self):
+        """The truncated trigger that has waited longest, as its source ref and revision; None when none waits."""
+        context, params = self._context("s.")
+        return (
+            self._read()
+            .execute(
+                f"""SELECT t.source_ref,t.source_revision {_TRUNCATED_TRIGGERS.format(context=context)}
+                ORDER BY t.processed_at,t.source_ref,t.source_revision LIMIT 1""",
+                params,
+            )
+            .fetchone()
+        )
+
     def next_source_page(self) -> tuple[str, int, list[tuple[str, int]] | None] | None:
         """The next page a truncated trigger owes, chosen in a read: its source and the candidates it names.
 
@@ -560,16 +573,7 @@ class CandidateIntake(CandidateTables):
         ``resume_source_pages(page=...)`` then links in a write of its own, checking each candidate again.
         The candidates are ``None`` when the source is gone: that write closes the trigger.
         """
-        context, params = self._context("s.")
-        row = (
-            self._read()
-            .execute(
-                f"""SELECT t.source_ref,t.source_revision {_TRUNCATED_TRIGGERS.format(context=context)}
-                ORDER BY t.processed_at,t.source_ref,t.source_revision LIMIT 1""",
-                params,
-            )
-            .fetchone()
-        )
+        row = self._oldest_owed_page()
         if row is None:
             return None
         source = self._tx.source(row["source_ref"], row["source_revision"])
@@ -594,16 +598,7 @@ class CandidateIntake(CandidateTables):
         they are found here, inside this write.
         """
         if page is None:
-            context, params = self._context("s.")
-            row = (
-                self._read()
-                .execute(
-                    f"""SELECT t.source_ref,t.source_revision {_TRUNCATED_TRIGGERS.format(context=context)}
-                    ORDER BY t.processed_at,t.source_ref,t.source_revision LIMIT 1""",
-                    params,
-                )
-                .fetchone()
-            )
+            row = self._oldest_owed_page()
             if row is None:
                 return 0
             source_ref, source_revision, matched = row["source_ref"], row["source_revision"], None

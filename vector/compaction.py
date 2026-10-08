@@ -175,7 +175,7 @@ def _backfill_report(space: Path, now: datetime) -> dict[str, Any]:
     current = [
         state
         for state in states
-        if (checked := _parse_time(state.get("checked_at"))) is not None and now - checked <= EMBED_BACKFILL_CURRENT
+        if (checked := parse_time(state.get("checked_at"))) is not None and now - checked <= EMBED_BACKFILL_CURRENT
     ]
     failed = [state for state in current if state.get("outcome") == "failed"]
     latest = max(current or states, key=lambda state: str(state.get("checked_at") or ""), default={})
@@ -230,13 +230,14 @@ def compaction_due(
     if footprint.fragments <= FRAGMENT_THRESHOLD:
         return None
     moment = now or datetime.now(timezone.utc)
-    last = _parse_time(state.get("finished_at"))
+    last = parse_time(state.get("finished_at"))
     if last is not None and moment - last < COOLDOWN:
         return None
     return f"fragments_above_threshold:{footprint.fragments}"
 
 
-def _parse_time(value: Any) -> datetime | None:
+def parse_time(value: Any) -> datetime | None:
+    """A state file's time; one without a zone is UTC, and anything that is not a time is None."""
     if not isinstance(value, str) or not value.strip():
         return None
     try:
@@ -259,6 +260,7 @@ __all__ = [
     "embed_backfill_filename",
     "instance_vector_footprints",
     "measure_footprint",
+    "parse_time",
     "read_state",
     "table_directory",
     "write_state",

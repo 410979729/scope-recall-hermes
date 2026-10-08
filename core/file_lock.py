@@ -29,6 +29,16 @@ def _busy_lock_error(exc: BaseException) -> bool:
     return code in {errno.EACCES, errno.EAGAIN, errno.EWOULDBLOCK} or winerror in {33, 36}
 
 
+def _wait_for_busy_lock(exc: OSError, deadline: float | None) -> None:
+    """After a lock attempt that failed: raise again unless the lock is only busy and time is left, else pause."""
+    if deadline is None or not _busy_lock_error(exc):
+        raise exc
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise TimeoutError("advisory file lock timeout") from exc
+    time.sleep(min(0.01, remaining))
+
+
 @contextmanager
 def advisory_file_lock(lock_path: Path, *, timeout_seconds: float | None = None) -> Iterator[None]:
     """Serialize one physical resource with an optional cumulative deadline."""
@@ -78,12 +88,7 @@ def advisory_file_lock(lock_path: Path, *, timeout_seconds: float | None = None)
                         using_posix_lock = True
                         break
                     except OSError as exc:
-                        if deadline is None or not _busy_lock_error(exc):
-                            raise
-                        remaining = deadline - time.monotonic()
-                        if remaining <= 0:
-                            raise TimeoutError("advisory file lock timeout") from exc
-                        time.sleep(min(0.01, remaining))
+                        _wait_for_busy_lock(exc, deadline)
             elif callable(windows_locking):
                 handle.seek(0, 2)
                 if handle.tell() == 0:
@@ -98,12 +103,7 @@ def advisory_file_lock(lock_path: Path, *, timeout_seconds: float | None = None)
                         windows_locking(handle.fileno(), mode, 1)
                         break
                     except OSError as exc:
-                        if deadline is None or not _busy_lock_error(exc):
-                            raise
-                        remaining = deadline - time.monotonic()
-                        if remaining <= 0:
-                            raise TimeoutError("advisory file lock timeout") from exc
-                        time.sleep(min(0.01, remaining))
+                        _wait_for_busy_lock(exc, deadline)
             depths[key] = 1
             try:
                 yield

@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from ..core.events import WITHHELD_TOOL_OUTPUT_SQL
+from ..vector.compaction import parse_time
 from .validation import utc_now
 
 #: Seconds of the drain budget set aside for one pass; below it the pass waits.
@@ -95,7 +96,7 @@ def pass_due(state: dict[str, Any], days: int, *, now: datetime) -> bool:
     """A pass is due at once after a backlog or a changed window, else hourly."""
     if state.get("retention_days") != days or state.get("backlog"):
         return True
-    last = _parse_time(state.get("finished_at"))
+    last = parse_time(state.get("finished_at"))
     return last is None or now - last >= PASS_INTERVAL
 
 
@@ -196,16 +197,6 @@ def write_state(storage_dir: Path, payload: dict[str, Any]) -> None:
 def _stamp(moment: datetime) -> str:
     """The ``Z``-suffixed form every worker receipt carries (``validation.utc_now``)."""
     return moment.isoformat().replace("+00:00", "Z")
-
-
-def _parse_time(value: Any) -> datetime | None:
-    if not isinstance(value, str) or not value.strip():
-        return None
-    try:
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        return None
-    return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=timezone.utc)
 
 
 __all__ = ["BATCH_LIMIT", "PASS_INTERVAL", "RESERVE_SECONDS", "expire_if_due", "expire_tool_vectors", "pass_due"]

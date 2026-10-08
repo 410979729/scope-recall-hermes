@@ -366,15 +366,7 @@ class Episodes:
 
     def _resume_sources(self, proposal, scope_id):
         """Resolve the cited sources and the single live episode they all belong to."""
-        ctx = self.tx.context
-        sources = [self.tx.source(*parse_source_ref(ref)) for ref in proposal["evidence_refs"]]
-        if any(
-            s is None or (s.scope_id, s.project_id, s.branch_id) != (scope_id, ctx.project_id, ctx.branch_id)
-            for s in sources
-        ):
-            raise ContractError("SOURCE_MISSING")
-        for source in sources:
-            self.tx.claims.require_live_source(source.ref, source.revision)
+        sources = self.tx.claims.live_sources(proposal["evidence_refs"], scope_id)
         episodes: set[str] = set()
         for source in sources:
             episode = self.source_episode(source.ref, source.revision)

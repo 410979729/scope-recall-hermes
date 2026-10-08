@@ -5,7 +5,7 @@ import json
 import math
 import re
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Literal, NotRequired, TypedDict, cast, get_args
 
@@ -383,6 +383,29 @@ def utc_instant(value: object) -> object:
     except (ValueError, OverflowError):
         return value
     return instant.isoformat(timespec="seconds") + (fraction or "") + "Z"
+
+
+def utc_timestamp(value: object) -> str:
+    """A timestamp with an explicit offset, as its UTC instant with microseconds; INPUT_INVALID for anything else."""
+    if type(value) is not str:
+        raise ContractError("INPUT_INVALID", "timestamp")
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ContractError("INPUT_INVALID", "timestamp") from exc
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise ContractError("INPUT_INVALID", "timestamp")
+    return parsed.astimezone(UTC).isoformat(timespec="microseconds")
+
+
+def verified_human_principal_ref(principal: object) -> str | None:
+    """The ref of a source principal that is a verified person; None for any other principal or none."""
+    if not isinstance(principal, dict):
+        return None
+    if principal.get("kind") != "human" or principal.get("resolution") != "verified":
+        return None
+    value = principal.get("principal_ref")
+    return value if isinstance(value, str) and value else None
 
 
 def _json_tree(value: object, depth: int = 0) -> None:

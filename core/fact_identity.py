@@ -57,44 +57,29 @@ def _digest(kind: str, components: list[str]) -> str:
     return hashlib.sha256(material.encode("utf-8")).hexdigest()
 
 
+def _subject(subject: Any) -> str:
+    return normalize_fact_component(subject, field_name="subject", max_chars=MAX_FACT_SUBJECT_CHARS)
+
+
+def _predicate(predicate: Any) -> str:
+    return normalize_fact_component(predicate, field_name="predicate", max_chars=MAX_FACT_PREDICATE_CHARS)
+
+
+def _value(value: Any) -> str:
+    return normalize_fact_component(value, field_name="value", max_chars=MAX_FACT_VALUE_CHARS)
+
+
 def canonical_fact_key(subject: Any, predicate: Any) -> str:
     """Return the versioned key for one subject/predicate fact slot."""
 
-    normalized_subject = normalize_fact_component(
-        subject,
-        field_name="subject",
-        max_chars=MAX_FACT_SUBJECT_CHARS,
-    )
-    normalized_predicate = normalize_fact_component(
-        predicate,
-        field_name="predicate",
-        max_chars=MAX_FACT_PREDICATE_CHARS,
-    )
-    return f"fact:v{FACT_IDENTITY_VERSION}:{_digest('slot', [normalized_subject, normalized_predicate])}"
+    return f"fact:v{FACT_IDENTITY_VERSION}:{_digest('slot', [_subject(subject), _predicate(predicate)])}"
 
 
 def canonical_fact_fingerprint(subject: Any, predicate: Any, value: Any) -> str:
     """Return a versioned fingerprint for one normalized slot/value assertion."""
 
-    normalized_subject = normalize_fact_component(
-        subject,
-        field_name="subject",
-        max_chars=MAX_FACT_SUBJECT_CHARS,
-    )
-    normalized_predicate = normalize_fact_component(
-        predicate,
-        field_name="predicate",
-        max_chars=MAX_FACT_PREDICATE_CHARS,
-    )
-    normalized_value = normalize_fact_component(
-        value,
-        field_name="value",
-        max_chars=MAX_FACT_VALUE_CHARS,
-    )
-    return (
-        f"assertion:v{FACT_IDENTITY_VERSION}:"
-        f"{_digest('assertion', [normalized_subject, normalized_predicate, normalized_value])}"
-    )
+    components = [_subject(subject), _predicate(predicate), _value(value)]
+    return f"assertion:v{FACT_IDENTITY_VERSION}:{_digest('assertion', components)}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -109,31 +94,13 @@ class FactIdentity:
 
     @classmethod
     def from_parts(cls, subject: Any, predicate: Any, value: Any) -> "FactIdentity":
-        normalized_subject = normalize_fact_component(
-            subject,
-            field_name="subject",
-            max_chars=MAX_FACT_SUBJECT_CHARS,
-        )
-        normalized_predicate = normalize_fact_component(
-            predicate,
-            field_name="predicate",
-            max_chars=MAX_FACT_PREDICATE_CHARS,
-        )
-        normalized_value = normalize_fact_component(
-            value,
-            field_name="value",
-            max_chars=MAX_FACT_VALUE_CHARS,
-        )
+        subject, predicate, value = _subject(subject), _predicate(predicate), _value(value)
         return cls(
-            subject=normalized_subject,
-            predicate=normalized_predicate,
-            value=normalized_value,
-            fact_key=canonical_fact_key(normalized_subject, normalized_predicate),
-            value_fingerprint=canonical_fact_fingerprint(
-                normalized_subject,
-                normalized_predicate,
-                normalized_value,
-            ),
+            subject=subject,
+            predicate=predicate,
+            value=value,
+            fact_key=canonical_fact_key(subject, predicate),
+            value_fingerprint=canonical_fact_fingerprint(subject, predicate, value),
         )
 
     def as_dict(self) -> dict[str, str]:

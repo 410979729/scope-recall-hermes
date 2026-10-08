@@ -11,10 +11,10 @@ import base64
 import json
 import math
 from dataclasses import dataclass, replace
-from datetime import datetime, timezone, tzinfo
+from datetime import tzinfo
 from typing import Literal
 
-from ..contracts import ContractError, RecallRequest, TrustedContext, validate_model_request
+from ..contracts import ContractError, RecallRequest, TrustedContext, utc_timestamp, validate_model_request
 from .recall_scope import QueryScope
 
 ObjectKind = Literal["event", "claim", "episode", "artifact", "reference"]
@@ -43,18 +43,6 @@ def optional_json(text: object) -> object:
         return json.loads(text)
     except ValueError:
         return None
-
-
-def _utc(value: str) -> str:
-    if type(value) is not str:
-        raise ContractError("INPUT_INVALID", "timestamp")
-    try:
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError as exc:
-        raise ContractError("INPUT_INVALID", "timestamp") from exc
-    if parsed.tzinfo is None or parsed.utcoffset() is None:
-        raise ContractError("INPUT_INVALID", "timestamp")
-    return parsed.astimezone(timezone.utc).isoformat(timespec="microseconds")
 
 
 @dataclass(frozen=True)
@@ -130,8 +118,8 @@ class SearchContext:
         if self.mode == "as_of" and self.as_of is None:
             raise ContractError("INPUT_INVALID", "as_of")
         if self.as_of is not None:
-            object.__setattr__(self, "as_of", _utc(self.as_of))
-        object.__setattr__(self, "now", _utc(self.now))
+            object.__setattr__(self, "as_of", utc_timestamp(self.as_of))
+        object.__setattr__(self, "now", utc_timestamp(self.now))
         if type(self.deadline) not in (int, float) or not math.isfinite(self.deadline):
             raise ContractError("INPUT_INVALID", "deadline")
         if not isinstance(self.limits, SearchLimits):

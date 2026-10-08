@@ -15,6 +15,7 @@ from ..contracts import (
     validate_model_request,
     validate_payload,
     validate_proposal_references,
+    verified_human_principal_ref,
 )
 from .aliases import validate_alias_source, validate_alias_target
 from .claim_normalization import expand_frames, human_owner, name_frame, normalize_frame, source_order
@@ -312,13 +313,7 @@ _REPORTED_ACTION = re.compile(
 
 
 def _source_principal_ref(source) -> str | None:
-    principal = source.event.get("source_principal")
-    if not isinstance(principal, dict):
-        return None
-    if principal.get("kind") != "human" or principal.get("resolution") != "verified":
-        return None
-    value = principal.get("principal_ref")
-    return value if isinstance(value, str) and value else None
+    return verified_human_principal_ref(source.event.get("source_principal"))
 
 
 def _revise_in_transaction(tx, clock, request, *, source=None) -> Mutation:

@@ -12,7 +12,7 @@ import unicodedata
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol
 
-from ..contracts import ContractError
+from ..contracts import ContractError, verified_human_principal_ref
 
 if TYPE_CHECKING:
     from .source_records import StoredSource
@@ -106,20 +106,8 @@ class CandidateEvaluator(Protocol):
 
 
 def _verified_human_principal_refs(sources: tuple[StoredSource, ...]) -> frozenset[str]:
-    refs: set[str] = set()
-    for source in sources:
-        principal = source.event.get("source_principal")
-        if not isinstance(principal, dict):
-            continue
-        ref = principal.get("principal_ref")
-        if (
-            principal.get("kind") == "human"
-            and principal.get("resolution") == "verified"
-            and isinstance(ref, str)
-            and ref
-        ):
-            refs.add(ref)
-    return frozenset(refs)
+    refs = (verified_human_principal_ref(source.event.get("source_principal")) for source in sources)
+    return frozenset(ref for ref in refs if ref is not None)
 
 
 def candidate_model_subject(

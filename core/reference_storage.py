@@ -163,14 +163,7 @@ class References:
 
     def apply(self, proposal, scope_id, now):
         conn, ctx = self.tx._check(write=True), self.tx.context
-        sources = [self.tx.source(*parse_source_ref(r)) for r in proposal["evidence_refs"]]
-        if any(
-            s is None or (s.scope_id, s.project_id, s.branch_id) != (scope_id, ctx.project_id, ctx.branch_id)
-            for s in sources
-        ):
-            raise ContractError("SOURCE_MISSING")
-        for source in sources:
-            self.tx.claims.require_live_source(source.ref, source.revision)
+        sources = self.tx.claims.live_sources(proposal["evidence_refs"], scope_id)
         mentioned = [s for s in sources if proposal["mention"] in s.event["content"]]
         if not mentioned:
             raise ContractError("DERIVATION_INVALID", "reference_mention")

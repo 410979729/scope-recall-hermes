@@ -79,15 +79,16 @@ class RequalifyReport:
         }
 
 
-def requalify_claims(tx, *, now: str, after_ref: str = "", limit: int = 16, dry_run: bool = True) -> RequalifyReport:
-    """Re-judge one bounded page of stored claims.  Returns what moved."""
+def _page(tx, after_ref: str, limit: int) -> list:
+    """The refs of one page of the claims this context may read and nothing blocks, after ``after_ref`` in ref order.
+
+    Authorization filters before pagination, so a visited prefix or another audience cannot starve the records behind
+    it.
+    """
     if type(limit) is not int or type(limit) is bool or not 1 <= limit <= MAX_PAGE:
         raise ContractError("INPUT_INVALID", "requalify_limit")
     if type(after_ref) is not str:
         raise ContractError("INPUT_INVALID", "requalify_cursor")
-
-    # Authorization filters before pagination, so a visited prefix or another
-    # audience cannot starve the records behind it.
     scopes = sorted(tx.context.allowed_scope_ids)
     rows = (
         tx._check()
@@ -100,13 +101,22 @@ def requalify_claims(tx, *, now: str, after_ref: str = "", limit: int = 16, dry_
         )
         .fetchall()
     )
+    return [row[0] for row in rows]
 
+
+def _head(tx, ref: str):
+    """The claim's current version, or None."""
+    return next((v for v in tx.claims.versions(ref) if v.revision == v.current_revision), None)
+
+
+def requalify_claims(tx, *, now: str, after_ref: str = "", limit: int = 16, dry_run: bool = True) -> RequalifyReport:
+    """Re-judge one bounded page of stored claims.  Returns what moved."""
+    refs = _page(tx, after_ref, limit)
     preserved = _preserved_reasons()
     report = RequalifyReport(applied=not dry_run)
-    for row in rows:
-        ref = row[0]
+    for ref in refs:
         report.last_ref = ref
-        head = next((v for v in tx.claims.versions(ref) if v.revision == v.current_revision), None)
+        head = _head(tx, ref)
         if head is None or head.state not in REQUALIFIABLE_STATES:
             continue
         if head.reason in preserved:
@@ -170,27 +180,11 @@ def retire_rootless_proposals(
     changed since they were written (on the pilot, 154 of them, promotions included), and retiring
     these must not bring that along.  The report names refs and verdicts only, never claim text.
     """
-    if type(limit) is not int or type(limit) is bool or not 1 <= limit <= MAX_PAGE:
-        raise ContractError("INPUT_INVALID", "requalify_limit")
-    if type(after_ref) is not str:
-        raise ContractError("INPUT_INVALID", "requalify_cursor")
-    scopes = sorted(tx.context.allowed_scope_ids)
-    rows = (
-        tx._check()
-        .execute(
-            f"""SELECT claim_id FROM claims WHERE claim_id>? AND read_blocked=0 AND suppressed=0
-            AND scope_id IN ({",".join("?" for _ in scopes)})
-            AND project_id IS ? AND branch_id IS ?
-            ORDER BY claim_id LIMIT ?""",
-            (after_ref, *scopes, tx.context.project_id, tx.context.branch_id, limit),
-        )
-        .fetchall()
-    )
+    refs = _page(tx, after_ref, limit)
     report = RequalifyReport(applied=not dry_run)
-    for row in rows:
-        ref = row[0]
+    for ref in refs:
         report.last_ref = ref
-        head = next((v for v in tx.claims.versions(ref) if v.revision == v.current_revision), None)
+        head = _head(tx, ref)
         if head is None or head.state != "proposed":
             continue
         report.examined += 1
