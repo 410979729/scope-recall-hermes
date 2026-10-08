@@ -22,6 +22,7 @@ from ..contracts import (
     SourceEvent,
     TrustedContext,
     validate_capture,
+    import_source_fingerprint,
 )
 from .truth_connection import TruthDatabaseMode, connect_truth_database
 from .writer_lease import TruthWriterBusyError
@@ -46,6 +47,10 @@ from .events import (
     stored_content_digest,
     withheld_tool_output,
 )
+from .delete_storage import Deletions, group_digest, purged_group_key
+from .inbox_rules import REKEY_MARKER, deleted_forms, deleted_text, holds_events, waiting
+from .visibility import allowed, allowed_refs
+from .work_storage import WorkItems
 
 #: How often a writer looks again for another process's lease while it waits.
 _LEASE_POLL_SECONDS = 0.01
@@ -225,25 +230,24 @@ class Transaction:
 
     @property
     def deletions(self):
-        from .delete_storage import Deletions
 
         return Deletions(self)
 
     @property
     def episodes(self):
-        from .episode_storage import Episodes
+        from .episode_storage import Episodes  # on first use: most of a hook's processes never need it
 
         return Episodes(self)
 
     @property
     def artifacts(self):
-        from .artifact_storage import Artifacts
+        from .artifact_storage import Artifacts  # on first use: most of a hook's processes never need it
 
         return Artifacts(self)
 
     @property
     def references(self):
-        from .reference_storage import References
+        from .reference_storage import References  # on first use: most of a hook's processes never need it
 
         return References(self)
 
@@ -259,21 +263,20 @@ class Transaction:
 
     @property
     def claims(self):
-        from .claim_storage import Claims
+        from .claim_storage import Claims  # on first use: most of a hook's processes never need it
 
         self._check()
         return Claims(self)
 
     @property
     def work(self):
-        from .work_storage import WorkItems
 
         self._check()
         return WorkItems(self)
 
     @property
     def candidates(self):
-        from .candidate_storage import CandidateLifecycle
+        from .candidate_storage import CandidateLifecycle  # on first use: most of a hook's processes never need it
 
         self._check()
         return CandidateLifecycle(self)
@@ -429,8 +432,6 @@ class Transaction:
         time on different content -- and the write time is the best one left.
         Stored rows are never rewritten; their fingerprints cover that time.
         """
-        from .inbox_rules import REKEY_MARKER
-
         stamp = source.event.get("occurred_at")
         stamp = stamp if type(stamp) is str and stamp else None
         key = source.event.get("source_event_key")
@@ -455,7 +456,6 @@ class Transaction:
         conn = self._check()
         if type(ref) is not str or not ref or len(ref) > 240 or type(revision) is not int or revision < 1:
             raise ContractError("INPUT_INVALID", "source_ref")
-        from .visibility import allowed
 
         if not allowed(self, "event", ref):
             return None
@@ -501,7 +501,6 @@ class Transaction:
             and revision >= 1
             and ("source", ref, revision) not in self.__memo
         ]
-        from .visibility import allowed_refs
 
         scopes = sorted(self.context.allowed_scope_ids)
         # The ``+`` keeps SQLite on the primary key: with a few scopes it started from the scope index, and read every
@@ -598,8 +597,6 @@ class Transaction:
         event = validate_capture(dict(event), self.context)
         provenance = self.context.import_provenance
         if provenance is not None:
-            from ..contracts import import_source_fingerprint
-
             if (
                 event.get("source_original_origin") != provenance.original_origin
                 or import_source_fingerprint(event) not in provenance.source_fingerprints
@@ -621,8 +618,6 @@ class Transaction:
     def _check_source_group(self, conn, group_key: str, scope_id: str, revision: int, segment_total: int):
         """A segment group belongs to one identity and one segment count; a
         blocked group refuses new members.  Returns the group's block policy row."""
-        from .delete_storage import group_digest
-
         digest = group_digest(
             self.context.binding, scope_id, self.context.project_id, self.context.branch_id, group_key
         )
@@ -690,8 +685,6 @@ class Transaction:
         delete compares them (``inbox_rules.holds``: whitespace aside, and so on).  A source group is suppressed
         whole: a part that is a copy suppresses the parts of its group stored before it and after it (review of
         rc13)."""
-        from .inbox_rules import REKEY_MARKER, deleted_text, holds_events
-
         if REKEY_MARKER not in group_key:
             return False
         partition = (scope_id, self.context.project_id, self.context.branch_id)
@@ -753,10 +746,6 @@ class Transaction:
         removes its own command's key, so the next message at that turn had been refused (reviews of rc13).  After the
         purge, a copy with words added is not known by anything kept, and is stored as another message.  A key with
         nothing stored left to compare with (a restored absence) refuses whatever comes."""
-        from .delete_storage import group_digest, purged_group_key
-        from .inbox_rules import deleted_forms, deleted_text, holds_events
-        from .visibility import allowed
-
         if not events:
             return
         conn = self._check()
@@ -849,7 +838,6 @@ class Transaction:
         # First delivery's recorded_at is retained.  Transport retries may arrive
         # later; occurrence time and all provenance/content fields must agree.
         ref = self._source_ref(event["source_event_key"])
-        from .visibility import allowed
 
         # A message under a deleted key has been compared with the deleted one before its parts are stored
         # (``refuse_under_a_deleted_key``); a hidden key refuses whatever reaches it here.
@@ -1093,7 +1081,6 @@ class Transaction:
         # stored a long prompt a second time.  A message stored whole is its own group.
         # A named message that was deleted counts as said as well: once the delete is purged its rows no longer
         # carry the key, and a record read stored the words again under a key of the record's (review of rc10).
-        from .delete_storage import group_digest
 
         for index, (_role, _content, _occurred_at, host_key) in enumerate(items):
             if host_key is not None:
@@ -1149,14 +1136,12 @@ class Transaction:
 
     def _waiting_in_inbox(self, scope_id: str) -> dict[tuple[str, str], list[tuple[object, str]]]:
         """This session's captures a replay of the inbox will still store, by (role, content digest)."""
-        from .inbox_rules import waiting as replays
-
-        waiting: dict[tuple[str, str], list[tuple[object, str]]] = {}
+        still_waiting: dict[tuple[str, str], list[tuple[object, str]]] = {}
         for payload, code in self._check().execute(
             "SELECT payload_json,last_error_code FROM capture_inbox WHERE scope_id=? AND project_id IS ? AND branch_id IS ?",
             (scope_id, self.context.project_id, self.context.branch_id),
         ):
-            if not replays(code):
+            if not waiting(code):
                 continue
             try:
                 body = json.loads(payload)
@@ -1173,10 +1158,10 @@ class Transaction:
                     # A segment answers to its message's key, as its stored rows do (``said_in_session``).
                     segment = event.get("segment")
                     key = segment.get("group_key") if isinstance(segment, dict) else event.get("source_event_key")
-                    waiting.setdefault((event["role"], stored_content_digest(event["content"])), []).append(
+                    still_waiting.setdefault((event["role"], stored_content_digest(event["content"])), []).append(
                         (event.get("occurred_at"), str(key))
                     )
-        return waiting
+        return still_waiting
 
     def enqueue_source(self, ref: str, revision: int, *, work_type: str, available_at: str) -> None:
         conn = self._check(write=True)
