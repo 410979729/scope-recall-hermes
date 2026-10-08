@@ -22,9 +22,10 @@ that the baseline only goes down: ``--update`` records it, and refuses to record
 pyright runs as Linux and as Windows, and a finding either reports counts once.
 
 The package's imports are held to its layers with no baseline: no cycle among its modules (an import inside a
-function counts, since it closes the cycle the first time it runs), and no module importing from a layer above
-its own (``LAYERS``) but the entry modules the installed command lines name and the lazy imports ``LAZY_UPWARD``
-names.
+function counts, since it closes the cycle the first time it runs, and importing a module runs the packages around
+it), and no module importing from a layer above its own (``LAYERS``), directly or through a module outside the
+layers, but the entry modules the installed command lines name and the lazy imports ``LAZY_UPWARD`` names.  Only
+what a type checker alone runs (``if TYPE_CHECKING:``) is left out.
 """
 
 from __future__ import annotations
@@ -307,10 +308,14 @@ def grown(recorded: dict, current: dict) -> list[str]:
 
 
 #: The package's layers, lowest first: a module imports from its own layer or a lower one, at the top or in a
-#: function.  Modules outside them (the package's root, ``_version``, ``_lance_worker``, ``distribution``) keep none.
+#: function.  Modules outside them (the package's root, ``_version``, ``_lance_worker``, ``distribution``) keep none,
+#: and an import through one of them counts as an import of what it imports.
 LAYERS = ("contracts", "core", "vector", "runtime", "adapters", "maintenance")
 #: The entry modules the installed hook and server command lines name: composition roots, free to import any layer.
-ENTRY_MODULES = "adapters/codex/"
+ENTRY_MODULES = frozenset(
+    f"adapters/codex/{name}.py"
+    for name in ("hook_entry", "mcp_entry", "remote_client", "remote_server", "resident_entry")
+)
 #: The upward imports the layering keeps, each made in the function that needs it.  A worker that replays a capture
 #: checks it against its host's current installation, which is the adapters' identity code, and the worker's module
 #: path is in its wake command, so no composition root above the adapters can be put in front of it.
@@ -327,45 +332,92 @@ def _dotted(path: str) -> str:
     return ".".join(["scope_recall", *(parts[:-1] if parts[-1] == "__init__" else parts)])
 
 
+def _guard(test: ast.expr, names: set[str], modules: set[str]) -> bool:
+    """Whether ``test`` is ``typing.TYPE_CHECKING`` itself, under a name it was imported as or through ``typing``."""
+    if isinstance(test, ast.Name):
+        return test.id in names
+    return (
+        isinstance(test, ast.Attribute)
+        and test.attr == "TYPE_CHECKING"
+        and isinstance(test.value, ast.Name)
+        and test.value.id in modules
+    )
+
+
+def typing_only(tree: ast.Module) -> set[int]:
+    """The nodes only a type checker runs: the body of ``if TYPE_CHECKING:`` and the ``else`` of ``if not
+    TYPE_CHECKING:``.  Every other branch runs, and so does a test that only contains the flag."""
+    names: set[str] = set()
+    modules: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.level == 0 and node.module in ("typing", "typing_extensions"):
+            names |= {alias.asname or alias.name for alias in node.names if alias.name == "TYPE_CHECKING"}
+        elif isinstance(node, ast.Import):
+            modules |= {
+                alias.asname or alias.name for alias in node.names if alias.name in ("typing", "typing_extensions")
+            }
+    skipped: set[int] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.If):
+            continue
+        if _guard(node.test, names, modules):
+            branch = node.body
+        elif isinstance(node.test, ast.UnaryOp) and isinstance(node.test.op, ast.Not):
+            branch = node.orelse if _guard(node.test.operand, names, modules) else []
+        else:
+            continue
+        skipped |= {id(inner) for statement in branch for inner in ast.walk(statement)}
+    return skipped
+
+
+def _requested(node: ast.Import | ast.ImportFrom, package: list[str]) -> list[str]:
+    """The dotted names an import statement asks for, each a module or a name in one."""
+    if isinstance(node, ast.Import):
+        return [alias.name for alias in node.names]
+    base = node.module or ""
+    if node.level:
+        base = ".".join([*package[: len(package) - node.level + 1], *([node.module] if node.module else [])])
+    return [f"{base}.{alias.name}" for alias in node.names]
+
+
+def _loaded(name: str, own: str, paths: dict[str, str]) -> list[str]:
+    """The modules importing ``name`` runs, as dotted names: the module it is or is in, and before it each package
+    around that module that the importer (``own``) is not itself inside."""
+    while name and name not in paths:
+        name = name.rpartition(".")[0]
+    if not name:
+        return []
+    parts = name.split(".")
+    around = (".".join(parts[:depth]) for depth in range(1, len(parts)))
+    return [name, *(package for package in around if package in paths and not f"{own}.".startswith(f"{package}."))]
+
+
 def import_edges(root: Path, files: Iterable[str]) -> set[tuple[str, str, bool, int]]:
     """Each import of one of ``files`` by another, as (importer, imported, in a function, line).  Importing a name
-    from a module imports the module; an import under ``if TYPE_CHECKING:`` is none."""
+    from a module imports the module and the packages around it (``_loaded``); an import only a type checker runs
+    (``typing_only``) is none."""
     paths = {_dotted(path): path for path in files}
     edges: set[tuple[str, str, bool, int]] = set()
     for path in sorted(paths.values()):
         tree = ast.parse((root / path).read_text(encoding="utf-8"))
-        typing_only = {
-            id(node)
-            for block in ast.walk(tree)
-            if isinstance(block, ast.If) and "TYPE_CHECKING" in ast.unparse(block.test)
-            for node in ast.walk(block)
-        }
+        skipped = typing_only(tree)
         in_function = {
             id(node)
             for function in ast.walk(tree)
             if isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef))
             for node in ast.walk(function)
         }
-        package = _dotted(path).split(".")
-        if not path.endswith("__init__.py"):
-            package = package[:-1]
+        own = _dotted(path)
+        package = own.split(".") if path.endswith("__init__.py") else own.split(".")[:-1]
         for node in ast.walk(tree):
-            if not isinstance(node, (ast.Import, ast.ImportFrom)) or id(node) in typing_only:
+            if not isinstance(node, (ast.Import, ast.ImportFrom)) or id(node) in skipped:
                 continue
-            if isinstance(node, ast.Import):
-                names = [alias.name for alias in node.names]
-            else:
-                base = node.module or ""
-                if node.level:
-                    base = ".".join(
-                        [*package[: len(package) - node.level + 1], *([node.module] if node.module else [])]
-                    )
-                names = [f"{base}.{alias.name}" for alias in node.names]
-            for name in names:
-                while name and name not in paths:
-                    name = name.rpartition(".")[0]
-                if name and paths[name] != path:
-                    edges.add((path, paths[name], id(node) in in_function, node.lineno))
+            for name in _requested(node, package):
+                edges |= {
+                    (path, paths[target], id(node) in in_function, node.lineno)
+                    for target in _loaded(name, own, paths)
+                    if paths[target] != path
+                }
     return edges
 
 
@@ -416,14 +468,46 @@ def _layer(path: str) -> int | None:
     return LAYERS.index(top) if top in LAYERS else None
 
 
+def _reached(path: str, graph: dict[str, set[str]]) -> list[tuple[str, str]]:
+    """The modules in a layer that importing ``path`` reaches, each with the module outside the layers it is reached
+    through (empty for ``path`` itself)."""
+    if _layer(path) is not None:
+        return [(path, "")]
+    found: list[tuple[str, str]] = []
+    seen, todo = {path}, [path]
+    while todo:
+        for following in sorted(graph[todo.pop()] - seen):
+            seen.add(following)
+            if _layer(following) is None:
+                todo.append(following)
+            else:
+                found.append((following, path))
+    return sorted(found)
+
+
+def _named_lazy(importer: str, imported: str, lazy: bool) -> bool:
+    """Whether an import is one of ``LAZY_UPWARD`` made in a function, or a package Python runs around its target."""
+    return lazy and any(
+        owner == importer
+        and (
+            target == imported
+            or (imported.endswith("__init__.py") and target.startswith(imported[: -len("__init__.py")]))
+        )
+        for owner, target in LAZY_UPWARD
+    )
+
+
 def import_problems(root: Path, files: Iterable[str]) -> list[str]:
     """What the package's imports may not do: form a cycle (an import in a function counts: it closes the cycle the
-    first time it runs), or reach a higher layer (``LAYERS``) but from an entry module or as one of ``LAZY_UPWARD``."""
+    first time it runs), or reach a higher layer (``LAYERS``), directly or through modules outside the layers, but
+    from an entry module or as one of ``LAZY_UPWARD``.  A cycle through one of those is that import itself (the
+    target's side imports the runtime, as everything above the runtime does), so they are left out of the cycles."""
     files = sorted(files)
     edges = sorted(import_edges(root, files), key=lambda edge: (edge[0], edge[3], edge[1]))  # by importer and line
     graph: dict[str, set[str]] = {path: set() for path in files}
-    for importer, imported, _lazy, _line in edges:
-        graph[importer].add(imported)
+    for importer, imported, lazy, _line in edges:
+        if not _named_lazy(importer, imported, lazy):
+            graph[importer].add(imported)
     problems: list[str] = []
     for group in strongly_connected(graph):
         inside = [
@@ -432,13 +516,27 @@ def import_problems(root: Path, files: Iterable[str]) -> list[str]:
             if importer in group and imported in group
         ]
         problems.append(f"import cycle among {len(group)} modules:" + "".join(inside))
+    return problems + _upward(edges, graph)
+
+
+def _upward(edges: list[tuple[str, str, bool, int]], graph: dict[str, set[str]]) -> list[str]:
+    """Each import of a higher layer than the importer's, but an entry module's and ``LAZY_UPWARD``: one line per
+    module it reaches there, the packages Python runs around that module left unsaid."""
+    reached: dict[tuple[str, int, bool], set[tuple[str, str]]] = {}
     for importer, imported, lazy, line in edges:
-        low, high = _layer(importer), _layer(imported)
-        if low is None or high is None or high <= low or importer.startswith(ENTRY_MODULES):
+        low = _layer(importer)
+        if low is None or importer in ENTRY_MODULES or _named_lazy(importer, imported, lazy):
             continue
-        if lazy and (importer, imported) in LAZY_UPWARD:
-            continue
-        problems.append(f"upward import: {importer}:{line} imports {imported}" + (" in a function" if lazy else ""))
+        higher = {(module, through) for module, through in _reached(imported, graph) if (_layer(module) or 0) > low}
+        if higher:
+            reached.setdefault((importer, line, lazy), set()).update(higher)
+    problems: list[str] = []
+    for (importer, line, lazy), found in reached.items():
+        for module, through in sorted({item for item in found if not item[0].endswith("__init__.py")} or found):
+            via = f" through {through}" if through else ""
+            problems.append(
+                f"upward import: {importer}:{line} imports {module}{via}" + (" in a function" if lazy else "")
+            )
     return problems
 
 

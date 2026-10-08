@@ -233,13 +233,66 @@ def test_an_import_in_a_function_that_closes_a_cycle_is_one(tmp_path):
     ]
 
 
+def test_only_what_the_type_checker_alone_runs_is_left_out(tmp_path):
+    files = _tree(
+        tmp_path,
+        {
+            "core/__init__.py": "",
+            "core/a.py": (
+                "import typing\n"
+                "from typing import TYPE_CHECKING as TC\n"
+                "\n"
+                "if TC:\n"
+                "    from ..runtime import t1\n"
+                "if typing.TYPE_CHECKING:\n"
+                "    from ..runtime import t2\n"
+                "else:\n"
+                "    from ..runtime import r1\n"
+                "if not TC:\n"
+                "    from ..runtime import r2\n"
+                "else:\n"
+                "    from ..runtime import t3\n"
+            ),
+            **{f"runtime/{name}.py": "" for name in ("__init__", "t1", "t2", "t3", "r1", "r2")},
+        },
+    )
+    # The flag under another name or through typing still guards its body; an else, or the body of `if not`, runs.
+    assert quality.import_problems(tmp_path, files) == [
+        "upward import: core/a.py:9 imports runtime/r1.py",
+        "upward import: core/a.py:11 imports runtime/r2.py",
+    ]
+
+
+def test_importing_a_module_runs_the_packages_around_it(tmp_path):
+    for case, first in enumerate(("from .pkg import leaf\n", "import scope_recall.core.pkg.leaf as leaf\n")):
+        files = _tree(
+            tmp_path / f"case{case}",
+            {
+                "core/__init__.py": "from .x import X\n",
+                "core/x.py": "from .y import Y\n\nX = Y\n",
+                "core/y.py": "Y = 1\n",
+                "core/a.py": first + "\nA = 1\n",
+                "core/pkg/__init__.py": "from ..a import A\n",
+                "core/pkg/leaf.py": "",
+            },
+        )
+        # Python stops a's import half-way: pkg's package code asks a for A before a defines it.  The core package
+        # importing x, which imports its sibling y, is no cycle: x and y are inside the package that runs first.
+        assert quality.import_problems(tmp_path / f"case{case}", files) == [
+            "import cycle among 2 modules:\n"
+            "    core/a.py:1 imports core/pkg/__init__.py\n"
+            "    core/pkg/__init__.py:1 imports core/a.py"
+        ]
+
+
 def test_an_import_from_a_higher_layer_is_one_but_from_an_entry_or_as_a_named_lazy_one(tmp_path):
     files = _tree(
         tmp_path,
         {
+            "__init__.py": "from .runtime.y import Y\n",
             "contracts.py": "",
             "core/__init__.py": "",
-            "core/x.py": "from .. import contracts\nfrom ..runtime import y\n",
+            "core/x.py": "from .. import contracts\nfrom ..runtime import y\nfrom .. import Y\n",
             "runtime/__init__.py": "",
             "runtime/y.py": "",
             "runtime/instance.py": (
@@ -248,17 +301,22 @@ def test_an_import_from_a_higher_layer_is_one_but_from_an_entry_or_as_a_named_la
             ),
             "adapters/__init__.py": "",
             "adapters/clients/__init__.py": "",
-            "adapters/clients/authorization.py": "",
+            "adapters/clients/authorization.py": "from ...runtime import instance\n",
             "adapters/hermes/__init__.py": "",
             "adapters/hermes/authorization.py": "",
             "adapters/codex/__init__.py": "",
             "adapters/codex/hook_entry.py": "from ...maintenance import install\n",
+            "adapters/codex/helper.py": "from ...maintenance import install\n",
             "maintenance/__init__.py": "",
             "maintenance/install.py": "from scope_recall.core import x\n",
         },
     )
-    # The instance's import of the Hermes check is named, but made at the top: every worker start would pay for it.
+    # Only the five installed entry modules may reach any layer; a re-export by the package root is followed; the
+    # instance's import of the Hermes check is named, but made at the top, where every worker start pays for it.  The
+    # named lazy import closes no cycle with the client check importing the runtime: that is the import itself.
     assert quality.import_problems(tmp_path, files) == [
+        "upward import: adapters/codex/helper.py:1 imports maintenance/install.py",
         "upward import: core/x.py:2 imports runtime/y.py",
+        "upward import: core/x.py:3 imports runtime/y.py through __init__.py",
         "upward import: runtime/instance.py:1 imports adapters/hermes/authorization.py",
     ]
