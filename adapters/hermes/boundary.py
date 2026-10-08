@@ -337,7 +337,7 @@ def host_notice(history: object, user_message: object) -> bool:
     text and the message carries a notice's kind.  A to-do list a compression adds after the turn's message has no
     words of its own (``agent.turn_context.reanchor_current_turn_user_idx``).  The latest only: when Hermes put a note
     of its own before the person's message (a model switch, a timestamp), an unanswered notice with the same words
-    took theirs, and so did an older folded one (reviews of 3.7.3).  A request Hermes restores after a notice
+    took theirs, and so did an older folded one.  A request Hermes restores after a notice
     decides in its place, and the notice stays the person's: the safe side.
 
     Past the last reply the message must be one Hermes folded and marked.  A compression at the turn's start can

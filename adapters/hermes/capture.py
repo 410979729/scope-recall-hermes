@@ -137,7 +137,7 @@ class CaptureWriter:
     def _snapshot(self, context, event: dict, identity, gaps, scope_id: str, bound: HermesIdentity):
         """What a failed write would keep to try again, made now and kept only once a write failed for a reason that
         may pass.  Kept before the write, a capture whose store I/O runs without the lock sat in the buffer while it
-        wrote, and a retry pass of the same session wrote it a second time (review of 3.5.1)."""
+        wrote, and a retry pass of the same session wrote it a second time."""
         if identity is None or identity in self._adapter._retry.captures:
             return None
         if len(json.dumps(event, ensure_ascii=False).encode("utf-8")) > _RETRY_EVENT_BYTES:
@@ -227,7 +227,7 @@ class CaptureWriter:
     def _closed_meanwhile(self, identity, outcome: CaptureReceipt | Exception, replay: bool):
         """A shutdown stopped waiting for this write and closed the session meanwhile.  The write itself may well
         have landed (the store is not closed with the session); its bookkeeping belongs to a closed session, and
-        raised into the host's hook runner (review of 3.5.1)."""
+        raised into the host's hook runner."""
         adapter = self._adapter
         receipt = None if isinstance(outcome, Exception) else outcome
         stored = receipt is not None and receipt.durability in ("persisted", "queued")
@@ -235,7 +235,7 @@ class CaptureWriter:
             adapter._ledger.confirm(identity)
             adapter._retry.captures.pop(identity, None)
         if replay and identity is not None:
-            # Said "still being written" at shutdown: its end is said here (review of 3.6.1).
+            # Said "still being written" at shutdown: its end is said here.
             if receipt is not None and stored:
                 _log.info(
                     "scope-recall: %s on retry: %s",

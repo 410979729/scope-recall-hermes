@@ -850,9 +850,9 @@ def resident_minutes(home: Path | str, host: str) -> int:
 
 def configured_minutes(home: Path | str, host: str, *, missing: int | None = 0) -> int | None:
     """``resident_minutes``, or None when the entry's files cannot be read just now: a file held for a moment, or a
-    runtime config caught half saved.  A running server looks again at its next check instead of ending on it (review
-    2 of 3.6.0rc1).  A missing file is ``missing``: 0 for a start, None for a running server, since an editor that
-    saves by moving files leaves none for a moment (review 3)."""
+    runtime config caught half saved.  A running server looks again at its next check instead of ending on it.  A
+    missing file is ``missing``: 0 for a start, None for a running server, since an editor that saves by moving
+    files leaves none for a moment."""
     from ...runtime.instance import RESIDENT_RECALL_MINUTES_BOUNDS
     from ...runtime.validation import strict_int
     from .config import load_shared_client
@@ -885,8 +885,8 @@ def resident_lock(home: Path | str, host: str) -> Path:
 
 def resident_record(home: Path | str, host: str) -> Path:
     """Where the running resident server keeps its process id, start and version, beside its lock.  A hook removes the
-    name of a server that did not prove itself in time, and ``resident stop`` saw nothing until it named itself again
-    (review of 3.6.0rc1); no hook removes this.  Not a ``.json``: it is not a name hooks ask."""
+    name of a server that did not prove itself in time, and ``resident stop`` saw nothing until it named itself again;
+    no hook removes this.  Not a ``.json``: it is not a name hooks ask."""
     return endpoints(home) / f"resident-{host}.pid"
 
 
@@ -905,7 +905,7 @@ def live_residents(
     A file whose process is gone, or whose process id another process took since, is removed: its start time differs,
     or cannot be read at all where it could when the file was written (a process of another account or a service, as
     a hook's ``Recaller`` reads it).  One written where no start time can be read (macOS) is kept and marked unproven:
-    after a crash its id may belong to any of the user's processes, which a stop must not end (reviews of 3.6.0rc1)."""
+    after a crash its id may belong to any of the user's processes, which a stop must not end."""
     from ..._version import __version__
     from ...runtime.process_probe import probe_process
 
@@ -938,7 +938,7 @@ def live_residents(
 
 def resident_running(home: Path | str, host: str) -> bool:
     """Whether a resident server of this entry and client runs, of any version: the lock it holds is held.  A name or
-    a record can outlive its process, or name an id another process took since; a lock cannot (review of 3.6.0rc1)."""
+    a record can outlive its process, or name an id another process took since; a lock cannot."""
     from ...core.file_lock import advisory_file_lock
 
     lock = resident_lock(home, host)
@@ -965,10 +965,10 @@ def ensure_resident(
 
     ``replace`` is the prompt hook's.  Hooks ask only a server of their own version, and one of another version that
     held the entry's lock (an installation in another venv, a canary, a build from before its self-exit) kept every
-    prompt cold for as long as the client ran, while every hook and MCP server marked it in use (review 2 of
-    3.6.0rc1).  None marks it now.  The hook stops one it can prove and end, and starts its own; the version an
-    entry's hooks run then wins, and hooks of two versions against one entry switch it at most once a minute (review
-    3).  A client's MCP server never stops one.  The server is started apart from this process, which the client may
+    prompt cold for as long as the client ran, while every hook and MCP server marked it in use.  None marks it
+    now.  The hook stops one it can prove and end, and starts its own; the version an entry's hooks run then wins,
+    and hooks of two versions against one entry switch it at most once a minute.  A client's MCP server never stops
+    one.  The server is started apart from this process, which the client may
     end at once (WorkBuddy stops a conversation's processes): in a new process group, broken away from the client's job
     where Windows allows it, with no window and no console of its own.  It writes nothing to the store; two started at
     once settle on one."""
@@ -1004,13 +1004,13 @@ def ensure_resident(
     try:
         folder.mkdir(parents=True, exist_ok=True)
         # The look at the stamps, the stop, the removal of a stale stamp and the new one under one lock: two starters
-        # that both found the stamp stale both started a server (review 2 of 3.6.0rc1).
+        # that both found the stamp stale both started a server.
         with advisory_file_lock(folder / f"resident-{host}.start.lock", timeout_seconds=1.0):
             if other is not None:
                 if _recent(switched):
                     return f"running:{other}"
                 # A stop that failed (a server this account may not end) said ``replaced`` at every prompt, and started
-                # one that gave way each time (review 3 of 3.6.0rc1).
+                # one that gave way each time.
                 if not stop_residents(home, host, other_versions=True):
                     return f"unstoppable:{other}"
                 switched.write_text(str(os.getpid()), encoding="ascii")
@@ -1048,8 +1048,8 @@ def ensure_resident(
 
 def _recent(stamp: Path) -> bool:
     """Whether ``stamp`` was written less than ``RESIDENT_START_EVERY_SECONDS`` ago.  One more than that far in the
-    future (a clock set back) is stale, not recent: it held off every start until the clock passed it (review of
-    3.6.0rc1); one just written can read a little ahead."""
+    future (a clock set back) is stale, not recent: it would hold off every start until the clock passed it; one
+    just written can read a little ahead."""
     try:
         age = time.time() - stamp.stat().st_mtime
     except FileNotFoundError:
@@ -1060,7 +1060,7 @@ def _recent(stamp: Path) -> bool:
 def package_upgrading() -> bool:
     """Whether ``package-upgrade`` is replacing this environment's package now (its lock in the venv is held): a server
     started meanwhile could import part of either version, and once the new ``_version.py`` was in place it would not
-    end (review 2 of 3.6.0rc1).  The client should be quit for an upgrade; its MCP servers' keeping made this
+    end.  The client should be quit for an upgrade; its MCP servers' keeping made this
     reachable without a prompt."""
     from ...core.file_lock import advisory_file_lock
 
@@ -1083,7 +1083,7 @@ def keep_resident(
     (``RESIDENT_KEEP_SECONDS``), in a daemon thread; set the event returned to stop.  The resident server then ends
     ``resident_recall_minutes`` after the client's last process, not its last prompt: WorkBuddy keeps a conversation's
     process long after its prompts, and a resident that ended meanwhile left that conversation's next prompt colder
-    than the conversation's own server had kept it (review of 3.6.0rc1).  The minutes are read each time, so at 0 this
+    than the conversation's own server had kept it.  The minutes are read each time, so at 0 this
     starts none.  Nothing it meets ends the MCP server, which serves its tools whatever this does."""
     stopped = threading.Event()
     every = RESIDENT_KEEP_SECONDS if every is None else every

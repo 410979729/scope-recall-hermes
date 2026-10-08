@@ -358,7 +358,7 @@ def _embed_retry_reason(tx, ref: str, revision: int, *, current_epoch: int | Non
     """An embed's subject is a source or, since every claim head is queued for the vector index, a claim, which may
     be worked on while it is the readable head it was queued for.  Read as a source, a claim was never found: every
     claim embed a provider failed was made obsolete instead of reopened, and 114 readable heads of the shared store
-    had no vector (review of 3.7.4)."""
+    had no vector."""
     if ref.startswith("claim-"):
         return _projection_retry_reason(tx, ref, revision, current_epoch=current_epoch)
     return _source_retry_reason(tx, ref, revision, current_epoch=current_epoch)
@@ -867,7 +867,7 @@ class WorkItems:
             report["retried"] += 1
         # The automatic recovery read every embed's subject as a source, so a claim embed a provider failed was made
         # obsolete instead of reopened (``_embed_retry_reason``).  A readable head it left without a vector is worked
-        # on again, and one an earlier conversion never queued is queued (review of 3.7.4).
+        # on again, and one an earlier conversion never queued is queued.
         heads = self._claim_heads_without_vectors(limit=limit)
         report["claim_embeds_reopened"] = sum(1 for work_id, _ref, _revision in heads if work_id is not None)
         report["claim_embeds_queued"] = sum(1 for work_id, _ref, _revision in heads if work_id is None)
@@ -924,7 +924,7 @@ class WorkItems:
         row's work id, or None when there is none, the claim, its head revision), at most ``limit``.
 
         The query asks what ``_embed_retry_reason`` will (the exact project and branch, no block), so heads it would
-        refuse never fill the page ahead of one it takes (review of 3.7.5)."""
+        refuse never fill the page ahead of one it takes."""
         conn = self._tx._check()
         context = self._tx.context
         scopes = sorted(context.allowed_scope_ids)

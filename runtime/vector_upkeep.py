@@ -255,7 +255,7 @@ def respace_if_due(
     ``IMPORT_EMBED_QUEUE_CEILING``, and to ``yield_ceiling`` while work of a type in ``yield_to`` is ready, so a
     message captured now and an evaluation that waits still move.  A run reopens rows of every partition, so the
     queue it counts is the store's (``embed_queue``): counted as this worker's alone, a partition it cannot see took
-    a page every pass however much of it waited (review of 3.8.0).  The run is looked at in a read; the write, and
+    a page every pass however much of it waited.  The run is looked at in a read; the write, and
     the writer lease it takes, come only when a run into this space has room to go on.  Returns the page's receipt,
     ``None`` when there is no run.  Never raises: a page that failed changed nothing and is tried again next drain.
     """

@@ -188,7 +188,7 @@ def _within_posting_budget(
     """The rarest ``_LEXICAL_MIN_TERMS`` of the terms more than one source holds, and more of them while their
     postings stay within ``_LEXICAL_POSTING_BUDGET``.  ``keep`` stays whatever it costs.  A term one source at most
     holds costs a posting at most and stays, but takes none of the rarest places: the prompt is stored before its own
-    recall, and the words only it holds would have taken them all (review of 3.4.2).  The query's own order is kept."""
+    recall, and the words only it holds would have taken them all.  The query's own order is kept."""
     held = sorted(
         (term for term in terms if term not in keep and frequencies.get(term, 0) > 1),
         key=lambda term: (frequencies[term], term),
@@ -510,7 +510,7 @@ def _shares(counts: list[int], limit: int) -> list[int]:
 def _coarse_to_fine(items: list) -> list:
     """``items``, in time order, reordered so that any first part of them spreads across all of them: the first, the
     middle, the quarters, the eighths (the positions' bits read backwards).  Offered in time order, a packet of six
-    took a day's morning and left its afternoon out (review 5 of 3.4.8)."""
+    took a day's morning and left its afternoon out."""
     bits = max(1, (len(items) - 1).bit_length())
     return [items[index] for index in sorted(range(len(items)), key=lambda index: int(f"{index:0{bits}b}"[::-1], 2))]
 
@@ -600,7 +600,7 @@ class RetrievalStorage:
             .fetchall()
         )
         # The posting budget chose which rows the statement found; what a found row holds of the terms it left out
-        # still counts, as before: admission weighs a row's matches against the whole query (review of 3.4.2).
+        # still counts, as before: admission weighs a row's matches against the whole query.
         held = _held_terms(tx, [row["source_id"] for row in rows], cut) if cut and rows else {}
         candidates = []
         for index, row in enumerate(rows, 1):
@@ -906,11 +906,10 @@ class RetrievalStorage:
         its end when the person spoke again within them, or when the rows ran
         out, its window has closed, and what the session says in the window
         after it, if anything, is the person's: an agent's turn of forty tool
-        calls went past the 64 rows, and its last reply read was not its answer
-        (review of 3.4.7), nor is the last of a turn still going on.  That look
+        calls went past the 64 rows, and its last reply read was not its answer,
+        nor is the last of a turn still going on.  That look
         is bounded to the next window, which the scope's time index reads in
-        order: unbounded, it read every later row of the scope (second review
-        of 3.4.7).
+        order: unbounded, it would read every later row of the scope.
 
         The same message stored again is not the person speaking again.  A
         Hermes provider rebuilt with its agent stored a turn's message a second
@@ -922,8 +921,8 @@ class RetrievalStorage:
         Only the replies a turn offers as candidates join (``turn_replies``),
         which rank them like any other: the reply can answer a new request
         instead ("算了，先查值班表"), so it never leads an older copy to it
-        (``latest_turn``), where the last reply is raised above the rest
-        (review of 3.7.2).  A message the host writes into the conversation
+        (``latest_turn``), where the last reply is raised above the rest.
+        A message the host writes into the conversation
         (a finished background process) ends a turn as the person's does: the
         rows do not say which turn its job began in.
         """

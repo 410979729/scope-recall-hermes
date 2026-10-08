@@ -57,8 +57,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.action == "stop":
         said["stopped"] = stopped
         if running:
-            # A server with no record and no name (in its first moments), or one that is not proven, was not stopped
-            # (review 2 of 3.6.0rc1).
+            # A server with no record and no name (in its first moments), or one that is not proven, was not stopped.
             said["status"] = "still_running"
     print(json.dumps(said, indent=2))
     return 1 if said["status"] == "still_running" else 0

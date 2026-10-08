@@ -49,15 +49,15 @@ from .local_endpoint import (
 #: recall stuck too long.
 IDLE_CHECK_SECONDS = 30.0
 #: Checks in a row whose files could not be read before the server ends: one read caught mid-save, or held for a
-#: moment by a scanner, ended a warm server (review 2 of 3.6.0rc1), and files gone for good end it a check later.
+#: moment by a scanner, ended a warm server, and files gone for good end it a check later.
 UNSURE_CHECKS = 2
 #: How long a recall may run past its time before the server ends.  Such a server tells every hook it is busy, and the
-#: marks of live client processes kept it up, cold for every prompt, for as long as the client ran (review 2 of
-#: 3.6.0rc1); ended, it is started anew by the next look.
+#: marks of live client processes would keep it up, cold for every prompt, for as long as the client ran; ended, it
+#: is started anew by the next look.
 STUCK_END_SECONDS = 300.0
 #: How long a starting server waits for the entry's lock.  A hook that looks whether one runs holds it for a moment
 #: (``local_endpoint.resident_running``); held a quarter of a second, a busy machine's look made a start give way, and
-#: the start stamp then kept the entry without a server for a minute (review 2 of 3.6.0rc1).  One of another version
+#: the start stamp then kept the entry without a server for a minute.  One of another version
 #: this server or a hook stopped holds it until the system has ended that process.
 LOCK_WAIT_SECONDS = 3.0
 STOPPED_WAIT_SECONDS = 5.0
@@ -108,7 +108,7 @@ def main(argv: list[str] | None = None) -> int:
     idle = resident_minutes(home, args.host) * 60.0 if configured else args.idle_seconds
     if idle <= 0 or package_upgrading():
         return 0  # none kept, or the package being replaced: a later look starts one from the new files
-    # One of another version runs the code it was started with, and hooks ask it nothing (review of 3.6.0rc1).  The
+    # One of another version runs the code it was started with, and hooks ask it nothing.  The
     # prompt hook stops one that holds the lock before it starts this one; one that took the lock meanwhile ends here.
     stopped = stop_residents(home, args.host, other_versions=True)
     try:
@@ -150,7 +150,7 @@ def _serve_until_idle(home: Path, host: str, env_file: Path | None, idle: float,
             minutes = configured_minutes(home, host, missing=None) if configured else None
             if minutes is not None:
                 # A change of the entry's minutes is taken here: set to 0 to free the server's memory, it kept serving,
-                # and every prompt put its end off (review of 3.6.0rc1).
+                # and every prompt put its end off.
                 idle = minutes * 60.0
             unsure = unsure + 1 if package == "unknown" or (configured and minutes is None) else 0
             if (
@@ -185,8 +185,7 @@ def _keep_record(path: Path, host: str) -> None:
 def _package_state() -> str:
     """``same``; ``replaced`` when the package on disk is no longer the one this server runs (an upgrade replaced it, or
     an uninstall took it away); ``unknown`` when its version could not be read just now.  A server of the old version
-    kept the entry's lock against every one of the new version until its idle end, while hooks asked it nothing
-    (review of 3.6.0rc1)."""
+    kept the entry's lock against every one of the new version until its idle end, while hooks asked it nothing."""
     from ... import _version
 
     folder = Path(_version.__file__).resolve().parent

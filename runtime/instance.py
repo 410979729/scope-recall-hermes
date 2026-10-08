@@ -568,7 +568,7 @@ class RuntimeInstance:
             # search of an index reads all of it into the helper's cache whatever the filter; after that a search
             # touches only the codes of the rows its filter keeps.  Filtered on the first scope's partition, which
             # held no rows for any entry of the shared store, the search touched 26 MB of the 306 MB the next recall
-            # paged back in once the helper's memory was trimmed (review of 3.5.0rc2).  What it finds is not looked at.
+            # paged back in once the helper's memory was trimmed.  What it finds is not looked at.
             search_scopes(
                 [1.0] + [0.0] * (self.config.vector.dimensions - 1),
                 scope_ids=list(search_partitions(trusted, self.config.embedding_space_id())),

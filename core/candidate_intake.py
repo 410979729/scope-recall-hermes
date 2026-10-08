@@ -319,7 +319,7 @@ class CandidateIntake(CandidateTables):
         context, params = self._context("l.")
         # The terms go in as one parameter and the candidates come back in one row.  A parameter per term failed a part
         # of 63,993 distinct terms whole ("too many SQL variables", kept to retry for good), and a row per candidate
-        # waited for the GIL in a busy Hermes gateway (``lexical_index.index_terms``; review of 3.7.6).  The CROSS JOIN
+        # waited for the GIL in a busy Hermes gateway (``lexical_index.index_terms``).  The CROSS JOIN
         # starts from the terms: from the candidates, SQLite looked every term up for each reachable one, 3-12 s for a
         # tool output of 5,001 terms beside 3,000-10,000 candidates.
         row = (

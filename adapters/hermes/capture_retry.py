@@ -233,6 +233,6 @@ class CaptureRetry:
             except Exception as exc:  # noqa: BLE001 - the next pass, a turn's end or the shutdown writes it
                 _log.warning("scope-recall: a retry of buffered captures failed (%s)", type(exc).__name__)
                 # A pass that raised before its captures' own check still gives up the expired ones: it would hold
-                # them, and an evicted agent's adapter, for good (review of 3.6.1).
+                # them, and an evicted agent's adapter, for good.
                 with self._adapter._lock:
                     self.give_up_expired(tuple(self.captures.items()))

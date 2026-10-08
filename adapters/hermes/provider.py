@@ -114,7 +114,7 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
         #: Turns Hermes opened itself (``host_notice``), with the text of the message that opened each, kept like
         #: ``_user_captured_turns`` under ``_said_lock``: that message is stored as the host's wherever it is stored, by
         #: ``pre_llm_call`` or by ``sync_turn``.  ``sync_turn`` names its turn by the one active when it runs, which can
-        #: be the next turn already, so the text decides, never the turn id alone (review of 3.7.2).
+        #: be the next turn already, so the text decides, never the turn id alone.
         self._notice_turns: dict[str, str] = {}
         self._session_watermark = 0
         self._current_source_refs: list[str] = []
@@ -166,7 +166,7 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
         Waited out past Hermes' hook timeout, the call was abandoned and Hermes skipped that hook for every session
         of the gateway for a minute (Hermes 0.21.5): Scope Recall registers one callback per hook.  A skipped
         ``pre_llm_call`` leaves its turn id for the turn's start: post_llm_call names the turn's interim messages
-        and steers by it, and without it they were dropped (review of 3.4.10).
+        and steers by it, and without it they were dropped.
         """
         holder = self._holder
         if kind == "pre_llm_call":

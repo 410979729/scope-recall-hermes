@@ -611,7 +611,7 @@ def _read_manifest(path: Path) -> dict[str, Any]:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as exc:
         raise HermesIdentityError("installation manifest is invalid") from exc
-    # JSON that is not an object raised AttributeError here, past every caller's handling (review of 3.6.1).
+    # JSON that is not an object raised AttributeError here, past every caller's handling.
     if not isinstance(payload, dict):
         raise HermesIdentityError("installation manifest is invalid")
     if payload.get("schema_version") != SCHEMA_VERSION:

@@ -11,8 +11,8 @@ entries taken out, what is left must be, whole, one of a few forms of such a que
 "帮我看看做了哪些工作", "总结一下", "有什么进展", "what did we talk about").  Anything else is recalled as if it
 named no day: a question about a subject ("9月2日发布的 3.4.2 修了什么", "继续昨天的任务"), which read in its day
 lost the answer said on another day, the current task and the claims that answered it, and a message that only
-mentions a day ("今天在吗", "我今天在忙呢", "今晚做什么菜"), which lost the owner's preferences and task (reviews of
-3.4.6).  A bag of words let such messages through round after round; a whole form does not, and a question it
+mentions a day ("今天在吗", "我今天在忙呢", "今晚做什么菜"), which lost the owner's preferences and task.
+A bag of words let such messages through round after round; a whole form does not, and a question it
 misses is only recalled as before.  A range of days, more than three, a day still to come and a placeholder such as
 9999-12-31 are no scope either.
 
@@ -39,7 +39,7 @@ _MONTH_DAY_REACH = timedelta(days=183)
 _EARLIEST = date(1970, 1, 2)
 #: Longest message read for its days and entries: a day's question is its days, its entries and a rest of at most
 #: ``_QUESTION_CHARS``.  Every entry's name was looked for in the whole message, and a log naming instances hundreds
-#: of times took a tenth of a second before the rest was found too long (review 5 of 3.4.8).
+#: of times took a tenth of a second before the rest was found too long.
 _MESSAGE_CHARS = 512
 #: Places a message may name entries in before it is a list or a log.
 _MAX_ENTRY_MENTIONS = 16
@@ -49,22 +49,22 @@ _MAX_ENTRY_MENTIONS = 16
 #: "改了什么", "聊什么了", "有什么进展", "进展如何", "总结一下", "的聊天记录").  Curated and strict: a message with
 #: anything more in it ("做什么饭", "继续做的", "忙吗", "在忙呢", "怎么办"), one asking what to do rather than what was
 #: done ("今天做什么", "今天聊点什么", "今天可以做什么"), or where the work stopped ("昨天聊到哪了", "where did we leave
-#: off"), which the current task answers and the whole day's spread did not (review 5 of 3.4.8), is no question about
+#: off"), which the current task answers and the whole day's spread did not, is no question about
 #: its day.
 _REQUEST = (
     r"(?:帮我|帮忙|告诉我|给我|跟我|和我|说说|讲讲|列一下|列出|问一下|查查|查一下|看看|看一下|总结|回顾|汇总|复盘|"
     r"梳理|盘点)"
 )
-#: "我" before a request says what the person will do ("我今天总结一下"), not what they ask for (review 5 of 3.4.8).
+#: "我" before a request says what the person will do ("我今天总结一下"), not what they ask for.
 _ASKER = (
     rf"(?:{_REQUEST}|(?:能不能|可不可以|可以)(?={_REQUEST})|请问|请|麻烦|想知道|你们|你|我们|咱们|大家|我(?!{_REQUEST})|"
     r"和你|跟你|在|的|对话|聊天|会话|工作)"
 )
 #: A clock time has one reading: "5:00", "3点", "3点15分".  Read two ways ("5:00:00" as "5:00" and "0:00"), a list
-#: of twenty times took seconds to reject and doubled with each more (review of 3.4.6).
+#: of twenty times took seconds to reject and doubled with each more.
 _CLOCK = r"\d{1,2}(?::\d{2}|点(?:\d{1,2}分?)?)(?!\d)"
 #: A part of the day with its time, or alone and followed by no digit: "上午1点" read as one time and as "上午" then
-#: "1点" doubled the work of each more (review 5 of 3.4.8).
+#: "1点" doubled the work of each more.
 _TIME_OF_DAY = (
     rf"(?:(?:上午|下午|中午|晚上|早上|凌晨|夜里|傍晚|半夜)(?:{_CLOCK}|(?!\d))|{_CLOCK})"
     r"(?:左右|前后|之前|之后|以后|以前)?"
@@ -85,7 +85,7 @@ _DAY_QUESTION = re.compile(
     rf")(?:呢|吗)?"
 )
 #: English asks what was done with an auxiliary ("what did we do", "what have you been working on") or in the past
-#: ("what we did"): "what we do today" and "What I do today" ask what to do (review 5 of 3.4.8).
+#: ("what we did"): "what we do today" and "What I do today" ask what to do.
 _DAY_QUESTION_EN = re.compile(
     r"(?:(?:please|can you|could you|tell me|show me|let me know|give me)\s+)*(?:"
     r"what\s+(?:did|have|has|were|was)\s+(?:(?:we|you|i|they)\s+)?(?:been\s+)?"
@@ -99,7 +99,7 @@ _DAY_QUESTION_EN = re.compile(
     r")(?:\s+(?:on|from|of|in|at|so\s+far))?"
 )
 #: Longest rest a day's question has: a longer one is a message that also says something, and a long run of a
-#: character the trailing strip scans made that strip quadratic (review of 3.4.6).
+#: character the trailing strip scans made that strip quadratic.
 _QUESTION_CHARS = 64
 _TRAILING = re.compile(r"[\s?？。.!！~～…,，、]+$")
 #: Acknowledgements, as whole words: "好的，继续吧", "OK 继续执行", "按你说的做", "确认", "下一步", "可以，就按这个来",
@@ -278,7 +278,7 @@ def _named_days(text: str, today: date) -> tuple[list[date], list[tuple[int, int
         if day is not None and _EARLIEST <= day <= today and day not in days:
             days.append(day)
         if len(spans) > _MAX_DAY_MENTIONS:
-            # A log that repeats "今天" thousands of times cost a quadratic scan of its mentions (review of 3.4.6).
+            # A log that repeats "今天" thousands of times cost a quadratic scan of its mentions.
             raise _NoScope
 
     for match in _FULL_DATE.finditer(text):
@@ -328,7 +328,7 @@ def _name_pattern(letters: str) -> re.Pattern[str]:
     "codex2".  Digits that begin a date may follow it: "Claude Code9月17日做了哪些工作" names the entry."""
     head = r"(?<![A-Za-z0-9])" if letters[0].isascii() and letters[0].isalnum() else ""
     # One digit and a look at what follows the run, not every length of it: a name before 8,000 digits took a
-    # fifth of a second (review 5 of 3.4.8).
+    # fifth of a second.
     tail = r"(?![A-Za-z])(?!\d(?![\d\s]*[年月日号/.\-]))" if letters[-1].isascii() and letters[-1].isalnum() else ""
     return re.compile(head + _NAME_GAP.join(map(re.escape, letters)) + tail, re.IGNORECASE)
 
@@ -406,7 +406,7 @@ def query_scope(query: str, *, now: str, zone: tzinfo | None, entries: Mapping[s
     except _NoScope:
         return None
     # What joins the named days and entries goes with them: "9月28日和9月29日聊了什么" asks what was said on both, and
-    # "昨天天璇和天权聊了什么" what those two entries said; between entries it had been left in the rest (review 5).
+    # "昨天天璇和天权聊了什么" what those two entries said; between entries it had been left in the rest.
     ordered = sorted([*day_spans, *entry_spans])
     joiners = [
         (end, start)

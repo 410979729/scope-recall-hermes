@@ -450,7 +450,7 @@ _CLOSING_MARKS = _TRAILING_MARKS | frozenset("？?;；:：")
 
 def _without_closing(text: str, marks: frozenset[str] = _CLOSING_MARKS) -> str:
     """``text`` without the spaces and ``marks`` it ends with, read from the end once.  A pattern anchored at the end
-    tried a run of them again from each of its positions: seconds for one long message (review of 3.7.1)."""
+    tried a run of them again from each of its positions: seconds for one long message."""
     end = len(text)
     while end and (text[end - 1].isspace() or text[end - 1] in marks):
         end -= 1
@@ -489,7 +489,7 @@ def same_message(text: str, other: str) -> bool:
     the message already says it.  Compared character for character, "我家窗外有什么" and "我家窗外有什么？" (both ask)
     were two messages, and the copy without the question mark took a packet slot as if it answered the one with it.
     "我的航班改到周五早上八点了。" asked back as "……八点了？" is not a copy: the person's statement stays found, at
-    any length (review of 3.7.1).  Letter case still tells two messages apart ("Release-2" is not "release-2").  A
+    any length.  Letter case still tells two messages apart ("Release-2" is not "release-2").  A
     message of closing marks alone is compared as it is.
     """
     if type(text) is not str or type(other) is not str:

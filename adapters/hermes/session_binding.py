@@ -167,7 +167,7 @@ class SessionBinding:
         Such a session fails closed: nothing in it is captured or recalled.  Hermes reads none of this
         adapter's diagnostics, so without this line a Desktop login's sessions wrote nothing for days and
         nothing said so.  A gateway chat left unmapped is the owner's choice and says nothing, as before: a line
-        for each would name its users, some by phone number (review of 3.4.10).  The platform, the login and the
+        for each would name its users, some by phone number.  The platform, the login and the
         gap codes only, never what was said, and nothing a login could make into a line of its own.
         """
         scope = identity.scope

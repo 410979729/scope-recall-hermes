@@ -30,7 +30,7 @@ RETRIED = tuple(sorted(STILL_REPLAYED - {"VERSION_CONFLICT"}))
 #: ``DEFERRED|<release>|<until>|<attempt>|<path>|<code>``.  A newer release's field in its context, a host whose check
 #: fails for now, a secret screen that differs between releases: each can clear.  Given a final code at once, such a
 #: row was never stored, and a Claude Code Stop that had counted it as waiting did not store the words either; left in
-#: place, it stopped every row after it on every pass (reviews of 3.4.0rc10).  It is tried again after a minute,
+#: place, it stopped every row after it on every pass.  It is tried again after a minute,
 #: doubling to an hour, by whichever release runs, and the tries are counted across releases: when its
 #: ``DEFER_ATTEMPTS``-th try again fails the row is given up (``GAVE_UP|<release>|<failures>|<path>|<code>``), where
 #: doctor and the patrol show it, and ``retry-failures --apply`` returns it to the replay once its cause is fixed.  ``path`` is the replay
@@ -195,7 +195,7 @@ def holds(
       group and revision), only a part sent without the message's first is: a whole message there is a copy by its
       words or another message under the same key, as storage tells them (``storage.refuse_under_a_deleted_key``).
       Codex sends a message into a running turn under the turn's key, and a message still waiting there when
-      another one under the key was deleted was cancelled with it (review of 3.4.6);
+      another one under the key was deleted was cancelled with it;
     - whitespace aside, it holds all of a deleted text of ``DISTINCT_TEXT`` characters or more, or is one with at most
       a tenth more; or, letters and digits compared, it is a deleted text of ``NEAR_COPY`` or more of them with at most
       a tenth more.  A message that quotes a short deleted one among other words, only part of a long one, or a long

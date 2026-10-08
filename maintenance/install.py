@@ -359,7 +359,7 @@ def apply_install(plan: InstallPlan) -> InstallResult:
         raise
 
     # A resident recall server runs the package it was started from: one of the installation this replaces (another
-    # venv, an older version) held the entry's lock against the new one's (review 2 of 3.6.0rc1).  The next prompt or
+    # venv, an older version) held the entry's lock against the new one's.  The next prompt or
     # conversation starts the new version's.
     _stop_residents(plan.host, plan.instance_root)
     return InstallResult(

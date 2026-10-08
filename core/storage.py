@@ -74,7 +74,7 @@ class StoreStatus:
 _PREFETCH_PAGE = 400
 #: What one read transaction keeps (``Transaction.remember``), its text counted in characters, which Python holds in
 #: a little over twice the room.  Over 483 recalls on a copy of the shared store: median 24 answers and 22,000 characters,
-#: the largest 7,595 and 13 million (review of 3.7.7).
+#: the largest 7,595 and 13 million.
 _MEMO_ENTRIES = 16384
 _MEMO_BYTES = 32 << 20
 
@@ -752,7 +752,7 @@ class SQLiteStorage:
                 _ensure_wal(conn)
         except BaseException as exc:
             # Nothing below closes this connection yet.  Left open, a writable one kept the writer lease until the
-            # process ended, and every other process's writes failed (review of 3.5.0rc3).  A busy store can answer
+            # process ended, and every other process's writes failed.  A busy store can answer
             # the first statement here with "database is locked".
             self._close(conn, exc)
             raise

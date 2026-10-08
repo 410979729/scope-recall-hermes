@@ -12,9 +12,8 @@ recognised in ordinary conversation rather than behind a tool call, because
 that is how people actually confirm things.
 
 Because this is the one path that reaches ``active`` without passing a single
-text gate, the recognition has to be narrow in three independent ways, and the
-first version of it was narrow in only one.  A review found five ordinary
-sentences that all read as adoption:
+text gate, the recognition has to be narrow in three independent ways.  Narrow
+in only one, it would read these five ordinary sentences as adoption:
 
     记住 references/topic.md 这条是错的，不要用。
     上次你记住的那条 configuration 值是错的

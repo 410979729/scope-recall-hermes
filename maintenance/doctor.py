@@ -1158,7 +1158,7 @@ def _check_embedding_respace(report: DoctorReport, config) -> None:
             "run respace-embeddings --restart --apply for the new space, or --cancel --apply",
         )
         return
-    # A held pass writes nothing, so the run's time alone does not say it waits (review of 3.8.0).
+    # A held pass writes nothing, so the run's time alone does not say it waits.
     waiting = report.embedding_health.get("pending")
     _record(
         report,

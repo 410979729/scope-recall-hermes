@@ -108,7 +108,7 @@ def unindex_withheld(conn, scope_ids: Iterable[str], *, after_id: int, limit: in
     An older release, the 1109 upgrade and both imports indexed the whole placeholder; it is found now by its error
     text alone, when it carries one (``events.indexed_terms``).  The sources stay, and so do the postings of their
     error text.  The scan walks ``source_id``: the ``+`` keeps SQLite from starting at the role and scope index and
-    sorting every tool row while the page holds the writer lease (review of 3.7.4).  A page cut short is found again,
+    sorting every tool row while the page holds the writer lease.  A page cut short is found again,
     and ``next_after_id`` continues the scan.
     """
     scopes = tuple(sorted(scope_ids))

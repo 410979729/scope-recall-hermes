@@ -251,7 +251,7 @@ class TurnCapture:
         waiting up to 1 s for a busy store) it kept the next turn's hooks, its start and its prefetch waiting.
         The captures keep the binding the turn was said under (``bound``).  One turn is written at a time, and a
         shutdown waits for it (the adapter's ``_sync_lock``): one that came between two captures closed the runtime
-        under the rest of the turn, the reply included (review of 3.4.10).
+        under the rest of the turn, the reply included.
         """
         adapter = self._adapter
         with adapter._lock:
@@ -259,7 +259,7 @@ class TurnCapture:
             if identity.read_only:
                 return
             # The turn's message and reply are dated when its writing begins: dated as each was reached, the reply
-            # came after the next turn's message, written between this turn's captures (review of 3.4.10).
+            # came after the next turn's message, written between this turn's captures.
             said_at = adapter._utc_now()
             effective_session = adapter._effective_session_id(session_id)
             active_turn = adapter._active_turn_id
