@@ -21,6 +21,7 @@ from ..contracts import (
     TrustedSourcePrincipal,
 )
 from .capture import CaptureReceipt, record_event
+from .delete_storage import canonical
 from .events import PreparedCapture, prepare_capture, segment_key
 from .inbox_rules import (
     GAVE_UP,
@@ -49,10 +50,6 @@ def _terminal_code(exc: ContractError) -> str:
     if exc.code == LEGACY_SOURCE_MISSING:
         return f"{exc.code}:{exc.field or 'unnamed'}"
     return exc.code
-
-
-def _json(value):
-    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
 
 
 def _context_payload(context):
@@ -89,7 +86,7 @@ def enqueue(storage, clock, context, value, *, scope_id, host_scope, remaining_s
     if host_scope is None and not context.binding.test_mode:
         raise ContractError("ACCESS_DENIED", "ingress_host_authority")
     body = dict(events=prepared.events, gaps=prepared.gaps, context=_context_payload(context), host_scope=host_scope)
-    encoded = _json(body)
+    encoded = canonical(body)
     if len(encoded.encode("utf-8")) > 2097152:
         raise ContractError("INPUT_INVALID", "ingress_item_budget")
     # The words are part of a capture's place here.  Codex gives a message sent into a running turn that turn's id, so
@@ -97,7 +94,7 @@ def enqueue(storage, clock, context, value, *, scope_id, host_scope, remaining_s
     # (``resolve_conflicted_ingress``), found that row and was refused as changed evidence: the work computer lost two
     # of its owner's messages that way on 2026-09-30 alone.  A retried hook sends the same words and finds its own row.
     token = hashlib.sha256(
-        _json(
+        canonical(
             [
                 context.binding.installation_id,
                 scope_id,
@@ -243,7 +240,7 @@ def _refused_for_a_delete(storage, context, token, prepared, deadline) -> Captur
 def _capture_fingerprint(events) -> str:
     """One fingerprint of a whole capture, which every segment of a long message shares."""
     return hashlib.sha256(
-        _json(
+        canonical(
             [
                 [
                     event["source_event_key"],
@@ -292,7 +289,7 @@ def _rekeyed_event(event: dict, capture: str = "") -> dict:
     if REKEY_MARKER in original:
         return dict(event)
     fingerprint = hashlib.sha256(
-        _json(
+        canonical(
             [original, event.get("content"), event.get("origin"), event.get("role"), event.get("occurred_at")]
         ).encode("utf-8")
     ).hexdigest()[:16]

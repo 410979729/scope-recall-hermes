@@ -10,14 +10,11 @@ from ..contracts import ClaimProposal, ContractError
 from . import lineage
 from .claim_normalization import PROJECT_TAG, normalize_frame
 from .claims import ClaimVersion, Qualification, RootEvidence, canonical_time, claim_slot, evidence_refs
+from .delete_storage import canonical
 from .visibility import allowed, allowed_refs
 
 if TYPE_CHECKING:
     from .storage import Transaction
-
-
-def _json(value: object) -> str:
-    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
 
 
 def parse_source_ref(value: str) -> tuple[str, int]:
@@ -532,7 +529,7 @@ class Claims:
             (
                 ref,
                 revision,
-                _json(proposal),
+                canonical(proposal),
                 qualification.state,
                 qualification.basis,
                 qualification.reason,
@@ -540,7 +537,7 @@ class Claims:
                 canonical_time(proposal["valid_to"]),
                 recorded,
                 previous.current_revision if previous and advance_head else None,
-                _json(conflicts),
+                canonical(conflicts),
             ),
         )
         if previous and advance_head:
@@ -689,7 +686,7 @@ class Claims:
                 source.scope_id,
                 source.project_id,
                 source.branch_id,
-                _json(candidates),
+                canonical(candidates),
                 canonical_time(recorded_at),
             ),
         )

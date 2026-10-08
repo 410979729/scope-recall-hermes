@@ -25,7 +25,7 @@ from ..contracts import (
     validate_capture,
 )
 from . import lexical_index
-from .delete_storage import Deletions, group_digest, purged_group_key
+from .delete_storage import Deletions, canonical, group_digest, purged_group_key
 from .events import (
     indexed_terms,
     prepare_capture,
@@ -54,10 +54,6 @@ from .writer_lease import TruthWriterBusyError
 
 #: How often a writer looks again for another process's lease while it waits.
 _LEASE_POLL_SECONDS = 0.01
-
-
-def _json(value: object) -> str:
-    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False)
 
 
 def _directory(path: Path) -> str:
@@ -411,12 +407,12 @@ class Transaction:
             or "\x00" in source_event_key
         ):
             raise ContractError("INPUT_INVALID", "source_event_key")
-        identity = _json([self.context.binding.installation_id, source_event_key])
+        identity = canonical([self.context.binding.installation_id, source_event_key])
         source = self.source("event-" + hashlib.sha256(identity.encode("utf-8")).hexdigest(), revision)
         if source is not None:
             return source
         first_key = segment_key(source_event_key, 0)
-        identity = _json([self.context.binding.installation_id, first_key])
+        identity = canonical([self.context.binding.installation_id, first_key])
         source = self.source("event-" + hashlib.sha256(identity.encode("utf-8")).hexdigest(), revision)
         if source is not None and source.event.get("segment", {}).get("group_key") == source_event_key:
             return source
@@ -730,7 +726,10 @@ class Transaction:
         return copy
 
     def _source_ref(self, key: str) -> str:
-        return "event-" + hashlib.sha256(_json([self.context.binding.installation_id, key]).encode("utf-8")).hexdigest()
+        return (
+            "event-"
+            + hashlib.sha256(canonical([self.context.binding.installation_id, key]).encode("utf-8")).hexdigest()
+        )
 
     def refuse_under_a_deleted_key(self, events, *, scope_id: str) -> None:
         """Refuse a message under a deleted message's key or source group, or tell another message from it.
@@ -847,7 +846,7 @@ class Transaction:
         fingerprint_input = {k: v for k, v in event.items() if k != "recorded_at"}
         provenance_hash = provenance.manifest_sha256 if provenance else None
         fingerprint = hashlib.sha256(
-            _json(
+            canonical(
                 [
                     scope_id,
                     self.context.session_id,
@@ -898,11 +897,11 @@ class Transaction:
                 persisted_at,
                 event.get("source_original_origin"),
                 event.get("dataset_id"),
-                _json(extras),
+                canonical(extras),
                 group_key,
                 segment_index,
                 segment_total,
-                _json(capture_gaps),
+                canonical(capture_gaps),
                 provenance_hash,
                 self.context.entry_id or "local",
             ),
