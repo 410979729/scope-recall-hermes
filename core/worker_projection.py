@@ -14,7 +14,7 @@ from ..contracts import ContractError
 from .delete_storage import purge_work_parts
 from .file_lock import advisory_file_lock
 from .retained_artifacts import RetainedBlob, erase_retained
-from .storage import StoredSource
+from .source_records import StoredSource
 from .work_storage import CAPACITY_REFUSALS
 from .worker_outcomes import (
     BUDGET_PAUSE_ERRORS,

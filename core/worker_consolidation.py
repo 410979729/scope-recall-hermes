@@ -21,7 +21,7 @@ from .consolidation_chunks import source_chunk
 from .consolidation_summary import resume_seed
 from .episodes import source_origin
 from .evidence_question import DERIVATION_ROOT_ORIGINS
-from .storage import StoredSource
+from .source_records import StoredSource
 from .worker_outcomes import (
     Outcome,
     budget_left,

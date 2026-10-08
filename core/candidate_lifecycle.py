@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING, Protocol
 from ..contracts import ContractError
 
 if TYPE_CHECKING:
-    from .storage import StoredSource
+    from .source_records import StoredSource
 
 RULE_VERSION = "r1-candidate-v1"
 SOURCE_MATCH_LIMIT = 16

@@ -11,7 +11,8 @@ from ..contracts import ContractError, SourceEvent, TrustedContext
 from .admission import AdmissionPolicy, decide, decision_marker, store_decision
 from .candidate_lifecycle import CandidateSourceTrigger
 from .events import prepare_capture
-from .storage import SourceWrite, SQLiteStorage
+from .source_records import SourceWrite
+from .storage import SQLiteStorage
 from .truth_connection import TruthDatabaseConnectionError
 from .writer_lease import TruthWriterBusyError
 

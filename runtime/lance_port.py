@@ -25,7 +25,7 @@ from ..contracts import ContractError, TrustedContext
 from ..core.deadline import RequestDeadline, using_request_deadline
 from ..core.recall_policy import SPACE_ID, claim_embedding_text, encode_embedding_text
 from ..core.retrieval import CandidateRef, SearchContext
-from ..core.storage import StoredSource
+from ..core.source_records import StoredSource
 
 _OBJECT_KINDS = frozenset({"event", "claim", "episode", "artifact", "reference"})
 _MAX_DIMENSIONS = 32768

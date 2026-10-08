@@ -47,6 +47,7 @@ from .schema import (
     upgrade_1108,
     upgrade_1109,
 )
+from .source_records import SOURCE_COLUMNS, SourceWrite, StoredSource, source_size, stored_source
 from .truth_connection import TruthDatabaseMode, connect_truth_database
 from .visibility import allowed, allowed_refs
 from .work_storage import WorkItems
@@ -84,49 +85,6 @@ class StoreStatus:
     oldest_deferred_at: str | None = None
 
 
-@dataclass(frozen=True)
-class StoredSource:
-    ref: str
-    revision: int
-    scope_id: str
-    session_id: str
-    project_id: str | None
-    branch_id: str | None
-    event: SourceEvent
-    content_sha256: str
-    suppressed: bool
-    capture_gaps: tuple[str, ...] = ()
-    import_provenance_sha256: str | None = None
-    entry_id: str = "local"
-
-
-#: The columns a loaded source is built from (``_stored_source``).
-_SOURCE_COLUMNS = (
-    "event_id",
-    "source_event_key",
-    "source_revision",
-    "source_group_key",
-    "segment_total",
-    "scope_id",
-    "session_id",
-    "project_id",
-    "branch_id",
-    "origin",
-    "role",
-    "content",
-    "content_sha256",
-    "occurred_at",
-    "recorded_at",
-    "time_precision",
-    "capture_state",
-    "source_original_origin",
-    "dataset_id",
-    "extra_json",
-    "capture_gaps_json",
-    "suppressed",
-    "import_provenance_sha256",
-    "entry_id",
-)
 #: Source versions ``Transaction.prefetch_sources`` loads per statement.
 _PREFETCH_PAGE = 400
 #: What one read transaction keeps (``Transaction.remember``), its text counted in characters, which Python holds in
@@ -134,58 +92,6 @@ _PREFETCH_PAGE = 400
 #: the largest 7,595 and 13 million (review of 3.7.7).
 _MEMO_ENTRIES = 16384
 _MEMO_BYTES = 32 << 20
-
-
-def _source_size(loaded) -> int:
-    """The text a remembered source holds (``Transaction.remember``)."""
-    return 0 if loaded is None else len(loaded[0]["content"]) + len(loaded[0]["extra_json"])
-
-
-def _stored_source(row, segment_count: int | None) -> StoredSource:
-    """A source built afresh from its row, so that no reader shares another's ``event``."""
-    event = json.loads(row["extra_json"])
-    event.pop("_scope_recall_admission", None)  # Internal scheduling never enters source evidence or model input.
-    event.update(
-        protocol_version="1.1",
-        source_event_key=row["source_event_key"],
-        source_revision=row["source_revision"],
-        origin=row["origin"],
-        role=row["role"],
-        content=row["content"],
-        occurred_at=row["occurred_at"],
-        recorded_at=row["recorded_at"],
-        time_precision=row["time_precision"],
-        capture_state=row["capture_state"],
-    )
-    for name in ("source_original_origin", "dataset_id"):
-        if row[name] is not None:
-            event[name] = row[name]
-    gaps = list(json.loads(row["capture_gaps_json"]))
-    if "segment" in event:
-        total = row["segment_total"]
-        if total is None or segment_count != total or event["segment"]["truncated"]:
-            gaps.append("source_segments_incomplete")
-    return StoredSource(
-        row["event_id"],
-        row["source_revision"],
-        row["scope_id"],
-        row["session_id"],
-        row["project_id"],
-        row["branch_id"],
-        event,
-        row["content_sha256"],
-        bool(row["suppressed"]),
-        tuple(dict.fromkeys(gaps)),
-        row["import_provenance_sha256"],
-        row["entry_id"],
-    )
-
-
-@dataclass(frozen=True)
-class SourceWrite:
-    disposition: str
-    ref: str
-    revision: int
 
 
 class Transaction:
@@ -456,9 +362,9 @@ class Transaction:
         if not allowed(self, "event", ref):
             return None
         loaded = self.remembered(
-            ("source", ref, revision), lambda: self._source_row(conn, ref, revision), size=_source_size
+            ("source", ref, revision), lambda: self._source_row(conn, ref, revision), size=source_size
         )
-        return None if loaded is None else _stored_source(*loaded)
+        return None if loaded is None else stored_source(*loaded)
 
     def _source_row(self, conn, ref: str, revision: int):
         """The visible row of one source version and, for a part of a long message, how many parts of it are readable;
@@ -466,7 +372,7 @@ class Transaction:
         scopes = sorted(self.context.allowed_scope_ids)
         marks = ",".join("?" for _ in scopes)
         row = conn.execute(
-            f"""SELECT {",".join(_SOURCE_COLUMNS)} FROM source_events WHERE event_id=? AND source_revision=? AND read_blocked=0 AND scope_id IN ({marks})
+            f"""SELECT {",".join(SOURCE_COLUMNS)} FROM source_events WHERE event_id=? AND source_revision=? AND read_blocked=0 AND scope_id IN ({marks})
             AND (project_id IS NULL OR project_id=?) AND (branch_id IS NULL OR branch_id=?)""",
             (ref, revision, *scopes, self.context.project_id, self.context.branch_id),
         ).fetchone()
@@ -504,7 +410,7 @@ class Transaction:
         for start in range(0, len(wanted), _PREFETCH_PAGE):
             page = wanted[start : start + _PREFETCH_PAGE]
             admitted = allowed_refs(self, "event", (ref for ref, _revision in page))
-            fields = ",".join(f"'{column}',s.{column}" for column in _SOURCE_COLUMNS)
+            fields = ",".join(f"'{column}',s.{column}" for column in SOURCE_COLUMNS)
             row = conn.execute(
                 f"""SELECT json_group_array(json_object({fields},
                        'segment_count',CASE WHEN json_type(s.extra_json,'$.segment') IS NOT NULL THEN
@@ -523,7 +429,7 @@ class Transaction:
                 if ref not in admitted:
                     continue
                 loaded = None if item is None else (item, item["segment_count"])
-                self.remember(("source", ref, revision), loaded, size=_source_size(loaded))
+                self.remember(("source", ref, revision), loaded, size=source_size(loaded))
                 if item is not None:
                     self.remember(("head", ref, revision), bool(item["head"]))
 

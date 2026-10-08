@@ -24,7 +24,8 @@ from .delete_storage import retraction_after
 from .file_lock import advisory_file_lock
 from .recall_diagnostics import RECALL_DIAGNOSTIC_PREFIX, RecallDiagnostics
 from .retrieval import CandidateRef, SearchContext, SearchLimits
-from .storage import SQLiteStorage, StoredSource, StoreStatus
+from .source_records import StoredSource
+from .storage import SQLiteStorage, StoreStatus
 from .visibility import release_objects
 from .work_storage import respace_refusal
 

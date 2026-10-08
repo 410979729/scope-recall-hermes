@@ -13,7 +13,7 @@ from threading import Barrier
 import pytest
 from scope_recall.contracts import ContractError, SourceEvent
 from scope_recall.core.recall_policy import EMBEDDING_SPACE, encode_embedding_text
-from scope_recall.core.storage import StoredSource
+from scope_recall.core.source_records import StoredSource
 from scope_recall.runtime.auxiliary import AuxiliaryRuntimeConfig, auxiliary_runtime_status, build_auxiliary_runtime
 from scope_recall.runtime.model_budget import (
     AuxiliaryBudgetLedger,

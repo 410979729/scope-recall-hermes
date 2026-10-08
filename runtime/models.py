@@ -23,7 +23,7 @@ from typing import Any, Protocol
 from ..contracts import ContractError
 from ..core.recall_policy import EMBEDDING_DIALECTS, EMBEDDING_SPACE, build_embedding_space, encode_embedding_text
 from ..core.secret_patterns import contains_secret_like_text
-from ..core.storage import StoredSource
+from ..core.source_records import StoredSource
 from .model_budget import AuxiliaryBudgetLedger, BudgetPolicy
 
 MAX_CHAT_RESPONSE_BYTES = 1_048_576

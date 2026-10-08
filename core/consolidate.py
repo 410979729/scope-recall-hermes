@@ -21,7 +21,7 @@ from .mutate import Mutation, MutationReceipt, apply_claim_frames, validate_clai
 from .worker_outcomes import DerivationFence, claim_versions_mark, claims_changed, derivation_changed
 
 if TYPE_CHECKING:
-    from .storage import StoredSource
+    from .source_records import StoredSource
 
 
 @dataclass(frozen=True)
