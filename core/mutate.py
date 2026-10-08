@@ -6,6 +6,7 @@ import json
 import re
 from copy import deepcopy
 from dataclasses import dataclass, replace
+from typing import Any
 
 from ..contracts import (
     ClaimProposal,
@@ -137,6 +138,33 @@ def _corroborated(tx, proposal, roots, identical, previous, qualification) -> bo
     )
 
 
+def _said_times(roots) -> list[str]:
+    """When each source was said, of those that say it."""
+    return [stamp for r in roots if r.occurred_at is not None if (stamp := canonical_time(r.occurred_at)) is not None]
+
+
+def _dated_before(new_start, old_start, new_times, old_times) -> bool:
+    """Whether the new assertion is dated before the head's: by its stated start, or by when its sources were said
+    unless its start says it comes after."""
+    return bool(
+        (new_start is not None and old_start is not None and new_start < old_start)
+        or (
+            new_times
+            and old_times
+            and max(new_times) < max(old_times)
+            and not (new_start and old_start and new_start > old_start)
+        )
+    )
+
+
+def _dated_after(new_start, old_start, new_times, old_times) -> bool:
+    """Whether the new assertion is known to come after the head's: by its stated start, or every source of it said
+    after every source of the head."""
+    return bool(new_start and old_start and new_start > old_start) or bool(
+        new_times and old_times and min(new_times) > max(old_times)
+    )
+
+
 def _order_against_head(tx, proposal, roots, previous, qualification, scope_id):
     """Decide whether a differing assertion advances the slot head.
 
@@ -156,19 +184,8 @@ def _order_against_head(tx, proposal, roots, previous, qualification, scope_id):
         and all(r.occurred_at is None for r in (*roots, *old_roots))
     )
     new_start, old_start = canonical_time(proposal["valid_from"]), canonical_time(previous.valid_from)
-    new_times = [
-        stamp for r in roots if r.occurred_at is not None if (stamp := canonical_time(r.occurred_at)) is not None
-    ]
-    old_times = [
-        stamp for r in old_roots if r.occurred_at is not None if (stamp := canonical_time(r.occurred_at)) is not None
-    ]
-    late = (new_start is not None and old_start is not None and new_start < old_start) or (
-        new_times
-        and old_times
-        and max(new_times) < max(old_times)
-        and not (new_start and old_start and new_start > old_start)
-    )
-    late = late or (ingestion_ordered and new_order < old_order)
+    new_times, old_times = _said_times(roots), _said_times(old_roots)
+    late = _dated_before(new_start, old_start, new_times, old_times) or (ingestion_ordered and new_order < old_order)
     if new_owner is not None and old_owner is not None and new_owner != old_owner:
         return Qualification("proposed", "inferred_suggestion", "different_source_principal"), False, ()
     if late:
@@ -178,11 +195,7 @@ def _order_against_head(tx, proposal, roots, previous, qualification, scope_id):
         live_human = True
     except ContractError:
         live_human = False
-    ordered = (
-        bool(new_start and old_start and new_start > old_start)
-        or bool(new_times and old_times and min(new_times) > max(old_times))
-        or (ingestion_ordered and new_order > old_order)
-    )
+    ordered = _dated_after(new_start, old_start, new_times, old_times) or (ingestion_ordered and new_order > old_order)
     if not live_human and not ordered:
         conflicts = tuple(dict.fromkeys((*previous.conflict_revisions, previous.revision)))
         return Qualification("disputed", qualification.basis, "conflicting_evidence_order_unknown"), True, conflicts
@@ -316,7 +329,19 @@ def _source_principal_ref(source) -> str | None:
     return verified_human_principal_ref(source.event.get("source_principal"))
 
 
-def _revise_in_transaction(tx, clock, request, *, source=None) -> Mutation:
+@dataclass(frozen=True)
+class _Authority:
+    """The person's current message that authorizes a revision, and what it says of the target."""
+
+    source: Any
+    raw: str
+    principal_matches: bool
+    first_person_target: bool
+    retraction: bool
+
+
+def _revision_head(tx, request):
+    """The current version of the claim a revision names, at the revision the request expects."""
     history = tx.claims.versions(request["target_ref"])
     if not history:
         raise ContractError("SOURCE_MISSING")
@@ -324,8 +349,21 @@ def _revise_in_transaction(tx, clock, request, *, source=None) -> Mutation:
     tx.claims.require_target(head)
     if head.current_revision != request["expected_revision"]:
         raise ContractError("VERSION_CONFLICT")
-    refs = tuple(request["source_evidence_refs"])
-    source = tx.claims.current_human(refs, head.scope_id)
+    return head
+
+
+def _names_target(text: str, head, first_person_target: bool) -> bool:
+    """Whether ``text`` names the claim: its ref, subject or value, or its predicate when the person speaks of
+    themselves and the claim's subject is them."""
+    return any(
+        bound_literal(text, marker) for marker in (head.ref, head.payload["subject"], head.payload["value_text"])
+    ) or (first_person_target and bound_literal(text, head.payload["predicate"]))
+
+
+def _revision_authority(tx, head, request) -> _Authority:
+    """The person's current message the request cites, checked to assert this revision of this claim: not older
+    than the claim's version, not negated, asked or reported, a correction or a plain retraction, naming the claim."""
+    source = tx.claims.current_human(tuple(request["source_evidence_refs"]), head.scope_id)
     raw = source.event["content"]
     principal_matches = _source_principal_ref(source) == head.payload["subject"]
     first_person_target = principal_matches and first_person_reference(raw)
@@ -344,10 +382,14 @@ def _revise_in_transaction(tx, clock, request, *, source=None) -> Mutation:
             raise ContractError("ACCESS_DENIED", "conditional_retraction_not_authorized")
     elif not _CORRECTION.search(raw):
         raise ContractError("ACCESS_DENIED", "correction_not_authorized")
-    if not any(
-        bound_literal(raw, marker) for marker in (head.ref, head.payload["subject"], head.payload["value_text"])
-    ) and not (first_person_target and bound_literal(raw, head.payload["predicate"])):
+    if not _names_target(raw, head, first_person_target):
         raise ContractError("ACCESS_DENIED", "target_not_bound")
+    return _Authority(source, raw, principal_matches, first_person_target, retraction)
+
+
+def _revised_payload(head, request, retraction: bool) -> dict:
+    """The claim's payload with the request's new value, conditions and start."""
+    new_value = request["new_value"]
     updated = deepcopy(head.payload)
     if isinstance(new_value, str):
         updated["value_text"] = new_value
@@ -364,8 +406,16 @@ def _revise_in_transaction(tx, clock, request, *, source=None) -> Mutation:
     updated["conditions"] = request["conditions"]
     updated["valid_from"] = request["valid_from"]
     updated["statement_kind"] = "assertion"
-    # Explicit revisions bind their spans to the authorizing current utterance.
-    # They do not silently reuse an old quotation as permission for a new action.
+    return updated
+
+
+def _revision_proof(head, updated: dict, authority: _Authority) -> str:
+    """The passage of the person's message that proves the revision.
+
+    Explicit revisions bind their spans to the authorizing current utterance.
+    They do not silently reuse an old quotation as permission for a new action.
+    """
+    raw = authority.raw
     anchor = (
         next(
             (
@@ -375,67 +425,56 @@ def _revise_in_transaction(tx, clock, request, *, source=None) -> Mutation:
             ),
             "",
         )
-        if retraction
+        if authority.retraction
         else updated["value_text"]
     )
     proof = evidence_context(raw, anchor) if anchor else ""
-    if (
-        not proof
-        or proof not in raw
-        or (
-            not any(
-                bound_literal(proof, marker)
-                for marker in (head.ref, head.payload["subject"], head.payload["value_text"])
-            )
-            and not (first_person_target and bound_literal(proof, head.payload["predicate"]))
-        )
-    ):
+    if not proof or proof not in raw or not _names_target(proof, head, authority.first_person_target):
         raise ContractError("DERIVATION_INVALID", "revision_proof_ambiguous")
-    if not (_RETRACT.search(proof) if retraction else _CORRECTION.search(proof)):
+    if not (_RETRACT.search(proof) if authority.retraction else _CORRECTION.search(proof)):
         raise ContractError("ACCESS_DENIED", "revision_not_bound_to_assertion")
     if len(proof) > 4096:
         raise ContractError("INPUT_INVALID", "explicit_revision_quote_budget")
-    updated["evidence_spans"] = [dict(source_ref=source.ref, source_revision=source.revision, quote=proof)]
-    if "intention" in updated:
-        updated["intention"]["state_evidence_refs"] = [f"{source.ref}@{source.revision}"]
-    result = dict(
-        protocol_version="1.1",
-        source_refs=list(refs),
-        claim_proposals=[updated],
-        resume_proposals=[],
-        reference_proposals=[],
-    )
-    validate_claims(tx, result, head.scope_id)
+    return proof
+
+
+def _revision_qualification(tx, updated: dict, proof: str, authority: _Authority) -> Qualification:
+    """The revised claim's qualification: a retraction is the person's report; a correction must qualify active."""
     roots = tx.claims.roots(evidence_refs(updated))
     roots = tuple(replace(root, content=evidence_context(root.content, proof)) for root in roots)
     if not all(grounded_time(updated[field], roots) for field in ("valid_from", "valid_to")):
         raise ContractError("DERIVATION_INVALID", "time_not_grounded")
-    if retraction:
-        qualification = Qualification("retracted", "direct_report", "explicit_retraction")
-    else:
-        if updated["value_text"] not in raw:
-            raise ContractError("DERIVATION_INVALID", "new_value_not_supported")
-        qualification = qualify(
-            updated,
-            roots,
-            project_id=tx.context.project_id,
-            explicit_attribute_correction=bool(_CORRECTION.search(proof)),
-            _subject_bound=principal_matches,
-        )
-        # An explicit, scoped attribute correction may omit the old predicate
-        # while naming the subject/old value and replacement literally.
-        # The exception is applied inside qualification so it cannot skip
-        # polarity, conditions, source identity or temporal checks.
-        if qualification.state != "active":
-            raise ContractError("DERIVATION_INVALID", qualification.reason)
+    if authority.retraction:
+        return Qualification("retracted", "direct_report", "explicit_retraction")
+    if updated["value_text"] not in authority.raw:
+        raise ContractError("DERIVATION_INVALID", "new_value_not_supported")
+    qualification = qualify(
+        updated,
+        roots,
+        project_id=tx.context.project_id,
+        explicit_attribute_correction=bool(_CORRECTION.search(proof)),
+        _subject_bound=authority.principal_matches,
+    )
+    # An explicit, scoped attribute correction may omit the old predicate
+    # while naming the subject/old value and replacement literally.
+    # The exception is applied inside qualification so it cannot skip
+    # polarity, conditions, source identity or temporal checks.
+    if qualification.state != "active":
+        raise ContractError("DERIVATION_INVALID", qualification.reason)
+    return qualification
+
+
+def _record_revision(tx, clock, head, updated: dict, qualification, request, authority: _Authority) -> Mutation:
+    """The revision written: nothing for a duplicate, a claim of its own when the conditions changed, else the
+    claim's next version."""
     if same_assertion(head.payload, updated) and head.state == qualification.state:
         return Mutation(head.ref, head.revision, "duplicate", head.state)
     same_conditions = sorted(set(head.payload["conditions"])) == sorted(set(updated["conditions"]))
     if not same_conditions:
-        if retraction:
+        if authority.retraction:
             raise ContractError("INPUT_INVALID", "retraction_conditions")
         now = clock.utc_now()
-        mutation = apply_claim(tx, updated, head.scope_id, now, _subject_bound=principal_matches)
+        mutation = apply_claim(tx, updated, head.scope_id, now, _subject_bound=authority.principal_matches)
         register_applied_candidate(tx, mutation, now)
         tx.claims.resolve_updates(mutation.ref, resolved_at=now)
         return mutation
@@ -448,13 +487,34 @@ def _revise_in_transaction(tx, clock, request, *, source=None) -> Mutation:
         previous=head,
         expected_revision=request["expected_revision"],
     )
-    mutation = Mutation(saved.ref, saved.revision, "retracted" if retraction else "revised", saved.state)
+    mutation = Mutation(saved.ref, saved.revision, "retracted" if authority.retraction else "revised", saved.state)
     register_applied_candidate(tx, mutation, now)
     # The ambiguity this claim was a candidate for has now been answered by an
     # authorized revision of it.  Without this, ``unresolved_updates`` only ever
     # grew: ``resolved`` had no writer anywhere in the codebase.
     tx.claims.resolve_updates(mutation.ref, resolved_at=now)
     return mutation
+
+
+def _revise_in_transaction(tx, clock, request) -> Mutation:
+    head = _revision_head(tx, request)
+    authority = _revision_authority(tx, head, request)
+    updated = _revised_payload(head, request, authority.retraction)
+    proof = _revision_proof(head, updated, authority)
+    source = authority.source
+    updated["evidence_spans"] = [dict(source_ref=source.ref, source_revision=source.revision, quote=proof)]
+    if "intention" in updated:
+        updated["intention"]["state_evidence_refs"] = [f"{source.ref}@{source.revision}"]
+    result = dict(
+        protocol_version="1.1",
+        source_refs=list(request["source_evidence_refs"]),
+        claim_proposals=[updated],
+        resume_proposals=[],
+        reference_proposals=[],
+    )
+    validate_claims(tx, result, head.scope_id)
+    qualification = _revision_qualification(tx, updated, proof, authority)
+    return _record_revision(tx, clock, head, updated, qualification, request, authority)
 
 
 def revise(storage, clock, context: TrustedContext, value, *, remaining_seconds: float = 1.0) -> MutationReceipt:
@@ -465,26 +525,50 @@ def revise(storage, clock, context: TrustedContext, value, *, remaining_seconds:
     return MutationReceipt((item,), epoch)
 
 
-def capture_correction(tx, source, clock) -> Mutation | None:
-    """Bounded model-free explicit target path. Ambiguity preserves the raw update."""
-    raw = source.event["content"]
+#: Words a message puts in a value's place: "改为 X", "用 X", "是 X", "change to X".
+_REPLACEMENT_WORD = re.compile(
+    r"(?:改为|改成|改用|换成|换为|调整为|调整成|替换为|更换为|用|是|change to|switch to)\s*([A-Za-z0-9\u4e00-\u9fff_.-]{1,120})(?=[。！？；，,;.!?\s]|$)",
+    re.I,
+)
+#: Only the explicit replacements among them ("改为 X", "change to X"; not "用 X" or "是 X").
+_EXPLICIT_REPLACEMENT = re.compile(
+    r"(?:改为|改成|改用|换成|换为|调整为|调整成|替换为|更换为|change to|switch to)\s*([A-Za-z0-9\u4e00-\u9fff_.-]{1,120})(?=[。！？；，,;.!?\s]|$)",
+    re.I,
+)
+
+
+def _may_correct(source, raw: str) -> bool:
+    """Whether a message can correct a claim: complete, typed by a person, not quoted or reported, and worded as a
+    correction, a retraction or an ambiguous change."""
     if source.event["origin"] != "human_direct" or source.capture_gaps or source.event["capture_state"] != "complete":
-        return None
+        return False
     if _REPORTED_ACTION.search(raw):
-        return None
-    if not (_CORRECTION.search(raw) or _RETRACT.search(raw) or _AMBIGUOUS.search(raw)):
-        return None
+        return False
+    return bool(_CORRECTION.search(raw) or _RETRACT.search(raw) or _AMBIGUOUS.search(raw))
+
+
+def _correction_refs(tx, source, raw: str):
+    """The claims a correction may be about: those it names in its scope, and the person's own when they speak of
+    themselves; with nothing named, the scope's list as context only (fallback).  Also the person's ref and
+    whether they speak of themselves."""
     refs = tx.claims.correction_refs(raw, source.scope_id)
     principal_ref = _source_principal_ref(source)
     self_reference = principal_ref is not None and first_person_reference(raw)
     if self_reference:
         refs = tuple(dict.fromkeys((*refs, *tx.claims.list_refs(subject=principal_ref))))
-    fallback_context = False
+    fallback = False
     if not refs and _AMBIGUOUS.search(raw):
         # Keep the previous bounded disambiguation context, without selecting
         # any of its candidates as an authorized target.
         refs = tx.claims.list_refs()
-        fallback_context = True
+        fallback = True
+    return refs, principal_ref, self_reference, fallback
+
+
+def _correction_targets(tx, source, raw: str):
+    """The current claims a correction may be about, those among them it names, and whether the scope's list only
+    stands in as context because it named none."""
+    refs, principal_ref, self_reference, fallback_context = _correction_refs(tx, source, raw)
     heads = [next(v for v in tx.claims.versions(ref) if v.revision == v.current_revision) for ref in refs]
     heads = [
         v
@@ -500,18 +584,14 @@ def capture_correction(tx, source, clock) -> Mutation | None:
         or (self_reference and v.payload["subject"] == principal_ref)
     ]
     exact = [v for v in matches if bound_literal(raw, v.ref) or bound_literal(raw, v.payload["predicate"])]
-    if exact:
-        matches = exact
-    tokens = re.findall(
-        r"(?:改为|改成|改用|换成|换为|调整为|调整成|替换为|更换为|用|是|change to|switch to)\s*([A-Za-z0-9\u4e00-\u9fff_.-]{1,120})(?=[。！？；，,;.!?\s]|$)",
-        raw,
-        re.I,
-    )
-    replacements = re.findall(
-        r"(?:改为|改成|改用|换成|换为|调整为|调整成|替换为|更换为|change to|switch to)\s*([A-Za-z0-9\u4e00-\u9fff_.-]{1,120})(?=[。！？；，,;.!?\s]|$)",
-        raw,
-        re.I,
-    )
+    return heads, exact or matches, fallback_context
+
+
+def _replacement_words(raw: str, matches) -> tuple[list[str], list[str]]:
+    """The words a message puts in a value's place, and the explicit replacements among them; with one claim matched,
+    "replace OLD with NEW" counts as both.  A sentence-final ASCII full stop is punctuation, not part of the value."""
+    tokens = _REPLACEMENT_WORD.findall(raw)
+    replacements = _EXPLICIT_REPLACEMENT.findall(raw)
     if len(matches) == 1:
         old = re.escape(matches[0].payload["value_text"])
         english = re.findall(
@@ -522,21 +602,33 @@ def capture_correction(tx, source, clock) -> Mutation | None:
         )
         tokens.extend(english)
         replacements.extend(english)
-    # A sentence-final ASCII full stop is punctuation, not part of the value.
-    tokens = [token.rstrip(".") for token in tokens]
-    replacements = [token.rstrip(".") for token in replacements]
-    if (
-        not fallback_context
-        and len(matches) == 1
+    return [token.rstrip(".") for token in tokens], [token.rstrip(".") for token in replacements]
+
+
+def _plain_correction(raw: str, matches, tokens, replacements) -> bool:
+    """Whether the message corrects or retracts one claim plainly enough to apply at once: one claim, at most one
+    explicit replacement, a value or a retraction, and nothing conditional, relative, negated or asked."""
+    return (
+        len(matches) == 1
         and len(replacements) <= 1
-        and (tokens or _RETRACT.search(raw))
+        and bool(tokens or _RETRACT.search(raw))
         and not (
             _NO_FAST_PATH.search(raw)
             or RELATIVE_SCOPE.search(raw)
             or _NEGATED_ACTION.search(raw)
             or _QUESTION.search(raw)
         )
-    ):
+    )
+
+
+def capture_correction(tx, source, clock) -> Mutation | None:
+    """Bounded model-free explicit target path. Ambiguity preserves the raw update."""
+    raw = source.event["content"]
+    if not _may_correct(source, raw):
+        return None
+    heads, matches, fallback_context = _correction_targets(tx, source, raw)
+    tokens, replacements = _replacement_words(raw, matches)
+    if not fallback_context and _plain_correction(raw, matches, tokens, replacements):
         target = matches[0]
         source_time = canonical_time(source.event["occurred_at"])
         target_time = canonical_time(target.valid_from)
