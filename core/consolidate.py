@@ -3,17 +3,23 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 import json
+import re
 from importlib.resources import files
 from pathlib import Path
 
 from ..contracts import ContractError
 from .claim_storage import parse_source_ref
-from .consolidation_chunks import ConsolidationChunk
+from .candidate_lifecycle import CandidateSnapshot, candidate_model_subject
+from .consolidation_chunks import ChunkedSource, ConsolidationChunk
 from .episodes import source_origin, source_watermark
 from .evidence_quote import resolve_evidence_quotes
 from .mutate import Mutation, MutationReceipt, apply_claim_frames, validate_claims
 from .worker_outcomes import DerivationFence, claim_versions_mark, claims_changed, derivation_changed
+
+if TYPE_CHECKING:
+    from .storage import StoredSource
 
 
 @dataclass(frozen=True)
@@ -186,6 +192,134 @@ def consolidation_messages(sources, *, episode_ref=None, budget=CONSOLIDATION_IN
     if len((system + user).encode("utf-8")) > budget:
         raise ContractError("INPUT_INVALID", "consolidation_input_budget")
     return [dict(role="system", content=system), dict(role="user", content=user)]
+
+
+#: Candidate re-evaluation carries the whole consolidation prompt (about 11.5 KB
+#: of instruction prose and inlined schema) plus a candidate block of its own,
+#: so the shared 16 KB consolidation ceiling left roughly 3.4 KB for evidence.
+#: Measured against one instance's live database that admitted none of the 115
+#: oversized evaluations: the smallest was already 2,892 characters of evidence.
+#: This ceiling is the request's real bound — the candidate block is counted
+#: inside it, not appended past it — and stays far below the auxiliary model's
+#: context window.
+CANDIDATE_EVALUATION_INPUT_BUDGET = 64000
+
+
+#: A source longer than this reaches a candidate evaluation as a window around
+#: the candidate's first verified saved quote, falling back to its value or
+#: subject when no saved quote matches this source version.
+#: Tool output dominated the evidence: replayed over one instance's evaluations, the
+#: calls still made after the verdict limit carried 28 M characters, and windows
+#: of this size keep 44% of them.  Qualification reads the complete stored source
+#: around each quote, so a window changes what the model reads, never what a
+#: quote has to satisfy.
+EVIDENCE_WINDOW_THRESHOLD = 3000
+EVIDENCE_WINDOW_RADIUS = 1500
+
+
+def _needle_pattern(text: object) -> re.Pattern[str] | None:
+    """Match ``text`` whatever spacing or punctuation sits between its letters and digits."""
+    characters = [character for character in str(text or "") if character.isalnum()]
+    if not characters:
+        return None
+    return re.compile(r"[\W_]*".join(re.escape(character) for character in characters), re.IGNORECASE)
+
+
+def evidence_window(source: StoredSource, needles, evidence_spans=()) -> StoredSource:
+    """Prefer the first exact saved quote for this source version, then a needle.
+
+    Several distant quotes cannot all fit one bounded contiguous window. Use
+    the first valid span in payload order, retaining context on both sides;
+    never concatenate fragments or treat a saved span as admission authority.
+    """
+    content = str(source.event.get("content") or "")
+    total = len(content)
+    if total <= EVIDENCE_WINDOW_THRESHOLD or getattr(source, "consolidation_window", None) is not None:
+        return source
+    start, end = 0, EVIDENCE_WINDOW_THRESHOLD
+    anchor = None
+    for span in evidence_spans:
+        if not isinstance(span, dict) or (span.get("source_ref"), span.get("source_revision")) != (
+            source.ref,
+            source.revision,
+        ):
+            continue
+        quote = span.get("quote")
+        if not isinstance(quote, str) or not quote:
+            continue
+        position = content.find(quote)
+        if position >= 0:
+            anchor = (position, position + len(quote))
+            break
+    if anchor is None:
+        for needle in needles:
+            pattern = _needle_pattern(needle)
+            match = pattern.search(content) if pattern is not None else None
+            if match is not None:
+                anchor = (match.start(), match.end())
+                break
+    if anchor is not None:
+        start = max(0, anchor[0] - EVIDENCE_WINDOW_RADIUS)
+        end = min(total, anchor[1] + EVIDENCE_WINDOW_RADIUS)
+    return ChunkedSource(
+        **dict(source.__dict__, event=dict(source.event, content=content[start:end])),
+        consolidation_window=ConsolidationChunk(start, end, total),
+        consolidation_seed=(),
+    )
+
+
+def candidate_evaluation_messages(
+    candidate: CandidateSnapshot,
+    sources: tuple[StoredSource, ...],
+    *,
+    budget: int = CANDIDATE_EVALUATION_INPUT_BUDGET,
+    validation_feedback: dict[str, str] | None = None,
+) -> list[dict]:
+    """Build a bounded candidate-specific request for the shared model port."""
+    needles = (candidate.payload.get("value_text"), candidate.payload.get("subject"))
+    spans = candidate.payload.get("evidence_spans") or ()
+    sources = tuple(evidence_window(source, needles, spans) for source in sources)
+    messages = consolidation_messages(sources, episode_ref=None, budget=budget, validation_feedback=validation_feedback)
+    candidate_json = json.dumps(
+        {
+            "candidate_ref": candidate.ref,
+            "candidate_revision": candidate.revision,
+            "kind": candidate.payload.get("kind"),
+            "subject": candidate_model_subject(candidate, sources),
+            "predicate": candidate.payload.get("predicate"),
+            "value_text": candidate.payload.get("value_text"),
+            "conditions": candidate.payload.get("conditions", []),
+            "rule_version": candidate.rule_version,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    if len(candidate_json.encode("utf-8")) > 32768:
+        raise ContractError("INPUT_INVALID", "candidate_input_budget")
+    messages.insert(
+        0,
+        {
+            "role": "system",
+            "content": (
+                "Re-evaluate only the supplied candidate against the supplied authorized sources. "
+                "Return the existing consolidation_result JSON object. source_refs must list every supplied "
+                "source version exactly once. Return zero claim_proposals when evidence is insufficient; "
+                "otherwise return at most one proposal with the same kind, subject and predicate. "
+                "Use the model-safe candidate subject exactly; never output an internal principal_ref. "
+                "Do not choose a fact state: Core qualification owns that decision."
+            ),
+        },
+    )
+    messages.append({"role": "user", "content": "candidate=" + candidate_json})
+    # The consolidation formatter bounded only its own two messages. The system
+    # preamble and candidate block above are appended after that check, so
+    # without this the request could reach roughly 49 KB while still claiming to
+    # be bounded. Raise the same field the consolidation path raises: callers
+    # and the oversize recovery already recognise it.
+    if sum(len(message["content"].encode("utf-8")) for message in messages) > budget:
+        raise ContractError("INPUT_INVALID", "consolidation_input_budget")
+    return messages
 
 
 def _fence_consolidation(tx, value, fence: ConsolidationWorkFence, *, now: str) -> None:

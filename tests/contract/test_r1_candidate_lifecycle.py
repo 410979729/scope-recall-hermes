@@ -9,10 +9,8 @@ from dataclasses import replace
 import pytest
 
 from scope_recall.contracts import TrustedSourcePrincipal
-from scope_recall.core.candidate_lifecycle import (
-    candidate_evaluation_messages,
-    candidate_subject_matches,
-)
+from scope_recall.core.candidate_lifecycle import candidate_subject_matches
+from scope_recall.core.consolidate import candidate_evaluation_messages
 from scope_recall.core.claims import Qualification
 from scope_recall.core.schema import SCHEMA_VERSION
 from scope_recall.maintenance import doctor

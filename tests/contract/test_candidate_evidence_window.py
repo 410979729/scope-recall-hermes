@@ -8,11 +8,8 @@ from dataclasses import replace
 import pytest
 
 from scope_recall.contracts import ContractError
-from scope_recall.core.candidate_lifecycle import (
-    CandidateSnapshot,
-    candidate_evaluation_messages,
-    evidence_window,
-)
+from scope_recall.core.candidate_lifecycle import CandidateSnapshot
+from scope_recall.core.consolidate import candidate_evaluation_messages, evidence_window
 from scope_recall.core.storage import StoredSource
 
 

@@ -10,8 +10,8 @@ import time
 
 from ..contracts import ContractError, TrustedContext
 from .admission import resume_deferred
-from .candidate_lifecycle import PROCESS_BATCH_LIMIT, CandidateEvaluator, candidate_evaluation_messages
-from .consolidate import consolidation_messages
+from .candidate_lifecycle import PROCESS_BATCH_LIMIT, CandidateEvaluator
+from .consolidate import candidate_evaluation_messages, consolidation_messages
 from .storage import SQLiteStorage
 from .work_storage import CAPACITY_REFUSALS, MAX_RECOVERY_PAGE
 from .worker_candidates import _process_candidate_evaluation

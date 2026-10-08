@@ -12,9 +12,13 @@ from typing import Protocol
 
 from ..contracts import ContractError, decode_payload, utc_instant, validate_payload
 from .storage import StoredSource
-from .consolidate import ConsolidationWorkFence, accept_consolidation, consolidation_messages
+from .consolidate import (
+    ConsolidationWorkFence,
+    accept_consolidation,
+    candidate_evaluation_messages,
+    consolidation_messages,
+)
 from .consolidation_chunks import source_chunk
-from .candidate_lifecycle import candidate_evaluation_messages
 from .episodes import source_origin
 from .evidence_question import DERIVATION_ROOT_ORIGINS
 from .worker_outcomes import (
