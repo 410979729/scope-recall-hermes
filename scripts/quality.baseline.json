@@ -387,7 +387,7 @@
   },
   "adapters/clients/remote_client.py": {
    "I001": 1,
-   "UP017": 2,
+   "UP017": 1,
    "UP037": 1
   },
   "adapters/clients/remote_server.py": {
@@ -1050,6 +1050,9 @@
   },
   "maintenance/install_receipt.py": {
    "UP035": 1
+  },
+  "maintenance/install_remote.py": {
+   "UP017": 1
   },
   "maintenance/install_workbuddy.py": {
    "I001": 1,

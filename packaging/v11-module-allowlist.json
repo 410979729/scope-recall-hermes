@@ -162,6 +162,7 @@
     "maintenance/install_hermes.py",
     "maintenance/install_purge.py",
     "maintenance/install_receipt.py",
+    "maintenance/install_remote.py",
     "maintenance/install_workbuddy.py",
     "maintenance/legacy_catalog.py",
     "maintenance/legacy_claims.py",

@@ -23,6 +23,8 @@ import urllib.request
 import pytest
 
 from scope_recall.adapters.clients import remote_client, remote_server, transcript
+from scope_recall.adapters.codex import remote_client as remote_entry
+from scope_recall.maintenance import install_remote
 from scope_recall.adapters.hermes.installation import (
     attach_shared_entry,
     attach_shared_record,
@@ -462,9 +464,9 @@ def test_the_plugin_sends_hooks_and_tools_to_the_server(tmp_path, host):
     if host == "workbuddy":
         # WorkBuddy has no plugin: install merges into its own settings (the next test), and never writes a Codex one.
         with pytest.raises(remote_client.RemoteClientError, match="no plugin"):
-            remote_client.plugin_files(config, tmp_path / "TEST-plugin" / "scope-recall")
+            install_remote.plugin_files(config, tmp_path / "TEST-plugin" / "scope-recall")
         return
-    files = remote_client.plugin_files(config, tmp_path / "TEST-plugin" / "scope-recall")
+    files = install_remote.plugin_files(config, tmp_path / "TEST-plugin" / "scope-recall")
     by_name = {
         path.relative_to(tmp_path / "TEST-plugin" / "scope-recall").as_posix(): text for path, text in files.items()
     }
@@ -505,7 +507,7 @@ def test_a_workbuddy_client_merges_its_hooks_and_server_into_workbuddy_s_own_fil
     before = {name: (home / name).read_bytes() for name in ("settings.json", "mcp.json")}
     proxy = (home / ".mcp.json").read_bytes()
 
-    assert remote_client.main(["install", "--config", str(config["config"]), "--plugin-dir", str(home)]) == 0
+    assert remote_entry.main(["install", "--config", str(config["config"]), "--plugin-dir", str(home)]) == 0
     result = json.loads(capsys.readouterr().out)
     assert sorted(Path(path).name for path in result["written"]) == ["mcp.json", "settings.json"]
     assert {Path(path).name: Path(path).read_bytes() for path in result["backups"]} == before
@@ -516,7 +518,7 @@ def test_a_workbuddy_client_merges_its_hooks_and_server_into_workbuddy_s_own_fil
     }
     assert written["hooks"]["Stop"][0] == settings["hooks"]["Stop"][0], "another tool's hook stays first"
     command = written["hooks"]["Stop"][-1]["hooks"][0]["command"]
-    assert shlex.split(command) == [*remote_client._hook_argv(config), "||", "exit", "1"], "a failure never blocks"
+    assert shlex.split(command) == [*install_remote._hook_argv(config), "||", "exit", "1"], "a failure never blocks"
     assert command.startswith('"') and "\\" not in command, "Git Bash runs it: quoted, forward slashes"
     assert {
         event: groups[-1]["hooks"][0]["timeout"] for event, groups in written["hooks"].items()
@@ -530,9 +532,9 @@ def test_a_workbuddy_client_merges_its_hooks_and_server_into_workbuddy_s_own_fil
         "description": install_workbuddy.SERVER_DESCRIPTION,
     }
 
-    assert remote_client.install(config, home) == {"written": [], "backups": []}, "run again, nothing changes"
+    assert install_remote.install(config, home) == {"written": [], "backups": []}, "run again, nothing changes"
     config["token_file"].write_text("TEST-token-of-a-new-machine", encoding="utf-8")
-    assert [Path(path).name for path in remote_client.install(config, home)["written"]] == ["mcp.json"]
+    assert [Path(path).name for path in install_remote.install(config, home)["written"]] == ["mcp.json"]
     servers = json.loads((home / "mcp.json").read_text(encoding="utf-8"))["mcpServers"]
     assert list(servers) == ["TEST-other-server", "scope-recall"]
     assert servers["scope-recall"]["headers"] == {"Authorization": "Bearer TEST-token-of-a-new-machine"}
@@ -544,10 +546,10 @@ def test_a_workbuddy_client_merges_its_hooks_and_server_into_workbuddy_s_own_fil
     (home / "settings.json").write_text(json.dumps(written), encoding="utf-8")
     held = (home / "settings.json").read_bytes()
     with pytest.raises(remote_client.RemoteClientError, match="another Scope Recall hook"):
-        remote_client.install(config, home)
+        install_remote.install(config, home)
     assert (home / "settings.json").read_bytes() == held
     with pytest.raises(remote_client.RemoteClientError, match="does not exist"):
-        remote_client.install(config, tmp_path / "TEST-nowhere")
+        install_remote.install(config, tmp_path / "TEST-nowhere")
     assert (home / ".mcp.json").read_bytes() == proxy, "WorkBuddy's own proxy record is not touched"
 
 
@@ -843,12 +845,12 @@ def test_a_plugin_command_survives_the_shell_that_runs_it(tmp_path):
     (tmp_path / "TEST with space").mkdir()
     spaced = _client(tmp_path / "TEST with space", "claude-code", 18765)
     with pytest.raises(remote_client.RemoteClientError):
-        remote_client.plugin_files(spaced, tmp_path / "TEST-plugin" / "scope-recall")
+        install_remote.plugin_files(spaced, tmp_path / "TEST-plugin" / "scope-recall")
     (tmp_path / "TEST-o'brien").mkdir()
     quoted = _client(tmp_path / "TEST-o'brien", "codex", 18766)
-    files = remote_client.plugin_files(quoted, tmp_path / "TEST-codex-plugin" / "scope-recall-codex")
+    files = install_remote.plugin_files(quoted, tmp_path / "TEST-codex-plugin" / "scope-recall-codex")
     hooks = json.loads(next(text for path, text in files.items() if path.name == "hooks.json"))["hooks"]
-    assert shlex.split(hooks["Stop"][0]["hooks"][0]["command"]) == remote_client._hook_argv(quoted)
+    assert shlex.split(hooks["Stop"][0]["hooks"][0]["command"]) == install_remote._hook_argv(quoted)
 
 
 def test_a_missing_token_file_answers_nothing_and_says_why(tmp_path):
