@@ -2,16 +2,16 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import hashlib
 import json
 import re
+from dataclasses import dataclass
 
 from ..contracts import ContractError
 from . import lineage
 from .claim_storage import parse_source_ref
 from .delete_storage import canonical
-from .episodes import source_origin, UNSETTLED
+from .episodes import UNSETTLED, source_origin
 from .source_qualification import AUTHORITY_QUESTION
 from .visibility import allowed
 

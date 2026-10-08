@@ -7,27 +7,25 @@ remains the authority for scope, version, deletion, and temporal eligibility.
 
 from __future__ import annotations
 
-from contextlib import closing
-from dataclasses import replace
-from dataclasses import dataclass
-from pathlib import Path
 import sqlite3
+from contextlib import closing
+from dataclasses import dataclass, replace
+from pathlib import Path
 from typing import Any, Mapping
 
 import pytest
-
 from scope_recall.contracts import ContractError, InstanceBinding, TrustedContext
 from scope_recall.core import CoreConfig, MemoryCore
 from scope_recall.core.events import MAX_QUERY_TERMS, lexical_terms, query_terms
+from scope_recall.core.recall_packet import canonical_render_json
 from scope_recall.core.recall_policy import (
-    RecallPolicy,
     SPACE_ID,
+    RecallPolicy,
     hard_identifiers,
     identifiers_compatible,
     synonym_expansions,
 )
 from scope_recall.core.retrieval import MAX_CURRENT_SOURCE_REFS, CandidateRef, CollectionQuery, SearchContext
-from scope_recall.core.recall_packet import canonical_render_json
 from scope_recall.core.retrieval_storage import scope_digest
 from v11_support import context, recall_request, source_event
 

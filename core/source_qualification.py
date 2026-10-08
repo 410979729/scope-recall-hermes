@@ -5,7 +5,6 @@ from __future__ import annotations
 import re
 import unicodedata
 
-
 AUTHORITY_QUESTION = re.compile(
     r"[?？]|是否|能否|可否|要不要|是不是|吗(?:[。.!，,;；\s]|$)|\b(?:whether|is it|(?:can|could|would|should)\s+(?:I|we|you))\b",
     re.I,

@@ -2,9 +2,10 @@
 machine or on another (``remote_client``, ``remote_server``).  Installed configurations run the entry modules by the
 names they were first given, in ``adapters/codex``."""
 
+from typing import TYPE_CHECKING
+
 from .config import CodexConfigError, install_codex_scope_recall, load_codex_config
 from .handler import CodexHookHandler
-from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     # Keep MCP optional at runtime while making the lazy public exports

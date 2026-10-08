@@ -1,14 +1,14 @@
 """P07 consolidation input is bounded, source-faithful, and data-only."""
 
-from dataclasses import replace
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
-
 from scope_recall.contracts import ContractError, TrustedSourcePrincipal, validate_payload
 from scope_recall.core.consolidate import consolidation_messages
-from test_v11_claims import app as app, capture
+from test_v11_claims import app as app
+from test_v11_claims import capture
 
 
 @pytest.fixture(autouse=True)

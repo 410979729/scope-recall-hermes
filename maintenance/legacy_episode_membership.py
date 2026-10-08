@@ -26,9 +26,9 @@ DDL, source-file access, or implicit retry is performed here.
 
 from __future__ import annotations
 
+import sqlite3
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
-import sqlite3
 from types import MappingProxyType
 from typing import Any
 

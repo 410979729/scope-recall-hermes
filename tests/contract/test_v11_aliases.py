@@ -1,12 +1,12 @@
 """P07 M11 project-name alias authority and scope contracts."""
 
-from dataclasses import replace
 import itertools
+from dataclasses import replace
 
 import pytest
-
 from scope_recall.core import CoreConfig, MemoryCore
-from tests.contract.test_v11_claims import Clock, capture, accept, draft
+
+from tests.contract.test_v11_claims import Clock, accept, capture, draft
 from tests.v11_support import context
 
 

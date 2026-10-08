@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-import pytest
 import sqlite3
 
+import pytest
 from scope_recall.adapters.hermes import ScopeRecallHermesAdapter, install_hermes_scope_recall
 from scope_recall.adapters.hermes.installation import HermesIdentityError, _build_audience_scope_ids
 

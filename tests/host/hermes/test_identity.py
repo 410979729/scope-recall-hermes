@@ -6,7 +6,6 @@ import inspect
 import sqlite3
 
 import pytest
-
 from scope_recall.adapters.hermes import (
     HermesIdentityError,
     ScopeRecallHermesAdapter,
@@ -15,8 +14,8 @@ from scope_recall.adapters.hermes import (
 )
 from scope_recall.adapters.hermes.hooks import unsupported_host_fields
 from scope_recall.adapters.hermes.provider import public_signatures_match
-from scope_recall.core import CoreConfig, MemoryCore
 from scope_recall.contracts import ContractError
+from scope_recall.core import CoreConfig, MemoryCore
 
 
 def test_public_memory_provider_signatures_match(adapter, initialize_kwargs):

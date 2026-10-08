@@ -7,11 +7,11 @@ server speak the protocol Codex's were modelled on.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from functools import partial
 import hashlib
 import json
 import os
+from dataclasses import dataclass
+from functools import partial
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Mapping

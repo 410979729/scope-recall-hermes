@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from copy import deepcopy
-from dataclasses import dataclass, replace
 import json
 import re
+from copy import deepcopy
+from dataclasses import dataclass, replace
 
 from ..contracts import (
     ClaimProposal,
@@ -16,27 +16,27 @@ from ..contracts import (
     validate_payload,
     validate_proposal_references,
 )
-from .secret_patterns import contains_secret_like_text
-from .claim_storage import parse_source_ref
 from .aliases import validate_alias_source, validate_alias_target
-from .evidence_quote import resolve_evidence_quotes
-from .source_qualification import AUTHORITY_QUESTION, RELATIVE_SCOPE, bound_literal, first_person_reference
-from .corroboration import CORROBORATED_REASON, corroboration_promotes
+from .claim_normalization import expand_frames, human_owner, name_frame, normalize_frame, source_order
+from .claim_storage import parse_source_ref
 from .claims import (
     ClaimVersion,
-    evidence_refs,
     Qualification,
     bind_claim_subject,
     canonical_time,
     effective_origin,
     evidence_context,
+    evidence_refs,
     grounded_time,
     qualify,
     same_assertion,
     select_effective,
 )
-from .claim_normalization import expand_frames, human_owner, name_frame, normalize_frame, source_order
 from .confirmation import CONFIRMED_REASON, confirmation_targets, is_confirmation
+from .corroboration import CORROBORATED_REASON, corroboration_promotes
+from .evidence_quote import resolve_evidence_quotes
+from .secret_patterns import contains_secret_like_text
+from .source_qualification import AUTHORITY_QUESTION, RELATIVE_SCOPE, bound_literal, first_person_reference
 
 
 @dataclass(frozen=True)

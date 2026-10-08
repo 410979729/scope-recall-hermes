@@ -6,6 +6,7 @@ import hashlib
 import sqlite3
 
 from scope_recall.core import CoreConfig, MemoryCore
+
 from tests.v11_support import context
 
 

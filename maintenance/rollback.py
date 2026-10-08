@@ -10,8 +10,8 @@ from __future__ import annotations
 
 import json
 import os
-from pathlib import Path
 import sqlite3
+from pathlib import Path
 from typing import Any
 
 from .backup import create_output, safe_path, sha256

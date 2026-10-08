@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import argparse
 import json
-from pathlib import Path
 import sys
 import time
+from pathlib import Path
 from typing import Any, Callable
 
 from .backup import BackupError
@@ -486,8 +486,9 @@ def _upgrade_store(args: argparse.Namespace) -> int:
     from scope_recall.core.schema import SCHEMA_VERSION, UPGRADE_CHAIN
     from scope_recall.core.storage import SQLiteStorage
     from scope_recall.core.writer_lease import TruthWriterBusyError
+
     from .backup import backup_sqlite
-    from .doctor import read_journal_mode, load_binding, recorded_schema_under_stale_header, schema_on_disk
+    from .doctor import load_binding, read_journal_mode, recorded_schema_under_stale_header, schema_on_disk
 
     instance = _path(args.instance_root, "instance_root")
     binding, data_directory = load_binding(args.host, instance)

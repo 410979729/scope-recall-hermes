@@ -1,11 +1,10 @@
+import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
-import json
 from pathlib import Path
 
 from scope_recall.contracts import InstanceBinding, TrustedContext, validate_capture
 from scope_recall.core.retrieval import AUTOMATIC_PACKET_BUDGET_UNITS
-
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -184,8 +183,8 @@ _SCHEMA_STEPS = {
 
 def downgrade_store(path, version: int) -> None:
     """Turn a fresh store into what a real store at ``version`` could hold, and stamp it."""
-    from contextlib import closing
     import sqlite3
+    from contextlib import closing
 
     # Closed here: left to the garbage collector, the connection moved its pages from the WAL into the file at a
     # moment nobody chose, and a byte comparison after it failed at random.

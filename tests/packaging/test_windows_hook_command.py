@@ -2,12 +2,11 @@
 
 import json
 import os
-from pathlib import Path
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
-
 from scope_recall.maintenance import install_codex as install
 
 

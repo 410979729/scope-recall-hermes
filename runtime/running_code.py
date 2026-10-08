@@ -33,10 +33,10 @@ import json
 import os
 import re
 import sys
+import time
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-import time
 from typing import Any, Iterator
 
 from .._version import __version__

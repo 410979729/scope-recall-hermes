@@ -30,19 +30,19 @@ machine except in the requests' ``Authorization`` header.
 from __future__ import annotations
 
 import argparse
-from datetime import datetime, timezone
 import hashlib
 import http.client
 import itertools
 import json
 import os
-from pathlib import Path
 import secrets
 import subprocess
 import sys
 import time
-from typing import Any
 import urllib.parse
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
 
 from . import transcript
 from .boundary import EMPTY_ANSWER, is_workbuddy_agent_run, without_lone_surrogates

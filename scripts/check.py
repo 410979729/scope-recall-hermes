@@ -5,15 +5,15 @@ import hashlib
 import importlib.metadata
 import json
 import os
-from pathlib import Path
 import shutil
 import subprocess
 import sys
 import tempfile
 import time
 import xml.etree.ElementTree as ET
-from test_directories import TestDirectory
+from pathlib import Path
 
+from test_directories import TestDirectory
 
 ROOT = Path(__file__).resolve().parents[1]
 #: No default path: a machine without uv says so, rather than asserting that

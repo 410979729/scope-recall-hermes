@@ -15,6 +15,7 @@ import sqlite3
 
 from scope_recall.core.candidate_lifecycle import PROCESS_BATCH_LIMIT
 from scope_recall.core.worker import CANDIDATE_QUEUE_CEILING
+
 from tests.contract.test_r1_candidate_lifecycle import (  # noqa: F401  (fixture)
     _candidate,
     _finish_source_work,

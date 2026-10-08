@@ -2,25 +2,15 @@
 
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
-from decimal import Decimal
 import hashlib
 import json
 import sqlite3
+from concurrent.futures import ThreadPoolExecutor
+from decimal import Decimal
 from pathlib import Path
 from threading import Barrier
 
 import pytest
-
-from scope_recall.runtime.models import (
-    AuxiliaryModelError,
-    ConsolidationRouteConfig,
-    EmbeddingRouteConfig,
-    GeminiEmbeddingAdapter,
-    OpenAIConsolidationAdapter,
-    build_gemini_embed_body,
-    validate_embedding_vector,
-)
 from scope_recall.contracts import ContractError, SourceEvent
 from scope_recall.core.recall_policy import EMBEDDING_SPACE, encode_embedding_text
 from scope_recall.core.storage import StoredSource
@@ -31,6 +21,15 @@ from scope_recall.runtime.model_budget import (
     ModelPricing,
     initialize_auxiliary_budget_ledger,
     read_auxiliary_budget_status,
+)
+from scope_recall.runtime.models import (
+    AuxiliaryModelError,
+    ConsolidationRouteConfig,
+    EmbeddingRouteConfig,
+    GeminiEmbeddingAdapter,
+    OpenAIConsolidationAdapter,
+    build_gemini_embed_body,
+    validate_embedding_vector,
 )
 
 

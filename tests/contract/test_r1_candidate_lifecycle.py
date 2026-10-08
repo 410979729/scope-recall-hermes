@@ -7,15 +7,16 @@ import sqlite3
 from dataclasses import replace
 
 import pytest
-
 from scope_recall.contracts import TrustedSourcePrincipal
 from scope_recall.core.candidate_lifecycle import candidate_subject_matches
-from scope_recall.core.consolidate import candidate_evaluation_messages
 from scope_recall.core.claims import Qualification
+from scope_recall.core.consolidate import candidate_evaluation_messages
 from scope_recall.core.schema import SCHEMA_VERSION
 from scope_recall.maintenance import doctor
 from scope_recall.runtime.scheduling import next_wake
-from test_finite_supervisor import NOW, fixture as supervisor_fixture, queue as queue_work
+from test_finite_supervisor import NOW
+from test_finite_supervisor import fixture as supervisor_fixture
+from test_finite_supervisor import queue as queue_work
 from test_v11_claims import app, capture, draft
 from test_v11_deletion import authorize, request
 from v11_support import downgrade_store

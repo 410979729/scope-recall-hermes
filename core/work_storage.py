@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
 import math
 import re
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 
 from ..contracts import ContractError
+from .delete_storage import purge_work_parts
 from .failure_retry import (
     AUTO_RECOVERABLE_ERRORS,
     DERIVATION_RETRY_MARKER,
@@ -16,9 +17,8 @@ from .failure_retry import (
     validate_page,
     validation_feedback,
 )
-from .schema import SCHEMA_VERSION
-from .delete_storage import purge_work_parts
 from .inbox_rules import deferred_path
+from .schema import SCHEMA_VERSION
 
 MAX_RECOVERABLE_ATTEMPTS = 3
 MAX_OPERATOR_RETRIES = 2

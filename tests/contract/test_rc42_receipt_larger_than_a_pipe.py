@@ -20,7 +20,6 @@ import textwrap
 import time
 
 import pytest
-
 from scope_recall.runtime.worker_watchdog import _ChildOutput, _wait_for_exit
 
 #: Comfortably more than a pipe buffer on any host, and the shape of a real

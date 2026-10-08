@@ -12,6 +12,7 @@ from __future__ import annotations
 import sqlite3
 
 from scope_recall.core.work_storage import INTERRUPTED_RETRY_MARKER, MAX_RECOVERABLE_ATTEMPTS
+
 from tests.contract.test_r1_candidate_lifecycle import (  # noqa: F401  (fixture)
     Evaluator,
     _candidate,

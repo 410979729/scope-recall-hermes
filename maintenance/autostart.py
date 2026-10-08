@@ -4,19 +4,19 @@ operator's own timer (systemd or cron) to run."""
 from __future__ import annotations
 
 import argparse
-from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 import os
-from pathlib import Path
 import shlex
 import subprocess
 import sys
 import tempfile
 import xml.etree.ElementTree as ET
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 from ..runtime.scheduling import control_path, read_control
-from ..runtime.worker_entry import write_worker_metadata, load_config
+from ..runtime.worker_entry import load_config, write_worker_metadata
 
 #: How the wake runs outside Windows: from the operator's timer.  Nothing here registers one.
 OPERATOR_TIMER = "operator_timer"

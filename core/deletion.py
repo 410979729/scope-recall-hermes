@@ -5,9 +5,8 @@ from __future__ import annotations
 import re
 
 from ..contracts import ContractError, validate_model_request
-from .visibility import allowed
 from .source_qualification import AUTHORITY_QUESTION
-
+from .visibility import allowed
 
 _DELETE = re.compile(r"删除|删掉|忘掉|忘记|清除|\b(?:delete|erase|forget)\b", re.I)
 _SUPPRESS = re.compile(r"不要主动提|别再主动|不再主动提|\b(?:suppress|do not mention|don't mention)\b", re.I)

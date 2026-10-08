@@ -6,19 +6,19 @@ from dataclasses import dataclass, replace
 from typing import Any
 
 import pytest
-
 from scope_recall.contracts import ImportProvenance, import_source_fingerprint
 from scope_recall.core import CoreConfig, MemoryCore
 from scope_recall.core.events import lexical_terms
 from scope_recall.core.recall_needs import unmet_needs
 from scope_recall.core.recall_policy import (
-    RecallPolicy,
     SPACE_ID,
+    RecallPolicy,
     meaningful_query_terms,
     query_is_specific,
 )
 from scope_recall.core.retrieval import CandidateRef, CollectionQuery, RetrievedObject, SearchContext, SearchLimits
 from scope_recall.core.retrieval_storage import RetrievalStorage, scope_digest
+
 from tests.contract.test_v11_claims import Clock, capture
 from tests.v11_support import context, recall_request, source_event
 

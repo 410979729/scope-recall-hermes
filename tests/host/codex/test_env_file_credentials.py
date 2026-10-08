@@ -15,7 +15,6 @@ import types
 from pathlib import Path
 
 import pytest
-
 from scope_recall.adapters.clients import hook_entry, mcp_entry
 from scope_recall.runtime import worker_entry
 

@@ -9,12 +9,13 @@ which is never evidence, so every page linked nothing and stayed open; the other
 
 from __future__ import annotations
 
-from dataclasses import replace
 import sqlite3
+from dataclasses import replace
 
 from scope_recall.core import worker
 from scope_recall.core.candidate_lifecycle import SOURCE_MATCH_LIMIT
 from scope_recall.core.claims import Qualification
+
 from tests.contract.test_r1_candidate_lifecycle import Evaluator, _finish_source_work
 from tests.contract.test_v11_claims import app, capture, draft  # noqa: F401  (fixture)
 from tests.v11_support import source_event

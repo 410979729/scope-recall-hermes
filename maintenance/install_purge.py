@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
+import json
+import sqlite3
 from contextlib import contextmanager, suppress
 from dataclasses import dataclass
-import json
 from pathlib import Path
-import sqlite3
 from types import ModuleType
 from typing import Any, Iterator
 

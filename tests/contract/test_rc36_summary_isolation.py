@@ -12,9 +12,9 @@ import json
 import sqlite3
 
 import pytest
-
 from scope_recall.contracts import ContractError
 from scope_recall.core.episodes import source_watermark
+
 from tests.contract.test_v11_claims import app, capture, draft  # noqa: F401  (fixture)
 from tests.contract.test_v11_worker import (  # noqa: F401  (fixture)
     FakeConsolidation,

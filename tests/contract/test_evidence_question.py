@@ -15,7 +15,6 @@ from __future__ import annotations
 import sqlite3
 
 import pytest
-
 from scope_recall.core.evidence_question import (
     FIRST_HAND_ORIGINS,
     is_first_hand,

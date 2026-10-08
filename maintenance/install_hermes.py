@@ -6,7 +6,6 @@ from __future__ import annotations
 from pathlib import Path
 
 from packaging.version import Version
-
 from scope_recall._version import __version__
 from scope_recall.adapters.hermes.audiences import (
     LOCAL_PLATFORMS,
@@ -16,13 +15,19 @@ from scope_recall.adapters.hermes.audiences import (
 )
 from scope_recall.adapters.hermes.installation import (
     approve_local_platforms as _approve_local_platforms,
+)
+from scope_recall.adapters.hermes.installation import (
     attachment_path,
     install_hermes_scope_recall,
     load_binding_for_home,
     load_installation_manifest,
-    unapproved_local_platforms as _unapproved_local_platforms,
-    unapproved_owner_logins as _unapproved_owner_logins,
     write_installation_manifest,
+)
+from scope_recall.adapters.hermes.installation import (
+    unapproved_local_platforms as _unapproved_local_platforms,
+)
+from scope_recall.adapters.hermes.installation import (
+    unapproved_owner_logins as _unapproved_owner_logins,
 )
 
 from .install_common import (

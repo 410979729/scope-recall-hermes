@@ -2,23 +2,21 @@
 
 from __future__ import annotations
 
-from contextlib import closing
-from dataclasses import replace
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
-from pathlib import Path
 import sqlite3
 import subprocess
 import sys
 import threading
 import time
+from contextlib import closing
+from dataclasses import replace
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 
 import pytest
-
-from scope_recall.runtime import codex_cli as cli
-from scope_recall.runtime.models import AuxiliaryModelError
 from scope_recall.contracts import InstanceBinding
+from scope_recall.runtime import codex_cli as cli
 from scope_recall.runtime.auxiliary import AuxiliaryRuntimeConfig, build_auxiliary_runtime
 from scope_recall.runtime.instance import RuntimeInstanceConfig, build_runtime_instance
 from scope_recall.runtime.model_budget import (
@@ -26,6 +24,7 @@ from scope_recall.runtime.model_budget import (
     initialize_auxiliary_budget_ledger,
     pre_request_refusals,
 )
+from scope_recall.runtime.models import AuxiliaryModelError
 from scope_recall.runtime.subscription_budget import SubscriptionBudgetLedger, SubscriptionBudgetPolicy
 from v11_support import source_event
 

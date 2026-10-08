@@ -6,8 +6,8 @@ one bounded Core page; vectors remain derived and no model is called here.
 
 # Historical callers also import maintenance.migrate_v2 without the package alias.
 from scope_recall.contracts import TrustedContext
-from scope_recall.core.storage import SQLiteStorage
 from scope_recall.core.index_rebuild import queue_embedding_page
+from scope_recall.core.storage import SQLiteStorage
 
 
 def queue_index_page(binding, value: dict, *, limit: int = 128) -> dict:

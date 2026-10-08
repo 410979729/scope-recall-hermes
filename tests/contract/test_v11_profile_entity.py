@@ -2,21 +2,20 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
 import itertools
 import os
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
-
+import scope_recall.core.read_views as read_views
 from scope_recall.contracts import ContractError
 from scope_recall.core import CoreConfig, MemoryCore
 from scope_recall.core.read_views import DEFAULT_BUDGET_TOKENS, DEFAULT_MAX_ITEMS
-import scope_recall.core.read_views as read_views
+
 from tests.contract.test_v11_aliases import _alias, _identity
 from tests.contract.test_v11_claims import Clock, accept, capture, draft, initial, intention
 from tests.v11_support import context
-
 
 ROOT = Path(__file__).resolve().parents[2]
 

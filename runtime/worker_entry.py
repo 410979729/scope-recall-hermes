@@ -15,20 +15,20 @@ import os
 import re
 import sqlite3
 import stat
+import sys
 import tempfile
 import time
 from pathlib import Path
-import sys
 from typing import Any, TextIO
 
+from ..contracts import ContractError, TrustedContext
+from ..core.failure_retry import retry_class
 from ..core.file_lock import advisory_file_lock
 from ..core.writer_lease import TruthWriterBusyError
 from ..vector.process_store import NativeVectorPathError, ProcessLanceVectorStore
-from ..contracts import ContractError, TrustedContext
 from .instance import RuntimeInstanceConfig, build_runtime_instance
 from .model_budget import pre_request_refusals, provider_refusals
 from .validation import strict_float, utc_now
-from ..core.failure_retry import retry_class
 
 #: Worker metadata files are small JSON documents; anything larger is not one.
 METADATA_LIMIT_BYTES = 65536

@@ -20,19 +20,18 @@ from decimal import Decimal
 from pathlib import Path
 
 import pytest
-
-from scope_recall.runtime.models import (
-    RESPONSES_KIND,
-    AuxiliaryModelError,
-    ConsolidationRouteConfig,
-    ResponsesRouteConfig,
-)
 from scope_recall.contracts import ContractError
 from scope_recall.runtime.auxiliary import AuxiliaryRuntimeConfig, build_auxiliary_runtime
 from scope_recall.runtime.model_budget import (
     BudgetPolicy,
     ModelPricing,
     initialize_auxiliary_budget_ledger,
+)
+from scope_recall.runtime.models import (
+    RESPONSES_KIND,
+    AuxiliaryModelError,
+    ConsolidationRouteConfig,
+    ResponsesRouteConfig,
 )
 
 MODEL = "deepseek-flash"

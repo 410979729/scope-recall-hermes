@@ -6,25 +6,23 @@ other machine would.  Sources are synthetic; nothing here is a person's memory.
 
 from __future__ import annotations
 
-from contextlib import closing
-from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 import logging
 import os
-from pathlib import Path
 import socket
 import sqlite3
 import threading
 import time
 import urllib.error
 import urllib.request
+from contextlib import closing
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
-
 from scope_recall.adapters.clients import remote_client, remote_server, transcript
 from scope_recall.adapters.codex import remote_client as remote_entry
-from scope_recall.maintenance import install_remote
 from scope_recall.adapters.hermes.installation import (
     attach_shared_entry,
     attach_shared_record,
@@ -34,6 +32,7 @@ from scope_recall.adapters.hermes.installation import (
     read_shared_payload,
     write_shared_payload,
 )
+from scope_recall.maintenance import install_remote
 
 NOW = "2026-09-27T06:00:00Z"
 AGENT = "TEST-agent"

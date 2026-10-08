@@ -23,10 +23,10 @@ so "29日" means the same day in the question and in the answer.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import date, datetime, time, timedelta, timezone, tzinfo
 import re
 import unicodedata
+from dataclasses import dataclass
+from datetime import date, datetime, time, timedelta, timezone, tzinfo
 from typing import Mapping
 
 #: Days one question may name.  More is a list, which a scope of whole days does not serve.

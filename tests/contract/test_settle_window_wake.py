@@ -10,22 +10,21 @@ worker after every pass.
 
 from __future__ import annotations
 
-from dataclasses import replace
-from datetime import datetime, timedelta, timezone
 import itertools
 import json
 import sqlite3
+from dataclasses import replace
+from datetime import datetime, timedelta, timezone
 
 import pytest
-
+from scope_recall.core import worker as worker_module
 from scope_recall.core.candidate_debounce import MAX_DEFERRAL_SECONDS, QUIET_SECONDS, settle_reason, settles_at
+from scope_recall.core.claims import Qualification
 from scope_recall.maintenance import doctor
 from scope_recall.runtime import scheduling
 from scope_recall.runtime.instance import RuntimeInstanceConfig
 from scope_recall.runtime.scheduling import SupervisorControl, next_wake, supervise
 from scope_recall.runtime.worker_entry import _receipt_payload
-from scope_recall.core import worker as worker_module
-from scope_recall.core.claims import Qualification
 from test_r1_candidate_lifecycle import Evaluator, ModelRefusal, _candidate, _finish_source_work
 from test_v11_claims import app, capture  # noqa: F401  (app is a fixture)
 
@@ -591,8 +590,8 @@ def test_a_route_without_a_budget_ledger_is_not_planned_for():
 def test_the_scheduled_wake_launches_for_a_candidate_ready_with_no_pass_on_record(app, monkeypatch):
     """Right after an upgrade no control file has the record: the scheduled wake launches a worker, once, for a
     candidate that became ready meanwhile."""
-    from pathlib import Path
     import sys
+    from pathlib import Path
     from types import SimpleNamespace
 
     from scope_recall.maintenance import autostart
@@ -809,8 +808,8 @@ def test_a_hold_older_than_the_last_sweep_holds_nothing(app, monkeypatch):
 
 
 def test_the_doctor_reports_an_operator_timer(app, monkeypatch):
-    from pathlib import Path
     import sys
+    from pathlib import Path
 
     from scope_recall.maintenance import autostart
 

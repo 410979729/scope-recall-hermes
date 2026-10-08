@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from datetime import timedelta, timezone
 import json
 import sys
 import types
+from datetime import timedelta, timezone
 
 from scope_recall.adapters.hermes import bind_hermes_identity
 from scope_recall.adapters.hermes.gating import is_trivial_prompt
@@ -14,6 +14,7 @@ from scope_recall.core import MemoryCore
 from scope_recall.core.background_context import BACKGROUND_PREFIX
 from scope_recall.core.episodes import source_watermark
 from scope_recall.core.retrieval import RetrievalResult
+
 from tests.v11_support import source_event
 
 _UNRELATED_QUERY = "紫色海豚量子温泉"

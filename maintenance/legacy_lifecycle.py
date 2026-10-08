@@ -7,13 +7,12 @@ fence, dependency traversal and receipts. It never deletes source content.
 
 from __future__ import annotations
 
+import json
 from collections import Counter, defaultdict
 from dataclasses import replace
-import json
 
 from scope_recall.contracts import ContractError
 from scope_recall.core.storage import Transaction
-
 
 POLICY = "legacy-ordinary-recall-lifecycle-preservation-v1"
 HIDDEN = frozenset({"archived", "obsolete", "rejected", "superseded", "candidate", "scratch", "in_progress"})

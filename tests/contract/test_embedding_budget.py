@@ -13,7 +13,6 @@ digit-dense ASCII, one token a character, under an estimate of three.
 from __future__ import annotations
 
 import pytest
-
 from scope_recall.contracts import ContractError
 from scope_recall.core.embedding_budget import (
     EMBEDDING_INPUT_TOKENS,

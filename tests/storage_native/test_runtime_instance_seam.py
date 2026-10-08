@@ -7,13 +7,12 @@ route is used; both embedding ports are deterministic TEST dependencies.
 
 from __future__ import annotations
 
-from dataclasses import replace
 import importlib.util
-from pathlib import Path
 import sqlite3
+from dataclasses import replace
+from pathlib import Path
 
 import pytest
-
 from scope_recall.contracts import InstanceBinding, TrustedContext
 from scope_recall.core.recall_policy import RecallPolicy
 from scope_recall.runtime.auxiliary import AuxiliaryRuntimeConfig
@@ -24,7 +23,6 @@ from scope_recall.runtime.instance import (
     default_vector_factory,
 )
 from v11_support import source_event
-
 
 pytestmark = pytest.mark.skipif(
     importlib.util.find_spec("lancedb") is None,

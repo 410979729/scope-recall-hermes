@@ -2,21 +2,20 @@
 
 from __future__ import annotations
 
-from collections import Counter
-from contextlib import closing
-from dataclasses import dataclass
-from decimal import Decimal, ROUND_CEILING
 import hashlib
 import json
 import os
 import sqlite3
 import time
+from collections import Counter
+from contextlib import closing
+from dataclasses import dataclass
+from decimal import ROUND_CEILING, Decimal
 from pathlib import Path
 from types import MappingProxyType
 from typing import Mapping
 
 from .validation import nonneg_decimal, nonneg_int, positive_int, text
-
 
 REQUESTS_TABLE = (
     "CREATE TABLE IF NOT EXISTS requests ("

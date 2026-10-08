@@ -30,12 +30,11 @@ from __future__ import annotations
 import codecs
 import json
 import os
-from pathlib import Path
 import re
+from pathlib import Path
 from typing import Any
 
 import yaml
-
 from scope_recall._version import __version__ as PACKAGE_VERSION
 from scope_recall.adapters.clients.config import CodexConfigError, load_shared_client
 from scope_recall.adapters.hermes.installation import attachment_path

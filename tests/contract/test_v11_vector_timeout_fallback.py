@@ -1,9 +1,9 @@
 from dataclasses import replace
 
 import pytest
-
 from scope_recall.core import CoreConfig, MemoryCore
 from scope_recall.core.recall_policy import RecallPolicy
+
 from tests.contract.test_v11_recall_admission import _capture
 from tests.v11_support import context, recall_request
 

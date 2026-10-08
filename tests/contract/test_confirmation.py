@@ -11,7 +11,6 @@ from __future__ import annotations
 import sqlite3
 
 import pytest
-
 from scope_recall.contracts import ContractError
 from scope_recall.core.confirmation import (
     CONFIRMED_REASON,
@@ -20,7 +19,7 @@ from scope_recall.core.confirmation import (
     is_confirmation,
 )
 from scope_recall.core.source_qualification import bound_literal
-from test_v11_claims import app, accept, capture, draft
+from test_v11_claims import accept, app, capture, draft
 
 #: An elliptical statement: no active-voice subject->relation->value order, so
 #: the fact gate refuses it on its own. Exactly the population confirmation is

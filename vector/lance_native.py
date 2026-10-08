@@ -12,9 +12,9 @@ from __future__ import annotations
 import importlib
 import importlib.util
 import os
-from pathlib import Path
 import subprocess
 import sys
+from pathlib import Path
 from typing import Any
 
 _PROBE_TIMEOUT_SECONDS = 10.0

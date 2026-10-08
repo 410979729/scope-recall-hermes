@@ -2,19 +2,17 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
-from contextlib import contextmanager
 import json
 import sqlite3
+from contextlib import contextmanager
+from dataclasses import dataclass, replace
 
 import pytest
-
 from scope_recall.contracts import ContractError, TrustedContext, validate_payload
 from scope_recall.core import CoreConfig, MemoryCore
 from scope_recall.core.events import lexical_terms
-from scope_recall.core.recall_diagnostics import RecallDiagnostics
 from scope_recall.core.recall_budget import estimate_tokens
-from scope_recall.core.recall_policy import meaningful_query_terms
+from scope_recall.core.recall_diagnostics import RecallDiagnostics
 from scope_recall.core.recall_packet import (
     RecallPacketCompiler,
     RecallPacketRenderer,
@@ -24,9 +22,11 @@ from scope_recall.core.recall_packet import (
     prioritize_current_claims,
     render_recall_packet_context,
 )
+from scope_recall.core.recall_policy import meaningful_query_terms
 from scope_recall.core.resume_compaction import compact_episode_variants
-from scope_recall.core.retrieval import CandidateRef, RetrievedObject, RetrievalResult, SearchContext
+from scope_recall.core.retrieval import CandidateRef, RetrievalResult, RetrievedObject, SearchContext
 from scope_recall.core.retrieval_storage import RetrievalStorage
+
 from tests.contract.test_v11_claims import accept, capture, draft
 from tests.v11_support import context, recall_request
 

@@ -11,7 +11,6 @@ was never delivered at all.
 from __future__ import annotations
 
 import pytest
-
 from scope_recall.core.duplicate_collapse import (
     DUPLICATE_GAP_PREFIX,
     DistinctContent,
@@ -21,6 +20,7 @@ from scope_recall.core.duplicate_collapse import (
     parse_duplicate_gap,
 )
 from scope_recall.core.recall_packet import public_gaps
+
 from tests.contract.test_v11_claims import app, capture
 from tests.v11_support import recall_request
 

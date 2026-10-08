@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import json
 import os
-from pathlib import Path
 import shutil
-from types import ModuleType
 import uuid
+from pathlib import Path
+from types import ModuleType
 
 from . import install_claude_code, install_codex, install_dsh, install_hermes, install_workbuddy
 from .backup import atomic_write, sha256
@@ -443,8 +443,8 @@ def _disable_autostart(data_dir: Path) -> None:
     registration_path = data_dir / "runtime-autostart.json"
     if not registration_path.is_file():
         return
-    from .autostart import disable
     from ..runtime.worker_entry import load_config
+    from .autostart import disable
 
     registration = json.loads(registration_path.read_text(encoding="utf-8"))
     config = load_config(registration["config_path"])

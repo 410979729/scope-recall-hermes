@@ -7,16 +7,15 @@ action. Unknown or ambiguous inputs become REVIEW proposals.
 
 from __future__ import annotations
 
+import unicodedata
 from dataclasses import dataclass
 from typing import Any
-import unicodedata
 
 from .fact_identity import (
     MAX_FACT_VALUE_CHARS,
     FactIdentityError,
     build_fact_identity,
 )
-
 
 MAX_SCOPE_ID_CHARS = 240
 _CARDINALITY_ALIASES = {

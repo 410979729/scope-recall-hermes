@@ -7,7 +7,6 @@ import sqlite3
 from contextlib import closing
 
 import pytest
-
 from test_v11_claims import app, capture, draft, initial
 from test_v11_deletion import authorize, request
 from test_v11_episodes import artifact, resume
@@ -798,6 +797,7 @@ def test_batch_respects_pending_retry_backoff(worker_app):
 
 def test_no_root_write_boundary_rechecks_the_lease(worker_app, monkeypatch):
     from contextlib import contextmanager
+
     from scope_recall.core.worker_consolidation import process_consolidate
 
     core, ctx, clock = worker_app

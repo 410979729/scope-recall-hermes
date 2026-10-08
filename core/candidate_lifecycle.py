@@ -6,10 +6,10 @@ the fact state and it never grants source, identity or write authority.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import json
 import re
 import unicodedata
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol
 
 from ..contracts import ContractError

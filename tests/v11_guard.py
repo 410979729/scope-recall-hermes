@@ -1,9 +1,8 @@
 import os
 import re
-from pathlib import Path
 import shlex
 import sys
-
+from pathlib import Path
 
 _ROOT = Path(__file__).resolve().parents[1]
 _ISOLATED = Path(os.environ["SCOPE_RECALL_TEST_BOUNDARY_PARENT"]).resolve()

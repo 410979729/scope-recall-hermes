@@ -7,6 +7,7 @@ import sqlite3
 from scope_recall.adapters.hermes import ScopeRecallHermesAdapter
 from scope_recall.adapters.hermes.boundary import SourceObservationLedger, pre_llm_source_event, sync_turn_source_events
 from scope_recall.core import capture_inbox
+
 from tests.v11_support import context
 
 
@@ -686,6 +687,7 @@ def test_a_busy_store_met_by_a_session_s_capture_retry_says_pending(adapter, ins
 
     from scope_recall.adapters.hermes.identity import host_scope_payload
     from scope_recall.core.writer_lease import TruthWriterBusyError
+
     from tests.v11_support import source_event
 
     provider, clock = adapter

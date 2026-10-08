@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
 import itertools
+from dataclasses import replace
 
 import pytest
-
 from scope_recall.core import CoreConfig, MemoryCore
+
 from tests.contract.test_v11_claims import Clock, capture
 from tests.v11_support import context, recall_request
 

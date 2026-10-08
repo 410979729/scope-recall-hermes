@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 import threading
+from dataclasses import dataclass, field
 from typing import Callable
 
 _SHUTDOWN_DRAIN_TIMEOUT_S = 5.0

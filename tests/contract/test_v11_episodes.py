@@ -1,12 +1,11 @@
 """P07 source-to-structure contracts; real-model/host slices have separate receipts."""
 
-from dataclasses import replace
 import hashlib
 import json
 import sqlite3
+from dataclasses import replace
 
 import pytest
-
 from scope_recall.contracts import ArtifactVersion, ContractError, DisplaySnapshot
 from scope_recall.core.artifact_storage import artifact_identity
 from scope_recall.core.episodes import source_watermark

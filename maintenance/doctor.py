@@ -7,29 +7,29 @@ far into the instance the checks can get. Nothing here writes to the instance.
 
 from __future__ import annotations
 
-from contextlib import closing, suppress
-from dataclasses import asdict, dataclass, field
-from datetime import datetime, timedelta, timezone
 import importlib.metadata
 import json
 import os
 import sqlite3
 import subprocess
+from contextlib import closing, suppress
+from dataclasses import asdict, dataclass, field
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Literal
 
 import scope_recall
+from scope_recall._version import __version__
 from scope_recall.contracts import TrustedContext
 from scope_recall.core import CoreConfig, MemoryCore
+from scope_recall.core.failure_retry import NEEDS_REVIEW_COUNT
 from scope_recall.core.inbox_rules import given_up, replayable
+from scope_recall.core.index_rebuild import IMPORT_EMBED_QUEUE_CEILING
 from scope_recall.core.schema import SCHEMA_VERSION, UPGRADE_CHAIN, stale_header_schema
 from scope_recall.core.storage import SQLiteStorage
-from scope_recall.core.failure_retry import NEEDS_REVIEW_COUNT
-from scope_recall.core.index_rebuild import IMPORT_EMBED_QUEUE_CEILING
 from scope_recall.runtime.model_budget import embedding_calls, pre_request_refusals, provider_holds, provider_refusals
 from scope_recall.runtime.running_code import live_records, stale_records
 from scope_recall.vector.compaction import instance_vector_footprints
-from scope_recall._version import __version__
 
 from . import package_health
 from .install_common import RUNTIME_CONFIG_LIMIT

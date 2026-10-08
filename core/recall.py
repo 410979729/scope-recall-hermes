@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
-from itertools import islice
 import sqlite3
 import time
+from dataclasses import replace
+from itertools import islice
 from typing import Protocol
 
 from ..contracts import ContractError

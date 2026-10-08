@@ -121,8 +121,8 @@ def test_the_changelog_has_an_entry_for_this_version() -> None:
 
 
 def _git(*args):
-    import subprocess
     import pathlib
+    import subprocess
 
     root = pathlib.Path(__file__).resolve().parents[2]
     done = subprocess.run(["git", *args], cwd=root, capture_output=True, text=True)

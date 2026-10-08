@@ -5,13 +5,15 @@ TEST archive handoffs. Never stops a service or changes a scheduled principal.
 """
 
 from __future__ import annotations
-from collections import defaultdict
+
 import hashlib
 import json
 import re
 import sqlite3
+from collections import defaultdict
 from pathlib import Path
 from typing import Any, Mapping
+
 from scope_recall.adapters.clients.config import load_codex_config
 from scope_recall.adapters.hermes.installation import (
     AUDIT_RETENTION_SCOPES,

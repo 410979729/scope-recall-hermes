@@ -5,26 +5,29 @@ owners; this module is the public facade and the command line.
 """
 
 from __future__ import annotations
+
 import argparse
 import json
 from pathlib import Path
 from typing import Any, Callable
 
-from .migration_records import (
-    LEGACY_BASELINE as LEGACY_BASELINE,
-    MigrationError as MigrationError,
-)
 from .legacy_catalog import build_legacy_catalog as build_legacy_catalog
+from .legacy_conversion import migrate_legacy as migrate_legacy
 from .migration_activation import (
-    install_hermes_archive_migration,
     accept_identical_archive_run,
     archive_report_path,
+    install_hermes_archive_migration,
     require_hex64,
     require_test_absolute_target,
     write_complete_archive_receipt,
 )
 from .migration_index import queue_index_page as queue_index_page
-from .legacy_conversion import migrate_legacy as migrate_legacy
+from .migration_records import (
+    LEGACY_BASELINE as LEGACY_BASELINE,
+)
+from .migration_records import (
+    MigrationError as MigrationError,
+)
 
 _ARGUMENTS: tuple[tuple[str, dict[str, Any]], ...] = (
     ("--source", {"required": True, "help": "旧版离线 memory.sqlite3"}),

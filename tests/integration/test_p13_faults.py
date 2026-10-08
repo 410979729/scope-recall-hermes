@@ -2,15 +2,15 @@
 
 from __future__ import annotations
 
+import time
 from concurrent.futures import ThreadPoolExecutor
 from threading import Event
-import time
 
 import pytest
-
 from scope_recall.contracts import ContractError
 from scope_recall.core import CoreConfig, MemoryCore
 from scope_recall.core.file_lock import advisory_file_lock
+
 from tests.v11_support import context, source_event
 
 

@@ -2,23 +2,23 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import TYPE_CHECKING
 import json
 import re
+from dataclasses import dataclass
 from importlib.resources import files
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from ..contracts import ContractError
-from .claim_storage import parse_source_ref
 from .candidate_lifecycle import CandidateSnapshot, candidate_model_subject
+from .claim_storage import parse_source_ref
 from .consolidation_chunks import ChunkedSource, ConsolidationChunk
+from .consolidation_summary import apply_summary, stage_fragment, validate_fragment
 from .episodes import source_origin, source_watermark
 from .evidence_quote import resolve_evidence_quotes
+from .failure_retry import validation_feedback as safe_feedback
 from .mutate import Mutation, MutationReceipt, apply_claim_frames, validate_claims
 from .worker_outcomes import DerivationFence, claim_versions_mark, claims_changed, derivation_changed
-from .consolidation_summary import apply_summary, stage_fragment, validate_fragment
-from .failure_retry import validation_feedback as safe_feedback
 
 if TYPE_CHECKING:
     from .storage import StoredSource

@@ -1,7 +1,6 @@
 from pathlib import Path
 
 import pytest
-
 from scope_recall.contracts import (
     ContractError,
     InstanceBinding,

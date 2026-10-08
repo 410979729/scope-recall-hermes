@@ -16,7 +16,6 @@ from .secret_patterns import (
     secret_scan_shadow,
 )
 
-
 PRIVATE_PATH_PATTERNS: tuple[re.Pattern[str], ...] = (
     # Windows drive paths first so `C:/Users/...` is fully redacted before the
     # POSIX `/Users/...` fallback can leave a `C:` fragment behind.

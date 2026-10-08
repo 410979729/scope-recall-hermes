@@ -10,9 +10,9 @@ from __future__ import annotations
 import base64
 import csv
 import hashlib
-from importlib import metadata
 import io
 import json
+from importlib import metadata
 from pathlib import Path
 
 DISTRIBUTION = "hermes-scope-recall"
@@ -56,8 +56,8 @@ def dependency_health(requirements, *, version_lookup=metadata.version) -> dict:
     its declared extra requirement still applies. Dev extras are not runtime.
     """
     try:
-        from packaging.requirements import Requirement
         from packaging.markers import default_environment
+        from packaging.requirements import Requirement
         from packaging.utils import canonicalize_name
         from packaging.version import InvalidVersion
     except ImportError:

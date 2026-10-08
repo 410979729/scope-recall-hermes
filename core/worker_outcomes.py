@@ -7,13 +7,12 @@ verdict only through the helpers here.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
 import hashlib
+from dataclasses import dataclass, replace
 
 from ..contracts import ContractError
 from .delete_storage import group_digest, retraction_after
-from .failure_retry import validation_feedback
-from .failure_retry import ACCOUNT_REFUSALS
+from .failure_retry import ACCOUNT_REFUSALS, validation_feedback
 
 _NON_RETRYABLE_MODEL_ERRORS = frozenset(
     {

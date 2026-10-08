@@ -12,7 +12,6 @@ import shlex
 import sys
 
 import pytest
-
 from scope_recall.maintenance import autostart
 
 

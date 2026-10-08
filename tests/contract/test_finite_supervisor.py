@@ -1,24 +1,22 @@
 """Focused finite scheduling checks with no model or network calls."""
 
-from concurrent.futures import ThreadPoolExecutor
-from dataclasses import replace
-from datetime import datetime, timedelta, timezone
 import json
-from pathlib import Path
 import subprocess
 import sys
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
-
 from scope_recall.contracts import InstanceBinding, TrustedContext
 from scope_recall.core import CoreConfig, MemoryCore
 from scope_recall.runtime.instance import RuntimeInstanceConfig
 from scope_recall.runtime.scheduling import SupervisorControl, next_wake, supervise
 from scope_recall.runtime.worker_entry import DAILY_COUNTER_MAX, _reserve_daily_work
 from v11_support import source_event
-
 
 NOW = datetime(2026, 9, 12, 0, 0, tzinfo=timezone.utc)
 
@@ -118,9 +116,8 @@ def test_an_inbox_row_a_replay_will_store_wakes_the_worker(tmp_path):
     ``SOURCE_MISSING`` (replayed once more since 3.4.0rc10) waited for a pass something else started.  A key
     collision wakes it too: its pass gives it a new key, and one its new key cannot store either is final
     (``VERSION_CONFLICT:rekeyed``), which wakes nothing (reviews of rc10).  Nor does a row whose failure is final."""
-    from scope_recall.core import capture_inbox
-
     from scope_recall._version import __version__
+    from scope_recall.core import capture_inbox
 
     core, cfg, _path = fixture(tmp_path)
     later = (NOW + timedelta(minutes=40)).strftime("%Y-%m-%dT%H:%M:%SZ")

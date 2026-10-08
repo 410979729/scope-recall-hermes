@@ -2,20 +2,17 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
 import json
-from pathlib import Path
 import sqlite3
+from dataclasses import replace
+from pathlib import Path
 
 import pytest
-
-from maintenance.backup import backup_sqlite
-from maintenance.migrate_v2 import migrate_legacy
-from maintenance.migration_records import stable_legacy_id
-from maintenance.rollback import rollback_to_verified_snapshot
 from legacy_fixture import build_official_578b_fixture
 from release_fixture import LATEST_RELEASE, LATEST_SCHEMA, PREVIOUS_SCHEMA, build_previous_release_store
 from scope_recall.contracts import ContractError, InstanceBinding, TrustedContext
+from scope_recall.core import CoreConfig, MemoryCore
+from scope_recall.core.capture import record_event
 from scope_recall.core.restore import (
     InstallationMaintenance,
     begin_restore,
@@ -23,10 +20,13 @@ from scope_recall.core.restore import (
     ledger_digest,
     replay_deletion_ledger,
 )
-from scope_recall.core import CoreConfig, MemoryCore
 from scope_recall.core.schema import SCHEMA_VERSION
 from scope_recall.core.storage import SQLiteStorage
-from scope_recall.core.capture import record_event
+
+from maintenance.backup import backup_sqlite
+from maintenance.migrate_v2 import migrate_legacy
+from maintenance.migration_records import stable_legacy_id
+from maintenance.rollback import rollback_to_verified_snapshot
 
 
 def _legacy(path: Path) -> None:
@@ -482,14 +482,15 @@ def test_p15_official_multivalue_is_archived_without_fake_conditions(tmp_path: P
 
 def test_migration_public_facade_has_real_responsibility_owners():
     import ast
+
     from scope_recall.maintenance import (
-        migrate_v2,
-        legacy_conversion,
         legacy_catalog,
         legacy_claims,
+        legacy_conversion,
         legacy_deletions,
         legacy_plan,
         legacy_sources,
+        migrate_v2,
         migration_activation,
         migration_index,
         migration_records,

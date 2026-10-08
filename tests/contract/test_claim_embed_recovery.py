@@ -8,13 +8,12 @@ claims by their words alone (review of 3.7.4).
 
 from __future__ import annotations
 
+import sqlite3
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
-import sqlite3
 
 from scope_recall.contracts import ContractError
 from scope_recall.core.schema import SCHEMA_VERSION
-
 from test_v11_claims import app, capture, initial  # noqa: F401  (fixtures)
 from test_v11_deletion import authorize, request
 

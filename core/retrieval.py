@@ -7,16 +7,15 @@ once at the trusted boundary; downstream stages receive that frozen snapshot.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
-from datetime import datetime, timezone, tzinfo
 import base64
 import json
 import math
+from dataclasses import dataclass, replace
+from datetime import datetime, timezone, tzinfo
 from typing import Literal
 
 from ..contracts import ContractError, RecallRequest, TrustedContext, validate_model_request
 from .recall_scope import QueryScope
-
 
 ObjectKind = Literal["event", "claim", "episode", "artifact", "reference"]
 CandidateChannel = Literal[

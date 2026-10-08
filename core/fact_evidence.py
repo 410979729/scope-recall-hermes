@@ -9,17 +9,16 @@ remain review-only rather than borrowing support from unrelated batch text.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import re
 import unicodedata
+from dataclasses import dataclass
 
 from .fact_actions import ClaimDraft, EvidenceReference
 from .fact_temporal_semantics import (
+    classify_durable_state_clause,
     clause_has_explicit_current_marker,
     clause_has_transition_event,
-    classify_durable_state_clause,
 )
-
 
 DIRECT_EVIDENCE_SOURCE_TYPES = frozenset(
     {

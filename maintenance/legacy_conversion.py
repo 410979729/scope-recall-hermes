@@ -10,15 +10,15 @@ below reads and extends one ``Conversion``. Any pre-write stage may raise
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
 import json
-from pathlib import Path
 import sqlite3
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping
 
 from scope_recall.contracts import InstanceBinding, TrustedContext
-from scope_recall.core.events import indexed_terms
 from scope_recall.core import lexical_index
+from scope_recall.core.events import indexed_terms
 from scope_recall.core.schema import SCHEMA_VERSION, normalize_scope_authorizations
 from scope_recall.core.storage import SQLiteStorage
 from scope_recall.maintenance.legacy_episode_membership import plan_legacy_episode_memberships
@@ -39,9 +39,9 @@ from .legacy_catalog import (
     HISTORY_TABLES,
     KNOWN_TABLES,
     REQUIRED_COLUMNS,
+    build_legacy_catalog,
     is_derived_index,
     offline_source_path,
-    build_legacy_catalog,
 )
 from .legacy_claims import link_history_records, versions_by_playbook, write_fact_claims, write_procedures
 from .legacy_deletions import plan_deletions, write_deletions
@@ -49,12 +49,12 @@ from .legacy_lifecycle import apply_lifecycle_suppression
 from .legacy_plan import Blocked, Conversion, Row
 from .legacy_sources import (
     SOURCE_EVENT_FIELDS,
+    archive_sources,
     json_list,
     map_scope_rows,
-    scope_descriptor,
     own_scope_id,
+    scope_descriptor,
     text_or_none,
-    archive_sources,
 )
 from .migration_activation import existing_target_scopes, load_installation_handoff, resolve_scope_mapping
 from .migration_records import (
@@ -63,16 +63,16 @@ from .migration_records import (
     MigrationError,
     blocked_prewrite_report,
     blocked_report,
-    canonical_json,
-    table_columns,
     canonical_digest,
+    canonical_json,
     materialize_explicit_scope_selection,
     open_immutable,
     recorded_time,
-    table_rows,
-    sanitized_value,
     sanitized_text,
+    sanitized_value,
+    table_columns,
     table_names,
+    table_rows,
     write_report,
 )
 

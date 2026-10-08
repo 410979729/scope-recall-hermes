@@ -23,8 +23,8 @@ import codecs
 import copy
 import json
 import os
-from pathlib import Path
 import shlex
+from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from scope_recall.adapters.clients.config import CodexConfigError, load_shared_client

@@ -11,10 +11,10 @@ request-budget failure may finish on an owned reaper after the caller returns.
 
 from __future__ import annotations
 
+import time
 from contextlib import contextmanager
 from contextvars import ContextVar, Token
 from dataclasses import dataclass
-import time
 from typing import Iterator
 
 # Same default and range as vector.embedder.query_timeout_seconds.

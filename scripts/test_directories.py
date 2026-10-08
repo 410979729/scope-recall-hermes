@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import os
-from pathlib import Path
 import shutil
 import tempfile
 import weakref
+from pathlib import Path
 
 
 def _cleanup(name: str, parent: str, prefix: str) -> None:

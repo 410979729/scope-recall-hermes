@@ -15,14 +15,14 @@ from __future__ import annotations
 import sqlite3
 
 import pytest
-
 from scope_recall.runtime.models import (
-    AuxiliaryModelError,
     MAX_EMBED_BATCH,
+    AuxiliaryModelError,
     _embedding_vectors,
     build_gemini_embed_body,
     build_openai_embed_body,
 )
+
 from tests.contract.test_v11_claims import app, capture  # noqa: F401  (fixture)
 
 

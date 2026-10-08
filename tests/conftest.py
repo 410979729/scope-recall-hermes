@@ -11,7 +11,6 @@ import types
 from pathlib import Path
 
 import pytest
-
 from plugin_source import install_plugin_tree
 
 from scripts.execution_boundary import (

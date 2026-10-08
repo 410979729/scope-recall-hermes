@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import hashlib
 import json
+from dataclasses import dataclass
 
 from ..contracts import ContractError
 from . import lineage
@@ -19,8 +19,8 @@ from .episodes import (
     state_from_sources,
     supported_work_goal,
 )
-from .visibility import allowed, allowed_refs
 from .resume_compaction import resume_evidence_refs
+from .visibility import allowed, allowed_refs
 
 #: A proof whose capture the episode does not hold.
 _NOT_CAPTURED = object()

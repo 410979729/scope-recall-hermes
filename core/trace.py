@@ -7,13 +7,13 @@ resolve a name. Each path stays in one authorized scope and one frozen time.
 
 from __future__ import annotations
 
+import hashlib
+import json
+import time
 from collections import deque
 from contextlib import contextmanager
 from dataclasses import replace
 from pathlib import Path
-import hashlib
-import json
-import time
 from types import SimpleNamespace
 
 from ..contracts import ContractError, validate_model_request, validate_payload

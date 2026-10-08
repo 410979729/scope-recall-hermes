@@ -1,21 +1,19 @@
 """Focused offline checks for long-source progress, transaction and authority fences."""
 
-from dataclasses import replace
 import json
 import sqlite3
+from dataclasses import replace
 
 import pytest
-
 from scope_recall.contracts import ContractError
 from scope_recall.core import CoreConfig, MemoryCore
 from scope_recall.core.consolidate import consolidation_messages
 from scope_recall.core.schema import SCHEMA_VERSION
-from v11_support import downgrade_store
 from scope_recall.core.storage import SQLiteStorage
 from scope_recall.core.work_storage import WorkItems
-from test_v11_worker import worker_app, app, capture, draft, consolidation_payload, FakeConsolidation, _mark_embed_done
 from test_v11_deletion import authorize, request
-
+from test_v11_worker import FakeConsolidation, _mark_embed_done, app, capture, consolidation_payload, draft, worker_app
+from v11_support import downgrade_store
 
 FIRST = "TEST-project 配色 蓝色。"
 LAST = "TEST-project 主题 深色。"

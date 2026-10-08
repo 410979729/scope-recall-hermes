@@ -25,7 +25,6 @@ from __future__ import annotations
 import inspect
 
 import pytest
-
 from scope_recall.runtime.lance_port import LanceIndexWriter, LancePurgePort, LanceVectorRecord
 from scope_recall.vector.process_store import ProcessLanceVectorStore
 from scope_recall.vector.sqlite_store import SQLiteBruteForceVectorStore

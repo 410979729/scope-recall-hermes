@@ -37,7 +37,6 @@ from typing import Any, Literal
 
 from .writer_lease import TruthWriterBusyError, TruthWriterLease
 
-
 TruthDatabaseMode = Literal["ro", "rw", "rwc"]
 _DEFAULT_ISOLATION_LEVEL = object()
 

@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
 import hashlib
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Mapping, cast
 
@@ -21,14 +21,13 @@ from scope_recall.contracts import (
 from ...runtime.worker_launch import RUNTIME_CONFIG_FILENAME
 from .audiences import LOCAL_PLATFORMS, LOCAL_USER_ID, approved_local_platforms
 from .installation import (
+    SCHEMA_VERSION,
     HermesIdentityError,
     InstallationManifest,
     assert_binding_matches_manifest,
     is_archive_scope,
     load_binding_for_home,
-    SCHEMA_VERSION,
 )
-
 
 _NON_PRIMARY_CONTEXTS = frozenset({"subagent", "cron", "flush"})
 _UNATTESTED_HUMAN_PLATFORMS = frozenset({"a2a"})

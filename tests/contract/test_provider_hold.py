@@ -7,14 +7,12 @@ the refused work type down, and the next pass asked again at once.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
 import json
 import sqlite3
 import time
+from datetime import datetime, timedelta, timezone
 
 import pytest
-
-from scope_recall.runtime.models import AuxiliaryModelError
 from scope_recall.runtime.auxiliary import build_auxiliary_runtime
 from scope_recall.runtime.model_budget import (
     PROVIDER_HOLD_FIRST_SECONDS,
@@ -23,6 +21,8 @@ from scope_recall.runtime.model_budget import (
     provider_hold_until,
     provider_holds,
 )
+from scope_recall.runtime.models import AuxiliaryModelError
+
 from tests.contract.test_finite_supervisor import NOW, fixture, queue
 from tests.contract.test_runtime_auxiliary import FakeTransport, _runtime_config, _vector
 from tests.contract.test_v11_claims import app, capture  # noqa: F401  (fixture)

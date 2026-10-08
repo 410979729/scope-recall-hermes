@@ -11,7 +11,6 @@ from __future__ import annotations
 from dataclasses import replace
 
 import pytest
-
 from scope_recall.core.claims import RootEvidence
 from scope_recall.core.corroboration import (
     CORROBORATED_REASON,
@@ -21,7 +20,7 @@ from scope_recall.core.corroboration import (
     independent_first_hand_sources,
     witness_occasions,
 )
-from test_v11_claims import app, accept, capture, draft
+from test_v11_claims import accept, app, capture, draft
 
 
 def _root(ref, *, origin="human_direct", state="complete", gaps=(), session=None, principal="principal:TEST-owner"):

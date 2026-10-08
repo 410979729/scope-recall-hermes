@@ -4,19 +4,18 @@ from __future__ import annotations
 
 import json
 import os
-from pathlib import Path
 import subprocess
 import sys
 import time
+from pathlib import Path
 
 import pytest
-
 from scope_recall.adapters.clients import install_codex_scope_recall
 from scope_recall.adapters.runtime_wiring import write_ephemeral_worker_config
+from scope_recall.runtime import worker_launch, worker_watchdog
 from scope_recall.runtime.worker_entry import FINALIZE_MARGIN_SECONDS
 from scope_recall.runtime.worker_launch import launch_worker
-from scope_recall.runtime.worker_watchdog import KILL_GRACE_SECONDS, _OwnedWindowsJob, _kill_tree
-from scope_recall.runtime import worker_launch, worker_watchdog
+from scope_recall.runtime.worker_watchdog import KILL_GRACE_SECONDS, _kill_tree, _OwnedWindowsJob
 
 
 def _alive(pid: int) -> bool:

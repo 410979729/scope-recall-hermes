@@ -1,22 +1,21 @@
 """Source fidelity and raw retrieval only; M/C semantic assertions run later."""
 
-from dataclasses import replace
 import json
 import sqlite3
+from dataclasses import replace
 
 import pytest
-
 from scope_recall.contracts import (
+    ArtifactVersion,
     ContractError,
     DisplaySnapshot,
-    ArtifactVersion,
     SourceSnapshot,
     validate_proposal_references,
 )
 from scope_recall.core import CoreConfig, MemoryCore
-from scope_recall.core.events import prepare_capture, lexical_terms
+from scope_recall.core.events import lexical_terms, prepare_capture
 from scope_recall.core.storage import SQLiteStorage
-from v11_support import context, source_event, public_cases, proposal
+from v11_support import context, proposal, public_cases, source_event
 
 
 @pytest.fixture

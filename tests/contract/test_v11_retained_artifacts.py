@@ -4,7 +4,6 @@ from dataclasses import replace
 from pathlib import Path
 
 import pytest
-
 from scope_recall.contracts import ContractError
 from scope_recall.core.retained_artifacts import (
     ArtifactGrant,

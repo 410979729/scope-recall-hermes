@@ -1,15 +1,14 @@
 """Real SQLite diagnostic and durable replay boundaries; no models or production data."""
 
-from contextlib import closing
-from dataclasses import replace
-from datetime import datetime, timedelta, timezone
 import json
 import sqlite3
 import subprocess
 import sys
+from contextlib import closing
+from dataclasses import replace
+from datetime import datetime, timedelta, timezone
 
 import pytest
-
 from scope_recall._version import __version__
 from scope_recall.contracts import ContractError
 from scope_recall.core import CoreConfig, MemoryCore

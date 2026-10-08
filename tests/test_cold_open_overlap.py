@@ -5,9 +5,8 @@ import threading
 import time
 
 import pytest
-
-from scope_recall.vector import process_store as native
 from scope_recall.core.deadline import RequestDeadline, using_request_deadline
+from scope_recall.vector import process_store as native
 
 
 def store(tmp_path, monkeypatch, *, error=False, delay=0.1):

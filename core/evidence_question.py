@@ -27,11 +27,12 @@ a question already answered.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import hashlib
 import json
-from typing import Iterable, Mapping
 import unicodedata
+from dataclasses import dataclass
+from typing import Iterable, Mapping
+
 from .claims import AUTHORITY_ORIGINS, HUMAN_ONLY_KINDS, VALUE_FREE_KINDS
 from .source_qualification import bound_literal
 

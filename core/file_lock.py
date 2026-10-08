@@ -1,12 +1,13 @@
 """Portable advisory file locking shared by persistent plugin resources."""
 
 from __future__ import annotations
-from contextlib import contextmanager
+
 import errno
 import math
-from pathlib import Path
 import threading
 import time
+from contextlib import contextmanager
+from pathlib import Path
 from typing import Iterator
 
 try:

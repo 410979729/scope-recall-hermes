@@ -8,16 +8,14 @@ store's writer lease 42 s, every other entry's write failed meanwhile, and Herme
 counts are what a regression raises; the time itself depends on the machine.
 """
 
-from dataclasses import replace
 import sqlite3
+from dataclasses import replace
 
 import pytest
-
 from scope_recall.contracts import ContractError
 from scope_recall.core.events import lexical_terms
 from scope_recall.core.storage import SQLiteStorage
 from scope_recall.core.visibility import allowed, allowed_refs
-
 from test_r1_candidate_lifecycle import _candidate
 from test_shared_store import shared, shared_context  # noqa: F401  (fixture)
 from test_v11_claims import app, capture, initial  # noqa: F401  (fixtures)

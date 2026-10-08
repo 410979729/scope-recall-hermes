@@ -11,7 +11,6 @@ from __future__ import annotations
 import sqlite3
 
 import pytest
-
 from scope_recall.contracts import ContractError
 from scope_recall.core.failure_retry import (
     ACTIONABLE_FAILURES,
@@ -27,7 +26,6 @@ from scope_recall.core.schema import SCHEMA_VERSION
 from scope_recall.maintenance import doctor
 from test_r1_candidate_lifecycle import _candidate, _candidate_rows, _finish_source_work
 from test_v11_claims import app
-
 
 # --------------------------------------------------------------------------
 # Reading a decorated error code
@@ -447,9 +445,7 @@ def test_a_terminal_failure_is_unaffected_by_the_refund(app):
 def test_the_wait_grows_with_each_refusal_in_a_row():
     """Refunding the attempt alone left the ordinary 60s ceiling in place, and
     197 items retried without pause for an entire provider outage."""
-    from scope_recall.core.work_storage import _capacity_backoff_seconds
-
-    from scope_recall.core.work_storage import CAPACITY_BACKOFF_FLOOR_SECONDS
+    from scope_recall.core.work_storage import CAPACITY_BACKOFF_FLOOR_SECONDS, _capacity_backoff_seconds
 
     waits = [_capacity_backoff_seconds(n) for n in range(1, 8)]
     assert waits == sorted(waits), waits
@@ -558,6 +554,7 @@ def test_invalid_candidate_gets_one_extra_attempt_repair_or_visible_review(app, 
     _candidate(core, ctx)
     _finish_source_work(core)
     import json
+
     from scope_recall.core.worker import build_consolidation_model
     from scope_recall.runtime.instance import _BoundedCandidate
 

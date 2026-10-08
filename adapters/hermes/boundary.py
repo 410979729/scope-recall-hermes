@@ -2,16 +2,15 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from datetime import datetime, timezone
 import math
 import re
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any, Literal, cast
 
 from scope_recall.contracts import Origin, SourceEvent, TrustedContext
 
 from .attachments import authorize_attachment_metadata
-
 
 OutcomeKind = Literal["success", "failure", "cancelled", "interrupted", "truncated"]
 SourceIdentity = tuple[str, int]

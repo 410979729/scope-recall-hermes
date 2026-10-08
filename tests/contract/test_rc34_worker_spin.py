@@ -9,13 +9,14 @@ pass starting at once for the item after it.
 
 from __future__ import annotations
 
-from datetime import timedelta
 import sqlite3
+from datetime import timedelta
 
-from scope_recall.runtime.models import AuxiliaryModelError
 from scope_recall.core.work_storage import AUTO_RECOVERABLE_WORK_TYPES
 from scope_recall.runtime import scheduling
+from scope_recall.runtime.models import AuxiliaryModelError
 from scope_recall.runtime.scheduling import next_wake, supervise
+
 from tests.contract.test_finite_supervisor import NOW, fixture, queue
 from tests.contract.test_v11_claims import app, capture  # noqa: F401  (fixture)
 from tests.contract.test_v11_worker import worker_app  # noqa: F401  (fixture)

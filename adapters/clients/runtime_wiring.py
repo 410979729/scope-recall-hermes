@@ -11,10 +11,12 @@ from scope_recall.adapters.runtime_wiring import (
     GAP_WORKER_BUSY,
     GAP_WORKER_LAUNCH_FAILED,
     TrustedHostRuntime,
-    attach_trusted_host_runtime as _attach_common,
     close_audience_workers,
     launch_audience_worker,
     write_ephemeral_worker_config,
+)
+from scope_recall.adapters.runtime_wiring import (
+    attach_trusted_host_runtime as _attach_common,
 )
 from scope_recall.runtime.worker_launch import launch_worker
 

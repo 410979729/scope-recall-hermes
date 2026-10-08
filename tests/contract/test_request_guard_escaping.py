@@ -11,7 +11,6 @@ from __future__ import annotations
 import json
 
 import pytest
-
 from scope_recall.runtime.models import AuxiliaryModelError
 from test_responses_consolidation import CREDENTIAL_ENV, MODEL, FakeTransport, _answer, _payload, _runtime
 

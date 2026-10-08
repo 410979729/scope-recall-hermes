@@ -14,7 +14,6 @@ import time
 import urllib.parse
 import urllib.request
 
-
 MAX_REQUEST_BYTES = 3 * 1024 * 1024
 _REQUEST_KEYS = frozenset({"url", "body_b64", "headers", "timeout_seconds", "max_response_bytes"})
 

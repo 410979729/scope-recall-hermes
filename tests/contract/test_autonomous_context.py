@@ -1,16 +1,16 @@
 """Ambient memory stays bounded, attributed, current, and distinct from answers."""
 
-from dataclasses import replace
 import itertools
 import sqlite3
+from dataclasses import replace
 
 import pytest
-
-from scope_recall.core import CoreConfig, MemoryCore
 from scope_recall.contracts import ContractError
+from scope_recall.core import CoreConfig, MemoryCore
 from scope_recall.core.background_context import BACKGROUND_PREFIX
 from scope_recall.core.recall_packet import canonical_render_json
 from scope_recall.core.retrieval import SearchContext
+
 from tests.contract.test_v11_claims import Clock, accept, capture, draft
 from tests.contract.test_v11_deletion import authorize, request
 from tests.contract.test_v11_episodes import apply, resume

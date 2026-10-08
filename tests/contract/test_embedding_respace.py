@@ -8,13 +8,12 @@ done embeddings, newest first and only while the embed queue has room.
 
 from __future__ import annotations
 
-from dataclasses import replace
 import json
 import sqlite3
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
-
 from scope_recall.contracts import ContractError
 from scope_recall.core import work_storage
 from scope_recall.core.index_rebuild import IMPORT_EMBED_QUEUE_CEILING
@@ -445,8 +444,8 @@ def test_doctor_names_a_run_no_worker_will_go_on_with():
 def test_doctor_names_an_embedding_backlog_that_aged_beside_a_refusing_provider(tmp_path):
     """Recall went on answering by words alone while embeddings waited for a week behind HTTP 429s, and nothing
     said so (reported with #200)."""
-    from datetime import datetime, timedelta, timezone
     import time
+    from datetime import datetime, timedelta, timezone
 
     from scope_recall.maintenance.doctor import DoctorReport, _check_embedding_health
     from scope_recall.runtime.model_budget import REQUESTS_TABLE, embedding_calls
@@ -547,8 +546,8 @@ def test_doctor_says_nothing_of_a_backlog_where_nothing_embeds_and_names_a_worke
 def test_doctor_blames_the_worker_only_when_nothing_asked_the_provider(tmp_path, statuses, said):
     """A proxy outage ends calls in network errors, which are no refusals: "refused nothing, so no worker has reached
     them" was wrong there (review of 3.8.0)."""
-    from datetime import datetime, timedelta, timezone
     import time
+    from datetime import datetime, timedelta, timezone
 
     from scope_recall.maintenance.doctor import DoctorReport, _check_embedding_health
     from scope_recall.runtime.model_budget import REQUESTS_TABLE

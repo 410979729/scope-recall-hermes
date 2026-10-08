@@ -8,7 +8,6 @@ from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
 
 import pytest
-
 from scope_recall.contracts import ContractError
 from scope_recall.core.worker_consolidation import decode_consolidation_result
 from test_v11_claims import accept, app, capture, draft

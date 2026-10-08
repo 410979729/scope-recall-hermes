@@ -10,7 +10,6 @@ from ..contracts import ContractError
 from .claims import canonical_time
 from .source_qualification import AUTHORITY_QUESTION, preserves_qualifiers
 
-
 TOPIC_BREAK = re.compile(r"换个话题|另一个话题|转去|转到|接下来讨论|switch (?:topic|to)|new topic", re.I)
 #: ``如果``/``假如``/``假设`` had no English counterpart, so an English
 #: conditional read as an assertion.  Measured on one instance: "If a tool failed

@@ -2,19 +2,18 @@
 
 from __future__ import annotations
 
-from copy import deepcopy
-from dataclasses import dataclass, replace
-from datetime import datetime, timezone
 import hashlib
 import json
 import re
+from copy import deepcopy
+from dataclasses import dataclass, replace
+from datetime import datetime, timezone
 
 from ..contracts import Basis, ClaimProposal, ContractError, Origin, SourcePrincipal
 from .candidate_lifecycle import SELF_SUBJECTS
 from .fact_actions import ClaimDraft, EvidenceReference
 from .fact_evidence import evidence_supports_claim, evidence_supports_relation
 from .fact_temporal_semantics import classify_durable_state_clause
-from .subject_binding import neighbourhood_binds
 from .source_qualification import (
     AUTHORITY_QUESTION,
     RELATIVE_SCOPE,
@@ -27,6 +26,7 @@ from .source_qualification import (
     preserves_qualifiers,
     self_report_bound,
 )
+from .subject_binding import neighbourhood_binds
 
 
 @dataclass(frozen=True)

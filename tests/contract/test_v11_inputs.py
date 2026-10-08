@@ -1,7 +1,6 @@
 import json
 
 import pytest
-
 from v11_support import ROOT, FixedInputs, public_cases, raw_case_inputs
 
 

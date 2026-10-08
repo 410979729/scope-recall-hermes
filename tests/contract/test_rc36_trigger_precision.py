@@ -11,6 +11,7 @@ from __future__ import annotations
 import sqlite3
 
 from scope_recall.core.claims import Qualification
+
 from tests.contract.test_v11_claims import app, capture, draft  # noqa: F401  (fixture)
 
 

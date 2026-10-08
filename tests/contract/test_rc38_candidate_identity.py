@@ -12,6 +12,7 @@ decides whether the evidence supports it, with what value and on which quote.
 from __future__ import annotations
 
 from scope_recall.core.candidate_lifecycle import candidate_name_matches
+
 from tests.contract.test_r1_candidate_lifecycle import (  # noqa: F401  (fixture)
     Evaluator,
     _candidate,

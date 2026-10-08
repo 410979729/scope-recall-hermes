@@ -19,6 +19,7 @@ import time
 
 from scope_recall.core.recall_policy import rrf_score
 from scope_recall.core.retrieval import CandidateRef, SearchContext
+
 from tests.contract import test_v11_claims as claims
 from tests.v11_support import recall_request
 

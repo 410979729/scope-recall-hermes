@@ -7,8 +7,8 @@ entry of a shared store: its wrappers then name the home, not a config."""
 
 from __future__ import annotations
 
-from pathlib import Path
 import shlex
+from pathlib import Path
 from typing import Any
 
 from scope_recall.adapters.clients.config import (

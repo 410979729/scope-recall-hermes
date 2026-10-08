@@ -8,17 +8,16 @@ Sources are synthetic; nothing here is a person's memory.
 
 from __future__ import annotations
 
-from contextlib import closing
-from datetime import datetime, timedelta, timezone
 import json
 import os
-from pathlib import Path
 import sqlite3
 import subprocess
 import sys
+from contextlib import closing
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
-
 from scope_recall.adapters.clients import CodexHookHandler
 from scope_recall.adapters.clients.config import CodexConfigError, load_shared_client
 from scope_recall.adapters.clients.mcp_server import build_server
@@ -2591,7 +2590,6 @@ def test_a_kept_handler_that_raised_or_could_not_attach_its_runtime_is_made_anew
     every later prompt without its vector search (review of rc12).  One whose recall raised is not trusted with the
     next."""
     import pytest
-
     from scope_recall.adapters.clients.local_endpoint import KeptRecaller
 
     _KeptFake.made = []
@@ -2745,11 +2743,10 @@ def _embedding_entry(base, monkeypatch, *, delay=0.0):
     connection idle for 1 s, as a provider closes an idle keep-alive one, and answers each request after ``delay``
     seconds, and a SQLite vector store."""
     import http.server
-    from pathlib import Path
     import threading
     import time
+    from pathlib import Path
 
-    from scope_recall.runtime import models
     from scope_recall.adapters.hermes.installation import (
         attach_shared_entry,
         build_installation_manifest,
@@ -2758,6 +2755,7 @@ def _embedding_entry(base, monkeypatch, *, delay=0.0):
         write_shared_payload,
     )
     from scope_recall.maintenance.shared import attach
+    from scope_recall.runtime import models
     from scope_recall.runtime.instance import RuntimeInstanceConfig
     from scope_recall.runtime.worker_entry import load_config
     from scope_recall.vector.store import build_vector_store

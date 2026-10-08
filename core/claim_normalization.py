@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
-from copy import deepcopy
 import re
+from copy import deepcopy
 
-from .source_qualification import AUTHORITY_QUESTION, UNASSERTED_UNCERTAINTY, REPORTED_SPEECH
 from .claims import evidence_context, rejects_other_value
+from .source_qualification import AUTHORITY_QUESTION, REPORTED_SPEECH, UNASSERTED_UNCERTAINTY
 
 PROJECT_TAG = re.compile(r"项目[【\[][^【】\[\]\n]{1,120}[】\]]")
 _SELF_ATTRIBUTE = re.compile(r"(?:我的|本人的)(?:长期|默认|通常)?(?:偏好|喜好|习惯|要求|决定)")

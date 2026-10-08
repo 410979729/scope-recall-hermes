@@ -2,16 +2,16 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
 import hashlib
 import json
+from dataclasses import asdict, dataclass
 
 from ..contracts import ContractError
 from . import lineage
-from .secret_patterns import contains_secret_like_text
 from .claim_storage import parse_source_ref
 from .delete_storage import canonical
-from .retained_artifacts import ArtifactGrant, RetainedBlob, retain, read_retained
+from .retained_artifacts import ArtifactGrant, RetainedBlob, read_retained, retain
+from .secret_patterns import contains_secret_like_text
 from .visibility import allowed
 
 

@@ -1,14 +1,14 @@
 """Bounded source-grounded claim rules; synthetic text and no model calls."""
 
-from dataclasses import replace
 import itertools
+from dataclasses import replace
 
 import pytest
-
 from scope_recall.contracts import ContractError
 from scope_recall.core import CoreConfig, MemoryCore
 from scope_recall.core.claims import RootEvidence, qualify
 from scope_recall.core.source_qualification import conditions_match
+
 from tests.contract.test_v11_claims import Clock, capture, initial, revise_request
 from tests.v11_support import context
 

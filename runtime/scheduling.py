@@ -6,28 +6,27 @@ a model, changes work state, widens authority, or renews a model budget.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 import os
-from pathlib import Path
 import time
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
+from ..core.failure_retry import AUTO_RECOVERABLE_ERRORS
+from ..core.file_lock import advisory_file_lock
 from ..core.inbox_rules import REPLAY_CANDIDATES, RETRIED, deferred_until, replayable
 from ..core.storage import SQLiteStorage
-from ..core.failure_retry import AUTO_RECOVERABLE_ERRORS
 from ..core.work_storage import AUTO_RECOVERABLE_WORK_TYPES
-from ..core.file_lock import advisory_file_lock
+from .model_budget import provider_holds
 from .worker_entry import (
     DAILY_COUNTER_MAX,
-    write_worker_metadata,
-    worker_metadata_path,
-    read_worker_metadata,
     load_config,
+    read_worker_metadata,
+    worker_metadata_path,
+    write_worker_metadata,
 )
-from .model_budget import provider_holds
-
 
 #: Seconds a supervisor waits after a busy pass, when the worker lock or the
 #: truth writer was held, before it tries again.  At the plain interval a long

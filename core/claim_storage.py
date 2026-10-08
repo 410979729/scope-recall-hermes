@@ -8,8 +8,8 @@ from typing import TYPE_CHECKING
 
 from ..contracts import ClaimProposal, ContractError
 from . import lineage
-from .claims import ClaimVersion, Qualification, RootEvidence, canonical_time, claim_slot, evidence_refs
 from .claim_normalization import PROJECT_TAG, normalize_frame
+from .claims import ClaimVersion, Qualification, RootEvidence, canonical_time, claim_slot, evidence_refs
 from .visibility import allowed, allowed_refs
 
 if TYPE_CHECKING:

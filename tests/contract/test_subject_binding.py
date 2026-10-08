@@ -9,7 +9,6 @@ anything invented, pointed at, or clause-shaped.
 from __future__ import annotations
 
 import pytest
-
 from scope_recall.core.claims import RootEvidence, qualify
 from scope_recall.core.subject_binding import (
     is_deictic,
@@ -18,7 +17,6 @@ from scope_recall.core.subject_binding import (
     quote_neighbourhood,
     subject_binding,
 )
-
 
 # --------------------------------------------------------------------------
 # The rungs

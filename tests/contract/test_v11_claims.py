@@ -1,15 +1,14 @@
 """P05 state contracts over captured synthetic text, not end-to-end model scores."""
 
-from copy import deepcopy
-from dataclasses import replace
 import itertools
 import sqlite3
 import time
 from concurrent.futures import ThreadPoolExecutor
+from copy import deepcopy
+from dataclasses import replace
 from threading import Barrier
 
 import pytest
-
 from scope_recall.contracts import ContractError, ImportProvenance, import_source_fingerprint
 from scope_recall.core import CoreConfig, MemoryCore
 from scope_recall.core.claims import Qualification, qualify
@@ -754,6 +753,7 @@ def test_explicit_revision_cannot_borrow_unrelated_sentence_deadline(app):
 
 def test_encoded_origin_map_agrees_with_json_dumps_character_for_character():
     import json
+
     from scope_recall.core.evidence_quote import encoded_with_origin
 
     for raw in (

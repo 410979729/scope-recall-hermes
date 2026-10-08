@@ -1,19 +1,18 @@
 """Autonomous recovery remains finite, scoped, and honest about failures."""
 
-from dataclasses import replace
-from io import StringIO
 import json
 import sqlite3
+from dataclasses import replace
+from io import StringIO
 
 import pytest
-
+from scope_recall.core import CoreConfig, MemoryCore
 from scope_recall.core.worker import WorkerConfig, drain_worker
 from scope_recall.runtime.instance import RuntimeInstanceConfig
 from scope_recall.runtime.validation import utc_now as _now
 from scope_recall.runtime.worker_entry import _reserve_daily_work, persist_worker_status, run_worker
-from test_v11_worker import worker_app, app, capture, work_rows, _mark_embed_done
 from test_runtime_worker_entry import _binding, _config_payload, _write_config
-from scope_recall.core import CoreConfig, MemoryCore
+from test_v11_worker import _mark_embed_done, app, capture, work_rows, worker_app
 
 
 def test_explicit_retry_preserves_automatic_retry_ceiling():

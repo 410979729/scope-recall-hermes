@@ -13,20 +13,20 @@ Code sends no conversation id at all, so its mutations are refused.
 from __future__ import annotations
 
 import functools
+import uuid
 from pathlib import Path
 from typing import Annotated, Any, Literal
-import uuid
 
 from mcp.server import MCPServer
 from mcp.server.mcpserver import Context
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
 from pydantic import Field, StrictInt, StrictStr
-
 from scope_recall.contracts import ContractError, Origin, SourceEvent, TrustedContext, validate_model_request
 from scope_recall.core import CoreConfig, MemoryCore
 from scope_recall.core.read_views import DEFAULT_BUDGET_TOKENS, DEFAULT_MAX_ITEMS
 from scope_recall.core.trace import TRACE_GUIDANCE, fence_trace_epoch
+
 from ..runtime_wiring import FORGET_GUIDANCE, READ_VIEW_BUDGET_GUIDANCE, RECALL_CONTEXT_GUIDANCE, REVISE_GUIDANCE
 from ..tool_common import (
     FENCED_ENTITY,
@@ -38,14 +38,15 @@ from ..tool_common import (
     check_protocol,
     envelope,
     fence_epoch,
-    request_id as bounded_request_id,
     revision_ref,
     strict_object,
+)
+from ..tool_common import (
+    request_id as bounded_request_id,
 )
 from .config import CodexInstallationConfig, SharedClientConfig
 from .identity import CodexRuntimeAudience, resolve_runtime_audience, trusted_context
 from .runtime_wiring import TrustedHostRuntime, attach_trusted_host_runtime
-
 
 OUTPUT_ORIGIN = "memory_reinjection"
 RECOMMENDED_EXPLICIT_BUDGET_TOKENS = 4096

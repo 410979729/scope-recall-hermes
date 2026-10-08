@@ -7,15 +7,14 @@ until operator review; UTC daily caps reset naturally, not by deleting rows.
 
 from __future__ import annotations
 
+import sqlite3
+import time
 from contextlib import closing
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-import sqlite3
-import time
 
 from .validation import mapping, only_keys, positive_int
-
 
 _TABLE = """CREATE TABLE IF NOT EXISTS codex_subscription_requests (
     id INTEGER PRIMARY KEY, day TEXT NOT NULL, model TEXT NOT NULL,

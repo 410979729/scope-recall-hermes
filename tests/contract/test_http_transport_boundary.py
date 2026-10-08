@@ -3,16 +3,15 @@
 from __future__ import annotations
 
 import base64
-from http.client import HTTPResponse
-from io import BytesIO
 import json
 import os
-from pathlib import Path
 import sys
 import time
+from http.client import HTTPResponse
+from io import BytesIO
+from pathlib import Path
 
 import pytest
-
 from scope_recall.runtime import models
 
 
@@ -221,8 +220,8 @@ def test_query_helper_reuses_process_and_connection_and_recovers(persistent_tran
 
 
 def test_query_adapter_uses_persistent_helper_but_source_does_not(persistent_transport, tmp_path, monkeypatch):
-    from test_runtime_auxiliary import _runtime_config, _source
     from scope_recall.runtime.auxiliary import build_auxiliary_runtime
+    from test_runtime_auxiliary import _runtime_config, _source
 
     _, connections, _ = persistent_transport
     monkeypatch.setenv("SCOPE_RECALL_TEST_EMBED_KEY", "synthetic-local-value")

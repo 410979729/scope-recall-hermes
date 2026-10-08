@@ -1,10 +1,9 @@
 import json
 
 import pytest
-
 from scope_recall.contracts import (
-    ContractError,
     MAX_PAYLOAD_BYTES,
+    ContractError,
     SourceSnapshot,
     decode_payload,
     validate_payload,

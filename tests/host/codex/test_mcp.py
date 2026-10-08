@@ -5,15 +5,14 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-from pathlib import Path
 import sqlite3
 import sys
+from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
 
 from mcp import ClientSession
 from mcp.client.stdio import StdioServerParameters, stdio_client
-
 from scope_recall.adapters.clients import CodexHookHandler, install_codex_scope_recall
 from scope_recall.adapters.clients.identity import resolve_runtime_audience, trusted_context
 from scope_recall.contracts import SourceEvent

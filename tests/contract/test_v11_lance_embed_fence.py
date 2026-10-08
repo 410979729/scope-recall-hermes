@@ -2,22 +2,20 @@
 
 from __future__ import annotations
 
-from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timedelta, timezone
 import json
 import queue
 import sqlite3
 import time
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime, timedelta, timezone
 from threading import Event
 
 import pytest
-
+from scope_recall.contracts import ContractError
+from scope_recall.runtime.lance_port import LanceEmbedPort, LancePurgePort
+from scope_recall.vector.process_store import ProcessLanceVectorStore
 from test_v11_claims import app, capture
 from test_v11_deletion import authorize, request
-
-from scope_recall.runtime.lance_port import LanceEmbedPort, LancePurgePort
-from scope_recall.contracts import ContractError
-from scope_recall.vector.process_store import ProcessLanceVectorStore
 
 
 def _purge_port(store, ctx, spaces=("TEST-p10-space",)):

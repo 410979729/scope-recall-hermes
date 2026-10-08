@@ -2,21 +2,20 @@
 
 from __future__ import annotations
 
-from contextlib import contextmanager
 import base64
 import csv
 import hashlib
 import io
 import json
 import os
-from pathlib import Path
 import shutil
 import subprocess
 import sys
 import zipfile
+from contextlib import contextmanager
+from pathlib import Path
 
 import pytest
-
 from scope_recall.maintenance import package_upgrade as upgrade
 
 

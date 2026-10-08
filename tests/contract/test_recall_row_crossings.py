@@ -6,20 +6,18 @@ yuheng's questions on a copy of the shared store.  In a busy Hermes gateway ever
 GIL (``test_capture_row_crossings``).  Now 469 statements and 755 rows.
 """
 
-from dataclasses import replace
 import json
 import sqlite3
+from dataclasses import replace
 
 import pytest
-
 from scope_recall.contracts import ContractError
 from scope_recall.core import storage as storage_module
 from scope_recall.core.storage import SQLiteStorage, Transaction
 from scope_recall.core.visibility import allowed
-
 from test_capture_row_crossings import Crossings
-from test_v11_claims import accept, app, capture, draft, initial, revise_request  # noqa: F401  (fixtures)
 from test_shared_store import NOW, put, shared, shared_context  # noqa: F401  (fixture)
+from test_v11_claims import accept, app, capture, draft, initial, revise_request  # noqa: F401  (fixtures)
 from v11_support import recall_request
 
 

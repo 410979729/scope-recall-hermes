@@ -8,13 +8,13 @@ on every host, so they live here once and never construct identity.
 from __future__ import annotations
 
 import copy
+import json
+import re
+import uuid
 from dataclasses import asdict, is_dataclass
 from datetime import datetime, tzinfo
-import json
 from pathlib import Path
-import re
 from typing import Any, Callable, cast
-import uuid
 
 from scope_recall.contracts import ContractError
 

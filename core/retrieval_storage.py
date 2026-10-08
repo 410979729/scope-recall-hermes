@@ -8,12 +8,12 @@ outside the trusted context.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
 import hashlib
 import json
 import re
 import time
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from typing import Iterable, cast
 
 from ..contracts import (
@@ -24,13 +24,12 @@ from ..contracts import (
     SourceContext,
     bounded_source_context,
 )
+from . import lexical_index, lineage
 from .claim_storage import parse_source_ref
 from .claims import canonical_time, select_effective, select_proposal
 from .delete_storage import canonical, retraction_after
 from .episodes import source_origin
-from . import lexical_index, lineage
 from .events import lexical_terms
-from .recall_scope import says_something
 from .recall_policy import (
     applicability,
     claim_embedding_text,
@@ -41,6 +40,7 @@ from .recall_policy import (
     query_is_relevant,
     synonym_expansions,
 )
+from .recall_scope import says_something
 from .resume_compaction import resume_evidence_refs
 from .retrieval import (
     STALE_RESUME_GAPS,

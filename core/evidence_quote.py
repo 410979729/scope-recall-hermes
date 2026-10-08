@@ -25,7 +25,6 @@ from __future__ import annotations
 
 import json
 
-
 #: What ``json.dumps(..., ensure_ascii=False)`` emits for each character it
 #: rewrites.  Anything else below 0x20 becomes a ``\u00xx`` escape; everything
 #: at or above it, non-ASCII included, is passed through unchanged.

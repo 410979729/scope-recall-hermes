@@ -14,7 +14,6 @@ import sys
 from pathlib import Path
 
 import pytest
-
 from scope_recall.adapters.runtime_wiring import FORGET_GUIDANCE, REVISE_GUIDANCE
 from scope_recall.core import deletion, mutate
 from scope_recall.maintenance.install import apply_install, plan_install, plan_uninstall

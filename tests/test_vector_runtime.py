@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import pytest
-
 from scope_recall.vector.store import VectorRecord, build_vector_store
 
 

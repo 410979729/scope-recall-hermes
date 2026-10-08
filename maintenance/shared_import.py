@@ -36,14 +36,14 @@ work is, as new work.  A store already imported for the entry is refused.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
 import hashlib
 import json
 import os
-from pathlib import Path
 import re
 import sqlite3
 import time
+from datetime import datetime, timezone
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Callable, Iterator
 from urllib.request import pathname2url
@@ -56,8 +56,8 @@ from ..core.schema import SCHEMA_VERSION
 from ..core.truth_connection import connect_truth_database
 from ..core.writer_lease import TruthWriterBusyError
 from ..runtime.running_code import live_records
-from .shared_run import Run, SharedStoreError
 from ..runtime.vector_retention import OMITTED_TOOL_OUTPUT, REPEATED_TOOL_OUTPUT
+from .shared_run import Run, SharedStoreError
 
 #: Store versions whose tables this import reads.  An older store is upgraded first.
 SOURCE_SCHEMAS = frozenset({1109, 1110})

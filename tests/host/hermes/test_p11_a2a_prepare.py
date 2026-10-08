@@ -1,16 +1,22 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 import sqlite3
 import sys
+from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[3]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from scope_recall.runtime.auxiliary import AuxiliaryRuntimeConfig
+from scope_recall.runtime.model_budget import initialize_auxiliary_budget_ledger
+from scope_recall.runtime.models import AuxiliaryBudgetLedger, OpenAIConsolidationAdapter
+
+from probes.hermes.p11_a2a_bridge import FORMAL_BATCH_NAME, Bridge
 from probes.hermes.p11_a2a_testkit import (
     A2A_PORT,
+    AUX_MODEL,
     AUX_RESERVE_OUTPUT,
     CORE_DIR,
     HERMES_CONFIG,
@@ -23,23 +29,18 @@ from probes.hermes.p11_a2a_testkit import (
     TEST_AGENT_ID,
     TEST_CONTEXT,
     TEST_WORKSPACE,
-    AUX_MODEL,
     UPSTREAM_ENDPOINT,
     UPSTREAM_KEY_ENV,
     budget_mapping,
     port_status,
 )
 from probes.hermes.p11_prepare_a2a_test import _test_audiences
-from probes.hermes.p11_a2a_bridge import Bridge, FORMAL_BATCH_NAME
 from probes.hermes.p11_start_a2a_test import (
     ZERO_MODEL_DIAGNOSTIC_DUMMY,
     _gateway_log_offset,
     _gateway_processing_ready,
     _resolve_upstream_key,
 )
-from scope_recall.runtime.models import AuxiliaryBudgetLedger, OpenAIConsolidationAdapter
-from scope_recall.runtime.auxiliary import AuxiliaryRuntimeConfig
-from scope_recall.runtime.model_budget import initialize_auxiliary_budget_ledger
 
 
 def test_p11_testkit_isolated_and_offline_contract():
@@ -119,9 +120,10 @@ def test_formal_bridge_uses_p18_batch_and_not_p11_diagnostic_cap(monkeypatch, tm
 
 
 def _synthetic_prepare_layout(tmp_path: Path):
+    from scope_recall.runtime.model_budget import initialize_auxiliary_budget_ledger
+
     from probes.hermes.p11_a2a_testkit import budget_policy
     from probes.hermes.p11_prepare_a2a_test import PrepareLayout
-    from scope_recall.runtime.model_budget import initialize_auxiliary_budget_ledger
 
     state = tmp_path / "isolated-prepare-state"
     ledger = tmp_path / "synthetic-fixture-ledger.sqlite3"
@@ -153,6 +155,7 @@ def _synthetic_prepare_layout(tmp_path: Path):
 
 def test_p11_prepare_writes_isolated_artifacts_and_observes_zero_post(monkeypatch, tmp_path):
     import urllib.request
+
     from probes.hermes.p11_prepare_a2a_test import run_prepare
 
     http_attempts = []
@@ -212,6 +215,7 @@ def test_p11_main_asserts_default_paths_before_run_prepare(monkeypatch, capsys):
 
 def test_p11_main_success_receipt_keeps_host_source_and_wrapper_hashes(monkeypatch, tmp_path, capsys):
     import hashlib
+
     import probes.hermes.p11_prepare_a2a_test as prepare
 
     hermes_root = tmp_path / "frozen-h-fixture"

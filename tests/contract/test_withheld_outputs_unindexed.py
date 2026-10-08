@@ -9,19 +9,16 @@ question that held them: 289 of the 1,772 messages the owner had sent.
 
 from __future__ import annotations
 
+import sqlite3
 from contextlib import closing
 from dataclasses import replace
-import sqlite3
 
 import pytest
-
 from scope_recall.contracts import ContractError
 from scope_recall.core import lexical_index
 from scope_recall.core.events import lexical_terms, query_terms
 from scope_recall.core.retrieval_storage import _discriminating_terms
-
 from test_v11_recall_admission import _app, _capture, _item_ref, recall
-
 
 #: The tool's own error text, the one part of a placeholder that is the output's (4,348 of the shared store's).
 _ERROR = "TEST-deploy 权限不足，配置文件不可写: permission denied"

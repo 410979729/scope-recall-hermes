@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 from collections import deque
+from dataclasses import dataclass, field
 from typing import Literal
 
 OutcomeState = Literal["open", "success", "failure", "cancelled", "interrupted", "truncated"]

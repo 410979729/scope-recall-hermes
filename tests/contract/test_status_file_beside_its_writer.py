@@ -15,7 +15,6 @@ import os
 from pathlib import Path
 
 import pytest
-
 from scope_recall.runtime import worker_entry
 
 

@@ -3,12 +3,12 @@
 from dataclasses import replace
 
 import pytest
-
 from scope_recall.core.background_context import background_candidates, mark_background
 from scope_recall.core.recall_packet import prioritize_current_claims, prioritize_resume_evidence
 from scope_recall.core.retrieval import CandidateRef, CollectionQuery, RetrievedObject, SearchContext
 from scope_recall.core.retrieval_storage import scope_digest
-from tests.contract.test_v11_claims import app, accept, capture, draft
+
+from tests.contract.test_v11_claims import accept, app, capture, draft
 from tests.contract.test_v11_episodes import apply, resume
 from tests.v11_support import recall_request
 

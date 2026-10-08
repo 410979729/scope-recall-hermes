@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-import json
 import ast
+import json
 from pathlib import Path
 
 from setuptools.command.build_py import build_py

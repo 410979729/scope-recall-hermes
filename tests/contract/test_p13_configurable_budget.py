@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import math
+from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-
 from scope_recall.adapters.clients.config import install_codex_scope_recall
 from scope_recall.adapters.clients.handler import CodexHookHandler
 from scope_recall.adapters.clients.mcp_server import build_server

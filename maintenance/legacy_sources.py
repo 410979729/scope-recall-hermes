@@ -7,10 +7,10 @@ stable Core id instead of a legacy row identity.
 
 from __future__ import annotations
 
-from collections import defaultdict
 import hashlib
 import json
 import re
+from collections import defaultdict
 from typing import Any, Mapping, cast
 
 from scope_recall.maintenance.legacy_v2_compat import resolve_memory_scope
@@ -19,14 +19,14 @@ from .legacy_catalog import DIGEST_TABLES, HISTORY_TABLES
 from .legacy_plan import Conversion, Row
 from .migration_records import (
     LEGACY_BASELINE,
-    canonical_json,
     canonical_digest,
+    canonical_json,
     json_value,
-    recorded_time,
-    sanitized_value,
-    sanitized_text,
-    stable_legacy_id,
     parse_instant,
+    recorded_time,
+    sanitized_text,
+    sanitized_value,
+    stable_legacy_id,
 )
 
 SOURCE_EVENT_FIELDS = (

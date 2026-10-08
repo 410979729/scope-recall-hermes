@@ -1568,7 +1568,8 @@ def test_package_health_record_bytes_and_declared_dependencies(tmp_path, monkeyp
     import base64
     import tomllib
     from importlib import metadata
-    from scope_recall.maintenance.package_health import record_integrity, dependency_health
+
+    from scope_recall.maintenance.package_health import dependency_health, record_integrity
 
     site = tmp_path / "TEST-site"
     dist_dir = site / "hermes_scope_recall-3.1.0rc28.dist-info"

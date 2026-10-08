@@ -8,12 +8,9 @@ A new CLI build must pass the offline wire test before its digest is admitted.
 
 from __future__ import annotations
 
-from contextlib import closing
-from dataclasses import dataclass
 import hashlib
 import json
 import os
-from pathlib import Path
 import re
 import signal
 import sqlite3
@@ -21,6 +18,9 @@ import subprocess
 import tempfile
 import threading
 import time
+from contextlib import closing
+from dataclasses import dataclass
+from pathlib import Path
 
 from .models import AuxiliaryModelError, validate_chat_messages, validate_timeout_seconds
 from .subscription_budget import SubscriptionBudgetLedger, SubscriptionBudgetPolicy

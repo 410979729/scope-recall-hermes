@@ -7,11 +7,11 @@ import sqlite3
 from unittest.mock import patch
 
 import pytest
-
 from scope_recall.adapters.hermes import HermesIdentityError, ScopeRecallHermesAdapter, install_hermes_scope_recall
 from scope_recall.adapters.hermes.boundary import pre_llm_source_event
 from scope_recall.adapters.hermes.installation import build_installation_manifest, write_installation_manifest
 from scope_recall.core.retrieval import RetrievalResult
+
 from tests.host.hermes.conftest import FixedClock
 
 

@@ -11,11 +11,11 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from pathlib import Path
 import sqlite3
 import stat
-from typing import Any
 import uuid
+from pathlib import Path
+from typing import Any
 
 
 class BackupError(RuntimeError):

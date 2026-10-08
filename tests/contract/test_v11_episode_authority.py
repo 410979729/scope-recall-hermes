@@ -3,10 +3,9 @@
 from dataclasses import replace
 
 import pytest
-
-from scope_recall.contracts import ContractError, DisplaySnapshot, ArtifactVersion
-from scope_recall.core.episodes import source_watermark, state_from_sources
+from scope_recall.contracts import ArtifactVersion, ContractError, DisplaySnapshot
 from scope_recall.core.artifact_storage import artifact_identity
+from scope_recall.core.episodes import source_watermark, state_from_sources
 from test_v11_claims import app, capture
 from test_v11_episodes import apply, artifact, ref, resume
 

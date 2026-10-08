@@ -7,18 +7,19 @@ All writes here target a new job directory and an installer-bound destination.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from contextlib import closing
 import hashlib
 import json
-from pathlib import Path
 import sqlite3
 import uuid
+from contextlib import closing
+from datetime import datetime, timezone
+from pathlib import Path
 
 from ..contracts import TrustedContext
-from ..core.storage import SQLiteStorage
 from ..core.file_lock import advisory_file_lock
-from .backup import atomic_json as _write, safe_path, sha256, backup_sqlite
+from ..core.storage import SQLiteStorage
+from .backup import atomic_json as _write
+from .backup import backup_sqlite, safe_path, sha256
 from .migrate_v2 import (
     MigrationError,
     build_legacy_catalog,

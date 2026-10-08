@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
 import inspect
 import itertools
 import json
+from dataclasses import replace
 
 import pytest
-
 from scope_recall.adapters.clients import install_codex_scope_recall
 from scope_recall.adapters.clients.identity import resolve_runtime_audience as codex_audience
 from scope_recall.adapters.clients.identity import trusted_context as codex_context
@@ -20,6 +19,7 @@ from scope_recall.core.background_context import _subject_visible_to_current_pri
 from scope_recall.core.read_views import _profile_subject
 from scope_recall.core.retrieval import SearchContext
 from scope_recall.runtime.instance import RuntimeInstanceConfig, build_runtime_instance
+
 from tests.contract.test_v11_claims import Clock, accept, capture, draft
 from tests.v11_support import context, recall_request, source_event
 

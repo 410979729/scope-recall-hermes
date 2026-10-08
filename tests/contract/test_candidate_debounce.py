@@ -12,7 +12,6 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 
 import pytest
-
 from scope_recall.core.candidate_debounce import (
     MAX_DEFERRAL_SECONDS,
     QUIET_SECONDS,

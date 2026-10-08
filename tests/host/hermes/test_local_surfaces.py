@@ -10,12 +10,11 @@ platform`` and the provider never initialised (issue #94).  The approval is the 
 
 from __future__ import annotations
 
-from dataclasses import replace
 import logging
 import sqlite3
+from dataclasses import replace
 
 import pytest
-
 from scope_recall.adapters.hermes import (
     HermesIdentityError,
     ScopeRecallHermesAdapter,

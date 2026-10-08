@@ -9,8 +9,6 @@ channels alone.  A live instance recorded that twice in one day.
 from __future__ import annotations
 
 import pytest
-
-from scope_recall.runtime.models import AuxiliaryModelError
 from scope_recall.runtime.embedding_retry import (
     MINIMUM_RETRY_FRACTION,
     TRANSIENT_EMBEDDING_ERRORS,
@@ -18,7 +16,7 @@ from scope_recall.runtime.embedding_retry import (
     retry_budget,
     transient,
 )
-
+from scope_recall.runtime.models import AuxiliaryModelError
 
 # --------------------------------------------------------------------------
 # What counts as worth another attempt

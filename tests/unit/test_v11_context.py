@@ -1,12 +1,11 @@
-from dataclasses import FrozenInstanceError, replace
 import os
-from pathlib import Path
 import socket
 import subprocess
 import sys
+from dataclasses import FrozenInstanceError, replace
+from pathlib import Path
 
 import pytest
-
 from scope_recall.contracts import (
     ArtifactVersion,
     ContractError,

@@ -7,16 +7,16 @@ a side effect of an optional host hookup.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field, replace
-from datetime import tzinfo
 import json
 import math
 import os
-from pathlib import Path
 import stat
 import tempfile
 import threading
 import time
+from dataclasses import dataclass, field, replace
+from datetime import tzinfo
+from pathlib import Path
 from typing import Any, Mapping
 
 from scope_recall.contracts import InstanceBinding
@@ -25,6 +25,7 @@ from scope_recall.core.recall_budget import canonical_render_json
 from scope_recall.runtime.instance import RuntimeInstance, RuntimeInstanceConfig, build_runtime_instance
 from scope_recall.runtime.worker_entry import load_config
 from scope_recall.runtime.worker_launch import EPHEMERAL_CONFIG_INFIX, RUNTIME_CONFIG_FILENAME
+
 from .tool_common import local_times
 
 GAP_UNCONFIGURED = "capability_gap:trusted_runtime_unconfigured"

@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import argparse
-from datetime import datetime, timezone
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 
 from ..core.file_lock import advisory_file_lock
 from .scheduling import SupervisorControl, next_wake, read_control
-from .worker_entry import write_worker_metadata, credential_environment, load_config
+from .worker_entry import credential_environment, load_config, write_worker_metadata
 from .worker_launch import launch_worker
 
 

@@ -10,17 +10,16 @@ nothing.  LanceDB is not needed: the import the helper died on is ``jsonschema``
 
 from __future__ import annotations
 
-from dataclasses import replace
 import importlib.util
 import json
 import os
-from pathlib import Path
 import subprocess
 import sys
 import time
+from dataclasses import replace
+from pathlib import Path
 
 import pytest
-
 import scope_recall
 from scope_recall.vector import lance_native, process_store
 

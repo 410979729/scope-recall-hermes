@@ -14,9 +14,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
-
-from scope_recall.vector import compaction as vc
 from scope_recall.runtime.vector_upkeep import INDEX_RECHECK, RESERVE_SECONDS, compact_if_due, index_if_due
+from scope_recall.vector import compaction as vc
 
 
 def _footprint(fragments, manifests=1, transactions=1, size=0):

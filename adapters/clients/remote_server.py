@@ -21,8 +21,6 @@ from __future__ import annotations
 
 import argparse
 import atexit
-from dataclasses import dataclass, replace
-from datetime import datetime, timedelta, timezone
 import hashlib
 import hmac
 import ipaddress
@@ -30,10 +28,12 @@ import json
 import logging
 import logging.handlers
 import os
-from pathlib import Path
 import re
 import sys
 import time
+from dataclasses import dataclass, replace
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any, Callable
 
 from ...runtime.worker_entry import host_process_credential_environment
@@ -41,8 +41,8 @@ from . import transcript
 from .boundary import without_lone_surrogates
 from .config import CodexConfigError, load_shared_client
 from .handler import CodexHookHandler, SystemHookClock
-from .record_reader import RecordLines
 from .local_endpoint import KeptRecaller, entry_files, file_stamp
+from .record_reader import RecordLines
 
 CONFIG_NAME = "remote-server.json"
 LOG_NAME = "remote-server.log"

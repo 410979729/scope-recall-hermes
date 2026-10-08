@@ -3,14 +3,13 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
 import time
+import uuid
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
-import uuid
 
 import pytest
-
 from scope_recall.adapters.clients import CodexHookHandler, install_codex_scope_recall
 from scope_recall.adapters.clients.mcp_server import build_server
 from scope_recall.adapters.clients.runtime_wiring import GAP_UNCONFIGURED, attach_trusted_host_runtime

@@ -8,16 +8,16 @@ persistence or lexical search.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
 import hashlib
 import json
 import re
 import unicodedata
+from dataclasses import dataclass, replace
 
 from ..contracts import ContractError
 from .events import withheld_tool_output
-from .work_storage import FRESH_CONVERSATION_ORIGINS, fresh_since
 from .visibility import allowed
+from .work_storage import FRESH_CONVERSATION_ORIGINS, fresh_since
 
 ADMISSION_KEY = "_scope_recall_admission"
 WORK_TYPES = frozenset({"consolidate", "embed"})

@@ -11,7 +11,6 @@ from __future__ import annotations
 import re
 import unicodedata
 
-
 _FUTURE_RE = re.compile(
     r"(?:\b(?:will|shall|next\s+(?:day|week|month|year|summer|winter|spring|fall|autumn)|"
     r"tomorrow|later|plans?\s+to|intends?\s+to|going\s+to)\b|"

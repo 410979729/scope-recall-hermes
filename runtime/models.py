@@ -2,13 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from functools import partial
 import base64
 import json
 import math
 import os
-from pathlib import Path
 import re
 import subprocess
 import sys
@@ -17,15 +14,17 @@ import time
 import urllib.parse
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass
+from functools import partial
+from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Protocol
 
 from ..contracts import ContractError
 from ..core.recall_policy import EMBEDDING_DIALECTS, EMBEDDING_SPACE, build_embedding_space, encode_embedding_text
+from ..core.secret_patterns import contains_secret_like_text
 from ..core.storage import StoredSource
 from .model_budget import AuxiliaryBudgetLedger, BudgetPolicy
-from ..core.secret_patterns import contains_secret_like_text
-
 
 MAX_CHAT_RESPONSE_BYTES = 1_048_576
 MAX_EMBED_RESPONSE_BYTES = 16 * 1024 * 1024

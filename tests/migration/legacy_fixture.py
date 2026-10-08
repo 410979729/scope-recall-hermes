@@ -11,7 +11,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-
 LEGACY_COMMIT = "578b955802df753f2e2208e26eab6f71971285a0"
 
 

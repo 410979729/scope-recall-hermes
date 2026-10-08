@@ -2,17 +2,17 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
-from contextlib import contextmanager
-from dataclasses import dataclass
-from datetime import datetime
 import hashlib
 import json
 import math
 import os
-from pathlib import Path
 import sqlite3
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
+from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
 
 from ..contracts import (
     ENTRY_ID,
@@ -21,12 +21,20 @@ from ..contracts import (
     InstanceBinding,
     SourceEvent,
     TrustedContext,
-    validate_capture,
     import_source_fingerprint,
+    validate_capture,
 )
-from .truth_connection import TruthDatabaseMode, connect_truth_database
-from .writer_lease import TruthWriterBusyError
 from . import lexical_index
+from .delete_storage import Deletions, group_digest, purged_group_key
+from .events import (
+    indexed_terms,
+    prepare_capture,
+    query_terms,
+    segment_key,
+    stored_content_digest,
+    withheld_tool_output,
+)
+from .inbox_rules import REKEY_MARKER, deleted_forms, deleted_text, holds_events, waiting
 from .schema import (
     APPLICATION_ID,
     SCHEMA_VERSION,
@@ -39,18 +47,10 @@ from .schema import (
     upgrade_1108,
     upgrade_1109,
 )
-from .events import (
-    indexed_terms,
-    prepare_capture,
-    query_terms,
-    segment_key,
-    stored_content_digest,
-    withheld_tool_output,
-)
-from .delete_storage import Deletions, group_digest, purged_group_key
-from .inbox_rules import REKEY_MARKER, deleted_forms, deleted_text, holds_events, waiting
+from .truth_connection import TruthDatabaseMode, connect_truth_database
 from .visibility import allowed, allowed_refs
 from .work_storage import WorkItems
+from .writer_lease import TruthWriterBusyError
 
 #: How often a writer looks again for another process's lease while it waits.
 _LEASE_POLL_SECONDS = 0.01

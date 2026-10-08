@@ -4,20 +4,18 @@ Storage-level only.  What an adapter puts in a source key, and what recall shows
 a reader, are tested where they are built.  Sources are synthetic.
 """
 
-from dataclasses import replace
 import os
 import shutil
 import sqlite3
 import time
+from dataclasses import replace
 
 import pytest
-
-from scope_recall.contracts import ContractError, InstanceBinding, MAX_BINDING_SCOPES, MAX_SHARED_SCOPES, TrustedContext
+from scope_recall.contracts import MAX_BINDING_SCOPES, MAX_SHARED_SCOPES, ContractError, InstanceBinding, TrustedContext
 from scope_recall.core import capture_inbox
 from scope_recall.core.schema import SCHEMA_VERSION
 from scope_recall.core.storage import SQLiteStorage
 from v11_support import context, downgrade_store, source_event
-
 
 NOW = "2026-09-22T20:00:00Z"
 LATER = "2026-09-22T21:00:00Z"

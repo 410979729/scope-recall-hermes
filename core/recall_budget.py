@@ -7,11 +7,11 @@ budget units merely because their encoding uses three bytes.
 
 from __future__ import annotations
 
-from collections import Counter
 import json
 import math
 import re
 import unicodedata
+from collections import Counter
 
 
 def canonical_render_json(value: object) -> str:

@@ -1,15 +1,15 @@
 """R1 semantic acceptance cases over synthetic, offline source text."""
 
-from dataclasses import replace
 import itertools
 import sqlite3
+from dataclasses import replace
 
 import pytest
-
 from scope_recall.contracts import ContractError, TrustedSourcePrincipal
 from scope_recall.core import CoreConfig, MemoryCore
-from scope_recall.core.claims import RootEvidence, qualify
 from scope_recall.core.candidate_storage import CandidateLifecycle
+from scope_recall.core.claims import RootEvidence, qualify
+
 from tests.contract.test_v11_claims import (
     Clock,
     accept,

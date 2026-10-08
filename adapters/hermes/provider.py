@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-from contextlib import contextmanager
-from dataclasses import dataclass
 import inspect
-from functools import wraps
 import logging
 import sqlite3
 import threading
 import time
+from contextlib import contextmanager
+from dataclasses import dataclass
+from functools import wraps
 from typing import Any, Dict, List, Optional
 
 from scope_recall.contracts import ContractError
@@ -19,17 +19,17 @@ from .boundary import (
     SourceIdentity,
     SourceObservationLedger,
 )
-from .identity import HermesIdentity, HermesIdentityError
-from .outcomes import TurnOutcomeTracker
-from .protocol import PublicMemoryProvider
-from .runtime_wiring import GAP_WORKER_LAUNCH_FAILED, HermesHostRuntime, TrustedHostRuntime
-from .worker import AdapterWorker
 from .capture import CAPTURE_TIMEOUT_S, GAP_CURRENT_SOURCE_REFS_LIMIT, CaptureWriter, label
 from .capture_retry import SHUTDOWN_RETRY_SECONDS, CaptureRetry
+from .identity import HermesIdentity, HermesIdentityError
+from .outcomes import TurnOutcomeTracker
 from .prefetch import Prefetch
+from .protocol import PublicMemoryProvider
+from .runtime_wiring import GAP_WORKER_LAUNCH_FAILED, HermesHostRuntime, TrustedHostRuntime
 from .session_binding import SessionBinding
-from .turn_capture import TurnCapture
 from .tool_surface import HermesToolSurface
+from .turn_capture import TurnCapture
+from .worker import AdapterWorker
 
 _log = logging.getLogger(__name__)
 

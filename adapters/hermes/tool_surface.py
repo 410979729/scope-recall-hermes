@@ -5,13 +5,16 @@ identity and Core port; it never constructs identity from tool arguments.
 """
 
 from __future__ import annotations
-from datetime import tzinfo
+
 import json
-from typing import Any, Dict, List
 import uuid
+from datetime import tzinfo
+from typing import Any, Dict, List
+
 from scope_recall.contracts import ContractError, validate_model_request
 from scope_recall.core.read_views import DEFAULT_BUDGET_TOKENS, DEFAULT_MAX_ITEMS
 from scope_recall.core.trace import fence_trace_epoch, trace_tool_schema
+
 from ..runtime_wiring import FORGET_GUIDANCE, READ_VIEW_BUDGET_GUIDANCE, REVISE_GUIDANCE
 from ..tool_common import (
     FENCED_ENTITY,
@@ -23,9 +26,11 @@ from ..tool_common import (
     check_protocol,
     envelope,
     fence_epoch,
-    request_id as bounded_request_id,
     revision_ref,
     strict_object,
+)
+from ..tool_common import (
+    request_id as bounded_request_id,
 )
 from .identity import HermesIdentityError
 

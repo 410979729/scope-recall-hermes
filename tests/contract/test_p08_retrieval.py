@@ -5,12 +5,12 @@ from dataclasses import FrozenInstanceError, replace
 from pathlib import Path
 
 import pytest
-
 from scope_recall.contracts import ContractError
 from scope_recall.core import CoreConfig, MemoryCore
-from scope_recall.core.recall_policy import RecallPolicy, SPACE_ID
+from scope_recall.core.recall_policy import SPACE_ID, RecallPolicy
 from scope_recall.core.retrieval import CandidateRef, CollectionQuery, PageCursor, SearchContext
 from scope_recall.core.retrieval_storage import scope_digest
+
 from tests.contract.test_v11_claims import Clock, capture
 from tests.v11_support import context, recall_request, source_event
 
@@ -353,7 +353,8 @@ def test_P08_what_the_channels_before_an_interrupted_one_found_still_answers(app
     """The exact ref is found before the lexical statement is interrupted, and is still delivered: the interrupt is
     taken off once the candidate statements end, so hydration's own statements, past the deadline too, run to the
     end.  Left on, the first of them was interrupted and the recall came back empty (review of 3.4.5)."""
-    from scope_recall.core import recall as recall_module, retrieval_storage
+    from scope_recall.core import recall as recall_module
+    from scope_recall.core import retrieval_storage
 
     core, ctx = app
     target = capture(core, ctx, "TEST 值班表明天换人。", key="TEST-p08/interrupt-exact")
@@ -532,6 +533,7 @@ def test_P08_synonym_table_is_short_disjoint_and_one_index_term_per_member():
 def test_P08_judged_probe_questions_are_outside_the_synonym_table():
     """The probe set is scored on a corpus no gate has: a table change reaching one must be re-measured."""
     from scope_recall.core.recall_policy import synonym_expansions
+
     from tests.contract.recall_probes import ANSWERABLE, UNANSWERABLE
 
     for query in (*(question for question, _pattern in ANSWERABLE), *UNANSWERABLE):

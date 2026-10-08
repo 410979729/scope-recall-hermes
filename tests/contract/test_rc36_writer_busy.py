@@ -7,17 +7,17 @@ autostart wake five minutes later. Nothing had failed: another writer held the d
 
 from __future__ import annotations
 
-from datetime import timedelta
-from io import StringIO
 import json
 import sqlite3
+from datetime import timedelta
+from io import StringIO
 
 import pytest
-
 from scope_recall.core import CoreConfig, MemoryCore
 from scope_recall.core.writer_lease import TruthWriterBusyError
 from scope_recall.runtime import worker_entry
 from scope_recall.runtime.scheduling import BUSY_BACKOFF_SECONDS, SupervisorControl, supervise
+
 from tests.contract.test_finite_supervisor import NOW, fixture, queue
 from tests.contract.test_runtime_worker_entry import _binding, _config_payload, _write_config
 

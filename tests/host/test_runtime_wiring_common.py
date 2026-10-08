@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 import json
-import pytest
+from pathlib import Path
 
+import pytest
 from scope_recall.adapters.runtime_wiring import GAP_UNCONFIGURED, attach_trusted_host_runtime
 from scope_recall.contracts import InstanceBinding
 

@@ -3,28 +3,26 @@
 Sources are synthetic. These tests do not claim semantic model/host acceptance.
 """
 
-from contextlib import closing
-from dataclasses import replace
 import hashlib
 import importlib
 import json
-from pathlib import Path
 import shutil
 import sqlite3
 import sys
 import threading
 import time
+from contextlib import closing
+from dataclasses import replace
+from pathlib import Path
 
 import pytest
-
+import scope_recall.core.storage as storage_module
 from scope_recall.contracts import ContractError, InstanceBinding, TrustedContext
 from scope_recall.core import CoreConfig, MemoryCore
 from scope_recall.core.schema import SCHEMA_VERSION
 from scope_recall.core.storage import SQLiteStorage
-import scope_recall.core.storage as storage_module
 from scope_recall.core.writer_lease import truth_writer_process_snapshot
 from v11_support import context, source_event
-
 
 NOW = "2026-09-06T06:00:00Z"
 

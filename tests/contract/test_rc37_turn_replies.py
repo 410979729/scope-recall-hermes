@@ -10,11 +10,12 @@ every seed, and costs at most three objects of the bound.
 
 from __future__ import annotations
 
-from dataclasses import replace
 import time
+from dataclasses import replace
 
 from scope_recall.core.retrieval import CandidateRef, SearchContext
 from scope_recall.core.retrieval_storage import TURN_REPLY_LIMIT, RetrievalStorage
+
 from tests.contract.test_rc33_recall_accuracy import _packet, _say  # noqa: F401  (helpers)
 from tests.contract.test_v11_claims import accept, app, draft  # noqa: F401  (fixture)
 from tests.v11_support import recall_request

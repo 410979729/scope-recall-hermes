@@ -20,7 +20,6 @@ import os
 from pathlib import Path
 
 import pytest
-
 from scope_recall.runtime.scheduling import MAX_CONSECUTIVE_WORKER_FAILURES, WakePlan, supervise
 
 

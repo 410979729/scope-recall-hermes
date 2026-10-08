@@ -2,20 +2,19 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import datetime, timezone
 import hashlib
 import json
 import math
 import re
-from typing import Iterable
 import unicodedata
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from typing import Iterable
 
 from ..contracts import ContractError
 from .embedding_budget import bounded_embedding_text
 from .events import CJK_RUN, lexical_terms, query_terms, version_suffixes
 from .retrieval import CandidateRef, SearchContext
-
 
 EMBEDDING_SPACE = {
     "model": "gemini-embedding-2",

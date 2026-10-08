@@ -31,7 +31,7 @@ import threading
 import types
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Any, IO, Iterator
+from typing import IO, Any, Iterator
 
 try:  # pragma: no cover - exercised on POSIX hosts
     import fcntl as _fcntl

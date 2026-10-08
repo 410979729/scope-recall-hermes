@@ -7,7 +7,8 @@ from dataclasses import replace
 from scope_recall.core.background_context import background_candidates
 from scope_recall.core.recall import RetrievalPipeline
 from scope_recall.core.retrieval import CandidateRef, RetrievedObject, SearchContext, SearchLimits
-from tests.contract.test_v11_claims import app, accept, capture, draft
+
+from tests.contract.test_v11_claims import accept, app, capture, draft
 from tests.v11_support import recall_request
 
 

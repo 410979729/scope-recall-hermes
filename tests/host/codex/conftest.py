@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import json
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
-
 from scope_recall.adapters.clients import CodexHookHandler, install_codex_scope_recall
 
 

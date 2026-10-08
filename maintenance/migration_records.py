@@ -4,16 +4,19 @@ No host activation, target writes or background work.
 """
 
 from __future__ import annotations
-from datetime import datetime, timezone
+
 import hashlib
 import json
 import re
 import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable
-from .backup import safe_path
+
 from scope_recall.core.capture_filters import sanitize_report_text, sanitize_structured_value
 from scope_recall.core.schema import SCHEMA_VERSION
+
+from .backup import safe_path
 
 LEGACY_BASELINE = "578b955802df753f2e2208e26eab6f71971285a0"
 REPORT_FORMAT = "scope-recall-p15-migration-report/3"

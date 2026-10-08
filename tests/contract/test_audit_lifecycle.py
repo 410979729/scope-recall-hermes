@@ -1,10 +1,9 @@
 """Synthetic authorization and restore races; no host or model calls."""
 
-from concurrent.futures import ThreadPoolExecutor
 import threading
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
-
 from scope_recall.contracts import ContractError
 from scope_recall.core.restore import (
     InstallationMaintenance,
@@ -13,7 +12,7 @@ from scope_recall.core.restore import (
     ledger_digest,
     replay_deletion_ledger,
 )
-from test_v11_deletion import app, capture, initial, request, authorize, sqlite_backup
+from test_v11_deletion import app, authorize, capture, initial, request, sqlite_backup
 from v11_support import source_event
 
 

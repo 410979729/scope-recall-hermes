@@ -2,15 +2,15 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field, replace
 import hashlib
 import json
 import os
-from pathlib import Path
 import re
 import secrets
 import tempfile
 import time
+from dataclasses import dataclass, field, replace
+from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
 from scope_recall.contracts import ENTRY_ID, InstanceBinding, TrustedContext
@@ -22,12 +22,12 @@ from .audiences import (
     LOCAL_USER_ID,
     HermesIdentityError,
     audience_entry,
-    normalize_audience_entry,
     is_archive_scope,
+    normalize_audience_entry,
     normalize_local_platforms,
     normalize_owner_logins,
-    normalize_retained_scope_ids,
     normalize_owner_principals,
+    normalize_retained_scope_ids,
 )
 
 MANIFEST_FILENAME = "installation.json"

@@ -1,30 +1,29 @@
 """Focused regressions for the bounded host/cost audit; no network calls."""
 
+import json
+import sqlite3
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from dataclasses import replace
 from io import StringIO
 from types import SimpleNamespace
 from unittest.mock import Mock
-from concurrent.futures import ThreadPoolExecutor
-from contextlib import contextmanager
-import json
-import sqlite3
-import threading
 
 import pytest
-
-from scope_recall.adapters.hermes.runtime_wiring import HermesHostRuntime
 from scope_recall.adapters.clients.runtime_wiring import CodexHostRuntime
+from scope_recall.adapters.hermes.runtime_wiring import HermesHostRuntime
 from scope_recall.adapters.runtime_wiring import launch_audience_worker
 from scope_recall.core import CoreConfig, MemoryCore
-from scope_recall.runtime.instance import RuntimeInstanceConfig, build_runtime_instance
-from scope_recall.runtime import worker_entry
 from scope_recall.core.file_lock import advisory_file_lock
-from scope_recall.runtime.models import AuxiliaryModelError
 from scope_recall.core.worker_outcomes import model_exception_outcome
-from test_runtime_worker_entry import _binding, _config_payload, _write_config
-from test_runtime_auxiliary import _runtime_config, FakeTransport
+from scope_recall.runtime import worker_entry
 from scope_recall.runtime.auxiliary import build_auxiliary_runtime
-from test_v11_worker import worker_app, app, capture, work_rows, _mark_embed_done
+from scope_recall.runtime.instance import RuntimeInstanceConfig, build_runtime_instance
+from scope_recall.runtime.models import AuxiliaryModelError
+from test_runtime_auxiliary import FakeTransport, _runtime_config
+from test_runtime_worker_entry import _binding, _config_payload, _write_config
+from test_v11_worker import _mark_embed_done, app, capture, work_rows, worker_app
 
 
 def _host(tmp_path, host_type=HermesHostRuntime):
@@ -143,8 +142,8 @@ def test_worker_counts_only_actual_model_attempts(worker_app, code, detail, stat
 
 
 def test_expired_request_never_settles_with_unbounded_timeout(tmp_path, monkeypatch):
-    from scope_recall import adapters
     import scope_recall.runtime.models as models
+    from scope_recall import adapters
 
     config, _, _ = _runtime_config(tmp_path)
     monkeypatch.setenv("SCOPE_RECALL_TEST_CHAT_KEY", "test-key")

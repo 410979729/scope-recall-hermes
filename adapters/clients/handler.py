@@ -2,45 +2,44 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from datetime import datetime, timezone
 import json
 import math
-from pathlib import Path
 import sqlite3
 import time
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Callable, Protocol, cast
 
 from scope_recall.contracts import ContractError, Origin, TrustedContext
 from scope_recall.core import CoreConfig, MemoryCore
 from scope_recall.core.capture_inbox import DELETED_KEY
 from scope_recall.runtime.instance import RuntimeInstanceConfig
-from ..runtime_wiring import strict_hook_budget
 
+from ..runtime_wiring import strict_hook_budget
 from . import transcript
 from .boundary import (
-    without_lone_surrogates,
     is_workbuddy_agent_run,
+    without_lone_surrogates,
 )
 from .config import CodexConfigError, CodexInstallationConfig, SharedClientConfig, load_codex_config, load_shared_client
 from .hook_answer import (
     HookDiagnostics,
 )
-from .identity import resolve_runtime_audience, trusted_context
 from .hook_events import CAPTURE_TIMEOUT_S, RUNTIME_ATTACH_MIN_S, HookEvents
+from .identity import resolve_runtime_audience, trusted_context
 from .prompt_recall import PromptRecall
 from .record_reader import RecordLines, RecordReader
-from .session_marks import (
-    forget_turns,
-    in_suggestions_thread,
-)
 from .runtime_wiring import (
     GAP_UNCONFIGURED,
     GAP_WORKER_LAUNCH_FAILED,
     TrustedHostRuntime,
     attach_trusted_host_runtime,
 )
-
+from .session_marks import (
+    forget_turns,
+    in_suggestions_thread,
+)
 
 _MAX_STDIN_BYTES = 65536
 _TOTAL_BUDGET_S = 2.0

@@ -1,12 +1,11 @@
 """Source-preserving cost admission with real isolated SQLite transactions."""
 
-from dataclasses import replace
 import itertools
 import json
 import sqlite3
+from dataclasses import replace
 
 import pytest
-
 from scope_recall.contracts import ContractError
 from scope_recall.core import CoreConfig, MemoryCore
 from scope_recall.core.admission import (

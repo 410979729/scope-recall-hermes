@@ -13,8 +13,8 @@ from __future__ import annotations
 import importlib.util
 
 import pytest
-
 from scope_recall.vector.store import LanceVectorStore
+
 from tests.contract import test_every_store_meets_the_runtime as seams
 
 pytestmark = pytest.mark.skipif(

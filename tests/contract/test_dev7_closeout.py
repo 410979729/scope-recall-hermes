@@ -1,37 +1,38 @@
 """Release-critical offline failure/restart checks, without model/network calls."""
 
-from dataclasses import replace
-from datetime import timedelta
 import json
-from pathlib import Path
 import sqlite3
 import subprocess
 import sys
+from dataclasses import replace
+from datetime import timedelta
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-
 from scope_recall.contracts import ContractError
-from scope_recall.core import CoreConfig, MemoryCore
-from scope_recall.core import capture_inbox, delete_storage, inbox_rules
+from scope_recall.core import CoreConfig, MemoryCore, capture_inbox, delete_storage, inbox_rules
 from scope_recall.core.episodes import source_watermark
 from scope_recall.core.worker_consolidation import decode_consolidation_result
+from scope_recall.maintenance.autostart import plan
 from scope_recall.runtime.resume_entry import resume_once
 from scope_recall.runtime.scheduling import control_path
-from scope_recall.maintenance.autostart import plan
+from test_finite_supervisor import NOW, fixture, queue
+from test_sprint_consolidation_chunks import long_source, row
+from test_v11_deletion import authorize, request
+from test_v11_worker import (
+    FakeConsolidation,
+    capture,
+    consolidation_payload,
+    draft,
+)
+from test_v11_worker import (
+    app as app,
+)
 from test_v11_worker import (
     worker_app as worker_app,
-    app as app,
-    capture,
-    draft,
-    consolidation_payload,
-    FakeConsolidation,
 )
-from test_v11_deletion import authorize, request
-from test_sprint_consolidation_chunks import long_source, row
-from test_finite_supervisor import fixture, queue, NOW
-from v11_support import downgrade_store
-from v11_support import source_event
+from v11_support import downgrade_store, source_event
 
 
 def test_capture_commit_failure_survives_fresh_process_and_dedupes(worker_app, monkeypatch, tmp_path):
@@ -274,8 +275,8 @@ def test_external_wake_still_launches_after_ten_thousand_items_in_a_day(tmp_path
 def test_restore_cancels_stale_inbox_and_fences_replay(worker_app, tmp_path):
     from test_v11_deletion import (
         InstallationMaintenance,
-        export_deletion_ledger,
         begin_restore,
+        export_deletion_ledger,
         ledger_digest,
         replay_deletion_ledger,
         sqlite_backup,

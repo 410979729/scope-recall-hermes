@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import json
 import hashlib
+import json
 import math
 import re
 from dataclasses import dataclass
@@ -10,7 +10,6 @@ from pathlib import Path
 from typing import Literal, NotRequired, TypedDict, cast, get_args
 
 from jsonschema import Draft202012Validator, FormatChecker
-
 
 Origin = Literal[
     "human_direct",

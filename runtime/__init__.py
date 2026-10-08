@@ -6,9 +6,9 @@ from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from .auxiliary import (
+        DEFAULT_LEDGER_NAME,
         AuxiliaryRuntime,
         AuxiliaryRuntimeConfig,
-        DEFAULT_LEDGER_NAME,
         auxiliary_runtime_status,
         build_auxiliary_runtime,
     )

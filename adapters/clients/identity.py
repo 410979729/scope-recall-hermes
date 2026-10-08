@@ -7,9 +7,9 @@ entry's grants in the store's manifest.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import hashlib
 import os
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping
 

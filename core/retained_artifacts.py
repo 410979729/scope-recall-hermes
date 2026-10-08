@@ -7,16 +7,15 @@ placing database deletion fences before calling :func:`erase_retained`.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import hashlib
 import os
-from pathlib import Path
 import re
 import xml.etree.ElementTree as ET
+from dataclasses import dataclass
+from pathlib import Path
 
 from ..contracts import ContractError, InstanceBinding
 from .secret_patterns import contains_secret_like_text
-
 
 MAX_RETAINED_BYTES = 16 * 1024 * 1024
 ALLOWED_MEDIA_TYPES = frozenset({"image/png", "image/jpeg", "image/webp", "image/svg+xml", "text/plain"})

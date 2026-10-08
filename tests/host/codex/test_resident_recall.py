@@ -17,7 +17,6 @@ import time
 from pathlib import Path
 
 import pytest
-
 from scope_recall.adapters.clients import local_endpoint, resident_entry
 from scope_recall.adapters.hermes.installation import (
     attach_shared_entry,

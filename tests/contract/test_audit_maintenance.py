@@ -1,14 +1,14 @@
 """New synthetic backup/rollback roots, including actual Windows junctions."""
 
 import os
-from pathlib import Path
 import sqlite3
+from pathlib import Path
 
 import pytest
 
 from maintenance.backup import BackupError, backup_sqlite
-from maintenance.rollback import RollbackError, rollback_to_verified_snapshot
 from maintenance.migrate_v2 import MigrationError, build_legacy_catalog, migrate_legacy
+from maintenance.rollback import RollbackError, rollback_to_verified_snapshot
 
 
 def database(path):

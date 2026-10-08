@@ -8,8 +8,8 @@ first and conflicting rows stay archived with an explicit conversion gap.
 
 from __future__ import annotations
 
-from collections import defaultdict
 import sqlite3
+from collections import defaultdict
 from typing import Any, NamedTuple, cast
 
 from scope_recall.contracts import ClaimProposal
@@ -26,14 +26,14 @@ from .legacy_sources import (
 )
 from .migration_records import (
     MigrationError,
-    canonical_json,
     canonical_digest,
+    canonical_json,
     json_value,
-    recorded_time,
-    sanitized_value,
-    sanitized_text,
-    stable_legacy_id,
     parse_instant,
+    recorded_time,
+    sanitized_text,
+    sanitized_value,
+    stable_legacy_id,
 )
 
 Evidence = list[tuple[str, str, str | None]]

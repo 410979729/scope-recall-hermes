@@ -10,7 +10,6 @@ from io import BytesIO
 from types import SimpleNamespace
 
 import pytest
-
 from scope_recall.runtime import _http_worker as worker
 
 

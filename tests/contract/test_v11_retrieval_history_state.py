@@ -1,7 +1,6 @@
 from dataclasses import replace
 
 import pytest
-
 from scope_recall.core.retrieval import CandidateRef, SearchContext, SearchLimits
 from scope_recall.core.retrieval_storage import RetrievalStorage
 from test_v11_claims import app, capture

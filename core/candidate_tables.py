@@ -11,9 +11,9 @@ evidence selection and the single-row moves -- so ``candidate_intake``,
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
 import hashlib
 import json
+from datetime import datetime, timezone
 
 from ..contracts import ContractError
 from .candidate_debounce import settle_reason

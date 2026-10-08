@@ -7,11 +7,11 @@ The inbox removal and all source effects commit in the same transaction.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
 import hashlib
 import json
 import sqlite3
 import time
+from datetime import datetime, timezone
 
 from ..contracts import (
     ArtifactVersion,
@@ -20,8 +20,6 @@ from ..contracts import (
     TrustedContext,
     TrustedSourcePrincipal,
 )
-from .truth_connection import TruthDatabaseConnectionError
-from .writer_lease import TruthWriterBusyError
 from .capture import CaptureReceipt, record_event
 from .events import PreparedCapture, prepare_capture, segment_key
 from .inbox_rules import (
@@ -34,6 +32,8 @@ from .inbox_rules import (
     deferred_path,
     replayable,
 )
+from .truth_connection import TruthDatabaseConnectionError
+from .writer_lease import TruthWriterBusyError
 
 _TRANSIENT = (sqlite3.Error, TruthDatabaseConnectionError, TruthWriterBusyError)
 #: What a capture already given a new key leaves when it conflicts again: another try would conflict the same way.

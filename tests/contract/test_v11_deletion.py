@@ -1,14 +1,12 @@
 """P06 online/read/restore fencing in isolated SQLite; no host or vector claims."""
 
-from dataclasses import replace
 import json
 import sqlite3
+from dataclasses import replace
 
 import pytest
-
 from scope_recall.contracts import ContractError
 from scope_recall.core import CoreConfig, MemoryCore
-from scope_recall.core.visibility import ObjectRef
 from scope_recall.core.restore import (
     InstallationMaintenance,
     begin_restore,
@@ -16,7 +14,8 @@ from scope_recall.core.restore import (
     ledger_digest,
     replay_deletion_ledger,
 )
-from test_v11_claims import app, capture, initial, accept, draft, counts
+from scope_recall.core.visibility import ObjectRef
+from test_v11_claims import accept, app, capture, counts, draft, initial
 
 
 def request(*items, mode="delete"):
@@ -430,7 +429,7 @@ def test_ordinary_context_with_all_scopes_has_no_installation_maintenance_author
 
 
 def test_purge_failure_keeps_content_blocked_and_can_retry(app, monkeypatch):
-    from test_v11_storage import inject, InjectedFailure, storage_module
+    from test_v11_storage import InjectedFailure, inject, storage_module
 
     core, ctx = app
     item, source = initial(core, ctx)
@@ -458,7 +457,7 @@ def test_question_word_without_punctuation_cannot_authorize_delete(app):
 
 
 def test_restore_failed_commit_keeps_marker_closed_and_replay_retries(app, tmp_path, monkeypatch):
-    from test_v11_storage import inject, InjectedFailure, storage_module
+    from test_v11_storage import InjectedFailure, inject, storage_module
 
     core, ctx = app
     item, source = initial(core, ctx)

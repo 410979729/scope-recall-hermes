@@ -33,11 +33,11 @@ manifest audience binding must separately preserve the old read boundary.
 
 from __future__ import annotations
 
+import json
+import sqlite3
 from collections.abc import Mapping
 from dataclasses import dataclass
 from hashlib import sha256
-import json
-import sqlite3
 from types import MappingProxyType
 from typing import Any
 

@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from typing import Any, Callable
 import itertools
 import logging
 import threading
 import time
 import weakref
+from typing import Any, Callable
 
 _log = logging.getLogger(__name__)
 

@@ -13,23 +13,32 @@ no lock and opens no store.
 
 from __future__ import annotations
 
-from dataclasses import MISSING, dataclass, field, fields, replace
-from functools import partial
 import math
-from pathlib import Path
 import sqlite3
 import threading
 import time
+from dataclasses import MISSING, dataclass, field, fields, replace
+from functools import partial
+from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from ..contracts import ContractError, InstanceBinding, Origin, TrustedContext
+from ..core.capture_filters import redact_private_paths
 from ..core.composition import CoreConfig, MemoryCore
-from ..core.storage import SQLiteStorage
-from ..core.retrieval import SearchContext
 from ..core.deadline import RequestDeadline, using_request_deadline
 from ..core.index_rebuild import IMPORT_EMBED_QUEUE_CEILING
+from ..core.recall_policy import EMBEDDING_SPACE, RecallPolicy, embedding_space_id
+from ..core.retrieval import SearchContext
+from ..core.storage import SQLiteStorage
+from ..vector.lance_native import helper_start_failure
+from ..vector.process_store import NativeVectorPathError
+from ..vector.store import build_vector_store
 from .auxiliary import AuxiliaryRuntimeConfig, build_auxiliary_runtime
+from .codex_cli import CodexCliConsolidationAdapter
 from .embedding_retry import embed_with_one_retry
+from .lance_port import LanceEmbedPort, LancePurgePort, LanceVectorPort, search_partitions
+from .model_budget import provider_holds
+from .models import AuxiliaryModelError
 from .running_code import record_running_code
 from .validation import (
     absolute_path,
@@ -42,18 +51,8 @@ from .validation import (
     utc_now,
 )
 from .vector_retention import expire_if_due
-from .worker_launch import failure_reason
 from .vector_upkeep import backfill_if_due, compact_if_due, index_if_due, respace_if_due
-from .codex_cli import CodexCliConsolidationAdapter
-from .lance_port import LanceEmbedPort, LancePurgePort, LanceVectorPort, search_partitions
-from .models import AuxiliaryModelError
-from ..core.capture_filters import redact_private_paths
-from ..core.recall_policy import EMBEDDING_SPACE, RecallPolicy, embedding_space_id
-from ..vector.lance_native import helper_start_failure
-from ..vector.process_store import NativeVectorPathError
-from ..vector.store import build_vector_store
-from .model_budget import provider_holds
-
+from .worker_launch import failure_reason
 
 _RUNTIME_ORIGINS: frozenset[Origin] = frozenset({"human_direct", "tool_observation", "external_document", "imported"})
 #: Claude Code runs the Codex adapter as an entry of a shared store (``adapters/clients/config.py``).

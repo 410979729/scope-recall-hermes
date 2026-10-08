@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field, replace
-from datetime import datetime, timezone, tzinfo
 import math
 import time
-from typing import Protocol
 import uuid
+from dataclasses import dataclass, field, replace
+from datetime import datetime, timezone, tzinfo
+from typing import Protocol
 
 from ..contracts import (
     ContractError,
@@ -17,14 +17,14 @@ from ..contracts import (
     validate_model_request,
     validate_payload,
 )
-from .file_lock import advisory_file_lock
 from . import lexical_index
-from .storage import SQLiteStorage, StoreStatus, StoredSource
-from .capture import CaptureReceipt, record_event
 from .admission import AdmissionPolicy, resume_deferred, schedule_source
+from .capture import CaptureReceipt, record_event
+from .delete_storage import retraction_after
+from .file_lock import advisory_file_lock
 from .recall_diagnostics import RECALL_DIAGNOSTIC_PREFIX, RecallDiagnostics
 from .retrieval import CandidateRef, SearchContext, SearchLimits
-from .delete_storage import retraction_after
+from .storage import SQLiteStorage, StoredSource, StoreStatus
 from .visibility import release_objects
 from .work_storage import respace_refusal
 

@@ -7,11 +7,11 @@ from dataclasses import replace
 from datetime import datetime, timedelta
 
 import pytest
-
 from scope_recall.core.claims import Qualification
 from scope_recall.runtime.instance import RuntimeInstance, RuntimeInstanceConfig
-from test_r1_candidate_lifecycle import Evaluator, _candidate, _finish_source_work, _candidate_rows
-from test_v11_claims import app as app, capture, draft, accept
+from test_r1_candidate_lifecycle import Evaluator, _candidate, _candidate_rows, _finish_source_work
+from test_v11_claims import accept, capture, draft
+from test_v11_claims import app as app
 
 
 def test_runtime_drain_preserves_candidate_capability_and_call_deadline(app):

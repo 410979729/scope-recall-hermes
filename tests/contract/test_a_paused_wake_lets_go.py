@@ -14,7 +14,6 @@ from __future__ import annotations
 import json
 
 import pytest
-
 from scope_recall.maintenance import package_upgrade
 from scope_recall.runtime import scheduling
 from scope_recall.runtime.scheduling import PAUSE_POLL_SECONDS, WakePlan, supervise

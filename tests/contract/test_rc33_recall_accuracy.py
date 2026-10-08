@@ -7,7 +7,15 @@ beta: the newest test report dated a day early, "阿乙当前是什么模型" an
 
 from __future__ import annotations
 
-from tests.contract.test_v11_claims import Clock, accept, app, capture, draft, initial, revise_request  # noqa: F401  (fixture)
+from tests.contract.test_v11_claims import (  # noqa: F401  (fixture)
+    Clock,
+    accept,
+    app,
+    capture,
+    draft,
+    initial,
+    revise_request,
+)
 from tests.v11_support import recall_request
 
 

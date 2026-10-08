@@ -4,19 +4,20 @@ Supported legacy tables and their dispositions have one owner here.
 """
 
 from __future__ import annotations
-import hashlib
 
+import hashlib
 import sqlite3
 from pathlib import Path
 from typing import Any
+
 from .backup import safe_path
 from .legacy_v2_compat import (
-    BRIDGE_TABLE,
     BRIDGE_COLUMNS,
-    IMPORT_LEDGER_TABLE,
+    BRIDGE_TABLE,
     IMPORT_LEDGER_COLUMNS,
+    IMPORT_LEDGER_TABLE,
 )
-from .migration_records import MigrationError, canonical_json, table_columns, open_immutable, table_names
+from .migration_records import MigrationError, canonical_json, open_immutable, table_columns, table_names
 
 HISTORY_TABLES = {
     "fact_action_receipts",

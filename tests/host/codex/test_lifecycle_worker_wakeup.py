@@ -7,9 +7,7 @@ import sqlite3
 from unittest.mock import Mock, patch
 
 import pytest
-
-from scope_recall.adapters.clients import CodexHookHandler
-from scope_recall.adapters.clients import install_codex_scope_recall
+from scope_recall.adapters.clients import CodexHookHandler, install_codex_scope_recall
 from scope_recall.contracts import ContractError
 
 

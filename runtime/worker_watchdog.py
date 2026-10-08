@@ -3,18 +3,19 @@
 from __future__ import annotations
 
 import argparse
-from collections import deque
-from contextlib import redirect_stdout
-from io import StringIO
 import json
 import os
-from pathlib import Path
 import signal
 import subprocess
 import sys
 import threading
 import time
+from collections import deque
+from contextlib import redirect_stdout
+from io import StringIO
+from pathlib import Path
 
+from .scheduling import supervise
 from .validation import utc_now
 from .worker_entry import load_config, persist_worker_status
 from .worker_launch import (
@@ -25,7 +26,6 @@ from .worker_launch import (
     taskkill_tree,
     validate_wake_arguments,
 )
-from .scheduling import supervise
 
 #: Seconds an owned child may outlive the deadline it was handed.  A child that
 #: honours that deadline has already written its receipt and exited; one still

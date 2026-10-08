@@ -2,25 +2,24 @@
 
 from __future__ import annotations
 
-from dataclasses import replace
 import importlib.util
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
 import pytest
-
+from scope_recall.core import CoreConfig, MemoryCore
+from scope_recall.core.recall_policy import SPACE_ID, RecallPolicy
 from scope_recall.runtime.lance_port import (
     LanceIndexWriter,
     LanceVectorPort,
     LanceVectorRecord,
     physical_partition_scope_id,
 )
-from scope_recall.core import CoreConfig, MemoryCore
-from scope_recall.core.recall_policy import RecallPolicy, SPACE_ID
 from scope_recall.vector.process_store import ProcessLanceVectorStore
+
 from tests.contract.test_v11_claims import Clock, capture
 from tests.v11_support import context, recall_request
-
 
 pytestmark = pytest.mark.skipif(
     importlib.util.find_spec("lancedb") is None,

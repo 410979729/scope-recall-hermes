@@ -9,8 +9,8 @@ to the model for its one repair attempt, where ``required`` told it nothing eith
 from __future__ import annotations
 
 import pytest
-
 from scope_recall.contracts import ContractError, validate_payload
+
 from tests.contract.test_rc33_recall_accuracy import _packet, _say  # noqa: F401  (helpers)
 from tests.contract.test_v11_claims import app, capture  # noqa: F401  (fixture)
 from tests.v11_support import recall_request
@@ -36,6 +36,7 @@ def test_the_spellings_a_query_may_use_are_accepted():
 def test_a_model_writes_the_instant_back_in_the_zone_it_was_shown(tmp_path):
     """Memory times reach a model in its host's zone; one it copies into a request is the same instant."""
     from scope_recall.contracts import validate_model_request
+
     from tests.v11_support import context
 
     trusted = context(tmp_path / "TEST-db")

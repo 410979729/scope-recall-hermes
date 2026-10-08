@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import os
 import re
-from pathlib import Path
 import signal
 import subprocess
 import sys
+from dataclasses import dataclass
+from pathlib import Path
 
 from .validation import absolute_path, strict_bool, strict_float, strict_int
 

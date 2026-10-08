@@ -12,13 +12,13 @@ status, answerability and coverage vocabulary.
 
 from __future__ import annotations
 
-from collections import OrderedDict
-from dataclasses import dataclass, field
 import copy
 import hashlib
 import json
 import threading
 import time
+from collections import OrderedDict
+from dataclasses import dataclass, field
 from typing import Callable, Literal, Protocol, cast
 
 from ..contracts import Basis, ContractError, RecallItem, RecallPacket, bounded_entry_labels, bounded_source_contexts

@@ -6,11 +6,10 @@ carrying a 12 KB vector -- the bulk of daily growth -- while a few hundred of
 without touching the text, the lexical index, or anything derived from it.
 """
 
-from datetime import datetime, timedelta, timezone
 import sqlite3
+from datetime import datetime, timedelta, timezone
 
 import pytest
-
 from scope_recall.maintenance import doctor
 from scope_recall.runtime import vector_retention
 from scope_recall.runtime.instance import VectorRuntimeConfig

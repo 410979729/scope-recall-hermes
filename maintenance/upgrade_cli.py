@@ -2,9 +2,9 @@
 
 import argparse
 import json
-from pathlib import Path
-import sys
 import sqlite3
+import sys
+from pathlib import Path
 
 from ..contracts import ContractError
 from .backup import BackupError
@@ -12,10 +12,10 @@ from .migrate_v2 import MigrationError
 from .onboarding import inspect_installation, workflow_text
 from .upgrade import (
     prepare_upgrade,
-    run_upgrade,
-    verify_upgrade,
-    upgrade_status,
     queue_upgrade_index,
+    run_upgrade,
+    upgrade_status,
+    verify_upgrade,
 )
 
 

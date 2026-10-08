@@ -13,7 +13,7 @@ import os
 from dataclasses import dataclass
 
 from ..contracts import ContractError, TrustedContext
-from .delete_storage import DeleteTarget, canonical, OBJECT_TABLES, purge_work_ref
+from .delete_storage import OBJECT_TABLES, DeleteTarget, canonical, purge_work_ref
 from .schema import SCHEMA_VERSION
 
 

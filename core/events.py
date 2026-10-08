@@ -2,16 +2,15 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import functools
 import hashlib
 import re
 import unicodedata
+from dataclasses import dataclass
 
-from .capture_filters import sanitize_source_capture_text
 from ..contracts import ContractError, SourceEvent, TrustedContext, decode_payload, validate_capture
+from .capture_filters import sanitize_source_capture_text
 from .secret_patterns import contains_secret_like_text
-
 
 MAX_SEGMENT_CHARS = 65536
 
