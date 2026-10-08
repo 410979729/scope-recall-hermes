@@ -56,6 +56,7 @@ from ..core.schema import SCHEMA_VERSION
 from ..core.truth_connection import connect_truth_database
 from ..core.writer_lease import TruthWriterBusyError
 from ..runtime.running_code import live_records
+from .shared_run import Run, SharedStoreError
 from ..runtime.vector_retention import OMITTED_TOOL_OUTPUT, REPEATED_TOOL_OUTPUT
 
 #: Store versions whose tables this import reads.  An older store is upgraded first.
@@ -521,8 +522,6 @@ def _drop_expirable_embeddings(conn, names: _Names, *, now: str) -> int:
 def import_entry(
     *, root: Path, entry_id: str, source: Path, dry_run: bool = False, now: str | None = None
 ) -> dict[str, Any]:
-    from .shared import SharedStoreError, _Run
-
     now = now or _now()
     payload = read_shared_payload(root)
     record = next((e for e in payload["entries"] if e["entry_id"] == entry_id and not e.get("detached_at")), None)
@@ -602,5 +601,5 @@ def import_entry(
         src.close()
     result["import_seconds"] = round(time.monotonic() - started, 1)
     if not dry_run:
-        result["receipt"] = _Run(root, f"import-{entry_id}", now).receipt(result)
+        result["receipt"] = Run(root, f"import-{entry_id}", now).receipt(result)
     return result

@@ -186,6 +186,7 @@
     "maintenance/rollback.py",
     "maintenance/shared.py",
     "maintenance/shared_import.py",
+    "maintenance/shared_run.py",
     "maintenance/upgrade.py",
     "maintenance/upgrade_cli.py",
     "runtime/__init__.py",
