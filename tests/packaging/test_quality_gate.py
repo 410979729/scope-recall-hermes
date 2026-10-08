@@ -320,3 +320,85 @@ def test_an_import_from_a_higher_layer_is_one_but_from_an_entry_or_as_a_named_la
         "upward import: core/x.py:3 imports runtime/y.py through __init__.py",
         "upward import: runtime/instance.py:1 imports adapters/hermes/authorization.py",
     ]
+
+
+def test_a_typing_flag_bound_twice_guards_nothing(tmp_path):
+    files = _tree(
+        tmp_path,
+        {
+            "core/__init__.py": "",
+            "core/a.py": (
+                "from typing import TYPE_CHECKING as TC\n\n\n"
+                "def run(TC):\n    if TC:\n        from ..runtime import b\n"
+            ),
+            "runtime/__init__.py": "",
+            "runtime/b.py": "",
+        },
+    )
+    # Inside run, TC is whatever the caller passes.
+    assert quality.import_problems(tmp_path, files) == ["upward import: core/a.py:6 imports runtime/b.py in a function"]
+
+
+def test_the_named_lazy_imports_cover_their_own_statements_alone(tmp_path):
+    files = _tree(
+        tmp_path,
+        {
+            "__init__.py": "from .maintenance.b import B\n",
+            "runtime/__init__.py": "",
+            "runtime/instance.py": (
+                "def build():\n    from ..adapters import helper\n    from .. import B\n\n    return helper, B\n"
+            ),
+            "adapters/__init__.py": "helper = 1\n",
+            "maintenance/__init__.py": "",
+            "maintenance/b.py": "B = 7\n",
+        },
+    )
+    # Lazy and from runtime/instance.py like the named ones, but neither names a host's authorization check.
+    assert quality.import_problems(tmp_path, files) == [
+        "upward import: runtime/instance.py:2 imports adapters/__init__.py in a function",
+        "upward import: runtime/instance.py:3 imports maintenance/b.py through __init__.py in a function",
+    ]
+
+
+def test_a_package_attribute_wins_over_a_submodule_of_its_name(tmp_path):
+    files = _tree(
+        tmp_path,
+        {
+            "__init__.py": "from .runtime.b import B as helper\n",
+            "helper.py": "",
+            "core/__init__.py": "",
+            "core/a.py": "from .pkg import value\nfrom .. import helper\n\nA = value\n",
+            "core/pkg/__init__.py": "value = 1\n",
+            "core/pkg/value.py": "from ..a import A\n",
+            "runtime/__init__.py": "",
+            "runtime/b.py": "B = 7\n",
+        },
+    )
+    # Python takes pkg's value and never loads pkg/value.py (no cycle), and the root's helper is runtime's B.
+    assert quality.import_problems(tmp_path, files) == [
+        "upward import: core/a.py:2 imports runtime/b.py through __init__.py"
+    ]
+
+
+def test_star_imports_dynamic_imports_and_a_named_lazy_import_run_at_load(tmp_path):
+    files = _tree(
+        tmp_path,
+        {
+            "core/__init__.py": "",
+            "core/a.py": 'from .pkg import *\nload = lambda: __import__("scope_recall.runtime.b")\n',
+            "core/pkg/__init__.py": "",
+            "runtime/__init__.py": "",
+            "runtime/b.py": "",
+            "runtime/instance.py": (
+                "def build():\n    from ..adapters.hermes.authorization import check\n\n    return check\n\n\nbuild()\n"
+            ),
+            "adapters/__init__.py": "",
+            "adapters/hermes/__init__.py": "",
+            "adapters/hermes/authorization.py": "check = 1\n",
+        },
+    )
+    assert quality.import_problems(tmp_path, files) == [
+        "star import: core/a.py:1 (name what it imports: the import check cannot follow a star)",
+        "named lazy import while its module loads: runtime/instance.py:1 build is called at the module's top level",
+        "upward import: core/a.py:2 imports runtime/b.py in a function",
+    ]
