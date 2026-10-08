@@ -47,8 +47,8 @@ def shared(tmp_path):
     storage = SQLiteStorage(binding)
     storage.initialize()
     with storage.write(shared_context(binding)) as tx:
-        tx.register_entry("tianshu", "天枢", "hermes", now=NOW)
-        tx.register_entry("tianxuan", "天璇", "hermes", now=NOW)
+        tx.registry.register_entry("tianshu", "天枢", "hermes", now=NOW)
+        tx.registry.register_entry("tianxuan", "天璇", "hermes", now=NOW)
     return storage, binding
 
 
@@ -111,13 +111,13 @@ def test_a_local_store_is_never_adopted_and_takes_no_entries(tmp_path):
     assert (exc.value.code, exc.value.field) == ("ACCESS_DENIED", "local_store")
     with storage.write(ctx) as tx:
         for call in (
-            lambda: tx.register_entry("tianshu", "天枢", "hermes", now=NOW),
-            lambda: tx.register_scopes({"TEST-other"}),
+            lambda: tx.registry.register_entry("tianshu", "天枢", "hermes", now=NOW),
+            lambda: tx.registry.register_scopes({"TEST-other"}),
         ):
             with pytest.raises(ContractError) as exc:
                 call()
             assert (exc.value.code, exc.value.field) == ("ACCESS_DENIED", "local_store")
-        assert tx.entries() == {}
+        assert tx.registry.entries() == {}
 
 
 def test_the_two_kinds_do_not_open_each_other(tmp_path, shared):
@@ -153,7 +153,7 @@ def test_a_capture_records_when_its_entry_was_last_seen(shared):
     storage, binding = shared
     put(storage, shared_context(binding, "tianshu"), "TEST-entry/1")
     with storage.read(shared_context(binding)) as tx:
-        seen = tx.entries()
+        seen = tx.registry.entries()
     assert seen["tianshu"] == {"name": "天枢", "host": "hermes", "first_seen": NOW, "last_seen": NOW}
     assert seen["tianxuan"]["last_seen"] == NOW
 
@@ -177,8 +177,13 @@ def test_a_shared_store_refuses_an_entry_it_never_registered(shared):
 def test_renaming_an_entry_keeps_when_it_first_attached(shared):
     storage, binding = shared
     with storage.write(shared_context(binding)) as tx:
-        tx.register_entry("tianshu", "天枢二号", "hermes", now=LATER)
-        assert tx.entries()["tianshu"] == {"name": "天枢二号", "host": "hermes", "first_seen": NOW, "last_seen": NOW}
+        tx.registry.register_entry("tianshu", "天枢二号", "hermes", now=LATER)
+        assert tx.registry.entries()["tianshu"] == {
+            "name": "天枢二号",
+            "host": "hermes",
+            "first_seen": NOW,
+            "last_seen": NOW,
+        }
 
 
 @pytest.mark.parametrize("entry_id", ["Tianshu", "t", "1abc", "tian_shu", "x" * 33, ""])
@@ -188,7 +193,7 @@ def test_an_entry_id_is_short_lowercase_ascii(entry_id, shared):
         TrustedContext(binding, "TEST-session", binding.scope_ids, "human_direct", entry_id=entry_id)
     with storage.write(shared_context(binding)) as tx:
         with pytest.raises(ContractError) as exc:
-            tx.register_entry(entry_id, "名字", "hermes", now=NOW)
+            tx.registry.register_entry(entry_id, "名字", "hermes", now=NOW)
         assert exc.value.field == "entry_id"
 
 
@@ -210,8 +215,8 @@ def test_an_entry_binds_a_subset_of_the_store_scopes(shared):
 def test_registering_scopes_lets_an_entry_with_them_open_the_store(shared):
     storage, binding = shared
     with storage.write(shared_context(binding)) as tx:
-        assert tx.register_scopes({"TEST-group-b", "TEST-scope"}) == 1
-        assert tx.register_scopes({"TEST-group-b"}) == 0
+        assert tx.registry.register_scopes({"TEST-group-b", "TEST-scope"}) == 1
+        assert tx.registry.register_scopes({"TEST-group-b"}) == 0
     wider = replace(binding, scope_ids=frozenset({"TEST-scope", "TEST-group-b"}))
     with SQLiteStorage(wider).read(shared_context(wider)) as tx:
         assert tx.status() is not None
@@ -221,9 +226,9 @@ def test_the_store_never_holds_more_scopes_than_its_worker_can_bind(shared):
     storage, binding = shared
     room = MAX_SHARED_SCOPES - len(SCOPES)
     with storage.write(shared_context(binding)) as tx:
-        assert tx.register_scopes({f"TEST-g{i}" for i in range(room)}) == room
+        assert tx.registry.register_scopes({f"TEST-g{i}" for i in range(room)}) == room
         with pytest.raises(ContractError) as exc:
-            tx.register_scopes({"TEST-one-too-many"})
+            tx.registry.register_scopes({"TEST-one-too-many"})
     assert (exc.value.code, exc.value.field) == ("INPUT_INVALID", "scope_limit")
 
 
@@ -339,8 +344,8 @@ def test_a_shared_recall_says_which_entry_each_item_came_in_through(tmp_path):
     binding = shared_binding(tmp_path / "TEST-shared")
     core = _core(binding)
     with core.storage.write(shared_context(binding)) as tx:
-        tx.register_entry("tianshu", "天枢", "hermes", now=NOW)
-        tx.register_entry("tianxuan", "天璇", "hermes", now=NOW)
+        tx.registry.register_entry("tianshu", "天枢", "hermes", now=NOW)
+        tx.registry.register_entry("tianxuan", "天璇", "hermes", now=NOW)
     _record(core, shared_context(binding, "tianxuan"), "天璇记下的 TEST 部署口令是 H100-ZEBRA。", "TEST-recall/1")
     packet = core.recall_packet(
         shared_context(binding, "tianshu"),
@@ -369,8 +374,8 @@ def test_an_item_with_evidence_from_several_entries_names_each_once(tmp_path):
     binding = shared_binding(tmp_path / "TEST-shared")
     core = _core(binding)
     with core.storage.write(shared_context(binding)) as tx:
-        tx.register_entry("tianshu", "天枢", "hermes", now=NOW)
-        tx.register_entry("tianxuan", "天璇", "hermes", now=NOW)
+        tx.registry.register_entry("tianshu", "天枢", "hermes", now=NOW)
+        tx.registry.register_entry("tianxuan", "天璇", "hermes", now=NOW)
     a = _record(core, shared_context(binding, "tianxuan"), "TEST 第一句。", "TEST-many/1")
     b = _record(core, shared_context(binding, "tianshu"), "TEST 第二句。", "TEST-many/2")
     c = _record(core, shared_context(binding, "tianxuan"), "TEST 第三句。", "TEST-many/3")

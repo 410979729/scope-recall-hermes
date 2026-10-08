@@ -96,7 +96,7 @@ def test_a_transaction_reads_the_store_s_scopes_in_one_row(shared, monkeypatch):
     crossings = Crossings(monkeypatch)
     few = crossings.during(open_one)
     with storage.write(ctx) as tx:
-        tx.register_scopes({f"TEST-g{index}" for index in range(500)})
+        tx.registry.register_scopes({f"TEST-g{index}" for index in range(500)})
     assert crossings.during(open_one) == few
 
 

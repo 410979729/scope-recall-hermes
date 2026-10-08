@@ -13,13 +13,12 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ..contracts import (
-    ENTRY_ID,
-    MAX_SHARED_SCOPES,
     ContractError,
     InstanceBinding,
     TrustedContext,
 )
 from .delete_storage import Deletions
+from .registry_storage import Registry
 from .schema import (
     APPLICATION_ID,
     SCHEMA_VERSION,
@@ -105,7 +104,9 @@ class Transaction:
         if self.context.binding.installation_kind != "shared":
             return None
         if self.__entry_labels is None:
-            self.__entry_labels = {key: {"id": key, "name": value["name"]} for key, value in self.entries().items()}
+            self.__entry_labels = {
+                key: {"id": key, "name": value["name"]} for key, value in self.registry.entries().items()
+            }
         label = self.__entry_labels.get(entry_id)
         return dict(label) if label is not None else None
 
@@ -135,6 +136,14 @@ class Transaction:
     @property
     def sources(self):
         return Sources(self)
+
+    @property
+    def registry(self):
+        return Registry(self)
+
+    def _entries_changed(self) -> None:
+        """An entry was registered or renamed in this transaction: ``entry_label`` reads them again."""
+        self.__entry_labels = None
 
     @property
     def references(self):
@@ -410,58 +419,6 @@ class Transaction:
     def knows(self, key: tuple) -> bool:
         """Whether a read transaction has already loaded ``key`` (``remembered``)."""
         return self.__memo is not None and key in self.__memo
-
-    def register_scopes(self, scope_ids) -> int:
-        """Add the scopes an attaching entry brings to a shared store; returns how many were new.
-
-        Refused on a local store, whose scope set is its binding.  The total is
-        held to what one binding carries, so the shared worker, which binds every
-        scope, can still be built after the entry attaches.
-        """
-        conn = self._check(write=True)
-        if self.context.binding.installation_kind != "shared":
-            raise ContractError("ACCESS_DENIED", "local_store")
-        scope_ids = frozenset(scope_ids)
-        if not scope_ids or any(type(s) is not str or not s.strip() or len(s) > 240 for s in scope_ids):
-            raise ContractError("INPUT_INVALID", "scope_ids")
-        existing = frozenset(r[0] for r in conn.execute("SELECT scope_id FROM instance_scopes"))
-        if len(existing | scope_ids) > MAX_SHARED_SCOPES:
-            raise ContractError("INPUT_INVALID", "scope_limit")
-        added = sorted(scope_ids - existing)
-        conn.executemany("INSERT INTO instance_scopes(scope_id) VALUES (?)", [(s,) for s in added])
-        return len(added)
-
-    def register_entry(self, entry_id: str, display_name: str, host: str, *, now: str) -> None:
-        """Record an entry of a shared store, or rename it; ``first_seen`` survives a rename."""
-        conn = self._check(write=True)
-        if self.context.binding.installation_kind != "shared":
-            raise ContractError("ACCESS_DENIED", "local_store")
-        if type(entry_id) is not str or not ENTRY_ID.fullmatch(entry_id):
-            raise ContractError("INPUT_INVALID", "entry_id")
-        for value, field in ((display_name, "display_name"), (host, "host")):
-            if type(value) is not str or not value.strip() or len(value) > 32:
-                raise ContractError("INPUT_INVALID", field)
-        if type(now) is not str or not now:
-            raise ContractError("INPUT_INVALID", "now")
-        conn.execute(
-            """INSERT INTO entries(entry_id,display_name,host,first_seen,last_seen) VALUES (?,?,?,?,?)
-            ON CONFLICT(entry_id) DO UPDATE SET display_name=excluded.display_name, host=excluded.host""",
-            (entry_id, display_name, host, now, now),
-        )
-        self.__entry_labels = None
-
-    def entries(self) -> dict[str, dict[str, str]]:
-        """Every entry this store has registered, by id; empty for a local store."""
-        conn = self._check()
-        return {
-            r["entry_id"]: {
-                "name": r["display_name"],
-                "host": r["host"],
-                "first_seen": r["first_seen"],
-                "last_seen": r["last_seen"],
-            }
-            for r in conn.execute("SELECT * FROM entries ORDER BY entry_id")
-        }
 
 
 #: A store this large is brought forward only by a caller with this much

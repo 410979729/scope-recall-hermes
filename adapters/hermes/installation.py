@@ -1089,8 +1089,8 @@ def attach_shared_record(root: Path | str, record: dict[str, Any], *, now: str) 
     storage = SQLiteStorage(binding(before or after))
     context = TrustedContext(storage.binding, "shared-store-attach", storage.binding.scope_ids, "host_generated")
     with storage.write(context) as tx:
-        tx.register_scopes(after)
-        tx.register_entry(view.entry_id, view.entry_name, view.entry_host, now=now)
+        tx.registry.register_scopes(after)
+        tx.registry.register_entry(view.entry_id, view.entry_name, view.entry_host, now=now)
     write_shared_payload(store, updated)
     pointer = {
         "schema": ATTACHMENT_SCHEMA,

@@ -125,6 +125,7 @@
     "core/recall_policy.py",
     "core/recall_scope.py",
     "core/reference_storage.py",
+    "core/registry_storage.py",
     "core/requalify.py",
     "core/restore.py",
     "core/resume_compaction.py",

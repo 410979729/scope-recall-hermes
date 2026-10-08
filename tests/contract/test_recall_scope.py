@@ -659,8 +659,8 @@ def test_a_day_question_naming_an_entry_of_a_shared_store_reads_that_entry(tmp_p
     storage = SQLiteStorage(binding)
     storage.initialize()
     with storage.write(shared_context(binding)) as tx:
-        tx.register_entry("tianshu", "天枢", "hermes", now="2026-09-01T00:00:00Z")
-        tx.register_entry("tianxuan", "天璇", "hermes", now="2026-09-01T00:00:00Z")
+        tx.registry.register_entry("tianshu", "天枢", "hermes", now="2026-09-01T00:00:00Z")
+        tx.registry.register_entry("tianxuan", "天璇", "hermes", now="2026-09-01T00:00:00Z")
     said: dict[str, list[str]] = {}
     for entry in ("tianshu", "tianxuan"):
         with storage.write(shared_context(binding, entry_id=entry)) as tx:

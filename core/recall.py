@@ -704,7 +704,7 @@ class RetrievalPipeline:
         scope = None
         try:
             if query_scope(working.query, now=working.now, zone=working.zone, entries={}) is not None:
-                entries = getattr(tx, "entries", None)
+                entries = getattr(getattr(tx, "registry", None), "entries", None)
                 names = (
                     {entry_id: str(value.get("name") or entry_id) for entry_id, value in entries().items()}
                     if callable(entries)

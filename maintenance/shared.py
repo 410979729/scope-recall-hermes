@@ -505,7 +505,7 @@ def entries(*, root: Path) -> dict[str, Any]:
             with SQLiteStorage(binding).read(
                 TrustedContext(binding, "shared-store-entries", binding.scope_ids, "host_generated")
             ) as tx:
-                seen = tx.entries()
+                seen = tx.registry.entries()
             store = "ok"
         except ContractError as exc:
             store = f"{exc.code}:{exc.field}"
