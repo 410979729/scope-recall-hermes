@@ -6,9 +6,9 @@ Owned by the worker drain; model calls stay outside SQLite transactions.
 from __future__ import annotations
 
 import json
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from functools import partial
-from typing import Protocol
+from typing import Any, Protocol
 
 from ..contracts import ContractError, decode_payload, utc_instant, validate_payload
 from .consolidate import (
@@ -226,6 +226,122 @@ def decode_consolidation_result(raw: str, sources=()) -> dict:
     return validate_payload("consolidation_result", value)
 
 
+@dataclass(frozen=True)
+class _ConsolidationBatch:
+    """What one consolidation attempt works on, read in one snapshot: the work item's source (None when it is gone or
+    no longer live), its episode, the batch and the sources left for a later one, the root-only sources the model
+    reads, a long source's resume point, and the dependencies the result is fenced on."""
+
+    source: Any = None
+    episode_ref: str | None = None
+    batch: tuple = ()
+    pending_sources: tuple = ()
+    roots: tuple = ()
+    offset: int = 0
+    seed: tuple = ()
+    dependencies: Any = None
+
+
+def _read_batch(tx, item, clock) -> _ConsolidationBatch:
+    """The batch a consolidation attempt works on, in the read transaction that verified its lease."""
+    source = tx.source(item.subject_ref, item.subject_revision)
+    if source is not None:
+        try:
+            tx.claims.require_live_source(source.ref, source.revision)
+        except ContractError:
+            source = None
+    if source is None:
+        return _ConsolidationBatch()
+    seed = ()
+    offset = tx.work.consolidation_offset(*item.lease, now=clock.utc_now())
+    if offset:
+        seed = resume_seed(tx, item.work_id)
+        episode = tx.episodes.source_episode(source.ref, source.revision)
+        episode_ref, batch, pending_sources = episode.ref if episode else None, (source,), ()
+    else:
+        episode_ref, batch, pending_sources = _episode_batch(tx, source, item, now=clock.utc_now())
+    roots = _root_only_sources(tx, batch)
+    # The dependencies come from the same snapshot as the batch itself.
+    dependencies = read_derivation_fence(tx, scope_id=item.scope_id, sources=(source, *batch), episode_ref=episode_ref)
+    return _ConsolidationBatch(source, episode_ref, batch, pending_sources, roots, offset, seed, dependencies)
+
+
+def _complete_without_model(storage, clock, context, item, read: _ConsolidationBatch, started: float, budget: float):
+    """Complete a batch with nothing for the model to read (no root-only source) without a model call, while the
+    lease, every source and the dependencies still hold."""
+    if budget_left(started, clock, budget) <= 0:
+        return deadline_result(storage, context, item)
+    with storage.write(context, remaining_seconds=budget_left(started, clock, budget)) as tx:
+        now = clock.utc_now()
+        if not tx.work._verify_lease(*item.lease, now=now):
+            return work_result(tx.work.complete(*item.lease, now=now))
+        try:
+            tx.claims.require_live_source(item.subject_ref, item.subject_revision)
+            for stored in read.batch:
+                tx.claims.require_live_source(stored.ref, stored.revision)
+        except ContractError:
+            return mark_obsolete(tx, item, now)
+        if derivation_changed(tx, read.dependencies) is not None:
+            return epoch_changed(tx, item, now)
+        return work_result(
+            tx.work.complete_consolidation(
+                *item.lease,
+                now=now,
+                covered_source_refs=frozenset(f"{s.ref}@{s.revision}" for s in read.batch)
+                | {f"{read.source.ref}@{read.source.revision}"},
+                pending_sources=read.pending_sources,
+            )
+        )
+
+
+def _needs_chunk(roots, episode_ref, feedback, offset) -> bool:
+    """Whether the source goes to the model a page at a time: it is already part-way through, or its messages exceed
+    the input budget."""
+    if offset:
+        return True
+    try:
+        consolidation_messages(roots, episode_ref=episode_ref, validation_feedback=feedback)
+    except ContractError as exc:
+        if exc.code != "INPUT_INVALID" or exc.field != "consolidation_input_budget":
+            raise
+        return True
+    return False
+
+
+def _decode_refused(finish, exc: Exception):
+    """A model answer that does not decode: a bounded fresh attempt, with the clause or envelope that failed."""
+    detail = exc.field if isinstance(exc, ContractError) else "json_envelope"
+    return Outcome(
+        *finish(
+            "retry",
+            "derivation_invalid",
+            error_detail=detail,
+            stage="decode",
+            validation_code=exc.code if isinstance(exc, ContractError) else "INPUT_INVALID",
+        ),
+        detail=detail,
+    )
+
+
+def _accept_refused(finish, exc: ContractError):
+    """A decoded result the store refused to accept."""
+    code = exc.code or "derivation_invalid"
+    # Reject this result, but retain live work for a fresh bounded attempt:
+    # something it was derived from changed during the call.
+    if code == "VERSION_CONFLICT" and exc.field == "memory_epoch":
+        return finish("retry", "memory_epoch_changed")
+    if code in {"SOURCE_MISSING", "VERSION_CONFLICT", "ACCESS_DENIED"}:
+        return finish("obsolete", "authority_revoked")
+    recoverable = code in {"STORAGE_UNAVAILABLE", "DEADLINE_EXCEEDED", "DERIVATION_INVALID"}
+    # Keep the clause that rejected the result. Without it a terminal
+    # DERIVATION_INVALID cannot be told apart from any other, and diagnosing
+    # one costs a full reproduction against live work.
+    return Outcome(
+        *finish("retry" if recoverable else "failed", code, error_detail=exc.field, stage="accept"),
+        detail=exc.field,
+    )
+
+
 def process_consolidate(
     storage,
     clock,
@@ -237,83 +353,31 @@ def process_consolidate(
     budget: float,
 ) -> tuple[str, str | None, str]:
     finish = partial(finalize_work, storage, clock, context, item, started=started, budget=budget)
-    dependencies = None
-    batch, pending_sources = (), ()
-    chunk, offset = None, 0
-    seed = ()
     with storage.read(context, remaining_seconds=budget_left(started, clock, budget)) as tx:
         feedback = tx.work.derivation_feedback(item.work_id)
         if not tx.work._verify_lease(*item.lease, now=clock.utc_now()):
             state = tx.work.read_state(item.work_id) or "stale"
             return "stale", "authority_revoked" if state == "obsolete" else None, state
-        source = tx.source(item.subject_ref, item.subject_revision)
-        if source is not None:
-            try:
-                tx.claims.require_live_source(source.ref, source.revision)
-            except ContractError:
-                source = None
-        if source is None:
-            episode_ref, roots = None, ()
-        else:
-            offset = tx.work.consolidation_offset(*item.lease, now=clock.utc_now())
-            if offset:
-                seed = resume_seed(tx, item.work_id)
-                episode = tx.episodes.source_episode(source.ref, source.revision)
-                episode_ref, batch, pending_sources = episode.ref if episode else None, (source,), ()
-            else:
-                episode_ref, batch, pending_sources = _episode_batch(tx, source, item, now=clock.utc_now())
-            roots = _root_only_sources(tx, batch)
-            # The dependencies come from the same snapshot as the batch itself.
-            dependencies = read_derivation_fence(
-                tx, scope_id=item.scope_id, sources=(source, *batch), episode_ref=episode_ref
-            )
+        read = _read_batch(tx, item, clock)
     # Do not open a write transaction while the read transaction above is
     # still active.  SQLite's reader lock otherwise turns an obsolete source
     # into a spurious "database is locked" failure.
+    source, episode_ref = read.source, read.episode_ref
     if source is None:
         return finish("obsolete", "authority_revoked")
-    if not roots:
-        if budget_left(started, clock, budget) <= 0:
-            return deadline_result(storage, context, item)
-        with storage.write(context, remaining_seconds=budget_left(started, clock, budget)) as tx:
-            now = clock.utc_now()
-            if not tx.work._verify_lease(*item.lease, now=now):
-                return work_result(tx.work.complete(*item.lease, now=now))
-            try:
-                tx.claims.require_live_source(item.subject_ref, item.subject_revision)
-                for stored in batch:
-                    tx.claims.require_live_source(stored.ref, stored.revision)
-            except ContractError:
-                return mark_obsolete(tx, item, now)
-            if derivation_changed(tx, dependencies) is not None:
-                return epoch_changed(tx, item, now)
-            return work_result(
-                tx.work.complete_consolidation(
-                    *item.lease,
-                    now=now,
-                    covered_source_refs=frozenset(f"{s.ref}@{s.revision}" for s in batch)
-                    | {f"{source.ref}@{source.revision}"},
-                    pending_sources=pending_sources,
-                )
-            )
+    if not read.roots:
+        return _complete_without_model(storage, clock, context, item, read, started, budget)
     if model is None:
         return finish("retry", "model_unavailable")
+    roots, batch, pending_sources, chunk = read.roots, read.batch, read.pending_sources, None
     try:
-        needs_chunk = bool(offset)
-        if not needs_chunk:
-            try:
-                consolidation_messages(roots, episode_ref=episode_ref, validation_feedback=feedback)
-            except ContractError as exc:
-                if exc.code != "INPUT_INVALID" or exc.field != "consolidation_input_budget":
-                    raise
-                needs_chunk = True
-        if needs_chunk:
+        if _needs_chunk(roots, episode_ref, feedback, read.offset):
             page, chunk = source_chunk(
                 source,
-                offset,
+                read.offset,
                 formatter=partial(consolidation_messages, validation_feedback=feedback),
                 episode_ref=episode_ref,
-                resume_seed=seed,
+                resume_seed=read.seed,
             )
             roots, batch, pending_sources = (page,), (source,), ()
         allowed_refs = frozenset(f"{stored.ref}@{stored.revision}" for stored in roots)
@@ -331,24 +395,14 @@ def process_consolidate(
     try:
         value = decode_consolidation_result(raw, roots)
     except (ContractError, ValueError, TypeError, json.JSONDecodeError) as exc:
-        detail = exc.field if isinstance(exc, ContractError) else "json_envelope"
-        return Outcome(
-            *finish(
-                "retry",
-                "derivation_invalid",
-                error_detail=detail,
-                stage="decode",
-                validation_code=exc.code if isinstance(exc, ContractError) else "INPUT_INVALID",
-            ),
-            detail=detail,
-        )
+        return _decode_refused(finish, exc)
     fence = ConsolidationWorkFence(
         item.work_id,
         item.lease_token,
         item.lease_owner,
         item.subject_ref,
         item.subject_revision,
-        dependencies.only_sources((source, *batch)),
+        read.dependencies.only_sources((source, *batch)),
         allowed_refs,
         skipped_source_refs=frozenset(f"{s.ref}@{s.revision}" for s in batch) - allowed_refs,
         pending_sources=pending_sources,
@@ -370,21 +424,7 @@ def process_consolidate(
             work_fence=fence,
         )
     except ContractError as exc:
-        code = exc.code or "derivation_invalid"
-        # Reject this result, but retain live work for a fresh bounded attempt:
-        # something it was derived from changed during the call.
-        if code == "VERSION_CONFLICT" and exc.field == "memory_epoch":
-            return finish("retry", "memory_epoch_changed")
-        if code in {"SOURCE_MISSING", "VERSION_CONFLICT", "ACCESS_DENIED"}:
-            return finish("obsolete", "authority_revoked")
-        recoverable = code in {"STORAGE_UNAVAILABLE", "DEADLINE_EXCEEDED", "DERIVATION_INVALID"}
-        # Keep the clause that rejected the result. Without it a terminal
-        # DERIVATION_INVALID cannot be told apart from any other, and diagnosing
-        # one costs a full reproduction against live work.
-        return Outcome(
-            *finish("retry" if recoverable else "failed", code, error_detail=exc.field, stage="accept"),
-            detail=exc.field,
-        )
+        return _accept_refused(finish, exc)
     if chunk is not None and not chunk.final:
         return "deferred", None, "pending"
     return "completed", None, "done"
