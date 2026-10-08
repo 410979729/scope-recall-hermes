@@ -92,9 +92,8 @@ class _Failing:
         self.code = code
 
     def evaluate_candidate(self, candidate, sources, *, remaining_seconds):
-        from scope_recall.runtime.models import ModelRefusal
-
-        raise ModelRefusal(self.code)
+        # Any failure of the call fails the item; _fail_one then records the code it was asked for.
+        raise RuntimeError(self.code)
 
 
 def _fail_one(core, ctx, code="timeout"):
