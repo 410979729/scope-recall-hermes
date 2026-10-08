@@ -18,7 +18,7 @@ import uuid
 from ..contracts import TrustedContext
 from ..core.storage import SQLiteStorage
 from ..core.file_lock import advisory_file_lock
-from .backup import _atomic_json as _write, _safe_path, _sha256, backup_sqlite
+from .backup import atomic_json as _write, safe_path, sha256, backup_sqlite
 from .migrate_v2 import (
     MigrationError,
     build_legacy_catalog,
@@ -51,15 +51,15 @@ def _source_stamp(path: Path) -> dict:
     # WAL is part of the source identity. A main-file-only hash misses committed
     # changes, so a changed/vanished WAL invalidates a prepared live snapshot.
     return {
-        suffix: _sha256(p) if p.exists() and p.stat().st_size else None
+        suffix: sha256(p) if p.exists() and p.stat().st_size else None
         for suffix in ("", "-wal", "-journal")
         if (p := Path(str(path) + suffix))
     }
 
 
 def _load(job: str | Path, *, verify_snapshot: bool = False) -> tuple[Path, dict]:
-    root = _safe_path(job, must_exist=True)
-    path = _safe_path(root / "job.json", must_exist=True)
+    root = safe_path(job, must_exist=True)
+    path = safe_path(root / "job.json", must_exist=True)
     if path.stat().st_size > 1024 * 1024:
         raise MigrationError("job metadata too large")
     value = json.loads(path.read_text(encoding="utf-8"))
@@ -69,14 +69,14 @@ def _load(job: str | Path, *, verify_snapshot: bool = False) -> tuple[Path, dict
         {k: value[k] for k in _PLAN_FIELDS}
     ):
         raise MigrationError("migration plan changed")
-    if verify_snapshot and _sha256(root / "source.sqlite3") != value["snapshot_sha256"]:
+    if verify_snapshot and sha256(root / "source.sqlite3") != value["snapshot_sha256"]:
         raise MigrationError("source snapshot changed")
     return root, value
 
 
 def prepare_upgrade(source, job, *, installation_manifest, host=None, scope_map=None) -> dict:
-    source = _safe_path(source, must_exist=True)
-    root = _safe_path(job)
+    source = safe_path(source, must_exist=True)
+    root = safe_path(job)
     binding, target, manifest, audiences, resolved_host = _load_installation_handoff(installation_manifest, host)
     if (
         root.is_relative_to(source.parent)
@@ -126,7 +126,7 @@ def prepare_upgrade(source, job, *, installation_manifest, host=None, scope_map=
         snapshot_sha256=backup["backup_sha256"],
         catalog_sha256=catalog["catalog_sha256"],
         manifest=str(manifest),
-        manifest_sha256=_sha256(manifest),
+        manifest_sha256=sha256(manifest),
         target_directory=str(target),
         installation_id=binding.installation_id,
         host=resolved_host,
@@ -147,8 +147,8 @@ def prepare_upgrade(source, job, *, installation_manifest, host=None, scope_map=
 
 
 def _binding(root, job):
-    manifest = _safe_path(job["manifest"], must_exist=True)
-    if _sha256(manifest) != job["manifest_sha256"]:
+    manifest = safe_path(job["manifest"], must_exist=True)
+    if sha256(manifest) != job["manifest_sha256"]:
         raise MigrationError("target audience manifest changed; prepare a new job")
     binding, target, _, _, _ = _load_installation_handoff(manifest, job["host"])
     if str(target) != job["target_directory"] or binding.installation_id != job["installation_id"]:
@@ -167,7 +167,7 @@ def run_upgrade(job, *, source_quiesced=False, legacy_reader_contract=None) -> d
             return value
         if source_quiesced is not True:
             raise MigrationError("agent must quiesce the source host before migration")
-        source = _safe_path(value["source_database"], must_exist=True)
+        source = safe_path(value["source_database"], must_exist=True)
         if _source_stamp(source) != value["source_stamp"]:
             raise MigrationError("source changed since preparation; refresh the snapshot before cutover")
         # Reserve the old SQLite writer while checking freshness and converting.
@@ -218,7 +218,7 @@ def run_upgrade(job, *, source_quiesced=False, legacy_reader_contract=None) -> d
                 )
                 value["state"] = "converted" if report["completion_status"] == "complete" else "blocked"
                 value["blockers"] = [] if value["state"] == "converted" else ["conversion_incomplete"]
-                value["report_sha256"] = _sha256(report_path)
+                value["report_sha256"] = sha256(report_path)
                 value["counts"] = report["counts"]
                 _write(root / "job.json", value)
             except Exception as exc:
@@ -244,7 +244,7 @@ def _verify_upgrade(job) -> dict:
     if value["state"] not in {"converted", "verified"}:
         raise MigrationError("conversion is not complete")
     report = Path(value["conversion_report"])
-    if _sha256(report) != value["report_sha256"]:
+    if sha256(report) != value["report_sha256"]:
         raise MigrationError("conversion report changed")
     context = TrustedContext(binding, "upgrade:" + value["operation_id"], binding.scope_ids, "host_generated")
     with SQLiteStorage(binding).read(context) as tx:

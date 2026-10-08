@@ -20,7 +20,7 @@ from typing import Any, Literal
 
 from scope_recall._version import __version__
 
-from .backup import _first_link
+from .backup import first_link
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SETUP_SKILL = Path(__file__).with_name("skills") / "scope-recall-setup" / "SKILL.md"
@@ -198,7 +198,7 @@ def _within(norm: str, root_norm: str) -> bool:
 
 
 def _reject_symlink_chain(path: Path) -> None:
-    link = _first_link(path)
+    link = first_link(path)
     if link is not None:
         raise InstallError(f"symlink or reparse paths are not allowed: {link}")
 
@@ -241,7 +241,7 @@ def _require_interpreter(path: Path, field: str) -> Path:
 
 
 def _safe_interpreter(path: Path, *, error_type=InstallError) -> Path:
-    """``_safe_path`` for interpreter executables: resolve, then verify the chain.
+    """``safe_path`` for interpreter executables: resolve, then verify the chain.
 
     Managed interpreter layouts (hostedtoolcache, pyenv, homebrew) expose
     ``python`` as a symlink into a versioned directory; the chain check must

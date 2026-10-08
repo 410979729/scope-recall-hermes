@@ -10,7 +10,7 @@ from types import ModuleType
 import uuid
 
 from . import install_claude_code, install_codex, install_dsh, install_hermes, install_workbuddy
-from .backup import _atomic_write, _sha256
+from .backup import atomic_write, sha256
 from .doctor import _host_registration_status
 from .install_common import (
     BACKUP_DIRNAME,
@@ -71,7 +71,7 @@ def _foreign_plugin_entries(target: Path, keep: set[str]) -> list[str]:
 
 
 def _written_digest(content: str | bytes) -> str:
-    """The digest of what ``_atomic_write`` puts on disk for ``content``: text in this platform's line endings."""
+    """The digest of what ``atomic_write`` puts on disk for ``content``: text in this platform's line endings."""
     import hashlib
 
     data = content if isinstance(content, bytes) else content.replace("\n", os.linesep).encode("utf-8")
@@ -200,7 +200,7 @@ def plan_install(
         if path.is_file():
             if norm not in owned:
                 plan.conflicts.append(f"no-receipt collision: {path}")
-            elif _sha256(path) != owned[norm]:
+            elif sha256(path) != owned[norm]:
                 # A Hermes agent keeps what it learns in its skills, and edited its memory skill between two
                 # releases that left that skill as it was: the upgrade stopped before its apply, which left the new
                 # package under the old wrapper and receipt (one agent, 2026-09-29).  A skill file whose packaged copy
@@ -324,7 +324,7 @@ def apply_install(plan: InstallPlan) -> InstallResult:
             backup_path = _backup_copy(path, backup_root, plan) if path.is_file() else None
             if backup_path is not None:
                 backups.append(str(backup_path))
-            _atomic_write(path, content)
+            atomic_write(path, content)
             written.append(str(path))
             touched.append((path, backup_path))
         # The host's own files are merged afresh from what they hold now, and never enter the receipt: an uninstall
@@ -336,7 +336,7 @@ def apply_install(plan: InstallPlan) -> InstallResult:
             backup_path = _backup_copy(path, backup_root, plan) if path.is_file() else None
             if backup_path is not None:
                 backups.append(str(backup_path))
-            _atomic_write(path, merged_content)
+            atomic_write(path, merged_content)
             merged.append(str(path))
             touched.append((path, backup_path))
 
@@ -409,7 +409,7 @@ def plan_uninstall(
         path = Path(norm)
         if not path.is_file():
             continue
-        if _sha256(path) != expected:
+        if sha256(path) != expected:
             plan.edited_files.append(norm)
         else:
             plan.files_to_remove.append(norm)
@@ -473,7 +473,7 @@ def apply_uninstall(plan: UninstallPlan, *, purge: bool = False) -> UninstallRes
         if content is None:
             continue
         backups.append(str(_backup_copy(path, backup_root, plan)))
-        _atomic_write(path, content)
+        atomic_write(path, content)
         unmerged.append(path_text)
 
     purged_paths: list[str] = []

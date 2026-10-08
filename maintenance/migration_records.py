@@ -11,7 +11,7 @@ import re
 import sqlite3
 from pathlib import Path
 from typing import Any, Iterable
-from .backup import _safe_path
+from .backup import safe_path
 from scope_recall.core.capture_filters import sanitize_report_text, sanitize_structured_value
 from scope_recall.core.schema import SCHEMA_VERSION
 
@@ -27,7 +27,7 @@ class MigrationError(RuntimeError):
 def _write_report(report: dict[str, Any], report_path: str | Path | None) -> None:
     if report_path is None:
         return
-    report_file = _safe_path(report_path, error_type=MigrationError)
+    report_file = safe_path(report_path, error_type=MigrationError)
     if report_file.exists() or report_file.is_symlink():
         raise MigrationError("refusing to overwrite migration report")
     report_file.parent.mkdir(parents=True, exist_ok=True)

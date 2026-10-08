@@ -6,7 +6,7 @@ from contextlib import closing
 from pathlib import Path
 import sqlite3
 
-from .backup import _safe_path
+from .backup import safe_path
 
 WORKFLOW = Path(__file__).with_name("AGENT_WORKFLOW.md")
 
@@ -14,7 +14,7 @@ WORKFLOW = Path(__file__).with_name("AGENT_WORKFLOW.md")
 def inspect_installation(home: str | Path, *, host: str = "hermes", database: str | Path | None = None) -> dict:
     if host not in {"hermes", "codex"}:
         raise ValueError("unsupported host")
-    root = _safe_path(home)
+    root = safe_path(home)
     candidates = (
         [root / "scope-recall" / "memory.sqlite3", root / "lancepro" / "memory.sqlite3"]
         if host == "hermes"
@@ -24,7 +24,7 @@ def inspect_installation(home: str | Path, *, host: str = "hermes", database: st
     if database is not None:
         # Host configuration can select a nonstandard legacy location. An
         # explicit missing database is damage, never a fresh installation.
-        databases = [_safe_path(database, must_exist=True)]
+        databases = [safe_path(database, must_exist=True)]
     result = dict(
         format="scope-recall.agent-setup/1",
         host=host,
@@ -57,7 +57,7 @@ def inspect_installation(home: str | Path, *, host: str = "hermes", database: st
                 safe_action="restore_verified_backup",
             )
         return result
-    database = _safe_path(databases[0], must_exist=True)
+    database = safe_path(databases[0], must_exist=True)
     try:
         with closing(sqlite3.connect(database.as_uri() + "?mode=ro", uri=True)) as conn:
             conn.execute("PRAGMA query_only=ON")

@@ -26,7 +26,7 @@ from scope_recall.adapters.hermes.installation import (
 )
 from scope_recall.contracts import InstanceBinding
 
-from .backup import _safe_path
+from .backup import safe_path
 from .legacy_catalog import build_legacy_catalog
 from .migration_records import MigrationError
 
@@ -39,7 +39,7 @@ def _load_installation_handoff(
     manifest_path: str | Path, host: str | None
 ) -> tuple[Any, Path, Path, dict[str, str], str]:
     """Load the host-owned identity and target directory without inventing one."""
-    supplied = _safe_path(manifest_path, error_type=MigrationError)
+    supplied = safe_path(manifest_path, error_type=MigrationError)
     choice = (host or "").strip().lower()
     if choice not in {"", "hermes", "codex"}:
         raise MigrationError("installation host must be hermes or codex")
@@ -150,7 +150,7 @@ def _require_test_absolute_target(raw: str) -> Path:
     target = Path(raw)
     if not target.is_absolute():
         raise MigrationError("archive-install-test target must be an absolute TEST path")
-    resolved = _safe_path(target, error_type=MigrationError)
+    resolved = safe_path(target, error_type=MigrationError)
     if not any(part.upper().startswith("TEST") for part in resolved.parts):
         raise MigrationError("archive-install-test target must be beneath a TEST-named path component")
     return resolved
@@ -158,8 +158,8 @@ def _require_test_absolute_target(raw: str) -> Path:
 
 def _archive_report_path(target_path: Path, report_arg: str | None) -> Path:
     if report_arg:
-        return _safe_path(report_arg, error_type=MigrationError)
-    return _safe_path(target_path / "scope-recall" / _ARCHIVE_REPORT_NAME, error_type=MigrationError)
+        return safe_path(report_arg, error_type=MigrationError)
+    return safe_path(target_path / "scope-recall" / _ARCHIVE_REPORT_NAME, error_type=MigrationError)
 
 
 def _file_sha256(path: Path) -> str:

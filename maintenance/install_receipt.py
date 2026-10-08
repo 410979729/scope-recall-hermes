@@ -8,7 +8,7 @@ import os
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
-from .backup import _atomic_write, _sha256
+from .backup import atomic_write, sha256
 from .install_common import (
     PACKAGE_VERSION,
     RECEIPT_FILENAME,
@@ -135,7 +135,7 @@ def _write_receipt(
     for path in [Path(text) for text in written]:
         norm = _norm(path)
         role = "instance" if norm.startswith(instance_norm + os.sep) else "plugin"
-        files.append({"path": norm, "sha256": _sha256(path), "role": role})
+        files.append({"path": norm, "sha256": sha256(path), "role": role})
         seen.add(norm)
     for norm, digest in sorted((kept or {}).items()):
         if norm not in seen:
@@ -150,7 +150,7 @@ def _write_receipt(
     for path in tracked:
         norm = _norm(path)
         if path.is_file() and norm not in seen:
-            files.append({"path": norm, "sha256": _sha256(path), "role": "instance"})
+            files.append({"path": norm, "sha256": sha256(path), "role": "instance"})
             seen.add(norm)
 
     body: dict[str, Any] = {
@@ -171,5 +171,5 @@ def _write_receipt(
         body["env_file"] = _norm(plan.env_file)
     body["receipt_sha256"] = _receipt_digest(body)
     path = _receipt_path(plan.instance_root)
-    _atomic_write(path, _json_dump(body))
+    atomic_write(path, _json_dump(body))
     return path

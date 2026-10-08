@@ -9,7 +9,7 @@ import hashlib
 import sqlite3
 from pathlib import Path
 from typing import Any
-from .backup import _safe_path
+from .backup import safe_path
 from .legacy_v2_compat import (
     BRIDGE_TABLE,
     BRIDGE_COLUMNS,
@@ -190,13 +190,13 @@ def _classify_table_disposition(table: str) -> str:
 
 
 def _offline_source_path(source: str | Path) -> Path:
-    path = _safe_path(source, must_exist=True, error_type=MigrationError)
+    path = safe_path(source, must_exist=True, error_type=MigrationError)
     if not path.is_file():
         raise MigrationError("source must be a regular offline SQLite file")
     # immutable=1 deliberately ignores journals; refusing a live snapshot is
     # safer than silently omitting committed WAL rows or a rollback journal.
     for suffix in ("-wal", "-journal"):
-        sidecar = _safe_path(path.with_name(path.name + suffix), error_type=MigrationError)
+        sidecar = safe_path(path.with_name(path.name + suffix), error_type=MigrationError)
         if sidecar.exists() and (not sidecar.is_file() or sidecar.stat().st_size > 0):
             raise MigrationError("offline source has a nonempty WAL or journal; use a consistent SQLite backup")
     return path

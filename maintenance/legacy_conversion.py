@@ -31,7 +31,7 @@ from scope_recall.maintenance.legacy_v2_compat import (
     verify_import_ledger_archive,
 )
 
-from .backup import _safe_path
+from .backup import safe_path
 from .legacy_catalog import (
     _COMPAT,
     _DERIVED_NAMES,
@@ -230,10 +230,10 @@ def _prepare(
     elif target_directory is None:
         raise MigrationError("target directory or installation manifest is required")
     else:
-        target_dir = _safe_path(target_directory, error_type=MigrationError)
+        target_dir = safe_path(target_directory, error_type=MigrationError)
     source_path = _offline_source_path(source)
     if report_path is not None:
-        _safe_path(report_path, error_type=MigrationError)
+        safe_path(report_path, error_type=MigrationError)
     if source_path.is_symlink() or not source_path.is_file() or source_path == target_dir:
         raise MigrationError("source must be a distinct regular offline SQLite file")
     catalog = build_legacy_catalog(source_path)
@@ -269,8 +269,8 @@ def _trusted_handoff(
     binding, manifest_target, manifest_file, audience_scopes, resolved_host = _load_installation_handoff(
         installation_manifest, host
     )
-    target_dir = _safe_path(manifest_target, error_type=MigrationError)
-    if target_directory is not None and _safe_path(target_directory, error_type=MigrationError) != target_dir:
+    target_dir = safe_path(manifest_target, error_type=MigrationError)
+    if target_directory is not None and safe_path(target_directory, error_type=MigrationError) != target_dir:
         raise MigrationError("target directory differs from trusted installation manifest")
     payload = json.loads(manifest_file.read_text(encoding="utf-8")) if manifest_file and manifest_file.exists() else {}
     handoff = {
