@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import subprocess
+import sys
 from dataclasses import replace
 from pathlib import Path
 
@@ -570,3 +572,19 @@ def test_a_store_the_3_1_2_release_wrote_opens_at_1110_with_every_source_its_own
             ("local", 12)
         ]
         assert conn.execute("SELECT count(*) FROM entries").fetchone()[0] == 0
+
+
+def test_the_cli_runs_from_a_source_checkout():
+    """``maintenance`` is a top-level package in a source checkout as well (these drills import it so): the operator
+    CLI answers ``python -m maintenance.cli --help`` there, so no module-level import of it climbs above the package."""
+    root = Path(__file__).resolve().parents[2]
+    result = subprocess.run(
+        [sys.executable, "-B", "-X", "utf8", "-m", "maintenance.cli", "--help"],
+        cwd=root,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=120,
+    )
+    assert result.returncode == 0, result.stderr[-2000:]
+    assert result.stdout.startswith("usage:")

@@ -13,8 +13,6 @@ from scope_recall.core.schema import SCHEMA_VERSION, STATEMENTS, UPGRADE_CHAIN, 
 from scope_recall.core.storage import SQLiteStorage
 from scope_recall.core.writer_lease import TruthWriterBusyError
 
-from ..contracts import ContractError
-from ..core import CoreConfig, MemoryCore
 from .backup import BackupError, backup_sqlite
 from .doctor import run_doctor
 from .install import InstallError, apply_install, apply_uninstall, plan_install, plan_uninstall
@@ -101,6 +99,8 @@ def _run_core(
     failed: Callable[[dict], bool] = lambda receipt: False,
 ) -> int:
     """Open the bound core for one maintenance call; contract and config failures exit 2."""
+    from ..contracts import ContractError
+    from ..core import CoreConfig, MemoryCore
     from ..runtime.worker_entry import load_config
 
     try:
