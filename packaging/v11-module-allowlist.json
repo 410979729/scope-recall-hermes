@@ -160,6 +160,8 @@
     "maintenance/backup.py",
     "maintenance/cli.py",
     "maintenance/doctor.py",
+    "maintenance/doctor_report.py",
+    "maintenance/doctor_store.py",
     "maintenance/install.py",
     "maintenance/install_claude_code.py",
     "maintenance/install_client.py",

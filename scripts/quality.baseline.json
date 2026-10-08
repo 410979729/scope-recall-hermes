@@ -794,9 +794,12 @@
    "UP035": 1
   },
   "maintenance/doctor.py": {
-   "E501": 2,
+   "E501": 1
+  },
+  "maintenance/doctor_store.py": {
+   "E501": 1,
    "PLR0915": {
-    "_check_storage": 75
+    "check_storage": 75
    },
    "UP017": 7
   },

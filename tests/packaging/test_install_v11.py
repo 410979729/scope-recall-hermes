@@ -1467,7 +1467,8 @@ def test_doctor_names_an_owner_grant_that_no_owner_principal_can_use(tmp_path, c
     assert [check["result"] for check in found] == ["owner_unverified"] and found[0]["detail"].startswith("desktop=1:")
     assert "basic:TEST-owner" not in json.dumps(report.to_dict(), ensure_ascii=False)
 
-    from scope_recall.maintenance.doctor import DoctorReport, _classify_status
+    from scope_recall.maintenance.doctor import _classify_status
+    from scope_recall.maintenance.doctor_report import DoctorReport
 
     alone = DoctorReport(host="hermes", status="degraded", capability_gaps=["audience_owner_unverified"])
     _classify_status(alone)

@@ -140,7 +140,8 @@ def test_a_success_forgets_the_earlier_failures(tmp_path, monkeypatch):
 
 
 def test_the_doctor_reports_a_loop_that_stood_down(tmp_path):
-    from scope_recall.maintenance.doctor import DoctorReport, _check_supervisor
+    from scope_recall.maintenance.doctor import _check_supervisor
+    from scope_recall.maintenance.doctor_report import DoctorReport
 
     (tmp_path / "runtime-supervisor-aaa.json").write_text(
         json.dumps(
@@ -161,7 +162,8 @@ def test_the_doctor_reports_a_loop_that_stood_down(tmp_path):
 
 
 def test_the_doctor_reports_a_loop_that_is_limping(tmp_path):
-    from scope_recall.maintenance.doctor import DoctorReport, _check_supervisor
+    from scope_recall.maintenance.doctor import _check_supervisor
+    from scope_recall.maintenance.doctor_report import DoctorReport
 
     (tmp_path / "runtime-supervisor-aaa.json").write_text(
         json.dumps(
@@ -181,7 +183,8 @@ def test_the_doctor_reports_a_loop_that_is_limping(tmp_path):
 
 
 def test_an_operator_pause_is_not_a_failure(tmp_path):
-    from scope_recall.maintenance.doctor import DoctorReport, _check_supervisor
+    from scope_recall.maintenance.doctor import _check_supervisor
+    from scope_recall.maintenance.doctor_report import DoctorReport
 
     (tmp_path / "runtime-supervisor-aaa.json").write_text(
         json.dumps(

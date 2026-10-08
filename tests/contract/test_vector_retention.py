@@ -10,7 +10,7 @@ import sqlite3
 from datetime import datetime, timedelta, timezone
 
 import pytest
-from scope_recall.maintenance import doctor
+from scope_recall.maintenance import doctor, doctor_store
 from scope_recall.runtime import vector_retention
 from scope_recall.runtime.instance import VectorRuntimeConfig
 from test_claims import app, capture
@@ -164,7 +164,9 @@ def test_the_doctor_counts_expired_vectors_and_names_the_window(app, tmp_path):
     _embedded(core, aged=[tool])
     _pass(core, ctx, Store(), tmp_path)
     report = doctor.DoctorReport(host="hermes", status="degraded")
-    doctor._check_index(report, core.storage.path.parent, store_readable=True, config=Config(_vector(tmp_path, 180)))
+    doctor_store.check_index(
+        report, core.storage.path.parent, store_readable=True, config=Config(_vector(tmp_path, 180))
+    )
     assert report.index_metadata["expired_vectors"] == 1
     assert report.index_metadata["tool_output_retention_days"] == 180
 

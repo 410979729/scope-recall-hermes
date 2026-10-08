@@ -14,7 +14,7 @@ from scope_recall.contracts import ContractError
 from scope_recall.core import CoreConfig, MemoryCore
 from scope_recall.core.admission import AdmissionPolicy
 from scope_recall.core.recall_policy import SPACE_ID
-from scope_recall.maintenance import doctor
+from scope_recall.maintenance import doctor, doctor_store
 from test_autonomous_admission import app_at, capture
 from v11_support import downgrade_store
 
@@ -237,7 +237,7 @@ def test_doctor_names_answers_cut_off_at_the_output_limit(tmp_path, monkeypatch)
     app, ctx = _doctor_app(tmp_path, monkeypatch)
     now = datetime.now(timezone.utc)
     with sqlite3.connect(app.storage.path) as conn:
-        for n in range(doctor.OUTPUT_TRUNCATION_ALERT):
+        for n in range(doctor_store.OUTPUT_TRUNCATION_ALERT):
             conn.execute(
                 "INSERT INTO work_error_details(work_id,lease_token,stage,error_code,error_field,recorded_at) VALUES (?,?,?,?,?,?)",
                 (
@@ -251,7 +251,7 @@ def test_doctor_names_answers_cut_off_at_the_output_limit(tmp_path, monkeypatch)
             )
     before = app.storage.path.read_bytes()
     result = doctor.run_doctor(host="hermes", instance_root=ctx.binding.data_directory)
-    assert result.recent_output_truncations == doctor.OUTPUT_TRUNCATION_ALERT
+    assert result.recent_output_truncations == doctor_store.OUTPUT_TRUNCATION_ALERT
     assert "model_output_truncated" in result.capability_gaps and result.status == "degraded"
     [check] = [item for item in result.checks if item["name"] == "model_output"]
     assert "max_output_tokens" in check["detail"] and "thinking" in check["detail"]

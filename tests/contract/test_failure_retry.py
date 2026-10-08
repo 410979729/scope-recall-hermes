@@ -23,7 +23,7 @@ from scope_recall.core.failure_retry import (
     selects,
 )
 from scope_recall.core.schema import SCHEMA_VERSION
-from scope_recall.maintenance import doctor
+from scope_recall.maintenance import doctor, doctor_store
 from test_candidate_lifecycle import _candidate, _candidate_rows, _finish_source_work
 from test_claims import app
 
@@ -188,7 +188,7 @@ def test_every_by_design_terminal_failure_counts_as_terminal(app, code):
     _fail_one(core, ctx, code)
     with sqlite3.connect(core.storage.path) as conn:
         total = conn.execute("SELECT count(*) FROM work_items WHERE state='failed'").fetchone()[0]
-        terminal = conn.execute(doctor.TERMINAL_FAILURE_COUNT).fetchone()[0]
+        terminal = conn.execute(doctor_store.TERMINAL_FAILURE_COUNT).fetchone()[0]
     assert total >= 1 and terminal == total
 
 
@@ -215,7 +215,7 @@ def test_a_fault_still_counts_as_actionable(app):
     core, ctx = app
     _fail_one(core, ctx, "timeout")
     with sqlite3.connect(core.storage.path) as conn:
-        assert conn.execute(doctor.TERMINAL_FAILURE_COUNT).fetchone()[0] == 0
+        assert conn.execute(doctor_store.TERMINAL_FAILURE_COUNT).fetchone()[0] == 0
 
 
 # --------------------------------------------------------------------------

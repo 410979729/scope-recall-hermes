@@ -306,7 +306,8 @@ def test_a_settled_candidate_with_nothing_new_to_ask_is_counted_as_waiting_not_a
     """Its evidence was already put to the evaluator, so the sweep schedules nothing for it and it
     keeps ``pending_evaluation`` until new evidence arrives.  On one live store that was 1,031 of
     1,032 candidates, and the doctor's bare "pending 1032" read as a queue that never drains."""
-    from scope_recall.maintenance.doctor import DoctorReport, _check_candidates
+    from scope_recall.maintenance.doctor_report import DoctorReport
+    from scope_recall.maintenance.doctor_store import check_candidates
 
     core, ctx = app
     _register(core, ctx, 0)
@@ -324,7 +325,7 @@ def test_a_settled_candidate_with_nothing_new_to_ask_is_counted_as_waiting_not_a
 
     report = DoctorReport(host="hermes", status="ok")
     report.candidate_pending_evaluation, report.candidate_settling = 1, summary
-    _check_candidates(report)
+    check_candidates(report)
     line = next(check for check in report.checks if check["name"] == "candidate_processing")
     assert (line["result"], line["detail"]) == ("pending", "due=0,nothing_new_to_ask=1,pending_evaluation=1")
 

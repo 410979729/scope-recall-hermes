@@ -414,7 +414,8 @@ def test_the_command_maps_its_flags_and_previews_unless_applied(app, monkeypatch
 
 
 def test_doctor_names_a_run_no_worker_will_go_on_with():
-    from scope_recall.maintenance.doctor import DoctorReport, _check_embedding_respace
+    from scope_recall.maintenance.doctor_report import DoctorReport
+    from scope_recall.maintenance.doctor_store import check_embedding_respace
 
     run = {
         "embedding_space": SPACE_A,
@@ -429,15 +430,15 @@ def test_doctor_names_a_run_no_worker_will_go_on_with():
         embedding_respace=dict(run),
         embedding_health={"pending": 70, "failed": 0, "oldest_pending_at": None},
     )
-    _check_embedding_respace(going, SimpleNamespace(embedding_space_id=lambda: SPACE_A))
+    check_embedding_respace(going, SimpleNamespace(embedding_space_id=lambda: SPACE_A))
     assert going.capability_gaps == [] and going.checks[-1]["result"] == "running"
     assert "70 embeddings wait in the store" in going.checks[-1]["detail"], "a held run says why it waits"
     stranded = DoctorReport(host="hermes", status="degraded", embedding_respace=dict(run))
-    _check_embedding_respace(stranded, SimpleNamespace(embedding_space_id=lambda: SPACE_B))
+    check_embedding_respace(stranded, SimpleNamespace(embedding_space_id=lambda: SPACE_B))
     assert stranded.capability_gaps == ["embedding_respace_space_mismatch"]
     assert stranded.checks[-1]["result"] == "space_mismatch"
     done = DoctorReport(host="hermes", status="degraded", embedding_respace={**run, "completed": True})
-    _check_embedding_respace(done, None)
+    check_embedding_respace(done, None)
     assert done.capability_gaps == [] and done.checks[-1]["result"] == "complete"
 
 
@@ -447,7 +448,8 @@ def test_doctor_names_an_embedding_backlog_that_aged_beside_a_refusing_provider(
     import time
     from datetime import datetime, timedelta, timezone
 
-    from scope_recall.maintenance.doctor import DoctorReport, _check_embedding_health
+    from scope_recall.maintenance.doctor_report import DoctorReport
+    from scope_recall.maintenance.doctor_store import check_embedding_health
     from scope_recall.runtime.model_budget import REQUESTS_TABLE, embedding_calls
 
     path = tmp_path / "auxiliary-budget.sqlite3"
@@ -483,7 +485,7 @@ def test_doctor_names_an_embedding_backlog_that_aged_beside_a_refusing_provider(
     report = DoctorReport(
         host="hermes", status="degraded", embedding_health={"pending": 12, "failed": 0, "oldest_pending_at": aged}
     )
-    _check_embedding_health(report, SimpleNamespace(auxiliary=auxiliary, vector=object()))
+    check_embedding_health(report, SimpleNamespace(auxiliary=auxiliary, vector=object()))
     assert report.capability_gaps == ["embedding_backlog_aged"]
     assert report.embedding_health["held_model"] == "TEST-embed"
     assert report.embedding_health["last_day"]["refused"] == {"http_429": 3}
@@ -495,7 +497,7 @@ def test_doctor_names_an_embedding_backlog_that_aged_beside_a_refusing_provider(
         status="degraded",
         embedding_health={"pending": 12, "failed": 0, "oldest_pending_at": datetime.now(timezone.utc).isoformat()},
     )
-    _check_embedding_health(fresh, None)
+    check_embedding_health(fresh, None)
     assert (fresh.capability_gaps, fresh.checks) == ([], [])
     assert (
         embedding_calls(SimpleNamespace(ledger_path=path, external_embedding=False, embedding=auxiliary.embedding))
@@ -508,7 +510,8 @@ def test_doctor_says_nothing_of_a_backlog_where_nothing_embeds_and_names_a_worke
     went from "attention" to "degraded" for good (review of 3.8.0)."""
     from datetime import datetime, timedelta, timezone
 
-    from scope_recall.maintenance.doctor import DoctorReport, _check_embedding_health
+    from scope_recall.maintenance.doctor_report import DoctorReport
+    from scope_recall.maintenance.doctor_store import check_embedding_health
 
     aged = (datetime.now(timezone.utc) - timedelta(hours=30)).isoformat()
     route = SimpleNamespace(
@@ -526,12 +529,12 @@ def test_doctor_says_nothing_of_a_backlog_where_nothing_embeds_and_names_a_worke
         report = DoctorReport(
             host="hermes", status="degraded", embedding_health={"pending": 12, "failed": 0, "oldest_pending_at": aged}
         )
-        _check_embedding_health(report, config)
+        check_embedding_health(report, config)
         assert (report.capability_gaps, report.checks) == ([], []), config
     report = DoctorReport(
         host="hermes", status="degraded", embedding_health={"pending": 12, "failed": 0, "oldest_pending_at": aged}
     )
-    _check_embedding_health(report, SimpleNamespace(auxiliary=route, vector=object()))
+    check_embedding_health(report, SimpleNamespace(auxiliary=route, vector=object()))
     assert report.capability_gaps == ["embedding_backlog_aged"]
     assert "provider" not in report.checks[-1]["detail"], "no ledger: nothing to say of the provider"
 
@@ -549,7 +552,8 @@ def test_doctor_blames_the_worker_only_when_nothing_asked_the_provider(tmp_path,
     import time
     from datetime import datetime, timedelta, timezone
 
-    from scope_recall.maintenance.doctor import DoctorReport, _check_embedding_health
+    from scope_recall.maintenance.doctor_report import DoctorReport
+    from scope_recall.maintenance.doctor_store import check_embedding_health
     from scope_recall.runtime.model_budget import REQUESTS_TABLE
 
     path = tmp_path / "auxiliary-budget.sqlite3"
@@ -569,7 +573,7 @@ def test_doctor_blames_the_worker_only_when_nothing_asked_the_provider(tmp_path,
     report = DoctorReport(
         host="hermes", status="degraded", embedding_health={"pending": 12, "failed": 0, "oldest_pending_at": aged}
     )
-    _check_embedding_health(report, SimpleNamespace(auxiliary=route, vector=object()))
+    check_embedding_health(report, SimpleNamespace(auxiliary=route, vector=object()))
     detail = report.checks[-1]["detail"]
     assert said in detail and ("no worker" in detail) is (not statuses), detail
 

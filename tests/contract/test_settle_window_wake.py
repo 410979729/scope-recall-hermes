@@ -20,7 +20,7 @@ import pytest
 from scope_recall.core import worker as worker_module
 from scope_recall.core.candidate_debounce import MAX_DEFERRAL_SECONDS, QUIET_SECONDS, settle_reason, settles_at
 from scope_recall.core.claims import Qualification
-from scope_recall.maintenance import doctor
+from scope_recall.maintenance import doctor, doctor_store
 from scope_recall.runtime import scheduling
 from scope_recall.runtime.instance import RuntimeInstanceConfig
 from scope_recall.runtime.scheduling import SupervisorControl, next_wake, supervise
@@ -351,7 +351,9 @@ def test_the_doctor_names_work_and_candidates_that_waited_a_day(app, monkeypatch
         conn.commit()
     result = doctor.run_doctor(host="hermes", instance_root=ctx.binding.data_directory)
     assert {row["project_id"]: row["work"] for row in result.unreached}.get("TEST-third-project") == 1
-    monkeypatch.setattr(doctor, "provider_holds", lambda auxiliary, now=None: {"rebuild_projection": ("TEST", 0.0)})
+    monkeypatch.setattr(
+        doctor_store, "provider_holds", lambda auxiliary, now=None: {"rebuild_projection": ("TEST", 0.0)}
+    )
     result = doctor.run_doctor(host="hermes", instance_root=ctx.binding.data_directory)
     assert {row["project_id"] for row in result.unreached} == {"TEST-project"}
     monkeypatch.undo()
