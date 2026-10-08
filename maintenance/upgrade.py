@@ -20,12 +20,17 @@ from ..core.file_lock import advisory_file_lock
 from ..core.storage import SQLiteStorage
 from .backup import atomic_json as _write
 from .backup import backup_sqlite, safe_path, sha256
+from .legacy_v2_compat import (
+    build_completed_bridge_archive,
+    build_import_ledger_archive,
+)
 from .migrate_v2 import (
     MigrationError,
     build_legacy_catalog,
     migrate_legacy,
 )
 from .migration_activation import load_installation_handoff
+from .migration_index import queue_index_page
 
 FORMAT = "scope-recall.upgrade-job/1"
 _PLAN_FIELDS = (
@@ -188,10 +193,6 @@ def run_upgrade(job, *, source_quiesced=False, legacy_reader_contract=None) -> d
                 kwargs = {}
                 if legacy_reader_contract is not None:
                     kwargs["legacy_memory_reader_contract"] = legacy_reader_contract
-                from .legacy_v2_compat import (
-                    build_completed_bridge_archive,
-                    build_import_ledger_archive,
-                )
 
                 with closing(
                     sqlite3.connect(
@@ -281,8 +282,6 @@ def upgrade_status(job) -> dict:
 
 
 def queue_upgrade_index(job, *, limit=128) -> dict:
-    from .migration_index import queue_index_page
-
     root, value = _load(job)
     with advisory_file_lock(root / "operation.lock", timeout_seconds=0):
         # Indexing reads target truth. Do not rehash a potentially multi-GB

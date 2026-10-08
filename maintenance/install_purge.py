@@ -10,6 +10,8 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any, Iterator
 
+from scope_recall.core.writer_lease import holding_truth_writer_lease, truth_writer_process_snapshot
+
 from .install_common import BACKUP_DIRNAME, InstallError, UninstallPlan, normalized_path, reject_symlink_chain
 
 
@@ -35,7 +37,6 @@ def _busy(exc: sqlite3.OperationalError) -> bool:
 def purge_guard(data_directory: Path) -> Iterator[None]:
     """Hold the cooperative writer and physical-retained locks for purge."""
     from scope_recall.core.file_lock import advisory_file_lock
-    from scope_recall.core.writer_lease import holding_truth_writer_lease, truth_writer_process_snapshot
 
     try:
         snapshot = truth_writer_process_snapshot(data_directory)

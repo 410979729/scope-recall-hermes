@@ -17,6 +17,7 @@ from scope_recall.adapters.runtime_wiring import (
     attach_trusted_host_runtime as _attach_common,
 )
 from scope_recall.runtime.worker_launch import launch_worker
+from scope_recall.vector.process_store import share
 
 
 class HermesHostRuntime(TrustedHostRuntime):
@@ -64,8 +65,6 @@ def attach_trusted_host_runtime(**kwargs):
     table through one helper, as a server's do (``vector.process_store.share``).  Stores are such helpers only on
     Windows; elsewhere sharing changes nothing.
     """
-    from scope_recall.vector.process_store import share
-
     share()
     return _attach_common(host_adapter="hermes", runtime_class=HermesHostRuntime, **kwargs)
 

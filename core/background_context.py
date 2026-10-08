@@ -13,6 +13,7 @@ from dataclasses import replace
 
 from .claims import select_effective
 from .coverage import note_truncation
+from .delete_storage import canonical
 from .events import lexical_terms
 from .recall_needs import RESUME_MARKERS, mentions
 from .recall_policy import meaningful_query_terms
@@ -295,8 +296,6 @@ def current_task_candidate(tx, context: SearchContext, reader, clock) -> tuple[C
     where, params = _audience(context, "e")
     trusted = context.trusted_context
     if trusted.task_anchor:
-        from .delete_storage import canonical
-
         series = tuple(
             hashlib.sha256(
                 canonical(

@@ -28,6 +28,8 @@ import threading
 import time
 from pathlib import Path
 
+from ... import _version
+from ..._version import __version__
 from ...core.file_lock import advisory_file_lock
 from ...runtime.running_code import version_on_disk
 from ...runtime.worker_entry import host_process_credential_environment
@@ -170,7 +172,6 @@ def _serve_until_idle(home: Path, host: str, env_file: Path | None, idle: float,
 
 def _keep_record(path: Path, host: str) -> None:
     """This server's process id, start and version beside the lock it holds (``local_endpoint.resident_record``)."""
-    from ..._version import __version__
     from ...runtime.process_probe import probe_process
 
     record = {"host": host, "pid": os.getpid(), "start": probe_process(os.getpid()).start_token, "version": __version__}
@@ -186,8 +187,6 @@ def _package_state() -> str:
     """``same``; ``replaced`` when the package on disk is no longer the one this server runs (an upgrade replaced it, or
     an uninstall took it away); ``unknown`` when its version could not be read just now.  A server of the old version
     kept the entry's lock against every one of the new version until its idle end, while hooks asked it nothing."""
-    from ... import _version
-
     folder = Path(_version.__file__).resolve().parent
     try:
         (folder / "_version.py").stat()

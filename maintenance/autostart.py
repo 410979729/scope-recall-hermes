@@ -15,6 +15,7 @@ import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from ..core.storage import SQLiteStorage
 from ..runtime.scheduling import control_path, read_control
 from ..runtime.worker_entry import load_config, write_worker_metadata
 
@@ -62,7 +63,6 @@ def plan(config_path, python_executable, *, user_id, env_file=None):
     config = load_config(config_path)
     if config_path.resolve().parent != config.binding.data_directory.resolve():
         raise ValueError("autostart_config_outside_binding")
-    from ..core.storage import SQLiteStorage
 
     with SQLiteStorage(config.binding).read(config.context()) as tx:
         tx.status()

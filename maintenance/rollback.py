@@ -14,6 +14,9 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
+from scope_recall.contracts import InstanceBinding, TrustedContext
+from scope_recall.core.storage import SQLiteStorage
+
 from .backup import create_output, safe_path, sha256
 
 
@@ -52,9 +55,7 @@ def _verified_snapshot_copy(source: Path, destination: Path) -> str:
 
 def _install_core_restore_fence(current: Path) -> dict[str, str]:
     """Install the restore-required marker consumed by every normal Core open."""
-    from scope_recall.contracts import InstanceBinding, TrustedContext
     from scope_recall.core.restore import InstallationMaintenance, begin_restore, export_deletion_ledger, ledger_digest
-    from scope_recall.core.storage import SQLiteStorage
 
     conn = sqlite3.connect(f"{current.as_uri()}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row

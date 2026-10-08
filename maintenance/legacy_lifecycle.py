@@ -13,6 +13,7 @@ from dataclasses import replace
 
 from scope_recall.contracts import ContractError
 from scope_recall.core.storage import Transaction
+from scope_recall.core.visibility import allowed
 
 POLICY = "legacy-ordinary-recall-lifecycle-preservation-v1"
 HIDDEN = frozenset({"archived", "obsolete", "rejected", "superseded", "candidate", "scratch", "in_progress"})
@@ -121,7 +122,6 @@ def apply_lifecycle_suppression(tx, memory_rows, *, now, require_same_scope=Fals
             if not receipt or receipt["read_blocked"] or not receipt["suppressed"] or receipt["active_content_removed"]:
                 raise ContractError("STORAGE_UNAVAILABLE", "legacy_suppression_receipt")
             # Confirm every member is fenced even on a resumed/idempotent call.
-            from scope_recall.core.visibility import allowed
 
             for member in affected:
                 if allowed(scoped, member.kind, member.ref, automatic=True):

@@ -20,6 +20,8 @@ from typing import Any, Literal
 
 import scope_recall
 from scope_recall._version import __version__
+from scope_recall.adapters.clients.config import load_codex_config, load_shared_client
+from scope_recall.adapters.hermes.installation import read_attachment
 from scope_recall.contracts import TrustedContext
 from scope_recall.core import CoreConfig, MemoryCore
 from scope_recall.core.failure_retry import NEEDS_REVIEW_COUNT
@@ -31,6 +33,7 @@ from scope_recall.runtime.model_budget import embedding_calls, pre_request_refus
 from scope_recall.runtime.running_code import live_records, stale_records
 from scope_recall.vector.compaction import instance_vector_footprints
 
+from ..runtime.instance import RuntimeInstanceConfig
 from . import package_health
 from .install_common import RUNTIME_CONFIG_LIMIT
 
@@ -209,7 +212,6 @@ def load_binding(host: HostChoice, instance_root: Path):
 
         manifest = load_binding_for_home(instance_root)
         return manifest.to_binding(), manifest.data_directory
-    from scope_recall.adapters.clients.config import load_codex_config, load_shared_client
 
     path = _codex_config_path(instance_root)
     config = load_shared_client(instance_root, host) if path.name == "attachment.json" else load_codex_config(path)
@@ -613,8 +615,6 @@ def _check_binding(report: DoctorReport, instance: Path):
     report.binding_ok = True
     _record(report, "adapter_binding", "ok", binding.installation_id)
     if binding.installation_kind == "shared":
-        from scope_recall.adapters.hermes.installation import read_attachment
-
         attachment = read_attachment(instance)
         if attachment is not None:
             report.shared_store = {
@@ -907,8 +907,6 @@ def _runtime_config(data_directory: Path):
 
     An unusable file is ``None`` here; ``_check_vector_threshold`` names it.
     """
-    from ..runtime.instance import RuntimeInstanceConfig
-
     try:
         raw = _read_control_file(data_directory / "runtime-config.json")
         return None if raw is None else RuntimeInstanceConfig.from_mapping(raw)
@@ -994,8 +992,6 @@ def _check_vector_threshold(report: DoctorReport, binding, data_directory: Path)
     sources and queries are still embedded while recall refuses every vector hit
     as ``vector_threshold_unconfigured``.  No threshold is assumed here.
     """
-    from ..runtime.instance import RuntimeInstanceConfig
-
     try:
         raw = _read_control_file(data_directory / "runtime-config.json")
         config = None if raw is None else RuntimeInstanceConfig.from_mapping(raw)

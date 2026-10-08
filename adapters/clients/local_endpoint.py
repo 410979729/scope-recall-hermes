@@ -42,6 +42,15 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable
 
+from ..._version import __version__
+from ...runtime.instance import RESIDENT_RECALL_MINUTES_BOUNDS
+from ...runtime.validation import strict_int
+from ...runtime.worker_launch import detached_creationflags
+from ...vector.process_store import share
+from ..hermes.installation import MANIFEST_FILENAME, attachment_path, read_attachment
+from .config import load_shared_client
+from .handler import CodexHookHandler
+
 #: What a hook may send: its payload (a hook's own stdin is at most 64 KiB, and written as ASCII JSON a character
 #: of it takes up to six bytes) and the refs and gaps of its capture.
 MAX_REQUEST_BYTES = 7 * 65536
@@ -292,7 +301,6 @@ class Recaller:
     def __call__(
         self, payload: dict[str, Any], current_refs: tuple[str, ...], gaps: tuple[str, ...], budget: float
     ) -> tuple[dict[str, Any], dict[str, Any]] | None:
-        from ..._version import __version__
         from ...runtime.process_probe import probe_process
 
         started = time.monotonic()
@@ -405,8 +413,6 @@ def file_stamp(*paths: Path | None) -> tuple:
 def entry_files(home: Path | str) -> tuple[Path, ...]:
     """What a shared entry's handler is made from besides its credentials and runtime config: its pointer to the
     store, and the store's record of the entry's grants and binding."""
-    from ..hermes.installation import MANIFEST_FILENAME, attachment_path, read_attachment
-
     files = [attachment_path(Path(home))]
     try:
         attachment = read_attachment(Path(home))
@@ -670,8 +676,6 @@ class HookEndpoint:
         return file_stamp(*self._watched, *entry_files(self.home))
 
     def _handler(self) -> Any:
-        from .handler import CodexHookHandler
-
         return CodexHookHandler.from_home(str(self.home), self.host)
 
     def _refresh_credentials(self) -> None:
@@ -729,7 +733,6 @@ class HookEndpoint:
             return max((now - due for due in self.inflight.values() if now > due), default=0.0)
 
     def _advertise(self) -> None:
-        from ..._version import __version__
         from ...runtime.process_probe import probe_process
 
         folder = self.path.parent
@@ -777,8 +780,6 @@ class HookEndpoint:
 
     def start(self) -> None:
         if sys.platform == "win32":
-            from ...vector.process_store import share
-
             # Before anything is served: the kept handler, a handler made for a prompt that comes meanwhile and the
             # tools search one store through one helper.
             share()
@@ -853,10 +854,6 @@ def configured_minutes(home: Path | str, host: str, *, missing: int | None = 0) 
     runtime config caught half saved.  A running server looks again at its next check instead of ending on it.  A
     missing file is ``missing``: 0 for a start, None for a running server, since an editor that saves by moving
     files leaves none for a moment."""
-    from ...runtime.instance import RESIDENT_RECALL_MINUTES_BOUNDS
-    from ...runtime.validation import strict_int
-    from .config import load_shared_client
-
     try:
         path = load_shared_client(Path(home), host).runtime_config_path
         raw = json.loads(Path(path).read_text(encoding="utf-8"))
@@ -906,7 +903,6 @@ def live_residents(
     or cannot be read at all where it could when the file was written (a process of another account or a service, as
     a hook's ``Recaller`` reads it).  One written where no start time can be read (macOS) is kept and marked unproven:
     after a crash its id may belong to any of the user's processes, which a stop must not end."""
-    from ..._version import __version__
     from ...runtime.process_probe import probe_process
 
     said: dict[int, tuple[list[Path], dict[str, Any]]] = {}
@@ -972,7 +968,6 @@ def ensure_resident(
     end at once (WorkBuddy stops a conversation's processes): in a new process group, broken away from the client's job
     where Windows allows it, with no window and no console of its own.  It writes nothing to the store; two started at
     once settle on one."""
-    from ..._version import __version__
     from ...core.file_lock import advisory_file_lock
 
     if minutes <= 0:
@@ -1107,8 +1102,6 @@ def start_detached(command: list[str], *, cwd: Path) -> bool:
     """Start ``command`` so that it outlives this process and its parent's job; whether it started."""
     import subprocess
 
-    from ...runtime.worker_launch import detached_creationflags
-
     quiet = {
         "stdin": subprocess.DEVNULL,
         "stdout": subprocess.DEVNULL,
@@ -1142,8 +1135,6 @@ def stop_residents(home: Path | str, host: str, *, other_versions: bool = False)
     One whose identity is not proven (``live_residents``) is never signalled: it ends itself once its package is
     replaced or its minutes are 0.  Returns the process ids stopped."""
     import signal
-
-    from ..._version import __version__
 
     stopped = []
     for paths, info, proven in live_residents(home, host, any_version=True):

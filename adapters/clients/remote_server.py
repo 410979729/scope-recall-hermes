@@ -36,6 +36,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
 
+from ..._version import __version__
 from ...runtime.worker_entry import host_process_credential_environment
 from . import transcript
 from .boundary import without_lone_surrogates
@@ -406,8 +407,6 @@ def build_app(config: RemoteServerConfig, *, warm: bool = False):
         return JSONResponse(answer)
 
     async def health(request: Request) -> JSONResponse:
-        from ..._version import __version__
-
         return JSONResponse({"entry_id": client.entry_id, "host": config.host, "version": __version__})
 
     app.router.routes.append(Route("/hook", hook, methods=["POST"]))
@@ -485,7 +484,6 @@ def serve(config: RemoteServerConfig, *, env_file: Path | None = None) -> None:
         except OSError as exc:
             # Without it each recall starts its own helper, as before: slower, never a reason not to serve.
             _log.warning("could not start a vector helper ahead: %s", type(exc).__name__)
-    from ..._version import __version__
 
     _log.info(
         "serving the %s entry at %s on %s:%d (%s)", config.host, config.home, config.listen, config.port, __version__
