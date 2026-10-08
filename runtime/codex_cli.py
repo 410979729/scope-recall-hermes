@@ -244,6 +244,8 @@ def _kill_tree(process: subprocess.Popen, job: int | None = None) -> None:
                     stderr=subprocess.DEVNULL,
                     timeout=10,
                     check=False,
+                    # A console program started from a windowless worker: without this, a console window flashes.
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
                 )
             except subprocess.TimeoutExpired:
                 pass

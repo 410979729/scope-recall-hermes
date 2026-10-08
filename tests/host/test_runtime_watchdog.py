@@ -472,3 +472,24 @@ def test_only_a_traceback_tail_is_kept_as_the_reason():
     assert worker_launch.failure_reason("just some chatter\n/some/path: not a reason\n") is None
     assert worker_launch.failure_reason("") is None
     assert worker_launch.failure_reason("RuntimeError: token sk-ant-api03-" + "A" * 40 + "\n") is None
+
+
+class _Running:
+    pid = 4321
+
+    @staticmethod
+    def poll():
+        return None
+
+
+def test_a_teardown_starts_taskkill_without_a_console_window(monkeypatch):
+    """The worker's teardown runs ``taskkill`` from a process with no console; started without ``CREATE_NO_WINDOW``
+    it got a console window of its own, which flashed on the desktop at every pass (#222)."""
+    calls = []
+    monkeypatch.setattr(worker_launch.subprocess, "run", lambda *args, **kwargs: calls.append((args, kwargs)))
+    worker_launch.taskkill_tree(_Running())
+    ((args, kwargs),) = calls
+    assert args[0][:2] == ["taskkill", "/PID"]
+    assert kwargs["creationflags"] == worker_launch.detached_creationflags()
+    no_window = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    assert kwargs["creationflags"] & no_window == no_window
