@@ -4,6 +4,10 @@ All notable changes to `scope-recall` will be documented in this file.
 
 ## [Unreleased]
 
+### Scope Recall 3.9.2rc1 - 2026-10-08
+
+The clean-up's last code step, no behaviour change: the store transaction and the core split by what they do, the installers share their common steps, and comments say what the code does rather than how it came about.
+
 ## [3.9.1] - 2026-10-08
 
 3.9.1 changes no behaviour. It is the clean-up's second part: stored content, recall results, hook and CLI output, log lines, configuration formats and the modules installed hosts run are those of 3.9.0.
