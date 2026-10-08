@@ -9,14 +9,24 @@ import time
 from typing import Protocol
 import uuid
 
-from ..contracts import ContractError, InstanceBinding, SourceEvent, TrustedContext
+from ..contracts import (
+    ContractError,
+    InstanceBinding,
+    SourceEvent,
+    TrustedContext,
+    validate_model_request,
+    validate_payload,
+)
 from .file_lock import advisory_file_lock
 from . import lexical_index
 from .storage import SQLiteStorage, StoreStatus, StoredSource
 from .capture import CaptureReceipt, record_event
-from .admission import AdmissionPolicy
-from .recall_diagnostics import RECALL_DIAGNOSTIC_PREFIX
-from .retrieval import CandidateRef, SearchContext
+from .admission import AdmissionPolicy, resume_deferred, schedule_source
+from .recall_diagnostics import RECALL_DIAGNOSTIC_PREFIX, RecallDiagnostics
+from .retrieval import CandidateRef, SearchContext, SearchLimits
+from .delete_storage import retraction_after
+from .visibility import release_objects
+from .work_storage import respace_refusal
 
 
 class Clock(Protocol):
@@ -69,6 +79,8 @@ class CoreConfig:
             raise ValueError("auto recall timeout must be finite and between zero and five seconds")
 
 
+# The services below import their modules when first used, not when this module loads: every entry, the installers
+# and the Hermes registration import ``scope_recall.core``, and most of them use few of these services.
 class MemoryCore:
     """Application composition. Construction neither opens storage nor calls a model."""
 
@@ -96,7 +108,6 @@ class MemoryCore:
         self.vectors = vectors
         self.consolidation = consolidation
         from .recall import RetrievalPipeline
-        from .recall_diagnostics import RecallDiagnostics
         from .recall_packet import RecallPacketCompiler, RecallPacketRenderer
 
         self.recall_pipeline = RetrievalPipeline(
@@ -135,8 +146,6 @@ class MemoryCore:
         moves with every capture, and on a store several entries write to, most views were
         compiled one capture ago.
         """
-        from .delete_storage import retraction_after
-
         with self.storage.read(context) as tx:
             return retraction_after(tx._check(), context.allowed_scope_ids, epoch)
 
@@ -213,8 +222,6 @@ class MemoryCore:
         )
 
     def schedule_source(self, context, ref, revision, *, remaining_seconds=None):
-        from .admission import schedule_source
-
         return schedule_source(
             self.storage,
             self.clock,
@@ -241,8 +248,6 @@ class MemoryCore:
         )
 
     def resume_deferred(self, context, *, limit=16, remaining_seconds=None):
-        from .admission import resume_deferred
-
         return resume_deferred(
             self.storage,
             self.clock,
@@ -286,9 +291,6 @@ class MemoryCore:
         ``background_without_evidence`` is a trusted caller choice, never a
         request field; see :class:`SearchContext`.
         """
-        from ..contracts import ContractError, validate_model_request
-        from .retrieval import SearchContext
-
         payload = validate_model_request("recall_request", request, context)
         if deadline_seconds is None:
             effective_deadline = self.config.auto_recall_seconds if payload.get("mode") == "auto" else 2.0
@@ -329,9 +331,6 @@ class MemoryCore:
         query that finds nothing then compiles to ``no_match`` rather than to
         ambient preferences a caller could read as the answer.
         """
-        from ..contracts import ContractError, validate_model_request, validate_payload
-        from .retrieval import SearchContext
-
         payload = validate_model_request("recall_request", request, context)
         if deadline_seconds is None:
             effective_deadline = self.config.auto_recall_seconds if payload.get("mode") == "auto" else 2.0
@@ -394,11 +393,7 @@ class MemoryCore:
         )
 
     def collection(self, context: TrustedContext, query, *, cursor=None, deadline_seconds: float = 2.0):
-        from .retrieval import SearchContext, SearchLimits
-
         if type(deadline_seconds) not in (int, float) or deadline_seconds <= 0:
-            from ..contracts import ContractError
-
             raise ContractError("INPUT_INVALID", "deadline_seconds")
         search_context = SearchContext(
             query="collection",
@@ -571,8 +566,6 @@ class MemoryCore:
         each worker in the space reopens pages of it while fewer than the queue's ceiling wait anywhere, and claims
         its own share.  A preview only reads; a start it would refuse is refused in the preview too.
         """
-        from .work_storage import respace_refusal
-
         if action not in ("status", "start", "restart", "cancel") or type(dry_run) is not bool:
             raise ContractError("INPUT_INVALID", "respace_action")
         writes = action != "status" and not dry_run
@@ -622,8 +615,6 @@ class MemoryCore:
     def release_objects(
         self, context: TrustedContext, refs, *, expected_epoch: int, automatic: bool = True, history: bool = False
     ):
-        from .visibility import release_objects
-
         return release_objects(
             self.storage, self.clock, context, refs, expected_epoch=expected_epoch, automatic=automatic, history=history
         )
