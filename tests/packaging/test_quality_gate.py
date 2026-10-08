@@ -201,3 +201,64 @@ def test_the_recorded_baseline_has_the_shape_the_gate_reads():
                     assert value and all(type(size) is int and size > 0 for size in value.values()), (path, rule)
                 else:
                     assert type(value) is int and value > 0, (path, rule)
+
+
+def _tree(root: Path, files: dict[str, str]) -> list[str]:
+    for name, text in files.items():
+        (root / name).parent.mkdir(parents=True, exist_ok=True)
+        (root / name).write_text(text, encoding="utf-8")
+    return list(files)
+
+
+def test_the_package_imports_form_no_cycle_and_follow_its_layers():
+    assert quality.import_problems(ROOT, quality.shipped_python(ROOT)) == []
+
+
+def test_an_import_in_a_function_that_closes_a_cycle_is_one(tmp_path):
+    files = _tree(
+        tmp_path,
+        {
+            "core/__init__.py": "",
+            "core/a.py": "from .b import helper\n",
+            "core/b.py": "def helper():\n    from . import a\n\n    return a\n",
+            "core/c.py": "from typing import TYPE_CHECKING\n\nif TYPE_CHECKING:\n    from .d import Row\n",
+            "core/d.py": "from .c import TYPE_CHECKING\n",
+        },
+    )
+    # c's import of d is for the type checker alone: d importing c closes no cycle.
+    assert quality.import_problems(tmp_path, files) == [
+        "import cycle among 2 modules:\n"
+        "    core/a.py:1 imports core/b.py\n"
+        "    core/b.py:2 imports core/a.py in a function"
+    ]
+
+
+def test_an_import_from_a_higher_layer_is_one_but_from_an_entry_or_as_a_named_lazy_one(tmp_path):
+    files = _tree(
+        tmp_path,
+        {
+            "contracts.py": "",
+            "core/__init__.py": "",
+            "core/x.py": "from .. import contracts\nfrom ..runtime import y\n",
+            "runtime/__init__.py": "",
+            "runtime/y.py": "",
+            "runtime/instance.py": (
+                "from ..adapters.hermes import authorization\n\n\n"
+                "def build():\n    from ..adapters.clients.authorization import build\n\n    return build\n"
+            ),
+            "adapters/__init__.py": "",
+            "adapters/clients/__init__.py": "",
+            "adapters/clients/authorization.py": "",
+            "adapters/hermes/__init__.py": "",
+            "adapters/hermes/authorization.py": "",
+            "adapters/codex/__init__.py": "",
+            "adapters/codex/hook_entry.py": "from ...maintenance import install\n",
+            "maintenance/__init__.py": "",
+            "maintenance/install.py": "from scope_recall.core import x\n",
+        },
+    )
+    # The instance's import of the Hermes check is named, but made at the top: every worker start would pay for it.
+    assert quality.import_problems(tmp_path, files) == [
+        "upward import: core/x.py:2 imports runtime/y.py",
+        "upward import: runtime/instance.py:1 imports adapters/hermes/authorization.py",
+    ]

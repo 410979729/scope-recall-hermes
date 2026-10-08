@@ -10,6 +10,7 @@ The clean-up's third step, no behaviour change: the import graph of the core and
 
 - `install_hermes_archive_migration`, the test-only archive migration install, moves from `scope_recall.adapters.hermes` to `scope_recall.maintenance.migration_activation`.
 - The model transport, the Codex CLI consolidation adapter and the Lance ports move below the host adapters: `scope_recall.adapters.models`, `.codex_cli` and `.lance` are now `scope_recall.runtime.models`, `.codex_cli` and `.lance_port`, and `scope_recall.adapters` no longer re-exports the Lance names. Nothing installed names these modules.
+- `scripts/quality.py` holds the package's imports to its layers (contracts, core, vector, runtime, adapters, maintenance): CI fails on an import cycle, an import inside a function included, and on a module importing from a layer above its own. The entry modules in `adapters/codex` may import any layer, and the worker's two lazy imports of a host's authorization check are named in the script.
 
 ## [3.9.0] - 2026-10-07
 

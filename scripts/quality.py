@@ -20,6 +20,11 @@ many, not which: one finding fixed and another of the same rule added in the sam
 unknown functions growing while another shrinks as much.  The check also fails when there is less than recorded, so
 that the baseline only goes down: ``--update`` records it, and refuses to record more unless ``--allow-more`` is given.
 pyright runs as Linux and as Windows, and a finding either reports counts once.
+
+The package's imports are held to its layers with no baseline: no cycle among its modules (an import inside a
+function counts, since it closes the cycle the first time it runs), and no module importing from a layer above
+its own (``LAYERS``) but the entry modules the installed command lines name and the lazy imports ``LAZY_UPWARD``
+names.
 """
 
 from __future__ import annotations
@@ -34,6 +39,7 @@ import re
 import subprocess
 import sys
 import tomllib
+from collections.abc import Iterable
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -54,12 +60,17 @@ def _relative(path: str) -> str:
     return Path(os.path.relpath(path, ROOT)).as_posix()
 
 
+def shipped_python(root: Path) -> set[str]:
+    """The Python files the wheel ships (``packaging/v11-module-allowlist.json``), as paths in the package."""
+    allowlist = json.loads((root / "packaging" / "v11-module-allowlist.json").read_text(encoding="utf-8"))
+    return {*allowlist["python_modules"], *(path for path in allowlist["package_data"] if path.endswith(".py"))}
+
+
 def install_problem(installed: Path, root: Path) -> str | None:
     """Why an installed package is not this tree's, or None.  It must hold exactly the Python files the wheel ships
-    (``packaging/v11-module-allowlist.json``), each as this tree has it, and no type stub besides: pyright reads a stub
-    in place of its module."""
-    allowlist = json.loads((root / "packaging" / "v11-module-allowlist.json").read_text(encoding="utf-8"))
-    shipped = {*allowlist["python_modules"], *(path for path in allowlist["package_data"] if path.endswith(".py"))}
+    (``shipped_python``), each as this tree has it, and no type stub besides: pyright reads a stub in place of its
+    module."""
+    shipped = shipped_python(root)
     present = {
         path.relative_to(installed).as_posix() for path in installed.rglob("*") if path.suffix in (".py", ".pyi")
     }
@@ -295,6 +306,142 @@ def grown(recorded: dict, current: dict) -> list[str]:
     return lines
 
 
+#: The package's layers, lowest first: a module imports from its own layer or a lower one, at the top or in a
+#: function.  Modules outside them (the package's root, ``_version``, ``_lance_worker``, ``distribution``) keep none.
+LAYERS = ("contracts", "core", "vector", "runtime", "adapters", "maintenance")
+#: The entry modules the installed hook and server command lines name: composition roots, free to import any layer.
+ENTRY_MODULES = "adapters/codex/"
+#: The upward imports the layering keeps, each made in the function that needs it.  A worker that replays a capture
+#: checks it against its host's current installation, which is the adapters' identity code, and the worker's module
+#: path is in its wake command, so no composition root above the adapters can be put in front of it.
+LAZY_UPWARD = frozenset(
+    {
+        ("runtime/instance.py", "adapters/clients/authorization.py"),
+        ("runtime/instance.py", "adapters/hermes/authorization.py"),
+    }
+)
+
+
+def _dotted(path: str) -> str:
+    parts = path.removesuffix(".py").split("/")
+    return ".".join(["scope_recall", *(parts[:-1] if parts[-1] == "__init__" else parts)])
+
+
+def import_edges(root: Path, files: Iterable[str]) -> set[tuple[str, str, bool, int]]:
+    """Each import of one of ``files`` by another, as (importer, imported, in a function, line).  Importing a name
+    from a module imports the module; an import under ``if TYPE_CHECKING:`` is none."""
+    paths = {_dotted(path): path for path in files}
+    edges: set[tuple[str, str, bool, int]] = set()
+    for path in sorted(paths.values()):
+        tree = ast.parse((root / path).read_text(encoding="utf-8"))
+        typing_only = {
+            id(node)
+            for block in ast.walk(tree)
+            if isinstance(block, ast.If) and "TYPE_CHECKING" in ast.unparse(block.test)
+            for node in ast.walk(block)
+        }
+        in_function = {
+            id(node)
+            for function in ast.walk(tree)
+            if isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef))
+            for node in ast.walk(function)
+        }
+        package = _dotted(path).split(".")
+        if not path.endswith("__init__.py"):
+            package = package[:-1]
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.Import, ast.ImportFrom)) or id(node) in typing_only:
+                continue
+            if isinstance(node, ast.Import):
+                names = [alias.name for alias in node.names]
+            else:
+                base = node.module or ""
+                if node.level:
+                    base = ".".join(
+                        [*package[: len(package) - node.level + 1], *([node.module] if node.module else [])]
+                    )
+                names = [f"{base}.{alias.name}" for alias in node.names]
+            for name in names:
+                while name and name not in paths:
+                    name = name.rpartition(".")[0]
+                if name and paths[name] != path:
+                    edges.add((path, paths[name], id(node) in in_function, node.lineno))
+    return edges
+
+
+def strongly_connected(graph: dict[str, set[str]]) -> list[list[str]]:
+    """The groups of more than one node that reach each other along ``graph``'s edges (Kosaraju, without recursion)."""
+    order: list[str] = []
+    seen: set[str] = set()
+    for start in sorted(graph):
+        if start in seen:
+            continue
+        seen.add(start)
+        stack = [(start, iter(sorted(graph[start])))]
+        while stack:
+            node, children = stack[-1]
+            for child in children:
+                if child not in seen:
+                    seen.add(child)
+                    stack.append((child, iter(sorted(graph[child]))))
+                    break
+            else:
+                stack.pop()
+                order.append(node)
+    reverse: dict[str, set[str]] = {node: set() for node in graph}
+    for node, children in graph.items():
+        for child in children:
+            reverse[child].add(node)
+    groups: list[list[str]] = []
+    placed: set[str] = set()
+    for start in reversed(order):
+        if start in placed:
+            continue
+        placed.add(start)
+        group: list[str] = []
+        todo = [start]
+        while todo:
+            node = todo.pop()
+            group.append(node)
+            for parent in reverse[node] - placed:
+                placed.add(parent)
+                todo.append(parent)
+        if len(group) > 1:
+            groups.append(sorted(group))
+    return sorted(groups)
+
+
+def _layer(path: str) -> int | None:
+    top = path.split("/")[0].removesuffix(".py")
+    return LAYERS.index(top) if top in LAYERS else None
+
+
+def import_problems(root: Path, files: Iterable[str]) -> list[str]:
+    """What the package's imports may not do: form a cycle (an import in a function counts: it closes the cycle the
+    first time it runs), or reach a higher layer (``LAYERS``) but from an entry module or as one of ``LAZY_UPWARD``."""
+    files = sorted(files)
+    edges = sorted(import_edges(root, files), key=lambda edge: (edge[0], edge[3], edge[1]))  # by importer and line
+    graph: dict[str, set[str]] = {path: set() for path in files}
+    for importer, imported, _lazy, _line in edges:
+        graph[importer].add(imported)
+    problems: list[str] = []
+    for group in strongly_connected(graph):
+        inside = [
+            f"\n    {importer}:{line} imports {imported}" + (" in a function" if lazy else "")
+            for importer, imported, lazy, line in edges
+            if importer in group and imported in group
+        ]
+        problems.append(f"import cycle among {len(group)} modules:" + "".join(inside))
+    for importer, imported, lazy, line in edges:
+        low, high = _layer(importer), _layer(imported)
+        if low is None or high is None or high <= low or importer.startswith(ENTRY_MODULES):
+            continue
+        if lazy and (importer, imported) in LAZY_UPWARD:
+            continue
+        problems.append(f"upward import: {importer}:{line} imports {imported}" + (" in a function" if lazy else ""))
+    return problems
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=(__doc__ or "").split("\n\n")[0])
     parser.add_argument("--update", action="store_true", help="record the current findings as the baseline")
@@ -316,6 +463,11 @@ def main(argv: list[str] | None = None) -> int:
         print(f"recorded {len(findings)} findings in {BASELINE.relative_to(ROOT).as_posix()}")
         return 0
     failed = False
+    problems = import_problems(ROOT, shipped_python(ROOT))
+    if problems:
+        print("\n".join(problems))
+        print("the package's imports may form no cycle and may not reach a layer above their own (LAYERS in this file)")
+        failed = True
     done = _run("ruff", "format", "--check", "--output-format", "concise", ".")
     if done.returncode != 0:
         print(done.stdout.strip() or done.stderr.strip())
@@ -338,7 +490,10 @@ def main(argv: list[str] | None = None) -> int:
         print("below the baseline, or renamed or moved: run `python scripts/quality.py --update` to record it")
         failed = True
     if not failed:
-        print(f"quality: formatted, and nothing above the baseline ({len(findings)} findings recorded)")
+        print(
+            f"quality: formatted, imports along the layers, and nothing above the baseline ({len(findings)} findings"
+            " recorded)"
+        )
     return 1 if failed else 0
 
 
