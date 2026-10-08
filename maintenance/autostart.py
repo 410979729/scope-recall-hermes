@@ -16,7 +16,7 @@ import tempfile
 import xml.etree.ElementTree as ET
 
 from ..runtime.scheduling import control_path, read_control
-from ..runtime.worker_entry import _atomic_metadata, load_config
+from ..runtime.worker_entry import write_worker_metadata, load_config
 
 #: How the wake runs outside Windows: from the operator's timer.  Nothing here registers one.
 OPERATOR_TIMER = "operator_timer"
@@ -150,7 +150,7 @@ def apply(prepared):
     if not _windows():
         # The control file is what the wake reads (``resume_entry``); the operator installs the timer that runs it.
         control = {key: value for key, value in prepared.items() if key not in _TIMER_FIELDS}
-        _atomic_metadata(control_path(config), control)
+        write_worker_metadata(control_path(config), control)
         return dict(
             control,
             **{key: prepared[key] for key in _TIMER_FIELDS},
@@ -165,7 +165,7 @@ def apply(prepared):
         raise ValueError("autostart_task_ownership_unverified")
     # Disabled control prevents a trigger racing registration from doing work.
     control = {k: v for k, v in prepared.items() if k != "xml"}
-    _atomic_metadata(control_path(config), dict(control, enabled=False))
+    write_worker_metadata(control_path(config), dict(control, enabled=False))
     with tempfile.TemporaryDirectory(prefix="scope-recall-task-") as temp:
         path = Path(temp) / "task.xml"
         path.write_text(prepared["xml"], encoding="utf-16")
@@ -176,9 +176,9 @@ def apply(prepared):
         )
     if result.returncode:
         if previous is not None:
-            _atomic_metadata(control_path(config), previous)
+            write_worker_metadata(control_path(config), previous)
         raise ValueError("autostart_registration_failed")
-    _atomic_metadata(control_path(config), control)
+    write_worker_metadata(control_path(config), control)
     return control
 
 
@@ -190,12 +190,12 @@ def disable(config_path, *, remove=False):
     if remove and control.get("registration_state") == "removed":
         return dict(status="removed", task_name=control["task_name"])
     control["enabled"] = False
-    _atomic_metadata(control_path(config), control)
+    write_worker_metadata(control_path(config), control)
     if control.get("registration") == OPERATOR_TIMER:
         # The wake reads the control file and does nothing while it is disabled; the timer is the operator's.
         if remove:
             control["registration_state"] = "removed"
-            _atomic_metadata(control_path(config), control)
+            write_worker_metadata(control_path(config), control)
         return dict(
             status="removed" if remove else "paused",
             task_name=control["task_name"],
@@ -211,7 +211,7 @@ def disable(config_path, *, remove=False):
         raise ValueError("autostart_unregister_failed")
     if remove:
         control["registration_state"] = "removed"
-        _atomic_metadata(control_path(config), control)
+        write_worker_metadata(control_path(config), control)
     return dict(status="removed" if remove else "paused", task_name=control["task_name"])
 
 

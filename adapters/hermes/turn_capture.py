@@ -19,7 +19,7 @@ from .boundary import (
     sync_turn_source_events,
     tool_call_source_event,
 )
-from .tool_surface import _TOOL_NAMES
+from .tool_surface import TOOL_NAMES
 
 if TYPE_CHECKING:
     from .provider import ScopeRecallHermesAdapter
@@ -46,7 +46,7 @@ def _is_scope_recall_tool_name(tool_name: object) -> bool:
     host identity.  The result body is deliberately never inspected.
     """
 
-    return type(tool_name) is str and tool_name in _TOOL_NAMES
+    return type(tool_name) is str and tool_name in TOOL_NAMES
 
 
 #: Hermes' own tools that hand back what was already said or remembered: its search over past

@@ -126,7 +126,7 @@ def _apply_verdict(tx, item, current, value, live_sources, now):
     return applied
 
 
-def _process_candidate_evaluation(
+def process_candidate_evaluation(
     storage,
     clock,
     context,

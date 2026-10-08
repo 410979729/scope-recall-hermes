@@ -115,7 +115,7 @@ def test_host_replay_rejects_invalid_identity_keys(tmp_path, key):
 def _doctor_app(tmp_path, monkeypatch):
     app, ctx = app_at(tmp_path, AdmissionPolicy(max_pending_work=2, important_reserve=0))
     (ctx.binding.data_directory / "installation.json").write_text("{}", encoding="utf-8")
-    monkeypatch.setattr(doctor, "_load_binding", lambda *args: (ctx.binding, ctx.binding.data_directory))
+    monkeypatch.setattr(doctor, "load_binding", lambda *args: (ctx.binding, ctx.binding.data_directory))
     monkeypatch.setattr(doctor, "_hermes_data_dir", lambda root: ctx.binding.data_directory)
     return app, ctx
 

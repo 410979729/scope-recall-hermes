@@ -28,7 +28,7 @@ HOOK_TIMEOUTS = {"UserPromptSubmit": 15, "Stop": 10, "SessionEnd": 10}
 #: The skills a Claude Code session gets.  ``scope-recall-setup`` stays out: installing and
 #: upgrading the fleet is an operator's procedure, not something a coding session is asked.
 CLAUDE_CODE_SKILLS = ("scope-recall-memory",)
-_SHELL_WORD = re.compile(r"[A-Za-z0-9_@%+=:,./-]+")
+SHELL_WORD = re.compile(r"[A-Za-z0-9_@%+=:,./-]+")
 
 
 def data_dir(instance_root: Path) -> Path:
@@ -105,7 +105,7 @@ def _argv(plan: InstallPlan, module: str) -> list[str]:
 
 def _hook_command(plan: InstallPlan) -> str:
     argv = _argv(plan, "hook_entry")
-    unsafe = [part for part in argv if not _SHELL_WORD.fullmatch(part)]
+    unsafe = [part for part in argv if not SHELL_WORD.fullmatch(part)]
     if unsafe:
         raise InstallError(
             "Claude Code runs a hook through a shell: keep the interpreter, home and env file on paths "

@@ -124,7 +124,7 @@ def test_failed_work_is_reported_even_with_no_pending(worker_app, monkeypatch):
     with sqlite3.connect(core.storage.path) as db:
         db.execute("UPDATE work_items SET state='failed',last_error_code='derivation_invalid'")
     (ctx.binding.data_directory / "installation.json").write_text("{}", encoding="utf-8")
-    monkeypatch.setattr(doctor, "_load_binding", lambda *args: (ctx.binding, ctx.binding.data_directory))
+    monkeypatch.setattr(doctor, "load_binding", lambda *args: (ctx.binding, ctx.binding.data_directory))
     monkeypatch.setattr(doctor, "_hermes_data_dir", lambda root: ctx.binding.data_directory)
     result = doctor.run_doctor(host="hermes", instance_root=ctx.binding.data_directory)
     assert result.pending_work == 0 and result.failed_work == 2

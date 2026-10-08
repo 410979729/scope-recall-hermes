@@ -15,7 +15,7 @@ from scope_recall.contracts import ContractError, Origin, TrustedContext
 from scope_recall.core import CoreConfig, MemoryCore
 from scope_recall.core.capture_inbox import DELETED_KEY
 from scope_recall.runtime.instance import RuntimeInstanceConfig
-from ..runtime_wiring import _strict_hook_budget
+from ..runtime_wiring import strict_hook_budget
 
 from . import transcript
 from .boundary import (
@@ -578,6 +578,6 @@ def _configured_budget(runtime_config_path: str | None) -> float | None:
             return None
         if "hook_processing_seconds" not in raw:
             return _DEFAULT_CONFIGURED_BUDGET_S
-        return _strict_hook_budget(raw["hook_processing_seconds"])
+        return strict_hook_budget(raw["hook_processing_seconds"])
     except (OSError, UnicodeError, ValueError):
         return None

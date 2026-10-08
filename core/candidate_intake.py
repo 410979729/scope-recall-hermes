@@ -13,6 +13,7 @@ from ..contracts import ContractError
 from . import lineage
 from .candidate_lifecycle import (
     RULE_VERSION,
+    SELF_SUBJECTS,
     SOURCE_MATCH_LIMIT,
     CandidateRegistration,
     CandidateSourceTrigger,
@@ -29,16 +30,15 @@ from .candidate_tables import (
     settled_reason,
     utc,
 )
-from .claims import _SELF_SUBJECTS
 from .events import lexical_terms
 from .evidence_question import (
     AUTOMATIC_VERDICTS,
     PERSON_ABSENT_REASON,
     REPEAT_WITHOUT_RESTATEMENT_REASON,
-    _letters_and_digits,
     evidence_text,
     is_first_hand,
     needs_absent_person,
+    nfkc_letters_and_digits,
     restatement_needle,
     rootless,
     unanswerable_reason,
@@ -359,7 +359,7 @@ class CandidateIntake(CandidateTables):
         ]
         if first_hand:
             return found[:limit]
-        letters = _letters_and_digits(source.event["content"])
+        letters = nfkc_letters_and_digits(source.event["content"])
         matched = []
         for candidate in found:
             if _speaks_to(json.loads(candidate["payload_json"]), letters):
@@ -707,9 +707,9 @@ def _speaks_to(payload, letters: str) -> bool:
         return True
 
     subject = str(payload.get("subject") or "") if isinstance(payload, dict) else ""
-    if subject.casefold() in _SELF_SUBJECTS:
+    if subject.casefold() in SELF_SUBJECTS:
         return False
-    named = _letters_and_digits(subject)
+    named = nfkc_letters_and_digits(subject)
     return bool(named) and named in letters
 
 

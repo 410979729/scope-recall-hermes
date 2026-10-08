@@ -186,7 +186,7 @@ def _is_reparse_point(path: Path) -> bool:
     return path.exists() and bool(getattr(path.stat(), "st_file_attributes", 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT)
 
 
-def _metadata_path(config: RuntimeInstanceConfig, name: str) -> Path:
+def worker_metadata_path(config: RuntimeInstanceConfig, name: str) -> Path:
     root = config.binding.data_directory
     if any(_is_reparse_point(path) for path in (root, *root.parents)):
         raise ValueError("worker_metadata_reparse_path")
@@ -217,7 +217,7 @@ def _beside_another_process(action):
             time.sleep(_SHARING_PAUSE_SECONDS)
 
 
-def _read_metadata(path: Path) -> dict[str, Any]:
+def read_worker_metadata(path: Path) -> dict[str, Any]:
     if not path.exists():
         return {}
 
@@ -232,7 +232,7 @@ def _read_metadata(path: Path) -> dict[str, Any]:
     return value
 
 
-def _atomic_metadata(path: Path, value: dict[str, Any]) -> None:
+def write_worker_metadata(path: Path, value: dict[str, Any]) -> None:
     payload = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     if len(payload.encode("utf-8")) > METADATA_LIMIT_BYTES:
         raise ValueError("worker_metadata_oversized")
@@ -258,7 +258,7 @@ def persist_worker_status(
     exit_code: int,
     worker_pid: int | None = None,
 ) -> None:
-    lock = _metadata_path(config, "runtime-worker-status.lock")
+    lock = worker_metadata_path(config, "runtime-worker-status.lock")
     with advisory_file_lock(lock, timeout_seconds=0.2):
         _persist_worker_status_unlocked(
             config, payload, started_at=started_at, exit_code=exit_code, worker_pid=worker_pid
@@ -274,8 +274,8 @@ def _persist_worker_status_unlocked(
     worker_pid: int | None = None,
 ) -> None:
     """Bounded metadata only. Never retain model text, stderr, or credentials."""
-    path = _metadata_path(config, "runtime-worker-status.json")
-    previous = _read_metadata(path)
+    path = worker_metadata_path(config, "runtime-worker-status.json")
+    previous = read_worker_metadata(path)
     if previous.get("installation_id") not in (None, config.binding.installation_id):
         raise ValueError("worker_status_binding_mismatch")
     if str(previous.get("started_at", "")) > started_at:
@@ -328,7 +328,7 @@ def _persist_worker_status_unlocked(
         worker_pid=worker_pid if worker_pid is not None else os.getpid(),
         last_success_at=finished if int(payload.get("completed", 0)) > 0 else previous.get("last_success_at"),
     )
-    _atomic_metadata(path, safe)
+    write_worker_metadata(path, safe)
 
 
 def _reserve_daily_work(config: RuntimeInstanceConfig) -> tuple[Path, dict[str, Any], int]:
@@ -337,8 +337,8 @@ def _reserve_daily_work(config: RuntimeInstanceConfig) -> tuple[Path, dict[str, 
     This cap complements, and never resets or expands, the auxiliary ledger's
     call/token/currency budget.
     """
-    path = _metadata_path(config, "runtime-worker-day.json")
-    prior = _read_metadata(path)
+    path = worker_metadata_path(config, "runtime-worker-day.json")
+    prior = read_worker_metadata(path)
     if prior.get("installation_id") not in (None, config.binding.installation_id):
         raise ValueError("worker_budget_binding_mismatch")
     day = utc_now()[:10]
@@ -354,7 +354,7 @@ def _reserve_daily_work(config: RuntimeInstanceConfig) -> tuple[Path, dict[str, 
         else min(config.max_items, max(0, config.daily_work_limit - used))
     )
     state = dict(installation_id=config.binding.installation_id, day=day, used=used + count)
-    _atomic_metadata(path, state)
+    write_worker_metadata(path, state)
     return path, state, count
 
 
@@ -459,7 +459,7 @@ def _drain_once(config: RuntimeInstanceConfig, instance: Any, deadline: float) -
     # Purge never spends the optional enrichment budget.
     used = sum(item.work_type != "purge" for item in receipt.items)
     budget_state["used"] -= max(0, reserved - used)
-    _atomic_metadata(budget_path, budget_state)
+    write_worker_metadata(budget_path, budget_state)
     background_gaps = tuple(instance.background_gaps)
     # A held provider is the one refusal that does steer the pass: its work
     # types were not claimed at all (runtime/model_budget.py provider_holds).
@@ -552,7 +552,7 @@ def run_worker(config_path: str | Path, *, output: TextIO | None = None, deadlin
         preflight_gap = _vector_preflight_gap(config)
         instance = build_runtime_instance(config)
         instance.memory_epoch()  # Validate the bound database before writing metadata.
-        lock_path = _metadata_path(config, "runtime-worker.lock")
+        lock_path = worker_metadata_path(config, "runtime-worker.lock")
         try:
             with advisory_file_lock(lock_path, timeout_seconds=max(0, deadline - time.monotonic())):
                 if deadline_epoch is not None and time.monotonic() >= deadline:

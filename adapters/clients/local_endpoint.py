@@ -250,7 +250,7 @@ def _hello(connection: http.client.HTTPConnection, token: str) -> str:
     return "ok" if hello.status == 200 and _proven(hello.getheader(_PROOF), token, "hello", nonce) else "unproven"
 
 
-def _forget(path: Path) -> None:
+def remove_quietly(path: Path) -> None:
     try:
         path.unlink(missing_ok=True)
     except OSError:
@@ -320,7 +320,7 @@ class Recaller:
             # Its process is gone, or another holds its id: our own server runs as this user, so its start time can
             # be read, and one that cannot (another account's process) is not it.
             if not state.running or state.start_token != info.get("start"):
-                _forget(path)
+                remove_quietly(path)
                 continue
             # A server started before an upgrade runs the code it was started with, until its client restarts.
             if info.get("host") != self.host or info.get("version") != __version__:
@@ -331,7 +331,7 @@ class Recaller:
                 self.outcome = outcome
                 return answer
             if outcome == "unproven":
-                _forget(path)
+                remove_quietly(path)
             self.outcome = outcome
             if outcome in ("late", "refused"):
                 return None  # the next would take this request no differently
@@ -803,7 +803,7 @@ class HookEndpoint:
             return  # stopped already, as at exit after its owner stopped it: a stuck recall is not waited for twice
         self._stopped.set()
         server, self._server = self._server, None
-        _forget(self.path)
+        remove_quietly(self.path)
         if server is not None:
             server.shutdown()
             server.server_close()
@@ -896,7 +896,7 @@ def resident_alive(home: Path | str, host: str) -> Path:
     return endpoints(home) / f"resident-{host}.alive"
 
 
-def _residents(
+def live_residents(
     home: Path | str, host: str, *, any_version: bool = False
 ) -> list[tuple[list[Path], dict[str, Any], bool]]:
     """This entry's live resident servers for ``host``, of this package's version unless ``any_version``: the files
@@ -929,7 +929,7 @@ def _residents(
         started = info.get("start")
         if not state.running or (started is not None and state.start_token != started):
             for path in paths:
-                _forget(path)
+                remove_quietly(path)
             continue
         if any_version or info.get("version") == __version__:
             found.append((paths, info, started is not None))
@@ -977,14 +977,14 @@ def ensure_resident(
 
     if minutes <= 0:
         return "off"
-    if _upgrading():
+    if package_upgrading():
         return "upgrading"
     folder = endpoints(home)
     other = None
     if resident_running(home, host):
         others = [
             (info, proven)
-            for _paths, info, proven in _residents(home, host, any_version=True)
+            for _paths, info, proven in live_residents(home, host, any_version=True)
             if info.get("version") != __version__
         ]
         if not others:
@@ -1041,7 +1041,7 @@ def ensure_resident(
     ]
     if env_file is not None:
         command += ["--env-file", str(env_file)]
-    if not _start_apart(command, cwd=folder):
+    if not start_detached(command, cwd=folder):
         return "failed"
     return f"replaced:{other}" if other is not None else "started"
 
@@ -1057,7 +1057,7 @@ def _recent(stamp: Path) -> bool:
     return -RESIDENT_START_EVERY_SECONDS < age < RESIDENT_START_EVERY_SECONDS
 
 
-def _upgrading() -> bool:
+def package_upgrading() -> bool:
     """Whether ``package-upgrade`` is replacing this environment's package now (its lock in the venv is held): a server
     started meanwhile could import part of either version, and once the new ``_version.py`` was in place it would not
     end (review 2 of 3.6.0rc1).  The client should be quit for an upgrade; its MCP servers' keeping made this
@@ -1103,7 +1103,7 @@ def keep_resident(
     return stopped
 
 
-def _start_apart(command: list[str], *, cwd: Path) -> bool:
+def start_detached(command: list[str], *, cwd: Path) -> bool:
     """Start ``command`` so that it outlives this process and its parent's job; whether it started."""
     import subprocess
 
@@ -1139,14 +1139,14 @@ def stop_residents(home: Path | str, host: str, *, other_versions: bool = False)
     that would be replaced.  With ``other_versions``, only those of another version than this package's (a starting
     server's, ``resident_entry``).  A server writes nothing, so it is ended rather than asked (on Windows ``os.kill``
     terminates the process); its vector and embedding helpers read their requests from it and end when it is gone.
-    One whose identity is not proven (``_residents``) is never signalled: it ends itself once its package is replaced
-    or its minutes are 0.  Returns the process ids stopped."""
+    One whose identity is not proven (``live_residents``) is never signalled: it ends itself once its package is
+    replaced or its minutes are 0.  Returns the process ids stopped."""
     import signal
 
     from ..._version import __version__
 
     stopped = []
-    for paths, info, proven in _residents(home, host, any_version=True):
+    for paths, info, proven in live_residents(home, host, any_version=True):
         if not proven or (other_versions and info.get("version") == __version__):
             continue
         pid = int(info["pid"])
@@ -1155,6 +1155,6 @@ def stop_residents(home: Path | str, host: str, *, other_versions: bool = False)
         except OSError:
             continue
         for path in paths:
-            _forget(path)
+            remove_quietly(path)
         stopped.append(pid)
     return stopped

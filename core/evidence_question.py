@@ -32,7 +32,7 @@ import hashlib
 import json
 from typing import Iterable, Mapping
 import unicodedata
-from .claims import _AUTHORITY_ORIGINS, _HUMAN_ONLY_KINDS, _VALUE_FREE_KINDS
+from .claims import AUTHORITY_ORIGINS, HUMAN_ONLY_KINDS, VALUE_FREE_KINDS
 from .source_qualification import bound_literal
 
 #: Origins that count as somebody testifying rather than the system observing
@@ -85,7 +85,7 @@ def question_digest(evidence: object) -> str:
 # verdict was already decided:
 #
 # * authority -- ``_cite`` keeps complete, gap-free roots and ``_authority``
-#   needs a human, tool or document one (a human one for ``_HUMAN_ONLY_KINDS``);
+#   needs a human, tool or document one (a human one for ``HUMAN_ONLY_KINDS``);
 # * value -- ``_value_preserved`` needs ``value_text`` inside the quotes for every
 #   kind but procedure, intention and alias, and a quote is an exact slice of a
 #   supplied source.  Compared here on letters and digits only, after NFKC and
@@ -118,7 +118,7 @@ def evidence_text(source) -> EvidenceText:
     return EvidenceText(origin, complete, str(source.event.get("content") or ""))
 
 
-def _letters_and_digits(value: object) -> str:
+def nfkc_letters_and_digits(value: object) -> str:
     text = unicodedata.normalize("NFKC", str(value or "")).casefold()
     return "".join(character for character in text if character.isalnum())
 
@@ -131,13 +131,13 @@ def unanswerable_reason(payload: Mapping, evidence: Iterable[EvidenceText]) -> s
     if kind not in _CLAIM_KINDS:
         return None
     items = tuple(evidence)
-    needed = ("human_direct",) if kind in _HUMAN_ONLY_KINDS else _AUTHORITY_ORIGINS
+    needed = ("human_direct",) if kind in HUMAN_ONLY_KINDS else AUTHORITY_ORIGINS
     if not any(item.complete and item.origin in needed for item in items):
         return "no_authoritative_evidence"
-    value = _letters_and_digits(payload.get("value_text"))
-    if kind in _VALUE_FREE_KINDS or not value:
+    value = nfkc_letters_and_digits(payload.get("value_text"))
+    if kind in VALUE_FREE_KINDS or not value:
         return None
-    if not any(value in _letters_and_digits(item.content) for item in items):
+    if not any(value in nfkc_letters_and_digits(item.content) for item in items):
         return "value_not_in_evidence"
     return None
 
@@ -182,7 +182,7 @@ def rooted_verdict(proposal: Mapping, quoted: Iterable[tuple[EvidenceText, str]]
         method = (proposal.get("procedure") or {}).get("method") or ()
         return bool(method) and all(any(step in text.content for text, _quote in roots) for step in method)
     value = str(proposal.get("value_text") or "")
-    if kind in _VALUE_FREE_KINDS or not value.strip():
+    if kind in VALUE_FREE_KINDS or not value.strip():
         return True
     return any(bound_literal(quote, value) for _text, quote in roots)
 
@@ -196,7 +196,7 @@ def rooted_verdict(proposal: Mapping, quoted: Iterable[tuple[EvidenceText, str]]
 # verdicts that promoted a fact, 19 came from a candidate's first verdict, 4 from
 # its second, and 4 from the fifth or later.  Two rules follow:
 #
-# * a kind only a person can establish (``claims._HUMAN_ONLY_KINDS``) that was
+# * a kind only a person can establish (``claims.HUMAN_ONLY_KINDS``) that was
 #   proposed from sources where no person spoke is not a candidate at all: 2,034
 #   of those evaluations promoted nothing, and when the person does say it, the
 #   consolidation of their own words proposes it with the authority it needs;
@@ -223,7 +223,7 @@ def needs_absent_person(payload: Mapping, cited_origins: Iterable[str]) -> bool:
     """
     kind = payload.get("kind") if isinstance(payload, Mapping) else None
     origins = frozenset(cited_origins)
-    return kind in _HUMAN_ONLY_KINDS and bool(origins) and origins <= IMPERSONAL_ORIGINS
+    return kind in HUMAN_ONLY_KINDS and bool(origins) and origins <= IMPERSONAL_ORIGINS
 
 
 def restatement_needle(payload: Mapping) -> str:
@@ -234,9 +234,9 @@ def restatement_needle(payload: Mapping) -> str:
     """
     if not isinstance(payload, Mapping):
         return ""
-    value = _letters_and_digits(payload.get("value_text"))
-    if payload.get("kind") in _VALUE_FREE_KINDS or not value:
-        return _letters_and_digits(payload.get("subject"))
+    value = nfkc_letters_and_digits(payload.get("value_text"))
+    if payload.get("kind") in VALUE_FREE_KINDS or not value:
+        return nfkc_letters_and_digits(payload.get("subject"))
     return value
 
 
@@ -245,7 +245,7 @@ def restates(payload: Mapping, contents: Iterable[str]) -> bool:
     needle = restatement_needle(payload)
     if not needle:
         return True
-    return any(needle in _letters_and_digits(content) for content in contents)
+    return any(needle in nfkc_letters_and_digits(content) for content in contents)
 
 
 __all__ = [

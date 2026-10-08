@@ -25,7 +25,7 @@ EVERY_TYPE = {"purge", "rebuild_projection", "consolidate", "embed", "evaluate_c
 
 def test_the_planner_wakes_only_for_failures_the_worker_recovers(tmp_path, monkeypatch):
     core, cfg, _path = fixture(tmp_path)
-    monkeypatch.setattr(scheduling, "_capable_work_types", lambda config: set(EVERY_TYPE))
+    monkeypatch.setattr(scheduling, "capable_work_types", lambda config: set(EVERY_TYPE))
     queue(
         core,
         cfg,
@@ -85,7 +85,7 @@ def test_a_type_its_port_refused_before_any_attempt_is_reported_unavailable(work
 
 def test_the_supervisor_sleeps_a_candidate_type_its_port_refused(tmp_path, monkeypatch):
     core, cfg, path = fixture(tmp_path, supervisor_seconds=600)
-    monkeypatch.setattr(scheduling, "_capable_work_types", lambda config: set(EVERY_TYPE))
+    monkeypatch.setattr(scheduling, "capable_work_types", lambda config: set(EVERY_TYPE))
     queue(core, cfg, ref="TEST-candidate", kind="evaluate_candidate")
     elapsed = [0.0]
     calls = []

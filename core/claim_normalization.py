@@ -8,7 +8,7 @@ import re
 from .source_qualification import AUTHORITY_QUESTION, UNASSERTED_UNCERTAINTY, REPORTED_SPEECH
 from .claims import evidence_context, rejects_other_value
 
-_PROJECT = re.compile(r"项目[【\[][^【】\[\]\n]{1,120}[】\]]")
+PROJECT_TAG = re.compile(r"项目[【\[][^【】\[\]\n]{1,120}[】\]]")
 _SELF_ATTRIBUTE = re.compile(r"(?:我的|本人的)(?:长期|默认|通常)?(?:偏好|喜好|习惯|要求|决定)")
 _EMBEDDED = re.compile(r"([^，,。;；!?！？]{1,120}?)(使用|采用|选择)([^，,。;；!?！？]{1,240})")
 _MODAL = re.compile(r"^(?:应当|应该|应|仍然|仍)(使用|采用|选择|是)$")
@@ -52,7 +52,7 @@ def normalize_frame(proposal, roots):
         or REPORTED_SPEECH.search(assertion)
     ):
         return proposal
-    projects = set(_PROJECT.findall(assertion))
+    projects = set(PROJECT_TAG.findall(assertion))
     if len(projects) != 1:
         return proposal
     project = next(iter(projects))

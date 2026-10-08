@@ -33,10 +33,10 @@ from ...runtime.running_code import version_on_disk
 from ...runtime.worker_entry import host_process_credential_environment
 from .config import load_shared_client
 from .local_endpoint import (
-    _forget,
-    _upgrading,
     configured_minutes,
     endpoints,
+    package_upgrading,
+    remove_quietly,
     resident_alive,
     resident_lock,
     resident_minutes,
@@ -88,7 +88,7 @@ def main(argv: list[str] | None = None) -> int:
         # Started by the client's MCP server, which lives as long as the conversation, the server was its child:
         # WorkBuddy ending the conversation's process tree ended it too (measured 2026-10-03, its tree killed as
         # ``taskkill /T`` does).  Started from this process, which ends now, it has no living parent in that tree.
-        from .local_endpoint import _start_apart
+        from .local_endpoint import start_detached
 
         command = [
             sys.executable,
@@ -103,10 +103,10 @@ def main(argv: list[str] | None = None) -> int:
         ]
         if args.env_file is not None:
             command += ["--env-file", str(args.env_file)]
-        return 0 if _start_apart(command, cwd=endpoints(home)) else 1
+        return 0 if start_detached(command, cwd=endpoints(home)) else 1
     configured = args.idle_seconds is None
     idle = resident_minutes(home, args.host) * 60.0 if configured else args.idle_seconds
-    if idle <= 0 or _upgrading():
+    if idle <= 0 or package_upgrading():
         return 0  # none kept, or the package being replaced: a later look starts one from the new files
     # One of another version runs the code it was started with, and hooks ask it nothing (review of 3.6.0rc1).  The
     # prompt hook stops one that holds the lock before it starts this one; one that took the lock meanwhile ends here.
@@ -164,7 +164,7 @@ def _serve_until_idle(home: Path, host: str, env_file: Path | None, idle: float,
     finally:
         # The record goes last: ``stop`` can wait for a stuck recall, and ``resident stop`` finds the server by it.
         endpoint.stop()
-        _forget(record)
+        remove_quietly(record)
     return 0
 
 

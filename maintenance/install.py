@@ -11,7 +11,7 @@ import uuid
 
 from . import install_claude_code, install_codex, install_dsh, install_hermes, install_workbuddy
 from .backup import atomic_write, sha256
-from .doctor import _host_registration_status
+from .doctor import check_host_registration
 from .install_common import (
     BACKUP_DIRNAME,
     PACKAGE_VERSION,
@@ -259,11 +259,11 @@ def _stop_residents(host: str, instance_root: Path) -> None:
         return
     import sys
 
-    from ..adapters.clients.local_endpoint import _residents, stop_residents
+    from ..adapters.clients.local_endpoint import live_residents, stop_residents
 
     try:
         stop_residents(instance_root, host)
-        left = [int(info["pid"]) for _paths, info, _proven in _residents(instance_root, host, any_version=True)]
+        left = [int(info["pid"]) for _paths, info, _proven in live_residents(instance_root, host, any_version=True)]
     except Exception:  # noqa: BLE001 - see above
         return
     if left:
@@ -366,7 +366,7 @@ def apply_install(plan: InstallPlan) -> InstallResult:
         files_written=written,
         # Registration is what the doctor can actually observe; hook trust is a
         # Codex operator step and full mode is never verified by an install.
-        host_registration_pending=_host_registration_status(plan.host, plan.instance_root, plan.python_executable)
+        host_registration_pending=check_host_registration(plan.host, plan.instance_root, plan.python_executable)
         != "registered",
         hook_trust_pending=plan.host == "codex",
         full_mode_unverified=True,

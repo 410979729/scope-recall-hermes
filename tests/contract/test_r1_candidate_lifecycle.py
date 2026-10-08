@@ -629,7 +629,7 @@ def test_r1_candidate_doctor_reports_waiting_capability_and_failures(app, monkey
     _finish_source_work(core)
     core.drain_worker(ctx, max_items=8, remaining_seconds=10)
     (ctx.binding.data_directory / "installation.json").write_text("{}", encoding="utf-8")
-    monkeypatch.setattr(doctor, "_load_binding", lambda *args: (ctx.binding, ctx.binding.data_directory))
+    monkeypatch.setattr(doctor, "load_binding", lambda *args: (ctx.binding, ctx.binding.data_directory))
     monkeypatch.setattr(doctor, "_hermes_data_dir", lambda root: ctx.binding.data_directory)
     result = doctor.run_doctor(host="hermes", instance_root=ctx.binding.data_directory)
     assert result.candidate_pending_evaluation == 1

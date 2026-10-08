@@ -278,9 +278,9 @@ def test_the_rules_are_named_once_in_the_qualification_module():
     """The shortcut imports its sets from claims.py so it cannot drift from the rules it skips."""
     from scope_recall.core import claims
 
-    assert claims._VALUE_FREE_KINDS == frozenset({"procedure", "intention", "alias"})
-    assert set(claims._AUTHORITY_ORIGINS) == {"human_direct", "tool_observation", "external_document"}
-    assert {"preference", "constraint", "decision"} <= claims._HUMAN_ONLY_KINDS
+    assert claims.VALUE_FREE_KINDS == frozenset({"procedure", "intention", "alias"})
+    assert set(claims.AUTHORITY_ORIGINS) == {"human_direct", "tool_observation", "external_document"}
+    assert {"preference", "constraint", "decision"} <= claims.HUMAN_ONLY_KINDS
 
 
 def test_an_imported_source_speaks_with_its_verified_origin(app):

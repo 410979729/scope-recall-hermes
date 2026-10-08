@@ -9,7 +9,7 @@ from pathlib import Path
 
 from ..core.file_lock import advisory_file_lock
 from .scheduling import SupervisorControl, next_wake, read_control
-from .worker_entry import _atomic_metadata, credential_environment, load_config
+from .worker_entry import write_worker_metadata, credential_environment, load_config
 from .worker_launch import launch_worker
 
 
@@ -36,7 +36,7 @@ def resume_once(config_path, *, launcher=launch_worker, now=None):
         return dict(status="running", launched=False)
     environment = credential_environment(config, control.get("env_file"))
     worker = launcher(path, python_executable=control["python_executable"], detach_output=True, environment=environment)
-    _atomic_metadata(
+    write_worker_metadata(
         config.binding.data_directory / "runtime-autostart-status.json",
         dict(installation_id=config.binding.installation_id, last_wake_at=now.isoformat(), last_worker_pid=worker.pid),
     )

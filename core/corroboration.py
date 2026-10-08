@@ -39,7 +39,7 @@ that), or writing anything (``core/mutate.apply_claim`` owns the version).
 
 from __future__ import annotations
 
-from .claims import _principal_ref, effective_origin
+from .claims import effective_origin, verified_human_ref
 
 #: Independent first-hand statements required before a refusal is overturned.
 #: Two is the ordinary standard for "not just one person's word"; a higher bar
@@ -108,7 +108,7 @@ def witness_occasions(roots) -> set[tuple[str | None, str]]:
     speaker in two sessions is too.  The same speaker twice in one session is
     one.
     """
-    return {(_principal_ref(root), root.session_id) for root in _first_hand(roots)}
+    return {(verified_human_ref(root), root.session_id) for root in _first_hand(roots)}
 
 
 def corroboration_promotes(

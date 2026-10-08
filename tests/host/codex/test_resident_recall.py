@@ -303,7 +303,7 @@ def test_a_client_starts_a_resident_server_once_and_not_while_one_runs(entry, mo
     from scope_recall.runtime import process_probe
 
     started = []
-    monkeypatch.setattr(local_endpoint, "_start_apart", lambda command, cwd: (started.append(command), True)[1])
+    monkeypatch.setattr(local_endpoint, "start_detached", lambda command, cwd: (started.append(command), True)[1])
     env_file = tmp_path / "TEST.env"
     assert local_endpoint.ensure_resident(entry, "workbuddy", minutes=0) == "off"
     assert local_endpoint.ensure_resident(entry, "workbuddy", minutes=120, env_file=env_file) == "started"
@@ -344,7 +344,7 @@ def test_a_stamp_from_the_future_is_stale_and_of_two_starters_at_once_one_starts
     """A stamp written before the clock was set back held off every start until the clock passed it.  Two starters
     that both looked before either wrote both started one (review of 3.6.0rc1)."""
     started = []
-    monkeypatch.setattr(local_endpoint, "_start_apart", lambda command, cwd: (started.append(command), True)[1])
+    monkeypatch.setattr(local_endpoint, "start_detached", lambda command, cwd: (started.append(command), True)[1])
     folder = local_endpoint.endpoints(entry)
     folder.mkdir(parents=True, exist_ok=True)
     stamp = folder / "resident-workbuddy.start"
@@ -375,10 +375,10 @@ def test_a_resident_server_of_another_version_or_client_is_not_this_one(entry, m
     _name(entry, pid=44, port=4104, resident=True, version="0.0.1")
     _name(entry, pid=45, port=4105, resident=True, host="codex")
     _name(entry, pid=46, port=4106, resident=False)
-    assert local_endpoint._residents(entry, "workbuddy") == []
+    assert local_endpoint.live_residents(entry, "workbuddy") == []
     assert [
         (int(info["pid"]), proven)
-        for _paths, info, proven in local_endpoint._residents(entry, "workbuddy", any_version=True)
+        for _paths, info, proven in local_endpoint.live_residents(entry, "workbuddy", any_version=True)
     ] == [(44, True)]
     killed = []
     monkeypatch.setattr(os, "kill", lambda pid, sig: killed.append(pid))
@@ -397,7 +397,7 @@ def test_a_name_whose_process_id_another_process_took_is_neither_counted_nor_sto
     name = _name(entry, pid=47, port=4107, resident=True)
     killed = []
     monkeypatch.setattr(os, "kill", lambda pid, sig: killed.append(pid))
-    assert local_endpoint._residents(entry, "workbuddy", any_version=True) == []
+    assert local_endpoint.live_residents(entry, "workbuddy", any_version=True) == []
     assert not name.exists(), "its name is removed"
     _name(entry, pid=47, port=4107, resident=True)
     assert local_endpoint.stop_residents(entry, "workbuddy") == [] and killed == []
@@ -439,7 +439,7 @@ def test_a_resident_server_breaks_away_from_the_client_s_job_where_it_may(monkey
         return object()
 
     monkeypatch.setattr(subprocess, "Popen", popen)
-    assert local_endpoint._start_apart(["TEST"], cwd=tmp_path)
+    assert local_endpoint.start_detached(["TEST"], cwd=tmp_path)
     assert len(seen) == 2
     assert seen[0] & subprocess.CREATE_BREAKAWAY_FROM_JOB and not seen[1] & subprocess.CREATE_BREAKAWAY_FROM_JOB
     assert all(flags & subprocess.CREATE_NO_WINDOW and flags & subprocess.CREATE_NEW_PROCESS_GROUP for flags in seen)
@@ -458,16 +458,18 @@ def test_a_start_that_fails_otherwise_than_by_the_os_is_tried_once_more_or_repor
 
     monkeypatch.setattr(subprocess, "Popen", popen)
     if os.name == "nt":
-        assert local_endpoint._start_apart(["TEST"], cwd=tmp_path) and len(seen) == 2
+        assert local_endpoint.start_detached(["TEST"], cwd=tmp_path) and len(seen) == 2
     else:
-        assert not local_endpoint._start_apart(["TEST"], cwd=tmp_path) and len(seen) == 1
+        assert not local_endpoint.start_detached(["TEST"], cwd=tmp_path) and len(seen) == 1
 
 
 def test_a_detached_start_starts_the_server_from_a_process_that_ends_at_once(entry, monkeypatch, tmp_path):
     """Started by the MCP server, which lives as long as the conversation, the server was its child, and ending the
     conversation's process tree ended it (measured 2026-10-03).  ``--detach`` starts it from a process that ends."""
     started = []
-    monkeypatch.setattr(local_endpoint, "_start_apart", lambda command, cwd: (started.append((command, cwd)), True)[1])
+    monkeypatch.setattr(
+        local_endpoint, "start_detached", lambda command, cwd: (started.append((command, cwd)), True)[1]
+    )
     env_file = tmp_path / "TEST.env"
     assert (
         resident_entry.main(["--home", str(entry), "--host", "workbuddy", "--detach", "--env-file", str(env_file)]) == 0
@@ -626,7 +628,7 @@ def test_a_prompt_hook_replaces_a_resident_server_of_another_version_and_an_mcp_
     from scope_recall.runtime.process_probe import probe_process
 
     started = []
-    monkeypatch.setattr(local_endpoint, "_start_apart", lambda command, cwd: (started.append(command), True)[1])
+    monkeypatch.setattr(local_endpoint, "start_detached", lambda command, cwd: (started.append(command), True)[1])
     holder, pid = _lock_holder(entry, tmp_path / "TEST-holder-pid")
     try:
         _name(entry, pid=pid, port=4114, resident=True, start=probe_process(pid).start_token, version="3.6.0rc0")
@@ -937,7 +939,7 @@ def test_two_real_resident_servers_settle_on_one_across_processes_and_a_stop_end
     folder.mkdir(parents=True, exist_ok=True)
     try:
         for _ in range(2):
-            assert local_endpoint._start_apart(
+            assert local_endpoint.start_detached(
                 [
                     sys.executable,
                     "-B",
@@ -980,7 +982,7 @@ def test_a_hook_that_starts_a_resident_server_closes_its_output_at_once(entry, t
         "from pathlib import Path\n"
         "from scope_recall.adapters.clients import local_endpoint\n"
         "sleeper = ('import os, sys, time; open(sys.argv[1], \"w\").write(str(os.getpid())); time.sleep(30)')\n"
-        "local_endpoint._start_apart([sys.executable, '-c', sleeper, sys.argv[2]], cwd=Path(sys.argv[1]))\n"
+        "local_endpoint.start_detached([sys.executable, '-c', sleeper, sys.argv[2]], cwd=Path(sys.argv[1]))\n"
         "sys.stdout.write('{}')\n"
     )
     started = time.monotonic()
@@ -1045,7 +1047,7 @@ def test_a_start_waits_for_another_starter_s_look_at_the_stamp(entry, monkeypatc
     from scope_recall.core.file_lock import advisory_file_lock
 
     started = []
-    monkeypatch.setattr(local_endpoint, "_start_apart", lambda command, cwd: (started.append(command), True)[1])
+    monkeypatch.setattr(local_endpoint, "start_detached", lambda command, cwd: (started.append(command), True)[1])
     folder = local_endpoint.endpoints(entry)
     folder.mkdir(parents=True, exist_ok=True)
     looking, done = threading.Event(), threading.Event()
@@ -1119,7 +1121,7 @@ def test_no_resident_server_is_started_while_the_package_is_being_replaced(entry
     from scope_recall.core.file_lock import advisory_file_lock
 
     started = []
-    monkeypatch.setattr(local_endpoint, "_start_apart", lambda command, cwd: (started.append(command), True)[1])
+    monkeypatch.setattr(local_endpoint, "start_detached", lambda command, cwd: (started.append(command), True)[1])
     monkeypatch.setattr(sys, "prefix", str(tmp_path))  # the venv package-upgrade locks
     upgrading, done = threading.Event(), threading.Event()
 
@@ -1156,7 +1158,7 @@ def test_a_record_whose_process_cannot_be_opened_is_another_s_and_removed(entry,
     record.write_text(
         json.dumps({"host": "workbuddy", "pid": 4343, "start": "TEST-start", "version": __version__}), encoding="utf-8"
     )
-    assert local_endpoint._residents(entry, "workbuddy", any_version=True) == []
+    assert local_endpoint.live_residents(entry, "workbuddy", any_version=True) == []
     assert not record.exists()
 
 
@@ -1194,7 +1196,7 @@ def test_a_server_of_another_version_the_hook_cannot_end_is_said_unstoppable_and
     from scope_recall.runtime.process_probe import probe_process
 
     started = []
-    monkeypatch.setattr(local_endpoint, "_start_apart", lambda command, cwd: (started.append(command), True)[1])
+    monkeypatch.setattr(local_endpoint, "start_detached", lambda command, cwd: (started.append(command), True)[1])
     holder, pid = _lock_holder(entry, tmp_path / "TEST-holder-pid")
     try:
         _name(entry, pid=pid, port=4115, resident=True, start=probe_process(pid).start_token, version="3.6.0rc0")
@@ -1229,7 +1231,7 @@ def test_a_server_of_another_version_whose_identity_cannot_be_proven_is_neither_
         start_token = None
 
     started = []
-    monkeypatch.setattr(local_endpoint, "_start_apart", lambda command, cwd: (started.append(command), True)[1])
+    monkeypatch.setattr(local_endpoint, "start_detached", lambda command, cwd: (started.append(command), True)[1])
     holder, pid = _lock_holder(entry, tmp_path / "TEST-holder-pid")
     try:
         monkeypatch.setattr(process_probe, "probe_process", lambda pid: _LiveNoStart())
@@ -1251,7 +1253,7 @@ def test_hooks_of_two_versions_switch_an_entry_s_server_at_most_once_a_minute(en
     from scope_recall.runtime.process_probe import probe_process
 
     started = []
-    monkeypatch.setattr(local_endpoint, "_start_apart", lambda command, cwd: (started.append(command), True)[1])
+    monkeypatch.setattr(local_endpoint, "start_detached", lambda command, cwd: (started.append(command), True)[1])
     switched = local_endpoint.endpoints(entry) / "resident-workbuddy.replaced"
     for index, expected in enumerate(("replaced:3.6.0rc0", "running:3.6.0rc0", "replaced:3.6.0rc0")):
         if index == 2:
@@ -1302,7 +1304,7 @@ def test_a_server_does_not_start_while_its_package_is_being_replaced(entry, monk
     """Launched just before ``package-upgrade`` took its lock, a server still imported during the replacement (review 3
     of 3.6.0rc1)."""
     _runtime_config(entry)
-    monkeypatch.setattr(resident_entry, "_upgrading", lambda: True)
+    monkeypatch.setattr(resident_entry, "package_upgrading", lambda: True)
     started = time.monotonic()
     assert resident_entry.main(["--home", str(entry), "--host", "workbuddy", "--idle-seconds", "60"]) == 0
     assert time.monotonic() - started < 5

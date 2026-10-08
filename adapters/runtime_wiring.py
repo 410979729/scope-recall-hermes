@@ -164,7 +164,7 @@ def _basic_core(expected_binding: InstanceBinding, core: MemoryCore | None, cloc
     return MemoryCore(CoreConfig(expected_binding), clock=clock)
 
 
-def _strict_hook_budget(value: object) -> float:
+def strict_hook_budget(value: object) -> float:
     if type(value) not in (int, float):
         raise ValueError("hook_processing_seconds")
     parsed = float(value)
@@ -192,7 +192,7 @@ class TrustedHostRuntime:
     _last_worker_launch: float = 0.0
 
     def __post_init__(self) -> None:
-        self._hook_processing_seconds = _strict_hook_budget(self._hook_processing_seconds)
+        self._hook_processing_seconds = strict_hook_budget(self._hook_processing_seconds)
 
     @property
     def configured(self) -> bool:
@@ -207,7 +207,7 @@ class TrustedHostRuntime:
         """Return the budget from the verified runtime, or the safe default."""
         runtime = self._runtime
         value = runtime.config.hook_processing_seconds if runtime is not None else self._hook_processing_seconds
-        value = _strict_hook_budget(value)
+        value = strict_hook_budget(value)
         auto = getattr(self.core.config, "auto_recall_seconds", 5.0)
         if type(auto) not in (int, float) or not math.isfinite(auto) or not 0 < auto <= 5.0:
             raise ValueError("auto_recall_seconds")

@@ -13,7 +13,7 @@ import unicodedata
 
 from ..contracts import ContractError
 from .embedding_budget import bounded_embedding_text
-from .events import _CJK, lexical_terms, query_terms, version_suffixes
+from .events import CJK_RUN, lexical_terms, query_terms, version_suffixes
 from .retrieval import CandidateRef, SearchContext
 
 
@@ -559,7 +559,7 @@ def synonym_expansions(query: str) -> dict[str, str]:
     """
     terms = frozenset(meaningful_query_terms(query))
     expansions: dict[str, str] = {}
-    for run in _CJK.findall(unicodedata.normalize("NFKC", query).casefold()):
+    for run in CJK_RUN.findall(unicodedata.normalize("NFKC", query).casefold()):
         for start in range(len(run) - 1):
             for other in _SYNONYMS.get(run[start : start + 2], ()):
                 variant = run[:start] + other + run[start + 2 :]

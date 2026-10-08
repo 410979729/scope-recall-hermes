@@ -10,6 +10,7 @@ import json
 import re
 
 from ..contracts import Basis, ClaimProposal, ContractError, Origin, SourcePrincipal
+from .candidate_lifecycle import SELF_SUBJECTS
 from .fact_actions import ClaimDraft, EvidenceReference
 from .fact_evidence import evidence_supports_claim, evidence_supports_relation
 from .fact_temporal_semantics import classify_durable_state_clause
@@ -130,7 +131,6 @@ _COMPLETION = re.compile(r"已经完成|已完成|检查完成|完成了|\b(?:co
 _CANCELLATION = re.compile(r"取消|撤销|作废|\b(?:cancel|revoke|withdraw)\b", re.I)
 _NEGATED_COMPLETION = re.compile(r"未完成|没[有]?完成|尚未完成|提醒|\b(?:not done|not completed|remind)\b", re.I)
 _NEGATION = re.compile(r"不是|并非|没有|未曾|不喜欢|讨厌|\b(?:not|never|dislike)\b", re.I)
-_SELF_SUBJECTS = frozenset({"user", "current_user", "用户", "我"})
 
 
 def evidence_refs(proposal: ClaimProposal) -> tuple[str, ...]:
@@ -144,7 +144,7 @@ def evidence_refs(proposal: ClaimProposal) -> tuple[str, ...]:
     return tuple(dict.fromkeys(refs))
 
 
-def _principal_ref(root: RootEvidence) -> str | None:
+def verified_human_ref(root: RootEvidence) -> str | None:
     principal = root.source_principal
     if not isinstance(principal, dict):
         return None
@@ -177,7 +177,7 @@ def bind_claim_subject(
     authority key. Unresolved sources receive a source-specific non-authority
     slot so different speakers in one shared scope cannot collapse together.
     """
-    if proposal["subject"].casefold() not in _SELF_SUBJECTS:
+    if proposal["subject"].casefold() not in SELF_SUBJECTS:
         return proposal, False, None
     relevant = tuple(
         root
@@ -203,7 +203,7 @@ def bind_claim_subject(
     ):
         bound["subject"] = _unresolved_subject(proposal, roots)
         return bound, False, "subject_not_bound"
-    principals = tuple(_principal_ref(root) for root in relevant)
+    principals = tuple(verified_human_ref(root) for root in relevant)
     if any(principal is None for principal in principals):
         bound["subject"] = _unresolved_subject(proposal, roots)
         return bound, False, "source_identity_unresolved"
@@ -353,11 +353,11 @@ def assertion_clause(content: str, quote: str) -> str:
 
 
 _UNASSERTED_STATEMENTS = frozenset({"request", "proposal", "hypothetical", "quotation", "fictional", "unknown"})
-_HUMAN_ONLY_KINDS = frozenset({"preference", "constraint", "decision", "intention", "alias"})
+HUMAN_ONLY_KINDS = frozenset({"preference", "constraint", "decision", "intention", "alias"})
 #: Origins a cited root may lend authority from; ``_authority`` needs one of them.
-_AUTHORITY_ORIGINS = ("human_direct", "tool_observation", "external_document")
+AUTHORITY_ORIGINS = ("human_direct", "tool_observation", "external_document")
 #: Kinds proved by something other than the value inside a quote (``_value_preserved``).
-_VALUE_FREE_KINDS = frozenset({"procedure", "intention", "alias"})
+VALUE_FREE_KINDS = frozenset({"procedure", "intention", "alias"})
 _POLARITY_KINDS = frozenset({"fact", "preference", "constraint", "decision"})
 
 
@@ -414,7 +414,7 @@ def _cite(
     narrowed = tuple(
         replace(r, content="\n".join(evidence_context(r.content, span["quote"]) for span in cited(r))) for r in roots
     )
-    by_origin = {origin: tuple(r for r in narrowed if effective_origin(r) == origin) for origin in _AUTHORITY_ORIGINS}
+    by_origin = {origin: tuple(r for r in narrowed if effective_origin(r) == origin) for origin in AUTHORITY_ORIGINS}
     return _Cited(
         proposal,
         narrowed,
@@ -469,7 +469,7 @@ def _scope_preserved(c: _Cited) -> str | None:
 def _authority(c: _Cited) -> str | None:
     if not (c.human or c.observed or c.documents):
         return "no_independent_authority"
-    if c.kind in _HUMAN_ONLY_KINDS and not c.human:
+    if c.kind in HUMAN_ONLY_KINDS and not c.human:
         return "requires_human_source"
     if any(not grounded_time(c.proposal[field], c.roots) for field in ("valid_from", "valid_to")):
         return "time_not_grounded"
@@ -482,7 +482,7 @@ def _subject_binds(c: _Cited) -> str | None:
     if c.subject_bound or c.kind == "alias":
         return None
     subject, kind = c.subject, c.kind
-    self_bound = subject.casefold() in _SELF_SUBJECTS and self_report_bound(
+    self_bound = subject.casefold() in SELF_SUBJECTS and self_report_bound(
         c.source_text, c.proposal["value_text"], kind=kind
     )
     if subject in c.quoted and not bound_literal(c.quoted, subject):
@@ -562,7 +562,7 @@ def _fact_entailed(c: _Cited) -> str | None:
                 "direct_user" if effective_origin(root) == "human_direct" else "external_record",
                 root.ref,
                 evidence_context(root.content, span["quote"]),
-                c.subject if c.subject_bound and _principal_ref(root) == c.subject else "",
+                c.subject if c.subject_bound and verified_human_ref(root) == c.subject else "",
             )
             for root in (*c.human, *c.observed, *c.documents)
             for span in c.proposal["evidence_spans"]
@@ -579,7 +579,7 @@ def _fact_entailed(c: _Cited) -> str | None:
 
 def _value_preserved(c: _Cited) -> str | None:
     value, conditions = c.proposal["value_text"], c.proposal["conditions"]
-    if c.kind not in _VALUE_FREE_KINDS and value not in c.quoted:
+    if c.kind not in VALUE_FREE_KINDS and value not in c.quoted:
         return "value_not_supported_by_quote"
     if c.kind in _POLARITY_KINDS and not preserves_qualifiers(
         c.source_text, value, conditions=conditions, polarity_only=True

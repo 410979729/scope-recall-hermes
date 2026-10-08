@@ -34,7 +34,7 @@ def main(argv: list[str] | None = None) -> int:
     if not home.is_absolute():
         print(json.dumps({"status": "error", "code": "home_not_absolute"}))
         return 2
-    from ..adapters.clients.local_endpoint import _residents, resident_minutes, resident_running, stop_residents
+    from ..adapters.clients.local_endpoint import live_residents, resident_minutes, resident_running, stop_residents
 
     stopped = stop_residents(home, args.host) if args.action == "stop" else []
     # A stopped process lets go of the entry's lock as it ends: what is said after, and an upgrade after that, waits
@@ -44,7 +44,7 @@ def main(argv: list[str] | None = None) -> int:
         time.sleep(0.1)
     servers = [
         {"pid": int(info["pid"]), "version": info.get("version"), "verified": proven}
-        for _paths, info, proven in _residents(home, args.host, any_version=True)
+        for _paths, info, proven in live_residents(home, args.host, any_version=True)
     ]
     running = resident_running(home, args.host)
     said = {

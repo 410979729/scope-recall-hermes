@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 from ..contracts import ClaimProposal, ContractError
 from . import lineage
 from .claims import ClaimVersion, Qualification, RootEvidence, canonical_time, claim_slot, evidence_refs
-from .claim_normalization import _PROJECT, normalize_frame
+from .claim_normalization import PROJECT_TAG, normalize_frame
 from .visibility import allowed, allowed_refs
 
 if TYPE_CHECKING:
@@ -203,7 +203,7 @@ class Claims:
             # uniquely equivalent, freshly grounded slot; similarity is never
             # enough to merge identities.
 
-            projects = [p for c in proposal["conditions"] for p in _PROJECT.findall(c)]
+            projects = [p for c in proposal["conditions"] for p in PROJECT_TAG.findall(c)]
             if len(set(projects)) != 1:
                 return ()
             candidates = (

@@ -177,7 +177,7 @@ def _doctor_instance(tmp_path, monkeypatch):
     """A doctor pointed at a real store, as the diagnostics tests do it."""
     app, ctx = app_at(tmp_path)
     (ctx.binding.data_directory / "installation.json").write_text("{}", encoding="utf-8")
-    monkeypatch.setattr(doctor, "_load_binding", lambda *a: (ctx.binding, ctx.binding.data_directory))
+    monkeypatch.setattr(doctor, "load_binding", lambda *a: (ctx.binding, ctx.binding.data_directory))
     monkeypatch.setattr(doctor, "_hermes_data_dir", lambda root: ctx.binding.data_directory)
     return app, ctx
 

@@ -418,7 +418,7 @@
   },
   "adapters/hermes/audiences.py": {
    "PLR0913": {
-    "_audience_entry": 11
+    "audience_entry": 11
    },
    "UP035": 1
   },
@@ -913,19 +913,19 @@
   "core/worker_candidates.py": {
    "BLE001": 1,
    "C901": {
-    "_process_candidate_evaluation": 25
+    "process_candidate_evaluation": 25
    },
    "PLR0911": {
-    "_process_candidate_evaluation": 15
+    "process_candidate_evaluation": 15
    },
    "PLR0912": {
-    "_process_candidate_evaluation": 26
+    "process_candidate_evaluation": 26
    },
    "PLR0913": {
     "_candidate_failure": 11
    },
    "PLR0915": {
-    "_process_candidate_evaluation": 76
+    "process_candidate_evaluation": 76
    }
   },
   "core/worker_consolidation.py": {

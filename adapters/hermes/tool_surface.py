@@ -193,7 +193,7 @@ _TOOL_SCHEMAS: tuple[dict[str, Any], ...] = (
 )
 #: Every schema by tool name; the strict boundary reads allowed/required from here.
 _SCHEMAS: dict[str, dict[str, Any]] = {schema["name"]: schema for schema in (*_TOOL_SCHEMAS, trace_tool_schema())}
-_TOOL_NAMES = frozenset(_SCHEMAS)
+TOOL_NAMES = frozenset(_SCHEMAS)
 
 
 def _dumps(payload: dict[str, Any]) -> str:

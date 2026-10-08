@@ -15,9 +15,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from ..adapters.clients.remote_client import HOOK_TIMEOUTS, RemoteClientError, _absolute, load_client_config
+from ..adapters.clients.remote_client import HOOK_TIMEOUTS, RemoteClientError, absolute_path, load_client_config
 from . import install_workbuddy as workbuddy
-from .install_claude_code import _SHELL_WORD
+from .install_claude_code import SHELL_WORD
 from .install_common import SKILLS, InstallError, manifest_version
 
 
@@ -48,7 +48,7 @@ def plugin_files(config: dict[str, Any], plugin_dir: Path) -> dict[Path, str]:
     skill = SKILLS["scope-recall-memory"].read_text(encoding="utf-8")
     dump = lambda value: json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True) + "\n"  # noqa: E731
     if host == "claude-code":
-        unsafe = [part for part in argv if not _SHELL_WORD.fullmatch(part)]
+        unsafe = [part for part in argv if not SHELL_WORD.fullmatch(part)]
         if unsafe:
             raise RemoteClientError(
                 "Claude Code runs a hook through a shell: keep the interpreter and client.json "
@@ -209,8 +209,8 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--plugin-dir", required=True)
     parsed = parser.parse_args(argv)
     try:
-        config = load_client_config(_absolute(parsed.config, "config"))
-        print(json.dumps(install(config, _absolute(parsed.plugin_dir, "plugin_dir")), ensure_ascii=False))
+        config = load_client_config(absolute_path(parsed.config, "config"))
+        print(json.dumps(install(config, absolute_path(parsed.plugin_dir, "plugin_dir")), ensure_ascii=False))
         return 0
     except RemoteClientError as exc:
         raise SystemExit(str(exc)) from None

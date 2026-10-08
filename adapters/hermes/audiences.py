@@ -140,7 +140,7 @@ def normalize_retained_scope_ids(values: object) -> frozenset[str]:
     return frozenset(_scope_ids(values, field="retained_scope_ids"))
 
 
-def _audience_entry(
+def audience_entry(
     *,
     platform: str,
     user_id: str,
@@ -192,7 +192,7 @@ def _audience_entry(
     }
 
 
-def _normalize_audience_entry(value: object) -> dict[str, Any]:
+def normalize_audience_entry(value: object) -> dict[str, Any]:
     """Reject pre-upgrade or incomplete rows rather than inferring new grants."""
     required = {*EXACT_FIELDS, "allowed_scope_ids", "writable_scope_ids", "capture_scope_id"}
     if not isinstance(value, dict) or not required <= value.keys():
@@ -201,4 +201,4 @@ def _normalize_audience_entry(value: object) -> dict[str, Any]:
         raise HermesIdentityError("unsupported audience fields")
     if not isinstance(value["allowed_scope_ids"], list) or not isinstance(value["writable_scope_ids"], list):
         raise HermesIdentityError("audience read/write scope sets must be explicit lists")
-    return _audience_entry(**{key: value[key] for key in required}, kind=value.get("kind", "conversation"))
+    return audience_entry(**{key: value[key] for key in required}, kind=value.get("kind", "conversation"))

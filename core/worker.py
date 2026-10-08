@@ -14,7 +14,7 @@ from .candidate_lifecycle import PROCESS_BATCH_LIMIT, CandidateEvaluator
 from .consolidate import candidate_evaluation_messages, consolidation_messages
 from .storage import SQLiteStorage
 from .work_storage import CAPACITY_REFUSALS, MAX_RECOVERY_PAGE
-from .worker_candidates import _process_candidate_evaluation
+from .worker_candidates import process_candidate_evaluation
 from .worker_consolidation import (
     ConsolidationModel,
     build_consolidation_model,
@@ -389,7 +389,7 @@ def drain_worker(
     processors = {
         "consolidate": partial(process_consolidate, model=consolidation),
         "embed": partial(process_embed, embed=embed),
-        "evaluate_candidate": partial(_process_candidate_evaluation, evaluator=candidate),
+        "evaluate_candidate": partial(process_candidate_evaluation, evaluator=candidate),
         "rebuild_projection": process_rebuild_projection,
         "purge": partial(process_purge, purge=purge),
     }

@@ -82,7 +82,7 @@ def stored_content_digest(content: str) -> str:
     return hashlib.sha256(sanitize_source_capture_text(content)[:MAX_SEGMENT_CHARS].encode("utf-8")).hexdigest()
 
 
-_CJK = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]+")
+CJK_RUN = re.compile(r"[\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff]+")
 _IDENTIFIER = re.compile(r"[a-z0-9]+(?:[._/-][a-z0-9]+)*")
 _FILENAME = re.compile(r"(?<![\w-])[\w-]+(?:\.[\w-]+)+", re.UNICODE)
 #: A dotted release version with a pre-release or build suffix, after
@@ -137,7 +137,7 @@ def lexical_terms(text: str) -> tuple[str, ...]:
     terms = set(_IDENTIFIER.findall(normalized)) | set(_FILENAME.findall(normalized))
     terms.update(part for token in tuple(terms) for part in token.split("/"))
     terms.update(_VERSION_SUFFIX.findall(normalized))
-    for run in _CJK.findall(normalized):
+    for run in CJK_RUN.findall(normalized):
         if len(run) == 1:
             terms.add(run)
         terms.update(run[i : i + 2] for i in range(len(run) - 1))

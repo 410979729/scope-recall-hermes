@@ -19,7 +19,13 @@ from ..core.storage import SQLiteStorage
 from ..core.failure_retry import AUTO_RECOVERABLE_ERRORS
 from ..core.work_storage import AUTO_RECOVERABLE_WORK_TYPES
 from ..core.file_lock import advisory_file_lock
-from .worker_entry import DAILY_COUNTER_MAX, _atomic_metadata, _metadata_path, _read_metadata, load_config
+from .worker_entry import (
+    DAILY_COUNTER_MAX,
+    write_worker_metadata,
+    worker_metadata_path,
+    read_worker_metadata,
+    load_config,
+)
 from .model_budget import provider_holds
 
 
@@ -71,7 +77,7 @@ class WakePlan:
     failed: int = 0
 
 
-def _capable_work_types(config) -> set[str]:
+def capable_work_types(config) -> set[str]:
     aux = config.auxiliary
     capable = {"purge", "rebuild_projection"}
     # A pass uses a route only with its budget ledger (``runtime/auxiliary``).
@@ -84,7 +90,7 @@ def _capable_work_types(config) -> set[str]:
 
 
 def _daily_items_used(config, now: datetime) -> int:
-    day = _read_metadata(_metadata_path(config, "runtime-worker-day.json"))
+    day = read_worker_metadata(worker_metadata_path(config, "runtime-worker-day.json"))
     if day.get("installation_id") not in (None, config.binding.installation_id):
         raise ValueError("supervisor_budget_binding")
     used = day.get("used", 0) if day.get("day") == _stamp(now)[:10] else 0
@@ -139,7 +145,7 @@ def next_wake(config, *, now: datetime | None = None, unavailable_until=None) ->
         held = datetime.fromtimestamp(until, timezone.utc)
         if work_type not in unavailable_until or unavailable_until[work_type] < held:
             unavailable_until[work_type] = held
-    capable = _capable_work_types(config)
+    capable = capable_work_types(config)
     spent = _daily_budget_spent(config, _daily_items_used(config, now))
     next_day = (now + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
 
@@ -270,12 +276,12 @@ class SupervisorControl:
             sorted(config.allowed_scope_ids),
         ]
         key = hashlib.sha256(json.dumps(material, separators=(",", ":")).encode()).hexdigest()[:24]
-        self.path = _metadata_path(config, f"runtime-supervisor-{key}.json")
-        self.control_lock = _metadata_path(config, f"runtime-supervisor-{key}.control.lock")
-        self.owner_lock = _metadata_path(config, f"runtime-supervisor-{key}.owner.lock")
+        self.path = worker_metadata_path(config, f"runtime-supervisor-{key}.json")
+        self.control_lock = worker_metadata_path(config, f"runtime-supervisor-{key}.control.lock")
+        self.owner_lock = worker_metadata_path(config, f"runtime-supervisor-{key}.owner.lock")
 
     def read(self):
-        value = _read_metadata(self.path)
+        value = read_worker_metadata(self.path)
         if value.get("installation_id") not in (None, self.config.binding.installation_id):
             raise ValueError("supervisor_binding_mismatch")
         revision = value.get("wake_revision", 0)
@@ -289,13 +295,13 @@ class SupervisorControl:
             value.update(
                 installation_id=self.config.binding.installation_id, wake_revision=value.get("wake_revision", 0) + 1
             )
-            _atomic_metadata(self.path, value)
+            write_worker_metadata(self.path, value)
 
     def update(self, **fields):
         with advisory_file_lock(self.control_lock, timeout_seconds=1):
             value = self.read()
             value.update(fields)
-            _atomic_metadata(self.path, value)
+            write_worker_metadata(self.path, value)
             return value
 
     def close_if_unchanged(self, revision, **fields):
@@ -304,7 +310,7 @@ class SupervisorControl:
             if value.get("wake_revision", 0) != revision:
                 return False
             value.update(accepting=False, **fields)
-            _atomic_metadata(self.path, value)
+            write_worker_metadata(self.path, value)
             return True
 
 

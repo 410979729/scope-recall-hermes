@@ -86,7 +86,7 @@ class RemoteClientError(ValueError):
     pass
 
 
-def _absolute(value: object, field: str) -> Path:
+def absolute_path(value: object, field: str) -> Path:
     if type(value) is not str or not value.strip():
         raise RemoteClientError(f"{field} must be an absolute path")
     path = Path(value).expanduser()
@@ -112,8 +112,8 @@ def load_client_config(path: Path) -> dict[str, Any]:
     return {
         "url": url.rstrip("/"),
         "host": raw["host"],
-        "token_file": _absolute(raw.get("token_file"), "token_file"),
-        "state_dir": _absolute(raw.get("state_dir"), "state_dir"),
+        "token_file": absolute_path(raw.get("token_file"), "token_file"),
+        "state_dir": absolute_path(raw.get("state_dir"), "state_dir"),
         "config": path,
     }
 
@@ -454,7 +454,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--config", required=True)
     parsed = parser.parse_args(args)
     try:
-        config = load_client_config(_absolute(parsed.config, "config"))
+        config = load_client_config(absolute_path(parsed.config, "config"))
         if command == "token":
             print(json.dumps({"token_sha256": make_token(config)}))
             return 0

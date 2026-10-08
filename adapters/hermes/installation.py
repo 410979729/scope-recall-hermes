@@ -21,8 +21,8 @@ from .audiences import (
     EXACT_FIELDS,
     LOCAL_USER_ID,
     HermesIdentityError,
-    _audience_entry,
-    _normalize_audience_entry,
+    audience_entry,
+    normalize_audience_entry,
     is_archive_scope,
     normalize_local_platforms,
     normalize_owner_logins,
@@ -232,7 +232,7 @@ def _build_audience_scope_ids(
 
 def _grant(scope_id: str, *, kind: str, chat_type: str, chat_id: str, route: dict[str, str]) -> dict[str, Any]:
     """One exact audience row whose read, write and capture grants are the same single scope."""
-    return _audience_entry(
+    return audience_entry(
         **route,
         chat_type=chat_type,
         chat_id=chat_id,
@@ -416,7 +416,7 @@ def build_installation_manifest(
     if audiences is not None:
         if project_id:
             raise HermesIdentityError("explicit audiences cannot be mixed with project convenience grants")
-        rows = [_normalize_audience_entry(item) for item in audiences]
+        rows = [normalize_audience_entry(item) for item in audiences]
         if not rows:
             raise HermesIdentityError("explicit audiences must not be empty")
     else:
@@ -551,7 +551,7 @@ def _audience_rows(raw: object) -> tuple[dict[str, Any], ...]:
             seen.append(scope_id)
         if type(item.get("capture_scope_id")) is not str:
             raise HermesIdentityError("audience capture_scope_id must be an explicit string")
-    return tuple(_normalize_audience_entry(item) for item in raw)
+    return tuple(normalize_audience_entry(item) for item in raw)
 
 
 def _archive_scope_list(raw: object) -> frozenset[str]:
@@ -997,7 +997,7 @@ def client_entry_record(
     """
     if host not in CLIENT_HOSTS:
         raise HermesIdentityError(f"a client entry's host is one of {', '.join(CLIENT_HOSTS)}")
-    row = _audience_entry(
+    row = audience_entry(
         platform=host,
         user_id=LOCAL_USER_ID,
         chat_type="private",

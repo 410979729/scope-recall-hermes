@@ -203,7 +203,7 @@ def _probe_python_package(python: Path) -> dict[str, Any]:
     return found
 
 
-def _load_binding(host: HostChoice, instance_root: Path):
+def load_binding(host: HostChoice, instance_root: Path):
     if host == "hermes":
         from scope_recall.adapters.hermes.installation import load_binding_for_home
 
@@ -216,14 +216,14 @@ def _load_binding(host: HostChoice, instance_root: Path):
     return config.to_binding(), config.data_directory
 
 
-def _journal_mode(db_path: Path) -> str | None:
+def read_journal_mode(db_path: Path) -> str | None:
     with suppress(sqlite3.Error, OSError, ValueError):
         with closing(sqlite3.connect(f"file:{db_path.as_posix()}?mode=ro", uri=True, timeout=5)) as db:
             return str(db.execute("PRAGMA journal_mode").fetchone()[0]).lower()
     return None
 
 
-def _schema_on_disk(db_path: Path) -> int | None:
+def schema_on_disk(db_path: Path) -> int | None:
     """The store's own schema stamp, read without opening it as a store."""
     with suppress(sqlite3.Error, OSError, ValueError):
         with closing(sqlite3.connect(f"file:{db_path.as_posix()}?mode=ro", uri=True, timeout=5)) as db:
@@ -231,7 +231,7 @@ def _schema_on_disk(db_path: Path) -> int | None:
     return None
 
 
-def _recorded_schema_under_stale_header(db_path: Path) -> int | None:
+def recorded_schema_under_stale_header(db_path: Path) -> int | None:
     """The schema the store records when its header was overwritten (``core.schema.stale_header_schema``)."""
     with suppress(sqlite3.Error, OSError, ValueError):
         with closing(sqlite3.connect(f"file:{db_path.as_posix()}?mode=ro", uri=True, timeout=5)) as db:
@@ -499,7 +499,7 @@ def _check_running_code(report: DoctorReport, data_directory: Path) -> None:
     _record(report, "running_code", "ok" if records else "no_records", str(len(records)))
 
 
-def _host_registration_status(host: str, instance: Path, python_executable: Path | None = None) -> str:
+def check_host_registration(host: str, instance: Path, python_executable: Path | None = None) -> str:
     """Whether the host can actually reach this provider.
 
     For Hermes, registration means the package exposes its memory-provider entry
@@ -544,7 +544,7 @@ def _host_registration_status(host: str, instance: Path, python_executable: Path
 
 
 def _check_host_registration(report: DoctorReport, instance: Path, python_executable: Path | None) -> None:
-    report.host_registration_status = _host_registration_status(report.host, instance, python_executable)
+    report.host_registration_status = check_host_registration(report.host, instance, python_executable)
     report.hook_trust_status = "pending" if report.host == "codex" else "unknown"
     _record(report, "host_registration", report.host_registration_status)
     if report.host_registration_status not in {"registered", "pending"}:
@@ -605,7 +605,7 @@ def _check_binding(report: DoctorReport, instance: Path):
         _record(report, "adapter_config", "missing")
         return None
     try:
-        binding, data_directory = _load_binding(report.host, instance)
+        binding, data_directory = load_binding(report.host, instance)
     except Exception as exc:  # noqa: BLE001 - a broken binding is a finding, not a crash.
         report.capability_gaps.append(f"binding_invalid:{type(exc).__name__}")
         _record(report, "adapter_binding", "invalid", type(exc).__name__)
@@ -690,9 +690,9 @@ def _check_storage(report: DoctorReport, binding, data_directory: Path) -> bool:
         report.capability_gaps.append("database_missing")
         _record(report, "database", "missing")
         return False
-    report.journal_mode = _journal_mode(data_directory / "memory.sqlite3")
+    report.journal_mode = read_journal_mode(data_directory / "memory.sqlite3")
     _record(report, "database", "ok", f"journal_mode={report.journal_mode}")
-    found = _schema_on_disk(data_directory / "memory.sqlite3")
+    found = schema_on_disk(data_directory / "memory.sqlite3")
     if found in UPGRADE_CHAIN:
         # Reported, never applied here: the doctor is read-only.
         report.schema_version = found
@@ -706,7 +706,7 @@ def _check_storage(report: DoctorReport, binding, data_directory: Path) -> bool:
             "upgrade-store or a Hermes session start)",
         )
         return False
-    recorded = _recorded_schema_under_stale_header(data_directory / "memory.sqlite3")
+    recorded = recorded_schema_under_stale_header(data_directory / "memory.sqlite3")
     if recorded is not None:
         # Every open fails closed on the header, so say why and what repairs it (#117).
         report.schema_version = found
@@ -1096,9 +1096,9 @@ def _check_unreached(report: DoctorReport, config) -> None:
     is named too, and the finding asks for attention rather than degrading the report.  The detail line counts; the
     scope ids, which carry chat and account ids, are only in ``unreached``.
     """
-    from ..runtime.scheduling import _capable_work_types
+    from ..runtime.scheduling import capable_work_types
 
-    capable = _capable_work_types(config) if config is not None else {"purge", "rebuild_projection"}
+    capable = capable_work_types(config) if config is not None else {"purge", "rebuild_projection"}
     if config is not None:
         capable -= set(provider_holds(config.auxiliary, now=datetime.now(timezone.utc).timestamp()))
     partitions: dict[tuple, dict[str, Any]] = {}

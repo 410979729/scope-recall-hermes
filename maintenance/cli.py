@@ -487,16 +487,16 @@ def _upgrade_store(args: argparse.Namespace) -> int:
     from scope_recall.core.storage import SQLiteStorage
     from scope_recall.core.writer_lease import TruthWriterBusyError
     from .backup import backup_sqlite
-    from .doctor import _journal_mode, _load_binding, _recorded_schema_under_stale_header, _schema_on_disk
+    from .doctor import read_journal_mode, load_binding, recorded_schema_under_stale_header, schema_on_disk
 
     instance = _path(args.instance_root, "instance_root")
-    binding, data_directory = _load_binding(args.host, instance)
+    binding, data_directory = load_binding(args.host, instance)
     database = data_directory / "memory.sqlite3"
-    before = _schema_on_disk(database)
-    recorded = _recorded_schema_under_stale_header(database)
+    before = schema_on_disk(database)
+    recorded = recorded_schema_under_stale_header(database)
     result: dict[str, Any] = {"schema_before": before, "schema_target": SCHEMA_VERSION}
     if recorded is None and before == SCHEMA_VERSION:
-        result.update(status="current", journal_mode=_journal_mode(database))
+        result.update(status="current", journal_mode=read_journal_mode(database))
         _emit(result)
         return 0
     if recorded is None and before not in UPGRADE_CHAIN:
@@ -544,7 +544,7 @@ def _upgrade_store(args: argparse.Namespace) -> int:
             "cause": "a 2.0 process opened this store after its migration; make sure none runs",
         }
         if recorded == SCHEMA_VERSION:
-            result.update(status="restamped", schema_after=SCHEMA_VERSION, journal_mode=_journal_mode(database))
+            result.update(status="restamped", schema_after=SCHEMA_VERSION, journal_mode=read_journal_mode(database))
             _report_other_tables(result, database)
             _emit(result)
             return 0
@@ -587,7 +587,7 @@ def _upgrade_store(args: argparse.Namespace) -> int:
         status="upgraded",
         schema_after=status.schema_version,
         seconds=round(time.monotonic() - started, 1),
-        journal_mode=_journal_mode(database),
+        journal_mode=read_journal_mode(database),
     )
     if recorded is not None:
         _report_other_tables(result, database)

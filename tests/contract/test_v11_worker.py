@@ -238,7 +238,7 @@ def test_bad_json_records_derivation_invalid_without_hiding_source(worker_app, m
     from scope_recall.maintenance import doctor
 
     (ctx.binding.data_directory / "installation.json").write_text("{}", encoding="utf-8")
-    monkeypatch.setattr(doctor, "_load_binding", lambda *args: (ctx.binding, ctx.binding.data_directory))
+    monkeypatch.setattr(doctor, "load_binding", lambda *args: (ctx.binding, ctx.binding.data_directory))
     monkeypatch.setattr(doctor, "_hermes_data_dir", lambda root: ctx.binding.data_directory)
     report = doctor.run_doctor(host="hermes", instance_root=ctx.binding.data_directory)
     assert report.needs_review_work == report.failed_work == 1

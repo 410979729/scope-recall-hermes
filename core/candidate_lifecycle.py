@@ -21,7 +21,8 @@ RULE_VERSION = "r1-candidate-v1"
 SOURCE_MATCH_LIMIT = 16
 PROCESS_BATCH_LIMIT = 8
 DORMANCY_DAYS = 30
-_SELF_SUBJECTS = frozenset({"user", "current_user", "用户", "我"})
+#: The words a proposal names its own speaker with.
+SELF_SUBJECTS = frozenset({"user", "current_user", "用户", "我"})
 #: Everything a name may be written with that does not change which name it is.
 _NOT_NAME = re.compile(r"[\s\"'`*_（）()【】\[\]「」“”‘’]+")
 
@@ -150,7 +151,7 @@ def candidate_subject_matches(
         return False
     principal_refs = _verified_human_principal_refs(sources)
     if expected in principal_refs:
-        return proposed_subject.casefold() in _SELF_SUBJECTS
+        return proposed_subject.casefold() in SELF_SUBJECTS
     return proposed_subject == expected
 
 
