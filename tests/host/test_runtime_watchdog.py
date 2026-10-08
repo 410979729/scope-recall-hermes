@@ -16,7 +16,7 @@ from scope_recall.adapters.runtime_wiring import write_ephemeral_worker_config
 from scope_recall.runtime.worker_entry import FINALIZE_MARGIN_SECONDS
 from scope_recall.runtime.worker_launch import launch_worker
 from scope_recall.runtime.worker_watchdog import KILL_GRACE_SECONDS, _OwnedWindowsJob, _kill_tree
-from scope_recall.runtime import worker_watchdog
+from scope_recall.runtime import worker_launch, worker_watchdog
 
 
 def _alive(pid: int) -> bool:
@@ -471,9 +471,8 @@ def test_a_pass_that_yielded_to_another_writer_is_not_a_failed_exit(tmp_path: Pa
 
 def test_only_a_traceback_tail_is_kept_as_the_reason():
     assert (
-        worker_watchdog._failure_reason("Traceback (most recent call last):\n  File x\nKeyError: 'k'\n")
-        == "KeyError: 'k'"
+        worker_launch.failure_reason("Traceback (most recent call last):\n  File x\nKeyError: 'k'\n") == "KeyError: 'k'"
     )
-    assert worker_watchdog._failure_reason("just some chatter\n/some/path: not a reason\n") is None
-    assert worker_watchdog._failure_reason("") is None
-    assert worker_watchdog._failure_reason("RuntimeError: token sk-ant-api03-" + "A" * 40 + "\n") is None
+    assert worker_launch.failure_reason("just some chatter\n/some/path: not a reason\n") is None
+    assert worker_launch.failure_reason("") is None
+    assert worker_launch.failure_reason("RuntimeError: token sk-ant-api03-" + "A" * 40 + "\n") is None

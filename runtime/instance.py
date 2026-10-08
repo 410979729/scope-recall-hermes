@@ -42,6 +42,7 @@ from .validation import (
     utc_now,
 )
 from .vector_retention import expire_if_due
+from .worker_launch import failure_reason
 from .vector_upkeep import backfill_if_due, compact_if_due, index_if_due, respace_if_due
 
 
@@ -476,10 +477,9 @@ def _helper_start_failure(deadline: float) -> str | None:
         return None
     from ..core.capture_filters import redact_private_paths
     from ..vector.lance_native import helper_start_failure
-    from .worker_watchdog import _failure_reason
 
     stderr = helper_start_failure(timeout)
-    line = _failure_reason(stderr) if stderr else None
+    line = failure_reason(stderr) if stderr else None
     return redact_private_paths(line)[:200] if line else None
 
 

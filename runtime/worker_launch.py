@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import os
+import re
 from pathlib import Path
 import signal
 import subprocess
@@ -186,6 +187,26 @@ def launch_worker(
         start_new_session=(os.name != "nt"),
     )
     return WorkerProcess(process=process, config_path=path)
+
+
+#: ``ExceptionClass: message`` -- the last line of a traceback, and nothing else.
+_TRACEBACK_TAIL = re.compile(r"^[A-Za-z_][\w.]*(?:Error|Exception|Exit|Interrupt)\b.*")
+
+
+def failure_reason(stderr: str) -> str | None:
+    """The one line of a child's stderr that names why it died, or None.
+
+    Only the last line of a Python traceback qualifies (``ModuleNotFoundError:
+    No module named 'scope_recall'``): bounded, no paths, no model text.  A
+    line that looks like a credential is dropped rather than recorded.
+    """
+    from ..core.secret_patterns import contains_secret_like_text
+
+    for line in reversed(stderr.splitlines()):
+        line = line.strip()
+        if _TRACEBACK_TAIL.match(line) and not contains_secret_like_text(line):
+            return line[:200]
+    return None
 
 
 __all__ = ["WorkerProcess", "launch_worker", "validate_wake_arguments"]
