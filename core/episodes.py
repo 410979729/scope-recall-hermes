@@ -86,6 +86,26 @@ def source_origin(source) -> str:
     return source.event["origin"]
 
 
+def _said_state(raw: str) -> str | None:
+    """The state a message's words give the task, plainly and with their qualifiers: cancelled, failed, completed
+    with nothing left unfinished, or open again (paused, resumed); None when they give none."""
+    cancelled = EPISODE_CANCELLED.search(raw)
+    failed = EPISODE_FAILED.search(raw)
+    completed = EPISODE_COMPLETED.search(raw)
+    if cancelled and preserves_qualifiers(raw, cancelled.group()):
+        return "cancelled"
+    if failed and preserves_qualifiers(raw, failed.group()):
+        return "failed"
+    if completed and preserves_qualifiers(raw, completed.group()) and not UNFINISHED.search(raw):
+        return "completed"
+    if any(
+        preserves_qualifiers(raw, marker.group())
+        for marker in re.finditer(r"暂停|先停|继续|\b(?:pause|resume|continue)\b", raw, re.I)
+    ):
+        return "open"
+    return None
+
+
 def state_from_sources(sources, *, has_goal=False, previous="unknown") -> str:
     state = previous
     # Occurrence order is independent of import/arrival order. Unknown times
@@ -116,20 +136,9 @@ def state_from_sources(sources, *, has_goal=False, previous="unknown") -> str:
             continue
         if AUTHORITY_QUESTION.search(raw):
             continue
-        cancelled = EPISODE_CANCELLED.search(raw)
-        failed = EPISODE_FAILED.search(raw)
-        completed = EPISODE_COMPLETED.search(raw)
-        if cancelled and preserves_qualifiers(raw, cancelled.group()):
-            state = "cancelled"
-        elif failed and preserves_qualifiers(raw, failed.group()):
-            state = "failed"
-        elif completed and preserves_qualifiers(raw, completed.group()) and not UNFINISHED.search(raw):
-            state = "completed"
-        elif any(
-            preserves_qualifiers(raw, marker.group())
-            for marker in re.finditer(r"暂停|先停|继续|\b(?:pause|resume|continue)\b", raw, re.I)
-        ):
-            state = "open"
+        said = _said_state(raw)
+        if said is not None:
+            state = said
     return "open" if state == "unknown" and has_goal else state
 
 

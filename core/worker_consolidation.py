@@ -169,6 +169,44 @@ def _root_only_sources(tx, sources: tuple[StoredSource, ...]) -> tuple[StoredSou
     return tuple(roots)
 
 
+def _requote(claim: dict, span: dict, content: str) -> None:
+    """A quote of a serialized JSON value, re-escaped once (with the claim's fields that held it) when exactly that
+    escaped span is stored."""
+    quote = span["quote"]
+    if quote not in content:
+        # The model may quote the decoded value of serialized JSON.
+        # Re-escape once only when that exact, unique stored span
+        # exists. No fuzzy matching, truncation or text generation.
+        encoded = json.dumps(quote, ensure_ascii=False)[1:-1]
+        if encoded != quote and content.count(encoded) == 1 and len(encoded) <= 4096:
+            span["quote"] = encoded
+            for field in ("subject", "predicate", "value_text"):
+                fragment = claim.get(field)
+                if isinstance(fragment, str) and fragment in quote and fragment not in encoded:
+                    claim[field] = json.dumps(fragment, ensure_ascii=False)[1:-1]
+
+
+def _undecorate_claim(claim: dict, source_text: dict) -> None:
+    """One claim's transport decoration taken off, in place: empty kind fields the claim is not of, offset times,
+    null locations, and quotes of serialized JSON values."""
+    for kind_field in ("procedure", "intention", "alias"):
+        if claim.get("kind") != kind_field and claim.get(kind_field) in (None, {}):
+            claim.pop(kind_field, None)
+    for time_field in ("valid_from", "valid_to"):
+        if time_field in claim:
+            claim[time_field] = utc_instant(claim[time_field])
+    spans = claim.get("evidence_spans")
+    if not isinstance(spans, list):
+        return
+    for span in spans:
+        if isinstance(span, dict) and span.get("location") is None and "location" in span:
+            del span["location"]
+        if not isinstance(span, dict) or not isinstance(span.get("quote"), str):
+            continue
+        content = source_text.get((span.get("source_ref"), span.get("source_revision")), "")
+        _requote(claim, span, content)
+
+
 def decode_consolidation_result(raw: str, sources=()) -> dict:
     """Decode the model envelope without relaxing the consolidation contract.
 
@@ -196,33 +234,7 @@ def decode_consolidation_result(raw: str, sources=()) -> dict:
         for claim in claims:
             if not isinstance(claim, dict):
                 continue
-            for kind_field in ("procedure", "intention", "alias"):
-                if claim.get("kind") != kind_field and claim.get(kind_field) in (None, {}):
-                    claim.pop(kind_field, None)
-            for time_field in ("valid_from", "valid_to"):
-                if time_field in claim:
-                    claim[time_field] = utc_instant(claim[time_field])
-            spans = claim.get("evidence_spans")
-            if not isinstance(spans, list):
-                continue
-            for span in spans:
-                if isinstance(span, dict) and span.get("location") is None and "location" in span:
-                    del span["location"]
-                if not isinstance(span, dict) or not isinstance(span.get("quote"), str):
-                    continue
-                content = source_text.get((span.get("source_ref"), span.get("source_revision")), "")
-                quote = span["quote"]
-                if quote not in content:
-                    # The model may quote the decoded value of serialized JSON.
-                    # Re-escape once only when that exact, unique stored span
-                    # exists. No fuzzy matching, truncation or text generation.
-                    encoded = json.dumps(quote, ensure_ascii=False)[1:-1]
-                    if encoded != quote and content.count(encoded) == 1 and len(encoded) <= 4096:
-                        span["quote"] = encoded
-                        for field in ("subject", "predicate", "value_text"):
-                            fragment = claim.get(field)
-                            if isinstance(fragment, str) and fragment in quote and fragment not in encoded:
-                                claim[field] = json.dumps(fragment, ensure_ascii=False)[1:-1]
+            _undecorate_claim(claim, source_text)
     return validate_payload("consolidation_result", value)
 
 

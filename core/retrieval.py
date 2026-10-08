@@ -78,6 +78,16 @@ class SearchLimits:
                 raise ContractError("INPUT_INVALID", name)
 
 
+def _require_distinct_refs(refs, limit: int, longest: int, field: str) -> None:
+    """A tuple of at most ``limit`` distinct refs, each a string of 1 to ``longest`` characters."""
+    if type(refs) is not tuple or len(refs) > limit:
+        raise ContractError("INPUT_INVALID", field)
+    if any(type(ref) is not str or not 1 <= len(ref) <= longest for ref in refs):
+        raise ContractError("INPUT_INVALID", field)
+    if len(set(refs)) != len(refs):
+        raise ContractError("INPUT_INVALID", field)
+
+
 @dataclass(frozen=True)
 class SearchContext:
     """Trusted, immutable snapshot used by all stages of one retrieval."""
@@ -126,18 +136,8 @@ class SearchContext:
             raise ContractError("INPUT_INVALID", "limits")
         if not isinstance(self.trusted_context, TrustedContext):
             raise ContractError("IDENTITY_UNBOUND")
-        if type(self.focus_refs) is not tuple or len(self.focus_refs) > 4:
-            raise ContractError("INPUT_INVALID", "focus_refs")
-        if any(type(ref) is not str or not 1 <= len(ref) <= 240 for ref in self.focus_refs):
-            raise ContractError("INPUT_INVALID", "focus_refs")
-        if len(set(self.focus_refs)) != len(self.focus_refs):
-            raise ContractError("INPUT_INVALID", "focus_refs")
-        if type(self.current_source_refs) is not tuple or len(self.current_source_refs) > MAX_CURRENT_SOURCE_REFS:
-            raise ContractError("INPUT_INVALID", "current_source_refs")
-        if any(type(ref) is not str or not 1 <= len(ref) <= 300 for ref in self.current_source_refs):
-            raise ContractError("INPUT_INVALID", "current_source_refs")
-        if len(set(self.current_source_refs)) != len(self.current_source_refs):
-            raise ContractError("INPUT_INVALID", "current_source_refs")
+        _require_distinct_refs(self.focus_refs, 4, 240, "focus_refs")
+        _require_distinct_refs(self.current_source_refs, MAX_CURRENT_SOURCE_REFS, 300, "current_source_refs")
 
     @classmethod
     def from_request(

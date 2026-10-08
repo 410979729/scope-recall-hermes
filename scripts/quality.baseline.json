@@ -47,7 +47,7 @@
   "adapters/clients/transcript.py": {
    "reportArgumentType": 8,
    "reportOperatorIssue": 2,
-   "reportOptionalMemberAccess": 6
+   "reportOptionalMemberAccess": 4
   },
   "adapters/hermes/__init__.py": {
    "reportUnsupportedDunderAll": 2
@@ -658,12 +658,6 @@
    "E501": 10
   },
   "core/retrieval.py": {
-   "C901": {
-    "SearchContext.__post_init__": 18
-   },
-   "PLR0912": {
-    "SearchContext.__post_init__": 17
-   },
    "UP037": 2
   },
   "core/retrieval_storage.py": {
@@ -743,14 +737,8 @@
   },
   "core/worker_consolidation.py": {
    "BLE001": 1,
-   "C901": {
-    "decode_consolidation_result": 19
-   },
    "PLR0911": {
     "process_consolidate": 10
-   },
-   "PLR0912": {
-    "decode_consolidation_result": 18
    }
   },
   "core/worker_outcomes.py": {
