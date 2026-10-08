@@ -19,6 +19,7 @@ from .boundary import (
     sync_turn_source_events,
     tool_call_source_event,
 )
+from .capture import GAP_CURRENT_SOURCE_REFS_LIMIT
 from .tool_surface import TOOL_NAMES
 
 if TYPE_CHECKING:
@@ -89,14 +90,15 @@ class TurnCapture:
         ordinal_turn_id = str(kwargs.get("turn_id") or turn_number)
         skipped, self._adapter._skipped_turn_id = self._adapter._skipped_turn_id, None
         if skipped and not kwargs.get("turn_id") and not self._adapter._pre_llm_pending:
-            # This turn's pre_llm_call was skipped (``_session_busy``): its turn id is the one the turn is known by.
+            # This turn's pre_llm_call was skipped (``HostBackpressure.busy``): its turn id is the one the turn is
+            # known by.
             ordinal_turn_id = skipped
         # Hermes calls this after pre_llm_call. Preserve that UUID and its
         # current-source fence until prefetch/sync consume this turn. If no
         # UUID arrived, the ordinal is the bounded fallback.
         if not self._adapter._pre_llm_pending:
             if ordinal_turn_id != self._adapter._active_turn_id:
-                self._adapter._reset_current_source_refs()
+                self.reset_source_refs()
             self._adapter._active_turn_id = ordinal_turn_id
         session_id = self._adapter._effective_session_id(str(kwargs.get("session_id") or ""))
         if type(message) is str and message:
@@ -114,7 +116,7 @@ class TurnCapture:
         supplied_turn_id = str(kwargs.get("turn_id") or "").strip()
         turn_id = supplied_turn_id or self._adapter._active_turn_id or str(self._adapter._turn_counter or "turn")
         if supplied_turn_id and supplied_turn_id != self._adapter._active_turn_id:
-            self._adapter._reset_current_source_refs()
+            self.reset_source_refs()
             self._adapter._active_turn_id = supplied_turn_id
         self._adapter._pre_llm_pending = bool(supplied_turn_id)
         self._adapter._outcomes.open_turn(session_id, turn_id)
@@ -309,7 +311,7 @@ class TurnCapture:
                 )
                 limited, said = True, said[:limit]
             for ordinal, (text, occurred_at) in enumerate(said, 1):
-                with adapter._lock, adapter._holding("sync_turn"):
+                with adapter._lock, adapter._calls.holding("sync_turn"):
                     event, gaps, ledger_identity = make_event(
                         adapter._ledger,
                         context,
@@ -357,7 +359,7 @@ class TurnCapture:
             )
         for event, ledger_identity in event_pairs:
             event_context = shown if event["role"] == "assistant" else opened
-            with adapter._lock, adapter._holding("sync_turn"):
+            with adapter._lock, adapter._calls.holding("sync_turn"):
                 adapter._writer.write(
                     event_context,
                     event,
@@ -367,3 +369,11 @@ class TurnCapture:
                     bound=identity,
                     release=True,
                 )
+
+    def reset_source_refs(self) -> None:
+        """Open a new current-turn fence: no refs, no overflow, no overflow gap."""
+        self._adapter._current_source_refs.clear()
+        self._adapter._current_source_refs_overflow = False
+        self._adapter._diagnostics.capability_gaps = tuple(
+            gap for gap in self._adapter._diagnostics.capability_gaps if gap != GAP_CURRENT_SOURCE_REFS_LIMIT
+        )

@@ -415,8 +415,8 @@ class HermesToolSurface:
             "chat_type": identity.scope.chat_type,
             "chat_id": identity.scope.chat_id,
             "thread_id": identity.scope.thread_id,
-            # Host calls this session did not take, or took past the host's timeout (provider ``_session_busy``).
-            "host_backpressure": self._backpressure_counts(),
+            # Host calls this session did not take, or took past the host's timeout (``HostBackpressure.busy``).
+            "host_backpressure": self._calls.counts(),
         }
         return self._reply(body["request_id"], result)
 

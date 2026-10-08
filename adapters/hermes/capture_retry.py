@@ -140,7 +140,7 @@ class CaptureRetry:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 break
-            with self._adapter._lock, self._adapter._holding("retry_buffered_captures"):
+            with self._adapter._lock, self._adapter._calls.holding("retry_buffered_captures"):
                 if self._adapter._identity is not identity or not (self._adapter._initialized or force):
                     # A session switch or a shutdown came in between: what is left stays for the next pass.
                     break
@@ -237,3 +237,27 @@ class CaptureRetry:
                 # them, and an evicted agent's adapter, for good.
                 with self._adapter._lock:
                     self.give_up_expired(tuple(self.captures.items()))
+
+    def durable_pending_count(self):
+        if not isinstance(self._adapter._core, MemoryCore) or self._adapter._identity is None:
+            return None
+        try:
+            context = self._adapter._identity.trusted_context()
+            scopes = sorted(context.allowed_scope_ids)
+            with self._adapter._core.storage.read(context, remaining_seconds=0.1) as tx:
+                return (
+                    tx._check()
+                    .execute(
+                        f"SELECT count(*) FROM capture_inbox WHERE scope_id IN ({','.join('?' for _ in scopes)}) AND project_id IS ? AND branch_id IS ?",
+                        (*scopes, context.project_id, context.branch_id),
+                    )
+                    .fetchone()[0]
+                )
+        except (ContractError, OSError, RuntimeError, sqlite3.Error):
+            return None
+
+    def pending_identities(self) -> tuple[SourceIdentity, ...]:
+        with self._adapter._lock:
+            # Failed writes roll back the observation ledger, but their DTO
+            # may still occupy the bounded memory retry buffer.
+            return tuple(sorted(set(self._adapter._ledger.pending_identities()) | set(self.captures)))

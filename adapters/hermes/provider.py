@@ -4,28 +4,25 @@ from __future__ import annotations
 
 import inspect
 import logging
-import sqlite3
 import threading
 import time
-from contextlib import contextmanager
 from dataclasses import dataclass
 from functools import wraps
 from typing import Any, Dict, List, Optional
 
-from scope_recall.contracts import ContractError
 from scope_recall.core import MemoryCore
 
+from .backpressure import HostBackpressure
 from .boundary import (
-    SourceIdentity,
     SourceObservationLedger,
 )
-from .capture import CAPTURE_TIMEOUT_S, GAP_CURRENT_SOURCE_REFS_LIMIT, CaptureWriter, label
+from .capture import CAPTURE_TIMEOUT_S, CaptureWriter, label
 from .capture_retry import SHUTDOWN_RETRY_SECONDS, CaptureRetry
 from .identity import HermesIdentity, HermesIdentityError
 from .outcomes import TurnOutcomeTracker
 from .prefetch import Prefetch
 from .protocol import PublicMemoryProvider
-from .runtime_wiring import GAP_WORKER_LAUNCH_FAILED, HermesHostRuntime, TrustedHostRuntime
+from .runtime_wiring import TrustedHostRuntime
 from .session_binding import SessionBinding
 from .tool_surface import HermesToolSurface
 from .turn_capture import TurnCapture
@@ -36,13 +33,12 @@ _log = logging.getLogger(__name__)
 #: What a shutdown waits for captures whose store I/O runs without the adapter lock.  A tool result's write took
 #: 1.4-4.4 s on a busy shared store, past its own ``CAPTURE_TIMEOUT_S`` budget; 10 s covers that.
 _CAPTURE_DRAIN_WAIT_S = 10.0
-_BOUNDED_MESSAGE_SCAN = 8
 
 
 def _serialized_host_event(method):
     @wraps(method)
     def guarded(self, *args, **kwargs):
-        with self._lock, self._holding(method.__name__):
+        with self._lock, self._calls.holding(method.__name__):
             return method(self, *args, **kwargs)
 
     return guarded
@@ -127,6 +123,7 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
         self._turns = TurnCapture(self)
         self._prefetch = Prefetch(self)
         self._binding = SessionBinding(self)
+        self._calls = HostBackpressure(self)
         self._diagnostics = AdapterDiagnostics()
         #: What the last worker launch attempt added to capability_gaps.
         self._worker_launch_gaps: tuple[str, ...] = ()
@@ -147,48 +144,6 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
         #: (``on_turn_start``); written without ``_lock`` by the skipped hook.
         self._skipped_turn_id: str | None = None
 
-    @contextmanager
-    def _holding(self, name: str):
-        previous, self._holder = self._holder, (name, time.monotonic(), threading.get_ident())
-        try:
-            yield
-        finally:
-            # An outer call of the same thread still holds the lock; anything else is over.
-            self._holder = previous if previous is not None and previous[2] == threading.get_ident() else None
-
-    def _count_backpressure(self, kind: str) -> None:
-        with self._said_lock:
-            self._backpressure[kind] = self._backpressure.get(kind, 0) + 1
-
-    def _session_busy(self, kind: str, kwargs: dict[str, Any] | None = None) -> None:
-        """A host call this session was too busy to take within its bound: counted and said, never waited out.
-
-        Waited out past Hermes' hook timeout, the call was abandoned and Hermes skipped that hook for every session
-        of the gateway for a minute (Hermes 0.21.5): Scope Recall registers one callback per hook.  A skipped
-        ``pre_llm_call`` leaves its turn id for the turn's start: post_llm_call names the turn's interim messages
-        and steers by it, and without it they were dropped.
-        """
-        holder = self._holder
-        if kind == "pre_llm_call":
-            self._skipped_turn_id = str((kwargs or {}).get("turn_id") or "").strip() or None
-            if self._skipped_turn_id:
-                self._turns.note_opener(
-                    self._skipped_turn_id,
-                    (kwargs or {}).get("conversation_history"),
-                    (kwargs or {}).get("user_message"),
-                )
-        self._count_backpressure(kind)
-        _log.warning(
-            "scope-recall: %s not taken: this session has been busy in %s for %.1f s",
-            kind,
-            holder[0] if holder else "another call",
-            time.monotonic() - holder[1] if holder else 0.0,
-        )
-
-    def _backpressure_counts(self) -> dict[str, int]:
-        with self._said_lock:
-            return dict(self._backpressure)
-
     @property
     def name(self) -> str:
         return self.PROVIDER_NAME
@@ -201,36 +156,12 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
 
     @property
     def diagnostics(self) -> AdapterDiagnostics:
-        pending = self._pending_capture_identities()
+        pending = self._retry.pending_identities()
         self._diagnostics.pending_capture_identities = tuple(f"{key}@{revision}" for key, revision in pending)
         self._diagnostics.current_source_refs = tuple(self._current_source_refs)
-        self._diagnostics.durable_pending_captures = self._durable_pending_count()
-        self._diagnostics.host_backpressure = self._backpressure_counts() or None
+        self._diagnostics.durable_pending_captures = self._retry.durable_pending_count()
+        self._diagnostics.host_backpressure = self._calls.counts() or None
         return self._diagnostics
-
-    def _durable_pending_count(self):
-        if not isinstance(self._core, MemoryCore) or self._identity is None:
-            return None
-        try:
-            context = self._identity.trusted_context()
-            scopes = sorted(context.allowed_scope_ids)
-            with self._core.storage.read(context, remaining_seconds=0.1) as tx:
-                return (
-                    tx._check()
-                    .execute(
-                        f"SELECT count(*) FROM capture_inbox WHERE scope_id IN ({','.join('?' for _ in scopes)}) AND project_id IS ? AND branch_id IS ?",
-                        (*scopes, context.project_id, context.branch_id),
-                    )
-                    .fetchone()[0]
-                )
-        except (ContractError, OSError, RuntimeError, sqlite3.Error):
-            return None
-
-    def _pending_capture_identities(self) -> tuple[SourceIdentity, ...]:
-        with self._lock:
-            # Failed writes roll back the observation ledger, but their DTO
-            # may still occupy the bounded memory retry buffer.
-            return tuple(sorted(set(self._ledger.pending_identities()) | set(self._retry.captures)))
 
     def is_available(self) -> bool:
         if self._identity is None:
@@ -275,50 +206,6 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
             values.extend(group)
         merged = tuple(dict.fromkeys(values))[-128:]
         self._diagnostics.pending_outcome_gaps = merged
-
-    def _reset_current_source_refs(self) -> None:
-        """Open a new current-turn fence: no refs, no overflow, no overflow gap."""
-        self._current_source_refs.clear()
-        self._current_source_refs_overflow = False
-        self._diagnostics.capability_gaps = tuple(
-            gap for gap in self._diagnostics.capability_gaps if gap != GAP_CURRENT_SOURCE_REFS_LIMIT
-        )
-
-    def _replace_worker_launch_gaps(self, gaps: tuple[str, ...]) -> None:
-        """This launch attempt's gaps replace the previous attempt's.
-
-        Busy or failed describes one attempt, not the session, so it must not
-        outlive a later attempt that was neither.  Identity, audience, runtime
-        and turn gaps are not launch results and stay.
-        """
-        previous = self._worker_launch_gaps
-        self._worker_launch_gaps = tuple(gaps)
-        self._diagnostics.capability_gaps = tuple(
-            dict.fromkeys(
-                (
-                    *(gap for gap in self._diagnostics.capability_gaps if gap not in previous),
-                    *self._worker_launch_gaps,
-                )
-            )
-        )
-
-    def _wake_background_worker(self, *, context=None) -> None:
-        """Use the host runtime's coalesced launcher, never drain in a hook."""
-        identity = self._require_identity()
-        if identity.read_only or not identity.writable_scope_ids:
-            return
-        runtime = self._host_runtime
-        if isinstance(runtime, HermesHostRuntime) and runtime.configured:
-            try:
-                gaps = runtime.maybe_launch_bounded_worker(
-                    session_id=identity.session_id if context is None else context.session_id,
-                    allowed_scope_ids=identity.writable_scope_ids if context is None else context.allowed_scope_ids,
-                    project_id=(identity.trusted_context().project_id if context is None else context.project_id),
-                    branch_id=(identity.trusted_context().branch_id if context is None else context.branch_id),
-                )
-            except Exception:
-                gaps = (GAP_WORKER_LAUNCH_FAILED,)
-            self._replace_worker_launch_gaps(gaps)
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
         """The turn's automatic recall (``Prefetch.recall``)."""
@@ -366,46 +253,7 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
     def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
         # Serialize the short process launch with shutdown, never the drain.
         with self._lock:
-            self._end_session(messages)
-
-    def _end_session(self, messages: List[Dict[str, Any]]) -> None:
-        identity = self._require_identity()
-        self._session_watermark += 1
-        self._retry.write_observed()
-        self._bounded_message_gaps(messages, hook="on_session_end")
-        if identity.read_only:
-            return
-        if identity.writable_scope_ids:
-            host_runtime = self._host_runtime
-            if host_runtime is not None and host_runtime.configured:
-                gaps = (GAP_WORKER_LAUNCH_FAILED,)
-                try:
-                    if isinstance(host_runtime, HermesHostRuntime):
-                        gaps = host_runtime.maybe_launch_bounded_worker(
-                            session_id=identity.session_id,
-                            allowed_scope_ids=identity.writable_scope_ids,
-                            project_id=identity.trusted_context().project_id,
-                            branch_id=identity.trusted_context().branch_id,
-                        )
-                except Exception:
-                    # Persisted work remains recoverable on the next wakeup.
-                    pass
-                self._replace_worker_launch_gaps(gaps)
-                return
-            elif identity.entry_id is not None:
-                # A shared store is drained by its own worker, never by an entry.
-                return
-            else:
-                # Basic mode retains the original bounded Core worker.  It is
-                # still an owned wakeup; the host callback never drains in
-                # the foreground lifecycle hook.
-                core = self._require_core()
-                context = identity.trusted_context(mutation=True)
-
-                def drain() -> None:
-                    core.drain_worker(context, max_items=8, remaining_seconds=CAPTURE_TIMEOUT_S)
-
-            self._worker.submit(drain, kind="drain")
+            self._binding.end(messages)
 
     @_serialized_host_event
     def on_session_switch(
@@ -430,8 +278,8 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
                 "on_pre_compress_kwargs": "ignored_in_bounded_slice",
             }
         self._retry.write_observed()
-        self._bounded_message_gaps(messages, hook="on_pre_compress")
-        self._wake_background_worker()
+        self._binding.bounded_message_gaps(messages, hook="on_pre_compress")
+        self._binding.wake_worker()
         return ""
 
     def shutdown(self) -> None:
@@ -457,14 +305,14 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
                 )
             except Exception as exc:  # noqa: BLE001 - the shutdown goes on; what is left is said below
                 _log.warning("scope-recall: a retry of buffered captures failed at shutdown (%s)", type(exc).__name__)
-            pending = self._pending_capture_identities()
+            pending = self._retry.pending_identities()
             for key in tuple(self._retry.captures)[:16]:
                 if key in self._retry.in_flight:
                     _log.warning("scope-recall: not stored yet (still being written at shutdown): %s", label(key))
                 else:
                     _log.warning("scope-recall: not stored (still failing at shutdown), lost: %s", label(key))
             self._retry.captures.clear()
-            durable_pending = self._durable_pending_count()
+            durable_pending = self._retry.durable_pending_count()
             state = self._worker.shutdown()
             if self._host_runtime is not None:
                 self._host_runtime.close()
@@ -486,26 +334,12 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
                 state.update(durable_pending_captures=durable_pending, durable_capture_status="queued_in_sqlite")
             elif durable_pending is None:
                 state["durable_capture_status"] = "unknown"
-            for kind, count in self._backpressure_counts().items():
+            for kind, count in self._calls.counts().items():
                 state[f"host_backpressure:{kind}"] = count
             if still_writing:
                 state["captures_still_writing"] = still_writing
             self._diagnostics.shutdown_state = state
             self._initialized = False
-
-    def _bounded_message_gaps(self, messages: List[Dict[str, Any]], *, hook: str) -> None:
-        gaps: list[str] = []
-        for message in (messages or [])[-_BOUNDED_MESSAGE_SCAN:]:
-            if not isinstance(message, dict):
-                gaps.append(f"{hook}_gap:unsupported_message_shape")
-                continue
-            role = str(message.get("role") or "unknown")
-            if role == "tool" and not str(message.get("content") or message.get("tool_call_id") or "").strip():
-                gaps.append(f"{hook}_gap:tool_result_missing")
-            if role == "assistant" and message.get("tool_calls") and not message.get("content"):
-                gaps.append(f"{hook}_gap:assistant_tool_calls_without_body")
-        if gaps:
-            self._merge_gaps(tuple(dict.fromkeys(gaps)))
 
 
 def public_signatures_match(provider: PublicMemoryProvider) -> bool:

@@ -12,7 +12,7 @@ from unittest.mock import Mock
 
 import pytest
 from scope_recall.adapters.hermes import ScopeRecallHermesAdapter, install_hermes_scope_recall
-from scope_recall.adapters.hermes.provider import GAP_CURRENT_SOURCE_REFS_LIMIT
+from scope_recall.adapters.hermes.capture import GAP_CURRENT_SOURCE_REFS_LIMIT
 from scope_recall.adapters.hermes.runtime_wiring import (
     GAP_BINDING_MISMATCH,
     GAP_UNCONFIGURED,

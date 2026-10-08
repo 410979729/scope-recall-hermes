@@ -418,7 +418,7 @@
    }
   },
   "adapters/hermes/capture_retry.py": {
-   "E501": 1
+   "E501": 2
   },
   "adapters/hermes/gating.py": {
    "UP045": 1
@@ -443,14 +443,13 @@
    "UP045": 1
   },
   "adapters/hermes/provider.py": {
-   "BLE001": 2,
-   "E501": 1,
-   "UP006": 10,
+   "UP006": 6,
    "UP017": 1,
    "UP035": 2,
    "UP045": 1
   },
   "adapters/hermes/session_binding.py": {
+   "BLE001": 2,
    "UP031": 1
   },
   "adapters/hermes/shared_entries.py": {

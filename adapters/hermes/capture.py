@@ -265,7 +265,7 @@ class CaptureWriter:
             if replay:
                 _log.info("scope-recall: queued on retry: %s", label(identity))
         adapter._merge_gaps(gaps, ("capture_gap:durable_ingress_pending",))
-        adapter._wake_background_worker(context=context)
+        adapter._binding.wake_worker(context=context)
         return receipt
 
     def _refused(self, identity, receipt, snapshot, gaps, replay: bool):
@@ -289,7 +289,7 @@ class CaptureWriter:
             self._fence(receipt)
         if gaps:
             adapter._merge_gaps(gaps)
-        adapter._wake_background_worker(context=context)
+        adapter._binding.wake_worker(context=context)
         return receipt
 
     def _fence(self, receipt) -> None:

@@ -35,7 +35,7 @@ class Prefetch:
         tools run after.
         """
         if not self._adapter._lock.acquire(timeout=_PREFETCH_STATE_WAIT_S):
-            self._adapter._session_busy("prefetch")
+            self._adapter._calls.busy("prefetch")
             return ""
         try:
             identity = self._adapter._require_identity()

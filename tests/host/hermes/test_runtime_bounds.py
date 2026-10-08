@@ -18,13 +18,13 @@ from scope_recall.adapters.hermes import (
 )
 from scope_recall.adapters.hermes import prefetch as prefetch_module
 from scope_recall.adapters.hermes import provider as provider_module
+from scope_recall.adapters.hermes.capture import GAP_CURRENT_SOURCE_REFS_LIMIT
 from scope_recall.adapters.hermes.hooks import (
     _SUPPORTED_HOOKS,
     _global_callback,
     _register_adapter_instance,
     _unregister_adapter_instance,
 )
-from scope_recall.adapters.hermes.provider import GAP_CURRENT_SOURCE_REFS_LIMIT
 from scope_recall.adapters.hermes.worker import AdapterWorker
 from scope_recall.contracts import validate_payload
 from scope_recall.core import CoreConfig, MemoryCore

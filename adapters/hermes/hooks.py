@@ -115,7 +115,7 @@ def _dispatch(event: str, kwargs: dict[str, Any], *, wait: float) -> Any | None:
     # host skips this hook for every session (tool hooks queued behind their session's prefetch did that).  One it
     # cannot wait for is counted and said.
     if not adapter._lock.acquire(timeout=wait):
-        adapter._session_busy(event, kwargs)
+        adapter._calls.busy(event, kwargs)
         return adapter
     try:
         # Session switch can occur after selection; never send that old
@@ -124,7 +124,7 @@ def _dispatch(event: str, kwargs: dict[str, Any], *, wait: float) -> Any | None:
             if event == "post_tool_call":
                 # Held here exactly once, so the capture's store I/O runs without it and the step's other tool hooks
                 # are not kept waiting behind it (``_observe_post_tool_call``).
-                with adapter._holding("observe_post_tool_call"):
+                with adapter._calls.holding("observe_post_tool_call"):
                     adapter._observe_post_tool_call(**kwargs)
             else:
                 getattr(adapter, _OBSERVERS.get(event, "observe_api_request_error"))(**kwargs)
@@ -149,7 +149,7 @@ def _global_callback(event: str) -> Callable[..., None]:
                 timeout,
             )
             if adapter is not None:
-                adapter._count_backpressure(f"{event}_overran")
+                adapter._calls.count(f"{event}_overran")
 
     # Hermes names a callback in its timeout and skip lines; every plugin's closure called ``callback`` read alike.
     callback.__name__ = callback.__qualname__ = f"scope_recall_{event}"

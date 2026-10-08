@@ -6,11 +6,12 @@ from __future__ import annotations
 
 import logging
 import sys
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from scope_recall.core import CoreConfig, MemoryCore
 
 from .audiences import LOCAL_PLATFORMS
+from .capture import CAPTURE_TIMEOUT_S
 from .identity import (
     HermesIdentity,
     assert_same_installation,
@@ -19,7 +20,7 @@ from .identity import (
     unbound_session_hint,
 )
 from .installation import assert_core_binding_matches
-from .runtime_wiring import attach_trusted_host_runtime
+from .runtime_wiring import GAP_WORKER_LAUNCH_FAILED, HermesHostRuntime, attach_trusted_host_runtime
 
 if TYPE_CHECKING:
     from .provider import ScopeRecallHermesAdapter
@@ -27,6 +28,7 @@ if TYPE_CHECKING:
 #: The adapter's log name, which these lines carried before the adapter was split: a host writes it into each line,
 #: and a logging configuration may name it.
 _log = logging.getLogger("scope_recall.adapters.hermes.provider")
+_BOUNDED_MESSAGE_SCAN = 8
 
 
 def _start_vector_helper(host_runtime) -> None:
@@ -96,7 +98,7 @@ class SessionBinding:
                 self._adapter._notice_turns.clear()
             self._adapter._user_captured_turns.clear()
             self._adapter._session_watermark = 0
-            self._adapter._reset_current_source_refs()
+            self._adapter._turns.reset_source_refs()
             self._adapter._current_task_message = ""
             # The buffer stays: each capture keeps the session, actor and scope it was said in, and is written under
             # its own scope's grant (``_retry_pass``).  Cleared here, a session started again in this adapter dropped
@@ -125,7 +127,7 @@ class SessionBinding:
         fresh = switch_hermes_identity(identity, new_session_id, parent_session_id=parent_session_id, **kwargs)
         self._adapter._outcomes.reset_session(identity.session_id)
         self._adapter._ledger.reset()
-        self._adapter._reset_current_source_refs()
+        self._adapter._turns.reset_source_refs()
         # A compression gives the conversation a new session id in the middle of a turn, and the turn goes on:
         # its id and what it said on the way stay, or its post_llm_call no longer matched the turn and what it
         # said between tool calls, and what the person sent meanwhile, was never recorded.
@@ -192,3 +194,92 @@ class SessionBinding:
             unbound_session_hint(scope),
         )
         _log.warning("%s", "".join(character for character in said if character.isprintable()))
+
+    def replace_worker_launch_gaps(self, gaps: tuple[str, ...]) -> None:
+        """This launch attempt's gaps replace the previous attempt's.
+
+        Busy or failed describes one attempt, not the session, so it must not
+        outlive a later attempt that was neither.  Identity, audience, runtime
+        and turn gaps are not launch results and stay.
+        """
+        previous = self._adapter._worker_launch_gaps
+        self._adapter._worker_launch_gaps = tuple(gaps)
+        self._adapter._diagnostics.capability_gaps = tuple(
+            dict.fromkeys(
+                (
+                    *(gap for gap in self._adapter._diagnostics.capability_gaps if gap not in previous),
+                    *self._adapter._worker_launch_gaps,
+                )
+            )
+        )
+
+    def wake_worker(self, *, context=None) -> None:
+        """Use the host runtime's coalesced launcher, never drain in a hook."""
+        identity = self._adapter._require_identity()
+        if identity.read_only or not identity.writable_scope_ids:
+            return
+        runtime = self._adapter._host_runtime
+        if isinstance(runtime, HermesHostRuntime) and runtime.configured:
+            try:
+                gaps = runtime.maybe_launch_bounded_worker(
+                    session_id=identity.session_id if context is None else context.session_id,
+                    allowed_scope_ids=identity.writable_scope_ids if context is None else context.allowed_scope_ids,
+                    project_id=(identity.trusted_context().project_id if context is None else context.project_id),
+                    branch_id=(identity.trusted_context().branch_id if context is None else context.branch_id),
+                )
+            except Exception:
+                gaps = (GAP_WORKER_LAUNCH_FAILED,)
+            self.replace_worker_launch_gaps(gaps)
+
+    def end(self, messages: list[dict[str, Any]]) -> None:
+        identity = self._adapter._require_identity()
+        self._adapter._session_watermark += 1
+        self._adapter._retry.write_observed()
+        self.bounded_message_gaps(messages, hook="on_session_end")
+        if identity.read_only:
+            return
+        if identity.writable_scope_ids:
+            host_runtime = self._adapter._host_runtime
+            if host_runtime is not None and host_runtime.configured:
+                gaps = (GAP_WORKER_LAUNCH_FAILED,)
+                try:
+                    if isinstance(host_runtime, HermesHostRuntime):
+                        gaps = host_runtime.maybe_launch_bounded_worker(
+                            session_id=identity.session_id,
+                            allowed_scope_ids=identity.writable_scope_ids,
+                            project_id=identity.trusted_context().project_id,
+                            branch_id=identity.trusted_context().branch_id,
+                        )
+                except Exception:
+                    # Persisted work remains recoverable on the next wakeup.
+                    pass
+                self.replace_worker_launch_gaps(gaps)
+                return
+            elif identity.entry_id is not None:
+                # A shared store is drained by its own worker, never by an entry.
+                return
+            else:
+                # Basic mode retains the original bounded Core worker.  It is
+                # still an owned wakeup; the host callback never drains in
+                # the foreground lifecycle hook.
+                core = self._adapter._require_core()
+                context = identity.trusted_context(mutation=True)
+
+                def drain() -> None:
+                    core.drain_worker(context, max_items=8, remaining_seconds=CAPTURE_TIMEOUT_S)
+
+            self._adapter._worker.submit(drain, kind="drain")
+
+    def bounded_message_gaps(self, messages: list[dict[str, Any]], *, hook: str) -> None:
+        gaps: list[str] = []
+        for message in (messages or [])[-_BOUNDED_MESSAGE_SCAN:]:
+            if not isinstance(message, dict):
+                gaps.append(f"{hook}_gap:unsupported_message_shape")
+                continue
+            role = str(message.get("role") or "unknown")
+            if role == "tool" and not str(message.get("content") or message.get("tool_call_id") or "").strip():
+                gaps.append(f"{hook}_gap:tool_result_missing")
+            if role == "assistant" and message.get("tool_calls") and not message.get("content"):
+                gaps.append(f"{hook}_gap:assistant_tool_calls_without_body")
+        if gaps:
+            self._adapter._merge_gaps(tuple(dict.fromkeys(gaps)))
