@@ -450,7 +450,7 @@ def process_rebuild_projection(
             return stale_result(tx, item)
         source = tx.source(item.subject_ref, item.subject_revision)
         if source is not None:
-            tx.index_source(source.ref, source.revision)
+            tx.sources.index_source(source.ref, source.revision)
         elif _live_claim(tx, item.subject_ref, item.subject_revision) is None:
             # Claims are queried from their versioned SQLite tables, so
             # completing the item is their whole projection; a missing or

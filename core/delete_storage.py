@@ -462,7 +462,7 @@ class Deletions:
         ).fetchall()
         # What a purge keeps of each version of a deleted message to know a later copy under its key by, once its
         # words are gone: digests of them spaced otherwise and of their letters and digits (``capture_inbox.
-        # deleted_forms``, compared by ``Transaction.refuse_under_a_deleted_key``).  Read before any group key below
+        # deleted_forms``, compared by ``Sources.refuse_under_a_deleted_key``).  Read before any group key below
         # is replaced (review of rc13).
 
         forms, versions, groups = {}, {}, set()

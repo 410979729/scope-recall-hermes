@@ -857,7 +857,7 @@ def test_rebuild_projection_is_the_existing_queue_type(worker_app):
     receipt = core.drain_worker(ctx, max_items=1, remaining_seconds=5, owner_id="projection-worker")
     assert receipt.completed == 1
     with core.storage.read(ctx) as tx:
-        lexical, _ = tx.source_projection_status(source.ref, source.revision)
+        lexical, _ = tx.sources.source_projection_status(source.ref, source.revision)
     assert lexical == "ready"
 
 
@@ -900,7 +900,7 @@ def test_embed_none_retries_without_marking_done(worker_app):
     assert row[3] == "pending" and row[4] == 0 and row[6] is None
     assert receipt.processed == 0 and receipt.unavailable_work_types == ("embed",)
     with core.storage.read(ctx) as tx:
-        lexical, semantic = tx.source_projection_status(row[1], row[2])
+        lexical, semantic = tx.sources.source_projection_status(row[1], row[2])
     assert lexical == "ready" and semantic == "pending"
 
 
@@ -923,7 +923,7 @@ def test_embed_port_completes_semantic_projection(worker_app):
     row = [r for r in work_rows(core) if r[0] == "embed"][0]
     assert row[3] == "done" and receipt.completed == 1 and receipt.items[0].state == "done"
     with core.storage.read(ctx) as tx:
-        lexical, semantic = tx.source_projection_status(source.ref, source.revision)
+        lexical, semantic = tx.sources.source_projection_status(source.ref, source.revision)
     assert lexical == "ready" and semantic == "ready"
 
 
@@ -1399,7 +1399,7 @@ def test_embed_barrier_cannot_publish_after_lease_stolen(worker_app):
     row = next(row for row in work_rows(core) if row[0] == "embed" and row[1] == source.ref)
     assert row[3] != "done"
     with core.storage.read(ctx) as tx:
-        lexical, semantic = tx.source_projection_status(source.ref, source.revision)
+        lexical, semantic = tx.sources.source_projection_status(source.ref, source.revision)
     assert semantic != "ready"
 
 

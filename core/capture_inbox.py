@@ -209,7 +209,7 @@ def _commit(storage, clock, context, token, prepared, scope_id, policy, deadline
 
 
 #: How storage refuses a copy of a deleted message under that message's key, or a later version or part of the deleted
-#: one (``storage.Transaction.refuse_under_a_deleted_key``): the code and field of its ContractError, refused for good.
+#: one (``Sources.refuse_under_a_deleted_key``): the code and field of its ContractError, refused for good.
 DELETED_KEY = ("ACCESS_DENIED", "source_unavailable")
 #: What the receipt of such a capture carries when it left the inbox.
 SOURCE_DELETED_GAP = "capture_gap:source_deleted"
@@ -217,7 +217,7 @@ SOURCE_DELETED_GAP = "capture_gap:source_deleted"
 
 def _refused_for_a_delete(storage, context, token, prepared, deadline) -> CaptureReceipt:
     """A copy of a deleted message under that message's key is refused for good; another message under the key is a
-    key collision, stored under a key of its own (``storage.Transaction.refuse_under_a_deleted_key``).  Left in the
+    key collision, stored under a key of its own (``source_storage.Sources.refuse_under_a_deleted_key``).  Left in the
     inbox with its code, the copy kept the doctor's ``capture_ingress_blocked`` and the patrol's line up until someone
     removed it by hand (rc13); it leaves the inbox, and the pass counts it among the rows it cancelled."""
     try:

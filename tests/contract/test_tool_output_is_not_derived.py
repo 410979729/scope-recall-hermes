@@ -57,7 +57,7 @@ def test_a_consolidation_queued_before_the_change_finishes_without_a_model_call(
     core, ctx = worker_app
     read = capture(core, ctx, "TEST 目录里有 42 个文件。", origin="tool_observation")
     with core.storage.write(ctx, remaining_seconds=10) as tx:
-        tx.enqueue_source(read.ref, read.revision, work_type="consolidate", available_at=core.clock.utc_now())
+        tx.sources.enqueue_source(read.ref, read.revision, work_type="consolidate", available_at=core.clock.utc_now())
     model = FakeConsolidation(
         lambda sources, episode_ref=None: consolidation_payload(*sources, claims=[procedure_proposal(sources[0])])
     )

@@ -303,7 +303,7 @@ def decision_marker(tx, ref, revision):
 
 def _schedule(tx, clock, ref, revision, policy, *, on_demand=True, fresh=False):
     source = tx.source(ref, revision)
-    current = tx.source_current(ref)
+    current = tx.sources.source_current(ref)
 
     if (
         source is None
@@ -351,7 +351,7 @@ def _schedule(tx, clock, ref, revision, policy, *, on_demand=True, fresh=False):
     if not ready:
         return SourceScheduleReceipt(ref, revision, "deferred", "queue_capacity")
     for kind in sorted(ready):
-        tx.enqueue_source(ref, revision, work_type=kind, available_at=clock.utc_now())
+        tx.sources.enqueue_source(ref, revision, work_type=kind, available_at=clock.utc_now())
     if ready != missing:
         store_decision(tx, ref, revision, AdmissionDecision("deferred", "queue_capacity", priority))
         return SourceScheduleReceipt(ref, revision, "partial", "queue_capacity", len(ready))

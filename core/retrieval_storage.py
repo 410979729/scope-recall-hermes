@@ -365,7 +365,7 @@ def recall_echo(tx, source) -> bool:
     """
     if source.event.get("origin") != "assistant_visible":
         return False
-    stamp = tx.witnessed_at(source)
+    stamp = tx.sources.witnessed_at(source)
     if stamp is None:
         return False
     try:
@@ -1076,7 +1076,7 @@ class RetrievalStorage:
             metadata=(
                 *_source_contexts_metadata([context_meta] if context_meta is not None else []),
                 *_entries_metadata([label] if (label := tx.entry_label(source.entry_id)) is not None else []),
-                *_occurred_metadata(tx.witnessed_at(source)),
+                *_occurred_metadata(tx.sources.witnessed_at(source)),
                 *((("recall_echo", "true"),) if context.mode in LIVE_MODES and recall_echo(tx, source) else ()),
             ),
         )
@@ -1125,7 +1125,7 @@ class RetrievalStorage:
             source = tx.source(*parse_source_ref(ref))
             if source is not None:
                 origins.append(source.event["origin"])
-                witnessed.append(tx.witnessed_at(source))
+                witnessed.append(tx.sources.witnessed_at(source))
         origin = next((item for item in origins if item == "human_direct"), origins[0] if origins else "origin_unknown")
         metadata = (
             ("payload_json", _claim_content(version)),

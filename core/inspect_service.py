@@ -36,7 +36,7 @@ def inspect_object(
     with storage.read(context) as tx:
         status = tx.status()
         kind: str | None = None
-        value = tx.source(ref, revision) if revision is not None else tx.source_current(ref)
+        value = tx.source(ref, revision) if revision is not None else tx.sources.source_current(ref)
         if value is not None:
             kind = "event"
         if value is None:

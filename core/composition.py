@@ -160,7 +160,7 @@ class MemoryCore:
     ) -> StoredSource | None:
         """Read first-capture timestamps for an authenticated host replay."""
         with self.storage.read(context, remaining_seconds=remaining_seconds) as tx:
-            return tx.source_by_event_key(source_event_key, revision)
+            return tx.sources.source_by_event_key(source_event_key, revision)
 
     def source(self, context: TrustedContext, ref: str, revision: int) -> StoredSource | None:
         with self.storage.read(context) as tx:
@@ -262,7 +262,7 @@ class MemoryCore:
         self, context: TrustedContext, query: str, *, limit: int = 20, history: bool = False, automatic: bool = False
     ) -> tuple[StoredSource, ...]:
         with self.storage.read(context) as tx:
-            return tx.search_sources(query, limit=limit, history=history, automatic=automatic)
+            return tx.sources.search_sources(query, limit=limit, history=history, automatic=automatic)
 
     def said_in_session(
         self,
@@ -275,7 +275,7 @@ class MemoryCore:
     ) -> tuple[bool, ...]:
         """Whether each (role, content, occurred_at, host_key) is already held in this session; see ``Transaction``."""
         with self.storage.read(context, remaining_seconds=remaining_seconds) as tx:
-            return tx.said_in_session(scope_id, tuple(items), window_seconds=window_seconds)
+            return tx.sources.said_in_session(scope_id, tuple(items), window_seconds=window_seconds)
 
     def recall(
         self,

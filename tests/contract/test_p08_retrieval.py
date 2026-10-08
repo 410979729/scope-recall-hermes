@@ -294,7 +294,9 @@ def test_P08_the_recent_channel_reads_the_pending_queue_not_every_consolidation(
     done = capture(core, ctx, "TEST 值班表上周换过。", key="TEST-p08/recent/done")
     with core.storage.write(ctx, remaining_seconds=10) as tx:
         for source in (waiting, done):
-            tx.enqueue_source(source.ref, source.revision, work_type="consolidate", available_at=core.clock.utc_now())
+            tx.sources.enqueue_source(
+                source.ref, source.revision, work_type="consolidate", available_at=core.clock.utc_now()
+            )
         tx._check().execute("UPDATE work_items SET state='done' WHERE subject_ref=?", (done.ref,))
     plans = []
 

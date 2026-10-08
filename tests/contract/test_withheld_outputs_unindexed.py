@@ -76,8 +76,8 @@ def test_a_placeholder_is_kept_and_not_indexed(tmp_path):
     assert _postings(core, placeholder.ref) == 0
     assert _postings(core, output.ref) > 0, "a tool output keeps its words"
     with core.storage.read(ctx) as tx:
-        assert tx.source_projection_status(placeholder.ref, 1)[0] == "ready", "no terms is all it should hold"
-        assert tx.source_projection_status(output.ref, 1)[0] == "ready"
+        assert tx.sources.source_projection_status(placeholder.ref, 1)[0] == "ready", "no terms is all it should hold"
+        assert tx.sources.source_projection_status(output.ref, 1)[0] == "ready"
 
 
 def test_a_placeholder_is_found_by_its_error_text_alone(tmp_path):
@@ -87,7 +87,7 @@ def test_a_placeholder_is_found_by_its_error_text_alone(tmp_path):
     assert _terms(core, placeholder.ref) == set(lexical_terms(_ERROR))
     assert not {"tool", "terminal", "status", "patch", "output_preview"} & _terms(core, placeholder.ref)
     with core.storage.read(ctx) as tx:
-        assert tx.source_projection_status(placeholder.ref, 1)[0] == "ready"
+        assert tx.sources.source_projection_status(placeholder.ref, 1)[0] == "ready"
     reader = replace(ctx, session_id="TEST-reader")
     refs = [_item_ref(item) for item in recall(core, reader, query="TEST-deploy 配置文件不可写", mode="current").items]
     assert placeholder.ref in refs, refs
@@ -100,8 +100,8 @@ def test_indexing_a_placeholder_again_drops_what_an_older_release_gave_it(tmp_pa
     (errored,) = _withheld(core, ctx, 1, error=_ERROR, key="TEST-errored")
     assert _terms(core, errored.ref) > set(lexical_terms(_ERROR))
     with core.storage.write(ctx, remaining_seconds=10) as tx:
-        tx.index_source(placeholder.ref, 1)
-        tx.index_source(errored.ref, 1)
+        tx.sources.index_source(placeholder.ref, 1)
+        tx.sources.index_source(errored.ref, 1)
     assert _postings(core, placeholder.ref) == 0
     assert _terms(core, errored.ref) == set(lexical_terms(_ERROR)), "its error text stays, the envelope goes"
 

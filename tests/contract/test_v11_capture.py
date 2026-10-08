@@ -125,7 +125,7 @@ def test_raw_repository_access_cannot_bypass_prepared_capture_filter(core):
     app, ctx = core
     with app.storage.write(ctx) as tx:
         with pytest.raises(ContractError, match="unprepared_source"):
-            tx.put_source(
+            tx.sources.put_source(
                 source_event(content="password=TEST_ONLY"), scope_id="TEST-scope", persisted_at="2026-09-06T07:00:00Z"
             )
     assert not rows(app)["source_events"]
@@ -134,7 +134,7 @@ def test_raw_repository_access_cannot_bypass_prepared_capture_filter(core):
 def test_duplicate_reports_real_projection_state_without_repairing_it(core):
     app, ctx = core
     with app.storage.write(ctx) as tx:
-        row = tx.put_source(
+        row = tx.sources.put_source(
             source_event(source_event_key="TEST-unindexed"), scope_id="TEST-scope", persisted_at="2026-09-06T07:00:00Z"
         )
     before = app.storage.path.read_bytes()

@@ -134,7 +134,7 @@
    "reportArgumentType": 2,
    "reportOperatorIssue": 1
   },
-  "core/storage.py": {
+  "core/source_storage.py": {
    "reportArgumentType": 4,
    "reportAssignmentType": 1,
    "reportReturnType": 1
@@ -763,10 +763,13 @@
   "core/source_qualification.py": {
    "E501": 2
   },
+  "core/source_storage.py": {
+   "E501": 9
+  },
   "core/storage.py": {
    "B010": 1,
    "BLE001": 4,
-   "E501": 16
+   "E501": 7
   },
   "core/trace.py": {
    "C901": {

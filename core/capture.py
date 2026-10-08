@@ -81,10 +81,10 @@ def record_event(
                     raise ContractError("ACCESS_DENIED")
             # Decided on the whole message, before any part is written: the first part alone had let a copy of a
             # deleted message through (review of rc13).
-            tx.refuse_under_a_deleted_key(prepared.events, scope_id=scope_id)
+            tx.sources.refuse_under_a_deleted_key(prepared.events, scope_id=scope_id)
             for event in prepared.events:
                 decision = decide(tx, event, scope_id, admission_policy)
-                source = tx.put_source(
+                source = tx.sources.put_source(
                     event, scope_id=scope_id, persisted_at=clock.utc_now(), capture_gaps=prepared.gaps
                 )
                 receipts.append(source)
@@ -92,14 +92,16 @@ def record_event(
                     candidate_sources.append((source, decision))
                     store_decision(tx, source.ref, source.revision, decision)
                     tx.claims.link_source(source.ref, source.revision)
-                    tx.index_source(source.ref, source.revision)
+                    tx.sources.index_source(source.ref, source.revision)
                     for kind in sorted(decision.work_types):
-                        tx.enqueue_source(source.ref, source.revision, work_type=kind, available_at=clock.utc_now())
+                        tx.sources.enqueue_source(
+                            source.ref, source.revision, work_type=kind, available_at=clock.utc_now()
+                        )
                     tx.episodes.attach(tx.source(source.ref, source.revision), clock.utc_now())
                 marker = decision_marker(tx, source.ref, source.revision)
                 if marker is not None:
                     admission_markers.append(marker)
-                projection_states.append(tx.source_projection_status(source.ref, source.revision))
+                projection_states.append(tx.sources.source_projection_status(source.ref, source.revision))
             from .mutate import capture_confirmation, capture_correction
 
             for receipt in receipts:
@@ -114,7 +116,7 @@ def record_event(
                         mutations.append(mutation)
             for source, decision in candidate_sources:
                 stored = tx.source(source.ref, source.revision)
-                current = tx.source_current(source.ref)
+                current = tx.sources.source_current(source.ref)
                 if (
                     decision.disposition != "source_only"
                     and stored is not None

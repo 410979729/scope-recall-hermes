@@ -314,7 +314,7 @@ def test_p15_unknown_authority_permissions_and_content_redaction_block_cutover(t
     binding = InstanceBinding("p15-synthetic-agent", "p15-synthetic-installation", target, frozenset({"scope-a"}), True)
     storage = SQLiteStorage(binding)
     with storage.read(TrustedContext(binding, "other", binding.scope_ids, "host_generated")) as tx:
-        assert tx.search_sources("[REDACTED_SECRET]") == ()
+        assert tx.sources.search_sources("[REDACTED_SECRET]") == ()
 
 
 def test_p15_exported_deletion_ledger_replays_and_core_fence_denies_normal_capture(tmp_path: Path) -> None:

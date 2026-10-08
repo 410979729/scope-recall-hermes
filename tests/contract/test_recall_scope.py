@@ -672,7 +672,7 @@ def test_a_day_question_naming_an_entry_of_a_shared_store_reads_that_entry(tmp_p
                     recorded_at=f"2026-09-02T1{index}:00:00Z",
                 )
                 said.setdefault(entry, []).append(
-                    tx.put_source(event, scope_id="TEST-scope", persisted_at="2026-09-02T20:00:00Z").ref
+                    tx.sources.put_source(event, scope_id="TEST-scope", persisted_at="2026-09-02T20:00:00Z").ref
                 )
 
     def asked(query):

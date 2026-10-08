@@ -79,7 +79,7 @@ def queue_embedding_page(storage, context, *, after_key=None, limit=128, waterma
                 tx.claims.require_live_source(source.ref, source.revision)
             except ContractError:
                 continue
-            tx.enqueue_source(source.ref, source.revision, work_type="embed", available_at=now)
+            tx.sources.enqueue_source(source.ref, source.revision, work_type="embed", available_at=now)
             scheduled += 1
     cursor = (rows[-1]["event_id"], rows[-1]["source_revision"]) if rows else watermark
     return dict(
@@ -175,7 +175,7 @@ def queue_import_embeddings(
                     continue
                 if classify(source.event).disposition != "schedule":
                     continue
-                tx.enqueue_source(source.ref, source.revision, work_type="embed", available_at=moment)
+                tx.sources.enqueue_source(source.ref, source.revision, work_type="embed", available_at=moment)
                 queued += 1
     cursor = (rows[-1]["event_id"], rows[-1]["source_revision"]) if rows else after_key
     return dict(after_key=cursor, queued=queued, scanned=len(rows), held=False, finished=len(rows) < scan)

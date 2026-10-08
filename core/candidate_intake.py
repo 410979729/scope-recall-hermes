@@ -214,7 +214,7 @@ class CandidateIntake(CandidateTables):
         now = utc(observed_at)
         rule_version = rule(rule_version)
         source = self._tx.source(source_ref, source_revision)
-        current = self._tx.source_current(source_ref)
+        current = self._tx.sources.source_current(source_ref)
         if source is None or source.suppressed or current is None or current.revision != source_revision:
             raise ContractError("SOURCE_MISSING", "candidate_trigger_source")
         conn = self._write()
@@ -573,7 +573,7 @@ class CandidateIntake(CandidateTables):
         if row is None:
             return None
         source = self._tx.source(row["source_ref"], row["source_revision"])
-        current = self._tx.source_current(row["source_ref"])
+        current = self._tx.sources.source_current(row["source_ref"])
         if source is None or source.suppressed or current is None or current.revision != source.revision:
             return row["source_ref"], row["source_revision"], None
         return (

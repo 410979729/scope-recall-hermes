@@ -36,7 +36,7 @@ def store(tmp_path):
 
 
 def put(tx, key="TEST-source/1", **values):
-    return tx.put_source(source_event(source_event_key=key, **values), scope_id="TEST-scope", persisted_at=NOW)
+    return tx.sources.put_source(source_event(source_event_key=key, **values), scope_id="TEST-scope", persisted_at=NOW)
 
 
 def snapshot(storage, ctx):
@@ -133,7 +133,7 @@ def test_independent_initialize_and_exact_restricted_roundtrip(store):
     text = "\n  TEST  原始文字、H100/H200 与文档.svg\n"
     with storage.write(ctx) as tx:
         written = put(tx, content=text)
-        tx.enqueue_source(written.ref, written.revision, work_type="consolidate", available_at=NOW)
+        tx.sources.enqueue_source(written.ref, written.revision, work_type="consolidate", available_at=NOW)
     with storage.read(ctx) as tx:
         saved = tx.source(written.ref, 1)
         assert saved.event["content"] == text
@@ -155,13 +155,13 @@ def test_scopes_filtered_and_foreign_binding_refused(tmp_path):
     private = TrustedContext(binding, "TEST-session", frozenset({"TEST-private"}), "human_direct")
     group = replace(private, allowed_scope_ids=frozenset({"TEST-group"}))
     with storage.write(private) as tx:
-        row = tx.put_source(source_event(), scope_id="TEST-private", persisted_at=NOW)
+        row = tx.sources.put_source(source_event(), scope_id="TEST-private", persisted_at=NOW)
     with storage.read(group) as tx:
         assert tx.source(row.ref, 1) is None
         assert tx.status().sources == 0
     with storage.write(group) as tx:
         with pytest.raises(ContractError, match="ACCESS_DENIED"):
-            tx.put_source(source_event(), scope_id="TEST-private", persisted_at=NOW)
+            tx.sources.put_source(source_event(), scope_id="TEST-private", persisted_at=NOW)
     stranger = replace(private, binding=replace(binding, installation_id="TEST-other"))
     with pytest.raises(ContractError, match="IDENTITY_UNBOUND"), storage.read(stranger):
         pass
@@ -174,17 +174,17 @@ def test_context_filter_precedes_source_search_limit_and_status(store, field):
     other = replace(owner, **{field: "TEST-other"})
     with storage.write(owner) as tx:
         foreign = put(tx, "TEST-foreign", content="TEST-only-owner 内容")
-        tx.index_source(foreign.ref, 1)
-        tx.enqueue_source(foreign.ref, 1, work_type="embed", available_at=NOW)
+        tx.sources.index_source(foreign.ref, 1)
+        tx.sources.enqueue_source(foreign.ref, 1, work_type="embed", available_at=NOW)
     with storage.read(other) as tx:
         assert tx.status().sources == tx.status().pending_work == 0
         assert tx.source(foreign.ref, 1) is None
-        assert tx.search_sources("TEST-only-owner", history=True) == ()
+        assert tx.sources.search_sources("TEST-only-owner", history=True) == ()
     with storage.write(other) as tx:
         local = put(tx, "TEST-local", content="TEST-only-owner 当前项目也包含此词")
-        tx.index_source(local.ref, 1)
+        tx.sources.index_source(local.ref, 1)
     with storage.read(other) as tx:
-        assert [r.ref for r in tx.search_sources("TEST-only-owner", limit=1)] == [local.ref]
+        assert [r.ref for r in tx.sources.search_sources("TEST-only-owner", limit=1)] == [local.ref]
         assert tx.status().sources == 1 and tx.status().pending_work == 0
 
 
@@ -193,7 +193,7 @@ def test_global_sources_remain_readable_without_exposing_project_sources(store):
     global_ctx = replace(ctx, project_id=None, branch_id=None)
     with storage.write(global_ctx) as tx:
         source = put(tx)
-        tx.enqueue_source(source.ref, 1, work_type="embed", available_at=NOW)
+        tx.sources.enqueue_source(source.ref, 1, work_type="embed", available_at=NOW)
     with storage.read(replace(ctx, project_id="TEST-A", branch_id="TEST-main")) as tx:
         assert tx.source(source.ref, 1) is not None
         assert tx.status().sources == tx.status().pending_work == 1
@@ -283,7 +283,7 @@ def test_owned_failure_rolls_back_source_work_and_epoch(store):
     with pytest.raises(InjectedFailure, match="application"):
         with storage.write(ctx) as tx:
             row = put(tx)
-            tx.enqueue_source(row.ref, 1, work_type="embed", available_at=NOW)
+            tx.sources.enqueue_source(row.ref, 1, work_type="embed", available_at=NOW)
             raise InjectedFailure("application")
     status = snapshot(storage, ctx)
     assert status.sources == status.pending_work == status.memory_epoch == 0
@@ -299,7 +299,7 @@ def test_owned_transaction_failures_discard_connection_and_allow_next_write(stor
     with pytest.raises(InjectedFailure):
         with storage.write(ctx) as tx:
             row = put(tx)
-            tx.enqueue_source(row.ref, 1, work_type="consolidate", available_at=NOW)
+            tx.sources.enqueue_source(row.ref, 1, work_type="consolidate", available_at=NOW)
     assert opened[-1].closed
     with pytest.raises(sqlite3.ProgrammingError, match="closed"):
         opened[-1].conn.execute("SELECT 1")
@@ -318,7 +318,7 @@ def test_borrowed_failure_rolls_back_only_nested_changes(store):
         with pytest.raises(InjectedFailure):
             with tx.savepoint() as borrowed:
                 second = put(borrowed, "TEST-inner")
-                borrowed.enqueue_source(second.ref, 1, work_type="embed", available_at=NOW)
+                borrowed.sources.enqueue_source(second.ref, 1, work_type="embed", available_at=NOW)
                 raise InjectedFailure("inner")
         assert tx.source(first.ref, 1)
         assert tx.source(second.ref, 1) is None
@@ -582,8 +582,8 @@ def test_source_versions_carry_an_integer_identity_and_the_lexical_index_names_t
     with storage.write(ctx) as tx:
         first = put(tx, key="TEST-id/1", content="TEST 蓝色 identity one")
         second = put(tx, key="TEST-id/2", content="TEST 蓝色 identity two")
-        tx.index_source(first.ref, first.revision)
-        tx.index_source(second.ref, second.revision)
+        tx.sources.index_source(first.ref, first.revision)
+        tx.sources.index_source(second.ref, second.revision)
     with sqlite3.connect(storage.path) as conn:
         ids = [row[0] for row in conn.execute("SELECT source_id FROM source_events ORDER BY source_id")]
         assert ids == [1, 2]
@@ -593,7 +593,7 @@ def test_source_versions_carry_an_integer_identity_and_the_lexical_index_names_t
         ).fetchone()[0]
         assert shared == 2, "one term row, one posting per source"
     with storage.read(ctx) as tx:
-        assert tx.source_projection_status(first.ref, first.revision)[0] == "ready"
-        assert [s.ref for s in tx.search_sources("identity")] == [second.ref, first.ref] or len(
-            tx.search_sources("identity")
+        assert tx.sources.source_projection_status(first.ref, first.revision)[0] == "ready"
+        assert [s.ref for s in tx.sources.search_sources("identity")] == [second.ref, first.ref] or len(
+            tx.sources.search_sources("identity")
         ) == 2

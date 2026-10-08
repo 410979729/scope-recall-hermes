@@ -135,6 +135,7 @@
     "core/secret_patterns.py",
     "core/source_qualification.py",
     "core/source_records.py",
+    "core/source_storage.py",
     "core/storage.py",
     "core/subject_binding.py",
     "core/trace.py",

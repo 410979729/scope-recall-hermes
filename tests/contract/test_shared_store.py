@@ -54,7 +54,9 @@ def shared(tmp_path):
 
 def put(storage, ctx, key, scope="TEST-scope", content="TEST 只写给共享库的一句话。"):
     with storage.write(ctx) as tx:
-        return tx.put_source(source_event(source_event_key=key, content=content), scope_id=scope, persisted_at=NOW)
+        return tx.sources.put_source(
+            source_event(source_event_key=key, content=content), scope_id=scope, persisted_at=NOW
+        )
 
 
 def rows(storage):
