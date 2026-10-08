@@ -5,9 +5,13 @@ longer text this file once held is in its history.
 
 ## [Unreleased]
 
-### Scope Recall 3.9.2rc1 - 2026-10-08
+## [3.9.2] - 2026-10-08
 
-The clean-up's last code step, no behaviour change: the store transaction and the core split by what they do, the installers share their common steps, and comments say what the code does rather than how it came about.
+3.9.2 changes no behaviour. It is the clean-up's last part: the store transaction and the core are split by what they do (`tx.sources`, `tx.registry`, `core.operations`, `core.records`), the clients' installers share their common functions, logic that was copied lives in one function (duplicated lines in production code 940 to 319), comments say what the code does rather than how it came about, test files are named for what they test, and this changelog keeps a line or two per release (each release's full notes are on its GitHub release page).
+
+### Upgrading from 3.9.1
+
+Install the package, run `plan-install` and `apply-install` where you upgrade, then restart the Hermes gateways and the clients' MCP servers. The schema is unchanged (1110), and so are the hook and MCP server commands the installers write. A script that called a moved method calls it on its part: `core.operations.respace_embeddings` (and the other maintenance passes), `core.records.schedule_source` (and the other record calls), `tx.sources.put_source`, `tx.registry.entries`.
 
 ## [3.9.1] - 2026-10-08
 3.9.1 changes no behaviour. It is the clean-up's second part: stored content, recall results, hook and CLI output, log lines, configuration formats and the modules installed hosts run are those of 3.9.0.
@@ -121,7 +125,7 @@ The changes as they were written when each landed, from the release audit back t
 3.1.1 is what running 3.1.0 on real instances, ours and yours, turned up, fixed. What is remembered and how it is asked for do not change, and there is no new concept to learn.
 
 ## [3.1.0] - 2026-09-18
-3.1.0 rebuilt the project (production code from 141,044 lines to 48,289): what is said is stored word for word first and becomes a fact only when its evidence is enough, a fact keeps its versions, and relevant memory reaches the model by itself. A 2.0.1 store goes through a migration (its section 9).
+3.1.0 rebuilt the project (production code from 141,044 lines to 48,289): what is said is stored word for word first and becomes a fact only when its evidence is enough, a fact keeps its versions, and relevant memory reaches the model by itself. A 2.0.1 store goes through a migration (section 9 of its release notes).
 
 ## [2.0.1] - 2026-08-30
 This patch is cumulative since the last public release, `2.0.0`. It completes the production managed upgrade path for ordinary users and hardens the 2.0 memory runtime: one fixed official stable source, an external resumable idempotent operation journal, strict state transitions, exact-Hermes-home restart control, zero-signal recall admission, candidate...

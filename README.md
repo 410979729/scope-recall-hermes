@@ -1,23 +1,22 @@
-# Scope Recall 3.7 autonomous memory
+# Scope Recall
 
-Scope Recall v3 is a bounded local memory core with SQLite as the authority and rebuildable vector companions. It provides host adapters for Hermes, Codex and Claude Code (the last two share one adapter of hooks and an MCP server), with the MCP tools when the optional `codex` extra is installed. The public package is `hermes-scope-recall`; the Python import is `scope_recall`; the host wrapper identity remains `scope-recall`.
-WorkBuddy runs that same hook adapter and MCP server, as an entry of a shared store, and so does DeepSeek Harness (dsh), through a plugin.
+Scope Recall v3 is a bounded local memory core with SQLite as the authority and rebuildable vector companions. It provides host adapters for Hermes, and for Codex, Claude Code, WorkBuddy and DeepSeek Harness (dsh), which share one adapter of hooks and an MCP server (the MCP tools need the optional `codex` extra; dsh runs the hooks through a plugin). The public package is `hermes-scope-recall`; the Python import is `scope_recall`; the host wrapper identity remains `scope-recall`.
 
-This checkout is `3.9.2rc1`, the clean-up's next step on 3.9.1; 3.9.1 is 3.8.2 cleaned up with no change in behaviour: one format for the whole tree, a quality check in CI that also holds the imports to the package's layers (no cycles), and the hook clients (`adapters/clients`) and the Hermes adapter split into smaller modules; since 3.8.2 a Hermes agent on Gemini can use its memory tools; since 3.8.1 a worker stays up until the candidates of a conversation's last messages settle, the doctor names work that has waited a day in any partition, and outside Windows `autostart` prints the wake for a timer of your own; since 3.8.0 an operator can re-embed a store into a new embedding space (`respace-embeddings`) and the doctor says when embeddings have waited a day; since 3.7.2 Hermes keeps what a failed tool call printed, an automatic recall reads its evidence in about 470 statements where it ran 16,000, a capture's write no longer grows with its words, its episode or the store's scopes in a busy Hermes gateway (a long tool output held the shared store's writer lease for up to 43 s), a claim's vector work comes back after a provider failed it (`retry-failures` reopens what earlier releases dropped), a withheld tool output's placeholder is indexed by the tool's own error text alone, and what Hermes writes into a conversation itself is stored as the host's, not the owner's, also when a compression folded its summary or a to-do list into it; since 3.7.0 DeepSeek Harness (dsh) joins the shared store too: a dsh plugin recalls before each turn and stores each turn's messages, and dsh's upload of its session logs is switched off ([docs/install.md](docs/install.md), section 13). Hermes, Codex, Claude Code, WorkBuddy and dsh can keep one memory: each attaches to a shared
+This checkout is `3.9.2`. Hermes, Codex, Claude Code, WorkBuddy and dsh can keep one memory: each attaches to a shared
 store as an entry, what the owner tells one of them another can recall, and each memory says
-which agent it came in through ([docs/shared-store.md](docs/shared-store.md)). Hermes agents
-could share a store from 3.2.0; Codex and Claude Code join in 3.3.0. An agent that is not
-attached keeps its own store. A tool's output is still kept and found, but no longer turned
-into facts. The notes are the `[3.7.x]`, `[3.6.x]`, `[3.5.x]` and `[3.4.x]` sections of [CHANGELOG.md](CHANGELOG.md), newest first; upgrading
-from `3.4.x`, `3.3.x` or `3.2.x` is `pip install -U`, `apply-install` and a host restart, and the store's
-schema does not change; on a shared store in the shipped embedding space, set `vector_threshold`
-from 0.653 to 0.70 by hand ([docs/configuration.md](docs/configuration.md#vector_threshold)). From `3.1.x` the store moves to schema 1110 the first time it is opened,
-after which a 3.1 process cannot open it.
+which agent it came in through ([docs/shared-store.md](docs/shared-store.md)). An agent that is not
+attached keeps its own store. A tool's output is kept and found, but not turned into facts. Each release's notes
+are a line or two in [CHANGELOG.md](CHANGELOG.md) and in full on its
+[GitHub release](https://github.com/410979729/scope-recall-hermes/releases). Upgrading from `3.2.x` or later is
+`pip install -U`, `apply-install` and a host restart, and the store's schema does not change; on a shared store in
+the shipped embedding space, set `vector_threshold` from 0.653 to 0.70 by hand
+([docs/configuration.md](docs/configuration.md#vector_threshold)). From `3.1.x` the store moves to schema 1110 the
+first time it is opened, after which a 3.1 process cannot open it.
 3.1 is a rebuild rather than a patch on 2.0: production
 code went from 141,044 lines to 48,289, memory now accumulates evidence before a
 fact is written rather than judging one sentence on sight, and hosts sit behind
-adapters instead of the core being shaped around Hermes. The notes for the rebuild are
-the `[3.1.0]` section of [CHANGELOG.md](CHANGELOG.md), and section 9 there is the
+adapters instead of the core being shaped around Hermes. Section 9 of the
+[3.1.0 release notes](https://github.com/410979729/scope-recall-hermes/releases/tag/v3.1.0) is the
 migration procedure for a 2.0.1 memory database. SQLite remains the only fact
 authority; host adapters share the same contracts.
 
@@ -54,12 +53,12 @@ The package is `hermes-scope-recall` on PyPI. Install it into the same isolated 
 environment the host uses:
 
 ```text
-python -m pip install hermes-scope-recall==3.7.0
-python -m pip install "hermes-scope-recall[codex]==3.7.0"
+python -m pip install hermes-scope-recall==3.9.2
+python -m pip install "hermes-scope-recall[codex]==3.9.2"
 ```
 
 The same wheel and sdist are attached to the
-[GitHub Release](https://github.com/410979729/scope-recall-hermes/releases/tag/v3.7.0)
+[GitHub Release](https://github.com/410979729/scope-recall-hermes/releases/tag/v3.9.2)
 alongside `SHA256SUMS` and `RELEASE-PROVENANCE.json`, for an offline install
 (`python -m pip install "<path-to-wheel>"`). To build it yourself from this checkout instead:
 
@@ -67,8 +66,8 @@ alongside `SHA256SUMS` and `RELEASE-PROVENANCE.json`, for an offline install
 python -m build --wheel
 ```
 
-Upgrading from 2.0.x is not an in-place upgrade. Read section 9 of
-[CHANGELOG.md](CHANGELOG.md) before you start; your old database needs a
+Upgrading from 2.0.x is not an in-place upgrade. Read section 9 of the
+[3.1.0 release notes](https://github.com/410979729/scope-recall-hermes/releases/tag/v3.1.0) before you start; your old database needs a
 one-time offline migration and there are two errors people commonly hit.
 
 The two console names `scope-recall` and `hermes-scope-recall` invoke the same v3 maintenance CLI. They are aliases for the current CLI only; neither is a compatibility promise for an older command set.
