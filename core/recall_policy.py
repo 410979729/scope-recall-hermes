@@ -72,9 +72,10 @@ def is_plaintext_loopback_url(value: object) -> bool:
     """Whether a URL is ``http://`` to a host on this machine.
 
     1.9.1 kept loopback HTTP compatible for local model servers (CHANGELOG):
-    ``require_safe_endpoint`` let a loopback host through without an opt-in.
-    The 3.x endpoint policy has to keep saying so, or the local-model path
-    1.9.1 documented is gone.
+    ``require_safe_endpoint`` let a loopback host through without an opt-in and
+    only asked ``allow_insecure_endpoint`` for a non-loopback one.  The 3.x
+    endpoint policy has to keep saying so, or the local-model path 1.9.1
+    documented is gone.
     """
     if type(value) is not str or not value:
         return False
@@ -85,17 +86,36 @@ def is_plaintext_loopback_url(value: object) -> bool:
     return parsed.scheme == "http" and bool(parsed.hostname) and is_loopback_host(parsed.hostname)
 
 
-def _endpoint_scheme_allowed(endpoint: str) -> bool:
+def endpoint_scheme_allowed(endpoint: str, *, allow_insecure: bool = False) -> bool:
     """Whether plain HTTP may be used to reach this endpoint.
 
-    HTTPS anywhere, and plain HTTP to this machine: 1.9.1's CHANGELOG kept
-    "Loopback HTTP ... compatible for local model servers", and its
-    ``require_safe_endpoint`` let a loopback host through without an opt-in.
-    A non-loopback plain-HTTP endpoint is not admitted here.
+    HTTPS anywhere; plain HTTP to this machine, or to a trusted host with the
+    literal opt-in.  1.9.1's rule, kept in one place: its CHANGELOG says
+    "Loopback HTTP remains compatible for local model servers" and, separately,
+    added "explicit CLI opt-in for trusted non-loopback HTTP endpoints";
+    ``require_safe_endpoint`` let a loopback host through and asked for
+    ``allow_insecure_endpoint`` only beyond it.  Both halves are kept together,
+    because the second is what a container reaching the model server on its
+    host's bridge address needs -- that address is not loopback.
+
+    The opt-in permits plain HTTP to another host; it does not admit a scheme
+    that is not HTTP at all, which is a different question the caller asks
+    separately.
     """
     if endpoint.startswith("https://"):
         return True
-    return is_plaintext_loopback_url(endpoint)
+    return is_plaintext_loopback_url(endpoint) or (allow_insecure and _is_http_url(endpoint))
+
+
+def _is_http_url(value: object) -> bool:
+    """Whether a value is an ``http://`` URL with a host and no credentials."""
+    if type(value) is not str or not value.startswith("http://"):
+        return False
+    try:
+        parsed = urllib.parse.urlsplit(value)
+    except ValueError:
+        return False
+    return bool(parsed.hostname) and not parsed.username and not parsed.password
 
 
 def _endpoint_url_shape_ok(endpoint: str) -> bool:

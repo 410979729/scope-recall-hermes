@@ -190,15 +190,16 @@ def test_P08_the_endpoint_rule_is_stated_where_the_config_is_read():
     instead of surfacing later as ``INPUT_INVALID: invalid embedding_space`` --
     which names neither the scheme nor the endpoint.
     """
-    from scope_recall.adapters.models import EmbeddingRouteConfig
+    from scope_recall.runtime.embedding_models import EmbeddingRouteConfig
 
-    def route(endpoint: str) -> EmbeddingRouteConfig:
+    def route(endpoint: str, *, allow_insecure: bool = False) -> EmbeddingRouteConfig:
         return EmbeddingRouteConfig(
             credential_env="TEST_EMBED_KEY",
             model="local-embedding",
             endpoint=endpoint,
             dimensions=1024,
             dialect="openai",
+            allow_insecure_endpoint=allow_insecure,
         )
 
     # Loopback HTTP is a local model server, every spelling of it, with no opt-in.
@@ -209,8 +210,8 @@ def test_P08_the_endpoint_rule_is_stated_where_the_config_is_read():
     ):
         assert route(endpoint).space()["endpoint"] == endpoint
 
-    # A host that is not this machine is refused by name -- a container bridge
-    # address included.
+    # A host that is not this machine needs the literal opt-in, and is refused by
+    # name without it -- a container bridge address included.
     for endpoint in (
         "http://172.17.0.1:18080/v1/embeddings",
         "http://example.com/v1/embeddings",
@@ -219,12 +220,29 @@ def test_P08_the_endpoint_rule_is_stated_where_the_config_is_read():
         with pytest.raises(ValueError) as refused:
             route(endpoint)
         assert str(refused.value) == "embedding_route_endpoint"
+        assert route(endpoint, allow_insecure=True).space()["endpoint"] == endpoint
 
-    # A scheme that is not HTTP, and a value that is not a URL, stay refused too.
+    # The opt-in permits plain HTTP to a trusted host; it does not admit a scheme
+    # that is not HTTP, nor a value that is not a URL.  Those stay refused with it.
     for endpoint in ("ftp://example.com/v1/embeddings", "example.com/v1/embeddings", "not-a-url"):
+        for opt_in in (False, True):
+            with pytest.raises(ValueError) as refused:
+                route(endpoint, allow_insecure=opt_in)
+            assert str(refused.value) == "embedding_route_endpoint"
+
+    # The opt-in is a literal boolean, as 1.9.1 required: anything else is refused
+    # rather than coerced, so a string "true" in a config file cannot open it.
+    for not_a_boolean in ("true", 1, "yes", []):
         with pytest.raises(ValueError) as refused:
-            route(endpoint)
-        assert str(refused.value) == "embedding_route_endpoint"
+            EmbeddingRouteConfig(
+                credential_env="TEST_EMBED_KEY",
+                model="local-embedding",
+                endpoint="https://api.example.com/v1/embeddings",
+                dimensions=1024,
+                dialect="openai",
+                allow_insecure_endpoint=not_a_boolean,  # type: ignore[arg-type]
+            )
+        assert str(refused.value) == "embedding_route_allow_insecure_endpoint"
 
     # And the shipped default, which states no endpoint, is untouched.
     assert EmbeddingRouteConfig(credential_env="TEST_EMBED_KEY").space() == EMBEDDING_SPACE

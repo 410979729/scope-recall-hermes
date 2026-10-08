@@ -17,6 +17,12 @@ import urllib.request
 
 MAX_REQUEST_BYTES = 3 * 1024 * 1024
 _REQUEST_KEYS = frozenset({"url", "body_b64", "headers", "timeout_seconds", "max_response_bytes"})
+#: The one key a caller may add.  1.9.1's permission to send plaintext HTTP to a
+#: host that is not this machine (`allow_insecure_endpoint`, "only for an
+#: explicitly trusted endpoint"); loopback HTTP needs no such word.  Optional, so
+#: a parent that never sends it cannot make the worker accept more than before.
+_OPTIONAL_REQUEST_KEYS = frozenset({"allow_insecure"})
+
 #: Headers never sent over a plaintext connection.  A local model server needs
 #: no credential, and 1.9.1's endpoint policy stripped them rather than letting
 #: a bearer token cross an unencrypted socket (CHANGELOG: "every HTTP path
@@ -142,7 +148,10 @@ def _parse_request(
         request = json.loads(raw.decode("utf-8"))
     except (UnicodeError, json.JSONDecodeError):
         raise _Failure("http_protocol") from None
-    if not isinstance(request, dict) or set(request) != _REQUEST_KEYS:
+    if not isinstance(request, dict) or not (_REQUEST_KEYS <= set(request) <= _REQUEST_KEYS | _OPTIONAL_REQUEST_KEYS):
+        raise _Failure("http_protocol")
+    allow_insecure = request.get("allow_insecure", False)
+    if type(allow_insecure) is not bool:
         raise _Failure("http_protocol")
     url = request["url"]
     if type(url) is not str:
@@ -155,7 +164,7 @@ def _parse_request(
         raise _Failure("endpoint_invalid")
     plaintext = False
     if parsed.scheme == "http":
-        if not _is_loopback_host(parsed.hostname):
+        if not (_is_loopback_host(parsed.hostname) or allow_insecure):
             raise _Failure("endpoint_invalid")
         plaintext = True
     elif parsed.scheme != "https":
