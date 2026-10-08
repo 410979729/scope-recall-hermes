@@ -1106,7 +1106,7 @@ def attach_shared_record(root: Path | str, record: dict[str, Any], *, now: str) 
     return view
 
 
-def _initialize_core(manifest: InstallationManifest, clock: Any | None) -> tuple[InstanceBinding, MemoryCore]:
+def initialize_core(manifest: InstallationManifest, clock: Any | None) -> tuple[InstanceBinding, MemoryCore]:
     binding = manifest.to_binding()
     core = MemoryCore(CoreConfig(binding), clock=clock)
     core.initialize()
@@ -1155,81 +1155,4 @@ def install_hermes_scope_recall(
         test_mode=test_mode,
     )
     write_installation_manifest(manifest)
-    return _initialize_core(manifest, clock)
-
-
-def _verified_legacy_catalog(source_database: Path | str, source_hash: str, catalog_hash: str) -> dict[str, Any]:
-    from scope_recall.maintenance.migrate_v2 import build_legacy_catalog
-
-    catalog = build_legacy_catalog(source_database)
-    if catalog["source_sha256"] != source_hash:
-        raise HermesIdentityError(
-            f"source snapshot digest mismatch: expected {source_hash}, got {catalog['source_sha256']}"
-        )
-    if catalog["catalog_sha256"] != catalog_hash:
-        raise HermesIdentityError(f"catalog digest mismatch: expected {catalog_hash}, got {catalog['catalog_sha256']}")
-    if not catalog["is_supported"]:
-        reasons = [item.get("reason", "unknown") for item in catalog.get("unsupported", [])]
-        raise HermesIdentityError(f"legacy catalog reports unsupported semantics: {reasons}")
-    return catalog
-
-
-def install_hermes_archive_migration(
-    hermes_home: Path | str,
-    *,
-    source_database: Path | str,
-    agent_id: str = "p15-archive-agent",
-    platform: str = "cli",
-    user_id: str = "local",
-    agent_workspace: str = "default",
-    test_mode: bool = True,
-    expected_source_hash: str | None = None,
-    expected_catalog_hash: str | None = None,
-    clock: Any | None = None,
-) -> tuple[InstanceBinding, InstallationManifest, dict[str, Any]]:
-    """Explicit opt-in trusted install for isolated archive migrations."""
-    if test_mode is not True:
-        raise HermesIdentityError("archive-only migration requires test_mode=True (literal True)")
-    home = Path(hermes_home)
-    if not home.is_absolute():
-        raise HermesIdentityError("hermes_home must be absolute before resolve")
-    home = home.expanduser().resolve()
-    if not any(part.upper().startswith("TEST") for part in home.parts):
-        raise HermesIdentityError("archive-only installation target must be beneath a TEST-named path component")
-    for label, digest in (
-        ("expected_source_hash", expected_source_hash),
-        ("expected_catalog_hash", expected_catalog_hash),
-    ):
-        if type(digest) is not str or not _HEX64_RE.fullmatch(digest):
-            raise HermesIdentityError(f"{label} must be exact 64-hex string")
-
-    catalog = _verified_legacy_catalog(source_database, expected_source_hash, expected_catalog_hash)
-    sources = dict.fromkeys(catalog["content_scopes"] + catalog["shared_only_scopes"] + catalog["audit_only_scopes"])
-    manifest = build_installation_manifest(
-        home,
-        agent_id=agent_id,
-        platform=platform,
-        user_id=user_id,
-        agent_workspace=agent_workspace,
-        test_mode=True,
-        archive_source_scopes={source: build_archive_scope_id(source) for source in sources},
-        archive_retention_scopes=AUDIT_RETENTION_SCOPES,
-        archive_snapshot_hash=catalog["source_sha256"],
-        archive_catalog_hash=catalog["catalog_sha256"],
-    )
-
-    target_data = home / "scope-recall"
-    if target_data.exists() and any(target_data.iterdir()):
-        try:
-            existing = load_installation_manifest(home)
-        except HermesIdentityError as exc:
-            raise HermesIdentityError(f"archive target exists but manifest is invalid or unreadable: {exc}") from exc
-        if manifest_payload(existing) != manifest_payload(manifest):
-            raise HermesIdentityError(
-                "existing manifest payload does not match intended payload; refusing unrelated target"
-            )
-        manifest = existing
-    else:
-        write_installation_manifest(manifest)
-    binding, _core = _initialize_core(manifest, clock)
-    return binding, manifest, catalog
+    return initialize_core(manifest, clock)

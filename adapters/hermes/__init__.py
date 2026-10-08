@@ -3,7 +3,6 @@
 from .identity import HermesIdentityError, bind_hermes_identity
 from .installation import (
     build_archive_scope_id,
-    install_hermes_archive_migration,
     install_hermes_scope_recall,
     is_archive_scope,
     load_installation_manifest,
@@ -14,7 +13,6 @@ __all__ = [
     "ScopeRecallHermesAdapter",
     "bind_hermes_identity",
     "build_archive_scope_id",
-    "install_hermes_archive_migration",
     "install_hermes_scope_recall",
     "is_archive_scope",
     "load_installation_manifest",

@@ -17,6 +17,7 @@ from .migration_records import (
 )
 from .legacy_catalog import build_legacy_catalog as build_legacy_catalog
 from .migration_activation import (
+    install_hermes_archive_migration,
     _load_installation_handoff as _load_installation_handoff,
     _accept_identical_archive_run,
     _archive_report_path,
@@ -166,8 +167,6 @@ def _archive_install_test(args: argparse.Namespace, mapping: dict[str, str] | No
         )
         _emit(json.loads(report_path.read_text(encoding="utf-8")))
         return 0
-    from scope_recall.adapters.hermes.installation import install_hermes_archive_migration
-
     _binding, manifest, catalog = install_hermes_archive_migration(
         target_path,
         source_database=args.source,

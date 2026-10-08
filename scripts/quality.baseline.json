@@ -67,7 +67,7 @@
    "reportArgumentType": 1
   },
   "adapters/hermes/installation.py": {
-   "reportArgumentType": 3
+   "reportArgumentType": 1
   },
   "adapters/hermes/tool_surface.py": {
    "reportAttributeAccessIssue": 15
@@ -213,7 +213,7 @@
    "reportArgumentType": 1
   },
   "maintenance/migration_activation.py": {
-   "reportArgumentType": 4,
+   "reportArgumentType": 6,
    "reportPrivateImportUsage": 1
   },
   "maintenance/migration_index.py": {
@@ -460,7 +460,6 @@
    "PLR0913": {
     "build_installation_manifest": 18,
     "client_entry_record": 9,
-    "install_hermes_archive_migration": 10,
     "install_hermes_scope_recall": 16
    },
    "UP035": 1
@@ -1125,6 +1124,9 @@
   },
   "maintenance/migration_activation.py": {
    "I001": 1,
+   "PLR0913": {
+    "install_hermes_archive_migration": 10
+   },
    "UP035": 1
   },
   "maintenance/migration_index.py": {

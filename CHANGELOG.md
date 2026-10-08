@@ -8,6 +8,8 @@ All notable changes to `scope-recall` will be documented in this file.
 
 The clean-up's third step, no behaviour change: the import graph of the core and its hosts without cycles.
 
+- `install_hermes_archive_migration`, the test-only archive migration install, moves from `scope_recall.adapters.hermes` to `scope_recall.maintenance.migration_activation`.
+
 ## [3.9.0] - 2026-10-07
 
 3.9.0 changes no behaviour. It is the first part of a clean-up: stored content, recall results, hook and CLI output, configuration formats and the modules installed hosts run are those of 3.8.2.
