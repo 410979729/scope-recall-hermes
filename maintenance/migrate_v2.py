@@ -13,17 +13,15 @@ from typing import Any, Callable
 from .migration_records import (
     LEGACY_BASELINE as LEGACY_BASELINE,
     MigrationError as MigrationError,
-    _stable as _stable,
 )
 from .legacy_catalog import build_legacy_catalog as build_legacy_catalog
 from .migration_activation import (
     install_hermes_archive_migration,
-    _load_installation_handoff as _load_installation_handoff,
-    _accept_identical_archive_run,
-    _archive_report_path,
-    _require_hex64,
-    _require_test_absolute_target,
-    _write_complete_archive_receipt,
+    accept_identical_archive_run,
+    archive_report_path,
+    require_hex64,
+    require_test_absolute_target,
+    write_complete_archive_receipt,
 )
 from .migration_index import queue_index_page as queue_index_page
 from .legacy_conversion import migrate_legacy as migrate_legacy
@@ -145,20 +143,20 @@ def _catalog_only(args: argparse.Namespace, mapping: dict[str, str] | None) -> i
 
 def _archive_install_test(args: argparse.Namespace, mapping: dict[str, str] | None) -> int:
     """Install a TEST archive bound to the exact source/catalog digests and convert."""
-    source_hash = _require_hex64(args.source_hash, "--source-hash")
-    catalog_hash = _require_hex64(args.catalog_hash, "--catalog-hash")
-    target_path = _require_test_absolute_target(args.target)
+    source_hash = require_hex64(args.source_hash, "--source-hash")
+    catalog_hash = require_hex64(args.catalog_hash, "--catalog-hash")
+    target_path = require_test_absolute_target(args.target)
     catalog = build_legacy_catalog(args.source)
     if catalog["source_sha256"] != source_hash or catalog["catalog_sha256"] != catalog_hash:
         raise MigrationError("source or catalog digest does not match the current files")
-    report_path = _archive_report_path(target_path, args.report)
+    report_path = archive_report_path(target_path, args.report)
     receipt_path = report_path.with_suffix(".receipt")
     if _present(report_path) or _present(receipt_path):
         if not _present(report_path):
             raise MigrationError("preexisting receipt exists without matching report")
         if not _present(receipt_path):
             raise MigrationError("preexisting report exists without matching receipt")
-        _accept_identical_archive_run(
+        accept_identical_archive_run(
             target_path=target_path,
             report_path=report_path,
             receipt_path=receipt_path,
@@ -184,7 +182,7 @@ def _archive_install_test(args: argparse.Namespace, mapping: dict[str, str] | No
     if report["completion_status"] != "complete":
         _emit(report)
         return 3
-    _write_complete_archive_receipt(
+    write_complete_archive_receipt(
         target_path=target_path,
         report_path=report_path,
         receipt_path=receipt_path,

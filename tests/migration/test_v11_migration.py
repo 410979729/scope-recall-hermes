@@ -10,7 +10,8 @@ import sqlite3
 import pytest
 
 from maintenance.backup import backup_sqlite
-from maintenance.migrate_v2 import _stable, migrate_legacy
+from maintenance.migrate_v2 import migrate_legacy
+from maintenance.migration_records import stable_legacy_id
 from maintenance.rollback import rollback_to_verified_snapshot
 from legacy_fixture import build_official_578b_fixture
 from release_fixture import LATEST_RELEASE, LATEST_SCHEMA, PREVIOUS_SCHEMA, build_previous_release_store
@@ -226,10 +227,10 @@ def test_p15_positive_negative_idempotent_and_candidate_safe(tmp_path: Path) -> 
     conn = sqlite3.connect(target / "memory.sqlite3")
     try:
         deleted = conn.execute(
-            "SELECT read_blocked FROM source_events WHERE event_id=?", (_stable("event", "journal_entries:2"),)
+            "SELECT read_blocked FROM source_events WHERE event_id=?", (stable_legacy_id("event", "journal_entries:2"),)
         ).fetchone()[0]
         linked_deleted = conn.execute(
-            "SELECT read_blocked FROM source_events WHERE event_id=?", (_stable("event", "memories:m-2"),)
+            "SELECT read_blocked FROM source_events WHERE event_id=?", (stable_legacy_id("event", "memories:m-2"),)
         ).fetchone()[0]
         active = conn.execute(
             "SELECT read_blocked FROM source_events WHERE source_event_key='legacy:journal_entries:1'"

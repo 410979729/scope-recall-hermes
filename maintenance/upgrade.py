@@ -23,8 +23,8 @@ from .migrate_v2 import (
     MigrationError,
     build_legacy_catalog,
     migrate_legacy,
-    _load_installation_handoff,
 )
+from .migration_activation import load_installation_handoff
 
 FORMAT = "scope-recall.upgrade-job/1"
 _PLAN_FIELDS = (
@@ -77,7 +77,7 @@ def _load(job: str | Path, *, verify_snapshot: bool = False) -> tuple[Path, dict
 def prepare_upgrade(source, job, *, installation_manifest, host=None, scope_map=None) -> dict:
     source = safe_path(source, must_exist=True)
     root = safe_path(job)
-    binding, target, manifest, audiences, resolved_host = _load_installation_handoff(installation_manifest, host)
+    binding, target, manifest, audiences, resolved_host = load_installation_handoff(installation_manifest, host)
     if (
         root.is_relative_to(source.parent)
         or root.is_relative_to(target)
@@ -150,7 +150,7 @@ def _binding(root, job):
     manifest = safe_path(job["manifest"], must_exist=True)
     if sha256(manifest) != job["manifest_sha256"]:
         raise MigrationError("target audience manifest changed; prepare a new job")
-    binding, target, _, _, _ = _load_installation_handoff(manifest, job["host"])
+    binding, target, _, _, _ = load_installation_handoff(manifest, job["host"])
     if str(target) != job["target_directory"] or binding.installation_id != job["installation_id"]:
         raise MigrationError("target binding changed")
     return binding

@@ -35,7 +35,7 @@ _HEX64 = re.compile(r"[0-9a-fA-F]{64}")
 _STORAGE_DB_NAMES = ("memory.sqlite3",)
 
 
-def _load_installation_handoff(
+def load_installation_handoff(
     manifest_path: str | Path, host: str | None
 ) -> tuple[Any, Path, Path, dict[str, str], str]:
     """Load the host-owned identity and target directory without inventing one."""
@@ -73,7 +73,7 @@ def _load_installation_handoff(
     )
 
 
-def _resolve_scope_mapping(
+def resolve_scope_mapping(
     source_scopes: frozenset[str],
     target_scopes: frozenset[str],
     audience_scopes: Mapping[str, str],
@@ -129,7 +129,7 @@ def _resolve_scope_mapping(
     return resolved, issues
 
 
-def _existing_target_scopes(path: Path) -> frozenset[str] | None:
+def existing_target_scopes(path: Path) -> frozenset[str] | None:
     db = path / "memory.sqlite3"
     if not db.exists():
         return None
@@ -140,13 +140,13 @@ def _existing_target_scopes(path: Path) -> frozenset[str] | None:
         conn.close()
 
 
-def _require_hex64(value: object, field: str) -> str:
+def require_hex64(value: object, field: str) -> str:
     if type(value) is not str or not _HEX64.fullmatch(value):
         raise MigrationError(f"{field} must be an exact 64-hex digest")
     return value
 
 
-def _require_test_absolute_target(raw: str) -> Path:
+def require_test_absolute_target(raw: str) -> Path:
     target = Path(raw)
     if not target.is_absolute():
         raise MigrationError("archive-install-test target must be an absolute TEST path")
@@ -156,7 +156,7 @@ def _require_test_absolute_target(raw: str) -> Path:
     return resolved
 
 
-def _archive_report_path(target_path: Path, report_arg: str | None) -> Path:
+def archive_report_path(target_path: Path, report_arg: str | None) -> Path:
     if report_arg:
         return safe_path(report_arg, error_type=MigrationError)
     return safe_path(target_path / "scope-recall" / _ARCHIVE_REPORT_NAME, error_type=MigrationError)
@@ -248,7 +248,7 @@ def _write_exclusive_text(path: Path, text: str) -> None:
     path.write_text(text, encoding="utf-8")
 
 
-def _accept_identical_archive_run(
+def accept_identical_archive_run(
     *,
     target_path: Path,
     report_path: Path,
@@ -293,7 +293,7 @@ def _accept_identical_archive_run(
         raise MigrationError("preexisting receipt does not bind this identical run")
 
 
-def _write_complete_archive_receipt(
+def write_complete_archive_receipt(
     *,
     target_path: Path,
     report_path: Path,

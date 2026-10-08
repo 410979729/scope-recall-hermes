@@ -12,14 +12,20 @@ from typing import Any
 
 from .legacy_plan import Conversion, Row
 from .legacy_sources import (
-    _anchor_ref,
-    _evidence_items,
-    _json_list,
-    _resolve,
-    _safe,
+    anchor_ref,
+    evidence_items,
     journal_links,
+    json_list,
+    resolve_evidence_ref,
 )
-from .migration_records import _canon, _digest, _json, _recorded, _stable
+from .migration_records import (
+    canonical_digest,
+    canonical_json,
+    json_value,
+    recorded_time,
+    sanitized_value,
+    stable_legacy_id,
+)
 
 _OBJECT_TABLES = {
     "event": ("source_events", "event_id"),
@@ -53,14 +59,14 @@ def _procedure_archive_groups(cv: Conversion) -> list[tuple[set[str], set[str]]]
             ref = cv.archives.get(("playbook_versions", str(snapshot.get("id"))))
             if ref:
                 group.add(ref)
-            data = _json(snapshot.get("snapshot"), {})
+            data = json_value(snapshot.get("snapshot"), {})
             if isinstance(data, dict):
                 records.append(data)
         dependencies: set[str] = set()
         for record in records:
-            for anchor in _evidence_items(record.get("evidence_anchors")):
-                ref = _resolve(
-                    _anchor_ref(anchor), anchor.get("source_type"), cv.journal_refs, cv.memory_refs, cv.archives
+            for anchor in evidence_items(record.get("evidence_anchors")):
+                ref = resolve_evidence_ref(
+                    anchor_ref(anchor), anchor.get("source_type"), cv.journal_refs, cv.memory_refs, cv.archives
                 )
                 if ref:
                     dependencies.add(ref)
@@ -77,7 +83,7 @@ def _closure(
     """Every archived object Core would treat as derived from the purged journals."""
     refs = {cv.journal_refs[x] for x in journal_ids if x in cv.journal_refs}
     for episode in cv.rows["task_episodes"]:
-        members = [str(x) for x in _json_list(episode.get("journal_entry_ids"))]
+        members = [str(x) for x in json_list(episode.get("journal_entry_ids"))]
         if any(x in journal_ids for x in members):
             refs.add(cv.episode_refs[str(episode.get("id"))])
     for memory in cv.rows["memories"]:
@@ -88,7 +94,7 @@ def _closure(
     while len(refs) != previous:
         previous = len(refs)
         for evidence in cv.rows["fact_claim_evidence"]:
-            resolved = _resolve(
+            resolved = resolve_evidence_ref(
                 evidence.get("source_ref"), evidence.get("source_type"), cv.journal_refs, cv.memory_refs, cv.archives
             )
             if resolved not in refs:
@@ -117,7 +123,7 @@ def plan_deletions(cv: Conversion) -> None:
                 "privacy_purge_operations",
                 op,
                 "non_completed_tombstone_not_replayed_blocks_cutover",
-                redacted_row=_safe(row),
+                redacted_row=sanitized_value(row),
             )
             continue
         journal_ids = [
@@ -129,11 +135,11 @@ def plan_deletions(cv: Conversion) -> None:
         scopes = sorted({str(scope_by_journal.get(x, default_scope)) for x in journal_ids})
         cv.deletion_specs.append(
             {
-                "operation_id": _stable("deletion", op),
+                "operation_id": stable_legacy_id("deletion", op),
                 "legacy_operation_id": op,
                 "refs": sorted(_closure(cv, journal_ids, links, groups)),
                 "scopes": scopes or [default_scope],
-                "created_at": _recorded(row.get("created_at")),
+                "created_at": recorded_time(row.get("created_at")),
             }
         )
     for row in cv.rows["privacy_purge_source_tombstones"]:
@@ -142,7 +148,7 @@ def plan_deletions(cv: Conversion) -> None:
                 "privacy_purge_source_tombstones",
                 str(row.get("journal_entry_id")),
                 "source_missing_unknown_blocks_cutover",
-                redacted_row=_safe(row),
+                redacted_row=sanitized_value(row),
             )
 
 
@@ -153,16 +159,16 @@ def _insert_operation(conn: Any, spec: Row, batch_key: str) -> None:
         "INSERT INTO deletion_operations(operation_id,request_sha256,mode,scope_ids_json,project_id,branch_id,requested_refs_json,expected_revisions_json,created_at,memory_epoch,layers_json,active_content_removed) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
         (
             spec["operation_id"],
-            _digest(request),
+            canonical_digest(request),
             "delete",
-            _canon(spec["scopes"]),
+            canonical_json(spec["scopes"]),
             None,
             None,
-            _canon(spec["refs"]),
-            _canon({x: 1 for x in spec["refs"]}),
+            canonical_json(spec["refs"]),
+            canonical_json({x: 1 for x in spec["refs"]}),
             spec["created_at"],
             epoch,
-            _canon(_PENDING_LAYERS),
+            canonical_json(_PENDING_LAYERS),
             0,
         ),
     )

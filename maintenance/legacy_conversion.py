@@ -33,14 +33,14 @@ from scope_recall.maintenance.legacy_v2_compat import (
 
 from .backup import safe_path
 from .legacy_catalog import (
-    _COMPAT,
-    _DERIVED_NAMES,
-    _DIGEST_TABLES,
-    _HISTORY,
-    _KNOWN,
-    _REQUIRED,
-    _is_derived_index,
-    _offline_source_path,
+    COMPAT_TABLES,
+    DERIVED_NAMES,
+    DIGEST_TABLES,
+    HISTORY_TABLES,
+    KNOWN_TABLES,
+    REQUIRED_COLUMNS,
+    is_derived_index,
+    offline_source_path,
     build_legacy_catalog,
 )
 from .legacy_claims import link_history_records, versions_by_playbook, write_fact_claims, write_procedures
@@ -49,31 +49,31 @@ from .legacy_lifecycle import apply_lifecycle_suppression
 from .legacy_plan import Blocked, Conversion, Row
 from .legacy_sources import (
     SOURCE_EVENT_FIELDS,
-    _json_list,
-    _map_scope_rows,
-    _safe,
-    _safe_text,
-    _scope,
-    _scope_value,
-    _text_or_none,
+    json_list,
+    map_scope_rows,
+    scope_descriptor,
+    own_scope_id,
+    text_or_none,
     archive_sources,
 )
-from .migration_activation import _existing_target_scopes, _load_installation_handoff, _resolve_scope_mapping
+from .migration_activation import existing_target_scopes, load_installation_handoff, resolve_scope_mapping
 from .migration_records import (
     LEGACY_BASELINE,
     REPORT_FORMAT,
     MigrationError,
-    _blocked_prewrite_report,
-    _blocked_report,
-    _canon,
-    _columns,
-    _digest,
-    _materialize_explicit_scope_selection,
-    _open_immutable,
-    _recorded,
-    _rows,
-    _tables,
-    _write_report,
+    blocked_prewrite_report,
+    blocked_report,
+    canonical_json,
+    table_columns,
+    canonical_digest,
+    materialize_explicit_scope_selection,
+    open_immutable,
+    recorded_time,
+    table_rows,
+    sanitized_value,
+    sanitized_text,
+    table_names,
+    write_report,
 )
 
 # Tables whose rows own a scope (an empty one means the legacy default), and
@@ -85,9 +85,9 @@ _SCOPE_INHERITING = (
     "privacy_purge_source_tombstones",
     "privacy_purge_tombstones",
     "playbook_versions",
-    *sorted(_HISTORY),
+    *sorted(HISTORY_TABLES),
 )
-_LEGACY_TABLES = ("memory_journal_sources", *_SCOPE_OWNING, *_SCOPE_INHERITING, *sorted(_DIGEST_TABLES))
+_LEGACY_TABLES = ("memory_journal_sources", *_SCOPE_OWNING, *_SCOPE_INHERITING, *sorted(DIGEST_TABLES))
 _ARCHIVE_MANIFEST_KEYS = (
     "archive_snapshot_hash",
     "archive_catalog_hash",
@@ -95,9 +95,9 @@ _ARCHIVE_MANIFEST_KEYS = (
     "archive_retention_scopes",
     "archive_scopes",
 )
-_CONVERSION_DERIVED_NAMES = _DERIVED_NAMES | {"governance_audit_events"}
+_CONVERSION_DERIVED_NAMES = DERIVED_NAMES | {"governance_audit_events"}
 _COMPAT_REASONS = {
-    **{table: "fact_version_authority_not_losslessly_mapped" for table in _COMPAT},
+    **{table: "fact_version_authority_not_losslessly_mapped" for table in COMPAT_TABLES},
     "aliases": "alias_or_reference_authority_not_losslessly_mapped",
     "references": "alias_or_reference_authority_not_losslessly_mapped",
     "artifacts": "attachment_metadata_or_bytes_not_losslessly_mapped",
@@ -188,7 +188,7 @@ def migrate_legacy(
         report = _convert(conversion)
     except Blocked as blocked:
         report = blocked.report
-    _write_report(report, report_path)
+    write_report(report, report_path)
     return report
 
 
@@ -221,7 +221,7 @@ def _prepare(
             raise MigrationError("single_scope_to must be a non-empty audience name or scope ID")
         if source_scope_map is not None:
             raise MigrationError("single_scope_to cannot be combined with source_scope_map")
-    explicit_scopes = _materialize_explicit_scope_selection(scope_ids)
+    explicit_scopes = materialize_explicit_scope_selection(scope_ids)
     handoff: dict[str, Any] | None = None
     audience_scopes: dict[str, str] = {}
     if installation_manifest is not None:
@@ -231,7 +231,7 @@ def _prepare(
         raise MigrationError("target directory or installation manifest is required")
     else:
         target_dir = safe_path(target_directory, error_type=MigrationError)
-    source_path = _offline_source_path(source)
+    source_path = offline_source_path(source)
     if report_path is not None:
         safe_path(report_path, error_type=MigrationError)
     if source_path.is_symlink() or not source_path.is_file() or source_path == target_dir:
@@ -240,7 +240,7 @@ def _prepare(
     malformed = _catalog_issues(catalog, "malformed_non_string_identity")
     if malformed:
         raise Blocked(
-            _blocked_prewrite_report(batch_key=batch_key, unmapped=malformed, reasons=["malformed_non_string_identity"])
+            blocked_prewrite_report(batch_key=batch_key, unmapped=malformed, reasons=["malformed_non_string_identity"])
         )
     source_scope_map = _check_archive_manifest(handoff, catalog, source_scope_map, single_scope_to, explicit_scopes)
     return Conversion(
@@ -266,7 +266,7 @@ def _trusted_handoff(
     installation_manifest: str | Path, host: str | None, target_directory: str | Path | None
 ) -> tuple[dict[str, Any], dict[str, str], Path]:
     """The host-owned identity and target; the manifest's archive fields ride along."""
-    binding, manifest_target, manifest_file, audience_scopes, resolved_host = _load_installation_handoff(
+    binding, manifest_target, manifest_file, audience_scopes, resolved_host = load_installation_handoff(
         installation_manifest, host
     )
     target_dir = safe_path(manifest_target, error_type=MigrationError)
@@ -334,7 +334,7 @@ def _check_archive_manifest(
 
 
 def _convert(cv: Conversion) -> dict[str, Any]:
-    conn = _open_immutable(cv.source_path)
+    conn = open_immutable(cv.source_path)
     try:
         _read_legacy(conn, cv)
         _plan_scopes(conn, cv)
@@ -350,7 +350,7 @@ def _convert(cv: Conversion) -> dict[str, Any]:
 
 
 def _read_legacy(conn: sqlite3.Connection, cv: Conversion) -> None:
-    cv.tables = _tables(conn)
+    cv.tables = table_names(conn)
     cv.import_ledger_receipt = _verify_sidecar(
         conn,
         cv.tables,
@@ -367,14 +367,14 @@ def _read_legacy(conn: sqlite3.Connection, cv: Conversion) -> None:
         # Do not copy even a sanitized row: an unknown column can restrict
         # the row and every derived copy. Leave an existing target intact.
         raise Blocked(
-            _blocked_prewrite_report(
+            blocked_prewrite_report(
                 batch_key=cv.batch_key,
                 unmapped=unsupported,
                 reasons=["unknown_legacy_columns_blocks_cutover"],
                 extra={"schema_inventory": {"tables": sorted(cv.tables), "schema_gaps": unsupported}},
             )
         )
-    cv.rows = {table: _rows(conn, table) for table in _LEGACY_TABLES}
+    cv.rows = {table: table_rows(conn, table) for table in _LEGACY_TABLES}
 
 
 def _verify_sidecar(
@@ -400,8 +400,8 @@ def _plan_scopes(conn: sqlite3.Connection, cv: Conversion) -> None:
     """Decide which legacy scopes convert and, under a handoff, where they land."""
     owning = [row for table in _SCOPE_OWNING for row in cv.rows[table]]
     direct = owning + [row for table in _SCOPE_INHERITING for row in cv.rows[table]]
-    base_missing_scope = any(_scope_value(row) is None for row in owning)
-    direct_scopes = frozenset(scope for row in direct if (scope := _scope_value(row)) is not None)
+    base_missing_scope = any(own_scope_id(row) is None for row in owning)
+    direct_scopes = frozenset(scope for row in direct if (scope := own_scope_id(row)) is not None)
     if cv.handoff and cv.handoff.get("archive_snapshot_hash"):
         source_scopes = _catalog_scopes(cv.catalog)
         if base_missing_scope:
@@ -432,7 +432,7 @@ def _plan_scopes(conn: sqlite3.Connection, cv: Conversion) -> None:
         issues = _map_handoff_scopes(cv)
         if issues:
             raise Blocked(
-                _blocked_report(
+                blocked_report(
                     batch_key=cv.batch_key,
                     unmapped=issues,
                     reasons=sorted({str(item["reason"]) for item in issues}),
@@ -469,7 +469,7 @@ def _map_handoff_scopes(cv: Conversion) -> list[Row]:
                 for scope in sorted(cv.requested_source)
             ]
         cv.applied_scope_map = {next(iter(cv.requested_source)): target}
-    cv.scope_mapping, issues = _resolve_scope_mapping(
+    cv.scope_mapping, issues = resolve_scope_mapping(
         cv.requested_source, targets, cv.audience_scopes, cv.applied_scope_map
     )
     return issues
@@ -477,9 +477,9 @@ def _map_handoff_scopes(cv: Conversion) -> list[Row]:
 
 def _apply_scope_mapping(rows: dict[str, list[Row]], mapping: Mapping[str, str]) -> None:
     for table in _SCOPE_OWNING:
-        rows[table] = _map_scope_rows(rows[table], mapping, default_source_scope="legacy-scope")
-    for table in (*_SCOPE_INHERITING, *sorted(_DIGEST_TABLES)):
-        rows[table] = _map_scope_rows(rows[table], mapping)
+        rows[table] = map_scope_rows(rows[table], mapping, default_source_scope="legacy-scope")
+    for table in (*_SCOPE_INHERITING, *sorted(DIGEST_TABLES)):
+        rows[table] = map_scope_rows(rows[table], mapping)
 
 
 def _plan_digest_retention(cv: Conversion) -> None:
@@ -487,7 +487,7 @@ def _plan_digest_retention(cv: Conversion) -> None:
     retention = (cv.handoff.get("archive_retention_scopes") or {}) if cv.handoff else {}
     cv.orphan_bridge_scope = retention.get("orphan_bridge")
     cv.digest_audit_scope = retention.get("digest_audit")
-    populated = [table for table in sorted(_DIGEST_TABLES) if cv.rows[table]]
+    populated = [table for table in sorted(DIGEST_TABLES) if cv.rows[table]]
     if not populated:
         return
     archive_scopes = (cv.handoff.get("archive_scopes") or []) if cv.handoff else []
@@ -500,7 +500,7 @@ def _plan_digest_retention(cv: Conversion) -> None:
     ):
         return
     raise Blocked(
-        _blocked_prewrite_report(
+        blocked_prewrite_report(
             batch_key=cv.batch_key,
             unmapped=[
                 {"table": table, "reason": _DIGEST_RETENTION_REASON, "auto_promoted": False} for table in populated
@@ -513,7 +513,7 @@ def _plan_digest_retention(cv: Conversion) -> None:
 
 def _bind_target(cv: Conversion) -> None:
     cv.target_dir.mkdir(parents=True, exist_ok=True)
-    existing = _existing_target_scopes(cv.target_dir)
+    existing = existing_target_scopes(cv.target_dir)
     if existing is None:
         return
     bound = frozenset(cv.handoff["target_scope_ids"]) if cv.handoff else cv.requested
@@ -524,35 +524,35 @@ def _bind_target(cv: Conversion) -> None:
 def _inventory_schema(conn: sqlite3.Connection, cv: Conversion) -> None:
     """Classify every source table; unknown tables and authority we cannot map block."""
     for table in sorted(cv.tables - {"sqlite_sequence"}):
-        missing = sorted(_REQUIRED.get(table, frozenset()) - set(_columns(conn, table)))
+        missing = sorted(REQUIRED_COLUMNS.get(table, frozenset()) - set(table_columns(conn, table)))
         if missing:
             cv.schema_gaps.append(
                 cv.unmapped(table, "<schema>", "legacy_schema_column_missing_blocks_cutover", missing_columns=missing)
             )
-        if table in _KNOWN:
+        if table in KNOWN_TABLES:
             continue
-        if _is_derived_index(table, _CONVERSION_DERIVED_NAMES):
+        if is_derived_index(table, _CONVERSION_DERIVED_NAMES):
             cv.derived_tables.append(table)
             continue
         cv.unknown_tables.append(table)
-        values = _rows(conn, table)
+        values = table_rows(conn, table)
         cv.unmapped(
             table,
             "<table>",
             "unknown_legacy_table_blocks_cutover",
-            columns=_columns(conn, table),
+            columns=table_columns(conn, table),
             row_count=len(values),
-            redacted_rows=[_safe(row) for row in values[:200]],
+            redacted_rows=[sanitized_value(row) for row in values[:200]],
             truncated=len(values) > 200,
         )
-    for table in sorted(_COMPAT & cv.tables):
-        for row in _rows(conn, table):
+    for table in sorted(COMPAT_TABLES & cv.tables):
+        for row in table_rows(conn, table):
             cv.unmapped(
                 table,
                 str(row.get("id") or row.get("claim_id") or "unknown"),
                 _COMPAT_REASONS[table],
-                row_digest=_digest(_safe(row)),
-                redacted_row=_safe(row),
+                row_digest=canonical_digest(sanitized_value(row)),
+                redacted_row=sanitized_value(row),
                 status=str(row.get("status") or "unknown"),
             )
 
@@ -633,7 +633,7 @@ def _insert_memory_links(cv: Conversion, conn: sqlite3.Connection) -> None:
 def _episode_resume(
     cv: Conversion, row: Row, episode_ref: str, refs: list[str], missing: list[str], scope: dict[str, Any]
 ) -> dict[str, Any]:
-    goal, _ = _safe_text(row.get("task_goal"))
+    goal, _ = sanitized_text(row.get("task_goal"))
     return {
         "episode_ref": episode_ref,
         "goal": {"text": goal, "evidence_refs": refs[:32]},
@@ -644,9 +644,9 @@ def _episode_resume(
         "next_step": None,
         "next_step_basis": "unknown",
         "artifact_refs": [],
-        "source_watermark": _digest({"legacy_episode": str(row.get("id")), "batch_key": cv.batch_key}),
+        "source_watermark": canonical_digest({"legacy_episode": str(row.get("id")), "batch_key": cv.batch_key}),
         "evidence_refs": refs[:32],
-        "legacy_fields": _safe({key: row.get(key) for key in _EPISODE_LEGACY_FIELDS}),
+        "legacy_fields": sanitized_value({key: row.get(key) for key in _EPISODE_LEGACY_FIELDS}),
         "scope_authorization": scope,
     }
 
@@ -659,7 +659,7 @@ def _insert_episodes(cv: Conversion, conn: sqlite3.Connection) -> None:
             {
                 cv.episode_refs[str(row.get("id"))]: [
                     cv.journal_refs[str(ref)]
-                    for ref in _json_list(row.get("journal_entry_ids"))
+                    for ref in json_list(row.get("journal_entry_ids"))
                     if str(ref) in cv.journal_refs
                 ]
                 for row in episodes
@@ -667,8 +667,8 @@ def _insert_episodes(cv: Conversion, conn: sqlite3.Connection) -> None:
         )
     sequence = int(conn.execute("SELECT COALESCE(max(sequence),0) FROM episode_events").fetchone()[0])
     for row in episodes:
-        episode_ref, scope = cv.episode_refs[str(row.get("id"))], _scope(row)
-        ids = [str(x) for x in _json_list(row.get("journal_entry_ids"))]
+        episode_ref, scope = cv.episode_refs[str(row.get("id"))], scope_descriptor(row)
+        ids = [str(x) for x in json_list(row.get("journal_entry_ids"))]
         refs = [cv.journal_refs[x] for x in ids if x in cv.journal_refs]
         missing = [x for x in ids if x not in cv.journal_refs]
         resume = _episode_resume(cv, row, episode_ref, refs, missing, scope)
@@ -678,8 +678,8 @@ def _insert_episodes(cv: Conversion, conn: sqlite3.Connection) -> None:
             (
                 episode_ref,
                 scope["row_scope_id"],
-                _text_or_none(row.get("project_id")),
-                _text_or_none(row.get("branch_id")),
+                text_or_none(row.get("project_id")),
+                text_or_none(row.get("branch_id")),
                 f"legacy-task:{row.get('id')}",
                 "task",
                 f"legacy-series:{row.get('id')}",
@@ -695,10 +695,10 @@ def _insert_episodes(cv: Conversion, conn: sqlite3.Connection) -> None:
                 episode_ref,
                 1,
                 state if state in _EPISODE_STATES else "unknown",
-                _canon(resume),
+                canonical_json(resume),
                 resume["source_watermark"],
                 0,
-                _recorded(row.get("started_at")),
+                recorded_time(row.get("started_at")),
                 None,
             ),
         )
@@ -806,7 +806,7 @@ def _report(cv: Conversion, target: dict[str, Any]) -> dict[str, Any]:
             "fact_claims_mapped": len(cv.mapped_facts),
             "procedure_claims_mapped": len(cv.mapped_procedures),
             "procedure_versions": target["procedure_versions"],
-            "history_archived": sum(len(cv.rows[table]) for table in _HISTORY),
+            "history_archived": sum(len(cv.rows[table]) for table in HISTORY_TABLES),
             "unmapped": len(cv.report_rows),
         },
         "fact_authority": {

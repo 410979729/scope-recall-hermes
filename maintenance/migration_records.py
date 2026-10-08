@@ -24,7 +24,7 @@ class MigrationError(RuntimeError):
     pass
 
 
-def _write_report(report: dict[str, Any], report_path: str | Path | None) -> None:
+def write_report(report: dict[str, Any], report_path: str | Path | None) -> None:
     if report_path is None:
         return
     report_file = safe_path(report_path, error_type=MigrationError)
@@ -35,7 +35,7 @@ def _write_report(report: dict[str, Any], report_path: str | Path | None) -> Non
         stream.write(json.dumps(report, ensure_ascii=False, sort_keys=True, indent=2) + "\n")
 
 
-def _materialize_explicit_scope_selection(
+def materialize_explicit_scope_selection(
     scope_ids: Iterable[str] | None,
 ) -> list[str] | None:
     """Keep omitted selection distinct from an explicit empty or subset list."""
@@ -51,7 +51,7 @@ def _materialize_explicit_scope_selection(
     return seen
 
 
-def _blocked_report(
+def blocked_report(
     *,
     batch_key: str,
     unmapped: list[dict[str, Any]],
@@ -89,14 +89,14 @@ def _blocked_report(
     }
 
 
-def _blocked_prewrite_report(
+def blocked_prewrite_report(
     *,
     batch_key: str,
     unmapped: list[dict[str, Any]],
     reasons: list[str],
     extra: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    return _blocked_report(
+    return blocked_report(
         batch_key=batch_key,
         unmapped=unmapped,
         reasons=reasons,
@@ -111,7 +111,7 @@ def _blocked_prewrite_report(
     )
 
 
-def _canon(value: object) -> str:
+def canonical_json(value: object) -> str:
     return json.dumps(
         value,
         ensure_ascii=False,
@@ -121,25 +121,25 @@ def _canon(value: object) -> str:
     )
 
 
-def _digest(value: object) -> str:
-    return hashlib.sha256(_canon(value).encode()).hexdigest()
+def canonical_digest(value: object) -> str:
+    return hashlib.sha256(canonical_json(value).encode()).hexdigest()
 
 
-def _stable(kind: str, value: object) -> str:
+def stable_legacy_id(kind: str, value: object) -> str:
     return f"{kind}-legacy-{hashlib.sha256(f'{kind}:{value}'.encode()).hexdigest()[:32]}"
 
 
-def _safe(value: object) -> object:
+def sanitized_value(value: object) -> object:
     return sanitize_structured_value(value)[0]
 
 
-def _safe_text(value: object) -> tuple[str, bool]:
+def sanitized_text(value: object) -> tuple[str, bool]:
     raw = str(value or "")
     clean = sanitize_report_text(raw)
     return clean, clean != raw
 
 
-def _json(value: object, default: object) -> object:
+def json_value(value: object, default: object) -> object:
     if isinstance(value, (dict, list)):
         return value
     if isinstance(value, str):
@@ -150,28 +150,28 @@ def _json(value: object, default: object) -> object:
     return default
 
 
-def _open_immutable(path: Path) -> sqlite3.Connection:
+def open_immutable(path: Path) -> sqlite3.Connection:
     """Open a frozen offline snapshot; ``immutable=1`` never touches its journals."""
     conn = sqlite3.connect(f"{path.as_uri()}?mode=ro&immutable=1", uri=True)
     conn.row_factory = sqlite3.Row
     return conn
 
 
-def _tables(conn: sqlite3.Connection) -> set[str]:
+def table_names(conn: sqlite3.Connection) -> set[str]:
     return {str(row[0]) for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
 
 
-def _columns(conn: sqlite3.Connection, table: str) -> list[str]:
+def table_columns(conn: sqlite3.Connection, table: str) -> list[str]:
     return [str(row[1]) for row in conn.execute(f"PRAGMA table_info([{table}])")]
 
 
-def _rows(conn: sqlite3.Connection, table: str) -> list[dict[str, Any]]:
-    if table not in _tables(conn):
+def table_rows(conn: sqlite3.Connection, table: str) -> list[dict[str, Any]]:
+    if table not in table_names(conn):
         return []
     return [{str(k): row[k] for k in row.keys()} for row in conn.execute(f"SELECT * FROM [{table}]")]
 
 
-def _time(value: object) -> tuple[str | None, str]:
+def parse_instant(value: object) -> tuple[str | None, str]:
     text = str(value or "")
     if not _ISO.fullmatch(text):
         return None, "unknown"
@@ -182,5 +182,5 @@ def _time(value: object) -> tuple[str | None, str]:
         return None, "unknown"
 
 
-def _recorded(value: object) -> str:
-    return _time(value)[0] or "1970-01-01T00:00:00.000000Z"
+def recorded_time(value: object) -> str:
+    return parse_instant(value)[0] or "1970-01-01T00:00:00.000000Z"
