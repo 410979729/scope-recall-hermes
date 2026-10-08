@@ -17,6 +17,8 @@ from .validation import absolute_path, strict_bool, strict_float, strict_int
 #: file of that name and nothing else: given an operator's real ``runtime-config.json`` it
 #: deleted that, silently, and every host dropped to basic mode (#118).
 EPHEMERAL_CONFIG_INFIX = "-worker-"
+#: A runtime config's file name, beside the binding's data or an entry's attachment.
+RUNTIME_CONFIG_FILENAME = "runtime-config.json"
 
 
 def is_ephemeral_worker_config(path: Path) -> bool:

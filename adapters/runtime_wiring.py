@@ -24,7 +24,7 @@ from scope_recall.core import CoreConfig, MemoryCore
 from scope_recall.core.recall_budget import canonical_render_json
 from scope_recall.runtime.instance import RuntimeInstance, RuntimeInstanceConfig, build_runtime_instance
 from scope_recall.runtime.worker_entry import load_config
-from scope_recall.runtime.worker_launch import EPHEMERAL_CONFIG_INFIX
+from scope_recall.runtime.worker_launch import EPHEMERAL_CONFIG_INFIX, RUNTIME_CONFIG_FILENAME
 from .tool_common import local_times
 
 GAP_UNCONFIGURED = "capability_gap:trusted_runtime_unconfigured"
@@ -33,7 +33,6 @@ GAP_BINDING_MISMATCH = "capability_gap:trusted_runtime_binding_mismatch"
 GAP_WORKER_BUSY = "capability_gap:trusted_runtime_worker_busy"
 GAP_WORKER_LAUNCH_FAILED = "capability_gap:trusted_runtime_worker_launch_failed"
 GAP_AUDIENCE_CAPACITY = "capability_gap:trusted_runtime_audience_capacity"
-RUNTIME_CONFIG_FILENAME = "runtime-config.json"
 #: Exact audiences a host may keep workers for at once, one active and one follower each.
 MAX_AUDIENCE_LANES = 8
 

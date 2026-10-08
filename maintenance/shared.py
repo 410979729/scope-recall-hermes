@@ -48,12 +48,12 @@ from ..adapters.hermes.installation import (
     shared_entry_record,
     write_shared_payload,
 )
-from ..adapters.runtime_wiring import RUNTIME_CONFIG_FILENAME
 from ..contracts import ContractError, InstanceBinding, TrustedContext
 from ..core.storage import SQLiteStorage
 from ..runtime.auxiliary import DEFAULT_LEDGER_NAME
 from ..runtime.instance import RuntimeInstanceConfig
 from ..runtime.model_budget import initialize_auxiliary_budget_ledger
+from ..runtime.worker_launch import RUNTIME_CONFIG_FILENAME
 from .install_common import RUNTIME_CONFIG_LIMIT
 from .install_hermes import DEFAULT_AGENT_WORKSPACE
 from .shared_import import import_entry

@@ -27,9 +27,9 @@ from scope_recall.adapters.hermes.installation import (
     read_attachment,
     shared_entry_manifest,
 )
-from scope_recall.adapters.runtime_wiring import RUNTIME_CONFIG_FILENAME
 from scope_recall.contracts import InstanceBinding
 from scope_recall.core import CoreConfig, MemoryCore
+from scope_recall.runtime.worker_launch import RUNTIME_CONFIG_FILENAME
 
 
 class CodexConfigError(RuntimeError):

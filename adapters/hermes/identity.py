@@ -18,7 +18,7 @@ from scope_recall.contracts import (
     bounded_source_context,
 )
 
-from ..runtime_wiring import RUNTIME_CONFIG_FILENAME
+from ...runtime.worker_launch import RUNTIME_CONFIG_FILENAME
 from .audiences import LOCAL_PLATFORMS, LOCAL_USER_ID, approved_local_platforms
 from .installation import (
     HermesIdentityError,
