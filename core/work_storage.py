@@ -8,8 +8,17 @@ import math
 import re
 
 from ..contracts import ContractError
-from .failure_retry import AUTO_RECOVERABLE_ERRORS, DERIVATION_RETRY_MARKER
+from .failure_retry import (
+    AUTO_RECOVERABLE_ERRORS,
+    DERIVATION_RETRY_MARKER,
+    marked,
+    selects,
+    validate_page,
+    validation_feedback,
+)
 from .schema import SCHEMA_VERSION
+from .delete_storage import purge_work_parts
+from .inbox_rules import deferred_path
 
 MAX_RECOVERABLE_ATTEMPTS = 3
 MAX_OPERATOR_RETRIES = 2
@@ -279,8 +288,6 @@ def _source_or_claim_context(tx, ref: str, revision: int) -> tuple[str, str | No
 
 
 def _purge_context(tx, ref: str, revision: int) -> tuple[str, str | None, str | None]:
-    from .delete_storage import purge_work_parts
-
     _operation_id, scope_id = purge_work_parts(ref)
     tx._scope(scope_id)
     return scope_id, tx.context.project_id, tx.context.branch_id
@@ -359,8 +366,6 @@ def _embed_retry_reason(tx, ref: str, revision: int, *, current_epoch: int | Non
 
 def _purge_retry_reason(tx, ref: str, revision: int, *, current_epoch: int | None = None) -> str | None:
     try:
-        from .delete_storage import purge_work_parts
-
         receipt = tx.deletions.receipt(purge_work_parts(ref)[0])
     except ContractError:
         receipt = None
@@ -392,8 +397,6 @@ class WorkItems:
 
     def derivation_feedback(self, work_id: int) -> dict[str, str] | None:
         """Read repair metadata only for a work item granted the bounded retry."""
-        from .failure_retry import validation_feedback  # imports this module
-
         conn = self._tx._check()
         row = conn.execute("SELECT last_error_code FROM work_items WHERE work_id=?", (work_id,)).fetchone()
         if row is None or f"{DERIVATION_RETRY_MARKER}|" not in str(row[0] or ""):
@@ -836,9 +839,6 @@ class WorkItems:
         Idempotent: every row is stamped with the schema generation that granted
         it, and a row already carrying this generation's stamp is skipped.
         """
-        from .failure_retry import selects, validate_page  # imports this module
-        from .inbox_rules import deferred_path
-
         validate_page(limit)
         if type(include_terminal) is not bool or type(dry_run) is not bool:
             raise ContractError("INPUT_INVALID", "retry_flags")
@@ -872,8 +872,6 @@ class WorkItems:
         report["claim_embeds_reopened"] = sum(1 for work_id, _ref, _revision in heads if work_id is not None)
         report["claim_embeds_queued"] = sum(1 for work_id, _ref, _revision in heads if work_id is None)
         if not dry_run:
-            from .failure_retry import marked  # imports this module
-
             for work_id, ref, revision in heads:
                 if work_id is None:
                     self.enqueue("embed", ref, revision, available_at=now)
@@ -1110,8 +1108,6 @@ class WorkItems:
 
     def _reopen_failed(self, work_id: int, work_type: str, code: object, *, now: str, automatic: bool = False) -> bool:
         """Move one failed row, and its sibling tables when it has any."""
-        from .failure_retry import marked  # imports this module
-
         conn = self._tx._check(write=True)
         reason = "derivation_retry" if automatic else "operator_retry"
         if work_type == "evaluate_candidate" and not self._tx.candidates.reopen_evaluation(

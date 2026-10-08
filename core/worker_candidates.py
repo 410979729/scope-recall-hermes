@@ -26,6 +26,10 @@ from .worker_outcomes import (
     derivation_changed,
     read_derivation_fence,
 )
+from .claim_normalization import normalize_frame
+from .claims import evidence_refs
+from .evidence_question import evidence_text, rooted_verdict
+from .mutate import apply_claim, validate_claims
 
 
 def _candidate_verdict(storage, clock, context, item, *, code: str, started: float, budget: float, mutate):
@@ -89,14 +93,11 @@ def _apply_verdict(tx, item, current, value, live_sources, now):
     value = dict(value, source_refs=[f"{ref}@{revision}" for ref, revision in current.evidence_refs])
     if len(value["claim_proposals"]) > 1:
         raise ContractError("DERIVATION_INVALID", "candidate_proposal_count")
-    from .claims import evidence_refs
-    from .mutate import apply_claim, validate_claims
 
     validated = validate_claims(tx, value, item.scope_id)
     if not validated["claim_proposals"]:
         return None
     proposal = validated["claim_proposals"][0]
-    from .claim_normalization import normalize_frame
 
     proposal = normalize_frame(proposal, tx.claims.roots(evidence_refs(proposal)))
     expected_candidate = replace(
@@ -109,7 +110,6 @@ def _apply_verdict(tx, item, current, value, live_sources, now):
     proposal = candidate_identity_restored(expected_candidate, authorized_sources, proposal)
     # A version the evaluator writes rests on a person's or a document's words, as a
     # consolidation's does, and those words carry what it says (``rooted_verdict``).
-    from .evidence_question import evidence_text, rooted_verdict
 
     texts = {(source.ref, source.revision): evidence_text(source) for source in authorized_sources}
     quoted = [

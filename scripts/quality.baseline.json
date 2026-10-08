@@ -966,7 +966,7 @@
     "_process_consolidate": 26
    },
    "PLR0915": {
-    "_process_consolidate": 71
+    "_process_consolidate": 70
    }
   },
   "core/worker_outcomes.py": {

@@ -33,6 +33,7 @@ from .worker_outcomes import (
     derivation_changed,
     read_derivation_fence,
 )
+from .consolidation_summary import resume_seed
 
 
 class ConsolidationModel(Protocol):
@@ -256,8 +257,6 @@ def _process_consolidate(
         else:
             offset = tx.work.consolidation_offset(*item.lease, now=clock.utc_now())
             if offset:
-                from .consolidation_summary import resume_seed
-
                 seed = resume_seed(tx, item.work_id)
                 episode = tx.episodes.source_episode(source.ref, source.revision)
                 episode_ref, batch, pending_sources = episode.ref if episode else None, (source,), ()

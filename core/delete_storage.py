@@ -9,6 +9,7 @@ import json
 from ..contracts import ContractError
 from . import lexical_index, lineage
 from .claims import canonical_time
+from .inbox_rules import deleted_forms, deleted_text, holds, taking_a_new_key
 
 OBJECT_TABLES = {
     "event": ("source_events", "event_id"),
@@ -350,7 +351,6 @@ class Deletions:
         # a suppressed claim, is suppressed as it is stored, and cancelling what
         # merely held its words lost captures the contract keeps
         # (``docs/deletion-contract.md``, reviews of rc10).
-        from .inbox_rules import deleted_text, holds, taking_a_new_key
 
         digests, groups, versions = set(), set(), set()
         for target in targets:
@@ -464,7 +464,6 @@ class Deletions:
         # words are gone: digests of them spaced otherwise and of their letters and digits (``capture_inbox.
         # deleted_forms``, compared by ``Transaction.refuse_under_a_deleted_key``).  Read before any group key below
         # is replaced (review of rc13).
-        from .inbox_rules import deleted_forms
 
         forms, versions, groups = {}, {}, set()
         for kind, ref in members:

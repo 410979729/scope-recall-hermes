@@ -11,7 +11,7 @@ from dataclasses import dataclass, replace
 import hashlib
 
 from ..contracts import ContractError
-from .delete_storage import retraction_after
+from .delete_storage import group_digest, retraction_after
 from .failure_retry import validation_feedback
 from .failure_retry import ACCOUNT_REFUSALS
 
@@ -148,8 +148,6 @@ def _digest(text: str | None) -> str | None:
 
 
 def _source_state(tx, ref: str, revision: int) -> tuple | None:
-    from .delete_storage import group_digest
-
     conn = tx._check()
     row = conn.execute(
         """SELECT e.event_sha256,e.read_blocked,e.suppressed,e.scope_id,e.project_id,e.branch_id,

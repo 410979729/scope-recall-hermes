@@ -17,6 +17,7 @@ import unicodedata
 from ..contracts import ContractError
 from .events import withheld_tool_output
 from .work_storage import FRESH_CONVERSATION_ORIGINS, fresh_since
+from .visibility import allowed
 
 ADMISSION_KEY = "_scope_recall_admission"
 WORK_TYPES = frozenset({"consolidate", "embed"})
@@ -303,7 +304,6 @@ def decision_marker(tx, ref, revision):
 def _schedule(tx, clock, ref, revision, policy, *, on_demand=True, fresh=False):
     source = tx.source(ref, revision)
     current = tx.source_current(ref)
-    from .visibility import allowed
 
     if (
         source is None

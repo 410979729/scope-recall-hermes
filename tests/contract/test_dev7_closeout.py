@@ -13,7 +13,7 @@ import pytest
 
 from scope_recall.contracts import ContractError
 from scope_recall.core import CoreConfig, MemoryCore
-from scope_recall.core import capture_inbox, inbox_rules
+from scope_recall.core import capture_inbox, delete_storage, inbox_rules
 from scope_recall.core.episodes import source_watermark
 from scope_recall.core.worker import _decode_consolidation_result
 from scope_recall.runtime.resume_entry import resume_once
@@ -1057,7 +1057,8 @@ def test_a_purge_run_again_keeps_the_forms_the_first_one_kept_and_reads_a_versio
     operation = core.forget(ctx, request(*stored), remaining_seconds=5)
     counted = []
     original = inbox_rules.deleted_forms
-    monkeypatch.setattr(inbox_rules, "deleted_forms", lambda text: counted.append(len(text)) or original(text))
+    # The purge reads the rule through delete_storage, which takes it at import.
+    monkeypatch.setattr(delete_storage, "deleted_forms", lambda text: counted.append(len(text)) or original(text))
     core.purge_sqlite(ctx, operation["operation_id"], remaining_seconds=10)
     assert len(counted) == 3, "the short message, the long one and the command: once each"
     with sqlite3.connect(core.storage.path) as conn:

@@ -20,6 +20,7 @@ from .episodes import (
     supported_work_goal,
 )
 from .visibility import allowed, allowed_refs
+from .resume_compaction import resume_evidence_refs
 
 #: A proof whose capture the episode does not hold.
 _NOT_CAPTURED = object()
@@ -48,8 +49,6 @@ class Episode:
 
 def _cited_pairs(resume) -> tuple[tuple[str, int], ...]:
     """The source versions a resume cites, once each, in document order."""
-    from .resume_compaction import resume_evidence_refs
-
     pairs = []
     for ref in dict.fromkeys(resume_evidence_refs(resume)):
         try:

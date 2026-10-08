@@ -17,6 +17,8 @@ from .episodes import source_origin, source_watermark
 from .evidence_quote import resolve_evidence_quotes
 from .mutate import Mutation, MutationReceipt, apply_claim_frames, validate_claims
 from .worker_outcomes import DerivationFence, claim_versions_mark, claims_changed, derivation_changed
+from .consolidation_summary import apply_summary, stage_fragment, validate_fragment
+from .failure_retry import validation_feedback as safe_feedback
 
 if TYPE_CHECKING:
     from .storage import StoredSource
@@ -161,8 +163,6 @@ def consolidation_messages(sources, *, episode_ref=None, budget=CONSOLIDATION_IN
             "边界可能截断句子，不得补猜省略的否定、条件或指代。"
         )
     if validation_feedback is not None:
-        from .failure_retry import validation_feedback as safe_feedback
-
         feedback = safe_feedback(validation_feedback.get("code"), validation_feedback.get("field"))
         system += (
             " The previous result failed validation. Repair the indicated schema/contract "
@@ -377,7 +377,6 @@ def _fence_consolidation(tx, value, fence: ConsolidationWorkFence, *, now: str) 
             or tx.work.consolidation_offset(fence.work_id, fence.lease_token, fence.lease_owner, now=now) != chunk.start
         ):
             raise ContractError("DERIVATION_INVALID", "consolidation_offset")
-        from .consolidation_summary import validate_fragment
 
         validate_fragment(tx, value, fence, content)
         for proposal in value["claim_proposals"]:
@@ -416,10 +415,7 @@ def accept_consolidation(
         if work_fence is not None and claims_changed(tx, work_fence.dependencies, until=mark, claim_refs=claim_refs):
             raise ContractError("VERSION_CONFLICT", "memory_epoch")
         if work_fence is not None and work_fence.chunk is not None:
-            from .consolidation_summary import stage_fragment
-
             result = stage_fragment(tx, result, work_fence, now)
-        from .consolidation_summary import apply_summary
 
         for proposal in result["reference_proposals"]:
             item = apply_summary(tx, work_fence, "reference", proposal, scope_id, now)

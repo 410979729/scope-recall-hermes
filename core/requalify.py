@@ -28,7 +28,13 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from ..contracts import ContractError
+from .claim_normalization import expand_frames
+from .claims import Qualification, bind_claim_subject, evidence_refs, qualify, same_assertion
+from .confirmation import CONFIRMED_REASON
+from .corroboration import CORROBORATED_REASON
+from .episodes import source_origin
 from .evidence_question import DERIVATION_ROOT_ORIGINS, NO_DERIVATION_ROOT_REASON
+from .mutate import apply_claim, register_applied_candidate
 
 #: Page ceiling.  Matches ``repair_frames``: large enough to finish a real
 #: store in a few passes, small enough that one pass is an ordinary transaction.
@@ -52,9 +58,6 @@ def _preserved_reasons() -> frozenset[str]:
 
     Imported lazily so this module stays free of import cycles with ``mutate``.
     """
-    from .confirmation import CONFIRMED_REASON
-    from .corroboration import CORROBORATED_REASON
-
     return frozenset({CONFIRMED_REASON, CORROBORATED_REASON})
 
 
@@ -78,8 +81,6 @@ class RequalifyReport:
 
 def requalify_claims(tx, *, now: str, after_ref: str = "", limit: int = 16, dry_run: bool = True) -> RequalifyReport:
     """Re-judge one bounded page of stored claims.  Returns what moved."""
-    from .claims import Qualification, bind_claim_subject, evidence_refs, qualify, same_assertion
-
     if type(limit) is not int or type(limit) is bool or not 1 <= limit <= MAX_PAGE:
         raise ContractError("INPUT_INVALID", "requalify_limit")
     if type(after_ref) is not str:
@@ -169,9 +170,6 @@ def retire_rootless_proposals(
     changed since they were written (on the pilot, 154 of them, promotions included), and retiring
     these must not bring that along.  The report names refs and verdicts only, never claim text.
     """
-    from .claims import Qualification, evidence_refs
-    from .episodes import source_origin
-
     if type(limit) is not int or type(limit) is bool or not 1 <= limit <= MAX_PAGE:
         raise ContractError("INPUT_INVALID", "requalify_limit")
     if type(after_ref) is not str:
@@ -246,10 +244,6 @@ def repair_frames(tx, *, now, after_ref="", limit=16):
     The caller persists the cursor; old versions and original sources remain.
     No model call, manual approval, or fabricated claim payload is involved.
     """
-    from .claim_normalization import expand_frames
-    from .claims import Qualification, evidence_refs, same_assertion
-    from .mutate import apply_claim, register_applied_candidate
-
     if type(limit) is not int or not 1 <= limit <= 32:
         raise ContractError("INPUT_INVALID", "normalization_limit")
     # Filter authorization before pagination so an already-visited prefix or

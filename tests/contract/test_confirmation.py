@@ -246,9 +246,13 @@ def test_requalify_previews_without_writing(app, monkeypatch):
     core, ctx = app
     ref = _claim(core, ctx)
     from scope_recall.core import claims as claims_module
+    from scope_recall.core import requalify as requalify_module
     from scope_recall.core.claims import Qualification
 
     monkeypatch.setattr(claims_module, "qualify", lambda *a, **k: Qualification("active", "direct_report", "TEST-rule"))
+    monkeypatch.setattr(
+        requalify_module, "qualify", lambda *a, **k: Qualification("active", "direct_report", "TEST-rule")
+    )
     report = core.requalify_claims(ctx, limit=32, dry_run=True)
     assert [item["now"] for item in report["changed"]] == ["active:TEST-rule"]
     assert report["applied"] is False
@@ -259,9 +263,13 @@ def test_requalify_applies_the_new_verdict(app, monkeypatch):
     core, ctx = app
     ref = _claim(core, ctx)
     from scope_recall.core import claims as claims_module
+    from scope_recall.core import requalify as requalify_module
     from scope_recall.core.claims import Qualification
 
     monkeypatch.setattr(claims_module, "qualify", lambda *a, **k: Qualification("active", "direct_report", "TEST-rule"))
+    monkeypatch.setattr(
+        requalify_module, "qualify", lambda *a, **k: Qualification("active", "direct_report", "TEST-rule")
+    )
     report = core.requalify_claims(ctx, limit=32, dry_run=False)
     assert report["applied"] is True and len(report["changed"]) == 1
     assert _head(core, ctx, ref) == ("active", "TEST-rule")
@@ -292,10 +300,14 @@ def test_requalify_can_also_withdraw_support(app, monkeypatch):
     assert _head(core, ctx, ref)[0] == "active"
 
     from scope_recall.core import claims as claims_module
+    from scope_recall.core import requalify as requalify_module
     from scope_recall.core.claims import Qualification
 
     monkeypatch.setattr(
         claims_module, "qualify", lambda *a, **k: Qualification("proposed", "inferred_suggestion", "TEST-tightened")
+    )
+    monkeypatch.setattr(
+        requalify_module, "qualify", lambda *a, **k: Qualification("proposed", "inferred_suggestion", "TEST-tightened")
     )
     core.requalify_claims(ctx, limit=32, dry_run=False)
     assert _head(core, ctx, ref) == ("proposed", "TEST-tightened")
