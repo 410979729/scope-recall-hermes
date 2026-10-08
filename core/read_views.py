@@ -16,7 +16,7 @@ from .aliases import validate_alias_source, validate_alias_target
 from .claim_storage import parse_source_ref
 from .claims import ClaimVersion, effective_origin, evidence_refs, select_effective
 from .recall_budget import canonical_render_json
-from .retrieval_storage import evidence_source_contexts
+from .retrieval_hydration import evidence_source_contexts
 from .visibility import CLOSED_INTENTION_STATES, ObjectRef, allowed, epoch_retracted, release_objects
 
 DEFAULT_MAX_ITEMS = 16

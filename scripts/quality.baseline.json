@@ -130,8 +130,11 @@
   "core/requalify.py": {
    "reportArgumentType": 3
   },
+  "core/retrieval_hydration.py": {
+   "reportArgumentType": 1
+  },
   "core/retrieval_storage.py": {
-   "reportArgumentType": 2,
+   "reportArgumentType": 1,
    "reportOperatorIssue": 1
   },
   "core/source_storage.py": {
@@ -660,16 +663,19 @@
   "core/retrieval.py": {
    "UP037": 2
   },
+  "core/retrieval_hydration.py": {
+   "E501": 1,
+   "UP017": 1
+  },
   "core/retrieval_storage.py": {
    "B905": 1,
    "C901": {
     "RetrievalStorage.collection": 16
    },
-   "E501": 6,
+   "E501": 5,
    "PLR0912": {
     "RetrievalStorage.collection": 17
    },
-   "UP017": 1,
    "UP035": 1
   },
   "core/schema.py": {

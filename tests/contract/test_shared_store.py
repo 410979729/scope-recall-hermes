@@ -369,7 +369,7 @@ def test_a_local_recall_packet_carries_no_entries(tmp_path):
 
 def test_an_item_with_evidence_from_several_entries_names_each_once(tmp_path):
     """A claim or episode lists every entry behind its evidence: once each, ordered."""
-    from scope_recall.core.retrieval_storage import evidence_entries
+    from scope_recall.core.retrieval_hydration import evidence_entries
 
     binding = shared_binding(tmp_path / "TEST-shared")
     core = _core(binding)

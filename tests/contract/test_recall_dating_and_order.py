@@ -256,7 +256,7 @@ def test_a_reply_that_restates_recall_does_not_outrank_what_it_restates(app):
         assert fact.ref in refs and report.ref in refs, mode
         assert refs.index(fact.ref) < refs.index(report.ref), mode
     with core.storage.read(ctx) as tx:
-        from scope_recall.core.retrieval_storage import recall_echo
+        from scope_recall.core.retrieval_hydration import recall_echo
 
         assert recall_echo(tx, report)
         assert not recall_echo(tx, answer) and not recall_echo(tx, status_reply)

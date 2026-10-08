@@ -133,6 +133,7 @@
     "core/resume_compaction.py",
     "core/retained_artifacts.py",
     "core/retrieval.py",
+    "core/retrieval_hydration.py",
     "core/retrieval_storage.py",
     "core/schema.py",
     "core/secret_patterns.py",
