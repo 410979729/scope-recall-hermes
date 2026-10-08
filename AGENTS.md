@@ -10,6 +10,8 @@ Maintainability is a product requirement. Prefer a small, explicit change to a n
 - Long work needs bounded stages, durable progress, idempotent retry and visible failure. Never turn unknown data into a successful migration or retry forever.
 - A new public capability needs a shared contract, both applicable host surfaces, concise operator documentation and focused boundary tests. Avoid full-suite repetition without a specific reason.
 - Do not add a dependency or an extensibility layer solely for hypothetical future use. Document the reason when a new durable state or abstraction is necessary.
+- Comments and docstrings say what the code does and why. Dates, instance names, incident, review and release-candidate numbers, and issue numbers belong in the commit message and the changelog. Tests are named for what they check, not for the change that added them.
+- A name another module uses is public (no leading underscore). Imports go at the top of the module. An import stays inside a function only in four cases: moving it up would load more when an entry starts, it needs an optional dependency, tests replace what it imports at call time, or it is one of the lazy upward imports `scripts/quality.py` names.
 
 ## What changes are accepted
 
@@ -24,6 +26,8 @@ Anything else, a new capability, a new setting, a rewrite for its own sake, need
 ## Release and deployment
 
 - The canonical repository is `github.com/410979729/scope-recall-hermes`; deployable wheels are built only from `main`, at a tagged commit (`v<major>.<minor>.<patch>`), one wheel and one sha256 per tag; the first commit after a tag moves `_version.py` past it. Never `git init` a second history or copy the tree; use `git worktree add` and remove the worktree when the task is merged.
+- Work that belongs together ships as one release once all of it is done and verified. Its steps are tested and audited on their branch, then merged and tagged once, not released one by one. A fix a user is waiting for goes out as one pull request with the fix, the version and its notes, and is tagged directly without a release candidate.
+- The changelog gives each release a heading and one paragraph, plus what an operator must do beyond installing the package. The release workflow publishes that section as the GitHub release's notes.
 - Production upgrades stop all target gateway/MCP/worker writers and automatic restarters FIRST (planned-stop where supported), then use `maintenance.cli package-upgrade` with an offline wheel and external backup; uv supports pip-less venvs. Follow `maintenance/AGENT_WORKFLOW.md` for activation/recovery. Never hot-edit `site-packages` or remove `~*` remnants as an upgrade procedure.
 - After every upgrade run `maintenance.cli plan-install` / `apply-install` so the receipt and host wrapper carry the installed version, then `doctor`; receipt, `pip show` and `running-code` records disagreeing on the version is a defect.
 - A temporary setting on a running install (a drain value, a pause) is undone in the same piece of work that made it. One that has to outlive the work is written where the next rollout will trip over it, with the original value and the condition for undoing it.

@@ -5,9 +5,7 @@ longer text this file once held is in its history.
 
 ## [3.9.3] - 2026-10-08
 
-3.9.3 fixes one thing and otherwise changes no behaviour.  On Windows a worker's teardown no longer flashes a console window on the desktop: `taskkill`, and the Codex route's kill of a call that ran out of time, start without one (#222, reported by @tutan0558).
-
-The rest is the clean-up's last part.  The functions hardest to follow are split into named steps (none is above a complexity of 40 any more, and 57 are above 20 where 77 were).  The largest modules are split by what they do: retrieval's hydration, the doctor's report and store checks, the embedding and consolidation models, a home's attachment to a shared store, and a runtime instance's configuration each have a module of their own (three files are above 1,000 lines where eight were).  The Hermes adapter's helpers live with the collaborators they serve (36 methods to 25).  Imports inside functions that loaded nothing new are at the top of their modules (126 between the package's own modules, from 176), and two definitions nothing used are gone.  The memory documentation says what 3.x takes from other plugins: nothing; memory is written from the conversation the host hands over (#221).
+3.9.3 fixes one thing and otherwise changes no behaviour: on Windows a worker's teardown no longer flashes a console window, because `taskkill`, and the Codex route's kill of a call that ran out of time, now start without one (#222, reported by @tutan0558). The rest is the clean-up's last part. The functions hardest to follow are split into named steps: none is above a complexity of 40, and 57 are above 20 where 77 were. Retrieval's hydration, the doctor's report and store checks, the embedding and consolidation models, a home's shared-store attachment and a runtime instance's configuration each have a module of their own, so three files are above 1,000 lines where eight were. The Hermes adapter's helpers live with the collaborators they serve (36 methods to 25). Imports inside functions that loaded nothing new are at the top of their modules (126 left, from 176), and two definitions nothing used are gone. The memory documentation says what 3.x takes from other plugins: nothing, since memory is written from the conversation the host hands over (#221).
 
 ### Upgrading from 3.9.2
 
@@ -15,7 +13,7 @@ Install the package, run `plan-install` and `apply-install` where you upgrade, t
 
 ## [3.9.2] - 2026-10-08
 
-3.9.2 changes no behaviour. It is the clean-up's last part: the store transaction and the core are split by what they do (`tx.sources`, `tx.registry`, `core.operations`, `core.records`), the clients' installers share their common functions, logic that was copied lives in one function (duplicated lines in production code 940 to 319), comments say what the code does rather than how it came about, test files are named for what they test, and this changelog keeps a line or two per release (each release's full notes are on its GitHub release page).
+3.9.2 changes no behaviour. It is the clean-up's third part: the store transaction and the core are split by what they do (`tx.sources`, `tx.registry`, `core.operations`, `core.records`), the clients' installers share their common functions, logic that was copied lives in one function (duplicated lines in production code 940 to 319), comments say what the code does rather than how it came about, test files are named for what they test, and this changelog keeps a line or two per release (each release's full notes are on its GitHub release page).
 
 ### Upgrading from 3.9.1
 
