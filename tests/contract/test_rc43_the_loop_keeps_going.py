@@ -76,10 +76,7 @@ def _supervise(tmp_path, codes, *, monkeypatch, max_drains=16):
     monkeypatch.setattr(scheduling, "load_config", lambda path: config)
     monkeypatch.setattr(scheduling, "SupervisorControl", Recorder)
     monkeypatch.setattr(scheduling, "_acquire_ownership", lambda ctl: _Owner())
-    monkeypatch.setattr(scheduling, "read_control", lambda cfg: {"enabled": True}, raising=False)
-    import scope_recall.runtime.resume_entry as resume_entry
-
-    monkeypatch.setattr(resume_entry, "read_control", lambda cfg: {"enabled": True})
+    monkeypatch.setattr(scheduling, "read_control", lambda cfg: {"enabled": True})
 
     passes = iter(codes)
     made: list[int] = []

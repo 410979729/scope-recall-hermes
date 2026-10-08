@@ -865,7 +865,7 @@ def _check_autostart(report: DoctorReport, binding, data_directory: Path) -> flo
     Returns the configured supervisor wake interval for the stall window, or
     None when autostart is absent or its config could not be read.
     """
-    from ..runtime.resume_entry import read_control
+    from ..runtime.scheduling import read_control
     from ..runtime.worker_entry import load_config
 
     wake_seconds: float | None = None

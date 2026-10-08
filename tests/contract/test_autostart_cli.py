@@ -89,7 +89,8 @@ def test_outside_windows_the_plan_is_a_timer_for_the_operator_and_enable_writes_
     from pathlib import Path
     from types import SimpleNamespace
 
-    from scope_recall.runtime.resume_entry import read_control, resume_once
+    from scope_recall.runtime.resume_entry import resume_once
+    from scope_recall.runtime.scheduling import read_control
     from test_finite_supervisor import NOW, fixture, queue
 
     core, config, written = fixture(tmp_path)

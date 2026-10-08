@@ -5,33 +5,13 @@ from __future__ import annotations
 import argparse
 from datetime import datetime, timezone
 import json
-import hashlib
 from pathlib import Path
 import re
 
 from ..core.file_lock import advisory_file_lock
-from .scheduling import SupervisorControl, next_wake
+from .scheduling import SupervisorControl, next_wake, read_control
 from .worker_entry import _atomic_metadata, load_config
 from .worker_launch import launch_worker
-
-
-def control_path(config):
-    return config.binding.data_directory / "runtime-autostart.json"
-
-
-def read_control(config):
-    path = control_path(config)
-    if not path.exists():
-        return None
-    if path.is_symlink() or path.stat().st_size > 65536:
-        raise ValueError("autostart_control_invalid")
-    control = json.loads(path.read_text(encoding="utf-8"))
-    if control.get("installation_id") != config.binding.installation_id or type(control.get("enabled")) is not bool:
-        raise ValueError("autostart_binding_invalid")
-    expected = "ScopeRecall-" + hashlib.sha256(config.binding.installation_id.encode()).hexdigest()[:20]
-    if control.get("task_name") != expected:
-        raise ValueError("autostart_task_identity_invalid")
-    return control
 
 
 def credential_environment(config, env_file):

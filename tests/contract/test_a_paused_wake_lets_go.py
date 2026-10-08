@@ -27,8 +27,6 @@ class _Owner:
 
 def _run(tmp_path, monkeypatch, *, delay_seconds, enabled_at):
     """Supervise with a start delay; ``enabled_at(slept)`` is what the operator's switch says."""
-    import scope_recall.runtime.resume_entry as resume_entry
-
     writes: list[dict] = []
     slept: list[float] = []
     drains: list[float] = []
@@ -63,7 +61,7 @@ def _run(tmp_path, monkeypatch, *, delay_seconds, enabled_at):
     monkeypatch.setattr(scheduling, "load_config", lambda path: config)
     monkeypatch.setattr(scheduling, "SupervisorControl", Recorder)
     monkeypatch.setattr(scheduling, "_acquire_ownership", lambda control: _Owner())
-    monkeypatch.setattr(resume_entry, "read_control", lambda cfg: {"enabled": enabled_at(sum(slept))})
+    monkeypatch.setattr(scheduling, "read_control", lambda cfg: {"enabled": enabled_at(sum(slept))})
 
     def drain_once(remaining):
         drains.append(sum(slept))

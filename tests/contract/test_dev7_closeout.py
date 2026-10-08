@@ -16,7 +16,8 @@ from scope_recall.core import CoreConfig, MemoryCore
 from scope_recall.core import capture_inbox
 from scope_recall.core.episodes import source_watermark
 from scope_recall.core.worker import _decode_consolidation_result
-from scope_recall.runtime.resume_entry import resume_once, control_path
+from scope_recall.runtime.resume_entry import resume_once
+from scope_recall.runtime.scheduling import control_path
 from scope_recall.maintenance.autostart import plan
 from test_v11_worker import (
     worker_app as worker_app,

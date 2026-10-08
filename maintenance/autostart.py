@@ -15,7 +15,7 @@ import sys
 import tempfile
 import xml.etree.ElementTree as ET
 
-from ..runtime.resume_entry import control_path, read_control
+from ..runtime.scheduling import control_path, read_control
 from ..runtime.worker_entry import _atomic_metadata, load_config
 
 #: How the wake runs outside Windows: from the operator's timer.  Nothing here registers one.
