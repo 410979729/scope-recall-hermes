@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import hashlib
+import ipaddress
 import json
 import math
 import re
 import unicodedata
+import urllib.parse
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Iterable
@@ -49,6 +51,73 @@ _IDENTIFIER_JOINT = re.compile(r"(?<=[A-Za-z])[ \t_-](?=\d)")
 _CLAUSE_BOUNDARY = re.compile(r"[，,；;。！？!?\n]+")
 
 
+def is_loopback_host(value: object) -> bool:
+    """Whether a host names this machine.
+
+    ``localhost``, any name under it, and any address ``ipaddress`` calls
+    loopback -- the same test 1.9.x's endpoint policy used.
+    """
+    host = str(value or "").rstrip(".").casefold()
+    if not host:
+        return False
+    if host == "localhost" or host.endswith(".localhost"):
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def is_plaintext_loopback_url(value: object) -> bool:
+    """Whether a URL is ``http://`` to a host on this machine.
+
+    1.9.1 kept loopback HTTP compatible for local model servers (CHANGELOG):
+    ``require_safe_endpoint`` let a loopback host through without an opt-in.
+    The 3.x endpoint policy has to keep saying so, or the local-model path
+    1.9.1 documented is gone.
+    """
+    if type(value) is not str or not value:
+        return False
+    try:
+        parsed = urllib.parse.urlsplit(value)
+    except ValueError:
+        return False
+    return parsed.scheme == "http" and bool(parsed.hostname) and is_loopback_host(parsed.hostname)
+
+
+def _endpoint_scheme_allowed(endpoint: str) -> bool:
+    """Whether plain HTTP may be used to reach this endpoint.
+
+    HTTPS anywhere, and plain HTTP to this machine: 1.9.1's CHANGELOG kept
+    "Loopback HTTP ... compatible for local model servers", and its
+    ``require_safe_endpoint`` let a loopback host through without an opt-in.
+    A non-loopback plain-HTTP endpoint is not admitted here.
+    """
+    if endpoint.startswith("https://"):
+        return True
+    return is_plaintext_loopback_url(endpoint)
+
+
+def _endpoint_url_shape_ok(endpoint: str) -> bool:
+    """Whether an endpoint is an http(s) URL with a host and no credentials.
+
+    The descriptor records how text reaches a model, so it carries the *shape* of
+    that URL -- which is what this module's own contract for it asks ("Shape and
+    bounds, not identity").  Which hosts a deployment may reach is policy, stated
+    where the route is read (``EmbeddingRouteConfig``) and enforced where the
+    request is sent (``HttpsTransport``): the split 1.9.1 had between its config
+    gate and ``require_safe_endpoint``.  Enforcing the policy here as well made
+    the digest refuse a URL the transport was willing to call, and the refusal
+    arrived as ``invalid embedding_space`` -- naming neither the scheme nor the
+    endpoint, and reading as a missing config.
+    """
+    try:
+        parsed = urllib.parse.urlsplit(endpoint)
+    except ValueError:
+        return False
+    return parsed.scheme in {"http", "https"} and bool(parsed.hostname) and not parsed.username and not parsed.password
+
+
 def canonical_embedding_space(value: dict) -> dict:
     """Return the frozen descriptor with a stable key order and strict fields."""
 
@@ -67,7 +136,7 @@ def canonical_embedding_space(value: dict) -> dict:
     if type(value.get("dimensions")) is not int or not 8 <= value["dimensions"] <= 16384:
         raise ContractError("INPUT_INVALID", "embedding_space")
     endpoint = value.get("endpoint")
-    if type(endpoint) is not str or not endpoint.startswith("https://") or len(endpoint) > 2048:
+    if type(endpoint) is not str or not _endpoint_url_shape_ok(endpoint) or len(endpoint) > 2048:
         raise ContractError("INPUT_INVALID", "embedding_space")
     if value.get("task_type") is not None:
         raise ContractError("INPUT_INVALID", "embedding_space")

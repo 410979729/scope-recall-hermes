@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from ..contracts import ContractError
+from ..core.recall_policy import _endpoint_scheme_allowed
 from ..core.secret_patterns import contains_secret_like_text
 from .model_budget import AuxiliaryBudgetLedger
 
@@ -150,7 +151,7 @@ def _worker_request(
 ) -> bytes:
     """The one request line the worker accepts, validated before any process starts."""
     parsed = urllib.parse.urlparse(url)
-    if parsed.scheme != "https" or not parsed.hostname:
+    if not _endpoint_scheme_allowed(url) or not parsed.hostname:
         raise AuxiliaryModelError("endpoint_invalid")
     if not _HTTP_WORKER_PATH.is_file():
         raise AuxiliaryModelError("transport_unavailable")

@@ -214,9 +214,6 @@
   "maintenance/shared.py": {
    "reportOptionalMemberAccess": 1
   },
-  "runtime/_http_worker.py": {
-   "reportAttributeAccessIssue": 1
-  },
   "runtime/auxiliary.py": {
    "reportArgumentType": 1
   },

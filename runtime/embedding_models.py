@@ -12,7 +12,13 @@ from dataclasses import dataclass
 from functools import partial
 from typing import Any
 
-from ..core.recall_policy import EMBEDDING_DIALECTS, EMBEDDING_SPACE, build_embedding_space, encode_embedding_text
+from ..core.recall_policy import (
+    EMBEDDING_DIALECTS,
+    EMBEDDING_SPACE,
+    _endpoint_scheme_allowed,
+    build_embedding_space,
+    encode_embedding_text,
+)
 from ..core.source_records import StoredSource
 from .model_budget import AuxiliaryBudgetLedger
 from .models import (
@@ -239,6 +245,18 @@ class EmbeddingRouteConfig:
             raise ValueError("embedding_route_partial_space")
         if self.dialect is not None and self.dialect not in EMBEDDING_DIALECTS:
             raise ValueError("embedding_route_dialect")
+        if self.endpoint is not None and (
+            type(self.endpoint) is not str or not _endpoint_scheme_allowed(self.endpoint)
+        ):
+            # HTTPS anywhere; plain HTTP to this machine -- the carve-out 1.9.1's
+            # endpoint policy kept for a local model server.  Stating the rule
+            # where the config is read names the fault at load: without it the
+            # refusal surfaced as ``INPUT_INVALID: invalid embedding_space``,
+            # which names neither the scheme nor the endpoint, and the host
+            # reported the session as *unconfigured* -- as if no file had been
+            # read.  ``ConsolidationRouteConfig`` states its own rule the same
+            # way (a chat route has no loopback carve-out).
+            raise ValueError("embedding_route_endpoint")
         if type(self.dimensions_field) is not str or not _REQUEST_FIELD_RE.fullmatch(self.dimensions_field):
             raise ValueError("embedding_route_dimensions_field")
 

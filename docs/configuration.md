@@ -276,7 +276,7 @@ C:\path\to\python.exe -c "import json, pathlib; from scope_recall.runtime import
 |-----|------|---------|---------|
 | `credential_env` | string matching `^[A-Z][A-Z0-9_]{0,127}$` | required | **Name** of the environment variable holding the API key. The key itself never appears in this file. |
 | `model` | string, 1–200 chars | absent | Model name sent on the wire. |
-| `endpoint` | `https://` URL, ≤ 2048 chars | absent | Full request URL. Not a base URL: no path is appended. |
+| `endpoint` | URL, ≤ 2048 chars | absent | Full request URL. Not a base URL: no path is appended. `https://` to any host; `http://` to a loopback host only (a local model server on this machine). |
 | `dimensions` | int, 8–16384 | absent | Vector width. It is sent in the request and the response length is checked against it. |
 | `dialect` | `"gemini"` or `"openai"` | absent | Wire shape. See the next section. |
 | `dimensions_field` | string, a JSON field name | `"dimensions"` | The request field the `openai` dialect sends the width in. Voyage calls it `output_dimension` and refuses `dimensions`. A wire detail: it does not change the embedding space. |

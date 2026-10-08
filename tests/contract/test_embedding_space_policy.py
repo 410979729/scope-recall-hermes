@@ -54,10 +54,14 @@ def test_P08_gem2_old_space_rejected_and_explicit_threshold_tolerates_float_roun
     old["model"] = "gemini-embedding-001"
     assert embedding_space_id(canonical_embedding_space(old)) != SPACE_ID
 
-    # A malformed descriptor is still refused.
+    # A malformed descriptor is still refused.  The endpoint's shape is what the
+    # descriptor carries, so a URL with no host or a credential in its authority
+    # is refused here; which hosts may be reached is policy, checked where the
+    # route is read (`EmbeddingRouteConfig`) and where the request is sent.
     for broken in (
         {**EMBEDDING_SPACE, "dimensions": 0},
-        {**EMBEDDING_SPACE, "endpoint": "http://insecure"},
+        {**EMBEDDING_SPACE, "endpoint": "not-a-url"},
+        {**EMBEDDING_SPACE, "endpoint": "https://user:secret@example.com/v1"},
         {**EMBEDDING_SPACE, "metric": "dot"},
         {**EMBEDDING_SPACE, "model": ""},
     ):
@@ -174,6 +178,56 @@ def test_P08_embedding_model_is_configuration_not_a_constant():
             dimensions=1536,
             dialect="not-a-dialect",
         )
+
+
+def test_P08_the_endpoint_rule_is_stated_where_the_config_is_read():
+    """1.9.1 kept loopback HTTP for local model servers and opted in beyond it.
+
+    The 3.x endpoint policy asked for ``https://`` everywhere, so the local-model
+    path 1.9.1 documented ("Loopback HTTP remains compatible for local model
+    servers", plus its explicit opt-in for a trusted non-loopback endpoint) had no
+    3.x equivalent, and nothing said so.  Stated here, where the config is read,
+    instead of surfacing later as ``INPUT_INVALID: invalid embedding_space`` --
+    which names neither the scheme nor the endpoint.
+    """
+    from scope_recall.adapters.models import EmbeddingRouteConfig
+
+    def route(endpoint: str) -> EmbeddingRouteConfig:
+        return EmbeddingRouteConfig(
+            credential_env="TEST_EMBED_KEY",
+            model="local-embedding",
+            endpoint=endpoint,
+            dimensions=1024,
+            dialect="openai",
+        )
+
+    # Loopback HTTP is a local model server, every spelling of it, with no opt-in.
+    for endpoint in (
+        "http://127.0.0.1:11434/v1/embeddings",
+        "http://localhost:11434/v1/embeddings",
+        "http://[::1]:11434/v1/embeddings",
+    ):
+        assert route(endpoint).space()["endpoint"] == endpoint
+
+    # A host that is not this machine is refused by name -- a container bridge
+    # address included.
+    for endpoint in (
+        "http://172.17.0.1:18080/v1/embeddings",
+        "http://example.com/v1/embeddings",
+        "http://93.184.216.34/v1/embeddings",
+    ):
+        with pytest.raises(ValueError) as refused:
+            route(endpoint)
+        assert str(refused.value) == "embedding_route_endpoint"
+
+    # A scheme that is not HTTP, and a value that is not a URL, stay refused too.
+    for endpoint in ("ftp://example.com/v1/embeddings", "example.com/v1/embeddings", "not-a-url"):
+        with pytest.raises(ValueError) as refused:
+            route(endpoint)
+        assert str(refused.value) == "embedding_route_endpoint"
+
+    # And the shipped default, which states no endpoint, is untouched.
+    assert EmbeddingRouteConfig(credential_env="TEST_EMBED_KEY").space() == EMBEDDING_SPACE
 
 
 def test_P08_admission_is_bound_to_the_configured_space_not_the_shipped_one():

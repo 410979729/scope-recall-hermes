@@ -1,9 +1,10 @@
-"""Private stdlib HTTPS worker for the bounded auxiliary transport."""
+"""Private stdlib HTTP(S) worker for the bounded auxiliary transport."""
 
 from __future__ import annotations
 
 import base64
 import http.client
+import ipaddress
 import json
 import math
 import select
@@ -16,6 +17,21 @@ import urllib.request
 
 MAX_REQUEST_BYTES = 3 * 1024 * 1024
 _REQUEST_KEYS = frozenset({"url", "body_b64", "headers", "timeout_seconds", "max_response_bytes"})
+#: Headers never sent over a plaintext connection.  A local model server needs
+#: no credential, and 1.9.1's endpoint policy stripped them rather than letting
+#: a bearer token cross an unencrypted socket (CHANGELOG: "every HTTP path
+#: strips authorization, API-key, cookie, and proxy credentials").
+_CREDENTIAL_HEADERS = frozenset(
+    {
+        "authorization",
+        "proxy-authorization",
+        "x-api-key",
+        "x-goog-api-key",
+        "api-key",
+        "cookie",
+        "set-cookie",
+    }
+)
 
 
 class _Failure(Exception):
@@ -62,6 +78,41 @@ def _resolve_http_proxy(target_hostname: str) -> tuple[str, int, dict[str, str]]
     return parsed.hostname, port, _proxy_authorization_from_url(proxy_url)
 
 
+def _is_loopback_host(value: str) -> bool:
+    """Whether a host names this machine (the test 1.9.x's endpoint policy used)."""
+    host = str(value or "").rstrip(".").casefold()
+    if not host:
+        return False
+    if host == "localhost" or host.endswith(".localhost"):
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def _plaintext_headers(headers: dict[str, str]) -> dict[str, str]:
+    """The headers a plaintext request may carry: no credential-bearing name."""
+    return {name: value for name, value in headers.items() if name.casefold() not in _CREDENTIAL_HEADERS}
+
+
+def _mark_idle(connection: http.client.HTTPConnection) -> None:
+    """Stamp the connection this worker keeps between requests (see ``_still_open``).
+
+    The stamp is a dynamic attribute, so it is set through ``vars`` rather than
+    a declared one: ``HTTPConnection`` has no such field.
+    """
+    vars(connection)["scope_recall_idle_since"] = time.monotonic()
+
+
+def _headers_and_body(request: dict, *, plaintext: bool) -> tuple[dict[str, str], str]:
+    """Read the request's headers and body, stripping credentials when plaintext."""
+    headers, body_b64 = request["headers"], request["body_b64"]
+    if not isinstance(headers, dict) or type(body_b64) is not str:
+        raise _Failure("http_protocol")
+    return (_plaintext_headers(headers) if plaintext else headers), body_b64
+
+
 def _open_https_connection(target_hostname: str, target_port: int, *, deadline: float) -> http.client.HTTPSConnection:
     remaining = deadline - time.monotonic()
     if remaining <= 0:
@@ -79,8 +130,14 @@ def _open_https_connection(target_hostname: str, target_port: int, *, deadline: 
     return connection
 
 
-def _parse_request(raw: bytes) -> tuple[urllib.parse.ParseResult, bytes, dict[str, str], float, int]:
-    """Validate the parent's request line; each failure names one field's fault."""
+def _parse_request(
+    raw: bytes,
+) -> tuple[urllib.parse.ParseResult, bytes, dict[str, str], float, int, bool]:
+    """Validate the parent's request line; each failure names one field's fault.
+
+    The last value is whether the request goes out in plaintext: HTTPS to any
+    host, or HTTP to this machine only (1.9.1's loopback carve-out).
+    """
     try:
         request = json.loads(raw.decode("utf-8"))
     except (UnicodeError, json.JSONDecodeError):
@@ -94,12 +151,17 @@ def _parse_request(raw: bytes) -> tuple[urllib.parse.ParseResult, bytes, dict[st
         parsed = urllib.parse.urlparse(url)
     except ValueError:
         raise _Failure("endpoint_invalid") from None
-    if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
+    if not parsed.hostname or parsed.username or parsed.password:
         raise _Failure("endpoint_invalid")
-    body_b64, headers = request["body_b64"], request["headers"]
+    plaintext = False
+    if parsed.scheme == "http":
+        if not _is_loopback_host(parsed.hostname):
+            raise _Failure("endpoint_invalid")
+        plaintext = True
+    elif parsed.scheme != "https":
+        raise _Failure("endpoint_invalid")
+    headers, body_b64 = _headers_and_body(request, plaintext=plaintext)
     timeout_seconds, max_response_bytes = request["timeout_seconds"], request["max_response_bytes"]
-    if type(body_b64) is not str or not isinstance(headers, dict):
-        raise _Failure("http_protocol")
     if (
         type(timeout_seconds) not in (int, float)
         or not math.isfinite(float(timeout_seconds))
@@ -118,7 +180,7 @@ def _parse_request(raw: bytes) -> tuple[urllib.parse.ParseResult, bytes, dict[st
         body = base64.b64decode(body_b64.encode("ascii"), validate=True)
     except (UnicodeError, ValueError):
         raise _Failure("http_protocol") from None
-    return parsed, body, headers, float(timeout_seconds), max_response_bytes
+    return parsed, body, headers, float(timeout_seconds), max_response_bytes, plaintext
 
 
 #: A connection idle longer than this is not used again.  A server or a proxy closes an idle keep-alive connection
@@ -142,13 +204,16 @@ def _still_open(connection: http.client.HTTPConnection) -> bool:
     return not readable
 
 
-def _take_connection(parsed, headers: dict[str, str], deadline: float, connections: dict | None):
+def _take_connection(
+    parsed, headers: dict[str, str], deadline: float, connections: dict | None, *, plaintext: bool = False
+):
     """The cached connection for this origin and header set while it is still open, else a fresh one.
 
     A persistent worker keeps at most one connection; anything cached for a
     different key is closed rather than left half-open.
     """
-    cache_key = (parsed.hostname, parsed.port or 443, tuple(sorted(headers.items())))
+    default_port = 80 if plaintext else 443
+    cache_key = (parsed.scheme, parsed.hostname, parsed.port or default_port, tuple(sorted(headers.items())))
     connection = None
     try:
         if connections is not None:
@@ -160,13 +225,30 @@ def _take_connection(parsed, headers: dict[str, str], deadline: float, connectio
                 connection.close()
                 connection = None
         if connection is None:
-            connection = _open_https_connection(parsed.hostname, parsed.port or 443, deadline=deadline)
+            if plaintext:
+                connection = _open_plaintext_connection(parsed.hostname, parsed.port or 80, deadline=deadline)
+            else:
+                connection = _open_https_connection(parsed.hostname, parsed.port or 443, deadline=deadline)
     except ValueError:
         raise _Failure("http_protocol") from None
     return cache_key, connection
 
 
-def _arm(connection: http.client.HTTPSConnection, deadline: float) -> float:
+def _open_plaintext_connection(
+    target_hostname: str, target_port: int, *, deadline: float
+) -> http.client.HTTPConnection:
+    """A plain connection to this machine.  No TLS, and no proxy: a loopback
+    model server is reached directly, and a proxy would take the request away
+    from this machine."""
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        raise TimeoutError
+    connection = http.client.HTTPConnection(target_hostname, target_port)
+    connection.timeout = remaining
+    return connection
+
+
+def _arm(connection: http.client.HTTPConnection, deadline: float) -> float:
     """Fail now if the deadline passed; otherwise bound the next socket operation by it."""
     remaining = deadline - time.monotonic()
     if remaining <= 0:
@@ -178,16 +260,16 @@ def _arm(connection: http.client.HTTPSConnection, deadline: float) -> float:
 
 def _request(raw: bytes, connections: dict | None = None) -> bytes:
     try:
-        parsed, body, headers, timeout_seconds, max_response_bytes = _parse_request(raw)
+        parsed, body, headers, timeout_seconds, max_response_bytes, plaintext = _parse_request(raw)
     except _Failure as failure:
         return _result(ok=False, error=failure.error)
     deadline = time.monotonic() + timeout_seconds
-    connection: http.client.HTTPSConnection | None = None
+    connection: http.client.HTTPConnection | None = None
     chunks: list[bytes] = []
     status: int | None = None
     reusable = False
     try:
-        cache_key, connection = _take_connection(parsed, headers, deadline, connections)
+        cache_key, connection = _take_connection(parsed, headers, deadline, connections, plaintext=plaintext)
         remaining = _arm(connection, deadline)
         if connection.sock is None:
             connection.timeout = remaining
@@ -227,7 +309,7 @@ def _request(raw: bytes, connections: dict | None = None) -> bytes:
     finally:
         if connection is not None:
             if reusable and connections is not None:
-                connection.scope_recall_idle_since = time.monotonic()
+                _mark_idle(connection)
                 connections[cache_key] = connection
             else:
                 connection.close()
