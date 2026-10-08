@@ -20,7 +20,7 @@ from scope_recall.runtime.instance import RuntimeInstanceConfig, build_runtime_i
 from scope_recall.runtime import worker_entry
 from scope_recall.core.file_lock import advisory_file_lock
 from scope_recall.runtime.models import AuxiliaryModelError
-from scope_recall.core.worker import _model_exception_outcome
+from scope_recall.core.worker_outcomes import model_exception_outcome
 from test_runtime_worker_entry import _binding, _config_payload, _write_config
 from test_runtime_auxiliary import _runtime_config, FakeTransport
 from scope_recall.runtime.auxiliary import build_auxiliary_runtime
@@ -114,9 +114,9 @@ def test_missing_credentials_do_not_reserve_or_send(tmp_path, monkeypatch):
 
 
 def test_http_failure_classification_preserves_transient_and_permanent_errors():
-    assert _model_exception_outcome(AuxiliaryModelError("http_status", detail="503")) == ("retry", "http_503")
-    assert _model_exception_outcome(AuxiliaryModelError("http_status", detail="429")) == ("retry", "http_429")
-    assert _model_exception_outcome(AuxiliaryModelError("http_status", detail="401")) == ("failed", "http_401")
+    assert model_exception_outcome(AuxiliaryModelError("http_status", detail="503")) == ("retry", "http_503")
+    assert model_exception_outcome(AuxiliaryModelError("http_status", detail="429")) == ("retry", "http_429")
+    assert model_exception_outcome(AuxiliaryModelError("http_status", detail="401")) == ("failed", "http_401")
 
 
 @pytest.mark.parametrize(

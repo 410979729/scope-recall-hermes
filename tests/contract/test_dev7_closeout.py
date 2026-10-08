@@ -15,7 +15,7 @@ from scope_recall.contracts import ContractError
 from scope_recall.core import CoreConfig, MemoryCore
 from scope_recall.core import capture_inbox, delete_storage, inbox_rules
 from scope_recall.core.episodes import source_watermark
-from scope_recall.core.worker import _decode_consolidation_result
+from scope_recall.core.worker_consolidation import decode_consolidation_result
 from scope_recall.runtime.resume_entry import resume_once
 from scope_recall.runtime.scheduling import control_path
 from scope_recall.maintenance.autostart import plan
@@ -219,11 +219,11 @@ def test_decoder_repairs_unique_serialized_quote_but_never_fuzzy_support(worker_
         evidence_spans=[dict(source_ref=source.ref, source_revision=1, quote=quote)],
         procedure={},
     )
-    value = _decode_consolidation_result(json.dumps(consolidation_payload(source, claims=[p])), (source,))
+    value = decode_consolidation_result(json.dumps(consolidation_payload(source, claims=[p])), (source,))
     assert "procedure" not in value["claim_proposals"][0]
     assert value["claim_proposals"][0]["evidence_spans"][0]["quote"] in raw
     p["evidence_spans"][0]["quote"] = "TEST invented quote"
-    value = _decode_consolidation_result(json.dumps(consolidation_payload(source, claims=[p])), (source,))
+    value = decode_consolidation_result(json.dumps(consolidation_payload(source, claims=[p])), (source,))
     assert value["claim_proposals"][0]["evidence_spans"][0]["quote"] == "TEST invented quote"
 
 

@@ -5,13 +5,12 @@ Owned by the worker drain; model calls stay outside SQLite transactions.
 
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 from functools import partial
-import json
 from typing import Protocol
 
 from ..contracts import ContractError, decode_payload, utc_instant, validate_payload
-from .storage import StoredSource
 from .consolidate import (
     ConsolidationWorkFence,
     accept_consolidation,
@@ -19,21 +18,22 @@ from .consolidate import (
     consolidation_messages,
 )
 from .consolidation_chunks import source_chunk
+from .consolidation_summary import resume_seed
 from .episodes import source_origin
 from .evidence_question import DERIVATION_ROOT_ORIGINS
+from .storage import StoredSource
 from .worker_outcomes import (
-    _Outcome,
-    _deadline_result,
-    _epoch_changed,
-    _finalize_work,
-    _mark_obsolete,
-    _model_failure,
-    _remaining,
-    _work_result,
+    Outcome,
+    budget_left,
+    deadline_result,
     derivation_changed,
+    epoch_changed,
+    finalize_work,
+    mark_obsolete,
+    model_failure,
     read_derivation_fence,
+    work_result,
 )
-from .consolidation_summary import resume_seed
 
 
 class ConsolidationModel(Protocol):
@@ -169,7 +169,7 @@ def _root_only_sources(tx, sources: tuple[StoredSource, ...]) -> tuple[StoredSou
     return tuple(roots)
 
 
-def _decode_consolidation_result(raw: str, sources=()) -> dict:
+def decode_consolidation_result(raw: str, sources=()) -> dict:
     """Decode the model envelope without relaxing the consolidation contract.
 
     Some OpenAI-compatible gateways/models still wrap a JSON-object response in
@@ -226,7 +226,7 @@ def _decode_consolidation_result(raw: str, sources=()) -> dict:
     return validate_payload("consolidation_result", value)
 
 
-def _process_consolidate(
+def process_consolidate(
     storage,
     clock,
     context,
@@ -236,12 +236,12 @@ def _process_consolidate(
     started: float,
     budget: float,
 ) -> tuple[str, str | None, str]:
-    finish = partial(_finalize_work, storage, clock, context, item, started=started, budget=budget)
+    finish = partial(finalize_work, storage, clock, context, item, started=started, budget=budget)
     dependencies = None
     batch, pending_sources = (), ()
     chunk, offset = None, 0
     seed = ()
-    with storage.read(context, remaining_seconds=_remaining(started, clock, budget)) as tx:
+    with storage.read(context, remaining_seconds=budget_left(started, clock, budget)) as tx:
         feedback = tx.work.derivation_feedback(item.work_id)
         if not tx.work._verify_lease(*item.lease, now=clock.utc_now()):
             state = tx.work.read_state(item.work_id) or "stale"
@@ -273,21 +273,21 @@ def _process_consolidate(
     if source is None:
         return finish("obsolete", "authority_revoked")
     if not roots:
-        if _remaining(started, clock, budget) <= 0:
-            return _deadline_result(storage, context, item)
-        with storage.write(context, remaining_seconds=_remaining(started, clock, budget)) as tx:
+        if budget_left(started, clock, budget) <= 0:
+            return deadline_result(storage, context, item)
+        with storage.write(context, remaining_seconds=budget_left(started, clock, budget)) as tx:
             now = clock.utc_now()
             if not tx.work._verify_lease(*item.lease, now=now):
-                return _work_result(tx.work.complete(*item.lease, now=now))
+                return work_result(tx.work.complete(*item.lease, now=now))
             try:
                 tx.claims.require_live_source(item.subject_ref, item.subject_revision)
                 for stored in batch:
                     tx.claims.require_live_source(stored.ref, stored.revision)
             except ContractError:
-                return _mark_obsolete(tx, item, now)
+                return mark_obsolete(tx, item, now)
             if derivation_changed(tx, dependencies) is not None:
-                return _epoch_changed(tx, item, now)
-            return _work_result(
+                return epoch_changed(tx, item, now)
+            return work_result(
                 tx.work.complete_consolidation(
                     *item.lease,
                     now=now,
@@ -319,7 +319,7 @@ def _process_consolidate(
         allowed_refs = frozenset(f"{stored.ref}@{stored.revision}" for stored in roots)
         repair = {"validation_feedback": feedback} if feedback is not None else {}
         raw = model.propose(
-            roots, episode_ref=episode_ref, remaining_seconds=_remaining(started, clock, budget), **repair
+            roots, episode_ref=episode_ref, remaining_seconds=budget_left(started, clock, budget), **repair
         )
     except ContractError as exc:
         # A probabilistic model occasionally emits an invalid derivation; give
@@ -327,12 +327,12 @@ def _process_consolidate(
         # first bad generation (attempts stay capped by MAX_RECOVERABLE_ATTEMPTS).
         return finish("retry", exc.code or "model_unavailable", error_detail=exc.field, stage="prepare_or_model")
     except Exception as exc:
-        return finish(*_model_failure(exc))
+        return finish(*model_failure(exc))
     try:
-        value = _decode_consolidation_result(raw, roots)
+        value = decode_consolidation_result(raw, roots)
     except (ContractError, ValueError, TypeError, json.JSONDecodeError) as exc:
         detail = exc.field if isinstance(exc, ContractError) else "json_envelope"
-        return _Outcome(
+        return Outcome(
             *finish(
                 "retry",
                 "derivation_invalid",
@@ -366,7 +366,7 @@ def _process_consolidate(
             replace(context, session_id=source.session_id, recent_messages=()),
             value,
             scope_id=item.scope_id,
-            remaining_seconds=_remaining(started, clock, budget),
+            remaining_seconds=budget_left(started, clock, budget),
             work_fence=fence,
         )
     except ContractError as exc:
@@ -381,7 +381,7 @@ def _process_consolidate(
         # Keep the clause that rejected the result. Without it a terminal
         # DERIVATION_INVALID cannot be told apart from any other, and diagnosing
         # one costs a full reproduction against live work.
-        return _Outcome(
+        return Outcome(
             *finish("retry" if recoverable else "failed", code, error_detail=exc.field, stage="accept"),
             detail=exc.field,
         )

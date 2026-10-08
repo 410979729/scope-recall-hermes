@@ -10,7 +10,7 @@ from threading import Barrier
 import pytest
 
 from scope_recall.contracts import ContractError
-from scope_recall.core.worker import _decode_consolidation_result
+from scope_recall.core.worker_consolidation import decode_consolidation_result
 from test_v11_claims import accept, app, capture, draft
 from test_v11_deletion import authorize, request
 
@@ -364,7 +364,7 @@ def test_consolidation_accepts_only_transport_fence_and_null_optional_location(w
 )
 def test_consolidation_decoder_rejects_unsafe_envelopes(raw):
     with pytest.raises((ContractError, ValueError, TypeError, json.JSONDecodeError)):
-        _decode_consolidation_result(raw)
+        decode_consolidation_result(raw)
 
 
 def _timed_claim_result(valid_from, valid_to=None):
@@ -391,12 +391,12 @@ def _timed_claim_result(valid_from, valid_to=None):
 
 
 def test_consolidation_decoder_writes_numeric_offsets_as_the_same_utc_instant():
-    value = _decode_consolidation_result(
+    value = decode_consolidation_result(
         _timed_claim_result("2026-09-16T10:00:00+08:00", "2026-09-16T01:30:00.25-05:30")
     )
     claim = value["claim_proposals"][0]
     assert (claim["valid_from"], claim["valid_to"]) == ("2026-09-16T02:00:00Z", "2026-09-16T07:00:00.25Z")
-    unchanged = _decode_consolidation_result(_timed_claim_result("2026-09-16T02:00:00+00:00", "2026-09-17T00:00:00Z"))
+    unchanged = decode_consolidation_result(_timed_claim_result("2026-09-16T02:00:00+00:00", "2026-09-17T00:00:00Z"))
     assert (unchanged["claim_proposals"][0]["valid_from"], unchanged["claim_proposals"][0]["valid_to"]) == (
         "2026-09-16T02:00:00+00:00",
         "2026-09-17T00:00:00Z",
@@ -417,7 +417,7 @@ def test_consolidation_decoder_writes_numeric_offsets_as_the_same_utc_instant():
 )
 def test_consolidation_decoder_still_rejects_invalid_timestamps(valid_from):
     with pytest.raises(ContractError, match="INPUT_INVALID"):
-        _decode_consolidation_result(_timed_claim_result(valid_from))
+        decode_consolidation_result(_timed_claim_result(valid_from))
 
 
 def test_offset_timestamp_does_not_discard_the_batch_and_is_stored_in_utc(worker_app):
@@ -634,13 +634,13 @@ def test_C09_deleted_source_obsoletes_late_worker_result(worker_app):
     assert leased.subject_ref == source.ref
     authorize(core, ctx, source)
     core.forget(ctx, request(source), remaining_seconds=10)
-    from scope_recall.core.worker import _process_consolidate
+    from scope_recall.core.worker_consolidation import process_consolidate
 
     class ValidModel:
         def propose(self, sources, *, episode_ref=None, remaining_seconds=1.0):
             return json.dumps(consolidation_payload(sources[0]), ensure_ascii=False)
 
-    disposition, code, state = _process_consolidate(
+    disposition, code, state = process_consolidate(
         core.storage,
         clock,
         ctx,
@@ -671,9 +671,9 @@ def test_C35_stale_lease_cannot_overwrite_newer_completion(worker_app):
         tx.work.release_stale(clock.utc_now())
         second = tx.work.claim_next("worker-b", clock.utc_now(), lease_seconds=60, limit=1)[0]
     assert second.lease_token > first.lease_token
-    from scope_recall.core.worker import _process_consolidate
+    from scope_recall.core.worker_consolidation import process_consolidate
 
-    disposition, code, state = _process_consolidate(
+    disposition, code, state = process_consolidate(
         core.storage,
         clock,
         ctx,
@@ -1119,11 +1119,11 @@ def test_consolidation_barrier_old_worker_cannot_mutate_after_lease_stolen(worke
         leased = tx.work.claim_next("worker-a", clock.utc_now(), lease_seconds=0.001, limit=1)[0]
     assert leased.subject_ref == source.ref
 
-    from scope_recall.core.worker import _process_consolidate
+    from scope_recall.core.worker_consolidation import process_consolidate
 
     with ThreadPoolExecutor(max_workers=1) as pool:
         future = pool.submit(
-            _process_consolidate,
+            process_consolidate,
             core.storage,
             clock,
             ctx,
@@ -1197,11 +1197,11 @@ def test_C10_restore_epoch_fences_late_consolidation(worker_app, tmp_path):
     with core.storage.write(ctx) as tx:
         leased = tx.work.claim_next("worker-a", clock.utc_now(), lease_seconds=60, limit=1)[0]
 
-    from scope_recall.core.worker import _process_consolidate
+    from scope_recall.core.worker_consolidation import process_consolidate
 
     with ThreadPoolExecutor(max_workers=1) as pool:
         future = pool.submit(
-            _process_consolidate,
+            process_consolidate,
             core.storage,
             clock,
             ctx,
@@ -1247,9 +1247,9 @@ def test_restore_of_an_older_backup_during_extraction_fences_late_consolidation(
             _restore(core, ctx, backup)
             return json.dumps(consolidation_payload(*sources, claims=[draft(source)]), ensure_ascii=False)
 
-    from scope_recall.core.worker import _process_consolidate
+    from scope_recall.core.worker_consolidation import process_consolidate
 
-    result = _process_consolidate(
+    result = process_consolidate(
         core.storage, clock, ctx, leased, model=RestoringModel(), started=clock.monotonic(), budget=30
     )
     assert result == ("retry", "memory_epoch_changed", "pending")
@@ -1290,9 +1290,9 @@ def test_restore_that_reuses_claim_version_rowids_fences_late_consolidation(work
             slot["ref"] = accept(core, ctx, draft(newer, "绿色")).items[0].ref
             return json.dumps(consolidation_payload(*sources, claims=[draft(subject)]), ensure_ascii=False)
 
-    from scope_recall.core.worker import _process_consolidate
+    from scope_recall.core.worker_consolidation import process_consolidate
 
-    result = _process_consolidate(
+    result = process_consolidate(
         core.storage, clock, ctx, leased, model=RestoringModel(), started=clock.monotonic(), budget=30
     )
     assert result == ("retry", "memory_epoch_changed", "pending")
@@ -1374,11 +1374,11 @@ def test_embed_barrier_cannot_publish_after_lease_stolen(worker_app):
     with core.storage.write(ctx) as tx:
         leased = tx.work.claim_next("worker-a", clock.utc_now(), lease_seconds=0.001, limit=1)[0]
 
-    from scope_recall.core.worker import _process_embed
+    from scope_recall.core.worker_projection import process_embed
 
     with ThreadPoolExecutor(max_workers=1) as pool:
         future = pool.submit(
-            _process_embed,
+            process_embed,
             core.storage,
             clock,
             ctx,

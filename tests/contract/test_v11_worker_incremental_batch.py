@@ -58,10 +58,10 @@ def test_late_leased_subject_is_in_its_actual_batch(worker_app):
     assert item.subject_ref == sources[39].ref
     with sqlite3.connect(core.storage.path) as conn:
         conn.execute("UPDATE work_items SET available_at=? WHERE state='pending'", (clock.utc_now(),))
-    from scope_recall.core.worker import _process_consolidate
+    from scope_recall.core.worker_consolidation import process_consolidate
 
     tracker = BatchTracker()
-    result = _process_consolidate(core.storage, clock, ctx, item, model=tracker, started=clock.monotonic(), budget=30)
+    result = process_consolidate(core.storage, clock, ctx, item, model=tracker, started=clock.monotonic(), budget=30)
     assert result == ("completed", None, "done")
     assert f"{item.subject_ref}@1" in tracker.batches[0]
     _drain(core, ctx, tracker)
@@ -79,9 +79,9 @@ def test_expired_no_root_worker_cannot_ack_siblings(worker_app):
     with core.storage.write(ctx) as tx:
         tx.work.claim_next("new-worker", clock.utc_now(), lease_seconds=60)
     before = _snapshot(core)
-    from scope_recall.core.worker import _process_consolidate
+    from scope_recall.core.worker_consolidation import process_consolidate
 
-    result = _process_consolidate(core.storage, clock, ctx, old, model=None, started=clock.monotonic(), budget=30)
+    result = process_consolidate(core.storage, clock, ctx, old, model=None, started=clock.monotonic(), budget=30)
     assert result[0] == "stale"
     assert _snapshot(core) == before
 
@@ -235,12 +235,12 @@ def test_unrelated_capture_before_no_root_completion_still_completes(worker_app,
         with original_write(context, **kwargs) as tx:
             yield tx
 
-    from scope_recall.core.worker import _process_consolidate
+    from scope_recall.core.worker_consolidation import process_consolidate
 
     with original_write(ctx) as tx:
         item = tx.work.claim_next("TEST-no-root", core.clock.utc_now(), lease_seconds=60)[0]
     monkeypatch.setattr(core.storage, "write", capture_before_write)
-    result = _process_consolidate(
+    result = process_consolidate(
         core.storage, core.clock, ctx, item, model=None, started=core.clock.monotonic(), budget=30
     )
     assert injected
@@ -633,9 +633,9 @@ def test_stale_lease_cannot_complete_covered_sibling_work(worker_app):
         tx.work.release_stale(clock.utc_now())
         second = tx.work.claim_next("worker-b", clock.utc_now(), lease_seconds=60, limit=1)[0]
 
-    from scope_recall.core.worker import _process_consolidate
+    from scope_recall.core.worker_consolidation import process_consolidate
 
-    disposition, code, state = _process_consolidate(
+    disposition, code, state = process_consolidate(
         core.storage,
         clock,
         ctx,
@@ -798,7 +798,7 @@ def test_batch_respects_pending_retry_backoff(worker_app):
 
 def test_no_root_write_boundary_rechecks_the_lease(worker_app, monkeypatch):
     from contextlib import contextmanager
-    from scope_recall.core.worker import _process_consolidate
+    from scope_recall.core.worker_consolidation import process_consolidate
 
     core, ctx, clock = worker_app
     for i in range(3):
@@ -819,7 +819,7 @@ def test_no_root_write_boundary_rechecks_the_lease(worker_app, monkeypatch):
             yield tx
 
     monkeypatch.setattr(core.storage, "write", steal_before_write)
-    result = _process_consolidate(core.storage, clock, ctx, old, model=None, started=clock.monotonic(), budget=30)
+    result = process_consolidate(core.storage, clock, ctx, old, model=None, started=clock.monotonic(), budget=30)
     assert result[0] == "stale"
     assert _snapshot(core) == observed["rows"]
 

@@ -900,7 +900,6 @@
    "C901": {
     "drain_worker": 22
    },
-   "I001": 1,
    "PLR0912": {
     "drain_worker": 23
    },
@@ -916,7 +915,6 @@
    "C901": {
     "_process_candidate_evaluation": 25
    },
-   "I001": 1,
    "PLR0911": {
     "_process_candidate_evaluation": 15
    },
@@ -933,45 +931,44 @@
   "core/worker_consolidation.py": {
    "BLE001": 1,
    "C901": {
-    "_decode_consolidation_result": 19,
-    "_process_consolidate": 25
+    "decode_consolidation_result": 19,
+    "process_consolidate": 25
    },
-   "I001": 1,
    "PLR0911": {
-    "_process_consolidate": 16
+    "process_consolidate": 16
    },
    "PLR0912": {
-    "_decode_consolidation_result": 18,
-    "_process_consolidate": 26
+    "decode_consolidation_result": 18,
+    "process_consolidate": 26
    },
    "PLR0915": {
-    "_process_consolidate": 70
+    "process_consolidate": 70
    }
   },
   "core/worker_outcomes.py": {
    "E501": 3,
    "I001": 1,
    "PLR0913": {
-    "_finalize_work": 11
+    "finalize_work": 11
    }
   },
   "core/worker_projection.py": {
    "B905": 1,
    "BLE001": 6,
    "C901": {
-    "_process_embed": 22,
-    "_purge_layers": 20
+    "_purge_layers": 20,
+    "process_embed": 22
    },
    "PLR0911": {
-    "_process_embed": 13,
-    "_purge_layers": 15
+    "_purge_layers": 15,
+    "process_embed": 13
    },
    "PLR0912": {
     "_purge_layers": 19
    },
    "PLR0913": {
-    "_process_embed": 9,
-    "_publish_kind": 9
+    "_publish_kind": 9,
+    "process_embed": 9
    },
    "UP035": 1
   },

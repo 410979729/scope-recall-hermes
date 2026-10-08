@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
+import math
+import time
 from collections import Counter
 from dataclasses import dataclass
 from functools import partial
-import math
-import time
 
 from ..contracts import ContractError, TrustedContext
 from .admission import resume_deferred
@@ -17,21 +17,20 @@ from .work_storage import CAPACITY_REFUSALS, MAX_RECOVERY_PAGE
 from .worker_candidates import _process_candidate_evaluation
 from .worker_consolidation import (
     ConsolidationModel,
-    _decode_consolidation_result,
-    _process_consolidate,
     build_consolidation_model,
+    process_consolidate,
 )
-from .worker_outcomes import BUDGET_PAUSE_ERRORS, _model_exception_outcome, _remaining
+from .worker_outcomes import BUDGET_PAUSE_ERRORS, budget_left
 from .worker_projection import (
     EmbedGroupRefused,
     EmbedPort,
     PurgePort,
-    _process_embed,
     complete_embed_group,
-    publish_embed_group,
-    _process_purge,
-    _process_rebuild_projection,
     prepare_embed_group,
+    process_embed,
+    process_purge,
+    process_rebuild_projection,
+    publish_embed_group,
 )
 
 __all__ = [
@@ -44,11 +43,6 @@ __all__ = [
     "WorkerReceipt",
     "build_consolidation_model",
     "drain_worker",
-    # Reached through this module by the contract tests.
-    "_decode_consolidation_result",
-    "_model_exception_outcome",
-    "_process_consolidate",
-    "_process_embed",
 ]
 
 #: Provider answers that mean "send less traffic".  Distinct from the
@@ -188,26 +182,26 @@ def _resume_admission(
         context,
         config.admission_policy,
         limit=min(16, config.max_items),
-        remaining_seconds=min(1.0, _remaining(started, clock, budget)),
+        remaining_seconds=min(1.0, budget_left(started, clock, budget)),
     )
     # Each page is chosen in a read and linked in a write of its own, so a capture waits behind at most one
     # page's links, never its matching; the pages may take at most half of the pass, and at most
     # SOURCE_PAGE_SECONDS.
     pages_started = time.monotonic()
     for _ in range(SOURCE_PAGES_PER_PASS):
-        if _remaining(started, clock, budget) <= budget / 2:
+        if budget_left(started, clock, budget) <= budget / 2:
             break
-        with storage.read(context, remaining_seconds=min(1.0, _remaining(started, clock, budget))) as tx:
+        with storage.read(context, remaining_seconds=min(1.0, budget_left(started, clock, budget))) as tx:
             page = tx.candidates.next_source_page()
         if page is None:
             break
-        with storage.write(context, remaining_seconds=min(1.0, _remaining(started, clock, budget))) as tx:
+        with storage.write(context, remaining_seconds=min(1.0, budget_left(started, clock, budget))) as tx:
             tx.candidates.resume_source_pages(now=clock.utc_now(), page=page)
         time.sleep(PAGE_TURN_SECONDS)
         if time.monotonic() - pages_started >= SOURCE_PAGE_SECONDS:
             break
     page = min(config.candidate_batch_limit, config.max_items)
-    with storage.write(context, remaining_seconds=min(1.0, _remaining(started, clock, budget))) as tx:
+    with storage.write(context, remaining_seconds=min(1.0, budget_left(started, clock, budget))) as tx:
         tx.candidates.backfill(now=clock.utc_now(), limit=page)
         tx.candidates.archive_dormant(now=clock.utc_now(), limit=page)
         if not candidate_available:
@@ -218,7 +212,7 @@ def _queued_work_types(storage, clock, context, started: float, budget: float, k
     """Which of ``kinds`` have queued rows, so the receipt reports only real gaps."""
     if not kinds:
         return ()
-    with storage.read(context, remaining_seconds=_remaining(started, clock, budget)) as tx:
+    with storage.read(context, remaining_seconds=budget_left(started, clock, budget)) as tx:
         visible, params = tx.work._visible_filter()
         queued = {
             row[0]
@@ -266,7 +260,7 @@ def _release_group(
     if not members:
         return
     try:
-        with storage.write(context, remaining_seconds=max(_remaining(started, clock, budget), RELEASE_SECONDS)) as tx:
+        with storage.write(context, remaining_seconds=max(budget_left(started, clock, budget), RELEASE_SECONDS)) as tx:
             now = clock.utc_now()
             for member in members:
                 tx.work.defer_without_attempt(
@@ -282,7 +276,7 @@ def _other_work_ready(storage, clock, context, started: float, budget: float, ki
     """Whether work this pass can still do, other than candidate evaluation, is ready now."""
     if not kinds:
         return False
-    with storage.read(context, remaining_seconds=_remaining(started, clock, budget)) as tx:
+    with storage.read(context, remaining_seconds=budget_left(started, clock, budget)) as tx:
         return tx.work.other_work_ready(now=clock.utc_now(), kinds=kinds)
 
 
@@ -299,13 +293,13 @@ def _recover_failed_work(
     if "evaluate_candidate" in allowed:
         # Which settled candidates to queue is read before the write: finding them walks every candidate still
         # settling, and under the writer lease that was 7.6 s of each pass on the shared store (2026-09-27).
-        with storage.read(context, remaining_seconds=_remaining(started, clock, budget)) as tx:
+        with storage.read(context, remaining_seconds=budget_left(started, clock, budget)) as tx:
             if tx.work.pending_depth("evaluate_candidate") < CANDIDATE_QUEUE_CEILING:
                 page = min(config.candidate_batch_limit, config.max_items)
                 settled = tx.candidates.settled_to_schedule(now=clock.utc_now(), limit=page)
                 sweep = "complete" if len(settled) < page else "partial"
             stale = tx.candidates.stale_pending(now=clock.utc_now(), limit=STALE_PENDING_PAGE)
-    with storage.write(context, remaining_seconds=_remaining(started, clock, budget)) as tx:
+    with storage.write(context, remaining_seconds=budget_left(started, clock, budget)) as tx:
         recovery_page = min(MAX_RECOVERY_PAGE, config.max_items)
         recovered = tx.work.recover_invalid_derivations(
             now=clock.utc_now(), allowed_work_types=allowed, limit=recovery_page
@@ -393,11 +387,11 @@ def drain_worker(
         )
     recovered, sweep = _recover_failed_work(storage, clock, context, config, allowed, started, budget)
     processors = {
-        "consolidate": partial(_process_consolidate, model=consolidation),
-        "embed": partial(_process_embed, embed=embed),
+        "consolidate": partial(process_consolidate, model=consolidation),
+        "embed": partial(process_embed, embed=embed),
         "evaluate_candidate": partial(_process_candidate_evaluation, evaluator=candidate),
-        "rebuild_projection": _process_rebuild_projection,
-        "purge": partial(_process_purge, purge=purge),
+        "rebuild_projection": process_rebuild_projection,
+        "purge": partial(process_purge, purge=purge),
     }
     receipts: list[WorkerItemReceipt] = []
     dispositions: Counter[str] = Counter()
@@ -410,15 +404,15 @@ def drain_worker(
     reserve = 0.0 if config.request_seconds is None else config.request_seconds + FINALIZE_MARGIN_SECONDS
     paused: list[str] = []
     candidate_ceiling = min(config.candidate_batch_limit, config.max_items)
-    while len(receipts) < config.max_items and _remaining(started, clock, budget) > 0:
-        if _remaining(started, clock, budget) < reserve:
+    while len(receipts) < config.max_items and budget_left(started, clock, budget) > 0:
+        if budget_left(started, clock, budget) < reserve:
             allowed = allowed - model_bound
         # Every second claim prefers fresh conversation over the backlog.  The
         # first claim of a pass stays FIFO, so the lane holds at most half of
         # any pass, a one-claim pass included, and the oldest work keeps moving
         # however busy the chat is.  A default runtime pass (120 s, 45 s
         # requests) fits two model requests, so each such pass reaches the lane.
-        with storage.write(context, remaining_seconds=_remaining(started, clock, budget)) as tx:
+        with storage.write(context, remaining_seconds=budget_left(started, clock, budget)) as tx:
             claimed = tx.work.claim_next(
                 config.owner_id,
                 clock.utc_now(),
@@ -443,7 +437,7 @@ def drain_worker(
             # none is left leased on a pass that ends early.
             room = min(config.embed_batch_limit, config.max_items - len(receipts)) - 1
             if room > 0:
-                with storage.write(context, remaining_seconds=_remaining(started, clock, budget)) as tx:
+                with storage.write(context, remaining_seconds=budget_left(started, clock, budget)) as tx:
                     group = (
                         item,
                         *tx.work.claim_next(
@@ -509,13 +503,13 @@ def drain_worker(
         for index, member in enumerate(rest):
             member_budget = budget
             if len(group) > 1:
-                if _remaining(started, clock, lease_end) < GROUP_REQUEST_FLOOR_SECONDS:
+                if budget_left(started, clock, lease_end) < GROUP_REQUEST_FLOOR_SECONDS:
                     _release_group(storage, clock, context, rest[index:], "lease_ending", started, budget)
                     break
                 member_budget = min(budget, lease_end)
             claimed_types[member.work_type] += 1
             run = (
-                partial(_process_embed, embed=embed, prepared_group=prepared_group, published_group=published_group)
+                partial(process_embed, embed=embed, prepared_group=prepared_group, published_group=published_group)
                 if member.work_type == "embed"
                 else processors[member.work_type]
             )
@@ -531,7 +525,7 @@ def drain_worker(
             refused = (disposition == "deferred" and error_code in BUDGET_PAUSE_ERRORS) or (
                 str(error_code or "").lower() in _RATE_LIMITED_ERRORS
             )
-            if refused or _remaining(started, clock, budget) <= 0:
+            if refused or budget_left(started, clock, budget) <= 0:
                 # The rest of this group was leased for a request that is not
                 # going to be made. Hand it back unspent rather than holding it
                 # until the lease expires.
@@ -568,7 +562,7 @@ def drain_worker(
                 candidate_ceiling = config.max_items
             else:
                 allowed = allowed - {"evaluate_candidate"}
-        if _remaining(started, clock, budget) <= 0:
+        if budget_left(started, clock, budget) <= 0:
             break
     return WorkerReceipt(
         processed=len(receipts),
