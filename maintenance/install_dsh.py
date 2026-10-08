@@ -27,7 +27,6 @@ upload counts as off only as the operations leave it, the install's own switch g
 
 from __future__ import annotations
 
-import codecs
 import json
 import os
 import re
@@ -36,10 +35,21 @@ from typing import Any
 
 import yaml
 from scope_recall._version import __version__ as PACKAGE_VERSION
-from scope_recall.adapters.clients.config import CodexConfigError, load_shared_client
-from scope_recall.adapters.hermes.installation import attachment_path
 
-from .install_common import RUNTIME_CONFIG_LIMIT, InstallError, InstallPlan, reject_symlink_chain, require_file
+from . import install_client
+from .install_client import (  # noqa: F401 -- install.py calls these on every host's module
+    approve_local_platforms,
+    config_path,
+    data_dir,
+    home_plugin_dir,
+    instance_wrapper_files,
+    purge_identity,
+    unapproved_local_platforms,
+    unapproved_owner_logins,
+    validate_local_platforms,
+    validate_owner_logins,
+)
+from .install_common import InstallError, InstallPlan, like_original, read_host_file
 
 HOST = "dsh"
 PATCH_FILENAME = "cordis.patch.yml"
@@ -59,28 +69,20 @@ RESTART_NOTE = (
 )
 _SERVER_MODULE = "scope_recall.adapters.codex.mcp_entry"
 _MARKER = re.compile(re.escape(START) + r" \(scope-recall \S+ for (.+); apply-uninstall takes this block out\)$")
+# dsh starts the plugin's hooks and the MCP server with an environment of its own (it scrubs the ambient one for an MCP
+# server), so the install may hand them a credential file (``validate_options``).
+_ENTRY = install_client.AttachedEntry(HOST, "dsh")
+validate_options = _ENTRY.validate_options
+foreign_instance_entries = _ENTRY.foreign_instance_entries
+initialize_instance = _ENTRY.initialize_instance
+installation_id = _ENTRY.installation_id
+validate_reuse = _ENTRY.validate_reuse
 
 
 def default_home() -> Path:
     """dsh's home as dsh finds it: ``DSH_HOME`` when set (a blank value is ignored), else ``~/.dsh``."""
     configured = os.environ.get("DSH_HOME", "").strip()
     return Path(configured).expanduser() if configured else Path.home() / ".dsh"
-
-
-def data_dir(instance_root: Path) -> Path:
-    return attachment_path(instance_root).parent
-
-
-def config_path(instance_root: Path) -> Path:
-    return attachment_path(instance_root)
-
-
-def instance_wrapper_files(instance_root: Path) -> tuple[Path, ...]:
-    return ()
-
-
-def home_plugin_dir(instance_root: Path) -> None:
-    return None
 
 
 def host_config_files(target_plugin_dir: Path) -> tuple[Path, ...]:
@@ -97,40 +99,6 @@ def plugin_source() -> bytes:
     from scope_recall import distribution
 
     return (Path(distribution.__file__).resolve().parent / "dsh" / "scope-recall" / "index.mjs").read_bytes()
-
-
-def validate_options(agent_workspace: str | None, env_file: Path | str | None) -> tuple[str, Path | None]:
-    """dsh starts the plugin's hooks and the MCP server with an environment of its own (it scrubs the ambient one for an
-    MCP server), so the installer may hand them a credential file, as the other clients' installers do."""
-    if agent_workspace is not None and str(agent_workspace).strip():
-        raise InstallError("agent_workspace is not used for dsh installation")
-    if env_file is None or str(env_file).strip() == "":
-        return "", None
-    return "", require_file(Path(env_file), "env_file")
-
-
-def validate_local_platforms(values: object) -> tuple[str, ...]:
-    if values:
-        raise InstallError("local_platform is only used for Hermes installation")
-    return ()
-
-
-def validate_owner_logins(values: object) -> tuple[str, ...]:
-    if values:
-        raise InstallError("owner_login is only used for Hermes installation")
-    return ()
-
-
-def unapproved_owner_logins(plan: InstallPlan) -> tuple[tuple[str, str], ...]:
-    return ()
-
-
-def unapproved_local_platforms(plan: InstallPlan) -> tuple[str, ...]:
-    return ()
-
-
-def approve_local_platforms(plan: InstallPlan) -> None:
-    return None
 
 
 def planned_files(plan: InstallPlan) -> dict[Path, str | bytes]:
@@ -201,12 +169,9 @@ _Loader.add_constructor("tag:yaml.org,2002:js", lambda loader, node: ("!!js", lo
 
 def read_patch(path: Path) -> tuple[str, bytes | None]:
     """The patch file's text (without a byte order mark) and its bytes; ("", None) when there is none yet."""
-    reject_symlink_chain(path)
-    if not path.exists():
+    raw = read_host_file(path)
+    if raw is None:
         return "", None
-    if not path.is_file() or path.stat().st_size > RUNTIME_CONFIG_LIMIT:
-        raise InstallError(f"{path} is not a file of at most {RUNTIME_CONFIG_LIMIT} bytes")
-    raw = path.read_bytes()
     try:
         return raw.decode("utf-8-sig"), raw
     except UnicodeError as exc:
@@ -360,11 +325,7 @@ def _block_style(lines: list[str], path: Path) -> None:
 
 
 def _encode(lines: list[str], original: bytes | None) -> bytes:
-    text = "\n".join(lines).rstrip("\n") + "\n"
-    if original is not None and b"\r\n" in original:
-        text = text.replace("\n", "\r\n")
-    data = text.encode("utf-8")
-    return codecs.BOM_UTF8 + data if original is not None and original.startswith(codecs.BOM_UTF8) else data
+    return like_original("\n".join(lines).rstrip("\n") + "\n", original)
 
 
 def _empty_list(line: str) -> bool:
@@ -427,40 +388,3 @@ def unmerged_file(instance_root: Path, path: Path) -> bytes | None:
     if not found:
         return None
     return _encode(_composed(rest), raw)
-
-
-# -- the entry --------------------------------------------------------------------------------------------------
-
-
-def foreign_instance_entries(instance_root: Path) -> list[str]:
-    """A home this installer is asked to create: dsh's is only ever an attached one."""
-    return [f"{instance_root} is not attached to a shared store; run scope-recall attach --host dsh first"]
-
-
-def initialize_instance(plan: InstallPlan) -> str:
-    raise InstallError("dsh joins a shared store: attach its home first (scope-recall attach --host dsh)")
-
-
-def _bound(instance_root: Path):
-    try:
-        return load_shared_client(instance_root, HOST)
-    except CodexConfigError as exc:
-        raise InstallError(f"existing dsh binding is unusable: {exc}") from exc
-
-
-def installation_id(instance_root: Path) -> str:
-    return _bound(instance_root).installation_id
-
-
-def validate_reuse(plan: InstallPlan) -> None:
-    config = _bound(plan.instance_root)
-    if config.agent_id != plan.agent_id:
-        raise InstallError("existing dsh entry agent_id mismatch: the store's is " + config.agent_id)
-    if config.test_mode != plan.test_mode:
-        raise InstallError(
-            f"existing dsh entry test_mode mismatch: stored={config.test_mode}, requested={plan.test_mode}"
-        )
-
-
-def purge_identity(instance_root: Path) -> tuple[Path, str, str, Path]:
-    raise InstallError("an entry of a shared store is never purged from its home; detach it instead")

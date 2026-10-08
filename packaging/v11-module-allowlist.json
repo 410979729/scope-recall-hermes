@@ -161,6 +161,7 @@
     "maintenance/doctor.py",
     "maintenance/install.py",
     "maintenance/install_claude_code.py",
+    "maintenance/install_client.py",
     "maintenance/install_codex.py",
     "maintenance/install_common.py",
     "maintenance/install_dsh.py",

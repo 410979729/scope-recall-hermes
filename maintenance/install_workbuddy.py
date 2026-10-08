@@ -19,7 +19,6 @@ server into the same files with the functions here.
 
 from __future__ import annotations
 
-import codecs
 import copy
 import json
 import os
@@ -27,10 +26,20 @@ import shlex
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
-from scope_recall.adapters.clients.config import CodexConfigError, load_shared_client
-from scope_recall.adapters.hermes.installation import attachment_path
-
-from .install_common import RUNTIME_CONFIG_LIMIT, InstallError, InstallPlan, reject_symlink_chain, require_file
+from . import install_client
+from .install_client import (  # noqa: F401 -- install.py calls these on every host's module
+    approve_local_platforms,
+    config_path,
+    data_dir,
+    home_plugin_dir,
+    instance_wrapper_files,
+    purge_identity,
+    unapproved_local_platforms,
+    unapproved_owner_logins,
+    validate_local_platforms,
+    validate_owner_logins,
+)
+from .install_common import InstallError, InstallPlan, like_original, read_host_file
 
 HOST = "workbuddy"
 SETTINGS_FILENAME = "settings.json"
@@ -63,6 +72,12 @@ _REMOTE_MODULE = "scope_recall.adapters.codex.remote_client"
 _SERVER_MODULE = "scope_recall.adapters.codex.mcp_entry"
 #: Characters a double-quoted word of a Git Bash command does not take literally.
 _NOT_LITERAL = frozenset('"$`\\')
+_ENTRY = install_client.AttachedEntry(HOST, "WorkBuddy")
+validate_options = _ENTRY.validate_options
+foreign_instance_entries = _ENTRY.foreign_instance_entries
+initialize_instance = _ENTRY.initialize_instance
+installation_id = _ENTRY.installation_id
+validate_reuse = _ENTRY.validate_reuse
 
 
 def default_home() -> Path:
@@ -71,59 +86,9 @@ def default_home() -> Path:
     return Path(configured).expanduser() if configured else Path.home() / ".workbuddy"
 
 
-def data_dir(instance_root: Path) -> Path:
-    return attachment_path(instance_root).parent
-
-
-def config_path(instance_root: Path) -> Path:
-    return attachment_path(instance_root)
-
-
-def instance_wrapper_files(instance_root: Path) -> tuple[Path, ...]:
-    return ()
-
-
-def home_plugin_dir(instance_root: Path) -> None:
-    return None
-
-
 def host_config_files(target_plugin_dir: Path) -> tuple[Path, ...]:
     """WorkBuddy's own files in its home (the install's target) that this install merges its entries into."""
     return (target_plugin_dir / SETTINGS_FILENAME, target_plugin_dir / MCP_FILENAME)
-
-
-def validate_options(agent_workspace: str | None, env_file: Path | str | None) -> tuple[str, Path | None]:
-    """WorkBuddy starts hooks and the MCP server with its own environment, so the installer may hand them a
-    credential file, as the other clients' installers do."""
-    if agent_workspace is not None and str(agent_workspace).strip():
-        raise InstallError("agent_workspace is not used for WorkBuddy installation")
-    if env_file is None or str(env_file).strip() == "":
-        return "", None
-    return "", require_file(Path(env_file), "env_file")
-
-
-def validate_local_platforms(values: object) -> tuple[str, ...]:
-    if values:
-        raise InstallError("local_platform is only used for Hermes installation")
-    return ()
-
-
-def validate_owner_logins(values: object) -> tuple[str, ...]:
-    if values:
-        raise InstallError("owner_login is only used for Hermes installation")
-    return ()
-
-
-def unapproved_owner_logins(plan: InstallPlan) -> tuple[tuple[str, str], ...]:
-    return ()
-
-
-def unapproved_local_platforms(plan: InstallPlan) -> tuple[str, ...]:
-    return ()
-
-
-def approve_local_platforms(plan: InstallPlan) -> None:
-    return None
 
 
 def planned_files(plan: InstallPlan) -> dict[Path, str | bytes]:
@@ -219,12 +184,9 @@ def _this_server(instance_root: Path) -> Callable[[object], bool]:
 
 def read_config(path: Path) -> tuple[dict[str, Any], bytes | None]:
     """One of WorkBuddy's JSON files as an object, and the bytes it holds (None: there is no such file yet)."""
-    reject_symlink_chain(path)
-    if not path.exists():
+    raw = read_host_file(path)
+    if raw is None:
         return {}, None
-    if not path.is_file() or path.stat().st_size > RUNTIME_CONFIG_LIMIT:
-        raise InstallError(f"{path} is not a file of at most {RUNTIME_CONFIG_LIMIT} bytes")
-    raw = path.read_bytes()
     try:
         value = json.loads(raw.decode("utf-8-sig")) if raw.strip() else {}
     except (UnicodeError, ValueError) as exc:
@@ -243,10 +205,7 @@ def encode_config(value: dict[str, Any], original: bytes | None) -> bytes:
     text = json.dumps(value, ensure_ascii=False, indent=2)
     if original is None or original.rstrip(b" \t").endswith(b"\n"):
         text += "\n"
-    if original is not None and b"\r\n" in original:
-        text = text.replace("\n", "\r\n")
-    data = text.encode("utf-8")
-    return codecs.BOM_UTF8 + data if original is not None and original.startswith(codecs.BOM_UTF8) else data
+    return like_original(text, original)
 
 
 def _is(entry: object, recognise: Callable[[list[str]], bool]) -> bool:
@@ -405,40 +364,3 @@ def unmerged_file(instance_root: Path, path: Path) -> bytes | None:
     else:
         stripped = without_server(value, _this_server(instance_root))
     return None if stripped == value else encode_config(stripped, raw)
-
-
-# -- the entry --------------------------------------------------------------------------------------------------
-
-
-def foreign_instance_entries(instance_root: Path) -> list[str]:
-    """A home this installer is asked to create: WorkBuddy's is only ever an attached one."""
-    return [f"{instance_root} is not attached to a shared store; run scope-recall attach --host workbuddy first"]
-
-
-def initialize_instance(plan: InstallPlan) -> str:
-    raise InstallError("WorkBuddy joins a shared store: attach its home first (scope-recall attach --host workbuddy)")
-
-
-def _bound(instance_root: Path):
-    try:
-        return load_shared_client(instance_root, HOST)
-    except CodexConfigError as exc:
-        raise InstallError(f"existing WorkBuddy binding is unusable: {exc}") from exc
-
-
-def installation_id(instance_root: Path) -> str:
-    return _bound(instance_root).installation_id
-
-
-def validate_reuse(plan: InstallPlan) -> None:
-    config = _bound(plan.instance_root)
-    if config.agent_id != plan.agent_id:
-        raise InstallError("existing WorkBuddy entry agent_id mismatch: the store's is " + config.agent_id)
-    if config.test_mode != plan.test_mode:
-        raise InstallError(
-            f"existing WorkBuddy entry test_mode mismatch: stored={config.test_mode}, requested={plan.test_mode}"
-        )
-
-
-def purge_identity(instance_root: Path) -> tuple[Path, str, str, Path]:
-    raise InstallError("an entry of a shared store is never purged from its home; detach it instead")

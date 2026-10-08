@@ -20,6 +20,17 @@ from scope_recall.adapters.clients.config import (
 )
 from scope_recall.adapters.hermes.installation import ATTACHMENT_FILENAME, attachment_path
 
+from . import install_client
+from .install_client import (  # noqa: F401 -- install.py calls these on every host's module
+    approve_local_platforms,
+    home_plugin_dir,
+    host_config_files,
+    instance_wrapper_files,
+    unapproved_local_platforms,
+    unapproved_owner_logins,
+    validate_local_platforms,
+    validate_owner_logins,
+)
 from .install_common import (
     BACKUP_DIRNAME,
     RECEIPT_FILENAME,
@@ -29,7 +40,6 @@ from .install_common import (
     json_dump,
     manifest_version,
     reject_symlink_chain,
-    require_file,
 )
 
 CODEX_HOOK_EVENTS = frozenset({"SessionStart", "UserPromptSubmit", "PostToolUse", "Stop", "Interrupt", "SessionEnd"})
@@ -63,55 +73,8 @@ def config_path(instance_root: Path) -> Path:
     return attachment_path(instance_root) if attached(instance_root) else instance_root / CONFIG_FILENAME
 
 
-def instance_wrapper_files(instance_root: Path) -> tuple[Path, ...]:
-    """Codex keeps every wrapper inside the plugin directory."""
-    return ()
-
-
-def home_plugin_dir(instance_root: Path) -> None:
-    """Codex finds its plugin by its own configuration; no plugin directory sits inside the instance root."""
-    return None
-
-
-def host_config_files(target_plugin_dir: Path) -> tuple[Path, ...]:
-    """The plugin is the installer's own; no file of the host's configuration is changed."""
-    return ()
-
-
 def validate_options(agent_workspace: str | None, env_file: Path | str | None) -> tuple[str, Path | None]:
-    """Codex starts the MCP server and hooks with its own environment, so the
-    installer may hand them a credential file; audience workspaces are a Hermes
-    concept and are refused here."""
-    if agent_workspace is not None and str(agent_workspace).strip():
-        raise InstallError("agent_workspace is not used for Codex installation")
-    if env_file is None or str(env_file).strip() == "":
-        return "", None
-    return "", require_file(Path(env_file), "env_file")
-
-
-def validate_local_platforms(values: object) -> tuple[str, ...]:
-    """A Codex installation has one local user and no audiences to approve."""
-    if values:
-        raise InstallError("local_platform is only used for Hermes installation")
-    return ()
-
-
-def validate_owner_logins(values: object) -> tuple[str, ...]:
-    if values:
-        raise InstallError("owner_login is only used for Hermes installation")
-    return ()
-
-
-def unapproved_owner_logins(plan: InstallPlan) -> tuple[tuple[str, str], ...]:
-    return ()
-
-
-def unapproved_local_platforms(plan: InstallPlan) -> tuple[str, ...]:
-    return ()
-
-
-def approve_local_platforms(plan: InstallPlan) -> None:
-    return None
+    return install_client.validate_options(agent_workspace, env_file, "Codex")
 
 
 def _binding_argv(config: Path) -> list[str]:

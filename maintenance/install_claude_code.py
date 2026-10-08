@@ -16,10 +16,21 @@ import re
 from pathlib import Path
 from typing import Any
 
-from scope_recall.adapters.clients.config import CodexConfigError, load_shared_client
-from scope_recall.adapters.hermes.installation import attachment_path
-
-from .install_common import SKILLS, InstallError, InstallPlan, json_dump, manifest_version, require_file
+from . import install_client
+from .install_client import (  # noqa: F401 -- install.py calls these on every host's module
+    approve_local_platforms,
+    config_path,
+    data_dir,
+    home_plugin_dir,
+    host_config_files,
+    instance_wrapper_files,
+    purge_identity,
+    unapproved_local_platforms,
+    unapproved_owner_logins,
+    validate_local_platforms,
+    validate_owner_logins,
+)
+from .install_common import SKILLS, InstallError, InstallPlan, json_dump, manifest_version
 
 HOST = "claude-code"
 #: The events recorded, and how long Claude Code waits for each.  A prompt waits for its
@@ -29,61 +40,12 @@ HOOK_TIMEOUTS = {"UserPromptSubmit": 15, "Stop": 10, "SessionEnd": 10}
 #: upgrading the fleet is an operator's procedure, not something a coding session is asked.
 CLAUDE_CODE_SKILLS = ("scope-recall-memory",)
 SHELL_WORD = re.compile(r"[A-Za-z0-9_@%+=:,./-]+")
-
-
-def data_dir(instance_root: Path) -> Path:
-    return attachment_path(instance_root).parent
-
-
-def config_path(instance_root: Path) -> Path:
-    return attachment_path(instance_root)
-
-
-def instance_wrapper_files(instance_root: Path) -> tuple[Path, ...]:
-    return ()
-
-
-def home_plugin_dir(instance_root: Path) -> None:
-    return None
-
-
-def host_config_files(target_plugin_dir: Path) -> tuple[Path, ...]:
-    """The plugin is the installer's own; no file of the host's configuration is changed."""
-    return ()
-
-
-def validate_options(agent_workspace: str | None, env_file: Path | str | None) -> tuple[str, Path | None]:
-    """Claude Code starts hooks and the MCP server with its own environment, so the
-    installer may hand them a credential file, as Codex's does."""
-    if agent_workspace is not None and str(agent_workspace).strip():
-        raise InstallError("agent_workspace is not used for Claude Code installation")
-    if env_file is None or str(env_file).strip() == "":
-        return "", None
-    return "", require_file(Path(env_file), "env_file")
-
-
-def validate_local_platforms(values: object) -> tuple[str, ...]:
-    if values:
-        raise InstallError("local_platform is only used for Hermes installation")
-    return ()
-
-
-def validate_owner_logins(values: object) -> tuple[str, ...]:
-    if values:
-        raise InstallError("owner_login is only used for Hermes installation")
-    return ()
-
-
-def unapproved_owner_logins(plan: InstallPlan) -> tuple[tuple[str, str], ...]:
-    return ()
-
-
-def unapproved_local_platforms(plan: InstallPlan) -> tuple[str, ...]:
-    return ()
-
-
-def approve_local_platforms(plan: InstallPlan) -> None:
-    return None
+_ENTRY = install_client.AttachedEntry(HOST, "Claude Code")
+validate_options = _ENTRY.validate_options
+foreign_instance_entries = _ENTRY.foreign_instance_entries
+initialize_instance = _ENTRY.initialize_instance
+installation_id = _ENTRY.installation_id
+validate_reuse = _ENTRY.validate_reuse
 
 
 def _argv(plan: InstallPlan, module: str) -> list[str]:
@@ -150,39 +112,3 @@ def planned_files(plan: InstallPlan) -> dict[Path, str | bytes]:
             for name in CLAUDE_CODE_SKILLS
         },
     }
-
-
-def foreign_instance_entries(instance_root: Path) -> list[str]:
-    """A home this installer is asked to create: Claude Code's is only ever an attached one."""
-    return [f"{instance_root} is not attached to a shared store; run scope-recall attach --host claude-code first"]
-
-
-def initialize_instance(plan: InstallPlan) -> str:
-    raise InstallError(
-        "Claude Code joins a shared store: attach its home first (scope-recall attach --host claude-code)"
-    )
-
-
-def _bound(instance_root: Path):
-    try:
-        return load_shared_client(instance_root, HOST)
-    except CodexConfigError as exc:
-        raise InstallError(f"existing Claude Code binding is unusable: {exc}") from exc
-
-
-def installation_id(instance_root: Path) -> str:
-    return _bound(instance_root).installation_id
-
-
-def validate_reuse(plan: InstallPlan) -> None:
-    config = _bound(plan.instance_root)
-    if config.agent_id != plan.agent_id:
-        raise InstallError("existing Claude Code entry agent_id mismatch: the store's is " + config.agent_id)
-    if config.test_mode != plan.test_mode:
-        raise InstallError(
-            f"existing Claude Code entry test_mode mismatch: stored={config.test_mode}, requested={plan.test_mode}"
-        )
-
-
-def purge_identity(instance_root: Path) -> tuple[Path, str, str, Path]:
-    raise InstallError("an entry of a shared store is never purged from its home; detach it instead")
