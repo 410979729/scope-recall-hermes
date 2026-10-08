@@ -98,30 +98,10 @@ def said(row: object) -> Said | None:
     if type(entry_id) is not str or not entry_id.strip() or len(entry_id) > 100 or occurred_at is None:
         return None
     message = row.get("message") if isinstance(row.get("message"), dict) else {}
-    kind = row.get("type")
-    if kind == "user" and _human(row.get("origin")) and message.get("role") == "user":
-        content = message.get("content")
-        if isinstance(content, list) and any(
-            isinstance(block, dict) and block.get("type") == "tool_result" for block in content
-        ):
-            return None
-        role, text = "user", _text(content)
-    elif kind == "attachment":
-        # A message the person sent while a turn was running reaches the model as a queued command.
-        attachment = row.get("attachment") if isinstance(row.get("attachment"), dict) else {}
-        if (
-            attachment.get("type") != "queued_command"
-            or attachment.get("commandMode") != "prompt"
-            or not _human(attachment.get("origin"))
-        ):
-            return None
-        role, text = "user", _text(attachment.get("prompt"))
-    elif kind == "assistant" and message.get("role") == "assistant":
-        if row.get("isApiErrorMessage") or message.get("model") == "<synthetic>":
-            return None
-        role, text = "assistant", _text(message.get("content"))
-    else:
+    spoken = _spoken(row, message)
+    if spoken is None:
         return None
+    role, text = spoken
     if not text.strip():
         return None
     # Half of a broken emoji is kept as U+FFFD, with the rest of the message (``boundary.without_lone_surrogates``);
@@ -131,17 +111,49 @@ def said(row: object) -> Said | None:
         entry_id.encode("utf-8")
     except UnicodeEncodeError:
         return None
-    prompt_id = row.get("promptId") if role == "user" else None
+    return Said(entry_id.strip(), role, text, occurred_at, _prompt_id(row) if role == "user" else None)
+
+
+def _spoken(row: dict, message: dict) -> tuple[str, str] | None:
+    """Who speaks in a record entry, and the words: a person's message, a message they queued while a turn was
+    running, or the model's answer; None for every other entry."""
+    kind = row.get("type")
+    if kind == "user" and _human(row.get("origin")) and message.get("role") == "user":
+        content = message.get("content")
+        if isinstance(content, list) and any(
+            isinstance(block, dict) and block.get("type") == "tool_result" for block in content
+        ):
+            return None
+        return "user", _text(content)
+    if kind == "attachment":
+        # A message the person sent while a turn was running reaches the model as a queued command.
+        attachment = row.get("attachment") if isinstance(row.get("attachment"), dict) else {}
+        if (
+            attachment.get("type") != "queued_command"
+            or attachment.get("commandMode") != "prompt"
+            or not _human(attachment.get("origin"))
+        ):
+            return None
+        return "user", _text(attachment.get("prompt"))
+    if kind == "assistant" and message.get("role") == "assistant":
+        if row.get("isApiErrorMessage") or message.get("model") == "<synthetic>":
+            return None
+        return "assistant", _text(message.get("content"))
+    return None
+
+
+def _prompt_id(row: dict) -> str | None:
+    """The prompt id of a person's message, when it is one the store can bind."""
+    prompt_id = row.get("promptId")
     if type(prompt_id) is not str or not prompt_id.strip() or len(prompt_id) > 240:
-        prompt_id = None
-    else:
-        try:
-            prompt_id.encode("utf-8")
-        except UnicodeEncodeError:
-            # An id the store cannot bind would stop every later read at this line; the message is still
-            # matched by its words and moment.
-            prompt_id = None
-    return Said(entry_id.strip(), role, text, occurred_at, prompt_id.strip() if prompt_id else None)
+        return None
+    try:
+        prompt_id.encode("utf-8")
+    except UnicodeEncodeError:
+        # An id the store cannot bind would stop every later read at this line; the message is still
+        # matched by its words and moment.
+        return None
+    return prompt_id.strip()
 
 
 def _milliseconds(value: object) -> str | None:
