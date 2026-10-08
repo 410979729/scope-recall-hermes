@@ -126,6 +126,85 @@ def _apply_verdict(tx, item, current, value, live_sources, now):
     return applied
 
 
+def _live_evidence(tx, evaluation):
+    """The sources an evaluation cites when every one is still there, unsuppressed and live; None when the
+    candidate's authority is gone (the evaluation, a source, or a source's liveness)."""
+    if evaluation is None:
+        return None
+    sources = tuple(tx.source(ref, revision) for ref, revision in evaluation.evidence_refs)
+    if any(source is None or source.suppressed for source in sources):
+        return None
+    evidence_sources = tuple(source for source in sources if source is not None)
+    for source in evidence_sources:
+        try:
+            tx.claims.require_live_source(source.ref, source.revision)
+        except ContractError:
+            return None
+    return evidence_sources
+
+
+def _record_verdict(tx, item, evaluation, dependencies, value, result_digest: str, now: str):
+    """Record the model's verdict on a candidate, in the transaction that re-checked the lease: obsolete when the
+    candidate, its evidence or anything it was judged on changed during the call; else the claim the verdict
+    supports, if any, applied and the evaluation completed."""
+    current = tx.candidates.evaluation(evaluation.evaluation_id)
+    if current is None:
+        mutation = tx.candidates.obsolete(evaluation.evaluation_id, item, now=now, reason="authority_revoked")
+        return work_result(mutation, error_code="authority_revoked")
+    # The row's stamp identifies this model attempt; the recorded
+    # dependencies say whether anything the verdict was judged on
+    # changed.  A capture or a write to another object changes neither.
+    if current.memory_epoch != dependencies.memory_epoch or derivation_changed(tx, dependencies) is not None:
+        mutation = tx.candidates.obsolete(evaluation.evaluation_id, item, now=now, reason="memory_epoch_changed")
+        return work_result(mutation, error_code="memory_epoch_changed")
+    live_sources = tuple(tx.source(ref, revision) for ref, revision in current.evidence_refs)
+    if any(source is None or source.suppressed for source in live_sources):
+        mutation = tx.candidates.obsolete(evaluation.evaluation_id, item, now=now, reason="authority_revoked")
+        return work_result(mutation, error_code="authority_revoked")
+    mark = claim_versions_mark(tx)
+    try:
+        applied = _apply_verdict(tx, item, current, value, live_sources, now)
+    except ContractError as exc:
+        # A rejection caused by a claim written during the call stays
+        # the conflict the epoch comparison used to report first.
+        if claims_changed(tx, dependencies, until=mark):
+            raise ContractError("VERSION_CONFLICT", "memory_epoch") from exc
+        raise
+    if applied is None:
+        mutation = tx.candidates.complete(
+            evaluation.evaluation_id,
+            item,
+            now=now,
+            state="waiting_evidence",
+            reason="insufficient_evidence",
+            result_digest=result_digest,
+        )
+        return work_result(mutation)
+    # Another writer's version in the slot the verdict just wrote to
+    # would have the stale verdict ordered against it; discard instead.
+    if claims_changed(tx, dependencies, until=mark, claim_refs={applied.ref, current.candidate.ref}):
+        raise ContractError("VERSION_CONFLICT", "memory_epoch")
+    lifecycle_state = "resolved" if applied.state == "active" else "waiting_evidence"
+    reason = "fact_active" if lifecycle_state == "resolved" else "evaluated_waiting_evidence"
+    mutation = tx.candidates.complete(
+        evaluation.evaluation_id,
+        item,
+        now=now,
+        state=lifecycle_state,
+        reason=reason,
+        result_digest=result_digest,
+    )
+    if (applied.ref, applied.revision) != (current.candidate.ref, current.candidate.revision):
+        tx.candidates.register(
+            applied.ref,
+            applied.revision,
+            observed_at=now,
+            rule_version=current.candidate.rule_version,
+            schedule_initial=False,
+        )
+    return work_result(mutation)
+
+
 def process_candidate_evaluation(
     storage,
     clock,
@@ -171,39 +250,29 @@ def process_candidate_evaluation(
             return stale_result(tx, item)
         feedback = tx.work.derivation_feedback(item.work_id)
         evaluation = tx.candidates.evaluation(item.subject_revision)
-        if evaluation is None:
+        live = _live_evidence(tx, evaluation)
+        if live is None:
             invalid_reason = "authority_revoked"
         else:
-            sources = tuple(tx.source(ref, revision) for ref, revision in evaluation.evidence_refs)
-            if any(source is None or source.suppressed for source in sources):
-                invalid_reason = "authority_revoked"
-            else:
-                evidence_sources = tuple(source for source in sources if source is not None)
-                for source in evidence_sources:
-                    try:
-                        tx.claims.require_live_source(source.ref, source.revision)
-                    except ContractError:
-                        invalid_reason = "authority_revoked"
-                        break
-                if invalid_reason is None:
-                    dependencies = read_derivation_fence(tx, scope_id=item.scope_id, sources=evidence_sources)
-                    # A question a rule already answers needs no model call; see
-                    # core/evidence_question.py.  Recorded like a verdict, with
-                    # no attempt spent, so the at-most-once fence is untouched.
-                    settled = tx.candidates.settle_without_model(
-                        evaluation,
-                        item,
-                        evidence_sources,
-                        now=clock.utc_now(),
-                    )
-                    if settled is not None:
-                        return work_result(settled)
-                if invalid_reason is None and evaluation.model_attempted_at is None:
-                    began = tx.candidates.begin_model_attempt(
-                        evaluation.evaluation_id,
-                        *item.lease,
-                        now=clock.utc_now(),
-                    )
+            evidence_sources = live
+            dependencies = read_derivation_fence(tx, scope_id=item.scope_id, sources=evidence_sources)
+            # A question a rule already answers needs no model call; see
+            # core/evidence_question.py.  Recorded like a verdict, with
+            # no attempt spent, so the at-most-once fence is untouched.
+            settled = tx.candidates.settle_without_model(
+                evaluation,
+                item,
+                evidence_sources,
+                now=clock.utc_now(),
+            )
+            if settled is not None:
+                return work_result(settled)
+            if evaluation.model_attempted_at is None:
+                began = tx.candidates.begin_model_attempt(
+                    evaluation.evaluation_id,
+                    *item.lease,
+                    now=clock.utc_now(),
+                )
     if invalid_reason is not None:
         return obsolete(reason=invalid_reason)
     # Commit the at-most-once fence before the optional model call. A crash
@@ -242,64 +311,7 @@ def process_candidate_evaluation(
             now = clock.utc_now()
             if not tx.work._verify_lease(*item.lease, now=now):
                 return stale_result(tx, item)
-            current = tx.candidates.evaluation(evaluation.evaluation_id)
-            if current is None:
-                mutation = tx.candidates.obsolete(evaluation.evaluation_id, item, now=now, reason="authority_revoked")
-                return work_result(mutation, error_code="authority_revoked")
-            # The row's stamp identifies this model attempt; the recorded
-            # dependencies say whether anything the verdict was judged on
-            # changed.  A capture or a write to another object changes neither.
-            if current.memory_epoch != dependencies.memory_epoch or derivation_changed(tx, dependencies) is not None:
-                mutation = tx.candidates.obsolete(
-                    evaluation.evaluation_id, item, now=now, reason="memory_epoch_changed"
-                )
-                return work_result(mutation, error_code="memory_epoch_changed")
-            live_sources = tuple(tx.source(ref, revision) for ref, revision in current.evidence_refs)
-            if any(source is None or source.suppressed for source in live_sources):
-                mutation = tx.candidates.obsolete(evaluation.evaluation_id, item, now=now, reason="authority_revoked")
-                return work_result(mutation, error_code="authority_revoked")
-            mark = claim_versions_mark(tx)
-            try:
-                applied = _apply_verdict(tx, item, current, value, live_sources, now)
-            except ContractError as exc:
-                # A rejection caused by a claim written during the call stays
-                # the conflict the epoch comparison used to report first.
-                if claims_changed(tx, dependencies, until=mark):
-                    raise ContractError("VERSION_CONFLICT", "memory_epoch") from exc
-                raise
-            if applied is None:
-                mutation = tx.candidates.complete(
-                    evaluation.evaluation_id,
-                    item,
-                    now=now,
-                    state="waiting_evidence",
-                    reason="insufficient_evidence",
-                    result_digest=result_digest,
-                )
-                return work_result(mutation)
-            # Another writer's version in the slot the verdict just wrote to
-            # would have the stale verdict ordered against it; discard instead.
-            if claims_changed(tx, dependencies, until=mark, claim_refs={applied.ref, current.candidate.ref}):
-                raise ContractError("VERSION_CONFLICT", "memory_epoch")
-            lifecycle_state = "resolved" if applied.state == "active" else "waiting_evidence"
-            reason = "fact_active" if lifecycle_state == "resolved" else "evaluated_waiting_evidence"
-            mutation = tx.candidates.complete(
-                evaluation.evaluation_id,
-                item,
-                now=now,
-                state=lifecycle_state,
-                reason=reason,
-                result_digest=result_digest,
-            )
-            if (applied.ref, applied.revision) != (current.candidate.ref, current.candidate.revision):
-                tx.candidates.register(
-                    applied.ref,
-                    applied.revision,
-                    observed_at=now,
-                    rule_version=current.candidate.rule_version,
-                    schedule_initial=False,
-                )
-            return work_result(mutation)
+            return _record_verdict(tx, item, evaluation, dependencies, value, result_digest, now)
     except ContractError as exc:
         code = exc.code or "DERIVATION_INVALID"
         if code in {"SOURCE_MISSING", "VERSION_CONFLICT", "ACCESS_DENIED"}:
