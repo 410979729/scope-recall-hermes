@@ -255,6 +255,41 @@ class Sources:
             + hashlib.sha256(canonical([self._tx.context.binding.installation_id, key]).encode("utf-8")).hexdigest()
         )
 
+    def _hidden_refs(self, events) -> list[str]:
+        """The refs a message's parts would take that a deletion hides."""
+        return [
+            ref
+            for ref in (self._source_ref(event["source_event_key"]) for event in events)
+            if not allowed(self._tx, "event", ref)
+        ]
+
+    @staticmethod
+    def _deleted_words(rows) -> tuple[set, set]:
+        """A deleted message's words: its text in each stored version whose parts all kept their words, and the forms
+        of the words a purge kept."""
+        versions: dict[int, list] = {}
+        for row in rows:
+            versions.setdefault(row["source_revision"], []).append((row, json.loads(row["extra_json"] or "{}")))
+        texts, kept = set(), set()
+        for parts in versions.values():
+            if all(row["content"] for row, _extra in parts):
+                texts.add(
+                    deleted_text(
+                        "".join(
+                            row["content"] for row, _extra in sorted(parts, key=lambda part: part[0]["segment_index"])
+                        )
+                    )
+                )
+            elif all(row["purged"] for row, _extra in parts) and not any(
+                "deleted_forms" in extra for _row, extra in parts
+            ):
+                # Purged by a release that kept no forms of the words: nothing tells a near copy there from another
+                # message, so a message under that key is refused.  A deleted message with no text (attachments
+                # alone) is not purged yet, and is compared by its digest.
+                raise ContractError("ACCESS_DENIED", "source_unavailable")
+            kept.update(form for _row, extra in parts for form in extra.get("deleted_forms") or ())
+        return texts, kept
+
     def refuse_under_a_deleted_key(self, events, *, scope_id: str) -> None:
         """Refuse a message under a deleted message's key or source group, or tell another message from it.
 
@@ -276,11 +311,7 @@ class Sources:
         segment = first.get("segment")
         group_key = segment["group_key"] if segment else first["source_event_key"]
         partition = (scope_id, self._tx.context.project_id, self._tx.context.branch_id)
-        hidden = [
-            ref
-            for ref in (self._source_ref(event["source_event_key"]) for event in events)
-            if not allowed(self._tx, "event", ref)
-        ]
+        hidden = self._hidden_refs(events)
         block = conn.execute(
             "SELECT read_blocked FROM source_group_blocks WHERE group_sha256=?",
             (group_digest(self._tx.context.binding, *partition, group_key),),
@@ -304,27 +335,7 @@ class Sources:
         indexes = {event["segment"]["index"] for event in events if event.get("segment")}
         if first["source_revision"] not in {row["source_revision"] for row in rows} or (indexes and 0 not in indexes):
             raise refuse
-        versions: dict[int, list] = {}
-        for row in rows:
-            versions.setdefault(row["source_revision"], []).append((row, json.loads(row["extra_json"] or "{}")))
-        texts, kept = set(), set()
-        for parts in versions.values():
-            if all(row["content"] for row, _extra in parts):
-                texts.add(
-                    deleted_text(
-                        "".join(
-                            row["content"] for row, _extra in sorted(parts, key=lambda part: part[0]["segment_index"])
-                        )
-                    )
-                )
-            elif all(row["purged"] for row, _extra in parts) and not any(
-                "deleted_forms" in extra for _row, extra in parts
-            ):
-                # Purged by a release that kept no forms of the words: nothing tells a near copy there from another
-                # message, so a message under that key is refused.  A deleted message with no text (attachments
-                # alone) is not purged yet, and is compared by its digest.
-                raise refuse
-            kept.update(form for _row, extra in parts for form in extra.get("deleted_forms") or ())
+        texts, kept = self._deleted_words(rows)
         ordered = sorted(events, key=lambda event: (event.get("segment") or {}).get("index", 0))
         if holds_events(
             events, frozenset(row["content_sha256"] for row in rows), frozenset(), frozenset(texts), rekeyed=True

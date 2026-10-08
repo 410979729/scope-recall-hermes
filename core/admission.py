@@ -116,6 +116,63 @@ def _ack(text):
     return re.sub(r"[\s.!。！,，~～]+", "", normalized) in _ACKS
 
 
+def _successful_tool_wrapper(text: str) -> bool:
+    """Whether a tool result is only a success wrapper: a bare "done", or a JSON status object that reports success,
+    no failure, no output and no message beyond an acknowledgement."""
+    if _TOOL_OK.fullmatch(text.strip()):
+        return True
+    try:
+        body = json.loads(text)
+    except (ValueError, TypeError):
+        return False
+    allowed = {
+        "status",
+        "success",
+        "ok",
+        "exit_code",
+        "returncode",
+        "duration_ms",
+        "elapsed_ms",
+        "stdout",
+        "stderr",
+        "output",
+        "message",
+    }
+    if not (isinstance(body, dict) and body and set(body) <= allowed):
+        return False
+    return _reports_success(body) and _says_nothing_more(body)
+
+
+def _reports_success(body: dict) -> bool:
+    """Whether a tool's status object says it succeeded, and nothing in it says it failed."""
+    success = (
+        body.get("success") is True
+        or body.get("ok") is True
+        or body.get("status") in ("ok", "success", "completed")
+        or type(body.get("exit_code")) is int
+        and body["exit_code"] == 0
+        or type(body.get("returncode")) is int
+        and body["returncode"] == 0
+    )
+    no_failure = (
+        body.get("success") is not False
+        and body.get("ok") is not False
+        and body.get("exit_code", 0) == 0
+        and body.get("returncode", 0) == 0
+    )
+    return success and no_failure
+
+
+def _says_nothing_more(body: dict) -> bool:
+    """Whether a tool's status object carries no output, and no message beyond an acknowledgement."""
+    empty_output = all(body.get(key) in (None, "", [], {}) for key in ("stdout", "stderr", "output"))
+    message = body.get("message", "")
+    empty_message = type(message) is str and (
+        not message.strip() or _ack(message) or bool(_TOOL_OK.fullmatch(message.strip()))
+    )
+    return empty_output and empty_message
+
+
 def classify(event, policy=None):
     """No semantic guesses: a keyword only raises scheduling priority."""
     policy = policy or AdmissionPolicy()
@@ -138,49 +195,8 @@ def classify(event, policy=None):
         return AdmissionDecision("source_only", "capture_gap")
     if _ack(text):
         return AdmissionDecision("source_only", "acknowledgement")
-    if event.get("role") == "tool":
-        if _TOOL_OK.fullmatch(text.strip()):
-            return AdmissionDecision("source_only", "successful_tool_wrapper")
-        try:
-            body = json.loads(text)
-        except (ValueError, TypeError):
-            body = None
-        allowed = {
-            "status",
-            "success",
-            "ok",
-            "exit_code",
-            "returncode",
-            "duration_ms",
-            "elapsed_ms",
-            "stdout",
-            "stderr",
-            "output",
-            "message",
-        }
-        if isinstance(body, dict) and body and set(body) <= allowed:
-            success = (
-                body.get("success") is True
-                or body.get("ok") is True
-                or body.get("status") in ("ok", "success", "completed")
-                or type(body.get("exit_code")) is int
-                and body["exit_code"] == 0
-                or type(body.get("returncode")) is int
-                and body["returncode"] == 0
-            )
-            no_failure = (
-                body.get("success") is not False
-                and body.get("ok") is not False
-                and body.get("exit_code", 0) == 0
-                and body.get("returncode", 0) == 0
-            )
-            empty_output = all(body.get(key) in (None, "", [], {}) for key in ("stdout", "stderr", "output"))
-            message = body.get("message", "")
-            empty_message = type(message) is str and (
-                not message.strip() or _ack(message) or bool(_TOOL_OK.fullmatch(message.strip()))
-            )
-            if success and no_failure and empty_output and empty_message:
-                return AdmissionDecision("source_only", "successful_tool_wrapper")
+    if event.get("role") == "tool" and _successful_tool_wrapper(text):
+        return AdmissionDecision("source_only", "successful_tool_wrapper")
     return AdmissionDecision("schedule", "content_not_classified_low_value")
 
 
