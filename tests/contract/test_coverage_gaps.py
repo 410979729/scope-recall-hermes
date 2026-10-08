@@ -18,7 +18,7 @@ from scope_recall.core.coverage import (
 from scope_recall.core.recall_packet import public_gaps
 from scope_recall.core.retrieval import SearchContext
 
-from tests.contract.test_v11_claims import accept, app, capture, draft
+from tests.contract.test_claims import accept, app, capture, draft
 from tests.v11_support import recall_request
 
 

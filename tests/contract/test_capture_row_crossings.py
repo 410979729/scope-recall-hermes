@@ -16,10 +16,10 @@ from scope_recall.contracts import ContractError
 from scope_recall.core.events import lexical_terms
 from scope_recall.core.storage import SQLiteStorage
 from scope_recall.core.visibility import allowed, allowed_refs
-from test_r1_candidate_lifecycle import _candidate
+from test_candidate_lifecycle import _candidate
+from test_claims import app, capture, initial  # noqa: F401  (fixtures)
+from test_deletion import authorize, request
 from test_shared_store import shared, shared_context  # noqa: F401  (fixture)
-from test_v11_claims import app, capture, initial  # noqa: F401  (fixtures)
-from test_v11_deletion import authorize, request
 from v11_support import source_event
 
 #: What two captures on the same path may differ by.

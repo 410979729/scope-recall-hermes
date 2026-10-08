@@ -23,7 +23,7 @@ from scope_recall.runtime.instance import RuntimeInstanceConfig, build_runtime_i
 from scope_recall.runtime.models import AuxiliaryModelError
 from test_runtime_auxiliary import FakeTransport, _runtime_config
 from test_runtime_worker_entry import _binding, _config_payload, _write_config
-from test_v11_worker import _mark_embed_done, app, capture, work_rows, worker_app
+from test_worker import _mark_embed_done, app, capture, work_rows, worker_app
 
 
 def _host(tmp_path, host_type=HermesHostRuntime):

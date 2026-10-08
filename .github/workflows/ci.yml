@@ -36,7 +36,7 @@ jobs:
         # storage, capture, claims, deletion, episodes and retrieval ran in
         # no workflow at all, and the nightly integration baseline does not
         # select their newest files (test_storage_growth.py,
-        # test_vector_retention.py, test_v11_aliases.py), so those tests had
+        # test_vector_retention.py, test_aliases.py), so those tests had
         # only ever run on a developer's machine.
         tier: [unit, contract, storage, capture, claims, deletion, episodes, retrieval, packaging, migration]
         # host and native ran in no pull-request workflow at all. Both are

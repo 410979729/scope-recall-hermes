@@ -25,8 +25,8 @@ from scope_recall.runtime import scheduling
 from scope_recall.runtime.instance import RuntimeInstanceConfig
 from scope_recall.runtime.scheduling import SupervisorControl, next_wake, supervise
 from scope_recall.runtime.worker_entry import _receipt_payload
-from test_r1_candidate_lifecycle import Evaluator, ModelRefusal, _candidate, _finish_source_work
-from test_v11_claims import app, capture  # noqa: F401  (app is a fixture)
+from test_candidate_lifecycle import Evaluator, ModelRefusal, _candidate, _finish_source_work
+from test_claims import app, capture  # noqa: F401  (app is a fixture)
 
 EVIDENCE = datetime(2026, 9, 6, 12, 0, tzinfo=timezone.utc)  # the claims fixture's clock
 EVERY_TYPE = {"purge", "rebuild_projection", "consolidate", "evaluate_candidate", "embed"}

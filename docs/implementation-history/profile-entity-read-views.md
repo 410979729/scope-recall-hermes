@@ -11,7 +11,7 @@ Candidate checkout: `<work root>/sr-profile-entity-20260911`. Package version re
 - `contracts/entity_request.schema.json`
 - `contracts/profile_view.schema.json`
 - `contracts/entity_view.schema.json`
-- `tests/contract/test_v11_profile_entity.py`
+- `tests/contract/test_profile_entity.py`
 - `tests/host/hermes/test_profile_entity_tools.py`
 - `tests/host/codex/test_profile_entity_mcp.py`
 - `docs/profile-entity.zh-CN.md`
@@ -49,7 +49,7 @@ Interpreter: `<instance root>/hermes-agent/venv/Scripts/python.exe -X utf8 -B` (
 ```
 python -m compileall -q core/read_views.py core/claim_storage.py core/composition.py
   contracts.py adapters/runtime_wiring.py adapters/hermes/provider.py
-  adapters/codex/mcp_server.py tests/contract/test_v11_profile_entity.py
+  adapters/codex/mcp_server.py tests/contract/test_profile_entity.py
   tests/host/hermes/test_profile_entity_tools.py
   tests/host/codex/test_profile_entity_mcp.py
 ```
@@ -57,7 +57,7 @@ python -m compileall -q core/read_views.py core/claim_storage.py core/compositio
 Result: `COMPILE_OK`.
 
 ```
-pytest tests/contract/test_v11_profile_entity.py
+pytest tests/contract/test_profile_entity.py
   tests/host/hermes/test_profile_entity_tools.py
   tests/host/hermes/test_operator_tools.py::test_operator_tools_expose_frozen_names_and_strict_boundary
   tests/host/codex/test_profile_entity_mcp.py

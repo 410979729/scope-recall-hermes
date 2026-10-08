@@ -12,7 +12,7 @@ from scope_recall.runtime.instance import RuntimeInstanceConfig
 from scope_recall.runtime.validation import utc_now as _now
 from scope_recall.runtime.worker_entry import _reserve_daily_work, persist_worker_status, run_worker
 from test_runtime_worker_entry import _binding, _config_payload, _write_config
-from test_v11_worker import _mark_embed_done, app, capture, work_rows, worker_app
+from test_worker import _mark_embed_done, app, capture, work_rows, worker_app
 
 
 def test_explicit_retry_preserves_automatic_retry_ceiling():

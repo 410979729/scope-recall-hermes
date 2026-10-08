@@ -20,7 +20,7 @@ def test_write_scope_delete_change_adds_safety_baseline() -> None:
 
     assert "I01_I03_I04_I06_I07_I08_I09_I10_I14_safety_baseline" in details["reasons"]
     assert set(check.CONTRACT_I_BASELINE) <= set(selected)
-    assert "tests/contract/test_v11_deletion.py" in selected
+    assert "tests/contract/test_deletion.py" in selected
 
 
 def test_unknown_change_requires_integration_instead_of_empty_green() -> None:
@@ -65,9 +65,9 @@ def test_a_release_plan_names_its_gates_without_claiming_them() -> None:
 
 
 def test_changed_contract_file_is_always_selected() -> None:
-    selected, details = check.select_tests("unit", changed=["tests/contract/test_p09_recall_packet.py"])
+    selected, details = check.select_tests("unit", changed=["tests/contract/test_recall_packet_compiler.py"])
 
-    assert "tests/contract/test_p09_recall_packet.py" in selected
+    assert "tests/contract/test_recall_packet_compiler.py" in selected
     assert details["unknown_files"] == []
 
 
@@ -75,7 +75,7 @@ def test_claim_change_adds_current_history_time_and_migration_closure() -> None:
     selected, details = check.select_tests("unit", changed=["core/claims.py"])
 
     assert set(check.CLAIMS_TIME_CONTRACT_CLOSURE) <= set(selected)
-    assert "tests/migration/test_v11_migration.py" not in selected
+    assert "tests/migration/test_migration_drills.py" not in selected
     assert "migration" in details["required_tiers"]
     assert "claims_time_current_history_candidate_and_migration_closure" in details["reasons"]
 
@@ -110,13 +110,13 @@ def test_integration_and_release_include_new_runtime_and_core_contracts() -> Non
     assert set(check.CORE_RELEASE_CONTRACTS) <= set(release)
     assert set(check.RUNTIME_BOUNDARY_TESTS) <= set(release)
     assert set(check.SCRIPT_GATE_TESTS) <= set(release)
-    assert "tests/contract/test_v11_vector_timeout_fallback.py" in integration
-    assert "tests/contract/test_v11_vector_timeout_fallback.py" in release
+    assert "tests/contract/test_vector_timeout_fallback.py" in integration
+    assert "tests/contract/test_vector_timeout_fallback.py" in release
 
 
 def test_retrieval_selector_keeps_vector_timeout_fallback() -> None:
     selected, _ = check.select_tests("retrieval")
-    assert "tests/contract/test_v11_vector_timeout_fallback.py" in selected
+    assert "tests/contract/test_vector_timeout_fallback.py" in selected
 
 
 def test_packaging_includes_script_gate_baseline() -> None:
@@ -135,8 +135,8 @@ def test_clean_integration_keeps_native_host_and_migration_baseline() -> None:
     assert "tests/host/hermes/test_operator_tools.py" in selected
     assert "tests/host/hermes/test_reinjection.py" in selected
     assert "tests/host/test_runtime_config_threshold.py" in selected
-    assert "tests/contract/test_p13_operator_retry.py" in selected
-    assert "tests/contract/test_p13_configurable_budget.py" in selected
+    assert "tests/contract/test_operator_retry.py" in selected
+    assert "tests/contract/test_recall_budget_config.py" in selected
     assert "native" in details["required_tiers"]
     assert "hermes" in details["required_tiers"]
     assert "codex" in details["required_tiers"]

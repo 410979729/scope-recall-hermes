@@ -8,8 +8,8 @@ from scope_recall.core.recall_packet import prioritize_current_claims, prioritiz
 from scope_recall.core.retrieval import CandidateRef, CollectionQuery, RetrievedObject, SearchContext
 from scope_recall.core.retrieval_storage import scope_digest
 
-from tests.contract.test_v11_claims import accept, app, capture, draft
-from tests.contract.test_v11_episodes import apply, resume
+from tests.contract.test_claims import accept, app, capture, draft
+from tests.contract.test_episodes import apply, resume
 from tests.v11_support import recall_request
 
 

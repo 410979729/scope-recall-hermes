@@ -7,7 +7,7 @@ from scope_recall.core.recall import RetrievalPipeline
 from scope_recall.core.retrieval import SearchContext
 
 from tests.contract.test_autonomous_context import app, task
-from tests.contract.test_p08_evidence_followup import LexicalBlockedStorage, RoundTrackingVectors
+from tests.contract.test_evidence_followup import LexicalBlockedStorage, RoundTrackingVectors
 from tests.v11_support import recall_request
 
 

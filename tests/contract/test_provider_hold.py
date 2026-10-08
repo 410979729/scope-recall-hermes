@@ -23,10 +23,10 @@ from scope_recall.runtime.model_budget import (
 )
 from scope_recall.runtime.models import AuxiliaryModelError
 
+from tests.contract.test_claims import app, capture  # noqa: F401  (fixture)
 from tests.contract.test_finite_supervisor import NOW, fixture, queue
 from tests.contract.test_runtime_auxiliary import FakeTransport, _runtime_config, _vector
-from tests.contract.test_v11_claims import app, capture  # noqa: F401  (fixture)
-from tests.contract.test_v11_worker import worker_app  # noqa: F401  (fixture)
+from tests.contract.test_worker import worker_app  # noqa: F401  (fixture)
 
 REFUSED = "http_429_usage_unknown_reserved_charge_retained"
 

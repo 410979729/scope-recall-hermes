@@ -14,8 +14,8 @@ from datetime import datetime, timedelta, timezone
 
 from scope_recall.contracts import ContractError
 from scope_recall.core.schema import SCHEMA_VERSION
-from test_v11_claims import app, capture, initial  # noqa: F401  (fixtures)
-from test_v11_deletion import authorize, request
+from test_claims import app, capture, initial  # noqa: F401  (fixtures)
+from test_deletion import authorize, request
 
 
 def _embed(core, ref: str, revision: int):

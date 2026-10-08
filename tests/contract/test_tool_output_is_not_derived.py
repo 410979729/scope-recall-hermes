@@ -14,9 +14,9 @@ import sqlite3
 
 import pytest
 from scope_recall.core.admission import AdmissionDecision, store_decision
-from test_r1_candidate_lifecycle import Evaluator, _candidate_rows, _finish_source_work
-from test_v11_claims import app, capture, draft  # noqa: F401 - app is a fixture
-from test_v11_worker import Clock, FakeConsolidation, consolidation_payload, procedure_proposal
+from test_candidate_lifecycle import Evaluator, _candidate_rows, _finish_source_work
+from test_claims import app, capture, draft  # noqa: F401 - app is a fixture
+from test_worker import Clock, FakeConsolidation, consolidation_payload, procedure_proposal
 
 
 @pytest.fixture

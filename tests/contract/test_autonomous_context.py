@@ -11,9 +11,9 @@ from scope_recall.core.background_context import BACKGROUND_PREFIX
 from scope_recall.core.recall_packet import canonical_render_json
 from scope_recall.core.retrieval import SearchContext
 
-from tests.contract.test_v11_claims import Clock, accept, capture, draft
-from tests.contract.test_v11_deletion import authorize, request
-from tests.contract.test_v11_episodes import apply, resume
+from tests.contract.test_claims import Clock, accept, capture, draft
+from tests.contract.test_deletion import authorize, request
+from tests.contract.test_episodes import apply, resume
 from tests.v11_support import context, recall_request
 
 

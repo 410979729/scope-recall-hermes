@@ -10,7 +10,7 @@ from __future__ import annotations
 import sqlite3
 
 from scope_recall.core.requalify import ROOTLESS_REASON
-from test_v11_claims import accept, app, capture, draft  # noqa: F401 - app is a fixture
+from test_claims import accept, app, capture, draft  # noqa: F401 - app is a fixture
 
 
 def _claims(core, ctx):

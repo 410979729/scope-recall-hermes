@@ -24,8 +24,8 @@ from scope_recall.core.failure_retry import (
 )
 from scope_recall.core.schema import SCHEMA_VERSION
 from scope_recall.maintenance import doctor
-from test_r1_candidate_lifecycle import _candidate, _candidate_rows, _finish_source_work
-from test_v11_claims import app
+from test_candidate_lifecycle import _candidate, _candidate_rows, _finish_source_work
+from test_claims import app
 
 # --------------------------------------------------------------------------
 # Reading a decorated error code

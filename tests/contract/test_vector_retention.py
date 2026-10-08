@@ -13,7 +13,7 @@ import pytest
 from scope_recall.maintenance import doctor
 from scope_recall.runtime import vector_retention
 from scope_recall.runtime.instance import VectorRuntimeConfig
-from test_v11_claims import app, capture
+from test_claims import app, capture
 
 SPACE = "TEST-space"
 NOW = datetime(2026, 9, 6, 12, 0, tzinfo=timezone.utc)

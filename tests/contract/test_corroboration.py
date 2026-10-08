@@ -20,7 +20,7 @@ from scope_recall.core.corroboration import (
     independent_first_hand_sources,
     witness_occasions,
 )
-from test_v11_claims import accept, app, capture, draft
+from test_claims import accept, app, capture, draft
 
 
 def _root(ref, *, origin="human_direct", state="complete", gaps=(), session=None, principal="principal:TEST-owner"):

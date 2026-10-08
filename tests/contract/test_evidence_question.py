@@ -20,7 +20,7 @@ from scope_recall.core.evidence_question import (
     is_first_hand,
     question_digest,
 )
-from test_v11_claims import app, capture
+from test_claims import app, capture
 
 
 def _tool(n):

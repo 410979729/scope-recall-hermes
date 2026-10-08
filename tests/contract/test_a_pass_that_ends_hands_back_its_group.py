@@ -15,8 +15,8 @@ from __future__ import annotations
 import sqlite3
 import time
 
-from tests.contract.test_rc40_embed_batch import Recording, _sources
-from tests.contract.test_v11_claims import app  # noqa: F401  (fixture)
+from tests.contract.test_claims import app  # noqa: F401  (fixture)
+from tests.contract.test_embed_batch import Recording, _sources
 
 
 def _rows(core):

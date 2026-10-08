@@ -334,7 +334,7 @@ def test_policy_disabled_preserves_legacy_scheduling_without_source_changes(tmp_
 
 
 def test_full_backlog_does_not_demote_correction_evidence_or_block_immediate_revision(tmp_path):
-    from tests.contract.test_v11_claims import initial
+    from tests.contract.test_claims import initial
 
     app, ctx = app_at(tmp_path, AdmissionPolicy(max_pending_work=2, important_reserve=0))
     app.test_sequence = itertools.count(1)
@@ -378,7 +378,7 @@ def test_core_worker_uses_capture_policy_for_deferred_refill(tmp_path):
 
 
 def clocked_app(tmp_path, policy):
-    from test_v11_worker import Clock
+    from test_worker import Clock
 
     app, ctx = app_at(tmp_path, policy)
     app.clock = Clock()
@@ -423,7 +423,7 @@ def test_refill_gives_a_freed_slot_to_fresh_conversation_before_older_deferred_s
 
 
 def test_fresh_message_at_queue_capacity_is_consolidated_within_one_pass(tmp_path):
-    from test_v11_worker import FakeConsolidation, consolidation_payload
+    from test_worker import FakeConsolidation, consolidation_payload
 
     # Two per type ordinarily, three with the reserve.
     app, ctx, clock, yesterday = clocked_app(tmp_path, AdmissionPolicy(max_pending_work=4, important_reserve=2))
@@ -479,7 +479,7 @@ def test_freshness_lends_the_reserve_without_becoming_importance(tmp_path):
 
 
 def test_unavailable_embedding_never_starves_consolidation_or_its_deferred_refill(tmp_path):
-    from test_v11_worker import FakeConsolidation, consolidation_payload
+    from test_worker import FakeConsolidation, consolidation_payload
 
     app, ctx = app_at(tmp_path, AdmissionPolicy(max_pending_work=2, important_reserve=0))
     model = FakeConsolidation(lambda sources, **kw: consolidation_payload(*sources))

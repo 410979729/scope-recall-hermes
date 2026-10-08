@@ -18,7 +18,7 @@ from scope_recall.contracts import ContractError
 from scope_recall.core import lexical_index
 from scope_recall.core.events import lexical_terms, query_terms
 from scope_recall.core.retrieval_storage import _discriminating_terms
-from test_v11_recall_admission import _app, _capture, _item_ref, recall
+from test_recall_admission import _app, _capture, _item_ref, recall
 
 #: The tool's own error text, the one part of a placeholder that is the output's (4,348 of the shared store's).
 _ERROR = "TEST-deploy 权限不足，配置文件不可写: permission denied"
@@ -193,7 +193,7 @@ def test_the_command_finds_a_placeholder_its_pattern_finds_whatever_leads_it(tmp
 def test_unindexing_stays_inside_the_context_s_scopes(tmp_path):
     from scope_recall.contracts import InstanceBinding, TrustedContext
     from scope_recall.core import CoreConfig, MemoryCore
-    from test_v11_recall_admission import FixedClock
+    from test_recall_admission import FixedClock
     from v11_support import source_event
 
     scopes = frozenset({"TEST-scope", "TEST-other"})

@@ -6,7 +6,7 @@ from dataclasses import replace
 import pytest
 from scope_recall.core import CoreConfig, MemoryCore
 
-from tests.contract.test_v11_claims import Clock, accept, capture, draft, initial
+from tests.contract.test_claims import Clock, accept, capture, draft, initial
 from tests.v11_support import context
 
 

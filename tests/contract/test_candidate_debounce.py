@@ -18,7 +18,7 @@ from scope_recall.core.candidate_debounce import (
     settle_reason,
 )
 from scope_recall.core.claims import Qualification
-from test_v11_claims import app, capture, draft
+from test_claims import app, capture, draft
 
 NOW = datetime(2026, 9, 6, 12, 0, 0, tzinfo=timezone.utc)
 

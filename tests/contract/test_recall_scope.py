@@ -13,8 +13,8 @@ from datetime import date, datetime, time, timedelta, timezone
 import pytest
 from scope_recall.core.recall_scope import query_scope
 
-from tests.contract.test_rc33_recall_accuracy import _say
-from tests.contract.test_v11_claims import app  # noqa: F401  (fixture; its clock says 2026-09-06T12:00:00Z)
+from tests.contract.test_claims import app  # noqa: F401  (fixture; its clock says 2026-09-06T12:00:00Z)
+from tests.contract.test_recall_dating_and_order import _say
 from tests.v11_support import recall_request
 
 ENTRIES = {

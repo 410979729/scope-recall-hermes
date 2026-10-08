@@ -21,7 +21,7 @@ from scope_recall.core.duplicate_collapse import (
 )
 from scope_recall.core.recall_packet import public_gaps
 
-from tests.contract.test_v11_claims import app, capture
+from tests.contract.test_claims import app, capture
 from tests.v11_support import recall_request
 
 

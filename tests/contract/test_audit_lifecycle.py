@@ -12,7 +12,7 @@ from scope_recall.core.restore import (
     ledger_digest,
     replay_deletion_ledger,
 )
-from test_v11_deletion import app, authorize, capture, initial, request, sqlite_backup
+from test_deletion import app, authorize, capture, initial, request, sqlite_backup
 from v11_support import source_event
 
 
@@ -110,7 +110,7 @@ def test_writer_preopened_before_restore_cannot_cross_the_new_fence(app, monkeyp
 
 
 def test_restored_attachments_and_vectors_require_fresh_physical_purge(app, tmp_path):
-    from test_v11_episodes import artifact
+    from test_episodes import artifact
 
     core, ctx = app
     item, source, _ = artifact(core, ctx, tmp_path)
