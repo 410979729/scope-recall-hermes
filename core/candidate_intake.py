@@ -29,6 +29,7 @@ from .candidate_tables import (
     settled_reason,
     utc,
 )
+from .claims import _SELF_SUBJECTS
 from .events import lexical_terms
 from .evidence_question import (
     AUTOMATIC_VERDICTS,
@@ -704,7 +705,6 @@ def _speaks_to(payload, letters: str) -> bool:
     needle = restatement_needle(payload)
     if not needle or needle in letters:
         return True
-    from .claims import _SELF_SUBJECTS
 
     subject = str(payload.get("subject") or "") if isinstance(payload, dict) else ""
     if subject.casefold() in _SELF_SUBJECTS:

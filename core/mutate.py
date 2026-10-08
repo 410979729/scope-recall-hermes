@@ -35,6 +35,8 @@ from .claims import (
     same_assertion,
     select_effective,
 )
+from .claim_normalization import expand_frames, human_owner, name_frame, normalize_frame, source_order
+from .confirmation import CONFIRMED_REASON, confirmation_targets, is_confirmation
 
 
 @dataclass(frozen=True)
@@ -142,8 +144,6 @@ def _order_against_head(tx, proposal, roots, previous, qualification, scope_id):
     evidence whose order against the head is unknown and has no live human
     behind it becomes disputed.
     """
-    from .claim_normalization import human_owner, source_order
-
     old_roots = tx.claims.roots(evidence_refs(previous.payload))
     new_owner, old_owner = human_owner(roots), human_owner(old_roots)
     new_order, old_order = source_order(tx, roots), source_order(tx, old_roots)
@@ -190,7 +190,6 @@ def _order_against_head(tx, proposal, roots, previous, qualification, scope_id):
 
 def apply_claim(tx, proposal: ClaimProposal, scope_id: str, now: str, *, _subject_bound: bool = False) -> Mutation:
     roots = tx.claims.roots(evidence_refs(proposal))
-    from .claim_normalization import name_frame, normalize_frame
 
     proposal = name_frame(normalize_frame(proposal, roots), roots)
     if _subject_bound:
@@ -261,8 +260,6 @@ def register_applied_candidate(tx, mutation: Mutation, now: str, *, schedule_ini
 
 
 def apply_claim_frames(tx, proposal, scope_id, now):
-    from .claim_normalization import expand_frames
-
     roots = tx.claims.roots(evidence_refs(proposal))
     items = []
     for frame in expand_frames(proposal, roots):
@@ -587,8 +584,6 @@ def capture_confirmation(tx, source, clock) -> Mutation | None:
     name the claim, and it must name exactly one.  A bare "记住" resolves to
     nothing and is recorded as unresolved rather than guessed at.
     """
-    from .confirmation import CONFIRMED_REASON, confirmation_targets, is_confirmation
-
     raw = source.event["content"]
     if source.event["origin"] != "human_direct" or source.capture_gaps or source.event["capture_state"] != "complete":
         return None

@@ -278,7 +278,7 @@ def test_only_a_first_hand_naming_statement_is_reframed(root, target_ref):
 def test_a_naming_alias_an_earlier_release_stored_is_repaired_into_the_fact(app, monkeypatch):
     """The pilot's store already holds the cat's name as an unproved alias; the frame repair re-frames it."""
     from scope_recall.contracts import TrustedSourcePrincipal
-    from scope_recall.core import claim_normalization
+    from scope_recall.core import claim_normalization, mutate
 
     core, ctx = app
     owner = replace(
@@ -302,6 +302,7 @@ def test_a_naming_alias_an_earlier_release_stored_is_repaired_into_the_fact(app,
     )
     with monkeypatch.context() as earlier_release:
         earlier_release.setattr(claim_normalization, "name_frame", lambda proposal, roots: proposal)
+        earlier_release.setattr(mutate, "name_frame", lambda proposal, roots: proposal)
         assert accept(core, owner, stored).items[0].state == "proposed"
 
     report = core.repair_claim_frames(owner, limit=16)

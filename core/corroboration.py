@@ -39,6 +39,8 @@ that), or writing anything (``core/mutate.apply_claim`` owns the version).
 
 from __future__ import annotations
 
+from .claims import _principal_ref, effective_origin
+
 #: Independent first-hand statements required before a refusal is overturned.
 #: Two is the ordinary standard for "not just one person's word"; a higher bar
 #: would be unreachable in practice, since the corpus shows most facts are
@@ -82,8 +84,6 @@ def _first_hand(roots):
     ``capture_state``/``capture_gaps`` are checked because a partially captured
     source is a fragment of a statement, and half a sentence is not a witness.
     """
-    from .claims import effective_origin
-
     return [
         root
         for root in roots
@@ -108,8 +108,6 @@ def witness_occasions(roots) -> set[tuple[str | None, str]]:
     speaker in two sessions is too.  The same speaker twice in one session is
     one.
     """
-    from .claims import _principal_ref
-
     return {(_principal_ref(root), root.session_id) for root in _first_hand(roots)}
 
 

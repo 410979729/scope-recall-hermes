@@ -6,6 +6,7 @@ from copy import deepcopy
 import re
 
 from .source_qualification import AUTHORITY_QUESTION, UNASSERTED_UNCERTAINTY, REPORTED_SPEECH
+from .claims import evidence_context, rejects_other_value
 
 _PROJECT = re.compile(r"项目[【\[][^【】\[\]\n]{1,120}[】\]]")
 _SELF_ATTRIBUTE = re.compile(r"(?:我的|本人的)(?:长期|默认|通常)?(?:偏好|喜好|习惯|要求|决定)")
@@ -43,7 +44,6 @@ def normalize_frame(proposal, roots):
         return proposal
     if not span["quote"] or root.content.count(span["quote"]) != 1:
         return proposal
-    from .claims import evidence_context, rejects_other_value
 
     assertion = evidence_context(root.content, span["quote"])
     if (
@@ -157,7 +157,6 @@ def name_frame(proposal, roots):
         return proposal
     if not span["quote"] or root.content.count(span["quote"]) != 1:
         return proposal
-    from .claims import evidence_context
 
     assertion = evidence_context(root.content, span["quote"])
     if (

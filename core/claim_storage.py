@@ -9,6 +9,8 @@ from typing import TYPE_CHECKING
 from ..contracts import ClaimProposal, ContractError
 from . import lineage
 from .claims import ClaimVersion, Qualification, RootEvidence, canonical_time, claim_slot, evidence_refs
+from .claim_normalization import _PROJECT, normalize_frame
+from .visibility import allowed, allowed_refs
 
 if TYPE_CHECKING:
     from .storage import Transaction
@@ -87,7 +89,6 @@ class Claims:
 
     def versions(self, ref: str) -> tuple[ClaimVersion, ...]:
         conn = self._tx._check()
-        from .visibility import allowed
 
         if not allowed(self._tx, "claim", ref):
             return ()
@@ -115,7 +116,6 @@ class Claims:
         tx = self._tx
         if not tx.remembers:
             return
-        from .visibility import allowed_refs
 
         wanted = [ref for ref in dict.fromkeys(refs) if type(ref) is str and not tx.knows(("versions", ref))]
         conn = tx._check()
@@ -142,7 +142,6 @@ class Claims:
     def version(self, ref: str, revision: int) -> ClaimVersion | None:
         """Load one visible claim version without scanning its history."""
         conn = self._tx._check()
-        from .visibility import allowed
 
         if not allowed(self._tx, "claim", ref):
             return None
@@ -178,8 +177,6 @@ class Claims:
 
     def current_revision(self, ref: str) -> int | None:
         """Resolve a visible claim head without loading its historical versions."""
-        from .visibility import allowed
-
         if not allowed(self._tx, "claim", ref):
             return None
         scopes = sorted(self._tx.context.allowed_scope_ids)
@@ -205,7 +202,6 @@ class Claims:
             # or put the subject/verb inside a preference value. Reuse only a
             # uniquely equivalent, freshly grounded slot; similarity is never
             # enough to merge identities.
-            from .claim_normalization import normalize_frame, _PROJECT
 
             projects = [p for c in proposal["conditions"] for p in _PROJECT.findall(c)]
             if len(set(projects)) != 1:
@@ -444,7 +440,6 @@ class Claims:
                 key = parse_source_ref(text_ref)
             except ContractError:
                 continue
-            from .visibility import allowed
 
             if not allowed(self._tx, "event", key[0]):
                 raise ContractError("SOURCE_MISSING", "deleted_derivation")
@@ -485,7 +480,6 @@ class Claims:
             if previous
             else "claim-" + hashlib.sha256((ctx.binding.installation_id + ":" + slot_key).encode()).hexdigest()
         )
-        from .visibility import allowed
 
         if not allowed(self._tx, "claim", ref):
             raise ContractError("ACCESS_DENIED", "claim_unavailable")
@@ -493,8 +487,6 @@ class Claims:
             self.require_target(previous)
             previous_slot = claim_slot(scope_id, ctx.project_id, ctx.branch_id, previous.payload)
             if previous_slot != slot_key:
-                from .claim_normalization import normalize_frame
-
                 previous_slot = claim_slot(
                     scope_id,
                     ctx.project_id,
