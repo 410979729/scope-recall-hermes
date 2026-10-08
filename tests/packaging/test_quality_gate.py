@@ -331,12 +331,18 @@ def test_a_typing_flag_bound_twice_guards_nothing(tmp_path):
                 "from typing import TYPE_CHECKING as TC\n\n\n"
                 "def run(TC):\n    if TC:\n        from ..runtime import b\n"
             ),
-            "runtime/__init__.py": "",
-            "runtime/b.py": "",
+            "core/c.py": (
+                "from typing import TYPE_CHECKING as TC\n\n"
+                'match {"x": 1}:\n    case {**TC}:\n        if TC:\n            from ..runtime import d\n'
+            ),
+            **{f"runtime/{name}.py": "" for name in ("__init__", "b", "d")},
         },
     )
-    # Inside run, TC is whatever the caller passes.
-    assert quality.import_problems(tmp_path, files) == ["upward import: core/a.py:6 imports runtime/b.py in a function"]
+    # Inside run, TC is whatever the caller passes; the match binds TC to the rest of its mapping.
+    assert quality.import_problems(tmp_path, files) == [
+        "upward import: core/a.py:6 imports runtime/b.py in a function",
+        "upward import: core/c.py:6 imports runtime/d.py",
+    ]
 
 
 def test_the_named_lazy_imports_cover_their_own_statements_alone(tmp_path):
@@ -380,13 +386,87 @@ def test_a_package_attribute_wins_over_a_submodule_of_its_name(tmp_path):
     ]
 
 
+def test_an_attribute_counts_only_where_python_binds_it(tmp_path):
+    package = (
+        "from typing import TYPE_CHECKING\n\n"
+        "noted: object\n"
+        "if TYPE_CHECKING:\n    typed = 1\n"
+        "try:\n    tried = 1\nexcept ImportError:\n    pass\n"
+        "gone = 1\ndel gone\n"
+        "from . import own as own\n"
+    )
+    names = ("noted", "typed", "tried", "gone", "own")
+    files = _tree(
+        tmp_path,
+        {
+            "core/__init__.py": "",
+            "core/a.py": f"from .pkg import {', '.join(names)}\n\nA = 1\n",
+            "core/pkg/__init__.py": package,
+            **{f"core/pkg/{name}.py": "from ..a import A\n" for name in names},
+            "core/other/__init__.py": (
+                "from typing import TYPE_CHECKING\n\nif TYPE_CHECKING:\n    typed = 1\nfrom . import inner\n"
+            ),
+            "core/other/inner.py": "from . import typed\n",
+            "core/other/typed.py": "",
+        },
+    )
+    # An annotation and what a type checker alone runs bind nothing, so Python loads those submodules; a name bound on
+    # some paths only, or deleted, may be the submodule; the package's own `from . import own as own` loads own.  Each
+    # submodule asks a for A before a defines it.  In other, inner's `from . import typed` loads the submodule alone:
+    # the half-made package it is imported from binds no typed, so inner does not wait for it.
+    problems = quality.import_problems(tmp_path, files)
+    assert len(problems) == 1 and problems[0].startswith("import cycle among 7 modules:")
+    for name in names:
+        assert f"    core/pkg/{name}.py:1 imports core/a.py" in problems[0]
+    assert "    core/pkg/__init__.py:12 imports core/pkg/own.py" in problems[0]
+
+
+def test_what_runs_while_a_module_loads_is_told_from_what_waits_for_a_call(tmp_path):
+    build = "def build():\n    from ..adapters.hermes.authorization import check\n\n    return check\n\n\n"
+    loads = {
+        "a class body": "class Holder:\n    value = build()\n",
+        "a default": "def wrap(value=build()):\n    return value\n",
+        "a decorator call": "@build()\ndef wrapped():\n    pass\n",
+        "a decorator": "@build\ndef wrapped():\n    pass\n",
+    }
+    waits = {
+        "a lambda": "later = lambda: build()  # noqa: E731\n",
+        "a typing-only branch": "from typing import TYPE_CHECKING\n\nif TYPE_CHECKING:\n    build()\n",
+        "a method": "class Holder:\n    def value(self):\n        return build()\n",
+    }
+    for case, (tail, expected) in enumerate(
+        [(code, True) for code in loads.values()] + [(code, False) for code in waits.values()]
+    ):
+        files = _tree(
+            tmp_path / f"case{case}",
+            {
+                "runtime/__init__.py": "",
+                "runtime/instance.py": build + tail,
+                "adapters/__init__.py": "",
+                "adapters/hermes/__init__.py": "",
+                "adapters/hermes/authorization.py": "check = 1\n",
+            },
+        )
+        problems = quality.import_problems(tmp_path / f"case{case}", files)
+        message = (
+            "named lazy import while its module loads: runtime/instance.py:1 build runs before the module is complete"
+        )
+        assert problems == ([message] if expected else []), tail
+
+
 def test_star_imports_dynamic_imports_and_a_named_lazy_import_run_at_load(tmp_path):
     files = _tree(
         tmp_path,
         {
             "core/__init__.py": "",
-            "core/a.py": 'from .pkg import *\nload = lambda: __import__("scope_recall.runtime.b")\n',
+            "core/a.py": (
+                "from .pkg import *\n"
+                'load = lambda: __import__("scope_recall.runtime.b")\n'
+                '__import__("scope_recall.core.pkg", fromlist=["leaf"])\n'
+                "A = 1\n"
+            ),
             "core/pkg/__init__.py": "",
+            "core/pkg/leaf.py": "from ..a import A\n",
             "runtime/__init__.py": "",
             "runtime/b.py": "",
             "runtime/instance.py": (
@@ -397,8 +477,12 @@ def test_star_imports_dynamic_imports_and_a_named_lazy_import_run_at_load(tmp_pa
             "adapters/hermes/authorization.py": "check = 1\n",
         },
     )
+    # The fromlist makes Python load pkg/leaf.py, which asks a for A before a defines it.
     assert quality.import_problems(tmp_path, files) == [
         "star import: core/a.py:1 (name what it imports: the import check cannot follow a star)",
-        "named lazy import while its module loads: runtime/instance.py:1 build is called at the module's top level",
+        "named lazy import while its module loads: runtime/instance.py:1 build runs before the module is complete",
+        "import cycle among 2 modules:\n"
+        "    core/a.py:3 imports core/pkg/leaf.py\n"
+        "    core/pkg/leaf.py:1 imports core/a.py",
         "upward import: core/a.py:2 imports runtime/b.py in a function",
     ]

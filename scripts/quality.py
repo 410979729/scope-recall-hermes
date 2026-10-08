@@ -27,7 +27,11 @@ it), and no module importing from a layer above its own (``LAYERS``), directly o
 layers, but the entry modules the installed command lines name and the lazy imports ``LAZY_UPWARD`` names (made in a
 function its module does not call while loading).  Only what a type checker alone runs (``if TYPE_CHECKING:``) is
 left out.  A literal ``importlib.import_module`` or ``__import__`` of the package's modules counts as an import, and a
-star import of them fails, since what it binds cannot be followed; no other dynamic import is seen.
+star import of them fails, since what it binds cannot be followed; no other dynamic import is seen.  The check reads
+syntax, not values: a call through another function or a called lambda while a module loads, a function that is only
+named like ``import_module``, and code that changes ``typing.TYPE_CHECKING`` are beyond it.  For the named lazy
+imports, ``tests/packaging/test_clean_v11_wheel.py`` loads the runtime from the built wheel and finds no adapter
+module loaded.
 """
 
 from __future__ import annotations
@@ -356,6 +360,8 @@ def _bound(tree: ast.Module) -> Counter[str]:
             found[(node.asname or node.name).split(".")[0]] += 1
         elif isinstance(node, (ast.ExceptHandler, ast.MatchAs, ast.MatchStar)) and node.name:
             found[node.name] += 1
+        elif isinstance(node, ast.MatchMapping) and node.rest:
+            found[node.rest] += 1
     return found
 
 
@@ -399,79 +405,140 @@ def typing_only(tree: ast.Module) -> set[int]:
     return skipped
 
 
-def _attributes(statements: list[ast.stmt]) -> set[str]:
-    """The names statements bind in their own scope, as a package's code makes its attributes: definitions,
-    assignments and imports, also under if, try and with, but not ``from . import x``, which binds the submodule x."""
-    found: set[str] = set()
+def _deferred(tree: ast.Module) -> set[int]:
+    """The nodes that run only when called: function and lambda bodies.  A definition's decorators and defaults, and a
+    class body, run where the definition does."""
+    deferred: set[int] = set()
+    todo: list[tuple[ast.AST, bool]] = [(tree, False)]
+    while todo:
+        node, later = todo.pop()
+        if later:
+            deferred.add(id(node))
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            now: list[ast.AST] = [*node.args.defaults, *(item for item in node.args.kw_defaults if item is not None)]
+            if not isinstance(node, ast.Lambda):
+                now += node.decorator_list
+            body: list[ast.AST] = [node.body] if isinstance(node, ast.Lambda) else list(node.body)
+            todo += [(item, later) for item in now] + [(item, True) for item in body]
+        else:
+            todo += [(child, later) for child in ast.iter_child_nodes(node)]
+    return deferred
+
+
+def _binds(node: ast.stmt) -> set[str]:
+    """The names one statement binds in its own scope (not what the blocks under it bind).  An annotation without a
+    value binds nothing, and ``from . import x`` binds the submodule x, no other attribute."""
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+        return {node.name}
+    if isinstance(node, (ast.Import, ast.ImportFrom)):
+        own = isinstance(node, ast.ImportFrom) and node.level == 1 and node.module is None
+        return {(alias.asname or alias.name).split(".")[0] for alias in node.names if not own or alias.asname}
+    if isinstance(node, (ast.Assign, ast.AugAssign)) or (isinstance(node, ast.AnnAssign) and node.value is not None):
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+        return {name.id for target in targets for name in ast.walk(target) if isinstance(name, ast.Name)}
+    return set()
+
+
+def _attributes(statements: list[ast.stmt], skipped: set[int], sure: bool = True) -> tuple[set[str], set[str]]:
+    """What a package's own code binds at its top level: (the names bound whenever it runs, those bound on some paths
+    only: under if, try, with or a loop).  What only a type checker runs (``skipped``) binds nothing."""
+    found: tuple[set[str], set[str]] = (set(), set())
     for node in statements:
+        if id(node) in skipped:
+            continue
+        found[0 if sure else 1].update(_binds(node))
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-            found.add(node.name)
             continue
-        if isinstance(node, (ast.Import, ast.ImportFrom)):
-            own = isinstance(node, ast.ImportFrom) and node.level == 1 and node.module is None
-            found |= {(alias.asname or alias.name).split(".")[0] for alias in node.names if not own or alias.asname}
-            continue
-        if isinstance(node, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
-            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
-            found |= {name.id for target in targets for name in ast.walk(target) if isinstance(name, ast.Name)}
-        handlers = getattr(node, "handlers", [])
-        for block in (getattr(node, "body", []), getattr(node, "orelse", []), getattr(node, "finalbody", [])):
-            found |= _attributes(block)
-        for handler in handlers:
-            found |= _attributes(handler.body)
+        blocks = [getattr(node, "body", []), getattr(node, "orelse", []), getattr(node, "finalbody", [])]
+        for block in blocks + [handler.body for handler in getattr(node, "handlers", [])]:
+            found[1].update(*_attributes(block, skipped, sure=False))
     return found
 
 
-def _dynamic(node: ast.AST) -> str | None:
-    """The package module a literal ``importlib.import_module(...)`` or ``__import__(...)`` call loads."""
+def _package_attributes(tree: ast.Module) -> tuple[set[str], set[str]]:
+    """``_attributes`` of a package's code, where a name it also deletes somewhere is bound on some paths only."""
+    skipped = typing_only(tree)
+    sure, maybe = _attributes(tree.body, skipped)
+    deleted = {
+        target.id
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Delete) and id(node) not in skipped
+        for target in node.targets
+        if isinstance(target, ast.Name)
+    }
+    return sure - deleted, maybe | (sure & deleted)
+
+
+def _dynamic(node: ast.AST) -> tuple[str, list[str]] | None:
+    """A literal ``importlib.import_module(...)`` or ``__import__(...)`` of the package's modules: the module, and the
+    names a literal ``fromlist`` of ``__import__`` asks for in it."""
     if not isinstance(node, ast.Call) or not node.args or not isinstance(node.args[0], ast.Constant):
         return None
     name = node.func.id if isinstance(node.func, ast.Name) else getattr(node.func, "attr", "")
     value = node.args[0].value
-    if name in ("__import__", "import_module") and isinstance(value, str) and value.split(".")[0] == "scope_recall":
-        return value
-    return None
+    if (
+        name not in ("__import__", "import_module")
+        or not isinstance(value, str)
+        or value.split(".")[0] != "scope_recall"
+    ):
+        return None
+    fromlist = next((keyword.value for keyword in node.keywords if keyword.arg == "fromlist"), None)
+    if fromlist is None and len(node.args) > 3:
+        fromlist = node.args[3]
+    entries = []
+    if name == "__import__" and isinstance(fromlist, (ast.List, ast.Tuple)):
+        entries = [
+            item.value for item in fromlist.elts if isinstance(item, ast.Constant) and isinstance(item.value, str)
+        ]
+    return value, entries
 
 
 def _imports(tree: ast.Module) -> list[tuple[ast.Import | ast.ImportFrom | ast.Call, bool]]:
     """The imports a module runs (statements, and literal dynamic imports of the package's modules), each with
-    whether it is in a function or a lambda; what only a type checker runs (``typing_only``) is left out."""
+    whether it waits for a call (``_deferred``); what only a type checker runs (``typing_only``) is left out."""
     skipped = typing_only(tree)
-    in_function = {
-        id(node)
-        for scope in ast.walk(tree)
-        if isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda))
-        for node in ast.walk(scope)
-    }
+    deferred = _deferred(tree)
     found: list[tuple[ast.Import | ast.ImportFrom | ast.Call, bool]] = []
     for node in ast.walk(tree):
         if id(node) in skipped:
             continue
         if isinstance(node, (ast.Import, ast.ImportFrom)) or (isinstance(node, ast.Call) and _dynamic(node)):
-            found.append((node, id(node) in in_function))
+            found.append((node, id(node) in deferred))
     return found
+
+
+def _from(
+    base: str, name: str, own: str, paths: dict[str, str], attributes: dict[str, tuple[set[str], set[str]]]
+) -> list[str]:
+    """What ``from base import name`` loads, as dotted names, as Python takes it: base's own attribute where base's
+    code binds name whenever it runs, the submodule base.name where it does not, both where it binds name on some
+    paths only.  A package importing from itself has no such attribute yet."""
+    submodule = f"{base}.{name}"
+    if submodule not in paths:
+        return [base]
+    sure, maybe = attributes.get(base, (set(), set())) if base != own else (set(), set())
+    if name in sure:
+        return [base]
+    return [base, submodule] if name in maybe else [submodule]
 
 
 def _requested(
     node: ast.Import | ast.ImportFrom | ast.Call,
+    own: str,
     package: list[str],
     paths: dict[str, str],
-    attributes: dict[str, set[str]],
+    attributes: dict[str, tuple[set[str], set[str]]],
 ) -> list[str]:
-    """The dotted names an import asks for.  ``from p import x`` asks for the submodule x only where p's own code does
-    not bind x: Python takes the attribute then."""
+    """The dotted names an import asks for: ``_from`` for each name a ``from`` import or a ``fromlist`` names."""
     if isinstance(node, ast.Call):
-        return [_dynamic(node) or ""]
+        module, entries = _dynamic(node) or ("", [])
+        return [module, *(loaded for entry in entries for loaded in _from(module, entry, own, paths, attributes))]
     if isinstance(node, ast.Import):
         return [alias.name for alias in node.names]
     base = node.module or ""
     if node.level:
         base = ".".join([*package[: len(package) - node.level + 1], *([node.module] if node.module else [])])
-    names = []
-    for alias in node.names:
-        submodule = f"{base}.{alias.name}"
-        names.append(submodule if submodule in paths and alias.name not in attributes.get(base, ()) else base)
-    return names
+    return [loaded for alias in node.names for loaded in _from(base, alias.name, own, paths, attributes)]
 
 
 def _loaded(name: str, own: str, paths: dict[str, str]) -> list[str]:
@@ -491,13 +558,15 @@ def import_edges(root: Path, files: Iterable[str]) -> set[Edge]:
     (``_loaded``); what a type checker alone runs is no import (``typing_only``)."""
     paths = {_dotted(path): path for path in files}
     trees = {path: ast.parse((root / path).read_text(encoding="utf-8")) for path in paths.values()}
-    attributes = {_dotted(path): _attributes(tree.body) for path, tree in trees.items() if path.endswith("__init__.py")}
+    attributes = {
+        _dotted(path): _package_attributes(tree) for path, tree in trees.items() if path.endswith("__init__.py")
+    }
     edges: set[Edge] = set()
     for path, tree in sorted(trees.items()):
         own = _dotted(path)
         package = own.split(".") if path.endswith("__init__.py") else own.split(".")[:-1]
         for node, lazy in _imports(tree):
-            for name in _requested(node, package, paths, attributes):
+            for name in _requested(node, own, package, paths, attributes):
                 loaded = _loaded(name, own, paths)
                 edges |= {
                     (path, paths[target], lazy, node.lineno, paths[loaded[0]])
@@ -591,22 +660,29 @@ def _stars(root: Path, files: list[str]) -> list[str]:
 
 
 def _named_at_load(root: Path, edges: list[Edge]) -> list[str]:
-    """A named lazy import (``LAZY_UPWARD``) in a function its module calls at its top level: Python would run it with
-    the module half made, which the exception does not cover."""
+    """A named lazy import (``LAZY_UPWARD``) in a function its module calls while loading: a call or a decorator
+    outside every function and lambda body (``_deferred``), in a class body or a default included.  Python would run
+    the import with the module half made, which the exception does not cover."""
     problems: list[str] = []
     for importer in sorted({edge[0] for edge in edges if _named_lazy(edge)}):
         tree = ast.parse((root / importer).read_text(encoding="utf-8"))
+        later = _deferred(tree) | typing_only(tree)
         called = {
             node.func.id
-            for statement in tree.body
-            if not isinstance(statement, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
-            for node in ast.walk(statement)
-            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and id(node) not in later
+        }
+        called |= {
+            decorator.id
+            for node in ast.walk(tree)
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and id(node) not in later
+            for decorator in node.decorator_list
+            if isinstance(decorator, ast.Name)
         }
         lines = {edge[3] for edge in edges if edge[0] == importer and _named_lazy(edge)}
         problems += [
-            f"named lazy import while its module loads: {importer}:{function.lineno} {function.name} is called at the"
-            " module's top level"
+            f"named lazy import while its module loads: {importer}:{function.lineno} {function.name} runs before the"
+            " module is complete"
             for function in ast.walk(tree)
             if isinstance(function, (ast.FunctionDef, ast.AsyncFunctionDef))
             and function.name in called

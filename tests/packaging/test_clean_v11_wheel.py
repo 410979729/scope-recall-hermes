@@ -189,6 +189,26 @@ def test_clean_v11_wheel_entrypoint_and_register_delegate(installed_venv: dict[s
     assert receipt["register_module"] == "scope_recall"
 
 
+def test_clean_v11_wheel_runtime_loads_no_host_adapter(installed_venv: dict[str, Path]) -> None:
+    """The runtime's two lazy imports of a host's authorization check (``LAZY_UPWARD`` in scripts/quality.py) run when
+    a worker builds its instance, never while the runtime loads: loading it loads no adapter module."""
+    probe = _run_clean_child(
+        installed_venv["python"],
+        cwd=installed_venv["outside_cwd"],
+        args=[
+            "-c",
+            (
+                "import json, sys; "
+                "import scope_recall.runtime.instance, scope_recall.runtime.worker_entry, "
+                "scope_recall.runtime.resume_entry; "
+                "print(json.dumps(sorted(name for name in sys.modules if name.startswith('scope_recall.adapters'))))"
+            ),
+        ],
+    )
+    assert probe.returncode == 0, probe.stderr.decode("utf-8", errors="replace")
+    assert json.loads(probe.stdout.decode("utf-8")) == []
+
+
 def test_clean_v11_wheel_installed_runtime_recall(installed_venv: dict[str, Path], tmp_path: Path) -> None:
     data_dir = tmp_path / "runtime-data"
     probe = _run_clean_child(
