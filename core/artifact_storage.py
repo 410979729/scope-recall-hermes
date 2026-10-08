@@ -94,6 +94,47 @@ class Artifacts:
             bool(row["suppressed"]),
         )
 
+    @staticmethod
+    def _require_metadata(revision, label) -> None:
+        """An artifact version has a positive revision and a short label that holds nothing like a secret."""
+        if (
+            type(revision) is not int
+            or revision < 1
+            or type(label) is not str
+            or not 1 <= len(label) <= 240
+            or contains_secret_like_text(label)
+        ):
+            raise ContractError("INPUT_INVALID", "artifact_metadata")
+
+    @staticmethod
+    def _require_attached(source, ref, revision, media_type, grant, description) -> None:
+        """The source attaches this artifact (this version, when it showed a list), the grant is for the version's
+        media type, and a description is quoted from the source."""
+        if ref not in source.event.get("artifact_refs", []):
+            raise ContractError("ACCESS_DENIED", "artifact_not_attached")
+        snapshot = source.event.get("display_snapshot", {})
+        if snapshot and dict(artifact_ref=ref, revision=revision) not in snapshot["items"]:
+            raise ContractError("VERSION_CONFLICT", "artifact_display_version")
+        if grant is not None and (not isinstance(grant, ArtifactGrant) or grant.media_type != media_type):
+            raise ContractError("INPUT_INVALID", "artifact_grant")
+        if description is not None and (
+            type(description) is not str
+            or not 1 <= len(description) <= 4096
+            or description not in source.event["content"]
+        ):
+            raise ContractError("DERIVATION_INVALID", "artifact_description")
+
+    @staticmethod
+    def _retention(blob, description) -> tuple:
+        """A version's retention columns: the retained file's digest, size, retention state, path and record."""
+        return (
+            blob.sha256 if blob else None,
+            blob.size_bytes if blob else None,
+            "retained_artifact" if blob else "described_artifact" if description else "reference_only",
+            blob.relative_path if blob else None,
+            canonical(asdict(blob)) if blob else None,
+        )
+
     def register(
         self,
         *,
@@ -109,14 +150,7 @@ class Artifacts:
     ):
         conn, ctx = self.tx._check(write=True), self.tx.context
         ref = artifact_identity(ctx, scope_id, key)
-        if (
-            type(revision) is not int
-            or revision < 1
-            or type(label) is not str
-            or not 1 <= len(label) <= 240
-            or contains_secret_like_text(label)
-        ):
-            raise ContractError("INPUT_INVALID", "artifact_metadata")
+        self._require_metadata(revision, label)
         if not allowed(self.tx, "artifact", ref):
             raise ContractError("SOURCE_MISSING")
         source = self.tx.source(*parse_source_ref(source_ref))
@@ -127,19 +161,7 @@ class Artifacts:
         ):
             raise ContractError("SOURCE_MISSING")
         self.tx.claims.require_live_source(source.ref, source.revision)
-        if ref not in source.event.get("artifact_refs", []):
-            raise ContractError("ACCESS_DENIED", "artifact_not_attached")
-        snapshot = source.event.get("display_snapshot", {})
-        if snapshot and dict(artifact_ref=ref, revision=revision) not in snapshot["items"]:
-            raise ContractError("VERSION_CONFLICT", "artifact_display_version")
-        if grant is not None and (not isinstance(grant, ArtifactGrant) or grant.media_type != media_type):
-            raise ContractError("INPUT_INVALID", "artifact_grant")
-        if description is not None and (
-            type(description) is not str
-            or not 1 <= len(description) <= 4096
-            or description not in source.event["content"]
-        ):
-            raise ContractError("DERIVATION_INVALID", "artifact_description")
+        self._require_attached(source, ref, revision, media_type, grant, description)
         existing = self.get(ref, revision)
         if existing:
             if (
@@ -192,11 +214,7 @@ class Artifacts:
                 revision,
                 label,
                 media_type,
-                blob.sha256 if blob else None,
-                blob.size_bytes if blob else None,
-                "retained_artifact" if blob else "described_artifact" if description else "reference_only",
-                blob.relative_path if blob else None,
-                canonical(asdict(blob)) if blob else None,
+                *self._retention(blob, description),
                 canonical(descriptions),
                 now,
             ),
