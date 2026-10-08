@@ -553,7 +553,8 @@ _SAME_WAVE_NS = 1_000_000_000
 
 def _held_refusal(status: object) -> bool:
     """Whether a settled row is the provider declining to serve: capacity or account."""
-    from ..core.work_storage import ACCOUNT_REFUSALS, CAPACITY_REFUSALS
+    from ..core.failure_retry import ACCOUNT_REFUSALS
+    from ..core.work_storage import CAPACITY_REFUSALS
 
     code = str(status or "").split(":", 1)[0].split("_usage", 1)[0]
     return code in CAPACITY_REFUSALS or code in ACCOUNT_REFUSALS

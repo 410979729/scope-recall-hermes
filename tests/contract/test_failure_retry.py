@@ -229,7 +229,7 @@ def test_every_transient_failure_the_worker_knows_is_operator_actionable():
     """They drifted once: ``model_unavailable`` was auto-recoverable but absent
     here, so four rows from one outage pinned a live instance at degraded with
     nobody able to clear them."""
-    from scope_recall.core.work_storage import AUTO_RECOVERABLE_ERRORS
+    from scope_recall.core.failure_retry import AUTO_RECOVERABLE_ERRORS
 
     # Compared on the normalised kind, which is what ``retry_class`` is given.
     assert {code.lower() for code in AUTO_RECOVERABLE_ERRORS} <= ACTIONABLE_FAILURES
@@ -277,7 +277,7 @@ def test_a_refused_request_can_be_cleared_once_its_cause_is_fixed(code):
     a way the worker does not recover by itself, so nothing retries it by itself, but an operator who fixed the cause
     may re-open it, as ``http_400``.  The HTTP worker's own refusals of a route or a size are its own codes, not a
     status (a 5xx, and ``http_redirect``, left out at first: reviews of 3.7.3)."""
-    from scope_recall.core.work_storage import AUTO_RECOVERABLE_ERRORS
+    from scope_recall.core.failure_retry import AUTO_RECOVERABLE_ERRORS
 
     assert retry_class(code) == "actionable"
     assert selects(code, include_terminal=False, generation=SCHEMA_VERSION) is True
@@ -317,8 +317,7 @@ def test_a_terminal_failure_is_never_also_actionable():
 def test_the_operator_only_extras_are_not_auto_recoverable():
     """They are listed by hand, so each must have a reason to be: a code the
     worker would have retried itself does not belong in that list."""
-    from scope_recall.core.failure_retry import _OPERATOR_ONLY_FAILURES
-    from scope_recall.core.work_storage import AUTO_RECOVERABLE_ERRORS
+    from scope_recall.core.failure_retry import _OPERATOR_ONLY_FAILURES, AUTO_RECOVERABLE_ERRORS
 
     normalised = {code.lower() for code in AUTO_RECOVERABLE_ERRORS}
     assert not (_OPERATOR_ONLY_FAILURES & normalised)

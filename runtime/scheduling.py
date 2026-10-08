@@ -16,7 +16,8 @@ import time
 
 from ..core.inbox_rules import REPLAY_CANDIDATES, RETRIED, deferred_until, replayable
 from ..core.storage import SQLiteStorage
-from ..core.work_storage import AUTO_RECOVERABLE_ERRORS, AUTO_RECOVERABLE_WORK_TYPES
+from ..core.failure_retry import AUTO_RECOVERABLE_ERRORS
+from ..core.work_storage import AUTO_RECOVERABLE_WORK_TYPES
 from ..core.file_lock import advisory_file_lock
 from .worker_entry import DAILY_COUNTER_MAX, _atomic_metadata, _metadata_path, _read_metadata, load_config
 

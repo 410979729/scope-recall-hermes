@@ -13,7 +13,7 @@ import hashlib
 from ..contracts import ContractError
 from .delete_storage import retraction_after
 from .failure_retry import validation_feedback
-from .work_storage import ACCOUNT_REFUSALS
+from .failure_retry import ACCOUNT_REFUSALS
 
 _NON_RETRYABLE_MODEL_ERRORS = frozenset(
     {

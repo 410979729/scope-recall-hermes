@@ -8,6 +8,7 @@ import math
 import re
 
 from ..contracts import ContractError
+from .failure_retry import AUTO_RECOVERABLE_ERRORS, DERIVATION_RETRY_MARKER
 from .schema import SCHEMA_VERSION
 
 MAX_RECOVERABLE_ATTEMPTS = 3
@@ -21,40 +22,11 @@ MAX_RECOVERY_PAGE = 200
 #: (``core/worker.py``'s ``max_items``), because a pass that claims its embedding
 #: group together claims as much of itself as it is allowed to process.
 MAX_CLAIM_PAGE = 1000
-DERIVATION_RETRY_MARKER = "derivation_retry:1"
 INTERRUPTED_RETRY_MARKER = "interrupted_retry:1"
 OPERATOR_ORIGINS = frozenset({"human_direct", "host_generated"})
 _OPERATION_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,63}")
 _OPERATOR_TOKEN = re.compile(r"(?:^|\|prior:)operator_retry:([A-Za-z0-9][A-Za-z0-9_.-]{0,63})(?=\||$)")
 _AUTO_TOKEN = re.compile(r"(?:^|\|(?:prior:)?)auto_retry:([0-9]+)(?=\||$)")
-# Only infrastructure failures may be recovered without a new source revision.
-# Invalid derivations and rejected authority remain terminal and inspectable.
-# ``http_protocol`` is the transport failing mid-reply (a connection closed or a malformed answer), and is treated as
-# ``network_error`` is: it says nothing about the payload.  Missing here, consolidation and embedding work failing
-# with it was never recovered, and no work failing with it was clearable by ``retry-failures``: candidate evaluations
-# against a model served over plain HTTP left failed rows only a hand edit could clear (#201).
-AUTO_RECOVERABLE_ERRORS = frozenset(
-    {
-        "model_unavailable",
-        "model_timeout",
-        "timeout",
-        "network_error",
-        "http_protocol",
-        "http_429",
-        "http_500",
-        "http_502",
-        "http_503",
-        "http_504",
-        "http_529",
-        "rate_limited",
-        "storage_unavailable",
-        "STORAGE_UNAVAILABLE",
-        "DEADLINE_EXCEEDED",
-        "memory_epoch_changed",
-        "lease_exhausted",
-        "embedding_unavailable",
-    }
-)
 
 #: Failures that are never about the work item.  A provider declining to serve
 #: anyone says nothing about this payload -- unlike a timeout, which a large
@@ -63,14 +35,6 @@ AUTO_RECOVERABLE_ERRORS = frozenset(
 #: 195 items into ``failed`` at ``attempt=3`` apiece, each needing an operator.  529 is a provider saying it is
 #: overloaded (MiniMax, Anthropic): one such answer failed a candidate evaluation for good on 2026-09-28.
 CAPACITY_REFUSALS = frozenset({"http_429", "rate_limited", "http_502", "http_503", "http_504", "http_529"})
-
-#: The provider declining the account rather than this request: payment
-#: required, key rejected, access forbidden.  No payload changes that answer, so
-#: the worker parks the item without an attempt (``BUDGET_PAUSE_ERRORS``) until
-#: someone fixes the account.  On one instance a DeepSeek balance that ran out
-#: answered 402 for fifteen minutes and failed 100 candidate evaluations
-#: outright, none of which an operator command could reopen afterwards.
-ACCOUNT_REFUSALS = frozenset({"http_401", "http_402", "http_403"})
 
 #: Token recording how many times in a row a provider refused for capacity.
 #: Kept in the error code beside ``auto_retry:`` rather than a new column, so

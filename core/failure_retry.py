@@ -52,7 +52,44 @@ import re
 
 from ..contracts import ContractError
 from .secret_patterns import contains_secret_like_text
-from .work_storage import ACCOUNT_REFUSALS, AUTO_RECOVERABLE_ERRORS, DERIVATION_RETRY_MARKER
+
+DERIVATION_RETRY_MARKER = "derivation_retry:1"
+# Only infrastructure failures may be recovered without a new source revision.
+# Invalid derivations and rejected authority remain terminal and inspectable.
+# ``http_protocol`` is the transport failing mid-reply (a connection closed or a malformed answer), and is treated as
+# ``network_error`` is: it says nothing about the payload.  Missing here, consolidation and embedding work failing
+# with it was never recovered, and no work failing with it was clearable by ``retry-failures``: candidate evaluations
+# against a model served over plain HTTP left failed rows only a hand edit could clear (#201).
+AUTO_RECOVERABLE_ERRORS = frozenset(
+    {
+        "model_unavailable",
+        "model_timeout",
+        "timeout",
+        "network_error",
+        "http_protocol",
+        "http_429",
+        "http_500",
+        "http_502",
+        "http_503",
+        "http_504",
+        "http_529",
+        "rate_limited",
+        "storage_unavailable",
+        "STORAGE_UNAVAILABLE",
+        "DEADLINE_EXCEEDED",
+        "memory_epoch_changed",
+        "lease_exhausted",
+        "embedding_unavailable",
+    }
+)
+
+#: The provider declining the account rather than this request: payment
+#: required, key rejected, access forbidden.  No payload changes that answer, so
+#: the worker parks the item without an attempt (``BUDGET_PAUSE_ERRORS``) until
+#: someone fixes the account.  On one instance a DeepSeek balance that ran out
+#: answered 402 for fifteen minutes and failed 100 candidate evaluations
+#: outright, none of which an operator command could reopen afterwards.
+ACCOUNT_REFUSALS = frozenset({"http_401", "http_402", "http_403"})
 
 #: Faults an operator may clear even though the worker's automatic budget is
 #: spent.  None is auto-recoverable, and each is here for a stated reason:
