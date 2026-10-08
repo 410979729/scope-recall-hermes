@@ -4,6 +4,10 @@ All notable changes to `scope-recall` will be documented in this file.
 
 ## [Unreleased]
 
+### Scope Recall 3.9.1rc1 - 2026-10-07
+
+The clean-up's third step, no behaviour change: the import graph of the core and its hosts without cycles.
+
 ## [3.9.0] - 2026-10-07
 
 3.9.0 changes no behaviour. It is the first part of a clean-up: stored content, recall results, hook and CLI output, configuration formats and the modules installed hosts run are those of 3.8.2.
