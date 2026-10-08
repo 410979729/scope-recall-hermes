@@ -284,6 +284,39 @@ class _Draft:
         self.unmet_needs.extend(needs)
 
 
+def _packet_status(items, result, gaps, needs, dropped: bool, *, failed: bool) -> str:
+    """Unavailable when authority or a read failed and nothing came back; no match when nothing came back (partial
+    if results were dropped); partial with gaps, unmet needs or drops; else ok."""
+    if failed and not items:
+        return "unavailable"
+    if not items:
+        return "partial" if result.items and dropped else "no_match"
+    if gaps or needs or dropped:
+        return "partial"
+    return "ok"
+
+
+def _answerability(status: str, answer_objects, needs, dropped: bool, gaps, hint) -> str:
+    """Unknown without answer evidence; partial with gaps, unmet needs or drops; else the retrieval's hint when it
+    is ambiguous or supported, and partial otherwise."""
+    if status in {"no_match", "unavailable"} or not answer_objects:
+        return "unknown"
+    if needs or dropped or gaps:
+        return "partial"
+    if hint in {"ambiguous", "supported"}:
+        return hint
+    return "partial"
+
+
+def _packet_epoch(status: str, items, memory_epoch: int | None) -> int | None:
+    """The memory epoch a packet answers at: none without items, 0 when items came from a read that had none."""
+    if status in {"no_match", "unavailable"}:
+        return None
+    if items:
+        return memory_epoch if memory_epoch is not None else 0
+    return memory_epoch
+
+
 def assemble_packet(draft: _Draft, *, items=None, objects=None, extra_needs=()) -> tuple[RecallPacket, tuple[str, ...]]:
     """Build the exact public packet shape without side effects.
 
@@ -308,32 +341,10 @@ def assemble_packet(draft: _Draft, *, items=None, objects=None, extra_needs=()) 
     needs = list(public_needs(dict.fromkeys(raw_needs)))
     dropped = bool(draft.stale_drops or draft.budget_drops)
 
-    if (authority_failed or read_incomplete) and not items:
-        status = "unavailable"
-    elif not items:
-        status = "partial" if result.items and dropped else "no_match"
-    elif gaps or needs or dropped:
-        status = "partial"
-    else:
-        status = "ok"
-
-    if status in {"no_match", "unavailable"} or not answer_objects:
-        answerability = "unknown"
-    elif needs or dropped or gaps:
-        answerability = "partial"
-    elif result.answerability_hint in {"ambiguous", "supported"}:
-        answerability = result.answerability_hint
-    else:
-        answerability = "partial"
-
+    status = _packet_status(items, result, gaps, needs, dropped, failed=authority_failed or read_incomplete)
+    answerability = _answerability(status, answer_objects, needs, dropped, gaps, result.answerability_hint)
     coverage = "partial" if gaps or dropped or needs else result.coverage
-
-    if status in {"no_match", "unavailable"}:
-        packet_epoch: int | None = None
-    elif items:
-        packet_epoch = draft.memory_epoch if draft.memory_epoch is not None else 0
-    else:
-        packet_epoch = draft.memory_epoch
+    packet_epoch = _packet_epoch(status, items, draft.memory_epoch)
 
     packet: RecallPacket = {
         "protocol_version": "1.1",

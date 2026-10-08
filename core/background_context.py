@@ -170,6 +170,47 @@ def _profile_rows(tx, context: SearchContext, gaps: list[str] | None = None):
     return [*rows, *recent[:window]]
 
 
+def _background_payload(obj, context: SearchContext) -> dict | None:
+    """The payload of a hydrated claim that may stand as background, or None: it must be current, evidenced, active,
+    reported or observed, about someone the current principal may see, under conditions that apply, and short."""
+    if obj is None or obj.temporal_status != "current" or not obj.evidence_refs:
+        return None
+    metadata = dict(obj.metadata)
+    if metadata.get("state") != "active" or obj.basis not in {"direct_report", "observed"}:
+        return None
+    payload = json.loads(metadata.get("payload_json", "{}"))
+    if not _subject_visible_to_current_principal(payload.get("subject"), context):
+        return None
+    conditions = payload.get("conditions", [])
+    if not _conditions_apply(conditions, context):
+        return None
+    # Bound background payload independently, then share the final packet
+    # byte budget with query evidence.  Large profiles remain explicit tools.
+    if len(obj.content.encode("utf-8")) > 768:
+        return None
+    return payload
+
+
+def _one_per_property(choices) -> list:
+    """The best choice for each attributed property; a property with two applicable exceptions of different values
+    gets none."""
+    grouped = {}
+    for choice in choices:
+        grouped.setdefault(choice[1], []).append(choice)
+    resolved = []
+    for group in grouped.values():
+        conditional = [choice for choice in group if choice[0][0]]
+        if len(conditional) > 1:
+            values = {json.loads(dict(choice[3].metadata)["payload_json"]).get("value_text") for choice in conditional}
+            if len(values) > 1:
+                # Two applicable exceptions have no proven precedence. Do not
+                # silently turn recency or lexical overlap into a decision.
+                # Explicit retrieval can still expose the attributed claims.
+                continue
+        resolved.append(max(conditional or group, key=lambda choice: choice[0]))
+    return resolved
+
+
 def background_candidates(
     tx, context: SearchContext, reader, clock, gaps: list[str] | None = None, *, query_evidence: bool = False
 ) -> tuple[tuple[CandidateRef, RetrievedObject], ...]:
@@ -207,21 +248,10 @@ def background_candidates(
             continue
         candidate = CandidateRef("claim", row[0], effective.revision, "background", rank=len(selected) + 1)
         obj = reader.hydrate(tx, candidate, context)
-        if obj is None or obj.temporal_status != "current" or not obj.evidence_refs:
-            continue
-        metadata = dict(obj.metadata)
-        if metadata.get("state") != "active" or obj.basis not in {"direct_report", "observed"}:
-            continue
-        payload = json.loads(metadata.get("payload_json", "{}"))
-        if not _subject_visible_to_current_principal(payload.get("subject"), context):
+        payload = _background_payload(obj, context)
+        if payload is None:
             continue
         conditions = payload.get("conditions", [])
-        if not _conditions_apply(conditions, context):
-            continue
-        # Bound background payload independently, then share the final packet
-        # byte budget with query evidence.  Large profiles remain explicit tools.
-        if len(obj.content.encode("utf-8")) > 768:
-            continue
         text = " ".join(str(payload.get(key, "")) for key in ("subject", "predicate", "value_text", "conditions"))
         hits = len(terms.intersection(lexical_terms(text)))
         attribute = (
@@ -242,21 +272,7 @@ def background_candidates(
             effective.recorded_from,
         )
         choices.append((priority, attribute, candidate, obj))
-    grouped = {}
-    for choice in choices:
-        grouped.setdefault(choice[1], []).append(choice)
-    resolved = []
-    for group in grouped.values():
-        conditional = [choice for choice in group if choice[0][0]]
-        if len(conditional) > 1:
-            values = {json.loads(dict(choice[3].metadata)["payload_json"]).get("value_text") for choice in conditional}
-            if len(values) > 1:
-                # Two applicable exceptions have no proven precedence. Do not
-                # silently turn recency or lexical overlap into a decision.
-                # Explicit retrieval can still expose the attributed claims.
-                continue
-        resolved.append(max(conditional or group, key=lambda choice: choice[0]))
-    ordered = sorted(resolved, key=lambda choice: choice[0], reverse=True)
+    ordered = sorted(_one_per_property(choices), key=lambda choice: choice[0], reverse=True)
     for _priority, _attribute, candidate, obj in ordered:
         selected.append((replace(candidate, rank=len(selected) + 1), mark_background(obj)))
         if len(selected) == 2:
