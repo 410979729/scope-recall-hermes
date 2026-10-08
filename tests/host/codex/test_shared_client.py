@@ -1298,6 +1298,10 @@ def test_a_late_answer_leaves_the_prompt_stored_once(resident, small_reserve, mo
     server tells the next prompt at once that it is busy."""
     import threading
 
+    from scope_recall.adapters.clients import handler as handler_module
+
+    # A real entry's 6 s: on the 2 s default, a slow runner's write of the prompt left no time to ask the server.
+    monkeypatch.setattr(handler_module, "_TOTAL_BUDGET_S", 6.0)
     root, client, endpoint = resident
     release, finished = threading.Event(), []
     calls = _counted(endpoint, monkeypatch, hold=release, finished=finished)
@@ -3953,8 +3957,11 @@ def test_a_message_that_comes_while_a_turn_is_stored_is_kept_and_stored_with_the
     from what it holds then, not from what it read before, and stores the rest when that turn ends."""
     root, home = dsh
     # Each Stop is a process of its own; on a slow runner the 2 s a test entry's hooks get stored a line or two a Stop,
-    # and the turns' lines outlasted the harness's wait.  The entry's hooks get the 6 s a real entry's have.
-    (home / "scope-recall" / "runtime-config.json").write_text(json.dumps({"hook_processing_seconds": 6}), "utf-8")
+    # and the turns' lines outlasted the harness's wait.  The entry's hooks get the 6 s a real entry's have, and no
+    # resident recall server, as without a runtime config: one kept running holds its lock past the test's end.
+    (home / "scope-recall" / "runtime-config.json").write_text(
+        json.dumps({"hook_processing_seconds": 6, "resident_recall_minutes": 0}), "utf-8"
+    )
     result = _run_plugin(
         {"python": sys.executable, "home": str(home), "spool": str(tmp_path / "TEST-spool"), "overlap": True}
     )
