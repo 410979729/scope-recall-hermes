@@ -29,11 +29,11 @@ from scope_recall.core.inbox_rules import given_up, replayable
 from scope_recall.core.index_rebuild import IMPORT_EMBED_QUEUE_CEILING
 from scope_recall.core.schema import SCHEMA_VERSION, UPGRADE_CHAIN, stale_header_schema
 from scope_recall.core.storage import SQLiteStorage
+from scope_recall.runtime.instance import RuntimeInstanceConfig
 from scope_recall.runtime.model_budget import embedding_calls, pre_request_refusals, provider_holds, provider_refusals
 from scope_recall.runtime.running_code import live_records, stale_records
 from scope_recall.vector.compaction import instance_vector_footprints
 
-from ..runtime.instance import RuntimeInstanceConfig
 from . import package_health
 from .install_common import RUNTIME_CONFIG_LIMIT
 
