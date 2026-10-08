@@ -12,7 +12,7 @@ import os
 import sys
 from pathlib import Path
 
-from ...runtime.resume_entry import host_process_credential_environment
+from ...runtime.worker_entry import host_process_credential_environment
 from .config import CodexConfigError, CodexInstallationConfig, SharedClientConfig, load_codex_config, load_shared_client
 from .mcp_server import build_server
 

@@ -17,7 +17,7 @@ from pathlib import Path
 import pytest
 
 from scope_recall.adapters.clients import hook_entry, mcp_entry
-from scope_recall.runtime import resume_entry
+from scope_recall.runtime import worker_entry
 
 KEY = "SCOPE_RECALL_TEST_EMBED_KEY"
 
@@ -34,20 +34,20 @@ def _stub_runtime_config(*names: str):
 def test_host_process_credential_environment_reads_only_declared_names(tmp_path: Path, monkeypatch) -> None:
     runtime_config = tmp_path / "runtime-config.json"
     runtime_config.write_text("{}", encoding="utf-8")
-    monkeypatch.setattr(resume_entry, "load_config", lambda path: _stub_runtime_config(KEY))
+    monkeypatch.setattr(worker_entry, "load_config", lambda path: _stub_runtime_config(KEY))
     env_file = tmp_path / "embedding.env"
     env_file.write_text(
         f"# comment\nexport {KEY}='secret-value'  \nSCOPE_RECALL_UNDECLARED=leak\nPATH=/tmp/not-touched\n",
         encoding="utf-8",
     )
 
-    loaded = resume_entry.host_process_credential_environment(runtime_config, env_file)
+    loaded = worker_entry.host_process_credential_environment(runtime_config, env_file)
 
     assert loaded == {KEY: "secret-value"}
     with pytest.raises(ValueError, match="runtime_config_path_not_absolute"):
-        resume_entry.host_process_credential_environment(Path("relative/runtime-config.json"), env_file)
+        worker_entry.host_process_credential_environment(Path("relative/runtime-config.json"), env_file)
     with pytest.raises(ValueError, match="autostart_environment_invalid"):
-        resume_entry.host_process_credential_environment(runtime_config, Path("relative.env"))
+        worker_entry.host_process_credential_environment(runtime_config, Path("relative.env"))
 
 
 def _install(tmp_path: Path):

@@ -29,8 +29,8 @@ import time
 from pathlib import Path
 
 from ...core.file_lock import advisory_file_lock
-from ...runtime.resume_entry import host_process_credential_environment
 from ...runtime.running_code import version_on_disk
+from ...runtime.worker_entry import host_process_credential_environment
 from .config import load_shared_client
 from .local_endpoint import (
     _forget,

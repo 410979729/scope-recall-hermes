@@ -36,7 +36,7 @@ import sys
 import time
 from typing import Any, Callable
 
-from ...runtime.resume_entry import host_process_credential_environment
+from ...runtime.worker_entry import host_process_credential_environment
 from . import transcript
 from .boundary import without_lone_surrogates
 from .config import CodexConfigError, load_shared_client

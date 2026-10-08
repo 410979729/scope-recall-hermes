@@ -6,56 +6,11 @@ import argparse
 from datetime import datetime, timezone
 import json
 from pathlib import Path
-import re
 
 from ..core.file_lock import advisory_file_lock
 from .scheduling import SupervisorControl, next_wake, read_control
-from .worker_entry import _atomic_metadata, load_config
+from .worker_entry import _atomic_metadata, credential_environment, load_config
 from .worker_launch import launch_worker
-
-
-def credential_environment(config, env_file):
-    """Read only the configured credential keys; never execute/interpolate dotenv."""
-    names = {
-        route.credential_env
-        for route in (getattr(config.auxiliary, "embedding", None), getattr(config.auxiliary, "consolidation", None))
-        if route is not None
-    }
-    if not env_file or not names:
-        return {}
-    path = Path(env_file)
-    if not path.is_absolute() or path.is_symlink() or path.stat().st_size > 1048576:
-        raise ValueError("autostart_environment_invalid")
-    result = {}
-    for line in path.read_text(encoding="utf-8-sig").splitlines():
-        match = re.fullmatch(r"\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*", line)
-        if match is None or match[1] not in names:
-            continue
-        value = match[2]
-        if len(value) >= 2 and value[0] == value[-1] and value[0] in {"'", '"'}:
-            value = value[1:-1]
-        else:
-            value = re.split(r"\s+#", value, maxsplit=1)[0]
-        if value and "\x00" not in value and len(value) <= 8192:
-            result[match[1]] = value
-    return result
-
-
-def host_process_credential_environment(runtime_config_path, env_file):
-    """Credential variables for a process the host launches with its own environment.
-
-    The worker receives them through its autostart control file (``resume_once``);
-    a Codex-launched MCP server or hook starts with Codex's environment, which carries
-    none of the configured credential names, so it is given the same two paths and
-    reads them under the same contract: only the names the trusted runtime config
-    declares, never an interpolated dotenv.  Raises ``ValueError`` for an unusable
-    env file and ``OSError``/``ValueError`` for an unreadable config; the caller
-    decides whether a process may run without credentials.
-    """
-    config_path = Path(runtime_config_path)
-    if not config_path.is_absolute():
-        raise ValueError("runtime_config_path_not_absolute")
-    return credential_environment(load_config(config_path), str(env_file))
 
 
 def resume_once(config_path, *, launcher=launch_worker, now=None):
