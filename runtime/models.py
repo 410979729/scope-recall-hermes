@@ -614,16 +614,6 @@ def _embedding_vectors(
     return tuple(validate_embedding_vector(row.get("embedding"), dimensions=dimensions) for row in data)
 
 
-def parse_embedding_batch_response(
-    payload: object, *, dialect: str, dimensions: int, count: int
-) -> tuple[tuple[tuple[float, ...], ...], dict[str, int] | None]:
-    """Read ``count`` vectors, and any usage the provider reported, from one response."""
-    if not isinstance(payload, dict):
-        raise AuxiliaryModelError("unsupported_response_shape")
-    usage = _embedding_usage(payload, dialect=dialect)
-    return _embedding_vectors(payload, dialect=dialect, dimensions=dimensions, count=count), usage
-
-
 def parse_embedding_response(
     payload: object, *, dialect: str, dimensions: int
 ) -> tuple[tuple[float, ...], dict[str, int] | None]:

@@ -88,8 +88,6 @@ COMMON_SECRET_PATTERNS: dict[str, re.Pattern[str]] = {
     ),
 }
 
-COMMON_SECRET_PATTERN_VALUES: tuple[re.Pattern[str], ...] = tuple(COMMON_SECRET_PATTERNS.values())
-
 #: What follows a credential word without being a credential, kept narrow on purpose: a password can be any
 #: word in any script, so only what cannot be one is let through.  Every message that said
 #: ``def login(user: str, password: str)``, ``api_key: <your-api-key>`` or "the password is required" was refused
