@@ -392,8 +392,9 @@ def test_an_item_with_evidence_from_several_entries_names_each_once(tmp_path):
 # --- writers in separate processes take turns ----------------------------------------------
 
 
-def _busy_for(monkeypatch, attempts):
-    """Another process holds the writer lease for the next ``attempts`` writable opens."""
+def _busy_for(monkeypatch, attempts, times=None):
+    """Another process holds the writer lease for the next ``attempts`` writable opens; ``times`` gets when each
+    writable open was tried."""
     from scope_recall.core import storage as module
     from scope_recall.core.writer_lease import TruthWriterBusyError
 
@@ -402,6 +403,8 @@ def _busy_for(monkeypatch, attempts):
     def connect(path, *, mode, **kwargs):
         if mode != "ro":
             calls.append(mode)
+            if times is not None:
+                times.append(time.monotonic())
             if attempts is None or len(calls) <= attempts:
                 raise TruthWriterBusyError(role="truth_connection", scope="other_process")
         return real(path, mode=mode, **kwargs)
@@ -414,11 +417,13 @@ def test_a_writer_waits_for_another_process_s_turn_to_end(monkeypatch, shared):
     """Soak of 2026-09-22: three entries and a worker, one capture in ten failed at once on a lease
     released milliseconds later, and waited in memory for a retry the process might never reach."""
     storage, binding = shared
-    calls = _busy_for(monkeypatch, 3)
-    started = time.monotonic()
+    times: list[float] = []
+    calls = _busy_for(monkeypatch, 3, times)
     saved = put(storage, shared_context(binding, "tianshu"), "TEST-turns/1")
     assert saved.disposition == "inserted" and len(calls) == 4
-    assert time.monotonic() - started < 0.5
+    # The lease's polls (10 ms apart), not the open's one-second timeout: from the first refused open to the one that
+    # succeeded, without the write's own time.
+    assert times[-1] - times[0] < 0.5
 
 
 def test_a_writer_gives_up_when_the_turn_outlasts_its_deadline(monkeypatch, shared):

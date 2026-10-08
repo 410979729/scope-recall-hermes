@@ -1227,8 +1227,9 @@ def _hook_entry(monkeypatch, raw, client):
     return hook_entry.main(["--home", str(client), "--host", "claude-code"])
 
 
-def _counted(endpoint, monkeypatch, *, delay=0.0):
-    """Count the recalls the server runs; ``delay`` keeps each one waiting that long first."""
+def _counted(endpoint, monkeypatch, *, delay=0.0, hold=None, finished=None):
+    """Count the recalls the server runs; ``delay`` keeps each one waiting that long first, ``hold`` (an event) until
+    the test sets it, at most a minute, and ``finished`` gets each prompt whose recall has ended."""
     import time
 
     calls = []
@@ -1237,7 +1238,13 @@ def _counted(endpoint, monkeypatch, *, delay=0.0):
     def recall(request, **kwargs):
         calls.append(request["payload"].get("prompt"))
         time.sleep(delay)
-        return real(request, **kwargs)
+        if hold is not None:
+            hold.wait(60.0)
+        try:
+            return real(request, **kwargs)
+        finally:
+            if finished is not None:
+                finished.append(request["payload"].get("prompt"))
 
     monkeypatch.setattr(endpoint, "recall", recall)
     return calls
@@ -1289,19 +1296,21 @@ def test_a_late_answer_leaves_the_prompt_stored_once(resident, small_reserve, mo
     """The first version had the server store the prompt too: one that answered after its hook stopped waiting left
     the prompt stored twice.  The server now only recalls, and the hook recalls itself; while its late recall runs, the
     server tells the next prompt at once that it is busy."""
-    import time
+    import threading
 
     root, client, endpoint = resident
-    calls = _counted(endpoint, monkeypatch, delay=3.0)
+    release, finished = threading.Event(), []
+    calls = _counted(endpoint, monkeypatch, hold=release, finished=finished)
     raw = json.dumps(_prompt("TEST 常驻进程答得太晚。", prompt_id="TEST-prompt-late")).encode()
     assert _hook_entry(monkeypatch, raw, client) == 0
     assert "CODEX_RECALL_RESIDENT:late" in capsys.readouterr().err
-    time.sleep(0.5)  # past the time the hook gave its server
+    assert _eventually(endpoint._stuck), "past the time the hook gave its server"
     raw = json.dumps(_prompt("TEST 下一句不再等它。", prompt_id="TEST-prompt-after-late")).encode()
     assert _hook_entry(monkeypatch, raw, client) == 0
     assert "CODEX_RECALL_RESIDENT:busy" in capsys.readouterr().err and endpoint.path.exists()
     assert calls == ["TEST 常驻进程答得太晚。"], "later prompts go past it"
-    time.sleep(3.0)  # the server's late recall ends
+    release.set()
+    assert _eventually(lambda: finished), "the server's late recall ends"
     assert sorted(_user_rows(root)) == [("TEST 下一句不再等它。",), ("TEST 常驻进程答得太晚。",)]
 
 
@@ -1873,7 +1882,7 @@ def test_a_server_answer_without_its_vector_search_gives_way_to_the_hook_s_own(
         )
 
 
-def test_a_hook_whose_own_recall_went_without_vectors_waits_for_its_server(resident, monkeypatch, capsys):
+def test_a_hook_whose_own_recall_went_without_vectors_waits_for_its_server(resident, ample_budget, monkeypatch, capsys):
     """Recalling alongside, the hook stopped waiting the moment its own recall was done, dropped an answer that came in
     the time it had given the server, and called the server late (review of rc11).  A hook whose own recall had no
     vector search waits until its own time is up; one whose own had it does not."""
@@ -1882,9 +1891,9 @@ def test_a_hook_whose_own_recall_went_without_vectors_waits_for_its_server(resid
     from scope_recall.adapters.clients import handler as handler_module
 
     _root, client, endpoint = resident
-    monkeypatch.setattr(
-        "scope_recall.adapters.clients.prompt_recall._LOCAL_RECALL_RESERVE_S", 5.0
-    )  # alongside from the start
+    # Alongside from the start: the reserve is more than the whole budget, which is ample so that a slow runner's
+    # write of the prompt leaves the server its time.
+    monkeypatch.setattr("scope_recall.adapters.clients.prompt_recall._LOCAL_RECALL_RESERVE_S", 60.0)
     monkeypatch.setattr("scope_recall.adapters.clients.prompt_recall._RESIDENT_MIN_S", 0.5)
 
     def slow(request, **kwargs):
@@ -3602,7 +3611,7 @@ def test_a_workbuddy_record_s_own_user_messages_are_not_the_person_s(workbuddy):
     assert _wb_said(root, "user") == [("user", "human_direct", "/review a.py")]
 
 
-def test_a_workbuddy_message_queued_while_a_turn_ran_is_kept_from_the_record(workbuddy):
+def test_a_workbuddy_message_queued_while_a_turn_ran_is_kept_from_the_record(workbuddy, ample_budget):
     """Messages sent while a turn ran are merged into one, a ``<user_query>`` block each, and the prompt hook is handed
     only the last: the others are read from the record."""
     root, home, projects = workbuddy
@@ -3943,6 +3952,9 @@ def test_a_message_that_comes_while_a_turn_is_stored_is_kept_and_stored_with_the
     """The person's next message, and the next turn, come while the first turn's Stop runs: the store rewrites the spool
     from what it holds then, not from what it read before, and stores the rest when that turn ends."""
     root, home = dsh
+    # Each Stop is a process of its own; on a slow runner the 2 s a test entry's hooks get stored a line or two a Stop,
+    # and the turns' lines outlasted the harness's wait.  The entry's hooks get the 6 s a real entry's have.
+    (home / "scope-recall" / "runtime-config.json").write_text(json.dumps({"hook_processing_seconds": 6}), "utf-8")
     result = _run_plugin(
         {"python": sys.executable, "home": str(home), "spool": str(tmp_path / "TEST-spool"), "overlap": True}
     )

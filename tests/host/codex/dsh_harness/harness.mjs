@@ -79,13 +79,13 @@ if (scenario === 'aborted') {
 }
 await later
 
-// Wait for the plugin's store to finish (or give up after 40 s), then let the plugin dispose as dsh's shutdown does.
+// Wait for the plugin's store to finish (or give up after 100 s), then let the plugin dispose as dsh's shutdown does.
 const spool = config.spool
 const statusFile = `${config.home}/scope-recall/dsh-plugin-status.json`
 const status = () => (existsSync(statusFile) ? JSON.parse(readFileSync(statusFile, 'utf8')) : null)
 const ignore = new Set(config.ignore ?? [])
 const pending = () => existsSync(spool) && readdirSync(spool).some((name) => name.endsWith('.jsonl') && !ignore.has(name))
-const deadline = Date.now() + (config.expectBacklog ? config.waitMs ?? 4_000 : 40_000)
+const deadline = Date.now() + (config.expectBacklog ? config.waitMs ?? 4_000 : 100_000)
 const waiting = () => {
   if (!config.expectBacklog) return pending()
   if (!config.waitStatus) return true

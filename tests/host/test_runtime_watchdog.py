@@ -65,14 +65,11 @@ def test_owned_watchdog_kills_real_child_tree_after_abrupt_parent_exit(tmp_path:
         parent.stdin.write(b"\x01")
         parent.stdin.close()
         deadline = time.monotonic() + 5.0
-        while not pid_file.exists() and time.monotonic() < deadline:
-            time.sleep(0.02)
-        assert pid_file.exists()
-        child_pid = int(pid_file.read_text(encoding="ascii"))
-        deadline = time.monotonic() + 5.0
         while parent.poll() is None and time.monotonic() < deadline:
             time.sleep(0.02)
         assert parent.poll() == 17
+        # The parent wrote the child's pid before it exited, so the file holds all of it now.
+        child_pid = int(pid_file.read_text(encoding="ascii"))
         _kill_tree(parent, job)
         assert parent.poll() is not None
         deadline = time.monotonic() + 5.0
