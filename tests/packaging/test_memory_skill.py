@@ -174,7 +174,9 @@ def test_an_agent_s_edit_of_a_skill_stays_when_the_package_did_not_change_it(tmp
     recorded = {entry["path"]: entry["sha256"] for entry in receipt["files"]}
     import hashlib
 
-    assert recorded[install_common._norm(skill)] == hashlib.sha256(packaged).hexdigest(), "the package's digest"
+    assert recorded[install_common.normalized_path(skill)] == hashlib.sha256(packaged).hexdigest(), (
+        "the package's digest"
+    )
     again = plan_install(**arguments)
     assert not again.conflicts and [c.action for c in again.changes if c.path == str(skill)] == ["keep"]
 

@@ -15,17 +15,17 @@ from .install_common import (
     HostChoice,
     InstallError,
     InstallPlan,
-    _json_dump,
-    _norm,
-    _reject_symlink_chain,
-    _validate_host,
-    _within,
+    json_dump,
+    normalized_path,
+    reject_symlink_chain,
+    validate_host,
+    within,
 )
 
 RECEIPT_SCHEMA = "scope-recall.install-receipt.v1"
 
 
-def _receipt_path(instance_root: Path) -> Path:
+def receipt_file(instance_root: Path) -> Path:
     return instance_root / RECEIPT_FILENAME
 
 
@@ -43,8 +43,8 @@ def _verify_receipt_digest(payload: dict[str, Any]) -> None:
         raise InstallError("receipt digest mismatch")
 
 
-def _load_receipt(instance_root: Path) -> dict[str, Any] | None:
-    path = _receipt_path(instance_root)
+def load_receipt(instance_root: Path) -> dict[str, Any] | None:
+    path = receipt_file(instance_root)
     if not path.is_file():
         return None
     try:
@@ -67,8 +67,8 @@ def _owned_files_from_receipt(
 ) -> dict[str, str]:
     """Map each receipt path to its recorded digest, refusing paths outside the install roots."""
     roots = {
-        "plugin": (_norm(plugin_dir), "receipt plugin path outside target_plugin_dir"),
-        "instance": (_norm(instance_root), "receipt instance path outside instance_root"),
+        "plugin": (normalized_path(plugin_dir), "receipt plugin path outside target_plugin_dir"),
+        "instance": (normalized_path(instance_root), "receipt instance path outside instance_root"),
     }
     files = receipt.get("files")
     if not isinstance(files, list):
@@ -86,13 +86,13 @@ def _owned_files_from_receipt(
         path = Path(path_text)
         if not path.is_absolute():
             raise InstallError("receipt file path must be absolute")
-        _reject_symlink_chain(path)
-        norm = _norm(path)
+        reject_symlink_chain(path)
+        norm = normalized_path(path)
         role = item.get("role")
         if type(role) is not str or role not in roots:
             raise InstallError("receipt file role invalid")
         root_norm, message = roots[role]
-        if not _within(norm, root_norm):
+        if not within(norm, root_norm):
             raise InstallError(message)
         if norm in owned and owned[norm] != sha:
             raise InstallError("receipt duplicate path")
@@ -100,25 +100,25 @@ def _owned_files_from_receipt(
     return owned
 
 
-def _validate_receipt_binding(
+def validate_receipt_binding(
     receipt: dict[str, Any],
     *,
     host: HostChoice,
     instance_root: Path,
     target_plugin_dir: Path,
 ) -> dict[str, str]:
-    if _validate_host(str(receipt.get("host") or "")) != host:
+    if validate_host(str(receipt.get("host") or "")) != host:
         raise InstallError("existing receipt host mismatch")
-    if _norm(instance_root) != _norm(Path(str(receipt.get("instance_root") or ""))):
+    if normalized_path(instance_root) != normalized_path(Path(str(receipt.get("instance_root") or ""))):
         raise InstallError("existing receipt instance_root mismatch")
-    if _norm(target_plugin_dir) != _norm(Path(str(receipt.get("target_plugin_dir") or ""))):
+    if normalized_path(target_plugin_dir) != normalized_path(Path(str(receipt.get("target_plugin_dir") or ""))):
         raise InstallError("existing receipt target_plugin_dir mismatch")
     if not str(receipt.get("installation_id") or "").strip():
         raise InstallError("existing receipt installation_id missing")
     return _owned_files_from_receipt(receipt, plugin_dir=target_plugin_dir, instance_root=instance_root)
 
 
-def _write_receipt(
+def write_receipt(
     plan: InstallPlan,
     *,
     installation_id: str,
@@ -129,11 +129,11 @@ def _write_receipt(
     """Record every written wrapper plus the adapter-owned files an uninstall must recognize.  A skill file the
     install kept as an agent edited it (``kept``) is recorded with the package's digest, so that the next install
     still finds it edited and compares it with the package again, instead of writing over the edit."""
-    instance_norm = _norm(plan.instance_root)
+    instance_norm = normalized_path(plan.instance_root)
     files: list[dict[str, str]] = []
     seen: set[str] = set()
     for path in [Path(text) for text in written]:
-        norm = _norm(path)
+        norm = normalized_path(path)
         role = "instance" if norm.startswith(instance_norm + os.sep) else "plugin"
         files.append({"path": norm, "sha256": sha256(path), "role": role})
         seen.add(norm)
@@ -148,7 +148,7 @@ def _write_receipt(
             )
             seen.add(norm)
     for path in tracked:
-        norm = _norm(path)
+        norm = normalized_path(path)
         if path.is_file() and norm not in seen:
             files.append({"path": norm, "sha256": sha256(path), "role": "instance"})
             seen.add(norm)
@@ -159,17 +159,17 @@ def _write_receipt(
         "host": plan.host,
         "installation_id": installation_id,
         "agent_id": plan.agent_id,
-        "target_plugin_dir": _norm(plan.target_plugin_dir),
-        "instance_root": _norm(plan.instance_root),
-        "project_root": _norm(plan.project_root) if plan.project_root is not None else None,
-        "python_executable": _norm(plan.python_executable),
+        "target_plugin_dir": normalized_path(plan.target_plugin_dir),
+        "instance_root": normalized_path(plan.instance_root),
+        "project_root": normalized_path(plan.project_root) if plan.project_root is not None else None,
+        "python_executable": normalized_path(plan.python_executable),
         "files": files,
     }
     if plan.agent_workspace:
         body["agent_workspace"] = plan.agent_workspace
     if plan.env_file is not None:
-        body["env_file"] = _norm(plan.env_file)
+        body["env_file"] = normalized_path(plan.env_file)
     body["receipt_sha256"] = _receipt_digest(body)
-    path = _receipt_path(plan.instance_root)
-    atomic_write(path, _json_dump(body))
+    path = receipt_file(plan.instance_root)
+    atomic_write(path, json_dump(body))
     return path

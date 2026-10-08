@@ -12,7 +12,7 @@ from typing import Any, Callable
 from .backup import BackupError
 from .doctor import run_doctor
 from .install import InstallError, apply_install, apply_uninstall, plan_install, plan_uninstall
-from .install_common import _absolute
+from .install_common import absolute
 from .install_hermes import LOCAL_PLATFORM_CHOICES
 from .rollback import RollbackError
 
@@ -22,7 +22,7 @@ def _emit(payload: dict) -> None:
 
 
 def _path(value: str, field: str) -> Path:
-    return _absolute(value, field, error=SystemExit).resolve()
+    return absolute(value, field, error=SystemExit).resolve()
 
 
 def _optional_path(value: str | None, field: str) -> Path | None:
@@ -32,7 +32,7 @@ def _optional_path(value: str | None, field: str) -> Path | None:
 def _interpreter(value: str | None, field: str) -> Path | None:
     """An interpreter path as given, never resolved: a POSIX venv's ``bin/python`` is a symlink to the base
     interpreter, which cannot import this package (#87, #141).  The installer and the doctor check the chain."""
-    return _absolute(value, field, error=SystemExit) if value else None
+    return absolute(value, field, error=SystemExit) if value else None
 
 
 # Sub-commands with their own parser: the first token routes to them before the

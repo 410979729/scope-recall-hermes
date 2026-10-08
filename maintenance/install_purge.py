@@ -10,7 +10,7 @@ import sqlite3
 from types import ModuleType
 from typing import Any, Iterator
 
-from .install_common import BACKUP_DIRNAME, InstallError, UninstallPlan, _norm, _reject_symlink_chain
+from .install_common import BACKUP_DIRNAME, InstallError, UninstallPlan, normalized_path, reject_symlink_chain
 
 
 @dataclass(frozen=True)
@@ -32,7 +32,7 @@ def _busy(exc: sqlite3.OperationalError) -> bool:
 
 
 @contextmanager
-def _purge_guard(data_directory: Path) -> Iterator[None]:
+def purge_guard(data_directory: Path) -> Iterator[None]:
     """Hold the cooperative writer and physical-retained locks for purge."""
     from scope_recall.core.file_lock import advisory_file_lock
     from scope_recall.core.writer_lease import holding_truth_writer_lease, truth_writer_process_snapshot
@@ -62,17 +62,17 @@ def _purge_guard(data_directory: Path) -> Iterator[None]:
         raise
 
 
-def _purge_identity(host: ModuleType, plan: UninstallPlan, receipt: dict[str, Any]) -> tuple[Path, str, str, Path]:
+def purge_identity(host: ModuleType, plan: UninstallPlan, receipt: dict[str, Any]) -> tuple[Path, str, str, Path]:
     """Resolve the data directory only through the signed install identity."""
     data_directory, installation_id, agent_id, config_path = host.purge_identity(plan.instance_root)
-    if _norm(data_directory) != _norm(host.data_dir(plan.instance_root).resolve()):
+    if normalized_path(data_directory) != normalized_path(host.data_dir(plan.instance_root).resolve()):
         raise InstallError("purge_refused:data_directory_binding")
     if str(receipt.get("installation_id") or "") != installation_id:
         raise InstallError("purge_refused:installation_binding")
     if str(receipt.get("agent_id") or "") != agent_id:
         raise InstallError("purge_refused:agent_binding")
-    _reject_symlink_chain(plan.instance_root)
-    _reject_symlink_chain(data_directory)
+    reject_symlink_chain(plan.instance_root)
+    reject_symlink_chain(data_directory)
     if config_path.is_symlink() or not config_path.is_file():
         raise InstallError("purge_refused:installation_manifest")
     return data_directory, installation_id, agent_id, config_path
@@ -80,14 +80,14 @@ def _purge_identity(host: ModuleType, plan: UninstallPlan, receipt: dict[str, An
 
 def _safe_owned_files(root: Path, *, label: str) -> tuple[Path, ...]:
     """Return regular files below an owned directory, rejecting links."""
-    _reject_symlink_chain(root)
+    reject_symlink_chain(root)
     if not root.exists():
         return ()
     if not root.is_dir():
         raise InstallError(f"purge_refused:{label}_not_directory")
     files: list[Path] = []
     for path in sorted(root.rglob("*")):
-        _reject_symlink_chain(path)
+        reject_symlink_chain(path)
         if path.is_dir():
             continue
         if not path.is_file():
@@ -110,7 +110,7 @@ def _expected_retained(db_path: Path, data_directory: Path, *, installation_id: 
         if meta is None or (
             str(meta["agent_id"]) != agent_id
             or str(meta["installation_id"]) != installation_id
-            or _norm(Path(str(meta["data_directory"]))) != _norm(data_directory)
+            or normalized_path(Path(str(meta["data_directory"]))) != normalized_path(data_directory)
         ):
             raise InstallError("purge_refused:database_identity")
         rows = conn.execute("SELECT blob_json FROM artifact_versions WHERE blob_json IS NOT NULL").fetchall()
@@ -144,12 +144,12 @@ def _expected_retained(db_path: Path, data_directory: Path, *, installation_id: 
     return expected
 
 
-def _purge_inventory(host: ModuleType, plan: UninstallPlan, receipt: dict[str, Any]) -> _PurgeInventory:
-    data_directory, installation_id, agent_id, config_path = _purge_identity(host, plan, receipt)
+def purge_inventory(host: ModuleType, plan: UninstallPlan, receipt: dict[str, Any]) -> _PurgeInventory:
+    data_directory, installation_id, agent_id, config_path = purge_identity(host, plan, receipt)
     db_path = data_directory / "memory.sqlite3"
     if db_path.is_symlink() or not db_path.is_file():
         raise InstallError("purge_refused:database_missing")
-    _reject_symlink_chain(db_path)
+    reject_symlink_chain(db_path)
     if (data_directory / "restore-required.json").exists():
         raise InstallError("purge_refused:restore_pending")
 
@@ -164,7 +164,7 @@ def _purge_inventory(host: ModuleType, plan: UninstallPlan, receipt: dict[str, A
     files = [config_path.resolve(), db_path.resolve()]
     for sidecar in (db_path.with_name(db_path.name + "-wal"), db_path.with_name(db_path.name + "-shm")):
         if sidecar.exists():
-            _reject_symlink_chain(sidecar)
+            reject_symlink_chain(sidecar)
             if not sidecar.is_file():
                 raise InstallError("purge_refused:database_sidecar")
             files.append(sidecar.resolve())
@@ -173,7 +173,7 @@ def _purge_inventory(host: ModuleType, plan: UninstallPlan, receipt: dict[str, A
     backups: tuple[Path, ...] = ()
     backup_root = plan.instance_root / BACKUP_DIRNAME
     if backup_root.exists():
-        _reject_symlink_chain(backup_root)
+        reject_symlink_chain(backup_root)
         backups = (backup_root.resolve(),)
     return _PurgeInventory(
         data_directory=data_directory,
@@ -186,23 +186,23 @@ def _purge_inventory(host: ModuleType, plan: UninstallPlan, receipt: dict[str, A
     )
 
 
-def _purge_owned_data(host: ModuleType, plan: UninstallPlan, receipt: dict[str, Any]) -> tuple[list[str], list[str]]:
-    data_directory, _installation_id, _agent_id, _config_path = _purge_identity(host, plan, receipt)
-    with _purge_guard(data_directory):
-        inventory = _purge_inventory(host, plan, receipt)
+def purge_owned_data(host: ModuleType, plan: UninstallPlan, receipt: dict[str, Any]) -> tuple[list[str], list[str]]:
+    data_directory, _installation_id, _agent_id, _config_path = purge_identity(host, plan, receipt)
+    with purge_guard(data_directory):
+        inventory = purge_inventory(host, plan, receipt)
         removed: list[str] = []
         # Delete only the inventory under the verified Core data directory;
         # instance_root siblings (host sessions/config/backups) are untouched.
         for path in inventory.files:
-            _reject_symlink_chain(path)
+            reject_symlink_chain(path)
             if path.is_file():
                 path.unlink()
                 removed.append(str(path))
         for directory in (data_directory / "retained", data_directory / "vectors"):
-            _reject_symlink_chain(directory)
+            reject_symlink_chain(directory)
             if directory.is_dir() and not directory.is_symlink():
                 for child in sorted(directory.rglob("*"), reverse=True):
-                    _reject_symlink_chain(child)
+                    reject_symlink_chain(child)
                     if child.is_dir() and not child.is_symlink():
                         with suppress(OSError):
                             child.rmdir()

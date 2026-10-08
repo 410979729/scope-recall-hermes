@@ -30,7 +30,7 @@ from typing import Any, Callable, Mapping
 from scope_recall.adapters.clients.config import CodexConfigError, load_shared_client
 from scope_recall.adapters.hermes.installation import attachment_path
 
-from .install_common import RUNTIME_CONFIG_LIMIT, InstallError, InstallPlan, _reject_symlink_chain, _require_file
+from .install_common import RUNTIME_CONFIG_LIMIT, InstallError, InstallPlan, reject_symlink_chain, require_file
 
 HOST = "workbuddy"
 SETTINGS_FILENAME = "settings.json"
@@ -99,7 +99,7 @@ def validate_options(agent_workspace: str | None, env_file: Path | str | None) -
         raise InstallError("agent_workspace is not used for WorkBuddy installation")
     if env_file is None or str(env_file).strip() == "":
         return "", None
-    return "", _require_file(Path(env_file), "env_file")
+    return "", require_file(Path(env_file), "env_file")
 
 
 def validate_local_platforms(values: object) -> tuple[str, ...]:
@@ -219,7 +219,7 @@ def _this_server(instance_root: Path) -> Callable[[object], bool]:
 
 def read_config(path: Path) -> tuple[dict[str, Any], bytes | None]:
     """One of WorkBuddy's JSON files as an object, and the bytes it holds (None: there is no such file yet)."""
-    _reject_symlink_chain(path)
+    reject_symlink_chain(path)
     if not path.exists():
         return {}, None
     if not path.is_file() or path.stat().st_size > RUNTIME_CONFIG_LIMIT:

@@ -18,7 +18,7 @@ from typing import Any
 from ..adapters.clients.remote_client import HOOK_TIMEOUTS, RemoteClientError, _absolute, load_client_config
 from . import install_workbuddy as workbuddy
 from .install_claude_code import _SHELL_WORD
-from .install_common import SKILLS, InstallError, _manifest_version
+from .install_common import SKILLS, InstallError, manifest_version
 
 
 def _hook_argv(config: dict[str, Any]) -> list[str]:
@@ -65,7 +65,7 @@ def plugin_files(config: dict[str, Any], plugin_dir: Path) -> dict[Path, str]:
             plugin_dir / ".claude-plugin" / "plugin.json": dump(
                 {
                     "name": plugin_dir.name,
-                    "version": _manifest_version(),
+                    "version": manifest_version(),
                     "author": {"name": "Local developer"},
                     "description": "Scope Recall: a shared memory store on another machine, in Claude Code",
                     "hooks": "./hooks/hooks.json",
@@ -98,7 +98,7 @@ def plugin_files(config: dict[str, Any], plugin_dir: Path) -> dict[Path, str]:
         plugin_dir / ".codex-plugin" / "plugin.json": dump(
             {
                 "name": plugin_dir.name,
-                "version": _manifest_version().replace("rc", "-rc."),
+                "version": manifest_version().replace("rc", "-rc."),
                 "author": {"name": "Local developer"},
                 "mcpServers": "./.mcp.json",
                 "description": "Scope Recall: a shared memory store on another machine, in Codex",

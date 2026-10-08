@@ -30,8 +30,8 @@ from .install_common import (
     SKILLS,
     InstallError,
     InstallPlan,
-    _reject_symlink_chain,
-    _validate_identifier,
+    reject_symlink_chain,
+    validate_identifier,
 )
 
 # Hermes 0.21+ ``_memory_provider_init_kwargs`` hardcodes agent_workspace="hermes".
@@ -74,7 +74,7 @@ def validate_options(agent_workspace: str | None, env_file: Path | str | None) -
     """Hermes processes inherit the gateway environment and must not carry a
     second credential path; the audience workspace defaults to the host value."""
     workspace = "" if agent_workspace is None else str(agent_workspace).strip()
-    workspace = _validate_identifier(workspace or DEFAULT_AGENT_WORKSPACE, "agent_workspace")
+    workspace = validate_identifier(workspace or DEFAULT_AGENT_WORKSPACE, "agent_workspace")
     if env_file is not None and str(env_file).strip() != "":
         raise InstallError("env_file is only used for Codex installation")
     return workspace, None
@@ -224,6 +224,6 @@ def purge_identity(instance_root: Path) -> tuple[Path, str, str, Path]:
     if attachment_path(instance_root).exists():
         raise InstallError("an entry of a shared store is never purged from its home; detach it instead")
     manifest = load_installation_manifest(instance_root)
-    _reject_symlink_chain(manifest.data_directory)
+    reject_symlink_chain(manifest.data_directory)
     data_directory = manifest.data_directory.resolve()
     return data_directory, manifest.installation_id, manifest.agent_id, data_directory / "installation.json"

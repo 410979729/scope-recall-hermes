@@ -19,7 +19,7 @@ from typing import Any
 from scope_recall.adapters.clients.config import CodexConfigError, load_shared_client
 from scope_recall.adapters.hermes.installation import attachment_path
 
-from .install_common import SKILLS, InstallError, InstallPlan, _json_dump, _manifest_version, _require_file
+from .install_common import SKILLS, InstallError, InstallPlan, json_dump, manifest_version, require_file
 
 HOST = "claude-code"
 #: The events recorded, and how long Claude Code waits for each.  A prompt waits for its
@@ -59,7 +59,7 @@ def validate_options(agent_workspace: str | None, env_file: Path | str | None) -
         raise InstallError("agent_workspace is not used for Claude Code installation")
     if env_file is None or str(env_file).strip() == "":
         return "", None
-    return "", _require_file(Path(env_file), "env_file")
+    return "", require_file(Path(env_file), "env_file")
 
 
 def validate_local_platforms(values: object) -> tuple[str, ...]:
@@ -132,7 +132,7 @@ def _mcp_json(plan: InstallPlan) -> dict[str, Any]:
 def _plugin_json(plugin_name: str) -> dict[str, Any]:
     return {
         "name": plugin_name,
-        "version": _manifest_version(),
+        "version": manifest_version(),
         "description": "Scope Recall: this machine's shared memory store, in Claude Code",
         "author": {"name": "Local developer"},
         "hooks": "./hooks/hooks.json",
@@ -142,11 +142,9 @@ def _plugin_json(plugin_name: str) -> dict[str, Any]:
 
 def planned_files(plan: InstallPlan) -> dict[Path, str | bytes]:
     return {
-        plan.target_plugin_dir / ".claude-plugin" / "plugin.json": _json_dump(
-            _plugin_json(plan.target_plugin_dir.name)
-        ),
-        plan.target_plugin_dir / "hooks" / "hooks.json": _json_dump(_hooks_json(plan)),
-        plan.target_plugin_dir / ".mcp.json": _json_dump(_mcp_json(plan)),
+        plan.target_plugin_dir / ".claude-plugin" / "plugin.json": json_dump(_plugin_json(plan.target_plugin_dir.name)),
+        plan.target_plugin_dir / "hooks" / "hooks.json": json_dump(_hooks_json(plan)),
+        plan.target_plugin_dir / ".mcp.json": json_dump(_mcp_json(plan)),
         **{
             plan.target_plugin_dir / "skills" / name / "SKILL.md": SKILLS[name].read_text(encoding="utf-8")
             for name in CLAUDE_CODE_SKILLS

@@ -21,7 +21,7 @@ import zipfile
 
 from ..core.file_lock import advisory_file_lock
 from .backup import atomic_json as _write_receipt, safe_path, sha256
-from .install_common import _safe_interpreter
+from .install_common import safe_interpreter
 
 
 class PackageUpgradeError(RuntimeError):
@@ -113,7 +113,7 @@ def replace_package(python, wheel, backup, *, source_quiesced=False, uv=None) ->
     launcher = Path(python).expanduser()
     if not launcher.is_absolute():
         launcher = Path.cwd() / launcher
-    _safe_interpreter(launcher, error_type=PackageUpgradeError)
+    safe_interpreter(launcher, error_type=PackageUpgradeError)
     python = launcher
     wheel = safe_path(wheel, must_exist=True, error_type=PackageUpgradeError)
     backup = safe_path(backup, error_type=PackageUpgradeError)

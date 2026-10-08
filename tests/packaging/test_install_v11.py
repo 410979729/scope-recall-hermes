@@ -825,20 +825,20 @@ def test_hermes_existing_home_coexistence_upgrade_uninstall_purge(tmp_path):
     receipt = json.loads((home / ".scope-recall-install-receipt.json").read_text(encoding="utf-8"))
     owned_paths = [item["path"] for item in receipt.get("files", [])]
 
-    def _norm(path: Path) -> str:
+    def normalized_path(path: Path) -> str:
         return os.path.normcase(os.path.abspath(os.fspath(path.resolve())))
 
     for path in sentinels:
-        assert _norm(Path(path)) not in owned_paths
-    assert _norm(home) not in owned_paths
-    namespace = _norm(home / "scope-recall")
-    plugin_norm = _norm(plugin_dir)
+        assert normalized_path(Path(path)) not in owned_paths
+    assert normalized_path(home) not in owned_paths
+    namespace = normalized_path(home / "scope-recall")
+    plugin_norm = normalized_path(plugin_dir)
     # The Hermes skills are the owned files that deliberately live outside the
     # namespace: ``maintenance/install.py`` writes them to ``instance_root/skills``
     # and the uninstall path already carves out exactly these paths.
     from scope_recall.maintenance.install_common import SKILLS
 
-    skills = {_norm(home / "skills" / name / "SKILL.md") for name in SKILLS}
+    skills = {normalized_path(home / "skills" / name / "SKILL.md") for name in SKILLS}
     assert owned_paths and all(
         item.startswith(namespace + os.sep)
         or item == namespace
@@ -1264,7 +1264,7 @@ def test_local_platform_is_approved_on_a_fresh_install_and_binds_a_session_that_
 def test_local_platform_is_added_to_an_existing_installation_in_place_and_once(tmp_path, capsys):
     from scope_recall.adapters.hermes import bind_hermes_identity
     from scope_recall.maintenance import cli as maintenance_cli
-    from scope_recall.maintenance.install_common import _norm
+    from scope_recall.maintenance.install_common import normalized_path
 
     instance_root = (tmp_path / "instance").resolve()
     manifest_path = instance_root / "scope-recall" / "installation.json"
@@ -1308,7 +1308,9 @@ def test_local_platform_is_added_to_an_existing_installation_in_place_and_once(t
     assert len(kept) == 1 and json.loads(kept[0].read_text(encoding="utf-8")) == before
     receipt = json.loads((instance_root / ".scope-recall-install-receipt.json").read_text(encoding="utf-8"))
     tracked = {item["path"]: item["sha256"] for item in receipt["files"]}
-    assert tracked[_norm(manifest_path)] == _sha256_file(manifest_path), "the receipt tracks the manifest as it now is"
+    assert tracked[normalized_path(manifest_path)] == _sha256_file(manifest_path), (
+        "the receipt tracks the manifest as it now is"
+    )
     session = dict(
         hermes_home=str(instance_root), agent_identity="default", agent_workspace="hermes", agent_context="primary"
     )
@@ -1335,7 +1337,7 @@ def test_local_platform_approval_is_undone_when_the_install_fails_after_it(tmp_p
     def fail(*_args, **_kwargs):
         raise OSError("TEST receipt cannot be written")
 
-    monkeypatch.setattr(install_module, "_write_receipt", fail)
+    monkeypatch.setattr(install_module, "write_receipt", fail)
     with pytest.raises(OSError, match="TEST receipt"):
         maintenance_cli.main(_hermes_cli(tmp_path, "apply-install", "--local-platform", "desktop"))
 

@@ -21,17 +21,17 @@ from .install_common import (
     PlannedChange,
     UninstallPlan,
     UninstallResult,
-    _norm,
-    _require_absolute,
-    _require_interpreter,
-    _validate_agent_id,
-    _validate_host,
-    _validate_plugin_name,
-    _validate_roots,
-    _within,
+    normalized_path,
+    require_absolute,
+    require_interpreter,
+    validate_agent_id,
+    validate_host,
+    validate_plugin_name,
+    validate_roots,
+    within,
 )
-from .install_purge import _purge_guard, _purge_identity, _purge_inventory, _purge_owned_data
-from .install_receipt import _load_receipt, _receipt_path, _validate_receipt_binding, _write_receipt
+from .install_purge import purge_guard, purge_identity, purge_inventory, purge_owned_data
+from .install_receipt import load_receipt, receipt_file, validate_receipt_binding, write_receipt
 
 __all__ = [
     "PACKAGE_VERSION",
@@ -67,7 +67,7 @@ def _instance_files(host: ModuleType, instance_root: Path) -> tuple[Path, Path]:
 def _foreign_plugin_entries(target: Path, keep: set[str]) -> list[str]:
     if not target.exists():
         return []
-    return [str(path) for path in sorted(target.rglob("*")) if not path.is_dir() and _norm(path) not in keep]
+    return [str(path) for path in sorted(target.rglob("*")) if not path.is_dir() and normalized_path(path) not in keep]
 
 
 def _written_digest(content: str | bytes) -> str:
@@ -80,10 +80,10 @@ def _written_digest(content: str | bytes) -> str:
 
 def _backup_copy(path: Path, backup_root: Path, plan: InstallPlan | UninstallPlan) -> Path:
     """Copy a file the install is about to overwrite under plugin/, instance/ or other/."""
-    norm = _norm(path)
-    if norm.startswith(_norm(plan.target_plugin_dir) + os.sep):
+    norm = normalized_path(path)
+    if norm.startswith(normalized_path(plan.target_plugin_dir) + os.sep):
         rel = Path("plugin") / path.relative_to(plan.target_plugin_dir)
-    elif norm.startswith(_norm(plan.instance_root) + os.sep):
+    elif norm.startswith(normalized_path(plan.instance_root) + os.sep):
         rel = Path("instance") / path.relative_to(plan.instance_root)
     else:
         rel = Path("other") / path.name
@@ -107,13 +107,13 @@ def plan_install(
     local_platforms: tuple[str, ...] | list[str] = (),
     owner_logins: tuple[str, ...] | list[str] = (),
 ) -> InstallPlan:
-    host_choice = _validate_host(host)
+    host_choice = validate_host(host)
     adapter = _HOSTS[host_choice]
-    target = _require_absolute(Path(target_plugin_dir), "target_plugin_dir")
-    instance = _require_absolute(Path(instance_root), "instance_root")
-    project = _require_absolute(Path(project_root), "project_root") if project_root is not None else None
-    python = _require_interpreter(Path(python_executable), "python_executable")
-    agent = _validate_agent_id(agent_id)
+    target = require_absolute(Path(target_plugin_dir), "target_plugin_dir")
+    instance = require_absolute(Path(instance_root), "instance_root")
+    project = require_absolute(Path(project_root), "project_root") if project_root is not None else None
+    python = require_interpreter(Path(python_executable), "python_executable")
+    agent = validate_agent_id(agent_id)
     workspace, credentials = adapter.validate_options(agent_workspace, env_file)
     approvals = adapter.validate_local_platforms(local_platforms)
     logins = adapter.validate_owner_logins(owner_logins)
@@ -121,15 +121,15 @@ def plan_install(
         raise InstallError("test_mode must be a boolean")
     host_files = adapter.host_config_files(target)
     if not host_files:
-        _validate_plugin_name(target.name)
+        validate_plugin_name(target.name)
     roots = ((instance, "instance_root"), *(((project, "project_root"),) if project is not None else ()))
     home_plugin = adapter.home_plugin_dir(instance)
-    if home_plugin is not None and _norm(target) == _norm(home_plugin):
+    if home_plugin is not None and normalized_path(target) == normalized_path(home_plugin):
         # The one plugin directory a host reads from inside the home it serves; a project root that
         # overlapped it would overlap the home too.
-        _validate_roots(*roots)
+        validate_roots(*roots)
     else:
-        _validate_roots((target, "target_plugin_dir"), *roots)
+        validate_roots((target, "target_plugin_dir"), *roots)
 
     plan = InstallPlan(
         host=host_choice,
@@ -144,11 +144,11 @@ def plan_install(
         local_platforms=approvals,
         owner_logins=logins,
     )
-    receipt = _load_receipt(instance)
+    receipt = load_receipt(instance)
     owned: dict[str, str] = {}
     if receipt is not None:
         try:
-            owned = _validate_receipt_binding(
+            owned = validate_receipt_binding(
                 receipt, host=host_choice, instance_root=instance, target_plugin_dir=target
             )
         except InstallError as exc:
@@ -159,8 +159,8 @@ def plan_install(
                 plan.conflicts.append("existing receipt agent_workspace mismatch")
 
     planned = adapter.planned_files(plan)
-    target_norm = _norm(target)
-    keep = {_norm(path) for path in planned} | {norm for norm in owned if _within(norm, target_norm)}
+    target_norm = normalized_path(target)
+    keep = {normalized_path(path) for path in planned} | {norm for norm in owned if within(norm, target_norm)}
     # A host's own home holds the host's files; only a plugin directory is the installer's alone.
     for path in _foreign_plugin_entries(target, keep) if not host_files else ():
         plan.conflicts.append(f"unrelated plugin file: {path}")
@@ -196,7 +196,7 @@ def plan_install(
         plan.changes.append(PlannedChange("initialize", str(instance), "create empty instance via adapter helper"))
 
     for path in sorted(planned, key=str):
-        norm = _norm(path)
+        norm = normalized_path(path)
         if path.is_file():
             if norm not in owned:
                 plan.conflicts.append(f"no-receipt collision: {path}")
@@ -214,7 +214,7 @@ def plan_install(
                 plan.conflicts.append(f"edited prior file: {path}")
         plan.changes.append(PlannedChange("write", str(path), "install host wrapper artifact"))
     _plan_merges(adapter, plan, host_files)
-    plan.changes.append(PlannedChange("write", str(_receipt_path(instance)), "install receipt with digest"))
+    plan.changes.append(PlannedChange("write", str(receipt_file(instance)), "install receipt with digest"))
     if host_files:
         plan.changes.append(PlannedChange("restart", str(target), adapter.RESTART_NOTE))
 
@@ -315,11 +315,11 @@ def apply_install(plan: InstallPlan) -> InstallResult:
             installation_id = adapter.initialize_instance(plan)
             instance_initialized = True
 
-        prior_receipt = _receipt_path(plan.instance_root)
+        prior_receipt = receipt_file(plan.instance_root)
         if prior_receipt.is_file():
             backups.append(str(_backup_copy(prior_receipt, backup_root, plan)))
         for path, content in planned.items():
-            if _norm(path) in plan.kept:
+            if normalized_path(path) in plan.kept:
                 continue
             backup_path = _backup_copy(path, backup_root, plan) if path.is_file() else None
             if backup_path is not None:
@@ -340,7 +340,7 @@ def apply_install(plan: InstallPlan) -> InstallResult:
             merged.append(str(path))
             touched.append((path, backup_path))
 
-        receipt_path = _write_receipt(
+        receipt_path = write_receipt(
             plan, installation_id=installation_id, written=written, tracked=tracked, kept=plan.kept
         )
         written.append(str(receipt_path))
@@ -355,7 +355,7 @@ def apply_install(plan: InstallPlan) -> InstallResult:
             # names it so a later uninstall still recognizes those files.
             partial = [str(path) for path in tracked if path.is_file()]
             if partial and installation_id:
-                _write_receipt(plan, installation_id=installation_id, written=partial, tracked=tracked)
+                write_receipt(plan, installation_id=installation_id, written=partial, tracked=tracked)
         raise
 
     # A resident recall server runs the package it was started from: one of the installation this replaces (another
@@ -383,28 +383,28 @@ def plan_uninstall(
     target_plugin_dir: Path | str | None = None,
     purge: bool = False,
 ) -> UninstallPlan:
-    instance = _require_absolute(Path(instance_root), "instance_root")
-    receipt = _load_receipt(instance)
+    instance = require_absolute(Path(instance_root), "instance_root")
+    receipt = load_receipt(instance)
     if receipt is None:
         raise InstallError("install receipt is required for uninstall")
 
-    host = _validate_host(str(receipt.get("host") or ""))
+    host = validate_host(str(receipt.get("host") or ""))
     adapter = _HOSTS[host]
     if target_plugin_dir is None:
         target_plugin_dir = str(receipt.get("target_plugin_dir") or "")
-    target = _require_absolute(Path(target_plugin_dir), "target_plugin_dir")
+    target = require_absolute(Path(target_plugin_dir), "target_plugin_dir")
     plan = UninstallPlan(host=host, instance_root=instance, target_plugin_dir=target, retain_memory=True)
 
     try:
-        owned = _validate_receipt_binding(receipt, host=host, instance_root=instance, target_plugin_dir=target)
+        owned = validate_receipt_binding(receipt, host=host, instance_root=instance, target_plugin_dir=target)
     except InstallError as exc:
         plan.conflicts.append(str(exc))
         return plan
 
-    target_norm = _norm(target)
-    wrapper_norms = {_norm(path) for path in adapter.instance_wrapper_files(instance)}
+    target_norm = normalized_path(target)
+    wrapper_norms = {normalized_path(path) for path in adapter.instance_wrapper_files(instance)}
     for norm, expected in owned.items():
-        if not (_within(norm, target_norm) or norm in wrapper_norms):
+        if not (within(norm, target_norm) or norm in wrapper_norms):
             continue
         path = Path(norm)
         if not path.is_file():
@@ -425,9 +425,9 @@ def plan_uninstall(
             plan.conflicts.append("purge_refused: edited plugin files")
         else:
             try:
-                data_directory, _installation_id, _agent_id, _config_path = _purge_identity(adapter, plan, receipt)
-                with _purge_guard(data_directory):
-                    inventory = _purge_inventory(adapter, plan, receipt)
+                data_directory, _installation_id, _agent_id, _config_path = purge_identity(adapter, plan, receipt)
+                with purge_guard(data_directory):
+                    inventory = purge_inventory(adapter, plan, receipt)
             except InstallError as exc:
                 plan.conflicts.append(str(exc))
             else:
@@ -481,10 +481,10 @@ def apply_uninstall(plan: UninstallPlan, *, purge: bool = False) -> UninstallRes
     if purge:
         if not plan.purge_allowed:
             raise InstallError("purge_refused:plan_not_authorized")
-        receipt = _load_receipt(plan.instance_root)
+        receipt = load_receipt(plan.instance_root)
         if receipt is None:
             raise InstallError("install receipt is required for uninstall")
-        purged_paths, retained_backups = _purge_owned_data(adapter, plan, receipt)
+        purged_paths, retained_backups = purge_owned_data(adapter, plan, receipt)
 
     removed: list[str] = []
     for path_text in plan.files_to_remove:

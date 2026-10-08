@@ -26,10 +26,10 @@ from .install_common import (
     SKILLS,
     InstallError,
     InstallPlan,
-    _json_dump,
-    _manifest_version,
-    _reject_symlink_chain,
-    _require_file,
+    json_dump,
+    manifest_version,
+    reject_symlink_chain,
+    require_file,
 )
 
 CODEX_HOOK_EVENTS = frozenset({"SessionStart", "UserPromptSubmit", "PostToolUse", "Stop", "Interrupt", "SessionEnd"})
@@ -86,7 +86,7 @@ def validate_options(agent_workspace: str | None, env_file: Path | str | None) -
         raise InstallError("agent_workspace is not used for Codex installation")
     if env_file is None or str(env_file).strip() == "":
         return "", None
-    return "", _require_file(Path(env_file), "env_file")
+    return "", require_file(Path(env_file), "env_file")
 
 
 def validate_local_platforms(values: object) -> tuple[str, ...]:
@@ -185,7 +185,7 @@ def _mcp_json(
 def _plugin_json(plugin_name: str) -> dict[str, Any]:
     return {
         "name": plugin_name,
-        "version": _manifest_version(),
+        "version": manifest_version(),
         "description": "Scope Recall local Codex plugin",
         "author": {"name": "Local developer"},
         "interface": {
@@ -207,16 +207,16 @@ def planned_files(plan: InstallPlan) -> dict[Path, str | bytes]:
         raise InstallError("project_root is required for a Codex installation of its own")
     launcher = plan.target_plugin_dir / "hooks" / WINDOWS_HOOK_LAUNCHER
     return {
-        plan.target_plugin_dir / ".codex-plugin" / "plugin.json": _json_dump(_plugin_json(plan.target_plugin_dir.name)),
+        plan.target_plugin_dir / ".codex-plugin" / "plugin.json": json_dump(_plugin_json(plan.target_plugin_dir.name)),
         launcher: _windows_hook_launcher_bytes(plan.python_executable, config, env_file=plan.env_file),
-        plan.target_plugin_dir / "hooks" / "hooks.json": _json_dump(
+        plan.target_plugin_dir / "hooks" / "hooks.json": json_dump(
             _hooks_json(plan.python_executable, config, windows_launcher=launcher, env_file=plan.env_file)
         ),
         **{
             plan.target_plugin_dir / "skills" / name / "SKILL.md": source.read_text(encoding="utf-8")
             for name, source in SKILLS.items()
         },
-        plan.target_plugin_dir / ".mcp.json": _json_dump(
+        plan.target_plugin_dir / ".mcp.json": json_dump(
             _mcp_json(plan.python_executable, config, plan.project_root, env_file=plan.env_file)
         ),
     }
@@ -269,6 +269,6 @@ def purge_identity(instance_root: Path) -> tuple[Path, str, str, Path]:
         raise InstallError("an entry of a shared store is never purged from its home; detach it instead")
     path = config_path(instance_root)
     config = load_codex_config(path)
-    _reject_symlink_chain(config.data_directory)
-    _reject_symlink_chain(path)
+    reject_symlink_chain(config.data_directory)
+    reject_symlink_chain(path)
     return config.data_directory.resolve(), config.installation_id, config.agent_id, path.resolve()
