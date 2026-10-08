@@ -363,8 +363,8 @@ def run_hook(config: dict[str, Any], raw: bytes, *, started: float | None = None
         return {}
     if not isinstance(payload, dict):
         return {}
-    # Half of a broken emoji (a lone surrogate, which JavaScript writes) could not be sent as UTF-8: the request failed
-    # and the turn had no recall (review of rc11).  It is sent, kept and stored as U+FFFD, as a hook here stores it.
+    # Half of a broken emoji (a lone surrogate, which JavaScript writes) cannot be sent as UTF-8: the request would fail
+    # and the turn have no recall.  It is sent, kept and stored as U+FFFD, as a hook here stores it.
     payload = without_lone_surrogates(payload)
     event = payload.get("hook_event_name")
     host = config["host"]

@@ -40,9 +40,9 @@ _AUTO_TOKEN = re.compile(r"(?:^|\|(?:prior:)?)auto_retry:([0-9]+)(?=\||$)")
 #: Failures that are never about the work item.  A provider declining to serve
 #: anyone says nothing about this payload -- unlike a timeout, which a large
 #: item can genuinely cause -- so the lease never got an attempt at all and the
-#: attempt is refunded.  Without the refund one four-hour provider outage pushed
-#: 195 items into ``failed`` at ``attempt=3`` apiece, each needing an operator.  529 is a provider saying it is
-#: overloaded (MiniMax, Anthropic): one such answer failed a candidate evaluation for good on 2026-09-28.
+#: attempt is refunded.  Without the refund one four-hour provider outage pushes
+#: hundreds of items into ``failed`` at ``attempt=3`` apiece, each needing an operator.  529 is a provider saying
+#: it is overloaded (MiniMax, Anthropic): without it here one such answer fails a candidate evaluation for good.
 CAPACITY_REFUSALS = frozenset({"http_429", "rate_limited", "http_502", "http_503", "http_504", "http_529"})
 
 #: Token recording how many times in a row a provider refused for capacity.
@@ -69,9 +69,9 @@ _LEASED_ROW = "work_id=? AND state='leased' AND lease_token=? AND lease_owner=?"
 
 # --- the fresh conversation lane ---------------------------------------------
 #
-# Claiming is otherwise strictly FIFO, so a message typed now waited behind the
-# whole backlog -- 1,443 items, the oldest 19 hours, on one live instance --
-# before it was consolidated into claims or embedded for semantic recall.  A
+# Claiming is otherwise strictly FIFO, so a message typed now would wait behind
+# the whole backlog (1,443 items, the oldest 19 hours, on a busy store) before
+# it was consolidated into claims or embedded for semantic recall.  A
 # lane claim prefers ready consolidate/embed work whose subject source is fresh
 # conversation, oldest first, so one conversation is still consolidated in
 # order and its episode batch still forms.  Purge keeps absolute priority and
@@ -106,8 +106,8 @@ FRESH_LANE_SCAN_ROWS = 512
 # --- a re-embed run after the embedding space changed ----------------------
 #
 # ``work_items`` is unique on its type and subject and says nothing of the space a vector was made in, so an
-# embedding done in one space stays done when the model changes, and the new store never receives it (#200, found
-# and reproduced by @Vivamisu).  Re-embedding a store is a deliberate, paid act: an operator starts a run
+# embedding done in one space stays done when the model changes, and the new store never receives it.
+# Re-embedding a store is a deliberate, paid act: an operator starts a run
 # (``respace-embeddings``), and each drain of a worker in that space reopens a page of done embeddings
 # (``respace_page``), newest first and only while the embed queue has room, down to the bottom of the queue.
 #
@@ -758,9 +758,9 @@ class WorkItems:
 
         The at-most-once fence is committed before the model call, so a worker
         killed after it -- a gateway stop, a lost lease, a machine restart --
-        leaves the candidate failed with nothing recorded and nothing to look at:
-        24 of another instance's candidates and 5 of one instance's sat there. Waiting for new
-        evidence never comes for a candidate whose evidence is already in.
+        leaves the candidate failed with nothing recorded and nothing to look at,
+        and waiting for new evidence never comes for a candidate whose evidence is
+        already in.
 
         One attempt: the marker says it was given, and ``attempt`` bounds it even
         when a later failure overwrites the marker -- an interruption observed as
@@ -883,8 +883,8 @@ class WorkItems:
                     )
         # Captures a replay gave up after its tries (``inbox_rules.GAVE_UP``) go back to it, their tries counted
         # anew: whatever kept them out has been fixed, or they are given up again, visibly.  Only the partition this
-        # config's replay takes (``replay_inbox``): returned by what the config could see, a row of another went back
-        # to a replay that never takes it (review of rc10).
+        # config's replay takes (``replay_inbox``): returned by what the config could see, a row of another would go
+        # back to a replay that never takes it.
         context = self._tx.context
         scopes = sorted(context.allowed_scope_ids)
         abandoned = conn.execute(
@@ -897,10 +897,10 @@ class WorkItems:
         for _token, code in abandoned:
             kind = str(code).rsplit("|", 1)[-1]
             report["inbox_by_kind"][kind] = report["inbox_by_kind"].get(kind, 0) + 1
-        # A capture an earlier release refused as ACCESS_DENIED, most often one under a deleted message's key, stayed
-        # in the inbox for good with doctor's capture_ingress_blocked up, and nothing but a hand could remove it.  The
-        # replay now cancels a copy of the deleted message and stores another message under a key of its own
-        # (``Sources.refuse_under_a_deleted_key``), so such rows go back to it once asked (review of rc13).
+        # A capture an earlier release refused as ACCESS_DENIED, most often one under a deleted message's key, stays
+        # in the inbox for good with doctor's capture_ingress_blocked up, and nothing but a hand removes it.  The
+        # replay cancels a copy of the deleted message and stores another message under a key of its own
+        # (``Sources.refuse_under_a_deleted_key``), so such rows go back to it once asked.
         refused = conn.execute(
             f"""SELECT token FROM capture_inbox WHERE last_error_code='ACCESS_DENIED'
                 AND scope_id IN ({_marks(scopes)}) AND project_id IS ? AND branch_id IS ?""",
@@ -908,8 +908,8 @@ class WorkItems:
         ).fetchall()
         report["inbox_refused"] = len(refused)
         if not dry_run:
-            # One the rekey path gave up goes back to it: returned as never tried, the plain replay met the old
-            # collision, and a row it put off was matched by a delete through the key it had taken (review of rc10).
+            # One the rekey path gave up goes back to it: returned as never tried, the plain replay would meet the old
+            # collision, and a row it put off would be matched by a delete through the key it had taken.
             conn.executemany(
                 "UPDATE capture_inbox SET last_error_code=? WHERE token=?",
                 [("VERSION_CONFLICT" if deferred_path(code) == "rekey" else None, token) for token, code in abandoned],

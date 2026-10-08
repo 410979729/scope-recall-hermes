@@ -15,7 +15,7 @@ from .validation import absolute_path, strict_bool, strict_float, strict_int
 #: A per-pass copy of a runtime config is written beside it as ``<stem>-worker-<8 random>.json``
 #: (``adapters.runtime_wiring.write_ephemeral_worker_config``).  ``--cleanup-config`` deletes a
 #: file of that name and nothing else: given an operator's real ``runtime-config.json`` it
-#: deleted that, silently, and every host dropped to basic mode (#118).
+#: would delete that, silently, and every host would drop to basic mode.
 EPHEMERAL_CONFIG_INFIX = "-worker-"
 #: A runtime config's file name, beside the binding's data or an entry's attachment.
 RUNTIME_CONFIG_FILENAME = "runtime-config.json"

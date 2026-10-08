@@ -82,7 +82,7 @@ class Operations:
         remaining_seconds: float | None = None,
     ):
         """Drop the postings of one bounded page of withheld tool outputs' placeholders beyond their error text; a
-        preview unless ``dry_run=False`` (#206).  The sources stay; only the lexical index loses what it never
+        preview unless ``dry_run=False``.  The sources stay; only the lexical index loses what it never
         needed."""
         seconds = self._core.config.write_timeout_seconds if remaining_seconds is None else remaining_seconds
         opener = self._core.storage.read if dry_run else self._core.storage.write

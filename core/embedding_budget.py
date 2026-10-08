@@ -1,6 +1,6 @@
 """How much of a source may be handed to the embedding model.
 
-Measured on one instance: of 1,852 embedding attempts, **six failed with http_400
+Measured: of 1,852 embedding attempts, **six failed with http_400
 and every one of them was an oversized source** -- 16,505 / 17,531 / 36,650 /
 52,410 / 52,451 / 65,536 characters.  ``http_400`` is not in
 ``AUTO_RECOVERABLE_ERRORS``, and rightly so -- resending the same oversized body
@@ -13,9 +13,9 @@ is worth having; no vector at all is not.  Truncation is recorded, never silent.
 The bound counts **tokens**, which is what providers limit, and it counts every
 character as one, whatever the script.  That is the most any measured text
 costs: against Zhipu ``embedding-3`` (3,072 tokens per input) 3,068 Chinese
-characters stopped at exactly 3,072 tokens (#125), and ASCII ran from 4.0
+characters stopped at exactly 3,072 tokens, and ASCII ran from 4.0
 characters a token for letters down to 2.5 for code, 2.0 for symbols, 1.4 for
-base64 and **1.0 for digits** (#151).  The estimate this replaced counted three
+base64 and **1.0 for digits**.  The estimate this replaced counted three
 ASCII characters as one token, which held for prose and symbols and let 6,000
 characters of a digit-dense body through as 2,000 tokens -- logs, IDs, hashes
 and JSON -- and ``embedding-3`` refused them with ``http_400`` for good.  One

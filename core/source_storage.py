@@ -65,8 +65,8 @@ class Sources:
     def witnessed_at(self, source: StoredSource) -> str | None:
         """When a source was said or observed, as far as the store can tell.
 
-        Its occurrence time, except for a capture re-keyed before rc33: a
-        restarted Hermes gateway numbers turns from 1 again, and the adapter
+        Its occurrence time, except for a capture an older adapter re-keyed: a
+        restarted Hermes gateway numbers turns from 1 again, and that adapter
         copied the time of the earlier, unrelated message already stored under
         the reused key.  Such a copy is recognizable exactly -- the original's
         time on different content -- and the write time is the best one left.
@@ -182,7 +182,7 @@ class Sources:
 
         The suppressed claims are picked first.  Subject and predicate are in the scope's index, so SQLite searched the
         content for those of every claim in the scope before it read whether one was suppressed: 8,995 claims, 11 of
-        them suppressed, held the writer lease 1 s for a tool output of 51,283 characters (2026-10-05).
+        them suppressed, held the writer lease 1 s for a tool output of 51,283 characters.
         """
         return (
             conn.execute(
@@ -200,12 +200,11 @@ class Sources:
     def _copies_a_suppressed_source(self, conn, scope_id: str, group_key: str, event) -> bool:
         """A capture given a new key because another message held its key (``inbox_rules.REKEY_MARKER``) that is a
         copy of a suppressed or deleted message is suppressed with it.  Its new key is a group of its own, which the
-        first message's suppression does not reach: a suppressed message sent again under a colliding key came back to
-        automatic recall (rc13).  A copy has the same role and words as a suppressed part in the same scope, project
+        first message's suppression does not reach: a suppressed message sent again under a colliding key would come
+        back to automatic recall.  A copy has the same role and words as a suppressed part in the same scope, project
         and branch (a digest outlasts a purge), or holds the words of the message whose key it took, compared as a
         delete compares them (``inbox_rules.holds``: whitespace aside, and so on).  A source group is suppressed
-        whole: a part that is a copy suppresses the parts of its group stored before it and after it (review of
-        rc13)."""
+        whole: a part that is a copy suppresses the parts of its group stored before it and after it."""
         if REKEY_MARKER not in group_key:
             return False
         partition = (scope_id, self._tx.context.project_id, self._tx.context.branch_id)
@@ -267,7 +266,7 @@ class Sources:
         purge, the same words spaced, cased or punctuated otherwise (``inbox_rules.deleted_forms``).  A copy is
         refused (``source_unavailable``).  Anything else is a key collision (``VERSION_CONFLICT``), which the capture
         inbox stores under a key of its own: a restarted Hermes gateway numbers its turns from 1 again, and a delete
-        removes its own command's key, so the next message at that turn had been refused (reviews of rc13).  After the
+        removes its own command's key, so the next message at that turn would otherwise be refused.  After the
         purge, a copy with words added is not known by anything kept, and is stored as another message.  A key with
         nothing stored left to compare with (a restored absence) refuses whatever comes."""
         if not events:
@@ -289,8 +288,8 @@ class Sources:
         if not hidden and not (block is not None and block["read_blocked"]):
             return
         # The deleted message's rows: under the refs this message's parts would take, under its key's own, and under its
-        # group key, before the purge or as the purge left it.  A long message purged before rc13 had its group key
-        # hashed once for each part and is found by none of these: with nothing to compare, it refuses, as it did.
+        # group key, before the purge or as the purge left it.  A long message an older release purged had its group
+        # key hashed once for each part and is under none of these: with nothing to compare, it refuses.
         refs = sorted({*hidden, self._source_ref(group_key)})
         rows = conn.execute(
             f"""SELECT source_revision,segment_index,content,content_sha256,extra_json,
@@ -321,10 +320,9 @@ class Sources:
             elif all(row["purged"] for row, _extra in parts) and not any(
                 "deleted_forms" in extra for _row, extra in parts
             ):
-                # Purged before rc13, which kept no forms of the words: nothing tells a near copy there from another
-                # message, so a message under that key is refused, as every release before rc13 refused it.  A deleted
-                # message with no text (attachments alone) is not purged yet, and is compared by its digest (reviews
-                # of rc13).
+                # Purged by a release that kept no forms of the words: nothing tells a near copy there from another
+                # message, so a message under that key is refused.  A deleted message with no text (attachments
+                # alone) is not purged yet, and is compared by its digest.
                 raise refuse
             kept.update(form for _row, extra in parts for form in extra.get("deleted_forms") or ())
         ordered = sorted(events, key=lambda event: (event.get("segment") or {}).get("index", 0))
@@ -450,8 +448,8 @@ class Sources:
         identity = lexical_index.source_id(conn, ref, revision)
         terms = indexed_terms(source.event)
         if withheld_tool_output(source.event):
-            # A withheld output's placeholder is found by its error text alone; what an older release gave it beyond
-            # that goes (#206).
+            # A withheld output's placeholder is indexed by its error text alone; what an older release gave it
+            # beyond that goes.
             lexical_index.unindex_beyond(conn, identity, terms)
         lexical_index.index_terms(conn, identity, terms)
 
@@ -552,7 +550,7 @@ class Sources:
         # key: looked up by the host's key alone, it was never found, and the Stop's read of the session record
         # stored a long prompt a second time.  A message stored whole is its own group.
         # A named message that was deleted counts as said as well: once the delete is purged its rows no longer
-        # carry the key, and a record read stored the words again under a key of the record's (review of rc10).
+        # carry the key, and a record read would store the words again under a key of the record's.
 
         for index, (_role, _content, _occurred_at, host_key) in enumerate(items):
             if host_key is not None:

@@ -283,9 +283,9 @@ class Episodes:
             return
         series, kind = self._series_for(source)
         segment_index = self._segment_index(series)
-        # A task names its series outright, so a later source of a task whose episode was deleted landed on the
-        # deleted episode and was refused with it: on the pilot every capture after a delete in that Codex thread
-        # failed for good (2026-09-28).  The task goes on in the next segment, a new episode that carries nothing
+        # A task names its series outright, so a later source of a task whose episode was deleted would land on the
+        # deleted episode and be refused with it: every capture after a delete in that thread would fail for good.
+        # The task goes on in the next segment, a new episode that carries nothing
         # of the deleted one.  A session's series already skips a blocked episode (``_series_for``).
         for _ in range(_BLOCKED_SEGMENTS):
             anchor = hashlib.sha256(canonical([series, segment_index]).encode()).hexdigest()

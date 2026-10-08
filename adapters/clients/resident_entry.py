@@ -2,12 +2,12 @@
 
 WorkBuddy's agent (2.147.0) puts itself and every process it starts in a Windows job that ends them all with it, and
 this server cannot leave that job: under WorkBuddy it lives as long as the conversation's agent process that started
-it, or less (measured 2026-10-04; docs/install.md, section 12).
+it, or less (measured; docs/install.md, section 12).
 
 WorkBuddy starts the entry's MCP server, and with it the recall server its prompt hooks ask, with each conversation's
 agent process and stops it with that process.  A prompt that started one met a server still opening its vector store
 and its embedding connection, and was recalled by words alone: a cold server answered with its vector search 12.7 s
-after its start (measured 2026-10-03), past the prompt hook's 6 s.  This server is started by the entry's hook or MCP
+after its start (measured), past the prompt hook's 6 s.  This server is started by the entry's hook or MCP
 server when none runs, names itself resident (hooks ask it first), and ends ``resident_recall_minutes`` after the last
 prompt's recall or the last mark of a live client process (``local_endpoint.keep_resident``), once the minutes are 0,
 once its package on disk is replaced, or once a recall has been stuck for minutes.  One runs for each entry and
@@ -86,7 +86,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     if args.detach:
         # Started by the client's MCP server, which lives as long as the conversation, the server was its child:
-        # WorkBuddy ending the conversation's process tree ended it too (measured 2026-10-03, its tree killed as
+        # WorkBuddy ending the conversation's process tree ended it too (measured: its tree is killed as
         # ``taskkill /T`` does).  Started from this process, which ends now, it has no living parent in that tree.
         from .local_endpoint import start_detached
 

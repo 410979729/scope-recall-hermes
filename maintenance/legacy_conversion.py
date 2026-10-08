@@ -737,7 +737,7 @@ def _project_lexical_terms(cv: Conversion, conn: sqlite3.Connection) -> None:
         ).fetchone()
         if row[0]:
             continue
-        # A withheld tool output's placeholder is found by nothing (#206).
+        # A withheld tool output's placeholder is indexed by its error text alone, or by nothing.
         cv.inserted["lexical_projection"] += lexical_index.index_terms(conn, row[1], indexed_terms(item))
 
 

@@ -366,13 +366,13 @@ class Deletions:
         # targets are the whole closure, a deleted claim's sources included) is
         # cancelled, so that a delayed capture cannot undo the delete.  Every
         # other row is kept, whichever client sent it: cancelling the whole
-        # partition lost words nothing had forgotten, from a row put off for
-        # hours, a key collision waiting for its new key (reviews of rc10), or
-        # another client's capture waiting for the next pass (rc13).  A suppress
-        # leaves the inbox alone: what arrives of the same message, or restates
-        # a suppressed claim, is suppressed as it is stored, and cancelling what
-        # merely held its words lost captures the contract keeps
-        # (``docs/deletion-contract.md``, reviews of rc10).
+        # partition would lose words nothing had forgotten, from a row put off
+        # for hours, a key collision waiting for its new key, or another
+        # client's capture waiting for the next pass.  A suppress leaves the
+        # inbox alone: what arrives of the same message, or restates a
+        # suppressed claim, is suppressed as it is stored, and cancelling what
+        # merely held its words would lose captures the contract keeps
+        # (``docs/deletion-contract.md``).
 
         digests, groups, versions = set(), set(), set()
         for target in targets:
@@ -483,7 +483,7 @@ class Deletions:
         # What a purge keeps of each version of a deleted message to know a later copy under its key by, once its
         # words are gone: digests of them spaced otherwise and of their letters and digits (``capture_inbox.
         # deleted_forms``, compared by ``Sources.refuse_under_a_deleted_key``).  Read before any group key below
-        # is replaced (review of rc13).
+        # is replaced.
 
         forms, versions, groups = {}, {}, set()
         for kind, ref in members:
@@ -493,7 +493,7 @@ class Deletions:
                 "SELECT source_group_key,source_revision FROM source_events WHERE event_id=?", (ref,)
             ).fetchall():
                 # Once per version, not once per part: joined and read again for each part of a long message, a purge
-                # took seconds under the writer lease (review of rc13).
+                # would take seconds under the writer lease.
                 if (group, revision) not in versions:
                     text = "".join(
                         content
@@ -506,8 +506,8 @@ class Deletions:
                 forms[ref, revision] = versions[group, revision]
                 groups.add(group)
         # Each group key is replaced once, by the key ``purged_group_key`` gives: replaced for each of its parts, a
-        # long message's key had been hashed once a part, and a later capture under it could not find its rows
-        # (review of rc13).  A key an earlier purge left stays as it is.
+        # long message's key would be hashed once a part, and a later capture under it could not reach its rows.  A
+        # key an earlier purge left stays as it is.
         for group in sorted(groups):
             if not group.startswith("removed-"):
                 conn.execute(
@@ -518,8 +518,8 @@ class Deletions:
             if kind == "event":
                 lexical_index.forget(conn, ref)
                 # A row already purged keeps what it has: a restore purges its file again, and written over from its
-                # empty text, the digests a first purge kept were lost; a row purged before rc13 keeps having none
-                # (review of rc13).
+                # empty text, the digests a first purge kept would be lost; a row an older release purged keeps
+                # having none.
                 for (revision,) in conn.execute(
                     "SELECT DISTINCT source_revision FROM source_events WHERE event_id=?", (ref,)
                 ).fetchall():

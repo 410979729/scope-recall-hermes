@@ -218,8 +218,8 @@ def _available_types(tx, scope_id, policy, important, candidates=WORK_TYPES):
 def _repeated_tool_output(tx, scope_id, text) -> bool:
     """Whether an earlier, still readable tool output in this scope has exactly this content.
 
-    On one instance 77% of 132,000 tool outputs were byte-identical to an
-    earlier one, and each was embedded again.  The earlier copy already carries
+    Measured in one store, 77% of 132,000 tool outputs were byte-identical to
+    an earlier one, and each was embedded again.  The earlier copy already carries
     the vector and the lexical index lists both, so a repeat is kept as a
     source only.  An earlier copy that was itself kept as a source only (recall
     output, a repeat, a withheld summary) carries no vector and does not count.
@@ -238,7 +238,7 @@ def _repeated_tool_output(tx, scope_id, text) -> bool:
     )
 
 
-#: What a tool output earns: an embedding, so it is found by meaning.  It is not consolidated;
+#: What a tool output earns: an embedding, so it is recalled by meaning.  It is not consolidated;
 #: tool output is no derivation root (``evidence_question.DERIVATION_ROOT_ORIGINS``), so a
 #: consolidation of it would show the model nothing.
 TOOL_OUTPUT_WORK_TYPES = frozenset({"embed"})
@@ -392,8 +392,8 @@ def resume_deferred(storage, clock, context, policy=None, *, limit=16, remaining
     # Which deferred sources to try is a scan of every source the context reaches, and the queue counts next to
     # it: all read without the writer lease, and the write touches only the page found, each source checked
     # again there by ``_schedule`` (its revision, visibility and the queue's room).  Under the lease the scan held
-    # it 9.8 s on 2026-09-27 with nothing deferred; with one deferred source that had no room, or an older
-    # revision's marker the page never selects, it ran on every pass and selected nothing.  The probe asks
+    # it 9.8 s on a large store with nothing deferred; with one deferred source that had no room, or an older
+    # revision's marker the page never selects, it would run on every pass and select nothing.  The probe asks
     # for the newest revision as the page does: nothing clears an older revision's marker, so one was
     # enough to start the page's scan on every pass, forever.
     with storage.read(context, remaining_seconds=remaining_seconds) as tx:

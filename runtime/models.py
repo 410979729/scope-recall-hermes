@@ -373,11 +373,11 @@ def _reject_secrets_outside_contents(build_body: Callable[[list[dict]], bytes], 
     one more layer of escaping, where a line break inside a content reads
     ``\\\\n``: the scanner's break rule restored the break and left a backslash
     behind it, which an empty credential slot ("AppSecret:" and nothing after
-    it) then took as its value.  On one instance 124 of 124 candidate
-    evaluations passed the contents gate and were refused here, none holding a
-    secret.  The same builder is run on the same messages with their contents
-    blanked, so the model, the route's fields and the message roles are still
-    scanned, and each text is scanned once.
+    it) then took as its value: 124 of 124 candidate evaluations in one store
+    passed the contents gate and were refused here, none holding a secret.
+    The same builder is run on the same messages with their contents blanked,
+    so the model, the route's fields and the message roles are still scanned,
+    and each text is scanned once.
     """
     _reject_secrets(build_body([dict(message, content="") for message in messages]).decode("utf-8"))
 
@@ -465,10 +465,10 @@ def _unreported_output_tokens(usage: Mapping[str, Any]) -> int | None:
     """Billed tokens ``total_tokens`` counts beyond the prompt and the completion.
 
     A thinking model can bill its reasoning without counting it in
-    ``completion_tokens``: another instance's Gemini 2.5 Flash route recorded a median of
-    325 completion tokens a call while the provider's console showed roughly
-    8,000.  OpenAI-style routes count reasoning inside ``completion_tokens`` and
-    report a total equal to the sum, so nothing is counted twice.
+    ``completion_tokens``: a Gemini 2.5 Flash route recorded a median of 325
+    completion tokens a call while the provider's console showed roughly 8,000.
+    OpenAI-style routes count reasoning inside ``completion_tokens`` and report
+    a total equal to the sum, so nothing is counted twice.
     """
     total = usage.get("total_tokens")
     if type(total) is not int:
@@ -552,7 +552,7 @@ def build_openai_embed_body(
     The width is sent because the space digest commits to one: a provider that
     silently returned a different width would produce vectors the store cannot
     compare, and the length check on the response catches it.  Voyage names
-    the field ``output_dimension`` (#88), so the route may name it.
+    the field ``output_dimension``, so the route may name it.
     """
     texts = [encoded_text] if type(encoded_text) is str else list(encoded_text)
     if not texts or any(type(text) is not str for text in texts):
@@ -777,7 +777,7 @@ class EmbeddingRouteConfig:
     dialect: str | None = None
     #: The request field the ``openai`` dialect sends the width in.  Voyage's
     #: /v1/embeddings is OpenAI-shaped in every other respect but calls it
-    #: ``output_dimension`` and refuses ``dimensions`` outright (#88); a request
+    #: ``output_dimension`` and refuses ``dimensions`` outright; a request
     #: that omits the width silently gets the model's default geometry, so the
     #: name is the only lever.  A wire detail, not a geometry: it does not enter
     #: the space digest, and the response length is still checked.

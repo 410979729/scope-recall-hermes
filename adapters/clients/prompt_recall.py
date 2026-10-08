@@ -69,7 +69,7 @@ class PromptRecall:
         The server is asked from a thread and given all of the hook's time but its answer's way back.  One that has
         not answered when ``_LOCAL_RECALL_RESERVE_S`` are left is recalled alongside, with the helper this hook
         started at its own start: given only what the hook did not keep back, a recall that needed most of the time
-        had none (review of rc11).  The hook then uses the answer that ran its vector search, the server's when both
+        would have none.  The hook then uses the answer that ran its vector search, the server's when both
         or neither did; one whose own went without it waits for the server until its own time is up.  An answer that
         failed, ran out of time or came back empty because its read did not finish (``_RESIDENT_REASONS``), or none,
         leaves the hook's own.  One without its vector search is used as it is unless what failed was the server's
@@ -128,7 +128,7 @@ class PromptRecall:
         result, fields = answered
         reason = fields.get("last_reason")
         if reason in _RESIDENT_REASONS:
-            # Said on the hook's stderr: a server whose recalls kept failing looked healthy there (review of rc11).
+            # Said on the hook's stderr, where a server whose recalls kept failing would otherwise look healthy.
             detail = error_detail(fields.get("recall_error_detail"))
             self._hook.resident_outcome = f"failed:{reason}" + (f":{detail}" if detail else "")
             return None
@@ -225,14 +225,14 @@ class PromptRecall:
             self._hook.diagnostics.recall_vector_gap = error_detail(without)
         incomplete = recall_incomplete(packet)
         if incomplete is not None:
-            # Its vector search may have run, but nothing of it reached the answer: ranked as without it, a hook's own
-            # empty answer beat the entry's server's finished one (review of rc11).
+            # Its vector search may have run, but nothing of it reached the answer: it is ranked as without it, or a
+            # hook's own empty answer would beat the entry's server's finished one.
             self._hook.diagnostics.recall_vectors = False
             self._hook.diagnostics.recall_error_detail = error_detail(incomplete)
             self._hook.note("recall_incomplete", gaps=gaps)
         if self._hook.remaining(deadline) <= 0:
-            # Nothing of its vector search reached an answer: ranked as with it, this empty answer beat a server's
-            # (review of rc11).
+            # Nothing of its vector search reached an answer: ranked as with it, this empty answer would beat a
+            # server's.
             self._hook.diagnostics.recall_vectors = False
             self._hook.note("deadline_exceeded", gaps=gaps)
             return {}

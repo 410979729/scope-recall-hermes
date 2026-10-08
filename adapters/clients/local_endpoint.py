@@ -46,16 +46,16 @@ from typing import Any, Callable
 #: of it takes up to six bytes) and the refs and gaps of its capture.
 MAX_REQUEST_BYTES = 7 * 65536
 #: Seconds a hook waits to connect, and then for the server's proof.  A live server on this machine takes the
-#: connection at once; one that does not prove itself in time loses its name, with time left to try the next (a hung
-#: first name took all of ``FIND_SECONDS``, and kept, it cost every later prompt its wait, reviews of rc11).
+#: connection at once; one that does not prove itself in time loses its name, with time left to try the next: a hung
+#: first name would take all of ``FIND_SECONDS``, and kept, it would cost every later prompt its wait.
 CONNECT_SECONDS = 0.3
 #: A server serving several recalls at once proves itself in 0.15-0.3 s (each hand-over of Python's lock waits for a
-#: timer tick on Windows): at 0.3 s such a server lost its name (review of rc11).
+#: timer tick on Windows): at 0.3 s such a server would lose its name.
 PROOF_SECONDS = 0.5
 #: What a server's check of itself may take to name itself again, by the clock.  Made from inside the busy process, the
 #: check waits for its own share of Python's lock besides the answer, and reads what a hook sees times 1.3-1.9 as a
 #: rule (up to 3.7 under the heaviest load measured).  Held to ``PROOF_SECONDS`` it kept out 14% of the servers hooks
-#: reached in time; at twice, it let back 31% of those they could not; at one and a half, 4% and 10% (reviews of rc11).
+#: reached in time; at twice, it let back 31% of those they could not; at one and a half, 4% and 10%.
 SELF_CHECK_SECONDS = 1.5 * PROOF_SECONDS
 #: Servers a hook tries, newest first, and how long it may spend finding one.
 MAX_TRIED = 2
@@ -67,14 +67,14 @@ ANSWER_MARGIN_SECONDS = 0.3
 WARM_SECONDS = 60.0
 WARM_WAIT_SHARE = 0.5
 #: What a server's start may spend warming its query embedding.  The warming holds the kept handler, and a provider or
-#: proxy that took the connection and hung kept every recall off it for the whole ``WARM_SECONDS`` (review of 3.6.0rc1).
+#: proxy that took the connection and hung would keep every recall off it for the whole ``WARM_SECONDS``.
 EMBEDDING_WARM_SECONDS = 10.0
 #: A kept handler left this long without a recall searches its vector store once more, off any prompt's time, and again
 #: after each such stretch.  The helper keeps the index in its memory, and a search touches the codes of every row its
 #: filter keeps (the warm search filters as a recall does: ``runtime/instance.py warm_vector_store``): left alone, the
-#: OS gave those pages to other work, and the first recall after an idle hour searched past its time.  This machine's
-#: Claude Code lost the vector search on 2 of the 4 prompts it had after an idle hour (2026-10-02), and on none of the 5
-#: it had while another process searched the same index every 10 minutes.
+#: OS gives those pages to other work, and the first recall after an idle hour searches past its time: a Claude Code
+#: client lost the vector search on 2 of 4 prompts after an idle hour, and on none of 5 while another process searched
+#: the same index every 10 minutes.
 KEEP_WARM_IDLE_SECONDS = 600.0
 #: How often a server looks whether its kept handler has been idle that long.
 KEEP_WARM_CHECK_SECONDS = 60.0
@@ -83,12 +83,12 @@ CLOSE_WAIT_SECONDS = 10.0
 #: Recalls one server runs at once; a hook past that recalls itself.
 MAX_CONCURRENT = 8
 #: How often a server looks for its own name, and puts it back when a hook removed it: a busy server that did not
-#: prove itself in time was left out for 30 s (review of rc11).
+#: prove itself in time would otherwise be left out for 30 s.
 ADVERTISE_SECONDS = 2.0
 #: Minutes a client's resident recall server (``resident_entry``) stays up without a recall when the entry's runtime
 #: config names none (``resident_recall_minutes``).  WorkBuddy starts the entry's MCP server with each conversation's
 #: agent process, so a prompt that started one met a server still opening its vector store: a cold server answered
-#: with its vector search 12.7 s after its start (measured 2026-10-03), past the prompt hook's 6 s.  Claude Code and
+#: with its vector search 12.7 s after its start (measured), past the prompt hook's 6 s.  Claude Code and
 #: Codex keep their server for as long as the client runs, and keep none.
 RESIDENT_DEFAULT_MINUTES = {"workbuddy": 120, "dsh": 120}
 #: How often a client starts a resident server when it finds none: a start warms for several seconds, and the next
@@ -153,8 +153,8 @@ class _Handler(BaseHTTPRequestHandler):
         body = self.rfile.read(int(size))
         if endpoint._stuck():
             # A recall is past the time its hook gave it, and what holds it may hold the next: hooks go on at once
-            # until it ends.  Counted 2 s later, a hung server answered, named itself again, and the next prompt
-            # waited on it (review of rc11).
+            # until it ends.  Counted 2 s later, a hung server would answer, name itself again, and make the next
+            # prompt wait on it.
             self._refuse(503)
             return
         if self.path == "/hello":
@@ -181,8 +181,8 @@ class _Handler(BaseHTTPRequestHandler):
             try:
                 answer_body, close = endpoint.recall(request, received=received)
             except Exception as exc:  # noqa: BLE001 - answered as a failed recall; the hook recalls itself
-                # Dropped, the hook took the server for another program and removed its name, which came back and
-                # failed the same way; and the log held only the error's class (review of rc11).
+                # Dropped, the hook would take the server for another program and remove its name, which would come
+                # back and fail the same way; and the log would hold only the error's class.
                 sys.stderr.write(f"SCOPE_RECALL_ENDPOINT:recall_failed\n{traceback.format_exc(limit=-8)}")
                 code = getattr(exc, "code", None)
                 detail = f"{type(exc).__name__}:{code}" if isinstance(code, str) else type(exc).__name__
@@ -439,7 +439,7 @@ class KeptRecaller:
 
     A server that made a handler for each recall opened the LanceDB table (about 2.3 s) and started the embedding
     worker and its connection (about 1 s) for every prompt: on the pilot a warm server's recall took 3.9-4.1 s and
-    two of five lost their vector search to the time; with the handler kept, 1.6-2.1 s with it (rc12).  The handler
+    two of five lost their vector search to the time; with the handler kept, 1.6-2.1 s with it.  The handler
     only recalls (``resident_recall_for``), which writes nothing.  One recall uses it at a time: another at the same
     moment gets None, and its caller recalls as it did before.  It is made anew when ``stamp`` changes (the files it
     was made from), after a recall that raised, and while its runtime is not attached from a readable config; the
@@ -486,7 +486,7 @@ class KeptRecaller:
                     except Exception:  # noqa: BLE001 - the first recall opens what is not open, as before
                         pass
                     # The query embedding route too, at the start only: warmed by the store alone, a cold server's
-                    # first recalls lost their vector search to the embedding's time (measured 2026-10-03).
+                    # first recalls lose their vector search to the embedding's time (measured).
                     warm_embedding = getattr(self._handler, "warm_embedding", None)
                     if callable(warm_embedding):
                         try:
@@ -646,8 +646,8 @@ class HookEndpoint:
         self._stopped = threading.Event()
         # A key rotated in the env file is taken up at the next prompt, as a hook of its own would read it, and one
         # taken out of it is taken out here too; so is a key the runtime config comes to name instead.  What cannot be
-        # read now is read at the next prompt: a server whose first read failed, here or at its own start, recalled
-        # by words alone until its client restarted (review of rc11).
+        # read now is read at the next prompt: a server whose first read failed, here or at its own start, would
+        # otherwise recall by words alone until its client restarted.
         self._watched = tuple(path for path in (env_file, runtime_config) if path is not None)
         self._credentials = credentials
         self._env_seen: tuple | None = None
@@ -757,7 +757,7 @@ class HookEndpoint:
             # A hook removed the name of a server that did not prove itself in time.  It names itself again once
             # none of its recalls is stuck and its own check comes back within ``SELF_CHECK_SECONDS``, counted by the
             # clock: from inside the server, the time its own busy threads held Python's lock did not count against
-            # the socket's, and a server hooks could not reach in time named itself again (reviews of rc11).
+            # the socket's, and a server hooks could not reach in time would name itself again.
             if self.path.exists() or self._stuck():
                 continue
             connection = http.client.HTTPConnection("127.0.0.1", self.port, timeout=CONNECT_SECONDS)

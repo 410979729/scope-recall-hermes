@@ -30,9 +30,9 @@ class Prefetch:
         """Read the turn's state under the lock, recall without it.
 
         Hermes gives a prefetch 8 s and goes on with the turn while the call keeps running.  Held through the recall,
-        the lock kept the turn's tool hooks waiting behind it past Hermes' 30 s hook timeout (tianji 2026-09-26,
-        tianxuan 2026-09-30: the same session's prefetch timed out 48 s and 33 s before).  Nothing of the turn is
-        written meanwhile: its message was stored before, its tools run after.
+        the lock would keep the turn's tool hooks waiting behind it past Hermes' 30 s hook timeout (a prefetch that
+        timed out can run 30-50 s).  Nothing of the turn is written meanwhile: its message was stored before, its
+        tools run after.
         """
         if not self._adapter._lock.acquire(timeout=_PREFETCH_STATE_WAIT_S):
             self._adapter._session_busy("prefetch")

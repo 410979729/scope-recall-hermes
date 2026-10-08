@@ -152,8 +152,8 @@ def _entry_config(
     """An entry's config: its model routes, bound to its scopes, searching the store's vector table.
 
     The table is the worker's: the routes may come from a store that named its
-    table otherwise, and a query then searches a table the worker never fills
-    (one agent's did, from its own 3.1 store, 2026-09-24).  The spend ledger lives
+    table otherwise (a store of an older release can), and a query would then search a
+    table the worker never fills.  The spend ledger lives
     beside the entry's pointer, where ``detach`` takes it from.  A client's routes
     come from another home, so the names its runtime reports are made its own.
     """

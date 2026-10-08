@@ -1,14 +1,14 @@
 """Cross-process truth-database writer lease.
 
-Issue #39's corruption class is two independent processes each opening a
-writable SQLite pager against the same truth database. SQLite WAL already
+The corruption class this guards against is two independent processes each
+opening a writable SQLite pager against the same truth database. SQLite WAL already
 allows one writer plus many readers across processes; this module does not
 change that. It makes *write ownership* explicit so cooperating provider
 processes do not become a second uncoordinated writer.
 
 Exactly one process per storage directory may hold the OS lease. Later
 provider instances degrade to read-only recall. Same-process peer providers
-share one refcounted OS lock so issue #43 dirty-peer recovery still works.
+share one refcounted OS lock so dirty-peer recovery still works.
 The kernel releases the lock on crash or exit; the runtime may also perform a
 coordinated, fail-closed idle handoff after every same-process holder and
 connection pin has quiesced.

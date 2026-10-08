@@ -465,7 +465,7 @@ def embedding_calls(auxiliary, *, hours: float = 24, now: float | None = None) -
     """The embedding model's requests over the last ``hours``: how many, how many it answered, its refusals by code.
 
     ``None`` without an external embedding route or a readable ledger.  A backlog of embeddings beside a provider
-    that refuses most of them is the quiet way recall comes to answer by words alone (reported with #200).
+    that refuses most of them is the quiet way recall comes to answer by words alone.
     """
     ledger_path = getattr(auxiliary, "ledger_path", None)
     if auxiliary is None or ledger_path is None or not getattr(auxiliary, "external_embedding", False):
@@ -533,9 +533,9 @@ def provider_refusals(ledger_path, *, now: float | None = None) -> list[str]:
 
 #: How long a model that just refused is left alone: doubling with each refusal
 #: in a row, from a minute to half an hour, and over at the first answer.  Each
-#: pass already stood a refused work type down, but the next pass asked again at
-#: once: through a monthly spend cap Google refused every embedding for seven
-#: hours while a third instance, one instance and another instance kept asking about 5,000 times a day.
+#: pass already stands a refused work type down, but the next pass would ask
+#: again at once: through a monthly spend cap a provider can refuse every
+#: embedding for hours while the installations keep asking thousands of times a day.
 #: Half an hour between asks is still quick to notice the cap was raised.
 PROVIDER_HOLD_FIRST_SECONDS = 60.0
 PROVIDER_HOLD_LONGEST_SECONDS = 1800.0

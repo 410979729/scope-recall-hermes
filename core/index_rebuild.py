@@ -108,9 +108,9 @@ def queue_import_embeddings(
     ``IMPORT_EMBED_QUEUE_CEILING``, and to ``yield_ceiling`` while work of a type in ``yield_to`` is ready; with the
     queue there, nothing is queued, the page is ``held`` and the cursor stays where it was.  The worker claims
     embeddings before candidate evaluations (``work_storage._CLAIM_ORDER``): the backfill kept a page past the
-    ceiling waiting (up to 127), every pass took embeddings alone, and on the pilot 251 evaluations waited behind an
-    import's history for the hours it ran (rc10).  Stopping for them instead stopped it for as long as they could
-    not be done, a model refusing before any request (review of rc11); kept to part of a pass, it still moves.
+    ceiling waiting (up to 127), every pass would take embeddings alone, and evaluations would wait behind an
+    import's history for the hours it runs.  Stopping for them instead would stop it for as long as they cannot be
+    done, a model refusing before any request; kept to part of a pass, it still moves.
     Only sources the context's worker would embed are looked at, those of its project and branch: an import kept
     by another's (a store converted from 2.x keeps them) was queued where this worker neither counts nor claims
     it, and every pass queued another page of them past the ceiling.

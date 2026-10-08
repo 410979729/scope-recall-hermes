@@ -112,7 +112,7 @@ _WITHOUT_VECTORS = (
 def recall_incomplete(packet) -> str | None:
     """What says a recall came back empty because its read did not finish (the store could not be read, or its time
     ran out at any step: ``status: unavailable``), or None.  Such a packet reads like one that found nothing, and a
-    server's was taken over the hook's own (reviews of rc11)."""
+    server's would be taken over the hook's own."""
     if not isinstance(packet, dict) or packet.get("status") != "unavailable":
         return None
     gaps = [gap for gap in packet.get("gaps") or () if isinstance(gap, str)]
@@ -124,10 +124,10 @@ def server_own_vector_fault(gap: object) -> bool:
     """Whether a server's recall went without its vector search for a reason of its own, which the hook's own recall
     may not share: no vector search at all, its key (``credential_*``), its LanceDB helper or another fault of its own
     process that is not an embedding call's (``core.vector_failure``), or its embedding connection and worker
-    (``network_error``, ``http_protocol``, ``transport_*``), which the server keeps between prompts (rc12) while the
-    hook's are new.  Otherwise an embedding call's failure (what the provider answered, the time it took, a spent
-    budget) the hook meets as well: a second recall only cost the prompt its time and a second metered call (reviews
-    of rc11).  The spend ledger's lock held by another writer is not one (an ``OperationalError``), and costs one
+    (``network_error``, ``http_protocol``, ``transport_*``), which the server keeps between prompts while the hook's
+    are new.  Otherwise an embedding call's failure (what the provider answered, the time it took, a spent budget)
+    the hook meets as well: a second recall would only cost the prompt its time and a second metered call.  The
+    spend ledger's lock held by another writer is not one (an ``OperationalError``), and costs one
     recall more.  Nor is the search running out of time here."""
     if gap == "vector_unavailable":
         return True

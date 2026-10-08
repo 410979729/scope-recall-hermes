@@ -1,9 +1,9 @@
 r"""Where a claim's subject is allowed to be found, verbatim, in its evidence.
 
 The gate requires a subject to appear literally in what was quoted, which is
-what stops a model from inventing one.  Measured on one instance's 92 live
-``subject_not_bound`` head versions, that is refusing three different things at
-once:
+what stops a model from inventing one.  Measured over 92 live
+``subject_not_bound`` head versions of one store, that is refusing three
+different things at once:
 
     37  the subject appears nowhere in the source at all -- "memory
         configuration", "memory provider", "skills directory".  Invented; these

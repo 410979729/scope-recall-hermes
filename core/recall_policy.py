@@ -177,8 +177,8 @@ def encode_embedding_text(raw_text: str, *, kind: str) -> str:
 
     The one choke point every embedded body passes through -- source, claim and
     query alike -- which is why the input bound lives here rather than in each
-    caller.  Six sources on one instance were permanently unembeddable because there
-    was no bound at all; see ``core/embedding_budget.py``.
+    caller.  Without a bound, an oversized source is permanently unembeddable; see
+    ``core/embedding_budget.py``.
     """
 
     if type(raw_text) is not str or kind not in {"document", "query"}:
@@ -384,7 +384,7 @@ def query_is_specific(
 #: Characters that only ask: 什么, 怎么, 哪个, 多少 and the sentence-final
 #: particles.  The index holds overlapping bigrams, so "这个实例当前是什么模型"
 #: searched 是什, 什么 and 么模 too -- terms every earlier question shares and
-#: no answer does -- and another instance returned "你现在是什么模型呀" as the best match.
+#: no answer does -- so "你现在是什么模型呀" came back as the best match.
 #: A bigram holding one of these asks rather than names, so it proves nothing.
 #: The few nouns built on them (酒吧, 哪吒) are the price of that rule.
 _ASKING_CHARACTERS = frozenset("什么吗呢呀吧嘛哪啥")

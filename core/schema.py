@@ -39,8 +39,8 @@ ENTRIES_STATEMENT = """CREATE TABLE entries (
         first_seen TEXT NOT NULL, last_seen TEXT NOT NULL
     ) STRICT"""
 #: The scope authorization a migrated source was admitted under.  The 2.0
-#: conversion wrote the same 600-byte record into every source's extra_json:
-#: 97 distinct payloads across 167,000 sources, 102 MB, on one instance.  It is
+#: conversion wrote the same 600-byte record into every source's extra_json
+#: (97 distinct payloads across 167,000 sources, 102 MB, in one store).  It is
 #: audit evidence, so it is kept once per distinct payload and linked.
 AUTHORIZATION_STATEMENTS = (
     """CREATE TABLE authorization_payloads (
@@ -197,7 +197,7 @@ STATEMENTS = (
         UNIQUE(source_group_key,source_revision,segment_index)
     ) STRICT""",
         "CREATE INDEX source_scope_time ON source_events(scope_id,occurred_at,event_id,source_revision)",
-        # A repeated tool output is found by its content hash at capture (core/admission.py)
+        # A repeated tool output is looked up by its content hash at capture (core/admission.py)
         # and by the retention pass (runtime/vector_retention.py).
         "CREATE INDEX source_content ON source_events(scope_id,role,content_sha256)",
         # A source version's integer identity, what the lexical postings name it by.
@@ -367,7 +367,7 @@ def stale_header_schema(connection) -> int | None:
     (``PRAGMA user_version``) and ``instance_meta.schema_version``.  The two disagree only
     when something else wrote the header.  After a 2.0 store is migrated, a 2.0 process
     that opens the new file stamps the header with the 2.0 layout's 10815 and leaves every
-    table and row in place (#117), and every open then fails closed.  The recorded schema
+    table and row in place, and every open then fails closed.  The recorded schema
     is returned only for this product's store (its application id) recording a schema this
     release reads or brings forward, under a header in the 2.x layouts' own numbering (from
     10000 up), so ``upgrade-store`` may restamp the header with it.  A header in 3.x's range is
@@ -473,7 +473,7 @@ def upgrade_1108(connection):
     revision they ask for, which makes the earliest copy the one to keep.
 
     The same step adds the retention ledger, ``expired_vectors``, the content
-    index a repeated tool output is found by, moves the migrated scope
+    index a repeated tool output is looked up by, moves the migrated scope
     authorizations out of every source row (8.5 s for 167,000 sources on a
     1.4 GB store), numbers every source version and rebuilds the lexical
     index as a term dictionary with integer postings (95 s for 5.2 million

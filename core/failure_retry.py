@@ -1,7 +1,7 @@
 """Give a failed work item one more attempt, once, when a fix has shipped.
 
 A failure that nothing clears is not automatically a failure nobody should look
-at again.  Measured on one instance, the 249 failed work items were:
+at again.  In one store's 249 failed work items, for example:
 
     derivation_invalid            213   model returned an invalid payload
     timeout                        15   transient; the automatic budget ran out
@@ -35,11 +35,10 @@ Two classes, because they answer different questions:
 
 The actionable set is *derived* from the worker's own transient set rather than
 listed again here.  Keeping two hand-written lists of "failures that may pass"
-is how they drift: they did.  ``model_unavailable`` is auto-recoverable, so the
-worker retried it until its automatic budget ran out and then failed the row --
-but it was missing from this list, so no operator could clear it either, and
-four rows left over from one outage pinned a live instance at ``degraded``
-with nothing anyone could do about them.
+is how they drift.  ``model_unavailable`` is auto-recoverable, so the worker
+retries it until its automatic budget runs out and then fails the row; missing
+from this list, no operator could clear it either, and rows left over from one
+outage would pin an installation at ``degraded`` with nothing anyone could do.
 
 Not responsible for: deciding whether the upstream fix actually works -- the
 next attempt decides that, and a row that fails again is failed again with its
@@ -58,8 +57,7 @@ DERIVATION_RETRY_MARKER = "derivation_retry:1"
 # Invalid derivations and rejected authority remain terminal and inspectable.
 # ``http_protocol`` is the transport failing mid-reply (a connection closed or a malformed answer), and is treated as
 # ``network_error`` is: it says nothing about the payload.  Missing here, consolidation and embedding work failing
-# with it was never recovered, and no work failing with it was clearable by ``retry-failures``: candidate evaluations
-# against a model served over plain HTTP left failed rows only a hand edit could clear (#201).
+# with it would never be recovered, and no work failing with it would be clearable by ``retry-failures``.
 AUTO_RECOVERABLE_ERRORS = frozenset(
     {
         "model_unavailable",
@@ -86,9 +84,9 @@ AUTO_RECOVERABLE_ERRORS = frozenset(
 #: The provider declining the account rather than this request: payment
 #: required, key rejected, access forbidden.  No payload changes that answer, so
 #: the worker parks the item without an attempt (``BUDGET_PAUSE_ERRORS``) until
-#: someone fixes the account.  On one instance a DeepSeek balance that ran out
-#: answered 402 for fifteen minutes and failed 100 candidate evaluations
-#: outright, none of which an operator command could reopen afterwards.
+#: someone fixes the account.  A balance that runs out answers 402 to every
+#: request: treated as a failure, fifteen minutes of it would fail a hundred
+#: candidate evaluations outright.
 ACCOUNT_REFUSALS = frozenset({"http_401", "http_402", "http_403"})
 
 #: Faults an operator may clear even though the worker's automatic budget is
@@ -184,9 +182,8 @@ def already_retried(error_code: object, *, generation: int) -> bool:
 #: Any other HTTP status a provider answered (``worker_outcomes`` records each as ``http_NNN``): a 4xx not named above
 #: (404, 409, 413, 422, ...), a 5xx the worker does not recover by itself (501, 520-524, ...).  The HTTP worker reports
 #: a redirect as ``http_redirect``, named above.  No automatic retry clears it, but an operator who has fixed the
-#: route, the model or a bound may re-open it, as ``http_400``.  Of neither class, a candidate evaluation failed
-#: with ``http_422`` on the shared store stayed failed with no command able to clear it, as ``http_protocol`` did
-#: before #201.
+#: route, the model or a bound may re-open it, as ``http_400``.  Of neither class, such a failure would stay failed
+#: with no command able to clear it.
 _HTTP_STATUS = re.compile(r"http_[1-5]\d\d")
 
 

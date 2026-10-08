@@ -474,7 +474,7 @@ def _drain_once(config: RuntimeInstanceConfig, instance: Any, deadline: float) -
     payload = _receipt_payload(config, receipt, gaps)
     payload.update(counts)
     # The gap names the fault (``vector_unavailable:RuntimeError:worker_failed``); this line, which the doctor
-    # shows, says why the helper could not start (runtime/instance.py ``_helper_start_failure``, #176).
+    # shows, says why the helper could not start (runtime/instance.py ``_helper_start_failure``).
     helper_error = getattr(instance, "vector_helper_error", None)
     if isinstance(helper_error, str) and helper_error:
         payload["worker_error"] = f"vector helper: {helper_error}"

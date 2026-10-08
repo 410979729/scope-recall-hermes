@@ -558,7 +558,7 @@ def _check_python_package(report: DoctorReport, python: Path) -> dict[str, Any]:
 
     The interpreter is probed as given: resolving a venv's ``bin/python``
     symlink would probe the base interpreter, which has no venv on its path
-    and would report the package missing from an install that is fine (#87).
+    and would report the package missing from an install that is fine.
     """
     python = python.expanduser()
     if not python.is_absolute():
@@ -629,7 +629,7 @@ def _check_audiences(report: DoctorReport, instance: Path) -> None:
     """Owner grants no session can use: owner_private rows whose user is no owner principal.
 
     Such a row binds nothing, so every session on its route captures and recalls nothing while the CLI's
-    route stays healthy (#175).  Counted by platform, never named by user.
+    route stays healthy.  Counted by platform, never named by user.
     """
     if report.host != "hermes":
         return
@@ -708,7 +708,7 @@ def _check_storage(report: DoctorReport, binding, data_directory: Path) -> bool:
         return False
     recorded = recorded_schema_under_stale_header(data_directory / "memory.sqlite3")
     if recorded is not None:
-        # Every open fails closed on the header, so say why and what repairs it (#117).
+        # Every open fails closed on the header, so say why and what repairs it.
         report.schema_version = found
         report.capability_gaps.append("schema_header_stale")
         _record(
@@ -829,11 +829,9 @@ def _check_worker_status(report: DoctorReport, binding, data_directory: Path) ->
 def _check_supervisor(report: DoctorReport, data_directory: Path) -> None:
     """Whether the loop that drains the queue is still accepting wakes.
 
-    A supervisor that met a hard worker failure used to mark itself non-accepting and
-    return, leaving the processing loop stopped until the next autostart wake -- and
-    saying so nowhere.  It was found by reading a control file by hand, at
-    ``drains=217`` with 180 items still queued.  It is now bounded by consecutive
-    failures instead of one, and either state is reported here: a loop that stood down
+    A supervisor stands down after consecutive hard worker failures, not one, and
+    stays down until the next autostart wake; nothing else says so, and a stopped
+    loop leaves its queue waiting.  Either state is reported here: a loop that stood down
     is a finding, and so is one that is limping.
     """
     newest: dict[str, Any] | None = None
@@ -967,7 +965,7 @@ def _finished_derived_work(db_path: Path) -> int:
 
 
 def _check_runtime_config_present(report: DoctorReport, data_directory: Path) -> None:
-    """A runtime config that was there and is gone, named instead of a silent basic mode (#118).
+    """A runtime config that was there and is gone, named instead of a silent basic mode.
 
     Without ``runtime-config.json`` every host runs in basic mode -- no worker, no model
     routes -- which is also how an install starts, so absence alone is not a finding.  A
@@ -1036,11 +1034,10 @@ EMBEDDING_BACKLOG_HOURS = 24
 def _check_embedding_health(report: DoctorReport, config) -> None:
     """The embedding queue beside what the provider has been answering.
 
-    Recall goes on answering while embeddings wait, by words alone, and nothing said so: an installation on a free
-    tier met HTTP 429 most days and had embeddings waiting for over a week before a status page of its own showed it
-    (reported with #200).  A backlog older than ``EMBEDDING_BACKLOG_HOURS`` is named, with the provider's hold and
-    refusals when it has them.  Without a vector store and an external embedding route nothing embeds, by choice,
-    and the queue only grows: that is no finding (review of 3.8.0)."""
+    Recall goes on answering while embeddings wait, by words alone, and nothing else says so: an installation on a
+    free tier can meet HTTP 429 most days and have embeddings waiting for over a week.  A backlog older than
+    ``EMBEDDING_BACKLOG_HOURS`` is named, with the provider's hold and refusals when it has them.  Without a vector
+    store and an external embedding route nothing embeds, by choice, and the queue only grows: that is no finding."""
     health = report.embedding_health
     auxiliary = getattr(config, "auxiliary", None) if config is not None else None
     if (
@@ -1249,9 +1246,9 @@ def _check_candidates(report: DoctorReport) -> None:
 
 
 #: Cut-off answers in an hour that mean the route's output limit is wrong, not
-#: that one source was long.  another instance's DeepSeek V4 Flash thought by default,
-#: its reasoning counted against max_tokens, and most consolidation answers were
-#: cut off while the backlog stood still -- visible only in recent_work_errors.
+#: that one source was long: a model that reasons by default (DeepSeek V4 Flash)
+#: counts its reasoning against max_tokens, and most consolidation answers are cut
+#: off while the backlog stands still, visible only in recent_work_errors.
 OUTPUT_TRUNCATION_ALERT = 5
 
 

@@ -59,10 +59,10 @@ def attach_trusted_host_runtime(**kwargs):
     """The common attach, for Hermes, with one vector helper for the whole process.
 
     A gateway attaches a runtime for every agent it makes, and Hermes does not always shut down the one it made
-    before.  Each runtime held a vector helper of its own (about 1.15 GB): yuheng's gateway held two after its agent
-    was made again, one per registration of the provider (19:20 and 22:42 on 2026-10-02), and tianji's one for its
-    one.  Every runtime of the process now searches one store of each table through one helper, as a server's do
-    (``vector.process_store.share``).  Stores are such helpers only on Windows; elsewhere sharing changes nothing.
+    before.  A vector helper of each runtime's own (about 1.15 GB) would leave a gateway holding two after its agent
+    was made again, one per registration of the provider.  Every runtime of the process searches one store of each
+    table through one helper, as a server's do (``vector.process_store.share``).  Stores are such helpers only on
+    Windows; elsewhere sharing changes nothing.
     """
     from scope_recall.vector.process_store import share
 

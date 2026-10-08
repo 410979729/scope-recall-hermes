@@ -66,8 +66,8 @@ def normalize_local_platforms(values: object) -> tuple[str, ...]:
 def normalize_owner_logins(values: object) -> tuple[tuple[str, str], ...]:
     """Dashboard logins an installer approves as the owner's own, each on one local surface: ``desktop=basic:alice``.
 
-    The host passes a login there as the session's ``user_id`` (``<provider>:<user>``) and names no chat
-    (#175).  Approving one is the owner principal ``(platform, login)``, as approving the surface for a
+    The host passes a login there as the session's ``user_id`` (``<provider>:<user>``) and names no
+    chat.  Approving one is the owner principal ``(platform, login)``, as approving the surface for a
     session that names nobody is ``(platform, "local")``.
     """
     if not isinstance(values, (list, tuple)):

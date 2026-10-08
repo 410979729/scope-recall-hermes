@@ -304,7 +304,7 @@ def assertion_clause(content: str, quote: str) -> str:
 
     ``evidence_context`` cuts on real punctuation only, because its job is to
     keep a quote's negation attached to it.  A tool envelope stored as an
-    escaped JSON body has no real punctuation to cut on: measured on one instance,
+    escaped JSON body has no real punctuation to cut on: measured in one store,
     **all 16** claims rejected as ``question_not_asserted`` came from sources
     with zero real newlines and 14 to 46 escaped ones, so the context ran 155 to
     1,581 characters and one ``?`` anywhere inside vetoed the claim.  Twelve of
@@ -330,8 +330,8 @@ def assertion_clause(content: str, quote: str) -> str:
         # A quote whose own last character is the break already ends its
         # clause.  Searching onwards from there finds the *next* sentence's
         # terminator and pulls that whole sentence in -- which is how three
-        # correct assertions on one instance were vetoed by a question standing in
-        # the sentence after them, in a message that said in so many words
+        # correct assertions were vetoed by a question standing in the sentence
+        # after them, in a message that said in so many words
         # "我只是问…这不是确认".  ``evidence_context`` has always had this
         # guard; this is the same one.
         if closes:
@@ -691,9 +691,9 @@ def select_proposal(versions: tuple[ClaimVersion, ...], instant: str) -> ClaimVe
 
     ``select_effective`` deliberately returns None for these, and it is right to:
     a proposal is not an effective version and must never be answered as if it
-    were settled. But that also removed them from recall entirely, and on a real
-    instance almost the whole derived layer sits in this state — 231 proposed
-    against 11 active on one instance — so 95% of what consolidation produced was
+    were settled. But that also removed them from recall entirely, and in a real
+    store almost the whole derived layer can sit in this state (231 proposed
+    against 11 active in one), so most of what consolidation produced would be
     invisible to every caller, with no error and no gap to notice it by.
 
     Returning the head here lets retrieval admit it *labelled*, so the reader can

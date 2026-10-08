@@ -254,8 +254,8 @@ class CandidateSweeps(CandidateIntake):
     ) -> tuple[tuple[str, int], ...]:
         """The candidate versions ``schedule_settled_candidates`` would queue now, found with reads only.
 
-        Finding them walks every candidate still settling -- on the shared store on 2026-09-27, 7.6 s to find
-        none -- so the worker does it before its write and hands ``refs`` over, and the write rechecks just those.
+        Finding them walks every candidate still settling (7.6 s to find none on a large shared store), so the
+        worker does it before its write and hands ``refs`` over, and the write rechecks just those.
         """
         if type(limit) is not int or not 1 <= limit <= 64:
             raise ContractError("INPUT_INVALID", "settle_limit")
@@ -319,7 +319,7 @@ class CandidateSweeps(CandidateIntake):
         """
         moment, current = (parse_time(after) if after is not None else None), parse_time(now)
         # Stamps are compared as text here, a second's margin covering one written without its fraction.  The newest
-        # question is found by id, which the index holds without reading the rows.  The query leaves out only those
+        # question is looked up by id, which the index holds without reading the rows.  The query leaves out only those
         # that certainly held the evidence, stamped alike or a millisecond later (``julianday`` keeps milliseconds, and
         # the store holds both ``Z`` and ``+00:00`` stamps); the rest are compared here to the microsecond.
         floor = stamp(moment - timedelta(seconds=QUIET_SECONDS + 1)) if moment is not None else ""

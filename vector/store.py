@@ -241,9 +241,9 @@ class LanceVectorStore(VectorStore):
         (``runtime.lance_port.LanceIndexWriter``).  On Windows the store is the
         helper-process one, and the helper asks the guard with the native lock
         held (``_lance_worker.fenced_upsert``).  Everywhere else
-        ``build_vector_store`` selects this in-process store, which did not
-        have the method: every publication failed with
-        ``fenced_upsert_unsupported`` and the companion stayed empty (#99).
+        ``build_vector_store`` selects this in-process store, so it needs the
+        method too: without it every publication would fail with
+        ``fenced_upsert_unsupported`` and the companion stay empty.
         The order here is the helper's: lock, guard, one merge.
         """
         if not callable(guard):
@@ -297,8 +297,8 @@ class LanceVectorStore(VectorStore):
         Windows helper process passes ``budget_seconds``, what is left of its
         parent's deadline.  ``runtime.lance_port.LancePurgePort`` passes
         ``remaining_seconds`` to whichever store it holds, and off Windows
-        that is this one: the keyword was refused with a ``TypeError`` the port
-        turns into "not purged", so a forget never finished there (#99).
+        that is this one: a refused keyword would be a ``TypeError`` the port
+        turns into "not purged", and a forget would never finish there.
         """
         if budget_seconds is None:
             budget_seconds = remaining_seconds

@@ -79,8 +79,8 @@ def record_event(
                     )
                 if tuple(pending) != (scope_id, context.project_id, context.branch_id):
                     raise ContractError("ACCESS_DENIED")
-            # Decided on the whole message, before any part is written: the first part alone had let a copy of a
-            # deleted message through (review of rc13).
+            # Decided on the whole message, before any part is written: the first part alone would let a copy of a
+            # deleted message through.
             tx.sources.refuse_under_a_deleted_key(prepared.events, scope_id=scope_id)
             for event in prepared.events:
                 decision = decide(tx, event, scope_id, admission_policy)

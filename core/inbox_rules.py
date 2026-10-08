@@ -114,12 +114,11 @@ def replayable(code: object, now: datetime) -> bool:
     """Whether a pass now stores a row with this code: never tried, a passing failure, a bare ``SOURCE_MISSING`` an
     older release left, or a row put off whose time has come.
 
-    What wakes the worker, and all the doctor does not call blocked, is read from here: the wake had counted two of
-    the three retried codes, so a row an older release left as ``SOURCE_MISSING`` waited for a pass something else
-    started, and the doctor called it blocked.  A key collision (``VERSION_CONFLICT``) is taken by the next pass's
-    ``resolve_conflicted_ingress``, which stores it under a new key, finds it final (``VERSION_CONFLICT:rekeyed``) or
-    puts it off, so its wake is never in vain; counted blocked, a collision, and a given-up row returned to the rekey
-    path, waited for a pass something else started (review of rc10)."""
+    What wakes the worker, and all the doctor does not call blocked, is read from here, so the two cannot disagree on
+    which codes are retried: a row an older release left as ``SOURCE_MISSING`` is one.  A key collision
+    (``VERSION_CONFLICT``) is taken by the next pass's ``resolve_conflicted_ingress``, which stores it under a new
+    key, finds it final (``VERSION_CONFLICT:rekeyed``) or puts it off, so its wake is never in vain; counted blocked,
+    a collision, and a given-up row returned to the rekey path, would wait for a pass something else started."""
     if code is None or code in RETRIED or code == "VERSION_CONFLICT":
         return True
     return type(code) is str and code.startswith(DEFERRED) and deferred_until(code, now) is None
@@ -153,8 +152,8 @@ def letters_and_digits(text: object) -> str:
 
 _NOT_A_LETTER = re.compile(r"[\W_]+")
 #: Characters, whitespace aside, from which a deleted message's text is its own: a row holding all of it is a copy,
-#: whatever else it says.  A shorter one ("好", "ok") is found inside unrelated messages, and deleting it cancelled
-#: every waiting row that held it (review of rc10).
+#: whatever else it says.  A shorter one ("好", "ok") occurs inside unrelated messages, and deleting it would cancel
+#: every waiting row that held it.
 DISTINCT_TEXT = 24
 #: Letters and digits from which a row with the same ones and at most a tenth more is a copy though its punctuation or
 #: case differ ("我要辞职了。").  Below that, different messages compare the same ("C++" and "C#", "+1" and "-1").
@@ -170,7 +169,7 @@ def deleted_text(text: object) -> tuple[str, str]:
 def deleted_forms(text: object) -> frozenset[str]:
     """What a purge keeps of a deleted message's words to know a copy by once they are gone: digests of them without
     whitespace, and of their letters and digits when there are ``NEAR_COPY`` or more of them.  The same words spaced,
-    cased or punctuated otherwise have the same forms; words added or taken away do not (review of rc13)."""
+    cased or punctuated otherwise have the same forms; words added or taken away do not."""
     bare, letters = deleted_text(text)
     forms = {"bare:" + hashlib.sha256(bare.encode("utf-8")).hexdigest()} if bare else set()
     if len(letters) >= NEAR_COPY:
@@ -202,9 +201,9 @@ def holds(
       a tenth more.  A message that quotes a short deleted one among other words, only part of a long one, or a long
       one written otherwise than whitespace (a quote reformatted, its punctuation changed), is kept.
 
-    Compared by digest alone, the same words with a line break or a full stop more were kept and stored after the
-    delete; compared more loosely, deleting a short message cancelled unrelated rows, and a character-by-character
-    normalisation of every waiting row held the writer lease for seconds (reviews of rc10)."""
+    Compared by digest alone, the same words with a line break or a full stop more would be kept and stored after the
+    delete; compared more loosely, deleting a short message would cancel unrelated rows, and a character-by-character
+    normalisation of every waiting row would hold the writer lease for seconds."""
     try:
         return holds_events(
             json.loads(payload_json)["events"], digests, groups, texts, rekeyed=rekeyed, versions=versions

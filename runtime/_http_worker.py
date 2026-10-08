@@ -122,9 +122,9 @@ def _parse_request(raw: bytes) -> tuple[urllib.parse.ParseResult, bytes, dict[st
 
 
 #: A connection idle longer than this is not used again.  A server or a proxy closes an idle keep-alive connection
-#: after a time of its own, and a request sent on it failed at once (``network_error``, ``http_protocol``) where a new
-#: connection would have been answered: a worker kept between a server's prompts sits idle between every two (review
-#: of rc12).  A request is still never sent twice.
+#: after a time of its own, and a request sent on it fails at once (``network_error``, ``http_protocol``) where a new
+#: connection would be answered: a worker kept between a server's prompts sits idle between every two.  A request is
+#: still never sent twice.
 IDLE_REUSE_SECONDS = 30.0
 
 

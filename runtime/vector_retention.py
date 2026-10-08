@@ -4,9 +4,9 @@ Sits beside ``vector_upkeep.py``: ``runtime/instance.py`` has the single call
 site, at the start of a drain, just before the compaction that reclaims what
 a pass deleted.  The source text, its lexical index and everything derived
 from it (claims, episodes, candidates) stay; only the vector goes.  An expired
-tool output is still found by its words and through whatever cites it, never
+tool output is still recalled by its words and through whatever cites it, never
 again by meaning alone.  (A withheld output's placeholder has no words of its
-own to be found by: ``core/events.indexed_terms``.)
+own to be recalled by: ``core/events.indexed_terms``.)
 
 Why tool outputs, and why a window: on a busy instance four in five captured
 sources were tool output, each carrying a 12 KB vector -- the bulk of the

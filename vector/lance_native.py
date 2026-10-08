@@ -33,8 +33,8 @@ def helper_import_roots() -> list[str]:
     """The directories this process imports the helper's dependencies from, in its own ``sys.path`` order.
 
     The helper runs isolated (``-I``) and sees no PYTHONPATH.  Hermes Desktop's package manager boots a bundled
-    CPython and puts the environment it built on PYTHONPATH (#176): the helper died at ``import jsonschema`` before
-    its first answer, and every embed and every vector search failed as ``worker_failed``.  It is handed these
+    CPython and puts the environment it built on PYTHONPATH: without it the helper dies at ``import jsonschema``
+    before its first answer, and every embed and every vector search fails as ``worker_failed``.  It is handed these
     directories and nothing else of this process's path: not its working directory, not a host's source tree, never
     this package's own directory, whose top-level names (``packaging``, ``core``, ``tests``) ``-I`` keeps off the
     path.  ``find_spec`` finds a top-level module without running it.

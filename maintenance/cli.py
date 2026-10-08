@@ -31,7 +31,7 @@ def _optional_path(value: str | None, field: str) -> Path | None:
 
 def _interpreter(value: str | None, field: str) -> Path | None:
     """An interpreter path as given, never resolved: a POSIX venv's ``bin/python`` is a symlink to the base
-    interpreter, which cannot import this package (#87, #141).  The installer and the doctor check the chain."""
+    interpreter, which cannot import this package.  The installer and the doctor check the chain."""
     return absolute(value, field, error=SystemExit) if value else None
 
 
@@ -518,7 +518,7 @@ def _upgrade_store(args: argparse.Namespace) -> int:
     result["backup"] = str(snapshot)
     wait = min(max(float(args.wait_seconds), 0.0), 30.0)
     if recorded is not None:
-        # The store records its own schema and only the header was overwritten (#117): put the
+        # The store records its own schema and only the header was overwritten: put the
         # header back, in a write transaction that checks it again, and carry on from there.
         try:
             restamped = _restamp_header(database, recorded, timeout=wait)

@@ -1,8 +1,8 @@
 """The lexical index: a term dictionary and integer postings.
 
 ``lexical_projection`` stored every (term, event_id, source_revision) as
-text, and its mirror index doubled that: on one instance 5.2 million rows
-took 713 MB, half the store, for 258,000 distinct terms.  A term is now one
+text, and its mirror index doubled that: 5.2 million rows took 713 MB, half
+a large store, for 258,000 distinct terms.  A term is now one
 row in ``lexical_terms`` and a posting two integers in ``lexical_postings``
 (``term_id``, ``source_id``) with a reverse index: 135 MB for the same rows,
 and a document-frequency lookup in 18 ms.  ``source_id`` is a source
@@ -40,10 +40,9 @@ def source_id(conn, event_id: str, source_revision: int) -> int | None:
 def index_terms(conn, source: int, terms: Iterable[str]) -> int:
     """Record that the source holds these terms.  Returns how many postings were named.
 
-    One statement each, whatever the count.  A statement per term handed the GIL back and forth at every row, and in a
-    Hermes gateway whose other threads were busy each handoff waited out their switch interval: a tool output of 51,283
-    characters (9,348 terms) held the store's writer lease 42 s, every other entry's write failed meanwhile, and Hermes
-    skipped the tool hook for a minute (yuheng and tianshu, 2026-10-05).
+    One statement each, whatever the count.  A statement per term hands the GIL back and forth at every row, and in a
+    Hermes gateway whose other threads are busy each handoff waits out their switch interval: a tool output of 51,283
+    characters (9,348 terms) would hold the store's writer lease 42 s, every other entry's write failing meanwhile.
     """
     unique = tuple(dict.fromkeys(terms))
     if not unique:
@@ -104,7 +103,7 @@ WITHHELD_PAGE_MAX = 5000
 
 def unindex_withheld(conn, scope_ids: Iterable[str], *, after_id: int, limit: int, dry_run: bool) -> dict:
     """One page of withheld tool outputs' placeholders that hold postings beyond their own terms, in ``source_id``
-    order, and those postings dropped unless ``dry_run`` (#206).
+    order, and those postings dropped unless ``dry_run``.
 
     An older release, the 1109 upgrade and both imports indexed the whole placeholder; it is found now by its error
     text alone, when it carries one (``events.indexed_terms``).  The sources stay, and so do the postings of their
@@ -128,8 +127,8 @@ def unindex_withheld(conn, scope_ids: Iterable[str], *, after_id: int, limit: in
         (after_id, *scopes, limit + 1),
     ).fetchall()
     page = rows[:limit]
-    whole: list[int] = []  # placeholders found by nothing
-    beyond: list[tuple[int, tuple[str, ...]]] = []  # those found by their error text, holding more than its terms
+    whole: list[int] = []  # placeholders indexed by nothing
+    beyond: list[tuple[int, tuple[str, ...]]] = []  # those indexed by their error text, holding more than its terms
     for source, role, content in page:
         event = {"role": role, "content": content}
         if not withheld_tool_output(event):

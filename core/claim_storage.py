@@ -571,7 +571,7 @@ class Claims:
             # The old revision's work is moot, except an embed that has held a lease: its vector may have landed
             # already, and it completes against its own revision, which stays readable, as one done a moment earlier
             # would have.  That includes one sent back to wait after it wrote (a dependency or its deadline moved).
-            # Made obsolete, it left a point in the store no ledger expected (#205; the waiting case: review of 3.7.4).
+            # Made obsolete, it would leave a point in the store no ledger expected.
             conn.execute(
                 """UPDATE work_items SET state='obsolete' WHERE subject_ref=? AND state IN ('pending','leased')
                             AND NOT (work_type='embed' AND lease_token>0)""",

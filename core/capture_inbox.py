@@ -90,9 +90,9 @@ def enqueue(storage, clock, context, value, *, scope_id, host_scope, remaining_s
     if len(encoded.encode("utf-8")) > 2097152:
         raise ContractError("INPUT_INVALID", "ingress_item_budget")
     # The words are part of a capture's place here.  Codex gives a message sent into a running turn that turn's id, so
-    # a second such message came under the key of the first while the first still waited for its new key
-    # (``resolve_conflicted_ingress``), found that row and was refused as changed evidence: the work computer lost two
-    # of its owner's messages that way on 2026-09-30 alone.  A retried hook sends the same words and finds its own row.
+    # a second such message comes under the key of the first while the first still waits for its new key
+    # (``resolve_conflicted_ingress``): without its words in the token it would meet that row and be refused as
+    # changed evidence.  A retried hook sends the same words and meets its own row.
     token = hashlib.sha256(
         canonical(
             [
@@ -191,8 +191,8 @@ def _commit(storage, clock, context, token, prepared, scope_id, policy, deadline
         if (exc.code, exc.field) == DELETED_KEY:
             return _refused_for_a_delete(storage, context, token, prepared, deadline)
         # Terminal failures remain inspectable, but are not replayed forever.  A passing one (the store busy, the time
-        # up) leaves the row's code as it was: written over, a collision left its path, and a row put off its tries
-        # and its place across a delete (review of rc10).
+        # up) leaves the row's code as it was: written over, a collision would leave its path, and a row put off its
+        # tries and its place across a delete.
         if code not in _PASSING:
             try:
                 with storage.write(context, remaining_seconds=max(0.001, deadline - time.monotonic())) as tx:
@@ -203,7 +203,7 @@ def _commit(storage, clock, context, token, prepared, scope_id, policy, deadline
                 pass
     except _TRANSIENT:
         code = "STORAGE_UNAVAILABLE"
-    # A row the next pass takes again says so: a pass that met a busy writer here said nothing (review of rc10).
+    # A row the next pass takes again says so, or a pass that met a busy writer here would say nothing.
     pending = (INGRESS_PENDING_GAP,) if code in _PASSING else ()
     return CaptureReceipt("queued", (), "queued", "pending", "pending", (*prepared.gaps, *pending), code)
 
@@ -218,8 +218,8 @@ SOURCE_DELETED_GAP = "capture_gap:source_deleted"
 def _refused_for_a_delete(storage, context, token, prepared, deadline) -> CaptureReceipt:
     """A copy of a deleted message under that message's key is refused for good; another message under the key is a
     key collision, stored under a key of its own (``source_storage.Sources.refuse_under_a_deleted_key``).  Left in the
-    inbox with its code, the copy kept the doctor's ``capture_ingress_blocked`` and the patrol's line up until someone
-    removed it by hand (rc13); it leaves the inbox, and the pass counts it among the rows it cancelled."""
+    inbox with its code, the copy would keep the doctor's ``capture_ingress_blocked`` up until someone removed it by
+    hand; it leaves the inbox, and the pass counts it among the rows it cancelled."""
     try:
         with storage.write(context, remaining_seconds=max(0.001, deadline - time.monotonic())) as tx:
             tx._check(write=True).execute("DELETE FROM capture_inbox WHERE token=?", (token,))
@@ -382,8 +382,8 @@ def _replay_rows(storage, clock, context, rows, authorize, admission_policy, dea
         try:
             revalidated = _revalidated(storage, context, row, authorize, deadline, rekey=rekey)
         except _TRANSIENT:
-            # The store itself: the rest of the page waits for the next pass.  Raised, it lost what this replay had
-            # done, and the rekey replay after it did not run (review of rc10).
+            # The store itself: the rest of the page waits for the next pass.  Raised, it would lose what this replay
+            # had done, and the rekey replay after it would not run.
             receipts.append(
                 CaptureReceipt(
                     "queued", (), "queued", "pending", "pending", (INGRESS_PENDING_GAP,), "STORAGE_UNAVAILABLE"
@@ -446,7 +446,7 @@ def _revalidated(storage, context, row, authorize, deadline, *, rekey):
         raise
     except (KeyError, TypeError, ValueError) as exc:
         # A field a newer release wrote into the stored context, or one this release needs and it lacks: named, where
-        # a bare TypeError said nothing of where to look (review of rc10).
+        # a bare TypeError would say nothing of where to look.
         raise ContractError("INPUT_INVALID", "ingress_context") from exc
     # Revalidate the stored envelope; trust is from the captured context,
     # never inferred from a payload role or text claiming to be a user.
@@ -478,7 +478,7 @@ def _defer(storage, clock, context, row, exc, deadline, *, path) -> CaptureRecei
             )
     except (*_TRANSIENT, ContractError):
         # Not written: the row keeps its code and a later pass takes it again.  Said as put off or given up, a pass
-        # reported a give-up the store never saw, and the next reported it again (review of rc10).
+        # would report a give-up the store never saw, and the next would report it again.
         return CaptureReceipt(
             "queued", (), "queued", "pending", "pending", (INGRESS_PENDING_GAP,), "STORAGE_UNAVAILABLE"
         )

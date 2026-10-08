@@ -109,7 +109,7 @@ def replace_package(python, wheel, backup, *, source_quiesced=False, uv=None) ->
     # the launcher the caller passed: a venv's ``bin/python`` symlink is how
     # CPython finds the venv's ``pyvenv.cfg``, and a probe run with the
     # resolved base interpreter reports the base prefix instead of the venv
-    # (observed on Ubuntu's hostedtoolcache layout), which then misjudges the
+    # (as on Ubuntu's hostedtoolcache layout), which then misjudges the
     # helper's containment. The resolved path is still the safety anchor.
     launcher = Path(python).expanduser()
     if not launcher.is_absolute():

@@ -10,7 +10,7 @@ embeddings the source store had: every source it embedded whose vector its
 retention had not expired, and every fact's current version -- less the tool
 outputs retention would expire at once (a withheld output's summary, a repeat),
 which are recorded as expired instead.  Until the worker has made them, those
-memories are found by their words.
+memories are recalled by their words.
 
 Three things cannot be copied as they are.
 
@@ -419,8 +419,8 @@ def _import_rows(conn, src, names: _Names, *, store_installation: str, store_sco
         conn.execute("SELECT i.old_id, t.term_id FROM temp.import_terms i JOIN lexical_terms t ON t.term=i.term")
     )
     conn.execute("DROP TABLE temp.import_terms")
-    # A withheld tool output's placeholder is found by its error text alone, when it carries one; the rest of the
-    # postings an older release gave it stay behind (#206).
+    # A withheld tool output's placeholder is indexed by its error text alone, when it carries one; the rest of the
+    # postings an older release gave it stay behind.
     withheld: dict[int, tuple[str, ...]] = {}
     for source_id, role, content in src.execute(
         f"SELECT e.source_id, e.role, e.content FROM source_events e WHERE e.role='tool' AND {OMITTED_TOOL_OUTPUT}"
@@ -497,10 +497,10 @@ def _drop_expirable_embeddings(conn, names: _Names, *, now: str) -> int:
 
     A summary the capture filter left for an output it withheld, and a repeat of an earlier tool
     output in the same scope, are what the intake gate keeps as sources only.  A store from an
-    earlier release embedded them anyway, and its embed history queued them again: the pilot's
-    import put 12,953 of them in front of the shared worker, each embedded and then deleted by
-    retention within the hour.  They are recorded as expired, under the reason retention gives,
-    and never asked for; the text and everything drawn from it stay, found by their words.
+    earlier release embedded them anyway, and its embed history would queue them again: thousands
+    in front of the shared worker, each embedded and then deleted by retention within the hour.
+    They are recorded as expired, under the reason retention gives, and never asked for; the text
+    and everything drawn from it stay, recalled by their words.
     """
     rows = conn.execute(
         f"""SELECT w.work_id, e.event_id, e.source_revision,

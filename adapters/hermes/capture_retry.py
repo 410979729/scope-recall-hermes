@@ -35,22 +35,22 @@ if TYPE_CHECKING:
 _log = logging.getLogger("scope_recall.adapters.hermes.provider")
 
 #: What the retry thread's pass may spend, off any hook's time and off Hermes' single memory worker.  At a capture's
-#: own ``CAPTURE_TIMEOUT_S`` a pass wrote about one of up to 16 buffered tool results, each write 1-4 s on the busy
-#: shared store (2026-10-04).  A turn's end keeps that 1 s: it runs on Hermes' memory worker, which the next turn's
-#: writes queue behind (review of 3.6.1).
+#: own ``CAPTURE_TIMEOUT_S`` a pass would write about one of up to 16 buffered tool results, each write 1-4 s on a
+#: busy shared store.  A turn's end keeps that 1 s: it runs on Hermes' memory worker, which the next turn's writes
+#: queue behind.
 _RETRY_PASS_SECONDS = 5.0
 #: What a shutdown's last pass may spend: the thread wrote again within the last ``_RETRY_EVERY_S``, and on a busy store
-#: a longer pass seldom changes the outcome while it holds up a gateway's planned stop (review of 3.6.1).
+#: a longer pass seldom changes the outcome while it holds up a gateway's planned stop.
 SHUTDOWN_RETRY_SECONDS = 2.0
 #: How long a capture is kept to retry: one that cannot be written by then is dropped and logged as lost.  Kept for
 #: good, a capture of a full inbox or of an installation whose scopes changed under a running gateway was retried every
-#: ``_RETRY_EVERY_S`` for the life of the process, and its thread held an evicted agent's adapter (review of 3.6.1).
+#: ``_RETRY_EVERY_S`` for the life of the process, and its thread would hold an evicted agent's adapter.
 _RETRY_GIVE_UP_S = 1800.0
 #: How often the retry thread writes again what the buffer holds, for as long as it holds anything.  Hermes runs
 #: ``sync_turn`` only after a turn with a message and a reply: a turn it injected (a watch notification), one it
 #: interrupted, or one with no reply ran no retry.  An idle agent evicted from Hermes' cache keeps its adapter without
-#: a shutdown, so nothing wrote the buffer again until a gateway restart dropped it.  tianji lost 10 tool results so on
-#: 2026-10-04 (``capture_failure`` logged once, never in the store).
+#: a shutdown, so without this thread nothing writes the buffer again until a gateway restart drops it, and the tool
+#: results it held are lost (``capture_failure`` logged once, never in the store).
 _RETRY_EVERY_S = 30.0
 
 

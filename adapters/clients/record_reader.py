@@ -120,7 +120,7 @@ class RecordReader:
                     remaining_seconds=max(0.0, self._hook.remaining(deadline)),
                 )
             except (ContractError, OSError, RuntimeError, sqlite3.Error) as exc:
-                # Named, so that a store that fails otherwise than busy says what failed (review of rc13).
+                # Named, so that a store that fails otherwise than busy says what failed.
                 self._hook.diagnostics.capture_error_type = type(exc).__name__
                 self._hook.note("session_record_check_failed")
                 return

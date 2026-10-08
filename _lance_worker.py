@@ -57,7 +57,7 @@ def _take_import_roots(arguments: list[str]) -> None:
     """Import first from where the host imports this worker's dependencies (``lance_native.helper_import_roots``).
 
     ``-I`` keeps PYTHONPATH, the user site and this file's own directory off the path.  A host given its packages
-    on PYTHONPATH (#176) hands those directories over as arguments; absolute paths only, ahead of this
+    on PYTHONPATH (Hermes Desktop) hands those directories over as arguments; absolute paths only, ahead of this
     interpreter's own as PYTHONPATH put them for the host, none twice.
     """
     known = {os.path.normcase(os.path.abspath(entry)) for entry in sys.path if entry}
@@ -86,8 +86,8 @@ def main() -> None:
 
     if sys.argv[1:2] == ["--probe"]:
         # The start-up and nothing after it: the drain's account of a helper that never answered
-        # (``lance_native.helper_start_failure``).  The imports above are where the helper died in #176.  A failed
-        # native import fails this run; the helper below leaves it to its first request, which reports it.
+        # (``lance_native.helper_start_failure``).  The imports above are where a helper missing its packages dies.  A
+        # failed native import fails this run; the helper below leaves it to its first request, which reports it.
         import lancedb  # noqa: F401
         import pyarrow  # noqa: F401
 

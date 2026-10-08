@@ -321,9 +321,8 @@ class SQLiteBruteForceVectorStore(VectorStore):
     ) -> bool:
         """Remove every revision of the governed members; acknowledge only an inventory verified empty.
 
-        This companion could not be purged at all.  That did not matter while
-        it could not be published to either (#85); once it could, a forget left
-        its vector rows behind and its purge work retrying for good.  The rules
+        This companion is purged as it is published to: otherwise a forget
+        would leave its vector rows behind and its purge work retrying for good.  The rules
         are the native store's, from the same code: opaque identities only, a
         row that cannot be classified makes the inventory unknown, and an
         unknown inventory is never acknowledged.

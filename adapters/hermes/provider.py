@@ -34,7 +34,7 @@ from .worker import AdapterWorker
 _log = logging.getLogger(__name__)
 
 #: What a shutdown waits for captures whose store I/O runs without the adapter lock.  A tool result's write took
-#: 1.4-4.4 s on the shared store (2026-10-03), past its own ``CAPTURE_TIMEOUT_S`` budget; 10 s covers that.
+#: 1.4-4.4 s on a busy shared store, past its own ``CAPTURE_TIMEOUT_S`` budget; 10 s covers that.
 _CAPTURE_DRAIN_WAIT_S = 10.0
 _BOUNDED_MESSAGE_SCAN = 8
 
@@ -447,7 +447,7 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
                 self._captures_done.wait(max(0.0, deadline - time.monotonic()))
             still_writing = self._captures_in_flight
             # What the buffer still holds is written once more, in the time the drain left and at least a capture's:
-            # dropped here, it was lost at every gateway restart (2026-10-04).  An agent Hermes evicts keeps its
+            # dropped here, it would be lost at every gateway restart.  An agent Hermes evicts keeps its
             # adapter without a shutdown; the retry thread writes its buffer.
             self._retry.wake.set()
             try:

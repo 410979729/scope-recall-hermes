@@ -398,7 +398,7 @@ def _run_once(
         _relay_output(stdout, stderr, result_sink)
         if child.returncode and not stdout.strip():
             # A child that died before its receipt is otherwise a bare exit
-            # code; the reason it printed is the only diagnosis there is (#87).
+            # code; the reason it printed is the only diagnosis there is.
             failure = {"status": "degraded", "capability_gaps": ["worker_process_failed"]}
             reason = failure_reason(stderr)
             if reason:
@@ -491,8 +491,8 @@ def main(argv: list[str] | None = None) -> int:
     # The interpreter is executed exactly as given.  Resolving it follows a
     # venv's bin/python symlink to the base interpreter, which then starts
     # without the venv on sys.path and cannot import the package it was asked
-    # to run (#87); Windows venvs copy the interpreter, which is why only POSIX
-    # installs saw it.
+    # to run; Windows venvs copy the interpreter, so only POSIX installs meet
+    # this.
     python_executable = python_raw
     if os.name != "nt":
         # WorkerProcess.terminate() signals the watchdog's process group.

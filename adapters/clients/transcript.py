@@ -208,8 +208,8 @@ def workbuddy_said(row: object) -> Said | None:
         return None
     if role == "assistant" and _error_words(text, _workbuddy_error(provider)):
         # An error WorkBuddy showed in place of the model's reply (not signed in, a model or network failure): the
-        # message carries that error and its words are the error's.  The model said nothing (seen 2026-10-04 with
-        # WorkBuddy's agent 2.147.0 not signed in, its notice stored as the reply).
+        # message carries that error and its words are the error's.  The model said nothing (WorkBuddy's agent
+        # 2.147.0, not signed in, writes its notice as the reply).
         return None
     text = without_lone_surrogates(text)
     try:
@@ -397,7 +397,7 @@ def read(
             try:
                 row = json.loads(line)
             except (ValueError, RecursionError):
-                # A line nested past what the parser takes failed every later Stop of the session (review of rc11).
+                # A line nested past what the parser takes would fail every later Stop of the session.
                 row = None
             lines.append((position, rows(row)))
     return lines

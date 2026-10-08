@@ -153,8 +153,8 @@ class TurnCapture:
         """Capture one tool result; the caller holds ``_lock`` exactly once, and the store I/O runs without it.
 
         Hermes calls the hook for each of a step's parallel tool calls at once.  Held across its write (1.4-4.4 s on
-        the shared store), one capture kept the others waiting, and those past the hook's bound were not taken:
-        yuheng 6 and tianji 2 tool results on 2026-10-03.
+        a busy shared store), one capture would keep the others waiting, and those past the hook's bound would not
+        be taken.
 
         A call that failed is kept as well, as Codex's are.  Hermes calls a result failed for a non-zero exit code or
         an error field, and what such a call printed (a traceback, a failing test) is what the agent saw and acted

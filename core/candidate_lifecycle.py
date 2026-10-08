@@ -162,7 +162,7 @@ def _plain(text: object) -> str:
 def candidate_name_matches(expected: object, proposed: object) -> bool:
     """Whether a proposed subject or predicate is the candidate's own, written differently.
 
-    Replayed against the real model on one instance's terminally failed evaluations,
+    Replayed against the real model on one store's terminally failed evaluations,
     every rejected name was the candidate's: ``embedding_retry.py`` came back as
     ``embedding_retry.py 全文`` from the document's heading, a subject holding
     ``\\"看图\\"`` came back with plain quotes, and a predicate of a whole clause

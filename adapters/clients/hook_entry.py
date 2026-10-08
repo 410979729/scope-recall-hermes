@@ -51,7 +51,7 @@ def main(argv: list[str] | None = None) -> int:
     empty = EMPTY_ANSWER[args.host]
     raw = sys.stdin.buffer.read(65537)
     # Started whether or not the entry's server is asked: the hook recalls itself when the server has not answered in
-    # time, and without a helper started here that recall ran by words alone (review of rc11).
+    # time, and without a helper started here that recall would run by words alone.
     _prestart_vector_helper(raw)
     location = (args.config if args.config is not None else args.home).expanduser()
     if not location.is_absolute():

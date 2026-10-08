@@ -75,9 +75,9 @@ _LEXICAL_DF_FRACTION = 0.10
 _LEXICAL_DF_FLOOR = 64
 #: Postings the lexical statement may group, the kept terms' document
 #: frequencies added rarest first.  It groups every posting of every term, so its
-#: time follows this sum: on the shared store (2026-09-29) a 2,000-character
-#: prompt's 80 terms held 273,000 postings and took 9 s, longer than the prompt's
-#: whole recall, which then ran without its vector search as well.  The rarest
+#: time follows this sum: on the shared store a 2,000-character prompt's 80
+#: terms held 273,000 postings and took 9 s, longer than the prompt's whole
+#: recall, which then ran without its vector search as well.  The rarest
 #: terms separate the most, and a question's own few are never cut.
 _LEXICAL_POSTING_BUDGET = 20_000
 _LEXICAL_MIN_TERMS = 16
@@ -337,9 +337,9 @@ def _claim_answers(hits: int, covered: float, term_count: int, *, proposed: bool
 #: How far back a reply's turn is looked for.  A turn that ran longer than this
 #: is judged from its last two hours only.
 _TURN_LOOKBACK = timedelta(hours=2)
-#: Memory lookups in one turn that make its reply a restatement.  On one instance and
-#: another instance the replies that tested recall ran 3 to 15 of them; replies that used
-#: memory to answer a question mostly ran one or two, and those stay evidence.
+#: Memory lookups in one turn that make its reply a restatement.  Replies that
+#: tested recall ran 3 to 15 of them; replies that used memory to answer a
+#: question mostly ran one or two, and those stay evidence.
 RECALL_ECHO_MIN_LOOKUPS = 3
 #: What a lookup that returned memory looks like: recall items, entity
 #: statements, profile sections.  A status lookup returns none of them.
@@ -356,8 +356,8 @@ def _second_precision(moment) -> str:
 def recall_echo(tx, source) -> bool:
     """Whether an assistant reply restates what memory lookups in its turn returned.
 
-    another instance tested her own recall and reported the queries and what came back;
-    the report then came back first for those very queries, above the evidence
+    an agent that tests its own recall and reports the queries and what came back
+    has the report come back first for those very queries, above the evidence
     it quoted.  The turn is the stretch since the session's last user message,
     which the host captures before any tool runs, and the reply is dated as the
     store can best tell (``witnessed_at``), since that report's own row carried
@@ -425,8 +425,8 @@ def _claim_statement_content(version) -> str:
     """What a reader is shown for a claim: its payload without the quoted spans.
 
     The spans are verbatim evidence, and a tool-derived claim quotes escaped
-    JSON: two such claims used most of a 4096-unit packet on one instance and pushed
-    the answering messages out.  The item's evidence_refs already name every
+    JSON: two such claims can use most of a 4096-unit packet and push the
+    answering messages out.  The item's evidence_refs already name every
     source, the full payload stays in metadata, and nothing on the read path
     matches against the quotes.
     """
@@ -474,9 +474,9 @@ TURN_REPLY_SECONDS = 1800
 TURN_REPLY_LIMIT = 3
 #: How long after a person's message a further message of theirs, sent before the agent's first reply, still joins
 #: its turn (``RetrievalStorage._turn``).  The person adds to what they asked while the agent works, and the reply
-#: answers both: of the owner's 1,242 messages of 2026-09-20..10-05, 141 had such a follow-up before a reply, 70 of
-#: them inside the same host turn, and their turns read empty, so a question asked again never reached what it had
-#: been told.  Nine in ten such follow-ups came within ten minutes; a later one may open a turn of its own.
+#: answers both: of one person's 1,242 messages over two weeks, 141 had such a follow-up before a reply, 70 of them
+#: inside the same host turn, and without this their turns read empty, so a question asked again never reached what
+#: it had been told.  Nine in ten such follow-ups came within ten minutes; a later one may open a turn of its own.
 TURN_FOLLOWUP_SECONDS = 600
 #: Rows of one named day (and entries) the scoped channel reads before it chooses (``RetrievalStorage.scoped``), in
 #: time order.  The shared store's busiest day was 861 messages of every entry, 542 of one; read only to 400 rows,
@@ -624,8 +624,8 @@ class RetrievalStorage:
 
         The lexical, vector and recent channels all yield events, so a fact used
         to reach recall only through relation expansion out of an event that was
-        retrieved first.  On one instance's benchmark 19 of the 29 facts recall missed
-        were never reached at all: newer talk about the same subject filled the
+        retrieved first.  In a benchmark, 19 of the 29 facts recall missed were
+        never reached at all: newer talk about the same subject filled the
         lexical pool before the fact's own evidence.  A claim is short and
         structured, so it is matched on its statement, with its own rule
         (``_claim_answers``) instead of the event specificity bar.
@@ -912,11 +912,11 @@ class RetrievalStorage:
         order: unbounded, it read every later row of the scope (second review
         of 3.4.7).
 
-        The same message stored again is not the person speaking again.  Until
-        3.4.4 a Hermes provider rebuilt with its agent stored a turn's message
-        a second time, with the reply, under the host's ordinal: 125 of the 209
-        Hermes turns of 2026-09-16..29 that seemed to have no reply were that,
-        and the first copy stopped at the second before reaching the answer.
+        The same message stored again is not the person speaking again.  A
+        Hermes provider rebuilt with its agent stored a turn's message a second
+        time in older releases, with the reply, under the host's ordinal (most
+        Hermes turns that seemed to have no reply were that), and the first copy
+        would stop at the second before reaching the answer.
         With ``join``, neither is what the person adds before the agent's first
         reply, within ``TURN_FOLLOWUP_SECONDS``: the reply often answers both.
         Only the replies a turn offers as candidates join (``turn_replies``),

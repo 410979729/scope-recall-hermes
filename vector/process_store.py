@@ -121,7 +121,7 @@ def _worker_command() -> list[str]:
     # The worker installs its own ``scope_recall`` alias; isolated mode keeps a
     # source-tree directory such as ``packaging`` from shadowing the wheel
     # installed in the interpreter, and the directories this process imports the
-    # worker's dependencies from follow as arguments (#176).
+    # worker's dependencies from follow as arguments.
     return helper_command()
 
 
@@ -891,10 +891,10 @@ def share() -> None:
 
     The server answers a prompt with the handler it keeps, and each prompt that comes meanwhile with a handler made
     for it, whose store started a helper of its own: about 2 s importing LanceDB, then the table's open, while that
-    prompt's words were searched.  Parallel sub-agents opening sessions two and three a second on the work computer
-    lost their vector search that way, and some their whole recall.  On a copy of the shared store, bursts of three
-    prompts with long briefs, each stored and then recalled within the hook's 6 s, kept their vector search in 29 of
-    48 recalls (16 lost it to a helper's start); with one store for the process, 45 of 48 (none) (2026-10-01).  The
+    prompt's words were searched.  Parallel sub-agents opening sessions two and three a second lose their vector
+    search that way, and some their whole recall.  On a copy of the shared store, bursts of three prompts with long
+    briefs, each stored and then recalled within the hook's 6 s, kept their vector search in 29 of 48 recalls (16
+    lost it to a helper's start); with one store for the process, 45 of 48 (none).  The
     prompts take turns on the helper, one search each, 10-40 ms when warm.  A store of a table the process no longer
     uses (its embedding space changed under it) keeps its helper until the process ends.
     """

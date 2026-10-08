@@ -342,10 +342,10 @@ def host_notice(history: object, user_message: object) -> bool:
 
     Past the last reply the message must be one Hermes folded and marked.  A compression at the turn's start can
     fold its summary into the turn's own message (``ContextCompressor._merge_summary_into_tail_row``) and put the
-    reply it folded away after it (``_reply_insertion_index``): one of tianshu's three delegation results on
-    2026-10-05 was stored as the owner's that way.  Anything else before the last reply belongs to an earlier turn.
-    Its own words only: a summary quotes the person's messages word for word, and a message merely holding the
-    turn's text took the person's words for a notice (review of 3.7.3).
+    reply it folded away after it (``_reply_insertion_index``), and a delegation result would be stored as the
+    person's that way.  Anything else before the last reply belongs to an earlier turn.  Its own words only: a
+    summary quotes the person's messages word for word, and a message merely holding the turn's text would take the
+    person's words for a notice.
     """
     text = extract_user_text(user_message).strip()
     if not isinstance(history, list) or not text:

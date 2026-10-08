@@ -36,9 +36,9 @@ BUSY_BACKOFF_SECONDS = 30.0
 #: Hard worker failures in a row before a supervisor stops accepting wakes.
 #: One is not a broken worker: a pass can raise on one item, lose a lease to a
 #: maintenance command, or meet a bound nobody had met before.  Standing down on
-#: the first one stopped the processing loop until the next five-minute wake and
-#: said so nowhere -- observed on a live instance at ``drains=217`` with 180
-#: items still queued.  Three in a row, each after a backoff, is a worker that
+#: the first one would stop the processing loop until the next five-minute wake
+#: and say so nowhere, with the queue left waiting.  Three in a row, each after
+#: a backoff, is a worker that
 #: is not going to work, and then standing down is right.
 MAX_CONSECUTIVE_WORKER_FAILURES = 3
 #: Seconds between two reads of the operator pause while a supervisor sleeps its start delay.

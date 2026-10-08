@@ -250,7 +250,7 @@ def require_interpreter(path: Path, field: str) -> Path:
     inside the resolved chain is still refused.  What is recorded and later
     executed -- hooks, MCP launchers, the autostart task, the worker -- is the
     link itself: a venv's ``bin/python`` started by its resolved target runs
-    without the venv on ``sys.path`` and cannot import this package (#87).
+    without the venv on ``sys.path`` and cannot import this package.
     """
 
     expanded = absolute(path, field)

@@ -162,7 +162,7 @@ class SessionBinding:
         self._adapter._session_watermark += 1
 
     def _say_if_unbound(self, identity: HermesIdentity) -> None:
-        """Say once per session, in the host's log, that a desktop or tui session binds no scope (#175).
+        """Say once per session, in the host's log, that a desktop or tui session binds no scope.
 
         Such a session fails closed: nothing in it is captured or recalled.  Hermes reads none of this
         adapter's diagnostics, so without this line a Desktop login's sessions wrote nothing for days and

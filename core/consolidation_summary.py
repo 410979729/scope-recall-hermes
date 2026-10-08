@@ -142,9 +142,9 @@ def apply_summary(tx, fence, kind, proposal, scope_id, now):
     if fence is None:
         return apply(proposal, scope_id, now)
     # A worker's summary that does not qualify is dropped and named; the claims
-    # accepted beside it stay.  Only paged results did this once: a single page
-    # rolled back whole, and another instance paid a second model call for each of 208
-    # unqualified goals in one day, losing the page's claims when that failed too.
+    # accepted beside it stay.  Rolled back whole, a single page would cost a
+    # second model call for each unqualified goal (hundreds a day in one store),
+    # losing the page's claims when that failed too.
     conn = tx._check(write=True)
     conn.execute("SAVEPOINT consolidation_summary")
     try:

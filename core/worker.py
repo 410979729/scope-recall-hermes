@@ -69,8 +69,8 @@ SOURCE_PAGES_PER_PASS = 16
 #: so it waited behind every page of the pass instead of one.  Two polls' worth lets it in.
 PAGE_TURN_SECONDS = 0.02
 #: Seconds of those pages a pass spends at most.  A page holds the writer lease while it matches its source
-#: against the candidates sharing a term: 0.5-7 s a page on the shared store on 2026-09-27 (thousands of
-#: candidates), so sixteen pages still held it for half a minute of each pass.  A small store's pages take
+#: against the candidates sharing a term: 0.5-7 s a page on a shared store with thousands of candidates, so
+#: sixteen pages would hold it for half a minute of each pass.  A small store's pages take
 #: milliseconds and all sixteen still fit.
 SOURCE_PAGE_SECONDS = 5.0
 #: Source embeddings one group may carry.  The adapter sends them as consecutive
@@ -229,8 +229,8 @@ def _queued_work_types(storage, clock, context, started: float, budget: float, k
 #: Scheduling settled candidates is how a candidate whose evidence stopped
 #: arriving is finally judged, and it ran every pass however deep the queue
 #: already was.  A pass evaluates at most ``candidate_batch_limit`` of them, so
-#: on another instance the queue grew by eight a pass -- 941 waiting, the oldest ten hours
-#: old -- while every one of them cost a model call to get there.  Above this
+#: the queue could grow by eight a pass, to hundreds waiting for hours, while
+#: every one of them costs a model call to get there.  Above this
 #: depth the work is already recorded and waiting; adding more only ages it.
 #: Twelve passes' worth, an hour at the default wake, so an idle instance clears
 #: the ceiling before the next sweep.
@@ -292,7 +292,7 @@ def _recover_failed_work(
     sweep = None
     if "evaluate_candidate" in allowed:
         # Which settled candidates to queue is read before the write: finding them walks every candidate still
-        # settling, and under the writer lease that was 7.6 s of each pass on the shared store (2026-09-27).
+        # settling, and under the writer lease that was 7.6 s of each pass on a large shared store.
         with storage.read(context, remaining_seconds=budget_left(started, clock, budget)) as tx:
             if tx.work.pending_depth("evaluate_candidate") < CANDIDATE_QUEUE_CEILING:
                 page = min(config.candidate_batch_limit, config.max_items)
@@ -542,8 +542,8 @@ def drain_worker(
             allowed = allowed - {item.work_type}
             # Reported like a missing port, so the supervisor sleeps the type
             # instead of starting the next pass at once for the next item:
-            # a fourth instance, with no embedding credential, parked one of 2,548 items
-            # every seven seconds.
+            # without an embedding credential, a store would otherwise park one
+            # waiting item every few seconds.
             paused.append(item.work_type)
         if str(error_code or "").lower() in _RATE_LIMITED_ERRORS:
             # A provider that just answered 429 will answer 429 to the next item
@@ -552,10 +552,10 @@ def drain_worker(
         if "evaluate_candidate" in allowed and claimed_types["evaluate_candidate"] >= candidate_ceiling:
             # The batch limit is there so a busy candidate queue never holds
             # captured conversation back.  With nothing else ready there is
-            # nothing to hold back, and standing down anyway is what let a
-            # backlog outlive the passes meant to drain it: another instance evaluated
-            # eight a pass while its schedulers queued up to sixteen, so the
-            # queue grew by eight a pass with no new conversation at all.
+            # nothing to hold back, and standing down anyway would let a
+            # backlog outlive the passes meant to drain it: evaluating eight a
+            # pass while the schedulers queue up to sixteen grows the queue by
+            # eight a pass with no new conversation at all.
             if candidate_ceiling < config.max_items and not _other_work_ready(
                 storage, clock, context, started, budget, allowed - {"evaluate_candidate"}
             ):

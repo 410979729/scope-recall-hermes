@@ -290,9 +290,9 @@ class _QueryEmbedding:
 
     Behind the exact, lexical, claim and recent channels the embedding had three quarters of what they left, about
     2.2 s of a prompt's 4 s window: enough on a warm connection, not for the new one a prompt more than 30 s after the
-    last needs (the proxy's tunnel, TLS, then the provider).  On 2026-09-29 the work computer's server recalled 4 of 9
-    prompts by words alone that way (``AuxiliaryModelError:timeout``), and the owner's own prompts after a pause did
-    too.  Asked for as the recall starts, it runs beside those channels with its share of the whole window.
+    last needs (the proxy's tunnel, TLS, then the provider): measured, a remote client's server recalled 4 of 9
+    prompts by words alone that way (``AuxiliaryModelError:timeout``).  Asked for as the recall starts, it runs beside
+    those channels with its share of the whole window.
     """
 
     def __init__(self, query: str, deadline: float) -> None:
@@ -465,8 +465,9 @@ def _close_quietly(resource: Any) -> None:
 def _helper_start_failure(deadline: float) -> str | None:
     """One line saying why the vector helper could not start, from its start-up run once more; or ``None``.
 
-    The helper's stderr is discarded.  On Hermes Desktop it died at ``import jsonschema`` and every pass reported
-    ``vector_unavailable:RuntimeError`` and nothing else (#176).  The run is sent no request, so it holds no memory
+    The helper's stderr is discarded, so a helper that dies at an import (as on Hermes Desktop, at ``import
+    jsonschema``) would leave every pass reporting ``vector_unavailable:RuntimeError`` and nothing else.  The run is
+    sent no request, so it holds no memory
     text; the line is the last of its traceback, chosen as the watchdog chooses a worker's, paths redacted.  It
     takes at most a quarter of what is left of the pass.
     """
@@ -580,8 +581,8 @@ class RuntimeInstance:
         worker and its connection.
 
         Warming the vector store alone left them to the first recall: a WorkBuddy entry's server, started cold, lost
-        the vector search of its first two recalls to the embedding's time (``AuxiliaryModelError:timeout``, measured
-        2026-10-03) and answered with it from the third, 12.7 s after its start.  The text is fixed and nothing of what
+        the vector search of its first two recalls to the embedding's time (``AuxiliaryModelError:timeout``, measured)
+        and answered with it from the third, 12.7 s after its start.  The text is fixed and nothing of what
         comes back is kept; it writes nothing."""
         self._ensure_open()
         if self.config.vector is None:
@@ -957,8 +958,7 @@ class _BoundedEmbed(_Bounded):
     # and publish_source, and each has to be listed here or the worker probes
     # for it, does not find it through this wrapper, and falls back to one
     # document per request and one commit per vector as if the capability did
-    # not exist.  That is exactly how rc40's batching reached production doing
-    # nothing.
+    # not exist, silently.
     methods = (
         "prepare_source",
         "prepare_sources",

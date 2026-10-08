@@ -47,9 +47,9 @@ from .evidence_question import (
 #: Truncated source triggers still owe a page of candidates, joined to their
 #: source so the audience filter can apply.
 #: Read inside the worker's page writes, so it starts from the few triggers: CROSS JOIN keeps SQLite's join
-#: order.  Left to choose, it started from ``source_events`` through its scope index and looked up a trigger for
-#: every source: 2.7 s and 3.5 s a page on the shared store on 2026-09-27 (8,819 triggers, 192 truncated), with
-#: the writer lease held, where this order takes 4-5 ms.
+#: order.  Left to choose, it starts from ``source_events`` through its scope index and looks up a trigger for
+#: every source: 2.7-3.5 s a page on a shared store of 8,819 triggers (192 truncated), with the writer lease
+#: held, where this order takes 4-5 ms.
 _TRUNCATED_TRIGGERS = """FROM candidate_source_triggers t
     CROSS JOIN source_events s ON s.event_id=t.source_ref AND s.source_revision=t.source_revision
     WHERE t.truncated=1 AND {context}"""
@@ -303,8 +303,8 @@ class CandidateIntake(CandidateTables):
 
         A shared term is enough for first-hand testimony, which can confirm a
         value without repeating it and lend a promotion its authority.  Any
-        other source must restate the candidate or name its subject: on one instance
-        a shared bigram had attached 116,000 sources to 1,215 live candidates,
+        other source must restate the candidate or name its subject: a shared
+        bigram alone attached 116,000 sources to 1,215 live candidates in one store,
         and 6% of them restated the candidate they were attached to.
         """
         if source.event.get("origin") in ECHO_ORIGINS:

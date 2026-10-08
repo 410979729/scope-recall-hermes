@@ -74,8 +74,8 @@ def question_digest(evidence: object) -> str:
 
 # --- questions no answer could settle ----------------------------------------
 #
-# A new question is still not always a question worth a model call.  On one instance
-# (2026-09-17) 2,019 evaluations in one day promoted 7 facts, and 54% of them
+# A new question is still not always a question worth a model call.  Measured
+# in one store, 2,019 evaluations in one day promoted 7 facts, and 54% of them
 # carried evidence on which no verdict could pass ``claims.qualify``: the
 # candidate's value appeared in none of the supplied sources, or no supplied
 # source could lend the authority its kind needs.  Of all 10,602 evaluations the
@@ -191,7 +191,7 @@ def rooted_verdict(proposal: Mapping, quoted: Iterable[tuple[EvidenceText, str]]
 # --- questions worth asking at most so often ---------------------------------
 #
 # Even an answerable question is not worth asking again and again.  Replayed over
-# one instance's 10,650 evaluations (2026-09-13..17), the candidate loop cost 81-97% of
+# one store's 10,650 evaluations of five days, the candidate loop cost 81-97% of
 # every day's model tokens, 60-96% of each day's evaluations re-asked a candidate
 # already judged, and 307 candidates were asked ten times or more.  Of the 27
 # verdicts that promoted a fact, 19 came from a candidate's first verdict, 4 from

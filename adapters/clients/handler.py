@@ -295,8 +295,8 @@ class CodexHookHandler:
     def runtime_ready(self) -> bool:
         """Whether this handler has its trusted runtime attached from a config it could read.  One kept for later
         prompts (``local_endpoint.KeptRecaller``) never attaches again, so without it the handler is made anew: a
-        config read at a bad moment (a sharing violation) left every later recall without its vector search, where a
-        handler of its own read it again (review of rc12)."""
+        config read at a bad moment (a sharing violation) would leave every later recall without its vector search,
+        where a handler of its own reads it again."""
         return self._host_runtime is not None and bool(getattr(self._host_runtime, "configured", False))
 
     def warm_vectors(self, seconds: float) -> None:
@@ -457,7 +457,7 @@ class CodexHookHandler:
         try:
             payload = json.loads(raw.decode("utf-8"))
         except (UnicodeError, ValueError, RecursionError):
-            # Nested past what the parser takes, a tool's output ended the hook with no answer (review of rc11).
+            # Nested past what the parser takes, a tool's output would otherwise end the hook with no answer.
             self.note("invalid_json")
             return {}
         if type(payload) is not dict:
@@ -516,8 +516,8 @@ class CodexHookHandler:
                 self.diagnostics.note_capture_error(exc.code)
                 if (exc.code, exc.field) == DELETED_KEY:
                     # A copy of a deleted message under its key, written straight from the session record: refused for
-                    # good, as the inbox cancels one.  Taken as unsettled, every later Stop stopped at that line
-                    # (review of rc13).
+                    # good, as the inbox cancels one.  Taken as unsettled, every later Stop would stop at that
+                    # line.
                     self.diagnostics.capture_disposition = "cancelled"
             gaps = (*gaps, "capture_gap:write_exception")
             self.note("capture_exception", gaps=gaps)

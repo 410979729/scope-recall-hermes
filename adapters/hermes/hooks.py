@@ -85,8 +85,8 @@ def _active_adapter(kwargs: dict[str, Any]) -> Any | None:
         # Hermes rebuilds an agent its cache evicted: a new provider binds the same session, and the old one, retired
         # but not shut down, stays registered.  Chosen by the lower id(), the hooks often went to the old one:
         # pre_llm_call stored the message there under the turn's id, while on_turn_start and sync_turn reached the
-        # new one, which stored the message again under an ordinal and the reply with it (tianji and yuheng: the
-        # first turn after each rebuild, 6 of 48 turns from 2026-09-28).  The adapter that bound it last is the host's.
+        # new one, which stored the message again under an ordinal and the reply with it (the first turn after each
+        # rebuild).  The adapter that bound it last is the host's.
         return max(matches, key=lambda item: _BOUND.get(item, 0))
 
 
@@ -111,9 +111,9 @@ def _dispatch(event: str, kwargs: dict[str, Any], *, wait: float) -> Any | None:
         # small lock, which also drops it when a session switch has cleared the turn meanwhile.
         adapter.observe_post_llm_call(**kwargs)
         return adapter
-    # The hook waits for its own session only so long: waited out past the host's timeout, it was abandoned and the
-    # host skipped this hook for every session (tianji 2026-09-26: three tool hooks behind their session's
-    # prefetch).  One it cannot wait for is counted and said.
+    # The hook waits for its own session only so long: waited out past the host's timeout, it is abandoned and the
+    # host skips this hook for every session (tool hooks queued behind their session's prefetch did that).  One it
+    # cannot wait for is counted and said.
     if not adapter._lock.acquire(timeout=wait):
         adapter._session_busy(event, kwargs)
         return adapter

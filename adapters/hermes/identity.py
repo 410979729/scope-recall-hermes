@@ -69,7 +69,7 @@ def _normalize_user_id(
     alternate = str(user_id_alt or "").strip()
     # The host's user_id_alt is another stable id of the same sender in another namespace
     # (Feishu's union_id beside its open_id, Signal's UUID), never a second person, so two
-    # different values are not a conflict (#116).  The principal stays user_id: the audience
+    # different values are not a conflict.  The principal stays user_id: the audience
     # rows and owner principals every earlier release wrote are keyed on it.
     resolved = primary or alternate
     # A session the host names no user for is the owner's on the CLI, and on a
@@ -299,7 +299,7 @@ def _route_matches(row: Mapping[str, object], route: Mapping[str, str]) -> bool:
     The session key is the host's own routing key, built from the platform, chat type and chat
     it names beside it, all of which the row still matches exactly.  Rows the installer and
     most operators write leave it empty, while a gateway sends one on every session, so an
-    exact empty key failed every gateway route closed (#124).  A row that names a key still
+    exact empty key would fail every gateway route closed.  A row that names a key still
     matches only that key.  The CLI sends none, so a CLI row is never relaxed: Hermes reports a
     relayed ``local`` gateway session to plugins as ``cli``, with its key, and that is not the CLI.
     """
@@ -363,7 +363,7 @@ def resolve_runtime_audience(manifest: InstallationManifest, scope: HermesRuntim
         gaps.append("capability_gap:audience_unmapped")
         # A row that differs only in how the plain chat's thread is written: the host sends
         # an empty thread_id for an unthreaded chat, and rows copied from the CLI's "main"
-        # never match it (#124).  Named for the operator to correct; it grants nothing.
+        # never match it.  Named for the operator to correct; it grants nothing.
         near = [
             row
             for row in manifest.audiences
@@ -440,7 +440,7 @@ def bind_hermes_identity(session_id: str, **kwargs: object) -> HermesIdentity:
         if "thread_id" not in kwargs:
             thread_id = "main"
     elif platform in LOCAL_PLATFORMS and user_id != LOCAL_USER_ID and not chat_type and not chat_id:
-        # A dashboard login there names no chat either (#175): one person at
+        # A dashboard login there names no chat either: one person at
         # one window, so a one-to-one chat with that login, routed the way an
         # owner grant is written.  The login is still a user like any other and
         # binds only what an owner principal and an audience row give it.

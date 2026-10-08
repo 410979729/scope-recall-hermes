@@ -462,9 +462,9 @@ def process_rebuild_projection(
 def _refusal_field(exc: BaseException) -> str | None:
     """The field a port named when it refused, so the receipt says why.
 
-    ``storage_unavailable`` alone told an operator nothing when the companion
-    simply had no fenced write (#85); the contract field it carried never
-    reached ``work_error_details``.
+    ``storage_unavailable`` alone tells an operator nothing when the companion
+    simply has no fenced write, and the contract field it carries would never
+    reach ``work_error_details``.
     """
     field = getattr(exc, "field", None) if isinstance(exc, ContractError) else None
     return field if isinstance(field, str) and field and field != "payload" else None

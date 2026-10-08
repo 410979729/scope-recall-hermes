@@ -363,7 +363,7 @@ def without_lone_surrogates(value):
     """``value`` with every lone surrogate in its strings replaced by U+FFFD, the character that stands for one.
 
     It walks the value with a stack of its own: walked by calling itself, a payload nested deeper than the
-    interpreter allows (a tool's output, 499 levels on Python 3.11) ended the hook (review of rc11)."""
+    interpreter allows (a tool's output, 499 levels on Python 3.11) would end the hook."""
     if isinstance(value, str):
         return _LONE_SURROGATE.sub("\ufffd", value)
     if not isinstance(value, (dict, list)):

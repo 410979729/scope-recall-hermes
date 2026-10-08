@@ -55,9 +55,9 @@ MINIMUM_HYDRATION_CAP = 16
 CLAIM_CANDIDATES = 16
 #: Share of its fusion score context-only evidence keeps in live modes: a bare
 #: question, or a reply restating what a recall tool returned in its turn.
-#: Asked again, one instance returned five earlier questions like the query ahead of
-#: the reply that answered one, and another instance's recall test report came back ahead
-#: of the evidence it quoted.  At 0.6 a first-ranked one falls below a reply that
+#: Asked again, a question can return five earlier questions like it ahead of the
+#: reply that answered one, and a report of a recall test can come back ahead of
+#: the evidence it quoted.  At 0.6 a first-ranked one falls below a reply that
 #: ranked in the mid-teens, and still ranks as context when nothing answers.
 CONTEXT_ONLY_WEIGHT = 0.6
 #: Meaningful terms a query needs before an older copy of it leads to what that copy was told
@@ -794,13 +794,13 @@ class RetrievalPipeline:
         """What the same question was told the last time it was asked goes before the best candidate of its time.
 
         Reached as any seed's turn is, at a first rank's fixed score, it fell below every candidate two channels agreed
-        on: with vectors on, the owner's questions asked again lost about 25 of 124 answers (the threshold sweep of
-        2026-09-30).  Only the latest copy's turn is raised, so an answer that changed since is not raised beside the
+        on: with vectors on, one person's questions asked again lost about 25 of 124 answers (a threshold sweep).
+        Only the latest copy's turn is raised, so an answer that changed since is not raised beside the
         one that replaced it.  Of that turn at most half the packet is: the replies a channel ranked highest, which say
         what was asked, then the turn's last reply, which answers it, when the turn was read to its end.  An agent's
         turn opens with what it is about to do, and raising every reply let an old turn's first messages fill the
-        packet, as raising every reply a channel found let its narration of the subject do (reviews of its first and
-        second versions); the last reply read of a turn cut by the window was narration too.  Raising only the best
+        packet, as raising every reply a channel found let its narration of the subject do; the last reply read of a
+        turn cut by the window was narration too.  Raising only the best
         found reply lost 6 of the owner's 173 questions asked again with vectors on, where more replies are found and
         the answer is not always the best of them.  They go above the best
         candidate said up to that turn, the turn's other replies included, and not above what was said after it and
