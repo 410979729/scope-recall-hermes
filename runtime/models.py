@@ -1,4 +1,6 @@
-"""Small production auxiliary-model adapters with explicit two-route configuration."""
+"""The auxiliary models' transport: the error type, the HTTPS worker, credentials, the secret guard and the metered
+post every embedding and consolidation request goes through.  The adapters and their routes are in
+``embedding_models`` and ``consolidation_models``."""
 
 from __future__ import annotations
 
@@ -12,53 +14,18 @@ import sys
 import threading
 import time
 import urllib.parse
-from collections.abc import Callable, Mapping, Sequence
-from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
-from functools import partial
+from collections.abc import Callable, Mapping
 from pathlib import Path
-from types import MappingProxyType
 from typing import Any, Protocol
 
 from ..contracts import ContractError
-from ..core.recall_policy import EMBEDDING_DIALECTS, EMBEDDING_SPACE, build_embedding_space, encode_embedding_text
 from ..core.secret_patterns import contains_secret_like_text
-from ..core.source_records import StoredSource
-from .model_budget import AuxiliaryBudgetLedger, BudgetPolicy
+from .model_budget import AuxiliaryBudgetLedger
 
 MAX_CHAT_RESPONSE_BYTES = 1_048_576
-MAX_EMBED_RESPONSE_BYTES = 16 * 1024 * 1024
-#: Embedding requests one group may have in flight.  A document request spawns its
-#: own bounded HTTP helper and shares no state, so this is threads waiting on
-#: sockets; the ledger reserves and settles each on its own connection.  It is the
-#: last serial cost in a pass: with a hundred documents per request at 3.8s each,
-#: a pass of a thousand spent 38 of its 55 seconds waiting for one request at a
-#: time, while the provider allows three thousand requests a minute and the pass
-#: was making ten.
-EMBED_REQUEST_CONCURRENCY = 4
-#: Documents one embedding request may carry, measured against the live provider
-#: rather than assumed: 32 texts answered in 2.6s, 64 in 3.2s, 100 in 3.8s, and
-#: 250 was refused with HTTP 400.  A hundred 3072-wide vectors is about 4 MB of
-#: response, well inside the cap above, and it is the difference between seven
-#: requests for a pass of two hundred sources and two.
-MAX_EMBED_BATCH = 100
-EMBED_RESERVE_FLOOR = 8192
 RESERVE_ENVELOPE_MARGIN = 256
 MAX_CREDENTIAL_BYTES = 8192
 _ENV_NAME_RE = re.compile(r"^[A-Z][A-Z0-9_]{0,127}$")
-#: Route kind naming the Responses-API consolidation dialect.  A stated kind is
-#: required for it; the OpenAI-compatible chat route keeps accepting an absent
-#: kind or ``"openai"``, so no existing installation changes meaning.
-RESPONSES_KIND = "openai_responses"
-#: DeepSeek's ``reasoning.effort`` vocabulary for ``/responses``.  ``minimal``,
-#: ``medium`` and ``xhigh`` are also accepted by that endpoint and mapped there,
-#: but a route that does not say what it sends is refused instead.
-RESPONSES_EFFORTS = frozenset({"none", "low", "high", "max"})
-#: Message roles a Responses ``input`` item can carry here.  ``tool`` has no item
-#: shape in this adapter (``function_call``/``function_call_output`` are pairs,
-#: not messages), so a tool message is refused rather than rewritten.
-_RESPONSES_ROLES = frozenset({"system", "user", "assistant"})
-_CHAT_ROLES = frozenset({"system", "user", "assistant", "tool"})
 
 
 class AuxiliaryModelError(RuntimeError):
@@ -158,11 +125,11 @@ def validate_timeout_seconds(timeout_seconds: object) -> float:
     return value
 
 
-def _remaining_seconds(deadline: float) -> float:
+def seconds_left(deadline: float) -> float:
     return deadline - time.monotonic()
 
 
-def _validate_credential_env_name(env_name: object) -> str:
+def validate_credential_env_name(env_name: object) -> str:
     if type(env_name) is not str or not env_name or _ENV_NAME_RE.fullmatch(env_name) is None:
         raise ValueError("credential_env")
     return env_name
@@ -267,14 +234,14 @@ class HttpsTransport:
                 url, body=body, headers=headers, timeout_seconds=timeout_seconds, max_response_bytes=max_response_bytes
             )
         deadline = time.monotonic() + validate_timeout_seconds(timeout_seconds)
-        if not self._post_lock.acquire(timeout=max(0, _remaining_seconds(deadline))):
+        if not self._post_lock.acquire(timeout=max(0, seconds_left(deadline))):
             raise AuxiliaryModelError("timeout")
         try:
             return self._post(
                 url,
                 body=body,
                 headers=headers,
-                timeout_seconds=_remaining_seconds(deadline),
+                timeout_seconds=seconds_left(deadline),
                 max_response_bytes=max_response_bytes,
             )
         except BaseException:
@@ -302,7 +269,7 @@ class HttpsTransport:
         max_stdout = (max_response_bytes * 4) // 3 + _HTTP_WORKER_STDOUT_MARGIN
         process: subprocess.Popen[bytes] | None = None
         try:
-            if _remaining_seconds(deadline) <= 0:
+            if seconds_left(deadline) <= 0:
                 raise AuxiliaryModelError("timeout")
             if self._session is not None:
                 stdout, stderr = self._session.exchange(
@@ -320,11 +287,11 @@ class HttpsTransport:
                     stderr=subprocess.PIPE,
                     **_hidden_window(),
                 )
-                remaining = _remaining_seconds(deadline)
+                remaining = seconds_left(deadline)
                 if remaining <= 0:
                     raise AuxiliaryModelError("timeout")
                 stdout, stderr = process.communicate(input=request_bytes, timeout=remaining)
-            if _remaining_seconds(deadline) <= 0:
+            if seconds_left(deadline) <= 0:
                 raise AuxiliaryModelError("timeout")
             if process is not None and process.returncode != 0:
                 raise AuxiliaryModelError("transport_worker", detail=str(process.returncode))
@@ -343,12 +310,12 @@ class HttpsTransport:
             _cleanup_http_worker(process)
 
 
-def _json_bytes(value: object) -> bytes:
+def json_bytes(value: object) -> bytes:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":"), allow_nan=False).encode("utf-8")
 
 
-def _load_credential(env_name: str) -> str:
-    _validate_credential_env_name(env_name)
+def load_credential(env_name: str) -> str:
+    validate_credential_env_name(env_name)
     value = os.environ.get(env_name)
     if type(value) is not str:
         raise AuxiliaryModelError("credential_missing")
@@ -360,46 +327,9 @@ def _load_credential(env_name: str) -> str:
     return value
 
 
-def _reject_secrets(value: str) -> None:
+def reject_secrets(value: str) -> None:
     if contains_secret_like_text(value):
         raise AuxiliaryModelError("sensitive_request")
-
-
-def _reject_secrets_outside_contents(build_body: Callable[[list[dict]], bytes], messages: list[dict]) -> None:
-    """The body gate: everything a request carries besides its message contents.
-
-    ``validate_chat_messages`` has already scanned every content as it was
-    written.  Scanning the serialised body scanned each of them again through
-    one more layer of escaping, where a line break inside a content reads
-    ``\\\\n``: the scanner's break rule restored the break and left a backslash
-    behind it, which an empty credential slot ("AppSecret:" and nothing after
-    it) then took as its value: 124 of 124 candidate evaluations in one store
-    passed the contents gate and were refused here, none holding a secret.
-    The same builder is run on the same messages with their contents blanked,
-    so the model, the route's fields and the message roles are still scanned,
-    and each text is scanned once.
-    """
-    _reject_secrets(build_body([dict(message, content="") for message in messages]).decode("utf-8"))
-
-
-def validate_chat_messages(messages: object, *, roles: frozenset[str] = _CHAT_ROLES) -> None:
-    """Exactly role and content per message, a role from the closed set, no secret-like text.
-
-    ``roles`` is the closed role set of the dialect being spoken: the Responses
-    route passes its own, because a role with no item shape in that dialect must
-    be refused rather than reworded into one.
-    """
-    if not isinstance(messages, list) or not messages:
-        raise AuxiliaryModelError("input_invalid")
-    for message in messages:
-        if (
-            not isinstance(message, dict)
-            or set(message) != {"role", "content"}
-            or message["role"] not in roles
-            or type(message["content"]) is not str
-        ):
-            raise AuxiliaryModelError("input_invalid")
-        _reject_secrets(message["content"])
 
 
 def _load_json_object(raw: bytes) -> dict[str, Any]:
@@ -414,488 +344,6 @@ def _load_json_object(raw: bytes) -> dict[str, Any]:
     if not isinstance(payload, dict):
         raise AuxiliaryModelError("unsupported_response_shape")
     return payload
-
-
-def _extract_chat_content(payload: Mapping[str, Any]) -> str:
-    choices = payload.get("choices")
-    if not isinstance(choices, list) or len(choices) != 1:
-        raise AuxiliaryModelError("unsupported_response_shape")
-    choice = choices[0]
-    if not isinstance(choice, dict):
-        raise AuxiliaryModelError("unsupported_response_shape")
-    message = choice.get("message")
-    if not isinstance(message, dict):
-        raise AuxiliaryModelError("unsupported_response_shape")
-    if message.get("role") != "assistant":
-        raise AuxiliaryModelError("unsupported_response_shape")
-    # OpenAI-compatible gateways may attach reasoning/refusal/annotation
-    # metadata to an assistant message.  It is not answer content and must be
-    # ignored; a tool request is a different protocol and cannot be silently
-    # treated as a text proposal.
-    if message.get("tool_calls") or message.get("function_call"):
-        raise AuxiliaryModelError("unsupported_response_shape")
-    content = message.get("content")
-    if type(content) is not str:
-        raise AuxiliaryModelError("unsupported_response_shape")
-    # "length" means the provider stopped at the output limit: the text is a
-    # prefix, not an answer.  Otherwise it reaches the decoder as anonymous
-    # invalid JSON and the one guided retry cannot tell the model what failed.
-    if choice.get("finish_reason") == "length":
-        raise ContractError("DERIVATION_INVALID", "model_output_truncated")
-    return content
-
-
-def _chat_usage(payload: Mapping[str, Any]) -> dict[str, int] | None:
-    candidate = payload.get("usage")
-    if isinstance(candidate, dict) and all(
-        type(candidate.get(name)) is int and candidate[name] >= 0 for name in ("prompt_tokens", "completion_tokens")
-    ):
-        usage = {"prompt_tokens": candidate["prompt_tokens"], "completion_tokens": candidate["completion_tokens"]}
-        cached = _cached_prompt_tokens(candidate)
-        if cached is not None:
-            usage["cached_prompt_tokens"] = cached
-        unreported = _unreported_output_tokens(candidate)
-        if unreported is not None:
-            usage["unreported_output_tokens"] = unreported
-        return usage
-    return None
-
-
-def _unreported_output_tokens(usage: Mapping[str, Any]) -> int | None:
-    """Billed tokens ``total_tokens`` counts beyond the prompt and the completion.
-
-    A thinking model can bill its reasoning without counting it in
-    ``completion_tokens``: a Gemini 2.5 Flash route recorded a median of 325
-    completion tokens a call while the provider's console showed roughly 8,000.
-    OpenAI-style routes count reasoning inside ``completion_tokens`` and report
-    a total equal to the sum, so nothing is counted twice.
-    """
-    total = usage.get("total_tokens")
-    if type(total) is not int:
-        return None
-    extra = total - usage["prompt_tokens"] - usage["completion_tokens"]
-    return extra if extra > 0 else None
-
-
-def _cached_prompt_tokens(usage: Mapping[str, Any]) -> int | None:
-    """Prompt tokens the provider says it served from its prefix cache.
-
-    DeepSeek reports ``prompt_cache_hit_tokens``; OpenAI-compatible routes nest
-    ``cached_tokens`` under ``prompt_tokens_details``.  Recorded for
-    observation only: whether a prompt layout actually reuses its prefix is
-    otherwise invisible from here.
-    """
-    details = usage.get("prompt_tokens_details")
-    for value in (
-        usage.get("prompt_cache_hit_tokens"),
-        details.get("cached_tokens") if isinstance(details, dict) else None,
-    ):
-        if type(value) is int and 0 <= value <= usage["prompt_tokens"]:
-            return value
-    return None
-
-
-def build_gemini_embed_body(
-    encoded_text: str | Sequence[str], *, model: str | None = None, dimensions: int | None = None
-) -> bytes:
-    """One ``batchEmbedContents`` request for one or many already-encoded texts.
-
-    The endpoint is a batch endpoint and always was; sending arrays of one is
-    what made a vector rebuild cost one HTTP request per source.
-    """
-    model = model or EMBEDDING_SPACE["model"]
-    texts = [encoded_text] if type(encoded_text) is str else list(encoded_text)
-    if not texts or any(type(text) is not str for text in texts):
-        raise AuxiliaryModelError("unsupported_request_shape")
-    body = {
-        "requests": [
-            {
-                "model": f"models/{model}",
-                "content": {"parts": [{"text": text}]},
-                "embedContentConfig": {
-                    "outputDimensionality": dimensions or EMBEDDING_SPACE["dimensions"],
-                    "autoTruncate": False,
-                },
-            }
-            for text in texts
-        ]
-    }
-    return _json_bytes(body)
-
-
-def request_chunks(texts: Sequence[str], *, body: Callable[[Sequence[str]], bytes], limit: int) -> list[list[str]]:
-    """Consecutive requests of at most ``MAX_EMBED_BATCH`` texts whose body stays within ``limit`` bytes.
-
-    The ledger refuses a body over its ``max_request_bytes`` before it is sent, as
-    ``budget_unavailable``, and the worker defers the whole group an hour.  On the pilot's shared
-    store the last 6,000 sources of a rebuild were long ones: a hundred of them made about 600 KB
-    against the 128 KB limit, and every pass for eight hours was refused without one request
-    leaving.  A text whose own body passes the limit still goes, alone, so the refusal is its own.
-    """
-    chunks: list[list[str]] = []
-    chunk: list[str] = []
-    for text in texts:
-        if chunk and (len(chunk) == MAX_EMBED_BATCH or len(body([*chunk, text])) > limit):
-            chunks.append(chunk)
-            chunk = []
-        chunk.append(text)
-    if chunk:
-        chunks.append(chunk)
-    return chunks
-
-
-def build_openai_embed_body(
-    encoded_text: str | Sequence[str], *, model: str, dimensions: int, dimensions_field: str = "dimensions"
-) -> bytes:
-    """The /v1/embeddings request shape MiniMax, Qwen and OpenAI all accept.
-
-    The width is sent because the space digest commits to one: a provider that
-    silently returned a different width would produce vectors the store cannot
-    compare, and the length check on the response catches it.  Voyage names
-    the field ``output_dimension``, so the route may name it.
-    """
-    texts = [encoded_text] if type(encoded_text) is str else list(encoded_text)
-    if not texts or any(type(text) is not str for text in texts):
-        raise AuxiliaryModelError("unsupported_request_shape")
-    return _json_bytes({"model": model, "input": texts, dimensions_field: dimensions})
-
-
-def _embedding_usage(payload: Mapping[str, Any], *, dialect: str) -> dict[str, int] | None:
-    if dialect == "gemini":
-        metadata, key = payload.get("usageMetadata"), "promptTokenCount"
-    else:
-        metadata, key = payload.get("usage"), "prompt_tokens"
-    if isinstance(metadata, dict) and type(metadata.get(key)) is int:
-        return {"promptTokenCount": metadata[key]}
-    return None
-
-
-def _embedding_vector(payload: Mapping[str, Any], *, dialect: str, dimensions: int) -> tuple[float, ...]:
-    if dialect == "gemini":
-        embeddings = payload.get("embeddings")
-        if not isinstance(embeddings, list) or len(embeddings) != 1:
-            raise AuxiliaryModelError("unsupported_response_shape")
-        row = embeddings[0]
-        if not isinstance(row, dict) or set(row) != {"values"}:
-            raise AuxiliaryModelError("unsupported_response_shape")
-        return validate_embedding_vector(row["values"], dimensions=dimensions)
-    data = payload.get("data")
-    if not isinstance(data, list) or len(data) != 1 or not isinstance(data[0], dict):
-        raise AuxiliaryModelError("unsupported_response_shape")
-    return validate_embedding_vector(data[0].get("embedding"), dimensions=dimensions)
-
-
-def _embedding_vectors(
-    payload: Mapping[str, Any], *, dialect: str, dimensions: int, count: int
-) -> tuple[tuple[float, ...], ...]:
-    """Exactly ``count`` vectors, in the order the texts were sent.
-
-    A provider that returns a different number has not answered this request:
-    the vectors could not be matched to their sources, and a vector written
-    against the wrong source is worse than no vector at all.
-    """
-    if dialect == "gemini":
-        rows = payload.get("embeddings")
-        if not isinstance(rows, list) or len(rows) != count:
-            raise AuxiliaryModelError("unsupported_response_shape")
-        for row in rows:
-            if not isinstance(row, dict) or set(row) != {"values"}:
-                raise AuxiliaryModelError("unsupported_response_shape")
-        return tuple(validate_embedding_vector(row["values"], dimensions=dimensions) for row in rows)
-    data = payload.get("data")
-    if not isinstance(data, list) or len(data) != count or any(not isinstance(row, dict) for row in data):
-        raise AuxiliaryModelError("unsupported_response_shape")
-    # OpenAI's shape carries the position of each vector; honour it when it is
-    # there rather than trusting the order the list happens to have.
-    if all(type(row.get("index")) is int for row in data):
-        if sorted(row["index"] for row in data) != list(range(count)):
-            raise AuxiliaryModelError("unsupported_response_shape")
-        data = sorted(data, key=lambda row: row["index"])
-    return tuple(validate_embedding_vector(row.get("embedding"), dimensions=dimensions) for row in data)
-
-
-def parse_embedding_response(
-    payload: object, *, dialect: str, dimensions: int
-) -> tuple[tuple[float, ...], dict[str, int] | None]:
-    """Read one vector, and any usage the provider reported, from a response.
-
-    The two dialects differ only here and in the request body; reservation,
-    transport, deadlines and error mapping are shared.
-    """
-    if not isinstance(payload, dict):
-        raise AuxiliaryModelError("unsupported_response_shape")
-    usage = _embedding_usage(payload, dialect=dialect)
-    return _embedding_vector(payload, dialect=dialect, dimensions=dimensions), usage
-
-
-def validate_embedding_vector(values: object, *, dimensions: int | None = None) -> tuple[float, ...]:
-    if not isinstance(values, list):
-        raise AuxiliaryModelError("unsupported_response_shape")
-    if len(values) != (dimensions or EMBEDDING_SPACE["dimensions"]):
-        raise AuxiliaryModelError("vector_dimension_mismatch")
-    converted: list[float] = []
-    for value in values:
-        if type(value) not in (int, float) or not math.isfinite(float(value)):
-            raise AuxiliaryModelError("vector_nonfinite")
-        converted.append(float(value))
-    if not any(number != 0.0 for number in converted):
-        raise AuxiliaryModelError("vector_zero")
-    return tuple(converted)
-
-
-def conservative_embed_reserve(body: bytes) -> int:
-    return max(EMBED_RESERVE_FLOOR, len(body) + RESERVE_ENVELOPE_MARGIN)
-
-
-def conservative_consolidation_input_reserve(body: bytes, configured: int) -> int:
-    return max(configured, len(body) + RESERVE_ENVELOPE_MARGIN)
-
-
-def _validate_consolidation_response_format(value: object) -> Mapping[str, str] | None:
-    if value is None:
-        return None
-    if not isinstance(value, Mapping):
-        raise ValueError("response_format")
-    if dict(value) != {"type": "json_object"}:
-        raise ValueError("response_format")
-    return MappingProxyType({"type": "json_object"})
-
-
-def _validate_consolidation_reasoning_effort(value: object, *, opencode_go: bool = False) -> str | None:
-    if value is None:
-        return None
-    allowed = {"low", "high", "max", "none"} if opencode_go else {"low", "high", "max"}
-    if type(value) is not str or value not in allowed:
-        raise ValueError("reasoning_effort")
-    return value
-
-
-_CONSOLIDATION_HEADER_NAME_RE = re.compile(r"^[!#$%&'*+.^_`|~0-9A-Za-z-]{1,64}$")
-_CONSOLIDATION_HEADER_RESERVED = {"authorization", "content-type", "user-agent", "host", "content-length"}
-_OPENCODE_GO_SESSION_HEADER = "x-opencode-session"
-_OPENCODE_GO_DEFAULT_SESSION = "scope-recall-auxiliary-consolidation"
-
-
-def _validate_consolidation_headers(value: object) -> Mapping[str, str] | None:
-    """Optional provider-specific static headers (e.g. routing session ids).
-
-    Credential-bearing or transport-owned header names are rejected so this
-    channel can never smuggle a second Authorization or override the explicit
-    Content-Type/User-Agent set by the client.
-    """
-    if value is None:
-        return None
-    if not isinstance(value, Mapping):
-        raise ValueError("headers")
-    if len(value) > 8:
-        raise ValueError("headers")
-    clean: dict[str, str] = {}
-    for raw_name, raw_val in value.items():
-        if type(raw_name) is not str or _CONSOLIDATION_HEADER_NAME_RE.fullmatch(raw_name) is None:
-            raise ValueError("headers")
-        if raw_name.casefold() in _CONSOLIDATION_HEADER_RESERVED:
-            raise ValueError("headers")
-        if type(raw_val) is not str:
-            raise ValueError("headers")
-        text = raw_val.strip()
-        if not text or len(text) > 512 or "\r" in text or "\n" in text:
-            raise ValueError("headers")
-        clean[raw_name] = text
-    return MappingProxyType(clean)
-
-
-def _opencode_go_endpoint(endpoint: str) -> bool:
-    if type(endpoint) is not str:
-        return False
-    parsed = urllib.parse.urlsplit(endpoint)
-    return (
-        parsed.scheme == "https"
-        and parsed.hostname == "opencode.ai"
-        and (parsed.path == "/zen/go" or parsed.path.startswith("/zen/go/"))
-    )
-
-
-def _opencode_session_id() -> str:
-    for name in ("SCOPE_RECALL_TEST_OPENCODE_SESSION", "SCOPE_RECALL_P11_TEST_CONTEXT"):
-        value = os.environ.get(name)
-        if type(value) is not str:
-            continue
-        text = value.strip()
-        if not text or len(text) > 512 or "\r" in text or "\n" in text:
-            continue
-        if name == "SCOPE_RECALL_P11_TEST_CONTEXT":
-            return "scope-recall-test-" + text
-        return text
-    return _OPENCODE_GO_DEFAULT_SESSION
-
-
-def _consolidation_request_headers(route: "ConsolidationRouteConfig", key: str) -> dict[str, str]:
-    headers = {
-        **dict(route.headers or {}),
-        "Authorization": f"Bearer {key}",
-        "Content-Type": "application/json",
-        "User-Agent": "ScopeRecall-AuxiliaryConsolidation/1.1",
-    }
-    if _opencode_go_endpoint(route.endpoint) and not any(
-        name.casefold() == _OPENCODE_GO_SESSION_HEADER for name in headers
-    ):
-        headers[_OPENCODE_GO_SESSION_HEADER] = _opencode_session_id()
-    return headers
-
-
-def model_output_reserve(policy: BudgetPolicy, model: str, requested_output: int) -> int:
-    floor = policy.model_reserve_output.get(model, policy.default_reserve_output)
-    return max(requested_output, floor)
-
-
-#: A JSON request field name a provider could accept.
-_REQUEST_FIELD_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,63}")
-
-
-@dataclass(frozen=True)
-class EmbeddingRouteConfig:
-    #: The embedding model, its endpoint and its wire dialect are configuration,
-    #: not a constant. Omitting them keeps the shipped Gemini defaults, so an
-    #: existing installation resolves the same space digest and keeps its vector
-    #: directory; naming a different model produces a different digest, which
-    #: moves the store and refuses the old vectors rather than comparing across
-    #: incompatible geometries.
-    credential_env: str
-    model: str | None = None
-    endpoint: str | None = None
-    dimensions: int | None = None
-    dialect: str | None = None
-    #: The request field the ``openai`` dialect sends the width in.  Voyage's
-    #: /v1/embeddings is OpenAI-shaped in every other respect but calls it
-    #: ``output_dimension`` and refuses ``dimensions`` outright; a request
-    #: that omits the width silently gets the model's default geometry, so the
-    #: name is the only lever.  A wire detail, not a geometry: it does not enter
-    #: the space digest, and the response length is still checked.
-    dimensions_field: str = "dimensions"
-
-    def __post_init__(self) -> None:
-        _validate_credential_env_name(self.credential_env)
-        stated = [self.model, self.endpoint, self.dimensions, self.dialect]
-        if any(value is not None for value in stated) and any(value is None for value in stated):
-            # Half a descriptor would silently mix a new model with the default
-            # dimensionality or dialect, and the digest would not reveal it.
-            raise ValueError("embedding_route_partial_space")
-        if self.dialect is not None and self.dialect not in EMBEDDING_DIALECTS:
-            raise ValueError("embedding_route_dialect")
-        if type(self.dimensions_field) is not str or not _REQUEST_FIELD_RE.fullmatch(self.dimensions_field):
-            raise ValueError("embedding_route_dimensions_field")
-
-    def space(self) -> dict:
-        """The embedding space this route addresses, defaults included."""
-        if self.model is None:
-            return dict(EMBEDDING_SPACE)
-        return build_embedding_space(
-            model=self.model,
-            dimensions=self.dimensions,
-            endpoint=self.endpoint,
-            dialect=self.dialect,
-        )
-
-    def wire_dialect(self) -> str:
-        return self.dialect or "gemini"
-
-
-@dataclass(frozen=True)
-class ConsolidationRouteConfig:
-    model: str
-    endpoint: str
-    credential_env: str
-    output_limit_field: str
-    max_output_tokens: int
-    thinking: Mapping[str, str] | None = None
-    response_format: Mapping[str, str] | None = None
-    reasoning_effort: str | None = None
-    stream: bool = False
-    n: int = 1
-    headers: Mapping[str, str] | None = None
-
-    def __post_init__(self) -> None:
-        _validate_route_target(self.model, self.endpoint, self.credential_env)
-        if self.output_limit_field not in {"max_tokens", "max_completion_tokens"}:
-            raise ValueError("output_limit_field")
-        if type(self.max_output_tokens) is not int or not 1 <= self.max_output_tokens <= 131_072:
-            raise ValueError("max_output_tokens")
-        if self.stream is not False:
-            raise ValueError("stream")
-        if type(self.n) is not int or self.n != 1:
-            raise ValueError("n")
-        if self.thinking is not None and not isinstance(self.thinking, Mapping):
-            raise ValueError("thinking")
-        object.__setattr__(self, "response_format", _validate_consolidation_response_format(self.response_format))
-        object.__setattr__(
-            self,
-            "reasoning_effort",
-            _validate_consolidation_reasoning_effort(
-                self.reasoning_effort, opencode_go=_opencode_go_endpoint(self.endpoint)
-            ),
-        )
-        object.__setattr__(self, "headers", _validate_consolidation_headers(self.headers))
-
-
-def _validate_route_target(model: object, endpoint: object, credential_env: object) -> None:
-    """A consolidation route names a model, an https endpoint and the environment variable holding its key."""
-    if type(model) is not str or not model:
-        raise ValueError("model")
-    if type(endpoint) is not str or not endpoint.startswith("https://"):
-        raise ValueError("endpoint")
-    _validate_credential_env_name(credential_env)
-
-
-def _validate_responses_text_format(value: object) -> Mapping[str, str] | None:
-    """Only JSON mode is implemented.
-
-    ``{"type": "text"}`` is the endpoint's default and is sent by omitting the
-    field; ``json_schema`` would need the schema it names to be validated here
-    rather than silently forwarded, so it is refused until that exists.
-    """
-    if value is None:
-        return None
-    if not isinstance(value, Mapping) or dict(value) != {"type": "json_object"}:
-        raise ValueError("text_format")
-    return MappingProxyType({"type": "json_object"})
-
-
-@dataclass(frozen=True)
-class ResponsesRouteConfig:
-    """One non-streaming Responses-API consolidation route.
-
-    Implemented for the documented DeepSeek ``POST https://api.deepseek.com/responses`` contract
-    (``model: deepseek-flash``): that endpoint accepts a string or an item list in
-    ``input``, inserts ``instructions`` as the first system message, reports
-    ``status`` as ``completed``/``incomplete``/``failed``, and answers with an
-    ``output`` array of ``reasoning`` and ``message`` items.  Nothing here claims
-    streaming (``stream`` must be ``false``), OAuth, or another provider's
-    compatibility -- a route is configuration, and this one says exactly what
-    this adapter sends.
-    """
-
-    model: str
-    endpoint: str
-    credential_env: str
-    max_output_tokens: int
-    reasoning_effort: str | None = None
-    text_format: Mapping[str, str] | None = None
-    stream: bool = False
-    kind: str = RESPONSES_KIND
-
-    def __post_init__(self) -> None:
-        _validate_route_target(self.model, self.endpoint, self.credential_env)
-        if type(self.max_output_tokens) is not int or not 1 <= self.max_output_tokens <= 131_072:
-            raise ValueError("max_output_tokens")
-        if self.reasoning_effort is not None and (
-            type(self.reasoning_effort) is not str or self.reasoning_effort not in RESPONSES_EFFORTS
-        ):
-            raise ValueError("reasoning_effort")
-        object.__setattr__(self, "text_format", _validate_responses_text_format(self.text_format))
-        if self.stream is not False:
-            raise ValueError("stream")
-        if self.kind != RESPONSES_KIND:
-            raise ValueError("kind")
 
 
 #: Ledger refusals that mean "not now" rather than "over budget".
@@ -934,7 +382,7 @@ def _settle(
     200 came back without the usage the ledger needs.
     """
     try:
-        final = settle(request_id, status, usage, timeout_seconds=max(0.001, _remaining_seconds(deadline)))
+        final = settle(request_id, status, usage, timeout_seconds=max(0.001, seconds_left(deadline)))
     except Exception as settle_exc:
         return pending if pending is not None else settle_exc
     if pending is not None:
@@ -946,7 +394,7 @@ def _settle(
     return None
 
 
-def _metered_post(
+def metered_post(
     *,
     ledger: AuxiliaryBudgetLedger,
     settle: Callable[..., str],
@@ -981,9 +429,9 @@ def _metered_post(
             body,
             reserved_input=reserved_input,
             reserved_output=reserved_output,
-            timeout_seconds=_remaining_seconds(deadline),
+            timeout_seconds=seconds_left(deadline),
         )
-        http_remaining = _remaining_seconds(deadline)
+        http_remaining = seconds_left(deadline)
         if http_remaining <= 0:
             raise AuxiliaryModelError("timeout")
         status_code, raw = transport.post(
@@ -1010,373 +458,3 @@ def _metered_post(
     if pending is not None:
         raise pending
     return result
-
-
-class GeminiEmbeddingAdapter:
-    def __init__(
-        self,
-        route: EmbeddingRouteConfig,
-        *,
-        ledger: AuxiliaryBudgetLedger,
-        transport: HttpTransport | None = None,
-    ) -> None:
-        self._route = route
-        self._ledger = ledger
-        self._transport = transport if transport is not None else HttpsTransport()
-        self._query_transport = transport if transport is not None else HttpsTransport(persistent=True)
-        self._owns_transport = transport is None
-        space = route.space()
-        self._space = space
-        self._endpoint = space["endpoint"]
-        self._model = space["model"]
-        self._dimensions = space["dimensions"]
-        self._dimensions_field = route.dimensions_field
-        self._dialect = route.wire_dialect()
-
-    def embed_query(self, text: str, *, remaining_seconds: float) -> Sequence[float]:
-        # The whole query first: the request guard sees only what the input bound keeps, so a key that straddled
-        # the cut went out in part.  A query is the owner's message as typed, screened by nothing before this.
-        _reject_secrets(text)
-        encoded = encode_embedding_text(text, kind="query")
-        return self._embed(encoded, remaining_seconds=remaining_seconds, transport=self._query_transport)
-
-    def close(self):
-        """Release only transports created by this adapter, not injected ports."""
-        if self._owns_transport:
-            self._query_transport.close()
-            self._transport.close()
-
-    def embed_source(self, source: StoredSource, *, remaining_seconds: float) -> Sequence[float]:
-        encoded = encode_embedding_text(source.event["content"], kind="document")
-        return self._embed(encoded, remaining_seconds=remaining_seconds)
-
-    def embed_sources(
-        self, sources: Sequence[StoredSource], *, remaining_seconds: float
-    ) -> tuple[tuple[float, ...], ...]:
-        """One request for many documents, answered in the order they were sent.
-
-        The provider charges per token either way; what a batch saves is the
-        request, and a store with a hundred thousand sources is a hundred
-        thousand requests to rebuild one at a time.
-        """
-        encoded = [encode_embedding_text(source.event["content"], kind="document") for source in sources]
-        return self.embed_texts(encoded, remaining_seconds=remaining_seconds)
-
-    def embed_texts(self, encoded: Sequence[str], *, remaining_seconds: float) -> tuple[tuple[float, ...], ...]:
-        """Embed already-encoded document texts, in as few requests as the provider allows.
-
-        The provider takes ``MAX_EMBED_BATCH`` texts per request and refuses more, so a longer
-        group is sent as consecutive full requests rather than refused: what a caller asks for
-        is how many documents it has, not how the endpoint is shaped.  Measured against the
-        live provider: 32 texts in 2.6s, 100 in 3.8s, 250 refused with HTTP 400.  A request also
-        stays within the ledger's ``max_request_bytes`` (``request_chunks``).
-        """
-        texts = list(encoded)
-        if not texts:
-            return ()
-        deadline = time.monotonic() + validate_timeout_seconds(remaining_seconds)
-        chunks = request_chunks(texts, body=self._request_body, limit=self._ledger.policy.max_request_bytes)
-        if len(chunks) == 1:
-            return tuple(self._embed_many(chunks[0], remaining_seconds=_remaining_seconds(deadline)))
-
-        def request(chunk: list[str]) -> tuple[tuple[float, ...], ...]:
-            # Each task reads the clock when it starts, not when it was queued, so
-            # a later request is bounded by what is actually left.
-            return self._embed_many(chunk, remaining_seconds=_remaining_seconds(deadline))
-
-        vectors: list[tuple[float, ...]] = []
-        with ThreadPoolExecutor(
-            max_workers=min(EMBED_REQUEST_CONCURRENCY, len(chunks)), thread_name_prefix="scope-recall-embed"
-        ) as pool:
-            answers = [pool.submit(request, chunk) for chunk in chunks]
-            for answer in answers:  # in the order they were asked
-                vectors.extend(answer.result())
-        return tuple(vectors)
-
-    def embed_text(self, text: str, *, remaining_seconds: float) -> Sequence[float]:
-        """Embed already-rendered text as a document.
-
-        Derived objects have no ``event["content"]`` to read, so a claim arrives
-        here as the rendered assertion. Same encoding as a source, so both land
-        in one comparable space.
-        """
-        encoded = encode_embedding_text(text, kind="document")
-        return self._embed(encoded, remaining_seconds=remaining_seconds)
-
-    def _request_body(self, texts: Sequence[str]) -> bytes:
-        """The request body for ``texts`` in this route's dialect."""
-        if self._dialect == "gemini":
-            return build_gemini_embed_body(texts, model=self._model, dimensions=self._dimensions)
-        return build_openai_embed_body(
-            texts, model=self._model, dimensions=self._dimensions, dimensions_field=self._dimensions_field
-        )
-
-    def _embed_many(self, texts: list[str], *, remaining_seconds: float) -> tuple[tuple[float, ...], ...]:
-        """The one-request path, for any number of texts; identical bounds to ``_embed``."""
-        deadline = time.monotonic() + validate_timeout_seconds(remaining_seconds)
-        for text in texts:
-            _reject_secrets(text)
-        return self._send(
-            self._request_body(texts),
-            deadline,
-            self._transport,
-            partial(_embedding_vectors, dialect=self._dialect, dimensions=self._dimensions, count=len(texts)),
-        )
-
-    def _embed(
-        self, encoded_text: str, *, remaining_seconds: float, transport: HttpTransport | None = None
-    ) -> Sequence[float]:
-        deadline = time.monotonic() + validate_timeout_seconds(remaining_seconds)
-        _reject_secrets(encoded_text)
-        return self._send(
-            self._request_body(encoded_text),
-            deadline,
-            transport or self._transport,
-            partial(_embedding_vector, dialect=self._dialect, dimensions=self._dimensions),
-        )
-
-    def _send(self, body: bytes, deadline: float, transport: HttpTransport, read_result):
-        """One embedding request, metered; refused when its time is up or the provider is holding calls."""
-        if _remaining_seconds(deadline) <= 0:
-            raise AuxiliaryModelError("timeout")
-        if self._ledger.provider_hold_until(self._model) is not None:
-            # The provider refused the calls just before this one; asking again
-            # now only adds a refusal (runtime/model_budget.py).
-            raise AuxiliaryModelError("provider_hold")
-        key = _load_credential(self._route.credential_env)
-        # Google authenticates with its own header; every OpenAI-compatible
-        # provider uses bearer auth.
-        auth = {"x-goog-api-key": key} if self._dialect == "gemini" else {"Authorization": f"Bearer {key}"}
-        return _metered_post(
-            ledger=self._ledger,
-            settle=self._ledger.finish_embedding,
-            model=self._model,
-            body=body,
-            reserved_input=conservative_embed_reserve(body),
-            reserved_output=0,
-            deadline=deadline,
-            transport=transport,
-            endpoint=self._endpoint,
-            headers={"Content-Type": "application/json", **auth, "User-Agent": "ScopeRecall-AuxiliaryEmbed/1.1"},
-            max_response_bytes=MAX_EMBED_RESPONSE_BYTES,
-            read_usage=partial(_embedding_usage, dialect=self._dialect),
-            read_result=read_result,
-        )
-
-
-class _ConsolidationAdapter:
-    """What both consolidation dialects share: the route, the ledger and the transport, and how a request is sent."""
-
-    def __init__(
-        self,
-        route: ConsolidationRouteConfig | ResponsesRouteConfig,
-        *,
-        ledger: AuxiliaryBudgetLedger,
-        reserve_input: int,
-        transport: HttpTransport | None = None,
-    ) -> None:
-        self._route = route
-        self._ledger = ledger
-        self._reserve_input = reserve_input
-        self._transport = transport if transport is not None else HttpsTransport()
-
-    def _send(self, body: bytes, deadline: float, *, headers, read_usage, read_result) -> str:
-        """One proposal request, metered; refused when its time is up or the provider is holding calls.  ``headers``
-        makes the request's headers from the key."""
-        reserved_output = model_output_reserve(self._ledger.policy, self._route.model, self._route.max_output_tokens)
-        if _remaining_seconds(deadline) <= 0:
-            raise AuxiliaryModelError("timeout")
-        if self._ledger.provider_hold_until(self._route.model) is not None:
-            raise AuxiliaryModelError("provider_hold")
-        key = _load_credential(self._route.credential_env)
-        return _metered_post(
-            ledger=self._ledger,
-            settle=self._ledger.finish,
-            model=self._route.model,
-            body=body,
-            reserved_input=conservative_consolidation_input_reserve(body, self._reserve_input),
-            reserved_output=reserved_output,
-            deadline=deadline,
-            transport=self._transport,
-            endpoint=self._route.endpoint,
-            headers=headers(key),
-            # The consolidation answer cap, shared by both dialects.
-            max_response_bytes=MAX_CHAT_RESPONSE_BYTES,
-            read_usage=read_usage,
-            read_result=read_result,
-        )
-
-
-class OpenAIConsolidationAdapter(_ConsolidationAdapter):
-    _route: ConsolidationRouteConfig
-
-    def _chat_body(self, messages: list[dict]) -> bytes:
-        route = self._route
-        body: dict[str, Any] = {
-            "model": route.model,
-            "messages": messages,
-            "stream": route.stream,
-            "n": route.n,
-            route.output_limit_field: route.max_output_tokens,
-        }
-        if route.thinking is not None:
-            body["thinking"] = dict(route.thinking)
-        if route.response_format is not None:
-            body["response_format"] = dict(route.response_format)
-        if route.reasoning_effort is not None:
-            body["reasoning_effort"] = route.reasoning_effort
-        return _json_bytes(body)
-
-    def propose(self, messages: list[dict], *, remaining_seconds: float) -> str:
-        deadline = time.monotonic() + validate_timeout_seconds(remaining_seconds)
-        validate_chat_messages(messages)
-        body = self._chat_body(messages)
-        _reject_secrets_outside_contents(self._chat_body, messages)
-        return self._send(
-            body,
-            deadline,
-            headers=partial(_consolidation_request_headers, self._route),
-            read_usage=_chat_usage,
-            read_result=_extract_chat_content,
-        )
-
-
-def _responses_usage(payload: Mapping[str, Any]) -> dict[str, int] | None:
-    """The ledger's prompt/completion pair from a Responses ``usage`` block.
-
-    ``output_tokens`` already counts the reasoning tokens the provider reports
-    separately in ``output_tokens_details.reasoning_tokens`` (the same tokens
-    ``max_output_tokens`` bounds), so reasoning is never billed a second time --
-    the anomaly guard that charges output outside ``completion_tokens`` on the
-    chat route does not apply here.  An absent or malformed block returns
-    ``None`` and the caller keeps the reserved charge, exactly as before.
-    """
-    candidate = payload.get("usage")
-    if not isinstance(candidate, dict):
-        return None
-    if any(type(candidate.get(name)) is not int or candidate[name] < 0 for name in ("input_tokens", "output_tokens")):
-        return None
-    usage = {"prompt_tokens": candidate["input_tokens"], "completion_tokens": candidate["output_tokens"]}
-    details = candidate.get("input_tokens_details")
-    cached = details.get("cached_tokens") if isinstance(details, dict) else None
-    if type(cached) is int and 0 <= cached <= candidate["input_tokens"]:
-        usage["cached_prompt_tokens"] = cached
-    return usage
-
-
-def _responses_output_text(payload: Mapping[str, Any]) -> str:
-    """The completed assistant answer, and nothing else.
-
-    Only a ``response`` whose own ``status`` is ``completed`` is an answer:
-    ``incomplete`` is a prefix cut off at the output limit (the same named
-    derivation failure the chat route raises for ``finish_reason: "length"``),
-    and ``failed`` produced nothing usable.  Reasoning items and
-    ``reasoning_text`` parts are never answer text, a refusal part is a refusal
-    rather than an empty proposal, and a tool-call item is a different protocol
-    that cannot be silently read as one.
-    """
-    status = payload.get("status")
-    if status != "completed":
-        if status == "incomplete":
-            raise ContractError("DERIVATION_INVALID", "model_output_truncated")
-        if status == "failed":
-            raise AuxiliaryModelError("response_status_failed")
-        raise AuxiliaryModelError("unsupported_response_shape")
-    output = payload.get("output")
-    if not isinstance(output, list):
-        raise AuxiliaryModelError("unsupported_response_shape")
-    answers: list[str] = []
-    for item in output:
-        if not isinstance(item, dict):
-            raise AuxiliaryModelError("unsupported_response_shape")
-        if item.get("type") == "reasoning":
-            continue
-        if item.get("type") != "message":
-            raise AuxiliaryModelError("unsupported_response_shape")
-        if item.get("role") != "assistant" or item.get("status") not in (None, "completed"):
-            # A message that is not this route's answer, or one the response
-            # marks unfinished while claiming to be complete, is a contradiction
-            # rather than something to assemble an answer out of.
-            raise AuxiliaryModelError("unsupported_response_shape")
-        content = item.get("content")
-        if not isinstance(content, list):
-            raise AuxiliaryModelError("unsupported_response_shape")
-        parts: list[str] = []
-        for part in content:
-            if not isinstance(part, dict):
-                raise AuxiliaryModelError("unsupported_response_shape")
-            if part.get("type") == "refusal":
-                raise AuxiliaryModelError("model_refused")
-            if part.get("type") != "output_text" or type(part.get("text")) is not str:
-                raise AuxiliaryModelError("unsupported_response_shape")
-            parts.append(part["text"])
-        answers.append("".join(parts))
-    text = "\n\n".join(answers)
-    if not text:
-        raise AuxiliaryModelError("empty_output")
-    return text
-
-
-class ResponsesConsolidationAdapter(_ConsolidationAdapter):
-    """One non-streaming Responses route on the shared consolidation boundary.
-
-    Reservation, transport, deadline, response cap, settlement and the raw
-    answer handed to the existing proposal validator are the chat route's; only
-    the request dialect and the answer extraction differ.
-    """
-
-    _route: ResponsesRouteConfig
-
-    def _responses_body(self, messages: list[dict]) -> bytes:
-        """Carry every message in ``input`` without moving system messages.
-
-        Each message becomes one item whose text part is typed for its role.
-        Using ``instructions`` would move interleaved system messages to the
-        beginning, so this adapter deliberately keeps them in ``input``.
-        ``store`` is false and the caller supplies all context explicitly.
-        """
-        route = self._route
-        items: list[dict[str, Any]] = []
-        for message in messages:
-            role, content = message["role"], message["content"]
-            items.append(
-                {
-                    "type": "message",
-                    "role": role,
-                    "content": [
-                        {
-                            "type": "output_text" if role == "assistant" else "input_text",
-                            "text": content,
-                        }
-                    ],
-                }
-            )
-        body: dict[str, Any] = {
-            "model": route.model,
-            "max_output_tokens": route.max_output_tokens,
-            "stream": route.stream,
-            "store": False,
-        }
-        body["input"] = items
-        if route.reasoning_effort is not None:
-            body["reasoning"] = {"effort": route.reasoning_effort}
-        if route.text_format is not None:
-            body["text"] = {"format": dict(route.text_format)}
-        return _json_bytes(body)
-
-    def propose(self, messages: list[dict], *, remaining_seconds: float) -> str:
-        deadline = time.monotonic() + validate_timeout_seconds(remaining_seconds)
-        validate_chat_messages(messages, roles=_RESPONSES_ROLES)
-        body = self._responses_body(messages)
-        _reject_secrets_outside_contents(self._responses_body, messages)
-        return self._send(
-            body,
-            deadline,
-            headers=lambda key: {
-                "Authorization": f"Bearer {key}",
-                "Content-Type": "application/json",
-                "User-Agent": "ScopeRecall-AuxiliaryConsolidation/1.1",
-            },
-            read_usage=_responses_usage,
-            read_result=_responses_output_text,
-        )

@@ -22,7 +22,8 @@ from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
 
-from .models import AuxiliaryModelError, validate_chat_messages, validate_timeout_seconds
+from .consolidation_models import validate_chat_messages
+from .models import AuxiliaryModelError, validate_timeout_seconds
 from .subscription_budget import SubscriptionBudgetLedger, SubscriptionBudgetPolicy
 from .validation import only_keys
 

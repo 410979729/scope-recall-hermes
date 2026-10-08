@@ -452,8 +452,9 @@ def _auxiliary(
     from decimal import Decimal
 
     from scope_recall.runtime.auxiliary import AuxiliaryRuntimeConfig
+    from scope_recall.runtime.consolidation_models import ConsolidationRouteConfig
+    from scope_recall.runtime.embedding_models import EmbeddingRouteConfig
     from scope_recall.runtime.model_budget import BudgetPolicy, ModelPricing
-    from scope_recall.runtime.models import ConsolidationRouteConfig, EmbeddingRouteConfig
 
     names = tuple(approved)
     pricing = {
@@ -543,8 +544,8 @@ def test_a_route_that_is_switched_off_is_not_a_gap():
 def test_the_embedding_default_is_checked_under_the_name_it_will_send():
     """An omitted embedding model still resolves to a concrete name, and that
     name is what ``reserve`` will judge."""
+    from scope_recall.core.recall_policy import EMBEDDING_SPACE
     from scope_recall.runtime.model_budget import pre_request_refusals
-    from scope_recall.runtime.models import EMBEDDING_SPACE
 
     default = EMBEDDING_SPACE["model"]
     approved = _auxiliary(external_embedding=True, approved=("chat", default))

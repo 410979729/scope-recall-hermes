@@ -10,8 +10,8 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from scope_recall.runtime.auxiliary import AuxiliaryRuntimeConfig
-from scope_recall.runtime.model_budget import initialize_auxiliary_budget_ledger
-from scope_recall.runtime.models import AuxiliaryBudgetLedger, OpenAIConsolidationAdapter
+from scope_recall.runtime.consolidation_models import OpenAIConsolidationAdapter
+from scope_recall.runtime.model_budget import AuxiliaryBudgetLedger, initialize_auxiliary_budget_ledger
 
 from probes.hermes.p11_a2a_bridge import FORMAL_BATCH_NAME, Bridge
 from probes.hermes.p11_a2a_testkit import (

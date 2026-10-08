@@ -102,7 +102,7 @@ def test_the_body_gate_still_guards_what_is_not_a_content(tmp_path, monkeypatch)
     def body_with_a_leaking_field(messages):
         body = json.loads(original(messages).decode("utf-8"))
         body["metadata"] = {"note": "password: hunter2-not-a-placeholder"}
-        return models._json_bytes(body)
+        return models.json_bytes(body)
 
     monkeypatch.setattr(adapter, "_chat_body", body_with_a_leaking_field)
     with pytest.raises(AuxiliaryModelError, match="sensitive_request"):

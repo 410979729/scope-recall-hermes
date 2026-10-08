@@ -11,6 +11,14 @@ from types import MappingProxyType
 from typing import Any, Mapping
 
 from .codex_cli import CodexCliConsolidationAdapter, CodexCliRouteConfig
+from .consolidation_models import (
+    RESPONSES_KIND,
+    ConsolidationRouteConfig,
+    OpenAIConsolidationAdapter,
+    ResponsesConsolidationAdapter,
+    ResponsesRouteConfig,
+)
+from .embedding_models import EmbeddingRouteConfig, GeminiEmbeddingAdapter
 from .model_budget import (
     AuxiliaryBudgetLedger,
     BudgetPolicy,
@@ -19,16 +27,7 @@ from .model_budget import (
     load_hermes_attempt_authorization,
     read_auxiliary_budget_status,
 )
-from .models import (
-    RESPONSES_KIND,
-    ConsolidationRouteConfig,
-    EmbeddingRouteConfig,
-    GeminiEmbeddingAdapter,
-    HttpTransport,
-    OpenAIConsolidationAdapter,
-    ResponsesConsolidationAdapter,
-    ResponsesRouteConfig,
-)
+from .models import HttpTransport
 from .subscription_budget import SubscriptionBudgetLedger
 from .validation import absolute_path, mapping, only_keys, positive_int, strict_bool, text
 

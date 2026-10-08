@@ -19,13 +19,9 @@ from types import SimpleNamespace
 import pytest
 from scope_recall.core.work_storage import MAX_CLAIM_PAGE, MAX_RECOVERY_PAGE
 from scope_recall.core.worker import EMBED_BATCH_LIMIT, WorkerConfig
+from scope_recall.runtime.embedding_models import EMBED_REQUEST_CONCURRENCY, MAX_EMBED_BATCH, build_gemini_embed_body
 from scope_recall.runtime.instance import _COUNT_BOUNDS
-from scope_recall.runtime.models import (
-    EMBED_REQUEST_CONCURRENCY,
-    MAX_EMBED_BATCH,
-    AuxiliaryModelError,
-    build_gemini_embed_body,
-)
+from scope_recall.runtime.models import AuxiliaryModelError
 from test_claims import app, capture  # noqa: F401  (fixtures)
 
 
@@ -51,7 +47,7 @@ class Recording:
 
 
 def _adapter(**options):
-    from scope_recall.runtime.models import GeminiEmbeddingAdapter
+    from scope_recall.runtime.embedding_models import GeminiEmbeddingAdapter
 
     made = Recording(**options)
     made.embed_texts = GeminiEmbeddingAdapter.embed_texts.__get__(made, Recording)
@@ -191,7 +187,7 @@ def test_a_group_asks_its_requests_at_the_same_time():
                 with self._lock:
                     self.live -= 1
 
-    from scope_recall.runtime.models import GeminiEmbeddingAdapter
+    from scope_recall.runtime.embedding_models import GeminiEmbeddingAdapter
 
     adapter = Concurrent()
     adapter.embed_texts = GeminiEmbeddingAdapter.embed_texts.__get__(adapter, Concurrent)

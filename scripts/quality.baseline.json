@@ -224,6 +224,10 @@
    "reportAttributeAccessIssue": 1,
    "reportOptionalMemberAccess": 4
   },
+  "runtime/embedding_models.py": {
+   "reportArgumentType": 3,
+   "reportAttributeAccessIssue": 2
+  },
   "runtime/http_session.py": {
    "reportOptionalMemberAccess": 7
   },
@@ -237,9 +241,8 @@
    "reportReturnType": 2
   },
   "runtime/models.py": {
-   "reportArgumentType": 4,
+   "reportArgumentType": 1,
    "reportAssignmentType": 1,
-   "reportAttributeAccessIssue": 2,
    "reportOptionalMemberAccess": 1
   },
   "runtime/process_probe.py": {
@@ -936,6 +939,12 @@
   "runtime/codex_cli.py": {
    "B905": 1
   },
+  "runtime/consolidation_models.py": {
+   "C901": {
+    "_responses_output_text": 16
+   },
+   "UP037": 1
+  },
   "runtime/embedding_retry.py": {
    "UP035": 1
   },
@@ -959,13 +968,9 @@
   },
   "runtime/models.py": {
    "BLE001": 1,
-   "C901": {
-    "_responses_output_text": 16
-   },
    "PLR0913": {
-    "_metered_post": 13
-   },
-   "UP037": 1
+    "metered_post": 13
+   }
   },
   "runtime/resume_entry.py": {
    "BLE001": 1,

@@ -202,6 +202,8 @@
     "runtime/_worker_bootstrap.py",
     "runtime/auxiliary.py",
     "runtime/codex_cli.py",
+    "runtime/consolidation_models.py",
+    "runtime/embedding_models.py",
     "runtime/embedding_retry.py",
     "runtime/http_session.py",
     "runtime/instance.py",
