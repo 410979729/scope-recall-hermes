@@ -5,6 +5,10 @@ longer text this file once held is in its history.
 
 ## [Unreleased]
 
+### Scope Recall 3.9.3rc1 - 2026-10-08
+
+The clean-up's last measures, no behaviour change: the most complex functions split into named steps, argument groups that travel together held in one value, and the largest files split by what they do.
+
 ## [3.9.2] - 2026-10-08
 
 3.9.2 changes no behaviour. It is the clean-up's last part: the store transaction and the core are split by what they do (`tx.sources`, `tx.registry`, `core.operations`, `core.records`), the clients' installers share their common functions, logic that was copied lives in one function (duplicated lines in production code 940 to 319), comments say what the code does rather than how it came about, test files are named for what they test, and this changelog keeps a line or two per release (each release's full notes are on its GitHub release page).
