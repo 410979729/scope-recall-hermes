@@ -147,15 +147,8 @@ def read_trace(storage, clock, context, request, *, seconds: float = 5.0) -> dic
             current_nodes = nodes + [_node(scope, canonical)]
             current_seen = seen | {canonical, subject}
             for edge in view.get("statements", []):
-                if edge["kind"] != "fact" or edge["claim_state"] != "active" or edge["temporal_status"] != "current":
-                    continue
-                if edge.get("conditions"):
-                    gaps.add("conditional_relation_not_traversed")
-                    continue
-                next_subject = edge["value_text"] if edge["direction"] == "outgoing" else edge["subject"]
-                if not next_subject.strip():
-                    continue
-                if next_subject in current_seen:
+                next_subject = _next_subject(edge, current_seen, gaps)
+                if next_subject is None:
                     continue
                 next_edges = edges + [edge]
                 path = {
@@ -183,6 +176,28 @@ def read_trace(storage, clock, context, request, *, seconds: float = 5.0) -> dic
         if tx.status().memory_epoch != epoch:
             return _unavailable(result, "memory_changed")
     result["visited_nodes"] = len(cache)
+    return _bounded_result(result, candidates, gaps, body)
+
+
+def _next_subject(edge: dict, seen, gaps: set) -> str | None:
+    """The subject a relation leads to, or None when the walk does not follow it: not a current active fact, held
+    under conditions (named as a gap), empty, or already on this path."""
+    if edge["kind"] != "fact" or edge["claim_state"] != "active" or edge["temporal_status"] != "current":
+        return None
+    if edge.get("conditions"):
+        gaps.add("conditional_relation_not_traversed")
+        return None
+    next_subject = edge["value_text"] if edge["direction"] == "outgoing" else edge["subject"]
+    if not next_subject.strip():
+        return None
+    if next_subject in seen:
+        return None
+    return next_subject
+
+
+def _bounded_result(result: dict, candidates: list, gaps: set, body: dict) -> dict:
+    """The trace's answer: the longest paths first, as many as ``max_paths`` and the byte budget allow, with every
+    limit that cut it named as a gap."""
     candidates.sort(key=lambda p: (-p["hops"], tuple(e["ref"] for e in p["edges"])))
     result["paths"] = candidates[: body["max_paths"]]
     if len(candidates) > body["max_paths"]:
