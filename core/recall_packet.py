@@ -284,7 +284,9 @@ class _Draft:
         self.unmet_needs.extend(needs)
 
 
-def _packet_status(items, result, gaps, needs, dropped: bool, *, failed: bool) -> str:
+def _packet_status(
+    items, result, gaps, needs, dropped: bool, *, failed: bool
+) -> Literal["ok", "no_match", "partial", "unavailable"]:
     """Unavailable when authority or a read failed and nothing came back; no match when nothing came back (partial
     if results were dropped); partial with gaps, unmet needs or drops; else ok."""
     if failed and not items:
@@ -296,7 +298,9 @@ def _packet_status(items, result, gaps, needs, dropped: bool, *, failed: bool) -
     return "ok"
 
 
-def _answerability(status: str, answer_objects, needs, dropped: bool, gaps, hint) -> str:
+def _answerability(
+    status: str, answer_objects, needs, dropped: bool, gaps, hint
+) -> Literal["supported", "partial", "ambiguous", "unknown"]:
     """Unknown without answer evidence; partial with gaps, unmet needs or drops; else the retrieval's hint when it
     is ambiguous or supported, and partial otherwise."""
     if status in {"no_match", "unavailable"} or not answer_objects:

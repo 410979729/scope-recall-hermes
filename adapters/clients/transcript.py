@@ -114,7 +114,7 @@ def said(row: object) -> Said | None:
     return Said(entry_id.strip(), role, text, occurred_at, _prompt_id(row) if role == "user" else None)
 
 
-def _spoken(row: dict, message: dict) -> tuple[str, str] | None:
+def _spoken(row: dict, message) -> tuple[str, str] | None:
     """Who speaks in a record entry, and the words: a person's message, a message they queued while a turn was
     running, or the model's answer; None for every other entry."""
     kind = row.get("type")

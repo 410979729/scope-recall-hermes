@@ -387,7 +387,7 @@ def _revision_authority(tx, head, request) -> _Authority:
     return _Authority(source, raw, principal_matches, first_person_target, retraction)
 
 
-def _revised_payload(head, request, retraction: bool) -> dict:
+def _revised_payload(head, request, retraction: bool):
     """The claim's payload with the request's new value, conditions and start."""
     new_value = request["new_value"]
     updated = deepcopy(head.payload)
@@ -409,7 +409,7 @@ def _revised_payload(head, request, retraction: bool) -> dict:
     return updated
 
 
-def _revision_proof(head, updated: dict, authority: _Authority) -> str:
+def _revision_proof(head, updated, authority: _Authority) -> str:
     """The passage of the person's message that proves the revision.
 
     Explicit revisions bind their spans to the authorizing current utterance.
@@ -438,7 +438,7 @@ def _revision_proof(head, updated: dict, authority: _Authority) -> str:
     return proof
 
 
-def _revision_qualification(tx, updated: dict, proof: str, authority: _Authority) -> Qualification:
+def _revision_qualification(tx, updated, proof: str, authority: _Authority) -> Qualification:
     """The revised claim's qualification: a retraction is the person's report; a correction must qualify active."""
     roots = tx.claims.roots(evidence_refs(updated))
     roots = tuple(replace(root, content=evidence_context(root.content, proof)) for root in roots)
@@ -464,7 +464,7 @@ def _revision_qualification(tx, updated: dict, proof: str, authority: _Authority
     return qualification
 
 
-def _record_revision(tx, clock, head, updated: dict, qualification, request, authority: _Authority) -> Mutation:
+def _record_revision(tx, clock, head, updated, qualification, request, authority: _Authority) -> Mutation:
     """The revision written: nothing for a duplicate, a claim of its own when the conditions changed, else the
     claim's next version."""
     if same_assertion(head.payload, updated) and head.state == qualification.state:

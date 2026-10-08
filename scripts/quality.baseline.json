@@ -47,7 +47,7 @@
   "adapters/clients/transcript.py": {
    "reportArgumentType": 8,
    "reportOperatorIssue": 2,
-   "reportOptionalMemberAccess": 11
+   "reportOptionalMemberAccess": 6
   },
   "adapters/hermes/__init__.py": {
    "reportUnsupportedDunderAll": 2
@@ -139,9 +139,6 @@
    "reportAssignmentType": 1,
    "reportReturnType": 1
   },
-  "core/trace.py": {
-   "reportArgumentType": 1
-  },
   "core/work_storage.py": {
    "reportReturnType": 1
   },
@@ -149,12 +146,7 @@
    "reportArgumentType": 2
   },
   "core/worker_candidates.py": {
-   "reportArgumentType": 4,
-   "reportOptionalMemberAccess": 8
-  },
-  "core/worker_consolidation.py": {
-   "reportArgumentType": 1,
-   "reportOptionalMemberAccess": 1
+   "reportArgumentType": 1
   },
   "core/worker_outcomes.py": {
    "reportAttributeAccessIssue": 1
@@ -389,9 +381,6 @@
   },
   "adapters/clients/transcript.py": {
    "E501": 1,
-   "PLR0911": {
-    "said": 9
-   },
    "UP017": 2,
    "UP035": 1
   },
@@ -485,23 +474,12 @@
    }
   },
   "core/admission.py": {
-   "E501": 3,
-   "PLR0911": {
-    "classify": 9
-   }
+   "E501": 3
   },
   "core/artifact_storage.py": {
    "E501": 2,
    "PLR0913": {
     "Artifacts.register": 9
-   }
-  },
-  "core/background_context.py": {
-   "C901": {
-    "background_candidates": 19
-   },
-   "PLR0912": {
-    "background_candidates": 18
    }
   },
   "core/candidate_debounce.py": {
@@ -518,14 +496,6 @@
   },
   "core/candidate_tables.py": {
    "UP017": 2
-  },
-  "core/capture.py": {
-   "C901": {
-    "record_event": 21
-   },
-   "PLR0912": {
-    "record_event": 20
-   }
   },
   "core/capture_inbox.py": {
    "E501": 1,
@@ -575,13 +545,7 @@
    "E501": 11
   },
   "core/episodes.py": {
-   "C901": {
-    "qualify_resume": 18
-   },
-   "E501": 3,
-   "PLR0912": {
-    "qualify_resume": 17
-   }
+   "E501": 3
   },
   "core/evidence_question.py": {
    "UP035": 1
@@ -633,16 +597,7 @@
    }
   },
   "core/mutate.py": {
-   "C901": {
-    "_revise_in_transaction": 24
-   },
-   "E501": 7,
-   "PLR0912": {
-    "_revise_in_transaction": 24
-   },
-   "PLR0915": {
-    "_revise_in_transaction": 78
-   }
+   "E501": 7
   },
   "core/read_views.py": {
    "UP035": 1
@@ -692,31 +647,15 @@
   "core/reference_storage.py": {
    "B905": 1,
    "C901": {
-    "References._explicit_candidate_mention": 16,
-    "References.apply": 22
+    "References._explicit_candidate_mention": 16
    },
-   "E501": 3,
-   "PLR0912": {
-    "References.apply": 22
-   },
-   "PLR0915": {
-    "References.apply": 62
-   }
+   "E501": 3
   },
   "core/requalify.py": {
    "E501": 3
   },
   "core/restore.py": {
-   "C901": {
-    "replay_deletion_ledger": 26
-   },
-   "E501": 10,
-   "PLR0912": {
-    "replay_deletion_ledger": 26
-   },
-   "PLR0915": {
-    "replay_deletion_ledger": 77
-   }
+   "E501": 10
   },
   "core/retrieval.py": {
    "C901": {
@@ -755,13 +694,13 @@
   },
   "core/trace.py": {
    "C901": {
-    "read_trace": 30
+    "read_trace": 20
    },
    "PLR0912": {
-    "read_trace": 29
+    "read_trace": 19
    },
    "PLR0915": {
-    "read_trace": 95
+    "read_trace": 68
    }
   },
   "core/truth_connection.py": {
@@ -781,51 +720,37 @@
   },
   "core/worker.py": {
    "C901": {
-    "drain_worker": 22
+    "drain_worker": 19
    },
    "PLR0912": {
-    "drain_worker": 23
+    "drain_worker": 19
    },
    "PLR0913": {
     "drain_worker": 9
    },
    "PLR0915": {
-    "drain_worker": 91
+    "drain_worker": 77
    }
   },
   "core/worker_candidates.py": {
    "BLE001": 1,
-   "C901": {
-    "process_candidate_evaluation": 25
-   },
    "PLR0911": {
-    "process_candidate_evaluation": 15
-   },
-   "PLR0912": {
-    "process_candidate_evaluation": 26
+    "process_candidate_evaluation": 11
    },
    "PLR0913": {
     "_candidate_failure": 11
-   },
-   "PLR0915": {
-    "process_candidate_evaluation": 76
    }
   },
   "core/worker_consolidation.py": {
    "BLE001": 1,
    "C901": {
-    "decode_consolidation_result": 19,
-    "process_consolidate": 25
+    "decode_consolidation_result": 19
    },
    "PLR0911": {
-    "process_consolidate": 16
+    "process_consolidate": 10
    },
    "PLR0912": {
-    "decode_consolidation_result": 18,
-    "process_consolidate": 26
-   },
-   "PLR0915": {
-    "process_consolidate": 70
+    "decode_consolidation_result": 18
    }
   },
   "core/worker_outcomes.py": {
@@ -869,7 +794,7 @@
     "_upgrade_store": 10
    },
    "PLR0915": {
-    "_upgrade_store": 68
+    "_upgrade_store": 64
    },
    "UP017": 1,
    "UP035": 1
@@ -1120,6 +1045,9 @@
   "tests/contract/test_a_pass_that_ends_hands_back_its_group.py": {
    "E501": 1
   },
+  "tests/contract/test_aliases.py": {
+   "E501": 1
+  },
   "tests/contract/test_autonomous_admission.py": {
    "E501": 1
   },
@@ -1129,17 +1057,32 @@
   "tests/contract/test_candidate_debounce.py": {
    "UP017": 1
   },
+  "tests/contract/test_candidate_lifecycle.py": {
+   "E501": 2
+  },
   "tests/contract/test_claim_embed_recovery.py": {
    "UP017": 1
+  },
+  "tests/contract/test_claims.py": {
+   "BLE001": 1,
+   "E501": 2,
+   "F841": 2
   },
   "tests/contract/test_comprehensive_storage_diagnostics.py": {
    "B905": 1,
    "E501": 1,
    "UP017": 3
   },
-  "tests/contract/test_restart_and_failure_recovery.py": {
-   "E501": 5,
-   "UP017": 1
+  "tests/contract/test_consolidation_chunks.py": {
+   "B905": 1,
+   "E501": 1
+  },
+  "tests/contract/test_consolidation_input.py": {
+   "B905": 1
+  },
+  "tests/contract/test_deletion.py": {
+   "B023": 3,
+   "F841": 1
   },
   "tests/contract/test_embed_group_bookkeeping.py": {
    "UP017": 1
@@ -1163,12 +1106,10 @@
   "tests/contract/test_http_proxy_boundary.py": {
    "B008": 1
   },
-  "tests/contract/test_retrieval_pipeline.py": {
-   "F841": 2
-  },
-  "tests/contract/test_recall_packet_compiler.py": {
-   "E501": 1,
-   "F841": 1
+  "tests/contract/test_lance_embed_fence.py": {
+   "BLE001": 2,
+   "F841": 1,
+   "UP017": 1
   },
   "tests/contract/test_operator_retry.py": {
    "UP017": 1
@@ -1176,14 +1117,19 @@
   "tests/contract/test_provider_hold.py": {
    "UP017": 1
   },
-  "tests/contract/test_candidate_lifecycle.py": {
-   "E501": 2
-  },
-  "tests/contract/test_turn_replies.py": {
-   "B905": 2
-  },
   "tests/contract/test_queue_backpressure.py": {
    "B905": 1
+  },
+  "tests/contract/test_recall_admission.py": {
+   "E501": 2,
+   "PLR0913": {
+    "recall": 10
+   },
+   "UP035": 1
+  },
+  "tests/contract/test_recall_packet_compiler.py": {
+   "E501": 1,
+   "F841": 1
   },
   "tests/contract/test_recall_row_crossings.py": {
    "E501": 2
@@ -1191,6 +1137,16 @@
   "tests/contract/test_recall_scope.py": {
    "E501": 1,
    "UP017": 15
+  },
+  "tests/contract/test_restart_and_failure_recovery.py": {
+   "E501": 5,
+   "UP017": 1
+  },
+  "tests/contract/test_retained_artifacts.py": {
+   "E713": 1
+  },
+  "tests/contract/test_retrieval_pipeline.py": {
+   "F841": 2
   },
   "tests/contract/test_running_code.py": {
    "UP017": 5
@@ -1202,9 +1158,8 @@
    "B905": 1,
    "UP017": 4
   },
-  "tests/contract/test_consolidation_chunks.py": {
-   "B905": 1,
-   "E501": 1
+  "tests/contract/test_storage.py": {
+   "E501": 2
   },
   "tests/contract/test_storage_growth.py": {
    "E501": 3
@@ -1212,46 +1167,8 @@
   "tests/contract/test_trace.py": {
    "UP017": 2
   },
-  "tests/contract/test_aliases.py": {
-   "E501": 1
-  },
-  "tests/contract/test_claims.py": {
-   "BLE001": 1,
-   "E501": 2,
-   "F841": 2
-  },
-  "tests/contract/test_consolidation_input.py": {
-   "B905": 1
-  },
-  "tests/contract/test_deletion.py": {
-   "B023": 3,
-   "F841": 1
-  },
-  "tests/contract/test_lance_embed_fence.py": {
-   "BLE001": 2,
-   "F841": 1,
-   "UP017": 1
-  },
-  "tests/contract/test_recall_admission.py": {
-   "E501": 2,
-   "PLR0913": {
-    "recall": 10
-   },
-   "UP035": 1
-  },
-  "tests/contract/test_retained_artifacts.py": {
-   "E713": 1
-  },
-  "tests/contract/test_storage.py": {
-   "E501": 2
-  },
-  "tests/contract/test_worker.py": {
-   "E501": 4,
-   "F841": 11
-  },
-  "tests/contract/test_worker_incremental_batch.py": {
-   "E501": 7,
-   "F841": 3
+  "tests/contract/test_turn_replies.py": {
+   "B905": 2
   },
   "tests/contract/test_vector_failure.py": {
    "B007": 1,
@@ -1260,6 +1177,14 @@
   "tests/contract/test_vector_retention.py": {
    "E501": 3,
    "UP017": 1
+  },
+  "tests/contract/test_worker.py": {
+   "E501": 4,
+   "F841": 11
+  },
+  "tests/contract/test_worker_incremental_batch.py": {
+   "E501": 7,
+   "F841": 3
   },
   "tests/host/codex/test_mcp.py": {
    "PLR0915": {
@@ -1275,12 +1200,12 @@
    "E501": 5,
    "UP017": 9
   },
-  "tests/host/hermes/test_dedupe.py": {
-   "B007": 1
-  },
   "tests/host/hermes/test_a2a_prepare.py": {
    "E402": 7,
    "UP012": 1
+  },
+  "tests/host/hermes/test_dedupe.py": {
+   "B007": 1
   },
   "tests/host/hermes/test_runtime_bounds.py": {
    "BLE001": 1
