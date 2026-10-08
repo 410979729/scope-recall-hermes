@@ -78,8 +78,7 @@ class RequalifyReport:
 
 def requalify_claims(tx, *, now: str, after_ref: str = "", limit: int = 16, dry_run: bool = True) -> RequalifyReport:
     """Re-judge one bounded page of stored claims.  Returns what moved."""
-    from .claims import Qualification, bind_claim_subject, qualify, same_assertion
-    from .mutate import evidence_refs
+    from .claims import Qualification, bind_claim_subject, evidence_refs, qualify, same_assertion
 
     if type(limit) is not int or type(limit) is bool or not 1 <= limit <= MAX_PAGE:
         raise ContractError("INPUT_INVALID", "requalify_limit")
@@ -170,9 +169,8 @@ def retire_rootless_proposals(
     changed since they were written (on the pilot, 154 of them, promotions included), and retiring
     these must not bring that along.  The report names refs and verdicts only, never claim text.
     """
-    from .claims import Qualification
+    from .claims import Qualification, evidence_refs
     from .episodes import source_origin
-    from .mutate import evidence_refs
 
     if type(limit) is not int or type(limit) is bool or not 1 <= limit <= MAX_PAGE:
         raise ContractError("INPUT_INVALID", "requalify_limit")
@@ -240,3 +238,100 @@ __all__ = [
     "requalify_claims",
     "retire_rootless_proposals",
 ]
+
+
+def repair_frames(tx, *, now, after_ref="", limit=16):
+    """Bounded upgrade repair through the ordinary evidence/application path.
+
+    The caller persists the cursor; old versions and original sources remain.
+    No model call, manual approval, or fabricated claim payload is involved.
+    """
+    from .claim_normalization import expand_frames
+    from .claims import Qualification, evidence_refs, same_assertion
+    from .mutate import apply_claim, register_applied_candidate
+
+    if type(limit) is not int or not 1 <= limit <= 32:
+        raise ContractError("INPUT_INVALID", "normalization_limit")
+    # Filter authorization before pagination so an already-visited prefix or
+    # another audience cannot starve later records.
+    scopes = sorted(tx.context.allowed_scope_ids)
+    rows = (
+        tx._check()
+        .execute(
+            f"""SELECT claim_id FROM claims WHERE claim_id>? AND read_blocked=0 AND suppressed=0
+        AND scope_id IN ({",".join("?" for _ in scopes)}) AND project_id IS ? AND branch_id IS ?
+        ORDER BY claim_id LIMIT ?""",
+            (after_ref, *scopes, tx.context.project_id, tx.context.branch_id, limit),
+        )
+        .fetchall()
+    )
+    repaired, errors = [], []
+    for row in rows:
+        versions = tx.claims.versions(row[0])
+        head = next((v for v in versions if v.revision == v.current_revision), None)
+        if head is None or head.state not in {"active", "proposed", "disputed"}:
+            continue
+        try:
+            with tx.savepoint():
+                roots = tx.claims.roots(evidence_refs(head.payload))
+                frames = expand_frames(head.payload, roots)
+                if len(frames) == 1 and same_assertion(head.payload, frames[0]):
+                    continue
+                mutation = apply_claim(tx, frames[0], head.scope_id, now)
+                register_applied_candidate(tx, mutation, now)
+                for sibling in frames[1:]:
+                    sibling_mutation = apply_claim(tx, sibling, head.scope_id, now)
+                    register_applied_candidate(tx, sibling_mutation, now)
+                    repaired.append(
+                        {
+                            "original_ref": head.ref,
+                            "ref": sibling_mutation.ref,
+                            "revision": sibling_mutation.revision,
+                            "state": sibling_mutation.state,
+                            "disposition": sibling_mutation.disposition,
+                        }
+                    )
+                if mutation.ref != head.ref and mutation.state == "active" and head.state in {"active", "disputed"}:
+                    # Retire a duplicate legacy frame only after its corrected
+                    # canonical replacement passed ordinary evidence admission.
+                    # Append a version; never rewrite the original payload.
+                    retired = tx.claims.append(
+                        head.scope_id,
+                        head.payload,
+                        Qualification("retracted", head.basis, "canonical_frame_reconciled"),
+                        recorded_at=now,
+                        previous=head,
+                    )
+                    tx.candidates.register(retired.ref, retired.revision, observed_at=now, schedule_initial=False)
+                if mutation.ref != head.ref and head.state == "proposed":
+                    conn = tx._check(write=True)
+                    conn.execute(
+                        "UPDATE candidate_lifecycle SET processing_state='archived',reason='canonical_frame_reconciled',updated_at=? WHERE candidate_ref=?",
+                        (now, head.ref),
+                    )
+                    conn.execute(
+                        "UPDATE work_items SET state='obsolete',last_error_code='canonical_frame_reconciled' WHERE work_type='evaluate_candidate' AND subject_ref=? AND state IN ('pending','leased')",
+                        ("candidate:" + head.ref,),
+                    )
+                    conn.execute(
+                        "UPDATE candidate_evaluations SET state='obsolete',reason='canonical_frame_reconciled',completed_at=? WHERE candidate_ref=? AND state='queued'",
+                        (now, head.ref),
+                    )
+                repaired.append(
+                    {
+                        "original_ref": head.ref,
+                        "ref": mutation.ref,
+                        "revision": mutation.revision,
+                        "state": mutation.state,
+                        "disposition": mutation.disposition,
+                    }
+                )
+        except ContractError as exc:
+            errors.append({"ref": head.ref, "code": exc.code, "field": exc.field})
+    return {
+        "cursor": rows[-1][0] if rows else after_ref,
+        "scanned": len(rows),
+        "items": repaired,
+        "errors": errors,
+        "done": len(rows) < limit,
+    }

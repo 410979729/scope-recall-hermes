@@ -467,7 +467,7 @@ class MemoryCore:
         self, context: TrustedContext, *, after_ref: str = "", limit: int = 16, remaining_seconds: float | None = None
     ):
         """Revalidate one bounded page of legacy frames without model calls."""
-        from .claim_normalization import repair_frames
+        from .requalify import repair_frames
 
         with self.storage.write(
             context,

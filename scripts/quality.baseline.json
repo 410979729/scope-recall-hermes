@@ -95,9 +95,6 @@
   "core/candidate_sweeps.py": {
    "reportOperatorIssue": 1
   },
-  "core/claim_normalization.py": {
-   "reportArgumentType": 3
-  },
   "core/claims.py": {
    "reportGeneralTypeIssues": 1
   },
@@ -144,6 +141,9 @@
   "core/recall_packet.py": {
    "reportGeneralTypeIssues": 1,
    "reportOptionalMemberAccess": 4
+  },
+  "core/requalify.py": {
+   "reportArgumentType": 3
   },
   "core/retrieval_storage.py": {
    "reportArgumentType": 2,
@@ -606,8 +606,7 @@
    "C901": {
     "normalize_frame": 19
    },
-   "E501": 3,
-   "I001": 2,
+   "I001": 1,
    "PLR0911": {
     "normalize_frame": 11
    },
@@ -826,6 +825,9 @@
    "PLR0915": {
     "References.apply": 65
    }
+  },
+  "core/requalify.py": {
+   "E501": 3
   },
   "core/restore.py": {
    "C901": {

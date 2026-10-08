@@ -133,6 +133,17 @@ _NEGATION = re.compile(r"不是|并非|没有|未曾|不喜欢|讨厌|\b(?:not|n
 _SELF_SUBJECTS = frozenset({"user", "current_user", "用户", "我"})
 
 
+def evidence_refs(proposal: ClaimProposal) -> tuple[str, ...]:
+    refs = [f"{s['source_ref']}@{s['source_revision']}" for s in proposal["evidence_spans"]]
+    intention = proposal.get("intention")
+    if intention is not None:
+        refs.extend(intention["state_evidence_refs"])
+    procedure = proposal.get("procedure")
+    if procedure is not None:
+        refs.extend(procedure["counterexample_refs"])
+    return tuple(dict.fromkeys(refs))
+
+
 def _principal_ref(root: RootEvidence) -> str | None:
     principal = root.source_principal
     if not isinstance(principal, dict):
@@ -575,11 +586,37 @@ def _value_preserved(c: _Cited) -> str | None:
     ):
         return "value_polarity_not_preserved"
     if c.kind in {"preference", "decision"} and _NEGATION.search(c.source_text) and not _NEGATION.search(value):
-        from .claim_normalization import rejects_other_value
-
         if not rejects_other_value(c.source_text, c.proposal):
             return "negation_not_preserved"
     return None
+
+
+def rejects_other_value(content, proposal):
+    """An explicit 'X, not Y' does not negate the positive X clause.
+
+    A general denial of the statement remains a denial. Every negative clause
+    must be an isolated rejected alternative; questions/uncertainty are still
+    checked by the owning qualifier.
+    """
+    clauses = re.split(r"[，,;；。!?！？\n]", content)
+    subject, predicate, value = (proposal[k] for k in ("subject", "predicate", "value_text"))
+    frame = re.compile(
+        re.escape(subject) + r"\s*(?:应当|应该|应|仍然|仍)?" + re.escape(predicate) + r"\s*" + re.escape(value)
+    )
+    if not any(frame.search(c) and not _NEGATION.search(c) for c in clauses):
+        return False
+    negatives = [c.strip() for c in clauses if _NEGATION.search(c)]
+    if not negatives:
+        return False
+    for clause in negatives:
+        match = re.fullmatch(r"(?:不是|并非)([^\s，,。;；!?！？]{1,120})", clause)
+        if (
+            not match
+            or value in match.group(1)
+            or re.search(r"事实|确认|真的|真实|认真|意思|偏好|断言|承诺|决定|成立|正确", match.group(1))
+        ):
+            return False
+    return True
 
 
 def _time_scope_known(c: _Cited) -> str | None:

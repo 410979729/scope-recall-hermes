@@ -24,6 +24,7 @@ from .source_qualification import AUTHORITY_QUESTION, RELATIVE_SCOPE, bound_lite
 from .corroboration import CORROBORATED_REASON, corroboration_promotes
 from .claims import (
     ClaimVersion,
+    evidence_refs,
     Qualification,
     bind_claim_subject,
     canonical_time,
@@ -49,17 +50,6 @@ class MutationReceipt:
     items: tuple[Mutation, ...]
     memory_epoch: int
     durability: str = "persisted"
-
-
-def evidence_refs(proposal: ClaimProposal) -> tuple[str, ...]:
-    refs = [f"{s['source_ref']}@{s['source_revision']}" for s in proposal["evidence_spans"]]
-    intention = proposal.get("intention")
-    if intention is not None:
-        refs.extend(intention["state_evidence_refs"])
-    procedure = proposal.get("procedure")
-    if procedure is not None:
-        refs.extend(procedure["counterexample_refs"])
-    return tuple(dict.fromkeys(refs))
 
 
 def validate_claims(tx, value, scope_id: str):

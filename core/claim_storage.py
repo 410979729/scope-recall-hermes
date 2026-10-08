@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 
 from ..contracts import ClaimProposal, ContractError
 from . import lineage
-from .claims import ClaimVersion, Qualification, RootEvidence, canonical_time, claim_slot
+from .claims import ClaimVersion, Qualification, RootEvidence, canonical_time, claim_slot, evidence_refs
 
 if TYPE_CHECKING:
     from .storage import Transaction
@@ -206,7 +206,6 @@ class Claims:
             # uniquely equivalent, freshly grounded slot; similarity is never
             # enough to merge identities.
             from .claim_normalization import normalize_frame, _PROJECT
-            from .mutate import evidence_refs
 
             projects = [p for c in proposal["conditions"] for p in _PROJECT.findall(c)]
             if len(set(projects)) != 1:
@@ -495,7 +494,6 @@ class Claims:
             previous_slot = claim_slot(scope_id, ctx.project_id, ctx.branch_id, previous.payload)
             if previous_slot != slot_key:
                 from .claim_normalization import normalize_frame
-                from .mutate import evidence_refs
 
                 previous_slot = claim_slot(
                     scope_id,

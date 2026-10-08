@@ -89,7 +89,8 @@ def _apply_verdict(tx, item, current, value, live_sources, now):
     value = dict(value, source_refs=[f"{ref}@{revision}" for ref, revision in current.evidence_refs])
     if len(value["claim_proposals"]) > 1:
         raise ContractError("DERIVATION_INVALID", "candidate_proposal_count")
-    from .mutate import apply_claim, evidence_refs, validate_claims
+    from .claims import evidence_refs
+    from .mutate import apply_claim, validate_claims
 
     validated = validate_claims(tx, value, item.scope_id)
     if not validated["claim_proposals"]:
