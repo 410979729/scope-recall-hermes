@@ -17,7 +17,7 @@ in `scripts/check.py`.
 | `maintenance/` | Install (`install*`), doctor, upgrade, legacy migration (`legacy_*`, `migration_*`) and the operator CLI |
 | `tests/` | The gated test suite; `scripts/check.py --tier <tier>` selects it |
 | `scripts/` | The gate runner, the quality check and its baseline, the manifest stamper and the dead-code scan |
-| `probes/hermes/` | The P11 real-host A2A test kit (see `docs/implementation-history/p11-a2a-test.zh-CN.md`) |
+| `probes/hermes/` | The real-host A2A test kit for a TEST Hermes gateway (`probes/README.md`) |
 | `verification/` | Byte-exact evidence bundles cited by receipts; never edit by hand |
 
 ## Before a change is merged
