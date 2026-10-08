@@ -4,13 +4,18 @@ All notable changes to `scope-recall` will be documented in this file.
 
 ## [Unreleased]
 
-### Scope Recall 3.9.1rc1 - 2026-10-07
+## [3.9.1] - 2026-10-08
 
-The clean-up's third step, no behaviour change: the import graph of the core and its hosts without cycles.
+3.9.1 changes no behaviour. It is the clean-up's second part: stored content, recall results, hook and CLI output, log lines, configuration formats and the modules installed hosts run are those of 3.9.0.
 
-- `install_hermes_archive_migration`, the test-only archive migration install, moves from `scope_recall.adapters.hermes` to `scope_recall.maintenance.migration_activation`.
-- The model transport, the Codex CLI consolidation adapter and the Lance ports move below the host adapters: `scope_recall.adapters.models`, `.codex_cli` and `.lance` are now `scope_recall.runtime.models`, `.codex_cli` and `.lance_port`, and `scope_recall.adapters` no longer re-exports the Lance names. Nothing installed names these modules.
-- `scripts/quality.py` holds the package's imports to its layers (contracts, core, vector, runtime, adapters, maintenance): CI fails on an import cycle, an import inside a function included, and on a module importing from a layer above its own. The entry modules in `adapters/codex` may import any layer, and the worker's two lazy imports of a host's authorization check are named in the script.
+- **No import cycles, and imports follow the layers.** In 3.9.0 the package's modules imported each other in four cycles (of 27, 15, 2 and 2 modules, counting imports inside functions); the code that closed them moved to the modules it belongs with, and there are none now. No module imports from a layer above its own (contracts, core, vector, runtime, adapters, maintenance), but the entry modules in `adapters/codex` and the worker's two lazy imports of a host's authorization check. `scripts/quality.py` fails CI on an import cycle or an upward import.
+- **Imports at the top where every entry loads them anyway.** Imports inside functions went from 326 to 176; the largest groups left are in the composition root, the operator CLI and the resident recall server, where they keep a process from loading what it does not use. Every import block is sorted.
+- **Shared helpers have public names.** 3.9.0 imported another module's private name in 199 places; 3.9.1 in none.
+- **Moved modules.** `scope_recall.adapters.models`, `.codex_cli` and `.lance` are now `scope_recall.runtime.models`, `.codex_cli` and `.lance_port`, and `scope_recall.adapters` no longer re-exports the Lance names; `install_hermes_archive_migration`, the test-only archive migration install, moved from `scope_recall.adapters.hermes` to `scope_recall.maintenance.migration_activation`; the remote client's `install` command is carried out by `scope_recall.maintenance.install_remote`, reached through the same `scope_recall.adapters.codex.remote_client` command. Installed hooks and MCP servers name none of these. A script that imported a renamed helper by its private name imports the public one.
+
+### Upgrading from 3.9.0
+
+Install the package, run `plan-install` and `apply-install` where you upgrade, then restart the Hermes gateways and the clients' MCP servers. The schema is unchanged (1110), and so are the hook and MCP server commands the installers write.
 
 ## [3.9.0] - 2026-10-07
 
