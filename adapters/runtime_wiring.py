@@ -267,7 +267,12 @@ def attach_trusted_host_runtime(
             return basic(GAP_UNCONFIGURED, GAP_INVALID)
     try:
         runtime_config = load_config(path)
-    except (OSError, ValueError):
+    except (OSError, ValueError) as exc:
+        # A file that is present and was read but refused by the parser is not a
+        # missing one.  Reporting both gaps sent an operator looking for a file
+        # that was already there, for a reason the parser can name.
+        if not isinstance(exc, OSError):
+            return basic(GAP_INVALID)
         return basic(GAP_UNCONFIGURED, GAP_INVALID)
     if not _bindings_match(expected_binding, runtime_config.binding):
         return basic(GAP_UNCONFIGURED, GAP_BINDING_MISMATCH)
