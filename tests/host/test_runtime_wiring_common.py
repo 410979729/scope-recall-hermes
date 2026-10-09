@@ -173,6 +173,87 @@ def test_default_runtime_config_rejects_symlink_when_supported(tmp_path: Path):
     attached.close()
 
 
+def test_a_config_that_was_read_and_refused_is_invalid_not_unconfigured(tmp_path: Path):
+    """A file the parser refuses is present; reporting it as missing sends the
+    operator looking for a file that is already there -- for a fault the parser
+    can name.  A missing file stays `unconfigured`, which is what that word means.
+    """
+    from scope_recall.adapters.runtime_wiring import GAP_INVALID
+
+    data = tmp_path / "owned-data"
+    data.mkdir()
+    binding = InstanceBinding("TEST-agent", "TEST-installation", data, frozenset({"TEST-scope"}), True)
+    payload = _runtime_payload(binding)
+    payload["auxiliary"] = {
+        "external_embedding": True,
+        "external_consolidation": False,
+        # Half a descriptor: a model with no endpoint/dimensions/dialect, which
+        # the parser refuses by name (`embedding_route_partial_space`).
+        "embedding": {"credential_env": "TEST_EMBED_KEY", "model": "only-a-model"},
+    }
+    (data / "runtime-config.json").write_text(json.dumps(payload), encoding="utf-8")
+    attached = attach_trusted_host_runtime(
+        config_path=None,
+        expected_binding=binding,
+        session_id="TEST-session",
+        allowed_scope_ids=binding.scope_ids,
+    )
+    assert not attached.configured
+    assert GAP_INVALID in attached.capability_gaps
+    assert GAP_UNCONFIGURED not in attached.capability_gaps, "the config was there and was read"
+    attached.close()
+
+
+def test_a_local_embedding_server_route_reaches_a_configured_runtime(tmp_path: Path):
+    """The 1.9.1 local-model path end to end: a loopback route attaches.
+
+    This is the case that did not work: `auxiliary.embedding.endpoint` carrying
+    `http://127.0.0.1:...`, which 1.9.1 allowed for a local model server, was
+    refused by the 3.x endpoint policy and the whole runtime fell back to basic.
+    """
+    data = tmp_path / "local-embedding"
+    data.mkdir()
+    binding = InstanceBinding("TEST-agent", "TEST-installation", data, frozenset({"TEST-scope"}), True)
+    payload = _runtime_payload(binding)
+    payload["auxiliary"] = {
+        "external_embedding": True,
+        "external_consolidation": False,
+        "embedding": {
+            "credential_env": "TEST_EMBED_KEY",
+            "model": "local-embedding",
+            "endpoint": "http://127.0.0.1:11434/v1/embeddings",
+            "dimensions": 1024,
+            "dialect": "openai",
+        },
+    }
+    (data / "runtime-config.json").write_text(json.dumps(payload), encoding="utf-8")
+    attached = attach_trusted_host_runtime(
+        config_path=None,
+        expected_binding=binding,
+        session_id="TEST-session",
+        allowed_scope_ids=binding.scope_ids,
+    )
+    assert attached.configured, attached.capability_gaps
+    attached.close()
+
+
+def test_a_missing_config_is_still_unconfigured(tmp_path: Path):
+    """The half of the pair this change must not touch: a path that is not a
+    regular file never reaches the parser, and `unconfigured` still describes it.
+    """
+    data = tmp_path / "no-file-here"
+    binding = InstanceBinding("TEST-agent", "TEST-installation", data, frozenset({"TEST-scope"}), True)
+    attached = attach_trusted_host_runtime(
+        config_path=data / "runtime-config.json",
+        expected_binding=binding,
+        session_id="TEST-session",
+        allowed_scope_ids=binding.scope_ids,
+    )
+    assert GAP_UNCONFIGURED in attached.capability_gaps
+    assert not attached.configured
+    attached.close()
+
+
 def test_a_delivered_view_is_blanked_only_for_a_withdrawal_after_it():
     """Every capture moves the epoch, and on a store several entries write to most views were
     compiled one capture ago: blanking on any move blanked most explicit recalls there."""
