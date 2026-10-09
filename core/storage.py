@@ -18,6 +18,7 @@ from ..contracts import (
     TrustedContext,
 )
 from .delete_storage import Deletions
+from .failure_retry import failure_kind, retry_class
 from .registry_storage import Registry
 from .schema import (
     APPLICATION_ID,
@@ -46,6 +47,11 @@ def _directory(path: Path) -> str:
     return os.path.normcase(os.path.abspath(os.fspath(path)))
 
 
+def _most_frequent(counts: dict[str, int]) -> tuple[tuple[str, int], ...]:
+    """The sixteen largest counts, largest first."""
+    return tuple(sorted(counts.items(), key=lambda pair: (-pair[1], pair[0]))[:16])
+
+
 def _cleanup_error(original: BaseException, cleanup: BaseException, stage: str) -> None:
     original.add_note(f"SQLite {stage} cleanup failed: {type(cleanup).__name__}; connection discarded")
     errors = getattr(original, "cleanup_errors", ())
@@ -64,10 +70,16 @@ class StoreStatus:
     failed_work: int = 0
     leased_work: int = 0
     oldest_pending_at: str | None = None
+    #: Why the failed rows failed, one count per failure kind (``failure_retry.failure_kind``).
     work_error_counts: tuple[tuple[str, int], ...] = ()
     source_only_sources: int | None = None
     deferred_sources: int | None = None
     oldest_deferred_at: str | None = None
+    #: The failed rows ``failure_retry.retry_class`` calls terminal: by design, cleared by no retry.
+    terminal_failed_work: int = 0
+    #: The error a queued row kept from its last attempt.  It is waiting, not failed, so it is told apart from the
+    #: failures and counted in none of them.
+    pending_error_counts: tuple[tuple[str, int], ...] = ()
 
 
 #: Source versions ``Transaction.prefetch_sources`` loads per statement.
@@ -272,20 +284,22 @@ class Transaction:
                 params,
             ).fetchone()
         errors = conn.execute(
-            f"""SELECT last_error_code,COUNT(*) AS n FROM work_items
+            f"""SELECT state,last_error_code,COUNT(*) AS n FROM work_items
             WHERE state IN ('pending','failed') AND last_error_code IS NOT NULL
             AND scope_id IN ({marks}) {context_filter}
-            GROUP BY last_error_code""",
+            GROUP BY state,last_error_code""",
             params,
         ).fetchall()
-        # A code carries its retry history (``auto_retry:1|derivation_invalid``)
-        # and its writer's case, so one failure kind used to fill several rows
-        # of this list.  Count each kind once, as ``failure_retry.failure_kind``
-        # reads it.
-        kinds: dict[str, int] = {}
-        for code, count in errors:
-            kind = str(code).strip().lower().rsplit("|", 1)[-1][:80]
-            kinds[kind] = kinds.get(kind, 0) + int(count)
+        # A code carries its retry history (``auto_retry:1|derivation_invalid``) and its writer's case; each kind is
+        # counted once, as ``failure_retry.failure_kind`` reads it, and a failure is terminal as ``retry_class`` and so
+        # ``retry-failures`` read it.
+        kinds: dict[str, dict[str, int]] = {"failed": {}, "pending": {}}
+        terminal = 0
+        for state, code, count in errors:
+            kind = failure_kind(code)[:80]
+            kinds[state][kind] = kinds[state].get(kind, 0) + int(count)
+            if state == "failed" and retry_class(code) == "terminal":
+                terminal += int(count)
         return StoreStatus(
             int(meta["schema_version"]),
             int(meta["memory_epoch"]),
@@ -295,10 +309,12 @@ class Transaction:
             int(failed_count),
             int(leased_count),
             oldest,
-            tuple(sorted(kinds.items(), key=lambda pair: (-pair[1], pair[0]))[:16]),
+            _most_frequent(kinds["failed"]),
             admission[0],
             admission[1],
             admission[2],
+            terminal_failed_work=terminal,
+            pending_error_counts=_most_frequent(kinds["pending"]),
         )
 
     def source(self, ref: str, revision: int) -> StoredSource | None:

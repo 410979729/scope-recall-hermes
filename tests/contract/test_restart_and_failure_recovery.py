@@ -1847,7 +1847,7 @@ def test_a_pass_says_and_keeps_what_its_replays_put_off_and_gave_up(tmp_path):
         CaptureReceipt("queued", (), "queued", "pending", "pending", error_code=code)
         for code in ("GAVE_UP", "DEFERRED", "DEFERRED")
     )
-    queue_state = SimpleNamespace(work_error_counts=(), failed_work=0, pending_work=0, oldest_pending_at=None)
+    queue_state = SimpleNamespace(terminal_failed_work=0, failed_work=0, pending_work=0, oldest_pending_at=None)
     instance = SimpleNamespace(
         auxiliary=SimpleNamespace(ledger_path=None, capability_gaps=()),
         drain=lambda **kwargs: receipt,

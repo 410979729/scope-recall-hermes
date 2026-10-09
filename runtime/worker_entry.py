@@ -493,10 +493,10 @@ def _drain_once(config: RuntimeInstanceConfig, instance: Any, deadline: float) -
 def _apply_queue_status(
     payload: dict[str, Any], gaps: list[str], queue: Any, receipt: Any, background_gaps: tuple[str, ...]
 ) -> None:
-    """Fold the queue's standing into the pass status, with the same
-    classification the doctor uses.  Never degraded without saying why: an
-    empty gap list is what sent a watcher hunting through two-day-old logs."""
-    terminal_failed = sum(count for code, count in queue.work_error_counts if not _is_actionable(code))
+    """Fold the queue's standing into the pass status.  The terminal count is the store's
+    (``StoreStatus.terminal_failed_work``), the one the doctor reads too, and a degraded status
+    always carries the gap that says why."""
+    terminal_failed = queue.terminal_failed_work
     actionable_failed = max(0, queue.failed_work - terminal_failed)
     payload.update(
         pending_work=queue.pending_work,

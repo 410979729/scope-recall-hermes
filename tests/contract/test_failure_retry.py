@@ -1,7 +1,7 @@
 """One bounded re-look at failed work, granted by an operator, stamped once.
 
-Covers ``core/failure_retry.py``, ``work.retry_failed`` and the widened
-terminal classification in the doctor.  The properties that matter: a fault can
+Covers ``core/failure_retry.py``, ``work.retry_failed`` and the terminal count
+the store's status gives the worker and the doctor.  The properties that matter: a fault can
 be cleared so an instance can return to healthy, a by-design terminal outcome
 is not re-run by accident, and nothing can loop.
 """
@@ -23,7 +23,6 @@ from scope_recall.core.failure_retry import (
     selects,
 )
 from scope_recall.core.schema import SCHEMA_VERSION
-from scope_recall.maintenance import doctor, doctor_store
 from test_candidate_lifecycle import _candidate, _candidate_rows, _finish_source_work
 from test_claims import app
 
@@ -167,7 +166,7 @@ def test_the_page_is_bounded(app, limit):
 
 
 # --------------------------------------------------------------------------
-# The doctor no longer pins itself at degraded for these
+# What the status counts as a terminal failure
 # --------------------------------------------------------------------------
 
 
@@ -178,17 +177,17 @@ def test_the_page_is_bounded(app, limit):
         "DERIVATION_INVALID",
         "auto_retry:1|derivation_invalid",
         "budget_checked:1108|input_invalid",
+        "input_invalid",
+        "auto_retry:1|sensitive_request",
     ],
 )
 def test_every_by_design_terminal_failure_counts_as_terminal(app, code):
-    """Counting only ``consolidate`` left 213 identical candidate failures
-    driving "degraded" with nobody able to act on them."""
+    """Whatever its decoration or case, a failed row of a terminal kind is counted terminal, as
+    ``retry-failures`` reads it."""
     core, ctx = app
     _fail_one(core, ctx, code)
-    with sqlite3.connect(core.storage.path) as conn:
-        total = conn.execute("SELECT count(*) FROM work_items WHERE state='failed'").fetchone()[0]
-        terminal = conn.execute(doctor_store.TERMINAL_FAILURE_COUNT).fetchone()[0]
-    assert total >= 1 and terminal == total
+    status = core.status(ctx)
+    assert status.failed_work >= 1 and status.terminal_failed_work == status.failed_work
 
 
 def test_status_counts_each_failure_kind_once(app):
@@ -213,8 +212,28 @@ def test_a_fault_still_counts_as_actionable(app):
     """Narrowing must not go so far that a real fault stops being reported."""
     core, ctx = app
     _fail_one(core, ctx, "timeout")
+    assert core.status(ctx).terminal_failed_work == 0
+
+
+def test_a_queued_row_s_last_error_is_kept_apart_from_the_failures(app):
+    """A row queued for another attempt keeps the error of its last one.  Only failed rows make the failure counts;
+    a queued row's terminal error counted among them hid as many failed rows that need a look."""
+    core, ctx = app
+    _fail_one(core, ctx, "timeout")
     with sqlite3.connect(core.storage.path) as conn:
-        assert conn.execute(doctor_store.TERMINAL_FAILURE_COUNT).fetchone()[0] == 0
+        queued = [row[0] for row in conn.execute("SELECT work_id FROM work_items WHERE state!='failed' LIMIT 2")]
+        for work_id in queued:
+            conn.execute(
+                "UPDATE work_items SET state='pending',last_error_code='auto_retry:1|derivation_invalid' "
+                "WHERE work_id=?",
+                (work_id,),
+            )
+        conn.commit()
+    status = core.status(ctx)
+    assert len(queued) == 2 and status.failed_work >= 1
+    assert status.terminal_failed_work == 0
+    assert dict(status.work_error_counts) == {"timeout": status.failed_work}
+    assert dict(status.pending_error_counts) == {"derivation_invalid": 2}
 
 
 # --------------------------------------------------------------------------

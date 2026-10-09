@@ -28,9 +28,10 @@ Two classes, because they answer different questions:
   are still an operator's to clear (``_OPERATOR_ONLY_FAILURES``, and any HTTP
   status not named there).  These are faults.  They drive "degraded" and
   clearing them is how an instance gets back to healthy.
-* **terminal** -- ``derivation_invalid`` and ``budget_checked``.  These are
-  by-design outcomes that never clear (see ``doctor_store.TERMINAL_FAILURE_COUNT``);
-  re-running them is a judgement that something upstream changed, so it takes
+* **terminal** -- ``TERMINAL_FAILURES``.  These are by-design outcomes that
+  never clear; the store's status counts the failed rows among them
+  (``StoreStatus.terminal_failed_work``) for the worker and the doctor alike.
+  Re-running them is a judgement that something upstream changed, so it takes
   an explicit flag rather than happening by default.
 
 The actionable set is *derived* from the worker's own transient set rather than

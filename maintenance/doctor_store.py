@@ -117,28 +117,6 @@ def check_index(report: DoctorReport, data_directory: Path, *, store_readable: b
 _LEDGER_PRESSURE_WARN = 0.90
 
 
-#: Failures that no amount of waiting clears, so they must not pin the instance
-#: at "degraded" forever. Two kinds qualify, on every work type:
-#:
-#: * ``derivation_invalid`` -- the model returned a payload that did not
-#:   validate; after its one extra automatic attempt it needs review.
-#: * ``budget_checked:*|input_invalid`` -- evidence that genuinely does not fit,
-#:   already durably marked as having had its one re-look.
-#:
-#: Both remain visible in ``capability_gaps`` and still raise "attention". An
-#: operator can still grant them another attempt (``maintenance/cli.py
-#: retry-failures``); terminal means "will not clear by itself", not "forbidden
-#: to look at again".
-TERMINAL_FAILURE_COUNT = """
-    SELECT count(*) FROM work_items WHERE state='failed' AND (
-        lower(last_error_code)='derivation_invalid'
-        OR lower(last_error_code) LIKE '%|derivation_invalid'
-        OR lower(last_error_code) LIKE 'budget_checked:%|input_invalid'
-        OR lower(last_error_code) LIKE '%sensitive_request'
-    )
-"""
-
-
 #: Default supervisor wake interval (``RuntimeInstanceConfig.supervisor_seconds``),
 #: used when the runtime config cannot be read. A quiet instance legitimately
 #: records no progress for one whole wake interval, so the stall window is a
@@ -240,7 +218,6 @@ def check_storage(report: DoctorReport, binding, data_directory: Path) -> bool:
             report.extraction_outcomes = dict(
                 conn.execute("SELECT disposition,count(*) FROM consolidation_outcomes GROUP BY disposition").fetchall()
             )
-            terminal_failures = conn.execute(TERMINAL_FAILURE_COUNT).fetchone()[0]
             report.needs_review_work = conn.execute(NEEDS_REVIEW_COUNT).fetchone()[0]
             candidates = transaction.candidates.summary(include_all_projects=True)
             # Debouncing raises pending_evaluation on purpose, so split that
@@ -269,14 +246,14 @@ def check_storage(report: DoctorReport, binding, data_directory: Path) -> bool:
     report.pending_work = status.pending_work
     report.failed_work = status.failed_work
     # Only meaningful next to a failure count; stays None on a clean queue.
-    report.terminal_failed_work = terminal_failures if status.failed_work else None
+    report.terminal_failed_work = status.terminal_failed_work if status.failed_work else None
     report.leased_work = status.leased_work
     report.oldest_pending_at = status.oldest_pending_at
     report.source_only_sources = status.source_only_sources
     report.deferred_sources = status.deferred_sources
     report.oldest_deferred_at = status.oldest_deferred_at
-    for error, count in status.work_error_counts:
-        report.work_error_counts[error] = report.work_error_counts.get(error, 0) + count
+    report.work_error_counts = dict(status.work_error_counts)
+    report.pending_error_counts = dict(status.pending_error_counts)
     if status.oldest_pending_at:
         age = _seconds_since(status.oldest_pending_at)
         if age is None:
