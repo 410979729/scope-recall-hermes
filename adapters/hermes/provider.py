@@ -253,9 +253,10 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
             self._turns.sync(user_content, assistant_content, session_id=session_id, messages=messages)
 
     def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
-        # Serialize the short process launch with shutdown, never the drain.
+        # The steers first, their store I/O without the lock; then the short process launch, serialized with
+        # shutdown, never the drain.
+        self._turns.steers(messages, hook="on_session_end")
         with self._lock:
-            self._turns.steers(messages, hook="on_session_end")
             self._binding.end(messages)
 
     @_serialized_host_event
@@ -273,18 +274,20 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
             new_session_id, parent_session_id=parent_session_id, reset=reset, rewound=rewound, **kwargs
         )
 
-    @_serialized_host_event
     def on_pre_compress(self, messages: List[Dict[str, Any]], **kwargs) -> str:
-        if kwargs:
-            self._diagnostics.unsupported_fields = {
-                **(self._diagnostics.unsupported_fields or {}),
-                "on_pre_compress_kwargs": "ignored_in_bounded_slice",
-            }
-        self._retry.write_observed()
-        self._binding.bounded_message_gaps(messages, hook="on_pre_compress")
+        with self._lock, self._calls.holding("on_pre_compress"):
+            if kwargs:
+                self._diagnostics.unsupported_fields = {
+                    **(self._diagnostics.unsupported_fields or {}),
+                    "on_pre_compress_kwargs": "ignored_in_bounded_slice",
+                }
+            self._retry.write_observed()
+            self._binding.bounded_message_gaps(messages, hook="on_pre_compress")
         # The compression takes the steers it summarizes out of the conversation; the turn's end would not find them.
+        # Written outside the hook's hold of the lock, so their store I/O runs without it.
         self._turns.steers(messages, session_id=str(kwargs.get("session_id") or ""), hook="on_pre_compress")
-        self._binding.wake_worker()
+        with self._lock, self._calls.holding("on_pre_compress"):
+            self._binding.wake_worker()
         return ""
 
     def shutdown(self) -> None:

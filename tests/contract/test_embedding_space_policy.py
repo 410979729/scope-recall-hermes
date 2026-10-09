@@ -236,6 +236,11 @@ def test_P08_the_endpoint_rule_is_stated_where_the_config_is_read():
                 allow_insecure_endpoint=not_a_boolean,  # type: ignore[arg-type]
             )
         assert str(refused.value) == "embedding_route_allow_insecure_endpoint"
+        # The transport that sends holds the same line: a truthy string is not permission there either.
+        from scope_recall.runtime.models import HttpsTransport
+
+        with pytest.raises(ValueError):
+            HttpsTransport(allow_insecure_endpoint=not_a_boolean)  # type: ignore[arg-type]
 
     # And the shipped default, which states no endpoint, is untouched.
     assert EmbeddingRouteConfig(credential_env="TEST_EMBED_KEY").space() == EMBEDDING_SPACE

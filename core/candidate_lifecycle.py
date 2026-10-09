@@ -25,11 +25,13 @@ DORMANCY_DAYS = 30
 SELF_SUBJECTS = frozenset({"user", "current_user", "用户", "我"})
 #: Everything a name may be written with that does not change which name it is.
 _NOT_NAME = re.compile(r"[\s\"'`*_（）()【】\[\]「」“”‘’]+")
-#: Words that make a name its opposite or narrow it: 不吃辣 is not 吃辣, nonprod is not prod.
+#: Words that make a name its opposite or narrow it to a condition or a time: 不吃辣 is not 吃辣, nonprod is not prod,
+#: "allow delete if approved" is not "allow delete".
 _CHANGES_A_NAME = re.compile(
-    r"[不没无非别勿未否禁仅只]|偶尔|很少|有时|"
+    r"[不没无非别勿未否禁仅只]|偶尔|很少|有时|如果|假如|除非|只要|暂时|临时|之前|之后|以前|以后|期间|时候|前提|条件|"
     r"\b(?:not|no|never|non|nor|none|without|except|unless|only|rarely|seldom|sometimes|occasionally|"
-    r"dont|doesnt|didnt|cannot|cant|wont|isnt|arent)\b",
+    r"dont|doesnt|didnt|cannot|cant|wont|isnt|arent|if|when|whenever|while|until|till|before|after|during|"
+    r"temporarily|provided|once)\b",
     re.I,
 )
 _CJK = re.compile(r"[\u3400-\u9fff\uf900-\ufaff]")
@@ -214,12 +216,11 @@ def candidate_identity_restored(
 
     What the candidate is -- its kind, subject and predicate -- is already
     recorded; an evaluation decides whether the evidence supports it, with what
-    value and on which quote.  A name written differently is restored rather than
-    rejected, because re-asking cost a second model call and usually came back
-    written differently again: one of one instance's candidates was refused four times
-    over its predicate.  A name that is not the candidate's is still refused, and
-    a kind never is: it is one of a fixed set, so there is nothing to write
-    differently.  A verified human principal keeps the existing rule -- the model
+    value and on which quote.  A name written differently (``candidate_name_matches``)
+    is restored rather than rejected: re-asking costs a model call and usually comes
+    back written differently again.  A name that is not the candidate's is refused,
+    and so is any other kind: a kind is one of a fixed set, so there is nothing to
+    write differently.  A verified human principal keeps its own rule -- the model
     must say a self label and ``apply_claim`` performs the binding.
     """
     for field in ("kind", "predicate"):

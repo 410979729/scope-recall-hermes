@@ -223,6 +223,8 @@ class HttpsTransport:
     def __init__(self, *, persistent: bool = False, allow_insecure_endpoint: bool = False):
         from .http_session import HttpWorkerSession
 
+        if type(allow_insecure_endpoint) is not bool:  # only the literal boolean is permission, here as in the config
+            raise ValueError("allow_insecure_endpoint")
         self._session = HttpWorkerSession() if persistent else None
         self._post_lock = threading.Lock()
         #: Permission to send plaintext HTTP beyond this machine (loopback HTTP needs none).  Held on the transport

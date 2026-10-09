@@ -1,12 +1,9 @@
 """A candidate's identity is not the model's to rewrite, and not its to lose a verdict over.
 
-Replayed against the real model on alpha's terminally failed evaluations, every rejected
-name was the candidate's own, written differently: ``embedding_retry.py`` came back as
-``embedding_retry.py 全文`` from the document's heading, a subject holding ``\\"看图\\"`` came
-back with plain quotes, and a predicate of a whole clause came back as its first word with
-the rest in ``value_text``.  One candidate had been refused four times over its predicate,
-each refusal a model call.  What the candidate is was recorded before the call; the verdict
-decides whether the evidence supports it, with what value and on which quote.
+What the candidate is was recorded before the call; the verdict decides whether the evidence supports it, with what
+value and on which quote.  A name the model writes differently -- quoted, escaped, with a document's heading after
+it, or cut to its first words -- is the candidate's own and is restored; a name that negates, narrows or names
+something else is refused.
 """
 
 from __future__ import annotations
@@ -107,6 +104,9 @@ def test_what_counts_as_the_same_name():
         ("prod", "nonprod"),
         ("prod", "non-prod"),
         ("allow delete", "do not allow delete"),
+        ("allow delete", "allow delete temporarily"),
+        ("allow delete", "allow delete if approved"),
+        ("部署", "部署之前确认"),
         ("fixed_by", "is not fixed by"),
         ("allow delete", "allow delete only on Fridays"),
         ("rc2", "rc28"),

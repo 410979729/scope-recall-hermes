@@ -303,7 +303,7 @@ class TurnCapture:
         )
         # The conversation sync_turn is handed, and what post_llm_call kept when it was not.
         steered = [steer for said in steers.values() for steer in said]
-        self._write_steers([*steered, *_steers(identity, messages)], identity, context, effective_session, "sync_turn")
+        self._write_steers([*steered, *_steers(identity, messages)], identity, context, "sync_turn")
         self._write_turn(identity, opened, shown, effective_session, turn_id, user_content, assistant_content, said_at)
         with adapter._lock:
             if adapter._active_turn_id == active_turn:
@@ -355,8 +355,7 @@ class TurnCapture:
     def steers(self, messages: object, *, session_id: str = "", hook: str) -> None:
         """Write now what the person sent while turns ran (``person_steers``) in ``messages``: a compression is
         about to take them out of the conversation, or the session ends, and no turn's end may come to read them.
-        Most steers were lost that way: a long task is compressed between the steer and the turn's end, and a turn
-        that ends without a reply has no end to read them at."""
+        The caller must not hold the adapter's lock: the store I/O runs without it."""
         adapter = self._adapter
         with adapter._lock:
             identity = adapter._identity
@@ -366,20 +365,26 @@ class TurnCapture:
         found = _steers(identity, messages)
         if found:
             context = identity.trusted_context(session_id=effective_session, mutation=True)
-            self._write_steers(found, identity, context, effective_session, hook)
+            self._write_steers(found, identity, context, hook)
 
-    def _write_steers(self, steers, identity, context, session_id: str, hook: str) -> None:
-        """Each steer this process has not written yet, one capture per hold of the lock, its store I/O without it."""
+    def _write_steers(self, steers, identity, context, hook: str) -> None:
+        """Each steer this process has not written yet, one capture per hold of the lock, its store I/O without it.
+        One the store did not take, and the retry buffer did not keep, is read again by the next hook."""
         adapter = self._adapter
         for steer in steers:
             if steer.key in adapter._steers_written:
                 continue
             with adapter._lock, adapter._calls.holding(hook):
                 event, gaps, ledger_identity = steer_source_event(
-                    adapter._ledger, context, session_id=session_id, steer=steer, recorded_at=adapter._utc_now()
+                    adapter._ledger, context, steer=steer, recorded_at=adapter._utc_now()
                 )
-                if event is not None or gaps:
-                    adapter._writer.write(
+                if event is None:
+                    # Seen already (stored, or being stored), unless the ledger is full for now.
+                    taken = not gaps
+                    if gaps:
+                        adapter._merge_gaps(gaps)
+                else:
+                    receipt = adapter._writer.write(
                         context,
                         event,
                         identity=ledger_identity,
@@ -388,9 +393,11 @@ class TurnCapture:
                         bound=identity,
                         release=True,
                     )
-                adapter._steers_written[steer.key] = None
-                while len(adapter._steers_written) > _STEERS_WRITTEN:
-                    adapter._steers_written.pop(next(iter(adapter._steers_written)))
+                    taken = receipt is not None or ledger_identity in adapter._retry.captures
+                if taken:
+                    adapter._steers_written[steer.key] = None
+                    while len(adapter._steers_written) > _STEERS_WRITTEN:
+                        adapter._steers_written.pop(next(iter(adapter._steers_written)))
 
     def _write_turn(
         self, identity, opened, shown, session_id: str, turn_id: str, user_content: str, assistant_content: str, said_at

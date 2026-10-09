@@ -41,30 +41,46 @@ _UNASSERTED_CONTEXT = re.compile(
     r"customer said|may|might|maybe|perhaps|guess(?:ed)?|heard\s+that|reportedly)\b",
     re.I,
 )
+#: Someone else's words, or an example, around a first person: a named or unnamed speaker (``张三说：``,
+#: ``Alice said``, ``Everyone thinks``), a speaker's label opening a line (``儿子：我…``), a quoted first person in
+#: double, CJK or single quotes (an apostrophe inside a word, ``I'm``, opens no quote), and an example (``比如``,
+#: ``for example``).
 _REPORTED_SELF = re.compile(
-    r'(?:他说|她说|他们说|客户说|同事说|朋友说|引用|原文)|\b(?:he|she|they|customer|colleague|friend)\s+(?:said|says|wrote)\b|[“"「『][^”"」』\n]{0,256}(?:\bI\b|\bmy\b|我)',
+    r"(?:他说|她说|他们说|客户说|同事说|朋友说|引用|原文|比如|例如|举例|譬如)"
+    r"|(?<!我)(?:说|讲|表示|写道)\s*[：:“\"「『'‘]"
+    r"|(?:^|[\n。！？!?；;])\s*(?!我)[\u4e00-\u9fff]{1,6}[：:]\s*我"
+    r"|\b(?!I\b)\w+\s+(?:said|says|wrote|writes|thinks?|believes?|claims?|assumes?|guess(?:es)?|hears?|heard"
+    r"|told\s+\w+|tells\s+\w+)\b"
+    r"|\b(?:for example|for instance|e\.g\.|imagine)\b"
+    r"|(?:^|\n)\s*(?!I\b)[A-Za-z][\w ]{0,20}:\s*I\b"
+    r"|[“\"「『][^”\"」』\n]{0,256}(?:\bI\b|\bmy\b|我)"
+    r"|(?:^|[\s:：,，])['‘][^'’\n]{0,256}(?:\bI\b|\bmy\b|我)",
     re.I,
 )
 #: An everyday self-report -- 我不吃辣, 我从不抽烟, 我对花生过敏, I never drink coffee: the person heads the clause and
 #: the value stands straight after the verb or holds it (``_everyday_self_report``).  看, 听 and 说 are not among the
-#: verbs: 我看不吃辣的人更健康 is the speaker's view, not a report of themselves.
+#: verbs: 我看不吃辣的人更健康 is the speaker's view, not a report of themselves; nor is a plan (打算, plan to), whose
+#: negation an intention would not keep.  对X过敏 crosses no other 对 and no 的 (我对象对花生过敏 is a partner's).
 _EVERYDAY_SELF_REPORT = (
     re.compile(
         r"(?:^|[\s：:])(?:本次|这次|今天|平时|通常|目前|现在|本轮)*"
-        r"我(?:本次|这次|今天|平时|通常|个人|一直|目前|现在|本轮|从来|向来|基本|几乎|很少|偶尔|经常|总是|"
-        r"也|还|都|就|从|不|没|太|很|更|最)*"
-        r"(?:(?:(?:吃|喝|抽|吸|穿|戴|碰|用|玩|开|住|睡|养|信|爱|讨厌|怕|害怕|戒|准备|打算|计划)"
+        r"我(?:本次|这次|今天|平时|通常|个人|一直|目前|现在|本轮|从来|向来|基本|几乎|很少|偶尔|经常|总是|一般|平常|"
+        r"每天|早上|中午|晚上|已经|也|还|都|就|只|从|不|没|太|很|更|最|能|会)*"
+        r"(?:(?:(?:吃|喝|抽|吸|穿|戴|碰|用|玩|开|住|睡|养|信|爱|讨厌|怕|害怕|戒)"
         r"(?:了|过|着|不了|得了|不惯|得惯)?){1,2}"
-        r"|对[^，,;；。!?！？\n]{1,40}?(?:过敏|感兴趣|有兴趣|没兴趣|没有兴趣))"
+        r"|对(?![象面方])[^，,;；。!?！？\n对的]{1,20}?(?:过敏|感兴趣|有兴趣|没兴趣|没有兴趣)(?!的))"
     ),
     re.compile(
-        r"\bI\s+(?:(?:usually|always|often|never|rarely|seldom|sometimes|also|really|just|still|mostly|generally|"
-        r"normally)\s+)*(?:(?:do\s+not|don[’\']t|cannot|can[’\']t|will\s+not|won[’\']t)\s+)?"
-        r"(?:eat|drink|smoke|wear|drive|play|hate|love|enjoy|dislike|avoid|plan|intend)\b(?:\s+(?:a|an|the|to)\b)?"
-        r"|\bI(?:\s+am|[’\']m)\s+allergic\s+to\b",
+        r"^\s*(?:(?:honestly|actually|personally|frankly|also|and|but|so|well|now|generally|usually|normally)\b[\s,]*)*"
+        r"I\s+(?:(?:usually|always|often|never|rarely|seldom|sometimes|also|really|just|still|mostly|generally|"
+        r"normally)\s+)*(?:(?:do\s+not|don[’']t|cannot|can[’']t|will\s+not|won[’']t)\s+)?"
+        r"(?:(?:really|usually|always|often|ever|even)\s+)?"
+        r"(?:eat|drink|smoke|wear|drive|play|hate|love|enjoy|dislike|avoid)\b(?:\s+(?:a|an|the)\b)?"
+        r"|^\s*I(?:\s+am|[’']m)\s+allergic\s+to\b",
         re.I,
     ),
 )
+_CJK_CHAR = re.compile(r"[\u3400-\u9fff]")
 _SENTENCE_BREAK = re.compile(r"[;；。!?！？\n]")
 _DURABLE_DIRECTIVE = re.compile(
     r"以后|今后|从现在起|长期|始终|一直|每次|每当|默认|平时|通常|惯例|"
@@ -100,10 +116,12 @@ def bound_literal(content, text):
 
 def _everyday_self_report(content, left, occurrence):
     """Whether the clause from ``left`` holds an everyday self-report whose verb the value ``occurrence`` stands
-    straight after or overlaps."""
+    straight after or overlaps.  A value that opens a relative clause (``讨厌吃香菜`` + ``的人``) reports no one."""
     after = CLAUSE_BREAK.search(content, occurrence.end())
     clause = content[left : after.start() if after else len(content)]
-    start = occurrence.start() - left
+    start, end = occurrence.start() - left, occurrence.end() - left
+    if clause[end : end + 1] == "的" and _CJK_CHAR.match(clause[end + 1 : end + 2]):
+        return False
     return any(
         match.start() <= start and (start < match.end() or not clause[match.end() : start].strip())
         for pattern in _EVERYDAY_SELF_REPORT
