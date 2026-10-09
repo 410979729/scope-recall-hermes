@@ -45,6 +45,26 @@ _REPORTED_SELF = re.compile(
     r'(?:他说|她说|他们说|客户说|同事说|朋友说|引用|原文)|\b(?:he|she|they|customer|colleague|friend)\s+(?:said|says|wrote)\b|[“"「『][^”"」』\n]{0,256}(?:\bI\b|\bmy\b|我)',
     re.I,
 )
+#: An everyday self-report -- 我不吃辣, 我从不抽烟, 我对花生过敏, I never drink coffee: the person heads the clause and
+#: the value stands straight after the verb or holds it (``_everyday_self_report``).  看, 听 and 说 are not among the
+#: verbs: 我看不吃辣的人更健康 is the speaker's view, not a report of themselves.
+_EVERYDAY_SELF_REPORT = (
+    re.compile(
+        r"(?:^|[\s：:])(?:本次|这次|今天|平时|通常|目前|现在|本轮)*"
+        r"我(?:本次|这次|今天|平时|通常|个人|一直|目前|现在|本轮|从来|向来|基本|几乎|很少|偶尔|经常|总是|"
+        r"也|还|都|就|从|不|没|太|很|更|最)*"
+        r"(?:(?:(?:吃|喝|抽|吸|穿|戴|碰|用|玩|开|住|睡|养|信|爱|讨厌|怕|害怕|戒|准备|打算|计划)"
+        r"(?:了|过|着|不了|得了|不惯|得惯)?){1,2}"
+        r"|对[^，,;；。!?！？\n]{1,40}?(?:过敏|感兴趣|有兴趣|没兴趣|没有兴趣))"
+    ),
+    re.compile(
+        r"\bI\s+(?:(?:usually|always|often|never|rarely|seldom|sometimes|also|really|just|still|mostly|generally|"
+        r"normally)\s+)*(?:(?:do\s+not|don[’\']t|cannot|can[’\']t|will\s+not|won[’\']t)\s+)?"
+        r"(?:eat|drink|smoke|wear|drive|play|hate|love|enjoy|dislike|avoid|plan|intend)\b(?:\s+(?:a|an|the|to)\b)?"
+        r"|\bI(?:\s+am|[’\']m)\s+allergic\s+to\b",
+        re.I,
+    ),
+)
 _SENTENCE_BREAK = re.compile(r"[;；。!?！？\n]")
 _DURABLE_DIRECTIVE = re.compile(
     r"以后|今后|从现在起|长期|始终|一直|每次|每当|默认|平时|通常|惯例|"
@@ -78,6 +98,19 @@ def bound_literal(content, text):
     return bool(literal_spans(content, text))
 
 
+def _everyday_self_report(content, left, occurrence):
+    """Whether the clause from ``left`` holds an everyday self-report whose verb the value ``occurrence`` stands
+    straight after or overlaps."""
+    after = CLAUSE_BREAK.search(content, occurrence.end())
+    clause = content[left : after.start() if after else len(content)]
+    start = occurrence.start() - left
+    return any(
+        match.start() <= start and (start < match.end() or not clause[match.end() : start].strip())
+        for pattern in _EVERYDAY_SELF_REPORT
+        for match in pattern.finditer(clause)
+    )
+
+
 def self_report_bound(content, value_text, *, kind=None):
     """Bind singular self-report to the value's clause, never to a third party.
 
@@ -89,6 +122,8 @@ def self_report_bound(content, value_text, *, kind=None):
     for occurrence in literal_spans(content, value_text):
         before = list(CLAUSE_BREAK.finditer(content, 0, occurrence.start()))
         left = before[-1].end() if before else 0
+        if _everyday_self_report(content, left, occurrence):
+            return True
         # Include the value: a faithful negative value may itself contain the
         # assertion verb ("我" + "不喜欢蓝色", "I" + "do not like blue").
         prefix = content[left : occurrence.end()]

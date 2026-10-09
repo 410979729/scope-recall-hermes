@@ -7,7 +7,7 @@ import pytest
 from scope_recall.contracts import ContractError
 from scope_recall.core import CoreConfig, MemoryCore
 from scope_recall.core.claims import RootEvidence, qualify
-from scope_recall.core.source_qualification import conditions_match
+from scope_recall.core.source_qualification import conditions_match, self_report_bound
 
 from tests.contract.test_claims import Clock, capture, initial, revise_request
 from tests.v11_support import context
@@ -96,6 +96,46 @@ def test_self_report_does_not_promote_third_party_or_team_to_user():
     ):
         assert qualification(text, value=value).state == "proposed", text
     assert qualification("我的同事喜欢蓝色。", subject="我").state == "proposed"
+
+
+def test_an_everyday_self_report_is_the_speaker_s():
+    """我不吃辣 is the speaker's own as 我喜欢蓝色 is.  Said of someone else, quoted, reported, or with the value
+    away from the verb, it is not."""
+    said = "我登陆了，我不吃辣，预算40以下都可以，尽量20左右，但是超出也没事，不超过40最好，除非那菜特别好"
+    assert self_report_bound(said, "不吃辣", kind="preference")
+    assert not self_report_bound("客户说" + said, "不吃辣", kind="preference")
+    for text, value in (
+        ("我不吃辣。", "不吃辣"),
+        ("我不喝酒。", "不喝酒"),
+        ("我平时不太吃辣。", "不太吃辣"),
+        ("我从来不抽烟。", "从来不抽烟"),
+        ("我从不抽烟。", "从不抽烟"),
+        ("我准备python考级。", "python考级"),
+        ("我爱吃辣。", "辣"),
+        ("我对花生过敏。", "对花生过敏"),
+        ("我讨厌香菜。", "讨厌香菜"),
+        ("I do not eat spicy food.", "do not eat spicy food"),
+        ("I never drink coffee.", "never drink coffee"),
+        ("I'm allergic to peanuts.", "allergic to peanuts"),
+    ):
+        verdict = qualification(text, value=value)
+        assert verdict.state == "active", (text, verdict.reason)
+    for text, value in (
+        ("客户说我不吃辣。", "不吃辣"),
+        ("她说：“我不吃辣。”", "不吃辣"),
+        ("我们不吃辣。", "不吃辣"),
+        ("我妈不吃辣。", "不吃辣"),
+        ("他和我都不吃辣。", "不吃辣"),
+        ("张三爱吃辣 我不吃。", "爱吃辣"),
+        ("我看他不吃辣。", "不吃辣"),
+        ("我看不吃辣的人更健康。", "不吃辣"),
+        ("我觉得他不喝酒。", "不喝酒"),
+        ("我用他的电脑。", "电脑"),
+        ("He does not eat spicy food.", "does not eat spicy food"),
+        ("My wife never drinks coffee.", "never drinks coffee"),
+    ):
+        assert not self_report_bound(text, value, kind="preference"), text
+        assert qualification(text, value=value).state == "proposed", text
 
 
 def test_self_report_requires_a_verified_c1_principal():
