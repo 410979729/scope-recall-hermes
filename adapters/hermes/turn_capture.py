@@ -1,20 +1,22 @@
 """What the Hermes adapter does with a turn: its start, the person's message before the model call (``pre_llm``),
-each tool's result, a failed request, what the model showed on the way (``post_llm``), and the finished turn
-(``sync``).  It works on the adapter's state under the adapter's locks (``self._adapter``) and writes through the
-adapter's ``CaptureWriter``."""
+each tool's result, a failed request, what the model showed on the way (``post_llm``), the finished turn
+(``sync``), and what the person sent while it ran (``steers``).  It works on the adapter's state under the adapter's
+locks (``self._adapter``) and writes through the adapter's ``CaptureWriter``."""
 
 from __future__ import annotations
 
 import logging
 from typing import TYPE_CHECKING
 
+from .audiences import LOCAL_PLATFORMS
 from .boundary import (
+    Steer,
     extract_user_text,
     host_notice,
     interim_messages,
     interim_source_event,
+    person_steers,
     pre_llm_source_event,
-    steer_messages,
     steer_source_event,
     sync_turn_source_events,
     tool_call_source_event,
@@ -35,6 +37,20 @@ _USER_CAPTURED_TURNS = 64
 #: kept, the answer is always written, and a turn past this says so (``capture_gap:interim_limit``).  With no
 #: bound a turn of three hundred tool steps held the adapter lock for minutes while each waited for the store.
 _INTERIM_PER_TURN = 64
+#: Steers this process wrote, by their name: read again at every turn's end, compression and session end, each is
+#: written once, also after a compression switched the session its key would name.
+_STEERS_WRITTEN = 4096
+
+
+def _steers(identity, messages: object) -> tuple[Steer, ...]:
+    """The steers in ``messages`` that the session's person sent (``person_steers``)."""
+    scope = identity.scope
+    return person_steers(
+        messages,
+        platform=scope.platform,
+        user_id=scope.user_id,
+        local_surface=scope.platform == "cli" or scope.platform in LOCAL_PLATFORMS,
+    )
 
 
 def _is_scope_recall_tool_name(tool_name: object) -> bool:
@@ -236,7 +252,7 @@ class TurnCapture:
         answer = kwargs.get("assistant_response")
         history = kwargs.get("conversation_history")
         said = interim_messages(history, answer=answer if isinstance(answer, str) else "")
-        steered = steer_messages(history)
+        steered = _steers(identity, history)
         with self._adapter._said_lock:
             if turn_id != self._adapter._active_turn_id:
                 return
@@ -245,7 +261,7 @@ class TurnCapture:
             if steered:
                 self._adapter._steer_said[turn_id] = steered
 
-    def sync(self, user_content: str, assistant_content: str, *, session_id: str) -> None:
+    def sync(self, user_content: str, assistant_content: str, *, session_id: str, messages: object = None) -> None:
         """Write the finished turn one capture per hold of the lock, each one's store I/O without it.
 
         Hermes runs this on its memory worker after the reply, with no time limit, while the next turn may already
@@ -285,7 +301,9 @@ class TurnCapture:
         limited = self._write_messages(
             interim_source_event, interim, identity, shown, effective_session, limit=_INTERIM_PER_TURN
         )
-        self._write_messages(steer_source_event, steers, identity, context, effective_session)
+        # The conversation sync_turn is handed, and what post_llm_call kept when it was not.
+        steered = [steer for said in steers.values() for steer in said]
+        self._write_steers([*steered, *_steers(identity, messages)], identity, context, effective_session, "sync_turn")
         self._write_turn(identity, opened, shown, effective_session, turn_id, user_content, assistant_content, said_at)
         with adapter._lock:
             if adapter._active_turn_id == active_turn:
@@ -333,6 +351,46 @@ class TurnCapture:
                             release=True,
                         )
         return limited
+
+    def steers(self, messages: object, *, session_id: str = "", hook: str) -> None:
+        """Write now what the person sent while turns ran (``person_steers``) in ``messages``: a compression is
+        about to take them out of the conversation, or the session ends, and no turn's end may come to read them.
+        Most steers were lost that way: a long task is compressed between the steer and the turn's end, and a turn
+        that ends without a reply has no end to read them at."""
+        adapter = self._adapter
+        with adapter._lock:
+            identity = adapter._identity
+            if identity is None or identity.read_only or not identity.runtime_audience.allowed_scope_ids:
+                return
+            effective_session = adapter._effective_session_id(session_id)
+        found = _steers(identity, messages)
+        if found:
+            context = identity.trusted_context(session_id=effective_session, mutation=True)
+            self._write_steers(found, identity, context, effective_session, hook)
+
+    def _write_steers(self, steers, identity, context, session_id: str, hook: str) -> None:
+        """Each steer this process has not written yet, one capture per hold of the lock, its store I/O without it."""
+        adapter = self._adapter
+        for steer in steers:
+            if steer.key in adapter._steers_written:
+                continue
+            with adapter._lock, adapter._calls.holding(hook):
+                event, gaps, ledger_identity = steer_source_event(
+                    adapter._ledger, context, session_id=session_id, steer=steer, recorded_at=adapter._utc_now()
+                )
+                if event is not None or gaps:
+                    adapter._writer.write(
+                        context,
+                        event,
+                        identity=ledger_identity,
+                        gaps=gaps,
+                        scope_id=identity.local_scope_id,
+                        bound=identity,
+                        release=True,
+                    )
+                adapter._steers_written[steer.key] = None
+                while len(adapter._steers_written) > _STEERS_WRITTEN:
+                    adapter._steers_written.pop(next(iter(adapter._steers_written)))
 
     def _write_turn(
         self, identity, opened, shown, session_id: str, turn_id: str, user_content: str, assistant_content: str, said_at

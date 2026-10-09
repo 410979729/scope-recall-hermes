@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import math
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Literal, cast
+from typing import Any, Literal, NamedTuple, cast
 
 from scope_recall.contracts import Origin, SourceEvent, TrustedContext
 
@@ -361,24 +363,63 @@ def host_notice(history: object, user_message: object) -> bool:
     return False
 
 
-def steer_messages(history: object) -> tuple[tuple[str, str | None], ...]:
-    """What the person sent while the turn that ends ``history`` ran, and when.
+class Steer(NamedTuple):
+    """What the person sent while a turn ran: its name, their words and when they were sent."""
 
-    ``sync_turn`` is handed only the message that opened the turn; a steer stays in the conversation.
+    key: str
+    words: str
+    occurred_at: str | None
+
+
+def _steer_origin(content: object) -> dict[str, Any] | None:
+    """The origin a gateway put before a steer's words (platform, chat, user, message ids), or None without one."""
+    text = extract_user_text(content)
+    at = text.find(_STEER_ORIGIN)
+    if at == -1:
+        return None
+    try:
+        origin, _end = json.JSONDecoder().raw_decode(text[at + len(_STEER_ORIGIN) :].lstrip())
+    except ValueError:
+        return None
+    return origin if isinstance(origin, dict) else None
+
+
+def person_steers(messages: object, *, platform: str, user_id: str, local_surface: bool) -> tuple[Steer, ...]:
+    """Every steer in ``messages`` that the session's person sent, in order and each once.
+
+    Wherever it is in the list: Hermes puts notices, compression summaries and to-do lists between a steer and the
+    turn's end, and a scan that stopped at the first of them lost the steers before it.  A gateway delivers the
+    person's steer after an origin naming its sender, which must be the session's own; a steer without one comes
+    from the agent's side (a parent agent writing to the agent it delegated to) and was stored as the person's
+    words, except on the owner's local surfaces, where the person types it.  Its name is the gateway's message id,
+    else its time and words, so the same steer read again at a compression, a turn's end or the session's end is
+    the same capture.
     """
-    if not isinstance(history, list):
+    if not isinstance(messages, list):
         return ()
-    said: list[tuple[str, str | None]] = []
-    for message in reversed(history):
-        if not isinstance(message, dict) or message.get("role") != "user":
+    found: dict[str, Steer] = {}
+    for message in messages:
+        if not isinstance(message, dict) or message.get("role") != "user" or message.get("display_kind") != STEER_KIND:
             continue
-        if message.get("display_kind") != STEER_KIND:
-            break
+        origin = _steer_origin(message.get("content"))
+        if origin is None:
+            if not local_surface:
+                continue
+        elif str(origin.get("user_id") or "") != user_id or (
+            not local_surface and str(origin.get("platform") or "") != platform
+        ):
+            continue
         words = _steer_words(message.get("content"))
-        if words:
-            said.append((words, _message_time(message)))
-    said.reverse()
-    return tuple(said)
+        if not words:
+            continue
+        occurred_at = _message_time(message)
+        message_id = str((origin or {}).get("message_id") or "").strip()
+        if origin is not None and message_id:
+            key = f"{origin.get('platform')}:{message_id}"
+        else:
+            key = "text:" + hashlib.sha256(f"{occurred_at}\x00{words}".encode()).hexdigest()[:32]
+        found.setdefault(key, Steer(key, words, occurred_at))
+    return tuple(found.values())
 
 
 def interim_messages(history: object, *, answer: str) -> tuple[tuple[str, str | None], ...]:
@@ -449,27 +490,24 @@ def steer_source_event(
     context: TrustedContext,
     *,
     session_id: str,
-    turn_id: str,
-    ordinal: int,
-    content: str,
+    steer: Steer,
     recorded_at: str,
-    occurred_at: str | None = None,
 ) -> tuple[SourceEvent | None, tuple[str, ...], SourceIdentity | None]:
-    """One message the person sent while a turn ran, named by its turn and place in it."""
+    """One message the person sent while a turn ran, named by the steer itself (``person_steers``)."""
     return ledger.observe(
         source_event_key=host_source_key(
             installation_id=context.binding.installation_id,
             entry_id=context.entry_id,
             session_id=session_id,
             event_kind="steer",
-            event_id=f"{turn_id or 'turn'}:{ordinal}",
+            event_id=steer.key,
         ),
         source_revision=1,
         role="user",
-        content=content,
+        content=steer.words,
         origin=context.actor_origin,
         recorded_at=recorded_at,
-        occurred_at=occurred_at or recorded_at,
+        occurred_at=steer.occurred_at or recorded_at,
         capture_state="complete",
     )
 

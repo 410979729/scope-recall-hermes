@@ -103,7 +103,9 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
         #: host's thread and written by ``sync_turn`` on its memory worker, where a write may wait.
         self._interim_said: dict[str, tuple[tuple[str, str | None], ...]] = {}
         #: What the person sent while a turn ran (Hermes' steers), and when, by turn; kept like ``_interim_said``.
-        self._steer_said: dict[str, tuple[tuple[str, str | None], ...]] = {}
+        self._steer_said: dict[str, tuple[Any, ...]] = {}
+        #: The names of the steers this process wrote (``TurnCapture._write_steers``), oldest first.
+        self._steers_written: dict[str, None] = {}
         #: Turns whose opening message ``pre_llm_call`` stored: after a compression switches the session id
         #: mid-turn, ``sync_turn`` would store it again under the new session's key.
         self._user_captured_turns: dict[str, None] = {}
@@ -248,11 +250,12 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
     ) -> None:
         """Write the finished turn (``TurnCapture.sync``); one turn at a time, and a shutdown waits for it."""
         with self._sync_lock:
-            self._turns.sync(user_content, assistant_content, session_id=session_id)
+            self._turns.sync(user_content, assistant_content, session_id=session_id, messages=messages)
 
     def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
         # Serialize the short process launch with shutdown, never the drain.
         with self._lock:
+            self._turns.steers(messages, hook="on_session_end")
             self._binding.end(messages)
 
     @_serialized_host_event
@@ -279,6 +282,8 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
             }
         self._retry.write_observed()
         self._binding.bounded_message_gaps(messages, hook="on_pre_compress")
+        # The compression takes the steers it summarizes out of the conversation; the turn's end would not find them.
+        self._turns.steers(messages, session_id=str(kwargs.get("session_id") or ""), hook="on_pre_compress")
         self._binding.wake_worker()
         return ""
 

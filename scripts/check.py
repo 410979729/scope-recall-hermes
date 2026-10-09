@@ -191,6 +191,7 @@ SUITES = {
         "tests/host/hermes/test_audience_isolation.py",
         "tests/host/hermes/test_bounded_corrections.py",
         "tests/host/hermes/test_dedupe.py",
+        "tests/host/hermes/test_steers.py",
         "tests/host/hermes/test_identity.py",
         "tests/host/hermes/test_local_surfaces.py",
         "tests/host/hermes/test_a2a_prepare.py",
@@ -305,6 +306,7 @@ I_SAFETY_MATRIX = {
         "tests/contract/test_capture.py",
         "tests/contract/test_episodes.py",
         "tests/host/hermes/test_dedupe.py",
+        "tests/host/hermes/test_steers.py",
     ],
     "I06": [
         "tests/contract/test_claims.py",
