@@ -80,7 +80,9 @@ def test_a_steer_before_a_notice_or_a_summary_is_still_the_person_s(telegram, he
         {"role": "assistant", "content": "TEST 好的，周一交。"},
     ]
     telegram.observe_post_llm_call(
-        session_id="TEST-session-tg", turn_id="turn-1", assistant_response="TEST 好的，周一交。",
+        session_id="TEST-session-tg",
+        turn_id="turn-1",
+        assistant_response="TEST 好的，周一交。",
         conversation_history=history,
     )
     telegram.sync_turn("TEST 整理 QX-21", "TEST 好的，周一交。", session_id="TEST-session-tg")
