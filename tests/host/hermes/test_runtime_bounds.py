@@ -1018,11 +1018,13 @@ def test_a_buffered_tool_result_is_written_again_without_a_turn_s_end(adapter, h
 
 
 def test_a_retry_pass_writes_every_buffered_capture_it_has_time_for(adapter, hermes_home, monkeypatch):
-    """At a capture's own 1 s a pass wrote about one of the buffered tool results, each write 1-4 s on the busy
-    shared store (2026-10-04).  The thread's pass has 5 s; a turn's end keeps 1 s, on Hermes' single memory worker,
-    which the next turn's writes queue behind (review of 3.6.1)."""
+    """The retry thread's pass has its own time, more than a capture's 1 s, and writes every buffered capture that
+    fits in it; a turn's end keeps 1 s, on Hermes' single memory worker, which the next turn's writes queue behind.
+    Four writes of 0.4 s each are more than a capture's 1 s; the pass is given time that a slow machine's real
+    writes cannot use up, so the test does not measure the machine."""
     provider, _clock = adapter
     monkeypatch.setattr(capture_retry, "_RETRY_EVERY_S", 3600.0)
+    monkeypatch.setattr(capture_retry, "_RETRY_PASS_SECONDS", 30.0)
     _busy_store(provider, monkeypatch, 4, delay=0.4)
     for index in range(4):
         _tool_result(provider, "turn-1", f"busy-call-{index}", f"TEST tool output {index}")
