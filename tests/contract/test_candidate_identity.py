@@ -1,9 +1,8 @@
 """A candidate's identity is not the model's to rewrite, and not its to lose a verdict over.
 
 What the candidate is was recorded before the call; the verdict decides whether the evidence supports it, with what
-value and on which quote.  A name the model writes differently -- quoted, escaped, with a document's heading after
-it, or cut to its first words -- is the candidate's own and is restored; a name that negates, narrows or names
-something else is refused.
+value and on which quote.  A name the model writes differently -- quoted, escaped, or cut to its first words -- is
+the candidate's own and is restored; a name it lengthens, negates or points at something else is refused.
 """
 
 from __future__ import annotations
@@ -54,11 +53,12 @@ def test_a_name_turned_into_its_opposite_is_refused_not_restored(app):
     assert current is None
 
 
-def test_a_subject_that_picked_up_a_heading_still_settles_the_candidate(app):
+def test_a_name_the_model_lengthened_is_refused(app):
+    """The words a model adds to a name may narrow it; the candidate's shorter name is not restored over them."""
     core, ctx = app
-    current, evaluation, work = _verdict(core, ctx, subject="entity-blue 全文")
-    assert work["state"] == "done" and evaluation["state"] == "resolved"
-    assert current.payload["subject"] == "entity-blue"
+    current, evaluation, work = _verdict(core, ctx, subject="entity-blue in staging")
+    assert work["state"] != "done" and evaluation["state"] != "resolved"
+    assert current is None
 
 
 def test_a_name_quoted_by_the_model_is_the_same_name(app):
@@ -85,7 +85,6 @@ def test_a_different_kind_is_still_refused(app):
 
 def test_what_counts_as_the_same_name():
     same = (
-        ("embedding_retry.py", "embedding_retry.py 全文"),
         ('无 vision_analyze 工具时要\\"看图\\"（截图识别）', '无 vision_analyze 工具时要"看图"（截图识别）'),
         ("prefer PYTHONDONTWRITEBYTECODE=1 to avoid __pycache__", "prefer"),
         ("host_adapter", "HOST_ADAPTER"),
@@ -105,6 +104,14 @@ def test_what_counts_as_the_same_name():
         ("prod", "non-prod"),
         ("allow delete", "do not allow delete"),
         ("allow delete", "allow delete temporarily"),
+        ("allow delete", "allow delete in staging"),
+        ("不吃辣", "吃辣"),
+        ("nonprod", "prod"),
+        ("rc28", "rc2"),
+        ("gpt-5-mini", "gpt-5"),
+        ("吃辣不行", "吃辣"),
+        ("allow delete if approved", "allow delete"),
+        ("embedding_retry.py", "embedding_retry.py 全文"),
         ("allow delete", "allow delete if approved"),
         ("部署", "部署之前确认"),
         ("fixed_by", "is not fixed by"),

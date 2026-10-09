@@ -280,14 +280,14 @@ def test_one_message_id_in_two_chats_is_two_steers(telegram, hermes_home):
 
 
 def test_a_steer_read_again_after_a_restart_is_one_source(telegram, hermes_home):
-    """A compression continues the conversation in a new session; a process that starts again has forgotten what it
-    wrote.  The steer, read again there, is still the one source it was."""
+    """A process that starts again has forgotten what it wrote; the steer it reads again in the same session is the
+    one source it was."""
     telegram.on_turn_start(13, "TEST 重启前", turn_id="turn-13")
     history = [{"role": "user", "content": "TEST 重启前"}, _row(_steer("TEST 别删日志", message_id="113"))]
     telegram.on_pre_compress([dict(message) for message in history])
     telegram._steers_written.clear()
     telegram._ledger.reset()
-    telegram.on_pre_compress([dict(message) for message in history], session_id="TEST-session-tg-2")
+    telegram.on_pre_compress([dict(message) for message in history])
     said = [content for _role, content, _origin in _stored(hermes_home)]
     assert said.count("TEST 别删日志") == 1
 
@@ -380,3 +380,33 @@ def test_a_steer_row_too_deep_to_read_costs_the_turn_nothing(telegram, hermes_ho
     telegram.sync_turn("TEST 深", "TEST 深的回复", session_id="TEST-session-tg", messages=[_row(deep)])
     said = [content for _role, content, _origin in _stored(hermes_home)]
     assert "TEST 深的回复" in said and "TEST 深处" not in said
+
+
+def test_a_steer_another_hook_is_still_writing_is_not_taken_for_written(telegram, hermes_home, monkeypatch):
+    """A hook that finds the steer's write in flight in another hook leaves it unmarked: that write may still fail."""
+    telegram.on_turn_start(19, "TEST 并发", turn_id="turn-19")
+    history = [{"role": "user", "content": "TEST 并发"}, _row(_steer("TEST 两个钩子同时读", message_id="123"))]
+    write, failed = telegram._writer.write, []
+
+    def busy(context, event, **kwargs):
+        if event is not None and event.get("content") == "TEST 两个钩子同时读" and not failed:
+            failed.append(event["source_event_key"])
+            telegram._turns.steers([dict(message) for message in history], hook="on_session_end")
+            telegram._ledger.rollback((event["source_event_key"], event["source_revision"]))
+            return None
+        return write(context, event, **kwargs)
+
+    monkeypatch.setattr(telegram._writer, "write", busy)
+    telegram.on_pre_compress([dict(message) for message in history])
+    assert failed and not any(content == "TEST 两个钩子同时读" for _role, content, _origin in _stored(hermes_home))
+    telegram.on_session_end([dict(message) for message in history])
+    assert ("user", "TEST 两个钩子同时读", "human_direct") in _stored(hermes_home)
+
+
+def test_an_origin_that_cannot_be_written_names_no_one(telegram, hermes_home):
+    """An origin carrying a lone surrogate would fail every write after it; it is no origin, and the turn is written."""
+    telegram.on_turn_start(20, "TEST 编码", turn_id="turn-20")
+    row = _steer("TEST 坏编码", message_id=chr(92) + "ud800")
+    telegram.sync_turn("TEST 编码", "TEST 回复照写", session_id="TEST-session-tg", messages=[_row(row)])
+    said = [content for _role, content, _origin in _stored(hermes_home)]
+    assert "TEST 回复照写" in said and "TEST 坏编码" not in said

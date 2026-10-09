@@ -42,20 +42,33 @@ _UNASSERTED_CONTEXT = re.compile(
     re.I,
 )
 #: Someone else's words, or an example, around a first person: a named or unnamed speaker (``张三说：``,
-#: ``Alice said``, ``Everyone thinks``), a speaker's label opening a line (``儿子：我…``), a quoted first person in
-#: double, CJK or single quotes (an apostrophe inside a word, ``I'm``, opens no quote), and an example (``比如``,
-#: ``for example``).
+#: ``张三说，``, ``Alice said``, ``Everyone thinks``), a speaker's label opening a line (``儿子：我…``), a quoted
+#: first person in double, CJK or single quotes (an apostrophe inside a word, ``I'm``, opens no quote), and an
+#: example (``比如``, ``for example``).  The speaker's own framing (``_OWN_FRAMING``, ``That said``) is no one
+#: else's words.
 _REPORTED_SELF = re.compile(
     r"(?:他说|她说|他们说|客户说|同事说|朋友说|引用|原文|比如|例如|举例|譬如)"
-    r"|(?<!我)(?:说|讲|表示|写道)\s*[：:“\"「『'‘]"
+    r"|(?<!我)(?:说|讲|表示|写道)\s*[：:，,“\"「『'‘]"
     r"|(?:^|[\n。！？!?；;])\s*(?!我)[\u4e00-\u9fff]{1,6}[：:]\s*我"
-    r"|\b(?!I\b)\w+\s+(?:said|says|wrote|writes|thinks?|believes?|claims?|assumes?|guess(?:es)?|hears?|heard"
-    r"|told\s+\w+|tells\s+\w+)\b"
+    r"|\b(?!I\b)(?!(?:that|having|being|as)\s+said\b)\w+\s+"
+    r"(?:said|says|wrote|writes|thinks?|believes?|claims?|assumes?|guess(?:es)?|hears?|heard|told\s+\w+|tells\s+\w+)\b"
     r"|\b(?:for example|for instance|e\.g\.|imagine)\b"
     r"|(?:^|\n)\s*(?!I\b)[A-Za-z][\w ]{0,20}:\s*I\b"
     r"|[“\"「『][^”\"」』\n]{0,256}(?:\bI\b|\bmy\b|我)"
     r"|(?:^|[\s:：,，])['‘][^'’\n]{0,256}(?:\bI\b|\bmy\b|我)",
     re.I,
+)
+#: A speaker's own framing that ends in 说 (老实说，一般来说，跟你说，换句话说): what follows it is their own words.
+_OWN_FRAMING = re.compile(
+    r"(?:(?:一般|总的|总得|总体|整体|具体|简单|严格|相对|通常|对我|对于我)来"
+    r"|老实|坦白|直白|简单|实话实|实话|换句话|话|再|虽|不用|照理|按理"
+    r"|这么|那么|怎么|所以|也就是|就是|可以|应该|不得不|跟你|和你)说"
+)
+#: The head of an English clause before its first person: a list marker, then words that frame it.  An English
+#: self-report stands there: "The rumor that I prefer blue is false" reports no preference.
+_ENGLISH_HEAD = (
+    r"^\s*(?:(?:[-*+•]|\d+[.)])\s+)?"
+    r"(?:(?:honestly|actually|personally|frankly|also|and|but|so|well|now|generally|usually|normally)\b[\s,]*)*"
 )
 #: An everyday self-report -- 我不吃辣, 我从不抽烟, 我对花生过敏, I never drink coffee: the person heads the clause and
 #: the value stands straight after the verb or holds it (``_everyday_self_report``).  看, 听 and 说 are not among the
@@ -71,15 +84,23 @@ _EVERYDAY_SELF_REPORT = (
         r"|对(?![象面方])[^，,;；。!?！？\n对的]{1,20}?(?:过敏|感兴趣|有兴趣|没兴趣|没有兴趣)(?!的))"
     ),
     re.compile(
-        r"^\s*(?:(?:honestly|actually|personally|frankly|also|and|but|so|well|now|generally|usually|normally)\b[\s,]*)*"
-        r"I\s+(?:(?:usually|always|often|never|rarely|seldom|sometimes|also|really|just|still|mostly|generally|"
+        _ENGLISH_HEAD
+        + r"(?:I\s+(?:(?:usually|always|often|never|rarely|seldom|sometimes|also|really|just|still|mostly|generally|"
         r"normally)\s+)*(?:(?:do\s+not|don[’']t|cannot|can[’']t|will\s+not|won[’']t)\s+)?"
         r"(?:(?:really|usually|always|often|ever|even)\s+)?"
         r"(?:eat|drink|smoke|wear|drive|play|hate|love|enjoy|dislike|avoid)\b(?:\s+(?:a|an|the)\b)?"
-        r"|^\s*I(?:\s+am|[’']m)\s+allergic\s+to\b",
+        r"|I(?:\s+am|[’']m)\s+allergic\s+to\b)",
         re.I,
     ),
 )
+#: An English first person of preference or decision, at the head of its clause as the everyday ones are.
+_ENGLISH_SELF_REPORT = re.compile(
+    _ENGLISH_HEAD
+    + r"(?:I\s+(?:(?:do\s+not|don[’']t)\s+)?(?:prefer|like|want|need|use|choose|decide)\b"
+    + r"|my\s+(?:preference|decision|requirement|constraint|habit)\b)",
+    re.I,
+)
+_ENGLISH_FACT = re.compile(_ENGLISH_HEAD + r"I\s+(?:am|have|live|work)\b", re.I)
 _CJK_CHAR = re.compile(r"[\u3400-\u9fff]")
 _SENTENCE_BREAK = re.compile(r"[;；。!?！？\n]")
 _DURABLE_DIRECTIVE = re.compile(
@@ -135,7 +156,7 @@ def self_report_bound(content, value_text, *, kind=None):
     This deliberately does not equate a team, a possessive third-party noun,
     or a quoted first-person sentence with the current user.
     """
-    if not value_text or _REPORTED_SELF.search(content):
+    if not value_text or _REPORTED_SELF.search(_OWN_FRAMING.sub("", content)):
         return False
     for occurrence in literal_spans(content, value_text):
         before = list(CLAUSE_BREAK.finditer(content, 0, occurrence.start()))
@@ -154,14 +175,10 @@ def self_report_bound(content, value_text, *, kind=None):
             r"|(?:^|[\s：:])我的(?:偏好|喜好|决定|要求|约束|习惯)",
             prefix,
         )
-        english = re.search(
-            r"\bI\s+(?:(?:do\s+not|don[’\']t)\s+)?(?:prefer\b|like\b|want\b|need\b|use\b|choose\b|decide\b)|\bmy\s+(?:preference|decision|requirement|constraint|habit)\b",
-            prefix,
-            re.I,
-        )
+        english = _ENGLISH_SELF_REPORT.search(prefix)
         if kind == "fact":
             chinese = chinese or re.search(r"(?:^|[\s：:])我(?:是|住在|工作于)", prefix)
-            english = english or re.search(r"\bI\s+(?:am|have|live|work)\b", prefix, re.I)
+            english = english or _ENGLISH_FACT.search(prefix)
         if chinese or english:
             return True
     return False

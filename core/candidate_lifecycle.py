@@ -185,12 +185,11 @@ def _without_subject(name: str, subject: str) -> str:
 def candidate_name_matches(expected: object, proposed: object, *, subject: object = None) -> bool:
     """Whether a proposed subject or predicate is the candidate's own, written differently.
 
-    A model echoing a name writes it another way (quotes, escapes, case, width, ``a defect`` for ``defect``),
-    adds words at its end (a document's heading: ``embedding_retry.py 全文``), keeps its first words and moves
-    the rest into ``value_text``, or leaves out of a predicate the words of its ``subject``.  Those are the same
-    name.  Other words added before it, words that negate or narrow it (``不吃辣`` against ``吃辣``, ``nonprod``
-    against ``prod``, ``偶尔吃辣``) and an identifier running on (``rc2`` against ``rc28``, ``gpt-5`` against
-    ``gpt-5-mini``) make another name.
+    A model echoing a name writes it another way (quotes, escapes, case, width, ``a defect`` for ``defect``), keeps
+    its first words and moves the rest into ``value_text``, or leaves out of a predicate the words of its
+    ``subject``.  Those are the same name.  A name the model writes longer than the candidate's is another: the words
+    it added may narrow it (``allow delete in staging``).  So is a shortening whose left-out words negate or narrow
+    the name (``吃辣不行``), or that cuts an identifier (``rc2`` of ``rc28``).
     """
     named = _words(subject)
     left, right = _without_subject(_words(expected), named), _without_subject(_words(proposed), named)
@@ -198,10 +197,10 @@ def candidate_name_matches(expected: object, proposed: object, *, subject: objec
         return False
     if left.replace(" ", "") == right.replace(" ", ""):
         return True
-    shorter, longer = sorted((left, right), key=len)
-    rest = longer[len(shorter) :]
+    rest = left[len(right) :]
     return (
-        longer.startswith(shorter)
+        len(right) < len(left)
+        and left.startswith(right)
         and (rest[0] == " " or _CJK.match(rest[0]) is not None)
         and _CHANGES_A_NAME.search(rest) is None
     )

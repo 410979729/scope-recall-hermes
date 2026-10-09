@@ -303,7 +303,7 @@ class TurnCapture:
         )
         # The conversation sync_turn is handed, and what post_llm_call kept when it was not.
         steered = [steer for said in steers.values() for steer in said]
-        self._write_steers([*steered, *_steers(identity, messages)], identity, context, "sync_turn")
+        self._write_steers([*steered, *_steers(identity, messages)], identity, context, effective_session, "sync_turn")
         self._write_turn(identity, opened, shown, effective_session, turn_id, user_content, assistant_content, said_at)
         with adapter._lock:
             if adapter._active_turn_id == active_turn:
@@ -365,22 +365,23 @@ class TurnCapture:
         found = _steers(identity, messages)
         if found:
             context = identity.trusted_context(session_id=effective_session, mutation=True)
-            self._write_steers(found, identity, context, hook)
+            self._write_steers(found, identity, context, effective_session, hook)
 
-    def _write_steers(self, steers, identity, context, hook: str) -> None:
+    def _write_steers(self, steers, identity, context, session_id: str, hook: str) -> None:
         """Each steer this process has not written yet, one capture per hold of the lock, its store I/O without it.
-        One the store did not take, and the retry buffer did not keep, is read again by the next hook."""
+        Only a write the store took, or the retry buffer kept, marks one written: another hook's write still in
+        flight may fail, and the next hook reads it again."""
         adapter = self._adapter
         for steer in steers:
             if steer.key in adapter._steers_written:
                 continue
             with adapter._lock, adapter._calls.holding(hook):
                 event, gaps, ledger_identity = steer_source_event(
-                    adapter._ledger, context, steer=steer, recorded_at=adapter._utc_now()
+                    adapter._ledger, context, session_id=session_id, steer=steer, recorded_at=adapter._utc_now()
                 )
+                taken = False
                 if event is None:
-                    # Seen already (stored, or being stored), unless the ledger is full for now.
-                    taken = not gaps
+                    # Stored already, or being stored by another hook, or the ledger is full for now.
                     if gaps:
                         adapter._merge_gaps(gaps)
                 else:

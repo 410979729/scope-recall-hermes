@@ -388,6 +388,7 @@ def _steer_pieces(content: object) -> list[tuple[dict[str, Any] | None, str]]:
             continue
         try:
             origin, _end = json.JSONDecoder().raw_decode(piece[len(_STEER_ORIGIN) :].lstrip())
+            json.dumps(origin, ensure_ascii=False).encode("utf-8")  # a lone surrogate would fail every later write
         except (ValueError, RecursionError):
             origin = {}
         blank = piece.find("\n\n")
@@ -504,16 +505,18 @@ def steer_source_event(
     ledger: SourceObservationLedger,
     context: TrustedContext,
     *,
+    session_id: str,
     steer: Steer,
     recorded_at: str,
 ) -> tuple[SourceEvent | None, tuple[str, ...], SourceIdentity | None]:
-    """One message the person sent while a turn ran, named by the steer itself (``person_steers``) and by no
-    session: read again in the session a compression continues, it is the same source."""
+    """One message the person sent while a turn ran, named by the steer itself (``person_steers``) in its session.
+    A source's identity holds its session, so a name without one met the same steer read in another session as a
+    conflict, kept in the inbox and stored again later."""
     return ledger.observe(
         source_event_key=host_source_key(
             installation_id=context.binding.installation_id,
             entry_id=context.entry_id,
-            session_id="steers",
+            session_id=session_id,
             event_kind="steer",
             event_id=steer.key,
         ),

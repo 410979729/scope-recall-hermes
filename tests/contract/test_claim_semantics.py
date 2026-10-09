@@ -99,8 +99,8 @@ def test_self_report_does_not_promote_third_party_or_team_to_user():
 
 
 def test_an_everyday_self_report_is_the_speaker_s():
-    """我不吃辣 is the speaker's own as 我喜欢蓝色 is.  Said of someone else, quoted, reported, or with the value
-    away from the verb, it is not."""
+    """我不吃辣 is the speaker's own as 我喜欢蓝色 is, after their own framing too (老实说，That said, a list
+    marker).  Said of someone else, quoted, reported, or with the value away from the verb, it is not."""
     said = "我登陆了，我不吃辣，预算40以下都可以，尽量20左右，但是超出也没事，不超过40最好，除非那菜特别好"
     assert self_report_bound(said, "不吃辣", kind="preference")
     assert not self_report_bound("客户说" + said, "不吃辣", kind="preference")
@@ -122,6 +122,12 @@ def test_an_everyday_self_report_is_the_speaker_s():
         ("我只喝美式。", "只喝美式"),
         ("Honestly, I never drink coffee.", "never drink coffee"),
         ("I don't really eat pork.", "don't really eat pork"),
+        ("老实说，我不吃辣。", "不吃辣"),
+        ("一般来说，我不喝酒。", "不喝酒"),
+        ("跟你说，我不吃辣。", "不吃辣"),
+        ("That said, I never drink coffee.", "never drink coffee"),
+        ("- I don't eat spicy food.", "don't eat spicy food"),
+        ("- I prefer dark mode.", "dark mode"),
     ):
         verdict = qualification(text, value=value)
         assert verdict.state == "active", (text, verdict.reason)
@@ -145,6 +151,10 @@ def test_an_everyday_self_report_is_the_speaker_s():
         ("Everyone thinks I drink coffee.", "drink coffee"),
         ("For example, I never smoke.", "never smoke"),
         ("The rumor that I eat spicy food is false.", "eat spicy food"),
+        ("The rumor that I prefer blue is false.", "blue"),
+        ("张三说，我不吃辣。", "不吃辣"),
+        ("张三表示，我不喝酒。", "不喝酒"),
+        ("- The rumor that I eat spicy food is false.", "eat spicy food"),
         ("Son: I don't drink milk.", "don't drink milk"),
         ("他和我都不吃辣。", "不吃辣"),
         ("张三爱吃辣 我不吃。", "爱吃辣"),
