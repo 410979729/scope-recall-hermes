@@ -17,16 +17,11 @@ import urllib.request
 
 MAX_REQUEST_BYTES = 3 * 1024 * 1024
 _REQUEST_KEYS = frozenset({"url", "body_b64", "headers", "timeout_seconds", "max_response_bytes"})
-#: The one key a caller may add.  1.9.1's permission to send plaintext HTTP to a
-#: host that is not this machine (`allow_insecure_endpoint`, "only for an
-#: explicitly trusted endpoint"); loopback HTTP needs no such word.  Optional, so
-#: a parent that never sends it cannot make the worker accept more than before.
+#: The one key a caller may add: permission to send plaintext HTTP to a host that is not this machine (the route's
+#: ``allow_insecure_endpoint``); loopback HTTP needs none.  A request without it is held to HTTPS and loopback.
 _OPTIONAL_REQUEST_KEYS = frozenset({"allow_insecure"})
 
-#: Headers never sent over a plaintext connection.  A local model server needs
-#: no credential, and 1.9.1's endpoint policy stripped them rather than letting
-#: a bearer token cross an unencrypted socket (CHANGELOG: "every HTTP path
-#: strips authorization, API-key, cookie, and proxy credentials").
+#: Headers never sent over a plaintext connection: no bearer token, key or cookie crosses an unencrypted socket.
 _CREDENTIAL_HEADERS = frozenset(
     {
         "authorization",
@@ -85,7 +80,8 @@ def _resolve_http_proxy(target_hostname: str) -> tuple[str, int, dict[str, str]]
 
 
 def _is_loopback_host(value: str) -> bool:
-    """Whether a host names this machine (the test 1.9.x's endpoint policy used)."""
+    """Whether a host names this machine.  The worker runs stdlib-only in its own process, so it keeps its own copy
+    of ``core.recall_policy.is_loopback_host``."""
     host = str(value or "").rstrip(".").casefold()
     if not host:
         return False
@@ -141,8 +137,8 @@ def _parse_request(
 ) -> tuple[urllib.parse.ParseResult, bytes, dict[str, str], float, int, bool]:
     """Validate the parent's request line; each failure names one field's fault.
 
-    The last value is whether the request goes out in plaintext: HTTPS to any
-    host, or HTTP to this machine only (1.9.1's loopback carve-out).
+    The last value is whether the request goes out in plaintext: HTTP to this machine, or to another host when the
+    request carries ``allow_insecure``.
     """
     try:
         request = json.loads(raw.decode("utf-8"))

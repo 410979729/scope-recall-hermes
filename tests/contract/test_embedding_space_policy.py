@@ -181,15 +181,8 @@ def test_P08_embedding_model_is_configuration_not_a_constant():
 
 
 def test_P08_the_endpoint_rule_is_stated_where_the_config_is_read():
-    """1.9.1 kept loopback HTTP for local model servers and opted in beyond it.
-
-    The 3.x endpoint policy asked for ``https://`` everywhere, so the local-model
-    path 1.9.1 documented ("Loopback HTTP remains compatible for local model
-    servers", plus its explicit opt-in for a trusted non-loopback endpoint) had no
-    3.x equivalent, and nothing said so.  Stated here, where the config is read,
-    instead of surfacing later as ``INPUT_INVALID: invalid embedding_space`` --
-    which names neither the scheme nor the endpoint.
-    """
+    """Loopback HTTP reaches a local model server with no opt-in; another host over HTTP needs the literal opt-in.
+    The rule is stated where the config is read, so a refused endpoint is named at load."""
     from scope_recall.runtime.embedding_models import EmbeddingRouteConfig
 
     def route(endpoint: str, *, allow_insecure: bool = False) -> EmbeddingRouteConfig:
@@ -230,7 +223,7 @@ def test_P08_the_endpoint_rule_is_stated_where_the_config_is_read():
                 route(endpoint, allow_insecure=opt_in)
             assert str(refused.value) == "embedding_route_endpoint"
 
-    # The opt-in is a literal boolean, as 1.9.1 required: anything else is refused
+    # The opt-in is a literal boolean: anything else is refused
     # rather than coerced, so a string "true" in a config file cannot open it.
     for not_a_boolean in ("true", 1, "yes", []):
         with pytest.raises(ValueError) as refused:

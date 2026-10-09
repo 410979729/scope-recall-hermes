@@ -52,11 +52,8 @@ _CLAUSE_BOUNDARY = re.compile(r"[，,；;。！？!?\n]+")
 
 
 def is_loopback_host(value: object) -> bool:
-    """Whether a host names this machine.
-
-    ``localhost``, any name under it, and any address ``ipaddress`` calls
-    loopback -- the same test 1.9.x's endpoint policy used.
-    """
+    """Whether a host names this machine: ``localhost``, a name under it, or an address ``ipaddress`` calls
+    loopback."""
     host = str(value or "").rstrip(".").casefold()
     if not host:
         return False
@@ -69,14 +66,7 @@ def is_loopback_host(value: object) -> bool:
 
 
 def is_plaintext_loopback_url(value: object) -> bool:
-    """Whether a URL is ``http://`` to a host on this machine.
-
-    1.9.1 kept loopback HTTP compatible for local model servers (CHANGELOG):
-    ``require_safe_endpoint`` let a loopback host through without an opt-in and
-    only asked ``allow_insecure_endpoint`` for a non-loopback one.  The 3.x
-    endpoint policy has to keep saying so, or the local-model path 1.9.1
-    documented is gone.
-    """
+    """Whether a URL is ``http://`` to a host on this machine: a local model server."""
     if type(value) is not str or not value:
         return False
     try:
@@ -87,20 +77,11 @@ def is_plaintext_loopback_url(value: object) -> bool:
 
 
 def endpoint_scheme_allowed(endpoint: str, *, allow_insecure: bool = False) -> bool:
-    """Whether plain HTTP may be used to reach this endpoint.
+    """Whether this endpoint may be reached: HTTPS anywhere, plain HTTP to this machine, and plain HTTP to
+    another host only with the literal opt-in (``allow_insecure_endpoint``) -- a container reaching the model server
+    on its host does so over a bridge address, which is not loopback.
 
-    HTTPS anywhere; plain HTTP to this machine, or to a trusted host with the
-    literal opt-in.  1.9.1's rule, kept in one place: its CHANGELOG says
-    "Loopback HTTP remains compatible for local model servers" and, separately,
-    added "explicit CLI opt-in for trusted non-loopback HTTP endpoints";
-    ``require_safe_endpoint`` let a loopback host through and asked for
-    ``allow_insecure_endpoint`` only beyond it.  Both halves are kept together,
-    because the second is what a container reaching the model server on its
-    host's bridge address needs -- that address is not loopback.
-
-    The opt-in permits plain HTTP to another host; it does not admit a scheme
-    that is not HTTP at all, which is a different question the caller asks
-    separately.
+    The opt-in permits plain HTTP to another host; it admits no other scheme.
     """
     if endpoint.startswith("https://"):
         return True
@@ -121,15 +102,9 @@ def _is_http_url(value: object) -> bool:
 def _endpoint_url_shape_ok(endpoint: str) -> bool:
     """Whether an endpoint is an http(s) URL with a host and no credentials.
 
-    The descriptor records how text reaches a model, so it carries the *shape* of
-    that URL -- which is what this module's own contract for it asks ("Shape and
-    bounds, not identity").  Which hosts a deployment may reach is policy, stated
-    where the route is read (``EmbeddingRouteConfig``) and enforced where the
-    request is sent (``HttpsTransport``): the split 1.9.1 had between its config
-    gate and ``require_safe_endpoint``.  Enforcing the policy here as well made
-    the digest refuse a URL the transport was willing to call, and the refusal
-    arrived as ``invalid embedding_space`` -- naming neither the scheme nor the
-    endpoint, and reading as a missing config.
+    The descriptor records how text reaches a model, so it checks the URL's shape.  Which hosts a deployment may
+    reach is policy, stated where the route is read (``EmbeddingRouteConfig``) and enforced where the request is
+    sent (``HttpsTransport``).
     """
     try:
         parsed = urllib.parse.urlsplit(endpoint)

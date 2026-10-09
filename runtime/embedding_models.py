@@ -235,15 +235,9 @@ class EmbeddingRouteConfig:
     #: name is the only lever.  A wire detail, not a geometry: it does not enter
     #: the space digest, and the response length is still checked.
     dimensions_field: str = "dimensions"
-    #: A literal boolean opt-in for plaintext HTTP to a host that is not this
-    #: machine.  1.9.1 stated the same permission the same way
-    #: (``allow_insecure_endpoint``, "only for an explicitly trusted endpoint"):
-    #: loopback HTTP was allowed outright for a local model server, and anything
-    #: farther away needed this word beside it.  A container reaching the model
-    #: server on its host does so over a bridge address (``172.17.0.1``), which
-    #: is not loopback, so this is the path that makes a local server reachable
-    #: from a container without publishing it.  Only a literal ``True`` reads as
-    #: permission, so a string ``"true"`` cannot open it.
+    #: A literal boolean opt-in for plaintext HTTP to a host that is not this machine: a container reaching the
+    #: model server on its host does so over a bridge address (``172.17.0.1``), which is not loopback.  Loopback HTTP
+    #: needs no opt-in.  Only a literal ``True`` reads as permission, so a string ``"true"`` cannot open it.
     allow_insecure_endpoint: bool = False
 
     def __post_init__(self) -> None:
@@ -261,18 +255,9 @@ class EmbeddingRouteConfig:
             type(self.endpoint) is not str
             or not endpoint_scheme_allowed(self.endpoint, allow_insecure=self.allow_insecure_endpoint)
         ):
-            # HTTPS anywhere; plain HTTP to this machine -- the carve-out 1.9.1's
-            # endpoint policy kept for a local model server.  Anything farther
-            # away needs the literal opt-in beside it, as 1.9.1 required
-            # ("non-loopback HTTP endpoint is disabled; set
-            # allow_insecure_endpoint=true only for an explicitly trusted
-            # endpoint").  Stating the rule where the config is read names the
-            # fault at load: without it the refusal surfaced as
-            # ``INPUT_INVALID: invalid embedding_space``, which names neither the
-            # scheme nor the endpoint, and the host reported the session as
-            # *unconfigured* -- as if no file had been read.
-            # ``ConsolidationRouteConfig`` states its own rule the same way (a
-            # chat route has no loopback carve-out).
+            # HTTPS anywhere, plain HTTP to this machine, and plain HTTP beyond it only with the opt-in.  Stated
+            # where the config is read, so a refused endpoint is named at load.  A consolidation route has its own
+            # rule, HTTPS only (``ConsolidationRouteConfig``).
             raise ValueError("embedding_route_endpoint")
         if type(self.dimensions_field) is not str or not _REQUEST_FIELD_RE.fullmatch(self.dimensions_field):
             raise ValueError("embedding_route_dimensions_field")

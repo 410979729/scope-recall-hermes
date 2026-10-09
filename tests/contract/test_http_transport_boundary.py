@@ -321,13 +321,9 @@ def test_the_helper_sends_nothing_on_a_connection_its_server_closed(tmp_path, mo
 
 
 def test_a_plaintext_request_carries_no_credential(tmp_path, monkeypatch):
-    """1.9.1: "every HTTP path strips authorization, API-key, cookie, and proxy credentials".
-
-    A loopback model server needs no key, and the route's ``credential_env`` is
-    still required, so the key is loaded and would otherwise ride the request to
-    a plaintext socket.  It must not: the permission to use plain HTTP is not a
-    permission to leak the credential over it.
-    """
+    """A loopback model server needs no key, but the route's ``credential_env`` is still required, so the key is
+    loaded and would otherwise ride the request to a plaintext socket.  Permission to use plain HTTP is not
+    permission to send the credential over it."""
     import http.server
     import threading
 

@@ -225,11 +225,8 @@ class HttpsTransport:
 
         self._session = HttpWorkerSession() if persistent else None
         self._post_lock = threading.Lock()
-        #: Permission to send plaintext HTTP beyond this machine.  Loopback HTTP
-        #: needs no opt-in (1.9.1's carve-out for a local model server); a
-        #: container reaching its host's model server does, the bridge address
-        #: not being loopback.  Held on the transport that will send, so the
-        #: permission cannot be lost between the config and the socket.
+        #: Permission to send plaintext HTTP beyond this machine (loopback HTTP needs none).  Held on the transport
+        #: that sends, so the permission cannot be lost between the config and the socket.
         self._allow_insecure_endpoint = allow_insecure_endpoint
 
     def close(self):

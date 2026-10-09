@@ -193,9 +193,8 @@ def _embedding_route_from_mapping(raw: object) -> EmbeddingRouteConfig | None:
         endpoint=text("embedding_endpoint", raw.get("endpoint")),
         dimensions=positive_int("embedding_dimensions", raw.get("dimensions")),
         dialect=text("embedding_dialect", raw.get("dialect")),
-        # 1.9.1's permission for plaintext HTTP beyond this machine.  Only a
-        # literal boolean reads as permission (`EmbeddingRouteConfig` refuses
-        # anything else), so a string "true" in a config file cannot open it.
+        # Permission for plaintext HTTP beyond this machine.  Only a literal boolean reads as permission
+        # (``EmbeddingRouteConfig`` refuses anything else), so a string "true" in a config file cannot open it.
         allow_insecure_endpoint=strict_bool(
             "embedding_allow_insecure_endpoint", raw.get("allow_insecure_endpoint", False)
         ),
