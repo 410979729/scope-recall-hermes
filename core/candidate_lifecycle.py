@@ -25,6 +25,16 @@ DORMANCY_DAYS = 30
 SELF_SUBJECTS = frozenset({"user", "current_user", "用户", "我"})
 #: Everything a name may be written with that does not change which name it is.
 _NOT_NAME = re.compile(r"[\s\"'`*_（）()【】\[\]「」“”‘’]+")
+#: Words that make a name its opposite or narrow it: 不吃辣 is not 吃辣, nonprod is not prod.
+_CHANGES_A_NAME = re.compile(
+    r"[不没无非别勿未否禁仅只]|偶尔|很少|有时|"
+    r"\b(?:not|no|never|non|nor|none|without|except|unless|only|rarely|seldom|sometimes|occasionally|"
+    r"dont|doesnt|didnt|cannot|cant|wont|isnt|arent)\b",
+    re.I,
+)
+_CJK = re.compile(r"[\u3400-\u9fff\uf900-\ufaff]")
+#: An article or a copula written before a name leaves it the same name: ``a defect``, ``is fixed by``.
+_LEADING_FUNCTION_WORDS = re.compile(r"^(?:(?:a|an|the|is|are|was|were|be|been|has|have|had|to) )+")
 
 
 @dataclass(frozen=True)
@@ -143,8 +153,9 @@ def candidate_subject_matches(
     return proposed_subject == expected
 
 
-def _plain(text: object) -> str:
-    """One name with nothing that changes how it reads: escapes, spacing, width, case."""
+def _words(text: object) -> str:
+    """One name with nothing that changes how it reads: escapes, width, case, an article or a copula before it, and
+    one space wherever spacing, quotes or brackets stood."""
     if not isinstance(text, str) or not text:
         return ""
     unescaped = text
@@ -156,24 +167,42 @@ def _plain(text: object) -> str:
         if not isinstance(decoded, str) or decoded == unescaped:
             break
         unescaped = decoded
-    return _NOT_NAME.sub("", unicodedata.normalize("NFKC", unescaped)).casefold()
+    words = " ".join(_NOT_NAME.sub(" ", unicodedata.normalize("NFKC", unescaped)).split()).casefold()
+    return _LEADING_FUNCTION_WORDS.sub("", words)
 
 
-def candidate_name_matches(expected: object, proposed: object) -> bool:
+def _without_subject(name: str, subject: str) -> str:
+    """A predicate without the subject's words at its start (``issue comments need joy's ok`` -> ``need joy's ok``)."""
+    if subject and name.startswith(subject) and len(name) > len(subject):
+        rest = name[len(subject) :]
+        if rest[0] == " " or _CJK.match(rest[0]) is not None:
+            return rest.strip()
+    return name
+
+
+def candidate_name_matches(expected: object, proposed: object, *, subject: object = None) -> bool:
     """Whether a proposed subject or predicate is the candidate's own, written differently.
 
-    Replayed against the real model on one store's terminally failed evaluations,
-    every rejected name was the candidate's: ``embedding_retry.py`` came back as
-    ``embedding_retry.py 全文`` from the document's heading, a subject holding
-    ``\\"看图\\"`` came back with plain quotes, and a predicate of a whole clause
-    came back as its first word with the rest moved into ``value_text``.  So one
-    name containing the other, once nothing that changes how it reads is left, is
-    the same name -- and ``kimi`` against ``ollama`` still is not.
+    A model echoing a name writes it another way (quotes, escapes, case, width, ``a defect`` for ``defect``),
+    adds words at its end (a document's heading: ``embedding_retry.py 全文``), keeps its first words and moves
+    the rest into ``value_text``, or leaves out of a predicate the words of its ``subject``.  Those are the same
+    name.  Other words added before it, words that negate or narrow it (``不吃辣`` against ``吃辣``, ``nonprod``
+    against ``prod``, ``偶尔吃辣``) and an identifier running on (``rc2`` against ``rc28``, ``gpt-5`` against
+    ``gpt-5-mini``) make another name.
     """
-    left, right = _plain(expected), _plain(proposed)
+    named = _words(subject)
+    left, right = _without_subject(_words(expected), named), _without_subject(_words(proposed), named)
     if not left or not right:
         return False
-    return left in right or right in left
+    if left.replace(" ", "") == right.replace(" ", ""):
+        return True
+    shorter, longer = sorted((left, right), key=len)
+    rest = longer[len(shorter) :]
+    return (
+        longer.startswith(shorter)
+        and (rest[0] == " " or _CJK.match(rest[0]) is not None)
+        and _CHANGES_A_NAME.search(rest) is None
+    )
 
 
 def candidate_identity_restored(
@@ -197,7 +226,9 @@ def candidate_identity_restored(
         expected = candidate.payload.get(field)
         if proposal.get(field) == expected:
             continue
-        if field == "kind" or not candidate_name_matches(expected, proposal.get(field)):
+        if field == "kind" or not candidate_name_matches(
+            expected, proposal.get(field), subject=candidate.payload.get("subject")
+        ):
             raise ContractError("DERIVATION_INVALID", f"candidate_{field}")
         proposal = {**proposal, field: expected}
     if candidate_subject_matches(candidate, sources, proposal.get("subject")):

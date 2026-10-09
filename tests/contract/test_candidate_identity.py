@@ -22,9 +22,9 @@ from tests.contract.test_candidate_lifecycle import (  # noqa: F401  (fixture)
 )
 
 
-def _verdict(core, ctx, **changes):
+def _verdict(core, ctx, *, candidate_predicate=None, **changes):
     """Run one evaluation whose proposal differs from the candidate as ``changes`` says."""
-    saved, _source, proposal, _registration = _candidate(core, ctx)
+    saved, _source, proposal, _registration = _candidate(core, ctx, predicate=candidate_predicate)
     _finish_source_work(core)
     evaluator = Evaluator({**proposal, **changes})
     core.drain_worker(ctx, max_items=8, remaining_seconds=10, consolidation=evaluator)
@@ -34,9 +34,27 @@ def _verdict(core, ctx, **changes):
 
 def test_a_predicate_shortened_to_its_first_word_still_settles_the_candidate(app):
     core, ctx = app
-    current, evaluation, work = _verdict(core, ctx, predicate="property")
+    current, evaluation, work = _verdict(core, ctx, candidate_predicate="prefers blue paint", predicate="prefers")
     assert work["state"] == "done" and evaluation["state"] == "resolved"
-    assert current.state == "active" and current.payload["predicate"] == "property-blue"
+    assert current.state == "active" and current.payload["predicate"] == "prefers blue paint"
+
+
+def test_a_predicate_without_its_subject_s_words_still_settles_the_candidate(app):
+    """A candidate's predicate that repeats its subject came back without it: the same predicate."""
+    core, ctx = app
+    current, evaluation, work = _verdict(
+        core, ctx, candidate_predicate="entity-blue needs review", predicate="needs review"
+    )
+    assert work["state"] == "done" and evaluation["state"] == "resolved"
+    assert current.payload["predicate"] == "entity-blue needs review"
+
+
+def test_a_name_turned_into_its_opposite_is_refused_not_restored(app):
+    """Restored, the candidate's 吃辣 would be recorded on a verdict the model gave for 不吃辣."""
+    core, ctx = app
+    current, evaluation, work = _verdict(core, ctx, candidate_predicate="吃辣", predicate="不吃辣")
+    assert work["state"] != "done" and evaluation["state"] != "resolved"
+    assert current is None
 
 
 def test_a_subject_that_picked_up_a_heading_still_settles_the_candidate(app):
@@ -75,8 +93,25 @@ def test_what_counts_as_the_same_name():
         ("prefer PYTHONDONTWRITEBYTECODE=1 to avoid __pycache__", "prefer"),
         ("host_adapter", "HOST_ADAPTER"),
         ("配色", "**配色**"),
+        ("hourly health check store access", "hourly health check"),
+        ("喜欢喝咖啡", "喜欢"),
+        ("Issue comments", "issue comments"),
+        ("defect", "a defect"),
+        ("fixed_by", "is fixed by"),
     )
     different = (
+        ("吃辣", "不吃辣"),
+        ("允许删除", "不允许删除"),
+        ("吃辣", "偶尔吃辣"),
+        ("吃辣", "吃辣（偶尔）"),
+        ("prod", "nonprod"),
+        ("prod", "non-prod"),
+        ("allow delete", "do not allow delete"),
+        ("fixed_by", "is not fixed by"),
+        ("allow delete", "allow delete only on Fridays"),
+        ("rc2", "rc28"),
+        ("gpt-5", "gpt-5-mini"),
+        ("方案", "方案2"),
         ("kimi-k3", "ollama-cloud-provider"),
         ("entity-blue", "entity-red"),
         ("rc28", "rc29"),
@@ -88,3 +123,10 @@ def test_what_counts_as_the_same_name():
         assert candidate_name_matches(expected, proposed), (expected, proposed)
     for expected, proposed in different:
         assert not candidate_name_matches(expected, proposed), (expected, proposed)
+    # A predicate that repeats its subject is the same predicate without it; a negation never falls away with it.
+    said = ("issue comments need Joy's OK", "need Joy's OK")
+    assert candidate_name_matches(*said, subject="issue comments")
+    assert not candidate_name_matches(*said)
+    assert not candidate_name_matches("issue comments need Joy's OK", "do not need Joy's OK", subject="issue comments")
+    assert not candidate_name_matches("Joy吃辣", "不吃辣", subject="Joy")
+    assert not candidate_name_matches("prodigy plan", "igy plan", subject="prod")
