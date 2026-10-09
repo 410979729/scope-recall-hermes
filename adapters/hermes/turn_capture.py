@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+import time
 from typing import TYPE_CHECKING
 
 from scope_recall.contracts import ContractError
@@ -25,7 +26,7 @@ from .boundary import (
     sync_turn_source_events,
     tool_call_source_event,
 )
-from .capture import GAP_CURRENT_SOURCE_REFS_LIMIT
+from .capture import CAPTURE_TIMEOUT_S, GAP_CURRENT_SOURCE_REFS_LIMIT
 from .tool_surface import TOOL_NAMES
 
 if TYPE_CHECKING:
@@ -41,11 +42,17 @@ _USER_CAPTURED_TURNS = 64
 #: kept, the answer is always written, and a turn past this says so (``capture_gap:interim_limit``).  With no
 #: bound a turn of three hundred tool steps held the adapter lock for minutes while each waited for the store.
 _INTERIM_PER_TURN = 64
-#: Steers this process wrote or found stored, by their name: read again at every turn's end, compression and session
+#: Steers this process wrote or found stored, by their key: read again at every turn's end, compression and session
 #: end, each is looked up and written once.
 _STEERS_WRITTEN = 4096
-#: How long a hook waits for the store to say which steers it holds already.
-_HELD_SECONDS = 1.0
+#: How long one hook spends on the steers it reads, the look-up and the writes.  Past it each is still written, without
+#: waiting: one the store cannot take at once is kept to retry (``CaptureWriter``), and the hook returns.
+_STEERS_SECONDS = 2.0
+
+
+def _budget(deadline: float) -> float:
+    """What one store call may wait of a hook's steer budget: a capture's own at most, next to nothing once spent."""
+    return max(0.001, min(CAPTURE_TIMEOUT_S, deadline - time.monotonic()))
 
 
 def _steers(identity, messages: object) -> tuple[Steer, ...]:
@@ -375,11 +382,15 @@ class TurnCapture:
 
     def _write_steers(self, steers, identity, context, hook: str) -> None:
         """Each steer the store does not hold yet (``_held``), one capture per hold of the lock, its store I/O
-        without it.  Only a write the store took, or the retry buffer kept, marks one written: another hook's write
-        still in flight may fail, and the next hook reads it again."""
+        without it, all within the hook's budget (``_STEERS_SECONDS``).  Only a write the store took, or the retry
+        buffer kept, marks one written: another hook's write still in flight may fail, and the next hook reads it
+        again."""
         adapter = self._adapter
-        unread = [steer for steer in steers if steer.key not in adapter._steers_written]
-        for steer, held in zip(unread, self._held(unread, identity, context), strict=True):
+        deadline = time.monotonic() + _STEERS_SECONDS
+        unread = [
+            (steer, key) for steer in steers if (key := steer_source_key(context, steer)) not in adapter._steers_written
+        ]
+        for (steer, key), held in zip(unread, self._held(unread, identity, context, deadline), strict=True):
             with adapter._lock, adapter._calls.holding(hook):
                 taken = held
                 if not held:
@@ -397,32 +408,33 @@ class TurnCapture:
                             identity=ledger_identity,
                             gaps=gaps,
                             scope_id=identity.local_scope_id,
+                            remaining_seconds=_budget(deadline),
                             bound=identity,
                             release=True,
                         )
                         taken = receipt is not None or ledger_identity in adapter._retry.captures
                 if taken:
-                    adapter._steers_written[steer.key] = None
+                    adapter._steers_written[key] = None
                     while len(adapter._steers_written) > _STEERS_WRITTEN:
                         adapter._steers_written.pop(next(iter(adapter._steers_written)))
 
-    def _held(self, steers, identity, context) -> tuple[bool, ...]:
+    def _held(self, unread, identity, context, deadline: float) -> tuple[bool, ...]:
         """Which steers the store holds already, in any session of the scope, or holds deleted: a compression
         carries a steer into the session it continues, and a process that starts again remembers none it wrote.
         When the store cannot say, none is held: a steer stored twice is better than one lost."""
-        if not steers:
+        if not unread:
             return ()
         try:
             held = self._adapter._require_core().said_in_session(
                 context,
                 identity.local_scope_id,
-                [("user", steer.words, steer.occurred_at or "", steer_source_key(context, steer)) for steer in steers],
-                remaining_seconds=_HELD_SECONDS,
+                [("user", steer.words, steer.occurred_at or "", key) for steer, key in unread],
+                remaining_seconds=_budget(deadline),
                 across_sessions=True,
             )
         except (ContractError, OSError, RuntimeError, sqlite3.Error):
-            return (False,) * len(steers)
-        return tuple(held) if len(held) == len(steers) else (False,) * len(steers)
+            return (False,) * len(unread)
+        return tuple(held) if len(held) == len(unread) else (False,) * len(unread)
 
     def _write_turn(
         self, identity, opened, shown, session_id: str, turn_id: str, user_content: str, assistant_content: str, said_at

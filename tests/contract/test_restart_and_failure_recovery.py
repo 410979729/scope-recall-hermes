@@ -1908,20 +1908,25 @@ def test_a_named_message_that_was_deleted_still_counts_as_said(worker_app):
 
 def test_a_named_message_stored_in_another_session_is_held_across_sessions(worker_app):
     """Hermes carries a steer into the session a compression continues.  Asked across sessions, the message stored in
-    the session before is held, and so is one deleted there; asked for this session alone, it is not."""
-    core, ctx, _clock = worker_app
+    the session before is held, and so are one deleted there and one still waiting in the inbox there; asked for this
+    session alone, the stored and the waiting ones are not."""
+    core, ctx, clock = worker_app
     kept = capture(core, ctx, "TEST 带进下一个会话的话。", key="TEST-named-carried")
     gone = capture(core, ctx, "TEST 删掉后又带进来的话。", key="TEST-named-carried-deleted")
     authorize(core, ctx, gone)
     deleted = core.forget(ctx, request(gone), remaining_seconds=5)
     core.operations.purge_sqlite(ctx, deleted["operation_id"], remaining_seconds=10)
+    queued = source_event(source_event_key="TEST-named-carried-waiting", content="TEST 还在收件箱里的话。")
+    token, _prepared = capture_inbox.enqueue(core.storage, clock, ctx, queued, scope_id="TEST-scope", host_scope=None)
+    assert token is not None
     later = replace(ctx, session_id="TEST-session-2")
     items = [
         ("user", "TEST 带进下一个会话的话。", kept.event["occurred_at"], "TEST-named-carried"),
         ("user", "TEST 删掉后又带进来的话。", gone.event["occurred_at"], "TEST-named-carried-deleted"),
+        (queued["role"], queued["content"], queued["occurred_at"], "TEST-named-carried-waiting"),
     ]
-    assert tuple(core.said_in_session(later, "TEST-scope", items)) == (False, True)
-    assert tuple(core.said_in_session(later, "TEST-scope", items, across_sessions=True)) == (True, True)
+    assert tuple(core.said_in_session(later, "TEST-scope", items)) == (False, True, False)
+    assert tuple(core.said_in_session(later, "TEST-scope", items, across_sessions=True)) == (True, True, True)
 
 
 def test_a_long_key_that_was_taken_is_cut_to_fit_its_new_key(worker_app):

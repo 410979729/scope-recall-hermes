@@ -42,26 +42,28 @@ _UNASSERTED_CONTEXT = re.compile(
     re.I,
 )
 #: Someone else's words, or an example, around a first person: a named or unnamed speaker (``张三说：``,
-#: ``张三说，``, ``Alice said``, ``Everyone thinks``), a speaker's label opening a line (``儿子：我…``, also before a
-#: list marker), a quoted first person in double, CJK or single quotes (an apostrophe inside a word, ``I'm``, opens
-#: no quote), and an example (``比如``, ``for example``).  The speaker's own framing (``_OWN_FRAMING``) is no one
-#: else's words.
+#: ``张三说，``, ``Alice said``, ``Everyone thinks``), a speaker's label opening a line and a first person anywhere on
+#: it, or on the next line when the label stands alone (``儿子：我…``, ``Alice:\nIn general I…``), a quoted first
+#: person in double, CJK or single quotes (an apostrophe inside a word, ``I'm``, opens no quote), and an example
+#: (``比如``, ``for example``).  The speaker's own framing (``_OWN_FRAMING``) is no one else's words.
 _REPORTED_SELF = re.compile(
     r"(?:他说|她说|他们说|客户说|同事说|朋友说|引用|原文|比如|例如|举例|譬如)"
     r"|(?<!我)(?:说|讲|表示|写道)\s*[：:，,“\"「『'‘]"
-    r"|(?:^|[\n。！？!?；;])\s*(?!我)[\u4e00-\u9fff]{1,6}[：:]\s*(?:(?:[-*+•]|\d+[.)、])\s*)?我"
+    r"|(?:^|[\n。！？!?；;])\s*(?!我)[\u4e00-\u9fff]{1,6}[：:](?:[^\S\n]*\n)?[^\n]*我"
     r"|\b(?!I\b)\w+\s+(?:said|says|wrote|writes|thinks?|believes?|claims?|assumes?|guess(?:es)?|hears?|heard"
     r"|told\s+\w+|tells\s+\w+)\b"
     r"|\b(?:for example|for instance|e\.g\.|imagine)\b"
-    r"|(?:^|\n)\s*(?!I\b)[A-Za-z][\w ]{0,20}:\s*(?:(?:[-*+•]|\d+[.)])\s+)?I\b"
+    r"|(?:^|\n)\s*(?!I\b)[A-Za-z][\w ]{0,20}:(?:[^\S\n]*\n)?[^\n]*\bI\b"
     r"|[“\"「『][^”\"」』\n]{0,256}(?:\bI\b|\bmy\b|我)"
     r"|(?:^|[\s:：,，])['‘][^'’\n]{0,256}(?:\bI\b|\bmy\b|我)",
     re.I,
 )
-#: A speaker's own framing at the head of a clause (老实说，一般来说，我跟你说，"That said,"): what follows it is their
-#: own words.  After a name it is someone else's again: 张三跟你说，…, "a message that said, …".
+#: A speaker's own framing at the head of a clause, after a list marker too (老实说，一般来说，我跟你说，"That said,"):
+#: what follows it is their own words.  After a name it is someone else's again: 张三跟你说，…, "a message that
+#: said, …".
 _OWN_FRAMING = re.compile(
-    r"(?:^|(?<=[\n，,;；。.!?！？：:]))\s*(?:我?(?:(?:一般|总的|总得|总体|整体|具体|简单|严格|相对|通常|对我|对于我)来"
+    r"(?:^|(?<=[\n，,;；。.!?！？：:]))\s*(?:(?:[-*+•]|\d+[.)、])\s*)?"
+    r"(?:我?(?:(?:一般|总的|总得|总体|整体|具体|简单|严格|相对|通常|对我|对于我)来"
     r"|老实|坦白|直白|简单|实话实|实话|换句话|话|再|虽|不用|照理|按理"
     r"|这么|那么|怎么|所以|也就是|就是|可以|应该|不得不|跟你|和你)说"
     r"|(?:that\s+said|that\s+being\s+said|having\s+said\s+that)\b)",

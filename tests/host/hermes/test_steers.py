@@ -5,6 +5,7 @@ origin naming the session's person is not theirs."""
 from __future__ import annotations
 
 import sqlite3
+import time
 
 import pytest
 from scope_recall.adapters.hermes import ScopeRecallHermesAdapter, install_hermes_scope_recall
@@ -474,3 +475,43 @@ def test_a_subagent_session_stores_no_steer(telegram, hermes_home, initialize_kw
     finally:
         child.shutdown()
     assert not any("父级转述的话" in content for _role, content, _origin in _stored(hermes_home))
+
+
+def test_the_same_words_without_a_time_in_another_session_are_another_steer(adapter, hermes_home):
+    """A local steer with neither a message id nor a time is named by its words alone: said again in another session
+    it is another message, stored again, not taken for the one stored before."""
+    provider, _clock = adapter
+    provider.on_turn_start(30, "TEST 第一段", turn_id="turn-30")
+    provider.sync_turn(
+        "TEST 第一段", "TEST 好。", session_id="TEST-session-1", messages=[_row(_steer("TEST 继续", origin=False))]
+    )
+    provider.on_session_switch("TEST-session-2")
+    provider.on_turn_start(31, "TEST 第二段", turn_id="turn-31")
+    provider.sync_turn(
+        "TEST 第二段", "TEST 好的。", session_id="TEST-session-2", messages=[_row(_steer("TEST 继续", origin=False))]
+    )
+    said = [content for _role, content, _origin in _stored(hermes_home)]
+    assert said.count("TEST 继续") == 2
+
+
+def test_a_hook_spends_a_bounded_time_on_steers_when_the_store_is_busy(telegram, hermes_home, monkeypatch):
+    """On a busy store each write waits its full time.  A hook with many steers stops waiting once its budget is
+    spent, and keeps each one it could not write to retry rather than drop it."""
+    real = telegram._core.record_host_event
+
+    def held(context, event, **kwargs):
+        time.sleep(kwargs["remaining_seconds"])
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(telegram._core, "record_host_event", held)
+    rows = [_row(_steer(f"TEST 第{n}条", message_id=str(300 + n))) for n in range(8)]
+    started = time.monotonic()
+    telegram.on_pre_compress([dict(row) for row in rows])
+    assert time.monotonic() - started < 4.0
+    monkeypatch.setattr(telegram._core, "record_host_event", real)
+    wanted = {f"TEST 第{n}条" for n in range(8)}
+    deadline = time.monotonic() + 10
+    while not wanted <= {content for _role, content, _origin in _stored(hermes_home)} and time.monotonic() < deadline:
+        telegram._retry.write_buffered()
+        time.sleep(0.05)
+    assert wanted <= {content for _role, content, _origin in _stored(hermes_home)}

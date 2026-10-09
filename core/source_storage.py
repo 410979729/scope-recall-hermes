@@ -560,7 +560,8 @@ class Sources:
         self._tx._scope(scope_id)
         conn = self._tx._check()
         waiting = self._waiting_in_inbox(scope_id)
-        waiting_keys = {key for found in waiting.values() for _stamp, key in found}
+        named_waiting = self._waiting_in_inbox(scope_id, any_session=True) if across_sessions else waiting
+        waiting_keys = {key for found in named_waiting.values() for _stamp, key in found}
         answers = [False] * len(items)
         # Named messages first, so the same words said again cannot take the copy a named message owns.
         named = {host_key for *_said, host_key in items if host_key is not None}
@@ -624,8 +625,11 @@ class Sources:
             answers[index] = bool(near)
         return tuple(answers)
 
-    def _waiting_in_inbox(self, scope_id: str) -> dict[tuple[str, str], list[tuple[object, str]]]:
-        """This session's captures a replay of the inbox will still store, by (role, content digest)."""
+    def _waiting_in_inbox(
+        self, scope_id: str, *, any_session: bool = False
+    ) -> dict[tuple[str, str], list[tuple[object, str]]]:
+        """This session's captures a replay of the inbox will still store, by (role, content digest); with
+        ``any_session``, those of every session of the scope."""
         still_waiting: dict[tuple[str, str], list[tuple[object, str]]] = {}
         for payload, code in self._tx._check().execute(
             "SELECT payload_json,last_error_code FROM capture_inbox WHERE scope_id=? AND project_id IS ? AND branch_id IS ?",
@@ -640,7 +644,7 @@ class Sources:
             if (
                 not isinstance(body, dict)
                 or not isinstance(body.get("context"), dict)
-                or body["context"].get("session_id") != self._tx.context.session_id
+                or (not any_session and body["context"].get("session_id") != self._tx.context.session_id)
             ):
                 continue
             for event in body.get("events") or ():
