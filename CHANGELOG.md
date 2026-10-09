@@ -3,15 +3,20 @@
 A line or two per release.  Each release's full notes are on its GitHub release page (tag ``v<version>``), and the
 longer text this file once held is in its history.
 
-## [Unreleased]
+## [3.9.4] - 2026-10-09
 
-### Scope Recall 3.9.4rc1 - 2026-10-09
+What the owner sends to a Hermes agent while it works (a steer) is stored as their words. Most were lost: they were read only at a turn's end and only after the last other row, and were gone once a compression or a turn without a reply came first. A steer is the owner's only when the gateway's origin names them; a parent agent's message to the agent it delegated to, a notice Hermes delivers the same way, and anything after another person's words in a row Hermes joined are not.
 
-What the owner sends to a Hermes agent while it works (a steer) is stored as their words: most were lost, read only at a turn's end and only after the last other row, and gone once a compression or a turn without a reply came first.  A parent agent's message to the agent it delegated to, and a notice Hermes delivers the same way, are no longer stored as the owner's.
+From an audit by one of the agents (yuheng):
+- The worker's status counts only failed work as failed. A queued item keeps its last attempt's error, and counted among the failures it hid as many that need a look. The queued items' errors are reported apart, as `pending_error_counts`.
+- An everyday first-person statement (我不吃辣, I do not eat spicy food) is bound to the person who said it; someone else's words around a first person are not.
+- A candidate's name the evaluating model writes differently is restored only when it is the same name: 不吃辣 no longer stands for 吃辣, nonprod for prod, nor "allow delete if approved" for "allow delete".
 
-An embedding route reaches a model server on this machine over plain HTTP again, and one on another host with the literal opt-in `allow_insecure_endpoint`, which is off by default: the text being embedded then crosses the network unencrypted.  A plaintext request never carries a credential (#227, contributed by @panxuewen0101).
+An embedding route reaches a model server on this machine over plain HTTP again, and one on another host with the literal opt-in `allow_insecure_endpoint`, which is off by default: the text being embedded then crosses the network unencrypted. A plaintext request never carries a credential (#227, contributed by @panxuewen0101).
 
-The worker's status counts only failed work as failed: a queued item keeps its last attempt's error, and counted among the failures it hid as many that need a look.  An everyday first-person statement (我不吃辣, I do not eat spicy food) is bound to the person who said it.  Both from yuheng's audit.
+### Upgrading from 3.9.3
+
+Install the package, run `plan-install` and `apply-install` where you upgrade, then restart the Hermes gateways and the clients' MCP servers. The schema is unchanged (1110), and so are the hook and MCP server commands the installers write.
 
 ## [3.9.3] - 2026-10-08
 
