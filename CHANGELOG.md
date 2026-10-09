@@ -3,6 +3,12 @@
 A line or two per release.  Each release's full notes are on its GitHub release page (tag ``v<version>``), and the
 longer text this file once held is in its history.
 
+## [Unreleased]
+
+### Scope Recall 3.9.4rc1 - 2026-10-09
+
+What the owner sends to a Hermes agent while it works (a steer) is stored as their words: most were lost, read only at a turn's end and only after the last other row, and gone once a compression or a turn without a reply came first.  A parent agent's message to the agent it delegated to, and a notice Hermes delivers the same way, are no longer stored as the owner's.
+
 ## [3.9.3] - 2026-10-08
 
 3.9.3 fixes one thing and otherwise changes no behaviour: on Windows a worker's teardown no longer flashes a console window, because `taskkill`, and the Codex route's kill of a call that ran out of time, now start without one (#222, reported by @tutan0558). The rest is the clean-up's last part. The functions hardest to follow are split into named steps: none is above a complexity of 40, and 57 are above 20 where 77 were. Retrieval's hydration, the doctor's report and store checks, the embedding and consolidation models, a home's shared-store attachment and a runtime instance's configuration each have a module of their own, so three files are above 1,000 lines where eight were. The Hermes adapter's helpers live with the collaborators they serve (36 methods to 25). Imports inside functions that loaded nothing new are at the top of their modules (126 left, from 176), and two definitions nothing used are gone. The memory documentation says what 3.x takes from other plugins: nothing, since memory is written from the conversation the host hands over (#221).
