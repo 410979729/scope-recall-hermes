@@ -178,6 +178,20 @@ def test_a_steer_from_another_sender_is_not_the_session_s_person_s(telegram, her
     assert not any(content == "TEST 别人插的话" for _role, content, _origin in _stored(hermes_home))
 
 
+def test_a_notice_hermes_delivers_as_a_steer_is_not_the_person_s(telegram, hermes_home):
+    """Hermes delivers a background process's heartbeat into a running turn the way it delivers a steer, with the
+    chat's origin; it is Hermes' notice, not the person's words."""
+    telegram.on_turn_start(9, "TEST 部署", turn_id="turn-9")
+    heartbeat = "[Background process TEST-proc heartbeat #1 — still running after 10m4s.\nCommand: TEST deploy]"
+    history = [
+        {"role": "user", "content": "TEST 部署"},
+        _row(_steer(heartbeat, message_id="109")),
+        {"role": "assistant", "content": "TEST 还在跑。"},
+    ]
+    telegram.sync_turn("TEST 部署", "TEST 还在跑。", session_id="TEST-session-tg", messages=history)
+    assert not any("heartbeat" in content for _role, content, _origin in _stored(hermes_home))
+
+
 def test_the_owner_s_steer_on_a_local_surface_needs_no_origin(adapter, hermes_home):
     """On the command line the owner types the steer; no gateway delivers it, so it carries no origin."""
     provider, _clock = adapter

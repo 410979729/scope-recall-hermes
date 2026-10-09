@@ -363,6 +363,11 @@ def host_notice(history: object, user_message: object) -> bool:
     return False
 
 
+#: How Hermes 0.21.5 begins the notices it delivers into a running turn the way it delivers a steer, with the chat's
+#: origin: a background process's heartbeat or end, a delegation's report.  They are not the person's words.
+_STEER_NOTICE_HEADS = ("[Background process ", "[IMPORTANT: Background process", "[ASYNC DELEGATION BATCH COMPLETE")
+
+
 class Steer(NamedTuple):
     """What the person sent while a turn ran: its name, their words and when they were sent."""
 
@@ -391,9 +396,10 @@ def person_steers(messages: object, *, platform: str, user_id: str, local_surfac
     turn's end, and a scan that stopped at the first of them lost the steers before it.  A gateway delivers the
     person's steer after an origin naming its sender, which must be the session's own; a steer without one comes
     from the agent's side (a parent agent writing to the agent it delegated to) and was stored as the person's
-    words, except on the owner's local surfaces, where the person types it.  Its name is the gateway's message id,
-    else its time and words, so the same steer read again at a compression, a turn's end or the session's end is
-    the same capture.
+    words, except on the owner's local surfaces, where the person types it.  A notice Hermes delivers the same way,
+    with the chat's origin (a process heartbeat, a delegation's report), is not theirs either.  Its name is the
+    gateway's message id, else its time and words, so the same steer read again at a compression, a turn's end or
+    the session's end is the same capture.
     """
     if not isinstance(messages, list):
         return ()
@@ -410,7 +416,7 @@ def person_steers(messages: object, *, platform: str, user_id: str, local_surfac
         ):
             continue
         words = _steer_words(message.get("content"))
-        if not words:
+        if not words or words.startswith(_STEER_NOTICE_HEADS):
             continue
         occurred_at = _message_time(message)
         message_id = str((origin or {}).get("message_id") or "").strip()
