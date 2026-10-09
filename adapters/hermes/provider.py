@@ -25,7 +25,7 @@ from .protocol import PublicMemoryProvider
 from .runtime_wiring import TrustedHostRuntime
 from .session_binding import SessionBinding
 from .tool_surface import HermesToolSurface
-from .turn_capture import TurnCapture
+from .turn_capture import TurnCapture, steer_deadline
 from .worker import AdapterWorker
 
 _log = logging.getLogger(__name__)
@@ -275,6 +275,8 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
         )
 
     def on_pre_compress(self, messages: List[Dict[str, Any]], **kwargs) -> str:
+        # One budget for the hook's captures: what the retry pass leaves of it is the steers'.
+        deadline = steer_deadline()
         with self._lock, self._calls.holding("on_pre_compress"):
             if kwargs:
                 self._diagnostics.unsupported_fields = {
@@ -285,7 +287,9 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
             self._binding.bounded_message_gaps(messages, hook="on_pre_compress")
         # The compression takes the steers it summarizes out of the conversation; the turn's end would not find them.
         # Written outside the hook's hold of the lock, so their store I/O runs without it.
-        self._turns.steers(messages, session_id=str(kwargs.get("session_id") or ""), hook="on_pre_compress")
+        self._turns.steers(
+            messages, session_id=str(kwargs.get("session_id") or ""), hook="on_pre_compress", deadline=deadline
+        )
         with self._lock, self._calls.holding("on_pre_compress"):
             self._binding.wake_worker()
         return ""

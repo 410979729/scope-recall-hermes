@@ -504,13 +504,13 @@ def interim_source_event(
 def steer_source_key(context: TrustedContext, steer: Steer) -> str:
     """A steer's key: the steer's own name (``person_steers``) and no session's.  A compression carries a steer into
     the session it continues; read there, it is the source stored before (``Sources.said_in_session`` across
-    sessions), and a delete of it holds there too.  Words with neither a message id nor a time say nothing of when
-    they were sent: in another session the same words are another message, so their key names the session."""
-    timeless = steer.occurred_at is None and steer.key.startswith("text:")
+    sessions), and a delete of it holds there too.  Hermes stamps every message it appends with a time
+    (``agent.message_metadata.stamp_message_timestamp``); words that came with neither a message id nor a time would
+    be taken for the same words stored before, which keeps a delete holding rather than store a deleted steer again."""
     return host_source_key(
         installation_id=context.binding.installation_id,
         entry_id=context.entry_id,
-        session_id=context.session_id if timeless else "steers",
+        session_id="steers",
         event_kind="steer",
         event_id=steer.key,
     )

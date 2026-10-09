@@ -477,26 +477,27 @@ def test_a_subagent_session_stores_no_steer(telegram, hermes_home, initialize_kw
     assert not any("父级转述的话" in content for _role, content, _origin in _stored(hermes_home))
 
 
-def test_the_same_words_without_a_time_in_another_session_are_another_steer(adapter, hermes_home):
-    """A local steer with neither a message id nor a time is named by its words alone: said again in another session
-    it is another message, stored again, not taken for the one stored before."""
+def test_a_steer_without_a_time_carried_into_the_next_session_is_stored_once(adapter, hermes_home):
+    """A local steer with neither a message id nor a time is named by its words alone, and by no session: carried by a
+    compression into the next session and read there after a restart, it is the one stored before."""
     provider, _clock = adapter
+    carried = _row(_steer("TEST 继续", origin=False))
     provider.on_turn_start(30, "TEST 第一段", turn_id="turn-30")
-    provider.sync_turn(
-        "TEST 第一段", "TEST 好。", session_id="TEST-session-1", messages=[_row(_steer("TEST 继续", origin=False))]
-    )
-    provider.on_session_switch("TEST-session-2")
+    provider.on_pre_compress([{"role": "user", "content": "TEST 第一段"}, dict(carried)])
+    provider.on_session_switch("TEST-session-2", parent_session_id="TEST-session-1")
+    provider._steers_written.clear()
+    provider._ledger.reset()
     provider.on_turn_start(31, "TEST 第二段", turn_id="turn-31")
-    provider.sync_turn(
-        "TEST 第二段", "TEST 好的。", session_id="TEST-session-2", messages=[_row(_steer("TEST 继续", origin=False))]
-    )
+    history = [dict(carried), {"role": "user", "content": "TEST 第二段"}]
+    provider.sync_turn("TEST 第二段", "TEST 好的。", session_id="TEST-session-2", messages=history)
     said = [content for _role, content, _origin in _stored(hermes_home)]
-    assert said.count("TEST 继续") == 2
+    assert said.count("TEST 继续") == 1
 
 
 def test_a_hook_spends_a_bounded_time_on_steers_when_the_store_is_busy(telegram, hermes_home, monkeypatch):
-    """On a busy store each write waits its full time.  A hook with many steers stops waiting once its budget is
-    spent, and keeps each one it could not write to retry rather than drop it."""
+    """On a busy store each write waits its full time.  A compression hook's retry pass and its steers share one
+    budget: once it is spent the hook stops waiting, and keeps each steer it could not write to retry rather than
+    drop it."""
     real = telegram._core.record_host_event
 
     def held(context, event, **kwargs):
@@ -504,14 +505,46 @@ def test_a_hook_spends_a_bounded_time_on_steers_when_the_store_is_busy(telegram,
         raise sqlite3.OperationalError("database is locked")
 
     monkeypatch.setattr(telegram._core, "record_host_event", held)
+    monkeypatch.setattr(telegram._retry, "start", lambda: None)
+    telegram.on_pre_compress([_row(_steer("TEST 先前没写成的", message_id="299"))])
+    assert telegram._retry.captures, "a capture the busy store refused is kept to retry"
     rows = [_row(_steer(f"TEST 第{n}条", message_id=str(300 + n))) for n in range(8)]
     started = time.monotonic()
     telegram.on_pre_compress([dict(row) for row in rows])
-    assert time.monotonic() - started < 4.0
+    # The retry pass waits a second, the first steer what is left of the hook's two: about two seconds in all.
+    assert time.monotonic() - started < 2.6
     monkeypatch.setattr(telegram._core, "record_host_event", real)
-    wanted = {f"TEST 第{n}条" for n in range(8)}
+    wanted = {f"TEST 第{n}条" for n in range(8)} | {"TEST 先前没写成的"}
     deadline = time.monotonic() + 10
     while not wanted <= {content for _role, content, _origin in _stored(hermes_home)} and time.monotonic() < deadline:
         telegram._retry.write_buffered()
         time.sleep(0.05)
     assert wanted <= {content for _role, content, _origin in _stored(hermes_home)}
+
+
+def test_a_steer_the_retry_buffer_gave_up_is_read_again(telegram, hermes_home, monkeypatch):
+    """A steer kept to retry is the buffer's to write; given up after the store failed for too long, it is not taken
+    for written, and once the store recovers the next hook writes it."""
+    from scope_recall.adapters.hermes import capture_retry
+
+    real, attempts = telegram._core.record_host_event, []
+
+    def busy(context, event, **kwargs):
+        attempts.append(event["content"])
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(telegram._core, "record_host_event", busy)
+    monkeypatch.setattr(telegram._retry, "start", lambda: None)
+    history = [_row(_steer("TEST 等了太久的话", message_id="140"))]
+    telegram.on_pre_compress([dict(message) for message in history])
+    assert telegram._retry.captures
+    telegram.on_pre_compress([dict(message) for message in history])
+    # The second hook's retry pass writes it once; the hook itself leaves it to the buffer.
+    assert attempts.count("TEST 等了太久的话") == 2 and len(telegram._retry.captures) == 1
+    monkeypatch.setattr(capture_retry, "_RETRY_GIVE_UP_S", 0.0)
+    with telegram._lock:
+        telegram._retry.give_up_expired(tuple(telegram._retry.captures.items()))
+    assert not telegram._retry.captures
+    monkeypatch.setattr(telegram._core, "record_host_event", real)
+    telegram.on_session_end([dict(message) for message in history])
+    assert ("user", "TEST 等了太久的话", "human_direct") in _stored(hermes_home)

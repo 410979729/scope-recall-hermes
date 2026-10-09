@@ -42,22 +42,27 @@ _UNASSERTED_CONTEXT = re.compile(
     re.I,
 )
 #: Someone else's words, or an example, around a first person: a named or unnamed speaker (``张三说：``,
-#: ``张三说，``, ``Alice said``, ``Everyone thinks``), a speaker's label opening a line and a first person anywhere on
-#: it, or on the next line when the label stands alone (``儿子：我…``, ``Alice:\nIn general I…``), a quoted first
-#: person in double, CJK or single quotes (an apostrophe inside a word, ``I'm``, opens no quote), and an example
-#: (``比如``, ``for example``).  The speaker's own framing (``_OWN_FRAMING``) is no one else's words.
+#: ``张三说，``, ``Alice said``, ``Everyone thinks``), a quoted first person in double, CJK or single quotes (an
+#: apostrophe inside a word, ``I'm``, opens no quote), and an example (``比如``, ``for example``); and a first person
+#: after a speaker's label (``_after_a_label``).  The speaker's own framing (``_OWN_FRAMING``) is no one else's words.
 _REPORTED_SELF = re.compile(
     r"(?:他说|她说|他们说|客户说|同事说|朋友说|引用|原文|比如|例如|举例|譬如)"
     r"|(?<!我)(?:说|讲|表示|写道)\s*[：:，,“\"「『'‘]"
-    r"|(?:^|[\n。！？!?；;])\s*(?!我)[\u4e00-\u9fff]{1,6}[：:](?:[^\S\n]*\n)?[^\n]*我"
     r"|\b(?!I\b)\w+\s+(?:said|says|wrote|writes|thinks?|believes?|claims?|assumes?|guess(?:es)?|hears?|heard"
     r"|told\s+\w+|tells\s+\w+)\b"
     r"|\b(?:for example|for instance|e\.g\.|imagine)\b"
-    r"|(?:^|\n)\s*(?!I\b)[A-Za-z][\w ]{0,20}:(?:[^\S\n]*\n)?[^\n]*\bI\b"
     r"|[“\"「『][^”\"」』\n]{0,256}(?:\bI\b|\bmy\b|我)"
     r"|(?:^|[\s:：,，])['‘][^'’\n]{0,256}(?:\bI\b|\bmy\b|我)",
     re.I,
 )
+#: A line opening with a speaker's label: ``儿子：``, ``Alice:``, a chat log's ``<alice>``, a ``[10:32]`` before
+#: either.  A URL is no label.
+_SPEAKER_LABEL = re.compile(
+    r"(?:^|[\n。！？!?；;])[^\S\n]*(?:\[[^\]\n]{0,24}\][^\S\n]*)?"
+    r"(?:<[^<>\n]{1,24}>|(?!我|I\b)(?:[\u4e00-\u9fff]{1,6}|[A-Za-z][\w .'-]{0,24})[：:](?!//))",
+    re.I,
+)
+_FIRST_PERSON = re.compile(r"\bI\b|\bmy\b|我", re.I)
 #: A speaker's own framing at the head of a clause, after a list marker too (老实说，一般来说，我跟你说，"That said,"):
 #: what follows it is their own words.  After a name it is someone else's again: 张三跟你说，…, "a message that
 #: said, …".
@@ -74,7 +79,8 @@ _OWN_FRAMING = re.compile(
 _ENGLISH_HEAD = (
     r"^\s*(?:(?:[-*+•]|\d+[.)])\s+)?"
     r"(?:(?:honestly|actually|personally|frankly|basically|generally|usually|normally|overall|anyway|also|and|but"
-    r"|so|well|now|yes|yeah|yep|no|ok|okay|oh|btw|fyi|tbh|lately|nowadays|in\s+general|of\s+course"
+    r"|so|well|now|yes|yeah|yep|no|ok|okay|oh|btw|fyi|tbh|lately|nowadays|in\s+general|in\s+practice|in\s+fact"
+    r"|in\s+short|of\s+course|as\s+a\s+rule|for\s+the\s+most\s+part|most\s+of\s+the\s+time|at\s+home|at\s+work"
     r"|by\s+the\s+way|to\s+be\s+honest|for\s+me|as\s+for\s+me|these\s+days)\b[\s,]*)*"
 )
 #: An everyday self-report -- 我不吃辣, 我从不抽烟, 我对花生过敏, I never drink coffee: the person heads the clause and
@@ -157,13 +163,23 @@ def _everyday_self_report(content, left, occurrence):
     )
 
 
+def _after_a_label(content: str) -> bool:
+    """Whether a first person stands after a line opening with a speaker's label (``_SPEAKER_LABEL``): a pasted
+    transcript is someone else's words, and the owner's own labelled notes (``Update: … I …``) are refused with it.
+    The first label and the first person after it, each found in one pass: one pattern spanning both read a long
+    log again from every label."""
+    label = _SPEAKER_LABEL.search(content)
+    return label is not None and _FIRST_PERSON.search(content, label.end()) is not None
+
+
 def self_report_bound(content, value_text, *, kind=None):
     """Bind singular self-report to the value's clause, never to a third party.
 
     This deliberately does not equate a team, a possessive third-party noun,
     or a quoted first-person sentence with the current user.
     """
-    if not value_text or _REPORTED_SELF.search(_OWN_FRAMING.sub("", content)):
+    unframed = _OWN_FRAMING.sub("", content)
+    if not value_text or _REPORTED_SELF.search(unframed) or _after_a_label(unframed):
         return False
     for occurrence in literal_spans(content, value_text):
         before = list(CLAUSE_BREAK.finditer(content, 0, occurrence.start()))

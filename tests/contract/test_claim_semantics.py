@@ -131,6 +131,9 @@ def test_an_everyday_self_report_is_the_speaker_s():
         ("In general I never drink coffee.", "never drink coffee"),
         ("嗯，老实说，我不吃辣。", "不吃辣"),
         ("- That said, I never drink coffee.", "never drink coffee"),
+        ("In practice I never drink coffee.", "never drink coffee"),
+        ("I never drink coffee.\nUpdate: the rest is done.", "never drink coffee"),
+        ("https://example.com/menu\nI never drink coffee.", "never drink coffee"),
     ):
         verdict = qualification(text, value=value)
         assert verdict.state == "active", (text, verdict.reason)
@@ -163,6 +166,12 @@ def test_an_everyday_self_report_is_the_speaker_s():
         ("儿子：\n- 我不喝牛奶。", "不喝牛奶"),
         ("Alice:\nIn general I never drink coffee.", "never drink coffee"),
         ("儿子：老实说，我不喝牛奶。", "不喝牛奶"),
+        ("Alice:\nMy preference is blue.", "blue"),
+        ("Alice:\nWell,\nin general I never drink coffee.", "never drink coffee"),
+        ("[10:32] Alice: I never drink coffee.", "never drink coffee"),
+        ("[10:32] Alice:\nI never drink coffee.", "never drink coffee"),
+        ("<alice> I never drink coffee.", "never drink coffee"),
+        ("<alice>\nI never drink coffee.", "never drink coffee"),
         ("- The rumor that I eat spicy food is false.", "eat spicy food"),
         ("Son: I don't drink milk.", "don't drink milk"),
         ("他和我都不吃辣。", "不吃辣"),

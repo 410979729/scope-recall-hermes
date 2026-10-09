@@ -50,6 +50,11 @@ _STEERS_WRITTEN = 4096
 _STEERS_SECONDS = 2.0
 
 
+def steer_deadline() -> float:
+    """When a hook that starts now must be done with the steers it reads (``_STEERS_SECONDS``)."""
+    return time.monotonic() + _STEERS_SECONDS
+
+
 def _budget(deadline: float) -> float:
     """What one store call may wait of a hook's steer budget: a capture's own at most, next to nothing once spent."""
     return max(0.001, min(CAPTURE_TIMEOUT_S, deadline - time.monotonic()))
@@ -365,10 +370,11 @@ class TurnCapture:
                         )
         return limited
 
-    def steers(self, messages: object, *, session_id: str = "", hook: str) -> None:
+    def steers(self, messages: object, *, session_id: str = "", hook: str, deadline: float | None = None) -> None:
         """Write now what the person sent while turns ran (``person_steers``) in ``messages``: a compression is
         about to take them out of the conversation, or the session ends, and no turn's end may come to read them.
-        The caller must not hold the adapter's lock: the store I/O runs without it."""
+        ``deadline`` is the hook's, when its other captures share the budget (``steer_deadline``).  The caller must
+        not hold the adapter's lock: the store I/O runs without it."""
         adapter = self._adapter
         with adapter._lock:
             identity = adapter._identity
@@ -378,22 +384,23 @@ class TurnCapture:
         found = _steers(identity, messages)
         if found:
             context = identity.trusted_context(session_id=effective_session, mutation=True)
-            self._write_steers(found, identity, context, hook)
+            self._write_steers(found, identity, context, hook, deadline)
 
-    def _write_steers(self, steers, identity, context, hook: str) -> None:
+    def _write_steers(self, steers, identity, context, hook: str, deadline: float | None = None) -> None:
         """Each steer the store does not hold yet (``_held``), one capture per hold of the lock, its store I/O
-        without it, all within the hook's budget (``_STEERS_SECONDS``).  Only a write the store took, or the retry
-        buffer kept, marks one written: another hook's write still in flight may fail, and the next hook reads it
-        again."""
+        without it, all by the hook's ``deadline``.  Only a write the store took marks one written: a write still in
+        flight in another hook may fail, and one the retry buffer kept may be given up.  The next hook reads either
+        again; meanwhile the observation ledger and the retry buffer keep it from being written twice."""
         adapter = self._adapter
-        deadline = time.monotonic() + _STEERS_SECONDS
+        deadline = steer_deadline() if deadline is None else deadline
         unread = [
             (steer, key) for steer in steers if (key := steer_source_key(context, steer)) not in adapter._steers_written
         ]
         for (steer, key), held in zip(unread, self._held(unread, identity, context, deadline), strict=True):
             with adapter._lock, adapter._calls.holding(hook):
                 taken = held
-                if not held:
+                # Kept to retry: the buffer writes it, or gives it up and the next hook reads it again.
+                if not held and (key, 1) not in adapter._retry.captures:
                     event, gaps, ledger_identity = steer_source_event(
                         adapter._ledger, context, steer=steer, recorded_at=adapter._utc_now()
                     )
@@ -412,7 +419,7 @@ class TurnCapture:
                             bound=identity,
                             release=True,
                         )
-                        taken = receipt is not None or ledger_identity in adapter._retry.captures
+                        taken = receipt is not None
                 if taken:
                     adapter._steers_written[key] = None
                     while len(adapter._steers_written) > _STEERS_WRITTEN:
