@@ -118,12 +118,16 @@ def test_a_steer_read_at_every_hook_is_stored_once(telegram, hermes_home):
         _row(_steer("TEST 什么进度了", message_id="103")),
         {"role": "assistant", "content": "TEST 进行中。"},
     ]
-    telegram.on_pre_compress(history)
+
+    def copy():  # each hook is handed its own copy of the conversation
+        return [dict(message) for message in history]
+
+    telegram.on_pre_compress(copy())
     telegram.observe_post_llm_call(
-        session_id="TEST-session-tg", turn_id="turn-3", assistant_response="TEST 进行中。", conversation_history=history
+        session_id="TEST-session-tg", turn_id="turn-3", assistant_response="TEST 进行中。", conversation_history=copy()
     )
-    telegram.sync_turn("TEST 查进度", "TEST 进行中。", session_id="TEST-session-tg", messages=history)
-    telegram.on_session_end(history)
+    telegram.sync_turn("TEST 查进度", "TEST 进行中。", session_id="TEST-session-tg", messages=copy())
+    telegram.on_session_end(copy())
     said = [content for _role, content, _origin in _stored(hermes_home)]
     assert said.count("TEST 什么进度了") == 1
 
