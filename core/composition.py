@@ -251,10 +251,14 @@ class MemoryCore:
         *,
         window_seconds: float = 120.0,
         remaining_seconds: float | None = None,
+        across_sessions: bool = False,
     ) -> tuple[bool, ...]:
-        """Whether each (role, content, occurred_at, host_key) is already held in this session; see ``Transaction``."""
+        """Whether each (role, content, occurred_at, host_key) is already held in this session, or with
+        ``across_sessions`` a named one in any session of the scope; see ``Sources.said_in_session``."""
         with self.storage.read(context, remaining_seconds=remaining_seconds) as tx:
-            return tx.sources.said_in_session(scope_id, tuple(items), window_seconds=window_seconds)
+            return tx.sources.said_in_session(
+                scope_id, tuple(items), window_seconds=window_seconds, across_sessions=across_sessions
+            )
 
     def _search_context(
         self,

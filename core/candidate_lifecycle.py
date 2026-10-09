@@ -35,8 +35,9 @@ _CHANGES_A_NAME = re.compile(
     re.I,
 )
 _CJK = re.compile(r"[\u3400-\u9fff\uf900-\ufaff]")
-#: An article or a copula written before a name leaves it the same name: ``a defect``, ``is fixed by``.
-_LEADING_FUNCTION_WORDS = re.compile(r"^(?:(?:a|an|the|is|are|was|were|be|been|has|have|had|to) )+")
+#: An article or a present-tense copula written before a name leaves it the same name: ``a defect``, ``is fixed by``.
+#: A past tense does not: ``had access`` is not ``has access``.
+_LEADING_FUNCTION_WORDS = re.compile(r"^(?:(?:a|an|the|is|are|be|been|has|have|to) )+")
 
 
 @dataclass(frozen=True)
@@ -187,9 +188,12 @@ def candidate_name_matches(expected: object, proposed: object, *, subject: objec
 
     A model echoing a name writes it another way (quotes, escapes, case, width, ``a defect`` for ``defect``), keeps
     its first words and moves the rest into ``value_text``, or leaves out of a predicate the words of its
-    ``subject``.  Those are the same name.  A name the model writes longer than the candidate's is another: the words
-    it added may narrow it (``allow delete in staging``).  So is a shortening whose left-out words negate or narrow
-    the name (``吃辣不行``), or that cuts an identifier (``rc2`` of ``rc28``).
+    ``subject``.  Those are the same name.  A subject cut short is the candidate's too: the candidate's subject is
+    the extractor's name for what its sources say, and the model shortens it toward the words of the evidence it
+    quotes (``API`` for ``API KEY``, ``live store`` for ``live store queries``); the verdict is still about the
+    candidate it was asked about.  A name the model writes longer than the candidate's is another: the words it
+    added may narrow it (``allow delete in staging``).  So is a shortening whose left-out words negate or narrow the
+    name (``吃辣不行``), or that cuts an identifier (``rc2`` of ``rc28``).
     """
     named = _words(subject)
     left, right = _without_subject(_words(expected), named), _without_subject(_words(proposed), named)

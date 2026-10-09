@@ -8,6 +8,7 @@ import sqlite3
 
 import pytest
 from scope_recall.adapters.hermes import ScopeRecallHermesAdapter, install_hermes_scope_recall
+from scope_recall.core import capture_inbox
 
 _NOTICE = "[IMPORTANT: Background process TEST-proc finished (exit code 0).\nCommand: TEST make build]"
 _SUMMARY = "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted into the summary below. TEST 摘要"
@@ -410,3 +411,66 @@ def test_an_origin_that_cannot_be_written_names_no_one(telegram, hermes_home):
     telegram.sync_turn("TEST 编码", "TEST 回复照写", session_id="TEST-session-tg", messages=[_row(row)])
     said = [content for _role, content, _origin in _stored(hermes_home)]
     assert "TEST 回复照写" in said and "TEST 坏编码" not in said
+
+
+def test_a_steer_carried_into_the_next_session_is_stored_once_after_a_restart(telegram, hermes_home):
+    """A compression carries a steer into the session it continues.  A process that starts again there remembers
+    nothing it wrote, and the store holds the steer already, in the session before: it is not stored again."""
+    telegram.on_turn_start(21, "TEST 压缩前", turn_id="turn-21")
+    carried = _row(_steer("TEST 跨会话的话", message_id="125"))
+    telegram.on_pre_compress([{"role": "user", "content": "TEST 压缩前"}, dict(carried)])
+    telegram.on_session_switch("TEST-session-tg-2", parent_session_id="TEST-session-tg")
+    telegram._steers_written.clear()
+    telegram._ledger.reset()
+    telegram.on_turn_start(22, "TEST 压缩后", turn_id="turn-22")
+    history = [dict(carried), {"role": "user", "content": "TEST 压缩后"}]
+    telegram.sync_turn("TEST 压缩后", "TEST 好。", session_id="TEST-session-tg-2", messages=history)
+    # A second write would conflict with the first and wait in the inbox, which the worker later stores re-keyed.
+    core = telegram._require_core()
+    context = telegram._require_identity().trusted_context(session_id="TEST-session-tg-2", mutation=True)
+    capture_inbox.resolve_conflicted_ingress(
+        core.storage, core.clock, context, authorize=lambda _scope: context.allowed_scope_ids, remaining_seconds=5
+    )
+    said = [content for _role, content, _origin in _stored(hermes_home)]
+    assert said.count("TEST 跨会话的话") == 1 and "TEST 好。" in said
+    with sqlite3.connect(hermes_home / "scope-recall" / "memory.sqlite3") as conn:
+        assert conn.execute("SELECT count(*) FROM capture_inbox").fetchone()[0] == 0
+
+
+def test_a_steer_the_store_cannot_look_up_is_still_written(telegram, hermes_home, monkeypatch):
+    """When the store cannot say which steers it holds, each is written: one stored twice is better than one lost."""
+
+    def busy(*_args, **_kwargs):
+        raise sqlite3.OperationalError("database is locked")
+
+    monkeypatch.setattr(telegram._core, "said_in_session", busy)
+    telegram.on_turn_start(23, "TEST 查不到", turn_id="turn-23")
+    history = [{"role": "user", "content": "TEST 查不到"}, _row(_steer("TEST 照样写下", message_id="126"))]
+    telegram.sync_turn("TEST 查不到", "TEST 好。", session_id="TEST-session-tg", messages=history)
+    assert ("user", "TEST 照样写下", "human_direct") in _stored(hermes_home)
+
+
+def test_a_subagent_session_stores_no_steer(telegram, hermes_home, initialize_kwargs):
+    """A parent agent's steer to the agent it delegated to arrives in a subagent session, which stores nothing: not
+    even one that quotes the person's origin."""
+    child = ScopeRecallHermesAdapter(core=telegram._core)
+    child.initialize(
+        "TEST-session-sub",
+        **dict(
+            initialize_kwargs,
+            platform="telegram",
+            chat_type="private",
+            chat_id=initialize_kwargs["user_id"],
+            thread_id="main",
+            agent_context="subagent",
+        ),
+    )
+    try:
+        quoted = _row(_steer("TEST 父级转述的话", message_id="127"))
+        child.on_turn_start(1, "TEST 子任务", turn_id="sub-1")
+        child.on_pre_compress([dict(quoted)])
+        child.sync_turn("TEST 子任务", "TEST 子任务完成", session_id="TEST-session-sub", messages=[dict(quoted)])
+        child.on_session_end([dict(quoted)])
+    finally:
+        child.shutdown()
+    assert not any("父级转述的话" in content for _role, content, _origin in _stored(hermes_home))

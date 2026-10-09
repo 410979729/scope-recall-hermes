@@ -540,7 +540,12 @@ class Sources:
         )
 
     def said_in_session(
-        self, scope_id: str, items: tuple[tuple[str, str, str, str | None], ...], *, window_seconds: float
+        self,
+        scope_id: str,
+        items: tuple[tuple[str, str, str, str | None], ...],
+        *,
+        window_seconds: float,
+        across_sessions: bool = False,
     ) -> tuple[bool, ...]:
         """For each (role, content, occurred_at, host_key): whether this session already holds that message.
 
@@ -549,6 +554,8 @@ class Sources:
         hook wrote, so the same short words said again are a new message.  One it does not name is held by
         its words said within ``window_seconds`` of that time.  Each copy answers for one message, and a
         hook's capture still waiting in the inbox counts as held: the inbox stores it later.
+        With ``across_sessions`` a named message is held in any session of the scope: Hermes carries a steer
+        into the session a compression continues, where it is the one already stored.
         """
         self._tx._scope(scope_id)
         conn = self._tx._check()
@@ -563,13 +570,15 @@ class Sources:
         # A named message that was deleted counts as said as well: once the delete is purged its rows no longer
         # carry the key, and a record read would store the words again under a key of the record's.
 
+        in_session = "" if across_sessions else " AND session_id=?"
+        session = () if across_sessions else (self._tx.context.session_id,)
         for index, (_role, _content, _occurred_at, host_key) in enumerate(items):
             if host_key is not None:
                 answers[index] = (
                     host_key in waiting_keys
                     or conn.execute(
-                        "SELECT 1 FROM source_events WHERE source_group_key=? AND scope_id=? AND session_id=? LIMIT 1",
-                        (host_key, scope_id, self._tx.context.session_id),
+                        f"SELECT 1 FROM source_events WHERE source_group_key=? AND scope_id=?{in_session} LIMIT 1",
+                        (host_key, scope_id, *session),
                     ).fetchone()
                     is not None
                     or conn.execute(

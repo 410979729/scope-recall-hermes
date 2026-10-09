@@ -1906,6 +1906,24 @@ def test_a_named_message_that_was_deleted_still_counts_as_said(worker_app):
     assert tuple(said) == (True,)
 
 
+def test_a_named_message_stored_in_another_session_is_held_across_sessions(worker_app):
+    """Hermes carries a steer into the session a compression continues.  Asked across sessions, the message stored in
+    the session before is held, and so is one deleted there; asked for this session alone, it is not."""
+    core, ctx, _clock = worker_app
+    kept = capture(core, ctx, "TEST 带进下一个会话的话。", key="TEST-named-carried")
+    gone = capture(core, ctx, "TEST 删掉后又带进来的话。", key="TEST-named-carried-deleted")
+    authorize(core, ctx, gone)
+    deleted = core.forget(ctx, request(gone), remaining_seconds=5)
+    core.operations.purge_sqlite(ctx, deleted["operation_id"], remaining_seconds=10)
+    later = replace(ctx, session_id="TEST-session-2")
+    items = [
+        ("user", "TEST 带进下一个会话的话。", kept.event["occurred_at"], "TEST-named-carried"),
+        ("user", "TEST 删掉后又带进来的话。", gone.event["occurred_at"], "TEST-named-carried-deleted"),
+    ]
+    assert tuple(core.said_in_session(later, "TEST-scope", items)) == (False, True)
+    assert tuple(core.said_in_session(later, "TEST-scope", items, across_sessions=True)) == (True, True)
+
+
 def test_a_long_key_that_was_taken_is_cut_to_fit_its_new_key(worker_app):
     """A host key of 490 characters or more went past the 512-character limit once the marker and the fingerprint
     were added, and was refused on every pass."""

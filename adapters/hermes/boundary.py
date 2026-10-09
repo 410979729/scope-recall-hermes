@@ -501,25 +501,29 @@ def interim_source_event(
     )
 
 
+def steer_source_key(context: TrustedContext, steer: Steer) -> str:
+    """A steer's key: the steer's own name (``person_steers``) and no session's.  A compression carries a steer into
+    the session it continues; read there, it is the source stored before (``Sources.said_in_session`` across
+    sessions), and a delete of it holds there too."""
+    return host_source_key(
+        installation_id=context.binding.installation_id,
+        entry_id=context.entry_id,
+        session_id="steers",
+        event_kind="steer",
+        event_id=steer.key,
+    )
+
+
 def steer_source_event(
     ledger: SourceObservationLedger,
     context: TrustedContext,
     *,
-    session_id: str,
     steer: Steer,
     recorded_at: str,
 ) -> tuple[SourceEvent | None, tuple[str, ...], SourceIdentity | None]:
-    """One message the person sent while a turn ran, named by the steer itself (``person_steers``) in its session.
-    A source's identity holds its session, so a name without one met the same steer read in another session as a
-    conflict, kept in the inbox and stored again later."""
+    """One message the person sent while a turn ran, stored in the session it is first read in."""
     return ledger.observe(
-        source_event_key=host_source_key(
-            installation_id=context.binding.installation_id,
-            entry_id=context.entry_id,
-            session_id=session_id,
-            event_kind="steer",
-            event_id=steer.key,
-        ),
+        source_event_key=steer_source_key(context, steer),
         source_revision=1,
         role="user",
         content=steer.words,

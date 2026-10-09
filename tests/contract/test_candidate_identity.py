@@ -94,6 +94,9 @@ def test_what_counts_as_the_same_name():
         ("Issue comments", "issue comments"),
         ("defect", "a defect"),
         ("fixed_by", "is fixed by"),
+        ("has access", "have access"),
+        ("API KEY", "API"),
+        ("live store queries", "live store"),
     )
     different = (
         ("吃辣", "不吃辣"),
@@ -115,6 +118,9 @@ def test_what_counts_as_the_same_name():
         ("allow delete", "allow delete if approved"),
         ("部署", "部署之前确认"),
         ("fixed_by", "is not fixed by"),
+        ("has access", "had access"),
+        ("had access", "has access"),
+        ("fixed_by", "was fixed by"),
         ("allow delete", "allow delete only on Fridays"),
         ("rc2", "rc28"),
         ("gpt-5", "gpt-5-mini"),
