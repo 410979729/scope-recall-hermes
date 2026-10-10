@@ -12,7 +12,13 @@ from dataclasses import dataclass
 from functools import partial
 from typing import Any
 
-from ..core.recall_policy import EMBEDDING_DIALECTS, EMBEDDING_SPACE, build_embedding_space, encode_embedding_text
+from ..core.endpoint_policy import endpoint_scheme_allowed
+from ..core.recall_policy import (
+    EMBEDDING_DIALECTS,
+    EMBEDDING_SPACE,
+    build_embedding_space,
+    encode_embedding_text,
+)
 from ..core.source_records import StoredSource
 from .model_budget import AuxiliaryBudgetLedger
 from .models import (
@@ -229,9 +235,15 @@ class EmbeddingRouteConfig:
     #: name is the only lever.  A wire detail, not a geometry: it does not enter
     #: the space digest, and the response length is still checked.
     dimensions_field: str = "dimensions"
+    #: A literal boolean opt-in for plaintext HTTP to a host that is not this machine: a container reaching the
+    #: model server on its host does so over a bridge address (``172.17.0.1``), which is not loopback.  Loopback HTTP
+    #: needs no opt-in.  Only a literal ``True`` reads as permission, so a string ``"true"`` cannot open it.
+    allow_insecure_endpoint: bool = False
 
     def __post_init__(self) -> None:
         validate_credential_env_name(self.credential_env)
+        if type(self.allow_insecure_endpoint) is not bool:
+            raise ValueError("embedding_route_allow_insecure_endpoint")
         stated = [self.model, self.endpoint, self.dimensions, self.dialect]
         if any(value is not None for value in stated) and any(value is None for value in stated):
             # Half a descriptor would silently mix a new model with the default
@@ -239,6 +251,14 @@ class EmbeddingRouteConfig:
             raise ValueError("embedding_route_partial_space")
         if self.dialect is not None and self.dialect not in EMBEDDING_DIALECTS:
             raise ValueError("embedding_route_dialect")
+        if self.endpoint is not None and (
+            type(self.endpoint) is not str
+            or not endpoint_scheme_allowed(self.endpoint, allow_insecure=self.allow_insecure_endpoint)
+        ):
+            # HTTPS anywhere, plain HTTP to this machine, and plain HTTP beyond it only with the opt-in.  Stated
+            # where the config is read, so a refused endpoint is named at load.  A consolidation route has its own
+            # rule, HTTPS only (``ConsolidationRouteConfig``).
+            raise ValueError("embedding_route_endpoint")
         if type(self.dimensions_field) is not str or not _REQUEST_FIELD_RE.fullmatch(self.dimensions_field):
             raise ValueError("embedding_route_dimensions_field")
 
@@ -267,8 +287,16 @@ class GeminiEmbeddingAdapter:
     ) -> None:
         self._route = route
         self._ledger = ledger
-        self._transport = transport if transport is not None else HttpsTransport()
-        self._query_transport = transport if transport is not None else HttpsTransport(persistent=True)
+        self._transport = (
+            transport
+            if transport is not None
+            else HttpsTransport(allow_insecure_endpoint=route.allow_insecure_endpoint)
+        )
+        self._query_transport = (
+            transport
+            if transport is not None
+            else HttpsTransport(persistent=True, allow_insecure_endpoint=route.allow_insecure_endpoint)
+        )
         self._owns_transport = transport is None
         space = route.space()
         self._space = space

@@ -13,6 +13,7 @@ from typing import Iterable
 
 from ..contracts import ContractError
 from .embedding_budget import bounded_embedding_text
+from .endpoint_policy import endpoint_url_shape_ok
 from .events import CJK_RUN, lexical_terms, query_terms, version_suffixes
 from .retrieval import CandidateRef, SearchContext
 
@@ -67,7 +68,7 @@ def canonical_embedding_space(value: dict) -> dict:
     if type(value.get("dimensions")) is not int or not 8 <= value["dimensions"] <= 16384:
         raise ContractError("INPUT_INVALID", "embedding_space")
     endpoint = value.get("endpoint")
-    if type(endpoint) is not str or not endpoint.startswith("https://") or len(endpoint) > 2048:
+    if type(endpoint) is not str or not endpoint_url_shape_ok(endpoint) or len(endpoint) > 2048:
         raise ContractError("INPUT_INVALID", "embedding_space")
     if value.get("task_type") is not None:
         raise ContractError("INPUT_INVALID", "embedding_space")

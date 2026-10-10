@@ -3,6 +3,49 @@
 A line or two per release.  Each release's full notes are on its GitHub release page (tag ``v<version>``), and the
 longer text this file once held is in its history.
 
+## [3.9.7] - 2026-10-10
+
+This repository candidate corrects the checkout version shown in the README and keeps the fixes in 3.9.6. Runtime behaviour, the database schema and the upgrade steps are unchanged.
+
+## [3.9.6] - 2026-10-10
+
+This repository candidate includes the 3.9.5 fixes for message preservation, model-endpoint credential protection, remote dsh setup and paged quote recovery. Its Windows deadline regression check now allows timestamp floating-point rounding without changing the runtime deadline or accepting an additional retry budget. There are no additional upgrade steps beyond those described for 3.9.5 below.
+
+## [3.9.5] - 2026-10-10
+
+This candidate includes the changes since the last public release, 3.9.3. It preserves user messages more reliably, prevents credentials from being placed in model-server URLs, connects remote dsh entries through their native plugin, and corrects escaped quotes during paged memory processing.
+
+### 3.9.3 — previous public release
+
+The comparison baseline. Existing memories and the database schema remain compatible.
+
+### 3.9.4 — repository candidate, not publicly released
+
+Messages sent by the owner while a Hermes agent works are retained as their words without treating delegated instructions or other people's statements as the owner's. Failed-work reporting distinguishes queued retries from failed work. Plain HTTP model endpoints work again on the same machine; other hosts require explicit opt-in (contributed by @panxuewen0101 in #227).
+
+### 3.9.5 — current repository candidate
+
+Model endpoints reject credentials embedded in URLs, including query parameters; plaintext requests still cannot carry credentials. Remote dsh setup installs and configures the dsh plugin and forwards its records through the existing shared-store connection. Paged consolidation resolves escaped text against the current page before considering a previously accepted goal, without decoding it twice or weakening quotation checks. Hermes compression retries share one deadline, and quoted third-party statements are not assigned to the owner.
+
+### Upgrading from 3.9.3
+
+Install the package, run `plan-install` and `apply-install` for each upgraded entry, then restart the affected gateways and MCP servers. The schema remains 1110. For remote dsh entries, use the dsh plugin setup described in `docs/remote-entries.md`; Codex hook installation is not a substitute.
+
+## [3.9.4] - 2026-10-09
+
+What the owner sends to a Hermes agent while it works (a steer) is stored as their words. Most were lost: they were read only at a turn's end and only after the last other row, and were gone once a compression or a turn without a reply came first. A steer is the owner's only when the gateway's origin names them; a parent agent's message to the agent it delegated to, a notice Hermes delivers the same way, and anything after another person's words in a row Hermes joined are not.
+
+From an audit by one of the agents (yuheng):
+- The worker's status counts only failed work as failed. A queued item keeps its last attempt's error, and counted among the failures it hid as many that need a look. The queued items' errors are reported apart, as `pending_error_counts`.
+- An everyday first-person statement (我不吃辣, I do not eat spicy food) is bound to the person who said it; someone else's words around a first person are not.
+- A candidate's name the evaluating model writes differently is restored only when it is the same name: 不吃辣 no longer stands for 吃辣, nonprod for prod, nor "allow delete if approved" for "allow delete".
+
+An embedding route reaches a model server on this machine over plain HTTP again, and one on another host with the literal opt-in `allow_insecure_endpoint`, which is off by default: the text being embedded then crosses the network unencrypted. A plaintext request never carries a credential (#227, contributed by @panxuewen0101).
+
+### Upgrading from 3.9.3
+
+Install the package, run `plan-install` and `apply-install` where you upgrade, then restart the Hermes gateways and the clients' MCP servers. The schema is unchanged (1110), and so are the hook and MCP server commands the installers write.
+
 ## [3.9.3] - 2026-10-08
 
 3.9.3 fixes one thing and otherwise changes no behaviour: on Windows a worker's teardown no longer flashes a console window, because `taskkill`, and the Codex route's kill of a call that ran out of time, now start without one (#222, reported by @tutan0558). The rest is the clean-up's last part. The functions hardest to follow are split into named steps: none is above a complexity of 40, and 57 are above 20 where 77 were. Retrieval's hydration, the doctor's report and store checks, the embedding and consolidation models, a home's shared-store attachment and a runtime instance's configuration each have a module of their own, so three files are above 1,000 lines where eight were. The Hermes adapter's helpers live with the collaborators they serve (36 methods to 25). Imports inside functions that loaded nothing new are at the top of their modules (126 left, from 176), and two definitions nothing used are gone. The memory documentation says what 3.x takes from other plugins: nothing, since memory is written from the conversation the host hands over (#221).

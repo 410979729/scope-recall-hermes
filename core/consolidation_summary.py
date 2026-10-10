@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 
 from ..contracts import ContractError, validate_payload
+from .evidence_quote import resolve_fragment_summaries
 
 
 def _json(value):
@@ -33,6 +34,7 @@ def validate_fragment(tx, value, fence, content):
     # qualification still uses the complete original including negations.
     seeds = resume_seed(tx, fence.work_id)
     page = content[fence.chunk.start : fence.chunk.end]
+    resolve_fragment_summaries(value, page, seeds)
     for proposal in value["resume_proposals"]:
         if proposal["goal"] not in seeds and proposal["goal"]["text"] not in page:
             raise ContractError("DERIVATION_INVALID", "fragment_goal")

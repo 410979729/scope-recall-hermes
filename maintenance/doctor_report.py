@@ -34,6 +34,8 @@ class DoctorReport:
     oldest_pending_at: str | None = None
     oldest_pending_age_seconds: float | None = None
     work_error_counts: dict[str, int] = field(default_factory=dict)
+    #: The error queued work kept from its last attempt; waiting, so in none of the failure counts.
+    pending_error_counts: dict[str, int] = field(default_factory=dict)
     recent_work_errors: list[dict[str, Any]] = field(default_factory=list)
     #: Model answers cut off at the output limit in the last hour.
     recent_output_truncations: int = 0

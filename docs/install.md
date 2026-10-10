@@ -532,6 +532,8 @@ Things that look wrong in a healthy report and are not:
 - `unreached: []` means no partition's work has waited more than a day, apart from
   work no configured route can do or a provider holds.
 - `terminal_failed_work: null` on a clean queue.
+- `pending_error_counts` is the error queued work kept from its last attempt. That
+  work is waiting for another attempt, so it is in none of the failure counts.
 - `embedding_respace: null` means no re-embed run was ever started (see
   section 7). `embedding_health` always counts the embedding queue; its
   `last_day` and `held_until` appear only with an external embedding route,

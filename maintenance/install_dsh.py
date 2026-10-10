@@ -114,7 +114,7 @@ def _scalar(value: str) -> str:
     return json.dumps(value, ensure_ascii=False)
 
 
-def _rows(plan: InstallPlan) -> list[str]:
+def _rows(plan: InstallPlan, remote: dict[str, Any] | None = None) -> list[str]:
     """This entry's block: the plugin row and the MCP server row, as one ``insert``."""
     python = plan.python_executable.as_posix()
     home = plan.instance_root.as_posix()
@@ -128,22 +128,61 @@ def _rows(plan: InstallPlan) -> list[str]:
         f"      name: {_scalar(plugin_path(plan.target_plugin_dir).as_uri())}",
         "      config:",
         f"        python: {_scalar(python)}",
-        f"        home: {_scalar(home)}",
+        f"        home: {_scalar(remote['state_dir'].as_posix() if remote else home)}",
         f"        version: {_scalar(PACKAGE_VERSION)}",
     ]
-    if plan.env_file is not None:
+    if remote is not None:
+        lines.append(f"        remoteConfig: {_scalar(remote['config'].as_posix())}")
+    elif plan.env_file is not None:
         lines.append(f"        envFile: {_scalar(plan.env_file.as_posix())}")
     lines += [
         f"    - id: {MCP_ROW}",
         f"      name: {_scalar(MCP_CLIENT)}",
         "      config:",
         f"        serverName: {MCP_SERVER_NAME}",
-        "        transport: stdio",
-        f"        command: {_scalar(python)}",
-        "        args: [" + ", ".join(_scalar(arg) for arg in args) + "]",
-        END,
     ]
+    if remote is not None:
+        token = remote["token_file"].read_text(encoding="utf-8").strip()
+        lines += [
+            "        transport: streamable-http",
+            f"        url: {_scalar(remote['url'] + '/mcp')}",
+            "        headers:",
+            f"          Authorization: {_scalar('Bearer ' + token)}",
+        ]
+    else:
+        lines += [
+            "        transport: stdio",
+            f"        command: {_scalar(python)}",
+            "        args: [" + ", ".join(_scalar(arg) for arg in args) + "]",
+        ]
+    lines.append(END)
     return lines
+
+
+def remote_files(config: dict[str, Any], home: Path, python: Path) -> dict[Path, bytes]:
+    """Render a remote dsh install without attaching a local store, using the same patch ownership/privacy rules.
+
+    The client.json path identifies the block, not a local entry home.  The state directory holds only the
+    plugin's status and unacknowledged record; credentials for the store's models stay on the server.
+    """
+    plan = InstallPlan(
+        host=HOST,
+        target_plugin_dir=home,
+        instance_root=config["config"],
+        project_root=None,
+        agent_id="",
+        python_executable=python,
+    )
+    changed = {}
+    path = plugin_path(home)
+    source = plugin_source()
+    if read_host_file(path) != source:
+        changed[path] = source
+    path = home / PATCH_FILENAME
+    merged = merged_file(plan, path, rows=_rows(plan, remote=config))
+    if merged is not None:
+        changed[path] = merged
+    return changed
 
 
 def _privacy_rows() -> list[str]:
@@ -341,7 +380,7 @@ def _composed(lines: list[str]) -> list[str]:
     return kept if any(not _empty_list(line) for line in content) else [*kept, "[]"]
 
 
-def merged_file(plan: InstallPlan, path: Path) -> bytes | None:
+def merged_file(plan: InstallPlan, path: Path, *, rows: list[str] | None = None) -> bytes | None:
     """The patch file with this entry's rows (and the upload switched off, when nothing switches it off yet), or None
     when it already holds them as they would be written."""
     text, raw = read_patch(path)
@@ -356,7 +395,7 @@ def merged_file(plan: InstallPlan, path: Path) -> bytes | None:
     if MCP_SERVER_NAME in _server_names(others):
         raise InstallError(f"{path} already has an MCP server named {MCP_SERVER_NAME}: take it out first")
     _block_style(rest, path)
-    rows = _rows(plan)
+    rows = _rows(plan) if rows is None else rows
     privacy: list[str] = []
     if not upload_off(others):
         # Last, after every operation that names the row: dsh applies them in order.

@@ -5,6 +5,8 @@ one. Its memories are the store's, recalled by every entry with the owner's gran
 names the entry it came in through, so "Work Claude Code" stays apart from this machine's Claude Code.
 WorkBuddy can be such a client as well (`--host workbuddy` below, `"host": "workbuddy"` in `client.json`); it is
 forwarded and its session record read like the `claude-code` host's, and where its setup differs is said below.
+dsh can also be a remote entry (`--host dsh`, `"host": "dsh"`); its native plugin sends the turn's messages
+inside the Stop payload instead of reading a transcript file.
 
 Nothing of the store moves. The client machine runs a small forwarder and holds only the entry's token:
 each hook goes to the entry's server here over HTTP, and this machine's handler records it, as it does for a
@@ -16,6 +18,8 @@ forward them, where a local Codex client records its tool calls.
 The server listens on one private address this machine has on a network both machines are in (a tailnet),
 never on every interface, and refuses any request without the entry's token. The token is made on the client
 machine and stays there; this machine keeps its SHA-256.
+Plain HTTP is accepted, including non-loopback addresses: use it only over a trusted private/encrypted network
+such as a tailnet, not the public internet. Use an HTTPS endpoint when that network cannot protect the token.
 
 ## On this machine
 
@@ -59,6 +63,7 @@ machine and stays there; this machine keeps its SHA-256.
 Each entry has its own port and its own server process. A server runs the installed package, so it is
 stopped with the other processes on the store for an upgrade (`package-upgrade`) and started after it.
 For a WorkBuddy client, name `--host workbuddy` in `attach`, `configure` and `serve`.
+For dsh, use `--host dsh` in all three; the attached home is on the server, not on the client machine.
 
 ## On the client machine
 
@@ -104,6 +109,30 @@ For a WorkBuddy client, name `--host workbuddy` in `attach`, `configure` and `se
    `remote_client` from those files, or put back the copies from `state_dir\backups\` if nothing else changed
    there since.
 
+### dsh on the client machine
+
+Use the client steps above with `"host": "dsh"`. Quit every dsh profile first, then pass its existing home
+(`$DSH_HOME`, normally `~/.dsh`) as `--plugin-dir`:
+
+```text
+python -m scope_recall.adapters.codex.remote_client install --config <client.json> --plugin-dir <dsh-home>
+```
+
+The installer writes `scope-recall/dsh-plugin/index.mjs` and merges two native rows into `cordis.patch.yml`:
+`scope-recall` runs the Python forwarder with `remoteConfig: <absolute client.json>`; `mcp-scope-recall` uses
+`@deepseek-ai/dsh-mcp-client`, `transport: streamable-http`, `<url>/mcp` and the token's Authorization header.
+The plugin's `home` is the client's `state_dir` (status and pending messages only); no local store attachment,
+model key or `envFile` is needed. Without `remoteConfig` the plugin still uses the same-machine hook entry.
+Recall and Stop retain bounded waits (9 and 20 s by default); a failed recall does not block the turn indefinitely.
+
+Other rows and user overrides are preserved; changed existing files are copied under `state_dir/backups/`.
+Reinstall is idempotent and refreshes the MCP token after token rotation. Another entry's managed block or an
+unowned Scope Recall row is refused rather than silently replaced. As with a local install, session-log upload
+to dsh's model API is switched off. Keep the patch and its backups private: the MCP header contains the token.
+Restart dsh and check `dsh --profile headless --dump-config` for both rows, without sharing the token-bearing dump.
+To remove it, quit dsh and remove only the `SCOPE_RECALL_DSH_START`/`END` block and installed plugin file;
+leave the separate privacy block in place. Do not discard pending messages unless you intend to lose them.
+
 ## When the server cannot be reached
 
 A hook whose connection has not opened in 3 s gives up and answers with nothing; for a minute after that no
@@ -120,12 +149,20 @@ rather than kept, since it would be refused again and would stop every later flu
 and drops its oldest past that. What did not get through, what the spool sent and what it dropped is logged in
 the client's `state_dir\remote-client.log`.
 
+dsh does **not** use the Codex forwarder's spool. Its native plugin already keeps unacknowledged messages in
+`state_dir/scope-recall/dsh-spool`; failed/empty responses do not advance its acknowledgement cursor. The next
+Stop or the plugin's bounded background sweep can replay them. The existing retention limit still applies
+(5,000 messages per session or 14 days); this is not unlimited delivery or a second remote queue. Check
+`state_dir/scope-recall/dsh-plugin-status.json` and the forwarder's log when capture stays pending.
+
 A message is dated by the client's clock, the moment its hook ran there, which is what makes a hook sent again
 the same source. When a request's latest time is more than a minute ahead of this machine's, every time in it
 moves back by that lead, so the latest is this machine's now and a turn keeps its order: a recall finds nothing
 dated after its now, so a message dated a day ahead would have stayed hidden for a day (a hook that such a client
 sends twice may then be stored twice). When it was stored, when its work falls due and a recall's now are
 this machine's clock, so a client clock that runs fast or slow does not hold back the work on its messages.
+That request-time adjustment covers the forwarder's hook time and file-record envelope; dsh's nested message
+timestamps retain the existing dsh transcript handling. Keep the two machines' clocks synchronized.
 
 The client connects to the server itself and never through a proxy: `HTTP_PROXY` or a system proxy on the
 client machine is for the internet and cannot reach the tailnet address. Claude Code's and Codex's own MCP

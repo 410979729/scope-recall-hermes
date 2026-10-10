@@ -1,4 +1,4 @@
-"""Claude Code or Codex on another machine: forward each hook to its entry's server over HTTP.
+"""A supported client on another machine: forward each hook to its entry's server over HTTP.
 
 This runs where the client runs.  It keeps no store, no model key and no memory: each hook's payload goes to
 the entry's server (``remote_server``) with the entry's token, and the server's answer is the hook's answer.
@@ -23,8 +23,9 @@ keeping everything else in them and a copy of each file it changes under the sta
     python -m scope_recall.adapters.codex.remote_client flush --config <client.json>  (started by a hook)
 
 ``client.json`` holds ``url`` (the server, e.g. ``http://100.64.0.10:18765``), ``host`` (``claude-code``,
-``codex`` or ``workbuddy``), ``token_file`` and ``state_dir``, all absolute.  The token never leaves this
-machine except in the requests' ``Authorization`` header.
+``codex``, ``workbuddy`` or ``dsh``), ``token_file`` and ``state_dir``, all absolute.  dsh's native plugin sends
+its record inside the payload and retains unacknowledged messages itself; it does not use the Codex spool.
+The token never leaves this machine except in the requests' ``Authorization`` header.
 """
 
 from __future__ import annotations
@@ -47,7 +48,7 @@ from typing import Any
 from . import transcript
 from .boundary import EMPTY_ANSWER, is_workbuddy_agent_run, without_lone_surrogates
 
-HOSTS = ("claude-code", "codex", "workbuddy")
+HOSTS = ("claude-code", "codex", "workbuddy", "dsh")
 #: Hosts whose Stop and SessionEnd send the lines of their own session record (``transcript``).
 _RECORD_HOSTS = frozenset({"claude-code", "workbuddy"})
 #: How long the client's host waits for each hook (the plugin's hooks.json): the local installers' ceilings
@@ -58,6 +59,7 @@ HOOK_TIMEOUTS = {
     "claude-code": {"UserPromptSubmit": 15, "Stop": 10, "SessionEnd": 10},
     "codex": {"SessionStart": 5, "UserPromptSubmit": 15, "Stop": 10, "Interrupt": 3, "SessionEnd": 3},
     "workbuddy": {"UserPromptSubmit": 15, "Stop": 10, "SessionEnd": 10},
+    "dsh": {"UserPromptSubmit": 9, "Stop": 20},
 }
 #: The part of each wait the request may use; the interpreter's start and the answer take the rest.
 _REQUEST_SHARE = 0.8

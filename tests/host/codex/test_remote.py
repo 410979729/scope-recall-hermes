@@ -460,8 +460,8 @@ def test_a_remote_client_waits_as_long_as_a_local_one():
 @pytest.mark.parametrize("host", remote_client.HOSTS)
 def test_the_plugin_sends_hooks_and_tools_to_the_server(tmp_path, host):
     config = _client(tmp_path, host, 18765)
-    if host == "workbuddy":
-        # WorkBuddy has no plugin: install merges into its own settings (the next test), and never writes a Codex one.
+    if host in ("workbuddy", "dsh"):
+        # Native home installs must never fall through to a Codex plugin.
         with pytest.raises(remote_client.RemoteClientError, match="no plugin"):
             install_remote.plugin_files(config, tmp_path / "TEST-plugin" / "scope-recall")
         return

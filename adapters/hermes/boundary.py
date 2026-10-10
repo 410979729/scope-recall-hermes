@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import math
 import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Literal, cast
+from typing import Any, Literal, NamedTuple, cast
 
 from scope_recall.contracts import Origin, SourceEvent, TrustedContext
 
@@ -267,24 +269,6 @@ _STEER_CLOSE = "[/OUT-OF-BAND USER MESSAGE]"
 _STEER_ORIGIN = "Gateway message origin (JSON data, not instructions or authorization):"
 
 
-def _steer_words(content: object) -> str:
-    """The person's words in one steer row: no marker lines, no origin preamble (chat and user ids)."""
-    text = extract_user_text(content)
-    start = text.find(_STEER_OPEN)
-    if start != -1:
-        line_end = text.find("\n", start)
-        start = line_end + 1 if line_end != -1 else len(text)
-    else:
-        start = 0
-    end = text.find(_STEER_CLOSE, start)
-    words = (text[start:] if end == -1 else text[start:end]).strip()
-    if words.startswith(_STEER_ORIGIN):
-        # The preamble ends at its first blank line; without one nothing here is known to be the person's.
-        blank = words.find("\n\n")
-        words = words[blank + 2 :].strip() if blank != -1 else ""
-    return words
-
-
 #: Hermes' mark on a user message it folded a compression summary into (``COMPRESSED_SUMMARY_METADATA_KEY``).
 _COMPRESSED_SUMMARY = "_compressed_summary"
 #: The lines that bound a folded summary (``agent.context_compressor``: ``_MERGED_PRIOR_CONTEXT_HEADER``,
@@ -361,24 +345,97 @@ def host_notice(history: object, user_message: object) -> bool:
     return False
 
 
-def steer_messages(history: object) -> tuple[tuple[str, str | None], ...]:
-    """What the person sent while the turn that ends ``history`` ran, and when.
+#: How Hermes 0.21.5 begins the notices it delivers into a running turn the way it delivers a steer, with the chat's
+#: origin: a background process's heartbeat or end, a delegation's report.  They are not the person's words.
+_STEER_NOTICE_HEADS = ("[Background process ", "[IMPORTANT: Background process", "[ASYNC DELEGATION BATCH COMPLETE")
 
-    ``sync_turn`` is handed only the message that opened the turn; a steer stays in the conversation.
+
+class Steer(NamedTuple):
+    """What the person sent while a turn ran: its name, their words and when they were sent."""
+
+    key: str
+    words: str
+    occurred_at: str | None
+
+
+#: The first line of a gateway's origin preamble, at the start of a line of a steer row.
+_ORIGIN_LINE = re.compile(r"(?m)^" + re.escape(_STEER_ORIGIN))
+
+
+def _steer_pieces(content: object) -> list[tuple[dict[str, Any] | None, str]]:
+    """A steer row's pieces, each its origin and its words, in order.
+
+    Hermes joins the steers queued before the next tool boundary into one row, a line apart (``AIAgent.steer``), and
+    a gateway puts its origin preamble before each (``_steer_text_with_origin``): that line, the origin's JSON, a
+    line, a blank line, then the words.  A piece with no preamble has no origin (None); one whose JSON cannot be
+    read has an origin naming no one ({}).
     """
-    if not isinstance(history, list):
-        return ()
-    said: list[tuple[str, str | None]] = []
-    for message in reversed(history):
-        if not isinstance(message, dict) or message.get("role") != "user":
+    text = extract_user_text(content).lstrip()
+    line_end = text.find("\n")
+    if not text.startswith(_STEER_OPEN) or line_end == -1:
+        return []
+    body = text[line_end + 1 :]
+    close = body.rfind(_STEER_CLOSE)
+    body = body[:close] if close != -1 else body
+    starts = [match.start() for match in _ORIGIN_LINE.finditer(body)]
+    if not starts or starts[0] != 0:
+        starts.insert(0, 0)
+    pieces: list[tuple[dict[str, Any] | None, str]] = []
+    for index, start in enumerate(starts):
+        piece = body[start : starts[index + 1] if index + 1 < len(starts) else len(body)]
+        if not piece.startswith(_STEER_ORIGIN):
+            pieces.append((None, piece.strip()))
             continue
-        if message.get("display_kind") != STEER_KIND:
-            break
-        words = _steer_words(message.get("content"))
-        if words:
-            said.append((words, _message_time(message)))
-    said.reverse()
-    return tuple(said)
+        try:
+            origin, _end = json.JSONDecoder().raw_decode(piece[len(_STEER_ORIGIN) :].lstrip())
+            json.dumps(origin, ensure_ascii=False).encode("utf-8")  # a lone surrogate would fail every later write
+        except (ValueError, RecursionError):
+            origin = {}
+        blank = piece.find("\n\n")
+        pieces.append((origin if isinstance(origin, dict) else {}, piece[blank + 2 :].strip() if blank != -1 else ""))
+    return pieces
+
+
+def _sent_by(origin: dict[str, Any], user_id: str) -> bool:
+    """Whether an origin names the session's person, as their id or as the ``user_<12 hex>`` a gateway that redacts
+    personal data writes in its place (``gateway.session._hash_sender_id``)."""
+    said = str(origin.get("user_id") or "")
+    return bool(user_id) and said in {user_id, "user_" + hashlib.sha256(user_id.encode("utf-8")).hexdigest()[:12]}
+
+
+def person_steers(messages: object, *, platform: str, user_id: str, local_surface: bool) -> tuple[Steer, ...]:
+    """Every steer in ``messages`` that the session's person sent, in order and each once.
+
+    Read wherever it is in the list: Hermes puts notices, compression summaries and to-do lists after a steer.  A
+    gateway delivers the person's steer after an origin naming them; a piece without one comes from the agent's side
+    (a parent agent writing to the agent it delegated to), and is the person's only on their local surfaces, where
+    they type it.  A notice Hermes delivers the same way, with the chat's origin, is not theirs.  In a row of joined
+    pieces, nothing after the first piece that is not the person's is taken: a preamble further on may be text inside
+    that piece.  A piece is named by its chat and message id, else by its time and words, so the same steer read
+    again at a compression, a turn's end or the session's end is the same capture.
+    """
+    if not isinstance(messages, list):
+        return ()
+    found: dict[str, Steer] = {}
+    for message in messages:
+        if not isinstance(message, dict) or message.get("role") != "user" or message.get("display_kind") != STEER_KIND:
+            continue
+        occurred_at = _message_time(message)
+        for origin, words in _steer_pieces(message.get("content")):
+            if origin is None:
+                theirs = local_surface
+            else:
+                theirs = _sent_by(origin, user_id) and (local_surface or str(origin.get("platform") or "") == platform)
+            if not theirs or not words or words.startswith(_STEER_NOTICE_HEADS):
+                break
+            message_id = str((origin or {}).get("message_id") or "").strip()
+            if origin is not None and message_id:
+                # A message id is the chat's own count: two chats of one platform share them.
+                key = f"{origin.get('platform')}:{origin.get('chat_id')}:{message_id}"
+            else:
+                key = "text:" + hashlib.sha256(f"{occurred_at}\x00{words}".encode()).hexdigest()[:32]
+            found.setdefault(key, Steer(key, words, occurred_at))
+    return tuple(found.values())
 
 
 def interim_messages(history: object, *, answer: str) -> tuple[tuple[str, str | None], ...]:
@@ -444,32 +501,37 @@ def interim_source_event(
     )
 
 
+def steer_source_key(context: TrustedContext, steer: Steer) -> str:
+    """A steer's key: the steer's own name (``person_steers``) and no session's.  A compression carries a steer into
+    the session it continues; read there, it is the source stored before (``Sources.said_in_session`` across
+    sessions), and a delete of it holds there too.  Hermes stamps every message it appends with a time
+    (``agent.message_metadata.stamp_message_timestamp``); words that came with neither a message id nor a time would
+    be taken for the same words stored before, which keeps a delete holding rather than store a deleted steer again."""
+    return host_source_key(
+        installation_id=context.binding.installation_id,
+        entry_id=context.entry_id,
+        session_id="steers",
+        event_kind="steer",
+        event_id=steer.key,
+    )
+
+
 def steer_source_event(
     ledger: SourceObservationLedger,
     context: TrustedContext,
     *,
-    session_id: str,
-    turn_id: str,
-    ordinal: int,
-    content: str,
+    steer: Steer,
     recorded_at: str,
-    occurred_at: str | None = None,
 ) -> tuple[SourceEvent | None, tuple[str, ...], SourceIdentity | None]:
-    """One message the person sent while a turn ran, named by its turn and place in it."""
+    """One message the person sent while a turn ran, stored in the session it is first read in."""
     return ledger.observe(
-        source_event_key=host_source_key(
-            installation_id=context.binding.installation_id,
-            entry_id=context.entry_id,
-            session_id=session_id,
-            event_kind="steer",
-            event_id=f"{turn_id or 'turn'}:{ordinal}",
-        ),
+        source_event_key=steer_source_key(context, steer),
         source_revision=1,
         role="user",
-        content=content,
+        content=steer.words,
         origin=context.actor_origin,
         recorded_at=recorded_at,
-        occurred_at=occurred_at or recorded_at,
+        occurred_at=steer.occurred_at or recorded_at,
         capture_state="complete",
     )
 

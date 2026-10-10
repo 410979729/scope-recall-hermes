@@ -41,10 +41,81 @@ _UNASSERTED_CONTEXT = re.compile(
     r"customer said|may|might|maybe|perhaps|guess(?:ed)?|heard\s+that|reportedly)\b",
     re.I,
 )
+#: Someone else's words, or an example, around a first person: a named or unnamed speaker (``张三说：``,
+#: ``张三说，``, ``Alice said``, ``Everyone thinks``), a quoted first person in double, CJK or single quotes (an
+#: apostrophe inside a word, ``I'm``, opens no quote), and an example (``比如``, ``for example``); and a first person
+#: after a speaker's label (``_after_a_label``).  The speaker's own framing (``_OWN_FRAMING``) is no one else's words.
 _REPORTED_SELF = re.compile(
-    r'(?:他说|她说|他们说|客户说|同事说|朋友说|引用|原文)|\b(?:he|she|they|customer|colleague|friend)\s+(?:said|says|wrote)\b|[“"「『][^”"」』\n]{0,256}(?:\bI\b|\bmy\b|我)',
+    r"(?:他说|她说|他们说|客户说|同事说|朋友说|引用|原文|比如|例如|举例|譬如)"
+    r"|(?<!我)(?:说|讲|表示|写道)\s*[：:，,“\"「『'‘]"
+    r"|\b(?!I\b)\w+\s+(?:said|says|wrote|writes|thinks?|believes?|claims?|assumes?|guess(?:es)?|hears?|heard"
+    r"|told\s+\w+|tells\s+\w+)\b"
+    r"|\b(?:for example|for instance|e\.g\.|imagine)\b"
+    r"|[“\"「『][^”\"」』\n]{0,256}(?:\bI\b|\bmy\b|我)"
+    r"|(?:^|[\s:：,，])['‘][^'’\n]{0,256}(?:\bI\b|\bmy\b|我)",
     re.I,
 )
+#: A line opening with a speaker's label: ``儿子：``, ``Alice:``, a chat log's ``<alice>``, a ``[10:32]`` before
+#: either, including a list item's label.  The list marker changes no speaker; a URL is no label.
+_SPEAKER_LABEL = re.compile(
+    r"(?:^|[\n。！？!?；;])[^\S\n]*(?:(?:[-*+•]|\d+[.)、])[^\S\n]+)?"
+    r"(?:\[[^\]\n]{0,24}\][^\S\n]*)?"
+    r"(?:<[^<>\n]{1,24}>|(?!我|I\b)(?:[\u4e00-\u9fff]{1,6}|[A-Za-z][\w .'-]{0,24})[：:](?!//))",
+    re.I,
+)
+_FIRST_PERSON = re.compile(r"\bI\b|\bmy\b|我", re.I)
+#: A speaker's own framing at the head of a clause, after a list marker too (老实说，一般来说，我跟你说，"That said,"):
+#: what follows it is their own words.  After a name it is someone else's again: 张三跟你说，…, "a message that
+#: said, …".
+_OWN_FRAMING = re.compile(
+    r"(?:^|(?<=[\n，,;；。.!?！？：:]))\s*(?:(?:[-*+•]|\d+[.)、])\s*)?"
+    r"(?:我?(?:(?:一般|总的|总得|总体|整体|具体|简单|严格|相对|通常|对我|对于我)来"
+    r"|老实|坦白|直白|简单|实话实|实话|换句话|话|再|虽|不用|照理|按理"
+    r"|这么|那么|怎么|所以|也就是|就是|可以|应该|不得不|跟你|和你)说"
+    r"|(?:that\s+said|that\s+being\s+said|having\s+said\s+that)\b)",
+    re.I,
+)
+#: The head of an English clause before its first person: a list marker, then words that frame it.  An English
+#: self-report stands there: "The rumor that I prefer blue is false" reports no preference.
+_ENGLISH_HEAD = (
+    r"^\s*(?:(?:[-*+•]|\d+[.)])\s+)?"
+    r"(?:(?:honestly|actually|personally|frankly|basically|generally|usually|normally|overall|anyway|also|and|but"
+    r"|so|well|now|yes|yeah|yep|no|ok|okay|oh|btw|fyi|tbh|lately|nowadays|in\s+general|in\s+practice|in\s+fact"
+    r"|in\s+short|of\s+course|as\s+a\s+rule|for\s+the\s+most\s+part|most\s+of\s+the\s+time|at\s+home|at\s+work"
+    r"|by\s+the\s+way|to\s+be\s+honest|for\s+me|as\s+for\s+me|these\s+days)\b[\s,]*)*"
+)
+#: An everyday self-report -- 我不吃辣, 我从不抽烟, 我对花生过敏, I never drink coffee: the person heads the clause and
+#: the value stands straight after the verb or holds it (``_everyday_self_report``).  看, 听 and 说 are not among the
+#: verbs: 我看不吃辣的人更健康 is the speaker's view, not a report of themselves; nor is a plan (打算, plan to), whose
+#: negation an intention would not keep.  对X过敏 crosses no other 对 and no 的 (我对象对花生过敏 is a partner's).
+_EVERYDAY_SELF_REPORT = (
+    re.compile(
+        r"(?:^|[\s：:])(?:本次|这次|今天|平时|通常|目前|现在|本轮)*"
+        r"我(?:本次|这次|今天|平时|通常|个人|一直|目前|现在|本轮|从来|向来|基本|几乎|很少|偶尔|经常|总是|一般|平常|"
+        r"每天|早上|中午|晚上|已经|也|还|都|就|只|从|不|没|太|很|更|最|能|会)*"
+        r"(?:(?:(?:吃|喝|抽|吸|穿|戴|碰|用|玩|开|住|睡|养|信|爱|讨厌|怕|害怕|戒)"
+        r"(?:了|过|着|不了|得了|不惯|得惯)?){1,2}"
+        r"|对(?![象面方])[^，,;；。!?！？\n对的]{1,20}?(?:过敏|感兴趣|有兴趣|没兴趣|没有兴趣)(?!的))"
+    ),
+    re.compile(
+        _ENGLISH_HEAD
+        + r"(?:I\s+(?:(?:usually|always|often|never|rarely|seldom|sometimes|also|really|just|still|mostly|generally|"
+        r"normally)\s+)*(?:(?:do\s+not|don[’']t|cannot|can[’']t|will\s+not|won[’']t)\s+)?"
+        r"(?:(?:really|usually|always|often|ever|even)\s+)?"
+        r"(?:eat|drink|smoke|wear|drive|play|hate|love|enjoy|dislike|avoid)\b(?:\s+(?:a|an|the)\b)?"
+        r"|I(?:\s+am|[’']m)\s+allergic\s+to\b)",
+        re.I,
+    ),
+)
+#: An English first person of preference or decision, at the head of its clause as the everyday ones are.
+_ENGLISH_SELF_REPORT = re.compile(
+    _ENGLISH_HEAD
+    + r"(?:I\s+(?:(?:do\s+not|don[’']t)\s+)?(?:prefer|like|want|need|use|choose|decide)\b"
+    + r"|my\s+(?:preference|decision|requirement|constraint|habit)\b)",
+    re.I,
+)
+_ENGLISH_FACT = re.compile(_ENGLISH_HEAD + r"I\s+(?:am|have|live|work)\b", re.I)
+_CJK_CHAR = re.compile(r"[\u3400-\u9fff]")
 _SENTENCE_BREAK = re.compile(r"[;；。!?！？\n]")
 _DURABLE_DIRECTIVE = re.compile(
     r"以后|今后|从现在起|长期|始终|一直|每次|每当|默认|平时|通常|惯例|"
@@ -78,17 +149,44 @@ def bound_literal(content, text):
     return bool(literal_spans(content, text))
 
 
+def _everyday_self_report(content, left, occurrence):
+    """Whether the clause from ``left`` holds an everyday self-report whose verb the value ``occurrence`` stands
+    straight after or overlaps.  A value that opens a relative clause (``讨厌吃香菜`` + ``的人``) reports no one."""
+    after = CLAUSE_BREAK.search(content, occurrence.end())
+    clause = content[left : after.start() if after else len(content)]
+    start, end = occurrence.start() - left, occurrence.end() - left
+    if clause[end : end + 1] == "的" and _CJK_CHAR.match(clause[end + 1 : end + 2]):
+        return False
+    return any(
+        match.start() <= start and (start < match.end() or not clause[match.end() : start].strip())
+        for pattern in _EVERYDAY_SELF_REPORT
+        for match in pattern.finditer(clause)
+    )
+
+
+def _after_a_label(content: str) -> bool:
+    """Whether a first person stands after a line opening with a speaker's label (``_SPEAKER_LABEL``): a pasted
+    transcript is someone else's words, and the owner's own labelled notes (``Update: … I …``) are refused with it.
+    The first label and the first person after it, each found in one pass: one pattern spanning both read a long
+    log again from every label."""
+    label = _SPEAKER_LABEL.search(content)
+    return label is not None and _FIRST_PERSON.search(content, label.end()) is not None
+
+
 def self_report_bound(content, value_text, *, kind=None):
     """Bind singular self-report to the value's clause, never to a third party.
 
     This deliberately does not equate a team, a possessive third-party noun,
     or a quoted first-person sentence with the current user.
     """
-    if not value_text or _REPORTED_SELF.search(content):
+    unframed = _OWN_FRAMING.sub("", content)
+    if not value_text or _REPORTED_SELF.search(unframed) or _after_a_label(unframed):
         return False
     for occurrence in literal_spans(content, value_text):
         before = list(CLAUSE_BREAK.finditer(content, 0, occurrence.start()))
         left = before[-1].end() if before else 0
+        if _everyday_self_report(content, left, occurrence):
+            return True
         # Include the value: a faithful negative value may itself contain the
         # assertion verb ("我" + "不喜欢蓝色", "I" + "do not like blue").
         prefix = content[left : occurrence.end()]
@@ -101,14 +199,10 @@ def self_report_bound(content, value_text, *, kind=None):
             r"|(?:^|[\s：:])我的(?:偏好|喜好|决定|要求|约束|习惯)",
             prefix,
         )
-        english = re.search(
-            r"\bI\s+(?:(?:do\s+not|don[’\']t)\s+)?(?:prefer\b|like\b|want\b|need\b|use\b|choose\b|decide\b)|\bmy\s+(?:preference|decision|requirement|constraint|habit)\b",
-            prefix,
-            re.I,
-        )
+        english = _ENGLISH_SELF_REPORT.search(prefix)
         if kind == "fact":
             chinese = chinese or re.search(r"(?:^|[\s：:])我(?:是|住在|工作于)", prefix)
-            english = english or re.search(r"\bI\s+(?:am|have|live|work)\b", prefix, re.I)
+            english = english or _ENGLISH_FACT.search(prefix)
         if chinese or english:
             return True
     return False

@@ -320,6 +320,125 @@ def test_the_helper_sends_nothing_on_a_connection_its_server_closed(tmp_path, mo
         thread.join(timeout=2)
 
 
+def test_a_plaintext_request_carries_no_credential(tmp_path, monkeypatch):
+    """A loopback model server needs no key, but the route's ``credential_env`` is still required, so the key is
+    loaded and would otherwise ride the request to a plaintext socket.  Permission to use plain HTTP is not
+    permission to send the credential over it."""
+    import http.server
+    import threading
+
+    seen: dict = {}
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        def log_message(self, *args):
+            pass
+
+        def do_POST(self):
+            self.rfile.read(int(self.headers["Content-Length"]))
+            seen.update(
+                auth=self.headers.get("Authorization"),
+                goog=self.headers.get("x-goog-api-key"),
+                cookie=self.headers.get("Cookie"),
+                content_type=self.headers.get("Content-Type"),
+            )
+            self.send_response(200)
+            self.send_header("Content-Length", "2")
+            self.end_headers()
+            self.wfile.write(b"ok")
+            self.wfile.flush()
+            self.close_connection = True
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    worker = tmp_path / "plaintext_worker.py"
+    # The helper itself, not whatever an earlier call patched ``_HTTP_WORKER_PATH`` to.
+    helper = Path(models.__file__).resolve().parents[1] / "runtime" / "_http_worker.py"
+    worker.write_text(
+        "import importlib.util\n"
+        f"s=importlib.util.spec_from_file_location('worker', {str(helper)!r})\n"
+        "w=importlib.util.module_from_spec(s); s.loader.exec_module(w)\n"
+        "raise SystemExit(w.main())\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(models, "_HTTP_WORKER_PATH", worker)
+    try:
+        assert models.HttpsTransport().post(
+            f"http://127.0.0.1:{server.server_port}/v1/embeddings",
+            body=b"body",
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": "Bearer sk-must-not-cross-a-plaintext-socket",
+                "x-goog-api-key": "sk-must-not-cross-a-plaintext-socket",
+                "Cookie": "session=secret",
+            },
+            timeout_seconds=2.0,
+            max_response_bytes=1024,
+        ) == (200, b"ok")
+        assert seen["auth"] is None, "a bearer token must not cross a plaintext socket"
+        assert seen["goog"] is None
+        assert seen["cookie"] is None
+        assert seen["content_type"] == "application/json", "what the server needs still travels"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
+def test_plain_http_is_refused_for_a_host_that_is_not_this_machine(tmp_path, monkeypatch):
+    """Loopback HTTP is the carve-out; anywhere else is not, and the worker says so
+    without starting a connection."""
+    import http.server
+    import threading
+
+    reached = []
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def log_message(self, *args):
+            pass
+
+        def do_POST(self):
+            reached.append(1)
+            self.send_response(200)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    worker = tmp_path / "refusing_worker.py"
+    helper = Path(models.__file__).resolve().parents[1] / "runtime" / "_http_worker.py"
+    worker.write_text(
+        "import importlib.util\n"
+        f"s=importlib.util.spec_from_file_location('worker', {str(helper)!r})\n"
+        "w=importlib.util.module_from_spec(s); s.loader.exec_module(w)\n"
+        "raise SystemExit(w.main())\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(models, "_HTTP_WORKER_PATH", worker)
+    try:
+        # A literal address that is not loopback, pointed at the live server: only
+        # the scheme/host rule can refuse it, so this proves the rule and not DNS.
+        with pytest.raises(models.AuxiliaryModelError) as refused:
+            models.HttpsTransport().post(
+                f"http://192.0.2.1:{server.server_port}/v1/embeddings",
+                body=b"body",
+                headers={"Content-Type": "application/json"},
+                timeout_seconds=2.0,
+                max_response_bytes=1024,
+            )
+        assert refused.value.error_type == "endpoint_invalid"
+        assert reached == [], "the request never left for a host the policy refuses"
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+
 def test_the_helper_does_not_reuse_a_connection_idle_past_its_limit(tmp_path, monkeypatch):
     """A connection idle past ``IDLE_REUSE_SECONDS`` is not used again even when nothing says it was closed: a proxy
     or a NAT drops it silently.  The same server keeps one connection within the limit."""

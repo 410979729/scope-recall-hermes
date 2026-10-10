@@ -80,10 +80,10 @@ def _snapshot(core, ref, revision):
     )
 
 
-def _candidate(core, ctx, *, value="蓝色", key=None):
+def _candidate(core, ctx, *, value="蓝色", key=None, predicate=None):
     slug = key.rsplit("/", 1)[-1] if key else "blue"
     subject = f"entity-{slug}"
-    predicate = f"property-{slug}"
+    predicate = predicate or f"property-{slug}"
     source = capture(core, ctx, f"{subject} {predicate} {value}。", key=key)
     proposal = draft(source, value, subject=subject, predicate=predicate)
     with core.storage.write(ctx) as tx:

@@ -173,6 +173,34 @@ def test_default_runtime_config_rejects_symlink_when_supported(tmp_path: Path):
     attached.close()
 
 
+def test_a_local_embedding_server_route_reaches_a_configured_runtime(tmp_path: Path):
+    """A route to a local model server over loopback HTTP attaches the whole runtime, end to end."""
+    data = tmp_path / "local-embedding"
+    data.mkdir()
+    binding = InstanceBinding("TEST-agent", "TEST-installation", data, frozenset({"TEST-scope"}), True)
+    payload = _runtime_payload(binding)
+    payload["auxiliary"] = {
+        "external_embedding": True,
+        "external_consolidation": False,
+        "embedding": {
+            "credential_env": "TEST_EMBED_KEY",
+            "model": "local-embedding",
+            "endpoint": "http://127.0.0.1:11434/v1/embeddings",
+            "dimensions": 1024,
+            "dialect": "openai",
+        },
+    }
+    (data / "runtime-config.json").write_text(json.dumps(payload), encoding="utf-8")
+    attached = attach_trusted_host_runtime(
+        config_path=None,
+        expected_binding=binding,
+        session_id="TEST-session",
+        allowed_scope_ids=binding.scope_ids,
+    )
+    assert attached.configured, attached.capability_gaps
+    attached.close()
+
+
 def test_a_delivered_view_is_blanked_only_for_a_withdrawal_after_it():
     """Every capture moves the epoch, and on a store several entries write to most views were
     compiled one capture ago: blanking on any move blanked most explicit recalls there."""

@@ -1,6 +1,6 @@
 {
   "schema": "scope-recall.v11-module-allowlist.v1",
-  "package_version": "3.9.3",
+  "package_version": "3.9.7",
   "packages": [
     "scope_recall",
     "scope_recall.adapters",
@@ -100,6 +100,7 @@
     "core/deletion.py",
     "core/duplicate_collapse.py",
     "core/embedding_budget.py",
+    "core/endpoint_policy.py",
     "core/episode_storage.py",
     "core/episodes.py",
     "core/events.py",

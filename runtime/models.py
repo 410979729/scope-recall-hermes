@@ -13,12 +13,12 @@ import subprocess
 import sys
 import threading
 import time
-import urllib.parse
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any, Protocol
 
 from ..contracts import ContractError
+from ..core.endpoint_policy import endpoint_scheme_allowed
 from ..core.secret_patterns import contains_secret_like_text
 from .model_budget import AuxiliaryBudgetLedger
 
@@ -146,11 +146,16 @@ def _hidden_window() -> dict[str, Any]:
 
 
 def _worker_request(
-    url: str, *, body: bytes, headers: Mapping[str, str], budget: float, max_response_bytes: int
+    url: str,
+    *,
+    body: bytes,
+    headers: Mapping[str, str],
+    budget: float,
+    max_response_bytes: int,
+    allow_insecure: bool = False,
 ) -> bytes:
     """The one request line the worker accepts, validated before any process starts."""
-    parsed = urllib.parse.urlparse(url)
-    if parsed.scheme != "https" or not parsed.hostname:
+    if not endpoint_scheme_allowed(url, allow_insecure=allow_insecure):
         raise AuxiliaryModelError("endpoint_invalid")
     if not _HTTP_WORKER_PATH.is_file():
         raise AuxiliaryModelError("transport_unavailable")
@@ -165,6 +170,8 @@ def _worker_request(
         "timeout_seconds": budget,
         "max_response_bytes": max_response_bytes,
     }
+    if allow_insecure:
+        request["allow_insecure"] = True
     try:
         request_bytes = json.dumps(request, ensure_ascii=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
     except (TypeError, ValueError) as exc:
@@ -211,11 +218,16 @@ def _worker_reply(stdout: bytes, max_response_bytes: int) -> tuple[int, bytes]:
 class HttpsTransport:
     """Bounded HTTPS POST; query callers may own a persistent stdlib worker."""
 
-    def __init__(self, *, persistent: bool = False):
+    def __init__(self, *, persistent: bool = False, allow_insecure_endpoint: bool = False):
         from .http_session import HttpWorkerSession
 
+        if type(allow_insecure_endpoint) is not bool:  # only the literal boolean is permission, here as in the config
+            raise ValueError("allow_insecure_endpoint")
         self._session = HttpWorkerSession() if persistent else None
         self._post_lock = threading.Lock()
+        #: Permission to send plaintext HTTP beyond this machine (loopback HTTP needs none).  Held on the transport
+        #: that sends, so the permission cannot be lost between the config and the socket.
+        self._allow_insecure_endpoint = allow_insecure_endpoint
 
     def close(self):
         if self._session is not None:
@@ -263,7 +275,12 @@ class HttpsTransport:
         budget = validate_timeout_seconds(timeout_seconds)
         deadline = time.monotonic() + budget
         request_bytes = _worker_request(
-            url, body=body, headers=headers, budget=budget, max_response_bytes=max_response_bytes
+            url,
+            body=body,
+            headers=headers,
+            budget=budget,
+            max_response_bytes=max_response_bytes,
+            allow_insecure=self._allow_insecure_endpoint,
         )
         command = [sys.executable, "-I", "-B", str(_HTTP_WORKER_PATH)]
         max_stdout = (max_response_bytes * 4) // 3 + _HTTP_WORKER_STDOUT_MARGIN

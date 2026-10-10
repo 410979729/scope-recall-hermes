@@ -1,25 +1,32 @@
 """What the Hermes adapter does with a turn: its start, the person's message before the model call (``pre_llm``),
-each tool's result, a failed request, what the model showed on the way (``post_llm``), and the finished turn
-(``sync``).  It works on the adapter's state under the adapter's locks (``self._adapter``) and writes through the
-adapter's ``CaptureWriter``."""
+each tool's result, a failed request, what the model showed on the way (``post_llm``), the finished turn
+(``sync``), and what the person sent while it ran (``steers``).  It works on the adapter's state under the adapter's
+locks (``self._adapter``) and writes through the adapter's ``CaptureWriter``."""
 
 from __future__ import annotations
 
 import logging
+import sqlite3
+import time
 from typing import TYPE_CHECKING
 
+from scope_recall.contracts import ContractError
+
+from .audiences import LOCAL_PLATFORMS
 from .boundary import (
+    Steer,
     extract_user_text,
     host_notice,
     interim_messages,
     interim_source_event,
+    person_steers,
     pre_llm_source_event,
-    steer_messages,
     steer_source_event,
+    steer_source_key,
     sync_turn_source_events,
     tool_call_source_event,
 )
-from .capture import GAP_CURRENT_SOURCE_REFS_LIMIT
+from .capture import CAPTURE_TIMEOUT_S, GAP_CURRENT_SOURCE_REFS_LIMIT
 from .tool_surface import TOOL_NAMES
 
 if TYPE_CHECKING:
@@ -35,6 +42,33 @@ _USER_CAPTURED_TURNS = 64
 #: kept, the answer is always written, and a turn past this says so (``capture_gap:interim_limit``).  With no
 #: bound a turn of three hundred tool steps held the adapter lock for minutes while each waited for the store.
 _INTERIM_PER_TURN = 64
+#: Steers this process wrote or found stored, by their key: read again at every turn's end, compression and session
+#: end, each is looked up and written once.
+_STEERS_WRITTEN = 4096
+#: How long one hook spends on the steers it reads, the look-up and the writes.  Past it each is still written, without
+#: waiting: one the store cannot take at once is kept to retry (``CaptureWriter``), and the hook returns.
+_STEERS_SECONDS = 2.0
+
+
+def steer_deadline() -> float:
+    """When a hook that starts now must be done with the steers it reads (``_STEERS_SECONDS``)."""
+    return time.monotonic() + _STEERS_SECONDS
+
+
+def _budget(deadline: float) -> float:
+    """What one store call may wait of a hook's steer budget: a capture's own at most, next to nothing once spent."""
+    return max(0.001, min(CAPTURE_TIMEOUT_S, deadline - time.monotonic()))
+
+
+def _steers(identity, messages: object) -> tuple[Steer, ...]:
+    """The steers in ``messages`` that the session's person sent (``person_steers``)."""
+    scope = identity.scope
+    return person_steers(
+        messages,
+        platform=scope.platform,
+        user_id=scope.user_id,
+        local_surface=scope.platform == "cli" or scope.platform in LOCAL_PLATFORMS,
+    )
 
 
 def _is_scope_recall_tool_name(tool_name: object) -> bool:
@@ -236,7 +270,7 @@ class TurnCapture:
         answer = kwargs.get("assistant_response")
         history = kwargs.get("conversation_history")
         said = interim_messages(history, answer=answer if isinstance(answer, str) else "")
-        steered = steer_messages(history)
+        steered = _steers(identity, history)
         with self._adapter._said_lock:
             if turn_id != self._adapter._active_turn_id:
                 return
@@ -245,7 +279,7 @@ class TurnCapture:
             if steered:
                 self._adapter._steer_said[turn_id] = steered
 
-    def sync(self, user_content: str, assistant_content: str, *, session_id: str) -> None:
+    def sync(self, user_content: str, assistant_content: str, *, session_id: str, messages: object = None) -> None:
         """Write the finished turn one capture per hold of the lock, each one's store I/O without it.
 
         Hermes runs this on its memory worker after the reply, with no time limit, while the next turn may already
@@ -285,7 +319,9 @@ class TurnCapture:
         limited = self._write_messages(
             interim_source_event, interim, identity, shown, effective_session, limit=_INTERIM_PER_TURN
         )
-        self._write_messages(steer_source_event, steers, identity, context, effective_session)
+        # The conversation sync_turn is handed, and what post_llm_call kept when it was not.
+        steered = [steer for said in steers.values() for steer in said]
+        self._write_steers([*steered, *_steers(identity, messages)], identity, context, "sync_turn")
         self._write_turn(identity, opened, shown, effective_session, turn_id, user_content, assistant_content, said_at)
         with adapter._lock:
             if adapter._active_turn_id == active_turn:
@@ -333,6 +369,79 @@ class TurnCapture:
                             release=True,
                         )
         return limited
+
+    def steers(self, messages: object, *, session_id: str = "", hook: str, deadline: float | None = None) -> None:
+        """Write now what the person sent while turns ran (``person_steers``) in ``messages``: a compression is
+        about to take them out of the conversation, or the session ends, and no turn's end may come to read them.
+        ``deadline`` is the hook's, when its other captures share the budget (``steer_deadline``).  The caller must
+        not hold the adapter's lock: the store I/O runs without it."""
+        adapter = self._adapter
+        with adapter._lock:
+            identity = adapter._identity
+            if identity is None or identity.read_only or not identity.runtime_audience.allowed_scope_ids:
+                return
+            effective_session = adapter._effective_session_id(session_id)
+        found = _steers(identity, messages)
+        if found:
+            context = identity.trusted_context(session_id=effective_session, mutation=True)
+            self._write_steers(found, identity, context, hook, deadline)
+
+    def _write_steers(self, steers, identity, context, hook: str, deadline: float | None = None) -> None:
+        """Each steer the store does not hold yet (``_held``), one capture per hold of the lock, its store I/O
+        without it, all by the hook's ``deadline``.  Only a write the store took marks one written: a write still in
+        flight in another hook may fail, and one the retry buffer kept may be given up.  The next hook reads either
+        again; meanwhile the observation ledger and the retry buffer keep it from being written twice."""
+        adapter = self._adapter
+        deadline = steer_deadline() if deadline is None else deadline
+        unread = [
+            (steer, key) for steer in steers if (key := steer_source_key(context, steer)) not in adapter._steers_written
+        ]
+        for (steer, key), held in zip(unread, self._held(unread, identity, context, deadline), strict=True):
+            with adapter._lock, adapter._calls.holding(hook):
+                taken = held
+                # Kept to retry: the buffer writes it, or gives it up and the next hook reads it again.
+                if not held and (key, 1) not in adapter._retry.captures:
+                    event, gaps, ledger_identity = steer_source_event(
+                        adapter._ledger, context, steer=steer, recorded_at=adapter._utc_now()
+                    )
+                    if event is None:
+                        # Being stored by another hook, or the ledger is full for now.
+                        if gaps:
+                            adapter._merge_gaps(gaps)
+                    else:
+                        receipt = adapter._writer.write(
+                            context,
+                            event,
+                            identity=ledger_identity,
+                            gaps=gaps,
+                            scope_id=identity.local_scope_id,
+                            remaining_seconds=_budget(deadline),
+                            bound=identity,
+                            release=True,
+                        )
+                        taken = receipt is not None
+                if taken:
+                    adapter._steers_written[key] = None
+                    while len(adapter._steers_written) > _STEERS_WRITTEN:
+                        adapter._steers_written.pop(next(iter(adapter._steers_written)))
+
+    def _held(self, unread, identity, context, deadline: float) -> tuple[bool, ...]:
+        """Which steers the store holds already, in any session of the scope, or holds deleted: a compression
+        carries a steer into the session it continues, and a process that starts again remembers none it wrote.
+        When the store cannot say, none is held: a steer stored twice is better than one lost."""
+        if not unread:
+            return ()
+        try:
+            held = self._adapter._require_core().said_in_session(
+                context,
+                identity.local_scope_id,
+                [("user", steer.words, steer.occurred_at or "", key) for steer, key in unread],
+                remaining_seconds=_budget(deadline),
+                across_sessions=True,
+            )
+        except (ContractError, OSError, RuntimeError, sqlite3.Error):
+            return (False,) * len(unread)
+        return tuple(held) if len(held) == len(unread) else (False,) * len(unread)
 
     def _write_turn(
         self, identity, opened, shown, session_id: str, turn_id: str, user_content: str, assistant_content: str, said_at

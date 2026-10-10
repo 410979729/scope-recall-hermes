@@ -1449,54 +1449,46 @@ def test_the_two_stop_loss_layers_stay_distinct():
 
 
 class _Queue:
-    def __init__(self, failed_work, work_error_counts, pending_work=0):
+    def __init__(self, failed_work, terminal_failed_work, pending_work=0):
         self.failed_work = failed_work
-        self.work_error_counts = work_error_counts
+        self.terminal_failed_work = terminal_failed_work
         self.pending_work = pending_work
         self.oldest_pending_at = None
 
 
 def _status_from(queue, *, background_gaps=(), source_only=0, gaps=()):
     """The decision `run_worker` makes after the drain, in isolation."""
-    from scope_recall.runtime.worker_entry import _is_actionable
+    from types import SimpleNamespace
 
-    terminal = sum(count for code, count in queue.work_error_counts if not _is_actionable(code))
-    actionable = max(0, queue.failed_work - terminal)
-    out = {"status": "completed", "capability_gaps": sorted(set(gaps))}
-    if actionable or background_gaps or source_only:
-        out["status"] = "degraded"
-        if actionable:
-            out["capability_gaps"] = sorted(set(tuple(gaps) + (f"work_failed:{actionable}",)))
-    elif terminal:
-        out["capability_gaps"] = sorted(set(tuple(gaps) + ("work_failed_terminal_only",)))
-    return out
+    from scope_recall.runtime.worker_entry import _apply_queue_status
+
+    payload = {"status": "completed", "capability_gaps": sorted(set(gaps)), "source_only": source_only}
+    _apply_queue_status(payload, list(gaps), queue, SimpleNamespace(idle=False), tuple(background_gaps))
+    return payload
 
 
 def test_by_design_failures_alone_do_not_make_the_worker_say_degraded():
-    """Measured on alpha: 33 items failed by design, none actionable. The
-    doctor said "attention"; this line said "degraded" with an empty gap list."""
-    status = _status_from(_Queue(33, (("derivation_invalid", 33),)))
+    """33 items failed by design and none needs a look: the doctor says "attention", and the pass names why."""
+    status = _status_from(_Queue(33, 33))
     assert status["status"] != "degraded"
     assert status["capability_gaps"] == ["work_failed_terminal_only"]
 
 
 def test_one_actionable_failure_among_many_terminal_is_still_degraded():
     """The restart that interrupts an in-flight evaluation leaves exactly this."""
-    status = _status_from(_Queue(34, (("derivation_invalid", 33), ("candidate_attempt_interrupted", 1))))
+    status = _status_from(_Queue(34, 33))
     assert status["status"] == "degraded"
     assert "work_failed:1" in status["capability_gaps"]
 
 
 def test_degraded_is_never_reported_without_a_reason():
-    """An empty gap list beside "degraded" is what sent a watcher hunting through
-    two-day-old logs for a cause that was not there."""
-    status = _status_from(_Queue(2, (("http_429", 2),)))
-    assert status["status"] == "degraded" and status["capability_gaps"]
+    """A degraded pass names its cause in the gap list a watcher reads."""
+    status = _status_from(_Queue(2, 0))
+    assert status["status"] == "degraded" and status["capability_gaps"] == ["work_failed:2"]
 
 
 def test_the_two_status_decisions_use_one_classification():
-    """rc15 fixed the pass-level decision and left this one restating the old
-    rule forty lines below it."""
+    """The pass takes the store's terminal count, the one the doctor reads, and classifies no failure itself."""
     import inspect
 
     from scope_recall.runtime import worker_entry
@@ -1504,26 +1496,14 @@ def test_the_two_status_decisions_use_one_classification():
     source = inspect.getsource(worker_entry)
     assert "if queue.failed_work or background_gaps" not in source
     assert "if actionable_failed or background_gaps" in source
-    assert source.count("_is_actionable(") >= 2
+    assert "terminal_failed = queue.terminal_failed_work" in source
 
 
 def test_a_source_only_drain_names_itself_too():
-    """The same empty-gap shape one branch over: source_only alone made the
-    status degraded and nothing in the gap list said so."""
-    from scope_recall.runtime.worker_entry import _is_actionable
-
-    queue = _Queue(0, ())
-    terminal = sum(count for code, count in queue.work_error_counts if not _is_actionable(code))
-    actionable = max(0, queue.failed_work - terminal)
-    gaps = []
-    source_only = 3
-    assert actionable == 0
-    if actionable or () or source_only:
-        if actionable:
-            gaps.append(f"work_failed:{actionable}")
-        if source_only:
-            gaps.append(f"source_only:{source_only}")
-    assert gaps == ["source_only:3"]
+    """source_only alone makes the pass degraded, and the gap list says so."""
+    status = _status_from(_Queue(0, 0), source_only=3)
+    assert status["status"] == "degraded"
+    assert status["capability_gaps"] == ["source_only:3"]
 
 
 def test_every_degraded_branch_appends_a_gap():

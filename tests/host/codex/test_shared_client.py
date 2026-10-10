@@ -3832,8 +3832,8 @@ def test_dsh_sends_no_session_end(dsh):
 
 # -- dsh's plugin (``distribution/dsh/scope-recall/index.mjs``) driven as dsh drives it, without dsh -------------------
 # node runs the plugin with a fake ``ctx`` (``dsh_harness/harness.mjs``) through one turn; the plugin runs the real hook
-# client against the test store.  The harness drops the interpreter's ``-I`` (``dsh_harness/hooks.mjs``), so the hook
-# imports this checkout through tests/sitecustomize.py.  Skipped where node (20.6 or later, for module hooks) is not
+# client against the test store.  The harness binds this checkout inside isolated Python and drops host editable
+# bridges (``dsh_harness/child_process_mock.mjs``).  Skipped where node (20.6 or later, for module hooks) is not
 # installed; the gate lets the host tier run the node it found (``SCOPE_RECALL_TEST_NODE``).
 
 DSH_PLUGIN = Path(__file__).resolve().parents[3] / "distribution" / "dsh" / "scope-recall" / "index.mjs"
