@@ -4,6 +4,7 @@ origin naming the session's person is not theirs."""
 
 from __future__ import annotations
 
+import math
 import sqlite3
 import threading
 import time
@@ -622,4 +623,6 @@ def test_compression_retries_keep_the_hook_deadline(telegram, hermes_home, monke
     if spent_at_lock:
         assert not budgets, budgets
     else:
-        assert len(budgets) == 1 and budgets[0][0] == "inbox" and 0 < budgets[0][1] <= 0.05, budgets
+        # Adding the budget to a monotonic timestamp can round up by one timestamp ULP.
+        upper_bound = 0.05 + math.ulp(time.monotonic())
+        assert len(budgets) == 1 and budgets[0][0] == "inbox" and 0 < budgets[0][1] <= upper_bound, budgets
