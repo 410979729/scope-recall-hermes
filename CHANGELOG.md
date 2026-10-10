@@ -3,6 +3,10 @@
 A line or two per release.  Each release's full notes are on its GitHub release page (tag ``v<version>``), and the
 longer text this file once held is in its history.
 
+## [3.9.7] - 2026-10-10
+
+This repository candidate corrects the checkout version shown in the README and keeps the fixes in 3.9.6. Runtime behaviour, the database schema and the upgrade steps are unchanged.
+
 ## [3.9.6] - 2026-10-10
 
 This repository candidate includes the 3.9.5 fixes for message preservation, model-endpoint credential protection, remote dsh setup and paged quote recovery. Its Windows deadline regression check now allows timestamp floating-point rounding without changing the runtime deadline or accepting an additional retry budget. There are no additional upgrade steps beyond those described for 3.9.5 below.
