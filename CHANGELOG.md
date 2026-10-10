@@ -3,6 +3,26 @@
 A line or two per release.  Each release's full notes are on its GitHub release page (tag ``v<version>``), and the
 longer text this file once held is in its history.
 
+## [3.9.5] - 2026-10-10
+
+This candidate includes the changes since the last public release, 3.9.3. It preserves user messages more reliably, prevents credentials from being placed in model-server URLs, connects remote dsh entries through their native plugin, and corrects escaped quotes during paged memory processing.
+
+### 3.9.3 — previous public release
+
+The comparison baseline. Existing memories and the database schema remain compatible.
+
+### 3.9.4 — repository candidate, not publicly released
+
+Messages sent by the owner while a Hermes agent works are retained as their words without treating delegated instructions or other people's statements as the owner's. Failed-work reporting distinguishes queued retries from failed work. Plain HTTP model endpoints work again on the same machine; other hosts require explicit opt-in (contributed by @panxuewen0101 in #227).
+
+### 3.9.5 — current repository candidate
+
+Model endpoints reject credentials embedded in URLs, including query parameters; plaintext requests still cannot carry credentials. Remote dsh setup installs and configures the dsh plugin and forwards its records through the existing shared-store connection. Paged consolidation resolves escaped text against the current page before considering a previously accepted goal, without decoding it twice or weakening quotation checks. Hermes compression retries share one deadline, and quoted third-party statements are not assigned to the owner.
+
+### Upgrading from 3.9.3
+
+Install the package, run `plan-install` and `apply-install` for each upgraded entry, then restart the affected gateways and MCP servers. The schema remains 1110. For remote dsh entries, use the dsh plugin setup described in `docs/remote-entries.md`; Codex hook installation is not a substitute.
+
 ## [3.9.4] - 2026-10-09
 
 What the owner sends to a Hermes agent while it works (a steer) is stored as their words. Most were lost: they were read only at a turn's end and only after the last other row, and were gone once a compression or a turn without a reply came first. A steer is the owner's only when the gateway's origin names them; a parent agent's message to the agent it delegated to, a notice Hermes delivers the same way, and anything after another person's words in a row Hermes joined are not.

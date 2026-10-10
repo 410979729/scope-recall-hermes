@@ -12,12 +12,12 @@ from dataclasses import dataclass
 from functools import partial
 from typing import Any
 
+from ..core.endpoint_policy import endpoint_scheme_allowed
 from ..core.recall_policy import (
     EMBEDDING_DIALECTS,
     EMBEDDING_SPACE,
     build_embedding_space,
     encode_embedding_text,
-    endpoint_scheme_allowed,
 )
 from ..core.source_records import StoredSource
 from .model_budget import AuxiliaryBudgetLedger

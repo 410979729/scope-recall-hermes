@@ -2,8 +2,8 @@
 // at its end.  A native dsh plugin (an ESM module in the dsh host process), written by `scope-recall apply-install
 // --host dsh` and named by a row of dsh's home patch (`$DSH_HOME/cordis.patch.yml`).
 //
-// It owns no memory policy: it runs the entry's hook client (`scope_recall.adapters.codex.hook_entry --host dsh`), the
-// one the other clients' hooks run, with a payload on stdin.  A prompt hook stores the person's prompt and answers with
+// It owns no memory policy: it runs the entry's hook client (`scope_recall.adapters.codex.hook_entry --host dsh`), or
+// remote_client with `remoteConfig` naming client.json, with a payload on stdin.  A prompt hook stores and answers with
 // what is remembered, which this appends to the step as a message of its own source; a Stop hook stores the turn's
 // messages, which this keeps on disk (a spool) from the moment dsh commits them until the hook says how many it stored.
 // dsh's session log is compressed and its hooks carry no turn or reply, which is why this is a plugin.
@@ -88,8 +88,10 @@ export function apply(ctx, raw) {
   // recall server; the step need not wait for that.  The hook is still ended at the deadline if it has not exited.
   const runHook = (payload, timeoutMs, signal, early = false) => new Promise((resolve) => {
     let child
-    const args = ['-I', '-B', '-m', 'scope_recall.adapters.codex.hook_entry', '--home', cfg.home, '--host', 'dsh']
-    if (cfg.envFile) args.push('--env-file', cfg.envFile)
+    const args = cfg.remoteConfig
+      ? ['-I', '-B', '-m', 'scope_recall.adapters.codex.remote_client', '--config', cfg.remoteConfig]
+      : ['-I', '-B', '-m', 'scope_recall.adapters.codex.hook_entry', '--home', cfg.home, '--host', 'dsh']
+    if (!cfg.remoteConfig && cfg.envFile) args.push('--env-file', cfg.envFile)
     try {
       child = spawn(cfg.python, args, { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true })
     } catch (error) { resolve({ ok: false, error: `start: ${error}` }); return }
@@ -372,6 +374,8 @@ function settings(raw) {
   return {
     python: raw.python,
     home: raw.home,
+    // The remote forwarder owns HTTP/auth; this plugin still owns its record and acknowledgement cursor.
+    remoteConfig: typeof raw.remoteConfig === 'string' && raw.remoteConfig ? raw.remoteConfig : null,
     envFile: typeof raw.envFile === 'string' && raw.envFile ? raw.envFile : null,
     version: typeof raw.version === 'string' ? raw.version : null,
     // The hook's own budget is the entry's hook_processing_seconds (at most 6 s), plus its interpreter's start.

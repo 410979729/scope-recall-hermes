@@ -3,18 +3,17 @@
 from __future__ import annotations
 
 import hashlib
-import ipaddress
 import json
 import math
 import re
 import unicodedata
-import urllib.parse
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Iterable
 
 from ..contracts import ContractError
 from .embedding_budget import bounded_embedding_text
+from .endpoint_policy import endpoint_url_shape_ok
 from .events import CJK_RUN, lexical_terms, query_terms, version_suffixes
 from .retrieval import CandidateRef, SearchContext
 
@@ -51,68 +50,6 @@ _IDENTIFIER_JOINT = re.compile(r"(?<=[A-Za-z])[ \t_-](?=\d)")
 _CLAUSE_BOUNDARY = re.compile(r"[，,；;。！？!?\n]+")
 
 
-def is_loopback_host(value: object) -> bool:
-    """Whether a host names this machine: ``localhost``, a name under it, or an address ``ipaddress`` calls
-    loopback."""
-    host = str(value or "").rstrip(".").casefold()
-    if not host:
-        return False
-    if host == "localhost" or host.endswith(".localhost"):
-        return True
-    try:
-        return ipaddress.ip_address(host).is_loopback
-    except ValueError:
-        return False
-
-
-def is_plaintext_loopback_url(value: object) -> bool:
-    """Whether a URL is ``http://`` to a host on this machine: a local model server."""
-    if type(value) is not str or not value:
-        return False
-    try:
-        parsed = urllib.parse.urlsplit(value)
-    except ValueError:
-        return False
-    return parsed.scheme == "http" and bool(parsed.hostname) and is_loopback_host(parsed.hostname)
-
-
-def endpoint_scheme_allowed(endpoint: str, *, allow_insecure: bool = False) -> bool:
-    """Whether this endpoint may be reached: HTTPS anywhere, plain HTTP to this machine, and plain HTTP to
-    another host only with the literal opt-in (``allow_insecure_endpoint``) -- a container reaching the model server
-    on its host does so over a bridge address, which is not loopback.
-
-    The opt-in permits plain HTTP to another host; it admits no other scheme.
-    """
-    if endpoint.startswith("https://"):
-        return True
-    return is_plaintext_loopback_url(endpoint) or (allow_insecure and _is_http_url(endpoint))
-
-
-def _is_http_url(value: object) -> bool:
-    """Whether a value is an ``http://`` URL with a host and no credentials."""
-    if type(value) is not str or not value.startswith("http://"):
-        return False
-    try:
-        parsed = urllib.parse.urlsplit(value)
-    except ValueError:
-        return False
-    return bool(parsed.hostname) and not parsed.username and not parsed.password
-
-
-def _endpoint_url_shape_ok(endpoint: str) -> bool:
-    """Whether an endpoint is an http(s) URL with a host and no credentials.
-
-    The descriptor records how text reaches a model, so it checks the URL's shape.  Which hosts a deployment may
-    reach is policy, stated where the route is read (``EmbeddingRouteConfig``) and enforced where the request is
-    sent (``HttpsTransport``).
-    """
-    try:
-        parsed = urllib.parse.urlsplit(endpoint)
-    except ValueError:
-        return False
-    return parsed.scheme in {"http", "https"} and bool(parsed.hostname) and not parsed.username and not parsed.password
-
-
 def canonical_embedding_space(value: dict) -> dict:
     """Return the frozen descriptor with a stable key order and strict fields."""
 
@@ -131,7 +68,7 @@ def canonical_embedding_space(value: dict) -> dict:
     if type(value.get("dimensions")) is not int or not 8 <= value["dimensions"] <= 16384:
         raise ContractError("INPUT_INVALID", "embedding_space")
     endpoint = value.get("endpoint")
-    if type(endpoint) is not str or not _endpoint_url_shape_ok(endpoint) or len(endpoint) > 2048:
+    if type(endpoint) is not str or not endpoint_url_shape_ok(endpoint) or len(endpoint) > 2048:
         raise ContractError("INPUT_INVALID", "embedding_space")
     if value.get("task_type") is not None:
         raise ContractError("INPUT_INVALID", "embedding_space")

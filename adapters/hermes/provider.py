@@ -283,7 +283,7 @@ class ScopeRecallHermesAdapter(HermesToolSurface, _MemoryProviderBase):  # pyrig
                     **(self._diagnostics.unsupported_fields or {}),
                     "on_pre_compress_kwargs": "ignored_in_bounded_slice",
                 }
-            self._retry.write_observed()
+            self._retry.write_observed(deadline=deadline)
             self._binding.bounded_message_gaps(messages, hook="on_pre_compress")
         # The compression takes the steers it summarizes out of the conversation; the turn's end would not find them.
         # Written outside the hook's hold of the lock, so their store I/O runs without it.

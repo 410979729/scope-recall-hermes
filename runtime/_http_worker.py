@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import base64
 import http.client
-import ipaddress
 import json
 import math
+import runpy
 import select
 import socket
 import ssl
@@ -14,25 +14,17 @@ import sys
 import time
 import urllib.parse
 import urllib.request
+from pathlib import Path
+
+# -I executes this file without importing the package. Load only the pure
+# policy module at its installed sibling path; never search cwd or PYTHONPATH.
+_POLICY = runpy.run_path(str(Path(__file__).resolve().parents[1] / "core" / "endpoint_policy.py"))
 
 MAX_REQUEST_BYTES = 3 * 1024 * 1024
 _REQUEST_KEYS = frozenset({"url", "body_b64", "headers", "timeout_seconds", "max_response_bytes"})
 #: The one key a caller may add: permission to send plaintext HTTP to a host that is not this machine (the route's
 #: ``allow_insecure_endpoint``); loopback HTTP needs none.  A request without it is held to HTTPS and loopback.
 _OPTIONAL_REQUEST_KEYS = frozenset({"allow_insecure"})
-
-#: Headers never sent over a plaintext connection: no bearer token, key or cookie crosses an unencrypted socket.
-_CREDENTIAL_HEADERS = frozenset(
-    {
-        "authorization",
-        "proxy-authorization",
-        "x-api-key",
-        "x-goog-api-key",
-        "api-key",
-        "cookie",
-        "set-cookie",
-    }
-)
 
 
 class _Failure(Exception):
@@ -79,23 +71,9 @@ def _resolve_http_proxy(target_hostname: str) -> tuple[str, int, dict[str, str]]
     return parsed.hostname, port, _proxy_authorization_from_url(proxy_url)
 
 
-def _is_loopback_host(value: str) -> bool:
-    """Whether a host names this machine.  The worker runs stdlib-only in its own process, so it keeps its own copy
-    of ``core.recall_policy.is_loopback_host``."""
-    host = str(value or "").rstrip(".").casefold()
-    if not host:
-        return False
-    if host == "localhost" or host.endswith(".localhost"):
-        return True
-    try:
-        return ipaddress.ip_address(host).is_loopback
-    except ValueError:
-        return False
-
-
 def _plaintext_headers(headers: dict[str, str]) -> dict[str, str]:
-    """The headers a plaintext request may carry: no credential-bearing name."""
-    return {name: value for name, value in headers.items() if name.casefold() not in _CREDENTIAL_HEADERS}
+    """Strip credential header names with the same policy as URL queries."""
+    return {name: value for name, value in headers.items() if not _POLICY["is_credential_key"](name)}
 
 
 def _mark_idle(connection: http.client.HTTPConnection) -> None:
@@ -150,21 +128,10 @@ def _parse_request(
     if type(allow_insecure) is not bool:
         raise _Failure("http_protocol")
     url = request["url"]
-    if type(url) is not str:
+    if not _POLICY["endpoint_scheme_allowed"](url, allow_insecure=allow_insecure):
         raise _Failure("endpoint_invalid")
-    try:
-        parsed = urllib.parse.urlparse(url)
-    except ValueError:
-        raise _Failure("endpoint_invalid") from None
-    if not parsed.hostname or parsed.username or parsed.password:
-        raise _Failure("endpoint_invalid")
-    plaintext = False
-    if parsed.scheme == "http":
-        if not (_is_loopback_host(parsed.hostname) or allow_insecure):
-            raise _Failure("endpoint_invalid")
-        plaintext = True
-    elif parsed.scheme != "https":
-        raise _Failure("endpoint_invalid")
+    parsed = urllib.parse.urlparse(url)
+    plaintext = parsed.scheme == "http"
     headers, body_b64 = _headers_and_body(request, plaintext=plaintext)
     timeout_seconds, max_response_bytes = request["timeout_seconds"], request["max_response_bytes"]
     if (

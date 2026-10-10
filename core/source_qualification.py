@@ -56,9 +56,10 @@ _REPORTED_SELF = re.compile(
     re.I,
 )
 #: A line opening with a speaker's label: ``儿子：``, ``Alice:``, a chat log's ``<alice>``, a ``[10:32]`` before
-#: either.  A URL is no label.
+#: either, including a list item's label.  The list marker changes no speaker; a URL is no label.
 _SPEAKER_LABEL = re.compile(
-    r"(?:^|[\n。！？!?；;])[^\S\n]*(?:\[[^\]\n]{0,24}\][^\S\n]*)?"
+    r"(?:^|[\n。！？!?；;])[^\S\n]*(?:(?:[-*+•]|\d+[.)、])[^\S\n]+)?"
+    r"(?:\[[^\]\n]{0,24}\][^\S\n]*)?"
     r"(?:<[^<>\n]{1,24}>|(?!我|I\b)(?:[\u4e00-\u9fff]{1,6}|[A-Za-z][\w .'-]{0,24})[：:](?!//))",
     re.I,
 )

@@ -513,7 +513,7 @@ def main(argv: list[str] | None = None) -> int:
     run = sub.add_parser("serve", help="serve an entry to its client on another machine")
     for command in (setup, run):
         command.add_argument("--home", required=True, help="absolute home of the client's entry, on this machine")
-        command.add_argument("--host", required=True, choices=("codex", "claude-code", "workbuddy"))
+        command.add_argument("--host", required=True, choices=("codex", "claude-code", "workbuddy", "dsh"))
     setup.add_argument("--listen", required=True, help="this machine's private (tailnet) address")
     setup.add_argument("--port", required=True, type=int)
     setup.add_argument("--token-sha256", required=True, help="what remote_client token printed on the client")

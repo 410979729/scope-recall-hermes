@@ -5,10 +5,12 @@ origin naming the session's person is not theirs."""
 from __future__ import annotations
 
 import sqlite3
+import threading
 import time
 
 import pytest
-from scope_recall.adapters.hermes import ScopeRecallHermesAdapter, install_hermes_scope_recall
+from scope_recall.adapters.hermes import ScopeRecallHermesAdapter, install_hermes_scope_recall, provider
+from scope_recall.adapters.hermes.identity import host_scope_payload
 from scope_recall.core import capture_inbox
 
 _NOTICE = "[IMPORTANT: Background process TEST-proc finished (exit code 0).\nCommand: TEST make build]"
@@ -548,3 +550,76 @@ def test_a_steer_the_retry_buffer_gave_up_is_read_again(telegram, hermes_home, m
     monkeypatch.setattr(telegram._core, "record_host_event", real)
     telegram.on_session_end([dict(message) for message in history])
     assert ("user", "TEST 等了太久的话", "human_direct") in _stored(hermes_home)
+
+
+@pytest.mark.parametrize("spent_at_lock", [True, False])
+def test_compression_retries_keep_the_hook_deadline(telegram, hermes_home, monkeypatch, spent_at_lock):
+    """A pending inbox and memory retry share the hook's time, including time already spent waiting for its lock.
+    Exhausting it keeps both captures for a later pass, rather than granting either another full wait."""
+
+    def busy(*_args, **_kwargs):
+        raise sqlite3.OperationalError("database is locked")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(telegram._core, "record_host_event", busy)
+        patch.setattr(telegram._retry, "start", lambda: None)
+        telegram.on_pre_compress([_row(_steer("TEST 缓冲等候", message_id="deadline-buffer"))])
+    pending = next(iter(telegram._retry.captures.values()))
+    event = dict(pending.event, source_event_key="TEST-inbox-deadline", content="TEST 收件箱等候")
+    token, _prepared = capture_inbox.enqueue(
+        telegram._core.storage,
+        telegram._core.clock,
+        pending.context,
+        event,
+        scope_id=pending.scope_id,
+        host_scope=host_scope_payload(pending.host_scope),
+    )
+    assert token is not None
+    began, finished = threading.Event(), threading.Event()
+    budgets, errors = [], []
+
+    def deadline():
+        value = time.monotonic() + 0.05
+        began.set()
+        return value
+
+    def replay(*_args, **kwargs):
+        budgets.append(("inbox", kwargs["remaining_seconds"]))
+        time.sleep(kwargs["remaining_seconds"] + 0.01)
+        return ()
+
+    def write(*_args, **kwargs):
+        budgets.append(("buffer", kwargs["remaining_seconds"]))
+        return busy()
+
+    def compress():
+        try:
+            telegram.on_pre_compress([])
+        except Exception as exc:  # noqa: BLE001 - Relay every worker failure to the test's assertion.
+            errors.append(exc)
+        finally:
+            finished.set()
+
+    with monkeypatch.context() as patch:
+        patch.setattr(provider, "steer_deadline", deadline)
+        patch.setattr(capture_inbox, "replay_inbox", replay)
+        patch.setattr(telegram._core, "record_host_event", write)
+        thread = threading.Thread(target=compress)
+        try:
+            with telegram._lock:
+                thread.start()
+                assert began.wait(1)
+                if spent_at_lock:
+                    time.sleep(0.08)
+            assert finished.wait(3)
+        finally:
+            thread.join(timeout=3)
+        assert not thread.is_alive() and not errors
+    # Real storage and the ordinary retry path recover both entries after the bounded hook leaves them pending.
+    telegram._retry.write_observed()
+    said = [content for _role, content, _origin in _stored(hermes_home)]
+    assert said.count("TEST 缓冲等候") == said.count("TEST 收件箱等候") == 1
+    if spent_at_lock:
+        assert not budgets, budgets
+    else:
+        assert len(budgets) == 1 and budgets[0][0] == "inbox" and 0 < budgets[0][1] <= 0.05, budgets

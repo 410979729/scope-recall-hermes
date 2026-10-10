@@ -132,4 +132,34 @@ def resolve_evidence_quotes(value: dict, contents: dict) -> int:
     return resolved
 
 
-__all__ = ["encoded_with_origin", "resolve_quote", "resolve_evidence_quotes"]
+def resolve_fragment_summaries(value: dict, page: str, seeds: tuple) -> None:
+    """Restore summary strings to literal page slices before strict validation.
+
+    Only a goal already accepted on an earlier page can use that page's text.
+    Other summaries and references resolve on the current page only; unresolved
+    text stays unchanged so the existing validator rejects it normally.
+    """
+    for proposal in value["resume_proposals"]:
+        goal = proposal["goal"]
+        if goal not in seeds:
+            original = goal["text"]
+            stored = resolve_quote(original, page)
+            if stored is not None:
+                # A current-page literal must not be decoded again against an
+                # older goal: different page goals must stay distinguishable.
+                goal["text"] = stored
+            else:
+                for seed in seeds:
+                    if dict(goal, text=seed["text"]) == seed and resolve_quote(original, seed["text"]) == seed["text"]:
+                        goal["text"] = seed["text"]
+                        break
+        for field in ("decisions", "verified_progress", "open_items", "blockers"):
+            for item in proposal[field]:
+                item["text"] = resolve_quote(item["text"], page) or item["text"]
+        if proposal["next_step"]:
+            proposal["next_step"] = resolve_quote(proposal["next_step"], page) or proposal["next_step"]
+    for proposal in value["reference_proposals"]:
+        proposal["mention"] = resolve_quote(proposal["mention"], page) or proposal["mention"]
+
+
+__all__ = ["encoded_with_origin", "resolve_quote", "resolve_evidence_quotes", "resolve_fragment_summaries"]

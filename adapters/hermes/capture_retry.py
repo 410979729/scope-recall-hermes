@@ -71,14 +71,20 @@ class CaptureRetry:
         #: Buffered captures a pass is writing without ``_lock``: a shutdown's pass, which may overlap it, skips them.
         self.in_flight: set[SourceIdentity] = set()
 
-    def write_observed(self) -> None:
+    def write_observed(self, *, deadline: float | None = None) -> None:
         """Retry only previously observed DTOs with their original identities.
 
         Raw history without event IDs is deliberately not promoted to new user
         evidence.  This also avoids re-saving compacted summaries as originals.
+        Both retry paths use the caller's deadline, including time already spent
+        waiting for the adapter lock; neither starts a fresh wait after it expires.
         """
+        deadline = time.monotonic() + 2 * CAPTURE_TIMEOUT_S if deadline is None else deadline
         identity = self._adapter._require_identity()
         core = self._adapter._require_core()
+        remaining = min(CAPTURE_TIMEOUT_S, deadline - time.monotonic())
+        if remaining <= 0:
+            return
         if isinstance(core, MemoryCore) and not identity.read_only:
             try:
                 from ...core.capture_inbox import INGRESS_PENDING_GAP, replay_inbox
@@ -89,7 +95,7 @@ class CaptureRetry:
                     identity.trusted_context(),
                     authorize=build_ingress_authorizer(identity.binding),
                     admission_policy=core.config.admission_policy,
-                    remaining_seconds=CAPTURE_TIMEOUT_S,
+                    remaining_seconds=remaining,
                 )
             except (ContractError, OSError, RuntimeError, sqlite3.Error, ValueError):
                 self._adapter._merge_gaps(("capture_gap:durable_ingress_pending",))
@@ -97,9 +103,16 @@ class CaptureRetry:
                 # A busy store stops the replay's page with a receipt that says so, where it used to raise.
                 if any(INGRESS_PENDING_GAP in receipt.gaps for receipt in receipts):
                     self._adapter._merge_gaps((INGRESS_PENDING_GAP,))
-        self.write_buffered()
+        self.write_buffered(deadline=deadline)
 
-    def write_buffered(self, *, release: bool = False, seconds: float = CAPTURE_TIMEOUT_S, force: bool = False) -> None:
+    def write_buffered(
+        self,
+        *,
+        release: bool = False,
+        seconds: float = CAPTURE_TIMEOUT_S,
+        force: bool = False,
+        deadline: float | None = None,
+    ) -> None:
         """Write again what a busy store kept in memory; nothing to do, and nothing opened, when it holds none.
 
         Run at every ``sync_turn``, by the retry thread while the buffer holds anything (``_run``), at the
@@ -107,15 +120,18 @@ class CaptureRetry:
         the writer lease in memory for hours, and an eviction or a restart lost it.  One pass at a time; ``force`` is
         shutdown's, which may run while another pass waits for the lock between two captures.  One retry per hold of
         the lock; with ``release`` (``sync_turn`` and the retry thread, which do not hold it) each writes without.
+        A caller's earlier deadline caps the pass, measured before acquiring the lock.
         """
+        pass_deadline = time.monotonic() + seconds
+        deadline = pass_deadline if deadline is None else min(deadline, pass_deadline)
         with self._adapter._lock:
-            if not self.captures or (self.retrying and not force):
+            if time.monotonic() >= deadline or not self.captures or (self.retrying and not force):
                 return
             identity = self._adapter._require_identity()
             pending_items = tuple(self.captures.items())
             self.retrying = True
         try:
-            self._pass(identity, pending_items, deadline=time.monotonic() + seconds, release=release, force=force)
+            self._pass(identity, pending_items, deadline=deadline, release=release, force=force)
         finally:
             with self._adapter._lock:
                 self.retrying = False
@@ -173,6 +189,10 @@ class CaptureRetry:
                 # Narrow current authorization only. Original actor, session,
                 # project, branch, occurrence time and DTO identity stay intact.
                 context = replace(pending.context, allowed_scope_ids=frozenset(allowed_scopes))
+                # Lock contention and authorization consume the same pass, not a new write budget.
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
                 self.in_flight.add(key)
                 try:
                     self._adapter._writer.write(

@@ -355,19 +355,10 @@ def _fence_consolidation(tx, value, fence: ConsolidationWorkFence, *, now: str) 
         is not None
     ):
         raise ContractError("VERSION_CONFLICT", "memory_epoch")
-    # ``validate_claims`` is where quotes are normally resolved, but the
-    # fragment check below runs before it, so the same resolution has to happen
-    # here too or a chunked consolidation is rejected as ``fragment_evidence``
-    # for a quote the rest of the pipeline would have accepted.  Every ref in
-    # the map was authorized by the loop above; the check itself stays
-    # byte-strict and simply sees a quote that is already a literal substring.
+    # Resolve only against the leased page. A literal match on an older page
+    # must not mask this page's decoded match; final claim qualification still
+    # sees the complete source, including qualifiers outside this window.
     if fence.chunk is not None:
-        authorized = {}
-        for ref in value["source_refs"]:
-            cited = tx.source(*parse_source_ref(ref))
-            if cited is not None:
-                authorized[(cited.ref, cited.revision)] = cited.event["content"]
-        resolve_evidence_quotes(value, authorized)
         chunk = fence.chunk
         source = tx.source(fence.subject_ref, fence.subject_revision)
         content = source.event["content"]
@@ -378,6 +369,8 @@ def _fence_consolidation(tx, value, fence: ConsolidationWorkFence, *, now: str) 
         ):
             raise ContractError("DERIVATION_INVALID", "consolidation_offset")
 
+        page = content[chunk.start : chunk.end]
+        resolve_evidence_quotes(value, {(source.ref, source.revision): page})
         validate_fragment(tx, value, fence, content)
         for proposal in value["claim_proposals"]:
             for span in proposal["evidence_spans"]:

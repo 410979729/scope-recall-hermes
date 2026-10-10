@@ -130,6 +130,7 @@ SUITES = {
         "tests/unit/test_dsh_record.py",
     ],
     "contract": [
+        "tests/contract/test_fragment_quote_recovery.py",
         "tests/contract/test_protocol.py",
         "tests/contract/test_synthetic_inputs.py",
         "tests/contract/test_recall_budget_config.py",
@@ -187,6 +188,7 @@ SUITES = {
         "tests/test_lance_fanout_deadline.py",
     ],
     "host": [
+        "tests/host/test_endpoint_credentials.py",
         "tests/host/hermes/test_attachments_shutdown.py",
         "tests/host/hermes/test_audience_isolation.py",
         "tests/host/hermes/test_bounded_corrections.py",
@@ -210,6 +212,7 @@ SUITES = {
         "tests/host/codex/test_runtime_wiring.py",
         "tests/host/codex/test_shared_client.py",
         "tests/host/codex/test_remote.py",
+        "tests/host/codex/test_dsh_remote.py",
         "tests/host/codex/test_resident_recall.py",
     ],
     "migration": ["tests/migration/test_migration_drills.py"],

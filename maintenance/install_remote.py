@@ -1,5 +1,5 @@
 """The remote client's installer: the plugin that sends a client's hooks and MCP calls to its entry's server, or for
-WorkBuddy those hooks and that server merged into WorkBuddy's own files (``remote_client install``).  The installed
+WorkBuddy/dsh those hooks and that server merged into the host's own files (``remote_client install``).  The installed
 entry ``scope_recall.adapters.codex.remote_client`` sends ``install`` here and every other command to the client
 (``adapters/clients/remote_client.py``)."""
 
@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from ..adapters.clients.remote_client import HOOK_TIMEOUTS, RemoteClientError, absolute_path, load_client_config
+from . import install_dsh as dsh
 from . import install_workbuddy as workbuddy
 from .install_claude_code import SHELL_WORD
 from .install_common import SKILLS, InstallError, manifest_version
@@ -36,6 +37,8 @@ def _hook_argv(config: dict[str, Any]) -> list[str]:
 def plugin_files(config: dict[str, Any], plugin_dir: Path) -> dict[Path, str]:
     """The plugin that sends this client's hooks and MCP calls to its entry's server."""
     host = config["host"]
+    if host == "dsh":
+        raise RemoteClientError("a dsh client has no plugin directory: install merges its native rows into dsh's home")
     if host == "workbuddy":
         raise RemoteClientError(
             "a WorkBuddy client has no plugin: install merges its hooks and server into "
@@ -170,17 +173,24 @@ def workbuddy_files(config: dict[str, Any], home: Path) -> dict[Path, bytes]:
 
 
 def install(config: dict[str, Any], plugin_dir: Path) -> dict[str, list[str]]:
-    """Write the plugin, or for WorkBuddy merge into its own files after a copy of each goes to ``backups``."""
+    """Write the plugin, or merge WorkBuddy/dsh's native files after copying changed files to ``backups``."""
     if not config["token_file"].exists():
         raise RemoteClientError("no token yet: run remote_client token first")
     files: dict[Path, str] | dict[Path, bytes]
     backups = []
-    if config["host"] == "workbuddy":
+    if config["host"] in ("workbuddy", "dsh"):
         if not plugin_dir.is_dir():
             raise RemoteClientError(
-                f"{plugin_dir} does not exist: name WorkBuddy's home (~/.workbuddy), or start WorkBuddy once"
+                f"{plugin_dir} does not exist: name {config['host']}'s home, or start that host once"
             )
-        files = workbuddy_files(config, plugin_dir)
+        try:
+            files = (
+                dsh.remote_files(config, plugin_dir, Path(sys.executable))
+                if config["host"] == "dsh"
+                else workbuddy_files(config, plugin_dir)
+            )
+        except InstallError as exc:
+            raise RemoteClientError(str(exc)) from None
         kept = config["state_dir"] / "backups" / datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
         for path in files:
             if path.is_file():

@@ -13,13 +13,12 @@ import subprocess
 import sys
 import threading
 import time
-import urllib.parse
 from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any, Protocol
 
 from ..contracts import ContractError
-from ..core.recall_policy import endpoint_scheme_allowed
+from ..core.endpoint_policy import endpoint_scheme_allowed
 from ..core.secret_patterns import contains_secret_like_text
 from .model_budget import AuxiliaryBudgetLedger
 
@@ -156,8 +155,7 @@ def _worker_request(
     allow_insecure: bool = False,
 ) -> bytes:
     """The one request line the worker accepts, validated before any process starts."""
-    parsed = urllib.parse.urlparse(url)
-    if not endpoint_scheme_allowed(url, allow_insecure=allow_insecure) or not parsed.hostname:
+    if not endpoint_scheme_allowed(url, allow_insecure=allow_insecure):
         raise AuxiliaryModelError("endpoint_invalid")
     if not _HTTP_WORKER_PATH.is_file():
         raise AuxiliaryModelError("transport_unavailable")

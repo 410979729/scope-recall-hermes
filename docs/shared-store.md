@@ -250,8 +250,9 @@ scope-recall apply-install --host dsh --instance-root D:\ScopeRecall\dsh ^
 Quit every dsh before `apply-install` and start it again after. Its prompt hook asks the entry's
 resident recall server, as WorkBuddy's does, which outlives a dsh process and ends
 `resident_recall_minutes` after the last prompt (120 by default). Take the rows out with
-`apply-uninstall` before `detach`; `detach` alone leaves dsh's patch file as it is. A dsh on
-another machine cannot be an entry yet.
+`apply-uninstall` before `detach`; `detach` alone leaves dsh's patch file as it is. For dsh on
+another machine, attach its entry on the store machine and use the
+[remote client installer](remote-entries.md#dsh-on-the-client-machine), not a local `apply-install`.
 
 ## Check
 
