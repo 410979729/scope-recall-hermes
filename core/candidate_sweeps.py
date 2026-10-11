@@ -12,7 +12,7 @@ from __future__ import annotations
 from datetime import timedelta
 
 from ..contracts import ContractError
-from .candidate_debounce import MAX_DEFERRAL_SECONDS, QUIET_SECONDS, parse_stamp, settles_at
+from .candidate_debounce import MAX_DEFERRAL_SECONDS, QUIET_SECONDS, SLOW_INTERVAL_SECONDS, parse_stamp, settles_at
 from .candidate_intake import CandidateIntake
 from .candidate_lifecycle import DORMANCY_DAYS, RULE_VERSION, CandidateSummary
 from .candidate_tables import (
@@ -341,12 +341,13 @@ class CandidateSweeps(CandidateIntake):
         newest = """(SELECT e.created_at FROM candidate_evaluations e WHERE e.evaluation_id=(
                          SELECT max(q.evaluation_id) FROM candidate_evaluations q
                          WHERE q.candidate_ref=l.candidate_ref AND q.candidate_revision=l.candidate_revision))"""
-        rows = conn.execute(
-            f"""SELECT l.candidate_ref,l.candidate_revision,l.last_evidence_at,l.last_evaluated_at,l.created_at,
+
+        def candidates(touched: str, values: tuple):
+            return conn.execute(
+                f"""SELECT l.candidate_ref,l.candidate_revision,l.last_evidence_at,l.last_evaluated_at,l.created_at,
                        l.updated_at,{newest} AS asked_at
                 FROM candidate_lifecycle l {HEAD_JOINS}
-                WHERE l.processing_state IN ('pending_evaluation','waiting_evidence') AND l.updated_at>?
-                  AND (l.last_evidence_at>? OR l.updated_at>?)
+                WHERE l.processing_state IN ('pending_evaluation','waiting_evidence') AND {touched}
                   AND l.reason<>'authority_revoked' AND {context}
                   AND c.current_revision=l.candidate_revision AND c.read_blocked=0 AND c.suppressed=0
                   AND v.state IN ('proposed','disputed')
@@ -355,36 +356,55 @@ class CandidateSweeps(CandidateIntake):
                           WHERE q.candidate_ref=l.candidate_ref AND q.candidate_revision=l.candidate_revision)
                       AND (e.created_at=l.last_evidence_at
                            OR julianday(e.created_at)>julianday(l.last_evidence_at)))""",
-            (floor, floor, changed_floor, *params),
-        )
+                (*values, *params),
+            )
+
+        def ready_at(row, *, slowed_only: bool):
+            if (row["candidate_ref"], row["candidate_revision"]) in queued:
+                return None
+            when = settles_at(
+                last_evidence_at=row["last_evidence_at"],
+                last_evaluated_at=row["last_evaluated_at"],
+                created_at=row["created_at"],
+            )
+            if when is None:
+                return None
+            # One slowed after the questions that did not settle it is ready when its day is over, not when its
+            # evidence settled: woken for that, the sweep would schedule nothing and the plan would wake it again.
+            until = self._slowed_until(row["candidate_ref"], int(row["candidate_revision"]))
+            if until is not None:
+                when = max(when, until)
+            elif slowed_only:
+                return None
+            asked = parse_stamp(row["asked_at"])
+            if asked is not None and asked >= parse_stamp(row["last_evidence_at"]):
+                return None
+            changed = parse_stamp(row["updated_at"])
+            if moment is not None and when <= moment and (changed is None or changed < moment):
+                return None
+            return when
+
+        reads = [
+            (("l.updated_at>? AND (l.last_evidence_at>? OR l.updated_at>?)", (floor, floor, changed_floor)), False)
+        ]
+        if moment is not None:
+            # A slowed candidate is ready a day after its last question, and its evidence came after that question:
+            # touched up to a day before the last pass began, further back than the quiet window reaches.
+            slow_floor = stamp(moment - timedelta(seconds=SLOW_INTERVAL_SECONDS + QUIET_SECONDS + 1))
+            reads.append((("l.updated_at>?", (slow_floor,)), True))
         earliest = None
-        try:
-            for row in rows:
-                if (row["candidate_ref"], row["candidate_revision"]) in queued:
-                    continue
-                when = settles_at(
-                    last_evidence_at=row["last_evidence_at"],
-                    last_evaluated_at=row["last_evaluated_at"],
-                    created_at=row["created_at"],
-                )
-                if when is None:
-                    continue
-                # One slowed after the questions that did not settle it is ready when its day is over, not when its
-                # evidence settled: woken for that, the sweep would schedule nothing and the plan would wake it again.
-                until = self._slowed_until(row["candidate_ref"], int(row["candidate_revision"]))
-                if until is not None:
-                    when = max(when, until)
-                asked = parse_stamp(row["asked_at"])
-                if asked is not None and asked >= parse_stamp(row["last_evidence_at"]):
-                    continue
-                changed = parse_stamp(row["updated_at"])
-                if moment is not None and when <= moment and (changed is None or changed < moment):
-                    continue
-                if when <= current:
-                    return stamp(when)
-                earliest = when if earliest is None else min(earliest, when)
-        finally:
-            rows.close()
+        for (touched, values), slowed_only in reads:
+            rows = candidates(touched, values)
+            try:
+                for row in rows:
+                    when = ready_at(row, slowed_only=slowed_only)
+                    if when is None:
+                        continue
+                    if when <= current:
+                        return stamp(when)
+                    earliest = when if earliest is None else min(earliest, when)
+            finally:
+                rows.close()
         return stamp(earliest) if earliest is not None else None
 
     def settled_unreached(self, *, before: str) -> list[dict]:

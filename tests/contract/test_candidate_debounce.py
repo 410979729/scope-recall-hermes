@@ -467,3 +467,22 @@ def test_a_worker_s_wake_plan_waits_for_a_slowed_candidate_s_day_not_for_its_evi
         assert planned == last + timedelta(seconds=SLOW_INTERVAL_SECONDS)
     else:
         assert planned is not None and planned <= parse_stamp(now)
+
+
+def test_a_pass_that_deferred_a_slowed_candidate_leaves_it_its_wake(app):
+    """A pass after the evidence settled deferred the candidate to its day.  The plan after that pass read only the
+    candidates touched in the quiet window before the pass began and named no wake: with nothing else to do, the
+    worker slept through the day, and the doctor called the candidate stuck."""
+    core, ctx = app
+    _register(core, ctx, 0)
+    _retire_live_evaluations(core)
+    last = _asked(core, SLOW_AFTER_QUESTIONS, hours_ago=3)
+    _restated(core, ctx)
+    evidence = last + timedelta(minutes=10)
+    with sqlite3.connect(core.storage.path) as conn:
+        conn.execute("UPDATE candidate_lifecycle SET last_evidence_at=?,updated_at=?", (evidence.isoformat(),) * 2)
+        conn.commit()
+    deferred_by = evidence + timedelta(hours=1)
+    with core.storage.read(ctx) as tx:
+        planned = tx.candidates.next_settle_at(after=deferred_by.isoformat(), now=core.clock.utc_now())
+    assert parse_stamp(planned) == last + timedelta(seconds=SLOW_INTERVAL_SECONDS)
