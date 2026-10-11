@@ -632,3 +632,92 @@ def test_compression_retries_keep_the_hook_deadline(telegram, hermes_home, monke
         # Adding the budget to a monotonic timestamp can round up by one timestamp ULP.
         upper_bound = 0.05 + math.ulp(time.monotonic())
         assert len(budgets) == 1 and budgets[0][0] == "inbox" and 0 < budgets[0][1] <= upper_bound, budgets
+
+
+# What a gateway that restarted put back into the conversation: messages no turn answered.
+
+
+def _put_back(now: float) -> list[dict]:
+    """The conversation the person's next message opens a turn in after a gateway restarted: the interrupted turn, then
+    what waited for the busy agent, put back as text alone (a notice included, its kind lost), then the new message."""
+    return [
+        {"role": "user", "content": "TEST 做游戏"},
+        {"role": "assistant", "content": "Operation interrupted: TEST waiting for the model"},
+        {"role": "user", "content": "TEST 游戏里能正确显示中文吗", "timestamp": now},
+        {"role": "user", "content": "[ASYNC DELEGATION BATCH COMPLETE] TEST 两个子任务完成", "timestamp": now},
+        {"role": "user", "content": _NOTICE, "timestamp": now},
+        {"role": "user", "content": "TEST 还没做好吗", "timestamp": now},
+        {"role": "user", "content": "TEST 继续啊"},
+        {"role": "assistant", "content": "TEST 好，继续。"},
+    ]
+
+
+def test_messages_a_restarted_gateway_put_back_are_stored_once_whichever_hook_reads_them(telegram, hermes_home):
+    """A gateway that stops while the person's messages wait for a busy agent puts them back when it starts and opens no
+    turn for them; their next message opens one after them (tianshu, 2026-10-05: two of the owner's lost)."""
+    telegram.on_turn_start(6, "TEST 继续啊", turn_id="turn-6")
+    history = _put_back(1790000200.0)
+    telegram.on_pre_compress([dict(message) for message in history])
+    telegram.sync_turn("TEST 继续啊", "TEST 好，继续。", session_id="TEST-session-tg", messages=history + history[2:4])
+    telegram.on_session_end([dict(message) for message in history])
+    said = [(content, origin) for _role, content, origin in _stored(hermes_home)]
+    assert said.count(("TEST 游戏里能正确显示中文吗", "human_direct")) == 1
+    assert said.count(("TEST 还没做好吗", "human_direct")) == 1
+    assert not any(content.startswith(("[ASYNC", "[IMPORTANT")) for content, _origin in said), "notices are Hermes's"
+    assert not any(content == "TEST 做游戏" for content, _origin in said), "a message a turn answered is its turn's"
+    with sqlite3.connect(hermes_home / "scope-recall" / "memory.sqlite3") as conn:
+        keys = [
+            row[0] for row in conn.execute("SELECT source_event_key FROM source_events WHERE content LIKE '%还没做好%'")
+        ]
+    assert len(keys) == 1 and ":unanswered:" in keys[0]
+
+
+def test_a_turn_s_own_message_a_stopped_gateway_left_unanswered_is_not_stored_again(telegram, hermes_home):
+    """The turn opened, pre_llm_call stored its message, and the gateway stopped before any reply: the message stands
+    unanswered before the next one, and is found stored by its words and moment."""
+    telegram.on_turn_start(7, "TEST 查一下进度", turn_id="turn-7")
+    telegram.observe_pre_llm(session_id="TEST-session-tg", turn_id="turn-7", user_message="TEST 查一下进度")
+    telegram.on_turn_start(8, "TEST 怎么样了", turn_id="turn-8")
+    history = [
+        {"role": "user", "content": "TEST 查一下进度", "timestamp": time.time()},
+        {"role": "user", "content": "TEST 怎么样了"},
+        {"role": "assistant", "content": "TEST 还在跑。"},
+    ]
+    telegram.sync_turn("TEST 怎么样了", "TEST 还在跑。", session_id="TEST-session-tg", messages=history)
+    said = [content for _role, content, _origin in _stored(hermes_home)]
+    assert said.count("TEST 查一下进度") == 1
+
+
+def test_the_message_the_running_turn_opened_on_is_left_to_the_turn(telegram, hermes_home):
+    """The conversation's last message is the one the running turn opened on, which pre_llm_call stores as the turn's:
+    a compression before the reply finds nothing after it, and does not take it for one no turn answered."""
+    telegram.on_turn_start(9, "TEST 现在这句", turn_id="turn-9")
+    history = [
+        {"role": "user", "content": "TEST 上一句"},
+        {"role": "assistant", "content": "TEST 上一句的回复"},
+        {"role": "user", "content": "TEST 现在这句", "timestamp": time.time()},
+    ]
+    telegram.on_pre_compress(history)
+    assert not any(content == "TEST 现在这句" for _role, content, _origin in _stored(hermes_home))
+
+
+@pytest.mark.parametrize(
+    ("chat_type", "origin", "taken"),
+    [
+        ("private", "human_direct", True),
+        ("dm", "human_direct", True),
+        ("group", "human_direct", False),
+        ("private", "origin_unknown", False),
+    ],
+)
+def test_only_a_chat_of_the_person_s_alone_says_whose_a_message_put_back_was(chat_type, origin, taken):
+    from types import SimpleNamespace
+
+    from scope_recall.adapters.hermes import turn_capture
+
+    identity = SimpleNamespace(
+        scope=SimpleNamespace(chat_type=chat_type, platform="telegram", user_id="TEST-user"),
+        trusted_context=lambda: SimpleNamespace(actor_origin=origin),
+    )
+    words = [steer.words for steer in turn_capture._said_aside(identity, _put_back(1790000200.0))]
+    assert words == (["TEST 游戏里能正确显示中文吗", "TEST 还没做好吗"] if taken else [])

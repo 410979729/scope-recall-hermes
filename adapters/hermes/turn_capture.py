@@ -14,6 +14,7 @@ from scope_recall.contracts import ContractError
 
 from .audiences import LOCAL_PLATFORMS
 from .boundary import (
+    UNANSWERED_KIND,
     Steer,
     extract_user_text,
     host_notice,
@@ -25,6 +26,7 @@ from .boundary import (
     steer_source_key,
     sync_turn_source_events,
     tool_call_source_event,
+    unanswered_messages,
 )
 from .capture import CAPTURE_TIMEOUT_S, GAP_CURRENT_SOURCE_REFS_LIMIT
 from .tool_surface import TOOL_NAMES
@@ -69,6 +71,20 @@ def _steers(identity, messages: object) -> tuple[Steer, ...]:
         user_id=scope.user_id,
         local_surface=scope.platform == "cli" or scope.platform in LOCAL_PLATFORMS,
     )
+
+
+#: Chats that are the person's alone, where a message no turn answered can only be theirs.
+_PRIVATE_CHATS = frozenset({"dm", "private", "cli"})
+
+
+def _said_aside(identity, messages: object) -> tuple[Steer, ...]:
+    """What the session's person said in ``messages`` that no turn opened on: their steers, and in a chat of theirs
+    alone, on a surface that attests them, the messages no turn answered (``unanswered_messages``).  In a group
+    nothing says whose a message no turn answered was."""
+    steers = _steers(identity, messages)
+    if identity.scope.chat_type not in _PRIVATE_CHATS or identity.trusted_context().actor_origin != "human_direct":
+        return steers
+    return (*steers, *unanswered_messages(messages))
 
 
 def _is_scope_recall_tool_name(tool_name: object) -> bool:
@@ -270,7 +286,7 @@ class TurnCapture:
         answer = kwargs.get("assistant_response")
         history = kwargs.get("conversation_history")
         said = interim_messages(history, answer=answer if isinstance(answer, str) else "")
-        steered = _steers(identity, history)
+        steered = _said_aside(identity, history)
         with self._adapter._said_lock:
             if turn_id != self._adapter._active_turn_id:
                 return
@@ -321,7 +337,7 @@ class TurnCapture:
         )
         # The conversation sync_turn is handed, and what post_llm_call kept when it was not.
         steered = [steer for said in steers.values() for steer in said]
-        self._write_steers([*steered, *_steers(identity, messages)], identity, context, "sync_turn")
+        self._write_steers([*steered, *_said_aside(identity, messages)], identity, context, "sync_turn")
         self._write_turn(identity, opened, shown, effective_session, turn_id, user_content, assistant_content, said_at)
         with adapter._lock:
             if adapter._active_turn_id == active_turn:
@@ -381,7 +397,7 @@ class TurnCapture:
             if identity is None or identity.read_only or not identity.runtime_audience.allowed_scope_ids:
                 return
             effective_session = adapter._effective_session_id(session_id)
-        found = _steers(identity, messages)
+        found = _said_aside(identity, messages)
         if found:
             context = identity.trusted_context(session_id=effective_session, mutation=True)
             self._write_steers(found, identity, context, hook, deadline)
@@ -428,18 +444,35 @@ class TurnCapture:
     def _held(self, unread, identity, context, deadline: float) -> tuple[bool, ...]:
         """Which steers the store holds already, in any session of the scope, or holds deleted: a compression
         carries a steer into the session it continues, and a process that starts again remembers none it wrote.
-        When the store cannot say, none is held: a steer stored twice is better than one lost."""
+        When the store cannot say, none is held: a steer stored twice is better than one lost.
+
+        A message no turn answered may still be a turn's own, stored by ``pre_llm_call`` under the turn's key when the
+        gateway stopped before any reply: one of those is looked up by its words and moment in this session as well."""
         if not unread:
             return ()
+        core = self._adapter._require_core()
         try:
-            held = self._adapter._require_core().said_in_session(
-                context,
-                identity.local_scope_id,
-                [("user", steer.words, steer.occurred_at or "", key) for steer, key in unread],
-                remaining_seconds=_budget(deadline),
-                across_sessions=True,
+            held = list(
+                core.said_in_session(
+                    context,
+                    identity.local_scope_id,
+                    [("user", steer.words, steer.occurred_at or "", key) for steer, key in unread],
+                    remaining_seconds=_budget(deadline),
+                    across_sessions=True,
+                )
             )
-        except (ContractError, OSError, RuntimeError, sqlite3.Error):
+            loose = [index for index, (steer, _key) in enumerate(unread) if steer.kind == UNANSWERED_KIND]
+            loose = [index for index in loose if index < len(held) and not held[index]]
+            if loose:
+                worded = core.said_in_session(
+                    context,
+                    identity.local_scope_id,
+                    [("user", unread[index][0].words, unread[index][0].occurred_at or "", None) for index in loose],
+                    remaining_seconds=_budget(deadline),
+                )
+                for index, said in zip(loose, worded, strict=True):
+                    held[index] = said
+        except (ContractError, OSError, RuntimeError, sqlite3.Error, ValueError):
             return (False,) * len(unread)
         return tuple(held) if len(held) == len(unread) else (False,) * len(unread)
 
