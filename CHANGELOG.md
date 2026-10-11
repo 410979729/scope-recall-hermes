@@ -3,6 +3,20 @@
 A line or two per release.  Each release's full notes are on its GitHub release page (tag ``v<version>``), and the
 longer text this file once held is in its history.
 
+## [3.10.0] - 2026-10-11
+
+An agent that asks its memory about the owner by name ("Joy 对动画的运镜有什么要求？") finds the owner's own words, which say "I" and never the name. Recall searches such a question by meaning both as asked and as the owner would ask it ("我对…"), and by its words also without the name. The names are the one a host attests for the person asking (a Hermes gateway passes the user's name) and an optional `owner_names` list in an entry's runtime config; none is built in. Both readings are embedded in one request. On a copy of the shared store, of 52 questions agents ask about the owner, each answered by one of the owner's own messages, 16 came back in the top five before and 27 after, none lost; the owner's own 173 questions came back exactly as before.
+
+A Hermes gateway that restarts puts the messages that waited for a busy agent back into the conversation without opening a turn for them, and the person's next message opens one after them: they were never stored (two of the owner's on 2026-10-05). In a chat of the person's own they are now stored as the person's words, once, whichever hook reads them first; in a group nothing says whose they were.
+
+A candidate memory the evaluator was asked about five times without settling it is asked again a day after the last time, not each time something new is said about it. In the week to 2026-10-10 the shared store asked 26,909 questions, 91% of them answered "not enough evidence yet"; 80% of the candidates ever resolved were resolved within five questions, while 556 had been asked twenty times or more. The day's pace would have spared 42% of that week's questions and delayed the rest of the resolutions by a day at most; what is said meanwhile is kept and asked about together. The doctor's settling summary counts such candidates as `slowed`.
+
+Three tests that failed on slow Windows runners wait for what they test instead of a time.
+
+### Upgrading from 3.9.7
+
+Install the package, run `plan-install` and `apply-install` for each upgraded entry, then restart the Hermes gateways and the clients' MCP servers. The schema is unchanged (1110). An entry whose host attests no name (Claude Code, Codex, WorkBuddy, dsh, a remote client) finds the owner by name once its runtime config lists it: `"owner_names": ["Joy"]` (`docs/configuration.md`).
+
 ## [3.9.7] - 2026-10-10
 
 What the owner sends to a Hermes agent while it works (a steer) is stored as their words. Most were lost: they were read only at a turn's end and only after the last other row, and were gone once a compression or a turn without a reply came first. A steer is the owner's only when the gateway's origin names them; a parent agent's message to the agent it delegated to, a notice Hermes delivers the same way, and anything after another person's words in a row Hermes joined are not. A steer a compression carries into the next session is not stored a second time, and a deleted one stays deleted.
